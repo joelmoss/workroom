@@ -713,6 +713,15 @@ final class RunCommandTests: XCTestCase {
     XCTAssertFalse(store.canRunCommand(for: missing, inProject: "/a"), "missing → no run controls")
     XCTAssertFalse(
       store.canRunCommand(for: present, inProject: "/b"), "no command → no run controls")
+
+    // A workroom whose setup script is still writing its worktree: `startRunCommand` refuses it
+    // (issue #167), so offering the button was offering a silent no-op (issue #171). The pane header
+    // reads `creatingWorkrooms` directly, since its Run isn't gated on a configured command.
+    store.creatingWorkrooms.insert(present.id)
+    XCTAssertFalse(
+      store.canRunCommand(for: present, inProject: "/a"), "mid-create → no run controls")
+    store.creatingWorkrooms.remove(present.id)
+    XCTAssertTrue(store.canRunCommand(for: present, inProject: "/a"), "and back when it lifts")
   }
 
   // MARK: Graceful teardown (issue #7, Option B) — a live run command (e.g. Puma) gets a SIGTERM

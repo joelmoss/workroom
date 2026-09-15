@@ -1868,11 +1868,18 @@ final class AppStore: ObservableObject {
     runConfig(forProject: projectPath).hasCommand
   }
 
-  /// Whether to surface run controls for a target: its project has a command configured AND the target
-  /// exists (not a missing directory, where `startRunCommand` silently no-ops). One gate for the
-  /// toolbar and the sidebar run buttons, so a new condition lands in a single place (review #9/#14).
+  /// Whether to surface run controls for a target: its project has a command configured AND
+  /// `startRunCommand` would actually start one. One gate for the toolbar and the sidebar run
+  /// buttons, so a new condition lands in a single place (review #9/#14).
+  ///
+  /// The two non-config clauses mirror that function's own guards, which is the point — a Run button
+  /// offered where pressing it silently returns is worse than no button. A missing directory was
+  /// always one; a workroom whose setup script is still writing the worktree became one in issue #167
+  /// and went unreflected here (issue #171). The pane title bar's Run reads `creatingWorkrooms`
+  /// directly, since it deliberately shows for a target with no command configured (issue #139).
   func canRunCommand(for target: TerminalTarget, inProject projectPath: String) -> Bool {
-    !target.isMissing && hasRunCommand(forProject: projectPath)
+    !target.isMissing && !creatingWorkrooms.contains(target.id)
+      && hasRunCommand(forProject: projectPath)
   }
 
   /// Persist a project's run config. A blank command with auto-run off removes the entry so the map
@@ -2241,10 +2248,11 @@ final class AppStore: ObservableObject {
     guard !target.isMissing, let project = project(forTarget: target) else { return }
     // Never launch the project command against a worktree whose setup script is still writing it
     // (issue #167). Auto-run already waits — it fires from `ensureInitialTerminal` once the pane
-    // mounts, which withholding defers — but the toolbar/sidebar/menu Run buttons stay live on a
-    // co-displayed creating pane, and a build or dev server started against half-installed
+    // mounts, which withholding defers — and a build or dev server started against half-installed
     // dependencies is the exact failure issue #7's disarm exists to prevent. Guarded HERE because
-    // it's the one place all of those callers route through.
+    // it's the one place the pane header, the sidebar rows and the ⌘R menu item all route through.
+    // Each of those now hides or disables itself on the same condition (issue #171 — they used to
+    // stay live and land on this silent return), but the guard is what makes that safe to rely on.
     guard !creatingWorkrooms.contains(target.id) else { return }
     let config = runConfig(forProject: project.path)
     guard config.hasCommand else { return }
@@ -2916,6 +2924,22 @@ final class AppStore: ObservableObject {
               first: .leaf(.root(project: project.path)),
               second: .leaf(.workroom(project: project.path, name: workroom.name)))
           ]
+          // Create-as-split scenario (issue #171): the SELECTED member is mid-setup-script, so its
+          // pane draws that create's own dialog while the root pane stays on screen beside it — the
+          // whole point of routing a focused create through the split rather than full-frame. The log
+          // is left UNFINISHED, which is what a running script looks like (a UI test can't drive a
+          // real create; nothing here shells out to the CLI). `creatingWorkrooms` is what the pane's
+          // Run gate and `startRunCommand` both read, so seeding it is what makes the absent Run
+          // assertable.
+          if UITestFixture.creatingSplitMember {
+            let session = ScriptLogSession(
+              title: "Setting up new workroom in \(project.displayName)", phase: "setup")
+            session.append("Running setup script…")
+            creations[target.id] = WorkroomCreation(
+              session: session, project: project, name: workroom.name, targetID: target.id,
+              hasSetup: true)
+            creatingWorkrooms.insert(target.id)
+          }
           // Second-group scenario: a window holds SEVERAL split groups, so seed a second one from two
           // more workrooms (needs `-WorkroomUITestWorkroomCount 3`). Both groups persist; the visible
           // one follows the selection, which is why the test can hop between them.
@@ -3389,9 +3413,11 @@ final class AppStore: ObservableObject {
     creations[id] = WorkroomCreation(
       session: session, project: project, name: name, targetID: id, hasSetup: setup)
     // Hand the pre-name loader slot over in the SAME synchronous step the entry lands in — not when
-    // the whole create ends. `focusedCreation` prefers that slot (it has no target to be scoped to),
-    // so holding it through a setup script would draw the loader over that script's own dialog;
-    // clearing it any earlier would blank the detail for the length of the reload above.
+    // the whole create ends. The slot is one-at-a-time and newest-wins, so holding it through a setup
+    // script would keep this create's provisional "Creating…" chip up (`WorkroomTabBar` prefers
+    // `pendingCreation` too) beside the real named chip it just resolved into, and would deny the
+    // slot to a second create that has nothing else to show. Clearing it any earlier would blank the
+    // detail for the length of the reload above, which is when nothing is selected yet.
     clearPendingCreation(session)
     // Arm auto-run so the workroom's first terminal runs the project command as tab #1 (issue #7). It
     // fires from `ensureInitialTerminal` when the pane mounts — after the setup dialog is dismissed for
@@ -3405,13 +3431,13 @@ final class AppStore: ObservableObject {
     // member itself, so a successful insert needs no `selectedTargetID` assignment. It returns
     // false — and we fall back to the plain landing — if the anchor was deleted while the create
     // ran, or if the anchor pane can't hold two halves.
-    // The new member's pane now renders its OWN create (`TargetTerminalDetail` reads
-    // `creations[target.id]`), so a co-displayed creating workroom shows its own log and its own
-    // Dismiss — the state blocker on #163's §2c is gone. What's still deferred is the FOCUSED case:
-    // while the new member is selected, `RootView.detailContent` hands the whole detail to the
-    // chrome-less full-frame create rather than routing it through the split, so ⌥⌘N shows a
-    // full-frame loader until the create clears. Routing that through the split (and gating the pane
-    // title bar's run controls during setup) is the remaining #163 work.
+    // The new member's pane renders its OWN create (`TargetTerminalDetail` reads
+    // `creations[target.id]`) — its own log, its own Dismiss — and since issue #171 that holds for
+    // the FOCUSED member too: `focusedCreation` no longer claims the detail for a create that has a
+    // target, so the split is on screen from the moment it is in the model (#163 §2c). The new
+    // member's title bar drops its Run control for the duration (`canStartRunCommand`), because
+    // `startRunCommand` refuses a creating workroom and a button that silently does nothing is worse
+    // than no button.
     let landedInSplit =
       splitAnchor.map {
         insertWorkroomSplit(
@@ -3420,39 +3446,40 @@ final class AppStore: ObservableObject {
     if !landedInSplit { selectedTargetID = sid }
   }
 
-  /// The create that owns the whole detail right now (issue #116), if any. Two sources, in this
-  /// order — and the order is the point (issue #167):
+  /// The create that owns the whole detail right now (issue #116), if any — and since issue #171
+  /// that is **only** the pre-name loader, shown only when nothing else is selected.
   ///
-  /// 1. **The SELECTED workroom's own create.** It has a target, so it is scoped to that target: a
-  ///    setup script blocks ONLY its own workroom, and selecting another reveals that one while the
-  ///    script keeps running in the background.
-  /// 2. **The pre-name loader, but only when there is nothing else to show.** It has no target yet,
-  ///    so it can only be full-frame — which makes it a window-wide blackout for as long as the CLI
-  ///    takes to report a name (worktree creation: seconds on a large repo). Unconditionally first,
-  ///    it meant starting a second create blanked the first create's live streaming dialog and every
-  ///    split pane, and clicking another workroom tab looked like a no-op (selection moved; the
-  ///    loader stayed). Worse, a no-setup create that finished under someone else's loader never got
-  ///    its pane mounted — so it never opened a terminal, never gained a tab chip, and left its
-  ///    auto-run armed until the user hunted it down in the sidebar.
+  /// A create with a target no longer takes the detail: its workroom exists, so it has a pane, and a
+  /// pane renders its own create (`TargetTerminalDetail` reads `creations[target.id]` — its own log,
+  /// its own Dismiss, under its own title bar). Routing the FOCUSED one full-frame as well unmounted
+  /// whatever it was created beside, which is exactly what ⌥⌘N's create-as-split exists to avoid
+  /// (#163 §2c): the split was in the model the whole time, just not on screen.
   ///
-  /// So the loader now yields to a live selected target, and the sidebar spinner plus the
-  /// provisional "Creating…" chip carry the progress instead. It still owns the detail in the case
-  /// it was written for — a create started with nothing selected, where there IS nothing else.
+  /// What is left is the case this was written for: a create still in its PRE-NAME phase has no
+  /// target, so there is no pane to draw it in and full-frame is the only option. Scoped to "nothing
+  /// selected" because full-frame is a window-wide blackout, and a create is not a reason to take the
+  /// window away from a workroom already on screen (issue #167) — with one selected, the sidebar
+  /// spinner and the provisional "Creating…" chip carry the progress instead.
   var focusedCreation: WorkroomCreation? {
-    if let sid = Self.targetIDString(for: selectedTargetID), let creation = creations[sid] {
-      return creation
-    }
-    return selectedTarget == nil ? pendingCreation : nil
+    selectedTarget == nil ? pendingCreation : nil
   }
 
   /// Whether the detail pane belongs to a create rather than to a terminal — see `focusedCreation`.
   var isCreationFocused: Bool { focusedCreation != nil }
 
-  /// Whether the given target's terminal must stay withheld while its workroom is being created with a
-  /// setup script (issue #116). Keyed on the OPERATION, not on which dialog is on screen: a create
-  /// superseded in the presentation slot still withholds its own terminal, so a second create can't
-  /// let the first's pane mount over a half-built tree and fire its armed auto-run (issue #167,
-  /// defect 3). A no-setup create never blocks — its terminal mounts as soon as its loader clears.
+  /// Whether the given target's terminal must stay withheld while its workroom is being created
+  /// (issue #116). Keyed on the OPERATION, not on which dialog is on screen: a create superseded in
+  /// the presentation slot still withholds its own terminal, so a second create can't let the first's
+  /// pane mount over a half-built tree and fire its armed auto-run (issue #167, defect 3).
+  ///
+  /// A NO-setup create withholds too, for the length of its loader (issue #171). It used to be exempt
+  /// — its dialog-less create was over in a moment and its pane wasn't mounted anyway, because the
+  /// focused create owned the whole detail. Now that every landed create renders inside its pane, that
+  /// pane mounts the instant the workroom exists, which is still inside `createWorkroom` —
+  /// `creatingWorkrooms` holds the id until the `defer`, so `ensureInitialTerminal` would consume the
+  /// armed auto-run (issue #7) and hand it to a `startRunCommand` that bails on exactly that guard.
+  /// Silently losing the auto-run. The entry clears one synchronous step before the `defer` does, so
+  /// withholding until then costs nothing and closes that window.
   ///
   /// Two sources, because the operation outlives this window's record of it:
   /// - `settingUpWorkrooms` (SHARED) covers the script's actual run, in EVERY window — including the
@@ -3461,7 +3488,7 @@ final class AppStore: ObservableObject {
   /// - `creations` (per-window) then keeps it withheld past the script, until THIS window's dialog is
   ///   dismissed — that part is per-window by definition, since the dialog is.
   func isCreationBlocking(_ targetID: TerminalTarget.ID) -> Bool {
-    settingUpWorkrooms.contains(targetID) || creations[targetID]?.hasSetup == true
+    settingUpWorkrooms.contains(targetID) || creations[targetID] != nil
   }
 
   /// Whether `workroom` has an in-flight create (its setup is running) — the delete affordances

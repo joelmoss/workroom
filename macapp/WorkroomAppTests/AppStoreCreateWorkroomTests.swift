@@ -271,7 +271,9 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     XCTAssertEqual(store.creations[wrID]?.targetID, wrID)
     XCTAssertNil(store.pendingCreation, "the pre-name slot clears once the create ends")
     XCTAssertTrue(store.isCreationBlocking(wrID), "the terminal must stay withheld during setup")
-    XCTAssertTrue(store.isCreationFocused, "the new workroom's slot owns the detail")
+    XCTAssertFalse(
+      store.isCreationFocused,
+      "the create has a workroom, so it draws in that workroom's PANE, not over the detail (#171)")
     XCTAssertEqual(store.selectedTargetID, .workroom(project: projectPath, name: "brave-fox"))
     XCTAssertEqual(store.creations[wrID]?.session.isFinished, true)
     XCTAssertNil(store.creations[wrID]?.session.failureMessage)
@@ -307,8 +309,14 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
   // MARK: - Synchronous state semantics
 
-  /// `isCreationBlocking` is true only for the in-progress creation's target AND only when a setup
-  /// script is running — a no-setup create never withholds the terminal.
+  /// `isCreationBlocking` is true for the in-progress creation's own target and no other — with or
+  /// without a setup script.
+  ///
+  /// The no-setup case became load-bearing in issue #171. Its pane used to be unmounted anyway (the
+  /// focused create owned the whole detail), so exempting it cost nothing; now the pane mounts the
+  /// instant the workroom exists, which is still inside `createWorkroom` with `creatingWorkrooms`
+  /// set — so an un-withheld pane would run `ensureInitialTerminal`, consume the armed auto-run and
+  /// feed it to a `startRunCommand` that refuses a creating workroom. The run would vanish.
   func testIsCreationBlockingSemantics() {
     let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
     let wrID = TerminalTarget.workroomID(project: projectPath, name: "wr")
@@ -319,7 +327,9 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
     store.creations[wrID] = WorkroomCreation(
       session: session, project: proj, name: "wr", targetID: wrID, hasSetup: false)
-    XCTAssertFalse(store.isCreationBlocking(wrID), "a no-setup create never blocks")
+    XCTAssertTrue(
+      store.isCreationBlocking(wrID),
+      "a no-setup create withholds too, for the length of its loader (#171)")
 
     store.creations[wrID] = WorkroomCreation(
       session: session, project: proj, name: "wr", targetID: wrID, hasSetup: true)
@@ -329,10 +339,15 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       "only the creation's own target is withheld")
   }
 
-  /// `isCreationFocused` owns the detail unconditionally pre-name (the loader phase), then follows
-  /// selection once named so a setup script blocks ONLY the new workroom — selecting another workroom
-  /// un-focuses it and reveals that workroom while the create keeps running (issue #116).
-  func testIsCreationFocusedFollowsSelection() {
+  /// `isCreationFocused` — the routing predicate `RootView.detailContent` branches on — is true for
+  /// the PRE-NAME loader and nothing else, and only while nothing is selected.
+  ///
+  /// Both halves matter. A pre-name create can't be drawn anywhere but full-frame (no name → no
+  /// target → no pane), yet full-frame is a window-wide blackout, so it yields to a workroom already
+  /// on screen (issue #167). And once the workroom exists it has a pane, so it draws THERE (issue
+  /// #171) — the case this used to claim, and the reason ⌥⌘N's anchor pane vanished for the length
+  /// of the create.
+  func testIsCreationFocusedIsThePreNameLoaderOnly() {
     let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
     let session = ScriptLogSession(title: "t", phase: "setup")
     let proj = Project(path: projectPath, vcs: "git", workrooms: [])
@@ -350,16 +365,43 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       store.isCreationFocused, "a pre-name create must not blank the workroom already on screen")
     XCTAssertNotNil(store.pendingCreation, "the create is still running — it just isn't full-frame")
 
-    // Named: focused only when the new workroom's own tab is selected.
+    // Named: never full-frame, selected or not. The workroom exists, so `workroomSplitBody` renders
+    // it and `TargetTerminalDetail` draws the create inside its pane.
     store.pendingCreation = nil
-    store.projects = []
+    store.projects = [self.project(withWorkroom: "wr")]
     let wrID = TerminalTarget.workroomID(project: projectPath, name: "wr")
     store.creations[wrID] = WorkroomCreation(
       session: session, project: proj, name: "wr", targetID: wrID, hasSetup: true)
     store.selectedTargetID = .root(project: projectPath)
     XCTAssertFalse(store.isCreationFocused, "another workroom stays visible while setup runs")
     store.selectedTargetID = .workroom(project: projectPath, name: "wr")
-    XCTAssertTrue(store.isCreationFocused)
+    XCTAssertFalse(
+      store.isCreationFocused, "its own tab selected → still the pane's job, not the detail's")
+    XCTAssertTrue(store.isCreationBlocking(wrID), "the pane withholds the terminal for it")
+  }
+
+  /// The routing decision for ⌥⌘N, end to end (issue #171 / #163 §2c): a create landed BESIDE an
+  /// anchor focuses the new member, and the detail must then render the split — both panes — rather
+  /// than hand the window to a full-frame create. `visibleWorkroomLayout` is what `workroomSplitBody`
+  /// lays out, so asserting on it is asserting on what is drawn.
+  func testFocusedCreateInASplitRendersBothPanes() async {
+    let fake = CreatingFakeCLI(
+      projectPath: projectPath, workroomName: "brave-fox", hasSetup: true, logLines: ["deps"],
+      existingWorkrooms: ["anchor-wr"])
+    let (store, anchor) = anchoredStore(fake, anchor: "anchor-wr")
+
+    await store.createWorkroom(
+      in: Project(path: projectPath, vcs: "git", workrooms: []), splitAnchor: anchor)
+
+    let created = SidebarID.workroom(project: projectPath, name: "brave-fox")
+    let wrID = TerminalTarget.workroomID(project: projectPath, name: "brave-fox")
+    XCTAssertEqual(store.selectedTargetID, created, "the insert focuses the new member")
+    XCTAssertFalse(store.isCreationFocused, "so the detail must NOT go full-frame")
+    XCTAssertEqual(
+      Set(store.visibleWorkroomLayout(for: created).tabIDs), [anchor, created],
+      "the split is what gets rendered — the anchor pane stays on screen through the create")
+    XCTAssertTrue(
+      store.isCreationBlocking(wrID), "the new member's own pane is what withholds its terminal")
   }
 
   /// The in-progress creation's target shows as a workroom tab even before its terminal exists — so
@@ -699,12 +741,14 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let idB = TerminalTarget.workroomID(project: projectPath, name: "wr-b")
 
     let a = await startAndLand(store, "wr-a", project: emptyProject)
-    // The moment a create lands it stops being pre-name, so the detail must show ITS dialog — not
-    // the loader the pre-name slot draws (which has no target, so it can only be full-frame).
+    // The moment a create lands it stops being pre-name, so what's on screen must be ITS dialog — not
+    // the loader the pre-name slot draws (which has no target, so it can only be full-frame). Since
+    // issue #171 that dialog is drawn by A's own PANE, which is why the assertion is on `creations`
+    // rather than on `focusedCreation` — the latter is now the pre-name loader and nothing else.
     store.selectedTargetID = .workroom(project: projectPath, name: "wr-a")
     XCTAssertNil(store.pendingCreation, "a landed create must give up the pre-name loader slot")
-    XCTAssertEqual(
-      store.focusedCreation?.targetID, idA, "the focused detail is A's own setup dialog")
+    XCTAssertEqual(store.creations[idA]?.targetID, idA, "A's pane draws A's own setup dialog")
+    XCTAssertNil(store.focusedCreation, "and nothing goes full-frame over it")
 
     let b = await startAndLand(store, "wr-b", project: emptyProject)
 

@@ -22,13 +22,14 @@ struct CreationLoader: View {
   }
 }
 
-/// The setup dialog shown full-pane in the detail area while a workroom's **setup script** runs
-/// (issues #18, #116). Only workrooms WITH a setup script ever show it — a no-setup create shows just
-/// `CreationLoader`, then its terminal. It swaps in from the loader once the script starts, streaming
-/// the log; a "Dismiss" button appears once the run finishes (success or failure), and dismissing
-/// lets the real terminal mount. A solid themed surface sits behind the card (no half-mounted terminal
-/// peeks through). The card springs in on appear. The caller scopes it to the creating slot, so
-/// selecting another workroom shows that workroom while the script keeps running in the background.
+/// The setup dialog shown over a workroom's own pane while its **setup script** runs (issues #18,
+/// #116, moved into the pane by #171). Only workrooms WITH a setup script ever show it — a no-setup
+/// create shows just `CreationLoader`, then its terminal. It replaces the loader once the script
+/// starts, streaming the log; a "Dismiss" button appears once the run finishes (success or failure),
+/// and dismissing lets the real terminal mount. A solid themed surface sits behind the card (no
+/// half-mounted terminal peeks through). The card springs in on appear. The caller scopes it to ONE
+/// workroom's create, so selecting another workroom — or looking at the pane beside it in a split —
+/// shows that workroom while the script keeps running.
 ///
 /// `@ObservedObject` keeps the streaming log scoped here.
 struct SetupOverlay: View {
@@ -54,6 +55,10 @@ struct SetupOverlay: View {
         .opacity(shown ? 1 : 0)
         .padding(32)
     }
+    // Named so a UI test can assert WHERE this renders: since issue #171 a create draws inside its own
+    // workroom pane, which is only provable by finding this as a descendant of `workroom.pane` rather
+    // than of the window.
+    .accessibilityIdentifier("SetupOverlay")
     .onAppear {
       guard !shown else { return }
       if reduceMotion {

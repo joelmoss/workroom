@@ -40,12 +40,17 @@ struct RootView: View {
   /// The detail content area's global frame, so a chip drag can be resolved against the workroom panes.
   @State private var detailContentFrame: CGRect = .zero
 
-  /// True when the selected target can host a terminal right now: it exists, isn't missing, and the
-  /// detail isn't currently showing the creating slot's loader/setup dialog (issue #116).
+  /// True when the selected target can host a terminal right now: it exists, isn't missing, and its
+  /// terminal isn't withheld behind its own create (issue #116).
+  ///
+  /// Reads `isCreationBlocking` — the same predicate `TargetTerminalDetail` withholds on — rather
+  /// than `isCreationFocused`. They used to agree, because a selected create owned the whole detail;
+  /// since issue #171 it renders inside its pane instead, so `isCreationFocused` is false there while
+  /// the terminal is still withheld. Asking the pane's own question keeps ⌘T and its neighbours
+  /// disabled over a create that has no terminal to act on.
   private var terminalInteractionAvailable: Bool {
     guard let target = store.selectedTarget, !target.isMissing else { return false }
-    if store.isCreationFocused { return false }
-    return true
+    return !store.isCreationBlocking(target.id)
   }
 
   var body: some View {
@@ -508,9 +513,13 @@ struct RootView: View {
     store.vcsAllowsRemoteActions(vcs: (store.remoteState.target?.vcs ?? .git).rawValue)
   }
 
+  /// Whether ⌘R (File ▸ Run) should be live for the selection — the shared `canRunCommand` gate, not a
+  /// bare `hasRunCommand`. The menu is one of the callers `startRunCommand`'s guards were written for
+  /// (issue #171), so it enables on exactly the conditions under which a run would actually start: a
+  /// present directory, no create in flight, and a command configured.
   private var selectedHasRunCommand: Bool {
-    guard let path = selectedRunProjectPath else { return false }
-    return store.hasRunCommand(forProject: path)
+    guard let path = selectedRunProjectPath, let target = store.selectedTarget else { return false }
+    return store.canRunCommand(for: target, inProject: path)
   }
   /// Whether the selected target's run command is currently running.
   private var selectedRunCommandActive: Bool {
@@ -643,17 +652,16 @@ struct RootView: View {
 
   @ViewBuilder
   private var detailContent: some View {
-    if let creation = store.focusedCreation {
-      // The creating slot owns the detail (issue #116): a loader through the pre-name phase (and all
-      // the way to the terminal for a no-setup workroom), swapped for the streaming setup dialog once
-      // a setup script starts. Scoped to this focused slot — selecting another workroom shows it.
+    if store.focusedCreation != nil {
+      // A create still in its PRE-NAME phase, started with nothing selected (issue #116): the
+      // workroom has no name yet, so there is no target, no pane and nothing to render this beside —
+      // full-frame is the only option left. Every create PAST that point draws inside its own pane
+      // instead (issue #171), which is why this branch is now the loader and only the loader.
       //
       // Deliberately chrome-less: no pane card, no title bar, no run/open-in. There is no workroom to
-      // act on yet, and the setup dialog owns this moment. So issue #139's "always" means every
-      // workroom with a mounted pane, not every state the detail can be in — a *non-focused* member
-      // still being created does get its header, because its pane is mounted (the terminal inside it is
-      // what's withheld).
-      creationDetail(creation)
+      // act on yet. So issue #139's "always" means every workroom with a mounted pane, not every
+      // state the detail can be in — and every workroom that exists now has one.
+      CreationLoader()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     } else if store.selectedTarget != nil {
       // The focused target's terminal body — ALWAYS rendered through `WorkroomSplitView` (a no-split
@@ -664,7 +672,9 @@ struct RootView: View {
       // A missing directory routes through here too, since issue #139: it used to get its own
       // `ContentUnavailableView` branch at this level, which meant a SOLO missing workroom never
       // reached the pane at all and so had no title bar — while a missing *split member* did.
-      // `TargetTerminalDetail` now owns that state for every pane, focused or not.
+      // `TargetTerminalDetail` now owns that state for every pane, focused or not. A workroom still
+      // being created is the same shape since issue #171: its pane owns its loader / setup dialog, so
+      // a create that landed beside an anchor keeps BOTH panes on screen while it runs.
       //
       // The run/stop/restart + "Open in…" controls live in each workroom pane's own title bar
       // (`WorkroomPaneTitleBar`), not the window title bar and not a detail `.toolbar`. The window
@@ -701,18 +711,6 @@ struct RootView: View {
             .buttonStyle(.borderedProminent)
         }
       }
-    }
-  }
-
-  /// The creating slot's detail (issue #116): a centered loader until a setup script's dialog is ready,
-  /// then the streaming setup dialog. A workroom with no setup script never reaches the dialog — the
-  /// loader shows until the create completes (which clears its `creations` entry) and the terminal mounts.
-  @ViewBuilder
-  private func creationDetail(_ creation: WorkroomCreation) -> some View {
-    if let id = creation.targetID, creation.hasSetup {
-      SetupOverlay(session: creation.session) { store.dismissCreation(id) }
-    } else {
-      CreationLoader()
     }
   }
 

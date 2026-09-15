@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The header + scrolling body of a setup log. Shared between the full-pane blocking
+/// The header + scrolling body of a setup log. Shared between the blocking
 /// setup view and the resizable under-terminal panel. A nil `onClose` hides the header
 /// close button — the blocking view withholds it (you dismiss via its footer button,
 /// and only once setup finishes).
