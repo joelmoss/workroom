@@ -331,6 +331,14 @@ enum UITestFixture {
     flag("WorkroomUITestCreatingSplitMember")
   }
 
+  /// `-WorkroomUITestCreatingSplitMemberNoSetup 1` — the same seed, but for a project with NO setup
+  /// script: `hasSetup: false`, so the pane draws `CreationLoader` instead of `SetupOverlay`. That
+  /// branch is new in issue #171 (the pane previously drew nothing for a no-setup create) and is
+  /// otherwise unexercised, since the flag above hardcodes a script.
+  static var creatingSplitMemberNoSetup: Bool {
+    flag("WorkroomUITestCreatingSplitMemberNoSetup")
+  }
+
   /// When set (`-WorkroomUITestConflict 1`), the fixture workroom is **conflicted**: its changed-file
   /// list gains a `.conflicted` entry (`conflictedFilePath`) and the status carries the top-level
   /// `conflicted` flag. Covers the jj per-file conflict status end-to-end in the UI — the Changes row

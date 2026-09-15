@@ -380,6 +380,88 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     XCTAssertTrue(store.isCreationBlocking(wrID), "the pane withholds the terminal for it")
   }
 
+  /// The post-script, pre-Dismiss window: the CLI has returned (so `createWorkroom`'s `defer` has
+  /// already cleared BOTH shared guard sets) but the setup dialog is still up and the terminal is
+  /// still withheld. `creatingWorkrooms` alone therefore says "go" while the pane says "wait".
+  ///
+  /// Offering Run there is not merely a silent no-op — it is worse than the bug issue #171 set out
+  /// to fix. The run starts against an unmounted pane AND overwrites the armed auto-run, so when the
+  /// user finally dismisses, `ensureInitialTerminal` sees a non-empty tab list, skips `addTab`, and
+  /// the workroom lands with a run tab and NO shell — issue #7's contract, broken silently.
+  func testRunIsRefusedWhileTheSetupDialogStillCoversThePane() {
+    let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
+    let proj = project(withWorkroom: "wr")
+    store.projects = [proj]
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: projectPath)
+    let id = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    let target = proj.workrooms[0].target(inProject: projectPath)
+
+    store.creations[id] = WorkroomCreation(
+      session: ScriptLogSession(title: "t", phase: "setup"), project: proj, name: "wr",
+      targetID: id, hasSetup: true)
+    XCTAssertTrue(
+      store.creatingWorkrooms.isEmpty, "precondition: the create's `defer` already cleared it")
+    store.armAutoRun(forWorkroom: id)
+
+    XCTAssertTrue(store.isRunBlocked(id), "the dialog still owns this pane")
+    XCTAssertFalse(
+      store.canRunCommand(for: target, inProject: projectPath),
+      "so no Run affordance may be offered")
+    store.startRunCommand(for: target)
+    XCTAssertNil(store.runTabID(for: id), "and the chokepoint refuses it even if one is")
+
+    // Dismissing mounts the pane, and the auto-run is still armed to do its job.
+    store.dismissCreation(id)
+    store.ensureInitialTerminal(for: target)
+    XCTAssertEqual(
+      store.terminals.tabCount(forTargetID: id), 2,
+      "the workroom gets its backgrounded run AND its always-on shell (issue #7)")
+  }
+
+  /// `isRunBlocked` needs BOTH halves; neither covers the other. `creatingWorkrooms` clears too
+  /// early (the case above), and `isCreationBlocking` starts too late — during the landing's
+  /// `reload()` a no-setup create holds `creatingWorkrooms` with no `creations` entry yet.
+  func testRunBlockedNeedsBothHalves() {
+    let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
+    let id = TerminalTarget.workroomID(project: projectPath, name: "wr")
+
+    XCTAssertFalse(store.isRunBlocked(id), "idle → nothing blocks")
+    store.creatingWorkrooms.insert(id)
+    XCTAssertFalse(store.isCreationBlocking(id), "the landing's reload window: no entry yet")
+    XCTAssertTrue(store.isRunBlocked(id), "but the run must still be refused")
+    store.creatingWorkrooms.remove(id)
+    store.creations[id] = WorkroomCreation(
+      session: ScriptLogSession(title: "t", phase: "setup"), project: emptyProject, name: "wr",
+      targetID: id, hasSetup: true)
+    XCTAssertTrue(store.isRunBlocked(id), "and again once only the dialog is left")
+  }
+
+  /// A landed create whose workroom does not resolve in `projects` still has somewhere to render.
+  /// `apply` assigns `projects` with no ordering guard, so an out-of-order `list` can revert it to a
+  /// snapshot predating a landed workroom; `WorkroomTabBar`'s provisional chip is the documented way
+  /// back in, and it lands here. Keyed on the id STRING so it needs no help from `projects` — which
+  /// is exactly what the pane route cannot do.
+  func testALandedCreateWhoseTargetStoppedResolvingStillRenders() {
+    let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
+    let id = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    let sid = SidebarID.workroom(project: projectPath, name: "wr")
+    store.creations[id] = WorkroomCreation(
+      session: ScriptLogSession(title: "t", phase: "setup"), project: emptyProject, name: "wr",
+      targetID: id, hasSetup: true)
+
+    store.projects = [project(withWorkroom: "wr")]
+    store.selectedTargetID = sid
+    XCTAssertNil(store.focusedCreation, "it resolves → its own pane draws it, nothing full-frame")
+
+    // The stale snapshot lands: the workroom is gone from `projects` but the create is still live.
+    store.projects = []
+    store.selectedTargetID = sid
+    XCTAssertNil(store.selectedTarget, "precondition: the target no longer resolves")
+    XCTAssertEqual(
+      store.focusedCreation?.targetID, id,
+      "so the dialog goes full-frame again — otherwise the log and its failure are unreachable")
+  }
+
   /// The routing decision for ⌥⌘N, end to end (issue #171 / #163 §2c): a create landed BESIDE an
   /// anchor focuses the new member, and the detail must then render the split — both panes — rather
   /// than hand the window to a full-frame create. `visibleWorkroomLayout` is what `workroomSplitBody`
@@ -910,10 +992,18 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     fake.release("wr-a")
     await a.value
 
-    // Positive control: with the create finished the SAME call starts a run, so the assertion above
-    // failed on the guard rather than on a missing command.
+    // The script has finished, but its dialog still covers the pane — and `isRunBlocked` still
+    // refuses there (issue #171). That window used to permit a run, which started it against an
+    // unmounted pane and consumed the armed auto-run; see
+    // `testRunIsRefusedWhileTheSetupDialogStillCoversThePane`.
     store.startRunCommand(for: target)
-    XCTAssertNotNil(store.runStates[idA]?.tab, "once setup is done, Run works normally")
+    XCTAssertNil(store.runStates[idA]?.tab, "the dialog still owns the pane")
+
+    // Positive control: with the dialog dismissed the SAME call starts a run, so every assertion
+    // above failed on a guard rather than on a missing command.
+    store.dismissCreation(idA)
+    store.startRunCommand(for: target)
+    XCTAssertNotNil(store.runStates[idA]?.tab, "once the create is fully over, Run works normally")
     store.setRunConfig(.empty, forProject: projectPath)
   }
 
