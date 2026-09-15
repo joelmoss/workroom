@@ -130,6 +130,65 @@ fn run_serve(socket: PathBuf, idle: Option<String>) -> ExitCode {
 /// Exit code the app already knows: `SessionAttachClient.daemonUnavailable`.
 const DAEMON_UNAVAILABLE: u8 = 92;
 
+/// Become an ordinary shell, because this relay could not deliver a persistent session.
+///
+/// **Why the relay and not the app.** The app decides whether a pane gets a session before it
+/// forks anything: `applyPersistentSession` either hands libghostty `wr-agent attach` as its
+/// `config.command` or lets it open a plain shell, and by the time this process exists that choice
+/// is spent. `config.wait_after_command` is false, so a relay that exits leaves a dead pane — no
+/// shell, no prompt, nothing the user can type into. The only place left that can still turn a
+/// failed attach into a working terminal is this process, by replacing itself with the shell the
+/// pane would have run anyway.
+///
+/// The app's own health check cannot prevent this. `SessionBackendProbe` runs `wr-agent protocol`
+/// and parses a version; an agent that answers that and then fails to serve — a stale socket it
+/// cannot bind, a version it cannot negotiate, a crash between the two — passes the probe and dies
+/// here. "A broken agent still leaves you a working terminal" is only true if this function exists.
+///
+/// **Persistence is lost, and that is said out loud.** The notice goes to stderr, which is the pane,
+/// because a terminal that silently stopped surviving quit is worse than one that says so: the user
+/// would find out by losing work. It is one line, printed once.
+///
+/// Never returns on success — `exec` replaces this process, so the shell inherits the pty, the
+/// window title, the exit status, everything. Returns only when `exec` itself fails.
+fn fall_back_to_shell(request: &serve::AttachRequest, reason: &str) -> ExitCode {
+    use std::os::unix::process::CommandExt;
+
+    let shell = request
+        .shell
+        .clone()
+        .unwrap_or_else(|| std::ffi::OsString::from("/bin/sh"));
+
+    eprintln!("wr-agent: {reason}; this terminal will not survive quitting Workroom\r");
+
+    let mut command = std::process::Command::new(&shell);
+    match request.command.as_ref().filter(|c| !c.is_empty()) {
+        // A caller that asked for a specific command still gets it. Dropping it and opening an
+        // interactive shell would silently not do the thing it was asked to do, which is a worse
+        // failure than the one being recovered from.
+        Some(text) => {
+            command.arg("-c").arg(text);
+        }
+        // `-l` so the pane matches what libghostty would have started on its own: a login shell.
+        None => {
+            command.arg("-l");
+        }
+    }
+    if let Some(cwd) = request.cwd.as_ref().filter(|c| !c.is_empty()) {
+        command.current_dir(cwd);
+    }
+    // Nothing downstream should think it is talking to a session that exists.
+    command.env_remove("WORKROOM_SESSION_ID");
+    command.env_remove("WORKROOM_SESSION_SOCKET");
+
+    let error = command.exec();
+    eprintln!(
+        "wr-agent: could not start {}: {error}\r",
+        shell.to_string_lossy()
+    );
+    ExitCode::from(DAEMON_UNAVAILABLE)
+}
+
 fn run_attach(args: &[String]) -> ExitCode {
     // Flags win, environment is the fallback — and the environment alone has to be enough, because
     // `PersistentSessionService.attachCommand()` builds the command line as `<binary> attach` with
@@ -139,18 +198,22 @@ fn run_attach(args: &[String]) -> ExitCode {
         // Safety: set before any thread is spawned, and only so the shared parser can read it.
         unsafe { std::env::set_var("WORKROOM_SESSION_ID", text) };
     }
+    // Parsed BEFORE the socket is resolved, so a misconfigured invocation can still fall back to a
+    // shell: `fall_back_to_shell` needs the shell and cwd the app exported, and those arrive in the
+    // same environment. The app can produce this state — it builds the attach command and the
+    // environment from two separate resolutions, so one failing while the other succeeds hands this
+    // process a command line with nothing to act on.
+    let mut request = serve::AttachRequest::from_env();
+
     let socket = flag(args, "--socket")
         .map(PathBuf::from)
         .or_else(serve::socket_from_env);
     let Some(socket) = socket else {
-        eprintln!("error: attach needs --socket <path> or WORKROOM_SESSION_SOCKET");
-        return ExitCode::FAILURE;
+        return fall_back_to_shell(&request, "no session socket was given");
     };
 
-    let mut request = serve::AttachRequest::from_env();
     let Some(session) = request.id else {
-        eprintln!("error: attach needs --session <uuid> or WORKROOM_SESSION_ID");
-        return ExitCode::FAILURE;
+        return fall_back_to_shell(&request, "no session id was given");
     };
     // The pty's initial size comes from the terminal this relay was forked into, so a session is
     // created at the size it will actually be shown at rather than at 80x24 and then resized —
@@ -161,12 +224,16 @@ fn run_attach(args: &[String]) -> ExitCode {
 
     // Spawn-on-connect-failure, exactly as the Swift attach client does: the agent is started by
     // whoever needs it first rather than by an installed service, so there is no install footprint.
+    //
+    // Every failure from here to the attach reply becomes a plain shell rather than a dead pane —
+    // see `fall_back_to_shell`. These are precisely the states an agent that PASSED the app's
+    // `wr-agent protocol` probe can still reach.
     let mut stream = match serve::connect(&socket) {
         Some(stream) => stream,
         None => {
             let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wr-agent"));
             if serve::spawn_agent(&binary, &socket).is_err() {
-                return ExitCode::from(DAEMON_UNAVAILABLE);
+                return fall_back_to_shell(&request, "could not start the session agent");
             }
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             loop {
@@ -174,7 +241,10 @@ fn run_attach(args: &[String]) -> ExitCode {
                     break stream;
                 }
                 if std::time::Instant::now() >= deadline {
-                    return ExitCode::from(DAEMON_UNAVAILABLE);
+                    return fall_back_to_shell(
+                        &request,
+                        "the session agent did not start within 5s",
+                    );
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -182,7 +252,10 @@ fn run_attach(args: &[String]) -> ExitCode {
     };
 
     if handshake(&mut stream).is_err() {
-        return ExitCode::from(DAEMON_UNAVAILABLE);
+        return fall_back_to_shell(
+            &request,
+            "could not agree a protocol with the session agent",
+        );
     }
 
     let attach = Frame::new(FrameKind::Attach, request.encode());
@@ -191,12 +264,15 @@ fn run_attach(args: &[String]) -> ExitCode {
         .write_all(&Envelope::new(Service::Terminal, 1, attach.encode()).encode())
         .is_err()
     {
-        return ExitCode::from(DAEMON_UNAVAILABLE);
+        return fall_back_to_shell(
+            &request,
+            "the session agent closed before accepting the attach",
+        );
     }
 
     // Before anything reads stdin: a relay that leaves its own tty cooked is not a relay. Held to
     // the end of this function so every `return` below restores the terminal.
-    let _raw = RawMode::enter();
+    let raw = RawMode::enter();
 
     // stdin -> agent on its own thread; agent -> stdout on this one.
     let input_stream = match stream.try_clone() {
@@ -247,9 +323,21 @@ fn run_attach(args: &[String]) -> ExitCode {
                                 // `ExitCode` is a byte; a shell status is already 0-255.
                                 return ExitCode::from(code.clamp(0, 255) as u8);
                             }
+                            // The agent answered, and its answer was no. This is the most literal
+                            // form of "passed the probe, failed at attach": the binary ran, spoke
+                            // the protocol, and then refused the session. A dead pane here is the
+                            // same loss as any other failed attach, so it falls back too — but the
+                            // terminal is in raw mode by now, and `exec` runs no destructors, so
+                            // the line discipline has to be put back by hand first.
                             FrameKind::Failure => {
-                                eprintln!("wr-agent: {}", String::from_utf8_lossy(&frame.payload));
-                                return ExitCode::FAILURE;
+                                raw.restore();
+                                return fall_back_to_shell(
+                                    &request,
+                                    &format!(
+                                        "the session agent refused the attach: {}",
+                                        String::from_utf8_lossy(&frame.payload)
+                                    ),
+                                );
                             }
                             _ => {}
                         }
@@ -338,6 +426,17 @@ fn relay_resizes(
 struct RawMode(Option<libc::termios>);
 
 impl RawMode {
+    /// Put the terminal back, idempotently.
+    ///
+    /// Separate from `Drop` because `exec` never returns, so a guard's destructor never runs — and
+    /// `fall_back_to_shell` execs. A shell handed a raw tty has no line editing, no echo and no
+    /// signal keys, which is a worse terminal than the dead pane the fallback exists to prevent.
+    fn restore(&self) {
+        if let Some(original) = self.0.as_ref() {
+            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) };
+        }
+    }
+
     fn enter() -> RawMode {
         let mut original: libc::termios = unsafe { std::mem::zeroed() };
         if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut original) } != 0 {
@@ -354,9 +453,7 @@ impl RawMode {
 
 impl Drop for RawMode {
     fn drop(&mut self) {
-        if let Some(original) = self.0.as_ref() {
-            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) };
-        }
+        self.restore();
     }
 }
 
@@ -389,6 +486,9 @@ fn run_list(args: &[String]) -> ExitCode {
         eprintln!("error: no agent listening on {}", socket.display());
         return ExitCode::from(DAEMON_UNAVAILABLE);
     };
+    // No fallback here, deliberately: `list` is a diagnostic command run by a person at a prompt,
+    // not a relay libghostty forked into a pane. Exec'ing a shell would be absurd; an exit code is
+    // exactly what the caller wants.
     if handshake(&mut stream).is_err() {
         return ExitCode::from(DAEMON_UNAVAILABLE);
     }
