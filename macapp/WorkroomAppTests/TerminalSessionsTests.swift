@@ -417,6 +417,38 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(s.tabs(for: target).map(\.title), ["Terminal 1", "vim"])
   }
 
+  /// The `home` default must be the cached value, not a fresh `NSHomeDirectory()` per call: this is
+  /// on the terminal title-change path (`handleTitleChange` on every `ghostty_app_tick`), and
+  /// WORKROOM-3P sampled the main thread inside `NSHomeDirectoryForUser` → `CFURLCopyFileSystemPath`
+  /// → malloc reached from exactly here.
+  ///
+  /// Read at the SOURCE level, the same way `DefaultsIsolationTests` enforces `suite: .app`. A
+  /// behavioural assertion cannot see this: both spellings of the default return the identical
+  /// string, so `isDirectoryTitle` gives byte-identical answers either way and a test built on its
+  /// return value passes against the un-fixed code (measured — it did). The declaration is the only
+  /// place the regression is observable.
+  func testIsDirectoryTitleDefaultsToTheCachedHomeDirectory() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()  // WorkroomAppTests
+        .deletingLastPathComponent()  // macapp
+        .appendingPathComponent("WorkroomApp/Core/TerminalSessions.swift"), encoding: .utf8)
+
+    guard
+      let declaration = source.components(separatedBy: "func isDirectoryTitle").dropFirst().first
+    else { return XCTFail("parse looks wrong — `isDirectoryTitle` not found") }
+    // Collapse whitespace before matching. The declaration sits a few characters under
+    // swift-format's 100-column limit, so a slightly longer parameter name would wrap the default
+    // onto its own line and fail this against correct code.
+    let signature = declaration.prefix { $0 != "{" }
+      .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+
+    XCTAssertTrue(
+      signature.contains("home: String = cachedHomeDirectory"),
+      "`isDirectoryTitle` must default `home:` to the cached value; resolving NSHomeDirectory() per "
+        + "call allocates through CFURLCopyFileSystemPath on every terminal title change")
+  }
+
   func testIsDirectoryTitleRecognizesPromptTitlesButNotCommands() {
     let home = "/Users/me"
     let cwd = "/Users/me/dev/codaset"

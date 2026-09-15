@@ -3215,7 +3215,14 @@ than shipped on nightly.
 
 **Priority:** P3 — until the next hang report, symbols alone may be enough.
 
-### Focus-responder App Hang on a large diff (macapp) — WORKROOM-2T — CLOSED (2026-08-11)
+### Focus-responder App Hang on a large diff (macapp) — WORKROOM-2T — STRAND CLOSED (2026-08-11)
+
+> **The strand closed; the ISSUE did not.** WORKROOM-2T went on to reach 38 events across 3 users.
+> It was never one bug: Sentry groups a Cocoa event on its in-app frames and a macOS app hang has
+> exactly one (`main` at `main.swift:57`), so every hang the app reports landed here regardless of
+> cause. Fixed at the root on 2026-09-15 with an `options.beforeSend` fingerprint in
+> `Core/SentryConfig.swift` — see "App hangs are fingerprinted client-side" below. Everything in this
+> entry is still true of the DiffViewer strand; it just was not the whole issue.
 
 **What:** Sentry WORKROOM-2T, nightly build 596 (macOS 26.5.2), 5 occurrences. **Pulling all events
 showed Sentry grouped two different bugs into one issue** (fingerprinted on `culprit: main` + "App
@@ -3316,7 +3323,45 @@ via `UserDefaults.standard.set(true, forKey: UITestFixture.defaultsKey)`, reset 
 tests, all passing: `testHugeDiffDoesNotBuildEveryLine` (laziness bound), `testHugeDiffRendersUnderTimeCeiling`
 (< 1s, well under the 2s watchdog), `testHugeDiffKeepsMultipleHunks` (pins the multi-hunk shape so the
 `ForEach`-in-`ForEach`-in-`List` nesting is exercised, not assumed to virtualize). Full `make app-test`
-green. WORKROOM-2T is fully closed.
+green. The DiffViewer strand is fully closed — the 2T *issue* is not; see the note at the top of this
+entry.
+
+### App hangs are fingerprinted client-side (macapp) — DONE (2026-09-15)
+
+**What:** every macOS app hang collapsed into WORKROOM-2T. Sentry groups a Cocoa event on its in-app
+frames and an app hang has exactly one (`main` at `main.swift:57`) — everything below is AppKit,
+SwiftUI and libdispatch. So the group was never a bug, and could not be triaged or closed. Six stacks
+pulled at 38 events shared nothing: a SwiftUI `LazyStack` measuring every child of a `ForEach`, a
+dispatch-source dispose blocked on the objc sidetable lock, a synchronous LaunchServices XPC
+round-trip, WindowServer menu-bar replicant-window creation, a trait write, and an idle main thread.
+The discriminating test: sibling hangs (3P, 3N) get their own groups precisely because they carry a
+named in-app frame.
+
+**Fix:** `options.beforeSend` in `Core/SentryConfig.swift` sets `event.fingerprint` for
+`mechanism.type == "AppHang"` to the **binary** owning the deepest non-noise frame. Not the leaf —
+the tracker samples the main thread once ~2s in, so the leaf is where the sample landed, not where
+the time went. The six known stacks separate into five groups (SwiftUI, Workroom, CoreServices,
+SkyLight, CoreFoundation); the two SwiftUI ones legitimately merge.
+
+**Why the binary and not the function — this cost a broken commit.** Sentry Cocoa symbolicates
+SERVER-side. `SentryCrashStackEntryMapper.sentryCrashStackEntryToSentryFrame:` sets exactly
+`instructionAddress`, `imageAddress`, `package`, `inApp` — never `function`. Measured on SDK 9.25.0
+through the real capture path: **95 frames, 0 with a `function`.** The first version of this fix
+keyed on `Frame.function`, so it would have grouped every hang as "unknown" — looking fixed while
+doing nothing. The symbol names visible in the Sentry web UI arrive from server-side symbolication
+against `event.debugMeta` and are never visible to `beforeSend`. Function-level grouping is possible
+only in Sentry's own Stack Trace / Fingerprint Rules, which run post-symbolication.
+
+**Watch:** splits hangs from here forward only, and cannot be fully verified until it reaches
+production — the tests assert the fingerprint, not that Sentry regroups. Existing 2T history stays a
+grab-bag. Deliberately over-splits rather than under-splits: two groups for one cause is a merge, one
+group for six causes is what this replaced. Supersedes the "fingerprints App Hangs loosely" caveat in
+the WORKROOM-3A entry above.
+
+**Test-gap note:** an inline `beforeSend` closure is unreachable from tests (`shouldStart` is
+`!isDebugBuild`, so `SentrySDK.start` never runs in the test host) — deleting the whole block left
+every test green. The body now lives in `SentryConfig.appHangFingerprint(for:)` and is driven with a
+real `Sentry.Event`; that test goes red against the function-name version.
 
 ### Diff line-height cache doesn't invalidate on Dynamic Type change (macapp) — WORKROOM-2T follow-up — MOOT
 

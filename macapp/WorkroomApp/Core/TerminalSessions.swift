@@ -1802,6 +1802,17 @@ final class TerminalSessions: ObservableObject {
     mutateTerminalState(tabID, target: target) { $0.progressActive = active }
   }
 
+  /// `NSHomeDirectory()` resolved once per process. It used to be `isDirectoryTitle`'s default
+  /// argument, so it re-ran on every terminal title change, allocating through
+  /// `NSHomeDirectoryForUser` → `-[NSURL path]` → `CFURLCopyFileSystemPath`. A process's home
+  /// directory cannot change while it runs, so resolving it per title is waste.
+  ///
+  /// **Unmeasured.** WORKROOM-3P sampled the main thread here, which is how the call site was
+  /// found, but one sample is not evidence this is hot — that is the whole point of
+  /// `SentryConfig.appHangFingerprint`'s "the leaf is where the sample landed, not where the time
+  /// went". This removes a per-title allocation; it does not explain 3P, and 3P stays open.
+  static let cachedHomeDirectory = NSHomeDirectory()
+
   /// Whether `title` is just the working directory (the idle title the shell/prompt sets) rather than a
   /// running command — so the tab strip can ignore it (issue #2). Pure for testability.
   ///
@@ -1810,7 +1821,7 @@ final class TerminalSessions: ObservableObject {
   /// never gets the `command_finished` that would clear it, so the sidebar spinner spins forever. The
   /// shipped zsh integration abbreviates deep paths (`%(4~|…/%3~|%~)` → "…/dir/dir/dir"), and bash's
   /// `PROMPT_DIRTRIM` truncates with ".../", so the full-path match alone isn't enough.
-  static func isDirectoryTitle(_ title: String, cwd: String?, home: String = NSHomeDirectory())
+  static func isDirectoryTitle(_ title: String, cwd: String?, home: String = cachedHomeDirectory)
     -> Bool
   {
     guard let cwd, !cwd.isEmpty else { return false }

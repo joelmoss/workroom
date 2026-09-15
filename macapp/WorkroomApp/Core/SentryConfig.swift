@@ -52,8 +52,77 @@ enum SentryConfig {
 
       // Metrics are on by default in SDK 9.12+; explicit for intent.
       options.enableMetrics = true
+
+      // Regroup app hangs before they're sent. See `appHangFingerprint`.
+      options.beforeSend = { event in
+        if let fingerprint = appHangFingerprint(for: event) { event.fingerprint = fingerprint }
+        return event
+      }
     }
   }
+
+  // MARK: App-hang fingerprinting
+
+  /// Sentry groups a Cocoa event by its *in-app* frames, and a macOS app hang has exactly one —
+  /// `main` at `main.swift:57` — because everything below it is AppKit, SwiftUI and libdispatch. So
+  /// every hang the app ever reports lands in a single issue regardless of cause. That issue is
+  /// WORKROOM-2T, and by 2026-09-14 it held 38 events across at least five mechanisms that share
+  /// nothing but the group: a synchronous LaunchServices XPC round-trip, WindowServer menu-bar
+  /// replicant-window creation, a SwiftUI `LazyStack` measuring every child of a `ForEach`, a
+  /// dispatch-source dispose blocked on the objc sidetable lock, and a plainly idle main thread. A
+  /// grab-bag can't be triaged, assigned or closed — every alert costs a full re-investigation.
+  ///
+  /// So fingerprint each hang here instead, on the binary that owns the deepest meaningful frame.
+  ///
+  /// **It has to be the binary, not the function.** Sentry Cocoa symbolicates SERVER-side: the
+  /// frames handed to `beforeSend` carry `instructionAddress`, `imageAddress`, `package` and
+  /// `inApp`, and nothing else — `SentryCrashStackEntryMapper.sentryCrashStackEntryToSentryFrame:`
+  /// sets exactly those four. Measured on this SDK (9.25.0) through the same capture path: 95
+  /// frames, 0 with a `function`. A function-name fingerprint therefore groups every hang as
+  /// "unknown", which looks like a fix and is not one. Function-level grouping is possible, but
+  /// only in Sentry's own Stack Trace / Fingerprint Rules, which run after symbolication.
+  ///
+  /// Deliberately NOT the leaf's binary. The hang tracker samples the main thread once, roughly 2s
+  /// into the stall, so the leaf is wherever the sample happened to land rather than where the time
+  /// went — routinely the allocator, a lock, or dispatch plumbing. `isNoiseBinary` skips exactly
+  /// those, and the first survivor walking up from the leaf is the framework doing real work.
+  ///
+  /// Coarser than a function name: two different SwiftUI hangs share a group. That is the honest
+  /// ceiling of client-side grouping, and it still turns one unclosable issue into one per
+  /// responsible framework. It errs toward over-splitting, which is the safe direction — two groups
+  /// for one cause is a merge, one group for six causes is what this replaced. Binary names are
+  /// also stable across macOS updates in a way SwiftUI's internal symbols are not.
+  ///
+  /// Only the last path component is used. `package` is a full path, and for the app's own binary
+  /// that path runs through the developer's home directory — the fingerprint is transmitted, and
+  /// `sendDefaultPii` is false, so the path must not travel with it.
+  /// The `beforeSend` body, extracted purely so a test can reach it. `SentrySDK.start` never runs in
+  /// the test host (`shouldStart` is `!isDebugBuild`), so an inline closure is unreachable from
+  /// tests — which is precisely how a first version of this, keyed on `Frame.function`, shipped with
+  /// every test green while grouping every hang as "unknown". Returns nil for anything that is not
+  /// an app hang, meaning "leave this event's grouping alone".
+  static func appHangFingerprint(for event: Event) -> [String]? {
+    guard event.exceptions?.first?.mechanism?.type == "AppHang" else { return nil }
+    let frames = event.exceptions?.first?.stacktrace?.frames ?? []
+    return appHangFingerprint(packages: frames.compactMap(\.package))
+  }
+
+  static func appHangFingerprint(packages: [String]) -> [String] {
+    let binaries = packages.map { ($0 as NSString).lastPathComponent }
+    return ["app-hang", binaries.last(where: { !isNoiseBinary($0) }) ?? "unknown"]
+  }
+
+  /// Binaries that never name the cause of a hang: the allocator, locks, the objc/Swift runtimes,
+  /// dispatch, and the loader. Everything else — AppKit, SwiftUI, HIToolbox, SkyLight, CoreServices,
+  /// the app itself — names something worth splitting on.
+  static func isNoiseBinary(_ binary: String) -> Bool { noiseBinaries.contains(binary) }
+
+  private static let noiseBinaries: Set<String> = [
+    "libsystem_kernel.dylib", "libsystem_malloc.dylib", "libsystem_platform.dylib",
+    "libsystem_pthread.dylib", "libsystem_c.dylib", "libsystem_blocks.dylib",
+    "libobjc.A.dylib", "libdispatch.dylib", "libswiftCore.dylib", "libswiftDispatch.dylib",
+    "libc++abi.dylib", "libc++.1.dylib", "dyld",
+  ]
 
   /// The Sentry `environment` for this build: `development` for Debug, `nightly` for the side-by-side
   /// Workroom Nightly product, `production` for the shipping app.
