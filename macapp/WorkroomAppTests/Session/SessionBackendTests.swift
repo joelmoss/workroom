@@ -54,13 +54,18 @@ final class SessionBackendTests: XCTestCase {
     XCTAssertEqual(backend, .rustAgent)
   }
 
-  /// And keep working on the daemon when it does not. A build where the agent is missing or broken
-  /// must still open terminals — this is the automatic fallback, which is only safe because the
-  /// two never share a socket and ownership is per session.
-  func testNewSessionsFallBackToTheDaemonWhenTheAgentCannotRun() {
-    XCTAssertEqual(SessionBackend.preferred { _ in .notBundled }, .swiftDaemon)
-    XCTAssertEqual(
-      SessionBackend.preferred { _ in .unhealthy(reason: "exited 127") }, .swiftDaemon)
+  /// REGRESSION. This asserted the opposite — that a failed agent probe fell back to the daemon —
+  /// and that fallback is exactly what the attach-only change removes. `workroom-session` can no
+  /// longer start a daemon, so routing a NEW session there would hand libghostty an attach command
+  /// for a session nobody holds: a blank pane, then exit 92, and no plain-shell fallback, because
+  /// that decision is made before the command is ever spawned. Nowhere is the correct answer, and
+  /// the caller opens a plain shell instead.
+  ///
+  /// Both failure shapes are asserted: `notBundled` is a packaging fact, `unhealthy` a runtime one,
+  /// and only the second can appear in a shipped build.
+  func testNewSessionsGoNowhereWhenTheAgentCannotRun() {
+    XCTAssertNil(SessionBackend.preferred { _ in .notBundled })
+    XCTAssertNil(SessionBackend.preferred { _ in .unhealthy(reason: "exited 127") })
   }
 
   /// Raw values are a stored-data contract for logs and diagnostics, even though no preference

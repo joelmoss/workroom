@@ -44,11 +44,14 @@ func fail(_ message: String) -> Never {
   exit(2)
 }
 
+/// `daemon` is deliberately absent. This binary is an attach-only CLIENT: it connects to a daemon
+/// an app at or before v2.0.0 left running and relays a session it already holds. It cannot start
+/// one, and starting one would serve no session that exists — every new session goes to `wr-agent`.
+/// See `docs/designs/remote-workrooms.md`.
 func usage() -> Never {
   fail(
     """
-    usage: workroom-session daemon --socket <path>
-           workroom-session attach
+    usage: workroom-session attach
            workroom-session list --socket <path>
            workroom-session kill --socket <path> --session <id>
            workroom-session kill --socket <path> --all
@@ -59,23 +62,6 @@ let arguments = CommandLine.arguments
 guard arguments.count > 1 else { usage() }
 
 switch arguments[1] {
-case "daemon":
-  guard let socketPath = argumentValue("--socket", in: arguments) else {
-    fail("usage: workroom-session daemon --socket <path>")
-  }
-  let idleTimeout =
-    argumentValue("--idle-timeout", in: arguments).flatMap(Int32.init)
-    ?? SessionDaemon.idleTimeoutMilliseconds
-  switch SessionDaemon.start(socketPath: socketPath, idleTimeoutMilliseconds: idleTimeout) {
-  case .running(let daemon):
-    daemon.run()
-    exit(0)
-  case .lockHeld:
-    exit(0)
-  case .failed(let message):
-    fail(message)
-  }
-
 case "attach":
   guard let configuration = attachConfiguration() else {
     fail("workroom-session: WORKROOM_SESSION_ID and WORKROOM_SESSION_SOCKET are required")

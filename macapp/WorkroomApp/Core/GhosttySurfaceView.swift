@@ -410,20 +410,25 @@ final class GhosttySurfaceView: NSView {
   ) -> Bool {
     // No session was requested for this pane — not a failure, nothing to log.
     guard let persistentSessionID else { return false }
+    // Deliberately NOT gated on `PersistentSessionService.isAvailable`, and
+    // `PersistentSessionAttachGateTests` fails if that is ever reintroduced. `isAvailable` answers
+    // for the backend a NEW session would go to, so it goes false whenever the agent is unhealthy
+    // — which is precisely when a session the retired Swift daemon still holds most needs reaching.
+    // Gating here rejected those panes before `attachCommand` could route them, defeating the
+    // attach-only client in its own use case. `attachCommand(forSession:)` already answers nil when
+    // the owning backend has no binary, so the global check bought nothing on this path.
     guard
-      PersistentSessionService.shared.isAvailable,
       let attach = PersistentSessionService.shared.attachCommand(
         forSession: persistentSessionID),
       let attachPointer = strdup(attach)
     else {
       // A pane that expected a persisted session fell back to a plain login shell. Whatever the
-      // daemon-side session was doing is now orphaned/unreachable from this pane — worth a log
+      // helper-side session was doing is now orphaned/unreachable from this pane — worth a log
       // line since the resulting terminal otherwise looks identical to a normal fresh shell.
       Self.sessionLogger.error(
         """
         persistent session \(persistentSessionID.uuidString, privacy: .public) unavailable \
-        (helper isAvailable=\(PersistentSessionService.shared.isAvailable, privacy: .public)); \
-        falling back to a plain shell
+        (no owning helper resolved); falling back to a plain shell
         """)
       return false
     }

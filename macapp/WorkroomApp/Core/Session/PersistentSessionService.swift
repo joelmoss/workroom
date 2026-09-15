@@ -18,23 +18,52 @@ final class PersistentSessionService {
   /// One socket path per backend. They deliberately differ, so these must never be conflated —
   /// the daemon's sessions and the agent's are reached through different files.
   private var resolvedSocketPaths: [SessionBackend: String] = [:]
-  /// Where new sessions go. Cached because resolving it runs the agent to check it works, and
-  /// that answer does not change within a launch.
+  /// Where new sessions go, once resolved. Cached because resolving it RUNS the agent to check it
+  /// works, and that answer does not change within a launch.
+  ///
+  /// **`preferredResolved` is what makes nil cacheable, and it is load-bearing.** `preferred()`
+  /// returns an Optional, so nil is a legitimate answer ("no backend can take a new session"), not
+  /// merely "not asked yet". Using nil for both meanings — as this did while `preferred()` was
+  /// non-Optional — silently un-caches exactly the case that most needs caching: the probe is a
+  /// `Process()` with a 2-second deadline run SYNCHRONOUSLY ON THE MAIN ACTOR during terminal
+  /// creation (`SessionBackendProbe.runProtocolCommand`), so a hung agent would cost 2s per access,
+  /// and `backend` is read once or more per pane. An eight-pane restore would freeze for ~16s.
   private var cachedPreferred: SessionBackend?
+  private var preferredResolved = false
   /// Which helper owns each session, resolved once. See `backend(forSession:)` for why one answer
   /// per session rather than one per call — a pane asks twice and the two must agree.
   private var owners: [UUID: SessionBackend] = [:]
   private var descriptors: [UUID: SessionDescriptor] = [:]
 
-  private init() {}
+  /// How the agent's health is measured. Injected so a test can drive the unhealthy path without
+  /// a real `wr-agent` to break.
+  private let probe: (SessionBackend) -> SessionBackendAvailability
+  /// What the shipped daemon says about a session, or nil to ask a real one over its socket.
+  /// Injected for the same reason, and separately: the two answers combine, and the case that
+  /// matters most (unhealthy agent, daemon-owned session) needs both driven at once.
+  private let ownershipOverride: ((UUID) -> SessionOwnership)?
 
-  /// Where a NEW session would be created. Existing sessions are resolved individually — see
-  /// `backend(forSession:)`, which is what makes the migration invisible.
-  var backend: SessionBackend {
-    if let cachedPreferred { return cachedPreferred }
-    let resolved = SessionBackend.preferred()
-    cachedPreferred = resolved
-    return resolved
+  private init() {
+    self.probe = { SessionBackendProbe.probe($0) }
+    self.ownershipOverride = nil
+  }
+
+  /// Test seam. `shared` never uses it; every other behaviour is identical.
+  init(
+    probe: @escaping (SessionBackend) -> SessionBackendAvailability,
+    ownership: @escaping (UUID) -> SessionOwnership
+  ) {
+    self.probe = probe
+    self.ownershipOverride = ownership
+  }
+
+  /// Where a NEW session would be created, or **nil when nowhere can take one**. Existing sessions
+  /// are resolved individually — see `backend(forSession:)`.
+  var backend: SessionBackend? {
+    if preferredResolved { return cachedPreferred }
+    cachedPreferred = SessionBackend.preferred(probe: probe)
+    preferredResolved = true
+    return cachedPreferred
   }
 
   /// Which helper owns an EXISTING session, or where a new one should go.
@@ -63,26 +92,14 @@ final class PersistentSessionService {
     return resolved
   }
 
+  /// The ambiguity branch this used to carry is gone, because the state it guarded is now
+  /// unreachable. It fired when new sessions were routed at the DAEMON — the old fallback for a
+  /// failed agent probe — and answered nil rather than send `workroom-session attach` at an id the
+  /// daemon had never held, which the daemon creates rather than refuses. `preferred()` no longer
+  /// names the daemon under any condition, so a failed probe now yields nil directly and the same
+  /// safety falls out of `owner(preferred:daemon:)` with nothing special to say.
   private func resolveOwner(_ sessionID: UUID) -> SessionBackend? {
-    let preferred = backend
-    let daemon = daemonOwnership(sessionID)
-    if case .owned = daemon { return .swiftDaemon }
-    guard preferred == .swiftDaemon else { return Self.owner(preferred: preferred, daemon: daemon) }
-
-    // New sessions go to the DAEMON, which means the agent probe failed this launch. That does not
-    // mean no agent sessions exist: an agent from an EARLIER launch can still be running and still
-    // holding ptys, reachable through its socket even though this launch could not start one. The
-    // daemon disclaiming the session is therefore not evidence that the daemon owns it, and
-    // answering `.swiftDaemon` here sends `workroom-session attach` at an id the daemon has never
-    // held — which it creates, forking a duplicate shell and orphaning the real one.
-    //
-    // A live agent socket is enough to make that ambiguous, so say so. A definitive answer would
-    // need an ownership query on `SessionControlPlane`, which only the daemon side has; adding one
-    // to the agent is the right fix and is more than this belongs in.
-    guard existingSocketPath(for: .rustAgent) != nil else {
-      return Self.owner(preferred: preferred, daemon: daemon)
-    }
-    return nil
+    Self.owner(preferred: backend, daemon: daemonOwnership(sessionID))
   }
 
   /// Which helper a session belongs to, given where new sessions go and what the daemon said —
@@ -103,7 +120,11 @@ final class PersistentSessionService {
   ///
   /// `nonisolated` because it touches no state — the probe is the caller's job, and a pure rule
   /// should not need the main actor to evaluate.
-  nonisolated static func owner(preferred: SessionBackend, daemon: SessionOwnership)
+  /// `preferred` is itself Optional now: nil means no backend can take a NEW session. It only
+  /// reaches the answer through `.notOwned`, so a daemon that CLAIMS the session still resolves to
+  /// the daemon even when nothing else can run — which is the whole point of keeping the attach
+  /// client, and the case an earlier draft of this change broke.
+  nonisolated static func owner(preferred: SessionBackend?, daemon: SessionOwnership)
     -> SessionBackend?
   {
     switch daemon {
@@ -119,6 +140,7 @@ final class PersistentSessionService {
   /// steady state once the migration has drained, and it must not push every session at a daemon
   /// that is not running.
   private func daemonOwnership(_ sessionID: UUID) -> SessionOwnership {
+    if let ownershipOverride { return ownershipOverride(sessionID) }
     guard
       let identifier = SessionIdentifier(uuidString: sessionID.uuidString),
       let socketPath = existingSocketPath(for: .swiftDaemon)
@@ -138,7 +160,7 @@ final class PersistentSessionService {
     }
   }
 
-  var socketPath: String? { socketPath(for: backend) }
+  var socketPath: String? { backend.flatMap { socketPath(for: $0) } }
 
   func existingSocketPath(for backend: SessionBackend) -> String? {
     let candidates = [
@@ -148,14 +170,19 @@ final class PersistentSessionService {
     return candidates.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0) }
   }
 
-  var existingSocketPath: String? { existingSocketPath(for: backend) }
+  var existingSocketPath: String? { backend.flatMap { existingSocketPath(for: $0) } }
 
   func binaryPath(for backend: SessionBackend) -> String? {
     PersistentSessionPaths.binaryURL(for: backend)?.path
   }
 
-  var binaryPath: String? { binaryPath(for: backend) }
+  var binaryPath: String? { backend.flatMap { binaryPath(for: $0) } }
 
+  /// Whether a NEW session could be created. **Not whether an existing one can be reached** — that
+  /// is `attachCommand(forSession:)`, which routes per session. The distinction is the bug this
+  /// change was written around twice: gating a RESTORED pane on this answer discards its id before
+  /// anything asks who owns it (`TerminalPersistentSessionPolicy`), and gating the attach itself on
+  /// it strands every daemon-owned pane whenever the agent is unhealthy.
   var isAvailable: Bool { socketPath != nil && binaryPath != nil }
 
   /// The command libghostty forks for this session, from the helper that owns it.
@@ -178,15 +205,19 @@ final class PersistentSessionService {
   ) -> [(key: String, value: String)] {
     // Socket and binary must both come from the helper that owns THIS session, or the relay is
     // pointed at one implementation while being told to use the other's socket.
+    // `WORKROOM_SESSION_BINARY` used to be set here. Its only reader was the attach client's
+    // `executablePath()`, which existed only to re-exec itself as `workroom-session daemon` when no
+    // daemon answered — a path this build no longer has. The Rust agent's env contract never read
+    // it (`WORKROOM_SESSION_{ID,SOCKET,SHELL,CWD,COMMAND,RESOURCES}` only), so it was left written
+    // by the app and read by nothing.
     guard
       let backend = backend(forSession: sessionID),
       let socketPath = socketPath(for: backend),
-      let binaryPath = binaryPath(for: backend)
+      binaryPath(for: backend) != nil
     else { return [] }
     var entries: [(key: String, value: String)] = [
       ("WORKROOM_SESSION_ID", sessionID.uuidString),
       ("WORKROOM_SESSION_SOCKET", socketPath),
-      ("WORKROOM_SESSION_BINARY", binaryPath),
       ("WORKROOM_SESSION_SHELL", shell),
       ("WORKROOM_SESSION_CWD", workingDirectory),
       ("WORKROOM_SESSION_COMMAND", ""),

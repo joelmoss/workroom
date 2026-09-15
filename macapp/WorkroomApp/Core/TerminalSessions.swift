@@ -2118,7 +2118,8 @@ final class TerminalSessions: ObservableObject {
   private func assignedSessionID(persisted: UUID?, isRunCommand: Bool) -> UUID? {
     let policy = TerminalPersistentSessionPolicy.usesPersistentSession(
       isAvailable: PersistentSessionService.shared.isAvailable,
-      isRunCommand: isRunCommand)
+      isRunCommand: isRunCommand,
+      hasExistingSession: persisted != nil)
     guard policy else { return nil }
     return persisted ?? UUID()
   }
