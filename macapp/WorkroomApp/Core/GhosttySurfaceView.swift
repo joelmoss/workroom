@@ -402,7 +402,13 @@ final class GhosttySurfaceView: NSView {
     envVarCount = 0
   }
 
-  /// Configure libghostty to spawn `workroom-session attach` for a background session.
+  /// Configure libghostty to spawn a session helper for a background session.
+  ///
+  /// Returns whether it set `config.command` — not strictly "a session was attached". The two
+  /// differ in one case: a session the daemon has already lost, where this sets a command that
+  /// tells the user so and then becomes their shell. The caller only uses the result to decide
+  /// whether to install a run command, and a pane with a persistent session is never a run-command
+  /// pane (`TerminalPersistentSessionPolicy` excludes them), so the distinction costs nothing.
   @discardableResult
   private func applyPersistentSession(
     to config: inout ghostty_surface_config_s,
@@ -410,6 +416,24 @@ final class GhosttySurfaceView: NSView {
   ) -> Bool {
     // No session was requested for this pane — not a failure, nothing to log.
     guard let persistentSessionID else { return false }
+
+    // Ask the daemon once more, before committing to an attach, whether it still holds this.
+    // The shipped daemon CREATES a session on attach for an id it does not hold, so a cached
+    // ownership answer that has outlived its session turns a reattach into a brand new shell with
+    // nothing to mark it as one. See `confirmBeforeAttach`.
+    if PersistentSessionService.shared.confirmBeforeAttach(sessionID: persistentSessionID) == .gone,
+      let noticePointer = strdup(Self.lostSessionCommand())
+    {
+      Self.sessionLogger.error(
+        """
+        persistent session \(persistentSessionID.uuidString, privacy: .public) is gone; \
+        opening a shell with a notice rather than letting the daemon create a new session
+        """)
+      surfaceCStrings.append(noticePointer)
+      config.command = UnsafePointer(noticePointer)
+      config.wait_after_command = false
+      return true
+    }
     // Deliberately NOT gated on `PersistentSessionService.isAvailable`, and
     // `PersistentSessionAttachGateTests` fails if that is ever reintroduced. `isAvailable` answers
     // for the backend a NEW session would go to, so it goes false whenever the agent is unhealthy
@@ -441,6 +465,32 @@ final class GhosttySurfaceView: NSView {
         workingDirectory: workingDirectory,
         metadata: sessionMetadata))
     return true
+  }
+
+  /// A command that says the previous session is gone, then becomes the user's shell.
+  ///
+  /// **Why a printed line and not silence.** Refusing the attach already prevents the wrong
+  /// outcome: the daemon does not get asked, so it cannot fork a replacement shell and pass it off
+  /// as the user's. But the pane still comes back showing a fresh prompt, which is exactly what a
+  /// successfully restored session looks like — and the thing that was running there is gone. A
+  /// terminal that quietly swaps a finished build for an empty prompt is the failure worth paying
+  /// a line of text to avoid.
+  ///
+  /// `exec` so the shell IS the pane's process: its exit status, title and signals behave the way
+  /// they would in any other terminal, rather than being wrapped by something the user did not ask
+  /// for. Same shape as the agent's own `fall_back_to_shell`, deliberately — one idea in two places
+  /// rather than two.
+  /// `SessionShellIntegration.defaultShell`, repeated rather than imported: this file does not
+  /// depend on `WorkroomSessionProtocol` and adding that dependency for one string would be the
+  /// larger change. Keep them in step.
+  static let fallbackShell = "/bin/zsh"
+
+  static func lostSessionCommand(
+    shell: String = ProcessInfo.processInfo.environment["SHELL"] ?? fallbackShell
+  ) -> String {
+    let notice = "The terminal that was running here has ended, so this is a new shell."
+    let script = "printf '%s\\n' \(shellQuoted(notice)); exec \(shellQuoted(shell)) -l"
+    return "/bin/sh -c \(shellQuoted(script))"
   }
 
   func reattachPersistentSession() {
@@ -1746,7 +1796,7 @@ extension GhosttySurfaceView {
 
   /// POSIX single-quote a path so spaces and shell metacharacters are taken literally by the shell
   /// that receives the inserted text.
-  private static func shellQuoted(_ path: String) -> String {
+  static func shellQuoted(_ path: String) -> String {
     "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
   }
 }

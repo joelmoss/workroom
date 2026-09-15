@@ -208,6 +208,52 @@ final class PersistentSessionService {
   /// it strands every daemon-owned pane whenever the agent is unhealthy.
   var isAvailable: Bool { socketPath != nil && binaryPath != nil }
 
+  /// Whether a session is still there to attach TO, asked immediately before attaching.
+  enum DaemonSessionState: Equatable {
+    case attachable
+    /// The daemon answered, and it does not hold this session. Attaching would make it CREATE one.
+    case gone
+  }
+
+  /// Re-ask the retired daemon whether it still holds this session, right before we attach to it.
+  ///
+  /// **The failure this prevents is the one that looks like success.** `SessionDaemon.handleAttach`
+  /// — in the shipped v2.0.0 binary, which cannot be changed — ends in
+  /// `create(request:connection:)` for an id it does not hold. So when a session's shell has exited
+  /// but this launch still has `.swiftDaemon` cached for it, attaching does not fail: the daemon
+  /// silently forks a brand new shell and hands it over. The user sees a fresh prompt where their
+  /// build was running, with nothing to distinguish it from a successful reattach.
+  ///
+  /// Asking again is what closes it. Ownership is otherwise resolved once per session and cached
+  /// for the launch (a pane asks twice and the two answers must agree), and that cache is correct
+  /// for routing — but it long outlives the session it describes.
+  ///
+  /// **`.unreachable` proceeds, deliberately.** It means we could not ask, not that the session is
+  /// gone, and the substitution needs the daemon to be RESPONSIVE enough to answer "not mine" and
+  /// then create. A daemon too wedged to reply is also too wedged to fork anything, so attaching
+  /// cannot produce the wrong result — and refusing would throw away a session that is probably
+  /// still there.
+  ///
+  /// What it does not close: the daemon can still answer `.owned` here and lose the session before
+  /// the attach lands. That race is narrow and cannot be closed from this side of the socket.
+  func confirmBeforeAttach(sessionID: UUID) -> DaemonSessionState {
+    guard owners[sessionID] == .swiftDaemon else { return .attachable }
+    switch daemonOwnership(sessionID) {
+    case .owned, .unreachable:
+      return .attachable
+    case .notOwned:
+      // The cached answer described a session that no longer exists. Drop it so a later reattach
+      // resolves afresh rather than walking back into this.
+      owners.removeValue(forKey: sessionID)
+      logger.error(
+        """
+        session \(sessionID.uuidString, privacy: .public) is no longer held by the daemon; \
+        not attaching, because the shipped daemon would create a new shell instead
+        """)
+      return .gone
+    }
+  }
+
   /// The command libghostty forks for this session, from the helper that owns it.
   ///
   /// Requires the same three things `launchEnvironment` does — owner, binary AND socket — because

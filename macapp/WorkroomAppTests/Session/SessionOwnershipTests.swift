@@ -367,6 +367,171 @@ final class PersistentSessionRoutingTests: XCTestCase {
   }
 }
 
+/// The substitution the shipped daemon performs on an id it does not hold, and the re-check that
+/// stops us walking into it.
+///
+/// `SessionDaemon.handleAttach` — in the v2.0.0 binary, which cannot be changed — ends in
+/// `create(request:connection:)` rather than refusing. So attaching to a session whose shell has
+/// exited does not fail: it silently forks a new one. The user gets a fresh prompt where their
+/// build was, and nothing distinguishes it from a successful reattach.
+final class DaemonSessionSubstitutionTests: XCTestCase {
+  /// The ordinary case: the daemon still has it, so nothing changes.
+  @MainActor
+  func testAStillHeldSessionIsAttachable() {
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in .owned })
+    let sessionID = UUID()
+    XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
+
+    XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID), .attachable)
+  }
+
+  /// The bug. The owner is resolved and cached while the daemon holds the session; the shell then
+  /// exits; a later reattach must NOT proceed on the cached answer.
+  @MainActor
+  func testASessionTheDaemonHasLostIsNotAttachedTo() {
+    let answers = OwnershipScript([.owned, .notOwned])
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in answers.next() })
+    let sessionID = UUID()
+
+    // Resolved and cached while it was still held — this is what makes the cache stale later.
+    XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
+
+    XCTAssertEqual(
+      service.confirmBeforeAttach(sessionID: sessionID), .gone,
+      """
+      attaching here would ask the v2.0.0 daemon for a session it no longer holds, and it creates \
+      one rather than refusing — the user's running work is replaced by an empty shell that looks \
+      exactly like a successful reattach.
+      """)
+  }
+
+  /// And the stale answer is dropped, so a later reattach resolves afresh instead of arriving back
+  /// at the same wrong conclusion.
+  @MainActor
+  func testALostSessionDropsItsCachedOwner() {
+    let answers = OwnershipScript([.owned, .notOwned, .notOwned])
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in answers.next() })
+    let sessionID = UUID()
+    XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
+    XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID), .gone)
+
+    XCTAssertEqual(
+      service.backend(forSession: sessionID), .rustAgent,
+      "the cached daemon answer must be gone, so the session re-resolves to where new ones go")
+  }
+
+  /// **A daemon that cannot answer still gets attached to.** `.unreachable` means we could not ask,
+  /// not that the session is gone — and the substitution needs the daemon responsive enough to
+  /// answer "not mine" and then fork. One too wedged to reply cannot produce the wrong result, so
+  /// refusing here would throw away a session that is probably still running.
+  @MainActor
+  func testAnUnreachableDaemonIsStillAttachedTo() {
+    let answers = OwnershipScript([.owned, .unreachable])
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in answers.next() })
+    let sessionID = UUID()
+    XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
+
+    XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID), .attachable)
+  }
+
+  /// Agent-owned sessions are not re-checked at all: the agent refuses an id it does not hold, so
+  /// there is no substitution to prevent and no round trip worth paying for.
+  @MainActor
+  func testAnAgentOwnedSessionIsNotRechecked() {
+    let probes = Counter()
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in
+        probes.increment()
+        return .notOwned
+      })
+    let sessionID = UUID()
+    XCTAssertEqual(service.backend(forSession: sessionID), .rustAgent)
+    let afterResolve = probes.value
+
+    XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID), .attachable)
+    XCTAssertEqual(probes.value, afterResolve, "an agent-owned session must not ask the daemon")
+  }
+}
+
+/// The notice a pane shows when its session is gone.
+final class LostSessionCommandTests: XCTestCase {
+  /// It has to actually run. A malformed command string is a pane that opens to nothing, which is
+  /// worse than the silent fresh prompt this replaces.
+  func testTheNoticeCommandRunsAndPrintsThenBecomesTheShell() throws {
+    let command = GhosttySurfaceView.lostSessionCommand(shell: "/bin/sh")
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    // `-l` would make the exec'd shell read login files and sit waiting; `</dev/null` ends it.
+    process.arguments = ["-c", "\(command) < /dev/null"]
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = pipe
+    try process.run()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+
+    let output = String(decoding: data, as: UTF8.self)
+    XCTAssertTrue(
+      output.contains("has ended, so this is a new shell"),
+      "the pane would come back with no explanation. got: \(output)")
+  }
+
+  /// A shell path carrying shell metacharacters must be taken literally. `SHELL` is
+  /// environment-supplied, so it is not ours to trust, and this string is handed to `/bin/sh -c`.
+  ///
+  /// Asserted by RUNNING it and checking the side effect did not happen. The first version of this
+  /// test looked for the injected text as a substring of the command and failed — correctly quoted
+  /// output still contains it, inside quotes, which is the whole point. A substring check cannot
+  /// tell "quoted" from "escaped"; only execution can.
+  func testAnAwkwardShellPathIsQuotedNotInterpreted() throws {
+    let marker = URL(fileURLWithPath: "/tmp/wr-quoting-\(UUID().uuidString.prefix(8))")
+    let hostile = "/nonexistent/sh'; touch \(marker.path); '"
+    let command = GhosttySurfaceView.lostSessionCommand(shell: hostile)
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    process.arguments = ["-c", "\(command) < /dev/null"]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    process.waitUntilExit()
+
+    let escaped = FileManager.default.fileExists(atPath: marker.path)
+    try? FileManager.default.removeItem(at: marker)
+    XCTAssertFalse(
+      escaped,
+      "a shell path from the environment broke out of its quoting and ran: \(command)")
+  }
+}
+
+/// Answers a scripted sequence of ownership results, then repeats the last one.
+private final class OwnershipScript: @unchecked Sendable {
+  private let lock = NSLock()
+  private var answers: [SessionOwnership]
+  private var index = 0
+
+  init(_ answers: [SessionOwnership]) {
+    self.answers = answers
+  }
+
+  func next() -> SessionOwnership {
+    lock.lock()
+    defer { lock.unlock() }
+    let answer = answers[min(index, answers.count - 1)]
+    index += 1
+    return answer
+  }
+}
+
 /// A plain counter rather than a captured `var`: the closure is `@escaping` and stored on the
 /// service, so it cannot capture a local mutable.
 private final class Counter: @unchecked Sendable {
