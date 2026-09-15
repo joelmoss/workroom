@@ -3,6 +3,8 @@ import Foundation
 import WorkroomSessionProtocol
 import XCTest
 
+@testable import Workroom
+
 /// The attach-only `workroom-session` against the daemon it actually has to talk to: the one
 /// shipped in **v2.0.0**, pinned as a binary fixture.
 ///
@@ -88,6 +90,110 @@ final class SessionShimCompatibilityTests: XCTestCase {
       the marker was already printed before this client connected. A user updating with a terminal \
       open would come back to a blank pane. Got: \(output.suffix(400))
       """)
+  }
+
+  /// **Typing.** The reattach test above proves bytes flow from the daemon to the pane; this one
+  /// proves they flow the other way, which is the half a user notices within a second of coming
+  /// back to a restored terminal.
+  ///
+  /// The observable is a file, not the echo. Echo would also appear if the client merely rendered
+  /// what was typed locally without it ever reaching the session, which is exactly the failure
+  /// worth catching.
+  func testTypingInTheReattachedPaneReachesTheV2Session() throws {
+    let socketPath = try startShippedDaemon()
+    let session = try startShellSession(on: socketPath)
+    let sentinel = directory.appendingPathComponent("typed").path
+
+    let attached = try attachInteractively(
+      sessionID: session.identifier, socketPath: socketPath)
+    defer { attached.terminate() }
+    XCTAssertTrue(
+      attached.text().contains(session.marker),
+      "this client got a session the daemon made for it, not the one already running")
+    attached.type("touch \(sentinel)\n")
+
+    XCTAssertTrue(
+      waitForFile(at: sentinel),
+      """
+      keystrokes did not reach a session the v2.0.0 daemon holds. The pane repaints and then \
+      ignores the user. got: \(attached.text().suffix(400))
+      """)
+  }
+
+  /// **Ending.** The session's shell exits, and the pane must go with it carrying the same status.
+  ///
+  /// Everything else in this file is about a relay that must NOT exit (`wait_after_command` is
+  /// false, so exiting leaves a dead pane). This is the one case where exiting is correct, and the
+  /// two are one `if` apart in the same function — so the ordinary end of a terminal gets a test
+  /// beside the failures.
+  func testTheV2SessionsExitStatusBecomesTheClientsExitStatus() throws {
+    let socketPath = try startShippedDaemon()
+    let session = try startShellSession(on: socketPath)
+
+    let attached = try attachInteractively(
+      sessionID: session.identifier, socketPath: socketPath)
+    defer { attached.terminate() }
+    XCTAssertTrue(
+      attached.text().contains(session.marker),
+      "this client got a session the daemon made for it, not the one already running")
+    attached.type("exit 7\n")
+
+    XCTAssertTrue(
+      attached.waitUntilExit(within: 10),
+      "the client outlived the session's shell. got: \(attached.text().suffix(400))")
+    XCTAssertEqual(
+      attached.status(), 7,
+      """
+      the session exited 7 and the pane reported \(attached.status()). A shell's exit status is \
+      what a script wrapping the pane reads, and 0 for a failed command is worse than no status.
+      """)
+    XCTAssertFalse(
+      attached.text().contains("will not survive quitting"),
+      "a clean session exit took the fallback path, which is for a FAILED attach")
+  }
+
+  /// **The control plane, not just the pty.** `list`, `info` and `kill` are how the app enumerates
+  /// and tears down sessions, and this build sends all three at a daemon it can never recompile.
+  ///
+  /// `ownership(identifier:)` is in here on purpose: it is the newest method on the protocol —
+  /// added because `list()` folds "no reply" into `[]` — and it is the one the reattach guard
+  /// consults before letting a pane attach. Its answer against the REAL v2.0.0 daemon is the thing
+  /// that decides whether a user's terminal is reconnected or replaced.
+  func testTheControlPlaneStillWorksAgainstTheShippedDaemon() throws {
+    let socketPath = try startShippedDaemon()
+    let session = try startShellSession(on: socketPath)
+    let client = PersistentSessionControlClient(socketPath: socketPath)
+
+    let listed = client.list()
+    XCTAssertTrue(
+      listed.contains { $0.identifier == session.identifier },
+      "this build's `list` could not see a session the v2.0.0 daemon is holding: \(listed)")
+    XCTAssertEqual(client.info(identifier: session.identifier)?.identifier, session.identifier)
+    guard case .owned = client.ownership(identifier: session.identifier) else {
+      return XCTFail("the daemon holds this session but did not claim it, so a reattach is refused")
+    }
+
+    XCTAssertTrue(
+      client.kill(identifier: session.identifier),
+      "the v2.0.0 daemon refused this build's `kill`; closing a pane would leave the pty behind")
+
+    // Killed, then gone: the daemon reaps asynchronously, so poll rather than assert on the next
+    // line and call a race a regression.
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      if !client.list().contains(where: { $0.identifier == session.identifier }) { break }
+      Thread.sleep(forTimeInterval: 0.05)
+    }
+    XCTAssertFalse(
+      client.list().contains { $0.identifier == session.identifier },
+      "the session survived a kill this build acknowledged")
+    guard case .notOwned = client.ownership(identifier: session.identifier) else {
+      return XCTFail(
+        """
+        a killed session still reads as owned, so a pane would attach to it — and the v2.0.0 \
+        daemon creates on attach, which silently replaces the user's shell with a fresh one.
+        """)
+    }
   }
 
   /// The version handshake, ported from the deleted `SessionDaemonEndToEndTests` — the only test
@@ -442,6 +548,128 @@ final class SessionShimCompatibilityTests: XCTestCase {
       Thread.sleep(forTimeInterval: 0.02)
     }
     return lastLength > 0
+  }
+
+  /// A session on the shipped daemon running a plain `/bin/sh` on its pty, created by the SHIPPED
+  /// client and then detached — the state a user's machine is in after they quit an older build.
+  private func startShellSession(on socketPath: String) throws -> ShellSession {
+    let sessionID = SessionIdentifier(UUID())
+    let marker = "V2-SHELL-\(UUID().uuidString.prefix(8))"
+    let ready = directory.appendingPathComponent("ready-\(sessionID.uuidString.prefix(8))").path
+    let creator = try run(
+      Self.shippedBinaryURL, arguments: ["attach"],
+      environment: attachEnvironment(
+        sessionID: sessionID, socketPath: socketPath,
+        // Print, touch, then `exec sh`. The marker goes into the daemon's replay buffer, the
+        // sentinel proves the pty is up and running commands before a second client attaches, and
+        // the `exec` leaves that same pty owned by an ordinary shell to type at.
+        command: "sh -c 'echo \(marker); touch \(ready); exec /bin/sh'"))
+    creator.waitUntilExit()
+    XCTAssertTrue(
+      waitForFile(at: ready),
+      "the v2.0.0 daemon never started a shell for this session; there is nothing to type at")
+    return ShellSession(identifier: sessionID, marker: marker)
+  }
+
+  /// A session the shipped daemon holds, plus the marker that proves a later attach REPLAYED it.
+  ///
+  /// The marker is not decoration. `SessionDaemon.handleAttach` creates a session for an id it does
+  /// not hold, so an attach that silently missed would still hand the test a working shell — one it
+  /// could type at and exit — and every assertion below it would pass against a pane the user's
+  /// work is not in. The replayed marker is the only thing that tells the two apart.
+  struct ShellSession {
+    let identifier: SessionIdentifier
+    let marker: String
+  }
+
+  private func waitForFile(at path: String, within seconds: TimeInterval = 10) -> Bool {
+    let deadline = Date().addingTimeInterval(seconds)
+    while Date() < deadline {
+      if FileManager.default.fileExists(atPath: path) { return true }
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    return false
+  }
+
+  /// This build's attach client, running, with its stdin held open so it can be typed at.
+  private func attachInteractively(
+    sessionID: SessionIdentifier, socketPath: String
+  ) throws -> AttachedClient {
+    let process = Process()
+    process.executableURL = try Self.currentBinaryURL()
+    process.arguments = ["attach"]
+    process.environment = attachEnvironment(
+      sessionID: sessionID, socketPath: socketPath, command: "")
+    let output = Pipe()
+    let input = Pipe()
+    process.standardOutput = output
+    process.standardError = output
+    process.standardInput = input
+
+    let client = AttachedClient(process: process, input: input, output: output)
+    try process.run()
+
+    // Type only once the session has repainted. Bytes written before the client finishes its
+    // handshake are relayed into a socket the daemon is not reading yet, and the test would be
+    // measuring the race rather than the feature.
+    XCTAssertTrue(
+      Self.waitForOutputToSettle(client.collected, lock: client.lock),
+      "the shipped daemon sent nothing within \(Self.attachCeiling)s of the attach")
+    return client
+  }
+
+  /// Owns the pipes for the lifetime of one attached client, so a test can type at it, read what
+  /// came back, and clean it up without three locals and a `defer` each time.
+  final class AttachedClient {
+    let collected = NSMutableData()
+    let lock = NSLock()
+    private let process: Process
+    private let input: Pipe
+    private let output: Pipe
+
+    init(process: Process, input: Pipe, output: Pipe) {
+      self.process = process
+      self.input = input
+      self.output = output
+      let collected = self.collected
+      let lock = self.lock
+      output.fileHandleForReading.readabilityHandler = { handle in
+        let data = handle.availableData
+        guard !data.isEmpty else { return }
+        lock.lock()
+        collected.append(data)
+        lock.unlock()
+      }
+    }
+
+    func type(_ text: String) {
+      input.fileHandleForWriting.write(Data(text.utf8))
+    }
+
+    func text() -> String {
+      lock.lock()
+      defer { lock.unlock() }
+      return String(decoding: collected as Data, as: UTF8.self)
+    }
+
+    func waitUntilExit(within seconds: TimeInterval) -> Bool {
+      let deadline = Date().addingTimeInterval(seconds)
+      while Date() < deadline {
+        if !process.isRunning { return true }
+        Thread.sleep(forTimeInterval: 0.02)
+      }
+      return false
+    }
+
+    func status() -> Int32 {
+      process.isRunning ? -1 : process.terminationStatus
+    }
+
+    func terminate() {
+      output.fileHandleForReading.readabilityHandler = nil
+      if process.isRunning { process.terminate() }
+      try? input.fileHandleForWriting.close()
+    }
   }
 
   private func attachEnvironment(

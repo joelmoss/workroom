@@ -73,11 +73,6 @@ enum SessionAttachClient {
     case failed(Int32)
   }
 
-  private enum ConnectionOutcome {
-    case connected(Int32)
-    case retry
-  }
-
   static func run(configuration: Configuration) -> Int32 {
     signal(SIGPIPE, SIG_IGN)
 
@@ -119,14 +114,8 @@ enum SessionAttachClient {
   private static func attach(
     configuration: Configuration, signalPipe: SessionSignalPipe, connected: inout Bool
   ) -> Outcome {
-    let socket: Int32
-    switch connect(socketPath: configuration.socketPath) {
-    case .connected(let descriptor):
-      socket = descriptor
-      connected = true
-    case .retry:
-      return .retry
-    }
+    guard let socket = connect(socketPath: configuration.socketPath) else { return .retry }
+    connected = true
     defer { SessionIO.close(socket) }
     SessionIO.setNonBlocking(socket)
 
@@ -365,13 +354,11 @@ enum SessionAttachClient {
   /// reach are held by a daemon some OLDER build of the app started, and starting a fresh one would
   /// serve no session that exists. What is left is a short retry for a live helper that is
   /// momentarily slow to `accept`.
-  private static func connect(socketPath: String) -> ConnectionOutcome {
+  private static func connect(socketPath: String) -> Int32? {
     for attempt in 0..<connectAttempts {
-      if let descriptor = SessionSocket.connect(path: socketPath) {
-        return .connected(descriptor)
-      }
+      if let descriptor = SessionSocket.connect(path: socketPath) { return descriptor }
       if attempt + 1 < connectAttempts { usleep(connectRetryMicroseconds) }
     }
-    return .retry
+    return nil
   }
 }

@@ -397,6 +397,115 @@ final class PersistentSessionRoutingTests: XCTestCase {
   }
 }
 
+/// **`attachCommand` and `launchEnvironment` are consumed as a pair.**
+///
+/// A pane asks twice: once for the binary to fork, once for the environment that binary reads. They
+/// are separate calls, and nothing in either signature says they must agree — but if they disagree
+/// the pane runs one helper pointed at the other's socket. The Swift client would bind the agent's
+/// socket, which takes the path a live agent's sessions are reached through and serves none of
+/// them. `macapp/CLAUDE.md` calls this load-bearing; until now nothing tested it.
+final class PersistentSessionPairTests: XCTestCase {
+  /// A session the daemon holds: the attach-only client, on the daemon's socket.
+  @MainActor
+  func testADaemonOwnedSessionGetsTheDaemonsBinaryAndTheDaemonsSocket() {
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in .owned })
+    let sessionID = UUID()
+
+    let command = service.attachCommand(forSession: sessionID)
+    let environment = Dictionary(
+      uniqueKeysWithValues: service.launchEnvironment(
+        sessionID: sessionID, workingDirectory: NSTemporaryDirectory()))
+
+    XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
+    XCTAssertEqual(command?.contains("workroom-session"), true, "got \(command ?? "nil")")
+    XCTAssertEqual(
+      environment["WORKROOM_SESSION_SOCKET"], service.socketPath(for: .swiftDaemon),
+      "the daemon's client was handed a socket that is not the daemon's")
+    XCTAssertEqual(environment["WORKROOM_SESSION_ID"], sessionID.uuidString)
+  }
+
+  /// And a session nothing claims goes to the agent, on the agent's socket.
+  @MainActor
+  func testAnAgentOwnedSessionGetsTheAgentsBinaryAndTheAgentsSocket() {
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in .notOwned })
+    let sessionID = UUID()
+
+    let command = service.attachCommand(forSession: sessionID)
+    let environment = Dictionary(
+      uniqueKeysWithValues: service.launchEnvironment(
+        sessionID: sessionID, workingDirectory: NSTemporaryDirectory()))
+
+    XCTAssertEqual(service.backend(forSession: sessionID), .rustAgent)
+    XCTAssertEqual(command?.contains("wr-agent"), true, "got \(command ?? "nil")")
+    XCTAssertEqual(
+      environment["WORKROOM_SESSION_SOCKET"], service.socketPath(for: .rustAgent),
+      "the agent was handed a socket that is not the agent's")
+  }
+
+  /// **The one that would actually break: ownership that answers differently each time.**
+  ///
+  /// A daemon on a loaded machine answers one probe and misses the next — a dropped answer is a
+  /// timeout, not an error, which is why `.unreachable` exists as its own case. The two calls a
+  /// pane makes are milliseconds apart but they are not atomic, so without the per-session cache
+  /// the first sees `.owned` and the second sees whatever the second probe returned. The pane then
+  /// forks `workroom-session` with the agent's socket in its environment.
+  ///
+  /// One probe per session is therefore not an optimisation. It is what makes the pair coherent.
+  @MainActor
+  func testAFlappingOwnershipProbeCannotProduceAMismatchedPair() {
+    let answers = Counter()
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      // Owned, then not owned, then owned… the worst case, not a random one.
+      ownership: { _ in
+        answers.increment()
+        return answers.value.isMultiple(of: 2) ? .notOwned : .owned
+      })
+    let sessionID = UUID()
+
+    let command = service.attachCommand(forSession: sessionID)
+    let environment = Dictionary(
+      uniqueKeysWithValues: service.launchEnvironment(
+        sessionID: sessionID, workingDirectory: NSTemporaryDirectory()))
+
+    XCTAssertEqual(
+      answers.value, 1, "the session was resolved twice; the two answers need not agree")
+
+    let socket = environment["WORKROOM_SESSION_SOCKET"]
+    let usesDaemonBinary = command?.contains("workroom-session") == true
+    XCTAssertEqual(
+      socket, service.socketPath(for: usesDaemonBinary ? .swiftDaemon : .rustAgent),
+      """
+      the pane was told to run \(command ?? "nil") against \(socket ?? "nil"). One helper, the \
+      other's socket: whichever binds first takes the path the other's sessions live on.
+      """)
+  }
+
+  /// Neither, or both — never one.
+  ///
+  /// `attachCommand` returning non-nil beside an empty environment is the shape that already
+  /// shipped once: the relay started with no `WORKROOM_SESSION_ID`, exited 2, and because the
+  /// plain-shell fallback is chosen BEFORE the command is spawned, the pane died instead of
+  /// degrading.
+  @MainActor
+  func testAnUnresolvableSessionRefusesOnBothSidesAtOnce() {
+    let service = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "exited 127") },
+      ownership: { _ in .notOwned })
+    let sessionID = UUID()
+
+    XCTAssertNil(service.attachCommand(forSession: sessionID))
+    XCTAssertTrue(
+      service.launchEnvironment(sessionID: sessionID, workingDirectory: NSTemporaryDirectory())
+        .isEmpty,
+      "a nil command beside a populated environment is a pane that dies rather than degrades")
+  }
+}
+
 /// The substitution the shipped daemon performs on an id it does not hold, and the re-check that
 /// stops us walking into it.
 ///
@@ -552,12 +661,20 @@ final class LostSessionCommandTests: XCTestCase {
     let command = GhosttySurfaceView.lostSessionCommand(shell: "/bin/sh")
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/bin/sh")
-    // `-l` would make the exec'd shell read login files and sit waiting; `</dev/null` ends it.
-    process.arguments = ["-c", "\(command) < /dev/null"]
+    process.arguments = ["-c", command]
     let pipe = Pipe()
+    let input = Pipe()
     process.standardOutput = pipe
     process.standardError = pipe
+    process.standardInput = input
     try process.run()
+
+    // Typed AT the pane, not redirected from `/dev/null`. The earlier version ended the shell with
+    // EOF and could only see the notice — which `printf` alone would satisfy, leaving a pane that
+    // explains itself and then dies. Feeding it a script proves there is a live shell on the other
+    // side to read it, which is the half of the name this test was not testing.
+    input.fileHandleForWriting.write(Data("echo ARGV0=$0\nexit 3\n".utf8))
+    try input.fileHandleForWriting.close()
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
 
@@ -565,6 +682,19 @@ final class LostSessionCommandTests: XCTestCase {
     XCTAssertTrue(
       output.contains("has ended, so this is a new shell"),
       "the pane would come back with no explanation. got: \(output)")
+    XCTAssertTrue(
+      output.contains("ARGV0=/bin/sh"),
+      """
+      nothing read what was typed, so the notice printed into a pane with no shell behind it — \
+      `wait_after_command` is false, so that pane is dead, not idle. got: \(output)
+      """)
+    XCTAssertEqual(
+      process.terminationStatus, 3,
+      """
+      the exit status came from somewhere other than the shell we typed `exit 3` at. `exec` is what \
+      makes this one process rather than a wrapper holding a child, and a wrapper would report its \
+      own status here. got: \(output)
+      """)
   }
 
   /// A shell path carrying shell metacharacters must be taken literally. `SHELL` is
