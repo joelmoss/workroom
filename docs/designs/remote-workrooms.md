@@ -1490,12 +1490,28 @@ disagreement passes every test on either side alone while presenting as an empty
    runs in a container (`vcs/scripts/test-linux.sh`), but nothing publishes the ELFs yet. Phase 3
    needs them; Phase 1 does not.
 3. **OQ21, where the `HostDriver` lives**, is untouched and remains open.
-4. **Two items from the 2026-09-15 eng review are not done.** (a) An agent that passes the
-   `wr-agent protocol` probe and then fails at attach still leaves a dead pane rather than a plain
-   shell — the probe is a liveness check, not a guarantee, so "a broken agent still gives you a
-   working terminal" is not yet true. (b) A daemon-substituted session is not detected or reported:
-   the app cannot prevent it, but it can notice the descriptor changed and say so in the pane
-   instead of letting a fresh prompt pass as a successful reattach.
+4. **~~Two items from the 2026-09-15 eng review~~ — BOTH DONE, 2026-09-15.**
+
+   (a) **A failed attach now becomes a shell, not a dead pane.** `SessionBackendProbe` runs
+   `wr-agent protocol` and parses a version, which proves the binary starts and prints — not that it
+   can serve. A stale socket, a failed negotiation, a crash between the two all pass it. And nothing
+   downstream could recover: the app picks session-or-plain-shell before forking, and
+   `wait_after_command` is false, so a relay that exits leaves a pane with no shell in it. So the
+   relay itself execs the user's shell on every pre-attach failure (`fall_back_to_shell`), printing
+   one line saying persistence is gone — a terminal that silently stopped surviving quit is worse
+   than one that admits it. `RawMode::restore()` had to become explicit: `exec` runs no destructors,
+   and a shell handed a raw tty has no line editing, echo or signal keys.
+
+   (b) **A lost session is no longer replaced by an invented one.** The shipped daemon's
+   `handleAttach` creates for an id it does not hold, so a reattach to a session whose shell had
+   exited silently forked a new one — a fresh prompt where a build was running, indistinguishable
+   from success. `confirmBeforeAttach` asks once more immediately before attaching and refuses when
+   the daemon disclaims it, which **prevents** the substitution rather than detecting it: the daemon
+   never receives the request that would make it create. `.unreachable` still attaches, deliberately
+   — it means we could not ask, and a daemon too wedged to answer is also too wedged to fork.
+
+   Residual, and not closable from this side of the socket: the daemon can answer `.owned` and lose
+   the session before the attach lands.
 
 ## Open Questions
 
