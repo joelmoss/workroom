@@ -310,6 +310,61 @@ final class PersistentSessionRoutingTests: XCTestCase {
       probeCount.value, 1,
       "a nil answer must cache; re-probing costs 2s of frozen main actor per access")
   }
+
+  /// …but not forever. A nil answer is retried after a cooldown.
+  ///
+  /// Latching it for the launch was worse than the behaviour it replaced: before this change a
+  /// failed probe fell back to the daemon, which could still be started, so a transient failure
+  /// degraded to daemon-backed persistence. Now it degrades to none at all, and the probe is a
+  /// 2-second-watchdogged `Process()` that a loaded machine or a slow first exec of a
+  /// freshly-updated binary is enough to trip once. Without a way back, that user has no persistent
+  /// terminals until they quit the app.
+  @MainActor
+  func testANilAnswerIsRetriedAfterTheCooldown() {
+    let probeCount = Counter()
+    var clock = 1000.0
+    let service = PersistentSessionService(
+      probe: { _ in
+        probeCount.increment()
+        return probeCount.value == 1
+          ? .unhealthy(reason: "transient") : .ready(version: "protocol 1")
+      },
+      ownership: { _ in .notOwned },
+      now: { clock })
+
+    XCTAssertNil(service.backend)
+    XCTAssertEqual(probeCount.value, 1)
+
+    clock += PersistentSessionService.probeRetryInterval - 1
+    XCTAssertNil(service.backend, "still inside the cooldown")
+    XCTAssertEqual(probeCount.value, 1, "the cooldown is what keeps the main actor free")
+
+    clock += 2
+    XCTAssertEqual(
+      service.backend, .rustAgent,
+      "past the cooldown the agent gets another chance, and this one answers")
+    XCTAssertEqual(probeCount.value, 2)
+  }
+
+  /// A successful answer is cached for good — no cooldown, no re-probe. An agent that has answered
+  /// does not stop existing, and re-running it would reintroduce the cost the cache exists to avoid.
+  @MainActor
+  func testAHealthyAnswerIsNeverReprobed() {
+    let probeCount = Counter()
+    var clock = 1000.0
+    let service = PersistentSessionService(
+      probe: { _ in
+        probeCount.increment()
+        return .ready(version: "protocol 1")
+      },
+      ownership: { _ in .notOwned },
+      now: { clock })
+
+    XCTAssertEqual(service.backend, .rustAgent)
+    clock += PersistentSessionService.probeRetryInterval * 10
+    XCTAssertEqual(service.backend, .rustAgent)
+    XCTAssertEqual(probeCount.value, 1)
+  }
 }
 
 /// A plain counter rather than a captured `var`: the closure is `@escaping` and stored on the

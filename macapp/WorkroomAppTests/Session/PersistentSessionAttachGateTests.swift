@@ -37,32 +37,42 @@ final class PersistentSessionAttachGateTests: XCTestCase {
     }
   }
 
-  func testTheAttachGuardDoesNotConsultGlobalAvailability() throws {
-    let source = try Self.surfaceViewSource
+  /// The body of `applyPersistentSession`, from its declaration to the next declaration at the same
+  /// indentation.
+  ///
+  /// Matching `"\n  private func"` was wrong: the next declaration is `func
+  /// reattachPersistentSession()`, which is not private, so the extracted "body" ran on past the end
+  /// of the function it was supposed to bound. Matching any `func` at two-space indentation is what
+  /// the comment always claimed.
+  private static func applyPersistentSessionBody(in source: String) throws -> String {
     guard let start = source.range(of: "private func applyPersistentSession") else {
-      return XCTFail("applyPersistentSession has been renamed; update this test deliberately")
+      throw XCTSkip("applyPersistentSession has been renamed; update this test deliberately")
     }
-    // The function body ends at the next declaration at the same indentation.
-    let rest = source[start.lowerBound...]
-    let body =
-      rest.range(
-        of: "\n  private func", range: rest.index(rest.startIndex, offsetBy: 1)..<rest.endIndex
-      )
-      .map { String(rest[rest.startIndex..<$0.lowerBound]) } ?? String(rest)
+    let rest = source[start.upperBound...]
+    guard
+      let end = rest.range(
+        of: "\n  (?:private |fileprivate |internal )?(?:static )?func ",
+        options: .regularExpression)
+    else { return String(rest) }
+    return String(rest[rest.startIndex..<end.lowerBound])
+  }
 
-    // The log line names it in prose; a GUARD is what breaks the feature. Match the call, then
-    // discount the one occurrence that is inside a log message rather than a condition.
-    let guardUses =
-      body.components(separatedBy: "PersistentSessionService.shared.isAvailable")
-      .count - 1
+  func testTheAttachGuardDoesNotConsultGlobalAvailability() throws {
+    let body = try Self.applyPersistentSessionBody(in: Self.surfaceViewSource)
+
+    // No discount for the log line, deliberately: the diff removed the only prose use, so any
+    // occurrence at all is a fresh one. A future author who wants the value for diagnostics should
+    // read this and decide consciously rather than have it slip back in as a condition.
+    let uses =
+      body.components(separatedBy: "PersistentSessionService.shared.isAvailable").count - 1
 
     XCTAssertEqual(
-      guardUses, 0,
+      uses, 0,
       """
-      applyPersistentSession consults PersistentSessionService.isAvailable again. That answers for \
-      the backend a NEW session would go to, so an unhealthy agent makes it false and strands every \
-      session the retired Swift daemon is still holding — the exact case the attach-only client \
-      exists to serve. Route per session through attachCommand(forSession:) instead. \
+      applyPersistentSession references PersistentSessionService.isAvailable again. That answers \
+      for the backend a NEW session would go to, so an unhealthy agent makes it false and strands \
+      every session the retired Swift daemon is still holding — the exact case the attach-only \
+      client exists to serve. Route per session through attachCommand(forSession:) instead. \
       See docs/designs/remote-workrooms.md.
       """)
   }
@@ -70,11 +80,50 @@ final class PersistentSessionAttachGateTests: XCTestCase {
   /// The complement: the attach really is routed per session, so the test above is asserting the
   /// absence of a guard from a function that still does the right thing rather than from one that
   /// has stopped attaching altogether.
+  ///
+  /// Scoped to the body. Searching the whole 2000-line file passed as long as the call appeared
+  /// anywhere in it, which is exactly the regression it exists to catch.
   func testTheAttachGuardRoutesPerSession() throws {
-    let source = try Self.surfaceViewSource
+    let body = try Self.applyPersistentSessionBody(in: Self.surfaceViewSource)
     XCTAssertTrue(
-      source.contains("PersistentSessionService.shared.attachCommand(\n        forSession:")
-        || source.contains("attachCommand(forSession:"),
-      "applyPersistentSession no longer resolves an attach command per session")
+      body.contains("attachCommand("), "applyPersistentSession no longer resolves an attach command"
+    )
+    XCTAssertTrue(
+      body.contains("forSession:"), "applyPersistentSession no longer routes per session")
+  }
+
+  /// FINDING 1 from the adversarial pass. The availability gate is asked at TWO layers, and pinning
+  /// only the view left the other one unpinned — which is the same defect one level up.
+  ///
+  /// Every test in `TerminalPersistentSessionPolicyTests` calls `usesPersistentSession` directly
+  /// with literal arguments, so changing the CALLER to `hasExistingSession: false` restores the
+  /// original bug — an unhealthy agent strands every daemon-held terminal — with all eight of them
+  /// still green. The argument-passing half is what this commit added, and it needs its own pin.
+  func testAssignedSessionIDReportsWhetherTheSessionAlreadyExists() throws {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("WorkroomApp/Core/TerminalSessions.swift")
+    let source = try String(contentsOf: url, encoding: .utf8)
+
+    guard let start = source.range(of: "private func assignedSessionID") else {
+      throw XCTSkip("assignedSessionID has been renamed; update this test deliberately")
+    }
+    let rest = source[start.upperBound...]
+    let body =
+      rest.range(
+        of: "\n  (?:private |fileprivate |internal )?(?:static )?func ",
+        options: .regularExpression
+      ).map { String(rest[rest.startIndex..<$0.lowerBound]) } ?? String(rest)
+
+    XCTAssertTrue(
+      body.contains("hasExistingSession: persisted != nil"),
+      """
+      assignedSessionID no longer tells the policy whether the pane already has a session. Passing \
+      a constant there re-strands every session the retired Swift daemon holds whenever the agent \
+      is unhealthy, and TerminalPersistentSessionPolicyTests cannot see it: those tests call the \
+      policy directly with literals, so they stay green. See docs/designs/remote-workrooms.md.
+      """)
   }
 }

@@ -1,11 +1,15 @@
 import Darwin
 import WorkroomSessionProtocol
 
+/// One socket to a session helper, from the client side.
+///
+/// `attachedSession` and `closesAfterFlush` used to live here and are gone: both were written and
+/// read only by the daemon, which tracked which session a connection was serving and whether to
+/// close it once its outbox drained. The attach client has exactly one connection and one session,
+/// so it never needed either.
 final class SessionConnection {
   let descriptor: Int32
   var decoder = SessionFrameDecoder()
-  var attachedSession: SessionIdentifier?
-  var closesAfterFlush = false
 
   private var outbox = SessionByteQueue()
 

@@ -18,6 +18,11 @@ import XCTest
 /// If these fail, a user who updates while holding a terminal from an older build loses it — see
 /// `docs/designs/remote-workrooms.md`. **`WorkroomSessionProtocol` is frozen while the shim ships**
 /// precisely because this peer can never be recompiled to match a change.
+/// Thrown after an `XCTFail` so the test stops without the failure being reported as a skip.
+private enum CompatibilityFixtureError: Error {
+  case unusable
+}
+
 final class SessionShimCompatibilityTests: XCTestCase {
   private var directory: URL!
   private var daemon: Process?
@@ -50,6 +55,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
     let socketPath = try startShippedDaemon()
     let sessionID = SessionIdentifier(UUID())
     let marker = "SHIM-COMPAT-\(UUID().uuidString.prefix(8))"
+    let sentinel = directory.appendingPathComponent("printed").path
 
     // Created by the SHIPPED client, then detached: `/dev/null` on stdin ends it immediately while
     // the daemon keeps the pty, which is exactly the state a user's machine is left in when they
@@ -58,17 +64,28 @@ final class SessionShimCompatibilityTests: XCTestCase {
       Self.shippedBinaryURL, arguments: ["attach"],
       environment: attachEnvironment(
         sessionID: sessionID, socketPath: socketPath,
-        command: "sh -c 'echo \(marker); sleep 120'"))
+        command: "sh -c 'echo \(marker); touch \(sentinel); sleep 120'"))
     creator.waitUntilExit()
+
+    // Wait for the marker to be firmly in the PAST before attaching. Without this the new client
+    // could be receiving it as live output and the test would pass either way — it would prove the
+    // session exists, not that its history was replayed, which is the property a user notices.
+    let deadline = Date().addingTimeInterval(10)
+    while Date() < deadline, !FileManager.default.fileExists(atPath: sentinel) {
+      Thread.sleep(forTimeInterval: 0.05)
+    }
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: sentinel),
+      "the v2.0.0 daemon never ran the session's command; nothing to replay")
 
     let output = try attachWithCurrentBuild(sessionID: sessionID, socketPath: socketPath)
 
     XCTAssertTrue(
       output.contains(marker),
       """
-      the attach-only client did not receive the v2.0.0 daemon's replay for a session it holds. \
-      A user updating with a terminal open would lose it. Got: \
-      \(output.suffix(400))
+      the attach-only client did not receive the v2.0.0 daemon's REPLAY for a session it holds — \
+      the marker was already printed before this client connected. A user updating with a terminal \
+      open would come back to a blank pane. Got: \(output.suffix(400))
       """)
   }
 
@@ -149,12 +166,27 @@ final class SessionShimCompatibilityTests: XCTestCase {
       if FileManager.default.isExecutableFile(atPath: url.path) { return url }
       candidate.deleteLastPathComponent()
     }
-    throw XCTSkip("workroom-session not found beside the test bundle")
+    // This build's own product, not an optional dependency: if it is missing the target did not
+    // build, which is a failure however the suite was invoked.
+    XCTFail("this build's workroom-session was not found beside the test bundle")
+    throw CompatibilityFixtureError.unusable
   }
 
+  /// **A missing fixture skips; a fixture that will not RUN fails.**
+  ///
+  /// The difference matters more than it looks. "Not checked out" is an environmental absence. "The
+  /// pinned binary is here and cannot start" — a broken signature, quarantine, a future macOS
+  /// refusing an old Mach-O — is this test's own subject failing, and reporting that as a skip would
+  /// let all three tests in this file stop running indefinitely while the suite stayed green. That
+  /// is precisely the wire-compatibility claim the whole change rests on, and `make app-test` does
+  /// not print a summary under Xcode 26, so nobody would notice.
   private func startShippedDaemon() throws -> String {
+    guard FileManager.default.fileExists(atPath: Self.shippedBinaryURL.path) else {
+      throw XCTSkip("v2.0.0 fixture not present at \(Self.shippedBinaryURL.path)")
+    }
     guard FileManager.default.isExecutableFile(atPath: Self.shippedBinaryURL.path) else {
-      throw XCTSkip("v2.0.0 fixture missing or not executable at \(Self.shippedBinaryURL.path)")
+      XCTFail("the pinned v2.0.0 fixture is present but not executable — check its mode in git")
+      throw CompatibilityFixtureError.unusable
     }
     let socketPath = directory.appendingPathComponent("s.sock").path
     daemon = try run(
@@ -168,7 +200,14 @@ final class SessionShimCompatibilityTests: XCTestCase {
       if let daemon, !daemon.isRunning { break }
       Thread.sleep(forTimeInterval: 0.02)
     }
-    throw XCTSkip("the v2.0.0 daemon never bound \(socketPath)")
+    let status = daemon.map { $0.isRunning ? "still running" : "exited \($0.terminationStatus)" }
+    XCTFail(
+      """
+      the pinned v2.0.0 daemon never bound \(socketPath) (\(status ?? "not started")). The fixture \
+      is present, so this is the compatibility subject failing, not a missing test dependency — \
+      do not downgrade it to a skip.
+      """)
+    throw CompatibilityFixtureError.unusable
   }
 
   /// Runs THIS build's attach client against the shipped daemon, holding stdin open with a pipe so

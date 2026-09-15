@@ -25,8 +25,16 @@ enum SessionAttachClient {
   /// Shrinking the connect retries above bounds only a REFUSED connect. A helper that accepts and
   /// then says nothing — a wedged one — is a different failure, and nothing bounded it: `poll`
   /// blocks indefinitely once no settle check is pending, so the pane sat blank forever with no
-  /// message and no exit. Matched to the app's own 2-second ownership-probe deadline.
-  static let attachHandshakeTimeoutSeconds: Double = 2
+  /// message and no exit.
+  ///
+  /// **Generous, and deliberately not retried.** The v2.0.0 daemon answers an attach from a single
+  /// poll iteration that first runs process introspection (`foregroundProcessGroup`,
+  /// `executableName`, `workingDirectory`) and then enqueues the whole replay buffer, flushing only
+  /// once that returns. On a loaded machine that is slow rather than broken, so a tight deadline
+  /// plus a retry is the worst combination available: each attempt tears down the connection, makes
+  /// the peer redo the same introspection and replay, and hands the next attempt an even busier
+  /// daemon. It cannot converge. One long wait converges or it does not.
+  static let attachHandshakeTimeoutSeconds: Double = 5
   static let inputBacklogLimit = 4 * 1024 * 1024
   /// How long after attaching to re-check the terminal size once more (seconds).
   ///
@@ -132,13 +140,15 @@ enum SessionAttachClient {
       SessionClock.monotonicSeconds() + attachHandshakeTimeoutSeconds
     while true {
       if let deadline = handshakeDeadline, SessionClock.monotonicSeconds() >= deadline {
-        // Named distinctly from the connect failure in `run`. The two look identical to a user —
-        // a pane that never fills in — and they have different causes and different fixes, so a
-        // bug report that quotes this line is worth something.
+        // TERMINAL, not `.retry`. Retrying reconnects and re-sends the attach, which on a slow peer
+        // makes it redo the introspection and replay this attempt already paid for — three attempts
+        // against a progressively busier daemon, converging on nothing. It also let `run`'s final
+        // "no session helper is listening" overwrite this line on screen, which is false in this
+        // path: the helper was listening, we reached it three times.
         report(
           "connected to the session helper, but it did not answer the attach request within "
-            + "\(Int(attachHandshakeTimeoutSeconds))s")
-        return .retry
+            + "\(Int(attachHandshakeTimeoutSeconds))s — the session may still be running")
+        return .failed(SessionAttachExitCode.daemonUnavailable)
       }
       guard connection.flush() else { return transportOutcome(isAttached: isAttached) }
 
@@ -181,9 +191,16 @@ enum SessionAttachClient {
       }
       // The attach reply has landed, so the handshake is no longer what we are waiting for. Past
       // this point an idle connection is a healthy one and blocking indefinitely is correct.
+      // Cleared BEFORE the settle deadline is armed, so the two are never live at once.
       if isAttached { handshakeDeadline = nil }
-      // Arm the one-shot settle re-check the moment `.attached` lands, not before — there's
-      // nothing to settle until the daemon has actually accepted us.
+      // Arm the settle re-check the moment `.attached` lands, not before — there's nothing to
+      // settle until the daemon has actually accepted us.
+      //
+      // NOT one-shot, despite how it reads, and this comment used to claim otherwise. Firing it
+      // sets `settleDeadline = nil` and `continue`s past this block; the next wake then finds
+      // `isAttached` with no deadline armed and starts another. So a resize trails every burst of
+      // output by ~300ms. Pre-existing and harmless — the v2.0.0 peer's `.resize` is a plain
+      // `SessionPTY.resize` with no forced redraw — but worth knowing when reading the timeouts.
       if isAttached, settleDeadline == nil {
         settleDeadline = SessionClock.monotonicSeconds() + settleCheckDelaySeconds
       }
@@ -193,9 +210,10 @@ enum SessionAttachClient {
   /// `poll`'s timeout in milliseconds: the nearest pending deadline, or `-1` (block indefinitely)
   /// when none is pending — this is a single terminal session's I/O loop, not a busy-poll.
   ///
-  /// Takes several because two deadlines can be live at once and the SHORTER must win. Passing only
-  /// the settle deadline, as this did, left the handshake bound unenforced whenever a settle check
-  /// happened to be pending, and unenforced entirely when one was not.
+  /// Both deadlines are passed even though only one can be armed at a time (the handshake one is
+  /// cleared in the same block that arms the settle one), because the alternative is a caller that
+  /// has to know which is live. What actually enforces the handshake bound is the top-of-loop
+  /// check, not this — `poll` only has to wake up in time for it.
   private static func pollTimeout(untilEarliestOf deadlines: Double?...) -> Int32 {
     guard let deadline = deadlines.compactMap({ $0 }).min() else { return -1 }
     let remaining = deadline - SessionClock.monotonicSeconds()

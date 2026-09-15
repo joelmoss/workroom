@@ -21,15 +21,29 @@ final class PersistentSessionService {
   /// Where new sessions go, once resolved. Cached because resolving it RUNS the agent to check it
   /// works, and that answer does not change within a launch.
   ///
-  /// **`preferredResolved` is what makes nil cacheable, and it is load-bearing.** `preferred()`
-  /// returns an Optional, so nil is a legitimate answer ("no backend can take a new session"), not
-  /// merely "not asked yet". Using nil for both meanings — as this did while `preferred()` was
-  /// non-Optional — silently un-caches exactly the case that most needs caching: the probe is a
-  /// `Process()` with a 2-second deadline run SYNCHRONOUSLY ON THE MAIN ACTOR during terminal
-  /// creation (`SessionBackendProbe.runProtocolCommand`), so a hung agent would cost 2s per access,
-  /// and `backend` is read once or more per pane. An eight-pane restore would freeze for ~16s.
+  /// **Nil has two meanings here and `lastProbeAt` is what separates them.** `preferred()` returns
+  /// an Optional, so nil is a legitimate answer ("no backend can take a new session"), not merely
+  /// "not asked yet". Using nil for both — as this did while `preferred()` was non-Optional —
+  /// silently un-caches exactly the case that most needs caching: the probe is a `Process()` with a
+  /// 2-second deadline run SYNCHRONOUSLY ON THE MAIN ACTOR during terminal creation
+  /// (`SessionBackendProbe.runProtocolCommand`), so a hung agent costs 2s per access, and `backend`
+  /// is read once or more per pane. An eight-pane restore would freeze for ~16s.
   private var cachedPreferred: SessionBackend?
-  private var preferredResolved = false
+  /// When the last probe ran, or nil if it never has. A SUCCESSFUL answer is cached for the launch
+  /// — the agent does not become unavailable once it has answered — but a nil answer is retried
+  /// after `probeRetryInterval`.
+  ///
+  /// Latching nil forever was worse than what it replaced. Before this change a failed probe cached
+  /// `.swiftDaemon`, and the daemon could still be STARTED, so a transient failure degraded to
+  /// daemon-backed persistence; now it degrades to no persistence at all, for the rest of the
+  /// launch, with no way back short of quitting. The probe is a `Process()` with a 2-second
+  /// watchdog, so load, resource exhaustion or a slow first exec of a freshly-updated binary are
+  /// all enough to trip it once. Re-probing on a cooldown keeps the fix for the real problem — the
+  /// per-access re-probe that froze the main actor for ~2s a time — while leaving a way out.
+  private var lastProbeAt: Double?
+  /// Long enough that a burst of pane creation pays one probe, short enough that a user who waits
+  /// a moment and opens another terminal gets another chance.
+  static let probeRetryInterval: Double = 30
   /// Which helper owns each session, resolved once. See `backend(forSession:)` for why one answer
   /// per session rather than one per call — a pane asks twice and the two must agree.
   private var owners: [UUID: SessionBackend] = [:]
@@ -42,27 +56,38 @@ final class PersistentSessionService {
   /// Injected for the same reason, and separately: the two answers combine, and the case that
   /// matters most (unhealthy agent, daemon-owned session) needs both driven at once.
   private let ownershipOverride: ((UUID) -> SessionOwnership)?
+  /// Monotonic seconds, for the probe cooldown. `systemUptime` rather than `Date()` so a clock
+  /// adjustment cannot make the cooldown never expire.
+  private let now: () -> Double
 
   private init() {
     self.probe = { SessionBackendProbe.probe($0) }
     self.ownershipOverride = nil
+    self.now = { ProcessInfo.processInfo.systemUptime }
   }
 
   /// Test seam. `shared` never uses it; every other behaviour is identical.
   init(
     probe: @escaping (SessionBackend) -> SessionBackendAvailability,
-    ownership: @escaping (UUID) -> SessionOwnership
+    ownership: @escaping (UUID) -> SessionOwnership,
+    now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }
   ) {
     self.probe = probe
     self.ownershipOverride = ownership
+    self.now = now
   }
 
   /// Where a NEW session would be created, or **nil when nowhere can take one**. Existing sessions
   /// are resolved individually — see `backend(forSession:)`.
   var backend: SessionBackend? {
-    if preferredResolved { return cachedPreferred }
+    if let cachedPreferred { return cachedPreferred }
+    let currentTime = now()
+    // A nil answer is remembered, just not forever: without `lastProbeAt` the nil case could not be
+    // told from "never asked" and re-probed on EVERY access, which is 2s of frozen main actor a
+    // time during terminal creation.
+    if let lastProbeAt, currentTime - lastProbeAt < Self.probeRetryInterval { return nil }
+    lastProbeAt = currentTime
     cachedPreferred = SessionBackend.preferred(probe: probe)
-    preferredResolved = true
     return cachedPreferred
   }
 
@@ -170,8 +195,6 @@ final class PersistentSessionService {
     return candidates.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0) }
   }
 
-  var existingSocketPath: String? { backend.flatMap { existingSocketPath(for: $0) } }
-
   func binaryPath(for backend: SessionBackend) -> String? {
     PersistentSessionPaths.binaryURL(for: backend)?.path
   }
@@ -186,10 +209,18 @@ final class PersistentSessionService {
   var isAvailable: Bool { socketPath != nil && binaryPath != nil }
 
   /// The command libghostty forks for this session, from the helper that owns it.
+  ///
+  /// Requires the same three things `launchEnvironment` does — owner, binary AND socket — because
+  /// the two are consumed as a pair and disagreeing is worse than either refusing. It used to check
+  /// only owner and binary, so an unresolvable socket path produced a non-nil command beside an
+  /// empty environment: `workroom-session attach` then started with no `WORKROOM_SESSION_ID` or
+  /// `_SOCKET` and exited 2 immediately, and because the plain-shell fallback is decided BEFORE the
+  /// command is spawned, the pane died rather than degrading. Refusing here degrades properly.
   func attachCommand(forSession sessionID: UUID) -> String? {
     // Nil owner ⇒ nil command ⇒ the caller opens a plain shell rather than guessing a helper.
     guard let owner = backend(forSession: sessionID),
-      let path = binaryPath(for: owner)
+      let path = binaryPath(for: owner),
+      socketPath(for: owner) != nil
     else { return nil }
     return path.replacingOccurrences(of: " ", with: "\\ ") + " attach"
   }
