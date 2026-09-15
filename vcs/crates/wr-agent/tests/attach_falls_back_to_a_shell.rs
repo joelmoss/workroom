@@ -493,3 +493,152 @@ fn a_healthy_agent_is_not_replaced_by_a_shell() {
         "a healthy attach must not print the fallback notice. got: {output:?}"
     );
 }
+
+/// **The line the fallback must NOT cross.** A `Failure` frame means the agent is TALKING, and the
+/// session it is talking about is usually alive — `RepaintFailed` (session.rs) fires only on
+/// reattach to a session that already has scrollback, which is precisely the pane holding the
+/// user's work, and it explicitly invites a retry. Exec'ing a shell there is unrecoverable (exec is
+/// one-way, so the retry can never happen) and hands back a healthy-looking prompt for a session
+/// that is still running: the same "failure that looks like success" `confirmBeforeAttach` exists
+/// to prevent on the app side.
+///
+/// An earlier version of `run_attach` made this a fallback, so this is a REGRESSION pin, and it is
+/// the only test anywhere that reaches the `FrameKind::Failure` arm.
+///
+/// `WORKROOM_SESSION_COMMAND` is both the discriminator and the hang guard: in the regression the
+/// exec'd shell runs the echo and exits, so the test fails on its assertions rather than blocking.
+#[test]
+fn a_failure_frame_is_reported_rather_than_replaced_by_a_shell() {
+    use std::io::Write;
+    use wr_agent::protocol::envelope::{Envelope, Hello, Service};
+    use wr_agent::protocol::frame::{Frame, FrameKind};
+
+    let dir = scratch("failure");
+    let socket = dir.join("a.sock");
+    let listener = UnixListener::bind(&socket).expect("bind fake agent");
+
+    // A peer that negotiates successfully — so every earlier fallback branch is passed — and then
+    // reports a failure, exactly as a session refusing a repaint does.
+    let accepter = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        stream
+            .write_all(&Hello::current("fake-peer").encode())
+            .expect("greet");
+        let _ = stream.flush();
+        let frame = Frame::new(FrameKind::Failure, b"FAKE-REPAINT-FAILED".to_vec());
+        stream
+            .write_all(&Envelope::new(Service::Terminal, 1, frame.encode()).encode())
+            .expect("failure frame");
+        let _ = stream.flush();
+        // Held open: closing here would race the client's read and arrive as an EOF instead, which
+        // is a different branch and would make this test pass for the wrong reason.
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    });
+
+    let (output, code) = attach(&[
+        (
+            "WORKROOM_SESSION_ID",
+            "6B9B968D-0BD7-4172-850A-A373DA73BC70",
+        ),
+        ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+        ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+        ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+        ("WORKROOM_SESSION_COMMAND", "echo FELL-BACK-TO-SHELL"),
+    ]);
+    let _ = accepter.join();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        output.contains("FAKE-REPAINT-FAILED"),
+        "the agent's failure was not shown to the user, so they cannot know to retry. got: \
+         {output:?}"
+    );
+    assert!(
+        !output.contains("FELL-BACK-TO-SHELL"),
+        "a Failure frame exec'd a shell. The session is still running and now unreachable from \
+         this pane, behind a prompt that looks like a successful reattach. got: {output:?}"
+    );
+    assert!(
+        !output.contains("will not survive quitting"),
+        "a Failure frame is not a broken agent and must not print the fallback notice. got: \
+         {output:?}"
+    );
+    assert_eq!(
+        code,
+        Some(1),
+        "a reported failure must exit non-zero so the pane does not look like a clean exit"
+    );
+}
+
+/// The FIRST `give_up` in `run_attach`, which no other test reaches: the id arrives but the socket
+/// does not. Its sibling — socket present, id missing — is
+/// `a_missing_session_id_still_leaves_a_working_shell`; both must fall back, because either one
+/// alone still means the app invoked us as a pane's command.
+#[test]
+fn a_missing_session_socket_still_leaves_a_working_shell() {
+    let dir = scratch("nosocket");
+    let (output, code) = attach(&[
+        (
+            "WORKROOM_SESSION_ID",
+            "6B9B968D-0BD7-4172-850A-A373DA73BC70",
+        ),
+        ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+        ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+        ("WORKROOM_SESSION_COMMAND", "echo FELL-BACK-TO-SHELL"),
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        output.contains("FELL-BACK-TO-SHELL"),
+        "attach with no session socket must open a shell, not exit. got: {output:?}"
+    );
+    assert!(
+        output.contains("will not survive quitting"),
+        "the fallback did not fire, so this test is asserting nothing. got: {output:?}"
+    );
+    assert_eq!(code, Some(0));
+}
+
+/// `first_usable_directory`'s SECOND rung. `a_deleted_working_directory_still_leaves_a_working_shell`
+/// proves the chain does not abort the exec, but it runs with `HOME` unset, so it cannot tell the
+/// home fallback from the `/` one — and landing a user in `/` when their home exists is the kind of
+/// quietly-wrong terminal nobody reports.
+#[test]
+fn a_deleted_working_directory_falls_back_to_home_before_root() {
+    let dir = scratch("homecwd");
+    let home = std::fs::canonicalize(&dir).expect("canonicalize");
+    let socket = dir.join("a.sock");
+    let listener = UnixListener::bind(&socket).expect("bind fake agent");
+    let accepter = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            drop(stream);
+        }
+    });
+
+    let (output, _) = attach(&[
+        (
+            "WORKROOM_SESSION_ID",
+            "6B9B968D-0BD7-4172-850A-A373DA73BC70",
+        ),
+        ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+        ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+        (
+            "WORKROOM_SESSION_CWD",
+            "/tmp/wr-this-directory-does-not-exist",
+        ),
+        ("HOME", home.to_str().unwrap()),
+        ("WORKROOM_SESSION_COMMAND", "pwd"),
+    ]);
+    let _ = accepter.join();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        output.contains("will not survive quitting"),
+        "the fallback did not fire, so this test is asserting nothing. got: {output:?}"
+    );
+    assert!(
+        output.contains(home.to_str().unwrap()),
+        "a pane whose directory was deleted landed somewhere other than the user's home. got: \
+         {output:?}"
+    );
+}

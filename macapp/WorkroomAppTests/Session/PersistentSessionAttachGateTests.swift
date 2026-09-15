@@ -92,6 +92,43 @@ final class PersistentSessionAttachGateTests: XCTestCase {
       body.contains("forSession:"), "applyPersistentSession no longer routes per session")
   }
 
+  /// The other call site this commit added, and the one with the same blind spot.
+  ///
+  /// `DaemonSessionSubstitutionTests` drives `confirmBeforeAttach` through the service and proves
+  /// the rule; none of it reaches the view. Deleting the call from `applyPersistentSession` leaves
+  /// every one of those tests green while restoring the bug in full: a reattach to a session the
+  /// v2.0.0 daemon has lost, which it answers by forking a new shell and passing it off as the
+  /// user's. Same "cover the wiring, not just the writer" failure this file was written for.
+  ///
+  /// Order is asserted too. A confirmation made AFTER the attach command is resolved is not a
+  /// confirmation — the routing it is supposed to veto has already happened.
+  func testTheAttachIsConfirmedWithTheDaemonBeforeItIsRouted() throws {
+    let body = try Self.applyPersistentSessionBody(in: Self.surfaceViewSource)
+
+    guard let confirm = body.range(of: "confirmBeforeAttach(sessionID:") else {
+      return XCTFail(
+        """
+        applyPersistentSession no longer asks the daemon whether it still holds this session. The \
+        shipped v2.0.0 daemon CREATES a session on attach for an id it does not hold, so a cached \
+        ownership answer that has outlived its session turns a reattach into a brand new shell \
+        with nothing to mark it as one. See PersistentSessionService.confirmBeforeAttach.
+        """)
+    }
+    XCTAssertTrue(
+      body.contains(".gone"),
+      "the confirmation's answer is no longer acted on; only `.gone` must stop the attach")
+
+    guard let attach = body.range(of: "attachCommand(") else {
+      return XCTFail("applyPersistentSession no longer resolves an attach command")
+    }
+    XCTAssertTrue(
+      confirm.lowerBound < attach.lowerBound,
+      """
+      the daemon is asked whether it still holds the session AFTER the attach command has been \
+      resolved, which vetoes nothing. Confirm first, then route.
+      """)
+  }
+
   /// FINDING 1 from the adversarial pass. The availability gate is asked at TWO layers, and pinning
   /// only the view left the other one unpinned — which is the same defect one level up.
   ///

@@ -18,6 +18,7 @@ import XCTest
 /// If these fail, a user who updates while holding a terminal from an older build loses it — see
 /// `docs/designs/remote-workrooms.md`. **`WorkroomSessionProtocol` is frozen while the shim ships**
 /// precisely because this peer can never be recompiled to match a change.
+
 /// Thrown after an `XCTFail` so the test stops without the failure being reported as a skip.
 private enum CompatibilityFixtureError: Error {
   case unusable
@@ -138,6 +139,134 @@ final class SessionShimCompatibilityTests: XCTestCase {
     XCTAssertNoThrow(
       try client.wait(for: .attached, timeout: 5),
       "v2.0.0 refused a request encoded by this tree — WorkroomSessionProtocol has drifted")
+  }
+
+  // MARK: - The attach-only client's own failure modes
+
+  /// The retirement itself, asserted against the shipped binary rather than against the source.
+  ///
+  /// `workroom-session daemon` started a pty daemon in v2.0.0. This build must not: every new
+  /// session belongs to `wr-agent`, and a daemon started now would hold none of the sessions this
+  /// client exists to reach — it would bind the socket the OLD daemon's sessions live on and
+  /// answer for none of them.
+  func testTheDaemonSubcommandIsGone() throws {
+    let socketPath = directory.appendingPathComponent("never.sock").path
+    let (output, status) = try runCapturing(
+      arguments: ["daemon", "--socket", socketPath], environment: [:])
+
+    XCTAssertEqual(status, 2, "`daemon` must be rejected as an unknown command. got: \(output)")
+    XCTAssertTrue(
+      output.contains("unknown command"), "expected an unknown-command error: \(output)")
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: socketPath),
+      """
+      this build bound a daemon socket. The pty daemon is retired: a new one would take the socket \
+      the sessions this client reattaches to are reached through, and hold none of them.
+      """)
+
+    let (usage, usageStatus) = try runCapturing(arguments: [], environment: [:])
+    XCTAssertEqual(usageStatus, 2)
+    XCTAssertFalse(
+      usage.contains("daemon"),
+      "the usage text still advertises a subcommand this binary no longer has: \(usage)")
+  }
+
+  /// Nothing listening at all: the session the client was asked to reach is gone.
+  ///
+  /// **The elapsed bound is the real assertion.** `connect` used to spawn a daemon and wait for it
+  /// to bind — 3 cycles of 50 × 20ms, three times over, ~9.2s of a pane showing nothing before the
+  /// user was told anything. With no daemon to start there is nothing to wait for, and the budget
+  /// is ~0.8s. A regression that restores the wait cannot be seen any other way: the exit code and
+  /// the message are the same either way.
+  func testAttachWithNothingListeningFailsFastAndStartsNothing() throws {
+    let socketPath = directory.appendingPathComponent("absent.sock").path
+    let started = Date()
+    let (output, status) = try runCapturing(
+      arguments: ["attach"],
+      environment: attachEnvironment(
+        sessionID: SessionIdentifier(UUID()), socketPath: socketPath, command: ""))
+    let elapsed = Date().timeIntervalSince(started)
+
+    // 92 is `SessionAttachExitCode.daemonUnavailable`, spelled as a literal because that enum lives
+    // in the helper target rather than the app's.
+    XCTAssertEqual(status, 92, "expected the daemon-unavailable exit code. got: \(output)")
+    XCTAssertTrue(
+      output.contains("no session helper is listening"),
+      "the pane fell back with no explanation of why: \(output)")
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: socketPath),
+      "the client started a helper. It cannot serve any session that exists, and it takes the "
+        + "socket a real one would need.")
+    XCTAssertLessThan(
+      elapsed, 5,
+      """
+      the client spent \(elapsed)s before giving up. The spawn-and-wait path is gone, so the \
+      budget is ~0.8s; anything near 9s means it is back and the pane shows nothing meanwhile.
+      """)
+  }
+
+  /// **A helper that accepts and then says nothing.** Wedged, not absent — and nothing bounded it:
+  /// `poll` blocks indefinitely once no settle check is pending, so the pane sat blank forever with
+  /// no message and no exit. The connect retries above bound only a REFUSED connect, which is a
+  /// different failure entirely.
+  ///
+  /// The peer is held open well past the 5s deadline on purpose. Closing sooner is an EOF, which
+  /// takes the retry path and reports "no session helper is listening" — so a short-sleeping fake
+  /// would make this test pass while measuring the wrong thing.
+  func testAWedgedHelperIsGivenUpOnRatherThanHangingThePane() throws {
+    let socketPath = directory.appendingPathComponent("wedged.sock").path
+    let listener = try Self.listen(at: socketPath)
+    Thread.detachNewThread {
+      let accepted = accept(listener, nil, nil)
+      guard accepted >= 0 else { return }
+      Thread.sleep(forTimeInterval: 12)
+      close(accepted)
+    }
+    defer { close(listener) }
+
+    let process = Process()
+    process.executableURL = try Self.currentBinaryURL()
+    process.arguments = ["attach"]
+    process.environment = attachEnvironment(
+      sessionID: SessionIdentifier(UUID()), socketPath: socketPath, command: "")
+    let output = Pipe()
+    // Held open for the whole run: a client whose stdin is already at EOF takes a different exit
+    // out of the poll loop, and this test would never reach the deadline it exists to measure.
+    let input = Pipe()
+    process.standardOutput = output
+    process.standardError = output
+    process.standardInput = input
+
+    let started = Date()
+    try process.run()
+    // A regression here is an infinite wait, which would hang the whole suite rather than fail it.
+    let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 25, execute: watchdog)
+    // EOF arrives when the client exits, which it does on its own deadline regardless of stdin —
+    // so stdin stays open until after the read, which is the whole point of the pipe.
+    let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    process.waitUntilExit()
+    watchdog.cancel()
+    let elapsed = Date().timeIntervalSince(started)
+    input.fileHandleForWriting.closeFile()
+
+    XCTAssertLessThan(
+      elapsed, 20,
+      """
+      the client never gave up on a helper that accepted the connection and then went silent. The \
+      pane shows nothing, forever, with no message and no exit.
+      """)
+    XCTAssertEqual(process.terminationStatus, 92, "got: \(text)")
+    XCTAssertTrue(
+      text.contains("did not answer the attach request"),
+      "the user was not told what happened: \(text)")
+    XCTAssertFalse(
+      text.contains("no session helper is listening"),
+      """
+      a helper that ACCEPTED the connection was reported as absent. That message is the retry \
+      path's, and retrying a slow peer makes it redo the introspection and replay each attempt \
+      already paid for — it cannot converge. got: \(text)
+      """)
   }
 
   // MARK: - Harness
@@ -276,6 +405,72 @@ final class SessionShimCompatibilityTests: XCTestCase {
     }
     try process.run()
     return process
+  }
+
+  /// A listening unix socket that nothing services, for the wedged-helper case. Same shape as
+  /// `SessionOwnershipTests.listen(at:)`, which is private to its own file.
+  private static func listen(at socketPath: String) throws -> Int32 {
+    let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard descriptor >= 0 else {
+      throw NSError(
+        domain: "SessionShimCompatibilityTests", code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "socket() failed: \(errno)"])
+    }
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Array(socketPath.utf8)
+    guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+      close(descriptor)
+      throw NSError(
+        domain: "SessionShimCompatibilityTests", code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "socket path too long: \(socketPath)"])
+    }
+    withUnsafeMutableBytes(of: &address.sun_path) { pointer in
+      pointer.withMemoryRebound(to: CChar.self) { dest in
+        for (index, byte) in pathBytes.enumerated() { dest[index] = CChar(bitPattern: byte) }
+      }
+    }
+    address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+    let bound = withUnsafePointer(to: &address) { pointer in
+      pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { casted in
+        Darwin.bind(descriptor, casted, socklen_t(MemoryLayout<sockaddr_un>.size))
+      }
+    }
+    guard bound == 0, Darwin.listen(descriptor, 1) == 0 else {
+      close(descriptor)
+      throw NSError(
+        domain: "SessionShimCompatibilityTests", code: 3,
+        userInfo: [NSLocalizedDescriptionKey: "bind/listen failed: \(errno)"])
+    }
+    return descriptor
+  }
+
+  /// Runs this build's `workroom-session` to completion and returns everything it wrote.
+  ///
+  /// `readDataToEndOfFile` rather than a readability handler: `Process` closes the parent's copy of
+  /// the child-side pipe ends after spawning, so the read end reaches EOF when the child exits.
+  /// (`attachWithCurrentBuild` uses a handler because it has to close stdin at a chosen moment
+  /// while output is still streaming — a different problem.) The watchdog is what keeps a hang
+  /// regression a FAILURE rather than a blocked read.
+  private func runCapturing(
+    arguments: [String], environment: [String: String]
+  ) throws -> (String, Int32) {
+    let process = Process()
+    process.executableURL = try Self.currentBinaryURL()
+    process.arguments = arguments
+    process.environment = environment
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = output
+    process.standardInput = FileHandle.nullDevice
+
+    try process.run()
+    let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 25, execute: watchdog)
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    watchdog.cancel()
+    return (String(decoding: data, as: UTF8.self), process.terminationStatus)
   }
 }
 
