@@ -154,39 +154,78 @@ const DAEMON_UNAVAILABLE: u8 = 92;
 fn fall_back_to_shell(request: &serve::AttachRequest, reason: &str) -> ExitCode {
     use std::os::unix::process::CommandExt;
 
-    let shell = request
-        .shell
-        .clone()
-        .unwrap_or_else(|| std::ffi::OsString::from("/bin/sh"));
+    let text = |value: &Option<std::ffi::OsString>| {
+        value
+            .as_ref()
+            .map(|v| v.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+
+    // The SAME invocation the agent would have exec'd in the pty, not a hand-rolled one.
+    //
+    // The first version of this ran `$SHELL -l`, which is wrong twice over. `-l` is not what makes
+    // a login shell — `argv[0]` prefixed with `-` is, and there is no flag for it (see shell.rs) —
+    // and it skipped ghostty's shell integration, so the pane lost OSC 133 and OSC 7: a title the
+    // user's prompt sets would latch and never clear, and the footer would never learn the working
+    // directory. `shell::invocation` knows all of that, per shell, and routes a run command through
+    // `/bin/sh -c "exec …"` rather than through a `$SHELL` that may not be POSIX at all.
+    let mut environment: Vec<(std::ffi::OsString, std::ffi::OsString)> = request
+        .env
+        .iter()
+        // Nothing downstream should believe it is inside a session that does not exist.
+        .filter(|(key, _)| !key.to_string_lossy().starts_with("WORKROOM_SESSION_"))
+        .cloned()
+        .collect();
+    // A marker the app, a shell prompt, or a bug report can see. The notice below is one line into
+    // a login shell whose own startup may clear the screen (instant prompts, a `clear` in
+    // `.zprofile`), so it cannot be the only signal that persistence was lost.
+    environment.push((
+        std::ffi::OsString::from("WORKROOM_SESSION_FALLBACK"),
+        std::ffi::OsString::from("1"),
+    ));
+
+    let invocation = wr_agent::shell::invocation(
+        &text(&request.command),
+        &text(&request.shell),
+        &text(&request.resources),
+        &environment,
+    );
 
     eprintln!("wr-agent: {reason}; this terminal will not survive quitting Workroom\r");
 
-    let mut command = std::process::Command::new(&shell);
-    match request.command.as_ref().filter(|c| !c.is_empty()) {
-        // A caller that asked for a specific command still gets it. Dropping it and opening an
-        // interactive shell would silently not do the thing it was asked to do, which is a worse
-        // failure than the one being recovered from.
-        Some(text) => {
-            command.arg("-c").arg(text);
-        }
-        // `-l` so the pane matches what libghostty would have started on its own: a login shell.
-        None => {
-            command.arg("-l");
-        }
+    let mut command = std::process::Command::new(&invocation.program);
+    if let Some((argv0, rest)) = invocation.arguments.split_first() {
+        command.arg0(argv0);
+        command.args(rest);
     }
-    if let Some(cwd) = request.cwd.as_ref().filter(|c| !c.is_empty()) {
+    command.env_clear();
+    command.envs(invocation.environment.iter().map(|(k, v)| (k, v)));
+    // `chdir` happens INSIDE the exec, so a directory that no longer exists aborts it — producing
+    // the dead pane this function exists to prevent, and blaming the shell for it. A workroom's
+    // directory being deleted while a tab is open is a supported operation (`reap`), so this is
+    // reachable. Same chain the agent's own child uses: requested, then home, then root.
+    if let Some(cwd) = first_usable_directory(request.cwd.as_ref()) {
         command.current_dir(cwd);
     }
-    // Nothing downstream should think it is talking to a session that exists.
-    command.env_remove("WORKROOM_SESSION_ID");
-    command.env_remove("WORKROOM_SESSION_SOCKET");
 
     let error = command.exec();
     eprintln!(
         "wr-agent: could not start {}: {error}\r",
-        shell.to_string_lossy()
+        invocation.program.to_string_lossy()
     );
     ExitCode::from(DAEMON_UNAVAILABLE)
+}
+
+/// The pane's directory, or the nearest fallback that actually exists.
+fn first_usable_directory(requested: Option<&std::ffi::OsString>) -> Option<PathBuf> {
+    [
+        requested.cloned().map(PathBuf::from),
+        std::env::var_os("HOME").map(PathBuf::from),
+        Some(PathBuf::from("/")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|path| !path.as_os_str().is_empty() && path.is_dir())
 }
 
 fn run_attach(args: &[String]) -> ExitCode {
@@ -199,21 +238,35 @@ fn run_attach(args: &[String]) -> ExitCode {
         unsafe { std::env::set_var("WORKROOM_SESSION_ID", text) };
     }
     // Parsed BEFORE the socket is resolved, so a misconfigured invocation can still fall back to a
-    // shell: `fall_back_to_shell` needs the shell and cwd the app exported, and those arrive in the
-    // same environment. The app can produce this state — it builds the attach command and the
-    // environment from two separate resolutions, so one failing while the other succeeds hands this
-    // process a command line with nothing to act on.
+    // shell: `fall_back_to_shell` reads the shell, cwd and resources the app exported, and those
+    // arrive in the same environment.
     let mut request = serve::AttachRequest::from_env();
+
+    // **Only a relay falls back.** `attach` is also a documented subcommand someone can type, and
+    // answering a typo by silently opening a nested login shell inside their current one is absurd
+    // — the same reasoning `run_list` uses. The app always exports the session variables, so their
+    // total absence is the tell: nothing invoked us as a pane's command.
+    let invoked_by_the_app = std::env::var_os("WORKROOM_SESSION_SOCKET").is_some()
+        || std::env::var_os("WORKROOM_SESSION_ID").is_some();
+    let give_up = |reason: &str| -> ExitCode {
+        if invoked_by_the_app {
+            fall_back_to_shell(&request, reason)
+        } else {
+            eprintln!("error: attach needs --socket <path> and --session <uuid>, or the");
+            eprintln!("       WORKROOM_SESSION_* environment the app exports ({reason})");
+            ExitCode::FAILURE
+        }
+    };
 
     let socket = flag(args, "--socket")
         .map(PathBuf::from)
         .or_else(serve::socket_from_env);
     let Some(socket) = socket else {
-        return fall_back_to_shell(&request, "no session socket was given");
+        return give_up("no session socket was given");
     };
 
     let Some(session) = request.id else {
-        return fall_back_to_shell(&request, "no session id was given");
+        return give_up("no session id was given");
     };
     // The pty's initial size comes from the terminal this relay was forked into, so a session is
     // created at the size it will actually be shown at rather than at 80x24 and then resized —
@@ -272,7 +325,7 @@ fn run_attach(args: &[String]) -> ExitCode {
 
     // Before anything reads stdin: a relay that leaves its own tty cooked is not a relay. Held to
     // the end of this function so every `return` below restores the terminal.
-    let raw = RawMode::enter();
+    let _raw = RawMode::enter();
 
     // stdin -> agent on its own thread; agent -> stdout on this one.
     let input_stream = match stream.try_clone() {
@@ -323,21 +376,27 @@ fn run_attach(args: &[String]) -> ExitCode {
                                 // `ExitCode` is a byte; a shell status is already 0-255.
                                 return ExitCode::from(code.clamp(0, 255) as u8);
                             }
-                            // The agent answered, and its answer was no. This is the most literal
-                            // form of "passed the probe, failed at attach": the binary ran, spoke
-                            // the protocol, and then refused the session. A dead pane here is the
-                            // same loss as any other failed attach, so it falls back too — but the
-                            // terminal is in raw mode by now, and `exec` runs no destructors, so
-                            // the line discipline has to be put back by hand first.
+                            // **Deliberately NOT a fallback**, and an earlier version of this made
+                            // it one. That was wrong in the worst available direction.
+                            //
+                            // A `Failure` here does not mean the agent is broken — it is talking,
+                            // and the session it is talking about is usually ALIVE. `RepaintFailed`
+                            // (session.rs) says so outright: "the client could not take its repaint
+                            // whole, so it was not attached at all… can retry from a clean
+                            // terminal", and it only fires on reattach to a session that already
+                            // has scrollback — precisely the pane with the user's work in it. A
+                            // fatal pty read reports the same kind for an already-attached client.
+                            //
+                            // Exec'ing a shell on either is unrecoverable (exec is one-way, so the
+                            // retry the agent is inviting can never happen) and, worse, it hands
+                            // back a healthy-looking prompt for a session that is still running.
+                            // That is the exact failure `confirmBeforeAttach` exists to prevent on
+                            // the app side: the one that looks like success. A visible error and a
+                            // non-zero exit is the honest answer, and it leaves the session where
+                            // the user can still reach it from the detached-sessions list.
                             FrameKind::Failure => {
-                                raw.restore();
-                                return fall_back_to_shell(
-                                    &request,
-                                    &format!(
-                                        "the session agent refused the attach: {}",
-                                        String::from_utf8_lossy(&frame.payload)
-                                    ),
-                                );
+                                eprintln!("wr-agent: {}", String::from_utf8_lossy(&frame.payload));
+                                return ExitCode::FAILURE;
                             }
                             _ => {}
                         }
@@ -428,9 +487,11 @@ struct RawMode(Option<libc::termios>);
 impl RawMode {
     /// Put the terminal back, idempotently.
     ///
-    /// Separate from `Drop` because `exec` never returns, so a guard's destructor never runs — and
-    /// `fall_back_to_shell` execs. A shell handed a raw tty has no line editing, no echo and no
-    /// signal keys, which is a worse terminal than the dead pane the fallback exists to prevent.
+    /// Split out of `Drop` when the fallback still exec'd from inside the relay loop, where no
+    /// destructor would have run. It no longer does — see the `FrameKind::Failure` arm — so today
+    /// this has exactly one caller, `drop`. Kept separate because the split is what makes the
+    /// restore callable at all if a future path ever needs it before an `exec`, and because a guard
+    /// whose only behaviour is in `Drop` reads as untestable.
     fn restore(&self) {
         if let Some(original) = self.0.as_ref() {
             unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) };

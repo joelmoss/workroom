@@ -12,7 +12,7 @@
 //! The claim under test is the one the eng review said was not established: *if the agent breaks,
 //! you still get a working terminal.*
 
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -34,6 +34,16 @@ fn scratch(name: &str) -> PathBuf {
 
 /// Runs `wr-agent attach` with the app's environment contract and returns (stdout+stderr, code).
 fn attach(env: &[(&str, &str)]) -> (String, Option<i32>) {
+    attach_inner(env, None)
+}
+
+/// Same, but feeding the exec'd shell a script on stdin — the only way to observe the INTERACTIVE
+/// branch, which takes no command argument by definition.
+fn attach_with_stdin(env: &[(&str, &str)], stdin: &str) -> (String, Option<i32>) {
+    attach_inner(env, Some(stdin))
+}
+
+fn attach_inner(env: &[(&str, &str)], stdin: Option<&str>) -> (String, Option<i32>) {
     let mut command = Command::new(agent_binary());
     command.arg("attach");
     command.env_clear();
@@ -41,10 +51,21 @@ fn attach(env: &[(&str, &str)]) -> (String, Option<i32>) {
     for (key, value) in env {
         command.env(key, value);
     }
-    command.stdin(Stdio::null());
+    command.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
     let mut child = command.spawn().expect("spawn attach");
+    if let Some(script) = stdin {
+        use std::io::Write;
+        let mut handle = child.stdin.take().expect("stdin");
+        let _ = handle.write_all(script.as_bytes());
+        // Closing it is what ends the interactive shell; without this the test hangs.
+        drop(handle);
+    }
 
     let mut out = String::new();
     let mut err = String::new();
@@ -88,9 +109,10 @@ fn a_peer_that_cannot_negotiate_still_leaves_a_working_shell() {
         ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
         ("WORKROOM_SESSION_SHELL", "/bin/sh"),
         ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
-        // A command rather than an interactive shell, only so the test has something to observe:
-        // the fallback path is identical, and an interactive `sh -l` on a null stdin would exit
-        // immediately with nothing to assert on.
+        // A command, so this test has something to observe. The two branches are NOT identical —
+        // an earlier comment here claimed they were — so the interactive one, which is the only
+        // one the app can actually reach, is covered separately by
+        // `the_interactive_fallback_is_a_real_login_shell`.
         ("WORKROOM_SESSION_COMMAND", "echo FELL-BACK-TO-SHELL"),
     ]);
     let _ = accepter.join();
@@ -140,9 +162,9 @@ fn an_agent_that_cannot_be_started_still_leaves_a_working_shell() {
     assert_eq!(code, Some(0));
 }
 
-/// A malformed invocation — the app resolved a command but not an environment — is also a dead pane
-/// without the fallback. `PersistentSessionService` builds the two from separate resolutions, so
-/// this state is reachable rather than hypothetical.
+/// A malformed invocation is also a dead pane without the fallback. Note this needs the app to have
+/// invoked us — `WORKROOM_SESSION_SOCKET` is set here — because a hand-run `attach` reports usage
+/// instead; see `a_hand_run_attach_reports_usage_instead_of_opening_a_shell`.
 #[test]
 fn a_missing_session_id_still_leaves_a_working_shell() {
     let dir = scratch("nosession");
@@ -249,9 +271,173 @@ fn the_fallback_shell_does_not_inherit_the_session_variables() {
     );
 }
 
+/// **The branch production actually takes.** Every other test here sets
+/// `WORKROOM_SESSION_COMMAND`, because a command gives the test something to observe — but
+/// `PersistentSessionService` hardcodes that variable to `""`, and a pane with a run command never
+/// gets a persistent session at all. So the interactive branch is the ONLY one the app can reach,
+/// and it was the one branch with no coverage. The two differ by more than an argument now:
+/// `shell::invocation` gives the interactive case a `-`-prefixed `argv[0]` and the shell-integration
+/// environment, and the command case a POSIX `/bin/sh -c "exec …"`.
+///
+/// Asserted through `argv[0]`, which is what makes a login shell — there is no flag for it.
+#[test]
+fn the_interactive_fallback_is_a_real_login_shell() {
+    let dir = scratch("login");
+    let socket = dir.join("a.sock");
+    let listener = UnixListener::bind(&socket).expect("bind fake agent");
+    let accepter = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            drop(stream);
+        }
+    });
+
+    // `-c` on the exec'd shell would take the command branch, so the login shell is driven the way
+    // a pane drives it — over stdin — and asked to report its own argv[0].
+    let (output, _) = attach_with_stdin(
+        &[
+            (
+                "WORKROOM_SESSION_ID",
+                "6B9B968D-0BD7-4172-850A-A373DA73BC70",
+            ),
+            ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+            ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+            ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+            // Empty, exactly as PersistentSessionService.launchEnvironment sets it.
+            ("WORKROOM_SESSION_COMMAND", ""),
+        ],
+        "printf 'argv0=[%s]\\n' \"$0\"; printf 'fallback=[%s]\\n' \"${WORKROOM_SESSION_FALLBACK:-unset}\"\n",
+    );
+    let _ = accepter.join();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        output.contains("will not survive quitting"),
+        "the fallback did not fire, so this test is asserting nothing. got: {output:?}"
+    );
+    assert!(
+        output.contains("argv0=[-sh]"),
+        "the fallback shell is not a LOGIN shell: argv[0] must be the shell's name prefixed with \
+         a dash, which is the only thing that makes it one. got: {output:?}"
+    );
+    assert!(
+        output.contains("fallback=[1]"),
+        "the exec'd shell must carry WORKROOM_SESSION_FALLBACK so the loss of persistence is \
+         visible to more than one scrollable line. got: {output:?}"
+    );
+}
+
+/// A session variable must not survive into the fallback shell, and the marker must.
+#[test]
+fn the_fallback_shell_reports_no_session_but_does_report_the_fallback() {
+    let dir = scratch("marker");
+    let socket = dir.join("a.sock");
+    let listener = UnixListener::bind(&socket).expect("bind fake agent");
+    let accepter = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            drop(stream);
+        }
+    });
+
+    let (output, _) = attach(&[
+        (
+            "WORKROOM_SESSION_ID",
+            "6B9B968D-0BD7-4172-850A-A373DA73BC70",
+        ),
+        ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+        ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+        ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+        (
+            "WORKROOM_SESSION_COMMAND",
+            "echo id=[${WORKROOM_SESSION_ID:-unset}] fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
+        ),
+    ]);
+    let _ = accepter.join();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        output.contains("id=[unset]") && output.contains("fb=[1]"),
+        "expected the session id stripped and the fallback marker set. got: {output:?}"
+    );
+}
+
+/// A pane whose directory has been deleted must still get a shell.
+///
+/// `chdir` happens INSIDE `exec`, so a missing directory aborts it — and the relay then reported
+/// "could not start /bin/zsh", blaming the shell, and exited 92: the dead pane the fallback exists
+/// to prevent, in the one case where the user most needs it. Deleting a workroom while a tab is
+/// open is a supported operation.
+#[test]
+fn a_deleted_working_directory_still_leaves_a_working_shell() {
+    let dir = scratch("gonecwd");
+    let socket = dir.join("a.sock");
+    let listener = UnixListener::bind(&socket).expect("bind fake agent");
+    let accepter = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            drop(stream);
+        }
+    });
+
+    let (output, code) = attach(&[
+        (
+            "WORKROOM_SESSION_ID",
+            "6B9B968D-0BD7-4172-850A-A373DA73BC70",
+        ),
+        ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+        ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+        (
+            "WORKROOM_SESSION_CWD",
+            "/tmp/wr-this-directory-does-not-exist",
+        ),
+        ("WORKROOM_SESSION_COMMAND", "echo FELL-BACK-TO-SHELL"),
+    ]);
+    let _ = accepter.join();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        output.contains("FELL-BACK-TO-SHELL"),
+        "a deleted working directory aborted the exec and produced a dead pane. got: {output:?}"
+    );
+    assert_eq!(code, Some(0));
+}
+
+/// Typed at a prompt rather than forked into a pane, `attach` must report usage — not silently
+/// open a nested login shell inside the user's current one. Same reasoning `list` uses.
+#[test]
+fn a_hand_run_attach_reports_usage_instead_of_opening_a_shell() {
+    let mut command = Command::new(agent_binary());
+    command.arg("attach");
+    command.env_clear();
+    command.env("PATH", "/usr/bin:/bin");
+    command.env("SHELL", "/bin/sh");
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    let output = command.output().expect("run attach");
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("attach needs"),
+        "a hand-run attach must explain itself. got: {combined:?}"
+    );
+    assert!(
+        !combined.contains("will not survive quitting"),
+        "a hand-run attach must not open a fallback shell. got: {combined:?}"
+    );
+    assert_ne!(output.status.code(), Some(0));
+}
+
 /// Negative control. Without this, every assertion above would pass just as well against a relay
 /// that ALWAYS execs a shell and never attaches to anything — which would be a total regression
 /// wearing the fallback's clothes.
+///
+/// The discriminator is the session variable, not the notice string. Asserting only on the absence
+/// of "will not survive quitting" leaned on a literal from the same commit; `WORKROOM_SESSION_ID`
+/// is passed THROUGH by a real session and STRIPPED by the fallback, so it separates the two
+/// regardless of what any message says.
 #[test]
 fn a_healthy_agent_is_not_replaced_by_a_shell() {
     let dir = scratch("healthy");
@@ -282,7 +468,10 @@ fn a_healthy_agent_is_not_replaced_by_a_shell() {
         ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
         ("WORKROOM_SESSION_SHELL", "/bin/sh"),
         ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
-        ("WORKROOM_SESSION_COMMAND", "echo RAN-IN-A-SESSION"),
+        (
+            "WORKROOM_SESSION_COMMAND",
+            "echo RAN-IN-A-SESSION id=[${WORKROOM_SESSION_ID:-unset}]",
+        ),
     ]);
 
     let _ = agent.kill();
@@ -294,19 +483,13 @@ fn a_healthy_agent_is_not_replaced_by_a_shell() {
         "a healthy agent should have run the command in a session. got: {output:?}"
     );
     assert!(
-        !output.contains("will not survive quitting"),
-        "a healthy attach must NOT print the fallback notice — the fallback is firing when it \
-         should not, and every other test here would pass anyway. got: {output:?}"
+        !output.contains("id=[unset]"),
+        "a real session passes WORKROOM_SESSION_ID through to its shell and the fallback strips \
+         it, so an unset id here means the fallback fired against a HEALTHY agent — and every \
+         other assertion in this file would pass against a relay that always execs. got: {output:?}"
     );
-}
-
-/// Keeps the unused-import lint honest about `Write`, which the fake peer does not need but a
-/// future one will. Deliberately trivial.
-#[test]
-fn scratch_directories_are_writable() {
-    let dir = scratch("writable");
-    let path = dir.join("probe");
-    let mut file = std::fs::File::create(&path).expect("create");
-    file.write_all(b"ok").expect("write");
-    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        !output.contains("will not survive quitting"),
+        "a healthy attach must not print the fallback notice. got: {output:?}"
+    );
 }
