@@ -16,6 +16,11 @@ struct CreationLoader: View {
         .foregroundStyle(theme.tokens.fgMuted)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
+    // The same opaque surface `SetupOverlay` paints (issue #171). Both are the same moment — "this
+    // workroom is being built" — and since the create moved inside its own pane they sit under the
+    // same card and title bar, so a bare spinner beside a fully-dressed dialog read as two different
+    // levels of finish depending only on whether the project happens to have a setup script.
+    .background(theme.tokens.panel)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Creating workroom")
     .accessibilityIdentifier("CreationLoader")
@@ -55,10 +60,6 @@ struct SetupOverlay: View {
         .opacity(shown ? 1 : 0)
         .padding(32)
     }
-    // Named so a UI test can assert WHERE this renders: since issue #171 a create draws inside its own
-    // workroom pane, which is only provable by finding this as a descendant of `workroom.pane` rather
-    // than of the window.
-    .accessibilityIdentifier("SetupOverlay")
     .onAppear {
       guard !shown else { return }
       if reduceMotion {

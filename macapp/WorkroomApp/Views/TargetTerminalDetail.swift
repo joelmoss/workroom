@@ -39,16 +39,24 @@ struct TargetTerminalDetail: View {
           target: target, sessions: store.terminals, surfaceActive: surfaceActive,
           workroomIsSplit: workroomIsSplit)
       }
-      // Exactly the `isCreationBlocking` condition above, so the terminal is withheld iff one of
-      // these covers it — one predicate, no drift. A no-setup create gets the loader rather than the
-      // dialog it never had; it withholds too (issue #171, see `isCreationBlocking`), so the loader
-      // replaces a terminal instead of floating over one.
+      // Mirrors `isCreationBlocking` EXACTLY, so the terminal is withheld iff something covers it —
+      // one predicate, no drift. A no-setup create gets the loader rather than the dialog it never
+      // had; it withholds too (issue #171), so the loader replaces a terminal instead of floating
+      // over one.
+      //
+      // The `else` is the case that had neither: `settingUpWorkrooms` is SHARED across windows while
+      // `creations` is per-window, so a second window looking at a workroom whose script this window
+      // started withholds the terminal with no entry to draw from — a blank pane under a full title
+      // bar, for the length of the script. It gets the loader; only the window that owns the dialog
+      // can show the log.
       if let creation = store.creations[target.id] {
         if creation.hasSetup {
           SetupOverlay(session: creation.session) { store.dismissCreation(target.id) }
         } else {
           CreationLoader()
         }
+      } else if store.isCreationBlocking(target.id) {
+        CreationLoader()
       }
       if target.isMissing {
         ContentUnavailableView {

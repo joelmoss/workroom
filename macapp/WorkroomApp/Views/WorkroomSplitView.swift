@@ -320,9 +320,9 @@ private struct WorkroomPaneLeaf: View {
     WorkroomPaneToolbarPresentation.controls(
       isMissing: target.isMissing, projectPath: projectPath,
       hasEditor: !ExternalEditor.installed.isEmpty, multi: multi,
-      // The same set `startRunCommand` guards on, so the button and the action can't disagree about
-      // whether a run could start (issue #171).
-      isCreating: store.creatingWorkrooms.contains(target.id))
+      // The same predicate `startRunCommand` guards on, so the button and the action can't disagree
+      // about whether a run could start (issue #171).
+      isCreating: store.isRunBlocked(target.id))
   }
 
   /// The project name — the chip's primary label format (`AppStore.projectPath` last component),
@@ -422,7 +422,7 @@ enum WorkroomPaneToolbarPresentation {
   }
 
   static func controls(
-    isMissing: Bool, projectPath: String?, hasEditor: Bool, multi: Bool, isCreating: Bool = false
+    isMissing: Bool, projectPath: String?, hasEditor: Bool, multi: Bool, isCreating: Bool
   ) -> Controls {
     // Run is deliberately NOT gated on a configured command: the button is always there for a present
     // target, and pressing it with nothing configured opens Project Settings with the warning, the same

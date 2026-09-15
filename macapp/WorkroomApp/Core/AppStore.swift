@@ -1869,17 +1869,16 @@ final class AppStore: ObservableObject {
   }
 
   /// Whether to surface run controls for a target: its project has a command configured AND
-  /// `startRunCommand` would actually start one. One gate for the toolbar and the sidebar run
-  /// buttons, so a new condition lands in a single place (review #9/#14).
+  /// `startRunCommand` would actually start one (`isRunBlocked`). One gate for the sidebar run
+  /// buttons and the ⌘R menu item, so a new condition lands in a single place (review #9/#14).
   ///
-  /// The two non-config clauses mirror that function's own guards, which is the point — a Run button
+  /// The non-config clauses mirror that function's own guards, which is the point — a Run button
   /// offered where pressing it silently returns is worse than no button. A missing directory was
-  /// always one; a workroom whose setup script is still writing the worktree became one in issue #167
-  /// and went unreflected here (issue #171). The pane title bar's Run reads `creatingWorkrooms`
-  /// directly, since it deliberately shows for a target with no command configured (issue #139).
+  /// always one; a workroom still being created became one in issue #167 and went unreflected here
+  /// (issue #171). The pane title bar's Run shares `isRunBlocked` but not this predicate, since it
+  /// deliberately shows for a target with no command configured (issue #139).
   func canRunCommand(for target: TerminalTarget, inProject projectPath: String) -> Bool {
-    !target.isMissing && !creatingWorkrooms.contains(target.id)
-      && hasRunCommand(forProject: projectPath)
+    !target.isMissing && !isRunBlocked(target.id) && hasRunCommand(forProject: projectPath)
   }
 
   /// Persist a project's run config. A blank command with auto-run off removes the entry so the map
@@ -2246,14 +2245,14 @@ final class AppStore: ObservableObject {
   /// created workroom where the run would be the sole tab (Arch #5) — there we DO show it.
   func startRunCommand(for target: TerminalTarget, focus: Bool = false) {
     guard !target.isMissing, let project = project(forTarget: target) else { return }
-    // Never launch the project command against a worktree whose setup script is still writing it
-    // (issue #167). Auto-run already waits — it fires from `ensureInitialTerminal` once the pane
-    // mounts, which withholding defers — and a build or dev server started against half-installed
-    // dependencies is the exact failure issue #7's disarm exists to prevent. Guarded HERE because
-    // it's the one place the pane header, the sidebar rows and the ⌘R menu item all route through.
-    // Each of those now hides or disables itself on the same condition (issue #171 — they used to
-    // stay live and land on this silent return), but the guard is what makes that safe to rely on.
-    guard !creatingWorkrooms.contains(target.id) else { return }
+    // Never launch the project command against a worktree that is still being built (issue #167),
+    // and never over a create's own dialog (issue #171). Auto-run already waits — it fires from
+    // `ensureInitialTerminal` once the pane mounts, which withholding defers — and a build or dev
+    // server started against half-installed dependencies is the exact failure issue #7's disarm
+    // exists to prevent. Guarded HERE because it's the one place the pane header, the sidebar rows
+    // and the ⌘R menu item all route through; each of those hides or disables itself on `isRunBlocked`
+    // too, so the button and the action agree, but this guard is what makes that safe to rely on.
+    guard !isRunBlocked(target.id) else { return }
     let config = runConfig(forProject: project.path)
     guard config.hasCommand else { return }
     if let existing = runStates[target.id]?.tab {
@@ -2931,13 +2930,18 @@ final class AppStore: ObservableObject {
           // real create; nothing here shells out to the CLI). `creatingWorkrooms` is what the pane's
           // Run gate and `startRunCommand` both read, so seeding it is what makes the absent Run
           // assertable.
-          if UITestFixture.creatingSplitMember {
+          //
+          // Two variants, because the two states render differently and the difference is the point:
+          // a setup script draws `SetupOverlay`, a no-setup create draws `CreationLoader` — the
+          // branch issue #171 added, where the pane used to draw nothing.
+          let hasSetup = !UITestFixture.creatingSplitMemberNoSetup
+          if UITestFixture.creatingSplitMember || UITestFixture.creatingSplitMemberNoSetup {
             let session = ScriptLogSession(
               title: "Setting up new workroom in \(project.displayName)", phase: "setup")
-            session.append("Running setup script…")
+            if hasSetup { session.append("Running setup script…") }
             creations[target.id] = WorkroomCreation(
               session: session, project: project, name: workroom.name, targetID: target.id,
-              hasSetup: true)
+              hasSetup: hasSetup)
             creatingWorkrooms.insert(target.id)
           }
           // Second-group scenario: a window holds SEVERAL split groups, so seed a second one from two
@@ -3435,8 +3439,8 @@ final class AppStore: ObservableObject {
     // `creations[target.id]`) — its own log, its own Dismiss — and since issue #171 that holds for
     // the FOCUSED member too: `focusedCreation` no longer claims the detail for a create that has a
     // target, so the split is on screen from the moment it is in the model (#163 §2c). The new
-    // member's title bar drops its Run control for the duration (`canStartRunCommand`), because
-    // `startRunCommand` refuses a creating workroom and a button that silently does nothing is worse
+    // member's title bar drops its Run control for the duration (it reads `creatingWorkrooms`, the
+    // set `startRunCommand` itself guards on), because a button that silently does nothing is worse
     // than no button.
     let landedInSplit =
       splitAnchor.map {
@@ -3461,7 +3465,18 @@ final class AppStore: ObservableObject {
   /// window away from a workroom already on screen (issue #167) — with one selected, the sidebar
   /// spinner and the provisional "Creating…" chip carry the progress instead.
   var focusedCreation: WorkroomCreation? {
-    selectedTarget == nil ? pendingCreation : nil
+    // A create whose workroom RESOLVES has a pane, and the pane draws it — nothing goes full-frame.
+    guard selectedTarget == nil else { return nil }
+    // Selected but unresolvable: `apply` assigns `projects` with no ordering guard, so an
+    // out-of-order `list` can revert it to a snapshot predating a landed workroom (four are in
+    // flight when two creates overlap). `WorkroomTabBar`'s provisional chip is the documented way
+    // back in, and this is what it lands on — keyed on the id STRING, so it resolves with no help
+    // from `projects`. Without it that chip clicks through to the empty state and a failed setup
+    // script's message is unreachable until some unrelated reload repairs the list.
+    if let sid = Self.targetIDString(for: selectedTargetID), let creation = creations[sid] {
+      return creation
+    }
+    return pendingCreation
   }
 
   /// Whether the detail pane belongs to a create rather than to a terminal — see `focusedCreation`.
@@ -3489,6 +3504,23 @@ final class AppStore: ObservableObject {
   ///   dismissed — that part is per-window by definition, since the dialog is.
   func isCreationBlocking(_ targetID: TerminalTarget.ID) -> Bool {
     settingUpWorkrooms.contains(targetID) || creations[targetID] != nil
+  }
+
+  /// Whether a run must NOT be started for this target right now — the single predicate the
+  /// chokepoint (`startRunCommand`) and every Run affordance read, so an offered button and a
+  /// refused action can never disagree (issue #171).
+  ///
+  /// The union is load-bearing; neither half covers the other. `creatingWorkrooms` clears in
+  /// `createWorkroom`'s `defer`, which fires the moment the CLI returns — but a setup script's
+  /// dialog stays up until the user dismisses it, and that window is arbitrarily long. A run
+  /// started there launches against a pane whose terminal is still withheld, and worse, it
+  /// overwrites the ARMED auto-run: `ensureInitialTerminal` then sees a non-empty tab list, skips
+  /// `addTab`, and the workroom lands with a run tab and no shell at all, silently breaking issue
+  /// #7's "backgrounded run as tab #1, focused shell as tab #2" contract. `isCreationBlocking`
+  /// alone is not enough either — during the landing's `reload()` a no-setup create holds
+  /// `creatingWorkrooms` while neither `settingUpWorkrooms` nor `creations` is set yet.
+  func isRunBlocked(_ targetID: TerminalTarget.ID) -> Bool {
+    creatingWorkrooms.contains(targetID) || isCreationBlocking(targetID)
   }
 
   /// Whether `workroom` has an in-flight create (its setup is running) — the delete affordances
@@ -3912,6 +3944,11 @@ final class AppStore: ObservableObject {
   /// Open a new terminal tab in the selected target — root or workroom (⌘T).
   func newTerminalInSelectedTarget() {
     guard let target = selectedTarget, !target.isMissing else { return }
+    // Never open a shell into a worktree a setup script is still writing (issues #167/#171). The
+    // File menu item disables itself on the same predicate (`RootView.terminalInteractionAvailable`),
+    // but that is a display rule — this is the chokepoint every caller routes through, the way
+    // `startRunCommand` guards the run path rather than trusting its buttons.
+    guard !isCreationBlocking(target.id) else { return }
     terminals.addTab(for: target)
   }
 
