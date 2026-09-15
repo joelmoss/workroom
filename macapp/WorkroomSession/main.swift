@@ -77,8 +77,22 @@ case "attach":
   // failure against the agent degraded to a working shell. Two relays behind one feature must fail
   // the same way.
   //
-  // Only the pre-attach outcomes fall back. `finished` carries the shell's own exit status and
-  // must be reported verbatim.
+  // `finished` and `protocolFailure` never fall back: the first carries the shell's own exit
+  // status and must be reported verbatim, and the second means the peer is not a session helper at
+  // all. An earlier version of this comment claimed the list below was "only the pre-attach
+  // outcomes". It is not, and `transportFailure` is the exception — see below.
+  // `transportFailure` is the one that is NOT pre-attach: `transportOutcome(isAttached:)` returns
+  // it only once the `.attached` frame has landed, and answers `.retry` before that. It still falls
+  // back — exiting leaves a pane with nothing in it either way — but it cannot borrow the pre-attach
+  // message, which says persistence is gone. Here the session may well be alive and simply out of
+  // reach, so say that instead and point at the thing that recovers it.
+  if status == SessionAttachExitCode.transportFailure {
+    SessionIO.writeAll(
+      STDERR_FILENO,
+      Array(
+        ("workroom-session: lost the connection to the session helper. If it is still running, "
+          + "closing and reopening this terminal will reattach.\r\n").utf8))
+  }
   if status == SessionAttachExitCode.daemonUnavailable
     || status == SessionAttachExitCode.transportFailure
     || status == SessionAttachExitCode.startupFailure

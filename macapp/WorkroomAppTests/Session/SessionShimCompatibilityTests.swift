@@ -152,6 +152,59 @@ final class SessionShimCompatibilityTests: XCTestCase {
       "a clean session exit took the fallback path, which is for a FAILED attach")
   }
 
+  /// **The helper dies mid-relay.** Not a failed attach — an attach that WORKED, and then the
+  /// socket under it went away.
+  ///
+  /// Found by review, and the branch had no coverage at all: `transportOutcome(isAttached:)`
+  /// returns `transportFailure` only after the `.attached` frame has landed, so nothing else in
+  /// this file can reach it. The review's proposed fix was to stop falling back here, on the
+  /// grounds that an active session should not be replaced by a fresh shell. The premise is right
+  /// and the conclusion is not: `wait_after_command` is false, so not falling back does not
+  /// preserve anything — it leaves a pane with no shell in it and no way to read the error. What
+  /// the post-attach case does need is its own message, because the pre-attach one says
+  /// persistence is gone and here the session may simply be out of reach.
+  func testTheHelperDyingMidRelayLeavesAWorkingShellNotADeadPane() throws {
+    // The pane under test is the thing on the other end of this pipe. If it dies, writing to it is
+    // EPIPE, and the default disposition would kill the test host instead of failing the test.
+    signal(SIGPIPE, SIG_IGN)
+    let socketPath = try startShippedDaemon()
+    let session = try startShellSession(on: socketPath)
+    let sentinel = directory.appendingPathComponent("after-death").path
+
+    let attached = try attachInteractively(
+      sessionID: session.identifier, socketPath: socketPath)
+    defer { attached.terminate() }
+    XCTAssertTrue(
+      attached.text().contains(session.marker), "never reattached, so this proves nothing")
+
+    // The relay is live and pumping. Take the helper out from under it.
+    daemon?.terminate()
+    daemon?.waitUntilExit()
+
+    let deadline = Date().addingTimeInterval(10)
+    while Date() < deadline, !attached.text().contains("lost the connection") {
+      Thread.sleep(forTimeInterval: 0.05)
+    }
+    XCTAssertTrue(
+      attached.text().contains("lost the connection"),
+      "the pane was not told what happened. got: \(attached.text().suffix(400))")
+    XCTAssertFalse(
+      attached.text().contains("no session helper is listening"),
+      """
+      a session that had already attached reported the pre-attach message, which tells the user \
+      their session is gone when it may only be unreachable.
+      """)
+
+    // The real assertion: there is a shell here, not a corpse.
+    attached.type("touch \(sentinel)\n")
+    XCTAssertTrue(
+      waitForFile(at: sentinel),
+      """
+      the pane died with the helper. `wait_after_command` is false, so an exit here leaves nothing \
+      to read the error in and nothing to type into. got: \(attached.text().suffix(400))
+      """)
+  }
+
   /// **The control plane, not just the pty.** `list`, `info` and `kill` are how the app enumerates
   /// and tears down sessions, and this build sends all three at a daemon it can never recompile.
   ///
@@ -642,8 +695,18 @@ final class SessionShimCompatibilityTests: XCTestCase {
       }
     }
 
-    func type(_ text: String) {
-      input.fileHandleForWriting.write(Data(text.utf8))
+    /// Throwing, and SIGPIPE ignored by the caller: if the relay has exited, its end of this pipe
+    /// is closed, and the non-throwing `write(_:)` raises rather than returns. That took the whole
+    /// test host down with it — a regression showed up as a test that had VANISHED from the run
+    /// rather than one that failed, which is the least legible way for this to break.
+    @discardableResult
+    func type(_ text: String) -> Bool {
+      do {
+        try input.fileHandleForWriting.write(contentsOf: Data(text.utf8))
+        return true
+      } catch {
+        return false
+      }
     }
 
     func text() -> String {
