@@ -224,28 +224,37 @@ final class PersistentSessionService {
   /// same reason: a helper that is not running holds nothing. Its sessions are its children and
   /// died with it.
   private func ownership(of sessionID: UUID, in backend: SessionBackend) -> SessionOwnership {
-    if let ownershipOverride { return ownershipOverride(sessionID) }
-    guard
-      let identifier = SessionIdentifier(uuidString: sessionID.uuidString),
-      let socketPath = existingSocketPath(for: backend)
-    else { return .notOwned }
-    // A helper that just failed to answer is not asked again for every remaining pane — see
-    // `lastUnreachableAt`. The answer is the same `.unreachable` it would have given, arrived at
-    // without a second 2-second wait.
+    // A helper that just failed to answer is not asked again for every remaining pane. The answer
+    // is the same `.unreachable` it would have given, arrived at without a second 2-second wait —
+    // which is what a window of panes opening against one wedged daemon would otherwise cost,
+    // serially, on the main actor.
+    //
+    // **Above the test override on purpose.** The override replaces the round trip, not the policy
+    // about how often to make one; with it on top, no test could reach this cooldown at all, and
+    // the first version of it shipped with nothing measuring it.
     let currentTime = now()
     if let failedAt = lastUnreachableAt[backend],
       currentTime - failedAt < Self.probeRetryInterval
     {
       return .unreachable
     }
-    let answer = controlPlane(socketPath: socketPath, backend: backend)
-      .ownership(identifier: identifier)
-    if case .unreachable = answer {
-      lastUnreachableAt[backend] = currentTime
+
+    let answer: SessionOwnership
+    if let ownershipOverride {
+      answer = ownershipOverride(sessionID)
     } else {
-      // It answered, so whatever was wrong is over: the next pane asks for real.
-      lastUnreachableAt[backend] = nil
+      guard
+        let identifier = SessionIdentifier(uuidString: sessionID.uuidString),
+        let socketPath = existingSocketPath(for: backend)
+      else { return .notOwned }
+      answer = controlPlane(socketPath: socketPath, backend: backend)
+        .ownership(identifier: identifier)
     }
+    // Only the failure is recorded. Clearing this on a real answer looks like the matching half
+    // and is not: `now()` is monotonic, so an entry can only be READ while it is still inside the
+    // cooldown — and a helper that answered had already outlived it. The clearing branch could
+    // never change what the next caller sees.
+    if case .unreachable = answer { lastUnreachableAt[backend] = currentTime }
     return answer
   }
 

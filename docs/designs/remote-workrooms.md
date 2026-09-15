@@ -1512,6 +1512,28 @@ disagreement passes every test on either side alone while presenting as an empty
 
    Residual, and not closable from this side of the socket: the daemon can answer `.owned` and lose
    the session before the attach lands.
+5. **Rolling BACK to v2.0.0 strands agent-held sessions, and re-updating does not recover them.**
+   This one is release notes, not code: nothing a newer build writes changes what an older one does
+   on relaunch.
+
+   Traced. A v2.0.0 app knows nothing about `wr-agent`. On relaunch it starts its own daemon, and
+   for each restored pane it attaches by session id at its own socket. `SessionDaemon.handleAttach`
+   creates for an id it does not hold, so the user gets a fresh shell in every pane — not an error.
+   The agent's sessions are not destroyed: `wr-agent` outlives the app and the shells keep running,
+   reachable with `wr-agent` directly.
+
+   **Updating forward again does not give them back**, which is the part worth saying out loud.
+   `resolveOwner` asks the daemon first and `owner(preferred:daemon:)` answers `.swiftDaemon` for
+   any `.owned` — the agent is preferred only when the daemon is `.unreachable`. After a rollback
+   both helpers hold a session under the same id, the daemon claims it, and the daemon wins. The
+   user lands back in the rollback-era shell.
+
+   Preferring the agent unconditionally is not the fix: that is the same coin flip in the other
+   direction, and it breaks the case this whole shim exists for, where the daemon legitimately holds
+   the only copy of a user's work. The honest answer is the release note.
+
+   **What the notes must say:** rolling back to v2.0.0 replaces the contents of open terminals with
+   fresh shells, and updating again will not bring them back. Close what matters first.
 
 ## Open Questions
 

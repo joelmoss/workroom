@@ -376,6 +376,45 @@ final class PersistentSessionRoutingTests: XCTestCase {
       probeCount.value, 2, "a second read past the cooldown must not start a second probe")
   }
 
+  /// **A wedged helper costs the window one timeout, not one per pane.**
+  ///
+  /// An unanswered ownership probe is a 2-second wait, and it is paid on the main actor during
+  /// terminal creation. A workroom restoring six panes against a v2.0.0 daemon that accepts and
+  /// then stalls used to pay it six times, serially: twelve seconds of frozen app, well past the
+  /// threshold that files an AppHang, for six copies of one answer.
+  ///
+  /// Each resolve asks twice — the daemon, then the agent, because a wedged daemon must not veto a
+  /// session the live agent holds — so the first session costs two probes and the rest cost none.
+  @MainActor
+  func testAWedgedHelperIsAskedOncePerCooldownNotOncePerPane() {
+    let probes = Counter()
+    var clock = 1000.0
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in
+        probes.increment()
+        return .unreachable
+      },
+      now: { clock })
+
+    XCTAssertNil(service.backend(forSession: UUID()), "an unanswered probe resolves to neither")
+    XCTAssertEqual(probes.value, 2, "the daemon, then the agent")
+
+    for _ in 0..<5 { XCTAssertNil(service.backend(forSession: UUID())) }
+    XCTAssertEqual(
+      probes.value, 2,
+      """
+      five more panes each waited out a helper that had just been proved silent. That is ~2s of \
+      frozen main actor per pane, during terminal restore, when the answer was already known.
+      """)
+
+    clock += PersistentSessionService.probeRetryInterval + 1
+    XCTAssertNil(service.backend(forSession: UUID()))
+    XCTAssertEqual(
+      probes.value, 4,
+      "past the cooldown the helper is asked for real again; a wedge is not permanent")
+  }
+
   /// A successful answer is cached for good — no cooldown, no re-probe. An agent that has answered
   /// does not stop existing, and re-running it would reintroduce the cost the cache exists to avoid.
   @MainActor
