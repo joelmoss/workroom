@@ -1502,7 +1502,10 @@ disagreement passes every test on either side alone while presenting as an empty
 2. **A Linux `wr-agent` as a build artifact.** The cross-build recipe works and the Linux test suite
    runs in a container (`vcs/scripts/test-linux.sh`), but nothing publishes the ELFs yet. Phase 3
    needs them; Phase 1 does not.
-3. **OQ21, where the `HostDriver` lives**, is untouched and remains open.
+3. **~~OQ21, where the `HostDriver` lives~~ — ANSWERED, Swift.** Phase 0 settled it for a
+   stronger reason than the one the question anticipated: the first driver shells out to the
+   `boxd` CLI rather than talking HTTP, which makes it the same shape as `WorkroomCLI`. See
+   open question 21.
 4. **~~Two items from the 2026-09-15 eng review~~ — BOTH DONE, 2026-09-15.**
 
    (a) **A failed attach now becomes a shell, not a dead pane.** `SessionBackendProbe` runs
@@ -1629,14 +1632,6 @@ disagreement passes every test on either side alone while presenting as an empty
 
    **`blob-diff` keeps the tree C-free.** The feature pulls `imara-diff`, which is pure Rust, so
    the property that motivated gix over `git2-rs` survives this expansion.
-2. **Does the alt-screen repaint trick survive real network latency?** Phase 0 item 3 answers it.
-||||||| 2a5600c2
-   **Still unpriced, and these are the parts that matter for Phase 2's estimate:** rename-detected
-   commit diffs (`GitCommitDiff`, the other half of this question), ref decorations
-   (`GitProvider.decorations`), and push state (`GitGraph.unpushed`, a second revwalk with
-   `--not refs/remotes/origin/*`). The log result says gix is viable and its output trustworthy; it
-   does not say the diff API is.
-2. **Does the alt-screen repaint trick survive real network latency?** Phase 0 item 3 answers it.
 2. **Does the alt-screen repaint trick survive real network latency?** **ANSWERED — Phase 0 item 3, see Phase 0 Results.** Re-synthesis carries every negotiated mode, but only with the formatter's `extra` flags set; with default options a fresh client is correct-looking and non-interactive. Kitty keyboard flags are the one gap and must be emitted by hand. exe-scroll's emission order does NOT need porting. The residual is a live client against a real TUI over a real dropped link. The original framing of this question follows.
    If not, mosh's state-synchronisation model becomes the serious option and the replay buffer's
    port scope changes — shrinking to primary-screen scrollback, which mosh's model does not cover,
@@ -1881,39 +1876,62 @@ disagreement passes every test on either side alone while presenting as an empty
 
 ## Next Steps
 
-**The two decisions that blocked Phase 1 are now made** (both recorded in Phase 1 and Phase 3):
-the relay is a mode of one Rust binary, `wr-agent serve|attach`, mirroring today's
-`workroom-session daemon|attach`; and the local agent keeps its existing on-demand spawn and idle
-self-exit, because the reason given for replacing it did not survive scrutiny. One smaller question
-took their place: whether the client-side `HostDriver` is Rust-called-from-Swift or simply written in
-Swift (OQ21 — probably Swift, since it talks HTTP to provider APIs).
+**Rewritten 2026-09-15.** Every step this section previously listed is done, and the reason it did
+not say so is recorded below: the stale text was the *base* side of a committed merge conflict
+(`||||||| 2a5600c2`, removed in the same pass), so the "still unpriced" framing survived the commit
+that priced it. What follows is the state as the rest of this document actually reports it.
 
-**Measure before writing anything:**
+**Done, with results elsewhere in this doc:** the Phase 0 spike (Phase 0 Results); the
+generated/fuzzed corpus harness, which found two bugs (Phase 1 Results); Phase 1 itself, completed
+2026-09-15 by PR #192; and **open question 1, both halves** — the `log` half on `master`
+(`vcs/crates/wr-vcs-git`), the diff/decorations/push-state half on the unmerged spike branch
+`spike/oq1-git-diff` (`74f6181a`, bin `gix-diff-spike`), which is where it belongs: the crate is
+marked a throwaway. OQ2 and OQ21 are answered too.
 
-1. **Phase 0 spike — one day, seven items, thrown away, items 5 and 7 first.** Item 5 no longer asks
-   *whether* the far side can stay awake (the lifecycle shim settled that); it asks **what boxd
-   measures and how narrowly the shim's credential can be scoped.** Start it and item 6's four-hour
-   hibernation in the background at hour zero, then work through the rest: **`libghostty-vt`
-   snapshot round-trip bound from Rust plus its static-musl cross-build (item 7, new — and the
-   thing most of Phase 1's shape now rests on)**, Rust pty plus `/proc` introspection, framing over
-   a stream, the mid-TUI repaint after a killed link, the non-admin deploy-key case, and deriving
-   two instances from one base. €30 boxd signup credit covers the provider items. Between them,
-   items 5 and 6 settle five open questions, and item 7 settles what is left of OQ2.
-2. **Finish pricing open question 1.** The `log` half is **done** — gix matches `git log` exactly
-   over 400 commits including merges, in a new `wr-vcs-git` crate, with the sorting caveat and the
-   `sha1` feature gotcha recorded above. What remains is the half that actually drives Phase 2's
-   estimate: **rename-detected commit diffs** (against `GitCommitDiff`'s libgit2 behaviour), plus
-   ref decorations and the push-state revwalk. Extend the same spike crate rather than starting a
-   new one.
-3. **Build the generated/fuzzed harness before porting the terminal service.** Translate the 15
-   existing tests, then generate the cases they do not cover — split escapes, alt-screen
-   transitions, truncated UTF-8, embedded queries. **Retargeted:** with `snapshot.h` there is no
-   replay buffer to port and no second implementation to diff, so the assertion is snapshot
-   round-trip plus attach-mid-stream equivalence. Same corpus, different oracle — see Phase 1's
-   harness bullet. **Order it after step 1's new item 7**, since that is what proves the oracle
-   exists.
-4. **Then Phase 1**, from `master` — and expect the estimate to move once step 2 lands, because
-   Phase 2's git half is the largest unpriced item in the plan.
+**So the gate is lifted.** Phase 2 was deliberately unestimated pending OQ1. OQ1 is priced.
+Estimating and starting Phase 2 is the live work, and three things have to be settled as part of
+producing that estimate rather than after it:
+
+1. **A product call: the line-count drift.** gix's file lists are 150/150 exact, but line counts are
+   139/150 — the 11 misses differ by at most 4 lines, always symmetrically, always with an identical
+   file list, because `imara-diff` finds a valid but non-minimal edit script where xdiff finds a
+   smaller one. The visible consequence is that History's "+N −M" badge would occasionally disagree
+   with `git show --stat` by a line or two. **This is a taste decision, not a technical one** (OQ1
+   has the full measurement). If it is not acceptable, the answer is to keep *stats* on the existing
+   path — not to abandon gix, whose file lists, rename detection and decorations are exact.
+
+2. **A routing decision, named in Phase 2 and still open.** `VCSProviding`'s eight methods all take
+   `root: URL`, and the routing input is `VCS.repoKind(at:)` — a local filesystem probe that returns
+   `.unsupported` for any path not on this Mac. Remote routing needs **either a host threaded
+   through those sites or a provider registry keyed on the workroom**; a switch-body edit does not
+   reach it. Four sites already have a closure seam; `ChangesetDetailView.swift:150` calls
+   `VCS.provider(for: root)` inline and is the one that needs restructuring. Decide which shape
+   before estimating, because the two cost differently.
+
+3. **Two pieces of Phase 2 scope that OQ1 discovered and the `log` result did not predict.** Both
+   are small, both are real, and an estimate that omits them is wrong:
+   - **`GitCommitDiff.patch` must synthesize its own file header.** libgit2 gets
+     `diff --git` / `similarity index` / `rename from` / `rename to` free from `git_patch_to_buf`,
+     and `UnifiedDiff.parse` reads that back into `renamedFrom`. gix's `UnifiedDiff` is blob-level:
+     hunk headers and nothing else. Every input is in hand from the tree-diff change; it still has
+     to be written.
+   - **Filter `entry_mode.is_tree()`.** gix reports the tree nodes along a changed path as changes
+     in their own right. Unfiltered, a 4-file commit reports 8 and collides `VCSChangedFile.id` on a
+     directory name.
+
+4. **Then Phase 2**, from `master`, with that estimate. Its scope is listed in the Phase 2 section:
+   VCS reads, VCS writes (a second protocol of seven methods behind a 13-case failure taxonomy, six
+   of which carry the `projectRoot` collapse), a file service, change notification across three
+   watch topologies, and the three interchangeability services — of which the busy/idle signal is
+   the load-bearing one and is specified but unbuilt (OQ19).
+
+**Tracked, not blocking** — both are Phase 1 → Outstanding items, with detail there:
+
+- **A Linux `wr-agent` as a published build artifact** (item 2). The cross-build works and the Linux
+  suite runs in a container; nothing publishes the ELFs. Phase 3 needs them, Phase 2 does not.
+- **The rollback warning** (item 5). The next release off `master` must carry it: rolling back to
+  v2.0.0 replaces the contents of open terminals with fresh shells, and updating again will not
+  bring them back. The wording is in item 5; the release channel is still an open decision.
 
 ## Reviewer Concerns
 
@@ -1966,9 +1984,10 @@ repo's own code rather than from provider claims:
 
 Carried forward, unresolved by design:
 
-- **Phase 2 is large and deliberately unestimated** — VCS reads, VCS writes with their `projectRoot`
-  problem, a file service, `gh` status, and three watch topologies. Do not estimate it before open
-  question 1 is priced.
+- **Phase 2 is large** — VCS reads, VCS writes with their `projectRoot` problem, a file service,
+  `gh` status, and three watch topologies. It was deliberately unestimated pending open question 1;
+  **OQ1 is now priced in both halves, so the gate is lifted** and the estimate is owed. See Next
+  Steps for the three things that have to be settled while producing it.
 - **The ordering is a preference, not a dividend** (the honesty note under Recommended Approach). With premise 3 corrected, nothing measurable
   justifies porting a working daemon ahead of the feature. Approach C remains a legitimate fallback,
   and the differential-harness argument that dismissed it cuts both ways.
