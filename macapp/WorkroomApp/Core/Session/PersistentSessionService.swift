@@ -41,13 +41,22 @@ final class PersistentSessionService {
   /// all enough to trip it once. Re-probing on a cooldown keeps the fix for the real problem — the
   /// per-access re-probe that froze the main actor for ~2s a time — while leaving a way out.
   private var lastProbeAt: Double?
+  /// One background re-probe at a time; a burst of panes must not spawn one each.
+  private var isReprobing = false
+  /// When a helper last failed to ANSWER, per backend.
+  ///
+  /// `ownership` has its own 2-second deadline and, unlike the agent probe, it is asked once per
+  /// SESSION with no shared answer — so a helper that accepts and then stalls cost N x 2s for N
+  /// panes, serially, on the main actor. That is the same arithmetic the probe cooldown exists to
+  /// stop, applied to the query the probe cooldown does not cover. A helper that could not answer
+  /// a moment ago is not worth asking again for every remaining pane in the window.
+  private var lastUnreachableAt: [SessionBackend: Double] = [:]
   /// Long enough that a burst of pane creation pays one probe, short enough that a user who waits
   /// a moment and opens another terminal gets another chance.
   static let probeRetryInterval: Double = 30
   /// Which helper owns each session, resolved once. See `backend(forSession:)` for why one answer
   /// per session rather than one per call — a pane asks twice and the two must agree.
   private var owners: [UUID: SessionBackend] = [:]
-  private var descriptors: [UUID: SessionDescriptor] = [:]
 
   /// How the agent's health is measured. Injected so a test can drive the unhealthy path without
   /// a real `wr-agent` to break.
@@ -79,16 +88,48 @@ final class PersistentSessionService {
 
   /// Where a NEW session would be created, or **nil when nowhere can take one**. Existing sessions
   /// are resolved individually — see `backend(forSession:)`.
+  /// **The first probe is synchronous; every retry is not.** That split is the whole design.
+  ///
+  /// The probe is a `Process()` with a 2-second watchdog, and this runs on the main actor during
+  /// terminal creation. Making the FIRST one async would cost the common case its persistence —
+  /// the healthy agent answers in milliseconds, and a pane that opened before the answer arrived
+  /// would be a plain shell for no reason. Making the RETRIES synchronous costs a broken agent a
+  /// >=2s frozen main actor once per cooldown window, for the life of the launch, which is Sentry's
+  /// AppHang threshold in a repo that has spent this month fixing AppHangs.
+  ///
+  /// So: answer nil immediately and re-probe in the background. The worst case degrades from "the
+  /// app freezes every 30 seconds" to "this pane has no persistence, the next one does".
   var backend: SessionBackend? {
     if let cachedPreferred { return cachedPreferred }
     let currentTime = now()
-    // A nil answer is remembered, just not forever: without `lastProbeAt` the nil case could not be
-    // told from "never asked" and re-probed on EVERY access, which is 2s of frozen main actor a
-    // time during terminal creation.
-    if let lastProbeAt, currentTime - lastProbeAt < Self.probeRetryInterval { return nil }
-    lastProbeAt = currentTime
-    cachedPreferred = SessionBackend.preferred(probe: probe)
-    return cachedPreferred
+    guard let lastProbeAt else {
+      self.lastProbeAt = currentTime
+      cachedPreferred = SessionBackend.preferred(probe: probe)
+      return cachedPreferred
+    }
+    guard currentTime - lastProbeAt >= Self.probeRetryInterval else { return nil }
+    self.lastProbeAt = currentTime
+    reprobeInBackground()
+    return nil
+  }
+
+  /// Re-probe off the main actor and publish the answer back onto it.
+  ///
+  /// `probe` is called on a detached task, so a hung agent burns its 2 seconds somewhere nobody is
+  /// waiting. Only a SUCCESS is written back: a second nil would just re-arm the same cooldown that
+  /// `backend` already set before starting this.
+  private func reprobeInBackground() {
+    guard !isReprobing else { return }
+    isReprobing = true
+    let probe = self.probe
+    Task.detached(priority: .utility) {
+      let resolved = SessionBackend.preferred(probe: probe)
+      await MainActor.run { [weak self] in
+        guard let self else { return }
+        self.isReprobing = false
+        if let resolved { self.cachedPreferred = resolved }
+      }
+    }
   }
 
   /// Which helper owns an EXISTING session, or where a new one should go.
@@ -188,7 +229,24 @@ final class PersistentSessionService {
       let identifier = SessionIdentifier(uuidString: sessionID.uuidString),
       let socketPath = existingSocketPath(for: backend)
     else { return .notOwned }
-    return controlPlane(socketPath: socketPath, backend: backend).ownership(identifier: identifier)
+    // A helper that just failed to answer is not asked again for every remaining pane — see
+    // `lastUnreachableAt`. The answer is the same `.unreachable` it would have given, arrived at
+    // without a second 2-second wait.
+    let currentTime = now()
+    if let failedAt = lastUnreachableAt[backend],
+      currentTime - failedAt < Self.probeRetryInterval
+    {
+      return .unreachable
+    }
+    let answer = controlPlane(socketPath: socketPath, backend: backend)
+      .ownership(identifier: identifier)
+    if case .unreachable = answer {
+      lastUnreachableAt[backend] = currentTime
+    } else {
+      // It answered, so whatever was wrong is over: the next pane asks for real.
+      lastUnreachableAt[backend] = nil
+    }
+    return answer
   }
 
   func socketPath(for backend: SessionBackend) -> String? {
@@ -397,7 +455,6 @@ final class PersistentSessionService {
 
   @discardableResult
   func endSession(sessionID: UUID) async -> Bool {
-    descriptors.removeValue(forKey: sessionID)
     // An UNKNOWN owner must report failure, not success. `reap` gates deleting the workroom's
     // directory on this (issue #7), so answering "killed" for a session we could not even route to
     // would delete a worktree out from under a live shell. A malformed id or a missing socket is
@@ -421,7 +478,7 @@ final class PersistentSessionService {
       return true
     }
     let client = controlPlane(socketPath: socketPath, backend: owner)
-    // Resolved above, via `controlPlane(forSession:)`, then forgotten: this session is over, and
+    // Resolved above, via `backend(forSession:)`, then forgotten: this session is over, and
     // holding its owner would outlive the thing it describes.
     defer { owners.removeValue(forKey: sessionID) }
     let killed = await Task.detached(priority: .utility) { client.kill(identifier: identifier) }
@@ -447,7 +504,6 @@ final class PersistentSessionService {
   /// looking at it right now. Pass an empty set (the default) to kill everything.
   func endAllSessions(excluding attachedSessionIDs: Set<UUID> = []) async {
     guard !attachedSessionIDs.isEmpty else {
-      descriptors.removeAll()
       // Owners go with them: these session ids are dead, and a tab reopened later reuses its
       // persisted id (`TerminalSessions.assignedSessionID`) — a surviving entry would pin it to
       // the helper that held the session just killed.

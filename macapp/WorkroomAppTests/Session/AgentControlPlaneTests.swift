@@ -88,7 +88,7 @@ final class AgentControlPlaneTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: directory) }
     let socketPath = directory.appendingPathComponent("b.sock").path
 
-    let listener = try Self.listen(at: socketPath)
+    let listener = try UnixSocketListener.listen(at: socketPath)
     defer { close(listener) }
     let greeter = Thread {
       let accepted = accept(listener, nil, nil)
@@ -110,29 +110,4 @@ final class AgentControlPlaneTests: XCTestCase {
       "a banner must be recognised as not-an-agent, not waited out")
   }
 
-  private static func listen(at socketPath: String) throws -> Int32 {
-    let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard descriptor >= 0 else { throw XCTSkip("socket() failed") }
-    var address = sockaddr_un()
-    address.sun_family = sa_family_t(AF_UNIX)
-    let pathBytes = Array(socketPath.utf8)
-    guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
-      close(descriptor)
-      throw NSError(domain: "AgentControlPlaneTests", code: 1)
-    }
-    withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: pathBytes) }
-    let size = socklen_t(MemoryLayout<sockaddr_un>.size)
-    let bound = withUnsafePointer(to: &address) { pointer in
-      pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-        Darwin.bind(descriptor, $0, size)
-      }
-    }
-    guard bound == 0, Darwin.listen(descriptor, 1) == 0 else {
-      close(descriptor)
-      throw NSError(
-        domain: "AgentControlPlaneTests", code: 2,
-        userInfo: [NSLocalizedDescriptionKey: "bind/listen failed: \(errno)"])
-    }
-    return descriptor
-  }
 }

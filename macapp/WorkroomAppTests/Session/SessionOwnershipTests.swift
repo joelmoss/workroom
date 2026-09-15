@@ -43,7 +43,7 @@ final class SessionOwnershipTests: XCTestCase {
   /// two calls needs two of them, and reusing the path fails to bind with `EADDRINUSE`.
   private func fakeDaemon(reply: [SessionDescriptor]?) throws -> String {
     let socketPath = directory.appendingPathComponent("d\(servers.count).sock").path
-    let listener = try Self.listen(at: socketPath)
+    let listener = try UnixSocketListener.listen(at: socketPath)
     servers.append(listener)
     Thread.detachNewThread {
       let accepted = accept(listener, nil, nil)
@@ -121,7 +121,7 @@ final class SessionOwnershipTests: XCTestCase {
   /// stays, nothing answers.
   func testAStaleSocketFileIsNotOwnedRatherThanUnreachable() throws {
     let socketPath = directory.appendingPathComponent("stale.sock").path
-    let listener = try Self.listen(at: socketPath)
+    let listener = try UnixSocketListener.listen(at: socketPath)
     close(listener)
     XCTAssertTrue(
       FileManager.default.fileExists(atPath: socketPath),
@@ -145,38 +145,6 @@ final class SessionOwnershipTests: XCTestCase {
     }
   }
 
-  private static func listen(at socketPath: String) throws -> Int32 {
-    let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard descriptor >= 0 else {
-      throw NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "socket()"])
-    }
-    var address = sockaddr_un()
-    address.sun_family = sa_family_t(AF_UNIX)
-    let pathBytes = Array(socketPath.utf8)
-    guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
-      throw NSError(
-        domain: "test", code: 2,
-        userInfo: [NSLocalizedDescriptionKey: "socket path too long: \(socketPath)"])
-    }
-    withUnsafeMutableBytes(of: &address.sun_path) { pointer in
-      pointer.withMemoryRebound(to: CChar.self) { dest in
-        for (index, byte) in pathBytes.enumerated() { dest[index] = CChar(bitPattern: byte) }
-      }
-    }
-    address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-    let bound = withUnsafePointer(to: &address) { pointer in
-      pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { casted in
-        Darwin.bind(descriptor, casted, socklen_t(MemoryLayout<sockaddr_un>.size))
-      }
-    }
-    guard bound == 0, Darwin.listen(descriptor, 1) == 0 else {
-      close(descriptor)
-      throw NSError(
-        domain: "test", code: 3,
-        userInfo: [NSLocalizedDescriptionKey: "bind/listen failed: \(errno)"])
-    }
-    return descriptor
-  }
 }
 
 /// The routing rule itself, exhaustively.
@@ -320,7 +288,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
   /// freshly-updated binary is enough to trip once. Without a way back, that user has no persistent
   /// terminals until they quit the app.
   @MainActor
-  func testANilAnswerIsRetriedAfterTheCooldown() {
+  func testANilAnswerIsRetriedAfterTheCooldown() async {
     let probeCount = Counter()
     var clock = 1000.0
     let service = PersistentSessionService(
@@ -339,11 +307,73 @@ final class PersistentSessionRoutingTests: XCTestCase {
     XCTAssertNil(service.backend, "still inside the cooldown")
     XCTAssertEqual(probeCount.value, 1, "the cooldown is what keeps the main actor free")
 
+    // Past the cooldown the agent gets another chance — but the caller does not wait for it. The
+    // retry is the whole reason this cannot be synchronous: the first probe is paid once at launch,
+    // whereas a retry recurs every 30s for as long as the agent stays unhealthy, and each one would
+    // freeze the main actor for the watchdog's 2 seconds. So the call that ARMS the retry still
+    // answers nil, and the answer arrives on a later read.
     clock += 2
+    XCTAssertNil(service.backend, "the retry is dispatched, not awaited")
+
+    let deadline = Date().addingTimeInterval(5)
+    while service.backend == nil && Date() < deadline {
+      await Task.yield()
+    }
+
     XCTAssertEqual(
-      service.backend, .rustAgent,
-      "past the cooldown the agent gets another chance, and this one answers")
+      service.backend, .rustAgent, "the background answer lands and is cached from then on")
     XCTAssertEqual(probeCount.value, 2)
+  }
+
+  /// One retry in flight at a time.
+  ///
+  /// A same-turn burst of panes is already handled by the cooldown — they all read the same
+  /// `lastProbeAt`. What this covers is the case the cooldown cannot: a probe that is SLOW. The
+  /// watchdog gives it 2 seconds, the cooldown lapses at 30, so a helper wedged long enough would
+  /// otherwise accumulate one live `Process()` per retry with nothing to stop them piling up.
+  @MainActor
+  func testARetryStillInFlightIsNotJoinedByAnother() async {
+    let probeCount = Counter()
+    let released = DispatchSemaphore(value: 0)
+    var clock = 1000.0
+    let service = PersistentSessionService(
+      probe: { _ in
+        probeCount.increment()
+        // Only the retries block. The first probe is synchronous, so waiting there would freeze
+        // the main actor this whole change exists to keep free.
+        if probeCount.value == 1 { return .unhealthy(reason: "transient") }
+        released.wait()
+        return .ready(version: "protocol 1")
+      },
+      ownership: { _ in .notOwned },
+      now: { clock })
+
+    XCTAssertNil(service.backend)
+    XCTAssertEqual(probeCount.value, 1)
+
+    clock += PersistentSessionService.probeRetryInterval + 1
+    XCTAssertNil(service.backend, "arms a retry, which has not answered yet")
+
+    // Wait for that retry to actually be running: if the next read arrived first it would be
+    // arming the only background probe, and the guard would never come into it.
+    let startedAt = Date()
+    while probeCount.value < 2 && Date().timeIntervalSince(startedAt) < 5 {
+      await Task.yield()
+    }
+    XCTAssertEqual(probeCount.value, 2, "the retry reached the probe")
+
+    clock += PersistentSessionService.probeRetryInterval + 1
+    XCTAssertNil(service.backend, "the cooldown has lapsed again while the probe is still out")
+
+    released.signal()
+    let deadline = Date().addingTimeInterval(5)
+    while service.backend == nil && Date() < deadline {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(service.backend, .rustAgent)
+    XCTAssertEqual(
+      probeCount.value, 2, "a second read past the cooldown must not start a second probe")
   }
 
   /// A successful answer is cached for good — no cooldown, no re-probe. An agent that has answered

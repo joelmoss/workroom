@@ -221,7 +221,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
   /// would make this test pass while measuring the wrong thing.
   func testAWedgedHelperIsGivenUpOnRatherThanHangingThePane() throws {
     let socketPath = directory.appendingPathComponent("wedged.sock").path
-    let listener = try Self.listen(at: socketPath)
+    let listener = try UnixSocketListener.listen(at: socketPath)
     Thread.detachNewThread {
       let accepted = accept(listener, nil, nil)
       guard accepted >= 0 else { return }
@@ -398,7 +398,13 @@ final class SessionShimCompatibilityTests: XCTestCase {
       lock.unlock()
     }
 
-    Thread.sleep(forTimeInterval: 3)
+    // Wait for the reattach to actually produce something, then for it to stop producing, rather
+    // than for a fixed three seconds. A flat sleep is wrong in both directions: it is three seconds
+    // of test time on every run, and on a loaded machine it is still not enough — the daemon has to
+    // accept, look the session up and replay its buffer before a single byte is due.
+    let settled = Self.waitForOutputToSettle(collected, lock: lock)
+    XCTAssertTrue(
+      settled, "the shipped daemon sent nothing within \(Self.attachCeiling)s of the attach")
     input.fileHandleForWriting.closeFile()
     process.waitUntilExit()
     output.fileHandleForReading.readabilityHandler = nil
@@ -406,6 +412,36 @@ final class SessionShimCompatibilityTests: XCTestCase {
     lock.lock()
     defer { lock.unlock() }
     return String(decoding: collected as Data, as: UTF8.self)
+  }
+
+  /// How long a reattach gets before we call it a failure. Generous on purpose: this bounds a
+  /// process spawn, a connect and a replay on whatever machine CI gave us, and the poll below
+  /// returns as soon as the output settles, so the ceiling is only ever paid by a real failure.
+  private static let attachCeiling: TimeInterval = 10
+
+  /// True once the client has written something and then gone quiet for `quiet` seconds.
+  ///
+  /// Quiescence, not just non-empty: the replay arrives in several writes and asserting on the
+  /// first of them would read a prefix of the screen.
+  private static func waitForOutputToSettle(
+    _ collected: NSMutableData, lock: NSLock, quiet: TimeInterval = 0.25
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(attachCeiling)
+    var lastLength = 0
+    var lastChange = Date()
+    while Date() < deadline {
+      lock.lock()
+      let length = collected.length
+      lock.unlock()
+      if length != lastLength {
+        lastLength = length
+        lastChange = Date()
+      } else if length > 0, Date().timeIntervalSince(lastChange) >= quiet {
+        return true
+      }
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    return lastLength > 0
   }
 
   private func attachEnvironment(
@@ -435,44 +471,6 @@ final class SessionShimCompatibilityTests: XCTestCase {
     }
     try process.run()
     return process
-  }
-
-  /// A listening unix socket that nothing services, for the wedged-helper case. Same shape as
-  /// `SessionOwnershipTests.listen(at:)`, which is private to its own file.
-  private static func listen(at socketPath: String) throws -> Int32 {
-    let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard descriptor >= 0 else {
-      throw NSError(
-        domain: "SessionShimCompatibilityTests", code: 1,
-        userInfo: [NSLocalizedDescriptionKey: "socket() failed: \(errno)"])
-    }
-    var address = sockaddr_un()
-    address.sun_family = sa_family_t(AF_UNIX)
-    let pathBytes = Array(socketPath.utf8)
-    guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
-      close(descriptor)
-      throw NSError(
-        domain: "SessionShimCompatibilityTests", code: 2,
-        userInfo: [NSLocalizedDescriptionKey: "socket path too long: \(socketPath)"])
-    }
-    withUnsafeMutableBytes(of: &address.sun_path) { pointer in
-      pointer.withMemoryRebound(to: CChar.self) { dest in
-        for (index, byte) in pathBytes.enumerated() { dest[index] = CChar(bitPattern: byte) }
-      }
-    }
-    address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-    let bound = withUnsafePointer(to: &address) { pointer in
-      pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { casted in
-        Darwin.bind(descriptor, casted, socklen_t(MemoryLayout<sockaddr_un>.size))
-      }
-    }
-    guard bound == 0, Darwin.listen(descriptor, 1) == 0 else {
-      close(descriptor)
-      throw NSError(
-        domain: "SessionShimCompatibilityTests", code: 3,
-        userInfo: [NSLocalizedDescriptionKey: "bind/listen failed: \(errno)"])
-    }
-    return descriptor
   }
 
   /// Runs this build's `workroom-session` to completion and returns everything it wrote.

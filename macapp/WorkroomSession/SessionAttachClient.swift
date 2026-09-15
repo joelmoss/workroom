@@ -228,12 +228,23 @@ enum SessionAttachClient {
   /// `poll`'s timeout in milliseconds: the nearest pending deadline, or `-1` (block indefinitely)
   /// when none is pending — this is a single terminal session's I/O loop, not a busy-poll.
   ///
-  /// Both deadlines are passed even though only one can be armed at a time (the handshake one is
-  /// cleared in the same block that arms the settle one), because the alternative is a caller that
-  /// has to know which is live. What actually enforces the handshake bound is the top-of-loop
-  /// check, not this — `poll` only has to wake up in time for it.
-  private static func pollTimeout(untilEarliestOf deadlines: Double?...) -> Int32 {
-    guard let deadline = deadlines.compactMap({ $0 }).min() else { return -1 }
+  /// Two plain optionals rather than a variadic: this is called once per wake of the relay's
+  /// busiest loop, and a Swift variadic heap-allocates an Array — then `compactMap` allocates a
+  /// second — where the surrounding code allocates nothing per iteration it does not have to.
+  ///
+  /// Both are passed even though only one can be armed at a time (the handshake deadline is cleared
+  /// in the same block that arms the settle one), because the alternative is a caller that has to
+  /// know which is live. What enforces the handshake bound is the top-of-loop check, not this —
+  /// `poll` only has to wake up in time for it.
+  private static func pollTimeout(untilEarliestOf first: Double?, _ second: Double?) -> Int32 {
+    let deadline: Double?
+    switch (first, second) {
+    case (let a?, let b?): deadline = min(a, b)
+    case (let a?, nil): deadline = a
+    case (nil, let b?): deadline = b
+    case (nil, nil): deadline = nil
+    }
+    guard let deadline else { return -1 }
     let remaining = deadline - SessionClock.monotonicSeconds()
     guard remaining > 0 else { return 0 }
     return Int32((remaining * 1000).rounded(.up))
