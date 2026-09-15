@@ -166,7 +166,12 @@ final class SessionShimCompatibilityTests: XCTestCase {
   func testTheHelperDyingMidRelayLeavesAWorkingShellNotADeadPane() throws {
     // The pane under test is the thing on the other end of this pipe. If it dies, writing to it is
     // EPIPE, and the default disposition would kill the test host instead of failing the test.
-    signal(SIGPIPE, SIG_IGN)
+    //
+    // Restored on the way out. The disposition is process-wide and `exec` preserves an IGNORED
+    // signal, so leaving it set would follow every later test and every process they spawn out of
+    // this one — a shell that ignores SIGPIPE does not end a pipeline when its reader closes.
+    let previousSIGPIPE = signal(SIGPIPE, SIG_IGN)
+    defer { signal(SIGPIPE, previousSIGPIPE) }
     let socketPath = try startShippedDaemon()
     let session = try startShellSession(on: socketPath)
     let sentinel = directory.appendingPathComponent("after-death").path
