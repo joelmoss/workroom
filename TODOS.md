@@ -2095,17 +2095,17 @@ brand logo rendering at all, the two bar fills (`accent` / `warning` / `failure`
 `AgentPace.severity`), the two pace-pin positions, and the pin's knockout gap reading as a gap on
 whatever ground it lands on.
 
-NOT in this list any more: which `ViewThatFits` bar-width rung rendered. That one IS machine-checkable
-after all — XCUITest reads element frames, and `testNarrowSplitKeepsBothWindowsAndShrinksTheBars`
-now asserts the segment shrinks on a split (116pt → 92pt under the fixture window) and stays inside
-its window. That guards the dead-ladder regression; the rest of the list genuinely has no mechanism.
+Issue #176 moved the segment to the app footer. XCUITest reads element frames, and
+`testSplitKeepsOneWindowQuotaSegment` now asserts that splitting a pane neither duplicates nor
+resizes the window's quota segment, and that it stays inside its window. Pane splits no longer
+exercise the `ViewThatFits` bar-width ladder; the visual checks below remain manual.
 
 **Why it's open:** same root cause as `#136`'s path truncation, one entry above. The unit gate can't
 assert SwiftUI text at all (`NSHostingView` in a test process reports an `AXGroup` with 0 children —
 documented at `macapp/WorkroomAppTests/HistoryCommitCardTests.swift:9-13`), and XCUITest reads the
-accessibility *label*, which `TerminalStatusBar.quotaAccessibilityLabel` keeps byte-identical to what
+accessibility *label*, which `AgentUsageSegment.quotaAccessibilityLabel` keeps byte-identical to what
 it was before the bars existed — so `AgentUsageUITests` passes whichever variant rendered, and would
-pass if the segment drew nothing. `testNarrowSplitKeepsBothWindows` is named to say so.
+pass if the bars themselves drew nothing.
 
 Verified by eye on 2026-09-10 at the 44pt and 32pt rungs, dark and light: logo in brand colour,
 amber 5h + red weekly, track visible on both grounds, halo notching both fills. 24pt was checked at
@@ -2116,8 +2116,9 @@ swallowed the whole fill-to-pin gap. Re-check 24pt if the halo or the widths mov
 `-WorkroomUITestFixture 1 -WorkroomUITestUsageAgent codex`. The fixture is tuned for this
 (`UITestFixture.swift`): the 5h window is 42% used resetting in 3.5h ⇒ pace +12 ⇒ amber `.warning`
 with a ~12-point gap between the fill's edge and the pin; weekly is 61% used resetting in 4d ⇒ pace
-+18 ⇒ red `.critical`. Add `-WorkroomUITestUsageZero 1` for the plain-`accent` `.onPace` case. Split
-a pane once for the 32pt variant, three times for 24pt. Check a light AND a dark theme: the track is
++18 ⇒ red `.critical`. Add `-WorkroomUITestUsageZero 1` for the plain-`accent` `.onPace` case.
+The segment now sizes against the app footer, so splitting panes no longer selects the 32pt or
+24pt variants. Check a light AND a dark theme: the track is
 `theme.tokens.border` on the footer's `panel`.
 
 On the colour encoding, measured across all 116 bundled themes (CIELAB ΔE plus deutan/protan/tritan
