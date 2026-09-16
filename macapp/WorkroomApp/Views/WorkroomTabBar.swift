@@ -226,8 +226,8 @@ struct WorkroomTabBar: View {
   /// LANDED create whose named chip hasn't resolved into `tabs`. nil otherwise — no double chip.
   ///
   /// Shared load generations prevent stale snapshots from reverting the project list (#170).
-  /// Keep the landed fallback while a newer load is pending: a create's own reload may have been
-  /// superseded before its workroom reached `tabs`, and its setup dialog must remain reachable.
+  /// Keep the landed fallback if loading the new workroom fails: its setup dialog must remain
+  /// reachable even before a successful reload makes its target available in `tabs`.
   ///
   /// The pre-name slot wins, matching `focusedCreation`. Sorted so two unresolved creates pick the
   /// same one every render rather than flickering between them.
