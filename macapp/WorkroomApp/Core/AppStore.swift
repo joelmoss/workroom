@@ -888,6 +888,7 @@ final class AppStore: ObservableObject {
   private var rootBranchRefreshTasks: [Project.ID: Task<Void, Never>] = [:]
   /// When the project list was last loaded — used to throttle the on-focus refresh.
   private var lastLoadAt: Date = .distantPast
+  private var pendingLoads = 0
   /// The selection persisted from a previous launch (issue #14), applied once on the first
   /// successful load (see `apply`). Consumed there so a later refresh can't resurrect it.
   ///
@@ -2817,15 +2818,22 @@ final class AppStore: ObservableObject {
       loadFixture()
       return
     }
+    let generation = projectStore.beginLoad()
+    pendingLoads += 1
     isLoading = true
-    defer { isLoading = false }
+    defer {
+      pendingLoads -= 1
+      isLoading = pendingLoads > 0
+    }
     do {
       let response = try await cli.list(warnings: warnings, project: nil)
+      guard generation == projectStore.loadGeneration else { return }
       apply(response.projects)
       lastLoadAt = Date()
       resolveBranches()
       refreshWorkroomStatuses()
     } catch {
+      guard generation == projectStore.loadGeneration else { return }
       if surfaceErrors { present(error) }
     }
   }

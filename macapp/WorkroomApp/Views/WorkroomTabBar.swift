@@ -225,13 +225,9 @@ struct WorkroomTabBar: View {
   /// The in-progress create whose chip isn't yet a real tab (issue #116): the pre-name slot, else a
   /// LANDED create whose named chip hasn't resolved into `tabs`. nil otherwise — no double chip.
   ///
-  /// That second clause is not just the landing blink it looks like. `apply` assigns `projects =
-  /// fresh` with no ordering guard, so an out-of-order `list` — four are in flight when two creates
-  /// overlap — can revert `projects` to a snapshot predating a landed workroom. `validatedSelection`
-  /// then nils the selection, `focusedCreation` goes nil with it, and a workroom whose setup script
-  /// is still running would otherwise have NO chip and NO dialog until some unrelated reload
-  /// repaired it. This chip is the way back in. (Dropping the stale `apply` at the source is the
-  /// root-cause fix and belongs to the reload path, not here.)
+  /// Shared load generations prevent stale snapshots from reverting the project list (#170).
+  /// Keep the landed fallback while a newer load is pending: a create's own reload may have been
+  /// superseded before its workroom reached `tabs`, and its setup dialog must remain reachable.
   ///
   /// The pre-name slot wins, matching `focusedCreation`. Sorted so two unresolved creates pick the
   /// same one every render rather than flickering between them.
