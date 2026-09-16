@@ -157,8 +157,13 @@ working directory.
 **See work happening at a glance.** While a command runs, the tab and its sidebar row animate so
 you can tell what's busy without switching to it. When a backgrounded terminal posts a notification,
 its tab and project light up, and — if Workroom isn't the frontmost app — you get a desktop banner.
-A notifications inspector keeps the history; click any entry (or the banner) to jump straight to the
-terminal that raised it.
+The bell at the right of the app footer opens notifications; click an entry (or the banner) to jump
+straight to the terminal that raised it.
+
+The [persistent app footer](docs/screenshots/window-footer.png) also shows usage for each running
+agent provider on the left, including agents in background tabs and other windows. Click its usage
+bars for details. The footer stays visible when switching workrooms or hiding sidebars; undocked
+terminal windows keep only their pane footer.
 
 **Review your work without leaving the app.** A right-hand inspector reads each workroom's VCS
 directly — a **History** log of commits, a **changeset detail** tab (message, authors, changed files,
@@ -184,7 +189,7 @@ Finder*, and *Copy Path* for the selected workroom.
 
 **Make it yours.** System / Light / Dark theming (terminals re-theme live), copy-on-select,
 confirm-before-quit and confirm-before-close toggles, and an editor preference all live in
-Preferences (`⌘,`).
+Settings (`⌘,`), also available from the gear at the bottom of the right sidebar.
 
 ---
 
