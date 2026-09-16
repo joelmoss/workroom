@@ -7,6 +7,12 @@
 # crates (libgit2-sys / openssl-sys), and gix's default feature set pulls network transports that
 # would undo that. If this spike graduates, that constraint is the thing to keep testing.
 #
+# ALSO on graduation: this crate is excluded from `input_hash()` in vcs/scripts/build-apple.sh,
+# which keys the app's xcframework cache and the Xcode `--check` freshness gate. The moment
+# anything wr-vcs-uniffi links takes a path dependency on this crate, drop that exclusion — edits
+# here would otherwise be invisible to the hash (a path dep carries no content hash in Cargo.lock
+# either), so CI would link a stale engine and pass.
+#
 # It lives in its own crate because both existing homes forbid it by written invariant:
 # wr-vcs-core is "the ONLY crate allowed to depend on jj-lib ... jj-only by design" and
 # wr-vcs-model says "adding jj-lib or gix here is a layering violation".

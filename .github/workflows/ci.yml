@@ -34,8 +34,23 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      # Run the BASE branch's selector, never the PR's own. This job decides whether the four
+      # native jobs run at all, and GitHub counts a conditionally-SKIPPED required check as
+      # passing — so a PR that edited changes.py to emit `run=false` (its `__main__` line alone,
+      # leaving should_run() and every test untouched) would merge green with no native coverage.
+      # Deleting ci.yml outright blocks a merge; silencing the gate would not. No-op on a push,
+      # where github.sha is already the trusted commit.
+      - name: Restore the trusted selector
+        env:
+          TRUSTED_REF: ${{ github.event.pull_request.base.sha || github.sha }}
+        run: git checkout "$TRUSTED_REF" -- scripts/ci
+
+      # Named file, not `unittest discover -s scripts/ci`: discover exits 0 when it finds NO
+      # tests, so a deleted or renamed suite would report green while proving nothing about the
+      # gate that can switch every native job off.
       - name: Test change selection
-        run: python3 -m unittest discover -s scripts/ci
+        run: python3 scripts/ci/test_changes.py
       - id: changes
         env:
           DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -76,22 +91,39 @@ jobs:
             | sudo tar -xz -C /usr/local/bin ./jj
           jj --version
 
-      # jj only affects tests. Analyze and cross-compile once, using a prebuilt linter
-      # instead of compiling the linter and downloading its Go toolchain on each runner.
+      # jj only affects tests, so the three steps below run once, on the first matrix leg.
+      # `strategy.job-index`, NOT a `matrix.jj-version == env.JJ_VERSION` comparison: JJ_VERSION
+      # tracks the jj-lib pin and this list tracks jj CLI releases, on different cadences — the
+      # first bump that leaves them disjoint would make such an `if` false on EVERY leg and
+      # silently delete the lint, format and cross-compile gates with CI still green. An index
+      # always matches exactly one leg however either value moves.
+      #
+      # Uses a prebuilt linter instead of compiling it and downloading its Go toolchain per runner.
+      #
+      # The pin must stay on golangci-lint /v2: v1 rejects the v2-format .golangci.yml and its
+      # vendored go/types cannot analyze a Go 1.27 stdlib at all. The constraint when bumping is
+      # *directional* — the linter's typechecker must be at least as new as the Go whose code it
+      # reads (older cannot decode newer export data; that is what killed v1 here), so a linter
+      # built by a NEWER Go than the module targets is correct, not a mismatch.
       - name: Lint
-        if: matrix.jj-version == env.JJ_VERSION
+        if: strategy.job-index == 0
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
 
-      # v2's run command does not check formatting. Keep this separate gate.
+      # v2 moved formatters out of `run`, so `run` alone reports NO gofmt/goimports findings and
+      # the formatting gate would be silently lost. Keep in step with the Makefile's cli-lint.
       - name: Format
-        if: matrix.jj-version == env.JJ_VERSION
+        if: strategy.job-index == 0
         run: golangci-lint fmt --diff
 
       # Includes the native Linux build; no separate unused binary is necessary.
+      #
+      # Why this gate exists: releases (goreleaser) and the nightly archives ship windows/linux
+      # builds, but this job only ever compiled for the runner. A unix-only syscall (Setpgid,
+      # syscall.Kill) therefore passed CI and broke the nightly + the next tag.
       - name: Cross-compile check
-        if: matrix.jj-version == env.JJ_VERSION
+        if: strategy.job-index == 0
         run: |
           for os in windows linux darwin; do
             GOOS="$os" GOARCH=amd64 go build -o /dev/null .
@@ -147,13 +179,15 @@ jobs:
         with:
           workspaces: vcs
 
-      # Ordered cheapest-first so a formatting nit doesn't wait on the jj-lib crate graph.
+      # Ordered cheapest-first so a formatting nit doesn't wait on the jj-lib crate graph. Both run
+      # once, on the first matrix leg — see `cli`'s Lint step for why that's an index, not a
+      # comparison against $JJ_VERSION.
       - name: Format
-        if: matrix.jj-version == env.JJ_VERSION
+        if: strategy.job-index == 0
         run: cargo fmt --manifest-path vcs/Cargo.toml --all -- --check
 
       - name: Clippy
-        if: matrix.jj-version == env.JJ_VERSION
+        if: strategy.job-index == 0
         run: cargo clippy --manifest-path vcs/Cargo.toml --workspace --all-targets -- -D warnings
 
       # This already covers wr-agent, and covers it on LINUX — the workspace has no
