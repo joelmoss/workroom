@@ -24,7 +24,27 @@ env:
   JJ_VERSION: 0.43.0
 
 jobs:
+  # Keep the workflow/check names present for branch protection. Only standalone website
+  # changes skip suites; unknown paths and unavailable history always run everything.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.changes.outputs.run }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Test change selection
+        run: python3 -m unittest discover -s scripts/ci
+      - id: changes
+        env:
+          DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          DIFF_HEAD: ${{ github.sha }}
+        run: python3 scripts/ci/changes.py >> "$GITHUB_OUTPUT"
+
   cli:
+    needs: changes
+    if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: ubuntu-latest
     # Matrix over jj CLI versions the Go tests shell out to (see the "Install jj" step below) —
     # NOT the same axis as $JJ_VERSION above, which stays the single version `app`'s fixed-cost
@@ -56,39 +76,22 @@ jobs:
             | sudo tar -xz -C /usr/local/bin ./jj
           jj --version
 
-      # golangci-lint subsumes `go vet` (govet) and the gofmt/goimports checks. Note the `/v2`
-      # module path: v2 is required, since v1 rejects the v2-format .golangci.yml and its vendored
-      # go/types cannot analyze a Go 1.27 stdlib at all (`@latest` on the old v1 path still
-      # resolves to the final v1 — don't).
-      #
-      # GOTOOLCHAIN=auto on the install ONLY. setup-go pins GOTOOLCHAIN=local to go.mod's Go
-      # (1.25.7), but golangci-lint v2.13.2's own go.mod requires >= 1.26, so a local-pinned
-      # `go install` fails outright ("requires go >= 1.26.0 ... GOTOOLCHAIN=local"). `auto` lets
-      # Go fetch a toolchain for that one build; every other step still runs go.mod's version,
-      # which is the point of go-version-file.
-      #
-      # The constraint to respect when bumping either version is *directional*: the linter's
-      # typechecker must be at least as new as the Go whose code it reads (older cannot decode
-      # newer export data — that is what killed v1 here), so a linter built by a NEWER Go than
-      # the module targets is correct, not a mismatch.
-      #
-      # Two commands, not one: v2 moved formatters out of `run`, so `run` alone reports NO
-      # gofmt/goimports findings and the formatting gate would be silently lost. `fmt --diff`
-      # reports them without rewriting and exits non-zero. Keep in step with the Makefile's
-      # cli-lint target.
+      # jj only affects tests. Analyze and cross-compile once, using a prebuilt linter
+      # instead of compiling the linter and downloading its Go toolchain on each runner.
       - name: Lint
-        run: |
-          GOTOOLCHAIN=auto go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
-          "$(go env GOPATH)/bin/golangci-lint" run
-          "$(go env GOPATH)/bin/golangci-lint" fmt --diff
+        if: matrix.jj-version == env.JJ_VERSION
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.2
 
-      - name: Build
-        run: go build -o workroom .
+      # v2's run command does not check formatting. Keep this separate gate.
+      - name: Format
+        if: matrix.jj-version == env.JJ_VERSION
+        run: golangci-lint fmt --diff
 
-      # Releases (goreleaser) and the nightly archives ship windows/linux builds, but this job only
-      # ever compiled for the runner. A unix-only syscall (Setpgid, syscall.Kill) therefore passed CI
-      # and broke the nightly + the next tag. One vet per non-native GOOS keeps that on the PR.
+      # Includes the native Linux build; no separate unused binary is necessary.
       - name: Cross-compile check
+        if: matrix.jj-version == env.JJ_VERSION
         run: |
           for os in windows linux darwin; do
             GOOS="$os" GOARCH=amd64 go build -o /dev/null .
@@ -102,6 +105,8 @@ jobs:
   # off the macOS critical path (it was ~3min of it on a cold run), Linux minutes are 10x cheaper,
   # and it's the only thing testing the core away from Apple targets.
   vcs-core:
+    needs: changes
+    if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: ubuntu-latest
     # Matrix over the jj CLI version the working_status fixtures shell out to for repo setup —
     # see the `cli` job's comment for why this axis exists and is independent of $JJ_VERSION/the
@@ -144,9 +149,11 @@ jobs:
 
       # Ordered cheapest-first so a formatting nit doesn't wait on the jj-lib crate graph.
       - name: Format
+        if: matrix.jj-version == env.JJ_VERSION
         run: cargo fmt --manifest-path vcs/Cargo.toml --all -- --check
 
       - name: Clippy
+        if: matrix.jj-version == env.JJ_VERSION
         run: cargo clippy --manifest-path vcs/Cargo.toml --workspace --all-targets -- -D warnings
 
       # This already covers wr-agent, and covers it on LINUX — the workspace has no
@@ -161,6 +168,8 @@ jobs:
   # `vcs-core` because it is the only thing in the repo that needs a Zig toolchain and a Ghostty
   # checkout, and the rest of the workspace should not wait on either.
   agent-terminal-state:
+    needs: changes
+    if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -209,6 +218,8 @@ jobs:
         run: cargo test --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state
 
   app:
+    needs: changes
+    if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
@@ -273,17 +284,13 @@ jobs:
       # vcs/scripts/build-apple.sh to produce the WrVcs package's xcframework + Swift bindings, and
       # MUST run before SPM resolves that local package below. Rust is preinstalled on the runner.
       #
-      # Cache the *outputs*, not cargo's state: they only change when vcs/ (or the compiler) does,
-      # which most commits don't touch, so the whole ~4min crate-graph build is skipped outright.
-      # The key mirrors the input hash build-apple.sh stamps, so a restored set is also a no-op for
-      # the app-vcs dep of `make app-test` below. rustc's version is in the key because it's in that
-      # hash — leaving it out would mean a toolchain bump hits the cache, rebuilds anyway, and (the
-      # primary key having hit) never saves the result.
-      - name: Rust toolchain version (cache key input)
-        id: rust
+      # Use the build script's own freshness hash so CI and local builds share exactly
+      # the same inputs. Agent and experimental Git crate sources do not affect this library.
+      - name: VCS core input hash
+        id: vcs-input
         run: |
-          # e.g. "rustc 1.96.1 (31fca3adb 2026-06-26)" → "1.96.1-31fca3adb" (cache-key-safe).
-          echo "version=$(rustc --version | awk '{print $2 "-" $3}' | tr -d '()')" >> "$GITHUB_OUTPUT"
+          hash=$(vcs/scripts/build-apple.sh --print-input-hash)
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
 
       - name: Cache VCS core outputs
         id: vcs-core
@@ -293,19 +300,15 @@ jobs:
             vcs/swift/WrVcs/Frameworks
             vcs/swift/WrVcs/Sources/WrVcs/wr_vcs_uniffi.swift
             vcs/swift/WrVcs/Sources/wr_vcs_uniffiFFI/include
-          key: >-
-            wrvcs-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{
-            hashFiles('vcs/**/*.rs', 'vcs/**/Cargo.toml', 'vcs/Cargo.lock', 'vcs/scripts/build-apple.sh') }}
+          key: wrvcs-${{ runner.os }}-${{ runner.arch }}-${{ steps.vcs-input.outputs.hash }}
 
-      # Cold path only (vcs/ changed): keep cargo itself incremental. Swatinem/rust-cache rather than
-      # a hand-rolled actions/cache of ~/.cargo + vcs/target, which restored a target/ whose
-      # fingerprints were always stale — every run recompiled all 257 crates on a cache *hit*, and
-      # the hit meant the useless cache was never re-saved.
-      - name: Cache cargo (cold path)
-        if: steps.vcs-core.outputs.cache-hit != 'true'
+      # Xcode still builds wr-agent when the VCS framework hits its output cache.
+      # Always restore Cargo dependencies; v2 avoids old entries saved without the agent build.
+      - name: Cache cargo (VCS core + agent)
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: vcs
+          key: app-agent-v2
 
       - name: Build VCS core (Rust → xcframework + Swift bindings)
         if: steps.vcs-core.outputs.cache-hit != 'true'
@@ -361,7 +364,7 @@ jobs:
           path: macapp/DerivedData/Build
           key: >-
             xcbuild-${{ runner.os }}-${{ steps.xcode.outputs.version }}-${{
-            hashFiles('macapp/project.yml') }}
+            hashFiles('macapp/project.yml', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
 
       # Resolve up front with retries so a transient github.com blip mid-clone can't fail the whole
       # run (it did: swift-syntax clone hit "Couldn't connect to server"). The subsequent app-test

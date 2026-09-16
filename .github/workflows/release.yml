@@ -34,13 +34,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Build a Developer ID-signed, notarized, stapled Workroom.dmg and attach it to the release
-  # goreleaser created above. Requires repo secrets: MACOS_CERTIFICATE / MACOS_CERTIFICATE_PWD
+  # goreleaser creates in parallel (the publish job waits for both).
+  # Requires repo secrets: MACOS_CERTIFICATE / MACOS_CERTIFICATE_PWD
   # (base64 .p12 + password), KEYCHAIN_PASSWORD, and the App Store Connect notary API key
   # NOTARY_KEY / NOTARY_KEY_ID / NOTARY_ISSUER_ID.
   # Optional: SENTRY_AUTH_TOKEN / SENTRY_ORG / SENTRY_PROJECT enable Sentry dSYM upload so release
   # crashes symbolicate; release.sh skips that step when any of them (or sentry-cli) is absent.
   macapp:
-    needs: release
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
@@ -130,6 +130,30 @@ jobs:
           echo "$NOTARY_KEY" | openssl base64 -d -A > "$RUNNER_TEMP/notary.p8"
           NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-test APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
           NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-release
+
+      - name: Preserve signed installer for publication
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macapp
+          path: |
+            macapp/build/release/Workroom.dmg
+            macapp/build/release/appcast-fields.env
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  # Build both platforms concurrently; publish the app only after both jobs succeed.
+  publish:
+    needs: [release, macapp]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-macapp
+          path: macapp/build/release
 
       - name: Upload installer to the release
         env:
