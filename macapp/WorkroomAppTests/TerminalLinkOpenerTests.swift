@@ -345,4 +345,84 @@ final class TerminalLinkOpenerTests: XCTestCase {
 
     XCTAssertFalse(TerminalLinkOpener.resolvesToFile("./dev/missing.rb", cwd: cwd))
   }
+
+  // isSystemHandledURL(_:) — only a scheme an installed app actually claims may reach NSWorkspace.
+  // libghostty's link regex reports path-shaped text as a link; when it doesn't resolve on disk,
+  // handing it to LaunchServices raised a modal Finder "-50" alert instead of doing nothing.
+
+  func testClaimedSchemesAreSystemHandled() throws {
+    // http/https/mailto always have a handler on macOS (Safari / Mail).
+    for url in ["https://example.com/x", "http://a.b", "mailto:me@x.com"] {
+      XCTAssertTrue(
+        TerminalLinkOpener.isSystemHandledURL(try XCTUnwrap(URL(string: url), url)),
+        "\(url) should go to the system handler")
+    }
+  }
+
+  func testSchemelessPathsAreNotSystemHandled() throws {
+    // The exact strings LaunchServices raised "-50" on.
+    for url in [
+      "hue/app/views/hue/cms/pages/show.rb:1:in",
+      "hue/lib/hue/controller_concerns/cms/pages.rb:96",
+      "./hue/lib/hue/controller_concerns/cms/pages.rb",
+      "/hue/lib/hue/controller_concerns/cms/pages.rb",
+      "/rails/active_storage/disk/abc123/banner.webp",
+    ] {
+      XCTAssertFalse(
+        TerminalLinkOpener.isSystemHandledURL(try XCTUnwrap(URL(string: url), url)),
+        "\(url) has no scheme — opening it raises the Finder -50 alert")
+    }
+  }
+
+  func testFilenameSchemesAreNotSystemHandled() throws {
+    // A filename is a legal URL scheme, so a bare `file:line` link parses with a bogus scheme. No app
+    // claims it — it must not reach NSWorkspace either.
+    for url in ["user.rb:5", "main.go:10:3", "Gemfile:12", "a.rb:32-40"] {
+      let parsed = try XCTUnwrap(URL(string: url), url)
+      XCTAssertNotNil(parsed.scheme, "\(url) parses with a filename as its scheme")
+      XCTAssertFalse(TerminalLinkOpener.isSystemHandledURL(parsed), "\(url) has no handler")
+    }
+  }
+
+  func testFileURLsAreNotSystemHandled() throws {
+    // A file: URL only reaches the fallback when it didn't resolve on disk, so it's a no-op too.
+    XCTAssertFalse(
+      TerminalLinkOpener.isSystemHandledURL(try XCTUnwrap(URL(string: "file:///tmp/missing.txt"))))
+    XCTAssertFalse(
+      TerminalLinkOpener.isSystemHandledURL(try XCTUnwrap(URL(string: "FILE:///tmp/missing.txt"))))
+  }
+
+  // handleOpenURL(_:cwd:) — the libghostty link path resolves the same decorations ⌘-click does:
+  // a `:line`, a `:line:col`, a `:line-line` range, and a Rails `:line:in '…'` frame all reduce to
+  // the bare path. Asserted through resolveLocalFile's public sibling to keep the launch out of it.
+
+  func testLinkDecorationsReduceToPathAndLine() throws {
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let nested = dir.appendingPathComponent("config/initializers")
+    try fm.createDirectory(at: nested, withIntermediateDirectories: true)
+    let rb = nested.appendingPathComponent("scrub_client_ip_header.rb")
+    let user = dir.appendingPathComponent("user.rb")
+    for file in [rb, user] { fm.createFile(atPath: file.path, contents: Data()) }
+    defer { try? fm.removeItem(at: dir) }
+    let cwd = dir.path
+    let base = "config/initializers/scrub_client_ip_header.rb"
+
+    let cases: [(link: String, path: String, line: Int?)] = [
+      (base, rb.path, nil),
+      ("\(base):32", rb.path, 32),
+      ("\(base):32:7", rb.path, 32),
+      ("\(base):32-40", rb.path, 32),  // a line range seeks to its first line
+      ("\(base):32:in", rb.path, 32),  // Rails backtrace frame — `:in` is not part of the path
+      // A bare filename + line: `URL(string:)` reads "user.rb" as the *scheme*, which used to make
+      // this look like a web URL and resolve to nothing.
+      ("user.rb:5", user.path, 5),
+    ]
+    for (link, path, line) in cases {
+      let url = try XCTUnwrap(URL(string: link), link)
+      let resolved = TerminalLinkOpener.resolveLocalFile(from: url, cwd: cwd)
+      XCTAssertEqual(resolved?.path, path, "\(link) should resolve to the file")
+      XCTAssertEqual(resolved?.line, line, "\(link) should carry its line")
+    }
+  }
 }
