@@ -233,6 +233,17 @@ impl SessionStore {
     /// Taking the lock across the spawn is deliberate: two clients racing to create the same id
     /// must not both fork a shell, and the window is a single `forkpty`.
     pub fn create(&self, spec: SessionSpec<'_>) -> Result<SessionInfo, SessionError> {
+        self.create_then(spec, Ok)
+    }
+
+    /// Registers the initial client before the reader can drain and retire a short-lived command.
+    /// The callback runs without the store lock. Even if it fails, start draining the detached
+    /// session so a failed handshake cannot leave a blocked child or an immortal store entry.
+    pub(crate) fn create_then<T>(
+        &self,
+        spec: SessionSpec<'_>,
+        register: impl FnOnce(SessionInfo) -> Result<T, SessionError>,
+    ) -> Result<T, SessionError> {
         let mut sessions = self.sessions.lock().expect("session store poisoned");
         if sessions.contains_key(&spec.id) {
             return Err(SessionError::AlreadyExists(spec.id.to_hyphenated()));
@@ -280,8 +291,9 @@ impl SessionStore {
         // Drop the store lock before the reader starts, or its first `ended` removal deadlocks
         // against this very lock.
         drop(sessions);
+        let result = register(info);
         std::thread::spawn(move || read_session(spec.id, pty, shadow, attached, store));
-        Ok(info)
+        result
     }
 
     /// The three pieces an operation on a live session needs, taken out of the store so nothing
@@ -1007,6 +1019,84 @@ mod tests {
                 return seen;
             }
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_command_that_writes_before_registration_still_delivers_output_and_exit() {
+        let store = SessionStore::new();
+        let args = [
+            OsString::from("-c"),
+            OsString::from("echo EARLY-OUTPUT; exit 7"),
+        ];
+        let e = env();
+        let capture = Capture::default();
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
+        store
+            .create_then(spec(id(80), &args, &e), |info| {
+                // Wait for pending output without consuming it. Waiting for child exit instead
+                // deadlocks on macOS, where PTY close can wait for the output to be drained.
+                let (pty, _, _) = store.parts(info.id).expect("new session");
+                let mut descriptor = libc::pollfd {
+                    fd: pty.master_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    assert!(!remaining.is_zero(), "command produced no output");
+                    let ready = unsafe {
+                        libc::poll(&mut descriptor, 1, remaining.as_millis() as libc::c_int)
+                    };
+                    if ready < 0
+                        && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                    {
+                        continue;
+                    }
+                    assert!(ready > 0, "command produced no output");
+                    break;
+                }
+                assert_ne!(descriptor.revents & libc::POLLIN, 0, "no pending output");
+                store.attach(id(80), writer, 1, 80, 24)
+            })
+            .expect("create and attach");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store.contains(id(80)) {
+            assert!(Instant::now() < deadline, "exited session was not removed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(capture.text().contains("EARLY-OUTPUT"));
+        let exit = terminal_envelope(
+            1,
+            Frame::new(FrameKind::Exited, 7i32.to_be_bytes().to_vec()),
+        );
+        assert!(
+            capture.0.lock().unwrap().ends_with(&exit),
+            "missing final exit frame"
+        );
+    }
+
+    #[test]
+    fn failed_initial_registration_still_drains_and_retires_the_session() {
+        let store = SessionStore::new();
+        // More than the PTY buffer: without a reader this child cannot finish.
+        let args = [
+            OsString::from("-c"),
+            OsString::from("head -c 131072 /dev/zero"),
+        ];
+        let e = env();
+        let result: Result<(), SessionError> = store.create_then(spec(id(81), &args, &e), |_| {
+            Err(SessionError::RepaintFailed(id(81).to_hyphenated()))
+        });
+        assert!(matches!(result, Err(SessionError::RepaintFailed(_))));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store.contains(id(81)) {
+            assert!(
+                Instant::now() < deadline,
+                "failed attach stranded its session"
+            );
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 

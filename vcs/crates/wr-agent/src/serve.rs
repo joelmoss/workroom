@@ -276,10 +276,31 @@ fn dispatch(
         FrameKind::Attach => {
             let request = AttachRequest::decode(&frame.payload)?;
             let id = request.id?;
+            // A new session must register its first client before its reader starts: a command
+            // such as `echo` can exit before attach, taking its output and exit status with it.
+            let attach = || {
+                send(
+                    &Envelope::new(
+                        Service::Control,
+                        envelope.stream,
+                        Frame::control(FrameKind::Attached).encode(),
+                    )
+                    .encode(),
+                )
+                .then_some(())
+                .ok_or(crate::session::SessionError::NotFound(id.to_hyphenated()))?;
+                sessions.attach(
+                    id,
+                    Arc::clone(writer),
+                    envelope.stream,
+                    request.columns,
+                    request.rows,
+                )
+            };
             // Create on first attach, reattach afterwards. One code path, so a client that
             // crashed and came back does not have to know which case it is in.
-            let created = if sessions.contains(id) {
-                Ok(())
+            let result = if sessions.contains(id) {
+                attach()
             } else {
                 // Not `<shell>` with no arguments: see `shell::invocation`. Spawning the shell
                 // bare cost the login profile and ghostty's shell integration, which showed up in
@@ -313,8 +334,8 @@ fn dispatch(
                         .to_string_lossy(),
                     &child_environment,
                 );
-                sessions
-                    .create(SessionSpec {
+                sessions.create_then(
+                    SessionSpec {
                         id,
                         program: &invocation.program,
                         argv0: invocation.arguments.first().map(|a| a.as_os_str()),
@@ -323,31 +344,10 @@ fn dispatch(
                         cwd: request.cwd.as_deref(),
                         columns: request.columns,
                         rows: request.rows,
-                    })
-                    .map(|_| ())
+                    },
+                    |_| attach(),
+                )
             };
-            // Create and reattach take ONE path from here: whether the session is new or was
-            // waiting, the client registers the same way and is painted the same way. A client
-            // that crashed and came back does not have to know which case it is in.
-            let result = created.and_then(|()| {
-                send(
-                    &Envelope::new(
-                        Service::Control,
-                        envelope.stream,
-                        Frame::control(FrameKind::Attached).encode(),
-                    )
-                    .encode(),
-                )
-                .then_some(())
-                .ok_or(crate::session::SessionError::NotFound(id.to_hyphenated()))?;
-                sessions.attach(
-                    id,
-                    Arc::clone(writer),
-                    envelope.stream,
-                    request.columns,
-                    request.rows,
-                )
-            });
             match result {
                 Ok((_, granted)) => {
                     *attached = Some(id);
