@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Defaults
 import SwiftUI
 
@@ -25,6 +26,7 @@ final class WindowRegistry: ObservableObject {
   private final class Entry {
     weak var window: NSWindow?
     weak var store: AppStore?
+    var sessionObservation: AnyCancellable?
     init(window: NSWindow, store: AppStore) {
       self.window = window
       self.store = store
@@ -43,6 +45,7 @@ final class WindowRegistry: ObservableObject {
   /// Combined unread notification count across every window — drives the menu-bar label + Dock badge
   /// (issue #70). `@Published` so the `MenuBarExtra` label re-renders as any window's count changes.
   @Published private(set) var aggregateUnread = 0
+  @Published private(set) var activeAgentBackends: Set<AgentBackend> = []
 
   init() {
     // Track the active workroom window. Only registered windows update `lastActiveStore`, so the quit
@@ -117,7 +120,12 @@ final class WindowRegistry: ObservableObject {
     if let existing = entries.first(where: { $0.window === window }) {
       existing.store = store
     } else {
-      entries.append(Entry(window: window, store: store))
+      let entry = Entry(window: window, store: store)
+      entry.sessionObservation = store.terminals.objectWillChange.sink { [weak self] _ in
+        // Published terminal state is still the old value during objectWillChange.
+        Task { @MainActor in self?.recomputeActiveAgents() }
+      }
+      entries.append(entry)
     }
     if lastActiveStore == nil { lastActiveStore = store }
     // The saved session is rebuilt from the live windows (issue #46), and the window layer publishes
@@ -143,6 +151,7 @@ final class WindowRegistry: ObservableObject {
     Task { @MainActor in
       assignWindowNumberIfNeeded(store)
       recomputeBadge()
+      recomputeActiveAgents()
     }
   }
 
@@ -163,6 +172,7 @@ final class WindowRegistry: ObservableObject {
     store(for: window)?.detachedPanes.closeAll()
     entries.removeAll { $0.window === window || $0.window == nil }
     recomputeBadge()
+    recomputeActiveAgents()
     // Without this a closed window is never noticed, and comes back on the next launch. The quit
     // freeze is what stops the same signal erasing the session as windows close during termination.
     SessionCoordinator.shared.markDirty()
@@ -246,6 +256,13 @@ final class WindowRegistry: ObservableObject {
   }
 
   // MARK: Aggregation
+
+  private func recomputeActiveAgents() {
+    let agents = allStores.reduce(into: Set<AgentBackend>()) {
+      $0.formUnion($1.terminals.activeAgentBackends)
+    }
+    if agents != activeAgentBackends { activeAgentBackends = agents }
+  }
 
   /// Mirror the *combined* unread count across all windows onto the menu-bar label + Dock badge
   /// (issue #70). Replaces the per-store `DockBadge.apply` so a second window can't clobber the

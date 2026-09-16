@@ -332,6 +332,32 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertNil(activeAgent(in: s), "command_finished removes quota immediately")
   }
 
+  func testActiveAgentsIncludeBackgroundTargetsAndDeduplicateProviders() {
+    let sessions = makeSessions()
+    let other = TerminalTarget(id: "wr|/p|other", title: "other", path: "/tmp", isMissing: false)
+    sessions.addTab(for: target)
+    let first = sessions.tabs(for: target)[0].surface!
+    first.foregroundProcessNameForTesting = "codex"
+    first.onTitleChange?("Codex")
+    sessions.addTab(for: target)
+    let second = sessions.tabs(for: target)[1].surface!
+    second.foregroundProcessNameForTesting = "codex"
+    second.onTitleChange?("Codex")
+    sessions.addTab(for: other)
+    let claude = sessions.tabs(for: other)[0].surface!
+    claude.foregroundProcessNameForTesting = "claude"
+    claude.onTitleChange?("Claude")
+    sessions.addTab(for: other)  // The focused tab is an ordinary shell.
+    XCTAssertEqual(sessions.activeAgentBackends, [.codex, .claude])
+
+    first.handleCommandFinished(rawExitCode: 0)
+    XCTAssertEqual(sessions.activeAgentBackends, [.codex, .claude])
+    second.handleCommandFinished(rawExitCode: 0)
+    XCTAssertEqual(sessions.activeAgentBackends, [.claude])
+    claude.handleCommandFinished(rawExitCode: 0)
+    XCTAssertTrue(sessions.activeAgentBackends.isEmpty)
+  }
+
   func testCodexAgentSurvivesProviderTitleRepaint() {
     let s = makeSessions()
     s.addTab(for: target)

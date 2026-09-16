@@ -709,6 +709,15 @@ final class TerminalSessions: ObservableObject {
     tabsByTarget.values.contains { $0[id] != nil }
   }
 
+  /// Includes hidden targets, background tabs, and panes popped into their own windows.
+  var activeAgentBackends: Set<AgentBackend> {
+    Set(
+      tabsByTarget.values.flatMap { $0.values }.compactMap { tab in
+        if case .terminal(let state) = tab.content { return state.activeAgentBackend }
+        return nil
+      })
+  }
+
   /// The set of target ids that currently own at least one terminal — the "active" targets backing
   /// the Workrooms View tab bar (issue #23). Filtered on **non-empty** because `closeTab` leaves an
   /// emptied target as `[:]` (key present) while `reap` removes the key entirely; both must read as
