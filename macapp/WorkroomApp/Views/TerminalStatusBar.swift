@@ -21,17 +21,10 @@ struct TerminalStatusBar: View {
   let state: TerminalState?
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var agentManager: TerminalAgentManager
-  @EnvironmentObject var agentUsage: AgentUsageMonitor
-  @EnvironmentObject var claudeUsageBridge: ClaudeUsageBridge
   /// Observed here too (`DetachedSessionsButton` already observes it) so a divider next to that
   /// button can know whether it's actually showing anything.
   @ObservedObject private var sessionsStore = TerminalSessionsStore.shared
   @State private var showingDiagnosis = false
-  /// Set by a click; the detail view stays open until dismissed (another click, or clicking
-  /// elsewhere) rather than opening on hover.
-  @State private var usageDetailPinned = false
-  @State private var confirmingClaudeUsage = false
-  @State private var claudeBridgeError: String?
   /// The AppKit view the cwd menu pops out of — see `MenuAnchor`.
   @State private var cwdMenuAnchor: NSView?
 
@@ -44,10 +37,6 @@ struct TerminalStatusBar: View {
 
   private var diagnosis: AgentBannerState? { state == nil ? nil : agentManager.banners[tabID] }
 
-  private var activeAgent: AgentBackend? {
-    state?.activeAgentBackend
-  }
-
   var body: some View {
     // Computed once per render so a divider between two segments only appears when BOTH sides are
     // actually showing something — each segment is independently optional.
@@ -56,7 +45,6 @@ struct TerminalStatusBar: View {
     let hasDiagnosis = diagnosis != nil
     let hasDetached = !sessionsStore.detached(for: target.id).isEmpty
     let hasRun = isRunTab && runStatePresentation != nil
-    let hasAgentUsage = activeAgent != nil
 
     HStack(spacing: 12) {
       // A terminal's cwd leads the bar. The file path a content pane used to show here moved to the
@@ -71,8 +59,6 @@ struct TerminalStatusBar: View {
       DetachedSessionsButton(target: target)
       if hasDetached, hasRun { statusBarDivider }
       if isRunTab, let run = runStatePresentation { runSegment(run) }
-      if hasDetached || hasRun, hasAgentUsage { statusBarDivider }
-      if let activeAgent { agentUsageSegment(activeAgent) }
     }
     // `.subheadline` (11pt) — the middle of the two sizes this bar has worn. `.caption` (10pt) was
     // too small to read at a glance for what the bar carries (a pane's live state: branch, run
@@ -86,227 +72,16 @@ struct TerminalStatusBar: View {
     // change so panes don't reflow — the 11pt text just sits in a little more air.
     .frame(height: TerminalPanelMetrics.chromeRowHeight)
     .frame(maxWidth: .infinity)
-    // `panel` (bg blended 5.5% toward fg), not the raw terminal `bg`: the bar reads as chrome rather
-    // than as more terminal. Opaque and theme-derived, so it lifts by the same amount on a light or a
-    // dark theme — a fixed white/black wash would invert on one of them.
-    .background(theme.tokens.panel)
+    .background { SidebarBackground() }
     .overlay(alignment: .top) { theme.tokens.border.frame(height: 1) }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("terminal.statusBar")
-    .task(id: activeAgent) {
-      if activeAgent != nil { agentUsage.refresh() }
-    }
-    .alert("Enable Claude usage?", isPresented: $confirmingClaudeUsage) {
-      Button("Cancel", role: .cancel) {}
-      Button("Enable") {
-        do {
-          try claudeUsageBridge.enable()
-          agentUsage.refresh(userInitiated: true)
-        } catch {
-          claudeBridgeError = error.localizedDescription
-        }
-      }
-    } message: {
-      Text(
-        "Workroom will update ~/.claude/settings.json to run its status-line wrapper. The wrapper "
-          + "stores only Claude's rate_limits data, then passes the original status-line input "
-          + "unchanged to your current command. You can disable this from Agent Settings."
-      )
-    }
-    .alert("Claude usage wasn’t enabled", isPresented: bridgeErrorPresented) {
-      Button("OK", role: .cancel) {}
-    } message: {
-      Text(claudeBridgeError ?? "The Claude status-line bridge could not be installed.")
-    }
   }
 
   /// A thin vertical rule between two segments, shorter than the 28pt bar so it reads as a
   /// separator rather than a full-height rail.
   private var statusBarDivider: some View {
     theme.tokens.border.frame(width: 1, height: 14)
-  }
-
-  private var bridgeErrorPresented: Binding<Bool> {
-    Binding(
-      get: { claudeBridgeError != nil },
-      set: { if !$0 { claudeBridgeError = nil } })
-  }
-
-  /// A system dismissal (clicking outside the popover, or Escape) unpins too, so a pin doesn't
-  /// linger open after the platform already closed it.
-  private var usageDetailPresented: Binding<Bool> {
-    Binding(get: { usageDetailPinned }, set: { usageDetailPinned = $0 })
-  }
-
-  // MARK: Agent quota
-
-  /// Resolved once per launch rather than per render. `ToolLogoRegistry.tool(...)` runs an
-  /// `NSImage(named:)` gate on every call, and this bar's body reads five observable sources, so it
-  /// re-evaluates on cwd, branch, run-state and quota-file changes in every pane.
-  ///
-  /// Worth being precise about what this does and doesn't buy, since the obvious reading overstates
-  /// it: `NSImage(named:)` hits AppKit's own name cache and `matchingEntry` is a dictionary lookup,
-  /// so the call was already cheap — and `Image(assetName(for:))` below resolves the asset per render
-  /// regardless, which no cache here can avoid. This removes one of two lookups, not both.
-  /// `AgentBackend.allCases` has two members, so the dictionary costs two entries to do it.
-  private static let logoTools: [AgentBackend: RecognizedTool] = Dictionary(
-    uniqueKeysWithValues: AgentBackend.allCases.compactMap { backend in
-      ToolLogoRegistry.tool(forExecutableName: backend.executable).map { (backend, $0) }
-    })
-
-  /// Bar widths for the `ViewThatFits` variants, widest first (the ladder takes the first that fits,
-  /// so inverting this order defeats it). Width is the only thing that varies — the segment is the
-  /// logo plus bars, with nothing else to shed.
-  ///
-  /// Which bar is which window is deliberately not drawn. They run shortest-window-first
-  /// (`AgentUsageDecoding.normalized` sorts by duration), and the segment's tooltip and popover both
-  /// name them in full: the footer is a glance, not a reading.
-  ///
-  /// Three rungs rather than two because the middle one earns its place: measured on a two-pane
-  /// split, the 44pt variant doesn't fit but the 32pt one does, and dropping straight to 24pt
-  /// squeezes the fill-to-pin gap down to about the marker's own halo width — which is where the pin
-  /// stops telling you which side of sustainable pace you're on.
-  private static let quotaBarWidths: [CGFloat] = [44, 32, 24]
-
-  /// ONE schedule for the whole segment, wrapping the BRANCH and not just the bars.
-  ///
-  /// The pace pin's offset is a function of wall-clock time — it crosses a bar in the window's own
-  /// duration, ~9pt/hour on the 44pt variant for a 5h window — and this bar has no clock of its own
-  /// otherwise, so an idle pane would park the pin wherever the last unrelated re-render left it.
-  /// The tooltip and the accessibility label read the same `now`, so they can't disagree with the
-  /// pin beside them.
-  ///
-  /// It wraps the branch because `agentUsage.snapshot(for:)` is what applies the freshness filter
-  /// (`fresh(at:)` drops windows past their `resetsAt`). Resolving the snapshot outside the schedule
-  /// and letting the ticks re-render a captured value means an idle agent that stops rewriting its
-  /// quota file keeps an EXPIRED window on screen indefinitely, marching the pin to 100% and
-  /// eventually claiming "resets now" — the filter never gets a chance to run.
-  /// `AgentUsageMonitor.unavailableReason` exists precisely for that state and says so in its own
-  /// doc comment; re-resolving here is what lets the segment reach it.
-  ///
-  /// It also sits OUTSIDE the `ViewThatFits` below: that view instantiates every child to measure
-  /// it, so a `TimelineView` inside the variants would run one schedule per rung. `VCSToolbar`
-  /// wraps its whole bar for the same reason.
-  @ViewBuilder private func agentUsageSegment(_ backend: AgentBackend) -> some View {
-    TimelineView(.periodic(from: .now, by: 60)) { context in
-      let now = context.date
-      if backend == .claude, claudeUsageBridge.state == .disabled {
-        Button("Enable Claude usage…") { confirmingClaudeUsage = true }
-          .buttonStyle(StatusBarSegmentButtonStyle())
-          .foregroundStyle(theme.tokens.accent)
-          .help("Enable the opt-in Claude status-line bridge")
-          .accessibilityIdentifier("terminal.statusBar.agentUsage.enableClaude")
-      } else if let snapshot = agentUsage.snapshot(for: backend) {
-        let label = quotaAccessibilityLabel(snapshot, now: now)
-        Button {
-          usageDetailPinned.toggle()
-        } label: {
-          // No `.fixedSize` here, unlike the text ladder this replaced. `fixedSize` proposes an
-          // UNSPECIFIED width, so `ViewThatFits` measures the first variant against no constraint,
-          // it always "fits", and every later variant is dead code — which is exactly what happened
-          // to the old compact half. The modifier existed only to stop a `Text` truncating under
-          // this bar's ambient `.lineLimit(1)`; fixed-frame capsules cannot truncate.
-          ViewThatFits(in: .horizontal) {
-            ForEach(Self.quotaBarWidths, id: \.self) { width in
-              quotaBars(snapshot, now: now, barWidth: width)
-            }
-          }
-        }
-        .buttonStyle(StatusBarSegmentButtonStyle())
-        // The percentages left the segment with issue #168, so hover is the only way to read one
-        // without opening the popover.
-        .help(label)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label)
-        .accessibilityIdentifier("terminal.statusBar.agentUsage")
-        .popover(isPresented: usageDetailPresented, arrowEdge: .bottom) {
-          AgentUsageDetailView(snapshot: snapshot, now: now)
-            .frame(width: AgentUsageDetailView.popoverWidth)
-        }
-      } else {
-        let isLoading = agentUsage.loading.contains(backend)
-        // The reason (and the retry) matter only once the read has settled — mid-load there's
-        // nothing to explain yet, and a click would just cancel the refresh already running. The
-        // reason is re-read on every tick along with the branch above it, so a snapshot that
-        // expires while sitting here updates its own explanation.
-        let reason = isLoading ? nil : agentUsage.unavailableReason(for: backend)
-        Button {
-          agentUsage.refresh(userInitiated: true)
-        } label: {
-          HStack(spacing: 4) {
-            if isLoading {
-              ProgressView().controlSize(.mini)
-              Text("Loading \(backend.displayName) usage…")
-            } else {
-              Text("\(backend.displayName) usage unavailable")
-              Image(systemName: "arrow.clockwise")
-            }
-          }
-        }
-        .buttonStyle(StatusBarSegmentButtonStyle())
-        .disabled(isLoading)
-        .foregroundStyle(theme.tokens.fgDim)
-        .help((reason.map { "\($0) Click to refresh." }) ?? "Reading the local quota snapshot…")
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(
-          isLoading
-            ? "Loading \(backend.displayName) quota usage"
-            : "\(backend.displayName) quota usage unavailable. \(reason ?? "") Click to refresh."
-        )
-        .accessibilityIdentifier("terminal.statusBar.agentUsage.unavailable")
-      }
-    }
-  }
-
-  /// The agent's logo followed by one bar per window. `barWidth` is the only thing the `ViewThatFits`
-  /// ladder varies between its variants.
-  private func quotaBars(_ snapshot: AgentQuotaSnapshot, now: Date, barWidth: CGFloat) -> some View
-  {
-    HStack(spacing: 8) {
-      agentLogo(snapshot.backend)
-      ForEach(snapshot.windows) { window in
-        quotaBar(window, now: now, width: barWidth)
-      }
-    }
-  }
-
-  private func quotaBar(_ window: AgentQuotaWindow, now: Date, width: CGFloat) -> some View {
-    let pace = window.pace(at: now)
-    return QuotaBar(
-      usedPercentage: window.usedPercentage,
-      markerPercentage: window.sustainablePacePercentage(at: now),
-      fill: QuotaBar.fill(for: pace.severity, theme.tokens), width: width, compact: true)
-  }
-
-  /// The agent's brand logo, or its name when no logo is bundled — `ToolLogoRegistry` only vends
-  /// entries whose imageset actually shipped, so this never renders a blank. Same modifiers as the
-  /// tab chip's favicon (`TerminalTabStrip`). No template-tinting risk: neither agent imageset
-  /// declares `template-rendering-intent`, so this bar's ambient `foregroundStyle` leaves the brand
-  /// colour alone.
-  @ViewBuilder private func agentLogo(_ backend: AgentBackend) -> some View {
-    if let tool = Self.logoTools[backend] {
-      Image(ToolLogoRegistry.assetName(for: tool.id))
-        .resizable()
-        .aspectRatio(contentMode: .fit)
-        .frame(width: 12, height: 12)
-        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
-        .accessibilityHidden(true)
-    } else {
-      Text(backend.displayName)
-    }
-  }
-
-  /// Takes `now` from the segment's `TimelineView` rather than reading its own clock, so the tooltip
-  /// and the VoiceOver label describe the same instant the pace pins are drawn for. The FORMAT is
-  /// load-bearing: every `AgentUsageUITests` assertion reads this string.
-  private func quotaAccessibilityLabel(_ snapshot: AgentQuotaSnapshot, now: Date) -> String {
-    let windows = snapshot.windows.map { window in
-      let used = Int(window.usedPercentage.rounded())
-      let pace = used == 0 ? "" : ", \(window.pace(at: now).accessibilityDescription)"
-      return
-        "\(window.kind.compactLabel) quota \(used)% used\(pace), \(window.resetDescription(at: now))"
-    }
-    return "\(snapshot.backend.displayName) quota. " + windows.joined(separator: ". ")
   }
 
   // MARK: Branch / cwd
@@ -566,7 +341,7 @@ private final class ClosureMenuItem: NSMenuItem {
 ///
 /// Opacity is animated, never the view tree: an implicit tree animation interpolates a glyph's 1pt
 /// pixel re-round into a visible slide (see `ToolbarIconButtonStyle`).
-private struct StatusBarSegmentButtonStyle: ButtonStyle {
+struct StatusBarSegmentButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     HoverWell(configuration: configuration)
   }

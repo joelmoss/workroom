@@ -1,5 +1,13 @@
 import SwiftUI
 
+/// Shared themed material for sidebar cards and pane footers.
+struct SidebarBackground: View {
+  var body: some View {
+    VisualEffectView()
+      .overlay(ThemeService.shared.tokens.panel.opacity(0.7))
+  }
+}
+
 extension View {
   /// The floating-card chrome for the edge-reveal panels: a rounded `tokens.bg` card with a hairline
   /// border all the way around and a soft shadow, inset from its container by `margin`. macOS already
@@ -26,13 +34,7 @@ extension View {
       self
       .background {
         if vibrant {
-          // The `.behindWindow` material samples the desktop, not the ghostty theme — so on its own
-          // it reads grey/washed and clashes with the themed chrome (worst on light themes). A wash
-          // of the panel colour (the same surface as the title/tab bar) over it pulls it back onto
-          // the theme palette while the material keeps the translucent frost. Opacity is the tuning
-          // knob: higher = more themed / less glassy.
-          VisualEffectView()
-            .overlay(tokens.panel.opacity(0.7))
+          SidebarBackground()
         } else {
           tokens.bg
         }

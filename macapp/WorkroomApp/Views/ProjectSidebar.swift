@@ -106,11 +106,7 @@ struct ProjectSidebar: View {
         tree
       }
     }
-    // The footer (notification strip + Add Project bar) is a SOLID bar pinned to the bottom via
-    // `safeAreaInset`, which *reserves* its height so the list scrolls above it — a long project list
-    // no longer disappears behind a translucent bar, and nothing shows through (issue #118 feedback).
-    // (This replaces the earlier floating overlay + top-fade gradient from issue #56, which let rows
-    // peek under the footer.)
+    // Reserve the footer's height so the list scrolls above its shared sidebar background.
     .safeAreaInset(edge: .bottom, spacing: 0) { footer }
     // Breathing room above the first project so it doesn't jam against the card's top edge (the card
     // sits flush under the title bar via `SidebarColumn`'s `topMargin: 0`). A solid `safeAreaInset`
@@ -587,17 +583,15 @@ struct ProjectSidebar: View {
 
   // MARK: Chrome
 
-  /// The sidebar's SOLID bottom footer (issue #118): the notification band stacked directly above the
-  /// Add Project bar. Pinned via `safeAreaInset` (see `body`), so it reserves its own height and the
-  /// list scrolls above it — an opaque `tokens.panel` fill with a top hairline means no list row ever
-  /// shows through. The strip manages its own slide in/out; the footer's height follows it.
+  /// The notification band and Add Project bar share the sidebar's background. The safe-area
+  /// inset reserves their height, keeping list rows from scrolling underneath.
   private var footer: some View {
     VStack(spacing: 0) {
       ThemeService.shared.tokens.border.frame(height: 1)
       SidebarNotificationStrip()
       bottomBar
     }
-    .background(ThemeService.shared.tokens.panel)
+    .background { SidebarBackground() }
   }
 
   /// The sidebar's bottom bar: "Add Project" on the right.
@@ -628,8 +622,7 @@ struct ProjectSidebar: View {
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 6)
-    // No background here: the enclosing `footer` provides the solid `tokens.panel` fill for the whole
-    // bar (issue #118). The bar is pinned via `safeAreaInset`, so nothing scrolls behind it.
+    // The enclosing footer provides the shared sidebar background.
   }
 }
 

@@ -62,7 +62,14 @@ struct RootView: View {
     // not sheets — render above the toast stack and above an edge-revealed sidebar. Inside, an
     // arriving toast drew on top of the dialog. Only the overlay presenters care about this ordering;
     // `.sheet` / `.alert` are position-independent.
-    rootWindowChrome(rootLifecycle(rootModals(rootReveals(splitView))))
+    rootWindowChrome(rootLifecycle(rootModals(windowContent)))
+  }
+
+  private var windowContent: some View {
+    VStack(spacing: 0) {
+      rootReveals(splitView)
+      WindowFooter()
+    }
   }
 
   /// The full title-bar bar hosted in the `.left` titlebar accessory: leading controls, the workroom

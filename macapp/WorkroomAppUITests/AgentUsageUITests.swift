@@ -29,7 +29,31 @@ final class AgentUsageUITests: XCTestCase {
     let app = launchedApp()
     XCTAssertTrue(
       app.descendants(matching: .any)["terminal.statusBar"].waitForExistence(timeout: 15))
+    XCTAssertTrue(app.descendants(matching: .any)["window.footer"].exists)
+    XCTAssertTrue(app.buttons["activityBar.settings"].exists)
+    XCTAssertTrue(app.buttons["activityBar.notifications"].exists)
     XCTAssertFalse(app.descendants(matching: .any)["terminal.statusBar.agentUsage"].exists)
+  }
+
+  func testSidebarSettingsButtonOpensSettings() {
+    let app = launchedApp()
+    let settingsButton = app.buttons["activityBar.settings"]
+    XCTAssertTrue(settingsButton.waitForExistence(timeout: 15))
+    settingsButton.click()
+    let settings = app.windows.matching(NSPredicate(format: "title CONTAINS %@", "Settings"))
+    XCTAssertTrue(settings.firstMatch.waitForExistence(timeout: 8))
+  }
+
+  func testEmptySecondWindowShowsRunningAgentFromFirstWindow() {
+    let app = launchedApp(agent: "codex")
+    let usage = app.descendants(matching: .any).matching(
+      identifier: "terminal.statusBar.agentUsage")
+    XCTAssertTrue(usage.firstMatch.waitForExistence(timeout: 15))
+    app.menuBars.menuBarItems["Window"].menuItems["New Window"].click()
+    let twoSegments = NSPredicate(format: "count == 2")
+    expectation(for: twoSegments, evaluatedWith: usage)
+    waitForExpectations(timeout: 10)
+    XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "window.footer").count, 2)
   }
 
   func testCodexShowsBothQuotaWindowsAndAccessibilityDetail() {
@@ -41,6 +65,10 @@ final class AgentUsageUITests: XCTestCase {
     XCTAssertTrue(usage.label.contains("wk quota 61% used"), usage.label)
     XCTAssertTrue(usage.label.contains("resets in"))
     XCTAssertFalse(usage.label.contains("second"))
+    let screenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
+    screenshot.name = "Window footer"
+    screenshot.lifetime = .keepAlways
+    add(screenshot)
   }
 
   func testClaudeOffersOptInWithoutChangingDeveloperSettings() {
@@ -76,21 +104,8 @@ final class AgentUsageUITests: XCTestCase {
     XCTAssertFalse(usage.label.contains("pace"), usage.label)
   }
 
-  /// Both windows survive a narrow split, AND the `ViewThatFits` bar-width ladder actually engages.
-  ///
-  /// The label half is deliberately not named "keeps both percentages": the percentages come off the
-  /// accessibility label, which is identical whichever variant rendered and would still carry them
-  /// if the segment drew nothing. The width half is what has teeth. The ladder shipped DEAD once
-  /// (issue #168): a `.fixedSize(horizontal: true)` on the `ViewThatFits` proposed an unspecified
-  /// width, so the first variant always "fit" and every later rung was unreachable — with the whole
-  /// suite green, because nothing looked at geometry. The bars are rigid `Capsule().frame(width:)`,
-  /// so a dead ladder does not shrink: it keeps its widest ideal width and overflows.
-  ///
-  /// Measured under this fixture window: 116pt unsplit (the 44pt rung), 92pt after one split (the
-  /// 32pt rung). Further splits divide the OTHER pane, so one split is what crosses a rung here.
-  /// Asserted as an inequality rather than the literal numbers so spacing tweaks don't false-fail;
-  /// re-adding `.fixedSize` pins it at 116 and trips this.
-  func testNarrowSplitKeepsBothWindowsAndShrinksTheBars() {
+  /// Splitting a pane must neither duplicate nor resize the window's provider quota controls.
+  func testSplitKeepsOneWindowQuotaSegment() {
     let app = launchedApp(agent: "codex")
     let usage = app.descendants(matching: .any)["terminal.statusBar.agentUsage"]
     XCTAssertTrue(usage.waitForExistence(timeout: 15))
@@ -105,9 +120,9 @@ final class AgentUsageUITests: XCTestCase {
     XCTAssertTrue(split.label.contains("42%"), split.label)
     XCTAssertTrue(split.label.contains("61%"), split.label)
 
-    XCTAssertLessThan(
-      split.frame.width, wideWidth,
-      "the bar-width ladder did not engage in a split pane — a dead ladder keeps its widest variant"
+    XCTAssertEqual(split.frame.width, wideWidth, accuracy: 1)
+    XCTAssertEqual(
+      app.descendants(matching: .any).matching(identifier: "terminal.statusBar.agentUsage").count, 1
     )
     XCTAssertTrue(
       app.windows.firstMatch.frame.contains(split.frame),
@@ -144,7 +159,7 @@ final class AgentUsageUITests: XCTestCase {
     XCTAssertTrue(detail.waitForNonExistence(timeout: 5))
   }
 
-  func testNonAgentTabHasNoQuotaSegment() {
+  func testNonAgentTabKeepsRunningAgentQuotaSegment() {
     let app = launchedApp(agent: "codex", terminalTabs: 2)
     app.descendants(matching: .any).matching(identifier: "terminal.tab.Codex").firstMatch
       .click()
@@ -154,7 +169,7 @@ final class AgentUsageUITests: XCTestCase {
     app.descendants(matching: .any).matching(identifier: "terminal.tab.Terminal 2").firstMatch
       .click()
     XCTAssertTrue(
-      app.descendants(matching: .any)["terminal.statusBar.agentUsage"].waitForNonExistence(
+      app.descendants(matching: .any)["terminal.statusBar.agentUsage"].waitForExistence(
         timeout: 5))
   }
 }
