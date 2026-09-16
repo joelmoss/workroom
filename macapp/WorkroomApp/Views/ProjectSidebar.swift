@@ -1,4 +1,3 @@
-import Defaults
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -29,9 +28,7 @@ struct ProjectSidebar: View {
   /// The terminal row currently under the cursor (issue #30). Keyed by the tab's UUID rather than a
   /// `SidebarID` — terminal rows aren't selectable `List` rows, so they sit outside `hovered`.
   @State private var hoveredTerminal: TerminalTab.ID?
-  @State private var themeHovering = false
   @State private var addProjectHovering = false
-  @Default(.theme) private var theme
 
   /// Width of the shared leading icon column on the root/workroom/terminal rows — it holds the
   /// disclosure caret (root/workroom, only at ≥2 terminals) or the terminal glyph, and is always
@@ -109,7 +106,7 @@ struct ProjectSidebar: View {
         tree
       }
     }
-    // The footer (notification strip + theme/add bar) is a SOLID bar pinned to the bottom via
+    // The footer (notification strip + Add Project bar) is a SOLID bar pinned to the bottom via
     // `safeAreaInset`, which *reserves* its height so the list scrolls above it — a long project list
     // no longer disappears behind a translucent bar, and nothing shows through (issue #118 feedback).
     // (This replaces the earlier floating overlay + top-fade gradient from issue #56, which let rows
@@ -591,7 +588,7 @@ struct ProjectSidebar: View {
   // MARK: Chrome
 
   /// The sidebar's SOLID bottom footer (issue #118): the notification band stacked directly above the
-  /// theme/add bar. Pinned via `safeAreaInset` (see `body`), so it reserves its own height and the
+  /// Add Project bar. Pinned via `safeAreaInset` (see `body`), so it reserves its own height and the
   /// list scrolls above it — an opaque `tokens.panel` fill with a top hairline means no list row ever
   /// shows through. The strip manages its own slide in/out; the footer's height follows it.
   private var footer: some View {
@@ -603,26 +600,9 @@ struct ProjectSidebar: View {
     .background(ThemeService.shared.tokens.panel)
   }
 
-  /// The sidebar's bottom bar: the appearance toggle on the left, "Add Project" on the right.
+  /// The sidebar's bottom bar: "Add Project" on the right.
   private var bottomBar: some View {
     HStack {
-      Button {
-        theme = theme.next
-      } label: {
-        Image(systemName: theme.symbol)
-          .font(.system(size: 11))
-          .foregroundStyle(.secondary)
-          .frame(width: 24, height: 24)
-          .background(
-            RoundedRectangle(cornerRadius: 6)
-              .fill(ThemeService.shared.tokens.hover.opacity(themeHovering ? 1 : 0))
-          )
-      }
-      .buttonStyle(.plain)
-      .onHover { themeHovering = $0 }
-      .help("Theme: \(theme.label) — click to switch to \(theme.next.label)")
-      .accessibilityLabel("Theme: \(theme.label)")
-
       Spacer()
 
       // Add Project, bottom-right. No key equivalent — File ▸ New Project… lost ⌘O to Open Workroom…
