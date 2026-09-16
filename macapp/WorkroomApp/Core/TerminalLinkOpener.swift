@@ -15,19 +15,39 @@ enum TerminalLinkOpener {
     "mailto:", "tel:", "magnet:", "ipfs://", "ipns://", "gemini://", "gopher://", "news:",
   ]
 
-  /// The filesystem path a link refers to, or nil if it's a web URL we don't open ourselves.
+  /// The filesystem path a link refers to, or nil if it's a URL we don't open ourselves.
+  ///
+  /// Both ⌘-click entry points funnel through here (the bare word via `resolvesToFile`, the
+  /// libghostty link via `resolveLocalFile`), so this is the one place a URL can be kept away from
+  /// the filesystem — and it has to be, because a link that reaches `resolveExistingFile` is joined
+  /// onto the cwd, and `NSString.appendingPathComponent` collapses `//`. A repo that ships
+  /// `HTTPS:/example.com/x.command` would otherwise capture a click on `HTTPS://example.com/x.command`
+  /// and hand a local executable to `/usr/bin/open`. Hence the scheme match is case-INSENSITIVE (the
+  /// list is lowercase; `HTTPS://` is the same URL), and `hasAuthority` catches every other scheme —
+  /// the list can only ever name the ones we thought of.
   static func filePath(from link: String) -> String? {
-    if passthroughSchemes.contains(where: { link.hasPrefix($0) }) { return nil }
-    if link.hasPrefix("file:") { return URL(string: link)?.path }
+    let lower = link.lowercased()
+    if passthroughSchemes.contains(where: { lower.hasPrefix($0) }) { return nil }
+    if lower.hasPrefix("file:") { return URL(string: link)?.path }
+    if hasAuthority(link) { return nil }
     return link
   }
 
-  /// Resolve `path` (absolute, ~-relative, or cwd-relative) to an absolute path. Returns nil
-  /// for a relative path when the working directory is unknown.
+  /// Is `link` shaped `scheme://…`? Then it is a URL, never a path — no filesystem path holds `://`.
+  static func hasAuthority(_ link: String) -> Bool {
+    link.range(of: "^[A-Za-z][A-Za-z0-9+.-]*://", options: .regularExpression) != nil
+  }
+
+  /// Resolve `path` (absolute, ~-relative, or cwd-relative) to an absolute path. Returns nil for a
+  /// relative path when the working directory is unknown — or is itself relative, which is the same
+  /// thing: `lastKnownCwd` is whatever OSC 7 reported and is never validated, and an empty or
+  /// relative cwd would leave the result relative. That matters past mere correctness, because the
+  /// result becomes an argv element: a file named `--locale=en` reached as `<abs cwd>/--locale=en` is
+  /// a path, but reached bare it is a flag the editor CLI would parse.
   static func absolutePath(for path: String, cwd: String?) -> String? {
     if path.hasPrefix("/") { return path }
     if path.hasPrefix("~") { return (path as NSString).expandingTildeInPath }
-    guard let cwd else { return nil }
+    guard let cwd, cwd.hasPrefix("/") else { return nil }
     return (cwd as NSString).appendingPathComponent(path)
   }
 
@@ -148,8 +168,9 @@ enum TerminalLinkOpener {
 
   /// VS Code's documented open-at-position URL: `vscode://file/<path>:<line>:<col>`. The path is
   /// percent-encoded (keeping `/`); the `:line:col` suffix is literal. Only used when the bundled
-  /// `code` CLI is missing — see `launchInvocation`. The column is always written (defaulting to 1)
-  /// to match the documented form, which carries both.
+  /// `code` CLI is missing — see `launchInvocation` for why the CLI is preferred. The column is always
+  /// written, defaulting to 1, to match the documented form; whether a `:line`-only URL would seek is
+  /// untested, since this branch stopped running on any machine that has VS Code installed.
   static func vscodeFileURL(path: String, line: Int, column: Int?) -> String {
     let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
     return "vscode://file\(encoded):\(line):\(column ?? 1)"
@@ -226,14 +247,22 @@ enum TerminalLinkOpener {
     resolveExistingFile(word, cwd: cwd) != nil
   }
 
-  /// Handle libghostty's `GHOSTTY_ACTION_OPEN_URL`: open local files/paths in the configured editor,
-  /// web URLs via `NSWorkspace`. Returns true (we are the apprt — always handle, since there's no
-  /// engine-side fallback).
+  /// Handle libghostty's `GHOSTTY_ACTION_OPEN_URL`. Three outcomes: a URL whose scheme an installed
+  /// app claims goes to that app; anything else that resolves to a file on disk opens in the
+  /// configured editor; text that is neither is dropped **silently** (see `isSystemHandledURL`).
+  /// Returns true (we are the apprt — always handle, since there's no engine-side fallback).
+  ///
+  /// The scheme test runs FIRST, and that order is load-bearing: a real URL must never be offered to
+  /// filesystem resolution, or a repo-controlled file can shadow it (see `resolveLocalFile`).
   static func handleOpenURL(_ url: URL, cwd: String?) -> Bool {
-    if let resolved = resolveLocalFile(from: url, cwd: cwd) {
-      openFile(resolved)
-    } else if isSystemHandledURL(url) {
+    if isSystemHandledURL(url) {
       NSWorkspace.shared.open(url)
+    } else if let resolved = resolveLocalFile(from: url, cwd: cwd) {
+      openFile(resolved)
+    } else {
+      // Silent for the user (the text was never a link), but not silent in the log: a dropped click
+      // is otherwise indistinguishable from a broken app, and there is no other diagnostic.
+      NSLog("Workroom: ignoring unopenable terminal link %@", url.absoluteString)
     }
     return true
   }
@@ -246,10 +275,14 @@ enum TerminalLinkOpener {
   /// `file:line` whose "scheme" is really a filename (`user.rb:5`) — and once that text fails to
   /// resolve on disk, handing it to LaunchServices raises a modal Finder alert ("The application
   /// can't be opened. -50") instead of doing nothing. Asking LaunchServices whether anything claims
-  /// the scheme is the same question the alert answers, minus the alert. `file:` is excluded outright:
-  /// reaching here means `resolveLocalFile` already found no such file.
+  /// the scheme is the same question the alert answers, minus the alert. `file:` is excluded outright
+  /// — it is a local file, which `resolveLocalFile` owns.
+  ///
+  /// This is a dispatch test, not a trust decision: LaunchServices reports the *default handler*, it
+  /// does not vet the URL. An action-bearing scheme (`shortcuts://run-shortcut?…`) still reaches its
+  /// app with the link's own parameters, exactly as it did before this predicate existed.
   static func isSystemHandledURL(_ url: URL) -> Bool {
-    guard let scheme = url.scheme, scheme.lowercased() != "file" else { return false }
+    guard url.scheme != nil, !url.isFileURL else { return false }
     return NSWorkspace.shared.urlForApplication(toOpen: url) != nil
   }
 
@@ -259,7 +292,11 @@ enum TerminalLinkOpener {
   private static func resolveExistingFile(_ word: String, cwd: String?) -> ResolvedFile? {
     guard let path = filePath(from: word) else { return nil }
     for candidate in pathCandidates(from: path) {
-      if let abs = absolutePath(for: candidate.path, cwd: cwd),
+      // `abs.hasPrefix("/")` enforces the absolute-path invariant at the one place every resolution
+      // leaves through, rather than trusting each producer: the result becomes an argv element, and a
+      // relative one is a FLAG to an editor CLI, not a filename. `absolutePath` already refuses a
+      // relative cwd; this also catches `~nobody/x`, which `expandingTildeInPath` leaves as-is.
+      if let abs = absolutePath(for: candidate.path, cwd: cwd), abs.hasPrefix("/"),
         FileManager.default.fileExists(atPath: abs)
       {
         return ResolvedFile(path: abs, line: candidate.line, column: candidate.column)
@@ -322,22 +359,33 @@ enum TerminalLinkOpener {
     return result
   }
 
-  /// A resolved local file from a libghostty open-URL, or nil for a real (schemed) web URL.
+  /// A resolved local file from a libghostty open-URL, or nil when the link is a URL rather than a
+  /// path. `internal`, not `private`, so the tests can drive this path without launching an editor.
   ///
-  /// The scheme test is `filePath(from:)`'s explicit passthrough list, **not** `URL.scheme` — a bare
-  /// `file:line` decoration parses as a URL scheme, because a filename is a legal scheme name
-  /// (`URL(string: "user.rb:5")?.scheme == "user.rb"`, likewise `main.go:10:3`, `Gemfile:12`). Trusting
-  /// `URL.scheme` here meant every link of that shape was written off as a web URL and never resolved
-  /// against the cwd, so ⌘-clicking it opened nothing.
-  // `internal` so the tests can drive the libghostty link path without launching an editor.
+  /// Two filters stand between a link and the filesystem, and `URL.scheme` is deliberately not one of
+  /// them: a bare `file:line` decoration parses *as* a scheme, because a filename is a legal scheme
+  /// name (`URL(string: "user.rb:5")?.scheme == "user.rb"`, likewise `main.go:10:3`, `Gemfile:12`).
+  /// Rejecting on `URL.scheme != nil` wrote every link of that shape off as a web URL and resolved
+  /// nothing, so ⌘-clicking it opened nothing.
+  ///
+  /// What does filter, in order:
+  ///   1. `handleOpenURL` runs `isSystemHandledURL` first, so a scheme an installed app claims never
+  ///      arrives here at all.
+  ///   2. `filePath(from:)`, inside `resolveExistingFile`, rejects the passthrough schemes and
+  ///      anything else shaped `scheme://…` — see there for why that is the load-bearing one.
+  ///
+  /// The `file:` branch requires an ABSOLUTE path: `URL(string: "file:-b")?.path` is `"-b"`, which
+  /// would otherwise be probed against the app's own process cwd (`/` under Finder, the repo under
+  /// `make app-run` — so which file opens depends on how the app was launched) and then handed to
+  /// `/usr/bin/open` as its `-b` flag rather than as a filename.
   static func resolveLocalFile(from url: URL, cwd: String?) -> ResolvedFile? {
     if url.isFileURL {
       let path = url.path
-      return FileManager.default.fileExists(atPath: path)
-        ? ResolvedFile(path: path, line: nil, column: nil) : nil
+      guard path.hasPrefix("/"), FileManager.default.fileExists(atPath: path) else { return nil }
+      return ResolvedFile(path: path, line: nil, column: nil)
     }
-    return resolveExistingFile(
-      url.absoluteString.removingPercentEncoding ?? url.absoluteString, cwd: cwd)
+    let link = url.absoluteString
+    return resolveExistingFile(link.removingPercentEncoding ?? link, cwd: cwd)
   }
 
 }
