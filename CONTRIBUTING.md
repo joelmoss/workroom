@@ -13,7 +13,7 @@ Before opening a PR:
   [the contract](README.md#the---json-machine-contract).
 - Note that this repo is a **colocated Git + JJ** repo, so either VCS works for contributing.
 
-See [`CLAUDE.md`](CLAUDE.md) and [`macapp/CLAUDE.md`](macapp/CLAUDE.md) for the conventions the
+See [`AGENTS.md`](AGENTS.md) and [`macapp/AGENTS.md`](macapp/AGENTS.md) for the conventions the
 maintainer follows.
 
 ---
@@ -149,7 +149,7 @@ workroom/
 │   ├── ui/                  # Colored output, tables, log panels, interactive prompts (huh)
 │   ├── updater/             # `workroom update`: GitHub release check + binary swap
 │   └── errs/                # Shared error sentinels + machine codes + exit codes
-├── macapp/                  # ★ The macOS app (SwiftUI) — the product; see macapp/CLAUDE.md & macapp/README.md
+├── macapp/                  # ★ The macOS app (SwiftUI) — the product; see macapp/AGENTS.md & macapp/README.md
 ├── vcs/                     # Rust VCS-reading core for the app (jj-lib + UniFFI → the WrVcs SwiftPM package)
 ├── scripts/workroom_setup   # This repo's own example setup hook
 ├── testdata/fixtures/       # Setup/teardown scripts used by Go tests
@@ -162,7 +162,7 @@ workroom/
 
 ### The macOS app architecture
 
-The app (`macapp/`, see [`macapp/CLAUDE.md`](macapp/CLAUDE.md)) is a value-based, **multi-window**
+The app (`macapp/`, see [`macapp/AGENTS.md`](macapp/AGENTS.md)) is a value-based, **multi-window**
 SwiftUI app. The core loop:
 
 1. **Sidebar selection** (project / root / workroom) sets `AppStore.selectedTargetID`.
@@ -352,7 +352,7 @@ embeds it in the app bundle — so a Go toolchain must be on `PATH` when buildin
 targets also run **`make app-vcs`** first (the Rust jj-lib core → the `WrVcs` SwiftPM package), which
 needs **`protoc`** on `PATH` (`brew install protobuf`); a universal release build additionally needs
 rustup `stable` ≥ 1.93. See [`macapp/README.md`](macapp/README.md) and
-[`macapp/CLAUDE.md`](macapp/CLAUDE.md) for the full architecture, the VCS core, the libghostty
+[`macapp/AGENTS.md`](macapp/AGENTS.md) for the full architecture, the VCS core, the libghostty
 integration notes (`macapp/QA-libghostty.md`), and signing details.
 
 ### Working on the Go CLI (engine)
