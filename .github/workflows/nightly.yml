@@ -127,7 +127,6 @@ jobs:
     runs-on: macos-15
     env:
       VERSION: ${{ needs.check.outputs.version }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -250,7 +249,14 @@ jobs:
             macapp/build/release/Workroom Nightly.dmg
             macapp/build/release/appcast-fields.env
           if-no-files-found: error
-          retention-days: 1
+          # v4 artifact names are unique per RUN, not per attempt, and this action fails by
+          # default when the name already exists — so "Re-run all jobs" would rebuild and
+          # re-notarize for ~40min and then die on this step.
+          overwrite: true
+          # 7, not 1: GitHub allows job re-runs for 30 days, and this artifact is the ONLY copy of
+          # the notarized DMG — a publish that fails Friday must still be retryable on Monday
+          # without re-running the whole signed macOS build.
+          retention-days: 7
           compression-level: 0
 
   # Build both platforms concurrently; publish the app only after both jobs succeed.

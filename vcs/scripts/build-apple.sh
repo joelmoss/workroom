@@ -48,16 +48,27 @@ input_hash() {
   {
     # Relative paths (cwd is vcs/) so the hash doesn't move when the repo does — every workroom
     # copy of the tree would otherwise rebuild from scratch.
-    # The local dependency closure of wr-vcs-uniffi. Update this list when adding a
-    # local dependency; CI calls this function too, so there is no second cache key to edit.
-    find crates/wr-vcs-uniffi crates/wr-vcs-core crates/wr-vcs-model \
-      -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256
+    # Everything in crates/ EXCEPT the two the app's VCS library does not link — keep in step with
+    # vcs/Cargo.toml's `members`. Deliberately a denylist: an ALLOWLIST of wr-vcs-uniffi's
+    # dependency closure lets a crate later pulled into that closure go unhashed, so CI hits its
+    # output cache, skips the build, and ships an xcframework older than its sources — with
+    # --check passing on the same hash. Here a new crate is hashed by default; only mistakenly
+    # EXCLUDING a linked crate reintroduces that risk, and forgetting to exclude one merely costs
+    # a rebuild. CI calls this function too, so there is no second cache key to edit.
+    find crates -type f -not -path '*/target/*' \
+      -not -path 'crates/wr-agent/*' -not -path 'crates/wr-vcs-git/*' \
+      -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256
     shasum -a 256 Cargo.toml Cargo.lock
     if [ -d .cargo ]; then
       find .cargo -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256
     fi
     shasum -a 256 < "$self"   # content only: the path itself varies with how we were invoked
     rustc --version
+    # Flags change codegen without touching a single hashed file. Known remaining gaps: a .cargo
+    # config ABOVE vcs/ (cargo walks parents, this only reads vcs/.cargo), and the rustup toolchain
+    # `--universal` selects via `rustup run stable`, which need not be the PATH rustc above.
+    echo "RUSTFLAGS=${RUSTFLAGS:-}"
+    echo "CARGO_ENCODED_RUSTFLAGS=${CARGO_ENCODED_RUSTFLAGS:-}"
   } | shasum -a 256 | awk '{print $1}'
 }
 
@@ -150,9 +161,11 @@ cp "$BIND/wr_vcs_uniffiFFI.modulemap" "$FFI/module.modulemap"
 mkdir -p "$GEN"
 cp "$BIND/wr_vcs_uniffi.swift" "$GEN/wr_vcs_uniffi.swift"
 
-# Outputs complete — vouch for them. Re-hashed rather than reusing $WANT so a source edit made
-# mid-build doesn't get stamped as built.
-{ input_hash; echo "universal=$universal"; } > "$STAMP"
+# Outputs complete — vouch for them. $WANT (the PRE-build hash), not a re-hash: re-hashing stamps
+# a source edit made DURING the build as though it had been compiled, and every later run and
+# --check then accepts those stale outputs forever. Stamping the inputs we actually built from
+# fails safe — a mid-build edit simply mismatches on the next run and rebuilds.
+{ echo "$WANT"; echo "universal=$universal"; } > "$STAMP"
 
 echo "built: $XC"
 echo "       $GEN/wr_vcs_uniffi.swift"

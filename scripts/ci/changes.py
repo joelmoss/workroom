@@ -5,7 +5,8 @@ import subprocess
 
 
 def should_run(base, head):
-    if not base or not head or set(base) == {"0"}:
+    # set(x) == {"0"} is git's all-zeros sentinel (a ref that did not exist yet).
+    if not base or not head or set(base) == {"0"} or set(head) == {"0"}:
         return True
     try:
         paths = subprocess.check_output(

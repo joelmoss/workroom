@@ -92,9 +92,29 @@ if NOTES_MD="$(gh release view "$TAG" --repo "$REPO" --json body -q .body 2>/dev
 fi
 
 # Fetch the current feed, or start a skeleton if the appcast release/asset doesn't exist yet.
+#
+# A FAILED download must never read as "no feed yet". The skeleton below is uploaded with
+# --clobber, so treating a timeout, a rate limit or a 502 as absence rewrites the live feed down to
+# this run's single item — silently deleting every stable and prerelease entry, while the run still
+# reports success and every installed app stops being offered updates.
+#
+# So the ONLY thing that authorizes the skeleton is gh reporting the release or its asset explicitly
+# ABSENT. Every other failure is fatal: an outage takes out the probe as readily as the download, so
+# "the probe also failed" must not fall through to initialize either.
 if gh release download "$FEED_TAG" --repo "$REPO" --dir "$BUILD" -p appcast.xml --clobber 2>/dev/null; then
   echo "Fetched existing appcast.xml"
 else
+  if FEED_ASSETS=$(gh release view "$FEED_TAG" --repo "$REPO" --json assets -q '.assets[].name' 2>&1); then
+    if printf '%s\n' "$FEED_ASSETS" | grep -qx 'appcast.xml'; then
+      echo "error: $FEED_TAG lists an appcast.xml asset but it could not be downloaded." \
+        "Refusing to overwrite the live feed with a fresh skeleton." >&2
+      exit 1
+    fi
+  elif ! printf '%s\n' "$FEED_ASSETS" | grep -qiE 'release not found|not found|HTTP 404'; then
+    echo "error: could not read the $FEED_TAG release, and it is not a clean 404." \
+      "Refusing to overwrite the live feed with a fresh skeleton. gh said: $FEED_ASSETS" >&2
+    exit 1
+  fi
   echo "Initializing new appcast.xml"
   cat >"$FEED" <<'XML'
 <?xml version="1.0" encoding="utf-8"?>
