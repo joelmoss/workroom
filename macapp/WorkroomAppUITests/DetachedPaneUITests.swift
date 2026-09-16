@@ -85,6 +85,7 @@ final class DetachedPaneUITests: XCTestCase {
     let detached = detachedWindow(app)
     XCTAssertTrue(
       detached.waitForExistence(timeout: 5), "the detached window should be identifiable")
+    XCTAssertFalse(detached.descendants(matching: .any)["window.footer"].exists)
     XCTAssertTrue(
       detached.descendants(matching: .any).matching(identifier: "terminal.pane").firstMatch
         .waitForExistence(timeout: 5),

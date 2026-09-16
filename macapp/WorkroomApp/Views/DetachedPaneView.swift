@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// The content of a popped-out pane's window (issue #172): the pane itself, edge to edge, with no
-/// chrome of its own.
+/// chrome of its own. The app footer belongs only to the main workroom windows.
 ///
 /// A detached pane is alone in a real window, so the window IS its chrome — the native title bar
 /// names it and closes it, and the pane's own title bar, rounded card and focus ring would only
@@ -61,7 +61,7 @@ extension View {
   ///
   /// This exists as ONE modifier because the failure mode is a hard crash, not a blank view:
   /// `@EnvironmentObject` traps when it is missing, and the miss is invisible until the exact view
-  /// that wants it renders. It cost a crash already — `TerminalStatusBar` reaches for
+  /// that wants it renders. It cost a crash when the pane's status bar reached for
   /// `claudeUsageBridge` and `agentUsage`, which are scene-level in `WorkroomApp` and so were absent
   /// here. If a pane ever grows a dependency on `updater` or `whatsNew` (today purely `RootView`
   /// chrome, and the only two of the app's eight environment objects left out), add it here.

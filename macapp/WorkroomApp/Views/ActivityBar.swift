@@ -39,10 +39,16 @@ struct ActivityBar: View {
         }
       }
       Spacer(minLength: 0)
-      // The notifications bell sits at the bottom of the rail (VSCode-style, where the account/gear
-      // icons live), separate from the section icons above — it opens a popover, it doesn't drive a
-      // pane. Always present, like the bar itself.
-      NotificationsBarButton()
+      SettingsLink {
+        Image(systemName: "gearshape")
+          .font(.system(size: 18))
+          .foregroundStyle(theme.tokens.fgMuted)
+          .frame(width: 36, height: 36)
+      }
+      .buttonStyle(ToolbarIconButtonStyle(wellSize: 36, horizontalPadding: 0))
+      .help("Settings (⌘,)")
+      .accessibilityLabel("Settings")
+      .accessibilityIdentifier("activityBar.settings")
     }
     .padding(.vertical, 6)
     .frame(width: Self.width)
@@ -128,14 +134,14 @@ private struct ActivityBarButton: View {
   }
 }
 
-/// The notifications bell pinned to the bottom of the activity bar (moved here from the title bar).
+/// The notifications bell at the trailing edge of the window footer.
 /// Not an `ActivitySection` — it opens a popover listing all notifications rather than driving a
 /// pane, so it draws no active strip. A plain click toggles the popover; ⌘-click walks the backlog
 /// (opens the oldest pending notification's terminal, mirroring ⇧⌘N). Disabled with no unread; an
 /// unread-count badge sits at the glyph's top-trailing corner. Because the bar lives in a normal
 /// SwiftUI view (unlike the title-bar accessory), a plain `.popover` anchors reliably — no
 /// hand-hosted `NSPopover` needed (contrast the old title-bar bell, which had to hand-host one).
-private struct NotificationsBarButton: View {
+struct NotificationsBarButton: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @State private var hovering = false
@@ -151,9 +157,9 @@ private struct NotificationsBarButton: View {
       }
     } label: {
       Image(systemName: "bell")
-        .font(.system(size: 18, weight: .regular))
+        .font(.system(size: 13, weight: .regular))
         .foregroundStyle(theme.tokens.fgMuted)
-        .frame(width: 44, height: 40)
+        .frame(width: ActivityBar.width, height: WindowFooter.height)
         .overlay(alignment: .topTrailing) {
           UnreadBadge(count: notifications.total)
             .padding(.top, 3)
@@ -181,7 +187,7 @@ private struct NotificationsBarButton: View {
       notifications.total > 0 ? "Notifications, \(notifications.total) unread" : "Notifications"
     )
     .accessibilityIdentifier("activityBar.notifications")
-    .popover(isPresented: $showPopover, arrowEdge: .leading) {
+    .popover(isPresented: $showPopover, arrowEdge: .bottom) {
       NotificationsPopover(onActivate: { showPopover = false })
         .environmentObject(store)
         .environmentObject(notifications)
