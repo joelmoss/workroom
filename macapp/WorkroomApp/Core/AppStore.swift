@@ -2818,23 +2818,38 @@ final class AppStore: ObservableObject {
       loadFixture()
       return
     }
-    let generation = projectStore.beginLoad()
+    var load = projectStore.beginLoad(cli: cli, warnings: warnings)
+    let issuedGeneration = load.generation
     pendingLoads += 1
     isLoading = true
     defer {
       pendingLoads -= 1
       isLoading = pendingLoads > 0
     }
-    do {
-      let response = try await cli.list(warnings: warnings, project: nil)
-      guard generation == projectStore.loadGeneration else { return }
-      apply(response.projects)
-      lastLoadAt = Date()
-      resolveBranches()
-      refreshWorkroomStatuses()
-    } catch {
-      guard generation == projectStore.loadGeneration else { return }
-      if surfaceErrors { present(error) }
+    while true {
+      let result = await load.task.result
+      // A newer read may still be pending. Do not return to mutation callers until it finishes:
+      // addProject and create-as-split immediately resolve their new target after awaiting reload.
+      if let latest = projectStore.latestLoad, latest.generation != load.generation {
+        load = latest
+        continue
+      }
+      // No suspension between checking the generation, publishing, and reconciling this window.
+      switch result {
+      case .success(let response):
+        if projectStore.claimPublication(of: load) {
+          apply(response.projects)
+          resolveBranches()
+          refreshWorkroomStatuses()
+        } else {
+          reconcileWindow(with: projects)
+        }
+        lastLoadAt = Date()
+      case .failure(let error):
+        // Only the issuing caller owns this error's presentation policy and window.
+        if surfaceErrors, load.generation == issuedGeneration { present(error) }
+      }
+      return
     }
   }
 
@@ -3004,6 +3019,17 @@ final class AppStore: ObservableObject {
     let fresh = applyingDeletionTombstones(sorted)
     projects = fresh
     registerVCSProviders(for: fresh)
+    // Prune shared caches only when publishing an accepted snapshot.
+    let liveIDs = Set(fresh.map(\.id))
+    rootRefs = rootRefs.filter { liveIDs.contains($0.key) }
+    let liveSidebarIDs = Self.liveSidebarIDs(in: fresh)
+    workroomStatuses = workroomStatuses.filter { liveSidebarIDs.contains($0.key) }
+    reconcileWindow(with: fresh)
+  }
+
+  /// Shared publication does not update a window's selection, splits, sheets or saved session.
+  /// Every successful reload must reconcile its own window, even if another waiter published.
+  private func reconcileWindow(with fresh: [Project]) {
     // Tool-version floor (see `VCSToolVersions`). Here rather than in `init` because whether to probe
     // `jj` at all depends on the project list, which only exists now. Single-flighted process-wide, so
     // repeat calls on later reloads are free once it has landed.
@@ -3032,12 +3058,8 @@ final class AppStore: ObservableObject {
     // to a survivor / dissolves below two, re-pointing selection. Runs after selection is validated so
     // history/notifications/run-toolbar (all keyed on `selectedTargetID`) follow the survivor.
     pruneWorkroomSplitToLiveLeaves(formerSelection: formerSelection)
-    // Forget labels for projects that went away.
     let liveIDs = Set(fresh.map(\.id))
-    rootRefs = rootRefs.filter { liveIDs.contains($0.key) }
-    // Forget VCS/CI status for sidebar ids that went away (mirrors rootRefs pruning, issue #24).
     let liveSidebarIDs = Self.liveSidebarIDs(in: fresh)
-    workroomStatuses = workroomStatuses.filter { liveSidebarIDs.contains($0.key) }
     // Drop a pending sheet whose project was deleted from ANOTHER window (issue #127 follow-up,
     // adversarial review): `removeProjectLocally` only clears these for the deleting window's own
     // store, but every window's periodic/on-focus reload comes through here. Without this, a second
@@ -3261,10 +3283,16 @@ final class AppStore: ObservableObject {
       // open a terminal on its root, mirroring workroom creation rather than leaving
       // the user on the "Nothing selected" empty state (issue #104). A new project
       // has no workrooms, so the root is the only sensible terminal to open.
-      if let match = projects.first(where: { $0.path == canonical }) {
-        selectedProjectID = match.id
-        selectedTargetID = .root(project: match.path)
+      guard let match = projects.first(where: { $0.path == canonical }) else {
+        throw NSError(
+          domain: "Workroom.AppStore", code: 1,
+          userInfo: [
+            NSLocalizedDescriptionKey:
+              "The project was registered, but could not be loaded. Refresh to try again."
+          ])
       }
+      selectedProjectID = match.id
+      selectedTargetID = .root(project: match.path)
       return .success(())
     } catch {
       present(error)
@@ -3479,12 +3507,8 @@ final class AppStore: ObservableObject {
   var focusedCreation: WorkroomCreation? {
     // A create whose workroom RESOLVES has a pane, and the pane draws it — nothing goes full-frame.
     guard selectedTarget == nil else { return nil }
-    // Selected but unresolvable: `apply` assigns `projects` with no ordering guard, so an
-    // out-of-order `list` can revert it to a snapshot predating a landed workroom (four are in
-    // flight when two creates overlap). `WorkroomTabBar`'s provisional chip is the documented way
-    // back in, and this is what it lands on — keyed on the id STRING, so it resolves with no help
-    // from `projects`. Without it that chip clicks through to the empty state and a failed setup
-    // script's message is unreachable until some unrelated reload repairs the list.
+    // A failed reload can leave a landed create unresolved. The provisional chip opens this
+    // fallback by target id, keeping its setup log reachable until a successful reload.
     if let sid = Self.targetIDString(for: selectedTargetID), let creation = creations[sid] {
       return creation
     }

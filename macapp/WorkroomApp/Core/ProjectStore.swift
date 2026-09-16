@@ -6,11 +6,8 @@ import Foundation
 /// multiple per-window `AppStore`s can share one project list while each keeps its own selection,
 /// terminals, splits, history, and run state.
 ///
-/// This first step is **storage-only and behaviour-preserving**: `AppStore` proxies these
-/// properties straight through to here and re-publishes the store's `objectWillChange`, so the
-/// single shared `AppStore` still behaves exactly as before. The CLI/load logic stays on `AppStore`
-/// for now (it mutates these via the proxies); per-window construction and the multi-window wiring
-/// land in a follow-up.
+/// `AppStore` proxies these properties and re-publishes `objectWillChange`. List requests are
+/// ordered here across windows; each `AppStore` reconciles its own window after an accepted read.
 @MainActor
 final class ProjectStore: ObservableObject {
   /// The shared instance used in production (every window's `AppStore` points at it). Tests
@@ -22,13 +19,34 @@ final class ProjectStore: ObservableObject {
   /// piece of state shared across all windows.
   @Published var projects: [Project] = []
 
-  /// Orders CLI list requests across windows by issue time, not completion time (#170).
-  /// Once a newer read starts, an older response must not publish or prune derived state.
-  private(set) var loadGeneration: UInt64 = 0
+  /// A read is stamped when issued, across all windows (#170). Superseded callers await
+  /// the newest read too. Success publishes its result; failure leaves the project list unchanged.
+  struct Load {
+    let generation: UInt64
+    let task: Task<ListResponse, Error>
+  }
 
-  func beginLoad() -> UInt64 {
+  private(set) var latestLoad: Load?
+  private var loadGeneration: UInt64 = 0
+  private var publishedLoadGeneration: UInt64 = 0
+
+  func beginLoad(cli: WorkroomCLIProtocol, warnings: String) -> Load {
     loadGeneration += 1
-    return loadGeneration
+    let load = Load(
+      generation: loadGeneration,
+      task: Task { try await cli.list(warnings: warnings, project: nil) })
+    latestLoad = load
+    return load
+  }
+
+  /// Called synchronously with publication on the main actor. Other waiters reconcile their
+  /// own window against `projects` without republishing the same raw CLI snapshot.
+  func claimPublication(of load: Load) -> Bool {
+    guard load.generation == loadGeneration, load.generation > publishedLoadGeneration else {
+      return false
+    }
+    publishedLoadGeneration = load.generation
+    return true
   }
 
   /// Per-project resolved root branch/bookmark labels, hydrated asynchronously after each load.
