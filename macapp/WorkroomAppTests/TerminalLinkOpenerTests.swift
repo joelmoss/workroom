@@ -151,8 +151,8 @@ final class TerminalLinkOpenerTests: XCTestCase {
   }
 
   func testVSCodeFallsBackToURLSchemeWhenCLIMissing() {
-    // The URL handler is the last resort; it always carries a column, since `:line` alone opens the
-    // file without seeking.
+    // The URL handler is the last resort, reached only when the bundled `code` binary is missing.
+    // It always carries a column, matching VS Code's documented `:line:column` form.
     let inv = TerminalLinkOpener.launchInvocation(
       file: .init(path: "/proj/app.rb", line: 12, column: nil),
       editorBundleID: "com.microsoft.VSCode", editorInstalled: true, vscodeCLIPath: nil,
@@ -392,9 +392,86 @@ final class TerminalLinkOpenerTests: XCTestCase {
       TerminalLinkOpener.isSystemHandledURL(try XCTUnwrap(URL(string: "FILE:///tmp/missing.txt"))))
   }
 
-  // handleOpenURL(_:cwd:) — the libghostty link path resolves the same decorations ⌘-click does:
-  // a `:line`, a `:line:col`, a `:line-line` range, and a Rails `:line:in '…'` frame all reduce to
-  // the bare path. Asserted through resolveLocalFile's public sibling to keep the launch out of it.
+  // resolveLocalFile(from:cwd:) — a URL must never be offered to filesystem resolution. Dropping the
+  // old `url.scheme == nil` guard (a filename is a legal scheme name) opened a shadowing hole: the
+  // passthrough list is case-sensitive, so `HTTPS://…` survived it, and appendingPathComponent
+  // collapses the `//` — a repo shipping `HTTPS:/example.com/x.command` captured the click.
+
+  func testURLsWithAnAuthorityNeverResolveToAFile() throws {
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    // The shadow files a malicious repo would ship, at the exact paths the join produces.
+    for shadow in ["HTTPS:/example.com", "vscode:/file/tmp", "anything:/evil"] {
+      try fm.createDirectory(
+        at: dir.appendingPathComponent(shadow), withIntermediateDirectories: true)
+    }
+    for shadow in [
+      "HTTPS:/example.com/payload.command", "vscode:/file/tmp/payload.command",
+      "anything:/evil/payload.command",
+    ] {
+      fm.createFile(atPath: dir.appendingPathComponent(shadow).path, contents: Data())
+    }
+    defer { try? fm.removeItem(at: dir) }
+
+    for link in [
+      "HTTPS://example.com/payload.command",  // case-sensitive passthrough list misses this
+      "vscode://file/tmp/payload.command",  // a scheme an app claims, but not via the list
+      "anything://evil/payload.command",  // a scheme no app claims at all
+      "https://example.com/x",
+    ] {
+      let url = try XCTUnwrap(URL(string: link), link)
+      XCTAssertNil(
+        TerminalLinkOpener.resolveLocalFile(from: url, cwd: dir.path),
+        "\(link) is a URL — it must never resolve to a file, even when one sits at the joined path")
+    }
+  }
+
+  func testBareWordClickAlsoRejectsURLs() throws {
+    // The ⌘-click word path (resolvesToFile) does NOT go through resolveLocalFile, so the guard has
+    // to live in filePath(from:) — their shared chokepoint — or this entry point stays open.
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try fm.createDirectory(
+      at: dir.appendingPathComponent("HTTP:/evil.com"), withIntermediateDirectories: true)
+    fm.createFile(
+      atPath: dir.appendingPathComponent("HTTP:/evil.com/a.command").path, contents: Data())
+    defer { try? fm.removeItem(at: dir) }
+
+    XCTAssertFalse(
+      TerminalLinkOpener.resolvesToFile("HTTP://evil.com/a.command", cwd: dir.path),
+      "a case-variant web URL must not resolve to the repo file that shadows it")
+  }
+
+  func testPassthroughSchemeMatchIsCaseInsensitive() {
+    for link in ["HTTPS://a.b", "Http://a.b", "MAILTO:me@x.com", "SSH://host"] {
+      XCTAssertNil(TerminalLinkOpener.filePath(from: link), "\(link) is a web URL, not a path")
+    }
+    XCTAssertEqual(TerminalLinkOpener.filePath(from: "FILE:///tmp/a.txt"), "/tmp/a.txt")
+  }
+
+  func testHasAuthorityRejectsURLsAndAcceptsPaths() {
+    for link in ["https://a.b", "HTTPS://a.b", "x-y+z.1://a", "anything://evil/x"] {
+      XCTAssertTrue(TerminalLinkOpener.hasAuthority(link), "\(link) is shaped scheme://")
+    }
+    // A path may hold colons and slashes; it can never hold `://`.
+    for link in ["user.rb:5", "a/b:12:in", "/abs/path.rb", "./rel.rb", "mailto:x@y.com", "C:/x"] {
+      XCTAssertFalse(TerminalLinkOpener.hasAuthority(link), "\(link) is not shaped scheme://")
+    }
+  }
+
+  // A relative cwd would leave the resolved path relative, and a relative path becomes a FLAG once
+  // it is an argv element (`--locale=en` rather than `<cwd>/--locale=en`).
+  func testRelativeCwdResolvesNothing() {
+    for cwd in ["", "relative/dir", "./dir"] {
+      XCTAssertNil(TerminalLinkOpener.absolutePath(for: "src/main.go", cwd: cwd), "cwd \(cwd)")
+    }
+    XCTAssertEqual(
+      TerminalLinkOpener.absolutePath(for: "src/main.go", cwd: "/proj"), "/proj/src/main.go")
+  }
+
+  // resolveLocalFile(from:cwd:) — the libghostty link path resolves the same decorations ⌘-click
+  // does: a `:line`, a `:line:col`, a `:line-line` range, and a Rails `:line:in '…'` frame all reduce
+  // to the bare path. Called directly (it is internal, not private) so no editor is launched.
 
   func testLinkDecorationsReduceToPathAndLine() throws {
     let fm = FileManager.default
