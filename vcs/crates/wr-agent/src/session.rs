@@ -237,8 +237,11 @@ impl SessionStore {
     }
 
     /// Registers the initial client before the reader can drain and retire a short-lived command.
-    /// The callback runs without the store lock. Even if it fails, start draining the detached
-    /// session so a failed handshake cannot leave a blocked child or an immortal store entry.
+    /// The callback runs without the store lock. Even if it fails, start draining the session so a
+    /// failed handshake cannot block the child on a full pty and strand an entry that would
+    /// otherwise retire. A session that survives a failed handshake is not stranded: it is the same
+    /// detached state a crashed client leaves, reattachable by the id the client persists, and
+    /// visible to `list` and `kill`.
     pub(crate) fn create_then<T>(
         &self,
         spec: SessionSpec<'_>,
