@@ -1179,8 +1179,8 @@ final class AppStore: ObservableObject {
     // was current when it opened; the launch window restores its last frame, else a sensible default.
     if !didApplyInitialSize {
       didApplyInitialSize = true
-      // Fixture mode ALWAYS gets the same deterministic size, ahead of session restore and the
-      // `Defaults` fallback below — neither is hermetic (both read real, cross-launch persisted
+      // Fixture mode gets an explicit test frame or the deterministic default size, ahead of
+      // session restore and the `Defaults` fallback below — neither is hermetic (both read persisted
       // state), so a UI test's window geometry otherwise depends on whatever a prior interactive
       // `make app-run` session or an earlier automated run last left behind. Found chasing why
       // several tab-strip overflow tests never overflowed on a wide monitor: the real
@@ -1198,8 +1198,12 @@ final class AppStore: ObservableObject {
       // the ~1000pt of chip content `TabStripOverflowUITests`/`TabStripScrollIntoViewUITests` need to
       // NOT fit, so overflow still triggers.
       if UITestFixture.isActive {
-        window.setContentSize(NSSize(width: 1450, height: 780))
-        window.center()
+        if let frame = UITestFixture.windowFrame {
+          window.setFrame(frame, display: false)
+        } else {
+          window.setContentSize(NSSize(width: 1450, height: 780))
+          window.center()
+        }
       } else if let restored = pendingSessionRestore?.frame.map(NSRectFromString),
         // The saved session owns per-window frames (issue #46) and wins over both the
         // "match the current window" size and the single-slot `Defaults` key, which can only ever
