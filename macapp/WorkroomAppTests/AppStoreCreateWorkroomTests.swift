@@ -460,6 +460,14 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     XCTAssertEqual(
       store.focusedCreation?.targetID, id,
       "so the dialog goes full-frame again — otherwise the log and its failure are unreachable")
+    // The two fields `RootView.creationDetail` branches on. Returning the creation is not enough on
+    // its own: the first cut of this recovery rendered a bare `CreationLoader`, which has no log and
+    // no Dismiss — so the entry could never be cleared from that surface and the terminal stayed
+    // withheld for good. A recovery that cannot be dismissed is not a recovery.
+    XCTAssertEqual(
+      store.focusedCreation?.hasSetup, true, "and it draws the DIALOG, not the loader")
+    XCTAssertNotNil(
+      store.focusedCreation?.targetID, "which needs a target to dismiss against")
   }
 
   /// The routing decision for ⌥⌘N, end to end (issue #171 / #163 §2c): a create landed BESIDE an

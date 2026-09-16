@@ -652,16 +652,21 @@ struct RootView: View {
 
   @ViewBuilder
   private var detailContent: some View {
-    if store.focusedCreation != nil {
-      // A create still in its PRE-NAME phase, started with nothing selected (issue #116): the
-      // workroom has no name yet, so there is no target, no pane and nothing to render this beside —
-      // full-frame is the only option left. Every create PAST that point draws inside its own pane
-      // instead (issue #171), which is why this branch is now the loader and only the loader.
+    if let creation = store.focusedCreation {
+      // The two creates with no pane to draw in (issue #171). Both are full-frame because there is
+      // nowhere else, not because full-frame is preferred:
       //
-      // Deliberately chrome-less: no pane card, no title bar, no run/open-in. There is no workroom to
-      // act on yet. So issue #139's "always" means every workroom with a mounted pane, not every
-      // state the detail can be in — and every workroom that exists now has one.
-      CreationLoader()
+      // 1. A create still in its PRE-NAME phase, started with nothing selected (issue #116) — the
+      //    workroom has no name yet, so there is no target and no pane. Just the loader.
+      // 2. A LANDED create whose target stopped resolving in `projects` (see `focusedCreation`) —
+      //    its pane is gone, so its setup dialog has to come back here. It must keep its log AND its
+      //    Dismiss: that entry is what withholds the terminal, and this is the only surface left that
+      //    can clear it.
+      //
+      // Deliberately chrome-less: no pane card, no title bar, no run/open-in. There is no workroom on
+      // screen to act on. So issue #139's "always" means every workroom with a mounted pane, not every
+      // state the detail can be in.
+      creationDetail(creation)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     } else if store.selectedTarget != nil {
       // The focused target's terminal body — ALWAYS rendered through `WorkroomSplitView` (a no-split
@@ -711,6 +716,19 @@ struct RootView: View {
             .buttonStyle(.borderedProminent)
         }
       }
+    }
+  }
+
+  /// The full-frame create's detail: the streaming setup dialog when this create has a script AND a
+  /// target to dismiss against, else the centred loader. Mirrors `TargetTerminalDetail`'s in-pane
+  /// branch, because it renders the same two states for the panes that no longer exist — a pre-name
+  /// create (no target) and the recovery path (target, but unresolvable).
+  @ViewBuilder
+  private func creationDetail(_ creation: WorkroomCreation) -> some View {
+    if let id = creation.targetID, creation.hasSetup {
+      SetupOverlay(session: creation.session) { store.dismissCreation(id) }
+    } else {
+      CreationLoader()
     }
   }
 
