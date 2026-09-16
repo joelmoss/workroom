@@ -12,13 +12,18 @@ import XCTest
 final class PaneTitleBarUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
 
-  private func launchedApp(longTitle: Bool = false, workroomSplit: Bool = false)
+  private func launchedApp(
+    longTitle: Bool = false, workroomSplit: Bool = false, windowFrame: CGRect? = nil
+  )
     -> XCUIApplication
   {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     if longTitle { app.launchArguments += ["-WorkroomUITestLongTabTitle", "1"] }
     if workroomSplit { app.launchArguments += ["-WorkroomUITestWorkroomSplit", "1"] }
+    if let windowFrame {
+      app.launchArguments += ["-WorkroomUITestWindowFrame", NSStringFromRect(windowFrame)]
+    }
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
     return app
@@ -143,21 +148,29 @@ final class PaneTitleBarUITests: XCTestCase {
   /// a `.fixedSize` made the first variant always "fit", so every later rung was unreachable). The
   /// same trap applies here, so assert the collapse by OBSERVING it, not by trusting the ladder.
   func testNarrowPaneCollapsesTheOptionalControlsIntoTheOverflowMenu() {
-    let app = launchedApp()
+    let app = launchedApp(windowFrame: CGRect(x: 80, y: 80, width: 1650, height: 780))
     openWorkroom(app)
+    XCTAssertEqual(app.windows.firstMatch.frame.width, 1650, accuracy: 1)
     openDiffPane(app)
 
     // Wide: the mode switch is in the row and there is nothing to overflow.
     XCTAssertTrue(app.buttons["tab.toolbar.diffSideBySide"].waitForExistence(timeout: 8))
-    XCTAssertFalse(app.buttons["pane.toolbar.overflow"].exists)
+    // SwiftUI Menu exposes a menu control, which a buttons-only query misses.
+    let overflow = app.descendants(matching: .any).matching(identifier: "pane.toolbar.overflow")
+      .firstMatch
+    XCTAssertFalse(overflow.exists)
 
-    // Halve the pane twice — ~420pt is where the full row stops fitting.
+    // Three even panes need at least 904pt. The wider fixture leaves ~1000pt for the
+    // container, so both splits fit and each pane lands near 330pt, in the collapse band.
     app.menuBars.menuBarItems["View"].menuItems["Split Right"].click()
     assertCount(panes(app), reaches: 2)
     app.menuBars.menuBarItems["View"].menuItems["Split Right"].click()
     assertCount(panes(app), reaches: 3)
 
-    let overflow = app.buttons["pane.toolbar.overflow"]
+    for pane in panes(app).allElementsBoundByIndex {
+      XCTAssertGreaterThanOrEqual(pane.frame.width, 300)
+      XCTAssertLessThan(pane.frame.width, 399)
+    }
     XCTAssertTrue(
       overflow.waitForExistence(timeout: 8),
       "the ladder never collapsed — a dead ViewThatFits keeps its widest candidate (issue #168)")
@@ -207,6 +220,8 @@ final class PaneTitleBarUITests: XCTestCase {
     openWorkroom(app)
     XCTAssertTrue(app.buttons["pane.toolbar.splitRight"].waitForExistence(timeout: 6))
     XCTAssertFalse(app.buttons["pane.toolbar.openFile"].exists)
-    XCTAssertFalse(app.buttons["pane.toolbar.overflow"].exists)
+    XCTAssertFalse(
+      app.descendants(matching: .any).matching(identifier: "pane.toolbar.overflow").firstMatch
+        .exists)
   }
 }

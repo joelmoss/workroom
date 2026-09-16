@@ -78,6 +78,23 @@ final class SharedPrefDefaultsTests: XCTestCase {
     writtenArguments = []
   }
 
+  func testWindowFrameRequiresAnActiveFixture() {
+    setArgument("0", forKey: UITestFixture.defaultsKey)
+    setArgument("{{80, 80}, {1650, 780}}", forKey: "WorkroomUITestWindowFrame")
+    XCTAssertNil(UITestFixture.windowFrame)
+
+    setArgument("1", forKey: UITestFixture.defaultsKey)
+    XCTAssertEqual(UITestFixture.windowFrame, CGRect(x: 80, y: 80, width: 1650, height: 780))
+  }
+
+  func testInvalidWindowFrameKeepsTheFixtureDefault() {
+    setArgument("1", forKey: UITestFixture.defaultsKey)
+    for value in ["", "invalid", "{{0, 0}, {0, 780}}", "{{0, 0}, {1650, 200}}"] {
+      setArgument(value, forKey: "WorkroomUITestWindowFrame")
+      XCTAssertNil(UITestFixture.windowFrame, value)
+    }
+  }
+
   override func setUp() {
     super.setUp()
     for key in keys {

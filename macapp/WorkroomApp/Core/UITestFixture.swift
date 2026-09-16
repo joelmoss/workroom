@@ -1,3 +1,4 @@
+import AppKit
 import Defaults
 import Foundation
 
@@ -16,8 +17,8 @@ enum UITestFixture {
   /// The launch-argument / `UserDefaults` key the tests set (highest-priority argument domain).
   static let defaultsKey = "WorkroomUITestFixture"
 
-  /// **DEBUG-only, by construction.** Every fixture flag below reads through `flag`/`number`/`text`,
-  /// and outside a Debug build they return the inert default without touching `UserDefaults` at all.
+  /// **DEBUG-only, by construction.** Fixture flags read through `flag`/`number`/`text` (or require
+  /// `isActive` first), and outside Debug they return the inert default without reading defaults.
   ///
   /// The flags are read from `UserDefaults.standard`, which is the app's *persisted* domain and not
   /// just the launch-argument domain the tests use. So without this gate a single
@@ -69,6 +70,26 @@ enum UITestFixture {
   static var sessionFilePath: String? {
     guard isActive else { return nil }
     return text("WorkroomUITestSessionFile")
+  }
+
+  /// An explicit fixture window frame, in `NSStringFromRect` format, for geometry-sensitive tests:
+  /// `-WorkroomUITestWindowFrame "{{80, 80}, {1650, 780}}"`.
+  /// Fixture sizing bypasses saved sessions and `window.mainFrame`; absent or invalid input keeps
+  /// the usual deterministic size. Only active Debug fixtures may override it.
+  static var windowFrame: NSRect? {
+    guard isActive else { return nil }
+    // UserDefaults tries to parse a leading `{` as a property-list dictionary and drops
+    // NSStringFromRect strings. Read this argument verbatim before the defaults fallback.
+    let arguments = ProcessInfo.processInfo.arguments
+    let index = arguments.firstIndex(of: "-WorkroomUITestWindowFrame")
+    let argument = index.flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+    guard let value = argument ?? text("WorkroomUITestWindowFrame") else { return nil }
+    let frame = NSRectFromString(value)
+    guard frame.origin.x.isFinite, frame.origin.y.isFinite,
+      frame.width.isFinite, frame.height.isFinite,
+      frame.width > 200, frame.height > 200
+    else { return nil }
+    return frame
   }
 
   /// When set (`-WorkroomUITestNoProjects 1`), the fixture loads an EMPTY project list — the
