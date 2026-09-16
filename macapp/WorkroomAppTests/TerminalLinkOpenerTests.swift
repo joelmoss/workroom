@@ -131,27 +131,41 @@ final class TerminalLinkOpenerTests: XCTestCase {
       [Candidate(path: "a:b/file.rb", line: nil, column: nil)])
   }
 
-  // launchInvocation(...) — line-aware editor dispatch. editorInstalled/zedCLIPath are injected so
-  // the mapping is pure; the with-line branches don't touch Launch Services.
+  // launchInvocation(...) — line-aware editor dispatch. editorInstalled and the editor CLI paths are
+  // injected so the mapping is pure; the with-line branches do not touch Launch Services.
 
-  func testVSCodeSeeksToLineViaURLScheme() {
+  func testVSCodeSeeksToLineViaBundledCLI() {
+    let cli = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
     let withColumn = TerminalLinkOpener.launchInvocation(
       file: .init(path: "/proj/app.rb", line: 12, column: 5),
-      editorBundleID: "com.microsoft.VSCode", editorInstalled: true, zedCLIPath: nil)
-    XCTAssertEqual(withColumn.executable, "/usr/bin/open")
-    XCTAssertEqual(withColumn.arguments, ["vscode://file/proj/app.rb:12:5"])
+      editorBundleID: "com.microsoft.VSCode", editorInstalled: true, vscodeCLIPath: cli,
+      zedCLIPath: nil)
+    XCTAssertEqual(withColumn.executable, cli)
+    XCTAssertEqual(withColumn.arguments, ["--goto", "/proj/app.rb:12:5"])
 
     let lineOnly = TerminalLinkOpener.launchInvocation(
       file: .init(path: "/proj/app.rb", line: 12, column: nil),
-      editorBundleID: "com.microsoft.VSCode", editorInstalled: true, zedCLIPath: nil)
-    XCTAssertEqual(lineOnly.arguments, ["vscode://file/proj/app.rb:12"])
+      editorBundleID: "com.microsoft.VSCode", editorInstalled: true, vscodeCLIPath: cli,
+      zedCLIPath: nil)
+    XCTAssertEqual(lineOnly.arguments, ["--goto", "/proj/app.rb:12"])
+  }
+
+  func testVSCodeFallsBackToURLSchemeWhenCLIMissing() {
+    // The URL handler is the last resort; it always carries a column, since `:line` alone opens the
+    // file without seeking.
+    let inv = TerminalLinkOpener.launchInvocation(
+      file: .init(path: "/proj/app.rb", line: 12, column: nil),
+      editorBundleID: "com.microsoft.VSCode", editorInstalled: true, vscodeCLIPath: nil,
+      zedCLIPath: nil)
+    XCTAssertEqual(inv.executable, "/usr/bin/open")
+    XCTAssertEqual(inv.arguments, ["vscode://file/proj/app.rb:12:1"])
   }
 
   func testZedSeeksToLineViaBundledCLI() {
     let cli = "/Applications/Zed.app/Contents/MacOS/cli"
     let inv = TerminalLinkOpener.launchInvocation(
       file: .init(path: "/proj/app.rb", line: 12, column: 5),
-      editorBundleID: "dev.zed.Zed", editorInstalled: true, zedCLIPath: cli)
+      editorBundleID: "dev.zed.Zed", editorInstalled: true, vscodeCLIPath: nil, zedCLIPath: cli)
     XCTAssertEqual(inv.executable, cli)
     XCTAssertEqual(inv.arguments, ["/proj/app.rb:12:5"])
   }
@@ -159,7 +173,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
   func testZedFallsBackToOpenWhenCLIMissing() {
     let inv = TerminalLinkOpener.launchInvocation(
       file: .init(path: "/proj/app.rb", line: 12, column: 5),
-      editorBundleID: "dev.zed.Zed", editorInstalled: true, zedCLIPath: nil)
+      editorBundleID: "dev.zed.Zed", editorInstalled: true, vscodeCLIPath: nil, zedCLIPath: nil)
     // Opens at the top; the exact `-b` argv depends on whether Zed is installed in this environment.
     XCTAssertEqual(inv.executable, "/usr/bin/open")
     XCTAssertEqual(inv.arguments.last, "/proj/app.rb")
@@ -168,7 +182,8 @@ final class TerminalLinkOpenerTests: XCTestCase {
   func testXcodeSeeksToLineViaXed() {
     let inv = TerminalLinkOpener.launchInvocation(
       file: .init(path: "/proj/app.rb", line: 12, column: 5),
-      editorBundleID: "com.apple.dt.Xcode", editorInstalled: true, zedCLIPath: nil)
+      editorBundleID: "com.apple.dt.Xcode", editorInstalled: true, vscodeCLIPath: nil,
+      zedCLIPath: nil)
     XCTAssertEqual(inv.executable, "/usr/bin/xed")
     XCTAssertEqual(inv.arguments, ["--line", "12", "/proj/app.rb"])  // no column option in xed
   }
@@ -176,7 +191,8 @@ final class TerminalLinkOpenerTests: XCTestCase {
   func testNoLineOpensViaOpenRegardlessOfEditor() {
     let inv = TerminalLinkOpener.launchInvocation(
       file: .init(path: "/proj/app.rb", line: nil, column: nil),
-      editorBundleID: "com.microsoft.VSCode", editorInstalled: true, zedCLIPath: nil)
+      editorBundleID: "com.microsoft.VSCode", editorInstalled: true, vscodeCLIPath: nil,
+      zedCLIPath: nil)
     XCTAssertEqual(inv.executable, "/usr/bin/open")
     XCTAssertEqual(inv.arguments.last, "/proj/app.rb")
   }
@@ -185,14 +201,16 @@ final class TerminalLinkOpenerTests: XCTestCase {
     // Uninstalled chosen editor → default app (no -b), no line.
     let uninstalled = TerminalLinkOpener.launchInvocation(
       file: .init(path: "/x.rb", line: 12, column: nil),
-      editorBundleID: "com.example.nope", editorInstalled: false, zedCLIPath: nil)
+      editorBundleID: "com.example.nope", editorInstalled: false, vscodeCLIPath: nil,
+      zedCLIPath: nil)
     XCTAssertEqual(uninstalled.executable, "/usr/bin/open")
     XCTAssertEqual(uninstalled.arguments, ["/x.rb"])
 
     // An editor we don't know how to seek in → open it (here "nope" isn't installed → default app).
     let unknown = TerminalLinkOpener.launchInvocation(
       file: .init(path: "/x.rb", line: 12, column: nil),
-      editorBundleID: "com.example.nope", editorInstalled: true, zedCLIPath: nil)
+      editorBundleID: "com.example.nope", editorInstalled: true, vscodeCLIPath: nil, zedCLIPath: nil
+    )
     XCTAssertEqual(unknown.arguments, ["/x.rb"])
   }
 
@@ -219,14 +237,14 @@ final class TerminalLinkOpenerTests: XCTestCase {
   }
 
   func testProjectAwareVSCodeFallsBackToFileOnlyWhenCLIMissing() {
-    // No `code` CLI → can't target the folder; degrade to today's file-only URL open.
+    // No `code` CLI → can't target the folder; degrade to the file-only URL open (column defaulted).
     let inv = TerminalLinkOpener.launchInvocations(
       file: .init(path: "/proj/app.rb", line: 12, column: nil), project: "/proj",
       editorBundleID: "com.microsoft.VSCode", editorInstalled: true,
       vscodeCLIPath: nil, zedCLIPath: nil)
     XCTAssertEqual(inv.count, 1)
     XCTAssertEqual(inv[0].executable, "/usr/bin/open")
-    XCTAssertEqual(inv[0].arguments, ["vscode://file/proj/app.rb:12"])
+    XCTAssertEqual(inv[0].arguments, ["vscode://file/proj/app.rb:12:1"])
   }
 
   func testProjectAwareZedOpensFolderAndFileViaCLI() {
@@ -253,13 +271,15 @@ final class TerminalLinkOpenerTests: XCTestCase {
   }
 
   func testNoProjectUsesPlainFileOnlyInvocation() {
-    // Terminal ⌘-click (no project) keeps the unchanged URL behavior.
+    // Terminal ⌘-click (no project) opens the file alone — but still through `code --goto`, so it
+    // seeks to the line the same way the project-aware branch does.
     let inv = TerminalLinkOpener.launchInvocations(
       file: .init(path: "/proj/app.rb", line: 12, column: nil), project: nil,
       editorBundleID: "com.microsoft.VSCode", editorInstalled: true,
       vscodeCLIPath: "/x/code", zedCLIPath: nil)
     XCTAssertEqual(inv.count, 1)
-    XCTAssertEqual(inv[0].arguments, ["vscode://file/proj/app.rb:12"])
+    XCTAssertEqual(inv[0].executable, "/x/code")
+    XCTAssertEqual(inv[0].arguments, ["--goto", "/proj/app.rb:12"])
   }
 
   func testProjectWithDefaultAppOpensFileOnly() {
@@ -288,7 +308,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
   func testVSCodeURLPercentEncodesPathKeepingSlashes() {
     XCTAssertEqual(
       TerminalLinkOpener.vscodeFileURL(path: "/proj/my app.rb", line: 7, column: nil),
-      "vscode://file/proj/my%20app.rb:7")
+      "vscode://file/proj/my%20app.rb:7:1")
     XCTAssertEqual(
       TerminalLinkOpener.vscodeFileURL(path: "/a/b.rb", line: 7, column: 3),
       "vscode://file/a/b.rb:7:3")

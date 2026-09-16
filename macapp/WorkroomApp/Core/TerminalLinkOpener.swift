@@ -91,7 +91,7 @@ enum TerminalLinkOpener {
       [
         launchInvocation(
           file: file, editorBundleID: editorBundleID, editorInstalled: editorInstalled,
-          zedCLIPath: zedCLIPath)
+          vscodeCLIPath: vscodeCLIPath, zedCLIPath: zedCLIPath)
       ]
     }
     guard let project, let id = editorBundleID, !id.isEmpty, editorInstalled else {
@@ -116,10 +116,11 @@ enum TerminalLinkOpener {
   /// one was parsed and the chosen editor is installed and can seek; otherwise `/usr/bin/open` with
   /// `openArguments` (the file's default app, or `-b <bundleID>` opened at the top).
   ///
-  /// `editorInstalled` / `zedCLIPath` are resolved by the caller (Launch Services / filesystem
-  /// lookups) and injected, so this stays a pure, unit-testable mapping.
+  /// `editorInstalled` / `vscodeCLIPath` / `zedCLIPath` are resolved by the caller (Launch Services /
+  /// filesystem lookups) and injected, so this stays a pure, unit-testable mapping.
   static func launchInvocation(
-    file: ResolvedFile, editorBundleID: String?, editorInstalled: Bool, zedCLIPath: String?
+    file: ResolvedFile, editorBundleID: String?, editorInstalled: Bool, vscodeCLIPath: String?,
+    zedCLIPath: String?
   ) -> (executable: String, arguments: [String]) {
     let fallback = (
       executable: "/usr/bin/open",
@@ -130,6 +131,10 @@ enum TerminalLinkOpener {
     }
     switch id {
     case EditorBundleID.vscode:
+      // `code --goto` first, the `vscode://` URL only when the bundled CLI is missing. The URL was
+      // reported not to seek (the file opens at the top); `--goto` is the same flag the
+      // project-aware branch above already ships and seeks with, so prefer the path we know works.
+      if let vscodeCLIPath { return (vscodeCLIPath, ["--goto", positionSuffixed(file)]) }
       return ("/usr/bin/open", [vscodeFileURL(path: file.path, line: line, column: file.column)])
     case EditorBundleID.zed:
       guard let zedCLIPath else { return fallback }  // CLI helper missing → open at the top
@@ -141,12 +146,13 @@ enum TerminalLinkOpener {
     }
   }
 
-  /// VS Code's documented open-at-position URL: `vscode://file/<path>:<line>[:<col>]`. The path is
-  /// percent-encoded (keeping `/`); the `:line[:col]` suffix is literal.
+  /// VS Code's documented open-at-position URL: `vscode://file/<path>:<line>:<col>`. The path is
+  /// percent-encoded (keeping `/`); the `:line:col` suffix is literal. Only used when the bundled
+  /// `code` CLI is missing — see `launchInvocation`. The column is always written (defaulting to 1)
+  /// to match the documented form, which carries both.
   static func vscodeFileURL(path: String, line: Int, column: Int?) -> String {
     let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
-    let position = column.map { ":\(line):\($0)" } ?? ":\(line)"
-    return "vscode://file\(encoded)\(position)"
+    return "vscode://file\(encoded):\(line):\(column ?? 1)"
   }
 
   /// Zed CLI positional argument: `<path>:<line>[:<col>]`.
