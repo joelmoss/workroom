@@ -119,10 +119,10 @@ jobs:
       - name: Upload nightly CLI archives
         run: gh release upload nightly dist/* --clobber
 
-  # Build + sign + notarize + staple the DMG at the nightly version, upload it (fixed name), append
-  # the nightly appcast item, then stamp the release title with the version as the skip marker.
+  # Build + sign + notarize + staple the DMG alongside the CLI. The publish job below
+  # uploads it, updates the appcast, then stamps the successful version as the skip marker.
   macapp:
-    needs: [check, cli]
+    needs: check
     if: needs.check.outputs.should_build == 'true'
     runs-on: macos-15
     env:
@@ -241,6 +241,31 @@ jobs:
           # CONFIGURATION=Nightly builds the side-by-side "Workroom Nightly" identity (bundle id,
           # name, icon, pinned nightly channel) instead of the main "Workroom" app.
           CONFIGURATION=Nightly NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-release
+
+      - name: Preserve signed installer for publication
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-macapp
+          path: |
+            macapp/build/release/Workroom Nightly.dmg
+            macapp/build/release/appcast-fields.env
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  # Build both platforms concurrently; publish the app only after both jobs succeed.
+  publish:
+    needs: [check, cli, macapp]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: nightly-macapp
+          path: macapp/build/release
 
       - name: Upload nightly DMG
         run: |

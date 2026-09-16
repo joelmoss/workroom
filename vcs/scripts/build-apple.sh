@@ -3,6 +3,7 @@
 #
 #   build-apple.sh              # arm64 (host) — for local dev on Apple Silicon
 #   build-apple.sh --universal  # arm64 + x86_64 (release/distribution; needs rustup targets)
+#   build-apple.sh --print-input-hash # print the output-cache key without building
 #   build-apple.sh --check      # build nothing; exit 1 if the outputs are stale/missing
 #
 # Outputs into the local SwiftPM package vcs/swift/WrVcs (Package.swift is tracked; these two are
@@ -47,8 +48,14 @@ input_hash() {
   {
     # Relative paths (cwd is vcs/) so the hash doesn't move when the repo does — every workroom
     # copy of the tree would otherwise rebuild from scratch.
-    find . -type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) \
-      -not -path './target/*' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256
+    # The local dependency closure of wr-vcs-uniffi. Update this list when adding a
+    # local dependency; CI calls this function too, so there is no second cache key to edit.
+    find crates/wr-vcs-uniffi crates/wr-vcs-core crates/wr-vcs-model \
+      -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256
+    shasum -a 256 Cargo.toml Cargo.lock
+    if [ -d .cargo ]; then
+      find .cargo -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256
+    fi
     shasum -a 256 < "$self"   # content only: the path itself varies with how we were invoked
     rustc --version
   } | shasum -a 256 | awk '{print $1}'
@@ -57,6 +64,10 @@ input_hash() {
 # Stamp format: line 1 = input_hash, line 2 = `universal=<bool>` (absent in the pre-two-field
 # format, which simply reads as a hash mismatch and rebuilds once).
 WANT=$(input_hash)
+if [ "${1:-}" = "--print-input-hash" ]; then
+  echo "$WANT"
+  exit 0
+fi
 fresh=false          # outputs exist and match the current inputs
 stamp_universal=false # ...and were built with --universal
 if [ -d "$XC" ] && [ -f "$GEN/wr_vcs_uniffi.swift" ] && [ -f "$FFI/wr_vcs_uniffiFFI.h" ] &&
