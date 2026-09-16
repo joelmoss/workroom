@@ -41,17 +41,31 @@ jobs:
       # leaving should_run() and every test untouched) would merge green with no native coverage.
       # Deleting ci.yml outright blocks a merge; silencing the gate would not. No-op on a push,
       # where github.sha is already the trusted commit.
+      # Absent on the base ref when that ref predates the selector — the PR introducing it (this
+      # one) included. No trusted selector means NO gate: the two steps below are skipped, `run`
+      # stays empty, and the `!= 'false'` tests on the four native jobs all pass, so everything
+      # runs. Never fall back to the PR's own copy; that is the bypass this whole step exists for.
       - name: Restore the trusted selector
+        id: selector
         env:
           TRUSTED_REF: ${{ github.event.pull_request.base.sha || github.sha }}
-        run: git checkout "$TRUSTED_REF" -- scripts/ci
+        run: |
+          if git checkout "$TRUSTED_REF" -- scripts/ci 2>/dev/null; then
+            echo "trusted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "trusted=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::no scripts/ci at $TRUSTED_REF — change gate disabled, running every suite"
+          fi
 
       # Named file, not `unittest discover -s scripts/ci`: discover exits 0 when it finds NO
       # tests, so a deleted or renamed suite would report green while proving nothing about the
       # gate that can switch every native job off.
       - name: Test change selection
+        if: steps.selector.outputs.trusted == 'true'
         run: python3 scripts/ci/test_changes.py
+
       - id: changes
+        if: steps.selector.outputs.trusted == 'true'
         env:
           DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           DIFF_HEAD: ${{ github.sha }}
