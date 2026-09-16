@@ -99,6 +99,36 @@ final class MultiWindowTests: XCTestCase {
       registry.allStores.count, 1, "re-resolving the same window doesn't double-register")
   }
 
+  func testRegistryTracksAgentsAcrossWindowsAndRemovesClosedWindows() async {
+    let registry = WindowRegistry()
+    let first = AppStore(projectStore: ProjectStore())
+    let second = AppStore(projectStore: ProjectStore())
+    let firstWindow = NSWindow()
+    let secondWindow = NSWindow()
+    let target = TerminalTarget(id: "root|/tmp", title: "test", path: "/tmp", isMissing: false)
+    for store in [first, second] {
+      store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+      store.terminals.addTab(for: target)
+    }
+    registry.register(window: firstWindow, store: first)
+    registry.register(window: secondWindow, store: second)
+    let codex = first.terminals.tabs(for: target)[0].surface!
+    let claude = second.terminals.tabs(for: target)[0].surface!
+    codex.foregroundProcessNameForTesting = "codex"
+    codex.onTitleChange?("Codex")
+    claude.foregroundProcessNameForTesting = "claude"
+    claude.onTitleChange?("Claude")
+    for _ in 0..<20 where registry.activeAgentBackends != [.codex, .claude] { await Task.yield() }
+    XCTAssertEqual(registry.activeAgentBackends, [.codex, .claude])
+
+    codex.handleCommandFinished(rawExitCode: 0)
+    for _ in 0..<20 where registry.activeAgentBackends != [.claude] { await Task.yield() }
+    XCTAssertEqual(registry.activeAgentBackends, [.claude])
+    registry.unregister(window: secondWindow)
+    XCTAssertTrue(registry.activeAgentBackends.isEmpty)
+    registry.unregister(window: firstWindow)
+  }
+
   func testRegistryAggregatesUnreadAcrossWindows() {
     let registry = WindowRegistry()
     let a = AppStore(projectStore: ProjectStore())
