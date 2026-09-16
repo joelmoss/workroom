@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 import SwiftUI
 
 /// Layout constants for the custom title bar. The bar is drawn as the top strip of the window's
@@ -148,14 +149,16 @@ struct LeadingTitlebarBar: View {
   }
 }
 
-/// Trailing title-bar controls: the update pill and the quick terminal (issue #39) — both
+/// Trailing title-bar controls: the update pill, appearance, theme picker, and quick terminal — all
 /// **window-level**, which is now the whole point. Everything workroom-scoped has left: notifications
 /// and inspector visibility moved to the activity bar, and issue #139 moved the selected target's
 /// run/open-in actions into each workroom pane's own title bar, where a co-displayed split member's
-/// are reachable too. With no update pending this collapses to just the quick terminal.
+/// are reachable too.
 struct TrailingTitlebarBar: View {
   @EnvironmentObject var updater: Updater
   @EnvironmentObject var store: AppStore
+
+  @Default(.theme) private var theme
 
   /// The theme dropdown (issue #36), anchored to its own toolbar button.
   ///
@@ -188,6 +191,15 @@ struct TrailingTitlebarBar: View {
         TitlebarDivider()
       }
 
+      Button {
+        theme = theme.next
+      } label: {
+        Image(systemName: theme.symbol)
+      }
+      .help("Theme: \(theme.label) — click to switch to \(theme.next.label)")
+      .accessibilityLabel("Theme: \(theme.label)")
+      .accessibilityIdentifier("toolbar.appearance")
+
       // Theme (⌘⇧K) — a dropdown anchored here rather than a sheet or a window of its own, because
       // picking a theme is a live-preview gesture: ↑/↓ apply families as you move through them, so the
       // app behind the dropdown IS the preview. A sheet made that impossible twice over (measured on
@@ -208,9 +220,7 @@ struct TrailingTitlebarBar: View {
       .accessibilityIdentifier("toolbar.theme")
       .popover(isPresented: $showThemePicker, arrowEdge: .bottom) { ThemePicker() }
 
-      // Quick Terminal (⌥§) — a ~/ shell in its own window. Always present, and since issue #139 moved
-      // the selected target's run/open-in actions into the workroom pane title bars, the only control
-      // left at the window's trailing edge besides the update pill.
+      // Quick Terminal (⌥§) — a ~/ shell in its own window, always at the trailing edge.
       Button {
         NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
       } label: {
