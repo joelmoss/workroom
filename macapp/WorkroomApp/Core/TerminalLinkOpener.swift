@@ -232,10 +232,25 @@ enum TerminalLinkOpener {
   static func handleOpenURL(_ url: URL, cwd: String?) -> Bool {
     if let resolved = resolveLocalFile(from: url, cwd: cwd) {
       openFile(resolved)
-    } else {
+    } else if isSystemHandledURL(url) {
       NSWorkspace.shared.open(url)
     }
     return true
+  }
+
+  /// Does an installed app actually claim `url`'s scheme (`https:`, `mailto:`, `vscode:`, …)?
+  ///
+  /// Only then may it reach `NSWorkspace.open`; everything else is a silent no-op. libghostty's link
+  /// regex reports plenty of text that isn't an openable link — a Rails backtrace frame
+  /// (`hue/app/views/…/show.rb:1:in`), a bare URL *path* (`/rails/active_storage/disk/…`), a bare
+  /// `file:line` whose "scheme" is really a filename (`user.rb:5`) — and once that text fails to
+  /// resolve on disk, handing it to LaunchServices raises a modal Finder alert ("The application
+  /// can't be opened. -50") instead of doing nothing. Asking LaunchServices whether anything claims
+  /// the scheme is the same question the alert answers, minus the alert. `file:` is excluded outright:
+  /// reaching here means `resolveLocalFile` already found no such file.
+  static func isSystemHandledURL(_ url: URL) -> Bool {
+    guard let scheme = url.scheme, scheme.lowercased() != "file" else { return false }
+    return NSWorkspace.shared.urlForApplication(toOpen: url) != nil
   }
 
   /// Resolve `word` (absolute, ~-relative, or cwd-relative) to an existing, non-passthrough file.
@@ -308,13 +323,19 @@ enum TerminalLinkOpener {
   }
 
   /// A resolved local file from a libghostty open-URL, or nil for a real (schemed) web URL.
-  private static func resolveLocalFile(from url: URL, cwd: String?) -> ResolvedFile? {
+  ///
+  /// The scheme test is `filePath(from:)`'s explicit passthrough list, **not** `URL.scheme` — a bare
+  /// `file:line` decoration parses as a URL scheme, because a filename is a legal scheme name
+  /// (`URL(string: "user.rb:5")?.scheme == "user.rb"`, likewise `main.go:10:3`, `Gemfile:12`). Trusting
+  /// `URL.scheme` here meant every link of that shape was written off as a web URL and never resolved
+  /// against the cwd, so ⌘-clicking it opened nothing.
+  // `internal` so the tests can drive the libghostty link path without launching an editor.
+  static func resolveLocalFile(from url: URL, cwd: String?) -> ResolvedFile? {
     if url.isFileURL {
       let path = url.path
       return FileManager.default.fileExists(atPath: path)
         ? ResolvedFile(path: path, line: nil, column: nil) : nil
     }
-    guard url.scheme == nil else { return nil }  // http/https/etc. → not a local file
     return resolveExistingFile(
       url.absoluteString.removingPercentEncoding ?? url.absoluteString, cwd: cwd)
   }
