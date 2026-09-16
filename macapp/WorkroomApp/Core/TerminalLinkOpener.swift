@@ -23,19 +23,31 @@ enum TerminalLinkOpener {
   /// onto the cwd, and `NSString.appendingPathComponent` collapses `//`. A repo that ships
   /// `HTTPS:/example.com/x.command` would otherwise capture a click on `HTTPS://example.com/x.command`
   /// and hand a local executable to `/usr/bin/open`. Hence the scheme match is case-INSENSITIVE (the
-  /// list is lowercase; `HTTPS://` is the same URL), and `hasAuthority` catches every other scheme —
+  /// list is lowercase; `HTTPS://` is the same URL), and `looksLikeURL` catches every other scheme —
   /// the list can only ever name the ones we thought of.
   static func filePath(from link: String) -> String? {
     let lower = link.lowercased()
     if passthroughSchemes.contains(where: { lower.hasPrefix($0) }) { return nil }
     if lower.hasPrefix("file:") { return URL(string: link)?.path }
-    if hasAuthority(link) { return nil }
+    if looksLikeURL(link) { return nil }
     return link
   }
 
-  /// Is `link` shaped `scheme://…`? Then it is a URL, never a path — no filesystem path holds `://`.
-  static func hasAuthority(_ link: String) -> Bool {
-    link.range(of: "^[A-Za-z][A-Za-z0-9+.-]*://", options: .regularExpression) != nil
+  /// Does `link` lead with a URL scheme rather than a path? True when it starts `scheme:` and that
+  /// colon is **not** followed by a digit.
+  ///
+  /// The digit is the whole test, because the only legitimate `word:` form in terminal output is a
+  /// `:line[:col]` decoration — `user.rb:5`, `Gemfile:12`, `main.go:10:3`. Anything else after the
+  /// colon is a URL body, whether it carries an authority (`https://…`, and every scheme the
+  /// passthrough list above does not name) or is opaque (`javascript:payload.command`, `data:…`).
+  /// Both shapes matter: neither is a path, and letting either through means the link gets joined
+  /// onto the cwd, where a repo-controlled file of that exact name captures the click.
+  ///
+  /// One deliberate loss: a real relative path whose first segment holds a colon not followed by a
+  /// digit (`a:b/file.rb`) now reads as a URL. That shape is rare, libghostty's own link regex does
+  /// not match it either, and treating it as a path is what reopens the hole.
+  static func looksLikeURL(_ link: String) -> Bool {
+    link.range(of: "^[A-Za-z][A-Za-z0-9+.-]*:(?![0-9])", options: .regularExpression) != nil
   }
 
   /// Resolve `path` (absolute, ~-relative, or cwd-relative) to an absolute path. Returns nil for a
@@ -372,7 +384,7 @@ enum TerminalLinkOpener {
   ///   1. `handleOpenURL` runs `isSystemHandledURL` first, so a scheme an installed app claims never
   ///      arrives here at all.
   ///   2. `filePath(from:)`, inside `resolveExistingFile`, rejects the passthrough schemes and
-  ///      anything else shaped `scheme://…` — see there for why that is the load-bearing one.
+  ///      anything else that leads with a scheme — see there for why that is the load-bearing one.
   ///
   /// The `file:` branch requires an ABSOLUTE path: `URL(string: "file:-b")?.path` is `"-b"`, which
   /// would otherwise be probed against the app's own process cwd (`/` under Finder, the repo under

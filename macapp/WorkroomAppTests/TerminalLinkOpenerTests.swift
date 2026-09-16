@@ -360,12 +360,13 @@ final class TerminalLinkOpenerTests: XCTestCase {
   }
 
   func testSchemelessPathsAreNotSystemHandled() throws {
-    // The exact strings LaunchServices raised "-50" on.
+    // The shapes LaunchServices raised "-50" on: gem-root-relative Rails backtrace frames (which
+    // exist nowhere on disk, being relative to the gem rather than the repo) and a bare URL *path*.
     for url in [
-      "hue/app/views/hue/cms/pages/show.rb:1:in",
-      "hue/lib/hue/controller_concerns/cms/pages.rb:96",
-      "./hue/lib/hue/controller_concerns/cms/pages.rb",
-      "/hue/lib/hue/controller_concerns/cms/pages.rb",
+      "acme/app/views/acme/cms/pages/show.rb:1:in",
+      "acme/lib/acme/controller_concerns/cms/pages.rb:96",
+      "./acme/lib/acme/controller_concerns/cms/pages.rb",
+      "/acme/lib/acme/controller_concerns/cms/pages.rb",
       "/rails/active_storage/disk/abc123/banner.webp",
     ] {
       XCTAssertFalse(
@@ -449,13 +450,40 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(TerminalLinkOpener.filePath(from: "FILE:///tmp/a.txt"), "/tmp/a.txt")
   }
 
-  func testHasAuthorityRejectsURLsAndAcceptsPaths() {
-    for link in ["https://a.b", "HTTPS://a.b", "x-y+z.1://a", "anything://evil/x"] {
-      XCTAssertTrue(TerminalLinkOpener.hasAuthority(link), "\(link) is shaped scheme://")
+  func testLooksLikeURLSplitsSchemesFromLineDecorations() {
+    // With an authority, and opaque (no `//`) — both are URL bodies, neither is a path.
+    for link in [
+      "https://a.b", "HTTPS://a.b", "x-y+z.1://a", "anything://evil/x", "smb://attacker/share",
+      "javascript:payload.command", "data:text/html,x", "mailto:x@y.com", "a:b/file.rb", "C:/x",
+    ] {
+      XCTAssertTrue(TerminalLinkOpener.looksLikeURL(link), "\(link) leads with a scheme")
     }
-    // A path may hold colons and slashes; it can never hold `://`.
-    for link in ["user.rb:5", "a/b:12:in", "/abs/path.rb", "./rel.rb", "mailto:x@y.com", "C:/x"] {
-      XCTAssertFalse(TerminalLinkOpener.hasAuthority(link), "\(link) is not shaped scheme://")
+    // A `word:` followed by a DIGIT is the `:line[:col]` decoration, the one legitimate form.
+    for link in [
+      "user.rb:5", "Gemfile:12", "main.go:10:3", "a.rb:32-40", "a/b:12:in", "/abs/path.rb",
+      "./rel.rb", "../up.rb", "~/x.rb", "src/main.go",
+    ] {
+      XCTAssertFalse(TerminalLinkOpener.looksLikeURL(link), "\(link) is a path")
+    }
+  }
+
+  func testOpaqueSchemesNeverResolveToAFile() throws {
+    // No `://` to catch, so only the digit test separates `javascript:payload.command` from
+    // `user.rb:5`. A repo can ship a file under either name.
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    for shadow in ["javascript:payload.command", "data:payload.command"] {
+      fm.createFile(atPath: dir.appendingPathComponent(shadow).path, contents: Data())
+    }
+    defer { try? fm.removeItem(at: dir) }
+
+    for link in ["javascript:payload.command", "data:payload.command"] {
+      XCTAssertFalse(
+        TerminalLinkOpener.resolvesToFile(link, cwd: dir.path),
+        "\(link) is an opaque URL — the cwd file shadowing it must not be opened")
+      let url = try XCTUnwrap(URL(string: link), link)
+      XCTAssertNil(TerminalLinkOpener.resolveLocalFile(from: url, cwd: dir.path), link)
     }
   }
 
