@@ -22,6 +22,15 @@ final class ProjectStore: ObservableObject {
   /// piece of state shared across all windows.
   @Published var projects: [Project] = []
 
+  /// Orders CLI list requests across windows by issue time, not completion time (#170).
+  /// Once a newer read starts, an older response must not publish or prune derived state.
+  private(set) var loadGeneration: UInt64 = 0
+
+  func beginLoad() -> UInt64 {
+    loadGeneration += 1
+    return loadGeneration
+  }
+
   /// Per-project resolved root branch/bookmark labels, hydrated asynchronously after each load.
   @Published var rootRefs: [Project.ID: RootRef] = [:]
 
