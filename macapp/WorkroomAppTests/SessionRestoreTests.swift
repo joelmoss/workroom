@@ -1,3 +1,4 @@
+import WorkroomSessionProtocol
 import XCTest
 
 @testable import Workroom
@@ -30,6 +31,69 @@ final class SessionRestoreTests: XCTestCase {
     .split(
       orientation: LayoutNode<String>.vertical, ratio: 0.35, first: .leaf(first),
       second: .leaf(second))
+  }
+
+  func testRecoveryRestoresAgentUsageWithoutAnOSCTitle() async {
+    for command in ["claude", "codex", "zsh", "nvim", ""] {
+      let sessions = makeSessions()
+      sessions.makeView = { _, cwd, _ in
+        GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+      }
+      let sessionID = UUID()
+      sessions.restore(
+        TargetSession(
+          targetID: target.id,
+          tabs: [terminal("a", title: "Terminal 1")]), for: target)
+      var tab = sessions.tabs(for: target).first!
+      guard case .terminal(var state) = tab.content else { return XCTFail("expected terminal") }
+      state.sessionID = sessionID
+      tab.content = .terminal(state)
+      sessions.replace(tab, for: target)
+      let descriptor = SessionDescriptor(
+        identifier: SessionIdentifier(sessionID), shellProcessID: 123, ttyDevice: 0,
+        workingDirectory: "/tmp", isAttached: false,
+        metadata: [SessionEnvironmentEntry(key: "command", value: command)])
+
+      await sessions.materializeLivePersistentSessions { [] }
+      XCTAssertTrue(sessions.activeAgentBackends.isEmpty, "lost sessions must not restore usage")
+      await sessions.materializeLivePersistentSessions { [descriptor] }
+      let expected: Set<AgentBackend> =
+        command == "claude" ? [.claude] : command == "codex" ? [.codex] : []
+      XCTAssertEqual(sessions.activeAgentBackends, expected, command)
+      XCTAssertFalse(sessions.isRunning(forTargetID: target.id), "recovery must not imply activity")
+      tab.surface?.handleCommandFinished(rawExitCode: 0)
+      XCTAssertTrue(sessions.activeAgentBackends.isEmpty, "agent exit must clear recovered usage")
+
+      // A provider title may arrive before discovery completes; keep it and recover recognition.
+      await sessions.materializeLivePersistentSessions {
+        tab.surface?.onTitleChange?("✻ Planning…")
+        return [descriptor]
+      }
+      XCTAssertEqual(sessions.activeAgentBackends, expected)
+      XCTAssertEqual(sessions.tabs(for: target).first?.title, "✻ Planning…")
+      tab.surface?.handleCommandFinished(rawExitCode: 0)
+
+      // A finish during discovery invalidates the captured command, even without a live title.
+      await sessions.materializeLivePersistentSessions {
+        tab.surface?.handleCommandFinished(rawExitCode: 0)
+        return [descriptor]
+      }
+      XCTAssertTrue(sessions.activeAgentBackends.isEmpty, "must not resurrect an exited agent")
+
+      // Reassigning this same pane during discovery must not apply another session's metadata.
+      var reassigned = sessions.tabs(for: target).first!
+      guard case .terminal(var reassignedState) = reassigned.content else { return }
+      reassignedState.sessionID = UUID()
+      reassigned.content = .terminal(reassignedState)
+      sessions.replace(reassigned, for: target)
+      await sessions.materializeLivePersistentSessions {
+        reassignedState.sessionID = sessionID
+        reassigned.content = .terminal(reassignedState)
+        sessions.replace(reassigned, for: target)
+        return [descriptor]
+      }
+      XCTAssertTrue(sessions.activeAgentBackends.isEmpty, "must not hydrate a reassigned pane")
+    }
   }
 
   // MARK: Shape

@@ -336,6 +336,8 @@ struct TerminalState {
   /// fallback for multiplexed sessions). Providers repaint OSC titles while they run, so this is
   /// deliberately latched until `command_finished` instead of being derived from `liveTitle`.
   var activeAgentBackend: AgentBackend?
+  /// Reject recovery metadata if the command ended while the helper query was in flight.
+  var commandFinishGeneration = 0
   /// The curated CLI/TUI tool recognized as currently running in this terminal's foreground (issue
   /// #141) — a broader, data-driven sibling of `activeAgentBackend`, latched/cleared identically.
   var activeTool: RecognizedTool?
@@ -1762,10 +1764,8 @@ final class TerminalSessions: ObservableObject {
     forTab tabID: TerminalTab.ID, target: TerminalTarget.ID, exitCode: Int32? = nil
   ) {
     notifyAgentOfCommandFinish(tabID: tabID, target: target, exitCode: exitCode)
-    guard let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content,
-      s.liveTitle != nil || s.progressActive != nil
-    else { return }
     mutateTerminalState(tabID, target: target) {
+      $0.commandFinishGeneration += 1
       $0.liveTitle = nil
       $0.activeAgentBackend = nil
       $0.activeTool = nil
@@ -2115,13 +2115,38 @@ final class TerminalSessions: ObservableObject {
       })
   }
 
-  func materializeLivePersistentSessions(_ liveIDs: Set<UUID>) {
+  func materializeLivePersistentSessions(
+    load: () async -> [SessionDescriptor]
+  ) async {
+    var generations: [TerminalTab.ID: (sessionID: UUID?, generation: Int)] = [:]
     for tabs in tabsByTarget.values {
+      for tab in tabs.values {
+        if case .terminal(let state) = tab.content {
+          generations[tab.id] = (state.sessionID, state.commandFinishGeneration)
+        }
+      }
+    }
+    let live = await load()
+    for (target, tabs) in tabsByTarget {
       for tab in tabs.values {
         guard case .terminal(let state) = tab.content,
           let sessionID = state.sessionID,
-          liveIDs.contains(sessionID)
+          let descriptor = live.first(where: { $0.identifier.uuid == sessionID })
         else { continue }
+        // The local PTY belongs to the attach helper, so foreground-process recognition cannot
+        // see the agent after a restart. Recover it from the helper's live command metadata;
+        // screen repaint alone need not replay the shell's original command title.
+        if state.activeAgentBackend == nil,
+          generations[tab.id]?.sessionID == sessionID,
+          generations[tab.id]?.generation == state.commandFinishGeneration,
+          let command = descriptor.value(forMetadataKey: "command"),
+          let backend = AgentProcessRecognition.backend(forProcessName: command)
+        {
+          mutateTerminalState(tab.id, target: target) {
+            $0.activeAgentBackend = backend
+            if $0.liveTitle == nil { $0.liveTitle = command }
+          }
+        }
         state.view.ensureSurfaceCreated(initialSize: CGSize(width: 800, height: 480))
       }
     }
