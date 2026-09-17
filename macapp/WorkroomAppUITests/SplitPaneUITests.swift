@@ -62,6 +62,23 @@ final class SplitPaneUITests: XCTestCase {
       "the fixture workroom should render a terminal pane on launch")
   }
 
+  func testDraggingCurrentTabCreatesSplitWithoutAddingTab() throws {
+    let app = launchedApp()
+    try openWorkroom(app)
+    let initial = tabs(app).count + 1
+    app.typeKey("t", modifierFlags: .command)
+    assertCount(tabs(app), reaches: initial)
+    assertCount(panes(app), reaches: 1)
+    let current = tabs(app).element(boundBy: initial - 1)
+    let pane = panes(app).firstMatch
+    current.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+      .press(
+        forDuration: 0.1,
+        thenDragTo: pane.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)))
+    assertCount(panes(app), reaches: 2)
+    assertCount(tabs(app), reaches: initial)
+  }
+
   func testSplitRightCreatesTwoPanes() throws {
     let app = launchedApp()
     try openWorkroom(app)

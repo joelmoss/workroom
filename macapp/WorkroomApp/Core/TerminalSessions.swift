@@ -1394,6 +1394,33 @@ final class TerminalSessions: ObservableObject {
     splitFocusedPane(for: target, edge: edge)
   }
 
+  /// A strip drag of the visible solo tab leaves its usual focus successor behind. Pane-title
+  /// drags still treat a drop onto themselves as a no-op, as do split members over their own pane.
+  func tabStripSplitDestination(
+    moving movedID: TerminalTab.ID, over destID: TerminalTab.ID, for target: TerminalTarget
+  ) -> TerminalTab.ID? {
+    guard movedID == destID else { return destID }
+    guard split(containing: movedID, for: target) == nil else { return nil }
+    return closeSuccessor(of: movedID, for: target)
+  }
+
+  func dropTabFromStrip(
+    _ movedID: TerminalTab.ID, ontoEdge edge: PaneEdge, of destID: TerminalTab.ID,
+    for target: TerminalTarget
+  ) {
+    guard
+      let destination = tabStripSplitDestination(
+        moving: movedID, over: destID, for: target)
+    else { return }
+    // The current pane supplies the measured size when the successor is hidden.
+    if movedID == destID {
+      guard let moved = tab(movedID, for: target),
+        fits(splitting: moved, orientation: edge.orientation, for: target)
+      else { return }
+    }
+    moveTabIntoSplit(movedID, ontoEdge: edge, of: destination, for: target)
+  }
+
   /// Drag-and-drop (issue #3): place `movedID` on `edge` of `destID`'s pane. One op covers both
   /// dragging a tab from the strip into a pane AND rearranging an existing pane, since panes are tabs.
   /// Two solo tabs dropped together seed a NEW group; every other group survives untouched.

@@ -152,7 +152,11 @@ struct PaneTreeView: View {
   private func dropHighlight(plan: PaneTreeLayout.Plan<TerminalTab.ID>) -> some View {
     if let drag = activeDrag,
       let hit = PaneTreeLayout.dropTarget(at: drag.location, panes: plan.panes),
-      hit.tab != drag.tabID, let rect = plan.panes[hit.tab]
+      hit.tab != drag.tabID
+        || (externalDrag != nil
+          && sessions.tabStripSplitDestination(
+            moving: drag.tabID, over: hit.tab, for: target) != nil),
+      let rect = plan.panes[hit.tab]
     {
       let band = PaneTreeLayout.edgeBand(hit.edge, in: rect)
       RoundedRectangle(cornerRadius: 8)

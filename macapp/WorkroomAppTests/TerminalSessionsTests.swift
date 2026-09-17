@@ -725,6 +725,52 @@ final class TerminalSessionsTests: XCTestCase {
 
   // MARK: Drag-and-drop (issue #3, Phase 2)
 
+  func testDraggingCurrentTabSplitsWithMostRecentTab() {
+    for edge in [PaneEdge.left, .right, .top, .bottom] {
+      let s = makeSessions()
+      let previous = s.addTab(for: target).id
+      let current = s.addTab(for: target).id
+      let surface = s.tab(current, for: target)?.surface
+      s.dropTabFromStrip(current, ontoEdge: edge, of: current, for: target)
+      XCTAssertEqual(
+        s.split(for: target)?.tabIDs,
+        edge.placesDroppedFirst ? [current, previous] : [previous, current])
+      XCTAssertEqual(s.activeTab(for: target)?.id, current)
+      XCTAssertEqual(s.tabs(for: target).count, 2)
+      XCTAssertTrue(s.tab(current, for: target)?.surface === surface)
+    }
+  }
+
+  func testDraggingOnlyTabOntoItselfDoesNothing() {
+    let s = makeSessions()
+    let current = s.addTab(for: target).id
+    XCTAssertNil(s.tabStripSplitDestination(moving: current, over: current, for: target))
+    s.dropTabFromStrip(current, ontoEdge: .right, of: current, for: target)
+    XCTAssertNil(s.split(for: target))
+    XCTAssertEqual(s.tabs(for: target).count, 1)
+  }
+
+  func testDraggingCurrentTabRespectsVisiblePaneSize() {
+    let s = makeSessions()
+    let previous = s.addTab(for: target).id
+    let current = s.addTab(for: target).id
+    s.paneRects[target.id] = [current: CGRect(x: 0, y: 0, width: 200, height: 600)]
+    s.dropTabFromStrip(current, ontoEdge: .right, of: current, for: target)
+    XCTAssertNil(s.split(for: target))
+    XCTAssertEqual(s.activeTab(for: target)?.id, current)
+    XCTAssertEqual(s.tabs(for: target).map(\.id), [previous, current])
+  }
+
+  func testDraggingSplitMemberOntoItselfDoesNotRearrangeGroup() {
+    let s = makeSessions()
+    let first = s.addTab(for: target).id
+    s.splitFocusedPane(for: target, edge: .right)
+    let current = s.activeTab(for: target)!.id
+    XCTAssertNil(s.tabStripSplitDestination(moving: current, over: current, for: target))
+    s.dropTabFromStrip(current, ontoEdge: .left, of: current, for: target)
+    XCTAssertEqual(s.split(for: target)?.tabIDs, [first, current])
+  }
+
   func testMoveTabOntoRightEdgeFormsSplit() {
     let s = makeSessions()
     s.addTab(for: target)

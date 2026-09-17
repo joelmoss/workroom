@@ -203,7 +203,7 @@ struct TerminalTabStrip: View {
                 return
               }
               if let drop = dropTarget(value.location) {
-                sessions.moveTabIntoSplit(
+                sessions.dropTabFromStrip(
                   tab.id, ontoEdge: drop.edge, of: drop.tab, for: target)
                 drag.cancel()
               } else {
