@@ -6,6 +6,19 @@ Repo: joelmoss/workroom
 Status: APPROVED
 Mode: Builder
 
+## Current Status — 2026-09-17
+
+Phase 0's feasibility results are recorded and Phase 1 is complete (closed out by #192).
+New persistent local sessions use `wr-agent`; an attach-only Swift shim preserves access to
+sessions held by older daemons. This does **not** yet provide remote workrooms.
+
+Phase 2 preparation has landed: #184 added the VCS registry, #185 moved working status onto
+`VCSProviding`, and #186 routed writers through the registry too. The registry currently selects
+local backends by local path; agent-backed VCS, file and notification services remain unbuilt.
+OQ1's gix measurements and OQ21's Swift driver decision are answered. The gix code remains a spike.
+Phases 3 and 4 — persistent remote transport, distribution, provisioning and UI — remain planned.
+The implementation sequence and remaining decisions are in **Next Steps**.
+
 ## Problem Statement
 
 A workroom today is a local directory: a git worktree or jj workspace on this Mac, with an
@@ -206,8 +219,10 @@ datagrams; the portable path has no such constraint. Two reasons the distinction
   the highest-risk work here. Rejected Swift-on-Linux and Go (a third rewrite, no in-process VCS).
 - **The driver contract is four methods: `create`, `openStream`, `destroy`, `deriveFromBase`.**
   `openStream` is "give me a bidirectional stream to a process running the agent on the far side" —
-  `ssh host wr-agent serve --stdio` is the first implementation, and a provider SDK's exec/attach
-  call or a WebSocket satisfies it equally (subject to the SDK-language precondition in Phase 3).
+  `ssh host wr-agent serve --stdio` proved the stream shape in the spike, but currently kills its
+  sessions on disconnect. The production transport must relay into a persistent far-side agent;
+  a provider SDK's exec/attach call or a WebSocket can carry that relay too (subject to the
+  SDK-language precondition in Phase 3).
   Without a stream-shaped contract, SDK-only sandbox platforms cannot be drivers at all.
 - **Capabilities the provider might lack are implemented in the agent, not required from the
   driver.** Port forwarding, primary-screen scrollback durability, and deciding whether a workroom
@@ -622,11 +637,10 @@ exists, but run both.
   unavoidable regardless. Once you are paying for that target, a second binary buys nothing — and
   keeping the Swift relay would have saved no build target while leaving `SessionAttachClient.swift`
   alive inside `macapp/WorkroomSession/`, blocking that directory's deletion.
-  **So the build products are two binaries from one crate, plus one open question:**
-  1. **A universal macOS `wr-agent`.** `vcs/` produces a static xcframework, not an executable.
-     The gap is precise: `macapp/Scripts/build-helper.sh` already builds and signs an executable into
-     the bundle (that is exactly what it does for the Go CLI) — what does not exist is a **universal
-     Rust** target, and the distributed CLI comes from goreleaser rather than that script.
+  **The agent build targets are macOS and Linux; the driver lives in Swift:**
+  1. **A universal macOS `wr-agent` — implemented in Phase 1.**
+     `macapp/Scripts/build-agent.sh` builds the Rust executable for the requested architectures and
+     bundles it alongside the Go CLI. This is separate from the existing Rust VCS xcframework.
   2. **A Linux `wr-agent`**, pushed to the far side. **Name the architectures** — if guests can be
      x86_64 *or* arm64 you ship two ELFs per artifact, which also doubles the codesign question in
      the Distribution Plan. **The cross-build is a solved recipe, borrowed:** `exe-scroll`'s
@@ -635,11 +649,10 @@ exists, but run both.
      cross-compiler. Two details from it worth copying rather than rediscovering: pin the toolchain
      by version *and* checksum, and **key the build cache by target triple**, because a shared
      cache across two `-Dtarget`s yields a non-reproducible second binary.
-  3. **Still open: where the `HostDriver` lives.** Provisioning precedes any far-side agent, so the
-     driver runs on the Mac, inside a Swift app. Either a Rust library callable from Swift (a third
-     product) or the driver is simply written in Swift and the trait is not Rust at all. The second is
-     probably right — the driver talks HTTP to provider APIs, which Swift does natively — but it is
-     not yet decided. Tracked as OQ21.
+  3. **`HostDriver` is a Swift protocol in the Mac app — decided (OQ21).** Provisioning precedes
+     any far-side agent. The first driver wraps the `boxd` CLI, using the subprocess pattern already
+     established by `WorkroomCLI`; HTTP drivers can use `URLSession`. No additional Rust driver
+     library or executable is required.
 - **Name what survives (S6).** `macapp/WorkroomSession/` (1967 lines) is the daemon plus attach
   client and is what the agent replaces. `macapp/WorkroomSessionProtocol/` (1346 lines) is a
   separate target holding `SessionFrame`, `SessionReplayBuffer`, `SessionBytes`, `SessionMessages`
@@ -718,20 +731,19 @@ exists, but run both.
 Every item below is a service on the multiplexed stream. The doc previously named only VCS reads;
 these are the subsystems that actually gate "a remote workroom is a real workroom".
 
-- **VCS reads.** `VCSProviding` is eight methods that all take `root: URL`. It is **not** reached
-  through one switch: `VCS.provider(for:)` is injected as a closure default at
-  **four** sites — `VCSWriting.swift:278`, `HistoryModel.swift:53`, `DiffResolver.swift:41`,
-  `BranchResolver.swift:24`. Exactly **one** use has no seam at all: `ChangesetDetailView.swift:150`
-  calls `VCS.provider(for: root)` directly inline. (This count took two corrections to get right —
-  an early draft said six by counting a doc comment and a direct call as injection points, then a
-  fix over-corrected by calling two integration tests seamless when they in fact pass
-  `{ try VCS.provider(for: $0) }` as an explicit closure literal into the same `makeProvider:`
-  parameter. Four defaults, one inline call, and the tests already inject.) So the single site
-  needing restructuring is the one that looked cheapest. The seam is convenient where it exists,
-  but the routing input is `VCS.repoKind(at:)`
-  (`VCSProviding.swift:70-84`), a **local filesystem probe** that returns `.unsupported` for any
-  path not on this Mac. Remote routing needs a host threaded to those sites or a provider registry
-  keyed on the workroom, not a switch-body edit. Decide which.
+- **VCS reads — registry preparation landed, service implementation remains.** `VCSProviding`
+  currently has nine methods taking `root: URL`, including working status and the two pre-image
+  content reads. `VCS.provider(for:)` now consults `VCSProviderRegistry` before falling back to a
+  local filesystem probe (#184, #185); `VCS.writer(for:)` uses the same declaration (#186).
+  Direct callers also benefit from that lookup; adding injection seams alone is not the remaining
+  remote-routing task.
+  The registry stores only `git`/`jj`, keyed by a path canonicalized with the Mac's filesystem,
+  and constructs local providers. It identifies neither a host nor an agent connection. Before
+  remote services use it, define host-qualified repository identity and connection ownership:
+  `/workspace/repo` on two hosts must resolve independently, and remote paths must never pass
+  through local symlink resolution. Carry that identity through reads, writes, files, watches and
+  their caches. Preserve the existing local routing behavior. The precise interface is a Phase 2
+  planning decision, not something #184 already implemented.
 - **VCS writes — a whole second protocol the earlier draft missed (C1).**
   `macapp/WorkroomApp/Core/VCSWriting.swift` is 1910 lines and seven methods (`remoteState`,
   `fetch`, `push`, `pullRebase`, `abortRebase`, `commit`, `stagedContentAtRisk`), shelling out to
@@ -778,9 +790,13 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       And it reports **busy forever** for an idle `vim`, `tmux`, or an agent sitting at its prompt —
       which is a remote workroom's *normal* state, so the box would never hibernate and the cost
       property the provider was chosen for evaporates (see OQ7, €0.049/vCPU-hr with no ceiling).
-      The sound signal is process-tree liveness under the session — the tree walk
+      The proposed replacement is process-tree liveness under the session — the tree walk
       `terminationTargets` already performs — combined with a CPU-time or `/proc/loadavg` delta,
       plus an explicit "an idle TUI is not busy" rule, hysteresis, and a maximum-awake ceiling.
+      **This is a candidate signal, not a proven policy:** low CPU also describes an agent waiting
+      for a network response. Measure that case alongside idle prompts, background builds and
+      detached servers; settle how explicit work activity and the awake ceiling affect suspension
+      before using the signal to control a provider.
     - *And it is not free.* Today the read is one line fired once per attach, inside the attach
       handler. This needs a continuous poll loop that runs **while detached**, a busy/idle policy,
       and a ceiling. That is a new service, not a reuse of an existing one.
@@ -885,8 +901,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   `suspend-with-processes`; the agnosticism decision moved that burden into the agent's wakefulness
   service, so a stop-only provider became a *degradation* rather than a disqualification. Review
   then showed a client-side translator cannot run lid-closed, which is why the far-side lifecycle
-  shim exists (Provider Decision). With it, there is **one** gate: a wall-clock `maxLifetime`
-  shorter than a working day. It belongs in the UI at provider-selection time, not at
+  shim exists (Provider Decision). The Goal amendment defines three gates: a wall-clock
+  `maxLifetime` compatible with the work, region proximity, and live-process suspend where the
+  shim cannot defer a provider stop. These belong in the UI at provider-selection time, not at
   workroom-creation time — as does a warning where the provider can only issue a broadly-scoped
   control-plane token for the shim.
 - **The far side carries exactly two provider-specific pieces, and no more.**
@@ -901,6 +918,12 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     and must stay small enough to audit by reading. Its credential scope is a declared trait.
   Everything else pushed to the far side is the agnostic agent. If a third provider-specific
   component appears, that is the signal the abstraction is wrong.
+- **A stream is not persistence.** Today's `wr-agent serve --stdio` creates a connection-scoped
+  session store and calls `kill_all()` on either EOF or an error. Keep it as a transport test
+  entry point; production `openStream` must relay into the supervised agent that owns the remote
+  socket and ptys. Reconnecting must reach that same owner, not launch a second store. Acceptance:
+  forcibly drop the transport, leave a job running with no client, reconnect, and verify the same
+  child process and terminal state survive. Repeat after client app restart and laptop sleep.
 - **Local needs no supervisor at all. DECIDED — and an earlier claim in this document was wrong.**
   A previous revision asserted that `SessionDaemon.swift:97-107`'s self-exit
   (`sessions.isEmpty && connections.isEmpty`) had to go, because the agent would also own VCS reads
@@ -953,15 +976,16 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
 - **Build order within this phase is fixed by the agnosticism decision:** the slowest correct
   derivation first (snapshot or clone, whichever the fixture supports), then boxd's live fork as an
   optimisation behind the same interface. Not the other way round.
-- **Who performs creation, Go or Rust?** Provisioning and derivation are the driver's job (Rust,
-  client-side per Phase 1 product 3). The **repo work** — clone, fetch, checkout — is the only part with a Go CLI
+- **Who performs creation?** Provisioning and derivation are the Swift driver's job in the Mac app
+  (OQ21). The **repo work** — clone, fetch, checkout — is the only part with a Go CLI
   shape, and the answer is to **keep the Go CLI on the Mac and run the repo commands through the
   agent's exec service**. The trap in the alternative: shipping a Linux Go binary to the far side
   means the Distribution Plan carries a second pushed binary *and* the CLI writes a
   `~/.config/workroom/config.json` on the VM, forking config semantics across machines for no gain.
   Where the CLI does run locally its `--json` contract is untouched (one envelope on stdout, NDJSON
   on stderr), so `WorkroomCLI.run`'s parsing stays reusable — but note that derivation itself
-  produces no envelope, because it is an API call rather than a command.
+  is a driver operation with its own result; it is not a Go CLI command. The first driver wraps
+  `boxd --json` output behind that result rather than reusing the Go CLI's envelope implicitly.
 - **The base machine is a fourth kind of thing** the config and UI have to model: not a project, not
   a workroom, but a per-project template with its own lifecycle (build, refresh when deps change,
   destroy). Nothing in the current schema anticipates it, though premise 7's untyped map absorbs it.
@@ -1876,62 +1900,70 @@ disagreement passes every test on either side alone while presenting as an empty
 
 ## Next Steps
 
-**Rewritten 2026-09-15.** Every step this section previously listed is done, and the reason it did
-not say so is recorded below: the stale text was the *base* side of a committed merge conflict
-(`||||||| 2a5600c2`, removed in the same pass), so the "still unpriced" framing survived the commit
-that priced it. What follows is the state as the rest of this document actually reports it.
+**Corrected 2026-09-17 against `master`.** Phase 1 is complete, OQ1's feasibility gate is lifted,
+and VCS registry preparation has already landed. The next deliverable is a bounded Phase 2
+implementation plan, followed by the service milestones below. Phase 2 is not complete merely
+because local backend selection no longer always probes the filesystem.
 
-**Done, with results elsewhere in this doc:** the Phase 0 spike (Phase 0 Results); the
-generated/fuzzed corpus harness, which found two bugs (Phase 1 Results); Phase 1 itself, completed
-2026-09-15 by PR #192; and **open question 1, both halves** — the `log` half on `master`
-(`vcs/crates/wr-vcs-git`), the diff/decorations/push-state half on the unmerged spike branch
-`spike/oq1-git-diff` (`74f6181a`, bin `gix-diff-spike`), which is where it belongs: the crate is
-marked a throwaway. OQ2 and OQ21 are answered too.
+1. **Define repository identity and connection ownership; settle the gix stats policy.**
+   Extend the registry approach with an identity that distinguishes local and remote repositories
+   and the same path on different hosts. Specify how reads, writes, file access, subscriptions and
+   caches reach the owning agent, and how a disconnected host is reported without falling back to
+   local disk. Local path canonicalization remains local-only. Acceptance must include two hosts
+   with `/workspace/repo`, a local repository with that same path, and reconnecting one host without
+   invalidating the others.
 
-**So the gate is lifted.** Phase 2 was deliberately unestimated pending OQ1. OQ1 is priced.
-Estimating and starting Phase 2 is the live work, and three things have to be settled as part of
-producing that estimate rather than after it:
+   The gix spike reported exact file lists on 150/150 cases, but exact line counts on 139/150;
+   the 11 differences were at most four lines. Accepting that visible drift remains a product
+   decision, not a completed technical task. If exact counts are required, retain the existing
+   local stats behavior while specifying an agent-side implementation that matches it; a local
+   libgit2 fallback cannot read a remote repository. Do not silently relax the parity goal.
 
-1. **A product call: the line-count drift.** gix's file lists are 150/150 exact, but line counts are
-   139/150 — the 11 misses differ by at most 4 lines, always symmetrically, always with an identical
-   file list, because `imara-diff` finds a valid but non-minimal edit script where xdiff finds a
-   smaller one. The visible consequence is that History's "+N −M" badge would occasionally disagree
-   with `git show --stat` by a line or two. **This is a taste decision, not a technical one** (OQ1
-   has the full measurement). If it is not acceptable, the answer is to keep *stats* on the existing
-   path — not to abandon gix, whose file lists, rename detection and decorations are exact.
+2. **Deliver agent-backed VCS reads, locally first.** Graduate the measured gix work into a
+   production service alongside the JJ backend and route the app's nine read methods through the
+   agent. The `log` spike is on `master` in `wr-vcs-git`; the diff/decorations/push-state spike is
+   on `spike/oq1-git-diff` (`74f6181a`). Neither is a production provider. Include synthesized
+   git-format file headers for the existing diff parser and filter `entry_mode.is_tree()` so
+   directory changes do not create duplicate file identities. Remove the spike's build-input hash
+   exclusion when it becomes a dependency of the app's VCS library.
 
-2. **A routing decision, named in Phase 2 and still open.** `VCSProviding`'s eight methods all take
-   `root: URL`, and the routing input is `VCS.repoKind(at:)` — a local filesystem probe that returns
-   `.unsupported` for any path not on this Mac. Remote routing needs **either a host threaded
-   through those sites or a provider registry keyed on the workroom**; a switch-body edit does not
-   reach it. Four sites already have a closure seam; `ChangesetDetailView.swift:150` calls
-   `VCS.provider(for: root)` inline and is the one that needs restructuring. Decide which shape
-   before estimating, because the two cost differently.
+   Verify history, working status, rename/typechange file lists, patches, pre-image content and
+   push-state against the existing backends on throwaway repositories, with line counts governed
+   by the policy from step 1. Preserve JJ snapshot serialization and keep other reads non-mutating.
 
-3. **Two pieces of Phase 2 scope that OQ1 discovered and the `log` result did not predict.** Both
-   are small, both are real, and an estimate that omits them is wrong:
-   - **`GitCommitDiff.patch` must synthesize its own file header.** libgit2 gets
-     `diff --git` / `similarity index` / `rename from` / `rename to` free from `git_patch_to_buf`,
-     and `UnifiedDiff.parse` reads that back into `renamedFrom`. gix's `UnifiedDiff` is blob-level:
-     hunk headers and nothing else. Every input is in hand from the tree-diff change; it still has
-     to be written.
-   - **Filter `entry_mode.is_tree()`.** gix reports the tree nodes along a changed path as changes
-     in their own right. Unfiltered, a 4-file commit reports 8 and collides `VCSChangedFile.id` on a
-     directory name.
+3. **Deliver the remaining Phase 2 services as separately reviewable milestones.**
+   - VCS writes: preserve typed failures and Retry/Abort behavior; account for remote clones whose
+     project root and workroom root are the same repository.
+   - File access and notifications: move directory listing, raw reads and watches behind the agent;
+     preserve coalescing and account for the different local-worktree and remote-clone watch layouts.
+     Reconnect must refresh state and restore subscriptions without leaving stale panels.
+   - GitHub status: keep `gh` on the Mac and supply explicit repository identity rather than a
+     remote working directory; exercise both Git and JJ badge resolution.
+   - Interchangeability services: implement port forwarding, terminal-state durability and the
+     busy/idle decision. Measure idle TUIs, background jobs, detached servers and agents waiting on
+     network responses. Define hysteresis, explicit activity handling and the awake-ceiling policy
+     before declaring the wakefulness service ready. OQ19 remains open until those results exist.
 
-4. **Then Phase 2**, from `master`, with that estimate. Its scope is listed in the Phase 2 section:
-   VCS reads, VCS writes (a second protocol of seven methods behind a 13-case failure taxonomy, six
-   of which carry the `projectRoot` collapse), a file service, change notification across three
-   watch topologies, and the three interchangeability services — of which the busy/idle signal is
-   the load-bearing one and is specified but unbuilt (OQ19).
+4. **Phase 3: publish Linux agents and prove persistent remote transport.** Establish Linux
+   artifacts and the bootstrap/version-compatibility policy, then use the container driver to
+   connect to a supervised agent. Do not use connection-scoped `serve --stdio` as the persistent
+   owner: it kills its sessions when the stream ends. Gate completion on transport loss, app
+   restart and laptop sleep preserving the same child process and restoring terminal state.
+   Exercise reconnection to an older agent without replacing it and killing its ptys. Treat
+   stop-and-reboot screen restoration separately from live-process survival.
 
-**Tracked, not blocking** — both are Phase 1 → Outstanding items, with detail there:
+5. **Phase 4: credentials, provisioning, lifecycle and the Nightly UI.** Resolve the non-admin
+   repository credential path (OQ20) before claiming ordinary organization-repository support.
+   Implement portable derivation first, including identity/key isolation and cleanup of instances
+   and credentials after partial failure. Apply the measured wakefulness policy through the
+   far-side shim. Add boxd's fast derivation only after the portable path passes. Remote UI remains
+   Nightly-only until the success criteria pass; the container fixture alone does not establish
+   parity across two real providers.
 
-- **A Linux `wr-agent` as a published build artifact** (item 2). The cross-build works and the Linux
-  suite runs in a container; nothing publishes the ELFs. Phase 3 needs them, Phase 2 does not.
-- **The rollback warning** (item 5). The next release off `master` must carry it: rolling back to
-  v2.0.0 replaces the contents of open terminals with fresh shells, and updating again will not
-  bring them back. The wording is in item 5; the release channel is still an open decision.
+**Release follow-up, independent of Phase 2:** Phase 1 Outstanding item 5 supplies the warning
+about rolling back to v2.0.0 and then updating again. Verify that the first release containing the
+migration carries that wording. Retain the attach-only compatibility shim according to its written
+retirement criteria, not an elapsed release cycle.
 
 ## Reviewer Concerns
 
@@ -1987,7 +2019,7 @@ Carried forward, unresolved by design:
 - **Phase 2 is large** — VCS reads, VCS writes with their `projectRoot` problem, a file service,
   `gh` status, and three watch topologies. It was deliberately unestimated pending open question 1;
   **OQ1 is now priced in both halves, so the gate is lifted** and the estimate is owed. See Next
-  Steps for the three things that have to be settled while producing it.
+  Steps for the remaining identity and stats decisions and the service milestones to estimate.
 - **The ordering is a preference, not a dividend** (the honesty note under Recommended Approach). With premise 3 corrected, nothing measurable
   justifies porting a working daemon ahead of the feature. Approach C remains a legitimate fallback,
   and the differential-harness argument that dismissed it cuts both ways.
