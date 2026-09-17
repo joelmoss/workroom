@@ -125,15 +125,24 @@ final class RepositoryRouter: @unchecked Sendable {
   /// Injected remote factories never fall back to local services.
   let remoteReader: @Sendable (RepositoryContext) throws -> VCSProviding
   let remoteWriter: @Sendable (RepositoryContext, VCSProviding) throws -> VCSWriting
+  private let connections: HostConnectionManager?
+
+  /// Production routers share app-wide host connections; local providers remain in-process.
+  init(connections: HostConnectionManager = .shared) {
+    self.connections = connections
+    self.remoteReader = { throw RepositoryRoutingError.unavailable($0.location.host) }
+    self.remoteWriter = { context, _ in
+      throw RepositoryRoutingError.unavailable(context.location.host)
+    }
+  }
 
   init(
-    remoteReader: @escaping @Sendable (RepositoryContext) throws -> VCSProviding = {
-      throw RepositoryRoutingError.unavailable($0.location.host)
-    },
+    remoteReader: @escaping @Sendable (RepositoryContext) throws -> VCSProviding,
     remoteWriter: @escaping @Sendable (RepositoryContext, VCSProviding) throws -> VCSWriting = {
       context, _ in throw RepositoryRoutingError.unavailable(context.location.host)
     }
   ) {
+    self.connections = nil
     self.remoteReader = remoteReader
     self.remoteWriter = remoteWriter
   }
@@ -212,7 +221,11 @@ final class RepositoryRouter: @unchecked Sendable {
   }
 
   func reader(for location: RepositoryLocation) async throws -> VCSProviding {
-    try reader(context: await context(for: location))
+    let context = try await context(for: location)
+    if location.host != .local, let connections {
+      return try await connections.reader(context: context)
+    }
+    return try reader(context: context)
   }
 
   private func reader(context: RepositoryContext) throws -> VCSProviding {
@@ -241,6 +254,9 @@ final class RepositoryRouter: @unchecked Sendable {
   func writer(for location: RepositoryLocation) async throws -> VCSWriting {
     let context = try registeredContext(for: location)
     _ = try context.requireOwnership()
+    if location.host != .local, let connections {
+      return try await connections.writer(context: context)
+    }
     let reader = try reader(context: context)
     guard location.host == .local else { return try remoteWriter(context, reader) }
     let provider: LocalVCSProviding = context.backend == .jj ? RustJJProvider() : GitProvider()
