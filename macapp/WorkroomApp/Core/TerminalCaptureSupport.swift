@@ -13,6 +13,49 @@ enum TerminalCapture {
     return childExited
   }
 
+  /// Cut `raw` down to a UTF-8 tail *before* any grapheme work happens (WORKROOM-3S). Callers hand
+  /// this whole surfaces — `readCommandRegion` reads SCREEN (scrollback + viewport) and
+  /// `readFullSurface` reads the scrollback on purpose — while every step in `tidy` below (`split`,
+  /// `utf8.count`, `reversed()`) is a Swift **Character** walk, i.e. Unicode grapheme breaking over
+  /// megabytes, on the main thread inside libghostty's command-finished callback. A 2s+ AppHang was
+  /// reported from exactly that path.
+  ///
+  /// Both steps work on BYTES, so they cost a scan and a memcpy rather than grapheme breaking:
+  ///
+  /// 1. **Drop the trailing blank lines first.** They are what `tidy` would drop anyway, and they
+  ///    can be arbitrarily long — a screen read includes every empty cell below the cursor. Cutting
+  ///    to a byte tail before dropping them would let a long blank run swallow the whole budget and
+  ///    hand `tidy` nothing but whitespace, which returns `nil` and silently skips the diagnosis for
+  ///    a command that did print an error. Blank means ASCII space or tab: the Unicode-whitespace
+  ///    reading of "blank" stays in `tidy`, which re-checks the (now small) tail.
+  /// 2. **Then keep a byte tail of 4x the cap**, skipping leading UTF-8 continuation bytes so the
+  ///    slice starts on a scalar boundary (no U+FFFD). The cap in `tidy` returns at most `maxBytes`
+  ///    from the END, so the 4x slack leaves the answer unchanged for real terminal output. It is
+  ///    not a proof of equality for every input: re-decoding from a byte offset re-segments
+  ///    graphemes, so a >48KB unbroken run of characters that pair with their neighbours (regional
+  ///    indicators) could pair differently than it would have. No terminal produces that.
+  private static func bounded(_ raw: String, maxBytes: Int) -> String {
+    guard maxBytes > 0 else { return "" }
+    let utf8 = raw.utf8
+
+    var end = utf8.endIndex
+    while true {
+      let lineStart = utf8[..<end].lastIndex(of: UInt8(ascii: "\n")).map { utf8.index(after: $0) }
+      let blank = utf8[(lineStart ?? utf8.startIndex)..<end].allSatisfy {
+        $0 == UInt8(ascii: " ") || $0 == UInt8(ascii: "\t")
+      }
+      guard blank, let lineStart else { break }
+      end = utf8.index(before: lineStart)  // the "\n" that ended the line above
+    }
+
+    let (scaled, overflowed) = maxBytes.multipliedReportingOverflow(by: 4)
+    let budget = overflowed ? Int.max : scaled
+    let body = utf8[..<end]
+    if end == utf8.endIndex, body.count <= budget { return raw }
+    guard body.count > budget else { return String(decoding: body, as: UTF8.self) }
+    return String(decoding: body.suffix(budget).drop { $0 & 0xC0 == 0x80 }, as: UTF8.self)
+  }
+
   /// Post-process raw rendered text (from `ghostty_surface_read_text`) before handing it to the
   /// agent:
   /// - drop trailing blank lines (a screen selection includes the empty cells below the cursor),
@@ -21,7 +64,8 @@ enum TerminalCapture {
   /// The cap keeps the largest tail of **whole characters** that fits in `maxBytes`, so it never
   /// splits a multi-byte character (no U+FFFD) and the result's UTF-8 length is a true bound.
   static func tidy(_ raw: String, maxBytes: Int = 16_384) -> String? {
-    var lines = raw.split(separator: "\n", omittingEmptySubsequences: false)
+    var lines = bounded(raw, maxBytes: maxBytes).split(
+      separator: "\n", omittingEmptySubsequences: false)
     while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty {
       lines.removeLast()
     }
