@@ -1,7 +1,7 @@
 import Foundation
 import SwiftGitX
 
-/// git-backed `VCSProviding`, over SwiftGitX (libgit2). Maps `SwiftGitX.*` types into the app-native
+/// git-backed `LocalVCSProviding`, over SwiftGitX (libgit2). Maps `SwiftGitX.*` types into the app-native
 /// models. Pure Swift — no Rust involved for git.
 ///
 /// Three reads reach *past* SwiftGitX, all on raw libgit2 (see each type's doc): push state via
@@ -14,7 +14,7 @@ import SwiftGitX
 /// Errors are caught untyped (`catch { … "\(error)" }`) on purpose: binding SwiftGitX's typed-throws
 /// error (`catch let e as SwiftGitXError`) trips a Swift 6 SIL ownership error across the async
 /// boundary.
-struct GitProvider: VCSProviding {
+struct GitProvider: LocalVCSProviding {
   func log(root: URL, limit: Int) throws -> VCSHistoryPage {
     do {
       let repo = try Repository.open(at: root)

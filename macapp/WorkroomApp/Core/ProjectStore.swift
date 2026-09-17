@@ -26,6 +26,10 @@ final class ProjectStore: ObservableObject {
     let task: Task<ListResponse, Error>
   }
 
+  var prepareRepositories: @Sendable ([Project]) async throws -> [RepositoryRouter.Registration] = {
+    try await RepositoryRouter.prepare($0)
+  }
+
   private(set) var latestLoad: Load?
   private var loadGeneration: UInt64 = 0
   private var publishedLoadGeneration: UInt64 = 0
@@ -116,7 +120,7 @@ final class ProjectStore: ObservableObject {
   /// workroom B of the same project, which a per-row check waved straight through. Counted rather than
   /// a `Set` because the app's premise is N parallel workrooms, so two of one project can legitimately
   /// commit at once and the first to finish must not clear the other's suppression.
-  @Published var committingProjectRoots: [String: Int] = [:]
+  @Published var committingProjectRoots: [RepositoryLocation: Int] = [:]
 
   /// How many writes (commit, fetch, push, or pull) are in flight against each project root,
   /// across every window. Checked by the write ACTIONS THEMSELVES before starting — not just
@@ -127,7 +131,7 @@ final class ProjectStore: ObservableObject {
   /// concurrently on the shared `.git`). Distinct from `committingProjectRoots`, which exists for
   /// a different reason (suppressing READ lanes during a commit specifically) and keeps its own
   /// narrower role unchanged; this counter is the umbrella that all four write kinds share.
-  @Published var writingProjectRoots: [String: Int] = [:]
+  @Published var writingProjectRoots: [RepositoryLocation: Int] = [:]
 
   /// Target ids of workrooms with an in-flight optimistic deletion — dropped from the sidebar but
   /// their teardown (worktree/config removal) not yet finished. `AppStore.apply` filters these out of

@@ -26,6 +26,8 @@ struct FilesPanel: View {
             Text("Listing files…").font(.callout).foregroundStyle(.secondary)
           }
           .padding(.vertical, 6).padding(.horizontal, 8)
+        case .failed(let message):
+          placeholder(message, systemImage: "exclamationmark.triangle")
         case .unavailable:
           placeholder("Not a repository", systemImage: "folder.badge.questionmark")
         case .loaded:
@@ -44,7 +46,7 @@ struct FilesPanel: View {
     .task(id: activationKey) {
       guard store.activeInspectorSection == .files else { return }
       let target = store.inspectorTarget
-      model.activate(path: target?.path, projectRoot: target.flatMap(store.projectRoot(forTarget:)))
+      model.activate(path: target?.path)
     }
   }
 

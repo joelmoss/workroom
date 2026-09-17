@@ -178,7 +178,7 @@ final class RemoteStateModelTests: XCTestCase {
     let writer = StubWriter(state: .state(state(branch: "feature/x")))
     let m = model(writer)
     var published: [SidebarID: String?] = [:]
-    m.onBranchResolved = { sid, name in published[sid] = name }
+    m.onBranchResolved = { target, name in published[target.sid] = name }
     m.focus(target)
     await m.awaitCurrentLoad()
     XCTAssertEqual(published[target.sid], "feature/x")
@@ -188,7 +188,7 @@ final class RemoteStateModelTests: XCTestCase {
     let writer = StubWriter(state: .absent)
     let m = model(writer)
     var published: [SidebarID: String?] = [:]
-    m.onBranchResolved = { sid, name in published[sid] = name }
+    m.onBranchResolved = { target, name in published[target.sid] = name }
     m.focus(target)
     await m.awaitCurrentLoad()
     XCTAssertEqual(published[target.sid], String?.none)
@@ -330,12 +330,12 @@ final class RemoteStateModelTests: XCTestCase {
     let m = model(writer, ttl: 0)
     var started: [String] = []
     var finished: [String] = []
-    m.writeDidStart = { root in started.append(root) }
-    m.writeDidFinish = { root in finished.append(root) }
+    m.writeDidStart = { root in started.append(root.path) }
+    m.writeDidFinish = { root in finished.append(root.path) }
     m.focus(target)
     await m.awaitCurrentLoad()
     m.perform(.push)
-    XCTAssertEqual(started, [target.projectRoot], "started before the write returns")
+    XCTAssertEqual(started, [], "routing completes before the write is marked")
     XCTAssertEqual(finished, [], "not finished yet — the write is still in flight")
     await m.awaitCurrentLoad()
     XCTAssertEqual(started, [target.projectRoot])
@@ -348,7 +348,7 @@ final class RemoteStateModelTests: XCTestCase {
     let writer = StubWriter(state: .state(state()), action: .failed(.authRequired("no")))
     let m = model(writer, ttl: 0)
     var finished: [String] = []
-    m.writeDidFinish = { root in finished.append(root) }
+    m.writeDidFinish = { root in finished.append(root.path) }
     m.focus(target)
     await m.awaitCurrentLoad()
     m.perform(.push)
@@ -471,7 +471,7 @@ final class RemoteStateModelTests: XCTestCase {
     let writer = StubWriter(state: .state(state(ahead: 1)), action: .ok(summary: "pushed"))
     let m = model(writer, ttl: 0)
     var mutated: [SidebarID] = []
-    m.onDidMutate = { _, sid in mutated.append(sid) }
+    m.onDidMutate = { _, target in mutated.append(target.sid) }
     m.focus(target)
     await m.awaitCurrentLoad()
     m.perform(.push)
@@ -780,7 +780,7 @@ final class RemoteStateModelTests: XCTestCase {
 }
 
 /// Records what was asked of it and returns canned results.
-private actor StubWriter: VCSWriting {
+private actor StubWriter: LocalVCSWriting {
   private var stateResult: VCSRemoteResolution
   private let actionResult: VCSRemoteActionResult
   private let actionDelay: TimeInterval

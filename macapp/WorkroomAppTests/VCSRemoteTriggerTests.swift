@@ -315,7 +315,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
 
 /// Counts reads and actions. Returns a usable snapshot so the model reaches `.loaded` and its derived
 /// enablement (which auto-fetch depends on) is true.
-private actor CountingWriter: VCSWriting {
+private actor CountingWriter: LocalVCSWriting {
   private(set) var stateReads = 0
   private(set) var fetches = 0
   private(set) var pulls = 0

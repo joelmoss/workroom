@@ -1,9 +1,9 @@
 import Foundation
 import WrVcs
 
-/// jj-backed `VCSProviding`, over the Rust core (`wr-vcs-core` → UniFFI `WrVcs`). Maps the generated
+/// jj-backed `LocalVCSProviding`, over the Rust core (`wr-vcs-core` → UniFFI `WrVcs`). Maps the generated
 /// `WrVcs.*` types into the app-native models.
-struct RustJJProvider: VCSProviding {
+struct RustJJProvider: LocalVCSProviding {
   func log(root: URL, limit: Int) throws -> VCSHistoryPage {
     let page: WrVcs.HistoryPage
     do {

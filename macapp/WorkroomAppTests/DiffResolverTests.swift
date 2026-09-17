@@ -4,9 +4,9 @@ import XCTest
 
 // MARK: - Test doubles
 
-/// A `VCSProviding` stub that records calls and returns configurable text (or throws). A class so
+/// A `LocalVCSProviding` stub that records calls and returns configurable text (or throws). A class so
 /// its closures record into it without capturing a mutable `var` across the `@Sendable` boundary.
-private final class StubDiffProvider: VCSProviding, @unchecked Sendable {
+private final class StubDiffProvider: LocalVCSProviding, @unchecked Sendable {
   var commitText: (@Sendable (_ commitID: String, _ path: String) throws -> String)?
   var workingText: (@Sendable (_ path: String, _ base: VCSWorkingDiffBase) throws -> String)?
 
@@ -379,14 +379,20 @@ final class DiffResolverTests: XCTestCase {
 // MARK: - DiffCache (LRU byte budget)
 
 final class DiffCacheTests: XCTestCase {
+  private func key(_ value: String) -> DiffCache.Key {
+    let location = try! RepositoryLocation.remote(
+      host: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, path: "/repo")
+    return DiffCache.Key(location: location, backend: .git, revision: value, path: "file")
+  }
+
   func testEvictsLeastRecentlyUsedOverBudget() async {
     let c = DiffCache(budget: 120)
-    await c.set("a", .empty, bytes: 60)
-    await c.set("b", .empty, bytes: 60)  // total 120 — at budget, nothing evicted
-    await c.set("c", .empty, bytes: 60)  // total 180 > 120 — evict LRU ("a")
-    let a = await c.get("a")
-    let b = await c.get("b")
-    let cc = await c.get("c")
+    await c.set(key("a"), .empty, bytes: 60)
+    await c.set(key("b"), .empty, bytes: 60)  // total 120 — at budget, nothing evicted
+    await c.set(key("c"), .empty, bytes: 60)  // total 180 > 120 — evict LRU ("a")
+    let a = await c.get(key("a"))
+    let b = await c.get(key("b"))
+    let cc = await c.get(key("c"))
     XCTAssertNil(a, "a was least-recently-used and should be evicted")
     XCTAssertNotNil(b)
     XCTAssertNotNil(cc)
@@ -394,13 +400,13 @@ final class DiffCacheTests: XCTestCase {
 
   func testGetTouchesRecency() async {
     let c = DiffCache(budget: 120)
-    await c.set("a", .empty, bytes: 60)
-    await c.set("b", .empty, bytes: 60)
-    _ = await c.get("a")  // touch a → b becomes least-recently-used
-    await c.set("c", .empty, bytes: 60)  // evicts the LRU, now b
-    let a = await c.get("a")
-    let b = await c.get("b")
-    let cc = await c.get("c")
+    await c.set(key("a"), .empty, bytes: 60)
+    await c.set(key("b"), .empty, bytes: 60)
+    _ = await c.get(key("a"))  // touch a → b becomes least-recently-used
+    await c.set(key("c"), .empty, bytes: 60)  // evicts the LRU, now b
+    let a = await c.get(key("a"))
+    let b = await c.get(key("b"))
+    let cc = await c.get(key("c"))
     XCTAssertNotNil(a, "a was touched, so it survives")
     XCTAssertNil(b, "b was LRU after a's touch")
     XCTAssertNotNil(cc)
@@ -408,18 +414,18 @@ final class DiffCacheTests: XCTestCase {
 
   func testKeepsMostRecentEvenWhenOversized() async {
     let c = DiffCache(budget: 10)
-    await c.set("big", .empty, bytes: 999)  // over budget on its own
-    let big = await c.get("big")
+    await c.set(key("big"), .empty, bytes: 999)  // over budget on its own
+    let big = await c.get(key("big"))
     XCTAssertNotNil(big, "the sole/most-recent entry is kept even over budget")
   }
 
   func testReplacingKeyUpdatesTotalBytes() async {
     let c = DiffCache(budget: 100)
-    await c.set("a", .empty, bytes: 90)
-    await c.set("a", .empty, bytes: 10)  // replace, not add — total is 10, not 100
-    await c.set("b", .empty, bytes: 80)  // 10 + 80 = 90 ≤ 100 — nothing evicted
-    let a = await c.get("a")
-    let b = await c.get("b")
+    await c.set(key("a"), .empty, bytes: 90)
+    await c.set(key("a"), .empty, bytes: 10)  // replace, not add — total is 10, not 100
+    await c.set(key("b"), .empty, bytes: 80)  // 10 + 80 = 90 ≤ 100 — nothing evicted
+    let a = await c.get(key("a"))
+    let b = await c.get(key("b"))
     XCTAssertNotNil(a, "a's bytes were replaced, so b fits without evicting it")
     XCTAssertNotNil(b)
   }

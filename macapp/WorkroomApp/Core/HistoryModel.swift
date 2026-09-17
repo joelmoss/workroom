@@ -1,7 +1,7 @@
 import Foundation
 
 /// Store-owned state for the History pane (issue #59): a paged, newest-first commit log for the
-/// selected workroom, read through `VCSProviding`. Re-pointed on selection (like `FileTreeModel`);
+/// selected workroom, read through `LocalVCSProviding`. Re-pointed on selection (like `FileTreeModel`);
 /// refreshes on demand. Pagination re-fetches a growing prefix and replaces the list (DAG-safe —
 /// decision A1: a jj merge graph makes cursor pagination lossy), so there are no dupes/gaps.
 @MainActor
@@ -39,7 +39,9 @@ final class HistoryModel: ObservableObject {
   /// (`FileTreeModel.renderCap`, `ChangesPanel.renderCap`), which is also why the pane says so in
   /// words rather than silently ignoring "Load more".
   private let maxWindow: Int
-  private let resolve: @Sendable (URL) throws -> VCSProviding
+  private let resolve: (@Sendable (URL) throws -> LocalVCSProviding)?
+  private let router: RepositoryRouter
+  private(set) var location: RepositoryLocation?
   /// Trailing debounce in front of every read — see `load`. Matches the selected-workroom status
   /// probe's own coalesce window (`AppStore.selectionDebounce`); injectable so tests needn't wait.
   private let debounce: TimeInterval
@@ -50,12 +52,14 @@ final class HistoryModel: ObservableObject {
     pageSize: Int = 100,
     maxWindow: Int = 1000,
     debounce: TimeInterval = 0.3,
-    resolve: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) }
+    resolve: (@Sendable (URL) throws -> LocalVCSProviding)? = nil,
+    router: RepositoryRouter = .shared
   ) {
     self.pageSize = pageSize
     self.maxWindow = max(pageSize, maxWindow)
     self.debounce = debounce
     self.resolve = resolve
+    self.router = router
   }
 
   /// True once the loaded window has hit `maxWindow`, so "Load more" would be a no-op.
@@ -71,8 +75,10 @@ final class HistoryModel: ObservableObject {
   /// Point the model at a repo (or clear it with `nil`). No-op if already focused there. Loads the
   /// first page.
   func focus(_ root: URL?) {
-    guard self.root != root else { return }
+    guard self.root != root || location != nil else { return }
     self.root = root
+    location = nil
+    pushScope = nil
     commits = []
     reachedEnd = false
     guard root != nil else {
@@ -83,9 +89,24 @@ final class HistoryModel: ObservableObject {
     load(limit: pageSize)
   }
 
+  func focus(location: RepositoryLocation?) {
+    guard self.location != location || root != nil else { return }
+    task?.cancel()
+    root = nil
+    self.location = location
+    commits = []
+    reachedEnd = false
+    pushScope = nil
+    guard location != nil else {
+      state = .idle
+      return
+    }
+    load(limit: pageSize)
+  }
+
   /// Reload the currently-shown range (on pane-appear / app-focus / the refresh button).
   func refresh() {
-    guard root != nil else { return }
+    guard root != nil || location != nil else { return }
     // Clamped as well as `loadMore`: belt and braces, so a window grown before the cap existed (or by a
     // future caller) can't re-inflate itself here on every ref write.
     load(limit: min(max(pageSize, commits.count), maxWindow))
@@ -107,7 +128,9 @@ final class HistoryModel: ObservableObject {
 
   /// Grow the page by one `pageSize` (the "Load more" affordance), up to `maxWindow`.
   func loadMore() {
-    guard root != nil, !reachedEnd, state != .loading, !atWindowCap else { return }
+    guard root != nil || location != nil, !reachedEnd, state != .loading, !atWindowCap else {
+      return
+    }
     load(limit: min(commits.count + pageSize, maxWindow))
   }
 
@@ -127,10 +150,13 @@ final class HistoryModel: ObservableObject {
   /// competing with the status sweep for the same pool: the shape of the "History pane loads forever"
   /// bug this model was already fixed for once.
   private func load(limit: Int) {
-    guard let root else { return }
+    let root = self.root
+    let location = self.location
+    guard root != nil || location != nil else { return }
     task?.cancel()
     state = .loading
     let resolve = self.resolve
+    let router = self.router
     let debounce = self.debounce
     task = Task { [weak self] in
       if debounce > 0 {
@@ -142,7 +168,19 @@ final class HistoryModel: ObservableObject {
         // `runBlocking`, NOT `Task.detached` — the cooperative pool is fixed-width and the
         // per-workroom status snapshots fanned out on selection saturate it, which starved this read
         // (the pane "loaded forever" until the pool drained; a tab switch just bought it time).
-        let page = try await runBlocking { try resolve(root).log(root: root, limit: limit) }
+        let page: VCSHistoryPage
+        if let resolve, let root {
+          page = try await runBlocking { try resolve(root).log(root: root, limit: limit) }
+        } else {
+          let target: RepositoryLocation
+          if let location {
+            target = location
+          } else {
+            target = try await RepositoryLocation.local(root!.path)
+          }
+          let provider = try await router.reader(for: target)
+          page = try await provider.log(limit: limit)
+        }
         if Task.isCancelled { return }
         guard let self else { return }
         self.commits = page.commits
