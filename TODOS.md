@@ -922,8 +922,9 @@ interdiff).
 
 **Where the write seam actually is — this changed.** The original plan put write methods on
 `VCSProviding` with a `CLIVCSProvider` fallback. That is **not** what shipped, and new work should not
-follow it. Writes live behind a **separate** `VCSWriting` protocol (`Core/VCSWriting.swift`) with its
-own factory `VCS.writer(for:)`, conformed by `CLIVCSWriter`. Two reasons, both load-bearing:
+follow it. Writes live behind a **separate**, context-bound `VCSWriting` protocol
+(`Core/RepositoryServices.swift`), constructed by `RepositoryRouter.writer(for:)`. Its local adapter
+delegates to `CLIVCSWriter`, which implements `LocalVCSWriting`. Two reasons, both load-bearing:
 
 - `VCSProviding`'s doc calls it "the single seam the app **reads** VCS data through", and four
   resolvers construct providers freely and call them with no gate. A `fetch` on that protocol means

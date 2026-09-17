@@ -80,9 +80,10 @@ files are the only ones in the app touching raw libgit2:
   a staged rename rendered as one "renamed" row badged `+N −N` while `git diff HEAD --shortstat`
   reported `0 insertions(+), 0 deletions(-)`.
 
-**Read surface & routing.** `Core/VCSProviding.swift` is the one Swift protocol; `VCS.provider(for:)`
-routes by repo kind. `RustJJProvider` maps `WrVcs.*` → app-native models, `GitProvider` wraps
-SwiftGitX. `WorkroomStatusResolver` and `BranchResolver` read through this layer — **the jj CLI
+**Read surface & routing.** `Core/RepositoryServices.swift` defines the context-bound `VCSProviding`
+protocol. `RepositoryRouter` captures the backend and shared ownership for a validated host/path
+identity; native engines implement `LocalVCSProviding` behind its local adapter. `RustJJProvider`
+maps `WrVcs.*` → app-native models, and `GitProvider` wraps SwiftGitX. `WorkroomStatusResolver` and `BranchResolver` read through this layer — **the jj CLI
 parsers are gone** (log/changeset/currentRef/workingStatus are all native jj-lib).
 
 **The one mutating read: `RustJJProvider.workingStatus`.** jj's working copy is itself a commit, so

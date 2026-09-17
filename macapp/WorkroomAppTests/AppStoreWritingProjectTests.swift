@@ -50,7 +50,6 @@ final class AppStoreWritingProjectTests: XCTestCase {
   /// `isWritingProject` refuses a second write before a second `beginWrite` is ever reached).
   func testEndWriteDecrementsRatherThanClears() async throws {
     let proj = try await RepositoryLocation.local("/proj")
-    let a = try await RepositoryLocation.local("/a")
     let store = try await makeStore([])
     store.beginWrite(projectRoot: proj)
     store.beginWrite(projectRoot: proj)
@@ -74,8 +73,6 @@ final class AppStoreWritingProjectTests: XCTestCase {
   /// `committingTargets` — when another write is already in flight for the same project root.
   func testPerformCommitRefusesWhenAnotherWriteIsInFlight() async throws {
     let proj = try await RepositoryLocation.local("/proj")
-    let a = try await RepositoryLocation.local("/a")
-    let never = try await RepositoryLocation.local("/never-began")
     let store = try await makeStore([project("/proj", workrooms: ["feat"])])
     let sid = SidebarID.workroom(project: "/proj", name: "feat")
     store.beginWrite(projectRoot: proj)
@@ -103,7 +100,6 @@ final class AppStoreWritingProjectTests: XCTestCase {
   /// project, in every window, until the app restarts.
   func testReleaseWriteWorksAgainstAProjectStoreAloneNoAppStoreNeeded() async throws {
     let proj = try await RepositoryLocation.local("/proj")
-    let a = try await RepositoryLocation.local("/a")
     let projectStore = ProjectStore()
     projectStore.writingProjectRoots[proj] = 1
     AppStore.releaseWrite(projectRoot: proj, in: projectStore)
@@ -123,9 +119,7 @@ final class AppStoreWritingProjectTests: XCTestCase {
     XCTAssertEqual(projectStore.writingProjectRoots[proj], 1)
   }
 
-  /// The common case: no other write in flight, so `performCommit` must proceed past the guard (it
-  /// marks `committingTargets`/`committingProjectRoots`/`writingProjectRoots` synchronously before
-  /// its `Task` even starts) rather than refusing.
+  /// Unknown ownership refuses the commit before reserving any cross-window suppression.
   func testUnregisteredCommitFailsWithoutMarkingAWrite() async throws {
     let store = AppStore(projectStore: ProjectStore())
     store.projects = [project("/missing-project", workrooms: ["feat"])]

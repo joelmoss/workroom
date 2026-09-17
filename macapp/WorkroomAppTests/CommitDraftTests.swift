@@ -240,3 +240,30 @@ final class CommitDraftTests: XCTestCase {
     }
   }
 }
+
+extension CommitDraftTests {
+  func testPendingPreflightClicksCannotCreateLateFailureAfterCommitStarts() {
+    var preflight = CommitPreflightState()
+    XCTAssertTrue(preflight.begin(), "sheet opens and starts its read")
+    XCTAssertFalse(preflight.begin(), "Commit clicked during the read")
+    XCTAssertFalse(preflight.begin(), "Amend clicked during the same read")
+    XCTAssertFalse(preflight.isReady)
+    XCTAssertTrue(preflight.finish(succeeded: true))
+    XCTAssertTrue(preflight.isReady, "commit is now permitted")
+    XCTAssertFalse(preflight.begin(), "successful preflight must not be rerun")
+    XCTAssertFalse(preflight.finish(succeeded: false), "late completion must be ignored")
+    XCTAssertTrue(preflight.isReady)
+  }
+
+  func testFailedPreflightCanRetryButCannotPermitCommitUntilSuccess() {
+    var preflight = CommitPreflightState()
+    XCTAssertTrue(preflight.begin())
+    XCTAssertTrue(preflight.finish(succeeded: false))
+    XCTAssertFalse(preflight.isReady)
+    XCTAssertTrue(preflight.begin(), "a deliberate retry after failure is allowed")
+    XCTAssertFalse(preflight.begin(), "retry is also single-flight")
+    XCTAssertFalse(preflight.isReady)
+    XCTAssertTrue(preflight.finish(succeeded: true))
+    XCTAssertTrue(preflight.isReady)
+  }
+}
