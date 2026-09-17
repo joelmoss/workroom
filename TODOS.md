@@ -2607,7 +2607,7 @@ per-appearance theme selection.
 itself. We instead write a single `theme = "<name>"` and, on every appearance change, rewrite
 `~/Library/Application Support/Workroom/ghostty.conf`, then `ghostty_config_load_file`,
 `ghostty_app_update_config`, then `updateConfig` on every surface
-(`GhosttyApp.swift` `writeThemeConfig`, `TerminalSessions.applyThemeToAll`). Muxy already uses the
+(`GhosttyApp.swift` `writeThemeConfig`, `ThemeService.applyActiveTheme`). Muxy already uses the
 native form (`muxy/Muxy/Services/ThemeService.swift` `parseThemeSelection`).
 
 **What verification against the pinned engine (sha `35e1a016`) actually found:** the two-variant
@@ -2629,7 +2629,7 @@ surface-scoped case, which means calling `ghostty_app_update_config`/`ghostty_su
 back into the engine from inside `action_cb` while it's mid-`colorSchemeEvent` — the same kind of
 reentrancy-off-callback-stacks hazard flagged for surface teardown (see the libghostty-surface-free
 memory note) — or (b) keeping our own explicit `updateConfig` calls, where scheme-flip-before-derive
-becomes a newly load-bearing ordering invariant (today's `applyThemeToAll` calls `reloadConfig`
+becomes a newly load-bearing ordering invariant (today's `ThemeService.applyActiveTheme` calls `reloadConfig`
 *before* `setColorScheme`, which is harmless only because today's single-name theme has no
 conditional state to get stale).
 

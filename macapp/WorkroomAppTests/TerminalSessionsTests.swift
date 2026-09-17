@@ -1708,4 +1708,31 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     s.equalizeSplit(for: target)
     XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
   }
+
+  // MARK: Theme sweep (WORKROOM-3R)
+
+  /// Forward guard: `applyThemeToAll` must never touch APP-GLOBAL ghostty state (the config
+  /// rebuild + color-scheme push). That half moved to `ThemeService.applyActiveTheme`, which now
+  /// runs it exactly once regardless of how many windows are registered — doing it here again,
+  /// inside the per-window loop, is the N-windows-N-config-writes stall this signature change
+  /// (dropping `force:`, adding `isDark:`) exists to prevent. Also exercises the content-tab
+  /// `continue` branch (a diff-preview tab has no surface) mixed with a real terminal tab, so the
+  /// sweep must not crash on the mix.
+  func testApplyThemeToAllTouchesNoAppGlobalGhosttyState() throws {
+    try XCTSkipUnless(
+      GhosttyApp.shared.isReady, "libghostty must be up to observe its config pointer")
+    let s = makeSessions()
+    s.addTab(for: target)
+    _ = s.openDiffPreview(
+      DiffDescriptor(path: "A.swift", change: .modified, source: .gitWorktree, isPreview: true),
+      for: target)
+    XCTAssertEqual(s.tabs(for: target).count, 2, "one terminal tab + one content tab")
+
+    let configBefore = GhosttyApp.shared.config
+    s.applyThemeToAll(isDark: true)
+
+    XCTAssertEqual(
+      GhosttyApp.shared.config, configBefore,
+      "applyThemeToAll rebuilt the app-global config — that now happens once in applyActiveTheme")
+  }
 }

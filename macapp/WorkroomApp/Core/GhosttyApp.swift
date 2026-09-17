@@ -189,15 +189,20 @@ final class GhosttyApp {
   }
 
   /// Rebuild the config for the current appearance and apply it app-wide (called on a light/dark
-  /// change from `TerminalSessions.applyThemeToAll`). Individual surfaces are refreshed by the
-  /// caller via `GhosttySurfaceView.updateConfig`.
+  /// change from `ThemeService.applyActiveTheme`, once per apply — NOT once per window). Individual
+  /// surfaces are refreshed by `TerminalSessions.applyThemeToAll` via `GhosttySurfaceView.updateConfig`.
   ///
   /// `force` rebuilds even when the appearance is unchanged — needed for a *same-appearance theme
   /// switch* (issue #36), where the active theme name changes but `dark` does not, so the plain
   /// appearance guard would skip the rebuild.
-  func reloadConfig(force: Bool = false) {
+  ///
+  /// `dark` comes FROM the caller rather than being re-derived here: `ThemeService`'s reading honours
+  /// a forced light/dark preference, this type's `isCurrentAppearanceDark` only asks AppKit. Deriving
+  /// it twice let the theme written into the conf disagree with the scheme pushed to the surfaces —
+  /// they agreed only because `RootView.applyAppearance` happens to set `NSApp.appearance` first,
+  /// which is an invariant held in another file.
+  func reloadConfig(force: Bool = false, dark: Bool) {
     guard let app else { return }
-    let dark = Self.isCurrentAppearanceDark()
     // Unchanged appearance and not forced → nothing to rebuild.
     guard force || dark != lastConfiguredDark else { return }
     lastConfiguredDark = dark
