@@ -41,9 +41,7 @@ enum TerminalCapture {
     var end = utf8.endIndex
     while true {
       let lineStart = utf8[..<end].lastIndex(of: UInt8(ascii: "\n")).map { utf8.index(after: $0) }
-      let blank = utf8[(lineStart ?? utf8.startIndex)..<end].allSatisfy {
-        $0 == UInt8(ascii: " ") || $0 == UInt8(ascii: "\t")
-      }
+      let blank = isBlankLine(raw, from: lineStart ?? utf8.startIndex, to: end)
       guard blank, let lineStart else { break }
       end = utf8.index(before: lineStart)  // the "\n" that ended the line above
     }
@@ -54,6 +52,30 @@ enum TerminalCapture {
     if end == utf8.endIndex, body.count <= budget { return raw }
     guard body.count > budget else { return String(decoding: body, as: UTF8.self) }
     return String(decoding: body.suffix(budget).drop { $0 & 0xC0 == 0x80 }, as: UTF8.self)
+  }
+
+  /// Is `raw[start..<end]` — one line, newline excluded — blank the way `tidy` means it?
+  ///
+  /// Bytes first, and any ASCII byte that is neither space nor tab settles it. That covers every
+  /// ordinary line at the cost of one early-exit scan. A line whose ASCII is all blank but which
+  /// carries non-ASCII falls through to the scalar reading `tidy` itself applies, where
+  /// `.whitespaces` also means NBSP and its relatives: judging those by ASCII alone would read a
+  /// long run of NBSP-only lines as content, let it eat the whole byte budget, and leave `tidy`
+  /// trimming it away to nothing — losing the error above it, which is exactly the loss the byte
+  /// scan exists to prevent.
+  private static func isBlankLine(_ raw: String, from start: String.Index, to end: String.Index)
+    -> Bool
+  {
+    var sawNonASCII = false
+    for byte in raw.utf8[start..<end] {
+      if byte >= 0x80 {
+        sawNonASCII = true
+      } else if byte != UInt8(ascii: " "), byte != UInt8(ascii: "\t") {
+        return false
+      }
+    }
+    guard sawNonASCII else { return true }
+    return raw.unicodeScalars[start..<end].allSatisfy { CharacterSet.whitespaces.contains($0) }
   }
 
   /// Post-process raw rendered text (from `ghostty_surface_read_text`) before handing it to the

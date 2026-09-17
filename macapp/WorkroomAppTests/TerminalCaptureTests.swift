@@ -153,4 +153,12 @@ final class TerminalCaptureTests: XCTestCase {
     // that only an input this extreme actually exercises.
     XCTAssertEqual(TerminalCapture.tidy("short output", maxBytes: Int.max), "short output")
   }
+
+  func testTidyKeepsContentBehindAnOversizedUnicodeWhitespaceTail() {
+    // Same loss as the ASCII blank run, one alphabet over: `tidy` trims NBSP lines (`.whitespaces`
+    // is Unicode), so judging blankness by ASCII alone let a >4x-budget NBSP tail read as content,
+    // eat the whole byte budget, and leave nothing behind once tidy trimmed it.
+    let raw = "FATAL: real error\n" + String(repeating: "\u{00A0}\u{2003}\n", count: 20_000)
+    XCTAssertEqual(TerminalCapture.tidy(raw, maxBytes: 1024), "FATAL: real error")
+  }
 }
