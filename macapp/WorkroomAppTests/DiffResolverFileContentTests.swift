@@ -4,14 +4,14 @@ import XCTest
 
 /// Tests for `DiffResolver.fileContent` — the new-side content fetch that feeds syntax highlighting.
 /// Working-copy sources read disk directly (guarded; exercised against a real temp workroom, never a
-/// real repo); commit / jj-parent sources read through `VCSProviding.fileContent` (a stub here — the
+/// real repo); commit / jj-parent sources read through `LocalVCSProviding.fileContent` (a stub here — the
 /// crucial invariant is the revision each source resolves to, and that working-copy reads never touch
 /// the backend). Real-backend behaviour is covered by `VCSProviderConformanceTests`.
 final class DiffResolverFileContentTests: XCTestCase {
 
   /// Records `fileContent` calls and returns a configurable result (or throws). All other
-  /// `VCSProviding` members are unused stubs.
-  private final class StubContentProvider: VCSProviding, @unchecked Sendable {
+  /// `LocalVCSProviding` members are unused stubs.
+  private final class StubContentProvider: LocalVCSProviding, @unchecked Sendable {
     var result: Result<String?, Error> = .success(nil)
     private let lock = NSLock()
     private var _calls: [(rev: String, path: String)] = []

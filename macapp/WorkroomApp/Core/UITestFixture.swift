@@ -1072,14 +1072,14 @@ enum UITestFixture {
 
   /// The canned VCS backend for History + changeset detail in fixture mode (issue #59). The fake
   /// workroom dirs aren't real repos, so `HistoryModel` / `ChangesetDetailView` read from this instead
-  /// of `VCS.provider(for:)` — the History → changeset click-through then runs hermetically.
-  static let vcsProvider: VCSProviding = FixtureVCSProvider()
+  /// of the repository router — the History → changeset click-through then runs hermetically.
+  static let vcsProvider: LocalVCSProviding = FixtureVCSProvider()
 }
 
-/// Deterministic `VCSProviding` for UI-test fixture mode (see `UITestFixture.vcsProvider`). Per-file
+/// Deterministic `LocalVCSProviding` for UI-test fixture mode (see `UITestFixture.vcsProvider`). Per-file
 /// diffs are NOT sourced here: `DiffViewer` serves `UITestFixture.diff(for:)` directly in fixture
 /// mode, so `fileDiff` is only a protocol stub.
-struct FixtureVCSProvider: VCSProviding {
+struct FixtureVCSProvider: LocalVCSProviding {
   /// The same canned status the fixture's own status path serves, so a fixture run reading through
   /// the provider sees what one reading `UITestFixture.workroomStatus` sees. Implemented rather
   /// than defaulted on the protocol: a default would let a REAL backend that forgot this method
@@ -1227,7 +1227,7 @@ struct StubAgentRunner: AgentRunning {
   }
 }
 
-/// The `VCSWriting` used under `-WorkroomUITestFixture`: serves the seeded `UITestFixture.remoteState`
+/// The `LocalVCSWriting` used under `-WorkroomUITestFixture`: serves the seeded `UITestFixture.remoteState`
 /// and answers every action without running git or jj.
 ///
 /// What no other tier can see is the button→engine seam: whether clicking "Push origin" actually asks
@@ -1239,7 +1239,7 @@ struct StubAgentRunner: AgentRunning {
 /// instead: `delay` makes the in-flight label ("Pushing…") observable, and `-WorkroomUITestSyncFailure`
 /// makes the failed action's own label the one shown — both of which name the action that was
 /// requested, in the accessibility tree, without a side channel.
-actor FixtureVCSWriter: VCSWriting {
+actor FixtureVCSWriter: LocalVCSWriting {
   /// Set for `-WorkroomUITestSyncFailure`, so the error tier renders.
   private let failing: Bool
   /// Delays each action so the in-flight state is observable rather than instantaneous.

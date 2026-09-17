@@ -909,6 +909,8 @@ struct ChangesPanel: View {
 
   private func failureText(_ f: VCSStatusFailure) -> String {
     switch f {
+    case .unavailable: return "Repository service unavailable."
+    case .registrationRequired: return "Reload projects to register this repository."
     case .missingPath: return "Directory not found."
     case .notRepository: return "Not a repository."
     case .timeout: return "Status unavailable (timed out)."

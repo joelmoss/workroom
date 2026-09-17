@@ -20,11 +20,10 @@ enum DiffResult: Equatable, Sendable {
 /// specifics are in `command(for:dir:)` (unit-tested without spawning). `resolve(_:in:)` calls
 /// the runner, interprets the result, and parses the unified diff.
 struct DiffResolver: Sendable {
-  /// The VCS backend, injected for tests. Defaults to the real repo-kind router
-  /// (`VCS.provider(for:)` — jj → jj-lib/CLI, git → SwiftGitX). Serves commit (`fileDiff`) and
-  /// working-copy (`workingFileDiff`) diffs and the new-side content for highlighting (`fileContent`)
-  /// — the resolver itself no longer shells out for anything.
-  let makeProvider: @Sendable (URL) throws -> VCSProviding
+  /// Optional raw local engine injection for existing engine tests. Production always uses the
+  /// context-bound router, including the overload accepting an explicit remote location.
+  let makeProvider: (@Sendable (URL) throws -> LocalVCSProviding)?
+  let router: RepositoryRouter
   /// Cache for immutable **commit** diffs, shared across viewers. Working-copy diffs are never cached
   /// — their content is mutable, so a cache would serve stale hunks after an edit.
   let cache: DiffCache
@@ -38,31 +37,32 @@ struct DiffResolver: Sendable {
   static let maxDiffBytes = 3 * 1024 * 1024
 
   init(
-    makeProvider: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) },
+    makeProvider: (@Sendable (URL) throws -> LocalVCSProviding)? = nil,
+    router: RepositoryRouter = .shared,
     cache: DiffCache = .shared, gate: JJSnapshotGate = .shared
   ) {
     self.makeProvider = makeProvider
+    self.router = router
     self.cache = cache
     self.gate = gate
   }
 
   /// Fetch and parse the diff for `descriptor`, reading the repo rooted at `dir` (the workroom
   /// directory, an absolute path). Every source is read structurally through the VCS backend
-  /// (`VCSProviding`) — no diff shells out of this resolver — and the git-format text each returns
+  /// (`LocalVCSProviding`) — no diff shells out of this resolver — and the git-format text each returns
   /// feeds the one `UnifiedDiff` pipeline. Returns a `DiffResult` the viewer renders directly.
   ///
-  /// `projectRoot` is the owning project's root (`AppStore.projectRoot(forTarget:)`) — required so
-  /// a `.jjWorkingCopy` diff (the one source that snapshots `@`, like
-  /// `WorkroomStatusResolver.resolveJJ`) can serialize through `JJSnapshotGate` against the status
-  /// sweep and other lanes for the same project. `nil` is legitimate (and ignored) for every other
-  /// source — `.commit`/`.jjParent`/`.gitWorktree` never snapshot. `.jjWorkingCopy` always gates —
-  /// if the caller couldn't resolve a real project root (e.g. `AppStore.projectRoot(forTarget:)`
-  /// returned nil for a target that no longer matches a live project), it falls back to `dir`
-  /// itself rather than silently skipping the gate: a narrower (per-workroom, not per-project) key
-  /// still beats an ungated snapshot.
+  /// The string entry point belongs to local persisted records. It normalizes asynchronously and
+  /// then routes by identity. `projectRoot` is used only by explicitly injected local engine tests;
+  /// production snapshots obtain ownership exclusively from the captured registry entry.
   func resolve(_ descriptor: DiffDescriptor, in dir: String, projectRoot: String?) async
     -> DiffResult
   {
+    if makeProvider == nil {
+      do { return await resolve(descriptor, in: try await RepositoryLocation.local(dir)) } catch {
+        return .failed(error.localizedDescription)
+      }
+    }
     let root = URL(fileURLWithPath: dir, isDirectory: true)
     switch descriptor.source {
     case .commit(let commitID):
@@ -79,14 +79,40 @@ struct DiffResolver: Sendable {
     }
   }
 
+  func resolve(_ descriptor: DiffDescriptor, in location: RepositoryLocation) async -> DiffResult {
+    do {
+      let provider = try await router.reader(for: location)
+      switch descriptor.source {
+      case .commit(let revision):
+        let key = DiffCache.Key(
+          location: location, backend: provider.context.backend,
+          revision: revision, path: descriptor.path)
+        if let cached = await cache.get(key) { return cached }
+        let text = try await provider.fileDiff(commitID: revision, path: descriptor.path)
+        let result = Self.interpret(text)
+        if case .failed = result {} else { await cache.set(key, result, bytes: text.utf8.count) }
+        return result
+      case .jjWorkingCopy, .gitWorktree:
+        return Self.interpret(
+          try await provider.workingFileDiff(path: descriptor.path, base: .workingCopy))
+      case .jjParent:
+        return Self.interpret(
+          try await provider.workingFileDiff(path: descriptor.path, base: .parent))
+      }
+    } catch let error as VCSError { return .failed(Self.message(for: error)) } catch {
+      return .failed(error.localizedDescription)
+    }
+  }
+
   /// A commit diff is immutable, so it's cached (keyed by root + commit id + path): re-selecting a
   /// file in History or reopening a changeset tab is then instant. Sourced from
-  /// `VCSProviding.fileDiff` (jj-lib / SwiftGitX).
+  /// `LocalVCSProviding.fileDiff` (jj-lib / SwiftGitX).
   private func resolveCommit(commitID: String, path: String, root: URL) async -> DiffResult {
-    let key = "commit\u{1F}\(root.path)\u{1F}\(commitID)\u{1F}\(path)"
-    if let cached = await cache.get(key) { return cached }
     do {
-      let text = try await makeProvider(root).fileDiff(root: root, commitID: commitID, path: path)
+      let location = try await RepositoryLocation.local(root.path)
+      let key = DiffCache.Key(location: location, backend: .git, revision: commitID, path: path)
+      if let cached = await cache.get(key) { return cached }
+      let text = try await makeProvider!(root).fileDiff(root: root, commitID: commitID, path: path)
       let result = Self.interpret(text)
       // Cache only settled outcomes — never a transient failure.
       if case .failed = result {} else { await cache.set(key, result, bytes: text.utf8.count) }
@@ -99,7 +125,7 @@ struct DiffResolver: Sendable {
   }
 
   /// A working-copy diff (jj `@`/`@-`, git worktree) read structurally via
-  /// `VCSProviding.workingFileDiff`. Never cached — the working copy is mutable, so a cache would
+  /// `LocalVCSProviding.workingFileDiff`. Never cached — the working copy is mutable, so a cache would
   /// serve a stale diff after an on-disk edit. `base == .workingCopy` for a jj repo is the one case
   /// that snapshots `@` (no `--ignore-working-copy`, unlike `.parent`) — gated per project root
   /// when `projectRoot` is supplied (always true for `.jjWorkingCopy`, always `nil` for
@@ -112,10 +138,10 @@ struct DiffResolver: Sendable {
       let text: String
       if base == .workingCopy, let projectRoot {
         text = try await gate.run(projectRoot: projectRoot) {
-          try await self.makeProvider(root).workingFileDiff(root: root, path: path, base: base)
+          try await self.makeProvider!(root).workingFileDiff(root: root, path: path, base: base)
         }
       } else {
-        text = try await makeProvider(root).workingFileDiff(root: root, path: path, base: base)
+        text = try await makeProvider!(root).workingFileDiff(root: root, path: path, base: base)
       }
       return Self.interpret(text)
     } catch let error as VCSError {
@@ -156,21 +182,28 @@ struct DiffResolver: Sendable {
 actor DiffCache {
   static let shared = DiffCache()
 
-  private var entries: [String: DiffResult] = [:]
-  private var sizes: [String: Int] = [:]
-  private var order: [String] = []  // front = least-recently-used
+  struct Key: Hashable, Sendable {
+    let location: RepositoryLocation
+    let backend: RepositoryBackend
+    let revision: String
+    let path: String
+  }
+
+  private var entries: [Key: DiffResult] = [:]
+  private var sizes: [Key: Int] = [:]
+  private var order: [Key] = []  // front = least-recently-used
   private var total = 0
   private let budget: Int
 
   init(budget: Int = 32 * 1024 * 1024) { self.budget = budget }
 
-  func get(_ key: String) -> DiffResult? {
+  func get(_ key: Key) -> DiffResult? {
     guard let value = entries[key] else { return nil }
     touch(key)
     return value
   }
 
-  func set(_ key: String, _ value: DiffResult, bytes: Int) {
+  func set(_ key: Key, _ value: DiffResult, bytes: Int) {
     if entries[key] != nil {
       total -= sizes[key] ?? 0
       order.removeAll { $0 == key }
@@ -189,7 +222,7 @@ actor DiffCache {
     total = 0
   }
 
-  private func touch(_ key: String) {
+  private func touch(_ key: Key) {
     order.removeAll { $0 == key }
     order.append(key)
   }
@@ -213,21 +246,25 @@ extension DiffResolver {
   /// - working-copy sources (`gitWorktree`, `jjWorkingCopy`): a guarded disk read (the working copy
   ///   is `@`, so nothing shells out and nothing contends on the jj working-copy lock).
   /// - `commit(id)` / jj `parent` (`@-`): the new side is a committed revision (not on disk) →
-  ///   `VCSProviding.fileContent` (git blob walk / jj `jj file show --ignore-working-copy`). This is
+  ///   `LocalVCSProviding.fileContent` (git blob walk / jj `jj file show --ignore-working-copy`). This is
   ///   why a commit diff now highlights too.
   ///
   /// Best-effort throughout: any backend error becomes `nil` (render plain). Only additions + context
   /// are highlighted, so a deleted file (no new side) correctly yields `nil`.
   func fileContent(for descriptor: DiffDescriptor, in dir: String) async -> String? {
+    if makeProvider == nil {
+      guard let location = try? await RepositoryLocation.local(dir) else { return nil }
+      return await fileContent(for: descriptor, in: location)
+    }
     let root = URL(fileURLWithPath: dir, isDirectory: true)
     switch descriptor.source {
     case .commit(let commitID):
-      return try? await makeProvider(root).fileContent(
+      return try? await makeProvider!(root).fileContent(
         root: root, rev: commitID, path: descriptor.path)
     case .gitWorktree, .jjWorkingCopy:
       return Self.readWorkingFile(path: descriptor.path, in: dir)
     case .jjParent:
-      return try? await makeProvider(root).fileContent(
+      return try? await makeProvider!(root).fileContent(
         root: root, rev: "@-", path: descriptor.path)
     }
   }
@@ -237,8 +274,12 @@ extension DiffResolver {
   /// parent/base resolver per source. Best-effort: any error / absence → `nil` (deletions render
   /// plain). Deleted files (no new side) still highlight their removals from this old side.
   func oldFileContent(for descriptor: DiffDescriptor, in dir: String) async -> String? {
+    if makeProvider == nil {
+      guard let location = try? await RepositoryLocation.local(dir) else { return nil }
+      return await oldFileContent(for: descriptor, in: location)
+    }
     let root = URL(fileURLWithPath: dir, isDirectory: true)
-    let provider = try? makeProvider(root)
+    let provider = try? makeProvider!(root)
     switch descriptor.source {
     case .commit(let commitID):
       return try? await provider?.commitParentFileContent(
@@ -249,6 +290,36 @@ extension DiffResolver {
     case .jjParent:
       return try? await provider?.workingBaseFileContent(
         root: root, base: .parent, path: descriptor.path)
+    }
+  }
+
+  func fileContent(for descriptor: DiffDescriptor, in location: RepositoryLocation) async -> String?
+  {
+    switch descriptor.source {
+    case .gitWorktree, .jjWorkingCopy:
+      guard location.host == .local else { return nil }
+      return try? await runBlocking {
+        Self.readWorkingFile(path: descriptor.path, in: location.path)
+      }
+    case .commit(let revision):
+      return try? await router.reader(for: location).fileContent(
+        rev: revision, path: descriptor.path)
+    case .jjParent:
+      return try? await router.reader(for: location).fileContent(rev: "@-", path: descriptor.path)
+    }
+  }
+
+  func oldFileContent(for descriptor: DiffDescriptor, in location: RepositoryLocation) async
+    -> String?
+  {
+    guard let provider = try? await router.reader(for: location) else { return nil }
+    switch descriptor.source {
+    case .commit(let revision):
+      return try? await provider.commitParentFileContent(commitID: revision, path: descriptor.path)
+    case .gitWorktree, .jjWorkingCopy:
+      return try? await provider.workingBaseFileContent(base: .workingCopy, path: descriptor.path)
+    case .jjParent:
+      return try? await provider.workingBaseFileContent(base: .parent, path: descriptor.path)
     }
   }
 

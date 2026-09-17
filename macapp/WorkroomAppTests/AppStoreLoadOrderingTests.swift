@@ -295,3 +295,68 @@ final class AppStoreLoadOrderingTests: XCTestCase {
   }
 
 }
+
+private actor RepositoryPreparationPause {
+  private var continuation: CheckedContinuation<Void, Never>?
+  private var released = false
+  func wait() async {
+    if released { return }
+    await withCheckedContinuation { continuation = $0 }
+  }
+  func release() {
+    released = true
+    continuation?.resume()
+    continuation = nil
+  }
+}
+
+extension AppStoreLoadOrderingTests {
+  func testSupersededNormalizationCannotPublishOverNewerListing() async throws {
+    try await checkSupersededPreparation(fails: false)
+  }
+
+  func testSupersededNormalizationFailureDoesNotSurfaceOrReplaceNewerListing() async throws {
+    try await checkSupersededPreparation(fails: true)
+  }
+
+  private func checkSupersededPreparation(fails: Bool) async throws {
+    let started = [expectation(description: "older list"), expectation(description: "newer list")]
+    let preparing = expectation(description: "older normalization suspended")
+    let cli = GatedListCLI(started: started)
+    let shared = ProjectStore()
+    let pause = RepositoryPreparationPause()
+    shared.prepareRepositories = { projects in
+      if projects.first?.workrooms.first?.name == "older" {
+        preparing.fulfill()
+        await pause.wait()
+        if fails { throw RepositoryRoutingError.invalidPath("older") }
+      }
+      return try await RepositoryRouter.prepare(projects)
+    }
+    let store = makeStore(shared, cli: cli)
+    let prior = projects(["prior"])
+    shared.projects = prior
+    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(prior))
+    let remote = try RepositoryLocation.remote(host: UUID(), path: path)
+    try RepositoryRouter.shared.register(
+      .init(location: remote, backend: .git, sharedLocation: remote))
+    let older = Task { await store.reload() }
+    await fulfillment(of: [started[0]], timeout: 3)
+    await cli.release(0, projects: projects(["older"]))
+    await fulfillment(of: [preparing], timeout: 3)
+    XCTAssertEqual(shared.projects.first?.workrooms.first?.name, "prior")
+    XCTAssertNotNil(RepositoryRouter.shared.localLocation(for: path + "/prior"))
+    XCTAssertNil(RepositoryRouter.shared.localLocation(for: path + "/older"))
+    let newer = Task { await store.reload() }
+    await fulfillment(of: [started[1]], timeout: 3)
+    await cli.release(1, projects: projects(["newer"]))
+    await newer.value
+    await pause.release()
+    await older.value
+    XCTAssertEqual(shared.projects.first?.workrooms.first?.name, "newer")
+    XCTAssertNotNil(RepositoryRouter.shared.localLocation(for: path + "/newer"))
+    XCTAssertNil(RepositoryRouter.shared.localLocation(for: path + "/older"))
+    XCTAssertNotNil(RepositoryRouter.shared.entry(for: remote))
+    XCTAssertNil(store.errorMessage)
+  }
+}

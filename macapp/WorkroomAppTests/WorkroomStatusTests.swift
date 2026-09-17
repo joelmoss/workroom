@@ -816,9 +816,10 @@ final class WorkroomStatusTests: XCTestCase {
   /// when the `gh` command fails — reverts to the prior state and surfaces the error, so the UI
   /// never lies about a change that didn't land.
   @MainActor
-  func testPerformPRActionRevertsOnFailure() async {
+  func testPerformPRActionRevertsOnFailure() async throws {
     let store = AppStore()
     store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
     store.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "pr already ready", exitCode: 1, timedOut: false)
@@ -844,9 +845,10 @@ final class WorkroomStatusTests: XCTestCase {
 
   /// Convert-to-draft also flips optimistically (open → draft) the instant it's invoked.
   @MainActor
-  func testPerformPRActionConvertToDraftIsOptimistic() {
+  func testPerformPRActionConvertToDraftIsOptimistic() async throws {
     let store = AppStore()
     store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
     store.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "boom", exitCode: 1, timedOut: false)
@@ -867,9 +869,10 @@ final class WorkroomStatusTests: XCTestCase {
   /// test of its own failure/revert path — this closes that gap, mirroring
   /// `testPerformPRActionRevertsOnFailure`.
   @MainActor
-  func testPerformMergeRevertsOnFailure() async {
+  func testPerformMergeRevertsOnFailure() async throws {
     let store = AppStore()
     store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
     store.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "not mergeable", exitCode: 1, timedOut: false)

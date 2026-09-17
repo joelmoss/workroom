@@ -26,7 +26,7 @@ final class HistoryLiveRefreshTests: XCTestCase {
 
   /// Counts `log` calls (the observable "a load fired" signal). Lock-guarded + `@unchecked Sendable`
   /// because `log` runs off-main via `runBlocking`; tests serialize with `awaitCurrentLoad`.
-  private final class CountingProvider: VCSProviding, @unchecked Sendable {
+  private final class CountingProvider: LocalVCSProviding, @unchecked Sendable {
     private let lock = NSLock()
     private var _count = 0
     var logCount: Int { lock.withLock { _count } }

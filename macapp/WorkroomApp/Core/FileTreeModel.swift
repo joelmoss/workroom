@@ -20,6 +20,7 @@ final class FileTreeModel: ObservableObject {
     case loaded
     /// Not a git/jj repo, or the tool is missing — nothing to list.
     case unavailable
+    case failed(String)
   }
 
   /// The sorted root nodes of the current target's tree.
@@ -36,10 +37,7 @@ final class FileTreeModel: ObservableObject {
   var rows: [FileTreeRow] { FileTreeBuilder.flatten(roots, expanded: expanded) }
 
   private var currentPath: String?
-  /// The owning project's root for `currentPath` (nil for a root target, where it equals
-  /// `currentPath` itself) — threaded into `list` to key `JJSnapshotGate` for the jj branch, the
-  /// same way `AppStore.projectRoot(forTarget:)` feeds `DiffResolver`.
-  private var currentProjectRoot: String?
+  private var currentLocation: RepositoryLocation?
   private let runner: StatusCommandRunning
   private let gate: JJSnapshotGate
   private var watcher: WorkroomFileWatcher?
@@ -57,47 +55,88 @@ final class FileTreeModel: ObservableObject {
 
   /// Point the model at a target directory (a workroom/project root), or `nil` to clear. Starts
   /// watching it and lists it. No-op if already on this path (so re-renders don't re-list).
-  /// `projectRoot` is the owning project's root (nil ⇒ falls back to `path` itself, e.g. for a root
-  /// target where they're the same) — see `currentProjectRoot`.
-  func activate(path: String?, projectRoot: String? = nil) {
-    guard path != currentPath else { return }
-    loadTask?.cancel()
-    currentPath = path
-    currentProjectRoot = projectRoot
-    expanded = []
-    // A nil path (nothing selected / Files section hidden) or a missing directory (a vanished
-    // workroom) clears the tree without spawning git/jj or a watcher.
-    var isDir: ObjCBool = false
-    let exists =
-      path.map { FileManager.default.fileExists(atPath: $0, isDirectory: &isDir) } ?? false
-    guard let path, exists, isDir.boolValue else {
-      watcher?.stop()
-      watcher = nil
-      roots = []
-      state = path == nil ? .idle : .unavailable
+  /// Raw paths are the local persisted-record boundary; normalization finishes before watching.
+  func activate(path: String?) {
+    guard path != currentPath || (currentLocation != nil && currentLocation?.host != .local) else {
       return
     }
-    startWatching(path)
-    state = .loading
+    loadTask?.cancel()
+    currentPath = path
+    expanded = []
+    currentLocation = nil
+    watcher?.stop()
+    watcher = nil
     roots = []
-    reload()
+    guard let path else {
+      state = .idle
+      return
+    }
+    state = .loading
+    loadTask = Task { [weak self] in
+      do {
+        let location = try await RepositoryLocation.local(path)
+        guard !Task.isCancelled, let self, self.currentPath == path else { return }
+        self.activate(location: location)
+      } catch { self?.state = .unavailable }
+    }
+  }
+
+  func activate(location: RepositoryLocation?) {
+    guard currentLocation != location || (location == nil && currentPath != nil) else { return }
+    loadTask?.cancel()
+    watcher?.stop()
+    watcher = nil
+    currentLocation = location
+    currentPath = location?.path
+    roots = []
+    expanded = []
+    guard let location else {
+      state = .idle
+      return
+    }
+    guard location.host == .local else {
+      state = .failed(RepositoryRoutingError.unavailable(location.host).localizedDescription)
+      return
+    }
+    state = .loading
+    loadTask = Task { [weak self] in
+      let exists =
+        (try? await runBlocking {
+          var directory: ObjCBool = false
+          return FileManager.default.fileExists(atPath: location.path, isDirectory: &directory)
+            && directory.boolValue
+        }) ?? false
+      guard !Task.isCancelled, let self, self.currentLocation == location else { return }
+      guard exists else {
+        self.state = .unavailable
+        return
+      }
+      self.startWatching(location.path)
+      self.reload()
+    }
   }
 
   /// Re-list the current target (a manual refresh, or after a watched filesystem change). Keeps the
   /// existing tree visible while the new listing runs.
   func reload() {
-    guard let path = currentPath else { return }
-    let projectRoot = currentProjectRoot
+    guard let location = currentLocation else { return }
+    guard location.host == .local else {
+      state = .failed(RepositoryRoutingError.unavailable(location.host).localizedDescription)
+      return
+    }
     loadTask?.cancel()
     loadTask = Task { [weak self] in
       guard let self else { return }
       let result = await FileTreeModel.list(
-        path: path, projectRoot: projectRoot, runner: self.runner, gate: self.gate)
-      guard !Task.isCancelled, self.currentPath == path else { return }
+        location: location, runner: self.runner, gate: self.gate)
+      guard !Task.isCancelled, self.currentLocation == location else { return }
       switch result {
       case .listing(let paths):
         self.roots = FileTreeBuilder.build(from: paths)
         self.state = .loaded
+      case .failed(let error):
+        self.roots = []
+        self.state = .failed(error.localizedDescription)
       case .unavailable:
         self.roots = []
         self.state = .unavailable
@@ -143,25 +182,27 @@ final class FileTreeModel: ObservableObject {
     /// the caller must not blank an existing tree over it — the sensible read is "try again", not
     /// "this isn't a repo any more".
     case interrupted
+    case failed(RepositoryRoutingError)
   }
 
-  /// List the working tree at `path`: try git first (covers git worktrees and colocated jj repos),
-  /// then jj (a non-colocated jj workspace has no `.git`). Static + injectable runner so the
-  /// git→jj fallthrough is testable. `jj file list` has no `--ignore-working-copy` — like
-  /// `WorkroomStatusResolver.resolveJJ`/`DiffResolver`'s `.jjWorkingCopy`, it snapshots `@`, so it's
-  /// serialized per project root through `JJSnapshotGate` (`git ls-files` is read-only and never
-  /// gated). `projectRoot` falls back to `path` itself when unavailable (never skip the gate
-  /// entirely — see `DiffResolver.resolve`'s identical fallback).
+  /// Immutable git listing is allowed without registration. The JJ fallback snapshots and must
+  /// acquire the registered shared repository's gate; unknown ownership is an explicit failure.
   static func list(
-    path: String, projectRoot: String?, runner: StatusCommandRunning, gate: JJSnapshotGate = .shared
+    location: RepositoryLocation, runner: StatusCommandRunning,
+    gate: JJSnapshotGate = .shared, router: RepositoryRouter = .shared
   ) async -> ListResult {
+    guard location.host == .local else { return .failed(.unavailable(location.host)) }
+    let path = location.path
     var sawSignal = false
     for vcs in [FileListVCS.git, .jj] {
       let command = FileListing.command(vcs)
       let result: CommandResult
       if vcs == .jj {
+        guard let shared = router.entry(for: location)?.sharedLocation else {
+          return .failed(.registrationRequired)
+        }
         result =
-          (try? await gate.run(projectRoot: projectRoot ?? path) {
+          (try? await gate.run(repository: shared) {
             await runner.run(command.executable, command.args, in: path, timeout: 10)
           }) ?? CommandResult(stdout: "", stderr: "", exitCode: 1, timedOut: false)
       } else {

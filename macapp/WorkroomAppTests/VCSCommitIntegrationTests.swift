@@ -71,7 +71,10 @@ final class VCSCommitIntegrationTests: XCTestCase {
 
   private func writer(_ vcs: String) -> CLIVCSWriter {
     CLIVCSWriter(
-      vcs: vcs, runner: StatusCommandRunner(), makeProvider: { try VCS.provider(for: $0) },
+      vcs: vcs, runner: StatusCommandRunner(),
+      makeProvider: { _ in
+        vcs == "jj" ? RustJJProvider() as LocalVCSProviding : GitProvider() as LocalVCSProviding
+      },
       gate: JJSnapshotGate(maxChainWait: 5))
   }
 
@@ -316,7 +319,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     // A worktree-only change, which is NOT at risk — nothing was staged for it.
     write("other changed\n", to: "g.txt", in: dir)
 
-    let atRisk = await writer("git").stagedContentAtRisk(
+    let atRisk = try await writer("git").stagedContentAtRisk(
       path: dir, files: [modified("f.txt"), modified("g.txt")])
     XCTAssertEqual(atRisk, ["f.txt"], "only the partly-staged file is at risk")
   }
@@ -349,7 +352,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     write("two\n", to: "f.txt", in: dir)
     sh("git add f.txt", in: dir)
 
-    let atRisk = await writer("git").stagedContentAtRisk(path: dir, files: [modified("f.txt")])
+    let atRisk = try await writer("git").stagedContentAtRisk(path: dir, files: [modified("f.txt")])
     XCTAssertTrue(atRisk.isEmpty, "staged and identical to disk — nothing is discarded")
   }
 
@@ -551,7 +554,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
   // MARK: - Commit pre-flight
 
   /// jj's description must come back **byte for byte**, which is the whole reason this is its own
-  /// method rather than `VCSProviding.log(limit: 1)`.
+  /// method rather than `LocalVCSProviding.log(limit: 1)`.
   ///
   /// Compared against what jj itself holds, read independently — **not** against a round-trip
   /// through `CommitDraft`, which would prove nothing. `message(summary:body:preserving:)` returns
@@ -560,7 +563,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
   ///
   /// A description with no blank separator is the discriminating shape: `CommitDraft.split` +
   /// `.message` rewrite it to `one\n\ntwo`, which is exactly what routing this through
-  /// `VCSProviding.log(limit: 1)` — whose `VCSCommit` is already split and trimmed — would produce.
+  /// `LocalVCSProviding.log(limit: 1)` — whose `VCSCommit` is already split and trimmed — would produce.
   /// The consequence is not cosmetic: `originalMessage` is what `commit(.describe)` compares against
   /// to decide the user changed nothing, so a normalised copy makes an untouched dialog rewrite the
   /// message underneath them.
@@ -571,7 +574,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     // No blank line between the two — legal in jj, and the exact shape that gets rewritten.
     sh("jj describe -m 'one\ntwo' >/dev/null 2>&1", in: dir)
 
-    let preflight = await writer("jj").commitPreflight(path: dir)
+    let preflight = try await writer("jj").commitPreflight(path: dir)
     let stored = try XCTUnwrap(preflight.currentMessage, "no description came back")
 
     let asJJHasIt = sh(
@@ -600,12 +603,12 @@ final class VCSCommitIntegrationTests: XCTestCase {
     sh("git commit -q --allow-empty -m 'a git commit in the colocated repo'", in: dir)
     FileManager.default.createFile(atPath: dir + "/.git/MERGE_HEAD", contents: Data())
 
-    let jj = await writer("jj").commitPreflight(path: dir)
+    let jj = try await writer("jj").commitPreflight(path: dir)
     XCTAssertNil(
       jj.sequencer, "a jj commit is not path-limited, so jj must not even read the git marker")
     XCTAssertNil(jj.amendTarget, "jj has no amend, even where a git HEAD exists to name")
 
-    let git = await writer("git").commitPreflight(path: gitRepo())
+    let git = try await writer("git").commitPreflight(path: gitRepo())
     XCTAssertNil(git.currentMessage, "git has no @ description")
   }
 
@@ -613,7 +616,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     let dir = gitRepo()
     sh("git commit -q --allow-empty -m 'the subject being replaced'", in: dir)
 
-    let preflight = await writer("git").commitPreflight(path: dir)
+    let preflight = try await writer("git").commitPreflight(path: dir)
 
     let target = try XCTUnwrap(preflight.amendTarget)
     XCTAssertTrue(
@@ -623,11 +626,11 @@ final class VCSCommitIntegrationTests: XCTestCase {
   }
 
   /// A repo with no commits has nothing to amend, and must report that rather than an empty label.
-  func testGitPreflightHasNoAmendTargetOnAnUnbornBranch() async {
+  func testGitPreflightHasNoAmendTargetOnAnUnbornBranch() async throws {
     let dir = tempDir()
     sh("git init -q . && git config user.email t@e.com && git config user.name T", in: dir)
 
-    let preflight = await writer("git").commitPreflight(path: dir)
+    let preflight = try await writer("git").commitPreflight(path: dir)
 
     XCTAssertNil(preflight.amendTarget)
   }
@@ -640,12 +643,12 @@ final class VCSCommitIntegrationTests: XCTestCase {
   /// `MERGE_HEAD`, so the file is the durable fact and the conflict is not).
   func testGitPreflightReportsAParkedOperation() async throws {
     let dir = gitRepo()
-    let before = await writer("git").commitPreflight(path: dir)
+    let before = try await writer("git").commitPreflight(path: dir)
     XCTAssertNil(before.sequencer, "clean, before")
 
     FileManager.default.createFile(atPath: dir + "/.git/MERGE_HEAD", contents: Data())
 
-    let after = await writer("git").commitPreflight(path: dir)
+    let after = try await writer("git").commitPreflight(path: dir)
     XCTAssertEqual(after.sequencer, "merge")
   }
 
@@ -666,15 +669,17 @@ final class VCSCommitIntegrationTests: XCTestCase {
     let dir = gitRepo()
     sh("git commit -q --allow-empty -m 'the subject the dialog shows'", in: dir)
     FileManager.default.createFile(atPath: dir + "/.git/MERGE_HEAD", contents: Data())
-    defer { VCSProviderRegistry.shared.removeAll() }
+    defer { RepositoryRouter.shared.replaceLocal([]) }
 
     let store = AppStore(
       cli: StubPreflightCLI(listed: Project(path: dir, vcs: "git", workrooms: [])))
     await store.reload()
 
-    let preflight: VCSCommitPreflight = await withCheckedContinuation { continuation in
+    let response: Result<VCSCommitPreflight, Error> = await withCheckedContinuation {
+      continuation in
       store.commitPreflight(on: .root(project: dir)) { continuation.resume(returning: $0) }
     }
+    let preflight = try response.get()
 
     XCTAssertEqual(
       preflight.sequencer, "merge", "the parked-merge warning never reached the dialog")
@@ -702,4 +707,13 @@ private struct StubPreflightCLI: WorkroomCLIProtocol {
   func deleteProject(
     _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
   ) async throws -> [URL] { [] }
+}
+
+extension VCSCommitIntegrationTests {
+  func testPreflightAcceptsUnbornOrphanWithOtherExistingRefs() async throws {
+    let dir = gitRepo()
+    sh("git switch --orphan fresh", in: dir)
+    let preflight = try await writer("git").commitPreflight(path: dir)
+    XCTAssertNil(preflight.amendTarget)
+  }
 }

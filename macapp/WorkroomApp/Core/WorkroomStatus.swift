@@ -80,6 +80,8 @@ enum GitHubCLIStatus: Equatable, Sendable {
 /// `notRepository` is distinct from `clean`: a path the model says is a repo but isn't is
 /// broken/stale, not clean.
 enum VCSStatusFailure: Equatable, Sendable {
+  case unavailable
+  case registrationRequired
   case missingPath  // workroom directory gone
   case notRepository  // path exists but isn't the expected VCS repo (git exit 128)
   case timeout  // probe exceeded its deadline (slow disk, index.lock contention)
@@ -286,7 +288,9 @@ struct WorkroomStatus: Equatable, Sendable {
     if conflicted { return 3 }
     switch failure {
     // Unknown-because-the-probe-failed: above clean, below dirty. `.timeout` is left out, as before.
-    case .missingPath, .notRepository, .busy, .staleWorkingCopy: return 1
+    case .unavailable, .registrationRequired, .missingPath, .notRepository, .busy,
+      .staleWorkingCopy:
+      return 1
     case .timeout, nil: break
     }
     if dirty == true { return 2 }
@@ -323,6 +327,8 @@ enum VCSStatusPresentation {
       // gh-style "absent" never reaches here; only genuine probe failures render unknown.
       let why: String
       switch s.failure {
+      case .unavailable: why = "repository service unavailable"
+      case .registrationRequired: why = "repository registration required"
       case .missingPath: why = "status unavailable, directory missing"
       case .notRepository: why = "status unavailable, not a repository"
       case .timeout: why = "status unavailable, timed out"

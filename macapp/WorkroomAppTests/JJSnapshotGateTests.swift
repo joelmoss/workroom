@@ -184,3 +184,92 @@ final class JJSnapshotGateTests: XCTestCase {
     XCTAssertEqual(events, ["first:start", "second:ran"])
   }
 }
+
+extension JJSnapshotGateTests {
+  func testCancelledMiddleWaiterCannotReleaseRunningPredecessor() async throws {
+    let gate = JJSnapshotGate(maxChainWait: 5)
+    let location = try RepositoryLocation.remote(host: UUID(), path: "/same/path")
+    let log = EventLog()
+    let entered = expectation(description: "native work started")
+    let release = DispatchSemaphore(value: 0)
+    let first = Task {
+      try await gate.run(repository: location) {
+        await log.append("A:start")
+        try await runBlocking {
+          entered.fulfill()
+          release.wait()
+        }
+        await log.append("A:end")
+      }
+    }
+    await fulfillment(of: [entered], timeout: 2)
+    let second = Task { try await gate.run(repository: location) { await log.append("B") } }
+    try await Task.sleep(nanoseconds: 30_000_000)
+    second.cancel()
+    let third = Task { try await gate.run(repository: location) { await log.append("C") } }
+    try await Task.sleep(nanoseconds: 50_000_000)
+    let beforeRelease = await log.events
+    XCTAssertEqual(beforeRelease, ["A:start"])
+    release.signal()
+    try await first.value
+    _ = try? await second.value
+    try await third.value
+    let final = await log.events
+    XCTAssertEqual(final, ["A:start", "A:end", "C"])
+  }
+
+  func testSamePathOnDifferentHostsDoesNotShareOrdering() async throws {
+    let gate = JJSnapshotGate()
+    let one = try RepositoryLocation.remote(host: UUID(), path: "/repo")
+    let two = try RepositoryLocation.remote(host: UUID(), path: "/repo")
+    let log = EventLog()
+    async let first: Void = gate.run(repository: one) {
+      await log.enter()
+      try await Task.sleep(nanoseconds: 80_000_000)
+      await log.exit()
+    }
+    async let second: Void = gate.run(repository: two) {
+      await log.enter()
+      try await Task.sleep(nanoseconds: 80_000_000)
+      await log.exit()
+    }
+    _ = try await (first, second)
+    let maximum = await log.maxConcurrent
+    XCTAssertEqual(maximum, 2)
+  }
+}
+
+extension JJSnapshotGateTests {
+  func testTimedOutNativeCallKeepsItsTailUntilActualCompletion() async throws {
+    let location = try RepositoryLocation.remote(host: UUID(), path: "/repo")
+    let gate = JJSnapshotGate(maxChainWait: 5)
+    let log = EventLog()
+    let started = expectation(description: "native operation started")
+    let release = DispatchSemaphore(value: 0)
+    let first = Task {
+      try await withTimeout(seconds: 0.05) {
+        try await gate.run(repository: location) {
+          await log.append("A:start")
+          try await runBlocking {
+            started.fulfill()
+            release.wait()
+          }
+          await log.append("A:end")
+        }
+      }
+    }
+    await fulfillment(of: [started], timeout: 2)
+    do {
+      try await first.value
+      XCTFail("wait should time out")
+    } catch { XCTAssertTrue(error is VCSTimeoutError) }
+    let second = Task { try await gate.run(repository: location) { await log.append("B") } }
+    try await Task.sleep(nanoseconds: 30_000_000)
+    let whileNativeIsRunning = await log.events
+    XCTAssertEqual(whileNativeIsRunning, ["A:start"])
+    release.signal()
+    try await second.value
+    let completed = await log.events
+    XCTAssertEqual(completed, ["A:start", "A:end", "B"])
+  }
+}

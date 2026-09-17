@@ -30,6 +30,7 @@ final class RemoteStateModel: ObservableObject {
     let path: String
     let vcs: VCSBackend
     let projectRoot: String
+    var location: RepositoryLocation? = nil
   }
 
   @Published private(set) var state: State = .idle
@@ -64,7 +65,9 @@ final class RemoteStateModel: ObservableObject {
   @Published private(set) var lastPullConflicted = false
 
   private(set) var target: Target?
-  private let makeWriter: @Sendable (URL) throws -> VCSWriting
+  private var resolvedContext: RepositoryContext?
+  private let makeWriter: (@Sendable (URL) throws -> LocalVCSWriting)?
+  private let router: RepositoryRouter
   private let debounce: TimeInterval
   private let ttl: TimeInterval
   /// Minimum gap between automatic fetches for one project. An automatic fetch is a network call the
@@ -82,17 +85,17 @@ final class RemoteStateModel: ObservableObject {
   /// 300s for a pull).
   private var inFlightTarget: Target?
   /// When each project last auto-fetched, in-memory (a relaunch may legitimately fetch again).
-  private var lastAutoFetch: [String: Date] = [:]
+  private var lastAutoFetch: [RepositoryLocation: Date] = [:]
   /// Monotonic id for `failureReport`. See `VCSFailureReport.sequence` for why a repeat needs a new one.
   private var failureSequence = 0
 
   /// Fired after a successful mutation so the store can refresh everything downstream — workroom
   /// status (the dirty/conflict badge), the commit history, and this model itself. Wired post-init so
   /// the model needs no `AppStore` to be unit-tested (the `workroomFileWatcher` idiom).
-  var onDidMutate: (@MainActor (VCSRemoteAction, SidebarID) -> Void)?
+  var onDidMutate: (@MainActor (VCSRemoteAction, Target) -> Void)?
   /// Publishes the resolved branch name so `AppStore.branchName(for:)` — the one accessor every
   /// branch-showing surface reads — can lead with it. This model is the only writer.
-  var onBranchResolved: (@MainActor (SidebarID, String?) -> Void)?
+  var onBranchResolved: (@MainActor (Target, String?) -> Void)?
   /// Resolves a target's human label ("platform / fix-auth"), for naming the workroom a failure belongs
   /// to when it is no longer the selected one. Wired post-init to `AppStore.label(for:)` for the same
   /// reason the two callbacks above are: the model stays `AppStore`-free and unit-testable.
@@ -105,24 +108,51 @@ final class RemoteStateModel: ObservableObject {
   /// to `AppStore.isWritingProject`, same `AppStore`-free reasoning as the callbacks above. Defaults to
   /// "never busy" so a model built without this wired (e.g. in isolation for a unit test) behaves as
   /// today rather than silently refusing everything.
-  var canStartWrite: (@MainActor (String) -> Bool)?
+  var canStartWrite: (@MainActor (RepositoryLocation) -> Bool)?
   /// Marks a write starting/finishing against a project root, wired to `AppStore.beginWrite`/`endWrite`.
   /// Paired unconditionally around the action's `Task` in `perform`/`finish`, mirroring how
   /// `performCommit` pairs its own `beginWrite`/`endWrite` calls.
-  var writeDidStart: (@MainActor (String) -> Void)?
-  var writeDidFinish: (@MainActor (String) -> Void)?
+  var writeDidStart: (@MainActor (RepositoryLocation) -> Void)?
+  var writeDidFinish: (@MainActor (RepositoryLocation) -> Void)?
 
   init(
-    makeWriter: @escaping @Sendable (URL) throws -> VCSWriting = { try VCS.writer(for: $0) },
+    makeWriter: (@Sendable (URL) throws -> LocalVCSWriting)? = nil,
+    router: RepositoryRouter = .shared,
     debounce: TimeInterval = 0.3, ttl: TimeInterval = 15,
     autoFetchInterval: TimeInterval = 300,
     now: @escaping @Sendable () -> Date = Date.init
   ) {
     self.makeWriter = makeWriter
+    self.router = router
     self.debounce = debounce
     self.ttl = ttl
     self.autoFetchInterval = autoFetchInterval
     self.now = now
+  }
+
+  private func resolveWriter(_ target: Target) async throws -> VCSWriting {
+    let location: RepositoryLocation
+    if let supplied = target.location {
+      location = supplied
+    } else {
+      location = try await RepositoryLocation.local(target.path)
+    }
+    if let makeWriter {
+      // Explicit local test/fixture engine injection; never accepts a remote location.
+      let root = try location.requireLocalURL()
+      let shared = try await RepositoryLocation.local(target.projectRoot)
+      let isolated = RepositoryRouter()
+      try isolated.register(
+        .init(
+          location: location,
+          backend: target.vcs == .jj ? .jj : .git, sharedLocation: shared))
+      let context = try await isolated.context(for: location)
+      return try BoundLocalWriter(
+        context: context,
+        reader: BoundLocalReader(context: context, provider: GitProvider()),
+        writer: try makeWriter(root))
+    }
+    return try await router.writer(for: location)
   }
 
   // MARK: Focus
@@ -131,6 +161,7 @@ final class RemoteStateModel: ObservableObject {
   func focus(_ target: Target?) {
     guard self.target != target else { return }
     self.target = target
+    resolvedContext = nil
     snapshot = nil
     lastFailure = nil
     readFailure = nil
@@ -194,20 +225,20 @@ final class RemoteStateModel: ObservableObject {
     // Only for a retry the user clicked: an automatic read must not put a spinner in the bar (the sweep
     // and the watcher fire constantly, and a flickering segment reads as instability, not as progress).
     readInFlight = skipDebounce
-    let makeWriter = self.makeWriter
     let debounce = skipDebounce ? 0 : self.debounce
     task = Task { [weak self] in
       if debounce > 0 {
         try? await Task.sleep(nanoseconds: UInt64(debounce * 1_000_000_000))
         if Task.isCancelled { return }
       }
-      let root = URL(fileURLWithPath: target.path, isDirectory: true)
       let resolution: VCSRemoteResolution
       do {
-        resolution = await (try makeWriter(root)).remoteState(
-          path: target.path, projectRoot: target.projectRoot)
+        guard let self else { return }
+        let writer = try await self.resolveWriter(target)
+        resolution = await writer.remoteState()
+        if !Task.isCancelled, self.target == target { self.resolvedContext = writer.context }
       } catch {
-        resolution = .absent
+        resolution = .failed(.other(error.localizedDescription))
       }
       if Task.isCancelled { return }
       self?.apply(resolution, for: target)
@@ -227,17 +258,20 @@ final class RemoteStateModel: ObservableObject {
       // op-log scan alone would mean "last fetch that changed something", and clicking Fetch with
       // nothing new would leave a stale timestamp on screen. The backend still wins when it is newer,
       // which keeps a fetch run in the user's own terminal visible.
-      snapshot = Self.merging(state, ownFetch: Defaults[.vcsLastFetch][target.projectRoot])
+      snapshot = Self.merging(
+        state,
+        ownFetch: target.location?.host != nil && target.location?.host != .local
+          ? nil : Defaults[.vcsLastFetch][target.projectRoot])
       self.state = .loaded
       readFailure = nil
-      onBranchResolved?(target.sid, state.current.name)
+      onBranchResolved?(target, state.current.name)
     case .absent:
       snapshot = nil
       self.state = .loaded
       // A definitive "not a repo" is an answer, not a failure — [2] "No repository" is the honest tier
       // for it, so any earlier read failure is over.
       readFailure = nil
-      onBranchResolved?(target.sid, nil)
+      onBranchResolved?(target, nil)
     case .keepPrior:
       // A transient blip — leave the last good snapshot standing rather than blanking the toolbar. Also
       // leaves `readFailure` standing: a blip is not evidence that a previous failure has cleared.
@@ -246,7 +280,7 @@ final class RemoteStateModel: ObservableObject {
       snapshot = nil
       self.state = .failed(VCSSyncPresenter.describe(failure))
       readFailure = failure
-      onBranchResolved?(target.sid, nil)
+      onBranchResolved?(target, nil)
     }
   }
 
@@ -317,52 +351,53 @@ final class RemoteStateModel: ObservableObject {
     // Refuse outright rather than queue behind another write (this window or another) on the same
     // project root — see `canStartWrite`'s doc for why. `inFlight == nil` above only rules out THIS
     // model's own action; this is the cross-window half.
-    if canStartWrite?(target.projectRoot) == false {
-      lastFailure = .locked(nil)
-      lastAction = action
-      if userInitiated { raiseFailureReport(.locked(nil), action: action) }
-      return
-    }
     inFlight = action
     inFlightTarget = target
     lastAction = action
     lastFailure = nil
     failureReport = nil
     lastPullConflicted = false
-    let makeWriter = self.makeWriter
     let current = snapshot.current
     let tracking = snapshot.tracking
-    let projectRoot = target.projectRoot
-    writeDidStart?(projectRoot)
+
     // Captured as a local NOW, not read through `self` after the `await` below: if this model (or
     // its owning `AppStore`) is deallocated before the write finishes — the window closed mid-write
     // — `self?.writeDidFinish` would silently no-op and leak the cross-window write-in-flight mark
     // forever. The closure value itself is held by this `Task`, independent of `self`'s lifetime.
     let finishWrite = writeDidFinish
+    let startWrite = writeDidStart
+    let canStart = canStartWrite
     actionTask = Task { [weak self] in
-      let root = URL(fileURLWithPath: target.path, isDirectory: true)
       let result: VCSRemoteActionResult
       do {
-        let writer = try makeWriter(root)
+        guard let self else { return }
+        let writer = try await self.resolveWriter(target)
+        let shared = try writer.context.requireOwnership()
+        guard canStart?(shared) != false else {
+          self.finish(
+            action, result: .failed(.locked(nil)), for: target, userInitiated: userInitiated)
+          return
+        }
+        startWrite?(shared)
+        defer { finishWrite?(shared) }
         switch action {
         case .fetch:
           result = await writer.fetch(
-            path: target.path, projectRoot: target.projectRoot, remote: remote)
+            remote: remote)
         case .push:
           result = await writer.push(
-            path: target.path, projectRoot: target.projectRoot, current: current, remote: remote,
+            current: current, remote: remote,
             setUpstream: setUpstream, anonymousRevision: anonymousRevision)
         case .pull:
           result = await writer.pullRebase(
-            path: target.path, projectRoot: target.projectRoot, current: current, remote: remote,
+            current: current, remote: remote,
             tracking: tracking)
         case .abortRebase:
-          result = await writer.abortRebase(path: target.path, projectRoot: target.projectRoot)
+          result = await writer.abortRebase()
         }
       } catch {
         result = .failed(.other("\(error)"))
       }
-      finishWrite?(projectRoot)
       self?.finish(action, result: result, for: target, userInitiated: userInitiated)
     }
   }
@@ -378,8 +413,12 @@ final class RemoteStateModel: ObservableObject {
     // The work happened in `target`'s repo whatever is selected now, so the fetch stamp and the
     // downstream refresh belong to it and fire regardless.
     if case .ok = result {
-      if action == .fetch || action == .pull { recordOwnFetch(projectRoot: target.projectRoot) }
-      onDidMutate?(action, target.sid)
+      if action == .fetch || action == .pull,
+        target.location == nil || target.location?.host == .local
+      {
+        recordOwnFetch(projectRoot: target.projectRoot)
+      }
+      onDidMutate?(action, target)
     }
     // The DIALOG is deliberately raised ahead of the identity guard below. Something the user asked for
     // failed, and that fact belongs to them, not to the current selection: with the report behind the
@@ -452,8 +491,11 @@ final class RemoteStateModel: ObservableObject {
   /// still have produced conflicts (jj writes them into commits and exits 0).
   /// `sid` is the workroom the pull ran in — checked, not trusted, for the same reason `finish` checks it:
   /// the sweep this waits on is async, so the selection can move before it lands.
-  func noteConflictState(_ conflicted: Bool, for sid: SidebarID) {
-    guard target?.sid == sid, lastAction == .pull, lastFailure == nil else { return }
+  func noteConflictState(
+    _ conflicted: Bool, for sid: SidebarID, location: RepositoryLocation? = nil
+  ) {
+    guard target?.sid == sid, target?.location == location, lastAction == .pull, lastFailure == nil
+    else { return }
     lastPullConflicted = conflicted
   }
 
@@ -466,12 +508,13 @@ final class RemoteStateModel: ObservableObject {
   /// with the Changes section active, so a hidden toolbar never triggers a network call.
   func autoFetchIfDue() {
     guard let target, inFlight == nil, let snapshot, snapshot.primaryRemote != nil else { return }
-    if let last = lastAutoFetch[target.projectRoot],
+    guard let shared = resolvedContext?.sharedLocation else { return }
+    if let last = lastAutoFetch[shared],
       now().timeIntervalSince(last) < autoFetchInterval
     {
       return
     }
-    lastAutoFetch[target.projectRoot] = now()
+    lastAutoFetch[shared] = now()
     perform(.fetch, userInitiated: false)
   }
 }
