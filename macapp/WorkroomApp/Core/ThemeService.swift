@@ -145,9 +145,30 @@ final class ThemeService {
   func registerTerminals(_ sessions: TerminalSessions) { terminalSinks.add(sessions) }
   func unregisterTerminals(_ sessions: TerminalSessions) { terminalSinks.remove(sessions) }
 
-  init() {
+  /// The OS appearance flipped while pref = System. Owned HERE, not by each window's
+  /// `TerminalSessions`: one observer per window meant a single flip fired the chokepoint N times,
+  /// and each of those already swept all N windows' surfaces — N² surface re-configures for one
+  /// keystroke (WORKROOM-3R). One owner, one sweep.
+  private var appearanceObserver: NSObjectProtocol?
+
+  /// `private` so `shared` stays the only instance. A second `ThemeService` would register a second
+  /// permanent observer (nothing removes it — a process-lifetime singleton needs no `deinit`) and
+  /// bring the N-observer stall straight back, with nothing to catch it.
+  private init() {
     let isDark = Self.isCurrentAppearanceDark()
     tokens = ThemeTokens(preview: Self.themePreview(named: Self.activeThemeName(isDark: isDark)))
+    appearanceObserver = DistributedNotificationCenter.default().addObserver(
+      forName: Notification.Name("AppleInterfaceThemeChangedNotification"), object: nil,
+      queue: .main
+    ) { [unowned self] _ in
+      // A forced light/dark preference ignores the OS appearance (see `isCurrentAppearanceDark`),
+      // so the whole apply — conf write, config parse, every surface reconfigured — would recompute
+      // the values it already has. Only System follows the OS.
+      guard Defaults[.theme] == .system else { return }
+      // Route through the chokepoint so chrome tokens recompute (the active variant flips) alongside
+      // the terminal re-theme (issue #36).
+      Task { @MainActor in self.applyActiveTheme() }
+    }
   }
 
   // MARK: Resolution (static — also called by GhosttyApp.writeThemeConfig without the instance)
@@ -184,7 +205,12 @@ final class ThemeService {
     let isDark = Self.isCurrentAppearanceDark()
     tokens = ThemeTokens(preview: Self.themePreview(named: Self.activeThemeName(isDark: isDark)))
     generation &+= 1
-    for sessions in terminalSinks.allObjects { sessions.applyThemeToAll(force: force) }
+    // The app-global half runs ONCE here, not inside the per-window loop below — it used to live in
+    // `applyThemeToAll`, so N windows meant N writes + N parses of the same generated ghostty.conf
+    // (and the regex compilation each parse implies) on the main thread. WORKROOM-3R is that stall.
+    GhosttyApp.shared.reloadConfig(force: force, dark: isDark)
+    GhosttyApp.shared.setColorScheme(dark: isDark)
+    for sessions in terminalSinks.allObjects { sessions.applyThemeToAll(isDark: isDark) }
     NotificationCenter.default.post(name: .themeDidChange, object: nil)
   }
 

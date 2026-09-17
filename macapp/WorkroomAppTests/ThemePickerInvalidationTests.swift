@@ -43,9 +43,11 @@ final class ThemePickerInvalidationTests: XCTestCase {
   }
 
   /// No live terminal is registered with `ThemeService.shared` in this bare harness, so
-  /// `applyFamily`'s `TerminalSessions.applyThemeToAll` loop is a no-op — this isolates exactly the
-  /// cost this TODO entry is about (the picker's own re-render), not the engine reload path a real
-  /// window's terminals would also pay (that path is unrelated, already-shipped behaviour).
+  /// `applyFamily`'s per-window `TerminalSessions.applyThemeToAll` sweep is a no-op — this isolates
+  /// the cost this TODO entry is about (the picker's own re-render) from the per-surface reconfigure
+  /// a real window's terminals would also pay. The app-global engine reload is NOT excluded: it
+  /// moved into `applyActiveTheme` itself (WORKROOM-3R) and now runs once per apply regardless, which
+  /// is the same single reload a real picker keystroke pays.
   func testArrowKeyReapplyRendersUnderTimeCeiling() throws {
     Defaults[.themeFamily] = "Workroom"
     let (window, view) = host()

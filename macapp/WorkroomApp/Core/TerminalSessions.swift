@@ -540,8 +540,6 @@ final class TerminalSessions: ObservableObject {
   /// resize hit-zone — kept tight, since the panes' own rounded borders mark the boundary.
   static let dividerThickness: CGFloat = 2
 
-  private var appearanceObserver: NSObjectProtocol?
-
   /// The inline terminal agent (issue #49). Owned here so the per-tab callbacks can feed it; injected
   /// into the environment (see `WorkroomApp`) so the pane banner observes it. Opt-in, default off.
   let agentManager: TerminalAgentManager
@@ -572,21 +570,8 @@ final class TerminalSessions: ObservableObject {
     } else {
       agentManager = TerminalAgentManager()
     }
-
-    appearanceObserver = DistributedNotificationCenter.default().addObserver(
-      forName: Notification.Name("AppleInterfaceThemeChangedNotification"), object: nil,
-      queue: .main
-    ) { _ in
-      // OS appearance flipped while pref = System: route through the chokepoint so chrome tokens
-      // recompute (the active variant flips) alongside the terminal re-theme (issue #36).
-      Task { @MainActor in ThemeService.shared.applyActiveTheme() }
-    }
-  }
-
-  deinit {
-    if let appearanceObserver {
-      DistributedNotificationCenter.default().removeObserver(appearanceObserver)
-    }
+    // The OS-appearance observer that used to live here now belongs to `ThemeService` — one owner
+    // for the whole app rather than one per window (WORKROOM-3R).
   }
 
   // MARK: Queries
@@ -1680,12 +1665,15 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// Re-theme every live terminal — visible and hidden, solo and split alike — to the active theme
-  /// for the current appearance. The terminal step of `ThemeService.applyActiveTheme()`. `force`
-  /// rebuilds the config even when the appearance is unchanged (a same-appearance theme switch).
-  func applyThemeToAll(force: Bool = false) {
-    let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-    GhosttyApp.shared.reloadConfig(force: force)
-    GhosttyApp.shared.setColorScheme(dark: isDark)
+  /// for the current appearance. The per-window terminal step of `ThemeService.applyActiveTheme()`,
+  /// which runs it once per registered sink.
+  ///
+  /// The **app-global** half of the re-theme (rebuild the ghostty config, push the color scheme) is
+  /// deliberately NOT here: this is called inside a loop over every window's sessions, so doing it
+  /// here meant N windows = N config writes + N parses of the same file on the main thread, each of
+  /// which compiles the config's regexes. That amplification showed up as a 2s+ AppHang on an OS
+  /// appearance flip (WORKROOM-3R). It now runs once, in `applyActiveTheme`.
+  func applyThemeToAll(isDark: Bool) {
     let config = GhosttyApp.shared.config
     for tabs in tabsByTarget.values {
       for tab in tabs.values {
