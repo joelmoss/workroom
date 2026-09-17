@@ -1916,9 +1916,8 @@ disagreement passes every test on either side alone while presenting as an empty
 ## Next Steps
 
 **Corrected 2026-09-17 against `master`.** Phase 1 is complete, OQ1's feasibility gate is lifted,
-and VCS registry preparation has already landed. The next deliverable is a bounded Phase 2
-implementation plan, followed by the service milestones below. Phase 2 is not complete merely
-because local backend selection no longer always probes the filesystem.
+and the host-aware Phase 2 routing foundation is implemented. The remaining work is split into the
+service milestones below so each layer can be reviewed and landed independently.
 
 1. **Connect the host-aware foundation to host-owned service connections.** Repository identities,
    captured routing and shared coordination are defined above. The next layer is an app-wide
