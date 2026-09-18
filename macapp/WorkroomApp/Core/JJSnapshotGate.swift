@@ -91,6 +91,9 @@ actor JJSnapshotGate {
     let task = Task<T, Error> {
       await dependency.value
       try Task.checkCancellation()
+      let barrier = try await runBlocking { try JJProcessBarrier.acquire(repository) }
+      defer { barrier?.release() }
+      try Task.checkCancellation()
       return try await operation()
     }
     tails[repository] = Task<Void, Never> { _ = try? await task.value }

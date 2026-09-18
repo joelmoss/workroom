@@ -1941,17 +1941,32 @@ service milestones below so each layer can be reviewed and landed independently.
    patch/count consistency before switching local reads. No gix implementation is part of this
    foundation.
 
-2. **Deliver agent-backed VCS reads, locally first.** Graduate the measured gix work into a
-   production service alongside the JJ backend and route the app's nine read methods through the
-   agent. The `log` spike is on `master` in `wr-vcs-git`; the diff/decorations/push-state spike is
-   on `spike/oq1-git-diff` (`74f6181a`). Neither is a production provider. Include synthesized
-   git-format file headers for the existing diff parser and filter `entry_mode.is_tree()` so
-   directory changes do not create duplicate file identities. Remove the spike's build-input hash
-   exclusion when it becomes a dependency of the app's VCS library.
+2. **Agent-backed VCS reads are implemented on the next stacked branch.** The app's production
+   router obtains all nine reads through one local host connection; test routers retain injectable
+   native providers. A VCS-version capability exchange follows the existing terminal greeting.
+   Requests use distinct stream IDs, bounded/chunked replies, explicit failures, and no replay.
+   An older terminal-only agent is not replaced: failed VCS negotiation is presented as service
+   unavailable while its terminals keep their existing owner.
 
-   Verify history, working status, rename/typechange file lists, patches, pre-image content and
-   push-state against the existing backends on throwaway repositories, with line counts governed
-   by the policy from step 1. Preserve JJ snapshot serialization and keep other reads non-mutating.
+   The Git service graduates gix history, refs, push-state and object reads. **Patches and exact
+   counts both come from owning-host Git**, using the same comparison and repository settings.
+   This supersedes the spike's approximate diff renderer: Git already supplies the required
+   headers and omits directory entries. Copy-source edits stay out of the selected copy patch;
+   two typechange patch sections belong to one file row. The crate is linked only by the agent,
+   whose Cargo build tracks it; its exclusion from the unrelated UniFFI input hash remains valid
+   until that library itself acquires the dependency.
+
+   JJ keeps the native backend and its existing CLI fallbacks. Snapshotting requests require
+   registered ownership and share a filesystem barrier with native app writes. The barrier lives
+   until actual execution finishes, including a CLI child surviving agent death. Cancellation
+   only abandons the caller's wait. A barrier still held after the bounded acquisition wait reports
+   contention; it does not permit a new operation to overtake surviving work.
+
+   Integration coverage drives the bundled Rust agent through the real Swift client against
+   throwaway Git/JJ repositories, including chunked replies, concurrent requests, host isolation,
+   unavailable status, and agent death during a snapshotting child. Terminal relays, ownership,
+   CLI JSON and persisted identities remain unchanged. Linux distribution, remote connectors,
+   persisted remote descriptors and remote UI remain later milestones.
 
 3. **Deliver the remaining Phase 2 services as separately reviewable milestones.**
    - VCS writes: preserve typed failures and Retry/Abort behavior; account for remote clones whose

@@ -13,7 +13,7 @@ final class AgentHarness {
   private let directory: URL
   private var attachments: [Process] = []
 
-  static func start() throws -> AgentHarness {
+  static func start(environment: [String: String]? = nil) throws -> AgentHarness {
     // sun_path is 104 bytes; NSTemporaryDirectory() + a UUID overflows it.
     let directory = URL(
       fileURLWithPath: "/tmp/wra-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -23,6 +23,7 @@ final class AgentHarness {
 
     let process = Process()
     process.executableURL = binary
+    process.environment = environment
     // The idle timeout has to outlast the whole test: an agent with no sessions and no clients
     // exits on purpose, and between two assertions it is briefly both.
     process.arguments = ["serve", "--socket", socketPath, "--idle-timeout", "120"]

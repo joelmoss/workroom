@@ -14,6 +14,7 @@ enum HostConnectionError: Error, Equatable, Sendable, LocalizedError, CustomStri
   case connectionLost
   case staleGeneration
   case mismatchedContext
+  case serviceUnavailable(String)
 
   var description: String { errorDescription ?? "Host service unavailable." }
 
@@ -25,6 +26,8 @@ enum HostConnectionError: Error, Equatable, Sendable, LocalizedError, CustomStri
       return "Host connection changed. Refresh repository data before retrying."
     case .mismatchedContext:
       return "Host service returned a different repository context."
+    case .serviceUnavailable(let detail):
+      return "Host service unavailable: \(detail)"
     }
   }
 }
