@@ -21,6 +21,27 @@ pub fn run(root: &Path, program: &str, args: &[&str]) -> model::Result<Vec<u8>> 
     run_with_status(root, program, args, false)
 }
 
+/// As `run`, plus child-process-scoped env overrides — never process-wide `std::env::set_var`,
+/// which races any concurrently spawned child reading the parent's environment. Test-fixture
+/// setup only; production call sites use `run`/`run_with_status` so a repository's own git config
+/// (aliases, `diff.renames`, credential helpers) still applies.
+pub fn run_with_env(
+    root: &Path,
+    program: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> model::Result<Vec<u8>> {
+    run_bounded(
+        root,
+        program,
+        args,
+        false,
+        Duration::from_secs(30),
+        None,
+        env,
+    )
+}
+
 /// Retain the operation barrier across exec. If the agent dies, a snapshotting JJ child still
 /// owns this descriptor until it really exits. Only the child clears CLOEXEC, never the parent.
 pub fn run_with_barrier(
@@ -36,6 +57,7 @@ pub fn run_with_barrier(
         false,
         Duration::from_secs(30),
         Some(barrier),
+        &[],
     )
 }
 
@@ -52,6 +74,7 @@ fn run_with_status(
         difference_is_success,
         Duration::from_secs(30),
         None,
+        &[],
     )
 }
 
@@ -62,6 +85,7 @@ fn run_bounded(
     difference_is_success: bool,
     timeout: Duration,
     barrier: Option<RawFd>,
+    extra_env: &[(&str, &str)],
 ) -> model::Result<Vec<u8>> {
     let mut command = Command::new(program);
     command
@@ -95,7 +119,8 @@ fn run_bounded(
     command
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C");
+        .env("LC_ALL", "C")
+        .envs(extra_env.iter().copied());
     let mut child = command.spawn().map_err(super::io)?;
     let exceeded = Arc::new(AtomicBool::new(false));
     let start = Instant::now();
@@ -531,6 +556,7 @@ mod tests {
             false,
             Duration::from_millis(100),
             None,
+            &[],
         );
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_secs(2));
@@ -545,6 +571,7 @@ mod tests {
             false,
             Duration::from_secs(5),
             None,
+            &[],
         );
         assert!(matches!(result, Err(VcsError::PartialData(_))));
     }
