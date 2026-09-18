@@ -26,30 +26,42 @@ const MAX_REQUEST: usize = 16 * 1024 * 1024;
 /// `{`, so this is unambiguous — and it is what keeps an UNCHUNKED request byte-identical to what
 /// the previous protocol sent, rather than adding a header to every request to serve the rare one.
 const REQUEST_CHUNK_MARKER: u8 = 0x02;
-/// Every byte buffered across ALL partial requests. Per-stream caps alone would still allow
-/// 32 × `MAX_REQUEST` = 512 MiB of peer-controlled memory in this process, which is not a bound
-/// worth having on a background daemon.
+/// Every byte buffered across all of ONE connection's partial requests. Per-stream caps alone would
+/// still allow 32 × `MAX_REQUEST` = 512 MiB of peer-controlled memory, which is not a bound worth
+/// having on a background daemon.
 const MAX_PARTIAL_TOTAL: usize = 32 * 1024 * 1024;
 
-/// In-progress chunked requests, keyed by stream.
+/// In-progress chunked requests for ONE connection, keyed by stream.
 ///
-/// `None` buffer ⇒ POISONED: the request was already refused (too large, too many streams) and its
-/// remaining chunks must be swallowed rather than starting a fresh buffer. Without that, the tail of
-/// a rejected request would be reassembled as a new one, fail to parse, and produce a SECOND reply
-/// on a stream the client has already completed — and an unknown stream id is a protocol violation
-/// that tears down every other in-flight request on the connection.
+/// Owned by `handle_connection` and threaded in, exactly as `attached` and `token` already are —
+/// NOT a process-global, which the first version of this was and which was wrong three ways at once.
+/// Stream ids restart at 1 on every connect (`AgentVCSConnection.nextStream`) while the agent is
+/// deliberately long-lived ("negotiated with, never replaced"), so a global keyed by stream alone
+/// let one app launch's abandoned buffer corrupt the next launch's identically-numbered request. A
+/// global also had no teardown: a client that vanished mid-request left its entry behind forever,
+/// and since `is_busy()` consulted it, that entry kept the daemon from ever idle-exiting.
 ///
-/// A client that vanishes mid-request leaves its buffer behind. Bounded by the caps here and by the
-/// agent's own lifetime, so it is accepted rather than given a connection-teardown hook that `vcs`
-/// does not currently have.
-static PARTIAL: Mutex<Option<std::collections::HashMap<u32, Option<Vec<u8>>>>> = Mutex::new(None);
+/// Per-connection state fixes all three by construction: the map dies with the connection, ids
+/// cannot collide across connections, and a live connection is already counted busy by `serve`'s own
+/// `connections > 0` check — so `is_busy()` does not need to know about partial requests at all.
+#[derive(Default)]
+pub struct PartialRequests {
+    /// `None` buffer ⇒ POISONED: the request was already refused and its remaining chunks must be
+    /// swallowed rather than starting a fresh buffer. Without that, the tail of a rejected request
+    /// would reassemble as a new one, fail to parse, and produce a SECOND reply on a stream the
+    /// client has already completed — and an unknown stream id is a protocol violation that tears
+    /// down every other in-flight request on the connection.
+    streams: std::collections::HashMap<u32, Option<Vec<u8>>>,
+}
 const MAX_HISTORY_LIMIT: usize = 10000;
+/// The exec service's wire version, reported in `capabilities` so a client can tell a capable agent
+/// from one that predates the service. A version, not a count — see the `capabilities` reply.
+///
+/// 2 added chunked request reassembly; 1 accepted only single-envelope requests.
+const EXEC_SERVICE_VERSION: u32 = 2;
 /// `CLIVCSWriter.commitTimeout` (Swift) is 600s, the longest legitimate write timeout. Bounds a
 /// hostile/buggy request from wedging an exec thread indefinitely; the 32-slot `ACTIVE` permit
 /// already bounds concurrency, this bounds duration.
-/// The exec service's wire version, reported in `capabilities` so a client can tell a capable agent
-/// from one that predates the service. A version, not a count — see the `capabilities` reply.
-const EXEC_SERVICE_VERSION: u32 = 2;
 const MAX_EXEC_TIMEOUT_MS: u64 = 610_000;
 /// The ceiling must stay above `CLIVCSWriter.commitTimeout` (600s), or the transport would cut a
 /// legitimate commit short — one with a slow `pre-commit` hook — before its own limit applied, and
@@ -65,17 +77,7 @@ static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 /// process exit while this is nonzero would abort a repo-level transaction mid-flight, not just
 /// drop a socket.
 pub fn is_busy() -> bool {
-    if ACTIVE.load(Ordering::Acquire) > 0 {
-        return true;
-    }
-    // A request arriving in chunks holds no `ACTIVE` permit until its last one lands — deliberately,
-    // so a slow upload cannot occupy one of the 32 slots. But that left a window where a client
-    // three chunks into a five-chunk commit looked idle, and the daemon's idle-exit would drop the
-    // connection under it. In flight is in flight, whichever half of the round trip it is in.
-    PARTIAL
-        .lock()
-        .map(|guard| guard.as_ref().is_some_and(|map| !map.is_empty()))
-        .unwrap_or(false)
+    ACTIVE.load(Ordering::Acquire) > 0
 }
 
 #[derive(Deserialize)]
@@ -639,7 +641,12 @@ fn run_exec(
 /// whole reply being replaced by an error.
 const EXEC_REPLY_RESERVE: usize = 64 * 1024;
 
-/// How many bytes this text costs once JSON-escaped, which is what `MAX_RESPONSE` actually bounds.
+/// An UPPER BOUND on what this text costs once JSON-escaped, which is what `MAX_RESPONSE` bounds.
+///
+/// A bound, not an exact count: serde emits `\b` (0x08) and `\f` (0x0C) as two bytes where this
+/// charges six. Over-estimating is the safe direction — it truncates fractionally early and can
+/// never overflow the ceiling — and getting it exact would mean tracking serde's escape table here,
+/// which is a coupling worth more than the handful of bytes it buys.
 ///
 /// The expansion is why the two caps could not both be satisfied: a control byte serializes as
 /// `\u0001`, six bytes for one, so two streams at `MAX_EXEC_STREAM` (4 MiB each) reach 48 MiB of
@@ -686,6 +693,32 @@ fn latin1_bytes(text: &str) -> model::Result<Vec<u8>> {
         .collect()
 }
 
+/// Cut the two captured streams down to what fits one reply, returning them unchanged when they
+/// already do — which is every ordinary command.
+///
+/// A function for `exec_timeout`'s reason: the test that covers it must call the code the reply is
+/// actually built from, not a copy of the arithmetic.
+fn bound_exec_streams<'a>(stdout: &'a str, stderr: &'a str) -> (&'a str, &'a str) {
+    let budget = MAX_RESPONSE - EXEC_REPLY_RESERVE;
+    if escaped_len(stdout) + escaped_len(stderr) <= budget {
+        return (stdout, stderr);
+    }
+    let err_budget = escaped_len(stderr).min(budget / 2);
+    (
+        truncate_to_escaped_budget(stdout, budget - err_budget),
+        truncate_to_escaped_budget(stderr, err_budget),
+    )
+}
+
+/// The deadline `run_exec` is given for a requested `timeout_ms`.
+///
+/// A function rather than an inline `clamp` so a test can assert the REAL expression: a test that
+/// rewrites the clamp for itself stays green when the clamp is deleted from here, which is exactly
+/// what the first version of its test did.
+fn exec_timeout(timeout_ms: u64) -> Duration {
+    Duration::from_millis(timeout_ms.clamp(1, MAX_EXEC_TIMEOUT_MS))
+}
+
 fn exec(request: ExecRequest) -> model::Result<Value> {
     let ExecRequest {
         version,
@@ -703,7 +736,7 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
         ));
     }
     let dir = absolute(&dir)?;
-    let timeout = Duration::from_millis(timeout_ms.clamp(1, MAX_EXEC_TIMEOUT_MS));
+    let timeout = exec_timeout(timeout_ms);
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let stdin = stdin.as_deref().map(latin1_bytes).transpose()?;
     let captured = run_exec(
@@ -724,16 +757,7 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
     // stderr gets first call on the budget: it is what `CLIVCSWriter.classify` matches on, so losing
     // it turns a diagnosable failure into `.other` with git's own words missing. stdout takes the
     // slack, which in practice is nearly all of it — stderr is tiny on every ordinary command.
-    let budget = MAX_RESPONSE - EXEC_REPLY_RESERVE;
-    let (stdout, stderr) = if escaped_len(&stdout) + escaped_len(&stderr) > budget {
-        let err_budget = escaped_len(&stderr).min(budget / 2);
-        (
-            truncate_to_escaped_budget(&stdout, budget - err_budget),
-            truncate_to_escaped_budget(&stderr, err_budget),
-        )
-    } else {
-        (stdout.as_ref(), stderr.as_ref())
-    };
+    let (stdout, stderr) = bound_exec_streams(&stdout, &stderr);
     Ok(json!({
         "stdout": stdout,
         "stderr": stderr,
@@ -899,7 +923,10 @@ fn send(writer: &SharedWriter, stream: u32, value: Value) {
 /// Take the complete request bytes for this envelope, or `None` when more chunks are still coming.
 ///
 /// `Err` is a request that broke the framing contract and gets a typed reply rather than silence.
-fn reassemble(envelope: &Envelope) -> Result<Option<Vec<u8>>, VcsError> {
+fn reassemble(
+    partial: &mut PartialRequests,
+    envelope: &Envelope,
+) -> Result<Option<Vec<u8>>, VcsError> {
     let payload = &envelope.payload;
     if payload.first() != Some(&REQUEST_CHUNK_MARKER) {
         // The overwhelmingly common case: one envelope, one request, no copy and no bookkeeping.
@@ -908,68 +935,76 @@ fn reassemble(envelope: &Envelope) -> Result<Option<Vec<u8>>, VcsError> {
     let Some(&is_final) = payload.get(1) else {
         return Err(VcsError::PartialData("truncated request chunk".into()));
     };
-    let mut guard = PARTIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let partials = guard.get_or_insert_with(std::collections::HashMap::new);
+    let streams = &mut partial.streams;
 
     // Already refused: swallow the rest in silence and clear on the last chunk. Replying again would
     // put a second reply on a stream the client has finished with.
-    if let Some(None) = partials.get(&envelope.stream) {
+    if let Some(None) = streams.get(&envelope.stream) {
         if is_final != 0 {
-            partials.remove(&envelope.stream);
+            streams.remove(&envelope.stream);
         }
         return Ok(None);
     }
 
-    let refuse = |partials: &mut std::collections::HashMap<u32, Option<Vec<u8>>>, error| {
-        // Poison unless this WAS the last chunk, in which case there is nothing left to swallow.
-        if is_final == 0 {
-            partials.insert(envelope.stream, None);
-        } else {
-            partials.remove(&envelope.stream);
-        }
-        Err(error)
-    };
+    // Poison unless this WAS the last chunk, in which case there is nothing left to swallow.
+    //
+    // Poisoning is itself an insert, so it must never be the thing that breaks a cap: the stream-count
+    // refusal below would otherwise add a 33rd entry in the act of enforcing a limit of 32. Refusals
+    // that cannot record a poison simply drop the stream and let the tail be refused the same way.
+    let refuse =
+        |streams: &mut std::collections::HashMap<u32, Option<Vec<u8>>>, error, may_poison: bool| {
+            if is_final == 0 && may_poison {
+                streams.insert(envelope.stream, None);
+            } else {
+                streams.remove(&envelope.stream);
+            }
+            Err(error)
+        };
 
     let incoming = payload.len() - 2;
-    let buffered: usize = partials
+    // The stream-count cap goes FIRST, because poisoning is itself an insert: refused after it, this
+    // stream is either already known or there is room for it, so recording a poison can never be the
+    // thing that breaks a cap. (A poison holds no bytes, so it cannot break the byte caps at all.)
+    if !streams.contains_key(&envelope.stream) && streams.len() >= 32 {
+        return refuse(streams, VcsError::LockContention, false);
+    }
+    let buffered: usize = streams
         .values()
         .map(|buffer| buffer.as_ref().map_or(0, Vec::len))
         .sum();
     if buffered + incoming > MAX_PARTIAL_TOTAL {
         return refuse(
-            partials,
+            streams,
             VcsError::PartialData("too many large VCS requests in flight".into()),
+            true,
         );
     }
-    // Checked before inserting a NEW stream, so a client cannot open unbounded partial requests.
-    if !partials.contains_key(&envelope.stream) && partials.len() >= 32 {
-        return refuse(partials, VcsError::LockContention);
-    }
-    let buffer = partials
+    let buffer = streams
         .entry(envelope.stream)
         .or_insert_with(|| Some(Vec::new()))
         .get_or_insert_with(Vec::new);
     if buffer.len() + incoming > MAX_REQUEST {
         return refuse(
-            partials,
+            streams,
             VcsError::PartialData("VCS request exceeds 16 MiB".into()),
+            true,
         );
     }
     buffer.extend_from_slice(&payload[2..]);
     if is_final == 0 {
         return Ok(None);
     }
-    Ok(partials.remove(&envelope.stream).flatten())
+    Ok(streams.remove(&envelope.stream).flatten())
 }
 
-pub fn dispatch(envelope: &Envelope, writer: &SharedWriter) {
+pub fn dispatch(partial: &mut PartialRequests, envelope: &Envelope, writer: &SharedWriter) {
     if envelope.stream == 0 {
         return;
     }
     // Before the permit: a non-final chunk does no work and must not hold one of the 32 slots for
     // however long the rest of the request takes to arrive. The permit is taken when the request is
     // COMPLETE, which is when it starts costing something.
-    let bytes = match reassemble(envelope) {
+    let bytes = match reassemble(partial, envelope) {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return,
         Err(error) => {
@@ -1412,11 +1447,12 @@ mod tests {
 
     /// The clamp is the only thing between a client's `timeout_ms` and a thread that waits on it,
     /// and both ends of it matter: 0 would make every command time out before it started, and an
-    /// unbounded value would park an `ACTIVE` permit for as long as the caller asked. Asserted
-    /// through the clamp expression `exec` actually uses, so a changed bound fails here.
+    /// unbounded value would park an `ACTIVE` permit for as long as the caller asked. Calls
+    /// `exec_timeout`, the function `exec` uses, so deleting the clamp reddens this.
     #[test]
     fn the_exec_timeout_clamp_holds_at_both_ends() {
-        let clamp = |ms: u64| Duration::from_millis(ms.clamp(1, MAX_EXEC_TIMEOUT_MS));
+        // `exec_timeout` itself, not a copy of its arithmetic — the whole point of extracting it.
+        let clamp = exec_timeout;
         // Zero is raised to 1ms, never passed through: a 0ms deadline kills the child immediately.
         assert_eq!(clamp(0), Duration::from_millis(1));
         assert_eq!(clamp(1), Duration::from_millis(1));
@@ -1603,22 +1639,21 @@ mod tests {
         assert_eq!(captured.exit_code, 3, "the child's own exit code was lost");
         assert_eq!(captured.stdout.len(), 3 * 1024 * 1024);
 
-        // The reply `exec` would build for that capture must fit the wire ceiling, so `send` never
-        // reaches its blanket replacement.
+        // `bound_exec_streams` is what `exec` builds its reply from, so deleting the bounding from
+        // `exec` reddens this — the previous version re-implemented the arithmetic here and stayed
+        // green against its own reverted fix.
         let stdout = String::from_utf8_lossy(&captured.stdout);
         let stderr = String::from_utf8_lossy(&captured.stderr);
-        let budget = MAX_RESPONSE - EXEC_REPLY_RESERVE;
         assert!(
-            escaped_len(&stdout) > budget,
+            escaped_len(&stdout) > MAX_RESPONSE - EXEC_REPLY_RESERVE,
             "the fixture no longer exceeds the budget, so this proves nothing"
         );
-        let err_budget = escaped_len(&stderr).min(budget / 2);
-        let kept = truncate_to_escaped_budget(&stdout, budget - err_budget);
+        let (kept, kept_err) = bound_exec_streams(&stdout, &stderr);
         let reply = json!({
             "version": 1,
             "result": {
                 "stdout": kept,
-                "stderr": truncate_to_escaped_budget(&stderr, err_budget),
+                "stderr": kept_err,
                 "exit_code": captured.exit_code,
                 "timed_out": captured.timed_out,
                 "signaled": captured.signaled,
@@ -1636,19 +1671,37 @@ mod tests {
     }
 
     /// The budget accounting itself, away from multi-MiB fixtures.
+    ///
+    /// `escaped_len` is an upper BOUND, so the assertions below are `>=` against serde except for
+    /// the classes where the two agree exactly. `\b` and `\f` are the whole of the difference and
+    /// are asserted as over-estimates rather than quietly omitted from the sample.
     #[test]
-    fn escaped_length_and_truncation_agree_on_the_expansion() {
+    fn escaped_length_bounds_the_expansion_it_is_used_to_budget() {
         // A control byte costs six on the wire, a quote two, plain ASCII one.
         assert_eq!(escaped_len("\u{0001}"), 6);
         assert_eq!(escaped_len("\""), 2);
         assert_eq!(escaped_len("\n"), 2);
         assert_eq!(escaped_len("abc"), 3);
-        // And that is what serde actually produces, minus the two surrounding quotes.
-        for sample in ["\u{0001}\u{0002}", "a\"b\\c", "plain", "tab\there", "é"] {
+        // Exact for everything but `\b`/`\f`, and never UNDER serde's real cost for anything —
+        // which is the only property the budget depends on.
+        for sample in [
+            "\u{0001}\u{0002}",
+            "a\"b\\c",
+            "plain",
+            "tab\there",
+            "é",
+            "\u{007F}",
+        ] {
             assert_eq!(
                 escaped_len(sample),
                 serde_json::to_string(sample).unwrap().len() - 2,
                 "escaped_len disagrees with serde for {sample:?}"
+            );
+        }
+        for sample in ["\u{0008}", "\u{000C}", "a\u{0008}b"] {
+            assert!(
+                escaped_len(sample) >= serde_json::to_string(sample).unwrap().len() - 2,
+                "escaped_len UNDER-counts {sample:?}, which could overflow the ceiling"
             );
         }
 
@@ -1670,70 +1723,85 @@ mod tests {
         Envelope::new(Service::Vcs, stream, payload)
     }
 
-    /// `PARTIAL` is process-global and these tests assert on its emptiness (via `is_busy`), so they
-    /// serialize against each other. Without this they pass alone and fail in the parallel run —
-    /// measured, and exactly the shape of flake that gets blamed on the code under test.
-    static PARTIAL_TESTS: Mutex<()> = Mutex::new(());
-
-    /// Take the serialization lock and start from an empty map. The guard is returned so it is held
-    /// for the caller's whole test.
-    fn partial_count() -> usize {
-        PARTIAL
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map_or(0, |map| map.len())
-    }
-
-    fn partial_test() -> std::sync::MutexGuard<'static, ()> {
-        let guard = PARTIAL_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-        PARTIAL.lock().unwrap_or_else(|e| e.into_inner()).take();
-        guard
-    }
-
     /// A request split across envelopes must reassemble to exactly the bytes that were sent, and a
     /// single-envelope request must still be handled byte-identically — the chunk marker exists so
     /// the common path pays nothing.
     #[test]
     fn a_chunked_request_reassembles_and_an_unchunked_one_is_untouched() {
-        let _serialized = partial_test();
+        let mut partial = PartialRequests::default();
         let whole = br#"{"version":1,"method":"capabilities"}"#.to_vec();
 
         // Unchunked: returned as-is, nothing buffered.
-        let got = reassemble(&Envelope::new(Service::Vcs, 7, whole.clone())).unwrap();
+        let got = reassemble(&mut partial, &Envelope::new(Service::Vcs, 7, whole.clone())).unwrap();
         assert_eq!(got, Some(whole.clone()));
-        assert_eq!(partial_count(), 0, "an unchunked request left state behind");
+        assert_eq!(
+            partial.streams.len(),
+            0,
+            "an unchunked request left state behind"
+        );
 
         // Chunked: nothing until the final chunk, then the exact original.
-        assert_eq!(reassemble(&chunk(9, &whole[..10], false)).unwrap(), None);
-        assert_eq!(reassemble(&chunk(9, &whole[10..20], false)).unwrap(), None);
-        // In flight between chunks — the daemon must not idle-exit under a half-sent request.
-        // `is_busy` is an OR with the dispatch count, so asserting it TRUE here is race-free even
-        // while other tests run; asserting it false would not be, hence `partial_count` for that.
-        assert!(is_busy(), "a partial request did not count as in flight");
         assert_eq!(
-            reassemble(&chunk(9, &whole[20..], true)).unwrap(),
+            reassemble(&mut partial, &chunk(9, &whole[..10], false)).unwrap(),
+            None
+        );
+        assert_eq!(
+            reassemble(&mut partial, &chunk(9, &whole[10..20], false)).unwrap(),
+            None
+        );
+        assert_eq!(partial.streams.len(), 1, "the buffer was not retained");
+        assert_eq!(
+            reassemble(&mut partial, &chunk(9, &whole[20..], true)).unwrap(),
             Some(whole)
         );
-        assert_eq!(partial_count(), 0, "the buffer outlived its request");
+        assert_eq!(partial.streams.len(), 0, "the buffer outlived its request");
     }
 
     /// Two streams interleaved, because that is what a busy connection actually does — the buffers
     /// are keyed by stream and must not bleed into one another.
     #[test]
     fn interleaved_chunked_requests_do_not_mix() {
-        let _serialized = partial_test();
-        assert_eq!(reassemble(&chunk(1, b"AAA", false)).unwrap(), None);
-        assert_eq!(reassemble(&chunk(2, b"BBB", false)).unwrap(), None);
+        let mut partial = PartialRequests::default();
         assert_eq!(
-            reassemble(&chunk(1, b"aaa", true)).unwrap(),
+            reassemble(&mut partial, &chunk(1, b"AAA", false)).unwrap(),
+            None
+        );
+        assert_eq!(
+            reassemble(&mut partial, &chunk(2, b"BBB", false)).unwrap(),
+            None
+        );
+        assert_eq!(
+            reassemble(&mut partial, &chunk(1, b"aaa", true)).unwrap(),
             Some(b"AAAaaa".to_vec())
         );
         assert_eq!(
-            reassemble(&chunk(2, b"bbb", true)).unwrap(),
+            reassemble(&mut partial, &chunk(2, b"bbb", true)).unwrap(),
             Some(b"BBBbbb".to_vec())
         );
-        assert_eq!(partial_count(), 0);
+        assert_eq!(partial.streams.len(), 0);
+    }
+
+    /// Two connections both number their first stream 1 — the client resets `nextStream` on every
+    /// connect while this agent deliberately outlives the app. A shared map would have let an
+    /// abandoned buffer from one launch prepend itself to the next launch's request, or, if that
+    /// entry were a poison, swallow a live request whole and answer nothing.
+    #[test]
+    fn one_connections_abandoned_chunks_cannot_reach_another() {
+        let mut first = PartialRequests::default();
+        assert_eq!(
+            reassemble(&mut first, &chunk(1, b"ABANDONED", false)).unwrap(),
+            None
+        );
+        // That connection ends here; its state goes with it.
+        drop(first);
+
+        let mut second = PartialRequests::default();
+        let whole = br#"{"version":1,"method":"capabilities"}"#.to_vec();
+        assert_eq!(
+            reassemble(&mut second, &chunk(1, &whole, true)).unwrap(),
+            Some(whole),
+            "a previous connection's bytes reached this one"
+        );
     }
 
     /// The hazard the poisoning exists for: a refused request keeps arriving, and reassembling its
@@ -1742,25 +1810,61 @@ mod tests {
     /// down every other in-flight request on that connection.
     #[test]
     fn a_refused_chunked_request_swallows_its_remaining_chunks() {
-        let _serialized = partial_test();
+        let mut partial = PartialRequests::default();
         // Fill past the total cap in one chunk, on a request that is NOT final.
         let huge = vec![b'x'; MAX_PARTIAL_TOTAL + 1];
         assert!(
-            reassemble(&chunk(4, &huge, false)).is_err(),
+            reassemble(&mut partial, &chunk(4, &huge, false)).is_err(),
             "the cap did not hold"
         );
         // Every later chunk is silent — no value to execute, and crucially no second error.
-        assert_eq!(reassemble(&chunk(4, b"more", false)).unwrap(), None);
-        assert_eq!(reassemble(&chunk(4, b"last", true)).unwrap(), None);
+        assert_eq!(
+            reassemble(&mut partial, &chunk(4, b"more", false)).unwrap(),
+            None
+        );
+        assert_eq!(
+            reassemble(&mut partial, &chunk(4, b"last", true)).unwrap(),
+            None
+        );
         // And the poison is cleared by that final chunk rather than leaking.
-        assert_eq!(partial_count(), 0, "the poisoned stream was never cleared");
+        assert_eq!(
+            partial.streams.len(),
+            0,
+            "the poisoned stream was never cleared"
+        );
+    }
+
+    /// Enforcing the stream-count cap must not itself break it. Poisoning is an insert, so refusing
+    /// the 33rd stream by recording a poison for it would grow the map to 33 — a limit that adds an
+    /// entry every time it is hit is not a limit.
+    #[test]
+    fn refusing_the_stream_cap_does_not_add_another_stream() {
+        let mut partial = PartialRequests::default();
+        for stream in 0..32u32 {
+            assert_eq!(
+                reassemble(&mut partial, &chunk(stream, b"x", false)).unwrap(),
+                None
+            );
+        }
+        assert_eq!(partial.streams.len(), 32);
+        for stream in 100..110u32 {
+            assert!(
+                reassemble(&mut partial, &chunk(stream, b"x", false)).is_err(),
+                "the 33rd stream was accepted"
+            );
+        }
+        assert_eq!(
+            partial.streams.len(),
+            32,
+            "refusals grew the map they were capping"
+        );
     }
 
     /// A chunk with no continuation byte at all is malformed, not an empty request.
     #[test]
     fn a_truncated_chunk_header_is_refused() {
-        let _serialized = partial_test();
+        let mut partial = PartialRequests::default();
         let envelope = Envelope::new(Service::Vcs, 5, vec![REQUEST_CHUNK_MARKER]);
-        assert!(reassemble(&envelope).is_err());
+        assert!(reassemble(&mut partial, &envelope).is_err());
     }
 }

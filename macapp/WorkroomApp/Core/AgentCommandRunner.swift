@@ -101,9 +101,9 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
   /// it means "nothing ran", which is a different fact from 127 ("env ran and searched PATH"), and
   /// `CLIVCSWriter.classify` checks it before everything else to reach `.launchFailed`.
   ///
-  /// Caveat: `vcs.rs`'s `send` replaces an over-16-MiB reply with a `PartialData` error, so a
-  /// command that ran and produced enormous output lands here too. That is the one remaining
-  /// misreport in this direction and is tracked separately from this fix.
+  /// This no longer covers a command that merely produced too much output: `vcs.rs`'s `exec` bounds
+  /// the two streams to what one reply can carry (`bound_exec_streams`), so an enormous but
+  /// successful command is truncated and still reports its real exit code, as native does.
   static func neverRan(_ reason: String) -> CommandResult {
     CommandResult(
       stdout: "", stderr: reason, exitCode: CommandResult.launchFailed, timedOut: false)

@@ -812,9 +812,10 @@ final class AgentVCSIntegrationTests: XCTestCase {
   /// routed a dropped handshake around the stale-socket recovery entirely — and a stale socket is
   /// the common case, not an exotic one: the daemon leaves `session.sock` behind on any `pkill`.
   ///
-  /// Driven against a socket that ACCEPTS and then closes without answering, which is the shape of a
-  /// dead agent's leftover socket. A socket nothing is listening on takes a different path (the
-  /// connect itself fails) and never reached the wrapper this covers.
+  /// The fixture must GREET and then hang up. An earlier version just accepted and closed, which
+  /// fails at the greeting read inside `connect`'s `runBlocking` closure and leaves the function
+  /// before the `catch` under test — so it passed against the reverted fix. The hello is
+  /// `"WRA1"` + a big-endian u16 version + a build-string length byte (`protocol/envelope.rs`).
   func testADroppedHandshakeStaysRecoverableRatherThanBecomingUnavailable() async throws {
     let dir = try root()
     let path = dir.appendingPathComponent("dead.sock").path
@@ -832,10 +833,15 @@ final class AgentVCSIntegrationTests: XCTestCase {
     }
     XCTAssertEqual(bound, 0, "could not bind the fixture socket")
     XCTAssertEqual(Darwin.listen(fd, 1), 0)
-    // Accept one connection and immediately hang up, mid-handshake.
+
+    // Greet with a version the client accepts (>= 2), no build string, then hang up mid-handshake —
+    // after the greeting, before answering `capabilities`.
+    let hello: [UInt8] = Array("WRA1".utf8) + [0x00, 0x02, 0x00]
     let accepting = Task.detached {
       let peer = Darwin.accept(fd, nil, nil)
-      if peer >= 0 { Darwin.close(peer) }
+      guard peer >= 0 else { return }
+      _ = hello.withUnsafeBytes { Darwin.send(peer, $0.baseAddress, $0.count, 0) }
+      Darwin.close(peer)
     }
     defer {
       accepting.cancel()
