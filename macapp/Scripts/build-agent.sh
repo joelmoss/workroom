@@ -22,7 +22,7 @@ DEST="${DEST_DIR}/${HELPER_NAME}"
 # how vcs/scripts/build-ghostty-vt.sh gets the pinned Zig on a cache miss — without it an engine-sha
 # bump fails an Xcode-driven build with "no zig and no mise" while the same build from a terminal
 # succeeds.
-export PATH="${HOME}/.cargo/bin:${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+export PATH="/opt/homebrew/bin:/usr/local/bin:${HOME}/.cargo/bin:${HOME}/.local/bin:${PATH}"
 if ! command -v cargo >/dev/null 2>&1; then
   echo "error: 'cargo' not found on PATH. Install Rust or adjust PATH in build-agent.sh." >&2
   exit 1
@@ -56,18 +56,38 @@ fi
 # constraint vcs/scripts/build-apple.sh documents for the VCS core, and the same cryptic
 # "can't find crate for `core`" if it is missing.
 CARGO="cargo"
+AGENT_TOOLCHAIN="${WR_AGENT_RUST_TOOLCHAIN:-stable}"
+# The VCS service links jj-lib (MSRV 1.93). Xcode can expose an older default rustup
+# toolchain than the terminal's Homebrew rust, so select stable when necessary.
+if ! rustc --version | awk '{split($2,v,"."); exit !(v[1] > 1 || v[1] == 1 && v[2] >= 93)}'; then
+  if ! rustup run "$AGENT_TOOLCHAIN" rustc --version 2>/dev/null | awk '{split($2,v,"."); exit !(v[1] > 1 || v[1] == 1 && v[2] >= 93)}'; then
+    echo "error: wr-agent VCS needs Rust >= 1.93. Run 'rustup update stable'." >&2
+    exit 1
+  fi
+  CARGO="rustup run $AGENT_TOOLCHAIN cargo"
+fi
 if [ "${#TARGETS[@]}" -gt 1 ] || [ "${TARGETS[0]}" != "$(rustc -vV | awk '/^host:/{print $2}')" ]; then
   if ! command -v rustup >/dev/null 2>&1; then
     echo "error: cross-compiling $HELPER_NAME needs rustup (Homebrew rust cannot). Install rustup, then 'rustup target add ${TARGETS[*]}'." >&2
     exit 1
   fi
   for target in "${TARGETS[@]}"; do
-    if ! rustup target list --installed --toolchain stable 2>/dev/null | grep -qx "$target"; then
+    if ! rustup target list --installed --toolchain "$AGENT_TOOLCHAIN" 2>/dev/null | grep -qx "$target"; then
       echo "error: rustup target '$target' is not installed. Run 'rustup target add $target'." >&2
       exit 1
     fi
   done
-  CARGO="rustup run stable cargo"
+  if ! rustup run "$AGENT_TOOLCHAIN" rustc --version 2>/dev/null | awk '{split($2,v,"."); exit !(v[1] > 1 || v[1] == 1 && v[2] >= 93)}'; then
+    echo "error: wr-agent VCS needs Rust >= 1.93. Update stable or set WR_AGENT_RUST_TOOLCHAIN to a compatible installed toolchain." >&2
+    exit 1
+  fi
+  CARGO="rustup run $AGENT_TOOLCHAIN cargo"
+fi
+
+# Cargo resolves rustc through PATH even when rustup selected cargo. Pin the matching
+# compiler so a Homebrew rustc cannot silently replace the cross-capable toolchain.
+if [ "$CARGO" != "cargo" ]; then
+  export RUSTC="$(rustup which --toolchain "$AGENT_TOOLCHAIN" rustc)"
 fi
 
 echo "Building $HELPER_NAME (${TARGETS[*]}) -> $DEST"

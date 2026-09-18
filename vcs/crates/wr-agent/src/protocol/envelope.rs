@@ -22,11 +22,20 @@
 
 use std::collections::VecDeque;
 
-/// Bumped when the wire changes in a way an older peer cannot parse. `MIN_SUPPORTED` is how far
-/// back this build can still talk, and it is what lets a newer app drive an older agent on a
-/// machine that has been asleep instead of replacing it.
-pub const PROTOCOL_VERSION: u16 = 1;
+/// Bumped when the wire changes in a way an older peer cannot parse, OR when a new service is
+/// added that an older agent would silently drop rather than answer (`Service::Vcs`, added at 2 —
+/// an older agent has no `vcs::dispatch` at all, so an unversioned capability probe would just
+/// hang until its own timeout). `MIN_SUPPORTED` stays untouched by such bumps: negotiation still
+/// takes the lower of the two sides' versions for the services both already understand (Terminal,
+/// Control), so a newer app still drives an older agent left running rather than replacing it —
+/// only a version-gated service (checked against the peer's raw `Hello.protocol_version`, not the
+/// negotiated minimum) refuses to talk to a peer that predates it.
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const MIN_SUPPORTED_VERSION: u16 = 1;
+/// The minimum peer version that understands `Service::Vcs`. Checked directly against a peer's
+/// `Hello.protocol_version` by VCS clients — never folded into `negotiate`'s minimum, which would
+/// incorrectly refuse Terminal/Control traffic with a pre-VCS agent too.
+pub const MIN_VCS_VERSION: u16 = 2;
 
 /// Sent first by both sides. The magic is here so a peer that is not an agent at all — a login
 /// banner, an MOTD, an ssh warning printed onto the stream — fails immediately and legibly

@@ -117,7 +117,14 @@ final class RepositoryRouter: @unchecked Sendable {
     }
   }
 
-  static let shared = RepositoryRouter()
+  static let shared: RepositoryRouter = {
+    #if DEBUG
+      if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+        return RepositoryRouter()
+      }
+    #endif
+    return RepositoryRouter(localReader: { try await LocalAgentVCS.shared.reader(context: $0) })
+  }()
   private let lock = NSLock()
   private var entries: [RepositoryLocation: Entry] = [:]
   private var localLocations: [String: RepositoryLocation] = [:]
@@ -126,10 +133,16 @@ final class RepositoryRouter: @unchecked Sendable {
   let remoteReader: @Sendable (RepositoryContext) throws -> VCSProviding
   let remoteWriter: @Sendable (RepositoryContext, VCSProviding) throws -> VCSWriting
   private let connections: HostConnectionManager?
+  private let localReader: (@Sendable (RepositoryContext) async throws -> VCSProviding)?
 
-  /// Production routers share app-wide host connections; local providers remain in-process.
-  init(connections: HostConnectionManager = .shared) {
+  /// Production routers share app-wide host connections. Tests can retain native local providers
+  /// or inject an isolated agent without starting a service against the user's session socket.
+  init(
+    connections: HostConnectionManager = .shared,
+    localReader: (@Sendable (RepositoryContext) async throws -> VCSProviding)? = nil
+  ) {
     self.connections = connections
+    self.localReader = localReader
     self.remoteReader = { throw RepositoryRoutingError.unavailable($0.location.host) }
     self.remoteWriter = { context, _ in
       throw RepositoryRoutingError.unavailable(context.location.host)
@@ -143,6 +156,7 @@ final class RepositoryRouter: @unchecked Sendable {
     }
   ) {
     self.connections = nil
+    self.localReader = nil
     self.remoteReader = remoteReader
     self.remoteWriter = remoteWriter
   }
@@ -225,6 +239,16 @@ final class RepositoryRouter: @unchecked Sendable {
     if location.host != .local, let connections {
       return try await connections.reader(context: context)
     }
+    if location.host == .local, let localReader {
+      do {
+        return try await localReader(context)
+      } catch VCSError.backendVersion(_) {
+        // A still-running pre-upgrade agent (kept alive because it may own terminals) has no VCS
+        // service at all — never replaced, so this is not transient. Serve the read natively
+        // rather than leaving every local repository unavailable until the user restarts it.
+        return try reader(context: context)
+      }
+    }
     return try reader(context: context)
   }
 
@@ -257,7 +281,17 @@ final class RepositoryRouter: @unchecked Sendable {
     if location.host != .local, let connections {
       return try await connections.writer(context: context)
     }
-    let reader = try reader(context: context)
+    let reader: VCSProviding
+    if location.host == .local, let localReader {
+      do {
+        reader = try await localReader(context)
+      } catch VCSError.backendVersion(_) {
+        // See the matching fallback in `reader(for:)`: a pre-upgrade agent with no VCS service.
+        reader = try self.reader(context: context)
+      }
+    } else {
+      reader = try self.reader(context: context)
+    }
     guard location.host == .local else { return try remoteWriter(context, reader) }
     let provider: LocalVCSProviding = context.backend == .jj ? RustJJProvider() : GitProvider()
     let writer = CLIVCSWriter(

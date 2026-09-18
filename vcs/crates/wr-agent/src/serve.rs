@@ -117,8 +117,16 @@ impl Agent {
                     });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    let busy =
-                        self.connections.load(Ordering::SeqCst) > 0 || !self.sessions.is_empty();
+                    // `connections` drops as soon as `handle_connection` returns, but `vcs::dispatch`
+                    // answers on a DETACHED thread that outlives it — a client that disconnects (or
+                    // whose request already tripped the app-side timeout) while its VCS request is
+                    // still running, e.g. a JJ snapshot mid in-process working-copy rewrite, would
+                    // otherwise let `connections` and `sessions` both read empty while that thread is
+                    // still mutating the repository. `crate::vcs::is_busy()` is the only thing that
+                    // actually knows.
+                    let busy = self.connections.load(Ordering::SeqCst) > 0
+                        || !self.sessions.is_empty()
+                        || crate::vcs::is_busy();
                     if busy {
                         idle_since = None;
                     } else {
@@ -257,6 +265,10 @@ fn dispatch(
     writer: &SharedWriter,
     send: &dyn Fn(&[u8]) -> bool,
 ) -> Option<Envelope> {
+    if envelope.service == Service::Vcs {
+        crate::vcs::dispatch(envelope, writer);
+        return None;
+    }
     if envelope.service != Service::Terminal && envelope.service != Service::Control {
         return None;
     }
