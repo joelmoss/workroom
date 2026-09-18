@@ -10,16 +10,10 @@ enum VCSWorkingDiffBase: Sendable, Equatable {
   case parent
 }
 
-/// The single seam the app reads VCS data through. Two implementations — `RustJJProvider` (jj, over
-/// the Rust/UniFFI core) and `GitProvider` (git, over SwiftGitX) — both return the app-native models
-/// in `VCSModels.swift`. Views/models depend on this protocol, not on either backend.
-///
-/// `workingStatus` was for a long time the one VCS read NOT on here, because the two backends
-/// returned differently-shaped concrete types and `WorkroomStatusResolver` bridged each by hand. It
-/// is on here now: a protocol whose shape depends on which backend implements it is one a third
-/// implementation cannot satisfy, and a remote backend is exactly that third implementation
-/// (issue #154, Phase 2).
-protocol VCSProviding: Sendable {
+/// Local engine interface. RepositoryRouter wraps these engines in a context-bound VCSProviding;
+/// application callers never supply an engine with a remote path. Synchronous native operations
+/// are offloaded by BoundLocalReader and keep their coordination tail until actual completion.
+protocol LocalVCSProviding: Sendable {
   /// A bounded, newest-first page of history.
   ///
   /// "Newest-first" is deliberately each backend's OWN CLI order, not a shared one — the page is what
@@ -59,8 +53,8 @@ protocol VCSProviding: Sendable {
   ///
   /// **The one read that mutates, on jj.** jj's working copy is itself a commit, so on-disk edits do
   /// not exist to jj-lib until snapshotted — this takes the working-copy lock and rewrites `@`.
-  /// Every other method on this protocol is read-only. That asymmetry is why the resolver gates this
-  /// one per project root and none of the others.
+  /// Working-copy diffs can snapshot too. The bound reader gates both operations by registered
+  /// shared repository identity. Immutable revision reads do not acquire the gate.
   ///
   /// Returns a `WorkroomStatus` with `ci`, `failure` and `localReadAt` unset: those are the
   /// resolver's to fill, not a backend's.
@@ -72,7 +66,7 @@ protocol VCSProviding: Sendable {
   func currentRef(root: URL) async throws -> VCSRef
 }
 
-extension VCSProviding {
+extension LocalVCSProviding {
   /// Default: **throws**, rather than reporting a clean working copy.
   ///
   /// The two real backends both implement this; the default exists for conformers that are not a
@@ -115,140 +109,4 @@ enum VCS {
     }
   }
 
-  /// The provider for a repo, or a typed error for an unsupported path.
-  ///
-  /// **The registry is consulted first, and the filesystem probe is the fallback.** `repoKind(at:)`
-  /// answers by looking for `.jj`/`.git` on THIS Mac, so it returns `.unsupported` for any path
-  /// that is not local — which is every path in a remote workroom (issue #154, Phase 2). Routing
-  /// therefore cannot stay a property of the filesystem; it has to be something a workroom
-  /// declares. `VCSProviderRegistry` is where it declares it.
-  ///
-  /// Every local project and workroom IS registered, on each `list --json` — so most calls now
-  /// resolve here rather than probing. Routing is unchanged because the registered name is the same
-  /// answer the probe would have given: the CLI derives `Project.vcs` by stating `.jj` before
-  /// `.git`, which is `repoKind(at:)`'s colocated preference. The probe remains the fallback for a
-  /// path no listing has mentioned yet.
-  static func provider(for root: URL) throws -> VCSProviding {
-    if let registered = VCSProviderRegistry.shared.provider(for: root) { return registered }
-    switch repoKind(at: root) {
-    case .jjColocated, .jjNonColocated: return RustJJProvider()
-    case .plainGit: return GitProvider()
-    case .unsupported(let reason): throw VCSError.unsupportedRepo(reason)
-    }
-  }
-}
-
-/// Which VCS backend each known repo root uses, so routing does not have to be inferred from the
-/// local filesystem.
-///
-/// **Why this exists.** `VCS.repoKind(at:)` classifies a repo by looking for `.jj`/`.git` under the
-/// path. That is correct and cheap for a local workroom and structurally impossible for a remote
-/// one: the directory is on another machine, so the probe sees nothing and reports `.unsupported`.
-/// Threading a host parameter through `VCSProviding`'s eight methods and their call sites would
-/// answer it too, at the cost of every local caller carrying a machine identifier forever. Keying
-/// on the workroom instead keeps the call sites exactly as they are — they already pass a `root:
-/// URL`, and that URL is the key.
-///
-/// **Keyed on the path, not on a `Workroom`.** Every call site has a URL in hand and none of them
-/// has a `Workroom`; passing one through would be the host-threading cost wearing this design's
-/// name. Paths are standardised on both write and read so `/tmp/x` and `/private/tmp/x/` agree.
-///
-/// **It stores the backend NAME, not a provider factory.** Both `VCS.provider(for:)` and
-/// `VCS.writer(for:)` have to route, and they need different things out of it — a `VCSProviding`
-/// and a `CLIVCSWriter(vcs:)` string respectively. Registering the name and deriving both keeps one
-/// fact behind both answers; registering a provider factory would leave the writer with nothing to
-/// read and send it back to the filesystem probe, which is the hole this type exists to close.
-final class VCSProviderRegistry: @unchecked Sendable {
-  static let shared = VCSProviderRegistry()
-
-  /// `provider(for:)` is called from `@Sendable` closures on arbitrary threads while `replace` runs
-  /// on the main actor, so the map is lock-guarded — the same shape as `SessionBackendProbe`'s
-  /// `Atomic`.
-  private let lock = NSLock()
-  private var backends: [String: String] = [:]
-
-  /// Replaces the whole map. Rebuilt wholesale on every `list --json` rather than diffed: the
-  /// projects payload is the complete truth about what exists, and a diff would have to invent a
-  /// removal rule to match it.
-  ///
-  /// **An unrecognised name is dropped here, not just in `entries(for:)`.** Storing one would be
-  /// harmless while the registry only answered `provider(for:)` — an unknown name resolves to no
-  /// provider and the path falls through to the probe. It stopped being harmless when
-  /// `VCS.writer(for:)` started reading the same map: a stored `"hg"` would build
-  /// `CLIVCSWriter(vcs: "hg")`, which spawns a binary called `hg` with git's arguments. The guard
-  /// is on the way in, where every caller passes, rather than on each of the two ways out.
-  func replace(with entries: [String: String]) {
-    let keyed = Dictionary(
-      entries.filter { Self.factory(forVCS: $0.value) != nil }
-        .map { (Self.key($0.key), $0.value) }, uniquingKeysWith: { _, last in last })
-    lock.withLock { backends = keyed }
-  }
-
-  /// The backend a repo root declares, or nil when nothing has declared one. `"git"` or `"jj"` —
-  /// `replace` refuses anything else, so a caller never has to re-check.
-  func vcs(for root: URL) -> String? {
-    // Keyed OUTSIDE the lock, as `replace` already does. `key` calls `resolvingSymlinksInPath()`,
-    // which is a `realpath(3)` — on a stalled network or FUSE mount that blocks, and inside the
-    // critical section it would block `replace` too, which runs on the main actor from
-    // `AppStore.apply`. Status sweeps call this ~5-wide from background closures, so that is a
-    // background read stalling the main thread.
-    let key = Self.key(root.path)
-    return lock.withLock { backends[key] }
-  }
-
-  func provider(for root: URL) -> VCSProviding? {
-    guard let vcs = vcs(for: root) else { return nil }
-    return Self.factory(forVCS: vcs)?()
-  }
-
-  /// Test seam: drop everything, so a test that registered a stub cannot leak into the next one.
-  func removeAll() {
-    lock.withLock { backends.removeAll() }
-  }
-
-  /// `/tmp` is a symlink to `/private/tmp` on macOS and a registered path may or may not have a
-  /// trailing slash, so both sides of the lookup are normalised through here rather than compared
-  /// raw.
-  private static func key(_ path: String) -> String {
-    URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
-  }
-
-  /// What every repo in `projects` resolves to: the project root and each of its workrooms, all
-  /// under the PROJECT's vcs.
-  ///
-  /// Pure and separate from `AppStore` so it can be tested as itself — the rule it encodes is the
-  /// one that has already been got wrong once (see `factory(forVCS:)`), and a test that only
-  /// exercised `factory(forVCS:)` would stay green if this loop read `workroom.vcsName` instead.
-  ///
-  /// Both roots are included because both are asked for a provider: the sidebar's root row resolves
-  /// through `BranchResolver` exactly as a workroom does. A project whose vcs is unrecognised
-  /// contributes nothing, so its paths keep falling through to the filesystem probe rather than
-  /// resolving to a confidently wrong backend. (`replace` refuses such a name too; this filter is
-  /// what makes the rule true of `entries(for:)` read on its own.)
-  static func entries(for projects: [Project]) -> [String: String] {
-    var entries: [String: String] = [:]
-    for project in projects {
-      guard factory(forVCS: project.vcs) != nil else { continue }
-      entries[project.path] = project.vcs
-      for workroom in project.workrooms {
-        entries[workroom.path] = project.vcs
-      }
-    }
-    return entries
-  }
-
-  /// The provider a `Project.vcs` string names. `"git"` and `"jj"` are the only values the CLI
-  /// emits (`WorkroomStatusResolver.resolveLocal` switches on the same two).
-  ///
-  /// Note this takes the PROJECT's vcs even for a workroom: a git project's workrooms are git
-  /// worktrees and a jj project's are jj workspaces. `Workroom.vcsName` is the branch/workspace
-  /// name, not a type, and reading it as one has already caused one bug — see the comment in
-  /// `AppStore+WorkroomStatus.statusWorkItems`.
-  static func factory(forVCS vcs: String) -> (@Sendable () -> VCSProviding)? {
-    switch vcs {
-    case "jj": return { RustJJProvider() }
-    case "git": return { GitProvider() }
-    default: return nil
-    }
-  }
 }

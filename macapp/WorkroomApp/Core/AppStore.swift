@@ -381,13 +381,13 @@ final class AppStore: ObservableObject {
   }
 
   /// In-flight commit counts per project root, which is the granularity the status lanes must respect.
-  var committingProjectRoots: [String: Int] {
+  var committingProjectRoots: [RepositoryLocation: Int] {
     get { projectStore.committingProjectRoots }
     set { projectStore.committingProjectRoots = newValue }
   }
 
   /// In-flight write (commit/fetch/push/pull) counts per project root — see `ProjectStore`'s doc.
-  var writingProjectRoots: [String: Int] {
+  var writingProjectRoots: [RepositoryLocation: Int] {
     get { projectStore.writingProjectRoots }
     set { projectStore.writingProjectRoots = newValue }
   }
@@ -436,7 +436,7 @@ final class AppStore: ObservableObject {
   /// screen: the section shown AND the inspector open.
   ///
   /// The visibility half matters because History lives in the DEFAULT pane now. A `focus` is not a
-  /// cheap "point at" — it runs a full page read (`HistoryModel.load` → `VCSProviding.log`, which for
+  /// cheap "point at" — it runs a full page read (`HistoryModel.load` → `LocalVCSProviding.log`, which for
   /// git is a repo open, a 101-commit revwalk, a ref enumeration and an unpushed-range walk), so
   /// without this gate every selection change would read a repo for a pane nobody can see, for every
   /// user, in the shipped default state.
@@ -491,7 +491,7 @@ final class AppStore: ObservableObject {
     guard let project = projects.first(where: { $0.path == projectPath }) else { return nil }
     return RemoteStateModel.Target(
       sid: sid, path: path, vcs: VCSBackend(rawValue: project.vcs) ?? .git,
-      projectRoot: project.path)
+      projectRoot: project.path, location: RepositoryRouter.shared.localLocation(for: path))
   }
 
   /// App-refocus safety net, mirroring `refreshHistoryIfActive`: a `git fetch` or a branch change made
@@ -952,11 +952,15 @@ final class AppStore: ObservableObject {
     // Wired post-init (the `workroomFileWatcher` idiom) so `RemoteStateModel` needs no `AppStore` to be
     // unit-tested. `onBranchResolved` makes this model the single writer of the shared branch cache
     // every branch-showing surface reads through `branchName(for:)`.
-    self.remoteState.onBranchResolved = { [weak self] sid, name in
-      self?.setResolvedBranchName(name, for: sid)
+    self.remoteState.onBranchResolved = { [weak self] target, name in
+      guard let self, self.selectedStatusWorkItem(for: target.sid)?.location == target.location
+      else { return }
+      self.setResolvedBranchName(name, for: target.sid)
     }
-    self.remoteState.onDidMutate = { [weak self] action, sid in
-      self?.handleRemoteMutation(action, on: sid)
+    self.remoteState.onDidMutate = { [weak self] action, target in
+      guard let self, self.selectedStatusWorkItem(for: target.sid)?.location == target.location
+      else { return }
+      self.handleRemoteMutation(action, on: target.sid, location: target.location)
     }
     // Only the store can name a target, and the model needs the name to attribute a failure that
     // outlived the selection it started from.
@@ -2793,7 +2797,7 @@ final class AppStore: ObservableObject {
     } else {
       // Another window already loaded the shared project list — don't refork the CLI (issue #70,
       // OV #2). Just resolve this (possibly blank) window's selection against the existing list.
-      apply(projectStore.projects)
+      reconcileWindow(with: projectStore.projects)
     }
   }
 
@@ -2837,8 +2841,23 @@ final class AppStore: ObservableObject {
       // No suspension between checking the generation, publishing, and reconciling this window.
       switch result {
       case .success(let response):
+        let registrations: [RepositoryRouter.Registration]
+        do {
+          registrations = try await projectStore.prepareRepositories(response.projects)
+        } catch {
+          if let latest = projectStore.latestLoad, latest.generation != load.generation {
+            load = latest
+            continue
+          }
+          if surfaceErrors, load.generation == issuedGeneration { present(error) }
+          return
+        }
+        if let latest = projectStore.latestLoad, latest.generation != load.generation {
+          load = latest
+          continue
+        }
         if projectStore.claimPublication(of: load) {
-          apply(response.projects)
+          apply(response.projects, registrations: registrations)
           resolveBranches()
           refreshWorkroomStatuses()
         } else {
@@ -2998,7 +3017,7 @@ final class AppStore: ObservableObject {
     lastLoadAt = Date()
   }
 
-  private func apply(_ incoming: [Project]) {
+  private func apply(_ incoming: [Project], registrations: [RepositoryRouter.Registration]) {
     // Inject GUI-only display labels (issue #41) onto the decoded workrooms from
     // `Defaults[.workroomLabels]` — the CLI JSON never carries them — and garbage-collect labels for
     // workrooms that no longer exist (deleted via the CLI or another build). `incoming` is the full
@@ -3017,8 +3036,12 @@ final class AppStore: ObservableObject {
     // before the teardown persisted still lists them, so without this a concurrent reload would
     // resurrect a just-deleted workroom. Cleared from `deletingWorkrooms` when the teardown ends.
     let fresh = applyingDeletionTombstones(sorted)
+    let acceptedPaths = Set(fresh.flatMap { [$0.path] + $0.workrooms.map(\.path) })
+    RepositoryRouter.shared.replaceLocal(
+      registrations.filter {
+        acceptedPaths.contains($0.localSourcePath ?? $0.location.path)
+      })
     projects = fresh
-    registerVCSProviders(for: fresh)
     // Prune shared caches only when publishing an accepted snapshot.
     let liveIDs = Set(fresh.map(\.id))
     rootRefs = rootRefs.filter { liveIDs.contains($0.key) }
@@ -3085,21 +3108,8 @@ final class AppStore: ObservableObject {
     restorePersistedSessionIfPending(in: fresh)
   }
 
-  /// Removes workrooms currently tombstoned in `deletingWorkrooms` from an incoming CLI project list,
-  /// so a stale `list` snapshot (taken before a delete's teardown persisted) can't resurrect a
-  /// just-deleted workroom (issue #116, the create/delete reload race). A no-op when nothing is being
-  /// deleted; otherwise rebuilds only the projects that actually contained a tombstoned workroom.
-  /// Tells `VCS.provider(for:)` what each known repo root is, so routing does not have to be
-  /// inferred from the local filesystem (issue #154, Phase 2 — see `VCSProviderRegistry`).
-  ///
-  /// Here because `apply` is where the complete project list arrives, and the whole map is replaced
-  /// rather than merged for the same reason: this payload IS the set of repos that exist, so a
-  /// project removed from it should stop resolving. The mapping itself lives on the registry so it
-  /// can be tested without a store.
-  private func registerVCSProviders(for projects: [Project]) {
-    VCSProviderRegistry.shared.replace(with: VCSProviderRegistry.entries(for: projects))
-  }
-
+  /// Remove workrooms with an in-flight deletion from the accepted listing. The same accepted
+  /// path set filters the already-normalized routing entries before projects are published.
   private func applyingDeletionTombstones(_ projects: [Project]) -> [Project] {
     let tombstoned = deletingWorkrooms
     guard !tombstoned.isEmpty else { return projects }
@@ -4888,7 +4898,9 @@ final class AppStore: ObservableObject {
   /// It used to read `remoteState.target?.sid` here, which is whatever is selected by the time the action
   /// finishes — so a pull in one workroom completing after the user moved to another read the SECOND
   /// workroom's conflict flag and attributed it to the first one's pull.
-  private func handleRemoteMutation(_ action: VCSRemoteAction, on sid: SidebarID) {
+  private func handleRemoteMutation(
+    _ action: VCSRemoteAction, on sid: SidebarID, location: RepositoryLocation?
+  ) {
     // A FETCH refreshes nothing here. It moves remote refs and touches neither our working copy nor our
     // CI runs, and `rootBranchWatchers` already watches `refs/remotes` and re-reads on its own. This used
     // to run a forced app-wide sweep for every action including the AUTOMATIC fetch, and `force` is the
@@ -4907,7 +4919,8 @@ final class AppStore: ObservableObject {
     Task { [weak self] in
       await refresh?.value
       guard let self else { return }
-      self.remoteState.noteConflictState(self.workroomStatuses[sid]?.conflicted == true, for: sid)
+      self.remoteState.noteConflictState(
+        self.workroomStatuses[sid]?.conflicted == true, for: sid, location: location)
     }
   }
 

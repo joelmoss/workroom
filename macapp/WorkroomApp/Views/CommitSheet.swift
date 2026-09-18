@@ -29,7 +29,7 @@ struct CommitSheet: View {
   /// this sheet is open arrives checked; a file the user unticked stays unticked.
   @State private var excluded: Set<String> = []
   @State private var phase: Phase = .editing
-  @State private var prefilled = false
+  @State private var preflightState = CommitPreflightState()
   /// A parked merge/rebase/cherry-pick/revert/bisect in this worktree, resolved on appear.
   ///
   /// The engine refuses one of these outright, so leaving it out of `blockedReason` meant composing a
@@ -409,13 +409,12 @@ struct CommitSheet: View {
   /// discard the body the user wrote earlier.
   private func prefill() {
     summaryFocused = true
-    guard !prefilled else { return }
-    prefilled = true
-    guard store.selectedStatusWorkItem(for: pending.sid) != nil else { return }
+    guard phase != .committing, !isSpent, preflightState.begin() else { return }
     // The fixture's paths are not repos, so every read below would fail and the dialog would show
     // nothing — which is the state these seeds exist to keep testable. Same rationale as
     // `FixtureVCSWriter`.
     if UITestFixture.isActive {
+      _ = preflightState.finish(succeeded: true)
       if isJJ {
         let existing = CommitDraft.split(message: status?.jjWorkingCopy?.description ?? "")
         summary = existing.summary
@@ -427,7 +426,16 @@ struct CommitSheet: View {
     }
     // One ask, through the writer. This used to spawn `git`/`jj` and stat a `.git` directory from
     // here, which works only for a repo on this Mac — see `VCSWriting.commitPreflight`.
-    store.commitPreflight(on: pending.sid) { preflight in
+    store.commitPreflight(on: pending.sid) { result in
+      guard phase != .committing, !isSpent else { return }
+      guard case .success(let preflight) = result else {
+        if case .failure(let error) = result, preflightState.finish(succeeded: false) {
+          phase = .failed(
+            VCSSyncPresenter.commitFailureDialog(.other(error.localizedDescription), mode: .commit))
+        }
+        return
+      }
+      guard preflightState.finish(succeeded: true) else { return }
       sequencer = preflight.sequencer
       amendTarget = preflight.amendTarget
       guard let message = preflight.currentMessage else { return }
@@ -453,14 +461,25 @@ struct CommitSheet: View {
   /// retry fell through to `commit` unchecked — and anything the user staged with `git add -p` while
   /// fixing the rejection was discarded with no warning, unrecoverable except as a dangling blob.
   private func commitChecking(mode: VCSCommitMode) {
+    guard preflightState.isReady else {
+      prefill()
+      return
+    }
     guard mode == .commit, !isJJ else { return commit(mode: mode) }
     let files = selectedFiles
-    store.stagedContentAtRisk(on: pending.sid, files: files) { atRisk in
+    store.stagedContentAtRisk(on: pending.sid, files: files) { result in
+      guard phase != .committing, !isSpent else { return }
+      guard case .success(let atRisk) = result else {
+        if case .failure(let error) = result {
+          phase = .failed(
+            VCSSyncPresenter.commitFailureDialog(.other(error.localizedDescription), mode: mode))
+        }
+        return
+      }
       // The sheet can move on while that `git status` runs — the secondary verb stays pressable
       // during the round-trip. Without this re-check, a late result would stamp
       // `.confirmingStagedLoss` over a commit already in flight, re-enabling the primary and letting
       // a second concurrent commit through on the same repo.
-      guard phase != .committing, !isSpent else { return }
       if atRisk.isEmpty {
         commit(mode: mode)
       } else {
@@ -470,6 +489,10 @@ struct CommitSheet: View {
   }
 
   private func commit(mode: VCSCommitMode) {
+    guard preflightState.isReady else {
+      prefill()
+      return
+    }
     guard phase != .committing else { return }
     let message = CommitDraft.message(
       summary: summary, body: messageBody, preserving: originalMessage)

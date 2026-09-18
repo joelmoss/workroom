@@ -139,9 +139,10 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
   /// pass, and the per-project `nwoCache` prefetch — sequential by construction — can't be mistaken
   /// for the bound under test) must never run more than `ciConcurrency` (2) `gh`/`git` calls at once.
   @MainActor
-  func testCISweepNeverExceedsItsConcurrencyCap() async {
+  func testCISweepNeverExceedsItsConcurrencyCap() async throws {
     let store = AppStore()
     store.projects = (0..<8).map { throwawayProject("ci-\($0)") }
+    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
 
     let ghCounter = InFlightCounter()
     // `dirty: false` (not counted here) only needs to make every item CI-eligible

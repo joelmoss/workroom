@@ -2,7 +2,7 @@ import Foundation
 
 /// Resolves a project root's current branch/bookmark for the sidebar root-row label — the `@`
 /// bookmark / nearest ancestor bookmark (jj) or current branch / short SHA (git) — read structurally
-/// through `VCSProviding` (jj via jj-lib, git via SwiftGitX). GUI-only: the `workroom` CLI never
+/// through `LocalVCSProviding` (jj via jj-lib, git via SwiftGitX). GUI-only: the `workroom` CLI never
 /// shows it, and resolving per project (not inside `list --json`) keeps the list instant and
 /// isolates a slow/wedged repo to its own row. Best-effort — any failure or timeout yields
 /// `.unresolved` for that project and never affects others.
@@ -13,15 +13,16 @@ import Foundation
 /// lock-safe: `current_ref` never snapshots the working copy, so it can't self-trigger the
 /// `.jj` file watcher.)
 struct BranchResolver: Sendable {
-  /// Per-call ceiling so one hung repo abandons only its own label. `VCSProviding` has no built-in
+  /// Per-call ceiling so one hung repo abandons only its own label. `LocalVCSProviding` has no built-in
   /// timeout, so this wraps the read in `withTimeout`.
   var timeout: TimeInterval
   /// The VCS backend, injected for tests. Defaults to the real repo-kind router.
-  let makeProvider: @Sendable (URL) throws -> VCSProviding
+  let makeProvider: (@Sendable (URL) throws -> LocalVCSProviding)?
+  var router: RepositoryRouter = .shared
 
   init(
     timeout: TimeInterval = 3,
-    makeProvider: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) }
+    makeProvider: (@Sendable (URL) throws -> LocalVCSProviding)? = nil
   ) {
     self.timeout = timeout
     self.makeProvider = makeProvider
@@ -36,12 +37,21 @@ struct BranchResolver: Sendable {
       let ref = try await withTimeout(seconds: timeout) {
         // The provider self-offloads its blocking read to GCD (`runBlocking`), so a plain await here
         // never occupies a cooperative-pool thread — no `Task.detached` wrapper needed.
-        try await makeProvider(root).currentRef(root: root)
+        if let makeProvider { return try await makeProvider(root).currentRef(root: root) }
+        let location = try await RepositoryLocation.local(path)
+        return try await router.reader(for: location).currentRef()
       }
       return Self.rootRef(from: ref)
     } catch {
       return .unresolved
     }
+  }
+
+  func resolve(location: RepositoryLocation) async throws -> RootRef {
+    let ref = try await withTimeout(seconds: timeout) {
+      try await router.reader(for: location).currentRef()
+    }
+    return Self.rootRef(from: ref)
   }
 
   /// Map the backend's `VCSRef` onto the sidebar's `RootRef`. `.none` (or a kind with no name) ⇒

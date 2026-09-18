@@ -52,7 +52,7 @@ actor JJSnapshotGate {
   private let maxChainWait: TimeInterval
   /// The most recently scheduled call's completion, per project root — the tail of that project's
   /// chain. A new call waits for this before running, then becomes the new tail.
-  private var tails: [String: Task<Void, Never>] = [:]
+  private var tails: [RepositoryLocation: Task<Void, Never>] = [:]
 
   /// Non-private so tests construct an isolated gate instead of sharing the process-wide singleton.
   /// `maxChainWait` is injectable (default `defaultMaxChainWait`) so a test can use a short ceiling
@@ -71,19 +71,29 @@ actor JJSnapshotGate {
   func run<T: Sendable>(
     projectRoot: String, _ operation: @Sendable @escaping () async throws -> T
   ) async throws -> T {
-    let previous = tails[projectRoot]
-    let task = Task<T, Error> {
+    let location = try await RepositoryLocation.local(projectRoot)
+    return try await run(repository: location, operation)
+  }
+
+  /// A validated shared identity is the ordering key. Cancellation only cancels the wait;
+  /// a started native operation retains this tail until its actual completion.
+  func run<T: Sendable>(
+    repository: RepositoryLocation, _ operation: @Sendable @escaping () async throws -> T
+  ) async throws -> T {
+    let previous = tails[repository]
+    // This dependency wait is not a child of the cancellable operation. Otherwise cancelling
+    // queued B could complete its tail while A still runs, allowing C to pass both of them.
+    let dependency = Task<Void, Never> {
       if let previous {
-        // `withTimeout`, not a task group: a task group awaits all children before returning, so a
-        // still-wedged `previous` would block this wait past its own ceiling — exactly the trap
-        // `Timeout.swift`'s own doc warns about. `withTimeout` races via a continuation instead, so
-        // it actually returns at the ceiling regardless of whether `previous` has finished.
         _ = try? await withTimeout(seconds: maxChainWait) { await previous.value }
       }
+    }
+    let task = Task<T, Error> {
+      await dependency.value
       try Task.checkCancellation()
       return try await operation()
     }
-    tails[projectRoot] = Task<Void, Never> { _ = try? await task.value }
+    tails[repository] = Task<Void, Never> { _ = try? await task.value }
     return try await withTaskCancellationHandler {
       try await task.value
     } onCancel: {

@@ -15,7 +15,7 @@ final class HistoryModelTests: XCTestCase {
 
   /// A provider returning `prefix(limit)` of a fixed list, so a growing limit yields more commits —
   /// exactly the growing-prefix pagination `HistoryModel` uses.
-  private struct FakeProvider: VCSProviding {
+  private struct FakeProvider: LocalVCSProviding {
     let all: [VCSCommit]
     func log(root: URL, limit: Int) throws -> VCSHistoryPage {
       let slice = Array(all.prefix(limit))
@@ -34,7 +34,7 @@ final class HistoryModelTests: XCTestCase {
     func currentRef(root: URL) async throws -> VCSRef { .none }
   }
 
-  private struct FailProvider: VCSProviding {
+  private struct FailProvider: LocalVCSProviding {
     func log(root: URL, limit: Int) throws -> VCSHistoryPage {
       throw VCSError.io("boom")
     }
@@ -57,7 +57,7 @@ final class HistoryModelTests: XCTestCase {
   /// (does it reload? how many times?) is observable, and its failure-retry can be driven. Lock-guarded
   /// + `@unchecked Sendable` because `log` runs off-main via `runBlocking`; the tests serialize access
   /// with `awaitCurrentLoad`, so there's no real contention.
-  private final class CountingProvider: VCSProviding, @unchecked Sendable {
+  private final class CountingProvider: LocalVCSProviding, @unchecked Sendable {
     private let lock = NSLock()
     private var _count = 0
     private var _all: [VCSCommit]
@@ -90,7 +90,7 @@ final class HistoryModelTests: XCTestCase {
     HistoryModel(pageSize: pageSize, resolve: { _ in provider })
   }
 
-  private func model(_ provider: some VCSProviding, pageSize: Int) -> HistoryModel {
+  private func model(_ provider: some LocalVCSProviding, pageSize: Int) -> HistoryModel {
     HistoryModel(pageSize: pageSize, resolve: { _ in provider })
   }
 
@@ -121,7 +121,8 @@ final class HistoryModelTests: XCTestCase {
 
   // MARK: window cap (bounds the per-refresh read, not the drawing — WORKROOM-2B)
 
-  private func capped(_ provider: some VCSProviding, pageSize: Int, maxWindow: Int) -> HistoryModel
+  private func capped(_ provider: some LocalVCSProviding, pageSize: Int, maxWindow: Int)
+    -> HistoryModel
   {
     HistoryModel(pageSize: pageSize, maxWindow: maxWindow, resolve: { _ in provider })
   }

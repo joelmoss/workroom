@@ -38,7 +38,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
 
   /// Serves a fixed page. `@unchecked Sendable` + lock because `HistoryModel` reads it off-main via
   /// `runBlocking`; the tests serialize on `awaitCurrentLoad`.
-  private final class FixedPageProvider: VCSProviding, @unchecked Sendable {
+  private final class FixedPageProvider: LocalVCSProviding, @unchecked Sendable {
     private let lock = NSLock()
     private var page: VCSHistoryPage
     init(commits: [VCSCommit]) {

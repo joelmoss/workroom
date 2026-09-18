@@ -13,8 +13,8 @@ New persistent local sessions use `wr-agent`; an attach-only Swift shim preserve
 sessions held by older daemons. This does **not** yet provide remote workrooms.
 
 Phase 2 preparation has landed: #184 added the VCS registry, #185 moved working status onto
-`VCSProviding`, and #186 routed writers through the registry too. The registry currently selects
-local backends by local path; agent-backed VCS, file and notification services remain unbuilt.
+`VCSProviding`, and #186 routed writers through the registry too. The host-aware foundation binds services to validated repository identities and captured ownership.
+Agent-backed VCS, file and notification services remain unbuilt.
 OQ1's gix measurements and OQ21's Swift driver decision are answered. The gix code remains a spike.
 Phases 3 and 4 — persistent remote transport, distribution, provisioning and UI — remain planned.
 The implementation sequence and remaining decisions are in **Next Steps**.
@@ -728,38 +728,53 @@ exists, but run both.
   replay.
 
 ### Phase 2 — the services, still local
+
+#### Foundation contracts
+
+- `HostID.remote(UUID)` names a host instance independently of its address. A repository location
+  pairs that identity with an absolute path. Local paths are canonicalized off the main thread
+  before publication; remote paths are validated in memory, preserve case, reject dot components,
+  and never resolve symlinks on the Mac.
+- The router captures backend and shared ownership together. Its bound reader exposes nine async
+  methods; its writer exposes eight methods without caller-supplied repository roots. Registered
+  local siblings coordinate on their project root; independent remote clones register their own
+  working root as the shared root. Local listing replacement preserves remote registrations.
+- Unregistered local repositories may serve immutable reads. Ownership stays unknown until an
+  accepted listing registers it: writes, JJ working status, snapshotting diffs, and snapshotting
+  file listings must fail rather than invent a coordination root. A failed preflight never permits
+  a commit. Service unavailability remains an explicit failure, not empty successful data.
+- Diff caches include host, path, backend, revision, and file. Working-copy diffs are never cached.
+  Coordination and write suppression use the shared repository identity across windows. Cancelling
+  a wait does not complete native work or release its place in the ordering chain.
+- GitHub CI/PR operations remain local. Remote requests are rejected before local commands,
+  repository-context cache lookups, or optimistic PR updates. Remote support is deferred.
+- An app-wide manager will own service connections per host, shared across windows. Reconnection
+  changes a generation, fails pending operations, rejects stale responses, and refreshes mutable
+  state and subscriptions. Never automatically replay writes after connection loss.
+- Preserve the existing terminal relays and attach-only compatibility shim; this foundation changes
+  no session ownership or persisted project, workroom, sidebar, or terminal identifiers.
+- When gix lands, line counts must match Git exactly. Obtain exact statistics through Git on the
+  owning host, using the repository configuration and comparison semantics of the corresponding
+  patch. Validate patch/count consistency before replacing local reads; the spike's approximate
+  counts are not the acceptance criterion.
+
+
 Every item below is a service on the multiplexed stream. The doc previously named only VCS reads;
 these are the subsystems that actually gate "a remote workroom is a real workroom".
 
-- **VCS reads — registry preparation landed, service implementation remains.** `VCSProviding`
-  currently has nine methods taking `root: URL`, including working status and the two pre-image
-  content reads. `VCS.provider(for:)` now consults `VCSProviderRegistry` before falling back to a
-  local filesystem probe (#184, #185); `VCS.writer(for:)` uses the same declaration (#186).
-  Direct callers also benefit from that lookup; adding injection seams alone is not the remaining
-  remote-routing task.
-  The registry stores only `git`/`jj`, keyed by a path canonicalized with the Mac's filesystem,
-  and constructs local providers. It identifies neither a host nor an agent connection. Before
-  remote services use it, define host-qualified repository identity and connection ownership:
-  `/workspace/repo` on two hosts must resolve independently, and remote paths must never pass
-  through local symlink resolution. Carry that identity through reads, writes, files, watches and
-  their caches. Preserve the existing local routing behavior. The precise interface is a Phase 2
-  planning decision, not something #184 already implemented.
-- **VCS writes — a whole second protocol the earlier draft missed (C1).**
-  `macapp/WorkroomApp/Core/VCSWriting.swift` is 1910 lines and seven methods (`remoteState`,
-  `fetch`, `push`, `pullRebase`, `abortRebase`, `commit`, `stagedContentAtRisk`), shelling out to
-  local `git`/`jj` with local paths, behind a **13**-case failure taxonomy (`VCSRemoteFailure`,
-  `VCSWriting.swift:26-84` — including `authRequired`, `hostKeyUnverified`, `rebaseInProgress` and a
-  `locked(VCSLockFile?)` payload) and a presentation layer in `VCSSyncPresentation.swift`. All of it
-  has to cross the stream, **including the
-  lock-file-on-disk distinction that decides Retry vs Abort** — a local-filesystem fact the remote
-  side must report rather than the client infer. Comparable in size to the read side; price it
-  separately. **And it carries a second local path the watch discussion already noticed but this
-  one did not:** six of the seven methods take `path` *and* `projectRoot` (`stagedContentAtRisk` is
-  the exception — it is local-only and takes just `path`), and `projectRoot` is load-bearing:
-  `opDirectory(.fetch, …)` returns it (`:373-375`) and `JJSnapshotGate.run(projectRoot:)` keys on it
-  (`:1421-1423`), 31 references in the file. For a remote **clone** the project root collapses into
-  the workroom itself, exactly as the third watch site does, so those six signatures need that
-  reckoning.
+- **VCS reads — host-aware routing is the foundation; live services remain.** `VCSProviding`
+  exposes nine async methods on an immutable context. `RepositoryRouter` captures declared backend
+  and shared ownership in one lookup, then constructs the bound service outside its lock. Native
+  local engines remain behind adapters; remote factories are injectable for tests and unavailable
+  in production until transport services land. Unknown local repositories are probed off-thread
+  for immutable reads only.
+- **VCS writes (C1).** `VCSWriting` exposes eight bound methods: `remoteState`, `fetch`, `push`,
+  `pullRebase`, `abortRebase`, `commit`, `stagedContentAtRisk`, and `commitPreflight`. The local
+  adapter supplies working/shared paths to the CLI engine from one captured context; callers
+  cannot override those roots. Preflight failures throw and prevent committing. Future agent
+  implementations must preserve the existing failure taxonomy and presentation, including the
+  lock-file-on-disk distinction that decides which recovery is possible. For an independent remote
+  clone the registered shared root is its own working root.
 - **A file service (C2).** `FileTree.swift` builds and parses VCS commands through a command runner
   rather than `VCSProviding`; `PlainFileViewer.swift:138` mmaps the file off local disk;
   `DiffResolver.swift:280` reads local files. Directory listing and raw file read are their own
@@ -1901,23 +1916,20 @@ disagreement passes every test on either side alone while presenting as an empty
 ## Next Steps
 
 **Corrected 2026-09-17 against `master`.** Phase 1 is complete, OQ1's feasibility gate is lifted,
-and VCS registry preparation has already landed. The next deliverable is a bounded Phase 2
-implementation plan, followed by the service milestones below. Phase 2 is not complete merely
-because local backend selection no longer always probes the filesystem.
+and the host-aware Phase 2 routing foundation is implemented. The remaining work is split into the
+service milestones below so each layer can be reviewed and landed independently.
 
-1. **Define repository identity and connection ownership; settle the gix stats policy.**
-   Extend the registry approach with an identity that distinguishes local and remote repositories
-   and the same path on different hosts. Specify how reads, writes, file access, subscriptions and
-   caches reach the owning agent, and how a disconnected host is reported without falling back to
-   local disk. Local path canonicalization remains local-only. Acceptance must include two hosts
-   with `/workspace/repo`, a local repository with that same path, and reconnecting one host without
-   invalidating the others.
+1. **Connect the host-aware foundation to host-owned service connections.** Repository identities,
+   captured routing and shared coordination are defined above. The next layer is an app-wide
+   connection manager, with a generation per connection and explicit disconnect failures. Test
+   reconnecting one of two hosts with the same repository path without invalidating the other.
+   Pending writes must fail and must never be automatically replayed.
 
-   The gix spike reported exact file lists on 150/150 cases, but exact line counts on 139/150;
-   the 11 differences were at most four lines. Accepting that visible drift remains a product
-   decision, not a completed technical task. If exact counts are required, retain the existing
-   local stats behavior while specifying an agent-side implementation that matches it; a local
-   libgit2 fallback cannot read a remote repository. Do not silently relax the parity goal.
+   Exact Git line counts are required. The spike matched file lists in 150/150 cases but counts in
+   139/150; its approximate counts are not acceptable for shipping. Obtain counts through Git on
+   the owning host with the same configuration/comparison semantics as its patch, and validate
+   patch/count consistency before switching local reads. No gix implementation is part of this
+   foundation.
 
 2. **Deliver agent-backed VCS reads, locally first.** Graduate the measured gix work into a
    production service alongside the JJ backend and route the app's nine read methods through the
