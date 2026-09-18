@@ -5,9 +5,9 @@ import Foundation
 /// building, stdout/stderr parsing and failure classification are untouched Swift, and see exactly
 /// the bytes a host-executed command produced — see `vcs.rs`'s `ExecRequest` doc for the design.
 ///
-/// Never throws: `StatusCommandRunning.run` doesn't, so any transport or decode failure here
-/// degrades to `CommandResult.launchFailed`, the same fact `StatusCommandRunner` reports when
-/// `Process.run()` itself fails — `CLIVCSWriter.classify`/`.classifyCommit` already handle it.
+/// Never throws: `StatusCommandRunning.run` doesn't, so every failure here becomes a
+/// `CommandResult` the existing classifiers already understand. Which one is NOT uniform, and the
+/// distinction is load-bearing — see `neverRan` and `outcomeUnknown`.
 struct AgentCommandRunner: StatusCommandRunning, Sendable {
   let connection: AgentVCSConnection
 
@@ -34,42 +34,105 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
     _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
     stdin: Data?, network: Bool
   ) async -> CommandResult {
-    // Always forwarded, network or not: wr-agent is a long-lived daemon "negotiated with, never
-    // replaced" (`LocalAgentVCS`), so its own inherited PATH at spawn time can predate a tool
-    // install and is never refreshed — without this, a write that would succeed natively could
-    // fail to find `git`/`jj` through an old agent.
-    var env = ["PATH": ShellEnvironment.path()]
-    if network { env.merge(Self.networkEnv()) { _, replacement in replacement } }
+    // The WHOLE environment native would use, not a key allowlist. wr-agent `env_clear()`s and
+    // adopts this map, so the child sees exactly what a native child sees. An allowlist could not
+    // work here: wr-agent is a long-lived daemon "negotiated with, never replaced"
+    // (`LocalAgentVCS`), so its own inherited environment is a snapshot of whichever app launch
+    // first spawned it, and the set of variables `git`/`jj` read for identity, config, signing and
+    // hooks is open-ended (`GIT_AUTHOR_*`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_PARAMETERS`, `HOME`,
+    // `JJ_CONFIG`, `EMAIL`, `GNUPGHOME`, …). Forwarding only `PATH` silently authored commits under
+    // the daemon's stale identity — see `StatusCommandRunner.childEnvironment`'s doc.
+    // Latin-1, not UTF-8: a pathspec payload is NUL-separated and paths are not guaranteed valid
+    // UTF-8, and Latin-1 is a total bijection over every byte 0x00-0xFF, so this never fails and
+    // `vcs.rs`'s `latin1_bytes` is its exact inverse — see `ExecRequest.stdin`'s doc. Far more
+    // compact on the wire than a JSON byte-number array for ordinary text.
+    var payload: String?
+    if let stdin {
+      // Unreachable (Latin-1 decodes every byte), but the old `?? ""` fallback would have staged
+      // nothing or committed an empty message. Refuse rather than send a silent lie.
+      guard let encoded = String(data: stdin, encoding: .isoLatin1) else {
+        return Self.neverRan("stdin payload is not representable on the wire")
+      }
+      payload = encoded
+    }
     let request = AgentExecRequest(
       executable: executable, args: args, dir: directory,
       timeoutMs: Int((timeout * 1000).rounded(.up)),
-      // Latin-1, not UTF-8: a pathspec payload is NUL-separated and paths are not guaranteed
-      // valid UTF-8, and Latin-1 is a total bijection over every byte 0x00-0xFF, so this never
-      // fails and `vcs.rs`'s `latin1_bytes` is its exact inverse — see `ExecRequest.stdin`'s doc.
-      // Far more compact on the wire than a JSON byte-number array for ordinary text.
-      stdin: stdin.map { String(data: $0, encoding: .isoLatin1) ?? "" },
-      env: env)
+      stdin: payload,
+      env: StatusCommandRunner.childEnvironment(network: network))
+    let reply: Data
     do {
       // Slack above the command's own timeout: the round trip and the agent's own bookkeeping
-      // must not race the command's own timeout into a spurious `.launchFailed`.
-      let reply = try await connection.request(request, timeout: timeout + 15)
+      // must not race the command's own timeout.
+      //
+      // Cancellable on purpose. The write path's protection against a cancelled command releasing
+      // the JJ barrier early lives in `JJSnapshotGate.run`, which shields the whole gated operation
+      // once it holds the flock — see the comment there. Shielding HERE instead would also cover
+      // `remoteState`'s ungated reads, and a superseded `RemoteStateModel` refresh would then squat
+      // one of this connection's 32 shared slots until the agent answered.
+      reply = try await connection.request(request, timeout: timeout + 15)
+    } catch let error as VCSError {
+      // Raised before anything left this process — today only the 1 MiB single-envelope request
+      // ceiling. Nothing ran.
+      return Self.neverRan("\(error)")
+    } catch HostConnectionError.notDispatched {
+      // Refused locally with nothing written to the socket (closed connection, exhausted stream
+      // counter, full request pool). Definitively never ran.
+      return Self.neverRan(HostConnectionError.notDispatched.localizedDescription)
+    } catch {
+      // The request reached the socket and no reply came back: connection loss, the client-side
+      // deadline, or cancellation. The command may have completed host-side.
+      return Self.outcomeUnknown(error)
+    }
+    do {
       let result = try AgentVCSReply<AgentExecResult>.decode(reply)
       return CommandResult(
         stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode,
         timedOut: result.timedOut, signaled: result.signaled)
     } catch {
-      return CommandResult(
-        stdout: "", stderr: "\(error)", exitCode: CommandResult.launchFailed, timedOut: false)
+      // A reply ARRIVED carrying an error. wr-agent answers one only for a request it refused
+      // before spawning (bad version, unusable `dir`, non-Latin-1 stdin) or for a reply too large
+      // to send — see `neverRan`'s caveat on that last case.
+      return Self.neverRan("\(error)")
     }
   }
 
-  /// The same forwarded-auth-key computation `StatusCommandRunner.networkEnvironment` does for a
-  /// native network command, as a standalone delta rather than a merged base environment: the
-  /// agent process's OWN inherited environment may predate this request and carry a stale or
-  /// absent `SSH_AUTH_SOCK` (see `ShellEnvironment`'s whole reason for existing), so the relevant
-  /// keys are resolved here, in the caller's process, and sent rather than re-derived agent-side.
-  private static func networkEnv() -> [String: String] {
-    StatusCommandRunner.networkEnvironment(base: [:], probed: ShellEnvironment.environment())
+  /// The command never started. `CommandResult.launchFailed`'s own doc is strict about this value:
+  /// it means "nothing ran", which is a different fact from 127 ("env ran and searched PATH"), and
+  /// `CLIVCSWriter.classify` checks it before everything else to reach `.launchFailed`.
+  ///
+  /// Caveat: `vcs.rs`'s `send` replaces an over-16-MiB reply with a `PartialData` error, so a
+  /// command that ran and produced enormous output lands here too. That is the one remaining
+  /// misreport in this direction and is tracked separately from this fix.
+  static func neverRan(_ reason: String) -> CommandResult {
+    CommandResult(
+      stdout: "", stderr: reason, exitCode: CommandResult.launchFailed, timedOut: false)
+  }
+
+  /// The command may or may not have completed; we stopped listening. Reported as a SIGTERM-signaled
+  /// result rather than `launchFailed`, because `launchFailed` asserts a falsehood: a cancelled or
+  /// disconnected `git push` DID run host-side (there is no cancel message in the protocol), and
+  /// telling the user it never launched invites a retry that double-applies it.
+  ///
+  /// It classifies as `.other(reason)`, carrying the underlying error's own description —
+  /// `HostConnectionError.connectionLost`'s is already exactly right ("An operation may have
+  /// completed; refresh before retrying"), and used to be discarded. Not the `"\(tool) was
+  /// interrupted"` branch: that one requires EMPTY stderr, and the message is worth more here.
+  /// `signaled: true` is therefore descriptive rather than load-bearing, and `timedOut` stays false
+  /// so this can never be mistaken for a command that ran and exceeded its own deadline.
+  ///
+  /// KNOWN GAP: `.other` is retryable (`VCSSyncPresentation.retryAction`), so the user is still
+  /// offered a Retry for an operation that may already have landed. Telling the truth in the
+  /// message is strictly better than the old `launchFailed` ("never ran"), but suppressing the
+  /// button needs its own `VCSRemoteFailure`/`VCSCommitFailure` case — that switch is exhaustive on
+  /// purpose, and adding a case is a user-visible taxonomy change, not a drive-by fix.
+  static func outcomeUnknown(_ error: Error) -> CommandResult {
+    let reason =
+      (error as? LocalizedError)?.errorDescription
+      ?? (error is CancellationError ? "The operation was cancelled; it may have completed." : nil)
+      ?? "\(error)"
+    return CommandResult(
+      stdout: "", stderr: reason, exitCode: 15, timedOut: false, signaled: true)
   }
 }
 

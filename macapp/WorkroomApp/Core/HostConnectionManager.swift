@@ -12,6 +12,11 @@ protocol HostServiceConnection: Sendable {
 
 enum HostConnectionError: Error, Equatable, Sendable, LocalizedError, CustomStringConvertible {
   case connectionLost
+  /// Refused locally, before a single byte reached the socket — the connection was already closed,
+  /// the stream counter is exhausted, or the 32-slot request pool is full. Distinct from
+  /// `connectionLost` because the caller can say "this definitely did not run", which for a WRITE
+  /// is the difference between a safe retry and one that double-applies a commit or a push.
+  case notDispatched
   case staleGeneration
   case mismatchedContext
   case serviceUnavailable(String)
@@ -22,6 +27,8 @@ enum HostConnectionError: Error, Equatable, Sendable, LocalizedError, CustomStri
     switch self {
     case .connectionLost:
       return "Host connection lost. An operation may have completed; refresh before retrying."
+    case .notDispatched:
+      return "Host service is busy; the request was not sent."
     case .staleGeneration:
       return "Host connection changed. Refresh repository data before retrying."
     case .mismatchedContext:

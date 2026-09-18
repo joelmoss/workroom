@@ -174,6 +174,65 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
     return env
   }
 
+  /// The complete environment a `git`/`jj` child gets, native or agent-routed.
+  ///
+  /// Extracted from `run` and made static so `AgentCommandRunner` can send the SAME map to
+  /// wr-agent, which `env_clear()`s and replaces its own environment with it. Before this existed
+  /// the agent forwarded a small allowlist (`PATH`, plus auth keys on a network command) and the
+  /// child inherited everything else from the DAEMON — a process "negotiated with, never replaced"
+  /// (`LocalAgentVCS`) whose environment is a snapshot of whichever app launch first spawned it.
+  /// That silently authored commits under a stale `GIT_AUTHOR_*`/`GIT_CONFIG_GLOBAL`/`HOME`, and no
+  /// allowlist could fix it: the set of variables git and jj read for identity, config, signing and
+  /// hooks is open-ended (`GIT_CONFIG_PARAMETERS`, `JJ_CONFIG`, `EMAIL`, `GNUPGHOME`, …). Sending
+  /// the whole environment is the only construction under which the two paths agree.
+  ///
+  /// Pure, so `StatusCommandRunnerEnvironmentTests` can assert native/agent parity without spawning.
+  static func childEnvironment(network: Bool) -> [String: String] {
+    var env = ProcessInfo.processInfo.environment
+    env["PATH"] = ShellEnvironment.path()
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    // Pin the message locale: EVERY consumer of this runner classifies failures by matching English
+    // substrings of git's stderr (`CLIVCSWriter.classify`, `WorkroomStatusResolver`), and git ships
+    // translated message catalogs. Homebrew git 2.55 under a French locale answers
+    // `erreur : le spécificateur de chemin …`, so without this a non-English user loses the ENTIRE
+    // failure taxonomy at once — auth, host-key, rejected-push, dirty-tree and leftover-lock all
+    // collapse to `.other(rawStderr)` with no recovery offered.
+    //
+    // `LC_ALL`, not `LC_MESSAGES`: this env is seeded from `ProcessInfo.environment`, so the user's own
+    // `LC_ALL` may be inherited, and it OUTRANKS `LC_MESSAGES` — setting the narrower variable is
+    // silently defeated (measured: `LC_ALL=fr_FR.UTF-8 LC_MESSAGES=C git …` still answers in French).
+    //
+    // Safe for paths despite forcing the C charset: git writes pathnames as raw bytes (and quotes
+    // non-ASCII per `core.quotePath` regardless of locale), so `LC_ALL=C` renders a `café-ünï.txt`
+    // byte-identically to the user's own locale — verified, not assumed. jj and gh are unaffected
+    // either way; neither localizes.
+    env["LC_ALL"] = "C"
+    // A workroom can be a clone of an *untrusted* repo, and the status sweep runs git automatically
+    // on load/focus/selection. `git diff` would otherwise run an inherited external-diff program;
+    // unset it so only the explicit `--no-ext-diff` flag (see WorkroomStatusResolver) governs diffs.
+    env.removeValue(forKey: "GIT_EXTERNAL_DIFF")
+    // Repository isolation: these OUTRANK the process's working directory, so an inherited
+    // `GIT_DIR`/`GIT_WORK_TREE` silently redirects a command aimed at one repository into another —
+    // a commit requested in workroom A landing in repo B, reported as success. Every caller here
+    // addresses a repository by `directory`, never by these, so inheriting them can only ever be
+    // wrong. A user who exports them in their shell (worktree tooling commonly does) would
+    // otherwise poison every command the app runs.
+    //
+    // Removed for the NATIVE path too, not just the agent's. wr-agent already stripped them; the
+    // app did not, so the two paths disagreed and the app was the unsafe one. `GIT_INDEX_FILE` is
+    // on the list deliberately: its one planned consumer is temp-index commits, which will pass it
+    // per-call rather than inherit it (see `StatusCommandRunning.run(stdin:)`'s doc).
+    for key in [
+      "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+      "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+      env.removeValue(forKey: key)
+    }
+    if network { env = Self.networkEnvironment(base: env, probed: ShellEnvironment.environment()) }
+    return env
+  }
+
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
   {
@@ -203,32 +262,7 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
     proc.arguments = [executable] + args
     proc.currentDirectoryURL = URL(fileURLWithPath: directory)
 
-    var env = ProcessInfo.processInfo.environment
-    env["PATH"] = ShellEnvironment.path()
-    env["GIT_OPTIONAL_LOCKS"] = "0"
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    // Pin the message locale: EVERY consumer of this runner classifies failures by matching English
-    // substrings of git's stderr (`CLIVCSWriter.classify`, `WorkroomStatusResolver`), and git ships
-    // translated message catalogs. Homebrew git 2.55 under a French locale answers
-    // `erreur : le spécificateur de chemin …`, so without this a non-English user loses the ENTIRE
-    // failure taxonomy at once — auth, host-key, rejected-push, dirty-tree and leftover-lock all
-    // collapse to `.other(rawStderr)` with no recovery offered.
-    //
-    // `LC_ALL`, not `LC_MESSAGES`: this env is seeded from `ProcessInfo.environment`, so the user's own
-    // `LC_ALL` may be inherited, and it OUTRANKS `LC_MESSAGES` — setting the narrower variable is
-    // silently defeated (measured: `LC_ALL=fr_FR.UTF-8 LC_MESSAGES=C git …` still answers in French).
-    //
-    // Safe for paths despite forcing the C charset: git writes pathnames as raw bytes (and quotes
-    // non-ASCII per `core.quotePath` regardless of locale), so `LC_ALL=C` renders a `café-ünï.txt`
-    // byte-identically to the user's own locale — verified, not assumed. jj and gh are unaffected
-    // either way; neither localizes.
-    env["LC_ALL"] = "C"
-    // A workroom can be a clone of an *untrusted* repo, and the status sweep runs git automatically
-    // on load/focus/selection. `git diff` would otherwise run an inherited external-diff program;
-    // unset it so only the explicit `--no-ext-diff` flag (see WorkroomStatusResolver) governs diffs.
-    env.removeValue(forKey: "GIT_EXTERNAL_DIFF")
-    if network { env = Self.networkEnvironment(base: env, probed: ShellEnvironment.environment()) }
-    proc.environment = env
+    proc.environment = Self.childEnvironment(network: network)
 
     let outPipe = Pipe()
     let errPipe = Pipe()
