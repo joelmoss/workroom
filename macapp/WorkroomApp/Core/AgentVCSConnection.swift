@@ -108,6 +108,19 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       // concurrent reader can observe a half-set value.
       connection.lock.withLock { connection._capabilities = capabilities }
       return connection
+    } catch HostConnectionError.connectionLost {
+      // Rethrown UNCHANGED, not wrapped. `LocalAgentVCS` catches exactly this case to spawn wr-agent
+      // and retry, and flattening it into `serviceUnavailable` routed a dropped handshake around
+      // that recovery entirely — leaving the VCS service dead until the app was restarted, over a
+      // stale socket, which is the common case rather than an exotic one (the daemon leaves
+      // `session.sock` behind on any `pkill`).
+      //
+      // Only this case. A `capabilities` reply that arrives and says the agent is incompatible, or a
+      // handshake that times out against a HUNG agent, are both still `serviceUnavailable`: a
+      // respawn cannot fix either, since the second candidate exits without binding while the first
+      // holds the single-instance flock.
+      await connection.close()
+      throw HostConnectionError.connectionLost
     } catch {
       await connection.close()
       throw HostConnectionError.serviceUnavailable("VCS negotiation failed: \(error)")

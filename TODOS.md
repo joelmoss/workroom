@@ -1171,11 +1171,13 @@ are fixed in `ed51faa9`; each entry below was reproduced or read off the code, n
    and writes onto separate pools or connections if it shows up in practice. Marked `ponytail:` in
    `AgentVCSConnection.request`.
 
-8. **A capabilities-negotiation disconnect never reaches the agent respawn.**
-   `AgentVCSConnection.connect` wraps every negotiation failure as
-   `serviceUnavailable("VCS negotiation failed: …")`, but `LocalAgentVCS` catches exactly
-   `connectionLost` to spawn wr-agent and retry. A connection that drops mid-`capabilities` therefore
-   fails without the stale-socket recovery. Predates this work.
+8. ~~**A capabilities-negotiation disconnect never reaches the agent respawn.**~~ **Fixed.**
+   `AgentVCSConnection.connect` flattened every negotiation failure into `serviceUnavailable`, but
+   `LocalAgentVCS` catches exactly `connectionLost` to spawn wr-agent and retry — so a dropped
+   handshake was routed around the stale-socket recovery and left the VCS service dead until the app
+   restarted. `connectionLost` is now rethrown unchanged; an incompatible reply or a hung agent stays
+   `serviceUnavailable`, since a respawn cannot fix either (the second candidate exits without
+   binding while the first holds the flock).
 
 9. **Seven test gaps, all with stubs available.** Nothing covers: the exec timeout clamp boundaries;
    the `version != 1` guard; `drain_capped`'s 4 MiB cap and its drain-past-cap property;
