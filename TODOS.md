@@ -1119,6 +1119,87 @@ deferred on its own merits.
 
 **Priority:** done.
 
+### Agent-routed VCS writes: the findings the `/review` pass didn't fix (macapp) — issue #205
+
+**What:** What the writes review (#205, PR pending) verified and left standing. The five P1s it found
+are fixed in `ed51faa9`; each entry below was reproduced or read off the code, none is speculative.
+
+1. **An outcome-unknown write still offers Retry.** `AgentCommandRunner.outcomeUnknown` stopped
+   claiming a cancelled or disconnected write "never ran", but it classifies as `.other`, and
+   `VCSSyncPresentation.retryAction` returns `lastAction` for `.other` — so the user is still one
+   click from re-running a push that may already have landed. The message is honest now; the button
+   is not. Closing it needs a new `VCSRemoteFailure`/`VCSCommitFailure` case (that switch is
+   exhaustive on purpose, so adding one is a compile-time-checked change) plus a `retryAction` arm
+   returning nil, and a matching tier in the presenter. User-visible taxonomy change, hence deferred
+   rather than folded into a review fix.
+
+2. **`child.wait()` after SIGKILL is unbounded.** `run_exec`'s timeout path ends
+   `break 'wait child.wait().map_err(io)?`. `kill(-pid, …)` only reaches the process group, so a
+   descendant that `setsid`s away (or a wrapper that re-parents) leaves that wait blocking. Codex
+   reproduced 4.1s on a 100ms timeout via `os.setpgid`. The drain bound means this no longer leaks an
+   `ACTIVE` permit, but the wait itself has no ceiling. Predates the agent-writes work.
+
+3. **The agent kills a process GROUP where native kills a process TREE.** `StatusCommandRunner`
+   escalates through `ProcessTree.killTree`, which walks real ppid lineage via `pgrep -P` — that file
+   explicitly rejected group-based kill because "helpers spawned by git/gh can outlive the parent".
+   `run_exec` has only `kill(-pid, …)`. Same gap as (2), and the two share a fix.
+
+4. **`writes: 8` is not a capability.** `AgentVCSConnection.writeMethodCount` counts methods on the
+   client-only `LocalVCSWriting` protocol; wr-agent implements ONE generic exec service and does
+   nothing the number could describe. Adding a ninth method — a Swift-only change the passthrough
+   already supports — silently drops every user to native writes on a fully capable agent, with no
+   log line. Gate on the exec service's presence/version instead. (`reads: 9` is fine; those are nine
+   real agent-side methods.)
+
+5. **Two caps that can't both be satisfied.** `MAX_EXEC_STREAM` is 4 MiB per stream, so two capped
+   streams JSON-escaped control-heavy can exceed `MAX_RESPONSE` (16 MiB); `send` then replaces the
+   whole reply with `PartialData`, discarding a completed command's exit status. Codex reproduced it
+   with 3 MiB of `0x01`. Native truncates and still classifies. Size the wire form for worst-case
+   expansion, or truncate while preserving status.
+
+6. **The 1 MiB request cap regresses large selective commits.** `StatusCommandRunning.run(stdin:)`
+   exists partly to sidestep `E2BIG`; routing through a single un-chunked envelope reintroduces a
+   ceiling, and a lower one (each NUL escapes to 6 bytes). "Select all and commit" in a large repo
+   fails through the agent where it succeeds natively. Needs real request chunking.
+
+7. **The 32-slot request pool is shared between reads and writes.** A write can hold a slot for
+   `commitTimeout` (600s) where only seconds-long reads used to compete. Exhaustion now degrades to
+   a typed `.notDispatched`, so it is no longer misreported, but the contention is real. Split reads
+   and writes onto separate pools or connections if it shows up in practice. Marked `ponytail:` in
+   `AgentVCSConnection.request`.
+
+8. **A capabilities-negotiation disconnect never reaches the agent respawn.**
+   `AgentVCSConnection.connect` wraps every negotiation failure as
+   `serviceUnavailable("VCS negotiation failed: …")`, but `LocalAgentVCS` catches exactly
+   `connectionLost` to spawn wr-agent and retry. A connection that drops mid-`capabilities` therefore
+   fails without the stale-socket recovery. Predates this work.
+
+9. **Seven test gaps, all with stubs available.** Nothing covers: the exec timeout clamp boundaries;
+   the `version != 1` guard; `drain_capped`'s 4 MiB cap and its drain-past-cap property;
+   `latin1_bytes`' rejection branch; a wrong-but-present `writes` count (only absent is tested);
+   `writer(context:reader:)`'s host-mismatch and closed-connection guards; and the write path's
+   transport-failure mapping. Items (2), (5) and the two fixed env/127 defects all lived in exactly
+   this untested region, which is the argument for closing it.
+
+**Also worth knowing, not a defect:** `serve::tests::instance_lock_is_exclusive` flaked once under the
+full parallel `cargo test -p wr-agent` run and passes in isolation and on re-run. Left alone; if it
+recurs, the exec tests' spawned processes are the likely interference.
+
+**Why:** These are the residue of a three-cycle review (critical pass + 6 specialists + two Claude
+adversarial passes + three Codex passes, one structured). Its P1s — a leaked concurrency permit that
+kills the VCS service, a completed push reported as never run, a cancelled write releasing the jj
+barrier, commits authored under a stale identity, and a missing tool reported as a deleted workroom —
+are fixed. Nothing left here is silent data loss; (1) is the closest, and it needs a UI decision.
+
+**How to start:** (1) is self-contained and the most user-visible. (2)+(3) are one change in
+`run_exec`. (4) is a two-line protocol simplification. (9) is mechanical and makes the rest safe to
+touch.
+
+**Depends on / blocked by:** nothing. All of it sits on the stacked branch (#201 → #202 → #204 →
+#205), so land the stack first.
+
+**Priority:** P2. (1) is the only one worth pulling forward.
+
 ### VCS toolbar: the findings the `/review` pass didn't fix (macapp)
 
 **What:** Everything the toolbar review verified but left standing. Each was reproduced or read off the

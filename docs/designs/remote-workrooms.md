@@ -17,10 +17,13 @@ Phase 2 preparation has landed: #184 added the VCS registry, #185 moved working 
 (#201, #202). Agent-backed VCS reads are implemented (#204, Next Steps item 2): exact patches and
 line counts both come from owning-host Git, not gix, so the spike's 139/150 count drift never
 ships. Agent-backed VCS writes are implemented (#205, Next Steps item 3): `wr-agent` gained a
-generic, allowlisted exec service, and every write's argv building, output parsing and failure
-classification stayed in `CLIVCSWriter` unmodified — only the `StatusCommandRunning` conformer that
-actually spawns `git`/`jj` changed, so agent-routed and native writes classify identically by
-construction. File and notification services remain unbuilt. All four PRs stay draft, stacked,
+generic exec service, and every write's argv building, output parsing and failure classification
+stayed in `CLIVCSWriter` unmodified — only the `StatusCommandRunning` conformer that actually spawns
+`git`/`jj` changed. Keeping one classifier proved necessary but not sufficient for parity: a review
+found it reaching opposite verdicts on the two paths because they fed it different input (stale
+environment, a different exit code for a missing tool, and transport failures reported as "never
+ran"). Parity is now three explicit properties rather than an architectural claim — see Next Steps
+item 3. File and notification services remain unbuilt. All four PRs stay draft, stacked,
 until the next stable release cuts from master.
 OQ1's gix measurements and OQ21's Swift driver decision are answered. The gix code remains a spike.
 Phases 3 and 4 — persistent remote transport, distribution, provisioning and UI — remain planned.
@@ -1987,8 +1990,25 @@ independently.
    `StatusCommandRunner`'s own SIGTERM-then-grace-then-SIGKILL shape. `CLIVCSWriter`'s existing arg
    building, output parsing and failure classification are untouched — only the
    `StatusCommandRunning` conformer it spawns through changed (`AgentCommandRunner`, forwarding to
-   the new exec service instead of `Process`), so agent-routed and native writes classify identically
-   by construction rather than by keeping two implementations in sync. The exec service deliberately
+   the new exec service instead of `Process`).
+
+   **One untouched classifier turned out to be necessary but not sufficient, and that is the main
+   thing this milestone learned.** The first draft argued that because `CLIVCSWriter` is untouched,
+   the two paths "classify identically by construction". A three-cycle review falsified it: the same
+   classifier reached OPPOSITE verdicts because the two paths fed it different input — which is
+   harder to catch than two classifiers, because nothing looks out of sync. Three defects came from
+   that one root, all reproduced: the child inherited the daemon's stale environment (commits
+   authored under the wrong identity), a missing tool failed to spawn instead of exiting 127 via
+   `/usr/bin/env` (a missing `git` reported as a deleted workroom), and every transport failure
+   became `launchFailed`, "the command never ran" (a push that completed host-side reported as never
+   started, inviting a retry that double-applies it). Parity needed three explicit properties, not an
+   architectural claim: the same child environment, the same exit-code semantics for a missing tool,
+   and an error partition that distinguishes "never ran" from "outcome unknown". Issue #205's
+   criterion 2 ("typed failures and Retry/Abort behavior match pre-agent behavior exactly") is met
+   with one recorded exception — an outcome-unknown result classifies as `.other` and is still
+   offered a Retry; suppressing that needs a new `VCSRemoteFailure` case, tracked in `TODOS.md`.
+
+   The exec service deliberately
    never takes the JJ snapshot barrier itself: `CLIVCSWriter`'s `JJSnapshotGate` already holds
    `<shared>/.jj/workroom-vcs.lock` for the whole gated write before any exec request goes out, and
    wr-agent's own `SnapshotLock` locks the identical file for its read-side snapshots — acquiring it
@@ -2032,6 +2052,22 @@ independently.
      busy/idle decision. Measure idle TUIs, background jobs, detached servers and agents waiting on
      network responses. Define hysteresis, explicit activity handling and the awake-ceiling policy
      before declaring the wakefulness service ready. OQ19 remains open until those results exist.
+
+   **Two Phase 3 questions this milestone opened rather than answered**, both consequences of the
+   exec service being the thing Phase 3 moves host-side. *Auth resolution*: the child environment is
+   resolved entirely client-side, and every value in it is a path into the client's filesystem —
+   `SSH_AUTH_SOCK` a socket in the client's namespace, `GIT_SSH_COMMAND` a command line valid on the
+   client's disk. Over a remote transport those are either dangling (a push failing in a way
+   `CLIVCSWriter.classify` will misattribute) or, if the transport forwards the agent socket to make
+   them meaningful, they hand the user's SSH agent to the remote host for the connection's lifetime.
+   Decide per transport: host-resolved credentials, explicitly consented agent forwarding, or
+   neither. Note also that the fail-fast ssh invariant (`-o BatchMode=yes`, `SSH_ASKPASS_REQUIRE`) is
+   appended client-side today, so the agent has no guarantee any request carries it — a remote agent
+   should enforce it itself. *Peer authentication*: the `git`/`jj` executable enum is not a
+   containment boundary, so a transport carrying exec must authenticate its peer to SHELL grade, not
+   repository grade. There is currently no code guard — `childEnvironment` takes no host parameter
+   and `AgentCommandRunner` is constructible for any `HostID` — so the first remote wiring will
+   silently ship a Mac `HOME`/`PATH`/`SSH_AUTH_SOCK` across the wire unless one is added.
 
 4. **Phase 3: publish Linux agents and prove persistent remote transport.** Establish Linux
    artifacts and the bootstrap/version-compatibility policy, then use the container driver to
