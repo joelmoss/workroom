@@ -19,13 +19,37 @@ use std::time::{Duration, Instant};
 use wr_vcs_model::{self as model, VcsError};
 
 const MAX_RESPONSE: usize = 16 * 1024 * 1024;
+/// The reassembled ceiling for a CHUNKED request, mirroring `MAX_RESPONSE` on the reply side. A
+/// single-envelope request is still bounded by `MAX_ENVELOPE_PAYLOAD` (1 MiB) as before.
+const MAX_REQUEST: usize = 16 * 1024 * 1024;
+/// First byte of a chunked request envelope. A whole request is JSON and therefore always starts
+/// `{`, so this is unambiguous — and it is what keeps an UNCHUNKED request byte-identical to what
+/// the previous protocol sent, rather than adding a header to every request to serve the rare one.
+const REQUEST_CHUNK_MARKER: u8 = 0x02;
+/// Every byte buffered across ALL partial requests. Per-stream caps alone would still allow
+/// 32 × `MAX_REQUEST` = 512 MiB of peer-controlled memory in this process, which is not a bound
+/// worth having on a background daemon.
+const MAX_PARTIAL_TOTAL: usize = 32 * 1024 * 1024;
+
+/// In-progress chunked requests, keyed by stream.
+///
+/// `None` buffer ⇒ POISONED: the request was already refused (too large, too many streams) and its
+/// remaining chunks must be swallowed rather than starting a fresh buffer. Without that, the tail of
+/// a rejected request would be reassembled as a new one, fail to parse, and produce a SECOND reply
+/// on a stream the client has already completed — and an unknown stream id is a protocol violation
+/// that tears down every other in-flight request on the connection.
+///
+/// A client that vanishes mid-request leaves its buffer behind. Bounded by the caps here and by the
+/// agent's own lifetime, so it is accepted rather than given a connection-teardown hook that `vcs`
+/// does not currently have.
+static PARTIAL: Mutex<Option<std::collections::HashMap<u32, Option<Vec<u8>>>>> = Mutex::new(None);
 const MAX_HISTORY_LIMIT: usize = 10000;
 /// `CLIVCSWriter.commitTimeout` (Swift) is 600s, the longest legitimate write timeout. Bounds a
 /// hostile/buggy request from wedging an exec thread indefinitely; the 32-slot `ACTIVE` permit
 /// already bounds concurrency, this bounds duration.
 /// The exec service's wire version, reported in `capabilities` so a client can tell a capable agent
 /// from one that predates the service. A version, not a count — see the `capabilities` reply.
-const EXEC_SERVICE_VERSION: u32 = 1;
+const EXEC_SERVICE_VERSION: u32 = 2;
 const MAX_EXEC_TIMEOUT_MS: u64 = 610_000;
 /// The ceiling must stay above `CLIVCSWriter.commitTimeout` (600s), or the transport would cut a
 /// legitimate commit short — one with a slow `pre-commit` hook — before its own limit applied, and
@@ -41,7 +65,17 @@ static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 /// process exit while this is nonzero would abort a repo-level transaction mid-flight, not just
 /// drop a socket.
 pub fn is_busy() -> bool {
-    ACTIVE.load(Ordering::Acquire) > 0
+    if ACTIVE.load(Ordering::Acquire) > 0 {
+        return true;
+    }
+    // A request arriving in chunks holds no `ACTIVE` permit until its last one lands — deliberately,
+    // so a slow upload cannot occupy one of the 32 slots. But that left a window where a client
+    // three chunks into a five-chunk commit looked idle, and the daemon's idle-exit would drop the
+    // connection under it. In flight is in flight, whichever half of the round trip it is in.
+    PARTIAL
+        .lock()
+        .map(|guard| guard.as_ref().is_some_and(|map| !map.is_empty()))
+        .unwrap_or(false)
 }
 
 #[derive(Deserialize)]
@@ -862,10 +896,91 @@ fn send(writer: &SharedWriter, stream: u32, value: Value) {
     }
 }
 
+/// Take the complete request bytes for this envelope, or `None` when more chunks are still coming.
+///
+/// `Err` is a request that broke the framing contract and gets a typed reply rather than silence.
+fn reassemble(envelope: &Envelope) -> Result<Option<Vec<u8>>, VcsError> {
+    let payload = &envelope.payload;
+    if payload.first() != Some(&REQUEST_CHUNK_MARKER) {
+        // The overwhelmingly common case: one envelope, one request, no copy and no bookkeeping.
+        return Ok(Some(payload.clone()));
+    }
+    let Some(&is_final) = payload.get(1) else {
+        return Err(VcsError::PartialData("truncated request chunk".into()));
+    };
+    let mut guard = PARTIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let partials = guard.get_or_insert_with(std::collections::HashMap::new);
+
+    // Already refused: swallow the rest in silence and clear on the last chunk. Replying again would
+    // put a second reply on a stream the client has finished with.
+    if let Some(None) = partials.get(&envelope.stream) {
+        if is_final != 0 {
+            partials.remove(&envelope.stream);
+        }
+        return Ok(None);
+    }
+
+    let refuse = |partials: &mut std::collections::HashMap<u32, Option<Vec<u8>>>, error| {
+        // Poison unless this WAS the last chunk, in which case there is nothing left to swallow.
+        if is_final == 0 {
+            partials.insert(envelope.stream, None);
+        } else {
+            partials.remove(&envelope.stream);
+        }
+        Err(error)
+    };
+
+    let incoming = payload.len() - 2;
+    let buffered: usize = partials
+        .values()
+        .map(|buffer| buffer.as_ref().map_or(0, Vec::len))
+        .sum();
+    if buffered + incoming > MAX_PARTIAL_TOTAL {
+        return refuse(
+            partials,
+            VcsError::PartialData("too many large VCS requests in flight".into()),
+        );
+    }
+    // Checked before inserting a NEW stream, so a client cannot open unbounded partial requests.
+    if !partials.contains_key(&envelope.stream) && partials.len() >= 32 {
+        return refuse(partials, VcsError::LockContention);
+    }
+    let buffer = partials
+        .entry(envelope.stream)
+        .or_insert_with(|| Some(Vec::new()))
+        .get_or_insert_with(Vec::new);
+    if buffer.len() + incoming > MAX_REQUEST {
+        return refuse(
+            partials,
+            VcsError::PartialData("VCS request exceeds 16 MiB".into()),
+        );
+    }
+    buffer.extend_from_slice(&payload[2..]);
+    if is_final == 0 {
+        return Ok(None);
+    }
+    Ok(partials.remove(&envelope.stream).flatten())
+}
+
 pub fn dispatch(envelope: &Envelope, writer: &SharedWriter) {
     if envelope.stream == 0 {
         return;
     }
+    // Before the permit: a non-final chunk does no work and must not hold one of the 32 slots for
+    // however long the rest of the request takes to arrive. The permit is taken when the request is
+    // COMPLETE, which is when it starts costing something.
+    let bytes = match reassemble(envelope) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return,
+        Err(error) => {
+            send(
+                writer,
+                envelope.stream,
+                json!({"version": 1, "error": error}),
+            );
+            return;
+        }
+    };
     if ACTIVE
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
             (count < 32).then_some(count + 1)
@@ -880,7 +995,6 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter) {
         return;
     }
     let writer = Arc::clone(writer);
-    let bytes = envelope.payload.clone();
     let stream = envelope.stream;
     std::thread::spawn(move || {
         struct Permit;
@@ -1548,5 +1662,105 @@ mod tests {
         // A multi-byte character is kept whole or dropped whole — a split would panic on the slice.
         assert_eq!(truncate_to_escaped_budget("é", 1), "");
         assert_eq!(truncate_to_escaped_budget("aé", 2), "a");
+    }
+
+    fn chunk(stream: u32, body: &[u8], is_final: bool) -> Envelope {
+        let mut payload = vec![REQUEST_CHUNK_MARKER, u8::from(is_final)];
+        payload.extend_from_slice(body);
+        Envelope::new(Service::Vcs, stream, payload)
+    }
+
+    /// `PARTIAL` is process-global and these tests assert on its emptiness (via `is_busy`), so they
+    /// serialize against each other. Without this they pass alone and fail in the parallel run —
+    /// measured, and exactly the shape of flake that gets blamed on the code under test.
+    static PARTIAL_TESTS: Mutex<()> = Mutex::new(());
+
+    /// Take the serialization lock and start from an empty map. The guard is returned so it is held
+    /// for the caller's whole test.
+    fn partial_count() -> usize {
+        PARTIAL
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map_or(0, |map| map.len())
+    }
+
+    fn partial_test() -> std::sync::MutexGuard<'static, ()> {
+        let guard = PARTIAL_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        PARTIAL.lock().unwrap_or_else(|e| e.into_inner()).take();
+        guard
+    }
+
+    /// A request split across envelopes must reassemble to exactly the bytes that were sent, and a
+    /// single-envelope request must still be handled byte-identically — the chunk marker exists so
+    /// the common path pays nothing.
+    #[test]
+    fn a_chunked_request_reassembles_and_an_unchunked_one_is_untouched() {
+        let _serialized = partial_test();
+        let whole = br#"{"version":1,"method":"capabilities"}"#.to_vec();
+
+        // Unchunked: returned as-is, nothing buffered.
+        let got = reassemble(&Envelope::new(Service::Vcs, 7, whole.clone())).unwrap();
+        assert_eq!(got, Some(whole.clone()));
+        assert_eq!(partial_count(), 0, "an unchunked request left state behind");
+
+        // Chunked: nothing until the final chunk, then the exact original.
+        assert_eq!(reassemble(&chunk(9, &whole[..10], false)).unwrap(), None);
+        assert_eq!(reassemble(&chunk(9, &whole[10..20], false)).unwrap(), None);
+        // In flight between chunks — the daemon must not idle-exit under a half-sent request.
+        // `is_busy` is an OR with the dispatch count, so asserting it TRUE here is race-free even
+        // while other tests run; asserting it false would not be, hence `partial_count` for that.
+        assert!(is_busy(), "a partial request did not count as in flight");
+        assert_eq!(
+            reassemble(&chunk(9, &whole[20..], true)).unwrap(),
+            Some(whole)
+        );
+        assert_eq!(partial_count(), 0, "the buffer outlived its request");
+    }
+
+    /// Two streams interleaved, because that is what a busy connection actually does — the buffers
+    /// are keyed by stream and must not bleed into one another.
+    #[test]
+    fn interleaved_chunked_requests_do_not_mix() {
+        let _serialized = partial_test();
+        assert_eq!(reassemble(&chunk(1, b"AAA", false)).unwrap(), None);
+        assert_eq!(reassemble(&chunk(2, b"BBB", false)).unwrap(), None);
+        assert_eq!(
+            reassemble(&chunk(1, b"aaa", true)).unwrap(),
+            Some(b"AAAaaa".to_vec())
+        );
+        assert_eq!(
+            reassemble(&chunk(2, b"bbb", true)).unwrap(),
+            Some(b"BBBbbb".to_vec())
+        );
+        assert_eq!(partial_count(), 0);
+    }
+
+    /// The hazard the poisoning exists for: a refused request keeps arriving, and reassembling its
+    /// tail as a fresh request would produce a SECOND reply on a stream the client has already
+    /// completed — which the client treats as an unknown stream id, a protocol violation that tears
+    /// down every other in-flight request on that connection.
+    #[test]
+    fn a_refused_chunked_request_swallows_its_remaining_chunks() {
+        let _serialized = partial_test();
+        // Fill past the total cap in one chunk, on a request that is NOT final.
+        let huge = vec![b'x'; MAX_PARTIAL_TOTAL + 1];
+        assert!(
+            reassemble(&chunk(4, &huge, false)).is_err(),
+            "the cap did not hold"
+        );
+        // Every later chunk is silent — no value to execute, and crucially no second error.
+        assert_eq!(reassemble(&chunk(4, b"more", false)).unwrap(), None);
+        assert_eq!(reassemble(&chunk(4, b"last", true)).unwrap(), None);
+        // And the poison is cleared by that final chunk rather than leaking.
+        assert_eq!(partial_count(), 0, "the poisoned stream was never cleared");
+    }
+
+    /// A chunk with no continuation byte at all is malformed, not an empty request.
+    #[test]
+    fn a_truncated_chunk_header_is_refused() {
+        let _serialized = partial_test();
+        let envelope = Envelope::new(Service::Vcs, 5, vec![REQUEST_CHUNK_MARKER]);
+        assert!(reassemble(&envelope).is_err());
     }
 }

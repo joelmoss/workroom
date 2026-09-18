@@ -1164,10 +1164,16 @@ are fixed in `ed51faa9`; each entry below was reproduced or read off the code, n
    and stdout takes the slack, which is nearly all of it in practice. Head-truncated and silent,
    matching `drain_capped` and native's `readCapped`.
 
-6. **The 1 MiB request cap regresses large selective commits.** `StatusCommandRunning.run(stdin:)`
-   exists partly to sidestep `E2BIG`; routing through a single un-chunked envelope reintroduces a
-   ceiling, and a lower one (each NUL escapes to 6 bytes). "Select all and commit" in a large repo
-   fails through the agent where it succeeds natively. Needs real request chunking.
+6. ~~**The 1 MiB request cap regresses large selective commits.**~~ **Fixed.** Requests now chunk
+   across envelopes on one stream, mirroring how replies always have. Framed with a marker byte
+   (`0x02`) rather than a header on every request, so an UNCHUNKED request stays byte-identical and
+   the common path pays nothing; gated on the agent's `exec >= 2`, since a pre-chunking agent would
+   read the marker as the start of a JSON document. Reassembly is bounded per stream (16 MiB), in
+   total (32 MiB) and by stream count (32), and a refused request POISONS its stream so its
+   remaining chunks are swallowed — without that, the tail would reassemble as a fresh request and
+   put a second reply on a completed stream, which the client treats as a protocol violation that
+   tears down every other request on the connection. `is_busy()` counts partial requests too, or the
+   daemon could idle-exit under a half-sent one.
 
 7. **The 32-slot request pool is shared between reads and writes.** A write can hold a slot for
    `commitTimeout` (600s) where only seconds-long reads used to compete. Exhaustion now degrades to

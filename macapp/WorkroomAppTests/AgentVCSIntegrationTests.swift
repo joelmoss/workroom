@@ -851,4 +851,51 @@ final class AgentVCSIntegrationTests: XCTestCase {
         "a dropped handshake must stay recoverable, got \(error)")
     }
   }
+
+  /// The regression this closes: `StatusCommandRunning.run(stdin:)` exists partly to sidestep
+  /// `E2BIG`, and routing through a single un-chunked envelope reintroduced a ceiling — a LOWER one,
+  /// since every NUL in the pathspec escapes to six bytes on the wire. "Select all and commit" in a
+  /// large repository therefore worked natively and failed through the agent.
+  ///
+  /// Drives a real commit whose pathspec payload exceeds one envelope, through the real client and
+  /// the bundled agent, and asserts the commit actually recorded every file.
+  func testACommitWhosePathspecExceedsOneEnvelopeStillCommits() async throws {
+    let root = try gitRepo()
+    // Long names so the payload clears 1 MiB well before the file count gets slow to create.
+    let padding = String(repeating: "p", count: 180)
+    var files: [ChangedFile] = []
+    for index in 0..<6000 {
+      let name = "\(padding)-\(index).txt"
+      try "x\n".write(
+        to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
+      // `.untracked`, not `.added`: that is what a new file on disk reports, and it is what routes
+      // this through the intent-to-add step — whose payload is the SECOND oversized request this
+      // exercises, since it carries the same paths.
+      files.append(ChangedFile(path: name, change: .untracked, oldPath: nil))
+    }
+    // The payload `CLIVCSWriter` will send, measured the way the wire measures it.
+    let payloadBytes = files.map(\.path).joined(separator: "\0").utf8.count
+    XCTAssertGreaterThan(
+      payloadBytes, 1 << 20,
+      "the fixture no longer exceeds one envelope, so this proves nothing")
+
+    let connection = try await connect()
+    let location = try await RepositoryLocation.local(root.path)
+    let router = RepositoryRouter(
+      localReader: { try connection.reader(context: $0) },
+      localWriter: { try connection.writer(context: $0, reader: connection.reader(context: $0)) })
+    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+
+    let result = await (try await router.writer(for: location)).commit(
+      request: VCSCommitRequest(message: "chunked commit", files: files, mode: .commit))
+    guard case .ok = result else { return XCTFail("chunked commit failed: \(result)") }
+
+    // Recorded, and recorded IN FULL: a truncated payload would commit a prefix and still report ok.
+    let subject = try run("git", ["log", "-1", "--format=%s"], at: root)
+    XCTAssertEqual(subject.trimmingCharacters(in: .whitespacesAndNewlines), "chunked commit")
+    let counted = try run("git", ["show", "--name-only", "--format=", "HEAD"], at: root)
+      .split(whereSeparator: \.isNewline).count
+    XCTAssertEqual(counted, files.count, "the commit recorded a truncated pathspec")
+    await connection.close()
+  }
 }
