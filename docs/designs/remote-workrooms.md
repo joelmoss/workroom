@@ -748,9 +748,16 @@ exists, but run both.
   a wait does not complete native work or release its place in the ordering chain.
 - GitHub CI/PR operations remain local. Remote requests are rejected before local commands,
   repository-context cache lookups, or optimistic PR updates. Remote support is deferred.
-- An app-wide manager will own service connections per host, shared across windows. Reconnection
-  changes a generation, fails pending operations, rejects stale responses, and refreshes mutable
-  state and subscriptions. Never automatically replay writes after connection loss.
+- `HostConnectionManager.shared` owns service connections per host across windows. Explicit
+  connection attempts change a generation, fail pending operations, close superseded connections,
+  and reject stale responses. Bound services retain their generation and never follow a reconnect
+  automatically. Never automatically replay writes after connection loss: a failed wait does not
+  establish whether the host applied the write.
+- The manager publishes the latest connection snapshot to each subscriber, including its generation.
+  Consumers must reacquire services, refresh mutable state, and recreate transport subscriptions on
+  a new connected generation. Snapshot buffering preserves the latest generation even for a slow
+  window. Live transport/subscription consumers arrive with agent-backed services; this slice tests
+  the lifecycle through injected connections and does not open a remote connection in production.
 - Preserve the existing terminal relays and attach-only compatibility shim; this foundation changes
   no session ownership or persisted project, workroom, sidebar, or terminal identifiers.
 - When gix lands, line counts must match Git exactly. Obtain exact statistics through Git on the
@@ -1919,11 +1926,14 @@ disagreement passes every test on either side alone while presenting as an empty
 and the host-aware Phase 2 routing foundation is implemented. The remaining work is split into the
 service milestones below so each layer can be reviewed and landed independently.
 
-1. **Connect the host-aware foundation to host-owned service connections.** Repository identities,
-   captured routing and shared coordination are defined above. The next layer is an app-wide
-   connection manager, with a generation per connection and explicit disconnect failures. Test
-   reconnecting one of two hosts with the same repository path without invalidating the other.
-   Pending writes must fail and must never be automatically replayed.
+1. **Host-owned connection lifecycle implemented on the stacked branch.** The app-wide manager
+   binds remote repository services to a connection generation, fails pending calls on disconnect,
+   and closes late connections from superseded or cancelled handshakes. Same-path hosts remain
+   independent; multiple routers share one manager. Reconnect snapshots signal consumers to refresh.
+   Pending writes fail without replay, even when the old operation ignores cancellation and finishes
+   later. `HostServiceConnection` is the injectable seam for the next milestone's negotiated transport.
+   Local VCS engines and terminal relays continue using their existing paths. No production connector,
+   remote descriptor persistence, provisioning, or remote UI is included in this layer.
 
    Exact Git line counts are required. The spike matched file lists in 150/150 cases but counts in
    139/150; its approximate counts are not acceptable for shipping. Obtain counts through Git on
