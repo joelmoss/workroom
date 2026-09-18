@@ -2004,9 +2004,18 @@ independently.
    started, inviting a retry that double-applies it). Parity needed three explicit properties, not an
    architectural claim: the same child environment, the same exit-code semantics for a missing tool,
    and an error partition that distinguishes "never ran" from "outcome unknown". Issue #205's
-   criterion 2 ("typed failures and Retry/Abort behavior match pre-agent behavior exactly") is met
-   with one recorded exception — an outcome-unknown result classifies as `.other` and is still
-   offered a Retry; suppressing that needs a new `VCSRemoteFailure` case, tracked in `TODOS.md`.
+   criterion 2 ("typed failures and Retry/Abort behavior match pre-agent behavior exactly") is met.
+
+   That third partition is a value the native path never needed and could never produce: a `Process`
+   either runs or fails to launch, and either way the answer arrives. Only a round trip can be
+   dispatched and then go unanswered, so `CommandResult.outcomeUnknown` and the matching
+   `VCSRemoteFailure`/`VCSCommitFailure` cases are the one place the agent path legitimately has a
+   state native does not. Its whole purpose is the recovery: `retryAction` answers `.fetch` rather
+   than the action that failed, because re-running a push that may have landed is the one thing this
+   state must not offer, and a fetch is both idempotent and the thing that resolves the doubt. For a
+   commit the doubt is usually resolved before the user sees it — `commit()` compares the revision
+   before and after, so a moved ref reports `.committedThenFailed` — and the failure case is reached
+   only when the repository could not be re-read either.
 
    The exec service deliberately
    never takes the JJ snapshot barrier itself: `CLIVCSWriter`'s `JJSnapshotGate` already holds
