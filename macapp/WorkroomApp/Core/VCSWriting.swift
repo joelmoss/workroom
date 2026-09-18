@@ -314,7 +314,8 @@ extension LocalVCSWriting {
 
   /// Default: nothing to report, so the dialog opens with empty fields.
   ///
-  /// Non-throwing, unlike `LocalVCSProviding.workingStatus`'s default, and the difference is deliberate.
+  /// This default never throws, unlike `LocalVCSProviding.workingStatus`'s default, and the
+  /// difference is deliberate.
   /// A wrong `workingStatus` default reports every workroom clean — a plausible-looking lie that
   /// survives a release. Every field here is optional and the dialog renders each one's absence
   /// honestly: no amend label, no parked-operation notice, an empty message box. A conformer that

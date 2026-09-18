@@ -29,7 +29,7 @@ if ! command -v rustup >/dev/null 2>&1; then
   CROSS=0
 else
   for t in aarch64-apple-darwin x86_64-apple-darwin; do
-    rustup target list --installed --toolchain stable 2>/dev/null | grep -qx "$t" || CROSS=0
+    rustup target list --installed --toolchain "${WR_AGENT_RUST_TOOLCHAIN:-stable}" 2>/dev/null | grep -qx "$t" || CROSS=0
   done
 fi
 
@@ -40,7 +40,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/build-agent_test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 # The real crate, but a throwaway CARGO_TARGET_DIR so the test neither pollutes nor is polluted by
-# the developer's build tree. wr-agent has one tiny dependency, so this stays quick.
+# the developer's build tree. The agent includes the VCS backends, so this is a full Cargo build.
 REPO="$(cd "$DIR/../.." && pwd)"
 export CARGO_TARGET_DIR="$WORK/cargo-target"
 

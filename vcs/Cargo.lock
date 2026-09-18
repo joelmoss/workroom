@@ -2867,7 +2867,12 @@ version = "0.1.0"
 dependencies = [
  "bindgen",
  "libc",
+ "serde",
+ "serde_json",
  "thiserror",
+ "wr-vcs-core",
+ "wr-vcs-git",
+ "wr-vcs-model",
 ]
 
 [[package]]
@@ -2893,6 +2898,7 @@ name = "wr-vcs-git"
 version = "0.1.0"
 dependencies = [
  "gix",
+ "libc",
  "serde",
  "serde_json",
  "wr-vcs-model",
