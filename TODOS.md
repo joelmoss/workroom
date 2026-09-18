@@ -1155,11 +1155,14 @@ are fixed in `ed51faa9`; each entry below was reproduced or read off the code, n
    the request itself, which is the only place that can know). (`reads: 9` is fine and stays; those
    are nine real agent-side methods.)
 
-5. **Two caps that can't both be satisfied.** `MAX_EXEC_STREAM` is 4 MiB per stream, so two capped
-   streams JSON-escaped control-heavy can exceed `MAX_RESPONSE` (16 MiB); `send` then replaces the
-   whole reply with `PartialData`, discarding a completed command's exit status. Codex reproduced it
-   with 3 MiB of `0x01`. Native truncates and still classifies. Size the wire form for worst-case
-   expansion, or truncate while preserving status.
+5. ~~**Two caps that can't both be satisfied.**~~ **Fixed.** `MAX_EXEC_STREAM` (4 MiB/stream) against
+   `MAX_RESPONSE` (16 MiB), with a control byte escaping to six — so `send` replaced the whole reply
+   with `PartialData` and discarded a completed command's exit status, reporting a known outcome as
+   an unknown one. Now truncated in `exec` itself, by MEASURED escaped length rather than by lowering
+   the stream cap (which would have dropped ordinary output to ~1.3 MiB to survive a worst case that
+   almost never occurs). stderr gets first call on the budget — it is what `classify` matches on —
+   and stdout takes the slack, which is nearly all of it in practice. Head-truncated and silent,
+   matching `drain_capped` and native's `readCapped`.
 
 6. **The 1 MiB request cap regresses large selective commits.** `StatusCommandRunning.run(stdin:)`
    exists partly to sidestep `E2BIG`; routing through a single un-chunked envelope reintroduces a

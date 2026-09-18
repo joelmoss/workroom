@@ -599,6 +599,49 @@ fn run_exec(
     })
 }
 
+/// Headroom left for everything in an exec reply that is not the two captured streams: the keys,
+/// the exit code, the two booleans, the envelope framing, and JSON's own punctuation. Generous on
+/// purpose — the cost of over-reserving is a few KiB of output, the cost of under-reserving is the
+/// whole reply being replaced by an error.
+const EXEC_REPLY_RESERVE: usize = 64 * 1024;
+
+/// How many bytes this text costs once JSON-escaped, which is what `MAX_RESPONSE` actually bounds.
+///
+/// The expansion is why the two caps could not both be satisfied: a control byte serializes as
+/// `\u0001`, six bytes for one, so two streams at `MAX_EXEC_STREAM` (4 MiB each) reach 48 MiB of
+/// wire form against a 16 MiB ceiling. Codex reproduced it with 3 MiB of `0x01`.
+fn escaped_len(text: &str) -> usize {
+    text.chars()
+        .map(|c| match c {
+            '"' | '\\' | '\n' | '\r' | '\t' => 2,
+            c if (c as u32) < 0x20 => 6,
+            c => c.len_utf8(),
+        })
+        .sum()
+}
+
+/// The longest prefix of `text` whose escaped form fits `budget`, cut on a character boundary.
+///
+/// Head rather than tail, matching `drain_capped` and native's `StatusCommandRunner.readCapped`:
+/// git and jj put the line that classifies a failure first, and a tail-truncated stderr would lose
+/// it. Silent, also matching those two — the markers `CLIVCSWriter.classify` matches live in this
+/// text, so injecting a "truncated" notice here could only create a false positive.
+fn truncate_to_escaped_budget(text: &str, budget: usize) -> &str {
+    let mut used = 0;
+    for (index, c) in text.char_indices() {
+        let cost = match c {
+            '"' | '\\' | '\n' | '\r' | '\t' => 2,
+            c if (c as u32) < 0x20 => 6,
+            c => c.len_utf8(),
+        };
+        if used + cost > budget {
+            return &text[..index];
+        }
+        used += cost;
+    }
+    text
+}
+
 /// The exact inverse of `AgentCommandRunner.swift`'s `String(data:encoding:.isoLatin1)` — see
 /// `ExecRequest.stdin`'s doc. Every `char` a Latin-1-decoded string can contain is U+0000-U+00FF
 /// by construction; a value outside that range means the client sent something else, so this
@@ -637,9 +680,29 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
         stdin.as_deref(),
         &env,
     )?;
+    let stdout = String::from_utf8_lossy(&captured.stdout);
+    let stderr = String::from_utf8_lossy(&captured.stderr);
+    // Truncate HERE rather than letting `send` refuse the reply. `send`'s blanket
+    // `PartialData` replacement is right for a read — half a history is not a history — but for an
+    // exec it threw away the exit status of a command that ran to completion, reporting a known
+    // outcome as an unknown one. Native truncates the output and still classifies; so does this.
+    //
+    // stderr gets first call on the budget: it is what `CLIVCSWriter.classify` matches on, so losing
+    // it turns a diagnosable failure into `.other` with git's own words missing. stdout takes the
+    // slack, which in practice is nearly all of it — stderr is tiny on every ordinary command.
+    let budget = MAX_RESPONSE - EXEC_REPLY_RESERVE;
+    let (stdout, stderr) = if escaped_len(&stdout) + escaped_len(&stderr) > budget {
+        let err_budget = escaped_len(&stderr).min(budget / 2);
+        (
+            truncate_to_escaped_budget(&stdout, budget - err_budget),
+            truncate_to_escaped_budget(&stderr, err_budget),
+        )
+    } else {
+        (stdout.as_ref(), stderr.as_ref())
+    };
     Ok(json!({
-        "stdout": String::from_utf8_lossy(&captured.stdout),
-        "stderr": String::from_utf8_lossy(&captured.stderr),
+        "stdout": stdout,
+        "stderr": stderr,
         "exit_code": captured.exit_code,
         "timed_out": captured.timed_out,
         "signaled": captured.signaled,
@@ -1398,5 +1461,92 @@ mod tests {
         assert!(descendants(i32::MAX).is_empty());
         // Killing an empty set is a no-op, not a signal to the current process group.
         kill_recorded(&[]);
+    }
+
+    /// The two caps could not both be satisfied: `MAX_EXEC_STREAM` allows 4 MiB per stream, and a
+    /// control byte JSON-escapes to six, so two full streams reach 48 MiB against `MAX_RESPONSE`'s
+    /// 16 MiB ceiling. `send` then replaced the WHOLE reply with `PartialData` — discarding the exit
+    /// status of a command that ran to completion and reporting a known outcome as an unknown one.
+    ///
+    /// Codex's repro, 3 MiB of `0x01`.
+    #[test]
+    fn a_huge_control_heavy_reply_keeps_its_exit_status() {
+        let root = git_repo("huge-output");
+        // 3 MiB of 0x01 on stdout, then a non-zero exit — the two facts that must both survive.
+        let program = "import sys; sys.stdout.write('\\x01' * (3 * 1024 * 1024)); sys.exit(3)";
+        // `run_exec` directly rather than `execute`: the executable allowlist is git/jj only, and
+        // neither will emit 3 MiB of control bytes on demand. The reply's wire size is then asserted
+        // against the same budget `exec` applies, which is the contract under test.
+        let captured = run_exec(
+            &root,
+            "python3",
+            &["-c".into(), program.into()],
+            Duration::from_secs(30),
+            None,
+            &[("PATH", "/usr/bin:/bin")],
+        )
+        .unwrap();
+        assert_eq!(captured.exit_code, 3, "the child's own exit code was lost");
+        assert_eq!(captured.stdout.len(), 3 * 1024 * 1024);
+
+        // The reply `exec` would build for that capture must fit the wire ceiling, so `send` never
+        // reaches its blanket replacement.
+        let stdout = String::from_utf8_lossy(&captured.stdout);
+        let stderr = String::from_utf8_lossy(&captured.stderr);
+        let budget = MAX_RESPONSE - EXEC_REPLY_RESERVE;
+        assert!(
+            escaped_len(&stdout) > budget,
+            "the fixture no longer exceeds the budget, so this proves nothing"
+        );
+        let err_budget = escaped_len(&stderr).min(budget / 2);
+        let kept = truncate_to_escaped_budget(&stdout, budget - err_budget);
+        let reply = json!({
+            "version": 1,
+            "result": {
+                "stdout": kept,
+                "stderr": truncate_to_escaped_budget(&stderr, err_budget),
+                "exit_code": captured.exit_code,
+                "timed_out": captured.timed_out,
+                "signaled": captured.signaled,
+            }
+        });
+        let wire = serde_json::to_vec(&reply).unwrap();
+        assert!(
+            wire.len() <= MAX_RESPONSE,
+            "reply is {} bytes, over the {MAX_RESPONSE} ceiling",
+            wire.len()
+        );
+        // Truncated, not emptied: the user still gets everything that fits.
+        assert!(!kept.is_empty(), "truncation threw the whole stream away");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The budget accounting itself, away from multi-MiB fixtures.
+    #[test]
+    fn escaped_length_and_truncation_agree_on_the_expansion() {
+        // A control byte costs six on the wire, a quote two, plain ASCII one.
+        assert_eq!(escaped_len("\u{0001}"), 6);
+        assert_eq!(escaped_len("\""), 2);
+        assert_eq!(escaped_len("\n"), 2);
+        assert_eq!(escaped_len("abc"), 3);
+        // And that is what serde actually produces, minus the two surrounding quotes.
+        for sample in ["\u{0001}\u{0002}", "a\"b\\c", "plain", "tab\there", "é"] {
+            assert_eq!(
+                escaped_len(sample),
+                serde_json::to_string(sample).unwrap().len() - 2,
+                "escaped_len disagrees with serde for {sample:?}"
+            );
+        }
+
+        // Truncation never exceeds the budget and never splits a character.
+        assert_eq!(
+            truncate_to_escaped_budget("\u{0001}\u{0001}", 6),
+            "\u{0001}"
+        );
+        assert_eq!(truncate_to_escaped_budget("\u{0001}", 5), "");
+        assert_eq!(truncate_to_escaped_budget("abc", 99), "abc");
+        // A multi-byte character is kept whole or dropped whole — a split would panic on the slice.
+        assert_eq!(truncate_to_escaped_budget("é", 1), "");
+        assert_eq!(truncate_to_escaped_budget("aé", 2), "a");
     }
 }
