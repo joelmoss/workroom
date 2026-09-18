@@ -77,6 +77,17 @@ enum VCSRemoteFailure: Equatable, Sendable {
   /// every retry fails identically. The real fix is remembering each workroom's own base instead of
   /// guessing `trunk()` — filed, not built.
   case immutableHistory(String)
+  /// The command was dispatched and we never heard back — `CommandResult.outcomeUnknown`. Only
+  /// reachable on the agent-routed path, where a lost connection, a client-side deadline or a
+  /// cancellation ends the round trip while the host-side `git`/`jj` keeps running to completion.
+  ///
+  /// The whole point of the case is the recovery. This is NOT `.other`: that one's recovery is a
+  /// retry of the action that failed, and retrying a push that may already have landed is the one
+  /// thing this state must not offer. `retryAction` answers `.fetch` instead — idempotent, and the
+  /// ahead/behind it brings back is exactly the fact that resolves the unknown.
+  ///
+  /// It is also NOT `.launchFailed`: that asserts nothing ran, which is the opposite falsehood.
+  case outcomeUnknown(String)
   /// jj refuses to push a commit with an empty description, changes or not. This is the state a workroom
   /// sits in the moment you edit a file and before you write a message, so it is the most reachable
   /// failure on the push path, not an edge case. Measured: `Error: Won't push commit 050e657d3c36 since
@@ -212,6 +223,13 @@ enum VCSCommitFailure: Equatable, Sendable {
   /// are invalid during several of these, and finishing the sequencer is the user's call.
   case sequencerInProgress(String)
   case locked(VCSLockFile?)
+  /// The commit was dispatched and we never heard back — see `VCSRemoteFailure.outcomeUnknown`.
+  ///
+  /// Reached ONLY when the ref could not be re-read either: `commit()` compares the revision before
+  /// and after, and a moved ref answers the question outright as `.committedThenFailed`. So this is
+  /// specifically "the write is unknown AND the repository is unreachable", which is why its copy
+  /// sends the user to check the history rather than offering anything.
+  case outcomeUnknown(String)
   /// The verb doesn't exist for this backend (`.amendMessage` on jj, `.describe` on git).
   case unsupportedMode
   case other(String)
@@ -1135,6 +1153,12 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     // Checked BEFORE commandNotFound: launchFailed means the process never ran at all (dominated by
     // a vanished cwd), which is a different fact from commandNotFound's "env ran and searched PATH".
     if result.exitCode == CommandResult.launchFailed { return .launchFailed }
+    // Before every output check, for `launchFailed`'s reason: this is a fact about whether we heard
+    // an answer, not about what the answer said. There is no output to match on anyway — the stderr
+    // is the transport's own description, and matching git's prose against it could only misfire.
+    if result.exitCode == CommandResult.outcomeUnknown {
+      return .outcomeUnknown(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
     if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
     let err = result.stderr + "\n" + result.stdout
     // A timed-out pull may have left a rebase behind; that reads better than "timed out".
@@ -1264,6 +1288,10 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// perfectly good commit behind a non-zero exit.
   static func classifyCommit(_ result: CommandResult, tool: String) -> VCSCommitFailure? {
     if result.exitCode == CommandResult.launchFailed { return .launchFailed }
+    // See `classify` — a fact about the round trip, not about the command's output.
+    if result.exitCode == CommandResult.outcomeUnknown {
+      return .outcomeUnknown(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
     if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
     // jj says "Nothing changed." and exits ZERO, so its no-op has to be read BEFORE the success
     // guard — an untouched working copy must not be reported as a commit that happened.
@@ -1975,6 +2003,10 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     case .toolMissing(let m), .identityMissing(let m), .signingFailed(let m), .hookRejected(let m),
       .unmergedFiles(let m), .sequencerInProgress(let m), .other(let m):
       return m
+    // Reached when contact was lost AND the ref moved anyway — so the doubt is already resolved,
+    // and this says which half of it survived rather than repeating the "may have completed" copy.
+    case .outcomeUnknown(let m):
+      return "Lost contact after the commit was written: \(m)"
     case .timedOut: return "The command was stopped at its time limit."
     case .nothingToCommit: return "Nothing to commit."
     case .locked(let file):

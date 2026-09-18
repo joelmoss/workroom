@@ -109,30 +109,29 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
       stdout: "", stderr: reason, exitCode: CommandResult.launchFailed, timedOut: false)
   }
 
-  /// The command may or may not have completed; we stopped listening. Reported as a SIGTERM-signaled
-  /// result rather than `launchFailed`, because `launchFailed` asserts a falsehood: a cancelled or
-  /// disconnected `git push` DID run host-side (there is no cancel message in the protocol), and
-  /// telling the user it never launched invites a retry that double-applies it.
+  /// The command may or may not have completed; we stopped listening. Carries
+  /// `CommandResult.outcomeUnknown` rather than `launchFailed`, because `launchFailed` asserts a
+  /// falsehood: a cancelled or disconnected `git push` DID run host-side (there is no cancel message
+  /// in the protocol), and telling the user it never launched invites a retry that double-applies it.
   ///
-  /// It classifies as `.other(reason)`, carrying the underlying error's own description —
-  /// `HostConnectionError.connectionLost`'s is already exactly right ("An operation may have
-  /// completed; refresh before retrying"), and used to be discarded. Not the `"\(tool) was
-  /// interrupted"` branch: that one requires EMPTY stderr, and the message is worth more here.
-  /// `signaled: true` is therefore descriptive rather than load-bearing, and `timedOut` stays false
-  /// so this can never be mistaken for a command that ran and exceeded its own deadline.
+  /// It classifies as `VCSRemoteFailure.outcomeUnknown` / `VCSCommitFailure.outcomeUnknown`, carrying
+  /// the underlying error's own description — `HostConnectionError.connectionLost`'s is already
+  /// exactly right ("An operation may have completed; refresh before retrying"), and used to be
+  /// discarded.
   ///
-  /// KNOWN GAP: `.other` is retryable (`VCSSyncPresentation.retryAction`), so the user is still
-  /// offered a Retry for an operation that may already have landed. Telling the truth in the
-  /// message is strictly better than the old `launchFailed` ("never ran"), but suppressing the
-  /// button needs its own `VCSRemoteFailure`/`VCSCommitFailure` case — that switch is exhaustive on
-  /// purpose, and adding a case is a user-visible taxonomy change, not a drive-by fix.
+  /// A sentinel exit code rather than the SIGTERM-shaped result this used to return. That one was
+  /// indistinguishable from a genuinely signaled command, so it classified as `.other` — which
+  /// `VCSSyncPresentation.retryAction` still offers a Retry for, i.e. the honest message came with
+  /// a button that could double-apply the write. `signaled` is now false: its doc makes `exitCode`
+  /// the signal number whenever it's true, and -2 isn't one. `timedOut` stays false so this can
+  /// never be mistaken for a command that ran and exceeded its own deadline.
   static func outcomeUnknown(_ error: Error) -> CommandResult {
     let reason =
       (error as? LocalizedError)?.errorDescription
       ?? (error is CancellationError ? "The operation was cancelled; it may have completed." : nil)
       ?? "\(error)"
     return CommandResult(
-      stdout: "", stderr: reason, exitCode: 15, timedOut: false, signaled: true)
+      stdout: "", stderr: reason, exitCode: CommandResult.outcomeUnknown, timedOut: false)
   }
 }
 

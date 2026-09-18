@@ -389,6 +389,19 @@ enum VCSSyncPresenter {
     // The workroom's folder is gone. Retrying spawns the identical command against the identical
     // missing path — there is no "later" where this changes, unlike ordinary contention.
     case .launchFailed: return nil
+    // The action may ALREADY HAVE HAPPENED, so `lastAction` is the one thing that must not be
+    // offered — a re-run of a push that landed pushes twice. Fetch instead: it is idempotent,
+    // it is what resolves the unknown (the ahead/behind it brings back says whether the push
+    // landed), and a successful one clears `lastFailure`, so the tier isn't a dead end.
+    //
+    // Same shape as `.rejected → .pull`: the recovery is deliberately not the failed verb, and the
+    // button is labelled with the recovery, so it can't lie about what it does.
+    //
+    // Conditional on `lastAction` because tier [13b] passes nil to ask "what does this failure need
+    // on its own?" — and a READ that lost contact wrote nothing, so there is no doubt for a fetch to
+    // resolve. Answering `.fetch` unconditionally would have replaced that tier's "Try Again"
+    // re-read with a network action nobody asked for. `readRetryIsWorthwhile` handles that half.
+    case .outcomeUnknown: return lastAction == nil ? nil : .fetch
     case .timedOut, .authRequired, .hostKeyUnverified, .dirtyWorkingTree, .other:
       return lastAction
     // A LOCATED lock file offers nothing, for `rebaseInProgress`'s reason: the file is sitting there, so
@@ -417,9 +430,12 @@ enum VCSSyncPresenter {
     case .toolMissing, .noRemote, .needsDescription, .immutableHistory: return false
     // The workroom's folder is gone — re-reading the same missing path can't succeed.
     case .launchFailed: return false
-    // Both carry an ACTION recovery, so this is only reached if that path is ever changed — and neither
-    // is fixed by re-reading.
+    // All three carry an ACTION recovery, so this is only reached if that path is ever changed.
+    // `.outcomeUnknown` is the one that would answer differently here: a READ has no side effect, so
+    // re-running it is always safe — the danger is re-running the WRITE, which is `retryAction`'s
+    // problem and already handled there.
     case .rejected, .rebaseInProgress: return false
+    case .outcomeUnknown: return true
     }
   }
 
@@ -469,6 +485,10 @@ enum VCSSyncPresenter {
       return "Describe the change before pushing it (jj describe)."
     case .immutableHistory:
       return "Pull would rewrite shared history here, so it can’t run."
+    case .outcomeUnknown:
+      // Never "failed": the single most expensive mistake here is a user who reads this as "it
+      // didn't happen" and repeats the action. The line has to carry the doubt, not the verdict.
+      return "Lost contact — this may have completed. Fetch to check."
     case .other(let message):
       return message.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Failed."
     }
@@ -565,6 +585,15 @@ enum VCSSyncPresenter {
         The workroom may have been deleted, or its folder moved or removed outside Workroom. \
         Refresh the sidebar, or recreate the workroom if it's genuinely gone.
         """
+    case .outcomeUnknown:
+      return """
+        The command was sent and the connection dropped before an answer came back, so it may have \
+        completed anyway — there is no way to cancel one once it has been sent.
+
+        Fetch first and read the result. If the push landed, the counts will say so and there is \
+        nothing left to do; if it didn't, push again from there. Repeating the action before \
+        checking is what applies it twice.
+        """
     // `.locked` is answered by `explain` in full; `.other` is raw tool output we have no advice for.
     case .locked, .other:
       return nil
@@ -578,7 +607,7 @@ enum VCSSyncPresenter {
     switch failure {
     case .timedOut(_, let m), .authRequired(let m), .hostKeyUnverified(let m), .rejected(let m),
       .dirtyWorkingTree(let m),
-      .immutableHistory(let m), .needsDescription(let m), .other(let m):
+      .immutableHistory(let m), .needsDescription(let m), .outcomeUnknown(let m), .other(let m):
       raw = m
     case .toolMissing, .noRemote, .rebaseInProgress, .locked, .launchFailed:
       raw = nil
@@ -665,6 +694,8 @@ enum VCSSyncPresenter {
       guard let file else { return "The repository was busy. Try again." }
       return "A leftover \(file.filename) is blocking git."
     case .unsupportedMode: return "That action isn’t available for this repository."
+    case .outcomeUnknown:
+      return "Lost contact — this commit may have been written."
     case .other(let message):
       return message.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Commit failed."
     }
@@ -725,6 +756,15 @@ enum VCSSyncPresenter {
         The workroom may have been deleted, or its folder moved or removed outside Workroom. \
         Refresh the sidebar, or recreate the workroom if it's genuinely gone.
         """
+    case .outcomeUnknown:
+      return """
+        The commit was sent and the connection dropped before an answer came back. Workroom also \
+        couldn’t re-read the repository afterwards, so it can’t tell you whether the commit was \
+        written — when it can, it says so instead of showing this.
+
+        Check the history before committing again. Committing a second time over a commit that did \
+        land leaves you with two.
+        """
     case .unsupportedMode, .other:
       return nil
     }
@@ -735,7 +775,7 @@ enum VCSSyncPresenter {
     let raw: String?
     switch failure {
     case .identityMissing(let m), .signingFailed(let m), .hookRejected(let m),
-      .unmergedFiles(let m), .other(let m):
+      .unmergedFiles(let m), .outcomeUnknown(let m), .other(let m):
       raw = m
     case .toolMissing, .launchFailed, .timedOut, .nothingToCommit, .sequencerInProgress, .locked,
       .unsupportedMode:

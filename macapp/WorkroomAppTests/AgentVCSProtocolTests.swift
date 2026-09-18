@@ -44,21 +44,64 @@ final class AgentVCSProtocolTests: XCTestCase {
   /// as `launchFailed` told the user nothing had happened and invited a retry that double-applies.
   func testTransportFailureIsNotReportedAsNeverHavingRun() {
     let lost = AgentCommandRunner.outcomeUnknown(HostConnectionError.connectionLost)
+    XCTAssertEqual(lost.exitCode, CommandResult.outcomeUnknown)
     XCTAssertNotEqual(lost.exitCode, CommandResult.launchFailed)
-    XCTAssertTrue(lost.signaled)
+    // `signaled` makes `exitCode` a signal number, and the sentinel isn't one. It used to be true,
+    // which made this indistinguishable from a genuinely SIGTERMed git and sent it to `.other`.
+    XCTAssertFalse(lost.signaled)
     // Not `timedOut`: that offers Retry, and nobody knows the outcome.
     XCTAssertFalse(lost.timedOut)
     // The existing error already says the right thing; it used to be discarded.
     XCTAssertTrue(lost.stderr.contains("may have completed"))
 
     let cancelled = AgentCommandRunner.outcomeUnknown(CancellationError())
-    XCTAssertNotEqual(cancelled.exitCode, CommandResult.launchFailed)
-    XCTAssertTrue(cancelled.signaled)
+    XCTAssertEqual(cancelled.exitCode, CommandResult.outcomeUnknown)
     XCTAssertTrue(cancelled.stderr.contains("may have completed"))
 
     // A request refused before it left this process genuinely never ran, and keeps the old value.
     XCTAssertEqual(
       AgentCommandRunner.neverRan("too large").exitCode, CommandResult.launchFailed)
+  }
+
+  /// The sentinel has to survive the whole way to the button, on both write taxonomies. This is the
+  /// end-to-end form of the defect: an honest message with a Retry beside it is still a retry that
+  /// double-applies the push.
+  func testAnUnknownOutcomeNeverOffersARetryOfTheActionThatFailed() {
+    let lost = AgentCommandRunner.outcomeUnknown(HostConnectionError.connectionLost)
+
+    guard case .outcomeUnknown(let reason) = CLIVCSWriter.classify(lost, action: .push, tool: "git")
+    else { return XCTFail("push did not classify as outcomeUnknown") }
+    XCTAssertTrue(reason.contains("may have completed"))
+
+    guard case .outcomeUnknown = CLIVCSWriter.classifyCommit(lost, tool: "git") else {
+      return XCTFail("commit did not classify as outcomeUnknown")
+    }
+
+    // Fetch, never Push: idempotent, and the ahead/behind it returns is what resolves the unknown.
+    XCTAssertEqual(
+      VCSSyncPresenter.retryAction(for: .outcomeUnknown(reason), lastAction: .push), .fetch)
+    XCTAssertEqual(
+      VCSSyncPresenter.retryAction(for: .outcomeUnknown(reason), lastAction: .pull), .fetch)
+    // A READ that lost contact wrote nothing, so tier [13b]'s `lastAction: nil` question must fall
+    // through to its own "Try Again" re-read rather than being handed a network action.
+    XCTAssertNil(VCSSyncPresenter.retryAction(for: .outcomeUnknown(reason), lastAction: nil))
+    XCTAssertTrue(VCSSyncPresenter.readRetryIsWorthwhile(.outcomeUnknown(reason)))
+    // The copy must carry the doubt. A user who reads "failed" repeats the action.
+    XCTAssertTrue(VCSSyncPresenter.describe(.outcomeUnknown(reason)).contains("may have"))
+    XCTAssertTrue(
+      VCSSyncPresenter.describeCommit(.outcomeUnknown(reason)).contains("may have"))
+  }
+
+  /// The sentinel is a claim about the round trip, so it must beat every output-shaped check — a
+  /// transport message that happened to contain git's prose must not be classified as git's failure.
+  func testTheUnknownSentinelOutranksOutputMatching() {
+    let misleading = CommandResult(
+      stdout: "", stderr: "Updates were rejected; the host key verification failed",
+      exitCode: CommandResult.outcomeUnknown, timedOut: false)
+    guard case .outcomeUnknown = CLIVCSWriter.classify(misleading, action: .push, tool: "git")
+    else {
+      return XCTFail("output matching won over the sentinel")
+    }
   }
 
   /// Both paths must hand the child the SAME environment. Forwarding only `PATH` let the child

@@ -38,6 +38,20 @@ struct CommandResult: Sendable, Equatable {
   /// "tool not installed" would otherwise misdiagnose a deleted workroom as a missing git/jj/gh.
   /// Negative and outside 0-255, so it can never collide with a real exit code or a signal number.
   static let launchFailed: Int32 = -1
+  /// The command's outcome is **unknown**: it was dispatched and we stopped listening before an
+  /// answer came back. Only reachable on the agent-routed path (`AgentCommandRunner.outcomeUnknown`),
+  /// where a connection loss, a client-side deadline or a cancellation ends the round trip while the
+  /// host-side command keeps running — there is no cancel message in the protocol.
+  ///
+  /// The third value in a partition every write classifier depends on: `launchFailed` asserts nothing
+  /// ran, a real exit code asserts a known outcome, and this asserts neither. Without it a
+  /// disconnected `git push` had to borrow one of the other two, and both are lies that cost
+  /// something: "never ran" invites a retry that double-applies it, and a signal number invites
+  /// `.other`, which offers the same retry.
+  ///
+  /// Negative and outside 0-255 for `launchFailed`'s reason, and distinct from it because "nothing
+  /// happened" and "something may have happened" need opposite recoveries.
+  static let outcomeUnknown: Int32 = -2
 
   /// Written out rather than synthesized: a `let` with an initial value is EXCLUDED from the
   /// memberwise init entirely, so `let signaled = false` would compile at all ~60 construction

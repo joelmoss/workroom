@@ -1120,14 +1120,16 @@ deferred on its own merits.
 **What:** What the writes review (#205, PR pending) verified and left standing. The five P1s it found
 are fixed in `ed51faa9`; each entry below was reproduced or read off the code, none is speculative.
 
-1. **An outcome-unknown write still offers Retry.** `AgentCommandRunner.outcomeUnknown` stopped
-   claiming a cancelled or disconnected write "never ran", but it classifies as `.other`, and
-   `VCSSyncPresentation.retryAction` returns `lastAction` for `.other` — so the user is still one
-   click from re-running a push that may already have landed. The message is honest now; the button
-   is not. Closing it needs a new `VCSRemoteFailure`/`VCSCommitFailure` case (that switch is
-   exhaustive on purpose, so adding one is a compile-time-checked change) plus a `retryAction` arm
-   returning nil, and a matching tier in the presenter. User-visible taxonomy change, hence deferred
-   rather than folded into a review fix.
+1. ~~**An outcome-unknown write still offers Retry.**~~ **Fixed.** `AgentCommandRunner.outcomeUnknown`
+   had stopped claiming a cancelled or disconnected write "never ran", but it still classified as
+   `.other`, whose `retryAction` is `lastAction` — an honest message with a button one click from
+   re-running a push that may already have landed. Closed with the taxonomy change it needed:
+   `CommandResult.outcomeUnknown` (a sentinel exit code beside `launchFailed`, since the old
+   SIGTERM-shaped result was indistinguishable from a genuinely signaled git), a
+   `VCSRemoteFailure`/`VCSCommitFailure` case each, and a `retryAction` arm answering `.fetch` —
+   not nil, as this entry originally proposed. Nil would have left the failure tier dead on a
+   *transient* state; fetch is idempotent, it is what resolves the unknown, and a successful one
+   clears `lastFailure`. Same shape as `.rejected → .pull`.
 
 2. **`child.wait()` after SIGKILL is unbounded.** `run_exec`'s timeout path ends
    `break 'wait child.wait().map_err(io)?`. `kill(-pid, …)` only reaches the process group, so a
