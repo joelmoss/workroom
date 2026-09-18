@@ -806,4 +806,49 @@ final class AgentVCSIntegrationTests: XCTestCase {
     XCTAssertEqual(VCSSyncPresenter.retryAction(for: failure, lastAction: .push), .fetch)
     XCTAssertNil(VCSSyncPresenter.retryAction(for: failure, lastAction: nil))
   }
+
+  /// A handshake that DROPS must stay `connectionLost` all the way out, because `LocalAgentVCS`
+  /// catches exactly that case to spawn wr-agent and retry. Flattening it into `serviceUnavailable`
+  /// routed a dropped handshake around the stale-socket recovery entirely — and a stale socket is
+  /// the common case, not an exotic one: the daemon leaves `session.sock` behind on any `pkill`.
+  ///
+  /// Driven against a socket that ACCEPTS and then closes without answering, which is the shape of a
+  /// dead agent's leftover socket. A socket nothing is listening on takes a different path (the
+  /// connect itself fails) and never reached the wrapper this covers.
+  func testADroppedHandshakeStaysRecoverableRatherThanBecomingUnavailable() async throws {
+    let dir = try root()
+    let path = dir.appendingPathComponent("dead.sock").path
+
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    XCTAssertGreaterThanOrEqual(fd, 0)
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let bytes = Array(path.utf8)
+    withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
+    let bound = withUnsafePointer(to: &address) {
+      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+      }
+    }
+    XCTAssertEqual(bound, 0, "could not bind the fixture socket")
+    XCTAssertEqual(Darwin.listen(fd, 1), 0)
+    // Accept one connection and immediately hang up, mid-handshake.
+    let accepting = Task.detached {
+      let peer = Darwin.accept(fd, nil, nil)
+      if peer >= 0 { Darwin.close(peer) }
+    }
+    defer {
+      accepting.cancel()
+      Darwin.close(fd)
+    }
+
+    do {
+      _ = try await AgentVCSConnection.connect(host: .local, socketPath: path)
+      XCTFail("a connection was negotiated against a socket that hung up")
+    } catch {
+      XCTAssertEqual(
+        error as? HostConnectionError, .connectionLost,
+        "a dropped handshake must stay recoverable, got \(error)")
+    }
+  }
 }
