@@ -694,4 +694,116 @@ final class AgentVCSIntegrationTests: XCTestCase {
     }
     await connection.close()
   }
+
+  /// Both `writer(context:reader:)` guards, which nothing reached before: they are the two ways a
+  /// writer can be refused BEFORE any command is built, and each has a distinct caller contract.
+  /// Driven through `RepositoryRouter`, which is the only thing that can mint a `RepositoryContext`
+  /// — and is the real caller, so this also pins that the router does not swallow either error.
+  ///
+  /// The host check is the one that matters for correctness rather than tidiness. The router keys on
+  /// host-qualified identity precisely so a remote repository cannot collide with a local one at the
+  /// same path (#201); a connection answering for another host's context would write to the wrong
+  /// machine's repository at a path that exists on both.
+  func testAWriterIsRefusedForAnotherHostAndForAClosedConnection() async throws {
+    let root = try gitRepo()
+    let connection = try await connect()
+
+    // This connection's host is `.local`, so a REMOTE context handed to it must be refused. Wired as
+    // the remote factory to get one built at all.
+    let elsewhere = try RepositoryLocation.remote(host: UUID(), path: root.path)
+    let remoteRouter = RepositoryRouter(
+      remoteReader: { try connection.reader(context: $0) },
+      remoteWriter: { try connection.writer(context: $0, reader: $1) })
+    try remoteRouter.register(
+      .init(location: elsewhere, backend: .git, sharedLocation: elsewhere))
+    do {
+      _ = try await remoteRouter.writer(for: elsewhere)
+      XCTFail("a writer was issued for another host's context")
+    } catch {
+      XCTAssertEqual(error as? HostConnectionError, .mismatchedContext, "got \(error)")
+    }
+
+    // Closed: `connectionLost`, NOT `notDispatched`. The distinction is the one P1 #2 established —
+    // the refusal happens before anything reaches the socket, but the caller learns it by asking for
+    // a writer rather than by a request coming back, so it is a lost connection.
+    //
+    // It must also NOT be `VCSError.backendVersion`, the one error `writer(for:)` falls back to
+    // native writes on: a closed connection is not a pre-upgrade agent, and silently writing
+    // natively here would route around a connection the caller believes it is using.
+    let location = try await RepositoryLocation.local(root.path)
+    let localRouter = RepositoryRouter(
+      localReader: { try connection.reader(context: $0) },
+      localWriter: { try connection.writer(context: $0, reader: connection.reader(context: $0)) })
+    try localRouter.register(.init(location: location, backend: .git, sharedLocation: location))
+    await connection.close()
+    do {
+      _ = try await localRouter.writer(for: location)
+      XCTFail("a writer was issued on a closed connection")
+    } catch {
+      XCTAssertEqual(error as? HostConnectionError, .connectionLost, "got \(error)")
+    }
+  }
+
+  /// A live agent must actually ROUTE writes, not merely fail to refuse them. Paired with the two
+  /// fallback tests above, which cover the refusal: together they pin the DECISION rather than the
+  /// capability number that currently encodes it, so replacing that number with an exec-service
+  /// check (TODOS item 4) does not invalidate this.
+  ///
+  /// `localWriter` is the only writer wired and it cannot throw `backendVersion`, so a fallback here
+  /// is impossible — the commit below is the agent's own child process or nothing.
+  func testACapableAgentRoutesWritesThroughTheAgentRatherThanFallingBack() async throws {
+    let root = try gitRepo()
+    try "second\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    let connection = try await connect()
+    let location = try await RepositoryLocation.local(root.path)
+    let router = RepositoryRouter(
+      localReader: { try connection.reader(context: $0) },
+      localWriter: { try connection.writer(context: $0, reader: connection.reader(context: $0)) })
+    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+
+    let result = await (try await router.writer(for: location)).commit(
+      request: VCSCommitRequest(
+        message: "agent-routed commit",
+        files: [ChangedFile(path: "file", change: .modified, oldPath: nil)], mode: .commit))
+    guard case .ok = result else { return XCTFail("agent-routed commit failed: \(result)") }
+
+    let log = try run("git", ["log", "-1", "--format=%s"], at: root)
+    XCTAssertEqual(log.trimmingCharacters(in: .whitespacesAndNewlines), "agent-routed commit")
+    await connection.close()
+  }
+
+  /// The write path's transport-failure mapping, end to end through the real client: a write issued
+  /// on a connection that dies UNDER it must classify as `.outcomeUnknown` and must not offer a
+  /// retry of itself.
+  ///
+  /// This is the property the whole `CommandResult.outcomeUnknown` partition exists for, and nothing
+  /// exercised it through an actual `VCSWriting` before — the unit tests build the `CommandResult`
+  /// by hand, which cannot catch the writer losing the distinction on the way through.
+  func testAWriteOnALostConnectionReportsAnUnknownOutcomeAndOffersNoSelfRetry() async throws {
+    let root = try gitRepo()
+    let connection = try await connect()
+    let location = try await RepositoryLocation.local(root.path)
+    let router = RepositoryRouter(
+      localReader: { try connection.reader(context: $0) },
+      localWriter: { try connection.writer(context: $0, reader: connection.reader(context: $0)) })
+    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    // Obtained while the connection is live, so both guards above pass and the failure can only come
+    // from the write itself — which is the path under test.
+    let writer = try await router.writer(for: location)
+    await connection.close()
+
+    let result = await writer.fetch(remote: "origin")
+    guard case .failed(let failure) = result else {
+      return XCTFail("a write on a closed connection reported success: \(result)")
+    }
+    // Never `.launchFailed`: that asserts nothing ran, and a dispatched command may well have.
+    // Never `.other`: that offers a retry of the verb that failed.
+    guard case .outcomeUnknown = failure else {
+      return XCTFail("transport failure classified as \(failure)")
+    }
+    // Fetch is idempotent, so it is offered back — but never escalated to a write.
+    XCTAssertEqual(VCSSyncPresenter.retryAction(for: failure, lastAction: .fetch), .fetch)
+    XCTAssertEqual(VCSSyncPresenter.retryAction(for: failure, lastAction: .push), .fetch)
+    XCTAssertNil(VCSSyncPresenter.retryAction(for: failure, lastAction: nil))
+  }
 }

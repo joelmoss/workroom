@@ -24,6 +24,11 @@ const MAX_HISTORY_LIMIT: usize = 10000;
 /// hostile/buggy request from wedging an exec thread indefinitely; the 32-slot `ACTIVE` permit
 /// already bounds concurrency, this bounds duration.
 const MAX_EXEC_TIMEOUT_MS: u64 = 610_000;
+/// The ceiling must stay above `CLIVCSWriter.commitTimeout` (600s), or the transport would cut a
+/// legitimate commit short — one with a slow `pre-commit` hook — before its own limit applied, and
+/// the failure would read as a transport fault rather than the timeout it is. Checked at COMPILE
+/// time: a lowered ceiling is a build error, not a test that someone runs later.
+const _: () = assert!(MAX_EXEC_TIMEOUT_MS > 600_000);
 /// Per-stream cap, matching `StatusCommandRunner.maxBytes`'s default on the Swift side.
 const MAX_EXEC_STREAM: usize = 4 * 1024 * 1024;
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
@@ -1095,5 +1100,101 @@ mod tests {
         );
         assert!(failed.is_err());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The clamp is the only thing between a client's `timeout_ms` and a thread that waits on it,
+    /// and both ends of it matter: 0 would make every command time out before it started, and an
+    /// unbounded value would park an `ACTIVE` permit for as long as the caller asked. Asserted
+    /// through the clamp expression `exec` actually uses, so a changed bound fails here.
+    #[test]
+    fn the_exec_timeout_clamp_holds_at_both_ends() {
+        let clamp = |ms: u64| Duration::from_millis(ms.clamp(1, MAX_EXEC_TIMEOUT_MS));
+        // Zero is raised to 1ms, never passed through: a 0ms deadline kills the child immediately.
+        assert_eq!(clamp(0), Duration::from_millis(1));
+        assert_eq!(clamp(1), Duration::from_millis(1));
+        assert_eq!(clamp(u64::MAX), Duration::from_millis(MAX_EXEC_TIMEOUT_MS));
+        assert_eq!(
+            clamp(MAX_EXEC_TIMEOUT_MS + 1),
+            Duration::from_millis(MAX_EXEC_TIMEOUT_MS)
+        );
+        // In range, it is the caller's value untouched.
+        assert_eq!(clamp(5_000), Duration::from_millis(5_000));
+    }
+
+    /// The exec envelope carries its OWN version, and it is checked before anything is spawned. The
+    /// read path's guard is covered by `version_and_path_errors_are_explicit`; this is the write
+    /// path's, and it has to fail as `BackendVersion` specifically — `RepositoryRouter` keys its
+    /// fall-back-to-native decision on that case, so any other error would strand the user instead.
+    #[test]
+    fn an_exec_request_with_an_unsupported_version_is_refused_before_spawning() {
+        let root = git_repo("exec-version");
+        let request = json!({
+            "version": 2,
+            "kind": "exec",
+            "executable": "git",
+            // A command with an observable side effect: if the guard ever moves after the spawn,
+            // this file appears and the assertion below catches it.
+            "args": ["init", "-q", "spawned-anyway"],
+            "dir": root.to_str().unwrap(),
+            "timeout_ms": 5000,
+        });
+        let reply = execute(&serde_json::to_vec(&request).unwrap());
+        assert!(
+            reply["error"]["BackendVersion"].as_str().is_some(),
+            "expected BackendVersion, got {reply}"
+        );
+        assert!(
+            !root.join("spawned-anyway").exists(),
+            "the child ran anyway"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Two separate properties, and the second is the one that matters. The cap bounds what is
+    /// KEPT; the loop must go on reading past it, because the child writes into a pipe whose buffer
+    /// is ~64 KiB — stop reading and the child blocks on write forever, which is a hang, not a
+    /// truncation. `StatusCommandRunner.readCapped` has the same shape for the same reason.
+    #[test]
+    fn drain_capped_bounds_what_it_keeps_and_still_reads_to_eof() {
+        // A source larger than the cap AND larger than any pipe buffer.
+        let cap = 1024;
+        let source = vec![b'x'; 256 * 1024];
+        let sink = Mutex::new(Vec::new());
+        drain_capped(source.as_slice(), cap, &sink);
+        assert_eq!(sink.lock().unwrap().len(), cap, "the cap did not hold");
+
+        // Drained to EOF through a REAL pipe, which is where refusing to read past the cap would
+        // deadlock rather than merely truncate. The writer completes only if the reader kept going.
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let payload = vec![b'y'; 512 * 1024];
+        let expected = payload.len();
+        let pump = std::thread::spawn(move || {
+            std::io::Write::write_all(&mut writer, &payload).unwrap();
+            expected
+        });
+        let piped = Mutex::new(Vec::new());
+        drain_capped(reader, cap, &piped);
+        assert_eq!(
+            pump.join().unwrap(),
+            expected,
+            "the writer never finished, so the reader stopped short of EOF"
+        );
+        assert_eq!(piped.lock().unwrap().len(), cap);
+    }
+
+    /// The rejection branch, which the round-trip test above cannot reach: every byte 0x00-0xFF is
+    /// representable, so only a client that sent something OTHER than a Latin-1-decoded string gets
+    /// here. Refusing is the point — truncating a pathspec payload would stage the wrong files.
+    #[test]
+    fn latin1_bytes_rejects_a_character_outside_the_byte_range() {
+        for text in ["\u{0100}", "é\u{20AC}", "ok-then-\u{1F600}"] {
+            assert!(
+                latin1_bytes(text).is_err(),
+                "accepted a non-Latin-1 payload: {text:?}"
+            );
+        }
+        // The boundary either side, to pin where the rejection starts.
+        assert!(latin1_bytes("\u{00FF}").is_ok());
+        assert!(latin1_bytes("\u{0100}").is_err());
     }
 }
