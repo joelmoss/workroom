@@ -1368,6 +1368,85 @@ enumerate remote refs cheaply, and its doc explains why the symref row must be d
 
 ## P3 — VCS engine, diffs, and status
 
+### Rename `AgentVCSConnection` once it carries files and events (macapp) — #211 follow-up
+
+**What:** rename `AgentVCSConnection` to `AgentConnection` (and `AgentVCSReader` / `LocalAgentVCS` where
+the name is now too narrow), and update its doc comment and error strings.
+
+**Why:** after #211 the class owns the File service and an always-open events stream as well as VCS.
+A name that says VCS on a class that carries three services misleads the next reader. #211 itself
+fixes only the comment and the strings that became false (`Invalid VCS envelope`).
+
+**Pros:** the name matches what the class does. **Cons:** pure churn across `LocalAgentVCS`,
+`HostConnectionManager`, `AgentVCSIntegrationTests` and `AgentVCSProtocolTests`; done inside #211 it
+would bury a security-sensitive change in mechanical noise.
+
+**How to start:** one pure-rename commit right after #211 merges, so `git diff --color-moved` verifies it.
+
+**Depends on:** #211 merged.
+
+**Priority:** P3.
+
+### Extract the agent's shared service plumbing out of `vcs.rs` (wr-agent) — #211 follow-up
+
+**What:** move `send` (chunked reply writer, parameterized by service byte), `Permit` / `ACTIVE` /
+`is_busy`, and the exec runner from `vcs.rs` into `service.rs`; `vcs.rs`, `file.rs` and the watcher import it.
+
+**Why:** #211 chose `pub(crate)` reuse over an extraction to keep its diff on new behavior. Three
+services (VCS, File, watch) now share this code, `vcs.rs` is ~1900 lines, and the helpers are the
+agent's service layer in all but name.
+
+**Pros:** honest module boundary; `vcs.rs` becomes the VCS service again. **Cons:** ~300 moved lines,
+in a crate whose changes need the mandatory adversarial review (`macapp/AGENTS.md` rule 3).
+
+**How to start:** one pure-move commit with no behavior change, verified by `git diff --color-moved`
+and the existing suite, immediately after #211 merges so the review does not re-read moved code.
+
+**Depends on:** #211 merged.
+
+**Priority:** P3.
+
+### One OS watcher per subscription duplicates watches across windows (wr-agent) — #211 accepted shortcut
+
+**What:** share one OS watcher per canonical root across subscriptions and connections, fanning events
+into per-subscription coalescers.
+
+**Why:** #211 creates one `notify` watcher per subscription. `AppStore` is per window, so N windows on
+the same workroom, plus one `.git`/`.jj` watch per project per window, duplicate identical recursive
+watches. Cheap on macOS FSEvents; on Linux inotify needs one watch per directory per watcher and
+duplicates multiply toward `fs.inotify.max_user_watches`.
+
+**Pros:** correct on both platforms with one OS watch per tree. **Cons:** a cross-connection registry
+(refcounts, canonical-path keys, start/stop races) in the daemon that owns terminals, and a
+shutdown-ordering case against per-connection teardown.
+
+**How to start:** find the `gstack-shortcut(dec-8742d8a5-42ac-4348-827b-9c15d9330f5a)` marker at the
+watcher creation site. Measure FSEvents duplication first; build the shared registry when the Linux
+agent lands.
+
+**Depends on:** Phase 3 Linux agent, or a measured FSEvents problem.
+
+**Priority:** P3 — no cost on the only platform it ships on today.
+
+### Listings above the 4 MiB capture ceiling fail instead of paginating (macapp + wr-agent) — #211 follow-up
+
+**What:** raise the listing-specific cap (the reply ceiling is 16 MiB) or paginate `list`, so very
+large repositories get a tree instead of a "too many files to list" failure.
+
+**Why:** #211 makes an over-cap listing an explicit typed failure on both paths. Before, both paths
+silently returned a stdout cut at an arbitrary byte, possibly mid-filename. A repository above about 70k
+paths now sees an error where it used to see a truncated tree with a bogus last entry.
+
+**Pros:** big monorepos get a usable Files panel. **Cons:** more memory per listing on the agent
+(bounded by the shared `ACTIVE` pool) and, for pagination, a stateful protocol.
+
+**How to start:** confirm users actually hit the error, then raise the cap for `list` only, keeping the
+16 MiB `MAX_RESPONSE` as the hard bound and re-running the differential and boundary tests.
+
+**Depends on:** #211 merged; evidence that the cap is reached.
+
+**Priority:** P3.
+
 ### `XDG_CONFIG_HOME` never reaches the `gh` auth probe (macapp) — gh-flap eng-review follow-up
 
 **What:** decide whether `XDG_CONFIG_HOME` (or another way of resolving gh's config dir) should reach
