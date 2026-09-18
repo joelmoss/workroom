@@ -120,31 +120,43 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     encoder.keyEncodingStrategy = .convertToSnakeCase
     let bytes = try encoder.encode(request)
     guard bytes.count <= 1 << 20 else { throw VCSError.partialData("VCS request is too large.") }
-    return try await withCheckedThrowingContinuation { continuation in
-      let stream: UInt32? = lock.withLock {
-        guard !closed, nextStream < UInt32.max, pending.count < 32 else { return nil }
-        let stream = nextStream
-        nextStream += 1
-        pending[stream] = Pending(continuation: continuation)
-        return stream
-      }
-      guard let stream else {
-        continuation.resume(throwing: HostConnectionError.connectionLost)
-        return
-      }
-      writes.async { [self] in
-        guard lock.withLock({ !closed }) else { return }
-        var envelope = Data([2])
-        for value in [stream, UInt32(bytes.count)] {
-          var value = value.bigEndian
-          withUnsafeBytes(of: &value) { envelope.append(contentsOf: $0) }
+    let cancellation = RequestCancellationBox()
+    return try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        let stream: UInt32? = lock.withLock {
+          guard !closed, nextStream < UInt32.max, pending.count < 32 else { return nil }
+          let stream = nextStream
+          nextStream += 1
+          pending[stream] = Pending(continuation: continuation)
+          return stream
         }
-        envelope.append(bytes)
-        do { try Self.send(descriptor, envelope) } catch { fail(error) }
+        guard let stream else {
+          continuation.resume(throwing: HostConnectionError.connectionLost)
+          return
+        }
+        // Registered only after `stream` is in `pending`, so an already-cancelled caller (Swift
+        // may run `onCancel` before this closure even starts) fails THIS stream the instant it
+        // exists instead of occupying one of the 32 slots until its 30s timeout — a cancelled
+        // status-sweep read must free its slot immediately, not squat on it.
+        cancellation.attach { [weak self] in
+          self?.timeoutStream(stream, error: CancellationError())
+        }
+        writes.async { [self] in
+          guard lock.withLock({ !closed }) else { return }
+          var envelope = Data([2])
+          for value in [stream, UInt32(bytes.count)] {
+            var value = value.bigEndian
+            withUnsafeBytes(of: &value) { envelope.append(contentsOf: $0) }
+          }
+          envelope.append(bytes)
+          do { try Self.send(descriptor, envelope) } catch { fail(error) }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
+          self?.timeoutStream(stream, error: HostConnectionError.connectionLost)
+        }
       }
-      DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
-        self?.timeoutStream(stream)
-      }
+    } onCancel: {
+      cancellation.fire()
     }
   }
 
@@ -218,13 +230,13 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// itself stay usable. Matches the design's own "never replay any request" rule: this fails the
   /// wait, not the underlying operation, so a reply that does eventually arrive is drained, never
   /// delivered to a second caller.
-  private func timeoutStream(_ stream: UInt32) {
+  private func timeoutStream(_ stream: UInt32, error: Error) {
     let continuation: CheckedContinuation<Data, Error>? = lock.withLock {
       guard let entry = pending.removeValue(forKey: stream) else { return nil }
       abandoned.insert(stream)
       return entry.continuation
     }
-    continuation?.resume(throwing: HostConnectionError.connectionLost)
+    continuation?.resume(throwing: error)
   }
 
   private func fail(_ error: Error) {
@@ -258,4 +270,32 @@ struct AgentVCSRequest: Encodable, Sendable {
   var revision: String?
   var path: String?
   var base: String?
+}
+
+/// Bridges `withTaskCancellationHandler`'s `onCancel` — which Swift may invoke BEFORE `request`'s
+/// continuation closure even starts (a task already cancelled at the call site), concurrently with
+/// it, or not at all — to failing that request's stream. Same shape as `Timeout.swift`'s
+/// `TimeoutCancelBox`: `onCancel` runs synchronously on whichever thread calls `.cancel()`, so both
+/// sides are lock-guarded rather than assuming an ordering.
+private final class RequestCancellationBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var action: (() -> Void)?
+  private var firedEarly = false
+
+  func attach(_ action: @escaping () -> Void) {
+    lock.lock()
+    let already = firedEarly
+    if !already { self.action = action }
+    lock.unlock()
+    if already { action() }
+  }
+
+  func fire() {
+    lock.lock()
+    firedEarly = true
+    let action = self.action
+    self.action = nil
+    lock.unlock()
+    action?()
+  }
 }

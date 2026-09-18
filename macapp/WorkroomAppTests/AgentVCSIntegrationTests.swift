@@ -17,6 +17,14 @@ final class AgentVCSIntegrationTests: XCTestCase {
 
   private var environment: [String: String] {
     var env = ProcessInfo.processInfo.environment
+    // An inherited repository-location override must never redirect a setup command away from
+    // the fresh temporary root, same hardening `wr-vcs-git`'s subprocess runner applies.
+    for key in [
+      "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+      "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+      env.removeValue(forKey: key)
+    }
     env["PATH"] = ShellEnvironment.path()
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"
     env["GIT_CONFIG_SYSTEM"] = "/dev/null"
@@ -359,6 +367,78 @@ final class AgentVCSIntegrationTests: XCTestCase {
     try await Task.sleep(for: .milliseconds(300))
     let refAgain = try await reader.currentRef()
     XCTAssertEqual(refAgain.name, "main")
+    await connection.close()
+  }
+
+  /// Before this fix, `request` registered no cancellation handler: cancelling the calling `Task`
+  /// did nothing to its suspended continuation, so it stayed in `pending` — occupying one of the
+  /// 32 concurrent-request slots — until the request's own 30s timeout finally fired. A cancelled
+  /// caller (e.g. a superseded status-sweep read) must fail immediately instead.
+  func testCancellingARequestFailsImmediatelyInsteadOfWaitingOutTheTimeout() async throws {
+    let root = try gitRepo()
+    try "next\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    try run("git", ["commit", "-am", "second"], at: root)
+    let bin = root.appendingPathComponent("bin")
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    let realGit = try run("which", ["git"], at: root)
+    let marker = root.appendingPathComponent("accepted")
+    let release = root.appendingPathComponent("release")
+    let wrapper = bin.appendingPathComponent("git")
+    let quote = CommandLineInstaller.shellQuoted
+    let script = """
+      #!/bin/sh
+      for arg; do
+        if [ "$arg" = diff ]; then
+          echo "$$" > \(quote(marker.path))
+          attempts=0
+          while [ ! -e \(quote(release.path)) ]; do
+            attempts=$((attempts + 1))
+            [ "$attempts" -lt 500 ] || exit 124
+            sleep 0.02
+          done
+          break
+        fi
+      done
+      exec \(quote(realGit)) "$@"
+      """
+    try script.write(to: wrapper, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: wrapper.path)
+    var env = environment
+    env["PATH"] = bin.path + ":" + (env["PATH"] ?? "")
+    let agent = try AgentHarness.start(environment: env)
+    agents.append(agent)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: agent.socketPath)
+    let (router, location) = try await router(root: root, backend: .git, connection: connection)
+    let reader = try await router.reader(for: location)
+    defer { try? Data().write(to: release) }
+    let page = try await reader.log(limit: 1)
+    let id = try XCTUnwrap(page.commits.first?.commitID)
+    let slowRequest = AgentVCSRequest(
+      root: location.path, sharedRoot: location.path, backend: RepositoryBackend.git.rawValue,
+      method: "file_diff", revision: id, path: "file")
+    let slow = Task { try await connection.request(slowRequest, timeout: 30) }
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !FileManager.default.fileExists(atPath: marker.path), ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "wrapped git never started")
+    let cancelledAt = ContinuousClock.now
+    slow.cancel()
+    do {
+      _ = try await slow.value
+      XCTFail("expected cancellation")
+    } catch is CancellationError {
+      XCTAssertLessThan(
+        cancelledAt.duration(to: .now), .seconds(2),
+        "cancellation must fail the request immediately, not wait out its 30s timeout")
+    } catch {
+      XCTFail("expected CancellationError, got \(error)")
+    }
+    // The connection itself, and the slot the cancelled request freed, both stay usable.
+    let ref = try await reader.currentRef()
+    XCTAssertEqual(ref.name, "main")
+    try Data().write(to: release)
     await connection.close()
   }
 

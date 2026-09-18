@@ -13,11 +13,6 @@ impl Repo {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&path).unwrap();
-        // Isolate from the developer's real git config, same as every Swift VCS test does — an
-        // ambient `init.defaultBranch`, alias, or hook would otherwise make these tests
-        // machine-dependent.
-        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
-        std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
         let repo = Self(path);
         repo.git(&["init", "-b", "main"]);
         repo.git(&["config", "user.name", "Test"]);
@@ -25,7 +20,23 @@ impl Repo {
         repo
     }
     fn git(&self, args: &[&str]) -> String {
-        String::from_utf8(diff::run(&self.0, "git", args).unwrap()).unwrap()
+        // Per-child-process overrides, not `std::env::set_var` — isolates this test's git config
+        // from the developer's real one (an ambient `init.defaultBranch`, alias, or hook would
+        // otherwise make these tests machine-dependent) without racing other tests' concurrently
+        // spawned git children over the process-wide environment.
+        String::from_utf8(
+            diff::run_with_env(
+                &self.0,
+                "git",
+                args,
+                &[
+                    ("GIT_CONFIG_GLOBAL", "/dev/null"),
+                    ("GIT_CONFIG_SYSTEM", "/dev/null"),
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap()
     }
     fn write(&self, path: &str, text: &str) {
         std::fs::write(self.0.join(path), text).unwrap();
