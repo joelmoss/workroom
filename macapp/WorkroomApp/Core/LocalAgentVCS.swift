@@ -29,6 +29,16 @@ actor LocalAgentVCS {
   }
 
   func reader(context: RepositoryContext) async throws -> VCSProviding {
+    try await ensureConnected(for: context)
+    return try await manager.reader(context: context)
+  }
+
+  func writer(context: RepositoryContext) async throws -> VCSWriting {
+    try await ensureConnected(for: context)
+    return try await manager.writer(context: context)
+  }
+
+  private func ensureConnected(for context: RepositoryContext) async throws {
     guard context.location.host == .local else { throw HostConnectionError.mismatchedContext }
     try Task.checkCancellation()
     // Captured as local lets: plain Sendable values, so the nested closures below (some running on
@@ -91,6 +101,5 @@ actor LocalAgentVCS {
       }
     }
     try Task.checkCancellation()
-    return try await manager.reader(context: context)
   }
 }

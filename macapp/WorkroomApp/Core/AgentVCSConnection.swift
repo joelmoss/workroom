@@ -22,6 +22,16 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// arrive. Tracked so a late reply drains harmlessly instead of `receive()` treating an unknown
   /// stream id as a protocol violation and tearing down every OTHER in-flight request too.
   private var abandoned: Set<UInt32> = []
+  /// Negotiated once in `connect()`, before this connection is shared with any other caller.
+  /// `writes` is absent on a still-running pre-upgrade agent that answers `reads` but has no VCS
+  /// write service at all — `writer(context:reader:)` treats that as `VCSError.backendVersion`,
+  /// the same signal `RepositoryRouter` already falls back to native writes on.
+  private var _capabilities: AgentVCSCapabilities?
+  private var capabilities: AgentVCSCapabilities? { lock.withLock { _capabilities } }
+  /// The write methods `LocalVCSWriting` declares — matches wr-agent's `"writes"` capability count
+  /// (`vcs.rs`'s `capabilities` reply). Kept as one literal so a protocol change updates both ends
+  /// deliberately rather than by coincidence.
+  private static let writeMethodCount = 8
 
   private init(host: HostID, descriptor: Int32) {
     self.host = host
@@ -95,6 +105,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       guard capabilities.version == 1, capabilities.reads == 9 else {
         throw HostConnectionError.serviceUnavailable("Agent does not support these VCS reads.")
       }
+      // Not yet shared with any other caller, so a plain lock-guarded write is enough — no
+      // concurrent reader can observe a half-set value.
+      connection.lock.withLock { connection._capabilities = capabilities }
       return connection
     } catch {
       await connection.close()
@@ -108,22 +121,49 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     return AgentVCSReader(context: context, connection: self)
   }
 
+  /// `reader` is the SAME agent-routed `VCSProviding` `HostConnectionManager.writer(context:)` just
+  /// built — threaded through rather than reconstructed so `CLIVCSWriter.remoteState`'s `currentRef`
+  /// read goes through the agent too (`AgentCurrentRefProvider`), not a fresh native process. A
+  /// still-running pre-upgrade agent has no write service at all; that is reported the same way an
+  /// unsupported read version is, so `RepositoryRouter` falls back to native writes rather than
+  /// leaving the repository unwritable.
   func writer(context: RepositoryContext, reader: VCSProviding) throws -> VCSWriting {
-    throw RepositoryRoutingError.unavailable(context.location.host)
+    guard context.location.host == host else { throw HostConnectionError.mismatchedContext }
+    guard lock.withLock({ !closed }) else { throw HostConnectionError.connectionLost }
+    guard capabilities?.writes == Self.writeMethodCount else {
+      throw VCSError.backendVersion("Agent does not support VCS writes.")
+    }
+    let engine = CLIVCSWriter(
+      vcs: context.backend.rawValue, runner: AgentCommandRunner(connection: self),
+      makeProvider: { _ in AgentCurrentRefProvider(reader: reader) }, gate: .shared)
+    return try BoundLocalWriter(context: context, reader: reader, writer: engine)
   }
 
   func close() async { fail(HostConnectionError.connectionLost) }
 
-  func request(_ request: AgentVCSRequest, timeout: TimeInterval = 30) async throws -> Data {
+  func request<Request: Encodable>(_ request: Request, timeout: TimeInterval = 30) async throws
+    -> Data
+  {
     try Task.checkCancellation()
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase
     let bytes = try encoder.encode(request)
+    // Matches the protocol's own per-envelope ceiling (`MAX_ENVELOPE_PAYLOAD` in
+    // `protocol/envelope.rs`) — requests are sent as ONE envelope, never chunked the way replies
+    // are, so raising this alone would only trade a typed `.partialData` failure here for a raw
+    // protocol violation there. A commit selecting many thousands of long paths (an `AgentExecRequest`
+    // stdin payload, `CLIVCSWriter`'s NUL-separated pathspec) could in principle exceed this; that
+    // would need real request chunking to lift, and is accepted as a known limit for now.
     guard bytes.count <= 1 << 20 else { throw VCSError.partialData("VCS request is too large.") }
     let cancellation = RequestCancellationBox()
     return try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
         let stream: UInt32? = lock.withLock {
+          // ponytail: one 32-slot pool shared by every read AND write on this connection, app-wide.
+          // A write can now legitimately hold a slot for minutes (`commitTimeout` = 600s), where only
+          // reads (seconds at most) used to compete for these slots. Exhausting the pool degrades to
+          // `.connectionLost` for the next caller rather than a distinct backpressure signal. Split
+          // reads and writes onto separate pools/connections if this is ever observed in practice.
           guard !closed, nextStream < UInt32.max, pending.count < 32 else { return nil }
           let stream = nextStream
           nextStream += 1
@@ -258,6 +298,8 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
 struct AgentVCSCapabilities: Decodable {
   let version: Int
   let reads: Int
+  /// Absent on a still-running pre-upgrade agent that predates the VCS write service.
+  let writes: Int?
 }
 
 struct AgentVCSRequest: Encodable, Sendable {

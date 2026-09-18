@@ -79,6 +79,20 @@ final class AgentVCSIntegrationTests: XCTestCase {
     try router.register(.init(location: location, backend: backend, sharedLocation: location))
     return (router, location)
   }
+  /// As `router(root:backend:connection:)`, but also wires `localWriter` — the write-path tests'
+  /// analogue of `reader(for:)`'s existing coverage.
+  private func writingRouter(
+    root: URL, backend: RepositoryBackend, connection: AgentVCSConnection
+  ) async throws -> (RepositoryRouter, RepositoryLocation) {
+    let location = try await RepositoryLocation.local(root.path)
+    let router = RepositoryRouter(
+      localReader: { try connection.reader(context: $0) },
+      localWriter: { context in
+        try connection.writer(context: context, reader: try connection.reader(context: context))
+      })
+    try router.register(.init(location: location, backend: backend, sharedLocation: location))
+    return (router, location)
+  }
 
   func testAllNineGitReadsMatchNativeProvider() async throws {
     let root = try gitRepo()
@@ -504,5 +518,180 @@ final class AgentVCSIntegrationTests: XCTestCase {
     XCTAssertEqual(refs.3.name, "main")
     XCTAssertEqual(
       attempts.value(), 1, "four concurrent callers must coalesce onto one connect attempt")
+  }
+
+  // MARK: - Writes (#205)
+
+  func testGitCommitRoutesThroughTheAgentAndMatchesNativeReads() async throws {
+    let root = try gitRepo()
+    try "second\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    let connection = try await connect()
+    let (router, location) = try await writingRouter(
+      root: root, backend: .git, connection: connection)
+    let writer = try await router.writer(for: location)
+    let result = await writer.commit(
+      request: VCSCommitRequest(
+        message: "agent commit",
+        files: [ChangedFile(path: "file", change: .modified, oldPath: nil)],
+        mode: .commit))
+    guard case .ok(_, let revision) = result else {
+      XCTFail("commit failed: \(result)")
+      return
+    }
+    XCTAssertNotNil(revision)
+    let reader = try await router.reader(for: location)
+    let native = BoundLocalReader(context: reader.context, provider: GitProvider())
+    let page = try await native.log(limit: 1)
+    XCTAssertEqual(page.commits.first?.summary, "agent commit")
+    XCTAssertEqual(page.commits.first?.commitID, revision)
+    await connection.close()
+  }
+
+  /// The property the whole design leans on: the agent-backed writer's `jj commit` runs inside the
+  /// SAME `JJSnapshotGate`/`JJProcessBarrier` a native writer would, and the agent's own exec
+  /// service must never try to take that barrier a second time — see `vcs.rs`'s
+  /// `exec_never_contends_with_a_held_snapshot_barrier` for the Rust-side proof of the same
+  /// property. If this ever regressed, the commit below would hang for up to 30s and fail the test
+  /// on timeout instead of completing.
+  func testJJCommitRoutesThroughTheAgentWithoutContendingItsOwnSnapshotBarrier() async throws {
+    let root = try root()
+    try run("jj", ["git", "init", "--colocate"], at: root)
+    try "base\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    try run("jj", ["commit", "-m", "initial"], at: root)
+    try "changed\n".write(
+      to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    let connection = try await connect()
+    let (router, location) = try await writingRouter(
+      root: root, backend: .jj, connection: connection)
+    let writer = try await router.writer(for: location)
+    let result = await writer.commit(
+      request: VCSCommitRequest(message: "agent jj commit", files: [], mode: .commit))
+    guard case .ok = result else {
+      XCTFail("jj commit failed: \(result)")
+      return
+    }
+    let reader = try await router.reader(for: location)
+    let status = try await reader.workingStatus()
+    XCTAssertEqual(status.dirty, false)
+    let page = try await reader.log(limit: 5)
+    XCTAssertTrue(page.commits.contains { $0.summary == "agent jj commit" })
+    await connection.close()
+  }
+
+  func testPushAndPullRouteThroughTheAgentAgainstARealRemote() async throws {
+    let root = try gitRepo()
+    let bareRemote = try self.root()
+    try run("git", ["init", "--bare", "-b", "main"], at: bareRemote)
+    try run("git", ["remote", "add", "origin", bareRemote.path], at: root)
+    let connection = try await connect()
+    let (router, location) = try await writingRouter(
+      root: root, backend: .git, connection: connection)
+    let writer = try await router.writer(for: location)
+    let pushed = await writer.push(
+      current: VCSRef(name: "main", kind: .branch), remote: "origin", setUpstream: true,
+      anonymousRevision: "")
+    guard case .ok = pushed else {
+      XCTFail("push failed: \(pushed)")
+      return
+    }
+    let remoteHead = try run("git", ["rev-parse", "main"], at: bareRemote)
+    let localHead = try run("git", ["rev-parse", "HEAD"], at: root)
+    XCTAssertEqual(remoteHead, localHead)
+
+    // A second clone pushes a new commit, so this workroom's `fetch`/`pullRebase` have something
+    // real to bring in.
+    let secondClone = try self.root()
+    try run("git", ["clone", bareRemote.path, "."], at: secondClone)
+    try run("git", ["config", "user.name", "Test"], at: secondClone)
+    try run("git", ["config", "user.email", "test@example.com"], at: secondClone)
+    try "from-second-clone\n".write(
+      to: secondClone.appendingPathComponent("other"), atomically: true, encoding: .utf8)
+    try run("git", ["add", "."], at: secondClone)
+    try run("git", ["commit", "-m", "from second clone"], at: secondClone)
+    try run("git", ["push", "origin", "main"], at: secondClone)
+
+    let pulled = await writer.pullRebase(
+      current: VCSRef(name: "main", kind: .branch), remote: "origin",
+      tracking: VCSTracking(comparedTo: "origin/main", ahead: 0, behind: 1, gone: false))
+    guard case .ok = pulled else {
+      XCTFail("pull failed: \(pulled)")
+      return
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("other").path))
+    await connection.close()
+  }
+
+  /// Selecting a tracked file with no actual diff against `HEAD` classifies as `.nothingToCommit` —
+  /// proving a specific, named failure (not just success/failure) survives the wire byte-for-byte,
+  /// since it depends on git's own exit code AND stderr text reaching `CLIVCSWriter.classifyCommit`
+  /// unmodified.
+  func testAFailingAgentCommitClassifiesExactlyAsTheNativeWriterWould() async throws {
+    let root = try gitRepo()
+    let connection = try await connect()
+    let (router, location) = try await writingRouter(
+      root: root, backend: .git, connection: connection)
+    let writer = try await router.writer(for: location)
+    let result = await writer.commit(
+      request: VCSCommitRequest(
+        message: "nothing changed",
+        files: [ChangedFile(path: "file", change: .modified, oldPath: nil)], mode: .commit))
+    guard case .failed(.nothingToCommit) = result else {
+      XCTFail("expected .nothingToCommit, got \(result)")
+      return
+    }
+    await connection.close()
+  }
+
+  /// Mirrors `testAgentPredatingVCSSupportFallsBackToNativeReads`: a still-running pre-upgrade
+  /// agent answers `capabilities` with no `writes` field at all, and `RepositoryRouter` must serve
+  /// the write natively rather than leaving the repository unwritable.
+  func testAgentPredatingVCSWriteSupportFallsBackToNativeWrites() async throws {
+    let root = try gitRepo()
+    try "second\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    let location = try await RepositoryLocation.local(root.path)
+    let router = RepositoryRouter(
+      localReader: { _ in throw VCSError.backendVersion("Agent predates VCS support.") },
+      localWriter: { _ in throw VCSError.backendVersion("Agent predates VCS write support.") })
+    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    let writer = try await router.writer(for: location)
+    let result = await writer.commit(
+      request: VCSCommitRequest(
+        message: "native fallback commit",
+        files: [ChangedFile(path: "file", change: .modified, oldPath: nil)], mode: .commit))
+    guard case .ok = result else {
+      XCTFail("native fallback commit failed: \(result)")
+      return
+    }
+  }
+
+  /// The realistic shape of `testAgentPredatingVCSWriteSupportFallsBackToNativeWrites`'s scenario:
+  /// a running agent whose `capabilities` reply has `reads: 9` but no `writes` (or a version the
+  /// `writes` count check rejects), so `reader(for:)` resolves through the REAL agent while
+  /// `writer(for:)`'s capability check alone fails — leaving the native `CLIVCSWriter` fallback
+  /// wired to an agent-sourced `reader`, not a freshly-native one (`RepositoryLocation.swift`'s
+  /// `writer(for:)`). A code-review pass flagged that the all-native version above never exercises
+  /// this reader/writer-origin mismatch.
+  func testWriteCapabilityFallbackWorksWithAnAgentSourcedReader() async throws {
+    let root = try gitRepo()
+    try "second\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    let connection = try await connect()
+    let location = try await RepositoryLocation.local(root.path)
+    let router = RepositoryRouter(
+      localReader: { try connection.reader(context: $0) },
+      localWriter: { _ in throw VCSError.backendVersion("Agent predates VCS write support.") })
+    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    // Confirms the reader really is agent-backed, not incidentally also falling back.
+    let ref = try await router.reader(for: location).currentRef()
+    XCTAssertEqual(ref.name, "main")
+    let writer = try await router.writer(for: location)
+    let result = await writer.commit(
+      request: VCSCommitRequest(
+        message: "mixed-origin fallback commit",
+        files: [ChangedFile(path: "file", change: .modified, oldPath: nil)], mode: .commit))
+    guard case .ok = result else {
+      XCTFail("mixed-origin fallback commit failed: \(result)")
+      return
+    }
+    await connection.close()
   }
 }
