@@ -1992,13 +1992,31 @@ independently.
    never takes the JJ snapshot barrier itself: `CLIVCSWriter`'s `JJSnapshotGate` already holds
    `<shared>/.jj/workroom-vcs.lock` for the whole gated write before any exec request goes out, and
    wr-agent's own `SnapshotLock` locks the identical file for its read-side snapshots — acquiring it
-   again on the write path would self-deadlock. `RepositoryRouter.writer(for:)` falls back to a
+   again on the write path would self-deadlock. That argument holds only while the client's lock
+   outlives the agent's child, so `JJSnapshotGate.run` shields the whole gated operation from task
+   cancellation once it holds the flock; unshielded, a cancelled commit released it while the agent
+   kept writing. The shield sits there rather than in the command runner deliberately: the thing
+   that holds the lock is the thing that must outlive the child, and shielding in the runner also
+   covered `remoteState`'s ungated reads, stranding connection slots on every superseded refresh.
+   Agent death mid-write is a known, documented residual (native has the same shape on app death);
+   closing it needs an operation-scoped agent-side lock with release-on-disconnect.
+   `RepositoryRouter.writer(for:)` falls back to a
    native `CLIVCSWriter` only when obtaining the writer itself fails (`VCSError.backendVersion`, a
    pre-upgrade agent with no write capability) — never mid-write, matching the read path's existing
-   fallback discipline exactly. Network commands (fetch/push/pull) forward a small allowlisted set of
-   auth env vars (`SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, etc.), resolved client-side via the same
-   `ShellEnvironment` probe a native push already depends on, rather than trusting wr-agent's own
-   (possibly stale, possibly launchd-minimal) inherited environment. A remote clone whose project
+   fallback discipline exactly. The child's environment is the app's OWN environment, sent
+   wholesale and applied over `env_clear()` agent-side (`StatusCommandRunner.childEnvironment`
+   builds the one map both paths use), not a key allowlist: wr-agent is "negotiated with, never
+   replaced", so its inherited environment is a snapshot of whichever app launch first spawned it,
+   and forwarding only `PATH` silently authored commits under that snapshot's stale
+   `GIT_AUTHOR_*`/`GIT_CONFIG_GLOBAL`/`HOME`. No allowlist could close that — what git and jj read
+   for identity, config, signing and hooks is open-ended. **That mechanism is local-only**: every
+   value in it (`SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, `HOME`, `XDG_CONFIG_HOME`) is a path into the
+   client's own filesystem, meaningless over a remote transport — how a remote host resolves
+   identity and auth is an open question for Phase 3, not a thing this milestone answers. Equally
+   local-only: the `git`/`jj` `executable` enum is not a containment boundary (argv is unvalidated,
+   and `git` with arbitrary argv is arbitrary code execution), which is acceptable only because the
+   transport is a same-user socket whose callers could spawn a shell anyway. Any Phase 3 transport
+   carrying this service must authenticate its peer to shell grade, not repository grade. A remote clone whose project
    root and workroom root are the same repository needs no special handling: `SnapshotLock`/
    `JJProcessBarrier` already canonicalize and compare the two, so equal roots resolve to one lock
    file. Filesystem probes `CLIVCSWriter` still runs locally (`sequencerState`, `worktreeGitDir`,

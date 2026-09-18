@@ -94,7 +94,21 @@ actor JJSnapshotGate {
       let barrier = try await runBlocking { try JJProcessBarrier.acquire(repository) }
       defer { barrier?.release() }
       try Task.checkCancellation()
-      return try await operation()
+      // Shielded once the barrier is held. This is what makes the doc above — "a started native
+      // operation retains this tail until its actual completion" — true for EVERY backend rather
+      // than only by accident. It held for a native writer because a `Process` inside `runBlocking`
+      // cannot observe Swift cancellation and simply runs on. An agent-routed write does observe
+      // it: cancelling returned immediately, `defer` released the flock, and wr-agent's `jj commit`
+      // kept running with the barrier gone — letting another instance or a read-side snapshot enter
+      // the operation this gate exists to protect.
+      //
+      // Deliberately here and not in `AgentCommandRunner`: the thing that holds the lock is the
+      // thing that must outlive the child. Shielding inside the runner instead covered every
+      // command it forwards, including `remoteState`'s ungated reads, so a superseded refresh
+      // squatted one of the connection's 32 shared slots until the agent answered.
+      return try await Task.detached(priority: Task.currentPriority) {
+        try await operation()
+      }.value
     }
     tails[repository] = Task<Void, Never> { _ = try? await task.value }
     return try await withTaskCancellationHandler {

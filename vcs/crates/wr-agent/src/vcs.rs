@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::time::{Duration, Instant};
 use wr_vcs_model::{self as model, VcsError};
@@ -26,23 +26,6 @@ const MAX_HISTORY_LIMIT: usize = 10000;
 const MAX_EXEC_TIMEOUT_MS: u64 = 610_000;
 /// Per-stream cap, matching `StatusCommandRunner.maxBytes`'s default on the Swift side.
 const MAX_EXEC_STREAM: usize = 4 * 1024 * 1024;
-/// Env vars an exec request may forward to the child, resolved by the client rather than re-derived
-/// here — the agent's own inherited environment may predate the request and carry a stale value
-/// (see `AgentCommandRunner.swift`). `PATH` is always sent, from the SAME `ShellEnvironment.path()`
-/// the native writer uses via `/usr/bin/env`: wr-agent is a long-lived daemon that "is negotiated
-/// with, never replaced" (`LocalAgentVCS`), so its own inherited PATH at spawn time can predate a
-/// tool install and is never refreshed; without this, a write that would succeed natively could fail
-/// to find `git`/`jj` through an old agent. The rest is `StatusCommandRunner.networkEnvironment`'s
-/// set, sent only for a network write. Anything else in the request's `env` map is silently dropped.
-const ALLOWED_EXEC_ENV_KEYS: &[&str] = &[
-    "PATH",
-    "SSH_AUTH_SOCK",
-    "SSH_AGENT_PID",
-    "GIT_SSH_COMMAND",
-    "GIT_CONFIG_GLOBAL",
-    "XDG_CONFIG_HOME",
-    "SSH_ASKPASS_REQUIRE",
-];
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
 /// Whether any dispatched VCS request — including a JJ snapshot that owns the working-copy lock
@@ -86,14 +69,44 @@ enum Backend {
 /// and failure-classification decision (`CLIVCSWriter.classify`/`.classifyCommit`, the pathspec
 /// and refspec injection defenses, the retry/abort taxonomy) stays in Swift and sees exactly the
 /// bytes it would see from a local `git`/`jj` — this is deliberately NOT a reimplementation of
-/// commit/push/pull semantics, so criterion 2 ("typed failures... match pre-agent behavior
-/// exactly") holds by construction rather than by keeping two classifiers in sync.
+/// commit/push/pull semantics.
+///
+/// One untouched classifier is necessary for criterion 2 ("typed failures... match pre-agent
+/// behavior exactly") and was not sufficient: a review found it reached OPPOSITE verdicts because
+/// the two paths fed it different input. Identical output needs three things, all now true —
+/// the child sees the same environment (`env_clear` below), a missing tool exits 127 rather than
+/// failing to spawn (`/usr/bin/env`), and a transport failure is not reported as "never ran"
+/// (`AgentCommandRunner.outcomeUnknown`). One documented gap remains: an outcome-unknown result is
+/// still offered a Retry, because suppressing it needs a new `VCSRemoteFailure` case.
 ///
 /// **Never acquires `SnapshotLock`.** A caller that needs the JJ working-copy barrier for a
 /// mutating command already holds it — `CLIVCSWriter`'s `gate: JJSnapshotGate` takes the same
 /// `<shared>/.jj/workroom-vcs.lock` flock (`JJProcessBarrier`, shared by name with `SnapshotLock`
 /// above) for the whole gated operation before any exec request goes out. Taking it again here
 /// would self-deadlock the same actor for 30s and then fail as `LockContention`.
+///
+/// That argument holds only while the CLIENT's lock outlives this child, which is why
+/// `JJSnapshotGate.run` shields the whole gated operation from task cancellation once it holds the
+/// flock: unshielded, a cancelled commit returned at once and released it while this `jj commit`
+/// kept running, letting another instance or a read-side snapshot enter the supposedly protected
+/// operation. Known residual: if the AGENT dies mid-write the gate is released with the child
+/// potentially still alive. Native has the same shape on app death. Closing it needs an
+/// operation-scoped lock here with release-on-disconnect, which is a protocol change, not a patch.
+///
+/// **The child's environment is the request's `env`, wholesale** (`env_clear` in `run_exec`), never
+/// this daemon's own. wr-agent is "negotiated with, never replaced", so its inherited environment is
+/// a snapshot of whichever app launch first spawned it; an agent-routed commit was picking up that
+/// snapshot's `GIT_AUTHOR_*`/`GIT_CONFIG_GLOBAL`/`HOME` and authoring under a stale identity. A key
+/// allowlist could not fix it — what git and jj read for identity, config, signing and hooks is
+/// open-ended — so `StatusCommandRunner.childEnvironment` builds one map for both paths.
+///
+/// **`args` is unvalidated and the `git`/`jj` `executable` enum is NOT a containment boundary.**
+/// `git` with arbitrary argv is arbitrary code execution (`-c alias.x='!…'`, `-c core.hooksPath=…`,
+/// `--exec-path`), the request's `PATH` decides which binary resolves, and `GIT_SSH_COMMAND` and the
+/// config paths in `env` are further routes. That is acceptable only because the sole transport
+/// today is a same-user unix socket, where every reachable caller could already spawn a shell
+/// itself. Any transport that is not that — Phase 3's remote relay above all — must authenticate its
+/// peer to SHELL grade, not repository grade, before carrying this service.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExecRequest {
@@ -290,20 +303,26 @@ struct Captured {
 /// Drain a pipe to EOF on its own thread (mirrors `StatusCommandRunner.readCapped`): a blocking
 /// read is safe here because it runs off the thread that watches for timeout/exit, and keeps
 /// draining past `cap` so the child can never block on a full pipe buffer.
-fn drain_capped(mut source: impl Read, cap: usize) -> Vec<u8> {
-    let mut collected = Vec::new();
+///
+/// Publishes into a shared sink rather than returning, so `run_exec` can take what has drained so
+/// far WITHOUT joining this thread. That matters because this thread can block forever: a
+/// descendant that inherited the pipe (an ssh `ControlPersist` master, a daemonising credential
+/// helper, gpg-agent auto-launched by `commit -S`) holds the write end open after the child is
+/// reaped, and `setsid` puts it outside the process group `run_exec` signals.
+fn drain_capped(mut source: impl Read, cap: usize, sink: &Mutex<Vec<u8>>) {
     let mut chunk = [0u8; 65536];
     loop {
         match source.read(&mut chunk) {
-            Ok(0) => return collected,
+            Ok(0) => return,
             Ok(count) => {
+                let mut collected = sink.lock().unwrap_or_else(|e| e.into_inner());
                 if collected.len() < cap {
                     let take = (cap - collected.len()).min(count);
                     collected.extend_from_slice(&chunk[..take]);
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => return collected,
+            Err(_) => return,
         }
     }
 }
@@ -321,8 +340,19 @@ fn run_exec(
     stdin: Option<&[u8]>,
     env: &[(&str, &str)],
 ) -> model::Result<Captured> {
-    let mut command = Command::new(executable);
+    // `/usr/bin/env <executable>`, byte-for-byte what native does
+    // (`StatusCommandRunner.run`: `proc.executableURL = /usr/bin/env`). Not a style choice — it is
+    // what makes a MISSING tool exit 127 (`env` ran and searched PATH) instead of failing to spawn.
+    // Spawning the program directly made that an Io error, which the client reported as
+    // `launchFailed`, the value whose own doc reserves it for "nothing ran" and warns it would
+    // "misdiagnose a deleted workroom as a missing git/jj/gh". Mapping `ErrorKind::NotFound` to 127
+    // by hand could not fix it either: `posix_spawn` returns ENOENT for a missing cwd AND a missing
+    // executable, so the two stay indistinguishable. Letting `env` do the lookup makes 127/126 its
+    // real exit codes, and narrows a spawn failure here to the cases that genuinely never ran — a
+    // vanished cwd, or `/usr/bin/env` itself being absent.
+    let mut command = Command::new("/usr/bin/env");
     command
+        .arg(executable)
         .current_dir(dir)
         .args(args)
         .stdin(if stdin.is_some() {
@@ -333,28 +363,17 @@ fn run_exec(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0)
-        // Same baseline as every other subprocess in this codebase (`StatusCommandRunner.run`,
-        // `wr_vcs_git::diff::run_bounded`): disable git's own lock-contention retries and terminal
-        // prompting, and pin the message locale so Swift's stderr-substring classifiers keep working.
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        // A workroom can be a clone of an untrusted repo; never run an inherited external-diff/askpass
-        // helper or reach for a graphical prompt this headless agent has no display for.
-        .env_remove("GIT_EXTERNAL_DIFF")
-        .env_remove("SSH_ASKPASS")
-        .env_remove("DISPLAY")
+        // `env_clear` first, then adopt the request's map wholesale: the child must see EXACTLY the
+        // environment `StatusCommandRunner.childEnvironment` built in the app, never this daemon's
+        // own. wr-agent is "negotiated with, never replaced", so its inherited environment is a
+        // snapshot of whichever app launch first spawned it — an agent-routed commit was picking up
+        // that snapshot's `GIT_AUTHOR_*`/`GIT_CONFIG_GLOBAL`/`HOME` and authoring under a stale
+        // identity. A key allowlist could not fix that: what git and jj read for identity, config,
+        // signing and hooks is open-ended. That one function also applies this codebase's subprocess
+        // baseline (`GIT_OPTIONAL_LOCKS`, `GIT_TERMINAL_PROMPT`, `LC_ALL=C`, and the removal of
+        // `GIT_EXTERNAL_DIFF` and the `GIT_DIR` family) so both paths get it from one place.
+        .env_clear()
         .envs(env.iter().copied());
-    for key in [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    ] {
-        command.env_remove(key);
-    }
     let mut child = command.spawn().map_err(io)?;
 
     if let Some(payload) = stdin {
@@ -370,13 +389,22 @@ fn run_exec(
 
     let stdout_pipe = child.stdout.take().expect("piped stdout");
     let stderr_pipe = child.stderr.take().expect("piped stderr");
-    let out = std::thread::spawn(move || drain_capped(stdout_pipe, MAX_EXEC_STREAM));
-    let err = std::thread::spawn(move || drain_capped(stderr_pipe, MAX_EXEC_STREAM));
+    let out_sink = Arc::new(Mutex::new(Vec::new()));
+    let err_sink = Arc::new(Mutex::new(Vec::new()));
+    let out = {
+        let sink = Arc::clone(&out_sink);
+        std::thread::spawn(move || drain_capped(stdout_pipe, MAX_EXEC_STREAM, &sink))
+    };
+    let err = {
+        let sink = Arc::clone(&err_sink);
+        std::thread::spawn(move || drain_capped(stderr_pipe, MAX_EXEC_STREAM, &sink))
+    };
 
     let pid = child.id() as i32;
     let start = Instant::now();
     let mut timed_out = false;
     let mut sent_term = false;
+    let mut sent_kill = false;
     let status = 'wait: loop {
         if let Ok(Some(status)) = child.try_wait() {
             break 'wait status;
@@ -388,32 +416,66 @@ fn run_exec(
                 sent_term = true;
                 unsafe { libc::kill(-pid, libc::SIGTERM) };
             } else if elapsed >= timeout + Duration::from_secs(2) {
+                sent_kill = true;
                 unsafe { libc::kill(-pid, libc::SIGKILL) };
                 break 'wait child.wait().map_err(io)?;
             }
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    let stdout = out.join().map_err(|_| io("stdout reader panicked"))?;
-    let stderr = err.join().map_err(|_| io("stderr reader panicked"))?;
+    // Two independent jobs, deliberately not fused. Fusing them (escalate only while a reader is
+    // still running) let a timed-out descendant survive: if it redirects stdout/stderr, both readers
+    // finish, the drain loop exits, and the SIGKILL never fires — leaving it free to keep modifying
+    // the repository after this result releases the caller's gate.
+    //
+    // 1. Timeout escalation. The wait loop above already SIGKILLs when the LEADER outlives the
+    //    grace; this covers the leader exiting promptly on SIGTERM while group members do not. The
+    //    remaining grace is honoured rather than skipped — `git`/`jj` can exit on SIGTERM while a
+    //    hook is still cleaning up, and cutting that short can leave hook-owned locks behind
+    //    (`CLIVCSWriter.commitTimeout`: "Killing a commit is categorically more dangerous than
+    //    killing a fetch"). Never on a normal exit: killing the group because a reader thread has
+    //    not been scheduled yet would kill a hook's legitimate background work, measured at ~1.5% of
+    //    successful large-output runs.
+    //
+    //    Like native's `ProcessTree.killTree` at `timeout + 2`, this signals a pid that has already
+    //    been reaped, so it carries the same (small, unavoidable) PID-reuse window. It reaches only
+    //    the process group; a descendant that `setsid`s escapes both this and native.
+    if timed_out && !sent_kill {
+        let kill_at = start + timeout + Duration::from_secs(2);
+        while Instant::now() < kill_at {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
+    }
+    // 2. Drain bound, mirroring `StatusCommandRunner`'s `_ = drain.wait(timeout: .now() + 2)` and
+    //    for the reason its comment gives: a descendant that inherited the pipe can hold the write
+    //    end open after the child is reaped, so joining unconditionally would block forever. Forever
+    //    is not merely a hung request here — this thread is the one `dispatch` spawned, so its
+    //    `Permit` never drops, one of the 32 `ACTIVE` slots shared with every read leaks, and
+    //    `is_busy()` stays true so the daemon never idle-exits either. After the deadline we take
+    //    what drained and DETACH the readers; each exits on its own when the descendant finally
+    //    closes the pipe, writing into a sink nobody reads. That costs a thread and up to 4 MiB per
+    //    occurrence, which is bounded per call and vastly better than leaking a permit.
+    let drained_by = Instant::now() + Duration::from_secs(2);
+    while !(out.is_finished() && err.is_finished()) && Instant::now() < drained_by {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let take = |sink: &Mutex<Vec<u8>>| {
+        std::mem::take(&mut *sink.lock().unwrap_or_else(|e| e.into_inner()))
+    };
     Ok(Captured {
-        stdout,
-        stderr,
+        stdout: take(&out_sink),
+        stderr: take(&err_sink),
+        // Never -1: that value IS `CommandResult.launchFailed` in Swift ("nothing ran"), and a
+        // process that got this far demonstrably ran. `code()` is None only when signaled, and a
+        // signaled status always carries a signal number, so the fallback is unreachable — pinned
+        // to 128+SIGKILL (the shell's own convention) rather than to a Swift sentinel.
         exit_code: status
             .code()
-            .unwrap_or_else(|| status.signal().unwrap_or(-1)),
+            .unwrap_or_else(|| status.signal().unwrap_or(137)),
         timed_out,
         signaled: status.signal().is_some(),
     })
-}
-
-/// Keep only the env vars an exec request is allowed to set — see `ALLOWED_EXEC_ENV_KEYS`. Pure,
-/// so the allowlist itself is unit-testable without spawning anything.
-fn filter_exec_env(env: &std::collections::BTreeMap<String, String>) -> Vec<(&str, &str)> {
-    env.iter()
-        .filter(|(key, _)| ALLOWED_EXEC_ENV_KEYS.contains(&key.as_str()))
-        .map(|(key, value)| (key.as_str(), value.as_str()))
-        .collect()
 }
 
 /// The exact inverse of `AgentCommandRunner.swift`'s `String(data:encoding:.isoLatin1)` — see
@@ -444,7 +506,7 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
     }
     let dir = absolute(&dir)?;
     let timeout = Duration::from_millis(timeout_ms.clamp(1, MAX_EXEC_TIMEOUT_MS));
-    let env = filter_exec_env(&env);
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let stdin = stdin.as_deref().map(latin1_bytes).transpose()?;
     let captured = run_exec(
         &dir,
@@ -934,32 +996,15 @@ mod tests {
         assert_eq!(reply["result"]["writes"], 8);
     }
 
+    /// The child's environment is EXACTLY the request's map — nothing of the daemon's own leaks
+    /// through. This is the property that keeps an agent-routed commit from being authored under
+    /// the stale identity of whichever app launch first spawned this daemon; a key allowlist could
+    /// not provide it, because what git and jj read for identity, config, signing and hooks is
+    /// open-ended. `env` (not in the git/jj allowlist) goes through `run_exec` directly, bypassing
+    /// `exec`'s executable restriction, specifically to observe what reaches the child.
     #[test]
-    fn filter_exec_env_drops_everything_outside_the_allowlist() {
-        let mut env = std::collections::BTreeMap::new();
-        env.insert("SSH_AUTH_SOCK".to_string(), "/tmp/agent.sock".to_string());
-        env.insert(
-            "WORKROOM_NOT_ALLOWED".to_string(),
-            "should-not-pass".to_string(),
-        );
-        // PATH is allowlisted deliberately (see `ALLOWED_EXEC_ENV_KEYS`'s doc) so an agent-routed
-        // write can find a `git`/`jj` install its own long-lived process predates.
-        env.insert("PATH".to_string(), "/usr/local/bin:/usr/bin".to_string());
-        let filtered = filter_exec_env(&env);
-        assert_eq!(
-            filtered,
-            vec![
-                ("PATH", "/usr/local/bin:/usr/bin"),
-                ("SSH_AUTH_SOCK", "/tmp/agent.sock")
-            ]
-        );
-    }
-
-    #[test]
-    fn run_exec_only_applies_the_env_pairs_it_is_given() {
-        // `env` (not in the git/jj allowlist) is used directly via `run_exec`, bypassing `exec`'s
-        // executable restriction, specifically to observe what actually reaches the child — the
-        // allowlist filter itself is `filter_exec_env`'s job, covered above.
+    fn run_exec_replaces_the_daemons_environment_with_the_requests() {
+        std::env::set_var("WORKROOM_DAEMON_ONLY", "stale-daemon-value");
         let root = git_repo("run-exec-env");
         let captured = run_exec(
             &root,
@@ -967,12 +1012,88 @@ mod tests {
             &[],
             Duration::from_secs(5),
             None,
-            &[("SSH_AUTH_SOCK", "/tmp/allowed.sock")],
+            &[
+                ("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                ("SSH_AUTH_SOCK", "/tmp/allowed.sock"),
+                ("GIT_AUTHOR_EMAIL", "fresh@example.com"),
+            ],
         )
         .unwrap();
         let stdout = String::from_utf8_lossy(&captured.stdout);
         assert!(stdout.contains("SSH_AUTH_SOCK=/tmp/allowed.sock"));
-        assert!(!stdout.contains("GIT_DIR="));
+        assert!(stdout.contains("GIT_AUTHOR_EMAIL=fresh@example.com"));
+        // The daemon's own environment must not reach the child at all.
+        assert!(!stdout.contains("WORKROOM_DAEMON_ONLY"));
+        std::env::remove_var("WORKROOM_DAEMON_ONLY");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The regression that motivated bounding the drain: a child that exits promptly while leaving
+    /// a BACKGROUND descendant holding its stdout must not hold the exec thread (and with it one of
+    /// the 32 `ACTIVE` permits) for the descendant's lifetime. Before the bound, this returned in
+    /// ~4s instead of ~0s, and each occurrence leaked a permit permanently.
+    #[test]
+    fn exec_does_not_wait_on_a_descendant_that_outlives_the_child() {
+        let root = git_repo("run-exec-straggler");
+        let started = Instant::now();
+        let captured = run_exec(
+            &root,
+            "sh",
+            &["-c".to_string(), "sleep 5 & echo done; exit 0".to_string()],
+            Duration::from_secs(30),
+            None,
+            &[("PATH", "/usr/bin:/bin")],
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(captured.exit_code, 0);
+        assert!(!captured.timed_out);
+        assert!(String::from_utf8_lossy(&captured.stdout).contains("done"));
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "run_exec waited {elapsed:?} on a background descendant"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Native spawns `/usr/bin/env git`, so a missing tool exits 127 and `CLIVCSWriter.classify`
+    /// answers `.toolMissing`. Spawning the program directly used to raise an Io error instead,
+    /// which the client reported as `launchFailed` — the value whose own doc reserves it for
+    /// "nothing ran" and warns it would "misdiagnose a deleted workroom as a missing git/jj/gh".
+    #[test]
+    fn exec_reports_a_missing_tool_as_127_not_a_service_error() {
+        let root = git_repo("run-exec-missing");
+        let empty = root.join("empty-bin");
+        std::fs::create_dir_all(&empty).unwrap();
+        let captured = run_exec(
+            &root,
+            "git",
+            &["status".to_string()],
+            Duration::from_secs(5),
+            None,
+            &[("PATH", empty.to_str().unwrap())],
+        )
+        .unwrap();
+        assert_eq!(captured.exit_code, 127);
+        assert!(!captured.signaled);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A vanished working directory stays a service error — that IS "nothing ran", and conflating
+    /// it with 127 is the mirror of the bug above.
+    #[test]
+    fn exec_reports_a_vanished_directory_as_an_error_not_127() {
+        let root = git_repo("run-exec-gone");
+        let missing = root.join("not-there");
+        let failed = run_exec(
+            &missing,
+            "git",
+            &["status".to_string()],
+            Duration::from_secs(5),
+            None,
+            &[("PATH", "/usr/bin:/bin")],
+        );
+        assert!(failed.is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

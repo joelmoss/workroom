@@ -158,20 +158,29 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     let cancellation = RequestCancellationBox()
     return try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
-        let stream: UInt32? = lock.withLock {
+        // Two refusals, two errors. Both happen before a byte reaches the socket, but they must
+        // NOT collapse: `connect()` issues its own `capabilities` request through here, and
+        // `LocalAgentVCS` catches exactly `.connectionLost` from it to spawn the agent and retry —
+        // the stale-`session.sock` case, which is common, not exotic. Reporting a closed connection
+        // as anything else would silently stop the agent ever being started.
+        let refusal: (stream: UInt32?, error: HostConnectionError) = lock.withLock {
+          if closed { return (nil, .connectionLost) }
           // ponytail: one 32-slot pool shared by every read AND write on this connection, app-wide.
           // A write can now legitimately hold a slot for minutes (`commitTimeout` = 600s), where only
-          // reads (seconds at most) used to compete for these slots. Exhausting the pool degrades to
-          // `.connectionLost` for the next caller rather than a distinct backpressure signal. Split
-          // reads and writes onto separate pools/connections if this is ever observed in practice.
-          guard !closed, nextStream < UInt32.max, pending.count < 32 else { return nil }
+          // reads (seconds at most) used to compete for these slots. Split reads and writes onto
+          // separate pools/connections if this is ever observed in practice.
+          //
+          // `.notDispatched` rather than `.connectionLost`: backpressure is not a lost connection,
+          // and a WRITE caller can say "this definitely did not run" — the difference between a safe
+          // retry and one that double-applies a commit or a push. See `AgentCommandRunner.neverRan`.
+          guard nextStream < UInt32.max, pending.count < 32 else { return (nil, .notDispatched) }
           let stream = nextStream
           nextStream += 1
           pending[stream] = Pending(continuation: continuation)
-          return stream
+          return (stream, .notDispatched)
         }
-        guard let stream else {
-          continuation.resume(throwing: HostConnectionError.connectionLost)
+        guard let stream = refusal.stream else {
+          continuation.resume(throwing: refusal.error)
           return
         }
         // Registered only after `stream` is in `pending`, so an already-cancelled caller (Swift
