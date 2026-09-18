@@ -23,15 +23,14 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// stream id as a protocol violation and tearing down every OTHER in-flight request too.
   private var abandoned: Set<UInt32> = []
   /// Negotiated once in `connect()`, before this connection is shared with any other caller.
-  /// `writes` is absent on a still-running pre-upgrade agent that answers `reads` but has no VCS
+  /// `exec` is absent on a still-running pre-upgrade agent that answers `reads` but has no VCS
   /// write service at all — `writer(context:reader:)` treats that as `VCSError.backendVersion`,
   /// the same signal `RepositoryRouter` already falls back to native writes on.
   private var _capabilities: AgentVCSCapabilities?
   private var capabilities: AgentVCSCapabilities? { lock.withLock { _capabilities } }
-  /// The write methods `LocalVCSWriting` declares — matches wr-agent's `"writes"` capability count
-  /// (`vcs.rs`'s `capabilities` reply). Kept as one literal so a protocol change updates both ends
-  /// deliberately rather than by coincidence.
-  private static let writeMethodCount = 8
+  /// The exec wire version this client speaks — the literal `AgentExecRequest.version` it sends, so
+  /// the two cannot drift.
+  private static let execVersion = 1
 
   private init(host: HostID, descriptor: Int32) {
     self.host = host
@@ -130,7 +129,11 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   func writer(context: RepositoryContext, reader: VCSProviding) throws -> VCSWriting {
     guard context.location.host == host else { throw HostConnectionError.mismatchedContext }
     guard lock.withLock({ !closed }) else { throw HostConnectionError.connectionLost }
-    guard capabilities?.writes == Self.writeMethodCount else {
+    // Presence and version of the SERVICE, not a count of the caller's own methods. `>=` rather
+    // than `==` so an agent that gains a version 2 does not refuse a client speaking 1 — the agent
+    // is what decides whether it still accepts this request, and it answers that on the request
+    // itself (`exec`'s `version != 1` guard), which is the only place that can know.
+    guard let exec = capabilities?.exec, exec >= Self.execVersion else {
       throw VCSError.backendVersion("Agent does not support VCS writes.")
     }
     let engine = CLIVCSWriter(
@@ -307,8 +310,16 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
 struct AgentVCSCapabilities: Decodable {
   let version: Int
   let reads: Int
-  /// Absent on a still-running pre-upgrade agent that predates the VCS write service.
-  let writes: Int?
+  /// The exec service's wire version, or nil on a still-running pre-upgrade agent that predates the
+  /// service entirely.
+  ///
+  /// Replaces a `writes` COUNT, which counted methods on `LocalVCSWriting` — a protocol that exists
+  /// only in this process. wr-agent implements one generic exec service and never had eight write
+  /// methods to report, so the number described nothing on the answering side and nothing could keep
+  /// it true: adding a ninth method here, a change the passthrough fully supports, made the equality
+  /// check below fail against a completely capable agent and silently dropped every user to native
+  /// writes with no log line.
+  let exec: Int?
 }
 
 struct AgentVCSRequest: Encodable, Sendable {

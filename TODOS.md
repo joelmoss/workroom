@@ -1146,12 +1146,14 @@ are fixed in `ed51faa9`; each entry below was reproduced or read off the code, n
    explicitly rejected group-based kill because "helpers spawned by git/gh can outlive the parent".
    `run_exec` has only `kill(-pid, …)`. Same gap as (2), and the two share a fix.
 
-4. **`writes: 8` is not a capability.** `AgentVCSConnection.writeMethodCount` counts methods on the
-   client-only `LocalVCSWriting` protocol; wr-agent implements ONE generic exec service and does
-   nothing the number could describe. Adding a ninth method — a Swift-only change the passthrough
-   already supports — silently drops every user to native writes on a fully capable agent, with no
-   log line. Gate on the exec service's presence/version instead. (`reads: 9` is fine; those are nine
-   real agent-side methods.)
+4. ~~**`writes: 8` is not a capability.**~~ **Fixed.** The count described a CLIENT-side Swift
+   protocol (`LocalVCSWriting`); wr-agent implements one generic exec service and never had eight
+   write methods to report, so nothing could keep the number true — and the client compared it for
+   equality, so adding a ninth method there would have dropped every user to native writes on a
+   fully capable agent with no log line. Replaced by `exec`, the exec service's own wire version,
+   compared `>=` so a future version 2 doesn't refuse a client speaking 1 (the agent answers that on
+   the request itself, which is the only place that can know). (`reads: 9` is fine and stays; those
+   are nine real agent-side methods.)
 
 5. **Two caps that can't both be satisfied.** `MAX_EXEC_STREAM` is 4 MiB per stream, so two capped
    streams JSON-escaped control-heavy can exceed `MAX_RESPONSE` (16 MiB); `send` then replaces the
