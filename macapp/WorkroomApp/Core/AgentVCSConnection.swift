@@ -31,6 +31,17 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// The exec wire version this client speaks — the literal `AgentExecRequest.version` it sends, so
   /// the two cannot drift.
   private static let execVersion = 1
+  /// The first exec service version that reassembles chunked requests. Separate from `execVersion`
+  /// because it gates a FRAMING capability, not the request body: a version-1 agent speaks the same
+  /// `AgentExecRequest` and is fully usable, it just cannot be sent one in pieces.
+  private static let chunkedRequestVersion = 2
+  /// `MAX_ENVELOPE_PAYLOAD` in `protocol/envelope.rs`.
+  private static let maxEnvelopePayload = 1 << 20
+  /// `MAX_REQUEST` in `vcs.rs` — the reassembled ceiling, mirroring the reply side's.
+  private static let maxRequest = 16 * 1024 * 1024
+  /// Marks a chunked request envelope. A whole request is JSON and starts `{`, so the two are
+  /// unambiguous — see `REQUEST_CHUNK_MARKER`.
+  private static let requestChunkMarker: UInt8 = 0x02
 
   private init(host: HostID, descriptor: Int32) {
     self.host = host
@@ -155,6 +166,37 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     return try BoundLocalWriter(context: context, reader: reader, writer: engine)
   }
 
+  /// One envelope: the `Service.vcs` byte, the stream, the payload length, then the payload.
+  private static func envelope(stream: UInt32, payload: Data) -> Data {
+    var envelope = Data([2])
+    for value in [stream, UInt32(payload.count)] {
+      var value = value.bigEndian
+      withUnsafeBytes(of: &value) { envelope.append(contentsOf: $0) }
+    }
+    envelope.append(payload)
+    return envelope
+  }
+
+  /// The payloads to send for one request: exactly one, byte-identical to what shipped before, or a
+  /// marker-framed sequence when the body exceeds one envelope.
+  ///
+  /// Each chunk is `[marker][isFinal][bytes]`, so the agent knows both that this is a chunked
+  /// request and when it has all of it, without a length header it would have to trust.
+  private static func payloads(for bytes: Data, chunked: Bool) -> [Data] {
+    guard chunked else { return [bytes] }
+    let limit = maxEnvelopePayload - 2
+    var payloads: [Data] = []
+    var index = bytes.startIndex
+    while index < bytes.endIndex {
+      let end = bytes.index(index, offsetBy: limit, limitedBy: bytes.endIndex) ?? bytes.endIndex
+      var payload = Data([requestChunkMarker, end == bytes.endIndex ? 1 : 0])
+      payload.append(bytes[index..<end])
+      payloads.append(payload)
+      index = end
+    }
+    return payloads
+  }
+
   func close() async { fail(HostConnectionError.connectionLost) }
 
   func request<Request: Encodable>(_ request: Request, timeout: TimeInterval = 30) async throws
@@ -164,13 +206,26 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase
     let bytes = try encoder.encode(request)
-    // Matches the protocol's own per-envelope ceiling (`MAX_ENVELOPE_PAYLOAD` in
-    // `protocol/envelope.rs`) — requests are sent as ONE envelope, never chunked the way replies
-    // are, so raising this alone would only trade a typed `.partialData` failure here for a raw
-    // protocol violation there. A commit selecting many thousands of long paths (an `AgentExecRequest`
-    // stdin payload, `CLIVCSWriter`'s NUL-separated pathspec) could in principle exceed this; that
-    // would need real request chunking to lift, and is accepted as a known limit for now.
-    guard bytes.count <= 1 << 20 else { throw VCSError.partialData("VCS request is too large.") }
+    // A request larger than the protocol's per-envelope ceiling (`MAX_ENVELOPE_PAYLOAD`) is split
+    // across envelopes on one stream — the mirror of how replies have always been chunked. What
+    // makes this reachable at all is `CLIVCSWriter`'s NUL-separated pathspec, sent as an
+    // `AgentExecRequest` stdin payload: "select all and commit" in a large repository produced a
+    // payload that worked natively (stdin exists precisely to sidestep `E2BIG`) and failed through
+    // the agent, which is a plain regression against the path it replaced.
+    //
+    // Gated on the agent's own exec version, because the framing is a wire change: a pre-chunking
+    // agent would read the marker byte as the start of a JSON document and answer with a parse
+    // error. Below the ceiling nothing changes — the envelope is byte-identical to what shipped
+    // before, so the common path pays nothing for this.
+    let chunked = bytes.count > Self.maxEnvelopePayload
+    if chunked {
+      guard let exec = capabilities?.exec, exec >= Self.chunkedRequestVersion else {
+        throw VCSError.partialData("VCS request is too large for this agent.")
+      }
+      guard bytes.count <= Self.maxRequest else {
+        throw VCSError.partialData("VCS request is too large.")
+      }
+    }
     let cancellation = RequestCancellationBox()
     return try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
@@ -208,13 +263,13 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
         }
         writes.async { [self] in
           guard lock.withLock({ !closed }) else { return }
-          var envelope = Data([2])
-          for value in [stream, UInt32(bytes.count)] {
-            var value = value.bigEndian
-            withUnsafeBytes(of: &value) { envelope.append(contentsOf: $0) }
+          do {
+            for payload in Self.payloads(for: bytes, chunked: chunked) {
+              try Self.send(descriptor, Self.envelope(stream: stream, payload: payload))
+            }
+          } catch {
+            fail(error)
           }
-          envelope.append(bytes)
-          do { try Self.send(descriptor, envelope) } catch { fail(error) }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
           self?.timeoutStream(stream, error: HostConnectionError.connectionLost)
