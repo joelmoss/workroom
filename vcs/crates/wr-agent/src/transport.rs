@@ -19,6 +19,15 @@ use std::io::{self, Read, Write};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 
+/// Ends a connection from a thread that is not the one reading it.
+///
+/// `handle_connection` learns the peer is gone by its read returning, so a thread that only WRITES
+/// (a watch subscription pushing events) cannot end the connection by itself: a failed write would
+/// otherwise leave the reader parked on a stream nobody is listening to. Calling this makes that
+/// read return, which runs the connection's normal teardown — and the client, seeing its transport
+/// drop, reconnects into a fresh generation instead of showing a panel that silently stopped updating.
+pub type Closer = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 /// A bidirectional stream the agent can serve one connection over.
 pub trait Transport {
     type Reader: Read + Send + 'static;
@@ -26,6 +35,16 @@ pub trait Transport {
 
     /// Split into halves usable from different threads.
     fn split(self) -> io::Result<(Self::Reader, Self::Writer)>;
+
+    /// A handle that ends this connection from any thread. Taken BEFORE `split`, which consumes
+    /// the transport.
+    ///
+    /// The default does nothing, which is honest for a transport that cannot be closed from the
+    /// outside (stdio, a pipe pair): there the evicting thread still drops its own subscription, and
+    /// the peer finds out when its next write fails.
+    fn closer(&self) -> Closer {
+        std::sync::Arc::new(|| {})
+    }
 }
 
 impl Transport for UnixStream {
@@ -37,6 +56,16 @@ impl Transport for UnixStream {
         // Same reason as `FdStream::writer`: a client that stops reading must not wedge the agent.
         let _ = writer.set_write_timeout(Some(WRITE_TIMEOUT));
         Ok((self, writer))
+    }
+
+    fn closer(&self) -> Closer {
+        // A clone shares the socket, so shutting it down wakes the reader on the original.
+        let handle = self.try_clone().ok();
+        std::sync::Arc::new(move || {
+            if let Some(handle) = &handle {
+                let _ = handle.shutdown(std::net::Shutdown::Both);
+            }
+        })
     }
 }
 

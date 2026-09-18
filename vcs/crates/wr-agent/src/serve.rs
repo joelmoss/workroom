@@ -145,6 +145,18 @@ impl Agent {
     }
 }
 
+/// The state the request/reply services keep for ONE connection, dropped with it.
+///
+/// Per connection, never process-wide: stream ids restart at 1 on every connect and this agent
+/// outlives the app, so a shared map would let one launch's abandoned chunks corrupt the next
+/// launch's identically-numbered request (see `PartialRequests`). And for `subscriptions` the
+/// teardown matters more than the isolation: dropping it on ANY exit from `handle_connection` stops
+/// every filesystem watcher the client started, so an OS watcher never outlives the peer it reports to.
+struct ConnectionServices {
+    partial: crate::vcs::PartialRequests,
+    subscriptions: crate::watch::Subscriptions,
+}
+
 /// Greets, negotiates, then serves envelopes until the peer goes away.
 ///
 /// Generic over the transport, which is the whole point: the driver contract is a bidirectional
@@ -155,6 +167,9 @@ pub fn handle_connection<T: Transport>(
     transport: T,
     sessions: SessionStore,
 ) -> Result<(), ProtocolError> {
+    // Before `split`, which consumes the transport: the watch service needs a way to end THIS
+    // connection from a thread that only writes.
+    let closer = transport.closer();
     let (mut reader, writer) = transport.split().map_err(|_| ProtocolError::NotAnAgent)?;
     // One writer, shared, and type-erased. A socket could be cloned instead, but a pipe or an exec
     // channel cannot, and the agent must not require a transport that can. Boxed because the
@@ -197,10 +212,10 @@ pub fn handle_connection<T: Transport>(
     let mut decoder = EnvelopeDecoder::new();
     let mut buffer = [0u8; 8192];
     let mut attached: Option<SessionId> = None;
-    // Per connection, so it dies with the connection: stream ids restart at 1 on every connect and
-    // this agent outlives the app, so a shared map would let one launch's abandoned chunks corrupt
-    // the next launch's identically-numbered request. See `PartialRequests`.
-    let mut partial = crate::vcs::PartialRequests::default();
+    let mut services = ConnectionServices {
+        partial: crate::vcs::PartialRequests::default(),
+        subscriptions: crate::watch::Subscriptions::new(Arc::clone(&writer), closer),
+    };
     // Identifies THIS attachment, so ending this connection cannot detach a client that has since
     // taken the session over.
     let mut token = 0u64;
@@ -222,7 +237,7 @@ pub fn handle_connection<T: Transport>(
                         &sessions,
                         &mut attached,
                         &mut token,
-                        &mut partial,
+                        &mut services,
                         &writer,
                         &send,
                     ) {
@@ -267,12 +282,16 @@ fn dispatch(
     sessions: &SessionStore,
     attached: &mut Option<SessionId>,
     token: &mut u64,
-    partial: &mut crate::vcs::PartialRequests,
+    services: &mut ConnectionServices,
     writer: &SharedWriter,
     send: &dyn Fn(&[u8]) -> bool,
 ) -> Option<Envelope> {
     if envelope.service == Service::Vcs {
-        crate::vcs::dispatch(partial, envelope, writer);
+        crate::vcs::dispatch(&mut services.partial, envelope, writer);
+        return None;
+    }
+    if envelope.service == Service::File {
+        crate::file::dispatch(envelope, writer, &services.subscriptions);
         return None;
     }
     if envelope.service != Service::Terminal && envelope.service != Service::Control {

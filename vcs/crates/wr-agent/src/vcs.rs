@@ -6,19 +6,19 @@ use crate::session::SharedWriter;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 use std::time::{Duration, Instant};
 use wr_vcs_model::{self as model, VcsError};
 
-const MAX_RESPONSE: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_RESPONSE: usize = 16 * 1024 * 1024;
 /// The reassembled ceiling for a CHUNKED request, mirroring `MAX_RESPONSE` on the reply side. A
 /// single-envelope request is still bounded by `MAX_ENVELOPE_PAYLOAD` (1 MiB) as before.
 const MAX_REQUEST: usize = 16 * 1024 * 1024;
@@ -71,6 +71,32 @@ const _: () = assert!(MAX_EXEC_TIMEOUT_MS > 600_000);
 /// Per-stream cap, matching `StatusCommandRunner.maxBytes`'s default on the Swift side.
 const MAX_EXEC_STREAM: usize = 4 * 1024 * 1024;
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+/// The most request-per-thread requests in flight at once, across every service that takes a
+/// `Permit`. A request past it is answered `LockContention` rather than queued.
+pub(crate) const MAX_ACTIVE: usize = 32;
+
+/// One of the `MAX_ACTIVE` slots. Held for the whole life of a request's thread, so `is_busy()`
+/// stays true until the work — not merely the reply — is finished. Shared by `Service::Vcs` and
+/// `Service::File`: one budget for every thread the agent spawns per request, so neither service
+/// can starve the other and idle-exit has a single thing to ask.
+pub(crate) struct Permit;
+
+impl Permit {
+    pub(crate) fn acquire() -> Option<Permit> {
+        ACTIVE
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_ACTIVE).then_some(count + 1)
+            })
+            .ok()
+            .map(|_| Permit)
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        ACTIVE.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 /// Whether any dispatched VCS request — including a JJ snapshot that owns the working-copy lock
 /// and rewrites `@` in-process — is still running. Consulted by `serve`'s idle-exit check: a hard
@@ -193,7 +219,7 @@ impl Executable {
     }
 }
 
-fn io(error: impl std::fmt::Display) -> VcsError {
+pub(crate) fn io(error: impl std::fmt::Display) -> VcsError {
     VcsError::Io(error.to_string())
 }
 fn required(value: &Option<String>) -> model::Result<&str> {
@@ -201,7 +227,7 @@ fn required(value: &Option<String>) -> model::Result<&str> {
         .as_deref()
         .ok_or_else(|| io("missing request parameter"))
 }
-fn absolute(value: &str) -> model::Result<PathBuf> {
+pub(crate) fn absolute(value: &str) -> model::Result<PathBuf> {
     if !value.starts_with('/')
         || value.contains('\0')
         || value.split('/').any(|s| s == "." || s == "..")
@@ -210,7 +236,7 @@ fn absolute(value: &str) -> model::Result<PathBuf> {
     }
     Ok(PathBuf::from(value))
 }
-fn relative(value: &str) -> model::Result<&str> {
+pub(crate) fn relative(value: &str) -> model::Result<&str> {
     if value.is_empty()
         || value.starts_with('/')
         || value.contains('\0')
@@ -223,9 +249,9 @@ fn relative(value: &str) -> model::Result<&str> {
 
 /// This lock belongs to actual native work, not to a socket or the caller waiting for its reply.
 /// Native app writers take the same cross-process barrier before starting a JJ operation.
-struct SnapshotLock(std::fs::File);
+pub(crate) struct SnapshotLock(std::fs::File);
 impl SnapshotLock {
-    fn acquire(root: &Path, shared: Option<&str>) -> model::Result<Self> {
+    pub(crate) fn acquire(root: &Path, shared: Option<&str>) -> model::Result<Self> {
         let shared = absolute(shared.ok_or_else(|| {
             VcsError::UnsupportedRepo("registration required for JJ snapshot".into())
         })?)?;
@@ -269,6 +295,12 @@ impl SnapshotLock {
     }
 }
 // Close, never LOCK_UN: a snapshotting CLI child may share the locked file description.
+impl SnapshotLock {
+    /// The locked descriptor, for a child that must keep the barrier alive past this process.
+    pub(crate) fn fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+}
 
 fn jj(root: &Path, args: &[&str]) -> model::Result<String> {
     String::from_utf8(wr_vcs_git::diff::run(root, "jj", args)?).map_err(io)
@@ -336,12 +368,15 @@ pub fn execute(bytes: &[u8]) -> Value {
     }
 }
 
-struct Captured {
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    exit_code: i32,
-    timed_out: bool,
-    signaled: bool,
+pub(crate) struct Captured {
+    pub(crate) stdout: Vec<u8>,
+    /// `stdout` was cut at the stream cap: the child wrote more than was kept. A truncated capture
+    /// can end mid-line, or mid-filename, so a consumer that parses it must not treat it as whole.
+    pub(crate) stdout_truncated: bool,
+    pub(crate) stderr: Vec<u8>,
+    pub(crate) exit_code: i32,
+    pub(crate) timed_out: bool,
+    pub(crate) signaled: bool,
 }
 
 /// Drain a pipe to EOF on its own thread (mirrors `StatusCommandRunner.readCapped`): a blocking
@@ -353,16 +388,29 @@ struct Captured {
 /// descendant that inherited the pipe (an ssh `ControlPersist` master, a daemonising credential
 /// helper, gpg-agent auto-launched by `commit -S`) holds the write end open after the child is
 /// reaped, and `setsid` puts it outside the process group `run_exec` signals.
-fn drain_capped(mut source: impl Read, cap: usize, sink: &Mutex<Vec<u8>>) {
+fn drain_capped(source: impl Read, cap: usize, sink: &Mutex<Vec<u8>>) {
+    drain_capped_flagged(source, cap, sink, &AtomicBool::new(false));
+}
+
+/// `drain_capped`, also raising `overflowed` the moment a byte is dropped for lack of room. A
+/// stream that ends EXACTLY at `cap` does not raise it, so the flag means "something was lost",
+/// never "the buffer is full".
+fn drain_capped_flagged(
+    mut source: impl Read,
+    cap: usize,
+    sink: &Mutex<Vec<u8>>,
+    overflowed: &AtomicBool,
+) {
     let mut chunk = [0u8; 65536];
     loop {
         match source.read(&mut chunk) {
             Ok(0) => return,
             Ok(count) => {
                 let mut collected = sink.lock().unwrap_or_else(|e| e.into_inner());
-                if collected.len() < cap {
-                    let take = (cap - collected.len()).min(count);
-                    collected.extend_from_slice(&chunk[..take]);
+                let take = cap.saturating_sub(collected.len()).min(count);
+                collected.extend_from_slice(&chunk[..take]);
+                if take < count {
+                    overflowed.store(true, Ordering::Release);
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -454,6 +502,29 @@ fn run_exec(
     stdin: Option<&[u8]>,
     env: &[(&str, &str)],
 ) -> model::Result<Captured> {
+    run_exec_with(dir, executable, args, timeout, stdin, env, None)
+}
+
+/// `run_exec`, optionally keeping `barrier` open in the child.
+///
+/// **Why the barrier must ride into the child.** `SnapshotLock`'s descriptor is CLOEXEC (Rust's
+/// default), so without this the flock lives exactly as long as the AGENT does. Agent death then
+/// frees the lock while a snapshotting `jj` child is still rewriting `@` — and the app's native
+/// writers, which take the same flock, walk straight into it. Clearing CLOEXEC in the child only
+/// (never the parent, where an exec of anything else would leak it) makes the child a co-owner of
+/// the open file description, so the lock is held until the last of them exits. It is the same
+/// mechanism as `wr_vcs_git::diff::run_with_barrier`.
+///
+/// Exec commands from the client still never pass one: the client holds its own lock across those.
+pub(crate) fn run_exec_with(
+    dir: &Path,
+    executable: &str,
+    args: &[String],
+    timeout: Duration,
+    stdin: Option<&[u8]>,
+    env: &[(&str, &str)],
+    barrier: Option<RawFd>,
+) -> model::Result<Captured> {
     // `/usr/bin/env <executable>`, byte-for-byte what native does
     // (`StatusCommandRunner.run`: `proc.executableURL = /usr/bin/env`). Not a style choice — it is
     // what makes a MISSING tool exit 127 (`env` ran and searched PATH) instead of failing to spawn.
@@ -488,6 +559,17 @@ fn run_exec(
         // `GIT_EXTERNAL_DIFF` and the `GIT_DIR` family) so both paths get it from one place.
         .env_clear()
         .envs(env.iter().copied());
+    if let Some(fd) = barrier {
+        // SAFETY: only `fcntl`, which is async-signal-safe, runs between fork and exec.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
     let mut child = command.spawn().map_err(io)?;
 
     if let Some(payload) = stdin {
@@ -505,9 +587,13 @@ fn run_exec(
     let stderr_pipe = child.stderr.take().expect("piped stderr");
     let out_sink = Arc::new(Mutex::new(Vec::new()));
     let err_sink = Arc::new(Mutex::new(Vec::new()));
+    let out_overflow = Arc::new(AtomicBool::new(false));
     let out = {
         let sink = Arc::clone(&out_sink);
-        std::thread::spawn(move || drain_capped(stdout_pipe, MAX_EXEC_STREAM, &sink))
+        let overflow = Arc::clone(&out_overflow);
+        std::thread::spawn(move || {
+            drain_capped_flagged(stdout_pipe, MAX_EXEC_STREAM, &sink, &overflow)
+        })
     };
     let err = {
         let sink = Arc::clone(&err_sink);
@@ -614,6 +700,7 @@ fn run_exec(
         });
         return Ok(Captured {
             stdout: take(&out_sink),
+            stdout_truncated: out_overflow.load(Ordering::Acquire),
             stderr: take(&err_sink),
             exit_code: 137,
             timed_out: true,
@@ -622,6 +709,7 @@ fn run_exec(
     };
     Ok(Captured {
         stdout: take(&out_sink),
+        stdout_truncated: out_overflow.load(Ordering::Acquire),
         stderr: take(&err_sink),
         // Never -1: that value IS `CommandResult.launchFailed` in Swift ("nothing ran"), and a
         // process that got this far demonstrably ran. `code()` is None only when signaled, and a
@@ -639,7 +727,7 @@ fn run_exec(
 /// the exit code, the two booleans, the envelope framing, and JSON's own punctuation. Generous on
 /// purpose — the cost of over-reserving is a few KiB of output, the cost of under-reserving is the
 /// whole reply being replaced by an error.
-const EXEC_REPLY_RESERVE: usize = 64 * 1024;
+pub(crate) const EXEC_REPLY_RESERVE: usize = 64 * 1024;
 
 /// An UPPER BOUND on what this text costs once JSON-escaped, which is what `MAX_RESPONSE` bounds.
 ///
@@ -651,7 +739,7 @@ const EXEC_REPLY_RESERVE: usize = 64 * 1024;
 /// The expansion is why the two caps could not both be satisfied: a control byte serializes as
 /// `\u0001`, six bytes for one, so two streams at `MAX_EXEC_STREAM` (4 MiB each) reach 48 MiB of
 /// wire form against a 16 MiB ceiling. Codex reproduced it with 3 MiB of `0x01`.
-fn escaped_len(text: &str) -> usize {
+pub(crate) fn escaped_len(text: &str) -> usize {
     text.chars()
         .map(|c| match c {
             '"' | '\\' | '\n' | '\r' | '\t' => 2,
@@ -897,10 +985,21 @@ fn read(request: Request) -> model::Result<Value> {
     value.map_err(io)
 }
 
-fn send(writer: &SharedWriter, stream: u32, value: Value) {
+/// Chunk a JSON reply across envelopes on `service`. Shared by every request/reply service, so the
+/// chunk marker byte and the 16 MiB ceiling exist once.
+///
+/// The oversize replacement is a `VcsError`, which is only right for `Service::Vcs`. `Service::File`
+/// bounds its own replies below the ceiling by construction (an 8 MiB read is 10.7 MiB of base64),
+/// so it never reaches this branch; `too_large` exists so that if it ever did, the client would
+/// still get an error it can decode rather than one from the wrong service.
+pub(crate) fn send(writer: &SharedWriter, service: Service, stream: u32, value: Value) {
     let mut bytes = serde_json::to_vec(&value).expect("JSON value serializes");
     if bytes.len() > MAX_RESPONSE {
-        bytes = serde_json::to_vec(&json!({"version": 1, "error": VcsError::PartialData("VCS reply exceeds 16 MiB".into())})).unwrap();
+        let error = match service {
+            Service::File => json!({"TooLarge": "File reply exceeds 16 MiB"}),
+            _ => json!(VcsError::PartialData("VCS reply exceeds 16 MiB".into())),
+        };
+        bytes = serde_json::to_vec(&json!({"version": 1, "error": error})).unwrap();
     }
     let chunks = bytes.chunks(MAX_ENVELOPE_PAYLOAD - 1);
     let count = chunks.len();
@@ -911,7 +1010,7 @@ fn send(writer: &SharedWriter, stream: u32, value: Value) {
             return;
         };
         if writer
-            .write_all(&Envelope::new(Service::Vcs, stream, payload).encode())
+            .write_all(&Envelope::new(service, stream, payload).encode())
             .and_then(|()| writer.flush())
             .is_err()
         {
@@ -1010,36 +1109,27 @@ pub fn dispatch(partial: &mut PartialRequests, envelope: &Envelope, writer: &Sha
         Err(error) => {
             send(
                 writer,
+                Service::Vcs,
                 envelope.stream,
                 json!({"version": 1, "error": error}),
             );
             return;
         }
     };
-    if ACTIVE
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-            (count < 32).then_some(count + 1)
-        })
-        .is_err()
-    {
+    let Some(permit) = Permit::acquire() else {
         send(
             writer,
+            Service::Vcs,
             envelope.stream,
             json!({"version": 1, "error": VcsError::LockContention}),
         );
         return;
-    }
+    };
     let writer = Arc::clone(writer);
     let stream = envelope.stream;
     std::thread::spawn(move || {
-        struct Permit;
-        impl Drop for Permit {
-            fn drop(&mut self) {
-                ACTIVE.fetch_sub(1, Ordering::AcqRel);
-            }
-        }
-        let _permit = Permit;
-        send(&writer, stream, execute(&bytes));
+        let _permit = permit;
+        send(&writer, Service::Vcs, stream, execute(&bytes));
     });
 }
 
@@ -1073,6 +1163,71 @@ mod tests {
                 .unwrap()
                 .contains("registration required")
         );
+    }
+
+    /// Whether another open of the lock file can take the flock right now.
+    fn lock_is_free(lock_file: &Path) -> bool {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(lock_file)
+            .unwrap();
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+    }
+
+    /// Run `sleep 1` through `run_exec_with` under `barrier_of(lock)`, drop the parent's lock while
+    /// the child is alive, and report whether the lock was free at that moment and after it exited.
+    fn lock_state_around_a_child(name: &str, barrier: bool) -> (bool, bool) {
+        let root =
+            std::env::temp_dir().join(format!("wr-vcs-barrier-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(root.join(".jj/repo")).unwrap();
+        let lock = SnapshotLock::acquire(&root, root.to_str()).unwrap();
+        let fd = lock.fd();
+        let child_root = root.clone();
+        let runner = std::thread::spawn(move || {
+            run_exec_with(
+                &child_root,
+                "sh",
+                &["-c".into(), "sleep 1".into()],
+                Duration::from_secs(10),
+                None,
+                &[("PATH", "/usr/bin:/bin")],
+                barrier.then_some(fd),
+            )
+        });
+        // The child is running by now; the parent's descriptor is the only other holder.
+        std::thread::sleep(Duration::from_millis(400));
+        drop(lock);
+        let free_while_running = lock_is_free(&root.join(".jj/workroom-vcs.lock"));
+        runner.join().unwrap().unwrap();
+        let free_after = lock_is_free(&root.join(".jj/workroom-vcs.lock"));
+        std::fs::remove_dir_all(root).unwrap();
+        (free_while_running, free_after)
+    }
+
+    #[test]
+    fn the_barrier_fd_keeps_the_jj_lock_held_by_the_child_until_it_exits() {
+        // The agent dying is `drop(lock)` here: the parent's descriptor closes while the child lives.
+        assert_eq!(lock_state_around_a_child("held", true), (false, true));
+    }
+
+    /// The negative control: without the barrier the same sequence frees the lock while the child
+    /// still runs, which is the hole (agent death admitting a native writer mid-snapshot).
+    #[test]
+    fn without_the_barrier_the_lock_dies_with_the_parents_descriptor() {
+        assert_eq!(lock_state_around_a_child("control", false), (true, true));
+    }
+
+    #[test]
+    fn a_stream_that_ends_exactly_at_the_cap_is_not_flagged_but_one_byte_over_is() {
+        let exact = Mutex::new(Vec::new());
+        let flag = AtomicBool::new(false);
+        drain_capped_flagged([7u8; 10].as_slice(), 10, &exact, &flag);
+        assert_eq!(exact.lock().unwrap().len(), 10);
+        assert!(!flag.load(Ordering::Acquire));
+        let over = Mutex::new(Vec::new());
+        drain_capped_flagged([7u8; 11].as_slice(), 10, &over, &flag);
+        assert_eq!(over.lock().unwrap().len(), 10);
+        assert!(flag.load(Ordering::Acquire));
     }
 
     #[test]
