@@ -41,6 +41,20 @@ Use concise, descriptive commits. History commonly uses `fix(macapp): …`, `ref
 
 Preserve the CLI `--json` contract; breaking changes require a `schema_version` bump in `cmd/json.go`. Read `CONTRIBUTING.md` and [repository notes](docs/repository-notes.md) for architecture and operations. For app work, also follow [macapp/AGENTS.md](macapp/AGENTS.md). Never use personal workrooms as destructive test fixtures.
 
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in `joelmoss/workroom`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), used as-is. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout (root `CONTEXT.md` + `docs/adr/`, created lazily). See `docs/agents/domain.md`.
+
 ## Shared Agent Instructions
 
 Maintain instructions in `AGENTS.md` files; `CLAUDE.md` files are symlinks to them. These rules apply to every coding agent. Use relevant skills when available through your agent's supported mechanism; do not assume a particular tool or slash command exists.
