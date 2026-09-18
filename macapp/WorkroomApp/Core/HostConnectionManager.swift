@@ -7,7 +7,18 @@ protocol HostServiceConnection: Sendable {
   var disconnection: AsyncStream<Void> { get }
   func reader(context: RepositoryContext) throws -> VCSProviding
   func writer(context: RepositoryContext, reader: VCSProviding) throws -> VCSWriting
+  /// The file service on this connection. Throws `VCSError.backendVersion` when the peer predates it,
+  /// which the router answers by falling back to native reads for a LOCAL host.
+  func files(context: FileContext) throws -> FileProviding
   func close() async
+}
+
+extension HostServiceConnection {
+  /// A connection with no file service, so existing conformers (tests, future transports) keep
+  /// compiling and report the honest answer.
+  func files(context: FileContext) throws -> FileProviding {
+    throw HostConnectionError.serviceUnavailable("Host has no file service.")
+  }
 }
 
 enum HostConnectionError: Error, Equatable, Sendable, LocalizedError, CustomStringConvertible {
@@ -192,6 +203,13 @@ actor HostConnectionManager {
       context: context,
       reader: HostRepositoryReader(context: context, service: reader, manager: self, lease: lease),
       service: writer, manager: self, lease: lease)
+  }
+
+  func files(context: FileContext) throws -> FileProviding {
+    let (lease, connection) = try connected(context.location.host)
+    let service = try connection.files(context: context)
+    guard service.context == context else { throw HostConnectionError.mismatchedContext }
+    return HostFileProvider(context: context, service: service, manager: self, lease: lease)
   }
 
   private func connected(_ host: HostID) throws -> (Lease, any HostServiceConnection) {

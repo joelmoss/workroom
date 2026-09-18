@@ -218,4 +218,102 @@ final class AgentVCSProtocolTests: XCTestCase {
     XCTAssertEqual(request.version, 1)
     XCTAssertEqual(request.kind, "exec")
   }
+
+  // MARK: File service (#211)
+
+  /// The client's three version constants are the agent's `PROTOCOL_VERSION`, `MIN_VCS_VERSION` and
+  /// `MIN_FILE_VERSION` declared a second time, in a second language. Checked against the shipped
+  /// binary's own report so a bump on one side alone fails here rather than as a dead File service.
+  func testTheClientsProtocolConstantsMatchTheShippedAgent() throws {
+    XCTAssertEqual(AgentControlClient.protocolVersion, 3)
+    XCTAssertEqual(AgentControlClient.minVCSVersion, 2)
+    XCTAssertEqual(AgentControlClient.minFileVersion, 3)
+    let process = Process()
+    process.executableURL = try AgentHarness.binaryURL()
+    process.arguments = ["protocol"]
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    try process.run()
+    let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    process.waitUntilExit()
+    XCTAssertTrue(
+      output.contains("protocol \(AgentControlClient.protocolVersion) "),
+      "the agent reports a different protocol version than this client speaks: \(output)")
+  }
+
+  /// Every failure the agent's `FileError` can produce keeps its meaning across the wire.
+  func testFileErrorsSurviveTheWire() {
+    let cases: [(String, Error)] = [
+      (
+        #"{"Refused":"outside the repository root"}"#,
+        FileServiceError.refused("outside the repository root")
+      ),
+      (#"{"TooLarge":"9 bytes exceeds 8"}"#, FileServiceError.tooLarge),
+      (#"{"NotFound":"gone"}"#, FileServiceError.notFound("gone")),
+      (#"{"ListingTruncated":"cap"}"#, FileServiceError.listingTruncated),
+      (#"{"Unsupported":"bad"}"#, FileServiceError.failed("bad")),
+      (#"{"Io":"disk"}"#, FileServiceError.failed("disk")),
+      (#"{"Busy":"full"}"#, FileServiceError.failed("full")),
+      (#"{"LockContention":"held"}"#, VCSError.lockContention),
+      (#"{"Registration":"needed"}"#, RepositoryRoutingError.registrationRequired),
+    ]
+    for (failure, expected) in cases {
+      let text = #"{"version":1,"error":"# + failure + "}"
+      XCTAssertThrowsError(try AgentFileReply<String>.decode(Data(text.utf8)), failure) {
+        XCTAssertEqual("\($0)", "\(expected)", failure)
+      }
+    }
+    for text in [
+      "not JSON", #"{"version":2,"result":"x"}"#, #"{"version":1,"error":{"Mystery":"?"}}"#,
+      #"{"version":1,"error":{}}"#, #"{"version":1}"#,
+    ] {
+      XCTAssertThrowsError(try AgentFileReply<String>.decode(Data(text.utf8)), text) {
+        XCTAssertTrue($0 is HostConnectionError, "\($0)")
+      }
+    }
+  }
+
+  /// The agent's `Request` is `deny_unknown_fields`, so a stray or misspelled key is a refused
+  /// request, not an ignored one. Pinned to the exact key sets the four methods send.
+  func testFileRequestsEncodeExactlyTheFieldsTheAgentAccepts() throws {
+    let encoder = JSONEncoder()
+    encoder.keyEncodingStrategy = .convertToSnakeCase
+    func keys(_ request: AgentFileRequest) throws -> Set<String> {
+      let object = try JSONSerialization.jsonObject(with: try encoder.encode(request))
+      return Set(try XCTUnwrap(object as? [String: Any]).keys)
+    }
+    XCTAssertEqual(
+      try keys(AgentFileRequest(method: "list", backend: "git", root: "/r", sharedRoot: "/s")),
+      ["version", "method", "backend", "root", "shared_root"])
+    XCTAssertEqual(
+      try keys(
+        AgentFileRequest(
+          method: "read", root: "/r", path: "a", symlinks: "refuse", maxBytes: 1)),
+      ["version", "method", "root", "path", "symlinks", "max_bytes"])
+    XCTAssertEqual(
+      try keys(AgentFileRequest(method: "watch", root: "/r", subscription: 7)),
+      ["version", "method", "root", "subscription"])
+    XCTAssertEqual(
+      try keys(AgentFileRequest(method: "unwatch", subscription: 7)),
+      ["version", "method", "subscription"])
+    XCTAssertEqual(FileSymlinkPolicy.followWithinRoot.rawValue, "follow_within_root")
+    XCTAssertEqual(FileSymlinkPolicy.refuse.rawValue, "refuse")
+  }
+
+  /// Events are unsolicited and versioned by nothing but their `event` tag, so an unknown kind must
+  /// be dropped, not fail the connection of an older client.
+  func testFileEventsDecodeAndUnknownKindsAreDropped() throws {
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    func model(_ json: String) throws -> FileWatchEvent? {
+      try decoder.decode(AgentFileEvent.self, from: Data(json.utf8)).model
+    }
+    XCTAssertEqual(
+      try model(#"{"event":"changed","subscription":7,"paths":["/a","/b"],"overflow":true}"#),
+      .changed(paths: ["/a", "/b"], overflow: true))
+    XCTAssertEqual(
+      try model(#"{"event":"ended","subscription":7,"reason":"root_removed"}"#),
+      .ended(reason: "root_removed"))
+    XCTAssertNil(try model(#"{"event":"from-the-future","subscription":7}"#))
+  }
 }

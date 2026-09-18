@@ -127,18 +127,7 @@ struct PlainFileViewer: View {
     content = ""
     truncated = false
     previewRendered = false  // a new file means a new render to wait for
-    let absolute = (directory as NSString).appendingPathComponent(descriptor.path)
-    let root = directory
-    let outcome = await Task.detached(priority: .utility) { () -> Outcome? in
-      // Refuse to read through a symlink that escapes the workroom root. The Files tree lists repo
-      // files (git ls-files / jj file list), so a committed symlink like `notes -> ~/.ssh/id_rsa`
-      // would otherwise display the target's contents from outside the workroom (review).
-      guard PlainFileViewer.isContained(path: absolute, within: root) else { return nil }
-      guard
-        let data = try? Data(contentsOf: URL(fileURLWithPath: absolute), options: .mappedIfSafe)
-      else { return nil }
-      return PlainFileViewer.classify(data: data)
-    }.value
+    let outcome = await Self.loadOutcome(directory: directory, relative: descriptor.path)
     // Stale-write guard (see `activePath`): a slow read of the file this pane USED to show must
     // never paint file A's text into file B's slot.
     guard !Task.isCancelled, activePath == path else { return }
@@ -188,16 +177,28 @@ struct PlainFileViewer: View {
 
   // MARK: Pure helpers (unit-tested)
 
-  /// Whether `path`, after resolving symlinks, is the workroom `root` itself or a descendant of it.
-  /// Guards the file read against a repo-committed symlink that points outside the workroom. Compares
-  /// resolved path *components* so `/a/bc` isn't treated as inside `/a/b`. Pure — unit-tested.
-  static func isContained(path: String, within root: String) -> Bool {
-    let resolvedRoot = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL
-    let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
-    let rootComponents = resolvedRoot.pathComponents
-    let components = resolved.pathComponents
-    guard components.count >= rootComponents.count else { return false }
-    return Array(components.prefix(rootComponents.count)) == rootComponents
+  /// Read `relative` under `directory` through the file service and classify it, or `nil` when it
+  /// cannot be shown (`.failed`).
+  ///
+  /// The read runs on whichever host holds the file, and CONTAINMENT is enforced there, on the opened
+  /// descriptor: a committed symlink like `notes -> ~/.ssh/id_rsa` (the Files tree lists repo files)
+  /// is refused rather than showing the target's contents, and a FIFO or a file swapped for a link
+  /// mid-read cannot hang or escape. In-repo links are followed. This used to be a client-side
+  /// path check followed by a separate open, which a remote host would have lost entirely.
+  static func loadOutcome(
+    directory: String, relative: String, router: RepositoryRouter = .shared
+  ) async -> Outcome? {
+    guard let location = try? await RepositoryLocation.local(directory) else { return nil }
+    do {
+      let files = try await router.files(for: location)
+      let data = try await files.read(
+        path: relative, symlinks: .followWithinRoot, maxBytes: maxBytes)
+      return classify(data: data)
+    } catch FileServiceError.tooLarge {
+      return .tooLarge
+    } catch {
+      return nil
+    }
   }
 
   /// Classify a file's bytes into a render outcome. Empty → `.empty`; over `byteCap` → `.tooLarge`;
