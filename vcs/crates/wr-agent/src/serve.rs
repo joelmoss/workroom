@@ -197,6 +197,10 @@ pub fn handle_connection<T: Transport>(
     let mut decoder = EnvelopeDecoder::new();
     let mut buffer = [0u8; 8192];
     let mut attached: Option<SessionId> = None;
+    // Per connection, so it dies with the connection: stream ids restart at 1 on every connect and
+    // this agent outlives the app, so a shared map would let one launch's abandoned chunks corrupt
+    // the next launch's identically-numbered request. See `PartialRequests`.
+    let mut partial = crate::vcs::PartialRequests::default();
     // Identifies THIS attachment, so ending this connection cannot detach a client that has since
     // taken the session over.
     let mut token = 0u64;
@@ -218,6 +222,7 @@ pub fn handle_connection<T: Transport>(
                         &sessions,
                         &mut attached,
                         &mut token,
+                        &mut partial,
                         &writer,
                         &send,
                     ) {
@@ -262,11 +267,12 @@ fn dispatch(
     sessions: &SessionStore,
     attached: &mut Option<SessionId>,
     token: &mut u64,
+    partial: &mut crate::vcs::PartialRequests,
     writer: &SharedWriter,
     send: &dyn Fn(&[u8]) -> bool,
 ) -> Option<Envelope> {
     if envelope.service == Service::Vcs {
-        crate::vcs::dispatch(envelope, writer);
+        crate::vcs::dispatch(partial, envelope, writer);
         return None;
     }
     if envelope.service != Service::Terminal && envelope.service != Service::Control {

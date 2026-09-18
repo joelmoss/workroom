@@ -77,6 +77,17 @@ enum VCSRemoteFailure: Equatable, Sendable {
   /// every retry fails identically. The real fix is remembering each workroom's own base instead of
   /// guessing `trunk()` — filed, not built.
   case immutableHistory(String)
+  /// The command was dispatched and we never heard back — `CommandResult.outcomeUnknown`. Only
+  /// reachable on the agent-routed path, where a lost connection, a client-side deadline or a
+  /// cancellation ends the round trip while the host-side `git`/`jj` keeps running to completion.
+  ///
+  /// The whole point of the case is the recovery. This is NOT `.other`: that one's recovery is a
+  /// retry of the action that failed, and retrying a push that may already have landed is the one
+  /// thing this state must not offer. `retryAction` answers `.fetch` instead — idempotent, and the
+  /// ahead/behind it brings back is exactly the fact that resolves the unknown.
+  ///
+  /// It is also NOT `.launchFailed`: that asserts nothing ran, which is the opposite falsehood.
+  case outcomeUnknown(String)
   /// jj refuses to push a commit with an empty description, changes or not. This is the state a workroom
   /// sits in the moment you edit a file and before you write a message, so it is the most reachable
   /// failure on the push path, not an edge case. Measured: `Error: Won't push commit 050e657d3c36 since
@@ -212,6 +223,14 @@ enum VCSCommitFailure: Equatable, Sendable {
   /// are invalid during several of these, and finishing the sequencer is the user's call.
   case sequencerInProgress(String)
   case locked(VCSLockFile?)
+  /// The commit was dispatched and we never heard back — see `VCSRemoteFailure.outcomeUnknown`.
+  ///
+  /// `commit()` compares the revision before and after, so a MOVED ref answers the question outright
+  /// as `.committedThenFailed` and never reaches here. What reaches here is everything else: the ref
+  /// could not be re-read (the common case — a dead socket fails that request too), or it read back
+  /// unchanged, which is not proof of anything because a commit host-side may simply not have
+  /// finished. Hence copy that sends the user to check the history rather than asserting either way.
+  case outcomeUnknown(String)
   /// The verb doesn't exist for this backend (`.amendMessage` on jj, `.describe` on git).
   case unsupportedMode
   case other(String)
@@ -1135,6 +1154,22 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     // Checked BEFORE commandNotFound: launchFailed means the process never ran at all (dominated by
     // a vanished cwd), which is a different fact from commandNotFound's "env ran and searched PATH".
     if result.exitCode == CommandResult.launchFailed { return .launchFailed }
+    // Before every output check, for `launchFailed`'s reason: this is a fact about whether we heard
+    // an answer, not about what the answer said. There is no output to match on anyway — the stderr
+    // is the transport's own description, and matching git's prose against it could only misfire.
+    //
+    // Except the DISK, which is not output and does not depend on having heard back. A pull whose
+    // reply was lost after git wrote `rebase-merge` leaves the same parked rebase as one we killed
+    // at its timeout, and the remedy is the same Abort — so this asks the same question the
+    // `timedOut` branch below does, in the same order, rather than discarding the one piece of
+    // positive evidence available. `commit()` resolves its own unknown the same way, off the ref.
+    //
+    // It races a host-side git that is still rebasing, and that is accepted here for the reason the
+    // `timedOut` branch already accepts it: a parked rebase the user cannot see is the worse state.
+    if result.exitCode == CommandResult.outcomeUnknown {
+      if action == .pull, rebaseInProgress(gitDir: gitDir) { return .rebaseInProgress }
+      return .outcomeUnknown(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
     if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
     let err = result.stderr + "\n" + result.stdout
     // A timed-out pull may have left a rebase behind; that reads better than "timed out".
@@ -1264,6 +1299,10 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// perfectly good commit behind a non-zero exit.
   static func classifyCommit(_ result: CommandResult, tool: String) -> VCSCommitFailure? {
     if result.exitCode == CommandResult.launchFailed { return .launchFailed }
+    // See `classify` — a fact about the round trip, not about the command's output.
+    if result.exitCode == CommandResult.outcomeUnknown {
+      return .outcomeUnknown(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
     if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
     // jj says "Nothing changed." and exits ZERO, so its no-op has to be read BEFORE the success
     // guard — an untouched working copy must not be reported as a commit that happened.
@@ -1820,18 +1859,6 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
         timeout: commitTimeout)
     }
 
-    // New sides only — see `gitPathspecPayload(literalPaths:)`.
-    let unknown = Self.pathsGitMayNotKnow(in: request.files)
-    if !unknown.isEmpty {
-      let ita = await runner.run(
-        vcs, Self.gitIntentToAddArgs(), in: path, timeout: refTimeout,
-        stdin: Self.gitPathspecPayload(literalPaths: unknown))
-      guard ita.ok else { return ita }
-    }
-    let result = await runner.run(
-      vcs, Self.gitCommitOnlyArgs(message: request.message), in: path, timeout: commitTimeout,
-      stdin: Self.gitPathspecPayload(request.files))
-
     // The commit failed, so undo the index entries we just made. Left behind, an intent-to-add marker
     // is not the harmless residue it looks like: it breaks the user's own `git stash` in the terminal
     // ("Entry 'x' not uptodate. Cannot merge.") until they find and reverse a change they never made.
@@ -1840,14 +1867,42 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     // `rm --cached` reverses exactly our own step. A rename's new side may already be a real staged
     // entry (`git mv`), and unstaging that would destroy work the user did themselves — the wrong
     // trade for tidiness.
-    if !result.ok {
+    func rollBackIntentToAdd() async {
       let added = Self.pathsAddedToTheIndex(in: request.files)
-      if !added.isEmpty {
-        _ = await runner.run(
-          vcs, Self.gitUnstageArgs(), in: path, timeout: refTimeout,
-          stdin: Self.gitPathspecPayload(literalPaths: added))
+      guard !added.isEmpty else { return }
+      _ = await runner.run(
+        vcs, Self.gitUnstageArgs(), in: path, timeout: refTimeout,
+        stdin: Self.gitPathspecPayload(literalPaths: added))
+    }
+
+    // New sides only — see `gitPathspecPayload(literalPaths:)`.
+    let unknown = Self.pathsGitMayNotKnow(in: request.files)
+    if !unknown.isEmpty {
+      let ita = await runner.run(
+        vcs, Self.gitIntentToAddArgs(), in: path, timeout: refTimeout,
+        stdin: Self.gitPathspecPayload(literalPaths: unknown))
+      guard ita.ok else {
+        // Rolled back HERE too, not only after a failed commit. A killed intent-to-add writes
+        // nothing, but a `CommandResult.outcomeUnknown` one may have written every entry before the
+        // connection dropped — so the branch that skipped the rollback was the one that most needed
+        // it, leaving exactly the `git stash` breakage the comment above documents.
+        await rollBackIntentToAdd()
+        // Relabelled as its own step, so the copy downstream ("The commit was sent…") cannot claim
+        // a commit was attempted when only the staging was. The exit code is carried through
+        // unchanged, so `classifyCommit` still reaches the same case.
+        return CommandResult(
+          stdout: ita.stdout,
+          stderr: ita.stderr.isEmpty
+            ? "git could not stage the new files"
+            : "Staging the new files failed: \(ita.stderr)",
+          exitCode: ita.exitCode, timedOut: ita.timedOut, signaled: ita.signaled)
       }
     }
+    let result = await runner.run(
+      vcs, Self.gitCommitOnlyArgs(message: request.message), in: path, timeout: commitTimeout,
+      stdin: Self.gitPathspecPayload(request.files))
+
+    if !result.ok { await rollBackIntentToAdd() }
     return result
   }
 
@@ -1975,6 +2030,10 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     case .toolMissing(let m), .identityMissing(let m), .signingFailed(let m), .hookRejected(let m),
       .unmergedFiles(let m), .sequencerInProgress(let m), .other(let m):
       return m
+    // Reached when contact was lost AND the ref moved anyway — so the doubt is already resolved,
+    // and this says which half of it survived rather than repeating the "may have completed" copy.
+    case .outcomeUnknown(let m):
+      return "Lost contact after the commit was written: \(m)"
     case .timedOut: return "The command was stopped at its time limit."
     case .nothingToCommit: return "Nothing to commit."
     case .locked(let file):

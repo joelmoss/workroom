@@ -54,12 +54,24 @@ struct CommitSheet: View {
     /// Distinct from `.failed` because retrying here would record the work a second time, and the
     /// notice says so — so the buttons that would do it are disabled rather than merely discouraged.
     case landedThenFailed(VCSFailureDialog)
+    /// Contact was lost mid-commit and the ref could not be re-read, so whether the work landed is
+    /// unknown — `VCSCommitFailure.outcomeUnknown`.
+    ///
+    /// Its own case rather than a `.failed`, for `.landedThenFailed`'s exact reason: the button is
+    /// the hazard, not the wording. A `.failed` leaves Commit live, and one click on a commit that
+    /// did land records it twice — the same defect, on the taxonomy that added a case to name it.
+    /// Not folded INTO `.landedThenFailed` either: that one asserts the commit was recorded, and
+    /// asserting the verdict is what this whole state exists to avoid.
+    case outcomeUnknown(VCSFailureDialog)
   }
 
-  /// The commit is on disk; nothing in this dialog can be pressed again without duplicating it.
+  /// Pressing again could duplicate work — either because the commit is on disk, or because nobody
+  /// knows whether it is. Both disable the buttons that would do it.
   private var isSpent: Bool {
-    if case .landedThenFailed = phase { return true }
-    return false
+    switch phase {
+    case .landedThenFailed, .outcomeUnknown: return true
+    default: return false
+    }
   }
 
   /// Hard cap on rendered rows, matching `ChangesPanel`'s. See `fileSection`.
@@ -111,6 +123,7 @@ struct CommitSheet: View {
       if case .confirmingStagedLoss(let paths) = phase { stagedLossNotice(paths) }
       if case .failed(let dialog) = phase { CommitFailureNotice(dialog: dialog) }
       if case .landedThenFailed(let dialog) = phase { CommitFailureNotice(dialog: dialog) }
+      if case .outcomeUnknown(let dialog) = phase { CommitFailureNotice(dialog: dialog) }
       Divider()
       buttons
     }
@@ -520,6 +533,11 @@ struct CommitSheet: View {
               "The commit was recorded. A step that runs after it — usually a post-commit hook — "
               + "then failed. Do not commit again; the change is already saved.",
             details: detail, recovery: nil, lockPath: nil))
+      case .failed(.outcomeUnknown(let reason)):
+        // Routed away from `.failed` so `isSpent` disables Commit: the work may be on disk, and the
+        // notice telling the user to check the history is worth nothing beside a live button.
+        phase = .outcomeUnknown(
+          VCSSyncPresenter.commitFailureDialog(.outcomeUnknown(reason), mode: mode))
       case .failed(let failure):
         phase = .failed(VCSSyncPresenter.commitFailureDialog(failure, mode: mode))
       }

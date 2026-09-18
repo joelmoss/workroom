@@ -22,6 +22,27 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// arrive. Tracked so a late reply drains harmlessly instead of `receive()` treating an unknown
   /// stream id as a protocol violation and tearing down every OTHER in-flight request too.
   private var abandoned: Set<UInt32> = []
+  /// Negotiated once in `connect()`, before this connection is shared with any other caller.
+  /// `exec` is absent on a still-running pre-upgrade agent that answers `reads` but has no VCS
+  /// write service at all — `writer(context:reader:)` treats that as `VCSError.backendVersion`,
+  /// the same signal `RepositoryRouter` already falls back to native writes on.
+  private var _capabilities: AgentVCSCapabilities?
+  private var capabilities: AgentVCSCapabilities? { lock.withLock { _capabilities } }
+  /// The exec wire version this client speaks. `AgentExecRequest.version` carries the same number on
+  /// the wire and is declared separately, so this is a claim the compiler does not check — asserted
+  /// in `AgentVCSProtocolTests` instead.
+  private static let execVersion = 1
+  /// The first exec service version that reassembles chunked requests. Separate from `execVersion`
+  /// because it gates a FRAMING capability, not the request body: a version-1 agent speaks the same
+  /// `AgentExecRequest` and is fully usable, it just cannot be sent one in pieces.
+  private static let chunkedRequestVersion = 2
+  /// `MAX_ENVELOPE_PAYLOAD` in `protocol/envelope.rs`.
+  private static let maxEnvelopePayload = 1 << 20
+  /// `MAX_REQUEST` in `vcs.rs` — the reassembled ceiling, mirroring the reply side's.
+  private static let maxRequest = 16 * 1024 * 1024
+  /// Marks a chunked request envelope. A whole request is JSON and starts `{`, so the two are
+  /// unambiguous — see `REQUEST_CHUNK_MARKER`.
+  private static let requestChunkMarker: UInt8 = 0x02
 
   private init(host: HostID, descriptor: Int32) {
     self.host = host
@@ -95,7 +116,24 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       guard capabilities.version == 1, capabilities.reads == 9 else {
         throw HostConnectionError.serviceUnavailable("Agent does not support these VCS reads.")
       }
+      // Not yet shared with any other caller, so a plain lock-guarded write is enough — no
+      // concurrent reader can observe a half-set value.
+      connection.lock.withLock { connection._capabilities = capabilities }
       return connection
+    } catch HostConnectionError.connectionLost {
+      // Rethrown UNCHANGED, not wrapped. `LocalAgentVCS` catches exactly this case to spawn wr-agent
+      // and retry, and flattening it into `serviceUnavailable` routed a dropped handshake around
+      // that recovery entirely — leaving the VCS service dead until the app was restarted, over a
+      // stale socket, which is the common case rather than an exotic one (the daemon leaves
+      // `session.sock` behind on any `pkill`).
+      //
+      // Only this case. A `capabilities` reply that arrives and says the agent is incompatible, and a
+      // handshake that times out against a HUNG agent (`.requestTimedOut` — which is the reason that
+      // case exists; it used to arrive here as `.connectionLost` and take the respawn path), are both
+      // still `serviceUnavailable`: a respawn cannot fix either, since the second candidate exits
+      // without binding while the first holds the single-instance flock.
+      await connection.close()
+      throw HostConnectionError.connectionLost
     } catch {
       await connection.close()
       throw HostConnectionError.serviceUnavailable("VCS negotiation failed: \(error)")
@@ -108,30 +146,122 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     return AgentVCSReader(context: context, connection: self)
   }
 
+  /// `reader` is the SAME agent-routed `VCSProviding` `HostConnectionManager.writer(context:)` just
+  /// built — threaded through rather than reconstructed so `CLIVCSWriter.remoteState`'s `currentRef`
+  /// read goes through the agent too (`AgentCurrentRefProvider`), not a fresh native process. A
+  /// still-running pre-upgrade agent has no write service at all; that is reported the same way an
+  /// unsupported read version is, so `RepositoryRouter` falls back to native writes rather than
+  /// leaving the repository unwritable.
   func writer(context: RepositoryContext, reader: VCSProviding) throws -> VCSWriting {
-    throw RepositoryRoutingError.unavailable(context.location.host)
+    guard context.location.host == host else { throw HostConnectionError.mismatchedContext }
+    guard lock.withLock({ !closed }) else { throw HostConnectionError.connectionLost }
+    // Presence and version of the SERVICE, not a count of the caller's own methods. `>=` rather
+    // than `==` so an agent that gains a version 3 does not refuse a client speaking 1 — the agent
+    // is what decides whether it still accepts this request, and it answers that on the request
+    // itself (`exec`'s version guard), which is the only place that can know.
+    //
+    // KNOWN GAP in that reasoning: a per-request refusal does NOT reach the native fallback. A
+    // `BackendVersion` error arriving in a REPLY is decoded in `AgentCommandRunner.exec`, throws,
+    // and becomes `neverRan`/`launchFailed` — not the `VCSError.backendVersion` that
+    // `RepositoryRouter.writer(for:)` falls back on. So a future agent that DROPS version 1 would
+    // fail every write as "launch failed" rather than writing natively. Nothing can hit this today
+    // (no such agent exists, and 2 still accepts 1), but the `>=` is justified by a mechanism that
+    // is not wired up, and that is worth knowing before the first version that drops one.
+    guard let exec = capabilities?.exec, exec >= Self.execVersion else {
+      throw VCSError.backendVersion("Agent does not support VCS writes.")
+    }
+    let engine = CLIVCSWriter(
+      vcs: context.backend.rawValue, runner: AgentCommandRunner(connection: self),
+      makeProvider: { _ in AgentCurrentRefProvider(reader: reader) }, gate: .shared)
+    return try BoundLocalWriter(context: context, reader: reader, writer: engine)
+  }
+
+  /// One envelope: the `Service.vcs` byte, the stream, the payload length, then the payload.
+  private static func envelope(stream: UInt32, payload: Data) -> Data {
+    var envelope = Data([2])
+    for value in [stream, UInt32(payload.count)] {
+      var value = value.bigEndian
+      withUnsafeBytes(of: &value) { envelope.append(contentsOf: $0) }
+    }
+    envelope.append(payload)
+    return envelope
+  }
+
+  /// The payloads to send for one request: exactly one, byte-identical to what shipped before, or a
+  /// marker-framed sequence when the body exceeds one envelope.
+  ///
+  /// Each chunk is `[marker][isFinal][bytes]`, so the agent knows both that this is a chunked
+  /// request and when it has all of it, without a length header it would have to trust.
+  private static func payloads(for bytes: Data, chunked: Bool) -> [Data] {
+    guard chunked else { return [bytes] }
+    let limit = maxEnvelopePayload - 2
+    var payloads: [Data] = []
+    var index = bytes.startIndex
+    while index < bytes.endIndex {
+      let end = bytes.index(index, offsetBy: limit, limitedBy: bytes.endIndex) ?? bytes.endIndex
+      var payload = Data([requestChunkMarker, end == bytes.endIndex ? 1 : 0])
+      payload.append(bytes[index..<end])
+      payloads.append(payload)
+      index = end
+    }
+    return payloads
   }
 
   func close() async { fail(HostConnectionError.connectionLost) }
 
-  func request(_ request: AgentVCSRequest, timeout: TimeInterval = 30) async throws -> Data {
+  func request<Request: Encodable>(_ request: Request, timeout: TimeInterval = 30) async throws
+    -> Data
+  {
     try Task.checkCancellation()
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase
     let bytes = try encoder.encode(request)
-    guard bytes.count <= 1 << 20 else { throw VCSError.partialData("VCS request is too large.") }
+    // A request larger than the protocol's per-envelope ceiling (`MAX_ENVELOPE_PAYLOAD`) is split
+    // across envelopes on one stream — the mirror of how replies have always been chunked. What
+    // makes this reachable at all is `CLIVCSWriter`'s NUL-separated pathspec, sent as an
+    // `AgentExecRequest` stdin payload: "select all and commit" in a large repository produced a
+    // payload that worked natively (stdin exists precisely to sidestep `E2BIG`) and failed through
+    // the agent, which is a plain regression against the path it replaced.
+    //
+    // Gated on the agent's own exec version, because the framing is a wire change: a pre-chunking
+    // agent would read the marker byte as the start of a JSON document and answer with a parse
+    // error. Below the ceiling nothing changes — the envelope is byte-identical to what shipped
+    // before, so the common path pays nothing for this.
+    let chunked = bytes.count > Self.maxEnvelopePayload
+    if chunked {
+      guard let exec = capabilities?.exec, exec >= Self.chunkedRequestVersion else {
+        throw VCSError.partialData("VCS request is too large for this agent.")
+      }
+      guard bytes.count <= Self.maxRequest else {
+        throw VCSError.partialData("VCS request is too large.")
+      }
+    }
     let cancellation = RequestCancellationBox()
     return try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
-        let stream: UInt32? = lock.withLock {
-          guard !closed, nextStream < UInt32.max, pending.count < 32 else { return nil }
+        // Two refusals, two errors. Both happen before a byte reaches the socket, but they must
+        // NOT collapse: `connect()` issues its own `capabilities` request through here, and
+        // `LocalAgentVCS` catches exactly `.connectionLost` from it to spawn the agent and retry —
+        // the stale-`session.sock` case, which is common, not exotic. Reporting a closed connection
+        // as anything else would silently stop the agent ever being started.
+        let refusal: (stream: UInt32?, error: HostConnectionError) = lock.withLock {
+          if closed { return (nil, .connectionLost) }
+          // ponytail: one 32-slot pool shared by every read AND write on this connection, app-wide.
+          // A write can now legitimately hold a slot for minutes (`commitTimeout` = 600s), where only
+          // reads (seconds at most) used to compete for these slots. Split reads and writes onto
+          // separate pools/connections if this is ever observed in practice.
+          //
+          // `.notDispatched` rather than `.connectionLost`: backpressure is not a lost connection,
+          // and a WRITE caller can say "this definitely did not run" — the difference between a safe
+          // retry and one that double-applies a commit or a push. See `AgentCommandRunner.neverRan`.
+          guard nextStream < UInt32.max, pending.count < 32 else { return (nil, .notDispatched) }
           let stream = nextStream
           nextStream += 1
           pending[stream] = Pending(continuation: continuation)
-          return stream
+          return (stream, .notDispatched)
         }
-        guard let stream else {
-          continuation.resume(throwing: HostConnectionError.connectionLost)
+        guard let stream = refusal.stream else {
+          continuation.resume(throwing: refusal.error)
           return
         }
         // Registered only after `stream` is in `pending`, so an already-cancelled caller (Swift
@@ -143,13 +273,13 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
         }
         writes.async { [self] in
           guard lock.withLock({ !closed }) else { return }
-          var envelope = Data([2])
-          for value in [stream, UInt32(bytes.count)] {
-            var value = value.bigEndian
-            withUnsafeBytes(of: &value) { envelope.append(contentsOf: $0) }
+          do {
+            for payload in Self.payloads(for: bytes, chunked: chunked) {
+              try Self.send(descriptor, Self.envelope(stream: stream, payload: payload))
+            }
+          } catch {
+            fail(error)
           }
-          envelope.append(bytes)
-          do { try Self.send(descriptor, envelope) } catch { fail(error) }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
           self?.timeoutStream(stream, error: HostConnectionError.connectionLost)
@@ -258,6 +388,16 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
 struct AgentVCSCapabilities: Decodable {
   let version: Int
   let reads: Int
+  /// The exec service's wire version, or nil on a still-running pre-upgrade agent that predates the
+  /// service entirely.
+  ///
+  /// Replaces a `writes` COUNT, which counted methods on `LocalVCSWriting` — a protocol that exists
+  /// only in this process. wr-agent implements one generic exec service and never had eight write
+  /// methods to report, so the number described nothing on the answering side and nothing could keep
+  /// it true: adding a ninth method here, a change the passthrough fully supports, made the equality
+  /// check below fail against a completely capable agent and silently dropped every user to native
+  /// writes with no log line.
+  let exec: Int?
 }
 
 struct AgentVCSRequest: Encodable, Sendable {
