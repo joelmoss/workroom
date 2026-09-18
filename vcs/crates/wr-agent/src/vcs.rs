@@ -332,6 +332,76 @@ fn drain_capped(mut source: impl Read, cap: usize, sink: &Mutex<Vec<u8>>) {
     }
 }
 
+/// Direct children of `pid`, via `/usr/bin/pgrep -P` — the exact mechanism (and the exact reasoning)
+/// of native's `ProcessTree.childPids`: `proc_listchildpids`' return value is ambiguous across
+/// sources (bytes vs count), and mis-reading it would target the wrong pid for a SIGKILL, which is a
+/// far worse failure than missing a child. Empty on any error.
+fn child_pids(pid: i32) -> Vec<i32> {
+    let Ok(output) = Command::new("/usr/bin/pgrep")
+        .args(["-P", &pid.to_string()])
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .filter_map(|field| field.parse::<i32>().ok())
+        .filter(|&child| child > 1)
+        .collect()
+}
+
+/// Every descendant of `pid`, breadth-first, nearest first. The Rust half of
+/// `ProcessTree.descendants`, and split from the killing for a reason that file did not need to
+/// face: this must be SNAPSHOTTED WHILE THE PARENT IS STILL ALIVE.
+///
+/// A descendant that calls `setsid` leaves the process group, so `kill(-pid, …)` never reaches it —
+/// but it keeps its real ppid until its parent dies, so `pgrep -P` finds it right up to that moment.
+/// Once the parent is reaped the orphan re-parents to init and both handles are gone: the group it
+/// left, and a lineage that no longer leads back to us. Walking the tree at KILL time therefore
+/// finds nothing, which is the hole native's `killTree` also has — it is called at `timeout + 2`,
+/// by which point a `git` that exited on SIGTERM has long been reaped.
+///
+/// So the walk happens when SIGTERM is sent, and the recorded pids are what gets SIGKILLed later.
+fn descendants(pid: i32) -> Vec<i32> {
+    let mut collected: Vec<i32> = Vec::new();
+    if pid <= 1 {
+        return collected;
+    }
+    let mut seen: Vec<i32> = vec![pid];
+    let mut queue = child_pids(pid);
+    while !queue.is_empty() {
+        let next = queue.remove(0);
+        if next <= 1 || seen.contains(&next) {
+            continue;
+        }
+        seen.push(next);
+        collected.push(next);
+        queue.extend(child_pids(next));
+    }
+    collected
+}
+
+/// SIGKILL the recorded descendants deepest first, so a parent cannot observe a child's death and
+/// respawn before it is itself killed — `ProcessTree.killTree`'s ordering, for its reason.
+///
+/// Carries the same small, unavoidable PID-reuse window native does, and slightly more of it because
+/// these pids were read earlier: by the time this runs some may have exited, and a pid could in
+/// principle have been reused. Native accepted that trade at `timeout + 2` for the same reason —
+/// the alternative is leaving a process running against the user's repository after the call that
+/// started it has returned.
+fn kill_recorded(descendants: &[i32]) {
+    for pid in descendants.iter().rev() {
+        unsafe { libc::kill(*pid, libc::SIGKILL) };
+    }
+}
+
+/// How long to keep trying to reap a process we have SIGKILLed before giving up on it. SIGKILL
+/// cannot be caught, so this is generous for the normal case; it exists for the abnormal one, where
+/// the leader is unkillable (uninterruptible I/O) and the alternative is blocking this thread — and
+/// therefore holding one of the 32 shared `ACTIVE` permits — forever.
+const REAP_GRACE: Duration = Duration::from_secs(2);
+
 /// Run `executable` to completion, capturing everything a `StatusCommandRunning` conformer needs
 /// to classify the outcome exactly as the native path would. Mirrors `StatusCommandRunner.run`'s
 /// SIGTERM-then-grace-then-SIGKILL shape (`CLIVCSWriter.commitTimeout`'s doc: "Killing a commit is
@@ -410,20 +480,38 @@ fn run_exec(
     let mut timed_out = false;
     let mut sent_term = false;
     let mut sent_kill = false;
+    let mut killed_at: Option<Instant> = None;
+    // Recorded at SIGTERM time, used at SIGKILL time — see `descendants`' doc for why it cannot be
+    // walked at the point of the kill.
+    let mut recorded: Vec<i32> = Vec::new();
+    // `None` ⇒ we killed it and it never became reapable within `REAP_GRACE`. Reported rather than
+    // waited on: this used to be `break 'wait child.wait()`, an UNBOUNDED wait, and a child that had
+    // left the process group never received the SIGKILL above it, so that wait had nothing to wait
+    // for. Codex reproduced 4.1s on a 100ms timeout with one `os.setpgid`.
     let status = 'wait: loop {
         if let Ok(Some(status)) = child.try_wait() {
-            break 'wait status;
+            break 'wait Some(status);
         }
         let elapsed = start.elapsed();
         if elapsed >= timeout {
             timed_out = true;
             if !sent_term {
                 sent_term = true;
+                // Snapshot BEFORE signalling: SIGTERM may reap the leader within microseconds, and
+                // an orphaned `setsid` descendant is unreachable from that moment on.
+                recorded = descendants(pid);
                 unsafe { libc::kill(-pid, libc::SIGTERM) };
             } else if elapsed >= timeout + Duration::from_secs(2) {
-                sent_kill = true;
-                unsafe { libc::kill(-pid, libc::SIGKILL) };
-                break 'wait child.wait().map_err(io)?;
+                if !sent_kill {
+                    sent_kill = true;
+                    // Recorded tree first, then group: the tree reaches a descendant that left the
+                    // group, the group reaches one that spawned after the snapshot.
+                    kill_recorded(&recorded);
+                    unsafe { libc::kill(-pid, libc::SIGKILL) };
+                    killed_at = Some(Instant::now());
+                } else if killed_at.is_some_and(|at| at.elapsed() >= REAP_GRACE) {
+                    break 'wait None;
+                }
             }
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -450,6 +538,10 @@ fn run_exec(
         while Instant::now() < kill_at {
             std::thread::sleep(Duration::from_millis(10));
         }
+        // The recorded set, not a fresh walk: the leader is already reaped on this path, so
+        // `pgrep -P` would find nothing — the orphan re-parented to init the moment its parent died.
+        // This is the branch the snapshot exists for.
+        kill_recorded(&recorded);
         unsafe { libc::kill(-pid, libc::SIGKILL) };
     }
     // 2. Drain bound, mirroring `StatusCommandRunner`'s `_ = drain.wait(timeout: .now() + 2)` and
@@ -467,6 +559,27 @@ fn run_exec(
     }
     let take = |sink: &Mutex<Vec<u8>>| {
         std::mem::take(&mut *sink.lock().unwrap_or_else(|e| e.into_inner()))
+    };
+    // Unreapable after SIGKILL: report what a killed process reports rather than blocking on it.
+    // `timed_out` is already true on this path (nothing else reaches it), so the client classifies
+    // this as `VCSRemoteFailure.timedOut` exactly as it would a child we did manage to reap — the
+    // outcome is the same fact, and the ONLY difference is whether this thread waited forever to
+    // state it. Deliberately not `outcomeUnknown`: we know what happened to this command.
+    //
+    // The handle is moved to a detached thread rather than dropped: Rust's `Child::drop` does not
+    // wait, so dropping it here would leave a zombie nothing ever reaps. Mirrors the drain detach
+    // below — one parked thread that ends whenever the process finally does.
+    let Some(status) = status else {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        return Ok(Captured {
+            stdout: take(&out_sink),
+            stderr: take(&err_sink),
+            exit_code: 137,
+            timed_out: true,
+            signaled: true,
+        });
     };
     Ok(Captured {
         stdout: take(&out_sink),
@@ -1196,5 +1309,76 @@ mod tests {
         // The boundary either side, to pin where the rejection starts.
         assert!(latin1_bytes("\u{00FF}").is_ok());
         assert!(latin1_bytes("\u{0100}").is_err());
+    }
+
+    /// The gap against native, which `ProcessTree.killTree` has covered since it was written ("helpers
+    /// spawned by git/gh can outlive the parent") and the agent did not: a DESCENDANT that calls
+    /// `setsid` leaves the process group, so `kill(-pid, …)` never reaches it. It then goes on
+    /// running — and, if it inherited the pipes, holding this request's readers open — after the
+    /// result has released the caller's gate.
+    ///
+    /// The leader itself cannot escape: `run_exec` sets `process_group(0)`, which makes it a group
+    /// leader, and `setsid` is EPERM for a group leader. So the descendant is the whole of the gap,
+    /// and asserting the leader's timing would prove nothing.
+    ///
+    /// ENVIRONMENT: needs a real process table. Under a sandbox that hides other processes, `pgrep`
+    /// returns nothing, the snapshot comes back empty and this fails in a way indistinguishable from
+    /// the bug — measured, not guessed. If it fails, check `descendants()` sees anything at all
+    /// before believing the kill path is broken.
+    #[test]
+    fn exec_kills_a_descendant_that_escaped_the_process_group() {
+        let root = git_repo("setsid-escape");
+        let marker = root.join("still-alive");
+        // The grandchild leaves the group, waits out the whole escalation, and only THEN writes.
+        // If it is still alive at that point the marker appears, which is the failure this catches.
+        let program = format!(
+            "import os,sys,time\n\
+             if os.fork() == 0:\n\
+             \x20   os.setsid()\n\
+             \x20   time.sleep(6)\n\
+             \x20   open({:?}, 'w').close()\n\
+             \x20   sys.exit(0)\n\
+             time.sleep(30)\n",
+            marker.to_str().unwrap()
+        );
+        let captured = run_exec(
+            &root,
+            "python3",
+            &["-c".into(), program],
+            // Not 100ms: python's own start-up is ~50ms and the fork follows it, so a tighter
+            // deadline races the grandchild into existence and the snapshot finds an empty tree —
+            // which looks exactly like the bug this asserts against.
+            Duration::from_millis(1500),
+            None,
+            &[("PATH", "/usr/bin:/bin")],
+        )
+        .unwrap();
+        assert!(captured.timed_out, "the timeout was not reported");
+
+        // Past the grandchild's own sleep, so its write would have happened by now if it survived.
+        std::thread::sleep(Duration::from_secs(6));
+        assert!(
+            !marker.exists(),
+            "a setsid descendant outlived the kill and kept running"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `descendants` walks parsed `pgrep` output, so it must terminate on shapes a process table
+    /// cannot produce but a parse can — and it must never reach init. A SIGKILL aimed at pid 1 is
+    /// the worst outcome a bug here could have, so the floor is enforced by value.
+    #[test]
+    fn the_descendant_walk_refuses_init_and_terminates() {
+        assert!(descendants(0).is_empty());
+        assert!(descendants(1).is_empty());
+        assert!(descendants(-1).is_empty());
+        // An impossible pid has no children, so the walk ends immediately rather than looping.
+        assert!(
+            child_pids(i32::MAX).is_empty(),
+            "pgrep invented children for an impossible pid"
+        );
+        assert!(descendants(i32::MAX).is_empty());
+        // Killing an empty set is a no-op, not a signal to the current process group.
+        kill_recorded(&[]);
     }
 }
