@@ -25,6 +25,12 @@ struct CommandResult: Sendable, Equatable {
   /// `timedOut` first, or a timeout gets misreported as a bare interruption.
   let signaled: Bool
 
+  /// `stdout` was cut at the runner's capture cap: the child wrote more than was kept, so the text can
+  /// end mid-line — mid-FILENAME, for a listing. A consumer that parses it as a whole must check this
+  /// first. Set by `StatusCommandRunner` and by the agent's listing reply; every other producer leaves
+  /// it false, which is what a fake runner's short canned output is.
+  let stdoutTruncated: Bool
+
   /// `/usr/bin/env` exits 127 when the command (git/jj/gh) isn't on PATH. A REAL exit from a REAL
   /// process — env ran, tried to exec the tool, and failed to find it.
   static let commandNotFound: Int32 = 127
@@ -57,12 +63,16 @@ struct CommandResult: Sendable, Equatable {
   /// memberwise init entirely, so `let signaled = false` would compile at all ~60 construction
   /// sites and then fail only where the runner tries to set it. Defaulted last so those sites —
   /// almost all tests, none of which care about signals — keep compiling untouched.
-  init(stdout: String, stderr: String, exitCode: Int32, timedOut: Bool, signaled: Bool = false) {
+  init(
+    stdout: String, stderr: String, exitCode: Int32, timedOut: Bool, signaled: Bool = false,
+    stdoutTruncated: Bool = false
+  ) {
     self.stdout = stdout
     self.stderr = stderr
     self.exitCode = exitCode
     self.timedOut = timedOut
     self.signaled = signaled
+    self.stdoutTruncated = stdoutTruncated
   }
 
   var ok: Bool { exitCode == 0 && !timedOut }
@@ -308,12 +318,13 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
         // started before run() so we never miss a fast child's output, harmless until it runs.
         drain.enter()
         DispatchQueue.global().async {
-          state.setStdout(Self.readCapped(outPipe.fileHandleForReading, cap: cap))
+          let (data, truncated) = Self.readCapped(outPipe.fileHandleForReading, cap: cap)
+          state.setStdout(data, truncated: truncated)
           drain.leave()
         }
         drain.enter()
         DispatchQueue.global().async {
-          state.setStderr(Self.readCapped(errPipe.fileHandleForReading, cap: cap))
+          state.setStderr(Self.readCapped(errPipe.fileHandleForReading, cap: cap).data)
           drain.leave()
         }
 
@@ -352,7 +363,8 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
               // exit this was — otherwise a cancelled/killed probe is indistinguishable from a CLI
               // that ran and failed, which is how a SIGKILLed `gh auth status` came to be read as
               // "not signed in" and a SIGTERMed `git push` as "git exited 15".
-              signaled: finished.terminationReason == .uncaughtSignal))
+              signaled: finished.terminationReason == .uncaughtSignal,
+              stdoutTruncated: state.stdoutTruncated))
         }
 
         do {
@@ -398,8 +410,12 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
 
   /// Drain a pipe to EOF, retaining at most `cap` bytes but reading the rest so the child
   /// never blocks on a full pipe buffer.
-  private static func readCapped(_ handle: FileHandle, cap: Int) -> Data {
+  ///
+  /// Also reports whether anything was actually dropped: a stream that ends exactly at `cap` is not
+  /// truncated, so the flag means "bytes were lost", never "the buffer is full".
+  private static func readCapped(_ handle: FileHandle, cap: Int) -> (data: Data, truncated: Bool) {
     var collected = Data()
+    var truncated = false
     while true {
       // `read(upToCount:)` (throwing) instead of `availableData`: the latter raises an
       // *Objective-C* `NSFileHandleOperationException` on a read error (common right after the
@@ -408,11 +424,11 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
       let chunk: Data
       do { chunk = try handle.read(upToCount: 1 << 16) ?? Data() } catch { break }
       if chunk.isEmpty { break }  // EOF: pipe closed
-      if collected.count < cap {
-        collected.append(chunk.prefix(cap - collected.count))
-      }
+      let room = max(0, cap - collected.count)
+      if chunk.count > room { truncated = true }
+      collected.append(chunk.prefix(room))
     }
-    return collected
+    return (collected, truncated)
   }
 }
 
@@ -447,12 +463,14 @@ private final class ProcessBox: @unchecked Sendable {
 private final class StatusRunState: @unchecked Sendable {
   private let lock = NSLock()
   private var _stdout = Data()
+  private var _stdoutTruncated = false
   private var _stderr = Data()
   private var _timedOut = false
 
-  func setStdout(_ d: Data) {
+  func setStdout(_ d: Data, truncated: Bool) {
     lock.lock()
     _stdout = d
+    _stdoutTruncated = truncated
     lock.unlock()
   }
   func setStderr(_ d: Data) {
@@ -470,6 +488,11 @@ private final class StatusRunState: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     return _stdout
+  }
+  var stdoutTruncated: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return _stdoutTruncated
   }
   var stderr: Data {
     lock.lock()

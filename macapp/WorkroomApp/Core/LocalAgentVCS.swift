@@ -29,17 +29,22 @@ actor LocalAgentVCS {
   }
 
   func reader(context: RepositoryContext) async throws -> VCSProviding {
-    try await ensureConnected(for: context)
+    try await ensureConnected(host: context.location.host)
     return try await manager.reader(context: context)
   }
 
   func writer(context: RepositoryContext) async throws -> VCSWriting {
-    try await ensureConnected(for: context)
+    try await ensureConnected(host: context.location.host)
     return try await manager.writer(context: context)
   }
 
-  private func ensureConnected(for context: RepositoryContext) async throws {
-    guard context.location.host == .local else { throw HostConnectionError.mismatchedContext }
+  func files(context: FileContext) async throws -> FileProviding {
+    try await ensureConnected(host: context.location.host)
+    return try await manager.files(context: context)
+  }
+
+  private func ensureConnected(host: HostID) async throws {
+    guard host == .local else { throw HostConnectionError.mismatchedContext }
     try Task.checkCancellation()
     // Captured as local lets: plain Sendable values, so the nested closures below (some running on
     // `HostConnectionManager`, not this actor) can read them with no actor hop.

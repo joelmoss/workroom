@@ -125,7 +125,8 @@ final class RepositoryRouter: @unchecked Sendable {
     #endif
     return RepositoryRouter(
       localReader: { try await LocalAgentVCS.shared.reader(context: $0) },
-      localWriter: { try await LocalAgentVCS.shared.writer(context: $0) })
+      localWriter: { try await LocalAgentVCS.shared.writer(context: $0) },
+      localFiles: { try await LocalAgentVCS.shared.files(context: $0) })
   }()
   private let lock = NSLock()
   private var entries: [RepositoryLocation: Entry] = [:]
@@ -139,17 +140,22 @@ final class RepositoryRouter: @unchecked Sendable {
   /// nil in every test router that doesn't opt in (the vast majority, read-focused) — `writer(for:)`
   /// then goes straight to the native `CLIVCSWriter` fallback it always has, unchanged.
   private let localWriter: (@Sendable (RepositoryContext) async throws -> VCSWriting)?
+  /// nil in every test router that doesn't opt in: `files(for:)` then serves natively, as it did
+  /// before the File service existed.
+  private let localFiles: (@Sendable (FileContext) async throws -> FileProviding)?
 
   /// Production routers share app-wide host connections. Tests can retain native local providers
   /// or inject an isolated agent without starting a service against the user's session socket.
   init(
     connections: HostConnectionManager = .shared,
     localReader: (@Sendable (RepositoryContext) async throws -> VCSProviding)? = nil,
-    localWriter: (@Sendable (RepositoryContext) async throws -> VCSWriting)? = nil
+    localWriter: (@Sendable (RepositoryContext) async throws -> VCSWriting)? = nil,
+    localFiles: (@Sendable (FileContext) async throws -> FileProviding)? = nil
   ) {
     self.connections = connections
     self.localReader = localReader
     self.localWriter = localWriter
+    self.localFiles = localFiles
     self.remoteReader = { throw RepositoryRoutingError.unavailable($0.location.host) }
     self.remoteWriter = { context, _ in
       throw RepositoryRoutingError.unavailable(context.location.host)
@@ -165,6 +171,7 @@ final class RepositoryRouter: @unchecked Sendable {
     self.connections = nil
     self.localReader = nil
     self.localWriter = nil
+    self.localFiles = nil
     self.remoteReader = remoteReader
     self.remoteWriter = remoteWriter
   }
@@ -264,6 +271,32 @@ final class RepositoryRouter: @unchecked Sendable {
     guard context.location.host == .local else { return try remoteReader(context) }
     let provider: LocalVCSProviding = context.backend == .jj ? RustJJProvider() : GitProvider()
     return BoundLocalReader(context: context, provider: provider)
+  }
+
+  /// Listing, raw reads and change notification for `location`'s files.
+  ///
+  /// Registered or not: an unregistered repository lists and reads exactly as before, and only a jj
+  /// listing needs the shared repository (`FileContext.sharedLocation`), which it reports itself.
+  ///
+  /// The native fallback is for one case only — a LOCAL host whose running agent predates the File
+  /// service (`VCSError.backendVersion` while OBTAINING the service; the agent is kept alive because
+  /// it may own terminals, so this is not transient). Every other failure to obtain it propagates,
+  /// and it is never applied mid-operation or to a remote host: service unavailability is an explicit
+  /// failure, not an empty successful result.
+  func files(
+    for location: RepositoryLocation, runner: StatusCommandRunning = StatusCommandRunner(),
+    gate: JJSnapshotGate = .shared
+  ) async throws -> FileProviding {
+    let context = FileContext(
+      location: location, sharedLocation: entry(for: location)?.sharedLocation)
+    guard location.host == .local else {
+      guard let connections else { throw RepositoryRoutingError.unavailable(location.host) }
+      return try await connections.files(context: context)
+    }
+    if let localFiles {
+      do { return try await localFiles(context) } catch VCSError.backendVersion(_) {}
+    }
+    return NativeFileProvider(context: context, runner: runner, gate: gate)
   }
 
   func registeredContext(for location: RepositoryLocation) throws -> RepositoryContext {

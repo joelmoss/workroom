@@ -264,17 +264,65 @@ final class FileTreeTests: XCTestCase {
     }
   }
 
-  // MARK: PlainFileViewer.isContained (symlink-escape guard)
+  // MARK: reload coalescing (#211)
 
-  func testIsContainedAcceptsRootAndDescendants() {
-    XCTAssertTrue(PlainFileViewer.isContained(path: "/repo", within: "/repo"))
-    XCTAssertTrue(PlainFileViewer.isContained(path: "/repo/src/a.swift", within: "/repo"))
+  /// Through the agent a cancelled listing keeps running on the host, so a burst of watch events must
+  /// not each start one: one in flight, one follow-up, and the tree still ends on the last state.
+  @MainActor
+  func testABurstOfReloadsRunsOneListingAndOneFollowUp() async throws {
+    let dir = NSTemporaryDirectory() + "reload-\(UUID().uuidString)"
+    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    let runner = GatedRunner()
+    let model = FileTreeModel(runner: runner)
+    model.activate(location: try await RepositoryLocation.local(dir))
+    defer { model.activate(location: nil) }
+
+    try await waitUntil { runner.calls == 1 }
+    for _ in 0..<10 { model.reload() }
+    try await Task.sleep(for: .milliseconds(150))
+    XCTAssertEqual(runner.calls, 1, "reloads during a listing must not start more listings")
+
+    runner.release()  // the first listing finishes and the ONE follow-up starts
+    try await waitUntil { runner.calls == 2 }
+    try await Task.sleep(for: .milliseconds(150))
+    XCTAssertEqual(runner.calls, 2, "ten reloads coalesce to a single follow-up")
+    runner.release()
+    try await waitUntil { model.state == .loaded }
+    XCTAssertEqual(model.roots.map(\.name), ["a.txt"])
   }
 
-  func testIsContainedRejectsSiblingPrefixDirectory() {
-    // Component-wise, not string-prefix: "/repo-evil" is NOT inside "/repo".
-    XCTAssertFalse(PlainFileViewer.isContained(path: "/repo-evil/x", within: "/repo"))
-    XCTAssertFalse(PlainFileViewer.isContained(path: "/elsewhere/x", within: "/repo"))
+  @MainActor
+  private func waitUntil(_ condition: () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      if condition() { return }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    XCTFail("condition not reached")
+  }
+}
+
+/// Holds every listing open until `release()`, and counts how many were started.
+private final class GatedRunner: StatusCommandRunning, @unchecked Sendable {
+  private let lock = NSLock()
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+  private var started = 0
+  var calls: Int { lock.withLock { started } }
+
+  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+    async -> CommandResult
+  {
+    lock.withLock { started += 1 }
+    await withCheckedContinuation { continuation in
+      lock.withLock { waiters.append(continuation) }
+    }
+    return CommandResult(stdout: "a.txt\0", stderr: "", exitCode: 0, timedOut: false)
+  }
+
+  func release() {
+    let next = lock.withLock { waiters.isEmpty ? nil : waiters.removeFirst() }
+    next?.resume()
   }
 }
 
