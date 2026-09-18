@@ -208,4 +208,14 @@ final class AgentVCSProtocolTests: XCTestCase {
       }
     }
   }
+
+  /// `AgentVCSConnection.execVersion` and `AgentExecRequest.version` are the same number declared
+  /// twice — the capability the client checks, and the version it actually sends. Nothing in the
+  /// compiler ties them together, and a doc comment claiming they "cannot drift" was simply wrong.
+  func testTheAdvertisedExecVersionIsTheOneActuallySent() {
+    let request = AgentExecRequest(
+      executable: "git", args: [], dir: "/tmp", timeoutMs: 1000, stdin: nil, env: [:])
+    XCTAssertEqual(request.version, 1)
+    XCTAssertEqual(request.kind, "exec")
+  }
 }

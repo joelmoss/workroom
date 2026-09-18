@@ -28,8 +28,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// the same signal `RepositoryRouter` already falls back to native writes on.
   private var _capabilities: AgentVCSCapabilities?
   private var capabilities: AgentVCSCapabilities? { lock.withLock { _capabilities } }
-  /// The exec wire version this client speaks — the literal `AgentExecRequest.version` it sends, so
-  /// the two cannot drift.
+  /// The exec wire version this client speaks. `AgentExecRequest.version` carries the same number on
+  /// the wire and is declared separately, so this is a claim the compiler does not check — asserted
+  /// in `AgentVCSProtocolTests` instead.
   private static let execVersion = 1
   /// The first exec service version that reassembles chunked requests. Separate from `execVersion`
   /// because it gates a FRAMING capability, not the request body: a version-1 agent speaks the same
@@ -126,10 +127,11 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       // stale socket, which is the common case rather than an exotic one (the daemon leaves
       // `session.sock` behind on any `pkill`).
       //
-      // Only this case. A `capabilities` reply that arrives and says the agent is incompatible, or a
-      // handshake that times out against a HUNG agent, are both still `serviceUnavailable`: a
-      // respawn cannot fix either, since the second candidate exits without binding while the first
-      // holds the single-instance flock.
+      // Only this case. A `capabilities` reply that arrives and says the agent is incompatible, and a
+      // handshake that times out against a HUNG agent (`.requestTimedOut` — which is the reason that
+      // case exists; it used to arrive here as `.connectionLost` and take the respawn path), are both
+      // still `serviceUnavailable`: a respawn cannot fix either, since the second candidate exits
+      // without binding while the first holds the single-instance flock.
       await connection.close()
       throw HostConnectionError.connectionLost
     } catch {
@@ -154,9 +156,17 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     guard context.location.host == host else { throw HostConnectionError.mismatchedContext }
     guard lock.withLock({ !closed }) else { throw HostConnectionError.connectionLost }
     // Presence and version of the SERVICE, not a count of the caller's own methods. `>=` rather
-    // than `==` so an agent that gains a version 2 does not refuse a client speaking 1 — the agent
+    // than `==` so an agent that gains a version 3 does not refuse a client speaking 1 — the agent
     // is what decides whether it still accepts this request, and it answers that on the request
-    // itself (`exec`'s `version != 1` guard), which is the only place that can know.
+    // itself (`exec`'s version guard), which is the only place that can know.
+    //
+    // KNOWN GAP in that reasoning: a per-request refusal does NOT reach the native fallback. A
+    // `BackendVersion` error arriving in a REPLY is decoded in `AgentCommandRunner.exec`, throws,
+    // and becomes `neverRan`/`launchFailed` — not the `VCSError.backendVersion` that
+    // `RepositoryRouter.writer(for:)` falls back on. So a future agent that DROPS version 1 would
+    // fail every write as "launch failed" rather than writing natively. Nothing can hit this today
+    // (no such agent exists, and 2 still accepts 1), but the `>=` is justified by a mechanism that
+    // is not wired up, and that is worth knowing before the first version that drops one.
     guard let exec = capabilities?.exec, exec >= Self.execVersion else {
       throw VCSError.backendVersion("Agent does not support VCS writes.")
     }
