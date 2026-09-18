@@ -92,11 +92,73 @@ final class AgentVCSProtocolTests: XCTestCase {
       VCSSyncPresenter.describeCommit(.outcomeUnknown(reason)).contains("may have"))
   }
 
+  /// The recovery rule is IDEMPOTENCE, not "never the failed verb". A lost `abortRebase` used to be
+  /// answered with Fetch, which resolves nothing about a parked rebase — and `perform` allows an
+  /// abort with no remote, so that click would have replaced the doubt with an unrelated `.noRemote`.
+  func testOnlyNonIdempotentVerbsAreSwappedForFetch() {
+    let reason = "An operation may have completed; refresh before retrying"
+    for verb in [VCSRemoteAction.fetch, .abortRebase] {
+      XCTAssertEqual(
+        VCSSyncPresenter.retryAction(for: .outcomeUnknown(reason), lastAction: verb), verb,
+        "\(verb.label) is idempotent and should be offered back")
+    }
+    for verb in [VCSRemoteAction.push, .pull] {
+      XCTAssertEqual(
+        VCSSyncPresenter.retryAction(for: .outcomeUnknown(reason), lastAction: verb), .fetch,
+        "\(verb.label) is not idempotent and must not be offered back")
+    }
+  }
+
+  /// The disk is not output, so it survives never hearing back. A pull whose reply was lost after git
+  /// wrote `rebase-merge` leaves the same parked rebase a killed one does, and the same Abort fixes
+  /// it — checking the sentinel first discarded the only positive evidence available.
+  func testALostPullStillFindsAParkedRebaseOnDisk() throws {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+      .appendingPathComponent("wr-rebase-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(
+      at: dir.appendingPathComponent("rebase-merge"), withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let lost = AgentCommandRunner.outcomeUnknown(HostConnectionError.connectionLost)
+    guard
+      case .rebaseInProgress = CLIVCSWriter.classify(
+        lost, action: .pull, tool: "git", gitDir: dir)
+    else { return XCTFail("the parked rebase was discarded") }
+
+    // Only for a pull, and only when the directory is actually there.
+    guard
+      case .outcomeUnknown = CLIVCSWriter.classify(
+        lost, action: .push, tool: "git", gitDir: dir)
+    else { return XCTFail("a push must not be upgraded to rebaseInProgress") }
+  }
+
+  /// `describe`'s own rule — never "failed" over a state that may have succeeded — has to hold for the
+  /// heading too. For a VoiceOver user the heading IS the whole message.
+  func testTheHeadingDoesNotAssertAVerdictItDoesNotHave() {
+    let unknown = VCSRemoteFailure.outcomeUnknown("dropped")
+    XCTAssertEqual(
+      VCSSyncPresenter.headline(unknown, action: .push), "Push may not have completed")
+    XCTAssertFalse(VCSSyncPresenter.headline(unknown, action: .push).contains("failed"))
+    // Every other failure keeps the plain verdict.
+    XCTAssertEqual(VCSSyncPresenter.headline(.noRemote, action: .push), "Push failed")
+  }
+
+  /// The remedy is rendered for push, pull, fetch, an abort AND for read failures (tier [13b] routes
+  /// a read through the same `describe`/`remedy` pair), so naming one verb was wrong advice for the
+  /// rest — "push again" to someone whose rebase may be half-applied most of all.
+  func testTheUnknownOutcomeRemedyNamesNoVerb() throws {
+    let remedy = try XCTUnwrap(VCSSyncPresenter.remedy(for: .outcomeUnknown("dropped")))
+    for verb in ["push again", "pull again", "the push landed"] {
+      XCTAssertFalse(remedy.lowercased().contains(verb), "remedy assumes a verb: \(verb)")
+    }
+  }
+
   /// The sentinel is a claim about the round trip, so it must beat every output-shaped check — a
   /// transport message that happened to contain git's prose must not be classified as git's failure.
   func testTheUnknownSentinelOutranksOutputMatching() {
     let misleading = CommandResult(
-      stdout: "", stderr: "Updates were rejected; the host key verification failed",
+      stdout: "",
+      stderr: "Updates were rejected. Host key verification failed. fatal: Cannot autostash",
       exitCode: CommandResult.outcomeUnknown, timedOut: false)
     guard case .outcomeUnknown = CLIVCSWriter.classify(misleading, action: .push, tool: "git")
     else {
