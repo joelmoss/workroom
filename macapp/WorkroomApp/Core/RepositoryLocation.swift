@@ -123,7 +123,9 @@ final class RepositoryRouter: @unchecked Sendable {
         return RepositoryRouter()
       }
     #endif
-    return RepositoryRouter(localReader: { try await LocalAgentVCS.shared.reader(context: $0) })
+    return RepositoryRouter(
+      localReader: { try await LocalAgentVCS.shared.reader(context: $0) },
+      localWriter: { try await LocalAgentVCS.shared.writer(context: $0) })
   }()
   private let lock = NSLock()
   private var entries: [RepositoryLocation: Entry] = [:]
@@ -134,15 +136,20 @@ final class RepositoryRouter: @unchecked Sendable {
   let remoteWriter: @Sendable (RepositoryContext, VCSProviding) throws -> VCSWriting
   private let connections: HostConnectionManager?
   private let localReader: (@Sendable (RepositoryContext) async throws -> VCSProviding)?
+  /// nil in every test router that doesn't opt in (the vast majority, read-focused) — `writer(for:)`
+  /// then goes straight to the native `CLIVCSWriter` fallback it always has, unchanged.
+  private let localWriter: (@Sendable (RepositoryContext) async throws -> VCSWriting)?
 
   /// Production routers share app-wide host connections. Tests can retain native local providers
   /// or inject an isolated agent without starting a service against the user's session socket.
   init(
     connections: HostConnectionManager = .shared,
-    localReader: (@Sendable (RepositoryContext) async throws -> VCSProviding)? = nil
+    localReader: (@Sendable (RepositoryContext) async throws -> VCSProviding)? = nil,
+    localWriter: (@Sendable (RepositoryContext) async throws -> VCSWriting)? = nil
   ) {
     self.connections = connections
     self.localReader = localReader
+    self.localWriter = localWriter
     self.remoteReader = { throw RepositoryRoutingError.unavailable($0.location.host) }
     self.remoteWriter = { context, _ in
       throw RepositoryRoutingError.unavailable(context.location.host)
@@ -157,6 +164,7 @@ final class RepositoryRouter: @unchecked Sendable {
   ) {
     self.connections = nil
     self.localReader = nil
+    self.localWriter = nil
     self.remoteReader = remoteReader
     self.remoteWriter = remoteWriter
   }
@@ -293,6 +301,16 @@ final class RepositoryRouter: @unchecked Sendable {
       reader = try self.reader(context: context)
     }
     guard location.host == .local else { return try remoteWriter(context, reader) }
+    // Local writes route through the same agent connection reads already use — mirroring
+    // `reader(for:)` above — and fall back to a native `CLIVCSWriter` only when the agent predates
+    // the write service (`VCSError.backendVersion`, from `AgentVCSConnection.writer`'s capability
+    // check). The fallback only ever fires before any write is attempted, never mid-operation:
+    // obtaining a writer here does not execute anything.
+    if let localWriter {
+      do {
+        return try await localWriter(context)
+      } catch VCSError.backendVersion(_) {}
+    }
     let provider: LocalVCSProviding = context.backend == .jj ? RustJJProvider() : GitProvider()
     let writer = CLIVCSWriter(
       vcs: context.backend.rawValue, runner: StatusCommandRunner(),

@@ -13,8 +13,15 @@ New persistent local sessions use `wr-agent`; an attach-only Swift shim preserve
 sessions held by older daemons. This does **not** yet provide remote workrooms.
 
 Phase 2 preparation has landed: #184 added the VCS registry, #185 moved working status onto
-`VCSProviding`, and #186 routed writers through the registry too. The host-aware foundation binds services to validated repository identities and captured ownership.
-Agent-backed VCS, file and notification services remain unbuilt.
+`VCSProviding`, and #186 routed writers through the registry too. The host-aware foundation binds services to validated repository identities and captured ownership
+(#201, #202). Agent-backed VCS reads are implemented (#204, Next Steps item 2): exact patches and
+line counts both come from owning-host Git, not gix, so the spike's 139/150 count drift never
+ships. Agent-backed VCS writes are implemented (#205, Next Steps item 3): `wr-agent` gained a
+generic, allowlisted exec service, and every write's argv building, output parsing and failure
+classification stayed in `CLIVCSWriter` unmodified — only the `StatusCommandRunning` conformer that
+actually spawns `git`/`jj` changed, so agent-routed and native writes classify identically by
+construction. File and notification services remain unbuilt. All four PRs stay draft, stacked,
+until the next stable release cuts from master.
 OQ1's gix measurements and OQ21's Swift driver decision are answered. The gix code remains a spike.
 Phases 3 and 4 — persistent remote transport, distribution, provisioning and UI — remain planned.
 The implementation sequence and remaining decisions are in **Next Steps**.
@@ -1922,9 +1929,12 @@ disagreement passes every test on either side alone while presenting as an empty
 
 ## Next Steps
 
-**Corrected 2026-09-17 against `master`.** Phase 1 is complete, OQ1's feasibility gate is lifted,
-and the host-aware Phase 2 routing foundation is implemented. The remaining work is split into the
-service milestones below so each layer can be reviewed and landed independently.
+**Corrected 2026-09-18.** Phase 1 is complete, OQ1's feasibility gate is lifted, and items 1, 2 and
+the VCS-writes half of item 3 are implemented on the draft stack (#201, #202, #204, #205) — the
+exact-line-count decision item 1 demanded is delivered, not deferred. File access/notifications,
+GitHub status and interchangeability (the rest of item 3) are the next milestones. The remaining
+work is split into the service milestones below so each layer can be reviewed and landed
+independently.
 
 1. **Host-owned connection lifecycle implemented on the stacked branch.** The app-wide manager
    binds remote repository services to a connection generation, fails pending calls on disconnect,
@@ -1969,8 +1979,32 @@ service milestones below so each layer can be reviewed and landed independently.
    persisted remote descriptors and remote UI remain later milestones.
 
 3. **Deliver the remaining Phase 2 services as separately reviewable milestones.**
-   - VCS writes: preserve typed failures and Retry/Abort behavior; account for remote clones whose
-     project root and workroom root are the same repository.
+
+   **VCS writes are implemented (#205).** `wr-agent` gained a generic exec service on the same
+   `Service::Vcs` envelope reads use, discriminated from a read `Request` by a `"kind":"exec"` field
+   so the existing read wire format is untouched: argv (allowlisted to `git`/`jj`), cwd, stdin and a
+   timeout in; exit code, stdout, stderr, `timed_out` and `signaled` out, mirroring
+   `StatusCommandRunner`'s own SIGTERM-then-grace-then-SIGKILL shape. `CLIVCSWriter`'s existing arg
+   building, output parsing and failure classification are untouched — only the
+   `StatusCommandRunning` conformer it spawns through changed (`AgentCommandRunner`, forwarding to
+   the new exec service instead of `Process`), so agent-routed and native writes classify identically
+   by construction rather than by keeping two implementations in sync. The exec service deliberately
+   never takes the JJ snapshot barrier itself: `CLIVCSWriter`'s `JJSnapshotGate` already holds
+   `<shared>/.jj/workroom-vcs.lock` for the whole gated write before any exec request goes out, and
+   wr-agent's own `SnapshotLock` locks the identical file for its read-side snapshots — acquiring it
+   again on the write path would self-deadlock. `RepositoryRouter.writer(for:)` falls back to a
+   native `CLIVCSWriter` only when obtaining the writer itself fails (`VCSError.backendVersion`, a
+   pre-upgrade agent with no write capability) — never mid-write, matching the read path's existing
+   fallback discipline exactly. Network commands (fetch/push/pull) forward a small allowlisted set of
+   auth env vars (`SSH_AUTH_SOCK`, `GIT_SSH_COMMAND`, etc.), resolved client-side via the same
+   `ShellEnvironment` probe a native push already depends on, rather than trusting wr-agent's own
+   (possibly stale, possibly launchd-minimal) inherited environment. A remote clone whose project
+   root and workroom root are the same repository needs no special handling: `SnapshotLock`/
+   `JJProcessBarrier` already canonicalize and compare the two, so equal roots resolve to one lock
+   file. Filesystem probes `CLIVCSWriter` still runs locally (`sequencerState`, `worktreeGitDir`,
+   `gitLastFetch`, `existingLockFile`) are the one deliberate remaining gap — correct for today's
+   local-only agent, and exactly the piece Phase 3's remote transport will need to move host-side.
+
    - File access and notifications: move directory listing, raw reads and watches behind the agent;
      preserve coalescing and account for the different local-worktree and remote-clone watch layouts.
      Reconnect must refresh state and restore subscriptions without leaving stale panels.
