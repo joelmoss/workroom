@@ -23,6 +23,9 @@ const MAX_HISTORY_LIMIT: usize = 10000;
 /// `CLIVCSWriter.commitTimeout` (Swift) is 600s, the longest legitimate write timeout. Bounds a
 /// hostile/buggy request from wedging an exec thread indefinitely; the 32-slot `ACTIVE` permit
 /// already bounds concurrency, this bounds duration.
+/// The exec service's wire version, reported in `capabilities` so a client can tell a capable agent
+/// from one that predates the service. A version, not a count — see the `capabilities` reply.
+const EXEC_SERVICE_VERSION: u32 = 1;
 const MAX_EXEC_TIMEOUT_MS: u64 = 610_000;
 /// The ceiling must stay above `CLIVCSWriter.commitTimeout` (600s), or the transport would cut a
 /// legitimate commit short — one with a slow `pre-commit` hook — before its own limit applied, and
@@ -650,7 +653,16 @@ fn read(request: Request) -> model::Result<Value> {
         ));
     }
     if request.method == "capabilities" {
-        return Ok(json!({"version": 1, "reads": 9, "writes": 8}));
+        // `exec` is the exec service's own version, NOT a method count. The count it replaced
+        // (`writes: 8`) described a CLIENT-side Swift protocol: wr-agent implements one generic
+        // exec service and has never had eight write methods to report. Nothing here could keep
+        // that number true, and the client compared it for equality — so adding a ninth method to
+        // that Swift protocol, a change this side fully supports, silently dropped every user to
+        // native writes with no log line.
+        //
+        // The highest version this agent speaks. `exec` rejects anything but 1 today; a future
+        // version bumps this and decides then whether it still accepts 1.
+        return Ok(json!({"version": 1, "reads": 9, "exec": EXEC_SERVICE_VERSION}));
     }
     if request.limit.is_some_and(|limit| limit > MAX_HISTORY_LIMIT) {
         return Err(VcsError::PartialData(format!(
@@ -1108,10 +1120,16 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_reports_both_read_and_write_counts() {
+    fn capabilities_reports_the_read_count_and_the_exec_service_version() {
         let reply = execute(br#"{"version":1,"method":"capabilities"}"#);
         assert_eq!(reply["result"]["reads"], 9);
-        assert_eq!(reply["result"]["writes"], 8);
+        // A VERSION, not a count of anything. The client requires `>=` its own, so this must never
+        // become a number that describes the caller's side — that was the defect it replaced.
+        assert_eq!(reply["result"]["exec"], EXEC_SERVICE_VERSION);
+        assert!(
+            reply["result"].get("writes").is_none(),
+            "the method count is gone; nothing here could keep it true"
+        );
     }
 
     /// The child's environment is EXACTLY the request's map — nothing of the daemon's own leaks
