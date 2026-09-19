@@ -92,6 +92,26 @@ enum UITestFixture {
     return frame
   }
 
+  /// Relative heights of the inspector's stacked sections, in `InspectorSectionKind` order (changes,
+  /// files, pull request, history): `-WorkroomUITestInspectorWeights "6,1,1,1"`. Unset (or not four
+  /// positive numbers) keeps the equal-height default.
+  ///
+  /// Equal thirds is the right default for most tests and the wrong one for any test that needs to
+  /// click a row past the fifth: the Changes list is an `NSScrollView` inside its section, its rows'
+  /// accessibility frames are NOT clipped to it, and XCUITest clicks the frame's centre — so a row
+  /// scrolled out of view is "found", "hittable-looking", and clicked on whatever section is drawn
+  /// over that point instead. That is why `DiffViewerUITests` clicked `config/routes.rb` (the sixth
+  /// row) and silently hit the History pane.
+  static var inspectorWeights: [Double]? {
+    guard let value = text("WorkroomUITestInspectorWeights") else { return nil }
+    let weights = value.split(separator: ",").compactMap {
+      Double($0.trimmingCharacters(in: .whitespaces))
+    }
+    guard weights.count == InspectorSectionKind.allCases.count, weights.allSatisfy({ $0 > 0 })
+    else { return nil }
+    return weights
+  }
+
   /// When set (`-WorkroomUITestNoProjects 1`), the fixture loads an EMPTY project list — the
   /// fresh-install / nothing-configured state. Used by `NewWorkroomDialogUITests` to assert File ▸
   /// New Workroom is disabled when there's nothing to pick (issue #81 D3).
@@ -707,7 +727,9 @@ enum UITestFixture {
     // a section's BODY renders at all (a collapsed section keeps only its header), and it's global +
     // persisted, so without this a test inherits whichever sections the developer — or the last UI test
     // to press ⌥⌘C/⌥⌘Y — left shut, and reads as "the panel is broken".
-    Defaults[.inspectorLayout] = .default
+    Defaults[.inspectorLayout] = InspectorPaneState(
+      collapsed: InspectorPaneState.default.collapsed,
+      weights: inspectorWeights ?? InspectorPaneState.default.weights)
     // Workroom's own last-fetch stamps, for the same reason as the collapse state: they PERSIST, and a
     // fetch performed by an earlier test writes one. `RemoteStateModel` takes the later of the backend's
     // evidence and this stamp, so a leftover value silently overrode a seeded `.never` and the

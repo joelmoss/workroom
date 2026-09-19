@@ -26,6 +26,11 @@ final class DiffViewerUITests: XCTestCase {
     // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launchArguments += ["-WorkroomUITestDiffViewMode", diffViewMode]
+    // These tests click changed-file rows down to the seventh, and with the default equal thirds the
+    // Changes section only shows the first five: the rest are scrolled out of view but still found,
+    // and a click on one lands on the History pane drawn over its accessibility frame. Give Changes
+    // the room.
+    app.launchArguments += ["-WorkroomUITestInspectorWeights", "6,1,1,1"]
     if gitWorkroom { app.launchArguments += ["-WorkroomUITestGitWorkroom", "1"] }
     app.launch()
     app.activate()
