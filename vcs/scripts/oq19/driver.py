@@ -27,6 +27,7 @@ import importlib
 import json
 import os
 import pty
+import random
 import select
 import signal
 import socket
@@ -175,7 +176,11 @@ def run(args):
     sampler = subprocess.Popen([sys.executable, os.path.join(HERE, "sampler.py"), "--out", trace,
                                 "--interval", str(args.interval), "--roots-file", roots,
                                 "--ss-every", str(args.ss_every)])
-    time.sleep(args.interval * 2)  # a couple of samples before the first phase, so the series has a start
+    # A couple of samples before the first phase, so the series has a start. With a jitter seed the wait varies
+    # by up to one interval, so repeats do not all start their work at the same point of the sampler's tick.
+    preroll = args.interval * 2 + (random.Random(args.jitter_seed).uniform(0, args.interval)
+                                   if args.jitter_seed is not None else 0.0)
+    time.sleep(preroll)
 
     ctx = Context(session, sampler, args.scale, args.compressed, args.out)
     truth = []
@@ -218,7 +223,7 @@ def run(args):
     with open(os.path.join(args.out, "meta.json"), "w") as f:
         json.dump({"scenario": scenario.id, "name": scenario.name, "mode": args.mode, "scale": args.scale,
                    "compressed": args.compressed, "interval": args.interval, "ss_every": args.ss_every,
-                   "variant": ctx.variant, "sampler": footer, "pty_events": len(pty_log)}, f, indent=2)
+                   "variant": ctx.variant, "jitter_seed": args.jitter_seed, "preroll": preroll, "sampler": footer, "pty_events": len(pty_log)}, f, indent=2)
     print("ok %s -> %s (sampler cpu %.3f%% of a core)" %
           (scenario.id, args.out, 100 * (footer.get("cpu_fraction") or 0)))
 
@@ -230,6 +235,8 @@ def main():
     ap.add_argument("--interval", type=float, default=1.0)
     ap.add_argument("--ss-every", type=int, default=1)
     ap.add_argument("--mode", choices=("detached", "attached"), default="detached")
+    ap.add_argument("--jitter-seed", type=int, default=None,
+                    help="vary the pre-roll by up to one interval, deterministically per seed (repeats)")
     ap.add_argument("--compressed", action="store_true")
     ap.add_argument("--scale", type=float, default=1.0,
                     help="multiply every phase duration: PIPELINE CHECKS ONLY, never for a scored run")
