@@ -75,6 +75,16 @@ class Labels(unittest.TestCase):
                                max(gates.WINDOW_GRID_COMPRESSED_S) + labels.PROVIDER_TIMEOUT_S)
         self.assertEqual(gates.WINDOW_GRID_COMPRESSED_S, tuple(w // 10 for w in gates.WINDOW_GRID_S))
 
+    def test_every_critical_scenario_has_a_compressed_variant(self):
+        for sc in labels.CRITICAL:
+            full = sum(labels.seconds(p) for p in sc.phases)
+            compressed = sum(labels.seconds(p, True) for p in sc.phases)
+            self.assertLess(compressed, full * 0.7, sc.id)  # otherwise the 20 repeats cost a full run each
+
+    def test_flaps_keep_a_reference_line_that_is_not_a_gate(self):
+        self.assertEqual(gates.FLAP_REFERENCE_PER_HOUR, 6.0)
+        self.assertFalse(hasattr(gates, "gate_flapping"))
+
     def test_the_owner_decisions_are_encoded(self):
         self.assertEqual([p.label for p in labels.BY_ID["8"].phases], [IDLE])  # listening server: IDLE
         self.assertTrue(labels.BY_ID["18"].gated)  # staleness is gated
@@ -208,52 +218,66 @@ class D3Fallback(unittest.TestCase):
 
 
 class FinalClaim(unittest.TestCase):
-    def run_(self, set_, scale, n, scenario="4b", mode="detached", failed=()):
+    def runs(self, set_, scale, scenario, n, mode="detached", failed=()):
         return [{"set": set_, "scale": scale, "mode": mode, "scenario": scenario,
                  "failed_gates": list(failed) if i == 0 else []} for i in range(n)]
 
-    def all_clean(self):
-        return (self.run_("tuning", "full", 5) + self.run_("tuning", "compressed", 20)
-                + self.run_("holdout", "full", 5) + self.run_("holdout", "compressed", 20))
+    def holdout(self, mode="detached", full=True, compressed=True, extra_failed=None):
+        """A COMPLETE hold-out: every gated scenario x HOLDOUT_REPEATS_FULL at full length and every critical
+        scenario x HOLDOUT_REPEATS_COMPRESSED_CRITICAL compressed."""
+        out = []
+        if full:
+            for sc in labels.GATED:
+                out += self.runs("holdout", "full", sc.id, gates.HOLDOUT_REPEATS_FULL, mode,
+                                 failed=(extra_failed or {}).get(sc.id, ()))
+        if compressed:
+            for sc in labels.CRITICAL:
+                out += self.runs("holdout", "compressed", sc.id, gates.HOLDOUT_REPEATS_COMPRESSED_CRITICAL, mode)
+        return out
 
     def test_the_claim_rests_on_the_detached_holdout_at_both_scales_and_never_pools(self):
-        verdict, table = gates.final_claim(self.all_clean())
+        tuning = self.runs("tuning", "full", "4b", 5) + self.runs("tuning", "compressed", "4b", 20)
+        verdict, table = gates.final_claim(self.holdout() + tuning)
         self.assertEqual(verdict, PASS)
         self.assertEqual(set(table), {("tuning", "full", "detached"), ("tuning", "compressed", "detached"),
                                       ("holdout", "full", "detached"), ("holdout", "compressed", "detached")})
-        self.assertAlmostEqual(table[("holdout", "compressed", "detached")]["bound_any"], gates.upper_bound(0, 20))
 
     def test_a_clean_tuning_set_cannot_carry_a_failing_holdout(self):
-        runs = self.run_("tuning", "full", 5) + self.run_("holdout", "full", 5, failed=("false_idle",)) \
-            + self.run_("holdout", "compressed", 20)
+        runs = self.holdout(extra_failed={"4b": ("false_idle",)}) + self.runs("tuning", "full", "4b", 5)
         self.assertEqual(gates.final_claim(runs)[0], FAIL)
 
     def test_a_missing_holdout_scale_or_mode_is_not_a_pass(self):
-        self.assertEqual(gates.final_claim(self.run_("holdout", "compressed", 20))[0], FAIL)
-        attached = self.run_("holdout", "full", 5, mode="attached") + self.run_("holdout", "compressed", 20, mode="attached")
-        self.assertEqual(gates.final_claim(attached)[0], FAIL)  # attached results never carry the claim
+        self.assertEqual(gates.final_claim(self.holdout(full=False))[0], FAIL)
+        self.assertEqual(gates.final_claim(self.holdout(mode="attached"))[0], FAIL)  # attached never carries it
 
     def test_every_gate_carries_the_claim_not_just_false_idle(self):
-        runs = self.run_("holdout", "full", 5, failed=("provider_deadline",)) + self.run_("holdout", "compressed", 20)
+        runs = self.holdout(extra_failed={"5": ("provider_deadline",)})
         self.assertEqual(gates.final_claim(runs)[0], FAIL)
+
+    def test_the_pre_registered_sample_size_is_enforced(self):
+        """One clean run per scale used to PASS with bound 1.0: 'how much hold-out is enough' was decidable
+        after the traces existed."""
+        thin = self.runs("holdout", "full", "1", 1) + self.runs("holdout", "compressed", "4b", 1)
+        verdict, table = gates.final_claim(thin)
+        self.assertEqual(verdict, FAIL)
+        self.assertFalse(table[("holdout", "full", "detached")]["sample_size_ok"])
+        short = self.holdout()
+        short.remove([r for r in short if r["scale"] == "compressed" and r["scenario"] == "10"][0])
+        self.assertEqual(gates.final_claim(short)[0], FAIL)  # 19 compressed runs of a critical scenario
 
     def test_the_false_idle_denominator_counts_only_runs_that_can_fail_it(self):
         """Idle-only scenarios cannot fail false-idle: counting them would manufacture a tighter bound."""
-        runs = (self.run_("holdout", "full", 45, scenario="1") + self.run_("holdout", "full", 35, scenario="5")
-                + self.run_("holdout", "compressed", 20))
-        table = gates.final_claim(runs)[1]
-        g = table[("holdout", "full", "detached")]
-        self.assertEqual((g["runs"], g["busy_runs"]), (80, 35))
-        self.assertAlmostEqual(g["bound_false_idle"], gates.upper_bound(0, 35))
-        self.assertGreater(g["bound_false_idle"], gates.upper_bound(0, 80))  # not the flattering pooled bound
+        g = gates.final_claim(self.holdout())[1][("holdout", "full", "detached")]
+        idle_only = [s for s in labels.GATED if not any(p.label == BUSY for p in s.phases)]
+        self.assertEqual(g["runs"] - g["busy_runs"], len(idle_only) * gates.HOLDOUT_REPEATS_FULL)
+        self.assertAlmostEqual(g["bound_false_idle"], gates.upper_bound(0, g["busy_runs"]))
+        self.assertGreater(g["bound_false_idle"], gates.upper_bound(0, g["runs"]))  # not the flattering pooled bound
 
     def test_critical_scenarios_are_reported_on_their_own(self):
-        runs = self.run_("holdout", "full", 5, scenario="4b") + self.run_("holdout", "full", 10, scenario="5") \
-            + self.run_("holdout", "compressed", 20)
-        g = gates.final_claim(runs)[1][("holdout", "full", "detached")]
-        self.assertEqual(g["critical_runs"], 5)
-        self.assertAlmostEqual(g["critical_bound"], gates.upper_bound(0, 5))
-        self.assertEqual(g["by_scenario"]["5"], (10, 0))
+        g = gates.final_claim(self.holdout())[1][("holdout", "full", "detached")]
+        self.assertEqual(g["critical_runs"], len(labels.CRITICAL) * gates.HOLDOUT_REPEATS_FULL)
+        self.assertAlmostEqual(g["critical_bound"], gates.upper_bound(0, g["critical_runs"]))
+        self.assertEqual(g["by_scenario"]["5"], (gates.HOLDOUT_REPEATS_FULL, 0))
 
 
 class Evaluate(unittest.TestCase):
@@ -275,7 +299,7 @@ class Evaluate(unittest.TestCase):
         # the excuses are not parameters any more
         for name in ("tails", "exempt"):
             self.assertNotIn(name, gates.evaluate.__code__.co_varnames[:gates.evaluate.__code__.co_argcount])
-        with self.assertRaises(AssertionError):  # and the gate itself refuses to excuse anything but 3b
+        with self.assertRaises(ValueError):  # and the gate itself refuses to excuse anything but 3b
             gates.gate_no_busy_forever([(0, BUSY)], [idle(0, 300)], {}, exempt=("1",))
 
     def test_the_d3_exemption_comes_only_from_the_mechanised_rule(self):
@@ -291,8 +315,34 @@ class Evaluate(unittest.TestCase):
         self.assertEqual(gates.evaluate(tail_60, post, 1, 20)["no_busy_forever"][0], FAIL)  # 60 > 20 + 10
 
     def test_unsorted_verdicts_are_rejected_rather_than_silently_misread(self):
-        with self.assertRaises(AssertionError):
+        with self.assertRaises(ValueError):
             gates.evaluate([(300, IDLE), (100, BUSY)], [busy(0, 400)], 1, 60)
+
+    def test_reported_scenarios_are_never_gated(self):
+        """Scenario 17 exists to REPORT what an OQ22 ceiling would do to a long job; a 3600 s ceiling on 5400 s
+        of work is an owner decision, not a claim-sinking false-idle failure."""
+        work = [Interval("17", "quiet", IDLE, 0, 110), Interval("17", "work", BUSY, 110, 5510),
+                Interval("17", "post", IDLE, 5510, 6150)]
+        ceiling = [(111, BUSY), (3711, IDLE), (5700, IDLE)]  # a force-sleep ceiling puts it to sleep mid-work
+        result = gates.evaluate(ceiling, work, 1, 60)
+        self.assertTrue(all(v[0] == PASS for v in result.values()), result)
+        for sid in ("12", "13"):
+            iv = [Interval(sid, "x", BUSY if sid == "12" else IDLE, 0, 300)]
+            self.assertTrue(all(v[0] == PASS for v in gates.evaluate([(0, IDLE)], iv, 1, 60).values()), sid)
+
+    def test_scenario_18_without_its_stale_interval_raises_instead_of_skipping_the_gate(self):
+        ivs = [busy(110, 410, "18"), idle(410, 1050, "18", "post")]
+        with self.assertRaises(ValueError):
+            gates.evaluate([(111, BUSY), (470, IDLE)], ivs, 1, 60)
+
+    def test_the_enforcement_survives_python_dash_O(self):
+        """Bare asserts are stripped by `python3 -O`; the exemption and sort checks must be real exceptions."""
+        code = ("import sys; sys.path.insert(0, %r); import gates\n"
+                "try:\n    gates.gate_no_busy_forever([(0,'BUSY')], [gates.Interval('1','idle','IDLE',0,300)], {}, exempt=('1',))\n"
+                "except ValueError:\n    print('raised')\n" % os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+        import subprocess
+        out = subprocess.run([sys.executable, "-O", "-c", code], capture_output=True, text=True)
+        self.assertEqual(out.stdout.strip(), "raised", out.stderr)
 
     def test_the_top_of_the_window_grid_is_reachable(self):
         """Review finding: a post phase shorter than the window made the largest window impossible to pass."""
@@ -326,12 +376,11 @@ class Staleness(unittest.TestCase):
         short = [Interval("18", "gap", labels.STALE, 100, 108)]
         self.assertEqual(gates.gate_staleness([(100, IDLE)], short, 5)[0], FAIL)
 
-    def test_evaluate_scores_it_only_when_a_gap_exists(self):
-        ivs = [busy(110, 410, "18"), idle(410, 1050, "18", "post")]
-        self.assertNotIn("staleness", gates.evaluate([(111, BUSY), (470, IDLE)], ivs, 1, 60))
-        with_gap = ivs + self.gap()
-        self.assertIn("staleness", gates.evaluate([(111, BUSY), (470, IDLE)], with_gap, 1, 60))
-
+    def test_evaluate_scores_it_when_a_gap_exists_and_only_scenario_18_has_one(self):
+        other = [busy(110, 410, "5"), idle(410, 1050, "5", "post")]
+        self.assertNotIn("staleness", gates.evaluate([(111, BUSY), (470, IDLE)], other, 1, 60))
+        ivs = [busy(110, 410, "18"), idle(410, 1050, "18", "post")] + self.gap()
+        self.assertIn("staleness", gates.evaluate([(100, BUSY), (470, IDLE)], ivs, 1, 60))
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
