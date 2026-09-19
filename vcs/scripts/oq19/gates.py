@@ -10,7 +10,9 @@ Contract (all times are CLOCK_MONOTONIC seconds, floats):
   before the first verdict counts as IDLE (the conservative reading for a busy interval).
 * A TRUTH INTERVAL is what the scenario driver did, from its own timeline: `Interval(scenario, phase,
   label, start, end)`. Truth never comes from a signal.
-* Every gate is a pure function of those two. `evaluate` applies all of them to one run.
+* Every gate is a pure function of those two. `evaluate` applies all of them to one run. NOTHING a gate
+  excuses (hysteresis tails, the D3 exemption) is taken from the policy under test: `evaluate` derives the
+  tails from the idle window the policy is configured with, and the exemption only from `d3_fallback`.
 
 Gate definitions match the approved plan (`OQ19 measurement plan`, decisions D1 to D12 and F1 to F8).
 """
@@ -18,7 +20,8 @@ Gate definitions match the approved plan (`OQ19 measurement plan`, decisions D1 
 import math
 from collections import namedtuple
 
-from labels import BUSY, IDLE, DEADLINE_HEADROOM_S, PROVIDER_TIMEOUT_S
+import labels
+from labels import BUSY, IDLE, STALE, DEADLINE_HEADROOM_S, PROVIDER_TIMEOUT_S
 
 Interval = namedtuple("Interval", "scenario phase label start end")
 
@@ -28,13 +31,14 @@ ONSET_MARGIN_S = 2.0            # D12: onset allowance = the policy's sampling i
 NO_BUSY_FOREVER_TAIL_S = 10.0   # an idle interval may stay BUSY for its hysteresis tail + this
 FALSE_BUSY_MAX_FRACTION = 0.05  # total BUSY verdict time / total IDLE time, across idle intervals
 TIME_TO_IDLE_MARGIN_S = 10.0    # after work ends: idle window + this
-FLAP_MAX_PER_HOUR = 6.0         # scenario 12 only
 SAMPLER_CPU_MAX = 0.005         # fraction of one core, sampler + shim, while detached
 CONFIDENCE = 0.95               # one-sided, for the upper bound on the miss rate
 
 # Grids the policies are tuned over (analyze.py); recorded here so they are part of the registration.
 INTERVAL_GRID_S = (1, 2, 5)
 WINDOW_GRID_S = (30, 60, 120, 300, 600)
+WINDOW_GRID_COMPRESSED_S = (3, 6, 12, 30, 60)  # compressed runs scale the POLICY's windows, not the provider
+STALENESS_FACTOR = 2  # D10: a sample older than this many sampling intervals means the verdict is BUSY
 
 # Repeats (D5, F6). Tuning traces are used to choose parameters. The hold-out set is recorded AFTER the
 # parameters are frozen and is what the final claim rests on. Compressed and full-length are never pooled.
@@ -50,6 +54,11 @@ NA = "N/A"
 
 
 # ---- verdict series ------------------------------------------------------------------------------------
+
+def check_sorted(verdicts):
+    """`verdict_at` assumes a time-sorted series and would silently misread an unsorted one."""
+    assert all(a[0] <= b[0] for a, b in zip(verdicts, verdicts[1:])), "verdicts must be time-sorted"
+
 
 def verdict_at(verdicts, t):
     """The verdict in force at time t (IDLE before the first one)."""
@@ -180,27 +189,31 @@ def gate_provider_deadline(verdicts, busy_intervals):
 
 def gate_no_busy_forever(verdicts, idle_intervals, tails, exempt=()):
     """No idle-labelled interval is declared BUSY for longer than allowed, and the BUSY time that is NOT an
-    excused hysteresis tail is at most 5% of idle time.
+    excused hysteresis tail is at most 5% of the idle time that is not an excused tail.
 
     A BUSY run that begins at the interval's start is the policy's hysteresis tail after work ended and may
     last `tails[interval]` + 10 s (`tails` maps interval -> tail seconds, 0 for a pure-idle scenario); any
-    BUSY run that begins later has no such excuse and may last 10 s. The excused part of that opening tail
-    is left out of the 5% fraction, so a policy is not failed twice for the window it was tuned with.
-    `exempt` holds scenarios excused by the pre-registered D3 fallback (3b)."""
+    BUSY run that begins later has no such excuse and may last 10 s. The excused tail is left out of BOTH
+    the numerator and the denominator of the 5% fraction, so a policy is neither failed twice for the window
+    it was tuned with nor helped by the idle time that window covers. `exempt` may hold only the D3
+    scenario (3b): excusing anything else would let a policy excuse itself."""
+    assert set(exempt) <= {"3b"}, "only the pre-registered D3 scenario may be exempt"
     scored = [i for i in idle_intervals if i.scenario not in exempt]
     unexcused = 0.0
+    idle_total = 0.0
     for i in scored:
-        tail_allowance = NO_BUSY_FOREVER_TAIL_S + tails.get(i, 0.0)
+        tail = tails.get(i, 0.0)
         opening = 0.0
         for a, b in busy_runs(verdicts, i):
             starts_at_open = abs(a - i.start) < 1e-9
-            if b - a > (tail_allowance if starts_at_open else NO_BUSY_FOREVER_TAIL_S):
+            if b - a > (NO_BUSY_FOREVER_TAIL_S + tail if starts_at_open else NO_BUSY_FOREVER_TAIL_S):
                 return FAIL, b - a
             if starts_at_open:
                 opening = b - a
-        unexcused += false_busy_seconds(verdicts, i) - min(opening, tails.get(i, 0.0))
-    idle_total = sum(i.end - i.start for i in scored)
-    fraction = unexcused / idle_total if idle_total else 0.0
+        excused = min(opening, tail)
+        unexcused += false_busy_seconds(verdicts, i) - excused
+        idle_total += (i.end - i.start) - min(tail, i.end - i.start)
+    fraction = unexcused / idle_total if idle_total > 0 else 0.0
     return (PASS if fraction <= FALSE_BUSY_MAX_FRACTION else FAIL), fraction
 
 
@@ -214,9 +227,17 @@ def gate_time_to_idle(verdicts, post_intervals, idle_window_s):
     return PASS, worst
 
 
-def gate_flapping(verdicts, start, end):
-    rate = flaps_per_hour(verdicts, start, end)
-    return (PASS if rate <= FLAP_MAX_PER_HOUR else FAIL), rate
+def gate_staleness(verdicts, gaps, interval_s):
+    """D10: while the sampler is blind (a STALE truth interval, scenario 18) the policy must fail safe to
+    BUSY. From STALENESS_FACTOR sampling intervals (+ the onset margin) after the gap begins until it ends,
+    the verdict must be BUSY. A gap too short to test that window fails rather than passing vacuously."""
+    worst = 0.0
+    for g in gaps:
+        start = g.start + STALENESS_FACTOR * interval_s + ONSET_MARGIN_S
+        if start >= g.end:
+            return FAIL, None
+        worst = max(worst, _seconds(verdicts, start, g.end, IDLE))
+    return (PASS if worst == 0 else FAIL), worst
 
 
 def gate_sampler_cost(cpu_fraction):
@@ -231,40 +252,83 @@ def d3_fallback_fires(policy_results):
     return not any(r["four_b_false_idle_zero"] and r["three_b_no_busy_forever"] for r in policy_results)
 
 
-def evaluate(verdicts, intervals, interval_s, idle_window_s, tails=None, exempt=(), sampler_cpu=None):
-    """All per-run gates for one run of one policy. Scenario 12 (flapping) is passed via `bursty` intervals
-    named scenario "12"; ungated scenarios (13, 17) are reported by analyze.py, never here."""
+def evaluate(verdicts, intervals, interval_s, idle_window_s, d3_fallback=False, sampler_cpu=None):
+    """All per-run GATES for one run of one policy. Nothing is excused by the caller's say-so: the hysteresis
+    tail of each post-work interval is the idle window the policy is configured with, and scenario 3b is
+    exempt only when `d3_fallback` is True (which must come from `d3_fallback_fires`). Scenario 12 (flaps)
+    and the ungated scenarios 13 and 17 are metrics, reported by analyze.py, never gated here."""
+    check_sorted(verdicts)
     busy = [i for i in intervals if i.label == BUSY and i.scenario != "12"]
     idle = [i for i in intervals if i.label == IDLE and i.scenario != "13"]
+    gaps = [i for i in intervals if i.label == STALE]
     post = [i for i in idle if i.phase == "post"]
-    # A policy's hysteresis tail IS its idle window: it keeps saying BUSY that long after work ends.
-    tails = tails or {i: idle_window_s for i in post}
+    tails = {i: idle_window_s for i in post}
     out = {
         "false_idle": gate_false_idle(verdicts, busy, interval_s),
         "provider_deadline": gate_provider_deadline(verdicts, busy),
-        "no_busy_forever": gate_no_busy_forever(verdicts, idle, tails, exempt),
+        "no_busy_forever": gate_no_busy_forever(verdicts, idle, tails, ("3b",) if d3_fallback else ()),
         "time_to_idle": gate_time_to_idle(verdicts, post, idle_window_s),
     }
-    bursty = [i for i in intervals if i.scenario == "12"]
-    if bursty:
-        out["flapping"] = gate_flapping(verdicts, min(i.start for i in bursty), max(i.end for i in bursty))
+    if gaps:
+        out["staleness"] = gate_staleness(verdicts, gaps, interval_s)
     if sampler_cpu is not None:
         out["sampler_cost"] = gate_sampler_cost(sampler_cpu)
     return out
 
 
+def flap_metric(verdicts, intervals):
+    """Scenario 12 flaps per hour: REPORTED (the trade-off curve), never a gate."""
+    bursty = [i for i in intervals if i.scenario == "12"]
+    if not bursty:
+        return None
+    return flaps_per_hour(verdicts, min(i.start for i in bursty), max(i.end for i in bursty))
+
+
+def _can_fail_false_idle(scenario):
+    s = labels.BY_ID[scenario]
+    return s.gated and any(p.label == BUSY for p in s.phases)
+
+
 def final_claim(runs):
     """D5 + F6. `runs` is an iterable of dicts {set: "tuning"|"holdout", scale: "full"|"compressed",
-    scenario, critical, false_idle_failed: bool}. Returns, per (set, scale), the failures, the run count and
-    the 95% upper bound on the miss rate; never pooled across sets or scales. The claim (PASS) requires the
-    HOLD-OUT set at BOTH scales to have zero false-idle failures; tuning results are reported but never
-    carry the claim."""
+    mode: "detached"|"attached", scenario: "4b", failed_gates: [gate names that FAILED]}.
+
+    Per (set, scale, mode) the table reports, never pooled across those keys:
+      runs           gated runs
+      busy_runs      runs that contain a gated BUSY interval (the only ones that CAN fail false-idle, so the
+                     only honest denominator for its bound)
+      failures_any   runs failing ANY gate
+      bound_false_idle / bound_any   95% upper bounds on the miss rate
+      critical       the same for scenarios 4b, 7, 10 alone
+      by_scenario    (runs, failures) per scenario
+    The claim is PASS iff the HOLD-OUT set, DETACHED (the mode the feature exists for), at BOTH scales, has
+    zero failures on ALL gates. Tuning results and attached-mode results are reported but never carry it."""
     groups = {}
     for r in runs:
-        key = (r["set"], r["scale"])
-        n, f = groups.get(key, (0, 0))
-        groups[key] = (n + 1, f + (1 if r["false_idle_failed"] else 0))
-    table = {k: {"runs": n, "failures": f, "upper_bound": upper_bound(f, n)} for k, (n, f) in groups.items()}
-    holdout = [table.get(("holdout", "full")), table.get(("holdout", "compressed"))]
-    ok = all(h is not None and h["failures"] == 0 for h in holdout)
+        if not labels.BY_ID[r["scenario"]].gated:
+            continue
+        g = groups.setdefault((r["set"], r["scale"], r["mode"]), {
+            "runs": 0, "busy_runs": 0, "failures_any": 0, "failures_false_idle": 0,
+            "critical_runs": 0, "critical_failures": 0, "by_scenario": {}})
+        failed = list(r["failed_gates"])
+        g["runs"] += 1
+        g["failures_any"] += 1 if failed else 0
+        if _can_fail_false_idle(r["scenario"]):
+            g["busy_runs"] += 1
+            g["failures_false_idle"] += 1 if "false_idle" in failed else 0
+        if labels.BY_ID[r["scenario"]].critical:
+            g["critical_runs"] += 1
+            g["critical_failures"] += 1 if failed else 0
+        n, f = g["by_scenario"].get(r["scenario"], (0, 0))
+        g["by_scenario"][r["scenario"]] = (n + 1, f + (1 if failed else 0))
+    table = {}
+    for key, g in groups.items():
+        table[key] = dict(
+            g,
+            bound_false_idle=upper_bound(g["failures_false_idle"], g["busy_runs"]),
+            bound_any=upper_bound(g["failures_any"], g["runs"]),
+            critical_bound=upper_bound(g["critical_failures"], g["critical_runs"]),
+        )
+    needed = [table.get(("holdout", "full", "detached")), table.get(("holdout", "compressed", "detached"))]
+    ok = all(n is not None and n["failures_any"] == 0 for n in needed)
     return (PASS if ok else FAIL), table

@@ -23,6 +23,7 @@ from collections import namedtuple
 
 BUSY = "BUSY"
 IDLE = "IDLE"
+STALE = "STALE"  # a truth interval marking a sampler gap (scenario 18); scored by the staleness gate
 
 # Provider model: boxd's shortest idle timer (Phase 0 item 5). The wake shim must assert BUSY before the
 # provider's idle clock reaches PROVIDER_TIMEOUT_S; work is started when it stands at QUIET_BEFORE_S.
@@ -33,25 +34,43 @@ QUIET_BEFORE_S = PROVIDER_TIMEOUT_S - DEADLINE_HEADROOM_S  # 110
 # Long enough to outlast every idle window in the grid plus the provider timeout (D11): 10 min + 120 s
 # = 12 min, rounded up to 15.
 LONG_WAIT_S = 900
-POST_IDLE_S = 300
-# Compressed repeats divide every duration, window and the provider timeout by this factor (D5); the
-# winning parameters are re-checked once at full length.
-COMPRESS = 10
+# After work ends the verdict may lag by the policy's window; the post phase must outlast the largest
+# window (600) + the time-to-idle margin (10) + the largest sampling interval (5), with slack, or no
+# policy at the top of the grid could ever pass (review finding). Checked by tests against gates.py.
+POST_IDLE_S = 640
 
-Phase = namedtuple("Phase", "name label seconds note")
+# COMPRESSED repeats (D5). What is compressed is the POLICY's timescale: the idle windows (gates.py:
+# WINDOW_GRID_COMPRESSED_S), the long waits and the post phase. What is NOT compressed is the provider's
+# real timing: the quiet phase stays QUIET_BEFORE_S and the provider-deadline gate is scored against the
+# real 120 s, because that deadline is a property of the sampler's latency and cannot be shrunk (a 1 s
+# headroom is unattainable with a 1 s sampling interval). Each compressed value keeps the D11 rule: a long
+# wait outlasts the (compressed) largest window plus the REAL provider timeout.
+LONG_WAIT_COMPRESSED_S = 200      # > 60 (largest compressed window) + 120 (provider timeout) + margin
+POST_IDLE_COMPRESSED_S = 90       # >= 60 + 10 (time-to-idle margin) + 5 (largest interval) + slack
+
+Phase = namedtuple("Phase", "name label seconds note compressed", defaults=(None,))
 Scenario = namedtuple("Scenario", "id name gated critical phases note")
 
 
-def _p(name, label, seconds, note=""):
-    return Phase(name, label, seconds, note)
+def _p(name, label, seconds, note="", compressed=None):
+    return Phase(name, label, seconds, note, compressed)
+
+
+def seconds(phase, compressed=False):
+    """A phase's duration in a full-length or compressed run."""
+    if compressed and phase.compressed is not None:
+        return phase.compressed
+    return phase.seconds
 
 
 def _quiet():
-    return _p("quiet", IDLE, QUIET_BEFORE_S, "idle box; the provider idle clock is at its worst point")
+    return _p("quiet", IDLE, QUIET_BEFORE_S, "idle box; the provider idle clock is at its worst point",
+              compressed=QUIET_BEFORE_S)
 
 
 def _post():
-    return _p("post", IDLE, POST_IDLE_S, "work has ended; verdict may lag by the policy's hysteresis tail")
+    return _p("post", IDLE, POST_IDLE_S, "work has ended; verdict may lag by the policy's hysteresis tail",
+              compressed=POST_IDLE_COMPRESSED_S)
 
 
 SCENARIOS = [
@@ -77,7 +96,8 @@ SCENARIOS = [
     ),
     Scenario(
         "4b", "agent-turn-silent", True, True,
-        [_quiet(), _p("turn", BUSY, LONG_WAIT_S, "NO pty output; blocked on a slow server for the whole wait"), _post()],
+        [_quiet(), _p("turn", BUSY, LONG_WAIT_S, "NO pty output; blocked on a slow server for the whole wait",
+            compressed=LONG_WAIT_COMPRESSED_S), _post()],
         "the hardest case: indistinguishable from 3b on CPU. The wait outlasts every window (D11)",
     ),
     Scenario(
@@ -91,7 +111,7 @@ SCENARIOS = [
     ),
     Scenario(
         "7", "sleepy-job", True, True,
-        [_quiet(), _p("sleep", BUSY, LONG_WAIT_S, "alive, no CPU, no I/O, nanosleep"), _post()],
+        [_quiet(), _p("sleep", BUSY, LONG_WAIT_S, "alive, no CPU, no I/O, nanosleep", compressed=LONG_WAIT_COMPRESSED_S), _post()],
         "the hard twin of an idle TUI on CPU alone (D11)",
     ),
     Scenario("8", "detached-server-idle", True, False, [_p("idle", IDLE, 300)], "listening, no CPU, no traffic: IDLE by owner decision"),
@@ -112,7 +132,8 @@ SCENARIOS = [
     Scenario(
         "12", "bursty-job", False, False,
         [_p("bursts", BUSY, 1800, "5 s of CPU every 60 s")],
-        "REPORTED as a trade-off curve, not gated: the label depends on the hysteresis window under test",
+        "REPORTED as a trade-off curve, not gated (flaps/hour is a metric, not a gate: an always-BUSY policy "
+        "would win it): the label depends on the hysteresis window under test",
     ),
     Scenario("13", "watch-top", False, False, [_p("watching", IDLE, 300)], "REPORTED, not gated: a human is looking; the label is ambiguous by intent"),
     Scenario(
@@ -133,7 +154,8 @@ SCENARIOS = [
     Scenario(
         "18", "gap-injection", True, False,
         [_quiet(), _p("work", BUSY, 300, "starts 5 s into a 15 s SIGSTOP of the sampler"), _post()],
-        "D10: work that starts while the sampler is blind must still be protected",
+        "D10: work that starts while the sampler is blind must still be protected. The driver also emits a "
+        "STALE truth interval for the 15 s SIGSTOP; the staleness gate requires BUSY inside it",
     ),
 ]
 

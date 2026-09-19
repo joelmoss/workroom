@@ -56,6 +56,7 @@ BUSY by its own monitoring; scenario 16 in closed loop gates exactly that.
 | cgroup v2 `cpu.stat`, `cgroup.procs` | readable in the agent's own cgroup; per-session cgroups would need delegation | cgroup v2 present in the boxd VM and the container |
 | `/proc/stat`, `/proc/net/dev` | any uid | none |
 | `ss -ti` (socket last-send/receive ages) | any uid (inet_diag) for all sockets; socket-to-pid attribution needs same uid | `ss` present (D4 image and `setup.sh`) |
+| `nice -n -5` for the sampler | `CAP_SYS_NICE` (root in the container, NOT the workroom user on a real box) | `nice -n -5` succeeds as the agent's uid on boxd; if not, a starved sampler is a finding |
 
 If a verification fails, the affected signal is dropped from the candidate policies and the results doc says
 so; the gates and labels do not change.
@@ -63,5 +64,9 @@ so; the gates and labels do not change.
 ## Assumptions stated up front (a failed one is a finding, not an edit to this file)
 
 * The box is single-tenant: everything not on the exclusion list belongs to the workroom's user.
-* The agent can read every process it needs to count; an unreadable process is counted as BUSY (fail safe).
+* The agent can read every process it needs to count. A process that cannot be read well enough to TEST against
+  the exclusion list is a pipeline-check (T2) verification failure, not a BUSY vote: counting it BUSY would make
+  every root-owned daemon an unreadable BUSY vote on a box where the agent is not root, failing scenario 16 only
+  on a real box. `hidepid`, the agent's uid on boxd and cgroup v2 availability are verified in T2 with a stated
+  pass criterion: every process on the exclusion list is readable (name and exe) by the agent's uid.
 * The production sampler runs at the same cadence and priority the harness sampler does (`nice -n -5`).
