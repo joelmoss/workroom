@@ -2125,8 +2125,48 @@ service milestones below so each layer can be reviewed and landed independently.
      `notify` changed `Cargo.lock`, which it also hashes, so the first build after this lands
      rebuilds the VCS xcframework once. Not done here: remote file access, listing pagination past
      the cap, a watch heartbeat, and agent-side request cancel.
-   - GitHub status: keep `gh` on the Mac and supply explicit repository identity rather than a
-     remote working directory; exercise both Git and JJ badge resolution.
+   - GitHub status (#207): done, Swift only — nothing changed in the agent, and `Service::Status`
+     stays reserved. `gh` stays on the Mac and every probe now names its repository: `--repo
+     host/owner/name` for `gh pr …`, `--hostname` for `gh api`, all in a neutral directory. That ends
+     the git/jj split (`ghProbeDirectory`) by construction, since neither needs a checkout. The
+     identity is a `GitHubRepository`, which validates every field and has no other constructor,
+     because owner and name are interpolated into a GraphQL string and the host goes to `gh` as an
+     argument. It carries the host because a neutral directory otherwise loses GitHub Enterprise
+     resolution, which used to come from the directory's git remote (arg-level tests only — there is
+     no GHE instance to run against). A local host finds its identity with `gh repo view`, the one
+     call that still needs a directory; a remote host has none on this Mac, so it is registered with
+     the location (`RepositoryRouter.Entry.github`), where the Phase 3 clone and deploy-key step
+     already knows `owner/repo`. `registeredGitHub(for:)` is the one way to build the service from a
+     registration, so a PR write cannot end up with the context and not the identity.
+
+     The lookup is classified with `ghPreflight` and returns found / absent / keepPrior: the PR
+     panel, checks list and CI badge all depend on it now, and a lookup that collapsed every failure
+     into "no repository" would blank them on a timeout or rate limit. It is asked once per refresh
+     (an actor shares one `Task` between the four probes) and once per project in the CI sweep, which
+     caches the whole three-state answer. Identity is read from the SHARED root for git and jj alike,
+     so CI, PR, checks and writes agree on one repository for a workroom. That assumes a project's
+     git worktrees share remote config; `extensions.worktreeConfig` with a per-worktree remote
+     breaks it, and one lookup per workroom per sweep was judged not worth covering it. A second,
+     UNVERIFIED assumption sits beside it: for a fork checkout, `gh repo view` and the old
+     cwd-based `gh pr list` both use gh's base-repo resolution, so they agree on which repository a
+     PR lives in. No test covers it (it needs a real fork); check it by hand before relying on it.
+     A PR write fails closed: with no resolved repository it returns a synthesized failure and never
+     spawns `gh`, and the message tells a transient failure ("try again") from "no repository".
+
+     The price is latency: the PR probe used to run `gh pr list` directly, and now waits for one
+     `gh repo view` first, on every settled selection (bounded by `ciTimeout`). The lookup is cached
+     per refresh and per sweep, not across refreshes. Caching a found identity on the router entry
+     would remove it; it was left out because the entry has no invalidation for a changed remote.
+
+     **Open for Phase 3: a remote host's CI.** CI is keyed to the branch-tip commit, and nothing on
+     this Mac can name one for a repository it has no checkout of — `WorkroomStatus.commitID` is 8
+     characters, `VCSProviding.log` refs carry full ids but only by inference. Until the agent
+     supplies one, a remote host's CI is absent (PR, checks and writes work from identity alone), and
+     there is no hint saying why. The alternative, a GraphQL branch-ref query, drops the "CI must
+     match the local commit" rule, so unpushed commits would show the branch's CI. Also not done:
+     ordinary connection failures (`error connecting`, `no such host`) still classify as absent, as
+     they did before, so a fully offline refresh blanks the PR panel; only a timeout, a signal, a
+     rate limit or a 503 keeps the prior state (see TODOS.md).
    - Interchangeability services: implement port forwarding, terminal-state durability and the
      busy/idle decision. Measure idle TUIs, background jobs, detached servers and agents waiting on
      network responses. Define hysteresis, explicit activity handling and the awake-ceiling policy
