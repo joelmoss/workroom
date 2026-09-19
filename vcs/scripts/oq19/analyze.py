@@ -122,6 +122,25 @@ class Run:
         self.mode = meta.get("mode", "detached")
         self.variant = meta.get("variant") or ""
         self.tags = tags or {}
+        self._feats = {}
+        gaps = [b["t"] - a["t"] for a, b in zip(samples, samples[1:])]
+        self.n_samples, self.gap_max = len(samples), max(gaps or [0.0])
+
+    def feats(self, interval_s, exclusions=True):
+        """Per-tick features at a policy cadence, computed once and shared by scoring and the report."""
+        key = (interval_s, exclusions)
+        if key not in self._feats:
+            if self.samples is None:
+                raise RuntimeError("raw samples were released; %s was only prepared for the default grid" % (key,))
+            self._feats[key] = features(Stream(self, interval_s), exclusions)
+        return self._feats[key]
+
+    def release_raw(self):
+        """Keep the features for the grid and drop the raw trace: the tuning set is ~150 runs of up to 6150
+        samples, and holding every raw sample at once is the memory bill nobody wants."""
+        for interval in INTERVALS:
+            self.feats(interval)
+        self.samples = self.pty = self.lifecycle = None
 
     @classmethod
     def load(cls, d, key="", tags=None):
@@ -377,20 +396,16 @@ def evaluate_all(runs, configs, matrix, progress=None):
     """Pass 1 (no D3 exemption) over every config, then D3 mechanised over the `agnostic` grid, then pass 2 with
     the exemption where it fires. Returns (per-config summaries, d3_fallback)."""
     scored = [r for r in runs if r.mode == "detached" and not r.variant and r.tags.get("role") != "serial-control"]
-    cache = {}
 
     def feats_for(run, c):
-        key = (run.key, c.interval, c.exclusions)
-        if key not in cache:
-            cache[key] = features(Stream(run, c.interval), c.exclusions)
-        return cache[key]
+        return run.feats(c.interval, c.exclusions)
 
     pass1 = {}
     for n, c in enumerate(configs):
         pass1[config_key(c)] = {r.key: score_run(c, r, feats_for(r, c))[0] for r in scored}
         if progress and n % 200 == 0:
             progress("pass 1: %d/%d configs" % (n, len(configs)))
-    family = [c for c in configs if c.wait == "agnostic" and c.policy in HYSTERESIS_POLICIES]
+    family = [c for c in configs if c.wait == "agnostic"]  # the whole grid, as gates.d3_fallback_fires says
     d3_rows = []
     for c in family:
         res = pass1[config_key(c)]
@@ -424,7 +439,7 @@ def evaluate_all(runs, configs, matrix, progress=None):
 
 
 def verdicts_for(c, run):
-    return verdict_series(c, features(Stream(run, c.interval), c.exclusions), window_for(c, run))
+    return verdict_series(c, run.feats(c.interval, c.exclusions), window_for(c, run))
 
 
 def mismatch(a, b, start_a, start_b, length):
@@ -453,7 +468,7 @@ def control_report(c, runs):
 def per_scenario(c, runs, d3):
     rows = {}
     for r in runs:
-        res, v = score_run(c, r, features(Stream(r, c.interval), c.exclusions), d3 and r.scenario == "3b")
+        res, v = score_run(c, r, r.feats(c.interval, c.exclusions), d3 and r.scenario == "3b")
         row = rows.setdefault((r.scenario, r.compressed), {"runs": 0, "failed": 0, "gates": collections.Counter(),
                                                             "ttb": [], "tti": []})
         row["runs"] += 1
@@ -528,11 +543,32 @@ def report(runs, excluded, summaries, d3, winner, matrix, pipeline_check, commit
         w("")
         claim_runs = []
         for r in scored:
-            res, _ = score_run(c, r, features(Stream(r, c.interval), c.exclusions), d3 and r.scenario == "3b")
+            res, _ = score_run(c, r, r.feats(c.interval, c.exclusions), d3 and r.scenario == "3b")
             claim_runs.append({"set": "tuning", "scale": "compressed" if r.compressed else "full", "mode": r.mode,
                                "scenario": r.scenario, "failed_gates": failed(res)})
-        w("Per-set table (`gates.final_claim`; tuning never carries the claim): `%s`" %
-          json.dumps(gates.final_claim(claim_runs), default=str)[:1500])
+        _, table = gates.final_claim(claim_runs)  # the verdict half is FAIL by construction: no hold-out yet
+        w("Per-group table (`gates.final_claim`; the tuning set never carries the claim, and its bounds are for the "
+          "record): 0 failures in N runs only bounds the miss rate at the 95% upper bound shown.")
+        w("")
+        w("| set / scale / mode | runs | runs that can false-idle | failing runs | 95% bound, false-idle | "
+          "critical scenarios (4b, 7, 10): runs / 95% bound |")
+        w("|---|---|---|---|---|---|")
+        for (kset, kscale, kmode), g in sorted(table.items()):
+            w("| %s / %s / %s | %d | %d | %d | %.2f | %d / %.2f |" % (
+                kset, kscale, kmode, g["runs"], g["busy_runs"], g["failures_any"], g["bound_false_idle"],
+                g["critical_runs"], g["critical_bound"]))
+        w("")
+        w("### What an idle box costs (the OQ7 input): BUSY verdict time on the idle-only scenarios, winner config")
+        w("| scenario | runs | mean BUSY fraction | awake hours per day if left like this |")
+        w("|---|---|---|---|")
+        for sid in ("1", "2a", "2b", "2c", "3a", "3b", "8", "16"):
+            fr = []
+            for r in scored:
+                if r.scenario == sid and not r.compressed:
+                    idle = next(i for i in r.intervals() if i.label == IDLE)
+                    fr.append(gates.false_busy_seconds(verdicts_for(c, r), idle) / (idle.end - idle.start))
+            if fr:
+                w("| %s | %d | %.3f | %.1f |" % (sid, len(fr), sum(fr) / len(fr), 24 * sum(fr) / len(fr)))
         w("")
         w("### Serial control (D7)")
         ctl = control_report(c, runs)
@@ -551,9 +587,13 @@ def report(runs, excluded, summaries, d3, winner, matrix, pipeline_check, commit
                     "ceiling %s s -> force-sleep %s" % (cap, v["force-sleep"]) for cap, v in report_.items())))
         w("")
         w("### Attached vs detached (scenario 15: reported, never scored)")
+        w("PREDICTION, written before any attached trace was analysed: the harness's fake client resizes the window "
+          "every 30 s, which redraws a full-screen TUI (several KB of pty output). That lands in the 10 s pty-rate "
+          "window for a third of the time, above both grid values, so attached 2a/2c/3a will look false-busy. "
+          "That is the harness's client, not a policy defect, and it does not enter the claim.")
         for r in runs:
             if r.mode == "attached" and labels.BY_ID[r.scenario].gated:
-                res, _ = score_run(c, r, features(Stream(r, c.interval), c.exclusions), d3 and r.scenario == "3b")
+                res, _ = score_run(c, r, r.feats(c.interval, c.exclusions), d3 and r.scenario == "3b")
                 w("* `%s`: %s" % (r.key, "all gates pass" if not failed(res) else "FAILS " + ", ".join(failed(res))))
     cond = [s for s in summaries if s["passes_all"] and s["config"].wait == "tty-aware"]
     w("")
@@ -563,9 +603,8 @@ def report(runs, excluded, summaries, d3, winner, matrix, pipeline_check, commit
     w("## 500-process build (sampler starvation)")
     for r in runs:
         if r.variant:
-            gaps = [b["t"] - a["t"] for a, b in zip(r.samples, r.samples[1:])]
             w("* `%s`: %d samples, longest silence %.1f s; sampler cost %.2f%% of a core (steady)" % (
-                r.key, len(r.samples), max(gaps or [0]), 100 * ((r.footer or {}).get("cpu_fraction_steady") or 0)))
+                r.key, r.n_samples, r.gap_max, 100 * ((r.footer or {}).get("cpu_fraction_steady") or 0)))
     return "\n".join(L) + "\n"
 
 
@@ -576,7 +615,9 @@ def load_tuning(root, pipeline_check=False):
         if row["status"] != "recorded" or not (row.get("check") or {}).get("ok"):
             excluded.append((row["key"], row["status"] if row["status"] != "recorded" else "check_trace failed"))
             continue
-        runs.append(Run.load(os.path.join(root, row["dir"]), row["key"], {"role": row["role"], "rep": row["rep"]}))
+        run = Run.load(os.path.join(root, row["dir"]), row["key"], {"role": row["role"], "rep": row["rep"]})
+        run.release_raw()
+        runs.append(run)
     check_scale(runs, pipeline_check)
     return runs, excluded
 
