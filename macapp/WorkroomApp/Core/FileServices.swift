@@ -197,6 +197,66 @@ struct NativeFileProvider: FileProviding {
   }
 }
 
+/// What a LOCAL host uses for files when its agent is in play: the agent first, this process second.
+///
+/// A local file is readable without any agent, so an agent that is missing, dead, hung or too old must
+/// cost the caller performance and coalescing, never the file. Listing and reading are idempotent, so
+/// when the agent fails at the TRANSPORT level (`HostConnectionError`: connection lost, request timed
+/// out, budget exhausted, generation replaced, undecodable reply) the same request is simply run
+/// natively. Nothing else falls back:
+/// - a semantic answer from a healthy agent (`.refused`, `.tooLarge`, `.notFound`, a truncated
+///   listing, a registration or lock error) is the answer, and the native path would give the same;
+/// - cancellation propagates, since retrying work its caller abandoned helps nobody.
+///
+/// Never used for a remote host: there is no native path to fall back to, and unavailability is an
+/// explicit failure. `watch` is not retried natively here — the caller (`HostFileWatcher`) owns that
+/// decision because it has to keep trying the agent afterwards.
+struct LocalFallbackFileProvider: FileProviding {
+  let primary: FileProviding
+  let fallback: FileProviding
+  var context: FileContext { primary.context }
+
+  func list(_ vcs: FileListVCS) async throws -> CommandResult {
+    do {
+      return try await primary.list(vcs)
+    } catch is HostConnectionError {
+      return try await fallback.list(vcs)
+    }
+  }
+
+  func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
+    do {
+      return try await primary.read(path: path, symlinks: symlinks, maxBytes: maxBytes)
+    } catch is HostConnectionError {
+      return try await fallback.read(path: path, symlinks: symlinks, maxBytes: maxBytes)
+    }
+  }
+
+  func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
+    -> FileWatchHandle?
+  { try await primary.watch(root: root, onEvent: onEvent) }
+}
+
+/// Stands in for an agent that could not be obtained at all. Every call throws the same transport-level
+/// error, so a `LocalFallbackFileProvider` around it runs listing and reading natively while `watch`
+/// throws — which is what tells `HostFileWatcher` to watch locally for now and keep retrying the agent,
+/// where a bare `NativeFileProvider` (whose `watch` is `nil`) would read as "this host never can" and
+/// stop trying.
+struct UnavailableFileProvider: FileProviding {
+  let context: FileContext
+  let reason: String
+
+  private var failure: HostConnectionError { .serviceUnavailable(reason) }
+
+  func list(_ vcs: FileListVCS) async throws -> CommandResult { throw failure }
+  func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
+    throw failure
+  }
+  func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
+    -> FileWatchHandle?
+  { throw failure }
+}
+
 /// Retains the connection generation that produced the service, like `HostRepositoryReader`: a call
 /// on a lease the manager has since invalidated fails rather than running against a replaced
 /// connection. Reacquiring is an explicit caller decision, never a retry.

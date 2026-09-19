@@ -38,9 +38,35 @@ actor LocalAgentVCS {
     return try await manager.writer(context: context)
   }
 
+  /// How long a failed acquisition makes the FILE service fail fast. A file operation that falls back
+  /// to native anyway should not pay a spawn-and-handshake wait (a few seconds) on every call while
+  /// the agent is persistently down. Scoped to files on purpose: a VCS read or write that finds the
+  /// agent back a moment after it failed should still get to try.
+  static let filesRetryCooldown: Duration = .seconds(5)
+  private var filesFailedAt: ContinuousClock.Instant?
+
   func files(context: FileContext) async throws -> FileProviding {
-    try await ensureConnected(host: context.location.host)
-    return try await manager.files(context: context)
+    if let failedAt = filesFailedAt, ContinuousClock.now - failedAt < Self.filesRetryCooldown {
+      throw RepositoryRoutingError.unavailable(.local)
+    }
+    do {
+      try await ensureConnected(host: context.location.host)
+      let files = try await manager.files(context: context)
+      filesFailedAt = nil
+      return files
+    } catch {
+      // A cancelled caller and an old agent are not "the agent is down": the first says nothing about
+      // it, the second is answered instantly and permanently by the negotiated version.
+      if !(error is CancellationError), !isBackendVersion(error) {
+        filesFailedAt = ContinuousClock.now
+      }
+      throw error
+    }
+  }
+
+  private func isBackendVersion(_ error: Error) -> Bool {
+    if case VCSError.backendVersion = error { return true }
+    return false
   }
 
   private func ensureConnected(host: HostID) async throws {

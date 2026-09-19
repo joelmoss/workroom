@@ -160,32 +160,71 @@ final class AgentFileIntegrationTests: XCTestCase {
     XCTAssertEqual(capabilities.version, 1)
   }
 
-  /// The router's one native fallback: a local host whose agent predates the File service.
-  func testTheRouterFallsBackToNativeForAPre_FileAgentAndPropagatesEveryOtherFailure() async throws
-  {
+  /// A local host never loses its files to its agent: whatever stops the agent being obtained, the
+  /// router hands back a provider that lists and reads natively, and `watch` THROWS (so the watcher
+  /// keeps trying the agent) instead of returning nil (which would read as "never").
+  func testALocalHostNeverLosesItsFilesToItsAgent() async throws {
     let root = try gitRepo()
     try "x\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
     let location = try await RepositoryLocation.local(root.path)
 
-    let old = RepositoryRouter(localFiles: { _ in throw VCSError.backendVersion("old agent") })
-    let native = try await old.files(for: location)
+    let failures: [Error] = [
+      VCSError.backendVersion("old agent"), HostConnectionError.connectionLost,
+      HostConnectionError.requestTimedOut, RepositoryRoutingError.unavailable(.local),
+    ]
+    for failure in failures {
+      let router = RepositoryRouter(localFiles: { _ in throw failure })
+      let files = try await router.files(for: location)
+      let listing = try await files.list(.git)
+      XCTAssertEqual(FileListing.parse(listing.stdout, vcs: .git), ["a.txt"], "\(failure)")
+      let data = try await files.read(path: "a.txt", symlinks: .refuse, maxBytes: 100)
+      XCTAssertEqual(data, Data("x\n".utf8), "\(failure)")
+      do {
+        _ = try await files.watch(root: root.path) { _ in }
+        XCTFail("watch must throw while the agent is unavailable, got nil or a handle")
+      } catch { XCTAssertTrue(error is HostConnectionError, "\(error)") }
+    }
+
+    // No agent configured at all (every test router): plain native, and `watch` is nil.
+    let native = try await RepositoryRouter().files(for: location)
     XCTAssertTrue(native is NativeFileProvider)
-    let listing = try await native.list(.git)
-    XCTAssertEqual(FileListing.parse(listing.stdout, vcs: .git), ["a.txt"])
+    let handle = try await native.watch(root: root.path) { _ in }
+    XCTAssertNil(handle)
 
-    // Anything else is an explicit failure, not empty data and not a silent native read.
-    let down = RepositoryRouter(localFiles: { _ in throw HostConnectionError.connectionLost })
+    // Cancellation is the one thing that propagates: retrying work its caller abandoned helps nobody.
+    let cancelled = RepositoryRouter(localFiles: { _ in throw CancellationError() })
     do {
-      _ = try await down.files(for: location)
-      XCTFail("an unreachable agent must not fall back")
-    } catch { XCTAssertEqual(error as? HostConnectionError, .connectionLost) }
+      _ = try await cancelled.files(for: location)
+      XCTFail("a cancelled acquisition must propagate")
+    } catch { XCTAssertTrue(error is CancellationError) }
 
-    // And never for a remote host.
+    // A REMOTE host has no native path: unavailability stays an explicit failure.
     let remote = try RepositoryLocation.remote(host: UUID(), path: "/private/tmp")
     do {
-      _ = try await old.files(for: remote)
+      _ = try await RepositoryRouter(localFiles: { _ in throw VCSError.backendVersion("old") })
+        .files(for: remote)
       XCTFail("a remote host must never get a native provider")
     } catch { XCTAssertEqual(error as? RepositoryRoutingError, .unavailable(remote.host)) }
+  }
+
+  /// The agent dying MID-SESSION: a provider that was working starts failing at the transport level,
+  /// and the same idempotent request is re-run natively instead of failing the panel.
+  func testAnAgentThatDiesMidSessionFallsBackToNativeForListingAndReading() async throws {
+    let (connection, agent) = try await connect()
+    let root = try gitRepo()
+    try "x\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+    let location = try await RepositoryLocation.local(root.path)
+    let router = RepositoryRouter(localFiles: { try connection.files(context: $0) })
+    let files = try await router.files(for: location)
+
+    let before = try await files.list(.git)
+    XCTAssertEqual(FileListing.parse(before.stdout, vcs: .git), ["a.txt"], "served by the agent")
+
+    agent.stop()
+    let after = try await files.list(.git)
+    XCTAssertEqual(FileListing.parse(after.stdout, vcs: .git), ["a.txt"], "served natively")
+    let data = try await files.read(path: "a.txt", symlinks: .refuse, maxBytes: 100)
+    XCTAssertEqual(data, Data("x\n".utf8))
   }
 
   func testAFileServiceIsBoundToItsHostAndRefusedOnAClosedConnection() async throws {
