@@ -43,6 +43,10 @@ vcs/scripts/oq19/run.sh controls                         # negative controls: a 
 vcs/scripts/oq19/run.sh cost                             # the sampler cost matrix
 vcs/scripts/oq19/record.py tuning --dry-run              # the job list and the wall-time estimate
 vcs/scripts/oq19/analyze.py tuning                       # replay + gates over traces/tuning (needs scale 1.0 runs)
+# after the tuning analysis: freeze, COMMIT results/frozen.json, then record and score the hold-out
+vcs/scripts/oq19/analyze.py tuning --freeze              # writes results/frozen.json from the pre-registered rule
+vcs/scripts/oq19/record.py holdout                       # refuses unless frozen.json is committed and unmodified
+vcs/scripts/oq19/analyze.py holdout                      # the final claim: PASS/FAIL from the hold-out alone
 # closed loop (F7): the real classifier and shim in the box, at the real cadence
 vcs/scripts/oq19/run.sh scenario 16 --closed-loop '{"config": {<analyze.Config fields>}, "window_s": 30}' --out DIR
 vcs/scripts/oq19/analyze.py closed-loop --run DIR        # live verdicts vs the gates, vs a replay, and the cost

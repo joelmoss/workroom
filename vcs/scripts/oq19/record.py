@@ -46,9 +46,10 @@ CONTROLS = (("4b", True), ("5", False))  # (scenario, compressed): the serial tw
 INFRA_RETRIES = 1
 
 
-def job_seed(key):
-    """Deterministic per job, and shared by a control and its parallel twin (same key without the role)."""
-    return int(hashlib.sha256(key.encode()).hexdigest()[:8], 16)
+def job_seed(key, salt=""):
+    """Deterministic per job, and shared by a control and its parallel twin (same key without the role). The
+    hold-out salts it, so no hold-out run replays a tuning run's jitter."""
+    return int(hashlib.sha256((salt + key).encode()).hexdigest()[:8], 16)
 
 
 def job_key(sid, mode, compressed, rep, variant="", interval=1.0):
@@ -90,6 +91,42 @@ def plan_jobs(only=None, reps=None, scale=1.0, interval=1.0):
             control["seed"] = twin["seed"]  # same jitter as the parallel twin: only the scheduling differs
             controls.append(control)
     return jobs, controls
+
+
+def plan_holdout(frozen, scale=1.0, reps=None):
+    """The hold-out set (F6): recorded AFTER the parameters are frozen, at the winner's real cadence, every run
+    CLOSED LOOP (the real classifier and shim in the box), so the final claim rests on live verdicts with the
+    classifier's own activity in the box. Gated scenarios only; 4b, 7 and 10 also compressed."""
+    cfg = frozen["config"]
+    interval = float(cfg["interval"])
+    reps = reps or gates.HOLDOUT_REPEATS_FULL
+    comp_reps = reps if reps != gates.HOLDOUT_REPEATS_FULL else gates.HOLDOUT_REPEATS_COMPRESSED_CRITICAL
+    jobs = []
+
+    def job(sid, compressed, rep):
+        key = job_key(sid, "detached", compressed, rep, "", interval)
+        idx = cfg.get("window")
+        window = 0.0 if idx is None else (gates.WINDOW_GRID_COMPRESSED_S if compressed else gates.WINDOW_GRID_S)[idx]
+        return {"key": key, "id": sid, "mode": "detached", "compressed": compressed, "rep": rep, "variant": "",
+                "role": "parallel", "seed": job_seed(key, "holdout:"), "scale": scale, "interval": interval,
+                "closed_loop": json.dumps({"config": cfg, "window_s": window})}
+
+    for s in labels.GATED:
+        jobs += [job(s.id, False, r) for r in range(reps)]
+        if s.critical:
+            jobs += [job(s.id, True, r) for r in range(comp_reps)]
+    jobs.sort(key=lambda j: -job_seconds(j))
+    return jobs, []
+
+
+def require_committed(path):
+    """The hold-out may only follow a FROZEN configuration: the file has to be committed and unmodified, so the
+    parameters provably predate the traces."""
+    rel = os.path.relpath(path, REPO)
+    if subprocess.run(["git", "-C", REPO, "ls-files", "--error-unmatch", rel], capture_output=True).returncode:
+        sys.exit("%s is not committed: freeze and commit the parameters before recording the hold-out" % rel)
+    if subprocess.run(["git", "-C", REPO, "diff", "--quiet", "HEAD", "--", rel]).returncode:
+        sys.exit("%s has uncommitted changes: the frozen parameters must not move" % rel)
 
 
 def preflight():
@@ -180,6 +217,8 @@ class Recorder:
                "--interval", str(job["interval"])]
         if job["compressed"]:
             cmd.append("--compressed")
+        if job.get("closed_loop"):
+            cmd += ["--closed-loop", job["closed_loop"]]
         status, started, attempts = "infra_fail", time.time(), 0
         while attempts <= self.retries:
             attempts += 1
@@ -227,8 +266,10 @@ class Recorder:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("set", choices=("tuning",))
-    ap.add_argument("--root", default=os.path.join(HERE, "traces", "tuning"))
+    ap.add_argument("set", choices=("tuning", "holdout"))
+    ap.add_argument("--frozen", default=os.path.join(HERE, "results", "frozen.json"),
+                    help="holdout: the committed winner (`analyze.py tuning --freeze`)")
+    ap.add_argument("--root", default=None)
     ap.add_argument("--parallel", type=int, default=4)
     ap.add_argument("--only", default="", help="comma-separated scenario ids (a test of the scheduler)")
     ap.add_argument("--reps", type=int, default=None)
@@ -237,9 +278,17 @@ def main():
                     help="sampling interval; a hold-out is recorded at the winner's real cadence, never downsampled (F7)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
-    args.root = os.path.abspath(args.root)  # run.sh cd's into the harness: a relative --out would land there
+    args.root = os.path.abspath(args.root or os.path.join(HERE, "traces", args.set))  # run.sh cd's away: absolute
     only = {x for x in args.only.split(",") if x}
-    jobs, controls = plan_jobs(only, args.reps, args.scale, args.interval)
+    if args.set == "holdout":
+        args.frozen = os.path.abspath(args.frozen)
+        if not args.dry_run:
+            require_committed(args.frozen)
+        with open(args.frozen) as f:
+            jobs, controls = plan_holdout(json.load(f), args.scale, args.reps)
+        jobs = [j for j in jobs if not only or j["id"] in only]
+    else:
+        jobs, controls = plan_jobs(only, args.reps, args.scale, args.interval)
 
     busy = sum(job_seconds(j) for j in jobs + controls)
     print("%d parallel jobs + %d serial controls; %.1f container-hours; about %.1f h wall at %d parallel" %
