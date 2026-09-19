@@ -23,6 +23,10 @@ struct GitHubRepository: Hashable, Sendable {
   /// nil unless all three parts are well-formed. The single choke point every construction path
   /// (`init?(url:)`, a supplied identity) goes through.
   init?(host: String, owner: String, name: String) {
+    // GitHub does not allow a repository name ending in `.git`, and a clone URL carries one, so a
+    // supplied identity built from a clone URL is normalised here rather than left to fail in the
+    // GraphQL query (where `name:"api.git"` matches nothing). Every construction path shares this.
+    let name = name.hasSuffix(".git") ? String(name.dropLast(4)) : name
     guard Self.isValidHost(host), Self.isValidSegment(owner, allowLeadingHyphen: false),
       Self.isValidSegment(name, allowLeadingHyphen: true)
     else { return nil }
@@ -33,15 +37,14 @@ struct GitHubRepository: Hashable, Sendable {
   /// ssh-style remotes, extra path segments, an empty owner — is nil rather than a guess.
   init?(url string: String) {
     let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+    // A port is refused: `gh api --hostname` rejects one ("invalid hostname"), so an identity carrying
+    // it would resolve its repository and then fail every GraphQL probe.
     guard let url = URL(string: trimmed), url.scheme == "https" || url.scheme == "http",
-      var host = url.host, url.user == nil
+      let host = url.host, url.user == nil, url.port == nil
     else { return nil }
-    if let port = url.port { host += ":\(port)" }
     let segments = url.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
     guard segments.count == 2 else { return nil }
-    var name = segments[1]
-    if name.hasSuffix(".git") { name = String(name.dropLast(4)) }
-    self.init(host: host, owner: segments[0], name: name)
+    self.init(host: host, owner: segments[0], name: segments[1])
   }
 
   /// The `--repo` value: `[HOST/]OWNER/REPO`.
@@ -58,18 +61,10 @@ struct GitHubRepository: Hashable, Sendable {
     return s.unicodeScalars.allSatisfy { Self.segmentScalars.contains($0) }
   }
 
-  /// DNS characters plus an optional `:port`; no leading `-` or `.`.
+  /// DNS characters only — no port (see `init?(url:)`), no leading `-` or `.`.
   private static func isValidHost(_ s: String) -> Bool {
-    let parts = s.split(separator: ":", omittingEmptySubsequences: false)
-    guard parts.count <= 2, let hostname = parts.first, !hostname.isEmpty, hostname.count <= 253,
-      hostname.first != "-", hostname.first != ".",
-      hostname.unicodeScalars.allSatisfy({ Self.hostScalars.contains($0) })
-    else { return false }
-    if parts.count == 2 {
-      guard let port = Int(parts[1]), (1...65535).contains(port), parts[1].allSatisfy(\.isNumber)
-      else { return false }
-    }
-    return true
+    !s.isEmpty && s.count <= 253 && s.first != "-" && s.first != "."
+      && s.unicodeScalars.allSatisfy { Self.hostScalars.contains($0) }
   }
 
   private static let segmentScalars = CharacterSet(

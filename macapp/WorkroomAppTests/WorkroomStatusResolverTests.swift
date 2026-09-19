@@ -14,8 +14,7 @@ private struct MockStatusRunner: StatusCommandRunning {
 }
 
 /// Like `MockStatusRunner` but records every (exe, args, dir) call, so a test can assert *where* a
-/// probe ran — e.g. that a jj workspace's `gh` probe runs from the colocated project root, not the
-/// (gitless) workspace.
+/// probe ran and what it named — e.g. that a `gh` probe runs in the neutral directory with `--repo`.
 private final class RecordingStatusRunner: StatusCommandRunning, @unchecked Sendable {
   private let handler: @Sendable (_ executable: String, _ args: [String]) -> CommandResult
   private let lock = NSLock()
@@ -227,7 +226,8 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let gh = runner.calls[0]
     XCTAssertEqual(gh.exe, "gh")
     XCTAssertEqual(gh.dir, NSTemporaryDirectory())
-    XCTAssertEqual(Array(gh.args.prefix(4)), ["api", "--hostname", "github.com", "graphql"])
+    XCTAssertEqual(Array(gh.args.prefix(2)), ["api", "graphql"])
+    XCTAssertEqual(Array(gh.args.suffix(2)), ["--hostname", "github.com"])
     let query = gh.args.first { $0.hasPrefix("query=") } ?? ""
     XCTAssertTrue(query.contains("owner:\"octo\""), query)
     XCTAssertTrue(query.contains("name:\"repo\""), query)
@@ -260,7 +260,8 @@ final class WorkroomStatusResolverTests: XCTestCase {
     _ = await r.runPRCommand(["pr", "close", "4"], repo: ghe)
     let calls = runner.calls
     XCTAssertEqual(calls.count, 4)
-    XCTAssertEqual(Array(calls[0].args.prefix(3)), ["api", "--hostname", "ghe.example.com"])
+    XCTAssertEqual(Array(calls[0].args.prefix(2)), ["api", "graphql"])
+    XCTAssertEqual(Array(calls[0].args.suffix(2)), ["--hostname", "ghe.example.com"])
     for call in calls.dropFirst() {
       XCTAssertEqual(Array(call.args.suffix(2)), ["--repo", "ghe.example.com/o/r"], "\(call.args)")
     }

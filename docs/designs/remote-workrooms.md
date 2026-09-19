@@ -908,7 +908,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     `ghostty_snapshot_*` (verified by `nm`). Two products out of one repo whose revisions now have
     to be kept in step, and the app's side of that pin comes from a third-party repackager
     (`Lakr233/libghostty-spm`) rather than upstream.
-- **`gh`-backed status.** `WorkroomStatusResolver` runs `gh pr list`, `gh repo view`,
+- **`gh`-backed status** (resolved by #207 — see the Phase 2 status below; what follows is the problem
+  as it stood). `WorkroomStatusResolver` ran `gh pr list`, `gh repo view`,
   `gh api graphql` and `gh run list` **with the workroom as cwd** (`:222,237,277,306,323,433`). For
   a remote workroom that directory does not exist locally, so every PR/CI/branch badge fails with
   `launchFailed`. **One wrinkle: git and jj already differ here.** `ghProbeDirectory` returns
@@ -2152,6 +2153,23 @@ service milestones below so each layer can be reviewed and landed independently.
      PR lives in. No test covers it (it needs a real fork); check it by hand before relying on it.
      A PR write fails closed: with no resolved repository it returns a synthesized failure and never
      spawns `gh`, and the message tells a transient failure ("try again") from "no repository".
+
+     **What works for a remote item, precisely.** At the service level (`RepositoryGitHub`): PR, checks
+     and writes resolve from the supplied identity alone, with no local path. At the store level,
+     nothing yet: no production code builds a `StatusWorkItem` with a remote `location`, and the
+     store's post-probe guards (`selectedStatusWorkItem(for:) == item`) rebuild the item from its
+     sidebar id, so a remote item's result — including a fail-closed write's error — would be
+     discarded as stale. `permitsGitHubAccess` and `registeredGitHub(for:)` are the router half of
+     that wiring, exercised by unit tests; Phase 3 must carry the location through the store and
+     compare items on it.
+
+     **A supplied identity's host is unconstrained.** `GitHubRepository` checks a host's syntax, not
+     that `gh` is signed in to it, and `gh` children inherit the app's environment (an exported
+     `GH_ENTERPRISE_TOKEN` would go with a request to any non-github.com host). Nothing supplies an
+     identity yet, and a local host's identity comes from `gh` itself, which only reads known hosts.
+     Before Phase 3 accepts an identity from a remote registrant, validate its host against
+     `gh auth status --active --json hosts`. Hosts with a port are refused outright: `gh api
+     --hostname` rejects one ("invalid hostname").
 
      The price is latency: the PR probe used to run `gh pr list` directly, and now waits for one
      `gh repo view` first, on every settled selection (bounded by `ciTimeout`). The lookup is cached

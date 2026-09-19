@@ -245,8 +245,9 @@ struct WorkroomStatusResolver: Sendable {
   static var ghDirectory: String { NSTemporaryDirectory() }
 
   /// `gh pr …` takes `--repo`; `gh api …` takes `--hostname` (it has no repository of its own — the
-  /// GraphQL query names it). Both run in `ghDirectory` with the network timeout. The one place a
-  /// probe's working directory and repository are decided, so a new probe cannot quietly go back to
+  /// GraphQL query names it). Callers pass the WHOLE command, subcommand included, and the helper
+  /// appends the flag. Both run in `ghDirectory` with the network timeout. The one place a probe's
+  /// working directory and repository are decided, so a new probe cannot quietly go back to
   /// depending on the folder it happens to run in.
   private enum GHFlavor { case pr, api }
 
@@ -256,7 +257,7 @@ struct WorkroomStatusResolver: Sendable {
     let full: [String]
     switch flavor {
     case .pr: full = arguments + ["--repo", repo.flag]
-    case .api: full = ["api", "--hostname", repo.host] + arguments
+    case .api: full = arguments + ["--hostname", repo.host]
     }
     return await runner.run("gh", full, in: Self.ghDirectory, timeout: ciTimeout)
   }
@@ -293,7 +294,7 @@ struct WorkroomStatusResolver: Sendable {
     let r = await gh(
       .api,
       [
-        "graphql", "-f",
+        "api", "graphql", "-f",
         "query=\(Self.checkRollupQuery(owner: repo.owner, name: repo.name, oid: commit))",
       ], repo: repo)
     return Self.classifyCheckRollup(r)
@@ -320,13 +321,6 @@ struct WorkroomStatusResolver: Sendable {
     return Self.classifyPR(r)
   }
 
-  /// Attach reviewer permalinks to an already-classified PR. A no-op for `.absent`/`.keepPrior` (and
-  /// for a PR with no submitted reviews — see `enrichReviewURLs`), so it's safe to call
-  /// unconditionally.
-  func enrichPR(_ res: PRResolution, repo: GitHubRepository) async -> PRResolution {
-    await enrichReviewURLs(res, repo: repo)
-  }
-
   /// The PR's individual CI checks (issue #75) via `gh pr checks <number>`. Keyed off the PR
   /// `number`, so unlike CI/PR it needs no branch resolution. The pure `classifyChecks` decides from
   /// stdout regardless of exit code (see its doc), so a "pending" (exit 8) or "a check failed"
@@ -337,18 +331,19 @@ struct WorkroomStatusResolver: Sendable {
     return Self.classifyChecks(r)
   }
 
-  /// Attach each submitted reviewer's review permalink so the PR panel can deep-link a row to its
-  /// comment. `gh pr list --json` blanks review urls/ids, so fetch them with a GraphQL
+  /// Attach each submitted reviewer's review permalink to an already-classified PR so the PR panel can
+  /// deep-link a row to its comment. A no-op for `.absent`/`.keepPrior`, so it is safe to call
+  /// unconditionally. `gh pr list --json` blanks review urls/ids, so fetch them with a GraphQL
   /// `resource(url:)` follow-up keyed by the PR's own URL. Best-effort: any failure (the probe
   /// errors, returns nothing, or the PR has no submitted reviews) leaves urls `nil` and returns the
   /// already-resolved PR unchanged — it never downgrades a good result. Only fires when there's a
   /// submitted (non-`requested`) reviewer, so PRs awaiting first review skip the extra round-trip.
-  private func enrichReviewURLs(_ res: PRResolution, repo: GitHubRepository) async -> PRResolution {
+  func enrichPR(_ res: PRResolution, repo: GitHubRepository) async -> PRResolution {
     guard case .info(let pr) = res,
       pr.reviewers.contains(where: { $0.state != .requested })
     else { return res }
     let g = await gh(
-      .api, ["graphql", "-f", "query=\(Self.reviewURLQuery(prURL: pr.url))"], repo: repo)
+      .api, ["api", "graphql", "-f", "query=\(Self.reviewURLQuery(prURL: pr.url))"], repo: repo)
     let urls = Self.parseReviewURLs(g)
     guard !urls.isEmpty else { return res }
     let enriched = pr.reviewers.map { rev -> Reviewer in
@@ -479,7 +474,7 @@ struct WorkroomStatusResolver: Sendable {
   /// all (`{"hosts":{}}`). So a non-zero exit means we learned nothing, not that you're logged out.
   func resolveGitHubCLI() async -> GHAuthProbe {
     let r = await runner.run(
-      "gh", ["auth", "status", "--active", "--json", "hosts"], in: NSTemporaryDirectory(),
+      "gh", ["auth", "status", "--active", "--json", "hosts"], in: Self.ghDirectory,
       timeout: ciTimeout)
     return Self.classifyGitHubCLI(r)
   }

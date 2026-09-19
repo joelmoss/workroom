@@ -27,9 +27,9 @@ final class GitHubRepositoryTests: XCTestCase {
       ("github.com/evil", "o", "r"),
       ("git hub.com", "o", "r"),
       ("github.com:", "o", "r"),
-      ("github.com:abc", "o", "r"),
-      ("github.com:0", "o", "r"),
-      ("github.com:99999", "o", "r"),
+      // A port is refused: `gh api --hostname` rejects one ("invalid hostname").
+      ("ghe.example.com:8443", "o", "r"),
+      ("github.com:443", "o", "r"),
       ("a:1:2", "o", "r"),
     ]
     for (host, owner, name) in bad {
@@ -50,7 +50,6 @@ final class GitHubRepositoryTests: XCTestCase {
       ("github.com", String(repeating: "a", count: 39), "r"),
       ("github.com", "o", String(repeating: "r", count: 100)),
       ("ghe.example.com", "o", "r"),
-      ("ghe.example.com:8443", "o", "r"),
       ("acme.ghe.com", "o", "r"),
     ]
     for (host, owner, name) in legal {
@@ -58,6 +57,16 @@ final class GitHubRepositoryTests: XCTestCase {
         GitHubRepository(host: host, owner: owner, name: name), "\(host) / \(owner) / \(name)")
       XCTAssertEqual(repo.flag, "\(host)/\(owner)/\(name)")
     }
+  }
+
+  /// A clone URL ends in `.git` and GitHub does not allow a name that does, so a supplied identity
+  /// built from one is normalised at the single choke point — not left to make the GraphQL query
+  /// match nothing while the PR probes (`--repo`) still work.
+  func testACloneURLSuffixIsNormalisedByEveryConstructionPath() throws {
+    let expected = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "acme", name: "api"))
+    XCTAssertEqual(GitHubRepository(host: "github.com", owner: "acme", name: "api.git"), expected)
+    XCTAssertEqual(GitHubRepository(url: "https://github.com/acme/api.git"), expected)
+    XCTAssertNil(GitHubRepository(host: "github.com", owner: "acme", name: ".git"))  // nothing left
   }
 
   func testHostIsLowercased() throws {
@@ -82,12 +91,10 @@ final class GitHubRepositoryTests: XCTestCase {
     }
   }
 
-  func testParsesAnEnterpriseHostAndPort() throws {
+  func testParsesAnEnterpriseHost() throws {
     XCTAssertEqual(
       GitHubRepository(url: "https://ghe.example.com/o/r"),
       GitHubRepository(host: "ghe.example.com", owner: "o", name: "r"))
-    XCTAssertEqual(
-      GitHubRepository(url: "https://ghe.example.com:8443/o/r")?.flag, "ghe.example.com:8443/o/r")
   }
 
   /// Anything that is not the plain `https://host/owner/name` form is nil rather than a guess.
@@ -105,6 +112,7 @@ final class GitHubRepositoryTests: XCTestCase {
       "https://user@github.com/octo/repo",  // credentials in the URL
       "https://github.com/octo/re po",
       "https://github.com/octo/repo\"){x",
+      "https://ghe.example.com:8443/o/r",  // a port: gh api --hostname rejects it
       "octo/repo",
     ] {
       XCTAssertNil(GitHubRepository(url: url), url)

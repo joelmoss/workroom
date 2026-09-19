@@ -277,7 +277,8 @@ extension AppStore {
   /// The gh-write lifecycle shared by `performPRAction` and `performMerge` (issue #88): guard the
   /// selected item, capture the prior PR to restore on failure, apply the optimistic update, then —
   /// UNLESS in fixture mode, where the optimistic flip is itself the final result — flip the
-  /// in-flight flag, resolve the gh working directory, and run the command. On success re-probe for
+  /// in-flight flag, build the GitHub service for the registered location (bound to its repository
+  /// identity), and run the command. On success re-probe for
   /// GitHub's authoritative state; on failure revert the optimistic flip and surface `stderr`.
   ///
   /// `UITestFixture.isActive` must be checked AFTER `applyOptimistic` but BEFORE `prActionInFlight`
@@ -626,7 +627,6 @@ extension AppStore {
     // blank. (Each workroom has its own `RepositoryGitHub`, so its per-instance lookup cannot span
     // them.)
     var repositories: [RepositoryLocation: GitHubRepositoryResolution] = [:]
-    var probed: Set<RepositoryLocation> = []
     for item in items where item.permitsGitHubAccess {
       if Task.isCancelled { return }
       do {
@@ -638,7 +638,7 @@ extension AppStore {
         }
         let service = try await RepositoryRouter.shared.gitHub(for: location, resolver: resolver)
         let key = service.context.sharedLocation ?? service.context.location
-        if probed.insert(key).inserted { repositories[key] = await service.repository() }
+        if repositories[key] == nil { repositories[key] = await service.repository() }
         services.append((item, service))
       } catch { continue }
     }

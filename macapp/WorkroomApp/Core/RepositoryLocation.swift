@@ -103,15 +103,6 @@ final class RepositoryRouter: @unchecked Sendable {
     /// local host leaves it nil (its identity comes from its own git remote); a remote host has no
     /// checkout on this Mac, so the identity is registered with it (issue #207).
     let github: GitHubRepository?
-
-    init(
-      backend: RepositoryBackend, sharedLocation: RepositoryLocation,
-      github: GitHubRepository? = nil
-    ) {
-      self.backend = backend
-      self.sharedLocation = sharedLocation
-      self.github = github
-    }
   }
 
   struct Registration: Sendable {
@@ -346,10 +337,10 @@ final class RepositoryRouter: @unchecked Sendable {
     for location: RepositoryLocation,
     resolver: WorkroomStatusResolver = WorkroomStatusResolver()
   ) throws -> RepositoryGitHub {
-    try github(for: location, entry: registeredEntry(for: location), resolver: resolver)
+    try makeGitHub(for: location, entry: registeredEntry(for: location), resolver: resolver)
   }
 
-  private func github(
+  private func makeGitHub(
     for location: RepositoryLocation, entry: Entry, resolver: WorkroomStatusResolver
   ) throws -> RepositoryGitHub {
     try RepositoryGitHub(
@@ -366,7 +357,7 @@ final class RepositoryRouter: @unchecked Sendable {
   ) async throws -> RepositoryGitHub {
     // ONE registry read: a registration cleared between two reads must fall through to the probe.
     if let entry = entry(for: location) {
-      return try github(for: location, entry: entry, resolver: resolver)
+      return try makeGitHub(for: location, entry: entry, resolver: resolver)
     }
     return try RepositoryGitHub(context: await context(for: location), resolver: resolver)
   }
