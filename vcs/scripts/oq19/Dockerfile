@@ -9,6 +9,8 @@ FROM debian:bookworm-slim
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       python3 iproute2 procps tmux vim less build-essential util-linux curl ca-certificates \
+      openssh-server cron \
+ && ssh-keygen -A \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /oq19

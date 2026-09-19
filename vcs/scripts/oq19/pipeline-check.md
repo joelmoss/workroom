@@ -80,3 +80,49 @@ the shell (state `S`, waiting on `poll_schedule_timeout`), itself at nice -5, an
   currently passes the same flags to all three.
 * Only scenario 1 has been run. Every BUSY scenario needs its action module (T3); the driver refuses to
   record a BUSY phase without one.
+
+## T3: every scenario runs and does what its label says
+
+All 21 scenario entries (18 scenarios; 2a/2b/2c, 3a/3b and 4a/4b are separate entries) ran end to end at
+scale 0.05 and passed `check_trace.py`, which asserts from the SAMPLER'S trace that:
+
+* the truth log matches `labels.py` phase for phase, contiguously and for the expected duration, with samples
+  across the whole timeline and the sampler at nice -5;
+* each scenario shows what it claims: vim, less or tmux running (2a to 2c); the self-renamed `2.1.232` agent
+  (3a to 4b), with an established peer connection where the label needs one; a spinner's pty output in 4a and
+  NONE in 4b's wait; a saturating build (5); `dd` (6); a live `sleep` with no CPU (7); the listening server (8)
+  and inbound bytes on `eth0` only when it is hit from outside (9); a job that outlives its shell in another
+  session (10); exactly one exec lifecycle span matching the BUSY phase and no pty activity (11); CPU bursts
+  (12); `watch` (13); keystrokes (14); sshd and cron (16); about 0.3 cores (17); one STALE gap during which the
+  sampler is silent and which straddles the start of the work (18).
+
+**The checks can fail.** `run.sh controls` runs a trace as a scenario it is not (same phase shape) and requires
+FAIL: 8 of 8 were caught (4a/4b, 2a/2b/2c, 3a as 3b, 8/13).
+
+Found and fixed while getting there: a 0x0 pty and a missing `TERM` stop curses, vim and tmux from starting;
+the agent crashed without a peer (3a has none). The 500-process build variant of scenario 5 produced 504
+processes and cost the Python sampler about 1.6% of a core at 1 s with every signal on: the same picture as the
+cost matrix above.
+
+**Finding: `nice -n -5` does not protect the sampler from a `--cpus=1` quota.** In that same 500-process run the
+container was throttled for 169 s of `throttled_usec` in 55 s of wall time (the sampler now records
+`cg_throttled_usec`), and the sampler's longest silence was 4.5 s at a 1 s interval, with the sampler at nice -5.
+The CFS quota throttles the whole cgroup, sampler included; niceness only orders work inside it. Consequences:
+(a) the staleness rule (D10) is not hypothetical, a saturating build in a quota'd box blinds the classifier;
+(b) `check_trace.py` does not fail the 500-process variant on sampling gaps, because there the gaps ARE the
+result; (c) T4 must not read a gap in a CPU-bound scenario as a harness fault, and the boxd VM (no quota) must be
+compared against this before the sampler's priority is trusted.
+
+Known limits, stated rather than hidden:
+
+* **Attached mode is only a periodic window resize** (a GUI client redrawing an idle TUI). It is a real
+  difference in pty output but a thin one; the claim "attached and detached agree" is only as strong as that.
+* **Parallel runs share a throttled box.** Each container has its own quota, so the throttling above is per
+  run, not from neighbours; D7's serial control still has to show the same verdicts.
+* **The F7 closed loop is not complete**: scenario 16 runs the sampler at its real cadence but there is no
+  lifecycle shim yet (T6 and T7). The idle-box result is therefore a lower bound on self-activity.
+* **The peer is a Docker sidecar.** On boxd (T7) it has to be another machine or the Mac; the scenario modules
+  only need `OQ19_PEER=host:port` and a name (`box`) the peer can connect back to.
+* **The agent is synthetic**, as the plan said.
+* Jobs end 0.2 s before their phase does (typing a command takes a moment), so the last 0.2 s of a BUSY phase
+  is idle. It is inside the onset allowance and the hysteresis tail, but it is there.

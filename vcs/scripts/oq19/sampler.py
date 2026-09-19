@@ -106,6 +106,7 @@ class Sampler:
         if "box" in self.groups:
             row.update({
                 "cg_cpu_usec": cpu.get("usage_usec"),
+                "cg_throttled_usec": cpu.get("throttled_usec"),  # a --cpus quota throttles the sampler too
                 "pids_current": read(os.path.join(CGROUP, "pids.current")),
                 "sys_cpu": stat, "load1": procfs.parse_loadavg(read("/proc/loadavg") or ""),
                 "net_rx": net[0], "net_tx": net[1],
