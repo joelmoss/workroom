@@ -47,6 +47,13 @@ extension AppStore {
     }
 
     var permitsLocalAccess: Bool { location == nil || location?.host == .local }
+    /// Whether GitHub status may be read for, or written through, this item: a local one, or a
+    /// remote one registered with a GitHub identity (`gh` stays on this Mac — only the repository's
+    /// NAME comes from the registration). A remote item without one is still refused.
+    var permitsGitHubAccess: Bool {
+      permitsLocalAccess
+        || location.flatMap { RepositoryRouter.shared.entry(for: $0)?.github } != nil
+    }
     var sharedLocation: RepositoryLocation? {
       location.flatMap { RepositoryRouter.shared.entry(for: $0)?.sharedLocation }
     }
@@ -200,7 +207,7 @@ extension AppStore {
       if Task.isCancelled { return }
       guard self.selectedStatusWorkItem(for: sid) == item else { return }
       self.mergeLocalStatus(fresh, into: sid)
-      guard item.permitsLocalAccess else { return }
+      guard item.permitsGitHubAccess else { return }
       let github: RepositoryGitHub
       do {
         let location: RepositoryLocation
@@ -280,7 +287,7 @@ extension AppStore {
     applyOptimistic: (SidebarID) -> Void, errorTitle: String
   ) {
     let sid = item.sid
-    guard item.permitsLocalAccess else {
+    guard item.permitsGitHubAccess else {
       self.errorTitle = errorTitle
       self.errorMessage =
         RepositoryRoutingError.unavailable(item.location?.host ?? .local).localizedDescription
@@ -294,9 +301,8 @@ extension AppStore {
         guard let location = item.location else {
           throw RepositoryRoutingError.registrationRequired
         }
-        github = try RepositoryGitHub(
-          context: RepositoryRouter.shared.registeredContext(for: location),
-          resolver: statusResolver)
+        github = try RepositoryRouter.shared.registeredGitHub(
+          for: location, resolver: statusResolver)
       } catch {
         self.errorTitle = errorTitle
         self.errorMessage = error.localizedDescription
@@ -615,9 +621,13 @@ extension AppStore {
     async
   {
     var services: [(StatusWorkItem, RepositoryGitHub)] = []
-    var names: [RepositoryLocation: String] = [:]
+    // One repository lookup per PROJECT, shared by all its workrooms — and the whole answer, not just
+    // a found repo: a `keepPrior` blip must reach every workroom's CI probe or the project's badges
+    // blank. (Each workroom has its own `RepositoryGitHub`, so its per-instance lookup cannot span
+    // them.)
+    var repositories: [RepositoryLocation: GitHubRepositoryResolution] = [:]
     var probed: Set<RepositoryLocation> = []
-    for item in items where item.permitsLocalAccess {
+    for item in items where item.permitsGitHubAccess {
       if Task.isCancelled { return }
       do {
         let location: RepositoryLocation
@@ -627,8 +637,8 @@ extension AppStore {
           location = try await RepositoryLocation.local(item.path)
         }
         let service = try await RepositoryRouter.shared.gitHub(for: location, resolver: resolver)
-        let key = service.context.sharedLocation ?? location
-        if probed.insert(key).inserted { names[key] = await service.nameWithOwner() }
+        let key = service.context.sharedLocation ?? service.context.location
+        if probed.insert(key).inserted { repositories[key] = await service.repository() }
         services.append((item, service))
       } catch { continue }
     }
@@ -641,8 +651,8 @@ extension AppStore {
         index += 1
         let branch = branches[item.sid] ?? nil
         let key = service.context.sharedLocation ?? service.context.location
-        let name = names[key]
-        group.addTask { (item, await service.ci(branch: branch, nameWithOwner: name)) }
+        let repository = repositories[key]
+        group.addTask { (item, await service.ci(branch: branch, repository: repository)) }
       }
       for _ in 0..<min(cap, services.count) { enqueue() }
       while let (item, result) = await group.next() {
