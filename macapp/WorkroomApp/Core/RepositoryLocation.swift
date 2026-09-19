@@ -278,11 +278,15 @@ final class RepositoryRouter: @unchecked Sendable {
   /// Registered or not: an unregistered repository lists and reads exactly as before, and only a jj
   /// listing needs the shared repository (`FileContext.sharedLocation`), which it reports itself.
   ///
-  /// The native fallback is for one case only — a LOCAL host whose running agent predates the File
-  /// service (`VCSError.backendVersion` while OBTAINING the service; the agent is kept alive because
-  /// it may own terminals, so this is not transient). Every other failure to obtain it propagates,
-  /// and it is never applied mid-operation or to a remote host: service unavailability is an explicit
-  /// failure, not an empty successful result.
+  /// **A local host never loses its files to its agent.** A local file is readable without one, so when
+  /// the agent cannot be obtained — missing from the bundle, failed to start, too old for the File
+  /// service (`VCSError.backendVersion`; it is kept alive because it may own terminals, so that is not
+  /// transient) — the answer is a provider that lists and reads natively (`UnavailableFileProvider`
+  /// inside a `LocalFallbackFileProvider`), and when a working agent fails mid-request at the transport
+  /// level, the same idempotent request is re-run natively. See `LocalFallbackFileProvider` for exactly
+  /// which failures fall back. Only cancellation propagates.
+  ///
+  /// A REMOTE host has no native path: its unavailability is an explicit failure, never empty data.
   func files(
     for location: RepositoryLocation, runner: StatusCommandRunning = StatusCommandRunner(),
     gate: JJSnapshotGate = .shared
@@ -293,10 +297,17 @@ final class RepositoryRouter: @unchecked Sendable {
       guard let connections else { throw RepositoryRoutingError.unavailable(location.host) }
       return try await connections.files(context: context)
     }
-    if let localFiles {
-      do { return try await localFiles(context) } catch VCSError.backendVersion(_) {}
+    let native = NativeFileProvider(context: context, runner: runner, gate: gate)
+    guard let localFiles else { return native }
+    let agent: FileProviding
+    do {
+      agent = try await localFiles(context)
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch {
+      agent = UnavailableFileProvider(context: context, reason: "\(error)")
     }
-    return NativeFileProvider(context: context, runner: runner, gate: gate)
+    return LocalFallbackFileProvider(primary: agent, fallback: native)
   }
 
   func registeredContext(for location: RepositoryLocation) throws -> RepositoryContext {

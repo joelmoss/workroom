@@ -2061,10 +2061,19 @@ independently.
      work recorded elsewhere, so it is not a guard this milestone provides. `PROTOCOL_VERSION` is 3 and `MIN_FILE_VERSION` is 3, checked against a
      peer's raw greeting before any File envelope is sent — a protocol-2 agent silently drops them —
      and never folded into `negotiate`. A failed File negotiation does not fail the connection: VCS
-     keeps working and the router falls back to native reads for a LOCAL host only, when
-     *obtaining* the service reports `VCSError.backendVersion`. The agent outlives the app, so
-     without that fallback the Files panel, viewer and diff highlighting would break on the first
-     launch after every update for anyone with a terminal still open.
+     keeps working. **A local host never loses its files to its agent**: a local file is readable
+     without one, so when the agent cannot be obtained (missing from the bundle, failed to start, or
+     too old — it outlives the app, so this is the normal state on the first launch after every update
+     for anyone with a terminal still open) the router returns a provider that lists and reads
+     natively, and when a working agent fails mid-request at the TRANSPORT level (connection lost,
+     timeout, exhausted budget, replaced generation, undecodable reply) the same idempotent request is
+     re-run natively. Nothing else falls back: a real answer from a healthy agent (refused, too
+     large, not found, truncated, lock contention) is the answer, and cancellation propagates. A
+     failed acquisition makes the file service fail fast for 5s so a persistently dead agent does not
+     cost every call a spawn-and-handshake wait. `watch` is the exception that keeps trying: it throws
+     while the agent is unavailable, so the watcher runs local FSEvents in the meantime and retries the
+     agent with backoff. A REMOTE host has no native path, so its unavailability stays an explicit
+     failure rather than empty data.
 
      *Listing* takes no argv from the client. The two commands are fixed in the agent, chosen by
      `backend`, and the Swift side keeps its git-then-jj loop so a colocated jj repository still
