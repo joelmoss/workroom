@@ -280,5 +280,40 @@ class D3AndSelection(unittest.TestCase):
         self.assertEqual(report["3600"]["advisory"], "ok")
 
 
+class Report(unittest.TestCase):
+    def test_every_section_of_the_report_renders_for_a_winner(self):
+        """The winner branch is the one nothing else exercises: a bug there would only show at the end of a
+        multi-hour recording."""
+        def tagged(run, key, mode="detached", role="parallel", variant=""):
+            run.key, run.mode, run.variant = key, mode, variant
+            run.tags = {"role": role, "rep": 0}
+            return run
+        idle = [("idle", IDLE, 120)]
+        long_work = [("quiet", IDLE, 110), ("work", BUSY, 400), ("post", IDLE, 90)]
+        runs = [
+            tagged(mk_run("5", BUILD, extra=build_extra), "5-detached-full-r0"),
+            tagged(mk_run("5", BUILD, extra=build_extra), "5-detached-full-r0-serial", role="serial-control"),
+            tagged(mk_run("5", BUILD, extra=build_extra), "5-attached-full-r0", mode="attached"),
+            tagged(mk_run("5", BUILD, extra=build_extra), "5-detached-full-500proc-r0", variant="500proc"),
+            tagged(mk_run("1", idle), "1-detached-full-r0"),
+            tagged(mk_run("3b", idle), "3b-detached-full-r0"),
+            tagged(mk_run("17", long_work, extra=lambda t: [P(81, ROOT, "cc1", "R", ticks_of(t, T0 + 110, 30))]
+                          if T0 + 110 <= t < T0 + 510 else []), "17-detached-full-r0"),
+        ]
+        configs = [cfg("P4", window=0), cfg("P5", window=0)]
+        summaries, d3 = A.evaluate_all(runs, configs, A.load_cost_matrix())
+        winner = summaries[0]
+        winner["passes_all"] = True  # force the winner branch: this test is about rendering, not about scoring
+        text = A.report(runs, [("x-run", "check_trace failed")], summaries, d3, winner, A.load_cost_matrix(), True, "abc")
+        for heading in ("## D3", "## The ladder", "## Winner", "What an idle box costs", "Serial control (D7)",
+                        "Scenario 17 and the awake ceiling", "Attached vs detached", "PREDICTION", "500-process build",
+                        "PIPELINE CHECK ONLY"):
+            self.assertIn(heading, text)
+        self.assertIn("5-detached-full-r0-serial", text)   # the control was paired with its twin
+        self.assertIn("excluded `x-run`", text)
+        # the serial control and the attached and 500-process runs are never scored
+        self.assertEqual(sum(1 for s in summaries for _ in [0] if s["runs"] != 4), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
