@@ -1,0 +1,47 @@
+# OQ19 measurement harness
+
+Answers OQ19 (`docs/designs/remote-workrooms.md`): can the agent tell busy from idle well enough to let a
+provider sleep a box without killing real work? The approved plan is the source of truth for what is
+measured and why; this directory is the harness.
+
+## The contract is frozen
+
+`labels.py`, `gates.py` and `boundary.md` were pre-registered, independently reviewed and tagged
+`oq19-preregistration-frozen` (sha256 of each is in the tag message). Do not edit `labels.py` or `gates.py`
+once any trace has been recorded: a gate the results embarrass is a finding, not a bug to fix.
+
+## Layout
+
+| File | Role |
+|---|---|
+| `labels.py` | Ground truth: scenarios, phases, BUSY/IDLE labels, durations (full and compressed). |
+| `gates.py` | Acceptance gates and metrics, pure functions of a verdict series and a truth timeline. |
+| `boundary.md` | What counts as work in production, the exclusion list, permissions per signal. |
+| `procfs.py` | Parsers for the Linux signals; tested against real captured output. |
+| `sampler.py` | Reads the signals on a fixed cadence into `trace.jsonl`; reports its own CPU cost. |
+| `driver.py` | Runs one scenario in a pty session, writes the truth log from what it actually did. |
+| `run.sh` | Runs the harness in a container (`container`, `docker` or `podman`); `--self-test`. |
+| `cost.py` | Sampler cost per signal group, interval and process load (`run.sh cost`). |
+| `Dockerfile` | The measurement image. `setup.sh` (boxd) installs the same package list. |
+| `pipeline-check.md` | What the pipeline check found in the image, and what it corrected. |
+| `tests/` | Self-checks; real fixtures in `tests/fixtures/`. Run by file name, never `unittest discover`. |
+
+## Running
+
+```
+vcs/scripts/oq19/run.sh --self-test                      # gates, labels and parsers, no container needed
+vcs/scripts/oq19/run.sh scenario 1 --scale 0.1           # a pipeline check: 10% of the phase durations
+vcs/scripts/oq19/run.sh cost                             # the sampler cost matrix
+```
+
+`--scale` is for pipeline checks only and is recorded in `meta.json`; a scored run always uses scale 1.0.
+Raw traces go to `traces/` (gitignored). Each run gets its own container with `--cpus=1 --memory=512m
+--cap-add=SYS_NICE`; the capability is required for `nice -n -5` (see `pipeline-check.md`).
+
+## Rules that keep the numbers honest
+
+* Time is `CLOCK_MONOTONIC` everywhere, never `/proc/uptime`.
+* The driver never reads a signal and the sampler never reads a label.
+* A BUSY phase without an action module refuses to run: an unimplemented scenario must never be recorded as
+  if it had done its work.
+* A missed sample is a gap, scored by the staleness rule (D10), never filtered out.
