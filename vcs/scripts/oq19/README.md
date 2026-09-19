@@ -23,6 +23,9 @@ once any trace has been recorded: a gate the results embarrass is a finding, not
 | `run.sh` | Runs the harness in a container (`container`, `docker` or `podman`); `--self-test`, `scenario`, `smoke`, `controls`, `cost`. |
 | `scenarios/` | One action module per scenario (`s_<id>.py`), `lib.py`, and `tools/` (`agent.py` the synthetic agent TUI, `peer.py` the network peer, `burn.py`, `burst.py`). |
 | `check_trace.py` | Proves a recorded run did what its label claims, from the sampler's trace rather than the driver's intent. |
+| `record.py` | Records the whole tuning set (or a hold-out) a few containers at a time from a snapshot of the committed harness; resumable, never discards a failed run. |
+| `analyze.py` | Replays recorded runs through policies P0 to P5 with the pre-registered gates; the candidate grid and the winner-selection rule are fixed in the file before any tuning trace existed. `--pipeline-check` for scaled runs. |
+| `cost_matrix.json` | The measured sampler cost per signal set, interval and load (from `run.sh cost`), so the analysis charges each policy what its signals cost. |
 | `cost.py` | Sampler cost per signal group, interval and process load (`run.sh cost`). |
 | `Dockerfile` | The measurement image. `setup.sh` (boxd) installs the same package list. |
 | `pipeline-check.md` | What the pipeline check found in the image, and what it corrected. |
@@ -36,6 +39,8 @@ vcs/scripts/oq19/run.sh scenario 1 --scale 0.1           # a pipeline check: 10%
 vcs/scripts/oq19/run.sh smoke [ids...]                   # every scenario at a small scale, then check_trace.py
 vcs/scripts/oq19/run.sh controls                         # negative controls: a wrong-scenario check must FAIL
 vcs/scripts/oq19/run.sh cost                             # the sampler cost matrix
+vcs/scripts/oq19/record.py tuning --dry-run              # the job list and the wall-time estimate
+vcs/scripts/oq19/analyze.py tuning                       # replay + gates over traces/tuning (needs scale 1.0 runs)
 ```
 
 `--scale` is for pipeline checks only and is recorded in `meta.json`; a scored run always uses scale 1.0.

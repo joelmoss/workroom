@@ -24,6 +24,7 @@ if [ "${1:-}" = "--self-test" ]; then
   # By file name, never `unittest discover`: discover exits 0 with "Ran 0 tests" when a suite disappears.
   python3 tests/test_gates.py
   python3 tests/test_procfs.py
+  python3 tests/test_analyze.py
   exit 0
 fi
 

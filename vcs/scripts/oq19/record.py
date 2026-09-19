@@ -51,8 +51,10 @@ def job_seed(key):
     return int(hashlib.sha256(key.encode()).hexdigest()[:8], 16)
 
 
-def job_key(sid, mode, compressed, rep, variant=""):
-    return "%s-%s-%s%s-r%d" % (sid, mode, "comp" if compressed else "full", "-" + variant if variant else "", rep)
+def job_key(sid, mode, compressed, rep, variant="", interval=1.0):
+    every = "" if interval == 1.0 else "-i%g" % interval
+    return "%s-%s-%s%s%s-r%d" % (sid, mode, "comp" if compressed else "full", "-" + variant if variant else "",
+                                 every, rep)
 
 
 def job_seconds(job):
@@ -60,15 +62,15 @@ def job_seconds(job):
     return sum(labels.seconds(p, job["compressed"]) for p in s.phases) * job["scale"]
 
 
-def plan_jobs(only=None, reps=None, scale=1.0):
+def plan_jobs(only=None, reps=None, scale=1.0, interval=1.0):
     comp_reps = reps or gates.COMPRESSED_CRITICAL_REPEATS  # --reps is for testing the scheduler
     reps = reps or gates.TUNING_REPEATS
     ids = [s.id for s in labels.SCENARIOS if not only or s.id in only]
 
     def job(sid, mode, compressed, rep, variant="", role="parallel"):
-        key = job_key(sid, mode, compressed, rep, variant)
+        key = job_key(sid, mode, compressed, rep, variant, interval)
         return {"key": key, "id": sid, "mode": mode, "compressed": compressed, "rep": rep, "variant": variant,
-                "role": role, "seed": job_seed(key), "scale": scale}
+                "role": role, "seed": job_seed(key), "scale": scale, "interval": interval}
 
     jobs = []
     for sid in ids:
@@ -174,7 +176,8 @@ class Recorder:
         shutil.rmtree(out, ignore_errors=True)
         env = dict(os.environ, OQ19_VARIANT=job["variant"]) if job["variant"] else dict(os.environ)
         cmd = [os.path.join(self.harness, "run.sh"), "scenario", job["id"], "--out", out,
-               "--mode", job["mode"], "--jitter-seed", str(job["seed"]), "--scale", str(job["scale"])]
+               "--mode", job["mode"], "--jitter-seed", str(job["seed"]), "--scale", str(job["scale"]),
+               "--interval", str(job["interval"])]
         if job["compressed"]:
             cmd.append("--compressed")
         status, started, attempts = "infra_fail", time.time(), 0
@@ -230,11 +233,13 @@ def main():
     ap.add_argument("--only", default="", help="comma-separated scenario ids (a test of the scheduler)")
     ap.add_argument("--reps", type=int, default=None)
     ap.add_argument("--scale", type=float, default=1.0, help="PIPELINE CHECKS ONLY")
+    ap.add_argument("--interval", type=float, default=1.0,
+                    help="sampling interval; a hold-out is recorded at the winner's real cadence, never downsampled (F7)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     args.root = os.path.abspath(args.root)  # run.sh cd's into the harness: a relative --out would land there
     only = {x for x in args.only.split(",") if x}
-    jobs, controls = plan_jobs(only, args.reps, args.scale)
+    jobs, controls = plan_jobs(only, args.reps, args.scale, args.interval)
 
     busy = sum(job_seconds(j) for j in jobs + controls)
     print("%d parallel jobs + %d serial controls; %.1f container-hours; about %.1f h wall at %d parallel" %

@@ -39,7 +39,7 @@ import sys
 
 import gates
 import labels
-from labels import BUSY, IDLE, STALE
+from labels import BUSY, IDLE
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -65,6 +65,7 @@ EXCLUDED_COMMS = ("sshd", "cron", "systemd", "systemd-journal", "systemd-logind"
                   "unattended-upgr", "apt.systemd.dai", "wr-agent")
 OWN_PIDS = (1,)                    # container init: the driver in the harness, systemd in production
 CEILINGS_S = (1800, 3600, 14400)   # OQ22: candidate awake ceilings, reported for scenario 17 only
+CONTROL_MAX_MISMATCH = 0.02        # D7: a serial control may differ from its parallel twin in at most this share of seconds
 
 # Signal groups each policy needs (sampler.py GROUPS), for charging the measured cost matrix.
 NEEDS = {"P0": "box", "P1": "box+procs", "P1b": "box+procs", "P2": "box+procs",
@@ -375,7 +376,7 @@ def ceiling_report(verdicts, work):
 def evaluate_all(runs, configs, matrix, progress=None):
     """Pass 1 (no D3 exemption) over every config, then D3 mechanised over the `agnostic` grid, then pass 2 with
     the exemption where it fires. Returns (per-config summaries, d3_fallback)."""
-    scored = [r for r in runs if r.mode == "detached" and not r.variant]
+    scored = [r for r in runs if r.mode == "detached" and not r.variant and r.tags.get("role") != "serial-control"]
     cache = {}
 
     def feats_for(run, c):
@@ -422,6 +423,152 @@ def evaluate_all(runs, configs, matrix, progress=None):
     return summaries, d3
 
 
+def verdicts_for(c, run):
+    return verdict_series(c, features(Stream(run, c.interval), c.exclusions), window_for(c, run))
+
+
+def mismatch(a, b, start_a, start_b, length):
+    """Share of the 1 s grid over `length` seconds, aligned at each run's first phase, where verdicts differ."""
+    n = int(length)
+    return sum(1 for k in range(n) if gates.verdict_at(a, start_a + k) != gates.verdict_at(b, start_b + k)) / max(1, n)
+
+
+def control_report(c, runs):
+    """D7: each serial control against its parallel twin (same seed, same config, only the scheduling differs)."""
+    by_key = {r.key: r for r in runs}
+    out = []
+    for r in runs:
+        if r.tags.get("role") != "serial-control":
+            continue
+        twin = by_key.get(r.key[: -len("-serial")])
+        if twin is None:
+            continue
+        va, vb = verdicts_for(c, twin), verdicts_for(c, r)
+        length = min(twin.truth[-1]["end"] - twin.truth[0]["start"], r.truth[-1]["end"] - r.truth[0]["start"])
+        m = mismatch(va, vb, twin.truth[0]["start"], r.truth[0]["start"], length)
+        out.append({"twin": twin.key, "control": r.key, "mismatch": m, "ok": m <= CONTROL_MAX_MISMATCH})
+    return out
+
+
+def per_scenario(c, runs, d3):
+    rows = {}
+    for r in runs:
+        res, v = score_run(c, r, features(Stream(r, c.interval), c.exclusions), d3 and r.scenario == "3b")
+        row = rows.setdefault((r.scenario, r.compressed), {"runs": 0, "failed": 0, "gates": collections.Counter(),
+                                                            "ttb": [], "tti": []})
+        row["runs"] += 1
+        f = failed(res)
+        row["failed"] += 1 if f else 0
+        row["gates"].update(f)
+        if res["provider_deadline"][1] is not None:
+            row["ttb"].append(res["provider_deadline"][1])
+        if res["time_to_idle"][1] is not None:
+            row["tti"].append(res["time_to_idle"][1])
+    return rows
+
+
+def report(runs, excluded, summaries, d3, winner, matrix, pipeline_check, commit):
+    scored = [r for r in runs if r.mode == "detached" and not r.variant and r.tags.get("role") != "serial-control"]
+    L = []
+    w = L.append
+    w("# OQ19 tuning analysis")
+    w("")
+    w("**PIPELINE CHECK ONLY: NOT A RESULT.** Scaled runs; the windows cannot be exercised." if pipeline_check
+      else "Scored tuning set (scale 1.0). Parameters are chosen here and frozen; the hold-out set (T6) carries the claim.")
+    w("")
+    w("Analysis code at `%s`. Runs scored: %d detached (full %d, compressed %d); attached %d; 500-process variant %d; "
+      "serial controls %d; excluded %d." % (
+          commit, len(scored), sum(1 for r in scored if not r.compressed), sum(1 for r in scored if r.compressed),
+          sum(1 for r in runs if r.mode == "attached"), sum(1 for r in runs if r.variant),
+          sum(1 for r in runs if r.tags.get("role") == "serial-control"), len(excluded)))
+    for key, why in excluded:
+        w("* excluded `%s`: %s (kept in the manifest; not scored)" % (key, why))
+    w("")
+    w("## D3 (3b vs 4b)")
+    w("The fallback %s over the agent-agnostic grid: %s." % (
+        "FIRES" if d3 else "does not fire",
+        "no candidate had 4b false-idle = 0 AND 3b no-busy-forever, so 3b and 4b are treated as inseparable, both BUSY "
+        "(never-idle wins), and 3b is exempt from no-busy-forever as an accepted cost (OQ7: an idle agent with a held "
+        "connection keeps its box awake)" if d3 else "some candidate separated them without relying on the tty-read wait"))
+    w("")
+    w("## The ladder: best config per policy (fewest failed runs, then least false-busy)")
+    w("| policy | best config | failed runs / runs | failing gates | downsampled |")
+    w("|---|---|---|---|---|")
+    for pol in POLICIES:
+        rows = [s for s in summaries if s["config"].policy == pol]
+        if not rows:
+            continue
+        b = min(rows, key=lambda s: (s["failed_runs"], s["false_busy"], s["key"]))
+        w("| %s | `%s` | %d / %d | %s | %s |" % (pol, b["key"], b["failed_runs"], b["runs"],
+                                                 ", ".join("%s x%d" % kv for kv in sorted(b["failures"].items())) or "none",
+                                                 "yes" if b["downsampled"] else "no"))
+    w("")
+    w("## Winner (pre-registered rule, `select_winner`)")
+    if winner is None:
+        w("**NONE: no agent-agnostic config passes every gate on every tuning run. That is a FAIL finding, not a "
+          "reason to loosen a gate.**")
+    else:
+        c = winner["config"]
+        w("`%s`" % winner["key"])
+        w("")
+        w("* charged sampler cost (Python, upper bound): %.2f%% idle, %.2f%% at 500 processes, against the %.1f%% gate: "
+          "**PROVISIONAL** (a native sampler has to be re-measured; never used to exclude a config)" % (
+              100 * winner["cost"], 100 * winner["cost_loaded"], 100 * COST_LIMIT))
+        w("* mean false-busy fraction on idle scenarios: %.4f; scenario 12 flaps/hour: %.1f (reference %.0f, a "
+          "reference line, not a gate)" % (winner["false_busy"], winner["flaps"], gates.FLAP_REFERENCE_PER_HOUR))
+        w("* interval %s s%s" % (c.interval, ": DOWNSAMPLED from the 1 s trace, so T6 must re-record at this cadence"
+                                 if winner["downsampled"] else ""))
+        w("")
+        w("| scenario | scale | runs | failed | worst time-to-busy (s) | worst time-to-idle (s) |")
+        w("|---|---|---|---|---|---|")
+        for (sid, comp), row in sorted(per_scenario(c, scored, d3).items()):
+            w("| %s | %s | %d | %d | %s | %s |" % (sid, "compressed" if comp else "full", row["runs"], row["failed"],
+                                                   "%.1f" % max(row["ttb"]) if row["ttb"] else "-",
+                                                   "%.1f" % max(row["tti"]) if row["tti"] else "-"))
+        w("")
+        claim_runs = []
+        for r in scored:
+            res, _ = score_run(c, r, features(Stream(r, c.interval), c.exclusions), d3 and r.scenario == "3b")
+            claim_runs.append({"set": "tuning", "scale": "compressed" if r.compressed else "full", "mode": r.mode,
+                               "scenario": r.scenario, "failed_gates": failed(res)})
+        w("Per-set table (`gates.final_claim`; tuning never carries the claim): `%s`" %
+          json.dumps(gates.final_claim(claim_runs), default=str)[:1500])
+        w("")
+        w("### Serial control (D7)")
+        ctl = control_report(c, runs)
+        for x in ctl:
+            w("* `%s` vs `%s`: %.1f%% of seconds differ: **%s**" % (
+                x["twin"], x["control"], 100 * x["mismatch"], "match" if x["ok"] else "DIFFER"))
+        if not ctl:
+            w("* no control pair recorded")
+        w("")
+        w("### Scenario 17 and the awake ceiling (OQ22: reported, never gated)")
+        for r in scored:
+            if r.scenario == "17":
+                work = next(i for i in r.intervals() if i.phase == "work")
+                report_, longest = ceiling_report(verdicts_for(c, r), work)
+                w("* `%s`: longest continuous BUSY %.0f s; %s" % (r.key, longest, "; ".join(
+                    "ceiling %s s -> force-sleep %s" % (cap, v["force-sleep"]) for cap, v in report_.items())))
+        w("")
+        w("### Attached vs detached (scenario 15: reported, never scored)")
+        for r in runs:
+            if r.mode == "attached" and labels.BY_ID[r.scenario].gated:
+                res, _ = score_run(c, r, features(Stream(r, c.interval), c.exclusions), d3 and r.scenario == "3b")
+                w("* `%s`: %s" % (r.key, "all gates pass" if not failed(res) else "FAILS " + ", ".join(failed(res))))
+    cond = [s for s in summaries if s["passes_all"] and s["config"].wait == "tty-aware"]
+    w("")
+    w("## Conditional alternative (tty-aware wait rule; requires an agent that blocks in a tty read)")
+    w("%d passing tty-aware config(s). Not selectable until a real agent trace confirms the wait class." % len(cond))
+    w("")
+    w("## 500-process build (sampler starvation)")
+    for r in runs:
+        if r.variant:
+            gaps = [b["t"] - a["t"] for a, b in zip(r.samples, r.samples[1:])]
+            w("* `%s`: %d samples, longest silence %.1f s; sampler cost %.2f%% of a core (steady)" % (
+                r.key, len(r.samples), max(gaps or [0]), 100 * ((r.footer or {}).get("cpu_fraction_steady") or 0)))
+    return "\n".join(L) + "\n"
+
+
 def load_tuning(root, pipeline_check=False):
     rows = load_jsonl(os.path.join(root, "manifest.jsonl"))
     runs, excluded = [], []
@@ -438,15 +585,26 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("set", choices=("tuning",))
     ap.add_argument("--root", default=os.path.join(HERE, "traces", "tuning"))
+    ap.add_argument("--out", default=os.path.join(HERE, "results"))
     ap.add_argument("--pipeline-check", action="store_true", help="allow scaled runs; output is stamped, not a result")
     args = ap.parse_args()
     runs, excluded = load_tuning(args.root, args.pipeline_check)
-    summaries, d3 = evaluate_all(runs, all_configs(), load_cost_matrix(), progress=print)
-    winner = select_winner([s for s in summaries])
-    print("runs scored: %d, excluded: %d, D3 fallback fires: %s" % (len(runs), len(excluded), d3))
-    print("winner: %s" % (config_key(winner["config"]) if winner else "NONE (a FAIL finding)"))
-    if args.pipeline_check:
-        print("PIPELINE CHECK ONLY: not a result")
+    matrix = load_cost_matrix()
+    summaries, d3 = evaluate_all(runs, all_configs(), matrix, progress=print)
+    winner = select_winner(summaries)
+    commit = os.popen("git -C %s rev-parse --short HEAD" % HERE).read().strip()
+    text = report(runs, excluded, summaries, d3, winner, matrix, args.pipeline_check, commit)
+    os.makedirs(args.out, exist_ok=True)
+    stem = "tuning-pipeline-check" if args.pipeline_check else "tuning"
+    with open(os.path.join(args.out, stem + ".md"), "w") as f:
+        f.write(text)
+    with open(os.path.join(args.out, stem + ".json"), "w") as f:
+        json.dump({"pipeline_check": args.pipeline_check, "commit": commit, "d3_fallback": d3,
+                   "winner": winner["key"] if winner else None,
+                   "configs": [{k: (dict(v) if isinstance(v, collections.Counter) else v)
+                                for k, v in s.items() if k not in ("config", "per_run")} for s in summaries]},
+                  f, indent=1, default=str)
+    print(text)
 
 
 if __name__ == "__main__":
