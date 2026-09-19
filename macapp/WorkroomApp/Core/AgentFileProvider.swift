@@ -129,16 +129,13 @@ struct AgentFileReply<T: Decodable>: Decodable {
   static func decode(_ data: Data) throws -> T {
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
-    do { return try decoder.decode(Self.self, from: data).result } catch let error
-      as FileServiceError
-    {
-      throw error
-    } catch let error as VCSError {
-      throw error
-    } catch let error as RepositoryRoutingError {
-      throw error
-    } catch let error as HostConnectionError {
-      throw error
-    } catch { throw HostConnectionError.serviceUnavailable("Invalid file response: \(error)") }
+    // Only a genuinely undecodable reply is wrapped. The typed failures `init(from:)` throws
+    // (`FileServiceError`, `VCSError`, `RepositoryRoutingError`, `HostConnectionError`) propagate
+    // unchanged, so a new one needs no edit here.
+    do {
+      return try decoder.decode(Self.self, from: data).result
+    } catch let error as DecodingError {
+      throw HostConnectionError.serviceUnavailable("Invalid file response: \(error)")
+    }
   }
 }

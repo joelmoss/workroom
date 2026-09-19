@@ -28,10 +28,19 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// The peer's raw greeting version. Kept (not just compared once in `connect()`) because the File
   /// service is gated on it separately from VCS: see `AgentControlClient.minFileVersion`.
   private let helloVersion: UInt16
-  /// The File service's own capabilities, or nil when it was not negotiated. Nil is NOT a failed
-  /// connection: a pre-File agent still serves VCS and owns terminals, so `files(context:)` reports
-  /// `VCSError.backendVersion` and the router falls back to native reads.
-  private var _fileCapabilities: AgentFileCapabilities?
+  /// How the File service negotiation ended. Never a failed CONNECTION: VCS works regardless, and
+  /// the agent is kept alive because it may own terminals. The three outcomes are different facts
+  /// with different answers, and folding them together was a bug:
+  /// - `unsupported`: the peer's greeting predates the service (or speaks another File version).
+  ///   `files(context:)` reports `VCSError.backendVersion` and the router falls back to native reads.
+  ///   Permanent for that agent.
+  /// - `failed`: the peer says it has the service and the probe did not come back (timeout, lost
+  ///   budget, garbled reply). Transient, so it must NOT read as an old agent and silently select
+  ///   native access for the connection's whole life; `files(context:)` retires the connection so the
+  ///   next acquisition reconnects and probes again.
+  /// - `ready`.
+  private enum FileNegotiation { case unsupported, failed, ready }
+  private var _fileNegotiation: FileNegotiation = .unsupported
   /// Streams this connection gave up waiting on (request timeout) but whose reply may still
   /// arrive. Tracked so a late reply drains harmlessly instead of `receive()` treating an unknown
   /// stream id as a protocol violation and tearing down every OTHER in-flight request too.
@@ -210,26 +219,38 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     // Against the peer's RAW greeting, before any File envelope: a protocol-2 agent silently drops
     // them, so the probe would otherwise wait out its whole timeout.
     guard helloVersion >= AgentControlClient.minFileVersion else { return }
-    guard
-      let reply = try? await request(
-        AgentFileRequest(method: "capabilities"), timeout: 2, service: Self.fileService),
-      let capabilities = try? AgentFileReply<AgentFileCapabilities>.decode(reply),
-      capabilities.version == 1
-    else { return }
-    lock.withLock { _fileCapabilities = capabilities }
+    let outcome: FileNegotiation
+    do {
+      let reply = try await request(
+        AgentFileRequest(method: "capabilities"), timeout: 2, service: Self.fileService)
+      let capabilities = try AgentFileReply<AgentFileCapabilities>.decode(reply)
+      outcome = capabilities.version == 1 ? .ready : .unsupported
+    } catch {
+      outcome = .failed
+    }
+    lock.withLock { _fileNegotiation = outcome }
   }
 
   func files(context: FileContext) throws -> FileProviding {
     guard context.location.host == host else { throw HostConnectionError.mismatchedContext }
     guard lock.withLock({ !closed }) else { throw HostConnectionError.connectionLost }
-    guard lock.withLock({ _fileCapabilities != nil }) else {
+    switch lock.withLock({ _fileNegotiation }) {
+    case .ready:
+      return AgentFileProvider(context: context, connection: self)
+    case .unsupported:
       throw VCSError.backendVersion("Agent does not support the file service.")
+    case .failed:
+      Task { await close() }
+      throw HostConnectionError.serviceUnavailable("File service negotiation failed; reconnecting.")
     }
-    return AgentFileProvider(context: context, connection: self)
   }
 
   /// A File request: one envelope, never chunked (the agent does not reassemble them).
-  func fileRequest(_ request: AgentFileRequest, timeout: TimeInterval = 30) async throws -> Data {
+  ///
+  /// 45s, not the VCS default of 30: a jj listing can legitimately spend 30s waiting for the
+  /// working-copy lock and then up to 10s running, and a client that gives up first leaves the agent
+  /// thread (and its shared request slot) queued on the lock while the caller starts another.
+  func fileRequest(_ request: AgentFileRequest, timeout: TimeInterval = 45) async throws -> Data {
     try await self.request(request, timeout: timeout, service: Self.fileService)
   }
 
@@ -255,10 +276,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       // The request may have left before it failed here (a cancellation or a timeout after the send),
       // in which case the agent is holding a watcher nobody will ever unsubscribe. `unwatch` is
       // idempotent on the agent, so asking is harmless when it never registered.
-      Task.detached { [weak self] in
-        _ = try? await self?.fileRequest(
-          AgentFileRequest(method: "unwatch", subscription: id), timeout: 5)
-      }
+      Task.detached { [weak self] in await self?.sendUnwatch(id) }
       throw error
     }
     // Detached, so a CANCELLED caller still sends the unwatch: `request` starts with
@@ -276,6 +294,10 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   private func unwatch(_ id: UInt64) async {
     let known = lock.withLock { watchHandlers.removeValue(forKey: id) != nil }
     guard known else { return }
+    await sendUnwatch(id)
+  }
+
+  private func sendUnwatch(_ id: UInt64) async {
     _ = try? await fileRequest(AgentFileRequest(method: "unwatch", subscription: id), timeout: 5)
   }
 
@@ -425,13 +447,13 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           guard service == Self.vcsService || service == Self.fileService, streamIsValid,
             length > 0, length <= 1 << 20
           else {
-            throw HostConnectionError.serviceUnavailable("Invalid VCS envelope.")
+            throw HostConnectionError.serviceUnavailable("Invalid agent envelope.")
           }
           guard buffer.count >= 9 + length else { break }
           let payload = Data(buffer.dropFirst(9).prefix(length))
           buffer = Data(buffer.dropFirst(9 + length))
           guard payload.first == 0 || payload.first == 1 else {
-            throw HostConnectionError.serviceUnavailable("Invalid VCS chunk.")
+            throw HostConnectionError.serviceUnavailable("Invalid agent chunk.")
           }
           if stream == 0 {
             // An event is always ONE final envelope; the agent never chunks one, so a continuation

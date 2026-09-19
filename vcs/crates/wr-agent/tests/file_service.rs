@@ -24,9 +24,6 @@ struct Client {
 impl Client {
     fn connect() -> Client {
         let (mut stream, server) = UnixStream::pair().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .unwrap();
         let server = std::thread::spawn(move || {
             let _ = handle_connection(server, SessionStore::new());
         });
@@ -39,6 +36,11 @@ impl Client {
             stream.read_exact(&mut byte).unwrap();
             greeting.push(byte[0]);
         }
+        // Short reads only from here: the greeting can be slow on a loaded machine, and a timeout
+        // during it would panic the test for a scheduling reason.
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
         Client {
             stream,
             decoder: EnvelopeDecoder::new(),
@@ -159,6 +161,30 @@ fn scratch(name: &str) -> PathBuf {
     std::fs::canonicalize(&root).unwrap()
 }
 
+/// Standard base64 decoder for tests, so a corrupted chunk is caught by CONTENT, not just length.
+fn base64_decode(text: &str) -> Vec<u8> {
+    let value = |c: u8| match c {
+        b'A'..=b'Z' => c - b'A',
+        b'a'..=b'z' => c - b'a' + 26,
+        b'0'..=b'9' => c - b'0' + 52,
+        b'+' => 62,
+        b'/' => 63,
+        _ => panic!("not base64: {c}"),
+    };
+    let mut out = Vec::new();
+    for chunk in text.as_bytes().chunks(4) {
+        let n = chunk
+            .iter()
+            .take_while(|&&c| c != b'=')
+            .fold(0u32, |acc, &c| acc << 6 | value(c) as u32)
+            << (6 * (4 - chunk.iter().take_while(|&&c| c != b'=').count()));
+        out.extend_from_slice(
+            &n.to_be_bytes()[1..1 + chunk.iter().take_while(|&&c| c != b'=').count() * 6 / 8],
+        );
+    }
+    out
+}
+
 fn touched(event: &Value, name: &str) -> bool {
     event["paths"]
         .as_array()
@@ -210,10 +236,10 @@ fn a_large_read_arrives_intact_across_chunked_envelopes() {
         "symlinks": "refuse", "max_bytes": 8 * 1024 * 1024,
     }));
     assert_eq!(read["result"]["size"], bytes.len());
-    // Length is a sufficient check that no chunk was lost or duplicated: base64 is 4 bytes per 3.
+    // Content, not length: a reordered, duplicated or corrupted chunk keeps the length.
     assert_eq!(
-        read["result"]["content"].as_str().unwrap().len(),
-        bytes.len().div_ceil(3) * 4
+        base64_decode(read["result"]["content"].as_str().unwrap()),
+        bytes
     );
 }
 
@@ -255,6 +281,35 @@ fn a_chunked_request_marker_and_stream_zero_requests_are_handled_safely() {
     client.send_raw(0, br#"{"version":1,"method":"capabilities"}"#.to_vec());
     let after = client.request(&json!({"version": 1, "method": "capabilities"}));
     assert_eq!(after["result"]["version"], 1);
+    // ...and it was ignored, not answered: an agent reply on stream 0 would read as an event.
+    assert!(client.events.is_empty(), "{:?}", client.events);
+    assert!(client.envelope().is_none());
+}
+
+#[test]
+fn malformed_and_foreign_version_requests_get_typed_errors_through_dispatch() {
+    let mut client = Client::connect();
+    let root = scratch("malformed");
+    for payload in [
+        br#"{not json"#.to_vec(),
+        br#"{"version":2,"method":"capabilities"}"#.to_vec(),
+        // watch and unwatch skip `handle`, so they need their own version gate proof.
+        br#"{"version":2,"method":"watch","subscription":1,"root":"/tmp"}"#.to_vec(),
+        br#"{"version":1,"method":"watch","root":"/tmp"}"#.to_vec(),
+        serde_json::to_vec(&json!({"version":1,"method":"read","root":root})).unwrap(),
+        serde_json::to_vec(&json!({"version":1,"method":"list","root":root})).unwrap(),
+        br#"{"version":1,"method":"list","backend":"git","root":"relative/path"}"#.to_vec(),
+    ] {
+        let stream = client.next_stream;
+        client.next_stream += 1;
+        client.send_raw(stream, payload.clone());
+        let reply = client.reply(stream);
+        assert!(
+            reply["error"]["Unsupported"].is_string(),
+            "{} -> {reply}",
+            String::from_utf8_lossy(&payload)
+        );
+    }
 }
 
 #[test]
@@ -291,6 +346,31 @@ fn a_watch_delivers_a_leading_event_at_once_and_one_trailing_batch() {
     assert!(
         deliveries <= 3,
         "a 200-file burst must coalesce, saw {deliveries} deliveries"
+    );
+}
+
+#[test]
+fn one_file_save_is_one_delivery() {
+    let root = scratch("one-save");
+    let mut client = Client::connect();
+    client.watch(3, &root);
+    while client.event(3, Duration::from_millis(1500)).is_some() {}
+
+    // An atomic save (write a temp file, rename it over the target) is several raw notifications.
+    std::fs::write(root.join("doc.tmp"), b"v1").unwrap();
+    std::fs::rename(root.join("doc.tmp"), root.join("doc.txt")).unwrap();
+    let first = client
+        .event(3, Duration::from_secs(5))
+        .expect("the save is reported");
+    assert!(
+        touched(&first, "doc.txt") || touched(&first, "doc.tmp"),
+        "{first}"
+    );
+    // Nothing follows: the old watcher delivered once per save, and so must this. Waits past the
+    // trailing window (1s), which is where the duplicate used to arrive.
+    assert!(
+        client.event(3, Duration::from_millis(2500)).is_none(),
+        "one save must not be reported twice"
     );
 }
 

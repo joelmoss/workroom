@@ -154,6 +154,10 @@ enum FileListVCS: Equatable, Sendable {
 /// Pure command construction + output parsing for the working-tree listing, so the args and the
 /// path-cleanup are unit-tested without spawning git/jj.
 enum FileListing {
+  /// Seconds a listing command may run. `LIST_TIMEOUT` in the agent's `file.rs` is the same value, so
+  /// a slow tree fails the same way on both paths.
+  static let timeout: TimeInterval = 10
+
   /// The executable + args that list the working tree honoring ignore rules.
   /// - git: tracked + untracked-but-not-ignored, NUL-separated (`-z`) so odd filenames survive.
   /// - jj: the working-copy files (jj auto-tracks, so this reflects new files too).

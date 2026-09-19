@@ -1428,6 +1428,25 @@ agent lands.
 
 **Priority:** P3 — no cost on the only platform it ships on today.
 
+### A daemonizing descendant of a jj listing can hold the working-copy lock forever (wr-agent) — #211 review
+
+**What:** `jj file list` runs with the `SnapshotLock` fd inherited (CLOEXEC cleared in the child) so the
+lock outlives an agent that dies mid-listing. Clearing CLOEXEC makes the descriptor inheritable by the
+child's whole descendant tree, so anything jj leaves running in the background (the watchman daemon, when
+`core.fsmonitor = "watchman"` is configured) keeps the open file description, and with it the flock on
+`<shared>/.jj/workroom-vcs.lock`, after jj itself has exited. Every gated jj snapshot in the app and every
+agent-side `SnapshotLock::acquire` then fails as `LockContention` after 30s until that process is killed.
+
+**Why:** the same shape already exists in `wr_vcs_git::diff::run_with_barrier`; #211 puts it on a path that
+now runs on every Files-panel reload, which raises the exposure. Confirmed with a C harness reproducing the
+exact fork / clear-CLOEXEC / exec sequence: the lock stays held by a reaped child's background grandchild.
+
+**How to start:** pin `core.fsmonitor=none` for the listing child (a `--config` flag, once the oldest
+supported jj is confirmed to accept it; `JJ_CONFIG` would drop the user's own config), and/or have
+`run_exec_with` verify the flock is free after the child is reaped and report it when it is not.
+
+**Priority:** P3 — needs an opt-in fsmonitor; also present on the native barrier today.
+
 ### Listings above the 4 MiB capture ceiling fail instead of paginating (macapp + wr-agent) — #211 follow-up
 
 **What:** raise the listing-specific cap (the reply ceiling is 16 MiB) or paginate `list`, so very
