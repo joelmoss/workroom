@@ -31,6 +31,7 @@ ONSET_MARGIN_S = 2.0            # D12: onset allowance = the policy's sampling i
 NO_BUSY_FOREVER_TAIL_S = 10.0   # an idle interval may stay BUSY for its hysteresis tail + this
 FALSE_BUSY_MAX_FRACTION = 0.05  # total BUSY verdict time / total IDLE time, across idle intervals
 TIME_TO_IDLE_MARGIN_S = 10.0    # after work ends: idle window + this
+FLAP_REFERENCE_PER_HOUR = 6.0   # scenario 12: a REFERENCE LINE reported beside the flap metric, NOT a gate
 SAMPLER_CPU_MAX = 0.005         # fraction of one core, sampler + shim, while detached
 CONFIDENCE = 0.95               # one-sided, for the upper bound on the miss rate
 
@@ -57,7 +58,8 @@ NA = "N/A"
 
 def check_sorted(verdicts):
     """`verdict_at` assumes a time-sorted series and would silently misread an unsorted one."""
-    assert all(a[0] <= b[0] for a, b in zip(verdicts, verdicts[1:])), "verdicts must be time-sorted"
+    if not all(a[0] <= b[0] for a, b in zip(verdicts, verdicts[1:])):
+        raise ValueError("verdicts must be time-sorted")  # not an assert: `python3 -O` would strip it
 
 
 def verdict_at(verdicts, t):
@@ -197,7 +199,8 @@ def gate_no_busy_forever(verdicts, idle_intervals, tails, exempt=()):
     the numerator and the denominator of the 5% fraction, so a policy is neither failed twice for the window
     it was tuned with nor helped by the idle time that window covers. `exempt` may hold only the D3
     scenario (3b): excusing anything else would let a policy excuse itself."""
-    assert set(exempt) <= {"3b"}, "only the pre-registered D3 scenario may be exempt"
+    if not set(exempt) <= {"3b"}:
+        raise ValueError("only the pre-registered D3 scenario may be exempt")
     scored = [i for i in idle_intervals if i.scenario not in exempt]
     unexcused = 0.0
     idle_total = 0.0
@@ -255,12 +258,17 @@ def d3_fallback_fires(policy_results):
 def evaluate(verdicts, intervals, interval_s, idle_window_s, d3_fallback=False, sampler_cpu=None):
     """All per-run GATES for one run of one policy. Nothing is excused by the caller's say-so: the hysteresis
     tail of each post-work interval is the idle window the policy is configured with, and scenario 3b is
-    exempt only when `d3_fallback` is True (which must come from `d3_fallback_fires`). Scenario 12 (flaps)
-    and the ungated scenarios 13 and 17 are metrics, reported by analyze.py, never gated here."""
+    exempt only when `d3_fallback` is True (which must come from `d3_fallback_fires`). Scenarios 12 (flaps),
+    13 and 17 (OQ22) are ungated in the labels: they are metrics, reported by analyze.py, never gated here."""
     check_sorted(verdicts)
-    busy = [i for i in intervals if i.label == BUSY and i.scenario != "12"]
-    idle = [i for i in intervals if i.label == IDLE and i.scenario != "13"]
-    gaps = [i for i in intervals if i.label == STALE]
+    # Gated-ness comes from the labels, so 12, 13 and 17 (reported, never gated) drop out without ids
+    # hard-coded here.
+    gated = [i for i in intervals if i.label == STALE or labels.BY_ID[i.scenario].gated]
+    busy = [i for i in gated if i.label == BUSY]
+    idle = [i for i in gated if i.label == IDLE]
+    gaps = [i for i in gated if i.label == STALE]
+    if any(i.scenario == "18" for i in gated) and not gaps:
+        raise ValueError("scenario 18 requires its STALE gap interval; a missing one must not skip the gate")
     post = [i for i in idle if i.phase == "post"]
     tails = {i: idle_window_s for i in post}
     out = {
@@ -302,7 +310,10 @@ def final_claim(runs):
       critical       the same for scenarios 4b, 7, 10 alone
       by_scenario    (runs, failures) per scenario
     The claim is PASS iff the HOLD-OUT set, DETACHED (the mode the feature exists for), at BOTH scales, has
-    zero failures on ALL gates. Tuning results and attached-mode results are reported but never carry it."""
+    zero failures on ALL gates AND meets its pre-registered sample size (`sample_size_ok`): every gated
+    scenario at least HOLDOUT_REPEATS_FULL runs at full length, every critical scenario at least
+    HOLDOUT_REPEATS_COMPRESSED_CRITICAL compressed. Tuning results and attached-mode results are reported
+    but never carry it, and how much hold-out is enough cannot be decided after the traces exist."""
     groups = {}
     for r in runs:
         if not labels.BY_ID[r["scenario"]].gated:
@@ -323,12 +334,18 @@ def final_claim(runs):
         g["by_scenario"][r["scenario"]] = (n + 1, f + (1 if failed else 0))
     table = {}
     for key, g in groups.items():
+        if key[1] == "full":
+            enough = all(g["by_scenario"].get(s.id, (0, 0))[0] >= HOLDOUT_REPEATS_FULL for s in labels.GATED)
+        else:
+            enough = all(g["by_scenario"].get(s.id, (0, 0))[0] >= HOLDOUT_REPEATS_COMPRESSED_CRITICAL
+                         for s in labels.CRITICAL)
         table[key] = dict(
             g,
+            sample_size_ok=enough,
             bound_false_idle=upper_bound(g["failures_false_idle"], g["busy_runs"]),
             bound_any=upper_bound(g["failures_any"], g["runs"]),
             critical_bound=upper_bound(g["critical_failures"], g["critical_runs"]),
         )
     needed = [table.get(("holdout", "full", "detached")), table.get(("holdout", "compressed", "detached"))]
-    ok = all(n is not None and n["failures_any"] == 0 for n in needed)
+    ok = all(n is not None and n["failures_any"] == 0 and n["sample_size_ok"] for n in needed)
     return (PASS if ok else FAIL), table

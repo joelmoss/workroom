@@ -121,7 +121,7 @@ SCENARIOS = [
     ),
     Scenario(
         "10", "setsid-cpu-job", True, True,
-        [_quiet(), _p("job", BUSY, 300, "setsid'd CPU job; its shell has exited"), _post()],
+        [_quiet(), _p("job", BUSY, 300, "setsid'd CPU job; its shell has exited", compressed=120), _post()],
         "escapes the session and process-group tree",
     ),
     Scenario(
