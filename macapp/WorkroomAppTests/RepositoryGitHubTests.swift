@@ -14,6 +14,10 @@ private final class GHRunner: StatusCommandRunning, @unchecked Sendable {
   private let delay: UInt64
   private let lock = NSLock()
   private var _calls: [Call] = []
+  private var _cancelled = 0
+  /// Calls whose task was cancelled while they were running — what the real runner turns into a
+  /// SIGKILL of the child.
+  var cancelledCalls: Int { lock.withLock { _cancelled } }
   var calls: [Call] {
     lock.lock()
     defer { lock.unlock() }
@@ -40,6 +44,7 @@ private final class GHRunner: StatusCommandRunning, @unchecked Sendable {
       // The real runner SIGKILLs a child whose task is cancelled and returns a signalled result; a
       // double that swallowed cancellation would pass a test whose whole point is cancellation.
       do { try await Task.sleep(nanoseconds: delay) } catch {
+        lock.withLock { _cancelled += 1 }
         return CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
       }
     }
@@ -72,6 +77,20 @@ private func healthy(_ exe: String, _ args: [String]) -> CommandResult {
     if args.contains("graphql") { return ok(passing) }
     if args.prefix(2) == ["pr", "checks"] { return ok(#"[{"name":"build","bucket":"pass"}]"#) }
     return ok(prJSON)
+  }
+}
+
+/// Polls until `condition` holds, failing (instead of hanging the whole run) after `seconds`.
+private func waitUntil(
+  _ description: String, seconds: Double = 5, _ condition: () -> Bool,
+  file: StaticString = #filePath, line: UInt = #line
+) async {
+  let deadline = Date().addingTimeInterval(seconds)
+  while !condition() {
+    if Date() > deadline {
+      return XCTFail("timed out waiting for \(description)", file: file, line: line)
+    }
+    try? await Task.sleep(nanoseconds: 2_000_000)
   }
 }
 
@@ -123,7 +142,13 @@ final class RepositoryGitHubTests: XCTestCase {
     XCTAssertEqual(calls.first { $0.exe == "git" }?.dir, path)
     XCTAssertEqual(runner.lookups.first?.dir, shared)
     XCTAssertNotEqual(path, shared)
-    XCTAssertEqual(calls.last { $0.args.contains("graphql") }?.dir, NSTemporaryDirectory())
+    let graphql = calls.last { $0.args.contains("graphql") }
+    XCTAssertEqual(graphql?.dir, NSTemporaryDirectory())
+    // The service wired the RESOLVED repository and the local branch tip into the query.
+    let query = graphql?.args.first { $0.hasPrefix("query=") } ?? ""
+    XCTAssertTrue(query.contains(tip), query)
+    XCTAssertTrue(query.contains(#"owner:"octo""#) && query.contains(#"name:"repo""#), query)
+    XCTAssertEqual(Array(graphql?.args.suffix(2) ?? []), ["--hostname", "github.com"])
   }
 
   /// jj: a secondary workspace has no `.git`. The bookmark tip is read in the workspace (jj resolves
@@ -207,18 +232,56 @@ final class RepositoryGitHubTests: XCTestCase {
 
   /// One caller being cancelled (a superseded selection) must not cancel the answer its siblings wait on.
   ///
-  /// Deterministic on purpose: the doomed probe starts FIRST and is the one that owns the lookup, and
-  /// it is cancelled only once that lookup is genuinely in flight. Against a lookup that inherited the
-  /// caller's cancellation, the sibling would get the killed child's `keepPrior` instead of a PR.
+  /// The doomed probe starts FIRST and owns the lookup; it is cancelled only once the lookup is in
+  /// flight AND the sibling has had time to join it (the lookup takes 400ms; joining takes microseconds).
+  /// Against a lookup that inherited the caller's cancellation, the sibling would get the killed
+  /// child's `keepPrior` instead of a PR.
   func testCancellingOneProbeDoesNotCancelTheSharedLookup() async throws {
-    let runner = GHRunner(delay: 200_000_000, healthy)
+    let runner = GHRunner(delay: 400_000_000, healthy)
     let (service, _, _) = try await local(.git, runner: runner)
     let doomed = Task { await service.checks(number: 9) }
-    while runner.lookups.isEmpty { await Task.yield() }  // the lookup is now in flight
-    async let sibling = service.pullRequest(branch: "main")
+    await waitUntil("the lookup to start") { !runner.lookups.isEmpty }
+    let sibling = Task { await service.pullRequest(branch: "main") }
+    try await Task.sleep(nanoseconds: 50_000_000)
     doomed.cancel()
-    guard case .info = await sibling else { return XCTFail("sibling lost the shared lookup") }
+    guard case .info = await sibling.value else { return XCTFail("sibling lost the shared lookup") }
     XCTAssertEqual(runner.lookups.count, 1)
+    XCTAssertEqual(runner.cancelledCalls, 0)
+  }
+
+  /// When the LAST waiter leaves, the lookup is cancelled — its `gh repo view` child is killed instead of
+  /// running out its timeout. Across several services at once (a fast walk through the sidebar), every
+  /// one, or the leak is unbounded by any sweep cap.
+  func testCancellingEveryWaiterKillsTheLookupAcrossServices() async throws {
+    let runner = GHRunner(delay: 30_000_000_000, healthy)  // would outlive the test if never killed
+    var probes: [Task<ChecksResolution, Never>] = []
+    for _ in 0..<5 {
+      let (service, _, _) = try await local(.git, runner: runner)
+      probes.append(Task { await service.checks(number: 9) })
+    }
+    await waitUntil("5 lookups to start") { runner.lookups.count == 5 }
+    for probe in probes { probe.cancel() }
+    await waitUntil("all 5 lookups to be killed") { runner.cancelledCalls == 5 }
+    // Superseded: nothing is blanked (keepPrior), and no probe was spawned against the answer.
+    for probe in probes {
+      let value = await probe.value
+      XCTAssertEqual(value, .keepPrior)
+    }
+    XCTAssertEqual(runner.calls.filter { $0.args.first == "pr" }.count, 0)
+  }
+
+  /// A cancelled lookup is not memoised: once every waiter has left, the next caller starts fresh.
+  func testALookupCancelledByItsLastWaiterIsNotReused() async throws {
+    let runner = GHRunner(delay: 300_000_000, healthy)
+    let (service, _, _) = try await local(.git, runner: runner)
+    let first = Task { await service.checks(number: 9) }
+    await waitUntil("the first lookup to start") { runner.lookups.count == 1 }
+    first.cancel()
+    await waitUntil("the first lookup to be killed") { runner.cancelledCalls == 1 }
+    let second = await service.checks(number: 9)
+    XCTAssertEqual(
+      second, .list([CICheck(name: "build", state: .passing, workflow: nil, link: nil)]))
+    XCTAssertEqual(runner.lookups.count, 2)
   }
 
   // MARK: - REGRESSION: a transient lookup failure must not blank a good panel
@@ -260,7 +323,13 @@ final class RepositoryGitHubTests: XCTestCase {
   func testCIUsesAPreResolvedLookupWithoutAskingAgain() async throws {
     let runner = GHRunner(healthy)
     let (service, _, _) = try await local(.git, runner: runner)
-    let found = await service.ci(branch: "main", repository: .found(octo))
+    let other = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "other", name: "thing"))
+    let found = await service.ci(branch: "main", repository: .found(other))
+    // It is the SUPPLIED repository that is queried, not the one this service's own lookup would find.
+    let query = runner.calls.last { $0.args.contains("graphql") }?.args.first {
+      $0.hasPrefix("query=")
+    }
+    XCTAssertTrue(query?.contains(#"owner:"other""#) ?? false, query ?? "no query")
     let kept = await service.ci(branch: "main", repository: .keepPrior)
     let absent = await service.ci(branch: "main", repository: .absent)
     XCTAssertEqual(found, .state(.passing))
@@ -352,6 +421,43 @@ final class RepositoryGitHubTests: XCTestCase {
       _ = try await router.gitHub(for: location)
       XCTFail("built GitHub status for a remote with no identity")
     } catch { XCTAssertEqual(error as? RepositoryRoutingError, .unavailable(.remote(host))) }
+  }
+
+  /// The selection refresh and the CI sweep build their service through `gitHub(for:)`, not
+  /// `registeredGitHub(for:)`: it must forward the registered identity too.
+  func testGitHubForARemoteRegistrationForwardsItsIdentity() async throws {
+    let runner = GHRunner(healthy)
+    let host = UUID()
+    let shared = try RepositoryLocation.remote(host: host, path: "/srv/proj")
+    let location = try RepositoryLocation.remote(host: host, path: "/srv/proj/ws")
+    let router = RepositoryRouter()
+    try router.register(
+      .init(location: location, backend: .git, sharedLocation: shared, github: octo))
+    let service = try await router.gitHub(
+      for: location, resolver: WorkroomStatusResolver(runner: runner))
+    let pr = await service.pullRequest(branch: "feature/x")
+    guard case .info = pr else { return XCTFail("expected a PR") }
+    XCTAssertTrue(runner.lookups.isEmpty)
+    XCTAssertEqual(Array(runner.calls[0].args.suffix(2)), ["--repo", octo.flag])
+  }
+
+  /// An UNREGISTERED local repository is still probed (status only — a write needs a registration),
+  /// and its identity comes from its own directory.
+  func testGitHubForAnUnregisteredLocalRepositoryProbesIt() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let initialized = await StatusCommandRunner().run(
+      "git", ["init", "-q"], in: directory.path, timeout: 10)
+    XCTAssertTrue(initialized.ok, initialized.stderr)
+    let location = try await RepositoryLocation.local(directory.path)
+    let runner = GHRunner(healthy)
+    let router = RepositoryRouter()
+    let service = try await router.gitHub(
+      for: location, resolver: WorkroomStatusResolver(runner: runner))
+    let found = await service.repository()
+    XCTAssertEqual(found, .found(octo))
+    XCTAssertEqual(runner.lookups.first?.dir, location.path)
   }
 
   // MARK: - Writes

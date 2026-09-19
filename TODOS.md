@@ -28,6 +28,11 @@ repository lookup #207 added, which reuses `ghPreflight`).
 a product question: offline, is stale data better than a blank panel? `keepPrior` shows stale state as
 if it were current.
 
+**Also in `ghPreflight`:** the `503`/`timeout` rule is a bare substring match on stderr, and `gh`'s
+stderr echoes repository names, so a repository called `timeout-lib` reads as a transient blip
+instead of "absent". Match `HTTP 503` / `rate limit` instead when this is touched. (The repository
+lookup #207 added is a new call site for the rule.)
+
 **How to start:** Drive each error string through `classifyPR`, `classifyChecks`,
 `classifyCheckRollup` and `resolveRepository` (all go through `ghPreflight`) before touching the
 classifier. `gh` has no machine-readable offline code; `gh auth status --json hosts` already tells a
