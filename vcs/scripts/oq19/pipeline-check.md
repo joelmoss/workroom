@@ -126,3 +126,22 @@ Known limits, stated rather than hidden:
 * **The agent is synthetic**, as the plan said.
 * Jobs end 0.2 s before their phase does (typing a command takes a moment), so the last 0.2 s of a BUSY phase
   is idle. It is inside the onset allowance and the hysteresis tail, but it is there.
+
+## Closed loop (F7): the classifier and the shim in the box
+
+`live.py` runs the sampler and the policy in one process, `scenarios/tools/wakeshim.sh` runs as `wr-wakeshim`, and
+the driver publishes the pty and lifecycle counters the agent would own. Checked on scenario 16 at scale 0.1
+(a pipeline check: the numbers say the plumbing works, not what the policy does):
+
+* the sampler sees `wr-wakeshim` and its `sleep`/`cat` children; with the exclusion list they never vote, and the
+  live verdicts stay IDLE (0 BUSY of 65 ticks);
+* **RED control:** the same run with `exclusions: false` is BUSY on all 65 ticks, so the closed-loop gate can fail;
+* the live verdicts equal a replay of the run's own trace (0% of seconds differ), and a unit test proves the same on
+  a synthetic trace with pty, input and lifecycle counters, and fails when any of those three is dropped from `live.py`;
+* self-cost, Python upper bound: classifier + sampler 0.35% of a core plus the shim 0.12% = 0.52%, just OVER the 0.5%
+  gate at a 1 s interval. The shim is a shell loop that forks `cat` and `sleep` every second, so its cost is mostly
+  process creation. Provisional, as every Python cost here is; a native implementation is expected to be cheaper, and
+  a 5 s interval divides the shim's cost by five.
+
+Limits: the counters reach `live.py` through a file refreshed every 0.2 s (the agent would hold them in memory), and
+the shim only touches a file where the real one calls the provider.

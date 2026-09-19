@@ -41,6 +41,7 @@ class Sampler:
     def __init__(self, args):
         self.args = args
         self.stop = False
+        self.on_sample = None  # live.py's hook: the classifier sees each sample as it is written
         self.exe_cache = {}  # pid -> (starttime, exe): readlink once per process, not once per tick
         self.clk_tck = os.sysconf("SC_CLK_TCK")
         self.groups = tuple(g for g in args.signals.split(",") if g)
@@ -148,8 +149,11 @@ class Sampler:
                     late = now - due
                     late_total += 1 if late > interval else 0
                     late_max = max(late_max, late)
-                out.write(json.dumps(self.sample(tick), separators=(",", ":")) + "\n")
+                row = self.sample(tick)
+                out.write(json.dumps(row, separators=(",", ":")) + "\n")
                 out.flush()
+                if self.on_sample:
+                    self.on_sample(row)
                 tick += 1
                 if warm is None:
                     warm = (time.monotonic(), self.cpu_used())

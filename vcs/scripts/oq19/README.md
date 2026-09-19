@@ -23,6 +23,8 @@ once any trace has been recorded: a gate the results embarrass is a finding, not
 | `run.sh` | Runs the harness in a container (`container`, `docker` or `podman`); `--self-test`, `scenario`, `smoke`, `controls`, `cost`. |
 | `scenarios/` | One action module per scenario (`s_<id>.py`), `lib.py`, and `tools/` (`agent.py` the synthetic agent TUI, `peer.py` the network peer, `burn.py`, `burst.py`). |
 | `check_trace.py` | Proves a recorded run did what its label claims, from the sampler's trace rather than the driver's intent. |
+| `live.py` | The classifier ONLINE (sampler + chosen policy in one process): the closed loop of F7. Uses `analyze.tick_features` and `analyze.vote`, the code the replay was scored with. |
+| `scenarios/tools/wakeshim.sh` | The item-5-shaped lifecycle shim, run as `wr-wakeshim` (on the exclusion list); its CPU is measured. |
 | `record.py` | Records the whole tuning set (or a hold-out) a few containers at a time from a snapshot of the committed harness; resumable, never discards a failed run. |
 | `analyze.py` | Replays recorded runs through policies P0 to P5 with the pre-registered gates; the candidate grid and the winner-selection rule are fixed in the file before any tuning trace existed. `--pipeline-check` for scaled runs. |
 | `cost_matrix.json` | The measured sampler cost per signal set, interval and load (from `run.sh cost`), so the analysis charges each policy what its signals cost. |
@@ -41,6 +43,9 @@ vcs/scripts/oq19/run.sh controls                         # negative controls: a 
 vcs/scripts/oq19/run.sh cost                             # the sampler cost matrix
 vcs/scripts/oq19/record.py tuning --dry-run              # the job list and the wall-time estimate
 vcs/scripts/oq19/analyze.py tuning                       # replay + gates over traces/tuning (needs scale 1.0 runs)
+# closed loop (F7): the real classifier and shim in the box, at the real cadence
+vcs/scripts/oq19/run.sh scenario 16 --closed-loop '{"config": {<analyze.Config fields>}, "window_s": 30}' --out DIR
+vcs/scripts/oq19/analyze.py closed-loop --run DIR        # live verdicts vs the gates, vs a replay, and the cost
 ```
 
 `--scale` is for pipeline checks only and is recorded in `meta.json`; a scored run always uses scale 1.0.
