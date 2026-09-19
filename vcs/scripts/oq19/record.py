@@ -232,6 +232,7 @@ def main():
     ap.add_argument("--scale", type=float, default=1.0, help="PIPELINE CHECKS ONLY")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+    args.root = os.path.abspath(args.root)  # run.sh cd's into the harness: a relative --out would land there
     only = {x for x in args.only.split(",") if x}
     jobs, controls = plan_jobs(only, args.reps, args.scale)
 
