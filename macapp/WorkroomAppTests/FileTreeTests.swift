@@ -264,6 +264,27 @@ final class FileTreeTests: XCTestCase {
     }
   }
 
+  // MARK: timeouts vs external kills (#211)
+
+  /// `timedOut` implies `signaled` (the timeout SIGTERMs the child), so a timeout used to read as an
+  /// EXTERNAL kill: `.interrupted` leaves the tree alone, and on a first load that is a spinner that
+  /// never ends. A timeout is an ordinary failure; only a signal without one is an interruption.
+  func testATimedOutListingIsUnavailableNotInterrupted() async {
+    let timedOut = CommandResult(
+      stdout: "", stderr: "", exitCode: 143, timedOut: true, signaled: true)
+    let result = await registeredList(
+      path: NSTemporaryDirectory(), projectRoot: nil,
+      runner: StubRunner(byExecutable: ["git": timedOut, "jj": timedOut]))
+    XCTAssertEqual(result, .unavailable)
+
+    let killed = CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
+    let interrupted = await registeredList(
+      path: NSTemporaryDirectory(), projectRoot: nil,
+      runner: StubRunner(byExecutable: ["git": killed, "jj": killed]))
+    XCTAssertEqual(
+      interrupted, .interrupted, "an external kill is still not evidence of a non-repo")
+  }
+
   // MARK: reload coalescing (#211)
 
   /// Through the agent a cancelled listing keeps running on the host, so a burst of watch events must

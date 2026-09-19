@@ -25,7 +25,30 @@ import Foundation
 ///
 /// Like `WorkroomFileWatcher`, call `start`/`stop` from the main thread. `onChange` runs on the main
 /// actor.
+/// The public handle. It owns nothing that runs: the long-lived loop belongs to `WatchCore`, which
+/// the loop's own task keeps alive, so the LOOP cannot keep THIS object alive. That is what lets
+/// `deinit` stop the watch. Without the split the task's strong reference made `deinit` unreachable
+/// while a subscription was running, and an owner that was simply dropped (a closed window's
+/// `AppStore`) left its subscriptions and their reconnect loops holding agent slots forever.
 final class HostFileWatcher {
+  private let core: WatchCore
+
+  init(
+    router: RepositoryRouter = .shared, onChange: @escaping @MainActor ([String], Bool) -> Void
+  ) {
+    core = WatchCore(router: router, onChange: onChange)
+  }
+
+  deinit { core.stop() }
+
+  /// Begin watching `path` recursively. No-op if already watching it; otherwise replaces the prior
+  /// watch.
+  func start(path: String) { core.start(path: path) }
+
+  func stop() { core.stop() }
+}
+
+private final class WatchCore {
   private let router: RepositoryRouter
   private let onChange: @MainActor ([String], Bool) -> Void
 
@@ -42,8 +65,6 @@ final class HostFileWatcher {
     self.router = router
     self.onChange = onChange
   }
-
-  deinit { stop() }
 
   /// Begin watching `path` recursively. No-op if already watching it; otherwise replaces the prior
   /// watch.
@@ -111,14 +132,18 @@ final class HostFileWatcher {
     }
   }
 
-  private func stopFallback(generation: Int) async {
+  /// Returns whether a fallback watcher was running, which is a handoff: it may have been holding a
+  /// change in its coalescing window, and stopping it discards that.
+  @discardableResult
+  private func stopFallback(generation: Int) async -> Bool {
     let stopped: WorkroomFileWatcher? = lock.withLock {
       guard self.generation == generation else { return nil }
       defer { fallback = nil }
       return fallback
     }
-    guard let stopped else { return }
+    guard let stopped else { return false }
     await MainActor.run { stopped.stop() }
+    return true
   }
 
   private func run(path: String, generation: Int) async {
@@ -161,22 +186,33 @@ final class HostFileWatcher {
         continue
       }
 
-      await stopFallback(generation: generation)
+      // A change the fallback had seen but not yet delivered dies with it, and the agent's watch
+      // never saw it, so a handoff is a gap like any other.
+      if await stopFallback(generation: generation) { gap = true }
       backoff = .milliseconds(500)
       if gap {
         deliver([], overflow: true, generation: generation)
         gap = false
       }
+      var endedByAgent = false
       subscription: for await event in events {
         guard current(generation) else { break subscription }
         switch event {
         case .changed(let paths, let overflow):
           deliver(paths, overflow: overflow, generation: generation)
-        case .ended, .lost:
+        case .ended:
+          endedByAgent = true
+          break subscription
+        case .lost:
           break subscription
         }
       }
       await handle.cancel()
+      // An `ended` subscription is one the AGENT gave up on (the root vanished, or the OS watcher
+      // failed). Subscribing straight back would spin one watch/unwatch round trip per iteration for
+      // as long as that stays true, so it waits; a lost connection does not, because reconnecting is
+      // the whole point.
+      if endedByAgent { try? await Task.sleep(for: .seconds(1)) }
       // The subscription is over, however it ended. Whatever happened while nothing was watching is
       // unknown, and is reported once when the next watch (agent or fallback) is live.
       gap = true

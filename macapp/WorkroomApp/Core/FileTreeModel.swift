@@ -200,8 +200,11 @@ final class FileTreeModel: ObservableObject {
     case .interrupted:
       // An external kill, not evidence `path` stopped being a repo — leave whatever tree/state
       // is already showing alone (the same "keep the existing tree visible" contract this
-      // function already promises while a listing is in flight) rather than blanking it.
-      break
+      // function already promises while a listing is in flight) rather than blanking it. With nothing
+      // showing yet there is nothing to keep, and staying `.loading` would spin for good.
+      if state == .loading {
+        state = .failed("The file listing was interrupted. Reload to try again.")
+      }
     }
   }
 
@@ -278,7 +281,10 @@ final class FileTreeModel: ObservableObject {
       if result.ok { return .listing(FileListing.parse(result.stdout, vcs: vcs)) }
       // A killed probe is not evidence `path` isn't a repo — remember it, but still try the other
       // tool before giving up, exactly as an ordinary failure does.
-      if result.signaled { sawSignal = true }
+      // `timedOut` implies `signaled` (the timeout SIGTERMs the child), and a timeout says nothing
+      // about an EXTERNAL kill — `CommandResult.signaled`'s own doc says to test it first. Left as
+      // `.interrupted` it would also leave a first load spinning forever.
+      if result.signaled && !result.timedOut { sawSignal = true }
     }
     return sawSignal ? .interrupted : .unavailable
   }

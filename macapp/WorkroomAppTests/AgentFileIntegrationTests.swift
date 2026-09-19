@@ -129,6 +129,37 @@ final class AgentFileIntegrationTests: XCTestCase {
     await connection.close()
   }
 
+  /// A protocol-3 peer HAS the service, so a probe that goes unanswered is a transient failure, not
+  /// proof of an old agent. Reporting `backendVersion` here silently selected native access for the
+  /// connection's whole life; it must be an explicit failure (and retire the connection so the next
+  /// acquisition probes again).
+  func testAV3AgentThatNeverAnswersTheFileProbeIsAFailureNotAnOldAgent() async throws {
+    let fake = try FakeAgent(version: 3)
+    fakes.append(fake)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: fake.socketPath)
+    connections.append(connection)
+    XCTAssertTrue(fake.receivedServices.contains(3), "a protocol-3 peer is probed")
+    let root = try gitRepo()
+    let fileContext = try await context(root)
+    XCTAssertThrowsError(try connection.files(context: fileContext)) { error in
+      XCTAssertEqual(
+        error as? HostConnectionError,
+        .serviceUnavailable("File service negotiation failed; reconnecting."))
+    }
+  }
+
+  /// The viewer's "too large" state and the agent's read ceiling are two literals in two languages.
+  /// If the viewer's cap rose alone, every open between them would fail as "File unavailable" instead
+  /// of showing the too-large state. Read from the agent's own capabilities reply.
+  func testTheViewersReadCapIsTheAgentsReadCeiling() async throws {
+    let (connection, _) = try await connect()
+    let reply = try await connection.fileRequest(AgentFileRequest(method: "capabilities"))
+    let capabilities = try AgentFileReply<AgentFileCapabilities>.decode(reply)
+    XCTAssertEqual(capabilities.maxReadBytes, PlainFileViewer.maxBytes)
+    XCTAssertEqual(capabilities.version, 1)
+  }
+
   /// The router's one native fallback: a local host whose agent predates the File service.
   func testTheRouterFallsBackToNativeForAPre_FileAgentAndPropagatesEveryOtherFailure() async throws
   {

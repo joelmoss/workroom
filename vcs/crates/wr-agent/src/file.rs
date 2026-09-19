@@ -154,8 +154,8 @@ fn root_of(request: &Request) -> Result<PathBuf, FileError> {
 
 fn reply(result: Result<Value, FileError>) -> Value {
     match result {
-        Ok(result) => json!({"version": 1, "result": result}),
-        Err(error) => json!({"version": 1, "error": error}),
+        Ok(result) => json!({"version": FILE_SERVICE_VERSION, "result": result}),
+        Err(error) => json!({"version": FILE_SERVICE_VERSION, "error": error}),
     }
 }
 
@@ -177,14 +177,10 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter, subscriptions: &Subs
         ))));
         return;
     }
-    let request = match serde_json::from_slice::<Request>(&envelope.payload) {
-        Ok(request) if request.version == 1 => request,
-        Ok(_) => {
-            send(reply(Err(unsupported("unsupported file service version"))));
-            return;
-        }
+    let request = match parse(&envelope.payload) {
+        Ok(request) => request,
         Err(error) => {
-            send(reply(Err(FileError::Unsupported(error.to_string()))));
+            send(reply(Err(error)));
             return;
         }
     };
@@ -198,9 +194,24 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter, subscriptions: &Subs
                 ))));
                 return;
             };
+            // A read holds its slot until its reply has been WRITTEN, not merely built: the
+            // base64 value and its serialized copy are the memory the cap exists to bound, and they
+            // live until `send` returns (which can block behind a slow reader for a long while).
+            let slot = if request.method == "read" {
+                match ReadSlot::acquire() {
+                    Ok(slot) => Some(slot),
+                    Err(error) => {
+                        send(reply(Err(error)));
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
             let writer = std::sync::Arc::clone(writer);
             std::thread::spawn(move || {
                 let _permit = permit;
+                let _slot = slot;
                 vcs::send(&writer, Service::File, stream, reply(handle(&request)));
             });
         }
@@ -224,19 +235,16 @@ fn unsubscribe(request: &Request, subscriptions: &Subscriptions) -> Result<Value
     Ok(json!({"subscription": id}))
 }
 
-/// Everything that is a plain request/reply. Public so tests can drive it without a socket.
-pub fn execute(bytes: &[u8]) -> Value {
-    reply(
-        serde_json::from_slice::<Request>(bytes)
-            .map_err(|error| FileError::Unsupported(error.to_string()))
-            .and_then(|request| {
-                if request.version == 1 {
-                    handle(&request)
-                } else {
-                    Err(unsupported("unsupported file service version"))
-                }
-            }),
-    )
+/// Parse one request and check its version. The single place either happens, so `dispatch` and the
+/// tests' `execute` cannot disagree about what a malformed or foreign-version request is.
+fn parse(bytes: &[u8]) -> Result<Request, FileError> {
+    let request = serde_json::from_slice::<Request>(bytes)
+        .map_err(|error| FileError::Unsupported(error.to_string()))?;
+    if request.version == FILE_SERVICE_VERSION {
+        Ok(request)
+    } else {
+        Err(unsupported("unsupported file service version"))
+    }
 }
 
 fn handle(request: &Request) -> Result<Value, FileError> {
@@ -427,7 +435,6 @@ fn read(request: &Request) -> Result<Value, FileError> {
     if max_bytes > MAX_READ_BYTES {
         return Err(unsupported("max_bytes exceeds the service ceiling"));
     }
-    let _slot = ReadSlot::acquire()?;
     let bytes = read_file(&root, relative, mode, max_bytes)?;
     Ok(json!({"size": bytes.len(), "content": base64(&bytes)}))
 }
@@ -475,8 +482,12 @@ pub(crate) fn read_file(
 ) -> Result<Vec<u8>, FileError> {
     let real_root = std::fs::canonicalize(root)?;
     let mut options = std::fs::OpenOptions::new();
+    // `O_NOCTTY`: a committed link can point at a tty, and opening one without it can make it the
+    // agent's controlling terminal. The descriptor check refuses it afterwards, but the open itself has
+    // already happened.
     options.read(true).custom_flags(
         libc::O_NONBLOCK
+            | libc::O_NOCTTY
             | match mode {
                 Symlinks::Refuse => libc::O_NOFOLLOW,
                 Symlinks::FollowWithinRoot => 0,
@@ -541,6 +552,11 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
     use std::process::Command;
+
+    /// Everything that is a plain request/reply, without a socket.
+    fn execute(bytes: &[u8]) -> Value {
+        reply(parse(bytes).and_then(|request| handle(&request)))
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("wr-file-test-{name}-{}", std::process::id()));

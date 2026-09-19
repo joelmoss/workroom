@@ -20,9 +20,10 @@
 //! **Coalescing lives here, not in the client.** An uncoalesced watch flushes ~70 callbacks/sec
 //! under an `npm install`-shaped burst, and a consumer that re-probes per callback forks git/jj at
 //! that rate. The [`Coalescer`] is leading + trailing: the first change after a quiet period is
-//! delivered at once (the panel reacts promptly), everything after is folded into one set, and that
-//! set is delivered once after a quiet window (the panel reflects the final on-disk state). A
-//! sustained burst therefore costs about two deliveries.
+//! delivered after a 50ms settle (the panel reacts promptly, and one save's several raw events are
+//! one delivery), everything after is folded into one set, and that set is delivered once after a
+//! quiet window (the panel reflects the final on-disk state). A sustained burst therefore costs about
+//! two deliveries.
 //!
 //! **Subscriptions belong to the connection.** [`Subscriptions`] is created by `handle_connection`
 //! and dropped with it, and dropping stops every watcher: an OS watcher must never outlive the peer
@@ -46,8 +47,9 @@ use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Watches one connection may hold. Each is an OS watcher plus a thread, so this is what bounds
@@ -56,6 +58,22 @@ pub const MAX_SUBSCRIPTIONS: usize = 64;
 
 /// Quiet time before a burst's trailing delivery, matching `WorkroomFileWatcher`'s 1s window.
 const COALESCE_WINDOW: Duration = Duration::from_secs(1);
+
+/// How long the first raw event of a burst waits for its siblings before the LEADING delivery.
+///
+/// One save is several raw events, not one: `notify`'s macOS backend runs FSEvents at latency 0 with
+/// per-file events, so an in-place save measured 4 events within ~0.1ms and an atomic save (write a
+/// temp file, rename) 6. Delivering the first immediately and folding the rest into the trailing edge
+/// made every ordinary save two panel refreshes (a `git ls-files` and a status probe each) where the
+/// old directory-granularity watcher made one. Settling briefly first puts the whole save in the
+/// leading batch, so the trailing edge is non-empty only when something changed AFTER it. 50ms is
+/// imperceptible and comfortably longer than the measured spread.
+const LEADING_SETTLE: Duration = Duration::from_millis(50);
+
+/// Raw notifications buffered between the OS watcher and the coalescer thread. Bounded, because that
+/// thread can block on a slow client's socket for a long time; a full buffer drops events and sets an
+/// overflow flag instead of growing without limit in a daemon every window shares.
+const INGRESS_CAPACITY: usize = 1024;
 
 /// The most paths one event carries. A burst that touches more is delivered as the first
 /// `MAX_EVENT_PATHS` plus `overflow`, which the consumer answers with a full rescan anyway.
@@ -69,6 +87,10 @@ const MAX_EVENT_PATH_BYTES: usize = 128 * 1024;
 /// How many distinct paths a burst accumulates before it stops remembering more (per class). The
 /// accumulator is bounded regardless of how many files an `npm install` touches.
 const MAX_PENDING_PATHS: usize = 4096;
+
+/// The same bound in BYTES across both classes. The count alone would let near-`PATH_MAX` names pin
+/// tens of MiB per subscription during a sustained burst.
+const MAX_PENDING_BYTES: usize = 512 * 1024;
 
 /// A path is VCS-internal when any component is `.git` or `.jj`. Delivered after everything else
 /// when the cap forces a choice, because an internal change is usually the tool's own churn (a jj
@@ -91,6 +113,8 @@ pub struct Batch {
 struct Pending {
     worktree: BTreeSet<PathBuf>,
     internal: BTreeSet<PathBuf>,
+    /// Bytes across both sets, against `MAX_PENDING_BYTES`.
+    bytes: usize,
     overflow: bool,
 }
 
@@ -101,9 +125,14 @@ impl Pending {
         } else {
             &mut self.worktree
         };
-        if set.len() >= MAX_PENDING_PATHS && !set.contains(&path) {
+        if set.contains(&path) {
+            return;
+        }
+        let cost = path.as_os_str().len();
+        if set.len() >= MAX_PENDING_PATHS || self.bytes + cost > MAX_PENDING_BYTES {
             self.overflow = true;
         } else {
+            self.bytes += cost;
             set.insert(path);
         }
     }
@@ -111,6 +140,7 @@ impl Pending {
     /// Empty the accumulator into a batch, or `None` when there is nothing to say.
     fn take(&mut self) -> Option<Batch> {
         let mut overflow = std::mem::take(&mut self.overflow);
+        self.bytes = 0;
         let mut paths = Vec::new();
         let mut bytes = 0;
         for path in std::mem::take(&mut self.worktree)
@@ -129,63 +159,82 @@ impl Pending {
     }
 }
 
+/// Where a burst is in its life.
+#[derive(Clone, Copy)]
+enum Phase {
+    Idle,
+    /// The first raw event arrived; siblings within the settle window join the leading batch.
+    Settling {
+        due: Instant,
+    },
+    /// The leading batch went out. `last` is the most recent raw activity; the trailing batch goes
+    /// out once nothing has happened for a whole window.
+    Open {
+        last: Instant,
+    },
+}
+
 /// Leading + trailing coalescing as a pure state machine over an explicit clock, so its timing is
-/// tested without sleeping. `WorkroomFileWatcher.ingest`/`scheduleTrailing` is the behaviour it
-/// mirrors: same leading edge, same union, same "quiet for the whole window" trailing edge.
+/// tested without sleeping. Same shape as `WorkroomFileWatcher.ingest`/`scheduleTrailing` — a leading
+/// edge, a union, a "quiet for the whole window" trailing edge — plus the settle that `notify`'s
+/// per-file events need (see `LEADING_SETTLE`).
 struct Coalescer {
     window: Duration,
-    /// `Some` while a burst is open: the last raw activity and what has accumulated since the
-    /// leading delivery.
-    open: Option<(Instant, Pending)>,
+    settle: Duration,
+    phase: Phase,
+    pending: Pending,
 }
 
 impl Coalescer {
-    fn new(window: Duration) -> Self {
-        Self { window, open: None }
+    fn new(window: Duration, settle: Duration) -> Self {
+        Self {
+            window,
+            settle,
+            phase: Phase::Idle,
+            pending: Pending::default(),
+        }
     }
 
-    /// Fold one raw notification in. Returns the LEADING batch when this opens a burst.
-    fn event(&mut self, now: Instant, paths: Vec<PathBuf>, rescan: bool) -> Option<Batch> {
-        let mut incoming = Pending::default();
+    /// Fold one raw notification in. Nothing is delivered from here: the caller asks `tick`.
+    fn event(&mut self, now: Instant, paths: Vec<PathBuf>, rescan: bool) {
         for path in paths {
-            incoming.add(path);
+            self.pending.add(path);
         }
-        incoming.overflow |= rescan;
-        match &mut self.open {
-            None => {
-                self.open = Some((now, Pending::default()));
-                incoming.take()
-            }
-            Some((last, pending)) => {
-                *last = now;
-                pending.worktree.append(&mut incoming.worktree);
-                pending.internal.append(&mut incoming.internal);
-                pending.overflow |= incoming.overflow;
-                // The merge above can exceed the accumulator's cap; re-apply it.
-                for set in [&mut pending.worktree, &mut pending.internal] {
-                    while set.len() > MAX_PENDING_PATHS {
-                        set.pop_last();
-                        pending.overflow = true;
-                    }
+        self.pending.overflow |= rescan;
+        match &mut self.phase {
+            Phase::Idle => {
+                self.phase = Phase::Settling {
+                    due: now + self.settle,
                 }
-                None
             }
+            Phase::Settling { .. } => {}
+            Phase::Open { last } => *last = now,
         }
     }
 
-    /// When the trailing delivery is due, if a burst is open.
+    /// When `tick` next has something to decide, if a burst is in progress.
     fn deadline(&self) -> Option<Instant> {
-        self.open.as_ref().map(|(last, _)| *last + self.window)
+        match self.phase {
+            Phase::Idle => None,
+            Phase::Settling { due } => Some(due),
+            Phase::Open { last } => Some(last + self.window),
+        }
     }
 
-    /// Close the burst if it has been quiet for the whole window, returning the TRAILING batch.
+    /// The LEADING batch once the settle has passed, or the TRAILING batch once the burst has been
+    /// quiet for the whole window (which also ends it).
     fn tick(&mut self, now: Instant) -> Option<Batch> {
-        let (last, _) = self.open.as_ref()?;
-        if now < *last + self.window {
-            return None;
+        match self.phase {
+            Phase::Settling { due } if now >= due => {
+                self.phase = Phase::Open { last: due };
+                self.pending.take()
+            }
+            Phase::Open { last } if now >= last + self.window => {
+                self.phase = Phase::Idle;
+                self.pending.take()
+            }
+            _ => None,
         }
-        let (_, mut pending) = self.open.take()?;
-        pending.take()
     }
 }
 
@@ -268,19 +317,33 @@ impl Subscriptions {
                 root.display()
             )));
         }
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(INGRESS_CAPACITY);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let handler_dropped = Arc::clone(&dropped);
         // gstack-shortcut(dec-8742d8a5-42ac-4348-827b-9c15d9330f5a): one OS watcher per
         // subscription, upgrade when two windows watching one workroom show up as duplicated
         // watches in a profile, or when inotify's per-user watch limit is reachable (Phase 3, Linux).
         // Sharing one watcher per root across subscriptions is the fix, recorded in TODOS.md.
-        let mut watcher = notify::recommended_watcher(sender)
-            .map_err(|error| FileError::Io(format!("cannot create a watcher: {error}")))?;
+        //
+        // Symlinks are NOT followed: a committed link to `$HOME` (or `/`) would otherwise make a
+        // recursive inotify watch walk the whole target and report paths outside the repository root.
+        // A no-op for FSEvents today, and load-bearing the day this runs on Linux.
+        let handler = move |result: notify::Result<notify::Event>| {
+            if sender.try_send(result).is_err() {
+                handler_dropped.store(true, Ordering::Release);
+            }
+        };
+        let mut watcher = notify::RecommendedWatcher::new(
+            handler,
+            notify::Config::default().with_follow_symlinks(false),
+        )
+        .map_err(|error| FileError::Io(format!("cannot create a watcher: {error}")))?;
         watcher
             .watch(root, RecursiveMode::Recursive)
             .map_err(|error| FileError::Io(format!("cannot watch {}: {error}", root.display())))?;
         let sink = self.sink.clone();
         let root = root.to_owned();
-        std::thread::spawn(move || run(id, &root, &receiver, &sink));
+        std::thread::spawn(move || run(id, &root, &receiver, &dropped, &sink));
         active.insert(id, Subscription { _watcher: watcher });
         Ok(())
     }
@@ -301,9 +364,10 @@ fn run(
     id: u64,
     root: &Path,
     receiver: &mpsc::Receiver<notify::Result<notify::Event>>,
+    dropped: &AtomicBool,
     sink: &Sink,
 ) {
-    let mut coalescer = Coalescer::new(COALESCE_WINDOW);
+    let mut coalescer = Coalescer::new(COALESCE_WINDOW, LEADING_SETTLE);
     loop {
         let received = match coalescer.deadline() {
             Some(deadline) => {
@@ -319,23 +383,26 @@ fn run(
             },
         };
         let now = Instant::now();
-        let batch = match received {
+        match received {
+            // Reads are not changes. Reporting them would make every `git status` in a watched tree
+            // wake its own consumer. Falls through to `tick` rather than `continue`, so a flood of
+            // them cannot starve a batch that is already due.
+            Some(Ok(event)) if matches!(event.kind, EventKind::Access(_)) => {}
             Some(Ok(event)) => {
-                // Reads are not changes. Reporting them would make every `git status` in a
-                // watched tree wake its own consumer.
-                if matches!(event.kind, EventKind::Access(_)) {
-                    continue;
-                }
                 let rescan = event.need_rescan();
-                coalescer.event(now, event.paths, rescan)
+                coalescer.event(now, event.paths, rescan);
             }
             Some(Err(error)) => {
                 sink.ended(id, &format!("watcher error: {error}"));
                 return;
             }
-            None => coalescer.tick(now),
-        };
-        if let Some(batch) = batch {
+            None => {}
+        }
+        // The ingress buffer was full and events were dropped, so anything may have changed.
+        if dropped.swap(false, Ordering::AcqRel) {
+            coalescer.event(now, Vec::new(), true);
+        }
+        if let Some(batch) = coalescer.tick(now) {
             if !sink.changed(id, &batch) {
                 return;
             }
@@ -390,77 +457,124 @@ mod tests {
         assert_eq!(closed.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn the_first_change_after_quiet_is_delivered_at_once() {
-        let mut coalescer = Coalescer::new(Duration::from_secs(1));
-        let now = Instant::now();
-        let batch = coalescer.event(now, paths(&["/r/a"]), false).unwrap();
-        assert_eq!(names(&batch), ["/r/a"]);
-        assert!(!batch.overflow);
+    fn coalescer() -> Coalescer {
+        Coalescer::new(Duration::from_secs(1), LEADING_SETTLE)
+    }
+
+    /// Every delivery the burst makes when driven to completion: feed `events`, tick at each event's
+    /// time and at each deadline, then run the clock out.
+    fn deliveries(events: &[(Duration, &[&str])]) -> Vec<Batch> {
+        let mut coalescer = coalescer();
+        let t0 = Instant::now();
+        let mut out = Vec::new();
+        for (at, names) in events {
+            let now = t0 + *at;
+            while let Some(due) = coalescer.deadline().filter(|due| *due <= now) {
+                out.extend(coalescer.tick(due));
+            }
+            coalescer.event(now, paths(names), false);
+            out.extend(coalescer.tick(now));
+        }
+        while let Some(due) = coalescer.deadline() {
+            out.extend(coalescer.tick(due));
+        }
+        out
     }
 
     #[test]
-    fn a_sustained_burst_yields_a_leading_and_one_trailing_delivery() {
-        let mut coalescer = Coalescer::new(Duration::from_secs(1));
-        let start = Instant::now();
-        let mut deliveries = 0;
-        // Seventy raw callbacks a second for five seconds, the measured `npm install` rate.
-        for tick in 0..350u64 {
-            let now = start + Duration::from_millis(tick * 14);
-            if coalescer
-                .event(now, paths(&[&format!("/r/f{tick}")]), false)
-                .is_some()
-            {
-                deliveries += 1;
-            }
-            if coalescer.tick(now).is_some() {
-                deliveries += 1;
-            }
-        }
-        assert_eq!(deliveries, 1, "only the leading edge while the burst lasts");
-        let end = start + Duration::from_millis(349 * 14);
-        assert!(coalescer.tick(end + Duration::from_millis(999)).is_none());
-        let trailing = coalescer.tick(end + Duration::from_secs(1)).unwrap();
+    fn the_leading_batch_waits_for_the_settle_and_carries_the_whole_burst_so_far() {
+        let mut coalescer = coalescer();
+        let t0 = Instant::now();
+        coalescer.event(t0, paths(&["/r/a"]), false);
+        assert!(coalescer.tick(t0).is_none(), "not before the settle");
+        coalescer.event(t0 + Duration::from_millis(20), paths(&["/r/b"]), false);
+        let leading = coalescer.tick(t0 + LEADING_SETTLE).unwrap();
+        assert_eq!(names(&leading), ["/r/a", "/r/b"]);
+        assert!(!leading.overflow);
+    }
+
+    /// The measured shape of one save (4 raw events in an in-place save, 6 in an atomic one, all for
+    /// the same path within ~0.1ms) must reach the panel ONCE. Before the settle it reached it twice:
+    /// the first event was the leading batch and its siblings became a trailing batch a second later.
+    #[test]
+    fn one_save_is_one_delivery() {
+        let raw: Vec<(Duration, &[&str])> = (0..6)
+            .map(|i| (Duration::from_micros(30 * i), &["/r/a.txt"][..]))
+            .collect();
+        let batches = deliveries(&raw);
+        assert_eq!(batches.len(), 1, "{batches:?}");
+        assert_eq!(names(&batches[0]), ["/r/a.txt"]);
+    }
+
+    #[test]
+    fn a_second_write_after_the_settle_is_reported_by_the_trailing_edge() {
+        let batches = deliveries(&[
+            (Duration::ZERO, &["/r/a.txt"]),
+            (Duration::from_millis(400), &["/r/a.txt"]),
+        ]);
+        assert_eq!(batches.len(), 2, "{batches:?}");
         assert_eq!(
-            trailing.paths.len(),
-            349,
-            "everything after the leading edge"
+            names(&batches[1]),
+            ["/r/a.txt"],
+            "the same path, genuinely written again"
         );
-        assert!(coalescer.deadline().is_none(), "the burst is closed");
+    }
+
+    #[test]
+    fn a_sustained_burst_is_a_leading_and_one_trailing_delivery() {
+        // Seventy raw notifications a second for five seconds, the measured `npm install` rate.
+        let names: Vec<String> = (0..350).map(|i| format!("/r/f{i}")).collect();
+        let raw: Vec<(Duration, Vec<&str>)> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (Duration::from_millis(14 * i as u64), vec![name.as_str()]))
+            .collect();
+        let events: Vec<(Duration, &[&str])> = raw
+            .iter()
+            .map(|(at, name)| (*at, name.as_slice()))
+            .collect();
+        let batches = deliveries(&events);
+        assert_eq!(
+            batches.len(),
+            2,
+            "a leading and a trailing delivery, not one per callback"
+        );
+        let reported: usize = batches.iter().map(|b| b.paths.len()).sum();
+        assert_eq!(reported, 350, "and between them every path");
     }
 
     #[test]
     fn the_trailing_edge_waits_for_a_full_quiet_window() {
-        let mut coalescer = Coalescer::new(Duration::from_secs(1));
+        let mut coalescer = coalescer();
         let t0 = Instant::now();
         coalescer.event(t0, paths(&["/r/a"]), false);
+        assert!(coalescer.tick(t0 + LEADING_SETTLE).is_some());
         coalescer.event(t0 + Duration::from_millis(900), paths(&["/r/b"]), false);
-        // 1s after the FIRST event, but only 100ms after the last: still active.
+        // A second after the first event, but only 100ms after the last: still active.
         assert!(coalescer.tick(t0 + Duration::from_secs(1)).is_none());
         assert_eq!(
             names(&coalescer.tick(t0 + Duration::from_millis(1900)).unwrap()),
             ["/r/b"]
         );
+        assert!(coalescer.deadline().is_none(), "the burst is closed");
     }
 
     #[test]
     fn a_new_burst_after_quiet_gets_its_own_leading_edge() {
-        let mut coalescer = Coalescer::new(Duration::from_secs(1));
-        let t0 = Instant::now();
-        coalescer.event(t0, paths(&["/r/a"]), false);
-        assert!(
-            coalescer.tick(t0 + Duration::from_secs(2)).is_none(),
-            "nothing pending"
-        );
-        assert!(coalescer
-            .event(t0 + Duration::from_secs(3), paths(&["/r/b"]), false)
-            .is_some());
+        let batches = deliveries(&[
+            (Duration::ZERO, &["/r/a"]),
+            (Duration::from_secs(3), &["/r/b"]),
+        ]);
+        assert_eq!(batches.len(), 2, "{batches:?}");
+        assert_eq!(names(&batches[1]), ["/r/b"]);
     }
 
     #[test]
     fn a_rescan_request_is_an_overflow_even_with_no_paths() {
-        let mut coalescer = Coalescer::new(Duration::from_secs(1));
-        let batch = coalescer.event(Instant::now(), vec![], true).unwrap();
+        let mut coalescer = coalescer();
+        let t0 = Instant::now();
+        coalescer.event(t0, vec![], true);
+        let batch = coalescer.tick(t0 + LEADING_SETTLE).unwrap();
         assert!(batch.overflow && batch.paths.is_empty());
     }
 
@@ -505,15 +619,40 @@ mod tests {
 
     #[test]
     fn the_accumulator_stops_remembering_paths_past_its_cap() {
-        let mut coalescer = Coalescer::new(Duration::from_secs(1));
+        let mut coalescer = coalescer();
         let t0 = Instant::now();
         coalescer.event(t0, paths(&["/r/lead"]), false);
-        let many: Vec<PathBuf> = (0..MAX_PENDING_PATHS + 500)
-            .map(|index| PathBuf::from(format!("/r/f{index}")))
-            .collect();
-        coalescer.event(t0, many, false);
+        assert!(coalescer.tick(t0 + LEADING_SETTLE).is_some());
+        // Two follow-up bursts whose UNION exceeds the per-class cap: each alone fits.
+        for chunk in 0..2 {
+            let many: Vec<PathBuf> = (0..3000)
+                .map(|index| PathBuf::from(format!("/r/c{chunk}-f{index}")))
+                .collect();
+            coalescer.event(t0 + Duration::from_millis(100), many, false);
+        }
         let trailing = coalescer.tick(t0 + Duration::from_secs(2)).unwrap();
         assert!(trailing.overflow);
         assert!(trailing.paths.len() <= MAX_EVENT_PATHS);
+    }
+
+    #[test]
+    fn the_accumulator_is_bounded_in_bytes_as_well_as_paths() {
+        let mut pending = Pending::default();
+        let long = "y".repeat(3000);
+        for index in 0..1000 {
+            pending.add(PathBuf::from(format!("/r/{index:04}{long}")));
+        }
+        assert!(pending.bytes <= MAX_PENDING_BYTES);
+        assert!(
+            pending.overflow,
+            "paths past the byte budget are reported as overflow"
+        );
+        let again = pending.worktree.len();
+        pending.add(PathBuf::from(format!("/r/0000{long}")));
+        assert_eq!(
+            pending.worktree.len(),
+            again,
+            "a repeated path costs nothing"
+        );
     }
 }

@@ -97,10 +97,12 @@ struct NativeFileProvider: FileProviding {
       }
       result =
         (try? await gate.run(repository: shared) {
-          await runner.run(command.executable, command.args, in: path, timeout: 10)
+          await runner.run(
+            command.executable, command.args, in: path, timeout: FileListing.timeout)
         }) ?? CommandResult(stdout: "", stderr: "", exitCode: 1, timedOut: false)
     } else {
-      result = await runner.run(command.executable, command.args, in: path, timeout: 10)
+      result = await runner.run(
+        command.executable, command.args, in: path, timeout: FileListing.timeout)
     }
     if result.stdoutTruncated { throw FileServiceError.listingTruncated }
     return result
@@ -120,7 +122,8 @@ struct NativeFileProvider: FileProviding {
   /// Read one regular file under `root`, verifying the DESCRIPTOR rather than the path.
   ///
   /// The wr-agent's `read_file` does the same thing on its side and this must stay in step with it:
-  /// `FileServiceContainmentTests` runs one matrix against both. Checking a path and then opening it
+  /// `AgentFileIntegrationTests.assertContainmentMatrix` runs one matrix against both. Checking a path
+  /// and then opening it
   /// leaves a window where the path is swapped for a link out of the root, and a plain open of a FIFO
   /// blocks forever — the two things the old client-side `isContained`/`readWorkingFile` could not
   /// prevent. So: open first and non-blocking, then ask the kernel what was opened.
@@ -133,7 +136,10 @@ struct NativeFileProvider: FileProviding {
     else { throw FileServiceError.failed("Invalid relative file path.") }
     guard let realRoot = realPath(root) else { throw FileServiceError.notFound(root) }
 
-    var flags = O_RDONLY | O_NONBLOCK | O_CLOEXEC
+    // `O_NOCTTY`: a committed link can point at a tty, and opening one without it can make it this
+    // process's controlling terminal. The descriptor check refuses it afterwards, but the open has
+    // already happened.
+    var flags = O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC
     if symlinks == .refuse { flags |= O_NOFOLLOW }
     let descriptor = open((root as NSString).appendingPathComponent(relative), flags)
     guard descriptor >= 0 else {
@@ -211,6 +217,17 @@ struct HostFileProvider: FileProviding {
   func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
     -> FileWatchHandle?
   {
-    try await manager.perform(on: lease) { try await service.watch(root: root, onEvent: onEvent) }
+    try await manager.perform(on: lease) {
+      let handle = try await service.watch(root: root, onEvent: onEvent)
+      // `perform` discards a result that arrives after its caller was cancelled or its lease ended,
+      // and this operation's own task is cancelled in exactly those cases. A subscription created
+      // just before that is an agent-side watcher nobody holds a handle to, so it is unsubscribed
+      // here, where the handle still exists.
+      if Task.isCancelled, let handle {
+        await handle.cancel()
+        throw CancellationError()
+      }
+      return handle
+    }
   }
 }

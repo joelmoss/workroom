@@ -98,8 +98,8 @@ impl Drop for Permit {
     }
 }
 
-/// Whether any dispatched VCS request — including a JJ snapshot that owns the working-copy lock
-/// and rewrites `@` in-process — is still running. Consulted by `serve`'s idle-exit check: a hard
+/// Whether any dispatched VCS or File request — including a JJ snapshot that owns the working-copy
+/// lock and rewrites `@` in-process — is still running. Consulted by `serve`'s idle-exit check: a hard
 /// process exit while this is nonzero would abort a repo-level transaction mid-flight, not just
 /// drop a socket.
 pub fn is_busy() -> bool {
@@ -251,6 +251,11 @@ pub(crate) fn relative(value: &str) -> model::Result<&str> {
 /// Native app writers take the same cross-process barrier before starting a JJ operation.
 pub(crate) struct SnapshotLock(std::fs::File);
 impl SnapshotLock {
+    /// The locked descriptor, for a child that must keep the barrier alive past this process.
+    pub(crate) fn fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+
     pub(crate) fn acquire(root: &Path, shared: Option<&str>) -> model::Result<Self> {
         let shared = absolute(shared.ok_or_else(|| {
             VcsError::UnsupportedRepo("registration required for JJ snapshot".into())
@@ -295,12 +300,6 @@ impl SnapshotLock {
     }
 }
 // Close, never LOCK_UN: a snapshotting CLI child may share the locked file description.
-impl SnapshotLock {
-    /// The locked descriptor, for a child that must keep the barrier alive past this process.
-    pub(crate) fn fd(&self) -> RawFd {
-        self.0.as_raw_fd()
-    }
-}
 
 fn jj(root: &Path, args: &[&str]) -> model::Result<String> {
     String::from_utf8(wr_vcs_git::diff::run(root, "jj", args)?).map_err(io)
@@ -990,13 +989,15 @@ fn read(request: Request) -> model::Result<Value> {
 ///
 /// The oversize replacement is a `VcsError`, which is only right for `Service::Vcs`. `Service::File`
 /// bounds its own replies below the ceiling by construction (an 8 MiB read is 10.7 MiB of base64),
-/// so it never reaches this branch; `too_large` exists so that if it ever did, the client would
-/// still get an error it can decode rather than one from the wrong service.
+/// so it never reaches this branch; the File-shaped `FileError::TooLarge` is built here so that if it
+/// ever did, the client would still get an error it can decode rather than one from the wrong service.
 pub(crate) fn send(writer: &SharedWriter, service: Service, stream: u32, value: Value) {
     let mut bytes = serde_json::to_vec(&value).expect("JSON value serializes");
     if bytes.len() > MAX_RESPONSE {
         let error = match service {
-            Service::File => json!({"TooLarge": "File reply exceeds 16 MiB"}),
+            Service::File => json!(crate::file::FileError::TooLarge(
+                "File reply exceeds 16 MiB".into()
+            )),
             _ => json!(VcsError::PartialData("VCS reply exceeds 16 MiB".into())),
         };
         bytes = serde_json::to_vec(&json!({"version": 1, "error": error})).unwrap();

@@ -2055,8 +2055,10 @@ independently.
    local-only agent, and exactly the piece Phase 3's remote transport will need to move host-side.
 
    - **File access and notifications are implemented (#211).** `Service::File` (`0x03`) carries
-     three things, all for registered *local* repositories (remote hosts stay unavailable until
-     Phase 3's transport). `PROTOCOL_VERSION` is 3 and `MIN_FILE_VERSION` is 3, checked against a
+     three things, for *local* repositories (remote hosts stay unavailable until Phase 3's
+     transport). The service serves any directory a same-user peer names — containment is relative to
+     the root the client supplies, and a host-side path allowlist is the deferred remote-registration
+     work recorded elsewhere, so it is not a guard this milestone provides. `PROTOCOL_VERSION` is 3 and `MIN_FILE_VERSION` is 3, checked against a
      peer's raw greeting before any File envelope is sent — a protocol-2 agent silently drops them —
      and never folded into `negotiate`. A failed File negotiation does not fail the connection: VCS
      keeps working and the router falls back to native reads for a LOCAL host only, when
@@ -2089,7 +2091,12 @@ independently.
      failing the whole connection. An event for an unknown id is dropped. The agent is the watcher
      (`notify`: FSEvents now, inotify in Phase 3) and owns the leading + trailing coalescer, because
      an uncoalesced burst is ~70 callbacks a second and a consumer that re-probes per callback forks
-     git/jj at that rate; a sustained burst costs about two deliveries. Events carry absolute host
+     git/jj at that rate; a sustained burst costs about two deliveries. `notify` reports per-file,
+     per-flag events (an in-place save measured 4 within 0.1ms, an atomic save 6) where the old
+     directory-granularity FSEvents stream reported one, so the leading edge waits a 50ms settle:
+     without it every ordinary save was two panel refreshes, a leading one and a trailing one a second
+     later. The buffer between the OS watcher and the coalescer is bounded and overflows into the
+     `overflow` flag rather than growing behind a slow client. Events carry absolute host
      paths (capped at 2048, non-`.git`/`.jj` first) plus an `overflow` flag that every consumer
      filter treats as relevant. Subscriptions belong to the connection and stop with it; they take no
      request permit (a resource, capped at 64 per connection, not a request in flight). A client that
