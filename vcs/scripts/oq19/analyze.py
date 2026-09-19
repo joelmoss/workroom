@@ -628,7 +628,7 @@ def live_verdicts(path):
     return events
 
 
-def closed_loop_check(run_dir, pipeline_check=False):
+def closed_loop_check(run_dir, pipeline_check=False, d3_fallback=False):
     """F7: score a run made with the real classifier and shim in the box (driver `--closed-loop`).
 
     Three questions, none answerable by replay: (1) do the LIVE verdicts pass the gates, with the classifier's own
@@ -648,14 +648,78 @@ def closed_loop_check(run_dir, pipeline_check=False):
     diff = mismatch(live, replay, start, start, end - start)
     footer = run.footer or {}
     cost = ((footer.get("cpu_s") or 0.0) + (run.meta.get("shim_cpu_s") or 0.0)) / max(footer.get("wall_s") or 1.0, 1e-9)
-    results = gates.evaluate(live, run.intervals(), c.interval, window_s, d3_fallback=False)
+    results = gates.evaluate(live, run.intervals(), c.interval, window_s,
+                             d3_fallback=d3_fallback and run.scenario == "3b")
     bad = failed(results)
     return {"run": run.key, "scenario": run.scenario, "config": config_key(c), "window_s": window_s,
             "gates": {g: v for g, (v, _) in results.items()}, "failed": bad,
             "live_vs_replay_mismatch": diff, "agrees_with_replay": diff <= CLOSED_LOOP_MAX_MISMATCH,
             "self_cost_fraction": cost, "self_cost_provisional_pass": cost <= COST_LIMIT,
             "busy_ticks": sum(1 for _, v in live if v == BUSY), "pipeline_check": pipeline_check,
+            "compressed": run.compressed, "mode": run.mode,
             "passes": not bad and diff <= CLOSED_LOOP_MAX_MISMATCH}
+
+
+def holdout_claim(results):
+    """The final claim, from closed-loop results of the HOLD-OUT set: `gates.final_claim` over runs whose failed
+    gates are the live gate failures plus `live_vs_replay` when the loop disagreed with its own replay."""
+    runs = [{"set": "holdout", "scale": "compressed" if r["compressed"] else "full", "mode": r["mode"],
+             "scenario": r["scenario"],
+             "failed_gates": r["failed"] + ([] if r["agrees_with_replay"] else ["live_vs_replay"])}
+            for r in results]
+    return gates.final_claim(runs)
+
+
+def run_holdout(root, frozen_path, pipeline_check, out_dir):
+    with open(frozen_path) as f:
+        frozen = json.load(f)
+    rows = load_jsonl(os.path.join(root, "manifest.jsonl"))
+    results, excluded = [], []
+    for row in rows:
+        if row["status"] != "recorded" or not (row.get("check") or {}).get("ok"):
+            excluded.append((row["key"], row["status"] if row["status"] != "recorded" else "check_trace failed"))
+            continue
+        res = closed_loop_check(os.path.join(root, row["dir"]), pipeline_check, frozen.get("d3_fallback", False))
+        recorded = json.loads(row["closed_loop"])["config"] if row.get("closed_loop") else None
+        if recorded != frozen["config"]:
+            sys.exit("%s was not recorded at the frozen configuration: the hold-out is void" % row["key"])
+        results.append(res)
+    verdict, table = holdout_claim(results)
+    text = ["# OQ19 hold-out result", "",
+            "**PIPELINE CHECK ONLY: NOT A RESULT.**" if pipeline_check else "Scored hold-out set (scale 1.0, closed loop).",
+            "", "Frozen configuration `%s` (tuning commit `%s`, D3 fallback %s)." % (
+                frozen.get("key"), frozen.get("tuning_commit"), "applied" if frozen.get("d3_fallback") else "not needed"),
+            "", "## Claim: **%s**" % verdict, "",
+            "PASS requires zero failures on all gates in the hold-out set, detached, at BOTH scales, and the "
+            "pre-registered sample size (every gated scenario x5 full-length, every critical scenario x20 compressed).",
+            "", "| set / scale / mode | runs | can false-idle | failing | 95% bound false-idle | sample size ok |",
+            "|---|---|---|---|---|---|"]
+    for (kset, kscale, kmode), g in sorted(table.items()):
+        text.append("| %s / %s / %s | %d | %d | %d | %.2f | %s |" % (
+            kset, kscale, kmode, g["runs"], g["busy_runs"], g["failures_any"], g["bound_false_idle"],
+            g["sample_size_ok"]))
+    bad = [r for r in results if not r["passes"]]
+    text += ["", "## Failing runs (%d)" % len(bad)]
+    text += ["* `%s`: %s%s" % (r["run"], ", ".join(r["failed"]) or "no gate", "" if r["agrees_with_replay"]
+                              else "; the live verdicts disagree with a replay of the trace") for r in bad]
+    costs = sorted(r["self_cost_fraction"] for r in results)
+    if costs:
+        text += ["", "## Classifier + sampler + shim cost (Python, an upper bound: PROVISIONAL)",
+                 "median %.2f%%, worst %.2f%% of one core, against the %.1f%% gate; %d of %d runs at or under it." % (
+                     100 * costs[len(costs) // 2], 100 * costs[-1], 100 * COST_LIMIT,
+                     sum(1 for x in costs if x <= COST_LIMIT), len(costs))]
+    for key, why in excluded:
+        text.append("* excluded `%s`: %s (kept in the manifest)" % (key, why))
+    os.makedirs(out_dir, exist_ok=True)
+    stem = "holdout-pipeline-check" if pipeline_check else "holdout"
+    with open(os.path.join(out_dir, stem + ".md"), "w") as f:
+        f.write("\n".join(text) + "\n")
+    with open(os.path.join(out_dir, stem + ".json"), "w") as f:
+        json.dump({"claim": verdict, "pipeline_check": pipeline_check, "runs": len(results), "failing": len(bad),
+                   "table": {"/".join(k): {a: b for a, b in v.items() if a != "by_scenario"} for k, v in table.items()}},
+                  f, indent=1, default=str)
+    print("\n".join(text))
+    return verdict
 
 
 def load_tuning(root, pipeline_check=False):
@@ -674,9 +738,11 @@ def load_tuning(root, pipeline_check=False):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("set", choices=("tuning", "closed-loop"))
+    ap.add_argument("set", choices=("tuning", "closed-loop", "holdout"))
+    ap.add_argument("--frozen", default=os.path.join(HERE, "results", "frozen.json"))
+    ap.add_argument("--freeze", action="store_true", help="tuning: write the winner to results/frozen.json")
     ap.add_argument("--run", help="closed-loop: the run directory to check")
-    ap.add_argument("--root", default=os.path.join(HERE, "traces", "tuning"))
+    ap.add_argument("--root", default=None)
     ap.add_argument("--out", default=os.path.join(HERE, "results"))
     ap.add_argument("--pipeline-check", action="store_true", help="allow scaled runs; output is stamped, not a result")
     args = ap.parse_args()
@@ -684,7 +750,10 @@ def main():
         out = closed_loop_check(args.run, args.pipeline_check)
         print(json.dumps(out, indent=1))
         sys.exit(0 if out["passes"] else 1)
-    runs, excluded = load_tuning(args.root, args.pipeline_check)
+    if args.set == "holdout":
+        sys.exit(0 if run_holdout(args.root or os.path.join(HERE, "traces", "holdout"), args.frozen,
+                                  args.pipeline_check, args.out) == gates.PASS else 1)
+    runs, excluded = load_tuning(args.root or os.path.join(HERE, "traces", "tuning"), args.pipeline_check)
     matrix = load_cost_matrix()
     summaries, d3 = evaluate_all(runs, all_configs(), matrix, progress=print)
     winner = select_winner(summaries)
@@ -701,6 +770,16 @@ def main():
                                 for k, v in s.items() if k not in ("config", "per_run")} for s in summaries]},
                   f, indent=1, default=str)
     print(text)
+    if args.freeze:
+        if winner is None or args.pipeline_check:
+            sys.exit("nothing to freeze: %s" % ("a pipeline check is not a result" if args.pipeline_check
+                                               else "no config passed every gate"))
+        with open(args.frozen, "w") as f:
+            json.dump({"config": winner["config"]._asdict(), "key": winner["key"], "d3_fallback": d3,
+                       "tuning_commit": commit,
+                       "note": "Frozen by `analyze.py tuning --freeze`. Commit this file BEFORE recording the "
+                               "hold-out: record.py holdout refuses an uncommitted or modified file."}, f, indent=1)
+        print("frozen -> %s (commit it before recording the hold-out)" % args.frozen)
 
 
 if __name__ == "__main__":
