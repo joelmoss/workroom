@@ -1432,6 +1432,41 @@ agent lands.
 
 **Priority:** P3 — no cost on the only platform it ships on today.
 
+### Four UI tests fail on the parent branch too: synthesized drags and the editor menu (macapp) — #211 follow-up
+
+**What:** `DiffPaneFocusUITests.testClickingTerminalPaneFocusesItWhenDiffPaneIsFocused`,
+`SplitPaneUITests.testDraggingCurrentTabCreatesSplitWithoutAddingTab`,
+`WindowDragUITests.testDraggingEmptyTitlebarMovesWindow` and
+`WorkroomPaneHeaderUITests.testSoloOpenInMenuOpens` fail identically on `10b94b38` (the parent of #211's
+branch) and on #211. Three depend on `press(forDuration:thenDragTo:)` — the window did not move, no split
+was created — and the fourth on a menu item being hittable after `menu.click()`.
+
+**Why:** they were found while resolving #211's UI failures and are NOT caused by it (same failures,
+same reasons, with the File service absent). Left red, they hide real regressions in the suite.
+
+**How to start:** confirm on a second machine whether it is this macOS release's synthesized-event
+handling or the tests, then replace the synthesized drag with the coordinate-level drag the reorder tests
+already use (`WindowDragUITests` has both shapes), and wait on the menu's items rather than reading them
+once.
+
+**Priority:** P3.
+
+### #211 review findings deliberately not applied (macapp + wr-agent)
+
+**What:** the gstack `/review` of #211 raised these and they were left, with reasons:
+simplification advisories (single-set `Pending`, drop the merge re-cap in `Coalescer::event`, delete the
+default `files(context:)`, decode only `version` from the capabilities reply); a per-process cap on watch
+subscriptions (the cap is per connection); reclaiming an agent-side subscription slot when its coalescer
+thread ends on its own; hard-link containment (a same-user peer only, parity with the native read);
+sharing the git-scrub env list and `pre_exec` barrier setup with `wr-vcs-git`; a shared test fixture base
+for the two agent integration suites; and a batch of lower-value tests (a swap-race stress test for
+`read_file`, `receive()` stream-0 protocol-violation cases, scripted `HostFileWatcher` cases, a registered
+jj listing end to end, `PlainFileViewer.loadOutcome`, `Permit` exhaustion, a timeout on the FIFO tests).
+
+**Why:** none is a defect a user can hit today; each trades a real change for a small gain.
+
+**Priority:** P3.
+
 ### A daemonizing descendant of a jj listing can hold the working-copy lock forever (wr-agent) — #211 review
 
 **What:** `jj file list` runs with the `SnapshotLock` fd inherited (CLOEXEC cleared in the child) so the

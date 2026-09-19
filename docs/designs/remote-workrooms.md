@@ -1934,12 +1934,11 @@ disagreement passes every test on either side alone while presenting as an empty
 
 ## Next Steps
 
-**Corrected 2026-09-18.** Phase 1 is complete, OQ1's feasibility gate is lifted, and items 1, 2 and
-the VCS-writes half of item 3 are implemented on the draft stack (#201, #202, #204, #205) — the
-exact-line-count decision item 1 demanded is delivered, not deferred. File access/notifications,
-GitHub status and interchangeability (the rest of item 3) are the next milestones. The remaining
-work is split into the service milestones below so each layer can be reviewed and landed
-independently.
+**Corrected 2026-09-19.** Phase 1 is complete, OQ1's feasibility gate is lifted, and items 1, 2 and
+the VCS-writes and File halves of item 3 are implemented on the draft stack (#201, #202, #204, #205,
+#211) — the exact-line-count decision item 1 demanded is delivered, not deferred. GitHub status and
+interchangeability (the rest of item 3) are the next milestones. The remaining work is split into the
+service milestones below so each layer can be reviewed and landed independently.
 
 1. **Host-owned connection lifecycle implemented on the stacked branch.** The app-wide manager
    binds remote repository services to a connection generation, fails pending calls on disconnect,
