@@ -280,6 +280,51 @@ class D3AndSelection(unittest.TestCase):
         self.assertEqual(report["3600"]["advisory"], "ok")
 
 
+class ClosedLoop(unittest.TestCase):
+    def test_the_live_classifier_matches_a_replay_of_its_own_trace(self):
+        """live.py must not drift from the code the gates were scored with: fed the same samples and the same
+        counters, its verdicts equal the replay's, tick for tick."""
+        import json
+        import tempfile
+        import live
+        spinner = [{"t": T0 + 130 + i * 0.1, "d": "out", "n": 20} for i in range(200)]
+        typing = [{"t": T0 + 20.0, "d": "in", "n": 3}]
+        span = [{"t": T0 + 60.0, "event": "start", "name": "git"}, {"t": T0 + 75.0, "event": "end", "name": "git"}]
+        run = mk_run("5", BUILD, extra=build_extra, pty=spinner + typing, lifecycle=span)
+        c = cfg("P5", grace=15.0, pty=30.0)
+        window = 20.0
+        expected = A.verdict_series(c, A.features(A.Stream(run, 1), True), window)
+        with tempfile.TemporaryDirectory() as d:
+            counters = os.path.join(d, "counters.json")
+            clf = live.Classifier(c, window, counters, os.path.join(d, "v.jsonl"), os.path.join(d, "verdict"), 1,
+                                  SAMPLER)
+            for smp in run.samples:
+                t = smp["t"]
+                out = sum(e["n"] for e in run.pty if e["d"] == "out" and e["t"] <= t)
+                ins = [e["t"] for e in run.pty if e["d"] == "in" and e["t"] <= t]
+                starts = sum(1 for e in span if e["event"] == "start" and e["t"] <= t)
+                ends = sum(1 for e in span if e["event"] == "end" and e["t"] <= t)
+                with open(counters, "w") as f:
+                    json.dump({"out": out, "last_in": ins[-1] if ins else None, "starts": starts,
+                               "open": starts - ends}, f)
+                clf.feed(smp)
+            clf.close()
+            got = A.live_verdicts(os.path.join(d, "v.jsonl"))
+        self.assertTrue(any(v == BUSY for _, v in got))
+        self.assertEqual(got, expected)
+
+    def test_closed_loop_gate_goes_red_when_the_classifier_can_see_itself(self):
+        run = mk_run("16", [("idle", IDLE, 120)])
+        c = cfg("P4")
+        ok = A.verdict_series(c, A.features(A.Stream(run, 1), True), 10.0)
+        seen = A.verdict_series(c._replace(exclusions=False), A.features(A.Stream(run, 1), False), 10.0)
+        self.assertEqual(gates.evaluate(ok, run.intervals(), 1, 10.0)["no_busy_forever"][0], gates.PASS)
+        self.assertEqual(gates.evaluate(seen, run.intervals(), 1, 10.0)["no_busy_forever"][0], gates.FAIL)
+
+    def test_the_wake_shim_is_on_the_exclusion_list(self):
+        self.assertIn("wr-wakeshim", A.EXCLUDED_COMMS)
+
+
 class Report(unittest.TestCase):
     def test_every_section_of_the_report_renders_for_a_winner(self):
         """The winner branch is the one nothing else exercises: a bug there would only show at the end of a

@@ -62,10 +62,11 @@ TTY_WCHAN = ("wait_woken", "n_tty_read")
 # The production exclusion list (boundary.md), applied by process name and, for the sampler, by pid. A match
 # excludes the process AND its descendants (cron's children are cron's housekeeping).
 EXCLUDED_COMMS = ("sshd", "cron", "systemd", "systemd-journal", "systemd-logind", "dbus-daemon", "rsyslogd",
-                  "unattended-upgr", "apt.systemd.dai", "wr-agent")
+                  "unattended-upgr", "apt.systemd.dai", "wr-agent", "wr-wakeshim")
 OWN_PIDS = (1,)                    # container init: the driver in the harness, systemd in production
 CEILINGS_S = (1800, 3600, 14400)   # OQ22: candidate awake ceilings, reported for scenario 17 only
 CONTROL_MAX_MISMATCH = 0.02        # D7: a serial control may differ from its parallel twin in at most this share of seconds
+CLOSED_LOOP_MAX_MISMATCH = 0.02    # F7: the live verdicts may differ from a replay of their own trace in at most this share
 
 # Signal groups each policy needs (sampler.py GROUPS), for charging the measured cost matrix.
 NEEDS = {"P0": "box", "P1": "box+procs", "P1b": "box+procs", "P2": "box+procs",
@@ -217,61 +218,71 @@ def _min_age(a, b):
     return min(vals) / 1000.0 if vals else 0.0  # unknown age counts as recent: the conservative reading
 
 
+def tick_features(s, prev, interval_s, sampler_pid, exclusions, pty_rate, since_input, lifecycle):
+    """One tick's features from a sample, the previous sample and the counters the caller owns (pty rate over
+    PTY_WINDOW_S, seconds since the last pty input, whether an agent-owned operation is open or just started).
+    Shared by the replay (`features`) and the live classifier (`live.py`), so the closed loop cannot drift from
+    the code the gates were scored with."""
+    procs = s.get("procs") or []
+    kids = collections.defaultdict(list)
+    for p in procs:
+        kids[p[1]].append(p[0])
+    roots = set(s.get("roots") or [])
+    excluded = set()
+    if exclusions:
+        excluded = set(OWN_PIDS) | {sampler_pid} | _closure([sampler_pid], kids)
+        named = [p[0] for p in procs if p[4] in EXCLUDED_COMMS]
+        excluded |= set(named) | _closure(named, kids)
+    cand = [p for p in procs if p[0] not in excluded and p[0] not in roots and p[6] != "Z"]
+    wchan = {p[0]: p[9] for p in procs}
+    dt = (s["t"] - prev["t"]) if prev else interval_s
+    prev_ticks = {p[0]: p[7] for p in (prev.get("procs") or [])} if prev else {}
+    cpu = 0.0
+    for p in cand:
+        # A process first seen now is credited at most one core for this interval: its earlier CPU is unknown.
+        used = p[7] - prev_ticks[p[0]] if p[0] in prev_ticks else min(p[7], dt * CLK_TCK)
+        cpu += max(0, used) / CLK_TCK
+    cpu = cpu / dt if prev else 0.0
+    tree = _closure(roots, kids)
+    cand_pids = {p[0] for p in cand}
+    age_agn = age_tty = None
+    for row in s.get("sockets") or []:
+        if row[0] != "ESTAB":
+            continue
+        owners = [pid for _, pid in (row[5] or []) if pid in cand_pids]
+        if not owners:
+            continue
+        age = _min_age(row[6], row[7])
+        age_agn = age if age_agn is None else min(age_agn, age)
+        if any(not wchan.get(pid, "").startswith(TTY_WCHAN) for pid in owners):
+            age_tty = age if age_tty is None else min(age_tty, age)
+    return {
+        "t": s["t"],
+        "fg_wait": any(wchan.get(r, "").startswith("do_wait") for r in roots),
+        "tree_live": any(p[0] in tree and p[6] != "Z" for p in procs),
+        "cand_live": bool(cand),
+        "cpu": cpu,
+        "d_state": any(p[6] == "D" for p in cand),
+        "timer": any(p[9].startswith(TIMER_WCHAN) for p in cand),
+        "age_agnostic": age_agn, "age_tty_aware": age_tty,
+        "pty_rate": pty_rate,
+        "since_input": since_input,
+        "net": ((s["net_rx"] + s["net_tx"] - prev["net_rx"] - prev["net_tx"]) / dt) if prev else 0.0,
+        "lifecycle": lifecycle,
+    }
+
+
 def features(stream, exclusions=True):
     """Everything a vote needs, per tick, computed once per (stream, exclusions) and reused across the grid."""
     out, prev = [], None
-    pid_sampler = stream.header["pid"]
     for s in stream.samples:
-        procs = s.get("procs") or []
-        kids = collections.defaultdict(list)
-        for p in procs:
-            kids[p[1]].append(p[0])
-        roots = set(s.get("roots") or [])
-        excluded = set()
-        if exclusions:
-            excluded = set(OWN_PIDS) | {pid_sampler} | _closure([pid_sampler], kids)
-            named = [p[0] for p in procs if p[4] in EXCLUDED_COMMS]
-            excluded |= set(named) | _closure(named, kids)
-        cand = [p for p in procs if p[0] not in excluded and p[0] not in roots and p[6] != "Z"]
-        wchan = {p[0]: p[9] for p in procs}
-        dt = (s["t"] - prev["t"]) if prev else stream.interval_s
-        prev_ticks = {p[0]: p[7] for p in (prev.get("procs") or [])} if prev else {}
-        cpu = 0.0
-        for p in cand:
-            # A process first seen now is credited at most one core for this interval: its earlier CPU is unknown.
-            used = p[7] - prev_ticks[p[0]] if p[0] in prev_ticks else min(p[7], dt * CLK_TCK)
-            cpu += max(0, used) / CLK_TCK
-        cpu = cpu / dt if prev else 0.0
-        tree = _closure(roots, kids)
-        cand_pids = {p[0] for p in cand}
-        age_agn = age_tty = None
-        for row in s.get("sockets") or []:
-            if row[0] != "ESTAB":
-                continue
-            owners = [pid for _, pid in (row[5] or []) if pid in cand_pids]
-            if not owners:
-                continue
-            age = _min_age(row[6], row[7])
-            age_agn = age if age_agn is None else min(age_agn, age)
-            if any(not wchan.get(pid, "").startswith(TTY_WCHAN) for pid in owners):
-                age_tty = age if age_tty is None else min(age_tty, age)
         prev_t = prev["t"] if prev else s["t"] - stream.interval_s
         last_in = stream.last_input_before(s["t"])
         open_ops, started = stream.lifecycle_open(prev_t, s["t"])
-        out.append({
-            "t": s["t"],
-            "fg_wait": any(wchan.get(r, "").startswith("do_wait") for r in roots),
-            "tree_live": any(p[0] in tree and p[6] != "Z" for p in procs),
-            "cand_live": bool(cand),
-            "cpu": cpu,
-            "d_state": any(p[6] == "D" for p in cand),
-            "timer": any(p[9].startswith(TIMER_WCHAN) for p in cand),
-            "age_agnostic": age_agn, "age_tty_aware": age_tty,
-            "pty_rate": stream.pty_out_between(s["t"] - PTY_WINDOW_S, s["t"]) / PTY_WINDOW_S,
-            "since_input": (s["t"] - last_in) if last_in is not None else float("inf"),
-            "net": ((s["net_rx"] + s["net_tx"] - prev["net_rx"] - prev["net_tx"]) / dt) if prev else 0.0,
-            "lifecycle": open_ops > 0 or started > 0,
-        })
+        out.append(tick_features(
+            s, prev, stream.interval_s, stream.header["pid"], exclusions,
+            stream.pty_out_between(s["t"] - PTY_WINDOW_S, s["t"]) / PTY_WINDOW_S,
+            (s["t"] - last_in) if last_in is not None else float("inf"), open_ops > 0 or started > 0))
         prev = s
     return out
 
@@ -608,6 +619,45 @@ def report(runs, excluded, summaries, d3, winner, matrix, pipeline_check, commit
     return "\n".join(L) + "\n"
 
 
+def live_verdicts(path):
+    """verdicts.jsonl (one line per tick) -> a change-point series."""
+    events = []
+    for row in load_jsonl(path):
+        if not events or events[-1][1] != row["verdict"]:
+            events.append((row["t"], row["verdict"]))
+    return events
+
+
+def closed_loop_check(run_dir, pipeline_check=False):
+    """F7: score a run made with the real classifier and shim in the box (driver `--closed-loop`).
+
+    Three questions, none answerable by replay: (1) do the LIVE verdicts pass the gates, with the classifier's own
+    activity in the box; (2) does the live classifier agree with a replay of its own trace (it runs the same
+    code, so a disagreement means the counters or the loop are wrong); (3) what did sampler + classifier + shim
+    cost (a Python upper bound: PROVISIONAL, reported, never a reason to excuse a gate)."""
+    run = Run.load(run_dir, key=os.path.basename(os.path.normpath(run_dir)))
+    check_scale([run], pipeline_check)
+    cl = run.meta.get("closed_loop")
+    if not cl:
+        sys.exit("%s was not recorded with --closed-loop" % run_dir)
+    c = Config(**cl["config"])
+    window_s = cl["window_s"]
+    live = live_verdicts(os.path.join(run_dir, "verdicts.jsonl"))
+    replay = verdict_series(c, run.feats(c.interval, c.exclusions), window_s)
+    start, end = run.truth[0]["start"], run.truth[-1]["end"]
+    diff = mismatch(live, replay, start, start, end - start)
+    footer = run.footer or {}
+    cost = ((footer.get("cpu_s") or 0.0) + (run.meta.get("shim_cpu_s") or 0.0)) / max(footer.get("wall_s") or 1.0, 1e-9)
+    results = gates.evaluate(live, run.intervals(), c.interval, window_s, d3_fallback=False)
+    bad = failed(results)
+    return {"run": run.key, "scenario": run.scenario, "config": config_key(c), "window_s": window_s,
+            "gates": {g: v for g, (v, _) in results.items()}, "failed": bad,
+            "live_vs_replay_mismatch": diff, "agrees_with_replay": diff <= CLOSED_LOOP_MAX_MISMATCH,
+            "self_cost_fraction": cost, "self_cost_provisional_pass": cost <= COST_LIMIT,
+            "busy_ticks": sum(1 for _, v in live if v == BUSY), "pipeline_check": pipeline_check,
+            "passes": not bad and diff <= CLOSED_LOOP_MAX_MISMATCH}
+
+
 def load_tuning(root, pipeline_check=False):
     rows = load_jsonl(os.path.join(root, "manifest.jsonl"))
     runs, excluded = [], []
@@ -624,11 +674,16 @@ def load_tuning(root, pipeline_check=False):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("set", choices=("tuning",))
+    ap.add_argument("set", choices=("tuning", "closed-loop"))
+    ap.add_argument("--run", help="closed-loop: the run directory to check")
     ap.add_argument("--root", default=os.path.join(HERE, "traces", "tuning"))
     ap.add_argument("--out", default=os.path.join(HERE, "results"))
     ap.add_argument("--pipeline-check", action="store_true", help="allow scaled runs; output is stamped, not a result")
     args = ap.parse_args()
+    if args.set == "closed-loop":
+        out = closed_loop_check(args.run, args.pipeline_check)
+        print(json.dumps(out, indent=1))
+        sys.exit(0 if out["passes"] else 1)
     runs, excluded = load_tuning(args.root, args.pipeline_check)
     matrix = load_cost_matrix()
     summaries, d3 = evaluate_all(runs, all_configs(), matrix, progress=print)

@@ -56,6 +56,8 @@ class PtySession:
             fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))  # a 0x0 pty breaks TUIs
             os.execvp("bash", ["bash", "--norc", "--noprofile"])
         self.alive = True
+        self.out_cum = self.in_cum = 0  # what the agent, which owns the pty, would count; read by live.py
+        self.last_in = None
         self.thread = threading.Thread(target=self._drain, daemon=True)
         self.thread.start()
 
@@ -72,11 +74,14 @@ class PtySession:
                 break
             with self.lock:
                 self.log.append({"t": time.monotonic(), "d": "out", "n": len(data)})
+                self.out_cum += len(data)
 
     def send(self, text):
         os.write(self.fd, text.encode())
         with self.lock:
-            self.log.append({"t": time.monotonic(), "d": "in", "n": len(text)})
+            self.last_in = time.monotonic()
+            self.log.append({"t": self.last_in, "d": "in", "n": len(text)})
+            self.in_cum += len(text)
 
     def close(self):
         self.alive = False
@@ -148,6 +153,31 @@ class Context:
         s.close()
 
 
+def publish_counters(session, ctx, path, stop):
+    """Closed loop only: the pty counters and the agent-owned operation count, as the agent would hold them,
+    written atomically a few times a second for live.py."""
+    while not stop.is_set():
+        with session.lock:
+            row = {"t": time.monotonic(), "out": session.out_cum, "in": session.in_cum, "last_in": session.last_in}
+        events = list(ctx.lifecycle)
+        row["starts"] = sum(1 for e in events if e["event"] == "start")
+        row["open"] = row["starts"] - sum(1 for e in events if e["event"] == "end")
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(row, f)
+        os.replace(tmp, path)
+        stop.wait(0.2)
+
+
+def start_shim(interval, verdict_file):
+    """The item-5-shaped shim as `wr-wakeshim` (a symlink to sh: the name boundary.md excludes by)."""
+    link = "/usr/local/bin/wr-wakeshim"
+    if not os.path.exists(link):
+        os.symlink("/bin/sh", link)
+    return subprocess.Popen([link, os.path.join(HERE, "scenarios", "tools", "wakeshim.sh"), str(interval),
+                             verdict_file])
+
+
 def load_module(scenario_id):
     try:
         return importlib.import_module("scenarios.s_%s" % scenario_id)
@@ -173,17 +203,34 @@ def run(args):
     session = PtySession(pty_log)
     with open(roots, "w") as f:
         json.dump([session.pid], f)
-    sampler = subprocess.Popen([sys.executable, os.path.join(HERE, "sampler.py"), "--out", trace,
-                                "--interval", str(args.interval), "--roots-file", roots,
-                                "--ss-every", str(args.ss_every)])
+    closed = json.loads(args.closed_loop) if args.closed_loop else None
+    shim = None
+    stop_counters = threading.Event()
+    ctx = Context(session, None, args.scale, args.compressed, args.out)
+    if closed:  # the real classifier and shim run in the box, at the real cadence (F7)
+        counters = os.path.join(args.out, "counters.json")
+        verdict_file = os.path.join(args.out, "verdict")
+        threading.Thread(target=publish_counters, args=(session, ctx, counters, stop_counters), daemon=True).start()
+        time.sleep(0.3)
+        sampler = subprocess.Popen([
+            sys.executable, os.path.join(HERE, "live.py"), "--out", trace, "--interval", str(args.interval),
+            "--roots-file", roots, "--ss-every", str(args.ss_every), "--config", json.dumps(closed["config"]),
+            "--window", str(closed["window_s"]), "--counters", counters,
+            "--verdicts", os.path.join(args.out, "verdicts.jsonl"), "--verdict-file", verdict_file])
+        shim = start_shim(args.interval, verdict_file)
+    else:
+        sampler = subprocess.Popen([sys.executable, os.path.join(HERE, "sampler.py"), "--out", trace,
+                                    "--interval", str(args.interval), "--roots-file", roots,
+                                    "--ss-every", str(args.ss_every)])
+    ctx.sampler = sampler
     # A couple of samples before the first phase, so the series has a start. With a jitter seed the wait varies
     # by up to one interval, so repeats do not all start their work at the same point of the sampler's tick.
     preroll = args.interval * 2 + (random.Random(args.jitter_seed).uniform(0, args.interval)
                                    if args.jitter_seed is not None else 0.0)
     time.sleep(preroll)
 
-    ctx = Context(session, sampler, args.scale, args.compressed, args.out)
     truth = []
+    shim_cpu = [None]
     if args.mode == "attached":  # a client is present: it resizes the window now and then, as a GUI does
         threading.Thread(target=resizer, args=(session,), daemon=True).start()
     try:
@@ -203,8 +250,14 @@ def run(args):
             p.kill()
         session.close()
         time.sleep(args.interval)  # a sample after the session has gone
+        stop_counters.set()
+        sampler.send_signal(signal.SIGCONT)  # a scenario may have left it stopped (scenario 18)
         sampler.send_signal(signal.SIGTERM)
         sampler.wait(timeout=30)
+        if shim is not None:
+            shim.send_signal(signal.SIGTERM)
+            _, _, usage = os.wait4(shim.pid, 0)  # its own CPU plus the `cat`/`sleep`/`touch` it forked
+            shim_cpu[0] = usage.ru_utime + usage.ru_stime
 
     with open(os.path.join(args.out, "truth.jsonl"), "w") as f:
         for row in truth + ctx.extra_truth:
@@ -223,7 +276,7 @@ def run(args):
     with open(os.path.join(args.out, "meta.json"), "w") as f:
         json.dump({"scenario": scenario.id, "name": scenario.name, "mode": args.mode, "scale": args.scale,
                    "compressed": args.compressed, "interval": args.interval, "ss_every": args.ss_every,
-                   "variant": ctx.variant, "jitter_seed": args.jitter_seed, "preroll": preroll, "sampler": footer, "pty_events": len(pty_log)}, f, indent=2)
+                   "closed_loop": closed, "shim_cpu_s": shim_cpu[0], "variant": ctx.variant, "jitter_seed": args.jitter_seed, "preroll": preroll, "sampler": footer, "pty_events": len(pty_log)}, f, indent=2)
     print("ok %s -> %s (sampler cpu %.3f%% of a core)" %
           (scenario.id, args.out, 100 * (footer.get("cpu_fraction") or 0)))
 
@@ -237,6 +290,9 @@ def main():
     ap.add_argument("--mode", choices=("detached", "attached"), default="detached")
     ap.add_argument("--jitter-seed", type=int, default=None,
                     help="vary the pre-roll by up to one interval, deterministically per seed (repeats)")
+    ap.add_argument("--closed-loop", default=None,
+                    help='JSON {"config": <analyze.Config fields>, "window_s": N}: run the real classifier and '
+                         'shim in the box instead of the plain sampler (F7)')
     ap.add_argument("--compressed", action="store_true")
     ap.add_argument("--scale", type=float, default=1.0,
                     help="multiply every phase duration: PIPELINE CHECKS ONLY, never for a scored run")
