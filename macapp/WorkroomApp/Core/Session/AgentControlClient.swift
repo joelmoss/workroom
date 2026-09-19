@@ -41,7 +41,13 @@ struct AgentControlClient: SessionControlPlane {
   /// Matches `PROTOCOL_VERSION` in the agent's `protocol::envelope`. Bumped together. `negotiate`
   /// on the agent side takes the lower of the two sides' versions for Terminal/Control, so
   /// advertising a newer version here never breaks talking to an older agent left running.
-  static let protocolVersion: UInt16 = 2
+  static let protocolVersion: UInt16 = 3
+  /// `MIN_VCS_VERSION` and `MIN_FILE_VERSION` in the agent's `protocol::envelope`: the first peer
+  /// versions that understand `Service::Vcs` and `Service::File`. Each is checked against a peer's RAW
+  /// greeting version before that service's first envelope — never folded into the negotiated minimum,
+  /// which would refuse Terminal traffic to an older agent that is still running someone's shell.
+  static let minVCSVersion: UInt16 = 2
+  static let minFileVersion: UInt16 = 3
   static let magic: [UInt8] = Array("WRA1".utf8)
 
   enum Service: UInt8 {

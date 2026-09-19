@@ -40,8 +40,21 @@ final class FileTreeModel: ObservableObject {
   private var currentLocation: RepositoryLocation?
   private let runner: StatusCommandRunning
   private let gate: JJSnapshotGate
-  private var watcher: WorkroomFileWatcher?
+  private var watcher: HostFileWatcher?
   private var loadTask: Task<Void, Never>?
+  /// The listing in flight, if any. Cancelling it stops waiting but NOT the work: on the agent path
+  /// the request has already left, and the host keeps listing (and, for jj, holding the working-copy
+  /// lock) until it finishes. So a burst of reloads must not each start their own — that would queue
+  /// N host-side listings behind each other for one screenful of tree. See `reload()`.
+  private struct Listing {
+    let id: UUID
+    let location: RepositoryLocation
+    let task: Task<Void, Never>
+  }
+  private var listing: Listing?
+  /// A reload arrived while `listing` was in flight for the same location: run exactly one more when
+  /// it finishes, so the tree still ends up reflecting the LAST change.
+  private var followUp = false
 
   init(runner: StatusCommandRunning = StatusCommandRunner(), gate: JJSnapshotGate = .shared) {
     self.runner = runner
@@ -50,6 +63,7 @@ final class FileTreeModel: ObservableObject {
 
   deinit {
     loadTask?.cancel()
+    listing?.task.cancel()
     watcher?.stop()
   }
 
@@ -64,6 +78,7 @@ final class FileTreeModel: ObservableObject {
     // never overwritten by `activate(location:)`.
     guard path != currentPath else { return }
     loadTask?.cancel()
+    cancelListing()
     currentPath = path
     expanded = []
     currentLocation = nil
@@ -87,6 +102,7 @@ final class FileTreeModel: ObservableObject {
   func activate(location: RepositoryLocation?) {
     guard currentLocation != location || (location == nil && currentPath != nil) else { return }
     loadTask?.cancel()
+    cancelListing()
     watcher?.stop()
     watcher = nil
     currentLocation = location
@@ -120,33 +136,74 @@ final class FileTreeModel: ObservableObject {
 
   /// Re-list the current target (a manual refresh, or after a watched filesystem change). Keeps the
   /// existing tree visible while the new listing runs.
+  ///
+  /// At most ONE listing per location is in flight, plus at most one follow-up. Each `reload()` used
+  /// to cancel the previous listing and start another, which was free while cancelling killed the
+  /// child process; through the agent it only abandons the wait, so a burst of watch events would
+  /// stack that many listings on the host.
   func reload() {
     guard let location = currentLocation else { return }
     guard location.host == .local else {
       state = .failed(RepositoryRoutingError.unavailable(location.host).localizedDescription)
       return
     }
-    loadTask?.cancel()
-    loadTask = Task { [weak self] in
-      guard let self else { return }
-      let result = await FileTreeModel.list(
-        location: location, runner: self.runner, gate: self.gate)
-      guard !Task.isCancelled, self.currentLocation == location else { return }
-      switch result {
-      case .listing(let paths):
-        self.roots = FileTreeBuilder.build(from: paths)
-        self.state = .loaded
-      case .failed(let error):
-        self.roots = []
-        self.state = .failed(error.localizedDescription)
-      case .unavailable:
-        self.roots = []
-        self.state = .unavailable
-      case .interrupted:
-        // An external kill, not evidence `path` stopped being a repo — leave whatever tree/state
-        // is already showing alone (the same "keep the existing tree visible" contract this
-        // function already promises while a listing is in flight) rather than blanking it.
-        break
+    if let listing, listing.location == location {
+      followUp = true
+      return
+    }
+    cancelListing()
+    startListing(location)
+  }
+
+  private func cancelListing() {
+    listing?.task.cancel()
+    listing = nil
+    followUp = false
+  }
+
+  private func startListing(_ location: RepositoryLocation) {
+    let id = UUID()
+    let task = Task { [weak self, runner, gate] in
+      let result = await FileTreeModel.list(location: location, runner: runner, gate: gate)
+      self?.finishListing(id: id, location: location, result: result)
+    }
+    listing = Listing(id: id, location: location, task: task)
+  }
+
+  private func finishListing(id: UUID, location: RepositoryLocation, result: ListResult) {
+    // Keyed by id, not just location: a listing that was cancelled and replaced by a fresh one for
+    // the SAME location (switch away and back) must not paint or retire its successor. A target that
+    // has since been replaced is dropped too.
+    guard listing?.id == id, currentLocation == location else { return }
+    listing = nil
+    apply(result)
+    if followUp {
+      followUp = false
+      startListing(location)
+    }
+  }
+
+  private func apply(_ result: ListResult) {
+    switch result {
+    case .listing(let paths):
+      roots = FileTreeBuilder.build(from: paths)
+      state = .loaded
+    case .failed(let error):
+      roots = []
+      state = .failed(error.localizedDescription)
+    case .tooLarge:
+      roots = []
+      state = .failed(FileServiceError.listingTruncated.localizedDescription)
+    case .unavailable:
+      roots = []
+      state = .unavailable
+    case .interrupted:
+      // An external kill, not evidence `path` stopped being a repo — leave whatever tree/state
+      // is already showing alone (the same "keep the existing tree visible" contract this
+      // function already promises while a listing is in flight) rather than blanking it. With nothing
+      // showing yet there is nothing to keep, and staying `.loading` would spin for good.
+      if state == .loading {
+        state = .failed("The file listing was interrupted. Reload to try again.")
       }
     }
   }
@@ -162,10 +219,13 @@ final class FileTreeModel: ObservableObject {
   }
 
   private func startWatching(_ path: String) {
-    let watcher = WorkroomFileWatcher(latency: 1.0) { [weak self] changed in
+    let watcher = HostFileWatcher { [weak self] changed, overflow in
       // Ignore pure VCS-internal churn (a jj snapshot under `.jj/`, git writing `.git/`) so the tree
-      // doesn't self-trigger an endless reload; any real working-tree edit still refreshes it.
-      let relevant = changed.contains { !$0.contains("/.git/") && !$0.contains("/.jj/") }
+      // doesn't self-trigger an endless reload; any real working-tree edit still refreshes it. The
+      // paths are ABSOLUTE host paths, so the `/.git/` test needs the leading slash. An `overflow`
+      // batch says some changes are unlisted, so it is relevant whatever the listed paths are.
+      let relevant =
+        overflow || changed.contains { !$0.contains("/.git/") && !$0.contains("/.jj/") }
       if relevant { self?.reload() }
     }
     watcher.start(path: path)
@@ -178,6 +238,9 @@ final class FileTreeModel: ObservableObject {
     case listing([String])
     /// Neither tool yielded a listing for an ordinary reason (not a repo, tool missing).
     case unavailable
+    /// The listing exceeded the capture cap. Distinct from `.unavailable` because the repo is fine and
+    /// the answer is "too many files to list", and never shown as a shortened tree.
+    case tooLarge
     /// A tool's probe was killed by a signal — our own cancellation is caught earlier by the caller
     /// checking `Task.isCancelled`, so reaching this means an EXTERNAL kill (OS memory pressure, a
     /// crash). Distinct from `.unavailable`: this says nothing about whether `path` is a repo, so
@@ -187,33 +250,41 @@ final class FileTreeModel: ObservableObject {
     case failed(RepositoryRoutingError)
   }
 
-  /// Immutable git listing is allowed without registration. The JJ fallback snapshots and must
-  /// acquire the registered shared repository's gate; unknown ownership is an explicit failure.
+  /// Immutable git listing is allowed without registration. The JJ fallback snapshots and needs the
+  /// registered shared repository (its working-copy lock is keyed by it); unknown ownership is an
+  /// explicit failure. WHERE the listing runs — this process, or wr-agent — is `router.files`'s
+  /// decision; the git-then-jj order, and so the fact that a colocated jj repo lists through
+  /// immutable git, is this function's and does not depend on the backend.
   static func list(
     location: RepositoryLocation, runner: StatusCommandRunning,
     gate: JJSnapshotGate = .shared, router: RepositoryRouter = .shared
   ) async -> ListResult {
     guard location.host == .local else { return .failed(.unavailable(location.host)) }
-    let path = location.path
+    let files: FileProviding
+    do {
+      files = try await router.files(for: location, runner: runner, gate: gate)
+    } catch {
+      return .failed(error as? RepositoryRoutingError ?? .unavailable(location.host))
+    }
     var sawSignal = false
     for vcs in [FileListVCS.git, .jj] {
-      let command = FileListing.command(vcs)
       let result: CommandResult
-      if vcs == .jj {
-        guard let shared = router.entry(for: location)?.sharedLocation else {
-          return .failed(.registrationRequired)
-        }
-        result =
-          (try? await gate.run(repository: shared) {
-            await runner.run(command.executable, command.args, in: path, timeout: 10)
-          }) ?? CommandResult(stdout: "", stderr: "", exitCode: 1, timedOut: false)
-      } else {
-        result = await runner.run(command.executable, command.args, in: path, timeout: 10)
+      do {
+        result = try await files.list(vcs)
+      } catch FileServiceError.listingTruncated {
+        return .tooLarge
+      } catch let error as RepositoryRoutingError {
+        return .failed(error)
+      } catch {
+        return .failed(.unavailable(location.host))
       }
       if result.ok { return .listing(FileListing.parse(result.stdout, vcs: vcs)) }
       // A killed probe is not evidence `path` isn't a repo — remember it, but still try the other
       // tool before giving up, exactly as an ordinary failure does.
-      if result.signaled { sawSignal = true }
+      // `timedOut` implies `signaled` (the timeout SIGTERMs the child), and a timeout says nothing
+      // about an EXTERNAL kill — `CommandResult.signaled`'s own doc says to test it first. Left as
+      // `.interrupted` it would also leave a first load spinning forever.
+      if result.signaled && !result.timedOut { sawSignal = true }
     }
     return sawSignal ? .interrupted : .unavailable
   }

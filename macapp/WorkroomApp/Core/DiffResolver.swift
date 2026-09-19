@@ -262,7 +262,7 @@ extension DiffResolver {
       return try? await makeProvider!(root).fileContent(
         root: root, rev: commitID, path: descriptor.path)
     case .gitWorktree, .jjWorkingCopy:
-      return Self.readWorkingFile(path: descriptor.path, in: dir)
+      return await readWorkingFile(path: descriptor.path, in: dir)
     case .jjParent:
       return try? await makeProvider!(root).fileContent(
         root: root, rev: "@-", path: descriptor.path)
@@ -298,9 +298,7 @@ extension DiffResolver {
     switch descriptor.source {
     case .gitWorktree, .jjWorkingCopy:
       guard location.host == .local else { return nil }
-      return try? await runBlocking {
-        Self.readWorkingFile(path: descriptor.path, in: location.path)
-      }
+      return await readWorkingFile(path: descriptor.path, location: location)
     case .commit(let revision):
       return try? await router.reader(for: location).fileContent(
         rev: revision, path: descriptor.path)
@@ -323,31 +321,23 @@ extension DiffResolver {
     }
   }
 
-  /// Read a working-copy file for highlighting, guarded against the traps a syntax parse would
-  /// otherwise hit (a symlink whose *target text* git diffs, a path escaping the workroom, an
-  /// over-cap file). Returns `nil` (⇒ render plain) on any guard failure or non-UTF-8 content.
-  static func readWorkingFile(path: String, in dir: String) -> String? {
-    let root = URL(fileURLWithPath: dir, isDirectory: true)
-    let target = URL(fileURLWithPath: path, relativeTo: root).standardizedFileURL
+  /// Read a working-copy file for highlighting through the file service, or `nil` (⇒ render plain).
+  ///
+  /// Under the `refuse` symlink policy: a symlink's diff is its *target path text*, not file content,
+  /// so parsing it as source would be wrong; and a path that escapes the workroom, a non-regular file
+  /// and an over-cap file are refused the same way. Enforced on the host that holds the file, on the
+  /// opened descriptor — the guards this used to run client-side against a path it then opened
+  /// separately. Non-UTF-8 content also yields `nil`.
+  private func readWorkingFile(path: String, in dir: String) async -> String? {
+    guard let location = try? await RepositoryLocation.local(dir) else { return nil }
+    return await readWorkingFile(path: path, location: location)
+  }
 
-    // Canonical-path containment: resolve symlinks on BOTH sides (consistently — so /tmp→/private
-    // doesn't trip a legit file) and require the real target to live under the real workroom. This
-    // catches an intermediate symlinked directory that would otherwise escape via a string prefix.
-    let realRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
-    let realTarget = target.resolvingSymlinksInPath().standardizedFileURL.path
-    guard realTarget == realRoot || realTarget.hasPrefix(realRoot + "/") else { return nil }
-
-    // lstat the leaf (don't follow symlinks): a symlink's diff is its *target path text*, not file
-    // content, so parsing it as source would be wrong → render plain. Require a regular file.
-    guard
-      let values = try? target.resourceValues(forKeys: [
-        .isSymbolicLinkKey, .isRegularFileKey, .fileSizeKey,
-      ]),
-      values.isSymbolicLink != true,
-      values.isRegularFile == true,
-      let size = values.fileSize, size <= SyntaxLanguage.byteCap
+  private func readWorkingFile(path: String, location: RepositoryLocation) async -> String? {
+    guard let files = try? await router.files(for: location),
+      let data = try? await files.read(
+        path: path, symlinks: .refuse, maxBytes: SyntaxLanguage.byteCap)
     else { return nil }
-
-    return try? String(contentsOf: target, encoding: .utf8)
+    return String(data: data, encoding: .utf8)
   }
 }

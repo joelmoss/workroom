@@ -1,7 +1,8 @@
 import Darwin
 import Foundation
 
-/// A persistent, negotiated VCS channel. Terminal relays keep their existing connections.
+/// A persistent, negotiated service channel — VCS and File share one connection per host. Terminal
+/// relays keep their existing connections.
 /// Blocking socket work runs on GCD. Closing shuts down the descriptor; only deinit closes it,
 /// so an in-flight reader/writer can never act on a recycled descriptor.
 final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
@@ -12,12 +13,34 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   private let lock = NSLock()
   private let writes = DispatchQueue(label: "workroom.agent.vcs.write")
   private var closed = false
+  /// One counter serves BOTH services, on purpose: the agent keys its chunked-request reassembly by
+  /// stream alone, so a VCS request and a File request that shared a number could merge their buffers.
   private var nextStream: UInt32 = 1
   private struct Pending {
     let continuation: CheckedContinuation<Data, Error>
     var bytes = Data()
   }
   private var pending: [UInt32: Pending] = [:]
+  /// Live watch subscriptions, keyed by the client-chosen id the agent echoes in every event. Read by
+  /// `receive()` for each event and cleared by `fail()`, so both hold `lock`.
+  private var watchHandlers: [UInt64: @Sendable (FileWatchEvent) -> Void] = [:]
+  private var nextSubscription: UInt64 = 1
+  /// The peer's raw greeting version. Kept (not just compared once in `connect()`) because the File
+  /// service is gated on it separately from VCS: see `AgentControlClient.minFileVersion`.
+  private let helloVersion: UInt16
+  /// How the File service negotiation ended. Never a failed CONNECTION: VCS works regardless, and
+  /// the agent is kept alive because it may own terminals. The three outcomes are different facts
+  /// with different answers, and folding them together was a bug:
+  /// - `unsupported`: the peer's greeting predates the service (or speaks another File version).
+  ///   `files(context:)` reports `VCSError.backendVersion` and the router falls back to native reads.
+  ///   Permanent for that agent.
+  /// - `failed`: the peer says it has the service and the probe did not come back (timeout, lost
+  ///   budget, garbled reply). Transient, so it must NOT read as an old agent and silently select
+  ///   native access for the connection's whole life; `files(context:)` retires the connection so the
+  ///   next acquisition reconnects and probes again.
+  /// - `ready`.
+  private enum FileNegotiation { case unsupported, failed, ready }
+  private var _fileNegotiation: FileNegotiation = .unsupported
   /// Streams this connection gave up waiting on (request timeout) but whose reply may still
   /// arrive. Tracked so a late reply drains harmlessly instead of `receive()` treating an unknown
   /// stream id as a protocol violation and tearing down every OTHER in-flight request too.
@@ -43,10 +66,14 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// Marks a chunked request envelope. A whole request is JSON and starts `{`, so the two are
   /// unambiguous — see `REQUEST_CHUNK_MARKER`.
   private static let requestChunkMarker: UInt8 = 0x02
+  /// `Service::Vcs` and `Service::File` in the agent's envelope.
+  private static let vcsService: UInt8 = 2
+  private static let fileService: UInt8 = 3
 
-  private init(host: HostID, descriptor: Int32) {
+  private init(host: HostID, descriptor: Int32, helloVersion: UInt16) {
     self.host = host
     self.descriptor = descriptor
+    self.helloVersion = helloVersion
     (disconnection, disconnected) = AsyncStream<Void>.makeStream()
   }
 
@@ -77,16 +104,18 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         try send(fd, Data(AgentControlClient.encodeHello(build: "Workroom VCS")))
         var hello: [UInt8] = []
+        var helloVersion: UInt16 = 0
         let deadline = Date().addingTimeInterval(2)
         while true {
           if let greeting = try AgentControlClient.decodeHello(hello) {
+            helloVersion = greeting.version
             // Checked against the peer's raw greeting, not the negotiated Terminal/Control
             // minimum: a still-running pre-upgrade agent (kept alive because it may own
             // terminals) truthfully reports its own lower version here, and its `dispatch` has no
             // VCS handling at all — it would silently drop the capabilities request that follows,
             // stalling this connect for the full capabilities timeout instead of failing now.
             // Matches `MIN_VCS_VERSION` in the agent's `protocol::envelope`.
-            guard greeting.version >= 2 else {
+            guard greeting.version >= AgentControlClient.minVCSVersion else {
               throw VCSError.backendVersion("Agent predates VCS support.")
             }
             break
@@ -102,7 +131,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
         // agent (mid VCS request on another thread) can leave the socket buffer full past 2s with
         // no fault of its own; a lingering SO_SNDTIMEO would then report that as connection loss.
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        return AgentVCSConnection(host: host, descriptor: fd)
+        return AgentVCSConnection(host: host, descriptor: fd, helloVersion: helloVersion)
       } catch {
         Darwin.close(fd)
         throw error
@@ -119,6 +148,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       // Not yet shared with any other caller, so a plain lock-guarded write is enough — no
       // concurrent reader can observe a half-set value.
       connection.lock.withLock { connection._capabilities = capabilities }
+      await connection.negotiateFiles()
       return connection
     } catch HostConnectionError.connectionLost {
       // Rethrown UNCHANGED, not wrapped. `LocalAgentVCS` catches exactly this case to spawn wr-agent
@@ -176,9 +206,104 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     return try BoundLocalWriter(context: context, reader: reader, writer: engine)
   }
 
-  /// One envelope: the `Service.vcs` byte, the stream, the payload length, then the payload.
-  private static func envelope(stream: UInt32, payload: Data) -> Data {
-    var envelope = Data([2])
+  /// Probe the File service, if the peer's greeting says it exists. Runs once in `connect()`, before
+  /// this connection is shared, and NEVER fails it: an agent that predates the service, or one whose
+  /// probe is unanswered or unreadable, leaves VCS fully working and just has no file service —
+  /// reported later as `VCSError.backendVersion`, which the router already falls back to native on.
+  /// (The alternative — failing `connect()` — would take VCS down with it, and the agent is kept
+  /// alive precisely because it may own terminals, so that is not a state the user can fix.)
+  ///
+  /// Probed on `Service::File` itself, never through the VCS `capabilities` reply, whose `reads`
+  /// count is compared for equality by every existing client.
+  private func negotiateFiles() async {
+    // Against the peer's RAW greeting, before any File envelope: a protocol-2 agent silently drops
+    // them, so the probe would otherwise wait out its whole timeout.
+    guard helloVersion >= AgentControlClient.minFileVersion else { return }
+    let outcome: FileNegotiation
+    do {
+      let reply = try await request(
+        AgentFileRequest(method: "capabilities"), timeout: 2, service: Self.fileService)
+      let capabilities = try AgentFileReply<AgentFileCapabilities>.decode(reply)
+      outcome = capabilities.version == 1 ? .ready : .unsupported
+    } catch {
+      outcome = .failed
+    }
+    lock.withLock { _fileNegotiation = outcome }
+  }
+
+  func files(context: FileContext) throws -> FileProviding {
+    guard context.location.host == host else { throw HostConnectionError.mismatchedContext }
+    guard lock.withLock({ !closed }) else { throw HostConnectionError.connectionLost }
+    switch lock.withLock({ _fileNegotiation }) {
+    case .ready:
+      return AgentFileProvider(context: context, connection: self)
+    case .unsupported:
+      throw VCSError.backendVersion("Agent does not support the file service.")
+    case .failed:
+      Task { await close() }
+      throw HostConnectionError.serviceUnavailable("File service negotiation failed; reconnecting.")
+    }
+  }
+
+  /// A File request: one envelope, never chunked (the agent does not reassemble them).
+  ///
+  /// 45s, not the VCS default of 30: a jj listing can legitimately spend 30s waiting for the
+  /// working-copy lock and then up to 10s running, and a client that gives up first leaves the agent
+  /// thread (and its shared request slot) queued on the lock while the caller starts another.
+  func fileRequest(_ request: AgentFileRequest, timeout: TimeInterval = 45) async throws -> Data {
+    try await self.request(request, timeout: timeout, service: Self.fileService)
+  }
+
+  /// Subscribe to filesystem changes under `root`. The handler is registered BEFORE the request is
+  /// sent: events follow the acknowledgement on the same socket, and one that arrived while this
+  /// method was still resuming from its `await` would find no handler and be lost.
+  func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
+    -> FileWatchHandle
+  {
+    let id: UInt64 = try lock.withLock {
+      guard !closed else { throw HostConnectionError.connectionLost }
+      let id = nextSubscription
+      nextSubscription += 1
+      watchHandlers[id] = onEvent
+      return id
+    }
+    do {
+      let reply = try await fileRequest(
+        AgentFileRequest(method: "watch", root: root, subscription: id))
+      _ = try AgentFileReply<AgentFileSubscription>.decode(reply)
+    } catch {
+      lock.withLock { _ = watchHandlers.removeValue(forKey: id) }
+      // The request may have left before it failed here (a cancellation or a timeout after the send),
+      // in which case the agent is holding a watcher nobody will ever unsubscribe. `unwatch` is
+      // idempotent on the agent, so asking is harmless when it never registered.
+      Task.detached { [weak self] in await self?.sendUnwatch(id) }
+      throw error
+    }
+    // Detached, so a CANCELLED caller still sends the unwatch: `request` starts with
+    // `Task.checkCancellation()`, and a `stop()` cancels the very task that then runs this. Without
+    // the detach every stop/start cycle would leak an agent-side watcher until the connection ended,
+    // and rapid workroom switching would walk into the per-connection subscription cap.
+    return FileWatchHandle { [weak self] in
+      await Task.detached { await self?.unwatch(id) }.value
+    }
+  }
+
+  /// Handler first, then the request: from this line on a late event for `id` is dropped by
+  /// `receive()` rather than delivered to a caller that has stopped listening. Best effort after that —
+  /// if the connection is gone the agent has already torn the subscription down with it.
+  private func unwatch(_ id: UInt64) async {
+    let known = lock.withLock { watchHandlers.removeValue(forKey: id) != nil }
+    guard known else { return }
+    await sendUnwatch(id)
+  }
+
+  private func sendUnwatch(_ id: UInt64) async {
+    _ = try? await fileRequest(AgentFileRequest(method: "unwatch", subscription: id), timeout: 5)
+  }
+
+  /// One envelope: the service byte, the stream, the payload length, then the payload.
+  private static func envelope(service: UInt8 = vcsService, stream: UInt32, payload: Data) -> Data {
+    var envelope = Data([service])
     for value in [stream, UInt32(payload.count)] {
       var value = value.bigEndian
       withUnsafeBytes(of: &value) { envelope.append(contentsOf: $0) }
@@ -209,9 +334,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
 
   func close() async { fail(HostConnectionError.connectionLost) }
 
-  func request<Request: Encodable>(_ request: Request, timeout: TimeInterval = 30) async throws
-    -> Data
-  {
+  func request<Request: Encodable>(
+    _ request: Request, timeout: TimeInterval = 30, service: UInt8 = 2
+  ) async throws -> Data {
     try Task.checkCancellation()
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -227,7 +352,10 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     // agent would read the marker byte as the start of a JSON document and answer with a parse
     // error. Below the ceiling nothing changes — the envelope is byte-identical to what shipped
     // before, so the common path pays nothing for this.
-    let chunked = bytes.count > Self.maxEnvelopePayload
+    let chunked = service == Self.vcsService && bytes.count > Self.maxEnvelopePayload
+    if service != Self.vcsService && bytes.count > Self.maxEnvelopePayload {
+      throw FileServiceError.failed("File request is too large.")
+    }
     if chunked {
       guard let exec = capabilities?.exec, exec >= Self.chunkedRequestVersion else {
         throw VCSError.partialData("VCS request is too large for this agent.")
@@ -275,7 +403,8 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           guard lock.withLock({ !closed }) else { return }
           do {
             for payload in Self.payloads(for: bytes, chunked: chunked) {
-              try Self.send(descriptor, Self.envelope(stream: stream, payload: payload))
+              try Self.send(
+                descriptor, Self.envelope(service: service, stream: stream, payload: payload))
             }
           } catch {
             fail(error)
@@ -311,14 +440,29 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           let header = Array(buffer.prefix(9))
           let stream = header[1..<5].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
           let length = header[5..<9].reduce(0) { ($0 << 8) | Int($1) }
-          guard header[0] == 2, stream > 0, length > 0, length <= 1 << 20 else {
-            throw HostConnectionError.serviceUnavailable("Invalid VCS envelope.")
+          let service = header[0]
+          // Stream 0 is the agent's own: File-service events, never a reply. On the VCS service it
+          // has always been a violation and still is.
+          let streamIsValid = stream > 0 || service == Self.fileService
+          guard service == Self.vcsService || service == Self.fileService, streamIsValid,
+            length > 0, length <= 1 << 20
+          else {
+            throw HostConnectionError.serviceUnavailable("Invalid agent envelope.")
           }
           guard buffer.count >= 9 + length else { break }
           let payload = Data(buffer.dropFirst(9).prefix(length))
           buffer = Data(buffer.dropFirst(9 + length))
           guard payload.first == 0 || payload.first == 1 else {
-            throw HostConnectionError.serviceUnavailable("Invalid VCS chunk.")
+            throw HostConnectionError.serviceUnavailable("Invalid agent chunk.")
+          }
+          if stream == 0 {
+            // An event is always ONE final envelope; the agent never chunks one, so a continuation
+            // here means the two sides disagree about the protocol.
+            guard payload.first == 1 else {
+              throw HostConnectionError.serviceUnavailable("Invalid file event chunk.")
+            }
+            deliver(event: payload.dropFirst())
+            continue
           }
           var completed: Pending?
           let valid = lock.withLock {
@@ -356,6 +500,20 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     } catch { fail(error) }
   }
 
+  /// Hand one agent-initiated event to the subscription it names. An unknown id — an unsubscribe
+  /// racing an event already in flight — is dropped: it is the normal shape of that race, not a
+  /// protocol violation, and treating it as one would fail every other request on the connection. An
+  /// undecodable or unrecognized event is dropped too, for forward compatibility.
+  private func deliver(event payload: Data) {
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    guard let wire = try? decoder.decode(AgentFileEvent.self, from: payload),
+      let event = wire.model
+    else { return }
+    let handler = lock.withLock { watchHandlers[wire.subscription] }
+    handler?(event)
+  }
+
   /// Only this request's reply is overdue — every other in-flight request and the connection
   /// itself stay usable. Matches the design's own "never replay any request" rule: this fails the
   /// wait, not the underlying operation, so a reply that does eventually arrive is drained, never
@@ -370,17 +528,23 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   }
 
   private func fail(_ error: Error) {
-    let failed: [Pending]? = lock.withLock {
-      guard !closed else { return nil }
-      closed = true
-      let values = Array(pending.values)
-      pending.removeAll()
-      abandoned.removeAll()
-      shutdown(descriptor, SHUT_RDWR)
-      return values
-    }
+    let failed: (pending: [Pending], watchers: [@Sendable (FileWatchEvent) -> Void])? =
+      lock.withLock {
+        guard !closed else { return nil }
+        closed = true
+        let values = Array(pending.values)
+        let watchers = Array(watchHandlers.values)
+        pending.removeAll()
+        abandoned.removeAll()
+        watchHandlers.removeAll()
+        shutdown(descriptor, SHUT_RDWR)
+        return (values, watchers)
+      }
     guard let failed else { return }
-    for operation in failed { operation.continuation.resume(throwing: error) }
+    for operation in failed.pending { operation.continuation.resume(throwing: error) }
+    // Outside the lock: a handler is caller code. Every subscription learns its watch is gone, so it
+    // can resubscribe on the next generation and refresh whatever it was showing.
+    for watcher in failed.watchers { watcher(.lost) }
     disconnected.finish()
   }
 }

@@ -918,7 +918,9 @@ extension AppStore {
   /// from THIS lane runs at a time — it does NOT by itself prevent this probe's jj snapshot from
   /// overlapping the sweep's or the selection-refresh's for the same project; that cross-lane
   /// ordering is `JJSnapshotGate`'s job (via `WorkroomStatusResolver.resolveLocal`).
-  func handleWorkroomFileChange(_ paths: [String]) {
+  /// `overflow` means some changes are unlisted (or the watch was interrupted and resumed), so `paths`
+  /// cannot be trusted to be complete and the jj-internal filter below must not apply.
+  func handleWorkroomFileChange(_ paths: [String], overflow: Bool = false) {
     guard !UITestFixture.isActive, let sid = selectedTargetID,
       let item = selectedStatusWorkItem(for: sid), item.permitsLocalAccess
     else { return }
@@ -935,7 +937,9 @@ extension AppStore {
     // A jj *local* probe snapshots `@` (writes under `.jj/`), which would itself trip the watcher —
     // an endless refresh loop. So ignore a burst that touched ONLY jj-internal paths. (git probes are
     // read-only, and `.git/index` changes from `git add` are real signal, so git events pass through.)
-    if item.vcs == "jj", !paths.isEmpty, paths.allSatisfy(Self.isJJInternalPath) { return }
+    if item.vcs == "jj", !overflow, !paths.isEmpty, paths.allSatisfy(Self.isJJInternalPath) {
+      return
+    }
     let resolver = statusResolver
     watchRefreshTask?.cancel()
     watchRefreshTask = Task { [weak self] in

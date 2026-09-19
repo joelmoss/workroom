@@ -25,6 +25,10 @@ final class PaneTitleBarUITests: XCTestCase {
       app.launchArguments += ["-WorkroomUITestWindowFrame", NSStringFromRect(windowFrame)]
     }
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    // Some tests here open the LAST changed-file row (`legacy_user.rb`, the ninth). With the default
+    // equal-height inspector sections only the first five rows are visible; a click on a scrolled-out
+    // row lands on the pane drawn over its accessibility frame. Give Changes the room.
+    app.launchArguments += ["-WorkroomUITestInspectorWeights", "6,1,1,1"]
     app.launch()
     return app
   }
