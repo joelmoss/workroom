@@ -197,49 +197,122 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(WorkroomStatusResolver.failure(for: .io("boom")), .notRepository)
   }
 
-  // MARK: - resolveCI (end-to-end via the mock)
+  // MARK: - resolveCI (by repository identity)
+
+  private let repo = GitHubRepository(host: "github.com", owner: "octo", name: "repo")!
+  private let sha = "0123456789abcdef0123456789abcdef01234567"
+  private let rollupPassing =
+    #"{"data":{"repository":{"object":{"statusCheckRollup":{"state":"SUCCESS"}}}}}"#
 
   func testResolveCIPassing() async {
     let r = WorkroomStatusResolver(
       runner: MockStatusRunner { exe, args in
-        if exe == "git", args.contains("rev-parse") { return ok("HEADSHA\n") }
-        if exe == "gh", args.contains("repo") { return ok("octo/repo\n") }
-        if exe == "gh", args.contains("graphql") {
-          return ok(
-            #"{"data":{"repository":{"object":{"statusCheckRollup":{"state":"SUCCESS"}}}}}"#)
-        }
-        return ok("")
+        (exe == "gh" && args.contains("graphql")) ? ok(self.rollupPassing) : ok("")
       })
-    let res = await r.resolveCI(path: existing, vcs: "git", projectRoot: existing, branch: "main")
+    let res = await r.resolveCI(repo: repo, commit: sha)
     XCTAssertEqual(res, .state(.passing))
   }
 
-  /// `nameWithOwner` passed in (the sweep's per-project cache) ⇒ no inline `gh repo view`; the rollup
-  /// query is keyed by the resolved HEAD sha.
-  func testResolveCIUsesCachedNameWithOwner() async {
-    let runner = RecordingStatusRunner { exe, args in
-      if exe == "git", args.contains("rev-parse") { return ok("HEADSHA\n") }
-      if exe == "gh", args.contains("graphql") {
-        return ok(#"{"data":{"repository":{"object":{"statusCheckRollup":{"state":"FAILURE"}}}}}"#)
-      }
-      return ok("")
+  /// A probe names its repository and commit and runs in a neutral directory — nothing in it depends
+  /// on a working directory, so a repository with no local checkout resolves the same way. Exactly
+  /// ONE call: no `gh repo view`, no git.
+  func testResolveCINamesRepositoryAndCommitInNeutralDirectory() async {
+    let runner = RecordingStatusRunner { _, _ in
+      ok(#"{"data":{"repository":{"object":{"statusCheckRollup":{"state":"FAILURE"}}}}}"#)
     }
     let r = WorkroomStatusResolver(runner: runner)
-    let res = await r.resolveCI(
-      path: existing, vcs: "git", projectRoot: existing, branch: "main", nameWithOwner: "octo/repo")
+    let res = await r.resolveCI(repo: repo, commit: sha)
     XCTAssertEqual(res, .state(.failing))
-    XCTAssertFalse(runner.calls.contains { $0.exe == "gh" && $0.args.contains("repo") })
-    let gh = runner.calls.first { $0.exe == "gh" && $0.args.contains("graphql") }
-    XCTAssertTrue(gh?.args.contains { $0.contains("HEADSHA") } ?? false)  // keyed by the tip sha
+    XCTAssertEqual(runner.calls.count, 1)
+    let gh = runner.calls[0]
+    XCTAssertEqual(gh.exe, "gh")
+    XCTAssertEqual(gh.dir, NSTemporaryDirectory())
+    XCTAssertEqual(Array(gh.args.prefix(4)), ["api", "--hostname", "github.com", "graphql"])
+    let query = gh.args.first { $0.hasPrefix("query=") } ?? ""
+    XCTAssertTrue(query.contains("owner:\"octo\""), query)
+    XCTAssertTrue(query.contains("name:\"repo\""), query)
+    XCTAssertTrue(query.contains(sha), query)
   }
 
-  func testResolveCINoGitBackingIsAbsent() async {
-    let r = WorkroomStatusResolver(
-      runner: MockStatusRunner { _, _ in
-        CommandResult(stdout: "", stderr: "not a repo", exitCode: 128, timedOut: false)
-      })
-    let res = await r.resolveCI(path: existing, vcs: "git", projectRoot: existing, branch: "main")
-    XCTAssertEqual(res, .absent)  // no git HEAD → no CI
+  /// The commit is interpolated into the GraphQL query, so anything that is not a hex object id is
+  /// refused before a process is spawned.
+  func testResolveCIRefusesANonCommit() async {
+    let runner = RecordingStatusRunner { _, _ in ok(self.rollupPassing) }
+    let r = WorkroomStatusResolver(runner: runner)
+    for bad in ["", "HEADSHA", "abc", "0123456\"){x", String(repeating: "a", count: 65)] {
+      let res = await r.resolveCI(repo: repo, commit: bad)
+      XCTAssertEqual(res, .absent, "commit \(bad)")
+    }
+    XCTAssertTrue(runner.calls.isEmpty)
+  }
+
+  /// An Enterprise host reaches BOTH the `--hostname` of `gh api` and the `--repo` of `gh pr`,
+  /// because a neutral directory can no longer supply it from a git remote.
+  func testEnterpriseHostReachesEveryProbe() async {
+    let ghe = GitHubRepository(host: "ghe.example.com", owner: "o", name: "r")!
+    let runner = RecordingStatusRunner { exe, args in
+      args.contains("graphql") ? ok(self.rollupPassing) : ok("[]")
+    }
+    let r = WorkroomStatusResolver(runner: runner)
+    _ = await r.resolveCI(repo: ghe, commit: sha)
+    _ = await r.resolvePRRaw(repo: ghe, branch: "main")
+    _ = await r.resolveChecks(repo: ghe, number: 4)
+    _ = await r.runPRCommand(["pr", "close", "4"], repo: ghe)
+    let calls = runner.calls
+    XCTAssertEqual(calls.count, 4)
+    XCTAssertEqual(Array(calls[0].args.prefix(3)), ["api", "--hostname", "ghe.example.com"])
+    for call in calls.dropFirst() {
+      XCTAssertEqual(Array(call.args.suffix(2)), ["--repo", "ghe.example.com/o/r"], "\(call.args)")
+    }
+    XCTAssertTrue(calls.allSatisfy { $0.dir == NSTemporaryDirectory() })
+  }
+
+  // MARK: - resolveRepository (the one probe that still reads a directory)
+
+  func testResolveRepositoryFoundReadsTheRemoteURL() async {
+    let runner = RecordingStatusRunner { _, _ in ok("https://github.com/octo/repo\n") }
+    let r = WorkroomStatusResolver(runner: runner)
+    let res = await r.resolveRepository(in: "/proj")
+    XCTAssertEqual(res, .found(repo))
+    XCTAssertEqual(runner.calls.first?.dir, "/proj")  // the ONE call that needs a directory
+    XCTAssertEqual(runner.calls.first?.args, ["repo", "view", "--json", "url", "-q", ".url"])
+  }
+
+  /// REGRESSION. The PR panel, checks list and CI badge all depend on this answer now, and they used
+  /// to survive a transient `gh` failure through `ghPreflight`. A lookup that collapsed every failure
+  /// into "no repository" would blank a good panel on a blip.
+  func testResolveRepositoryClassifiesFailuresLikeEveryOtherGhProbe() async {
+    func lookup(_ result: CommandResult) async -> GitHubRepositoryResolution {
+      await WorkroomStatusResolver(runner: MockStatusRunner { _, _ in result })
+        .resolveRepository(in: "/proj")
+    }
+    let timedOut = CommandResult(
+      stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true)
+    let killed = CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
+    let rateLimited = CommandResult(
+      stdout: "", stderr: "API rate limit exceeded", exitCode: 1, timedOut: false)
+    let unavailable = CommandResult(
+      stdout: "", stderr: "HTTP 503", exitCode: 1, timedOut: false)
+    let notInstalled = CommandResult(
+      stdout: "", stderr: "", exitCode: CommandResult.commandNotFound, timedOut: false)
+    let noRemote = CommandResult(
+      stdout: "", stderr: "no git remotes found", exitCode: 1, timedOut: false)
+    var results: [String: GitHubRepositoryResolution] = [:]
+    results["timedOut"] = await lookup(timedOut)
+    results["killed"] = await lookup(killed)
+    results["rateLimited"] = await lookup(rateLimited)
+    results["unavailable"] = await lookup(unavailable)
+    results["notInstalled"] = await lookup(notInstalled)
+    results["noRemote"] = await lookup(noRemote)
+    results["empty"] = await lookup(ok(""))
+    results["malformed"] = await lookup(ok("git@github.com:octo/repo.git"))
+    XCTAssertEqual(
+      results,
+      [
+        "timedOut": .keepPrior, "killed": .keepPrior, "rateLimited": .keepPrior,
+        "unavailable": .keepPrior, "notInstalled": .absent, "noRemote": .absent,
+        "empty": .absent, "malformed": .absent,
+      ])
   }
 
   // MARK: - classifyPR
@@ -509,7 +582,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
         if args.contains("pr") { return ok(prJSON) }
         return ok("")
       })
-    let res = await r.resolvePR(path: existing, vcs: "git", projectRoot: existing, branch: "main")
+    let res = await resolvePR(r, branch: "main")
     guard case .info(let pr) = res else { return XCTFail("expected .info") }
     func url(_ id: String) -> String? { pr.reviewers.first { $0.id == id }?.url }
     XCTAssertEqual(url("user:iainad"), "https://x/9#pullrequestreview-7")  // submitted → linked
@@ -524,7 +597,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
       (exe == "gh" && args.contains("pr")) ? ok(prJSON) : ok("")
     }
     let r = WorkroomStatusResolver(runner: runner)
-    let res = await r.resolvePR(path: existing, vcs: "git", projectRoot: existing, branch: "main")
+    let res = await resolvePR(r, branch: "main")
     guard case .info(let pr) = res else { return XCTFail("expected .info") }
     XCTAssertNil(pr.reviewers.first?.url)
     XCTAssertFalse(runner.calls.contains { $0.args.contains("graphql") })
@@ -542,7 +615,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
         if exe == "gh", args.contains("pr") { return ok(prJSON) }
         return ok("")
       })
-    let res = await r.resolvePR(path: existing, vcs: "git", projectRoot: existing, branch: "main")
+    let res = await resolvePR(r, branch: "main")
     guard case .info(let pr) = res else { return XCTFail("expected .info") }
     XCTAssertEqual(pr.reviewers.first?.id, "user:iainad")
     XCTAssertNil(pr.reviewers.first?.url)
@@ -557,96 +630,43 @@ final class WorkroomStatusResolverTests: XCTestCase {
       runner: MockStatusRunner { exe, args in
         (exe == "gh" && args.contains("pr")) ? ok(json) : ok("")
       })
-    let res = await r.resolvePR(path: existing, vcs: "git", projectRoot: existing, branch: "main")
+    let res = await resolvePR(r, branch: "main")
     guard case .info(let pr) = res else { return XCTFail("expected .info") }
     XCTAssertEqual(pr.number, 9)
     XCTAssertEqual(pr.reviewDecision, .approved)
   }
 
-  func testResolvePRNoBranchIsAbsent() async {
-    // branch nil + git symbolic-ref fails (detached) → no branch → absent, never calls gh.
-    let r = WorkroomStatusResolver(
-      runner: MockStatusRunner { exe, args in
-        if exe == "git", args.contains("symbolic-ref") {
-          return CommandResult(stdout: "", stderr: "", exitCode: 1, timedOut: false)
-        }
-        return ok("[]")
-      })
-    let res = await r.resolvePR(path: existing, vcs: "git", projectRoot: existing, branch: nil)
-    XCTAssertEqual(res, .absent)
+  /// `gh pr list` for a branch, then the reviewer-permalink enrichment — what a selection refresh does.
+  private func resolvePR(_ r: WorkroomStatusResolver, branch: String) async -> PRResolution {
+    await r.enrichPR(await r.resolvePRRaw(repo: repo, branch: branch), repo: repo)
   }
 
-  // MARK: - resolveCI / resolvePR for jj (gh runs from the colocated project root)
-
-  func testResolveCIJJProbesProjectRootWithBookmarkSha() async {
-    // jj's `commit_id` for the bookmark is the git sha the rollup query is keyed on.
-    let runner = RecordingStatusRunner { exe, _ in
-      if exe == "jj" { return ok("JJSHA\n") }  // `jj log -r <bookmark> -T commit_id`
-      if exe == "gh" {
-        return ok(#"{"data":{"repository":{"object":{"statusCheckRollup":{"state":"SUCCESS"}}}}}"#)
-      }
-      return ok("")
-    }
-    let r = WorkroomStatusResolver(runner: runner)
-    let res = await r.resolveCI(
-      path: "/proj/ws", vcs: "jj", projectRoot: "/proj", branch: "feature/login",
-      nameWithOwner: "octo/repo")
-    XCTAssertEqual(res, .state(.passing))
-    // gh must run from the colocated project root (the workspace has no `.git`), keyed by the
-    // bookmark's commit sha.
-    let gh = runner.calls.first { $0.exe == "gh" }
-    XCTAssertEqual(gh?.dir, "/proj")
-    XCTAssertTrue(gh?.args.contains { $0.contains("JJSHA") } ?? false)
-    // the commit-id probe runs in the workspace itself (jj resolves the workspace from cwd)
-    let jj = runner.calls.first { $0.exe == "jj" }
-    XCTAssertEqual(jj?.dir, "/proj/ws")
-    XCTAssertFalse(runner.calls.contains { $0.exe == "git" })  // never shells git in the workspace
-  }
-
-  func testResolveCIJJNoBookmarkIsAbsent() async {
-    // No bookmark resolved upstream (branch nil) → no branch → absent, never calls jj or gh.
-    let runner = RecordingStatusRunner { _, _ in ok("") }
-    let r = WorkroomStatusResolver(runner: runner)
-    let res = await r.resolveCI(path: "/proj/ws", vcs: "jj", projectRoot: "/proj", branch: nil)
-    XCTAssertEqual(res, .absent)
-    XCTAssertTrue(runner.calls.isEmpty)  // short-circuits before any probe
-  }
-
-  func testResolvePRJJProbesProjectRoot() async {
+  /// `gh pr list` names the repository and the branch, and runs in the neutral directory — for git
+  /// and jj alike. There is no longer a git/jj difference in where a probe runs: jj used to need the
+  /// colocated project root because a secondary workspace has no `.git`.
+  func testResolvePRRawNamesRepositoryAndBranchInNeutralDirectory() async {
     let json =
       #"[{"number":9,"title":"F","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null}]"#
-    let runner = RecordingStatusRunner { exe, _ in (exe == "gh") ? ok(json) : ok("") }
+    let runner = RecordingStatusRunner { _, _ in ok(json) }
     let r = WorkroomStatusResolver(runner: runner)
-    let res = await r.resolvePR(
-      path: "/proj/ws", vcs: "jj", projectRoot: "/proj", branch: "feature/login")
+    let res = await r.resolvePRRaw(repo: repo, branch: "feature/login")
     guard case .info(let pr) = res else { return XCTFail("expected .info") }
     XCTAssertEqual(pr.number, 9)
-    let gh = runner.calls.first { $0.exe == "gh" }
-    XCTAssertEqual(gh?.dir, "/proj")  // colocated project root, not the workspace
-    XCTAssertTrue(gh?.args.contains("feature/login") ?? false)
+    XCTAssertEqual(runner.calls.count, 1)
+    let gh = runner.calls[0]
+    XCTAssertEqual(gh.dir, NSTemporaryDirectory())
+    XCTAssertEqual(Array(gh.args.prefix(4)), ["pr", "list", "--head", "feature/login"])
+    XCTAssertEqual(Array(gh.args.suffix(2)), ["--repo", "github.com/octo/repo"])
   }
 
-  func testGhProbeDirectoryJJUsesProjectRootGitUsesPath() {
-    XCTAssertEqual(
-      WorkroomStatusResolver.ghProbeDirectory(path: "/p/ws", vcs: "jj", projectRoot: "/p"), "/p")
-    XCTAssertEqual(
-      WorkroomStatusResolver.ghProbeDirectory(path: "/p/wt", vcs: "git", projectRoot: "/p"), "/p/wt"
-    )
-  }
-
-  func testResolveBranchNameFallsBackToSymbolicRef() async {
-    // branch=nil + git symbolic-ref returns a name → resolvePR proceeds keyed by that branch.
-    let json =
-      #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null}]"#
-    let runner = RecordingStatusRunner { exe, args in
-      if exe == "git", args.contains("symbolic-ref") { return ok("main\n") }
-      if exe == "gh" { return ok(json) }
-      return ok("")
-    }
+  /// A write is aimed at the named repository too, not at whatever the neutral directory resolves to.
+  func testRunPRCommandNamesTheRepository() async {
+    let runner = RecordingStatusRunner { _, _ in ok("") }
     let r = WorkroomStatusResolver(runner: runner)
-    let res = await r.resolvePR(path: existing, vcs: "git", projectRoot: existing, branch: nil)
-    guard case .info = res else { return XCTFail("expected .info via symbolic-ref fallback") }
-    XCTAssertTrue((runner.calls.first { $0.exe == "gh" })?.args.contains("main") ?? false)
+    _ = await r.runPRCommand(["pr", "merge", "9", "--squash"], repo: repo)
+    XCTAssertEqual(
+      runner.calls.first?.args, ["pr", "merge", "9", "--squash", "--repo", "github.com/octo/repo"])
+    XCTAssertEqual(runner.calls.first?.dir, NSTemporaryDirectory())
   }
 
   func testResolveLocalJJFailureIsNotRepository() async {
@@ -998,26 +1018,25 @@ final class WorkroomStatusResolverTests: XCTestCase {
 
   // MARK: - resolveChecks (end-to-end via the mock)
 
-  /// git: `gh pr checks <number>` runs in the workroom path with the right args.
-  func testResolveChecksGitRunsInPath() async {
+  /// `gh pr checks <number>` names the repository and runs in the neutral directory.
+  func testResolveChecksNamesTheRepositoryInNeutralDirectory() async {
     let json = #"[{"name":"build","bucket":"pass"}]"#
     let runner = RecordingStatusRunner { exe, _ in exe == "gh" ? ok(json) : ok("") }
     let r = WorkroomStatusResolver(runner: runner)
-    let res = await r.resolveChecks(path: "/proj", vcs: "git", projectRoot: "/proj", number: 9)
+    let res = await r.resolveChecks(repo: repo, number: 9)
     XCTAssertEqual(res, .list([CICheck(name: "build", state: .passing, workflow: nil, link: nil)]))
     let gh = runner.calls.first { $0.exe == "gh" }
-    XCTAssertEqual(gh?.dir, "/proj")
-    XCTAssertEqual(gh?.args.prefix(3).map { $0 }, ["pr", "checks", "9"])
+    XCTAssertEqual(gh?.dir, NSTemporaryDirectory())
+    XCTAssertEqual(Array(gh?.args.prefix(3) ?? []), ["pr", "checks", "9"])
+    XCTAssertEqual(Array(gh?.args.suffix(2) ?? []), ["--repo", "github.com/octo/repo"])
   }
 
-  /// jj: `gh` must run from the colocated project root (the workspace has no `.git`).
-  func testResolveChecksJJRunsInProjectRoot() async {
+  /// `[]` ⇒ loaded, no checks — distinct from absent, and unchanged by naming the repository.
+  func testResolveChecksEmptyListIsAbsent() async {
     let runner = RecordingStatusRunner { exe, _ in exe == "gh" ? ok("[]") : ok("") }
     let r = WorkroomStatusResolver(runner: runner)
-    let res = await r.resolveChecks(path: "/proj/ws", vcs: "jj", projectRoot: "/proj", number: 3)
-    XCTAssertEqual(res, .absent)  // [] → loaded, no checks
-    let gh = runner.calls.first { $0.exe == "gh" }
-    XCTAssertEqual(gh?.dir, "/proj")
-    XCTAssertTrue(gh?.args.contains("3") ?? false)
+    let res = await r.resolveChecks(repo: repo, number: 3)
+    XCTAssertEqual(res, .absent)
+    XCTAssertTrue(runner.calls.first?.args.contains("3") ?? false)
   }
 }

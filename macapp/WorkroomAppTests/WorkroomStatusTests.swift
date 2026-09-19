@@ -983,12 +983,20 @@ final class WorkroomStatusTests: XCTestCase {
 
 /// A `StatusCommandRunning` returning a canned result for the `gh pr …` write command, so
 /// `performPRAction`'s success/failure handling is exercised without spawning real `gh`.
+///
+/// A write is aimed at a resolved repository, so the `gh repo view` lookup that precedes it is answered
+/// here (a real repository) rather than by `handler`, which stays the canned result for the command
+/// under test. `RepositoryGitHubTests` covers a lookup that fails.
 private struct StubPRRunner: StatusCommandRunning {
   let handler: @Sendable (_ executable: String, _ args: [String]) -> CommandResult
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
   {
-    handler(executable, args)
+    if executable == "gh", args.prefix(2) == ["repo", "view"] {
+      return CommandResult(
+        stdout: "https://github.com/octo/repo\n", stderr: "", exitCode: 0, timedOut: false)
+    }
+    return handler(executable, args)
   }
 }
 
