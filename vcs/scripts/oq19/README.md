@@ -20,7 +20,9 @@ once any trace has been recorded: a gate the results embarrass is a finding, not
 | `procfs.py` | Parsers for the Linux signals; tested against real captured output. |
 | `sampler.py` | Reads the signals on a fixed cadence into `trace.jsonl`; reports its own CPU cost. |
 | `driver.py` | Runs one scenario in a pty session, writes the truth log from what it actually did. |
-| `run.sh` | Runs the harness in a container (`container`, `docker` or `podman`); `--self-test`. |
+| `run.sh` | Runs the harness in a container (`container`, `docker` or `podman`); `--self-test`, `scenario`, `smoke`, `controls`, `cost`. |
+| `scenarios/` | One action module per scenario (`s_<id>.py`), `lib.py`, and `tools/` (`agent.py` the synthetic agent TUI, `peer.py` the network peer, `burn.py`, `burst.py`). |
+| `check_trace.py` | Proves a recorded run did what its label claims, from the sampler's trace rather than the driver's intent. |
 | `cost.py` | Sampler cost per signal group, interval and process load (`run.sh cost`). |
 | `Dockerfile` | The measurement image. `setup.sh` (boxd) installs the same package list. |
 | `pipeline-check.md` | What the pipeline check found in the image, and what it corrected. |
@@ -31,6 +33,8 @@ once any trace has been recorded: a gate the results embarrass is a finding, not
 ```
 vcs/scripts/oq19/run.sh --self-test                      # gates, labels and parsers, no container needed
 vcs/scripts/oq19/run.sh scenario 1 --scale 0.1           # a pipeline check: 10% of the phase durations
+vcs/scripts/oq19/run.sh smoke [ids...]                   # every scenario at a small scale, then check_trace.py
+vcs/scripts/oq19/run.sh controls                         # negative controls: a wrong-scenario check must FAIL
 vcs/scripts/oq19/run.sh cost                             # the sampler cost matrix
 ```
 
@@ -44,4 +48,8 @@ Raw traces go to `traces/` (gitignored). Each run gets its own container with `-
 * The driver never reads a signal and the sampler never reads a label.
 * A BUSY phase without an action module refuses to run: an unimplemented scenario must never be recorded as
   if it had done its work.
+* A scenario is not trusted until `check_trace.py` says it did what its label claims, and that check is not
+  trusted until `run.sh controls` shows it fails on the wrong scenario.
+* Scenarios that need a network peer (3b, 4a, 4b, 9) get it as a SEPARATE container on a private network, so
+  its traffic crosses the box's `eth0` as a provider's network-idle timer would see it (loopback is invisible).
 * A missed sample is a gap, scored by the staleness rule (D10), never filtered out.

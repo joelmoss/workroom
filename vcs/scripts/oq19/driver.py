@@ -13,19 +13,27 @@ Output (one directory per run):
   trace.jsonl   the sampler's signals
   pty.jsonl     {"t", "d": "out"|"in", "n": bytes}: pty output (spinners, streaming) and input recency (S4, S5)
 
-A BUSY phase with no action module fails loudly: an unimplemented scenario must never be recorded as if it
-had done its work (that would mislabel idle time as BUSY).
+  lifecycle.jsonl  agent-owned operations (S9): {"t", "event": "start"|"end", "name"} (scenario 11)
+
+A scenario other than 1 with no action module fails loudly, and so does a BUSY phase with no action: an
+unimplemented scenario must never be recorded as if it had done its work (that would mislabel an empty box
+as "vim open" or idle time as BUSY).
 """
 
 import argparse
+import contextlib
+import fcntl
 import importlib
 import json
 import os
 import pty
 import select
 import signal
+import socket
+import struct
 import subprocess
 import sys
+import termios
 import threading
 import time
 
@@ -43,6 +51,8 @@ class PtySession:
         self.lock = threading.Lock()
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
+            os.environ["TERM"] = "xterm-256color"  # curses, vim and tmux refuse to start without one
+            fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))  # a 0x0 pty breaks TUIs
             os.execvp("bash", ["bash", "--norc", "--noprofile"])
         self.alive = True
         self.thread = threading.Thread(target=self._drain, daemon=True)
@@ -79,29 +89,80 @@ class PtySession:
             pass
 
 
-class Context:
-    """What a scenario action may use."""
+def resizer(session, period=30.0):
+    """The attached-mode client: a resize every `period` s (TIOCSWINSZ), which makes a full-screen TUI redraw."""
+    rows = 24
+    while session.alive:
+        time.sleep(period)
+        rows = 25 if rows == 24 else 24
+        try:
+            fcntl.ioctl(session.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, 80, 0, 0))
+        except OSError:
+            return
 
-    def __init__(self, session, scale, compressed, out):
-        self.session, self.scale, self.compressed, self.out = session, scale, compressed, out
+
+class Context:
+    """What a scenario module may use."""
+
+    def __init__(self, session, sampler, scale, compressed, out):
+        self.session, self.sampler, self.scale, self.compressed, self.out = session, sampler, scale, compressed, out
+        self.tools = os.path.join(HERE, "scenarios", "tools")
+        self.peer = os.environ.get("OQ19_PEER")  # host:port of the peer container, when the scenario needs one
+        self.lifecycle = []
+        self.extra_truth = []  # extra truth rows a scenario emits (scenario 18's STALE gap)
+        self.spawned = []
+        self.variant = os.environ.get("OQ19_VARIANT", "")
 
     def sleep(self, seconds):
-        time.sleep(seconds)
+        time.sleep(max(0.0, seconds))
+
+    def shell(self, command):
+        """Type a command line into the pty shell, as a user would."""
+        self.session.send(command + "\n")
+
+    def keys(self, text):
+        self.session.send(text)
+
+    def spawn(self, argv, **kw):
+        """A background process OUTSIDE the pty session (a system daemon, an agent-owned command)."""
+        p = subprocess.Popen(argv, **kw)
+        self.spawned.append(p)
+        return p
+
+    @contextlib.contextmanager
+    def lifecycle_span(self, name):
+        """An agent-owned operation in flight (signal S9): start and end are logged by the driver."""
+        self.lifecycle.append({"t": time.monotonic(), "event": "start", "name": name})
+        try:
+            yield
+        finally:
+            self.lifecycle.append({"t": time.monotonic(), "event": "end", "name": name})
+
+    def peer_send(self, line, wait_ok=True):
+        host, port = self.peer.rsplit(":", 1)
+        s = socket.create_connection((host, int(port)), timeout=10)
+        s.sendall((line + "\n").encode())
+        if wait_ok:
+            s.recv(16)
+        s.close()
 
 
-def load_actions(scenario_id):
-    """Action callables per phase name, from scenarios/s_<id>.py (`ACTIONS = {phase: fn(ctx, seconds)}`)."""
+def load_module(scenario_id):
     try:
-        return importlib.import_module("scenarios.s_%s" % scenario_id).ACTIONS
+        return importlib.import_module("scenarios.s_%s" % scenario_id)
     except ModuleNotFoundError:
-        return {}
+        return None
 
 
 def run(args):
     scenario = labels.BY_ID[args.scenario]
     os.makedirs(args.out, exist_ok=True)
     trace, roots = os.path.join(args.out, "trace.jsonl"), os.path.join(args.out, "roots.json")
-    actions = load_actions(args.scenario)
+    module = load_module(args.scenario)
+    if module is None and scenario.id != "1":
+        sys.exit("scenario %s has no action module (scenarios/s_%s.py): refusing to record an empty box as it"
+                 % (scenario.id, scenario.id))
+    actions = getattr(module, "ACTIONS", {})
     for phase in scenario.phases:
         if phase.label == labels.BUSY and phase.name not in actions:
             sys.exit("scenario %s phase %r is BUSY but has no action: refusing to record it as BUSY"
@@ -116,9 +177,13 @@ def run(args):
                                 "--ss-every", str(args.ss_every)])
     time.sleep(args.interval * 2)  # a couple of samples before the first phase, so the series has a start
 
-    ctx = Context(session, args.scale, args.compressed, args.out)
+    ctx = Context(session, sampler, args.scale, args.compressed, args.out)
     truth = []
+    if args.mode == "attached":  # a client is present: it resizes the window now and then, as a GUI does
+        threading.Thread(target=resizer, args=(session,), daemon=True).start()
     try:
+        if module is not None and hasattr(module, "SETUP"):
+            module.SETUP(ctx)
         for phase in scenario.phases:
             seconds = labels.seconds(phase, args.compressed) * args.scale
             start = time.monotonic()
@@ -129,13 +194,18 @@ def run(args):
             truth.append({"scenario": scenario.id, "phase": phase.name, "label": phase.label,
                           "start": start, "end": time.monotonic()})
     finally:
+        for p in ctx.spawned:
+            p.kill()
         session.close()
         time.sleep(args.interval)  # a sample after the session has gone
         sampler.send_signal(signal.SIGTERM)
         sampler.wait(timeout=30)
 
     with open(os.path.join(args.out, "truth.jsonl"), "w") as f:
-        for row in truth:
+        for row in truth + ctx.extra_truth:
+            f.write(json.dumps(row) + "\n")
+    with open(os.path.join(args.out, "lifecycle.jsonl"), "w") as f:
+        for row in ctx.lifecycle:
             f.write(json.dumps(row) + "\n")
     with open(os.path.join(args.out, "pty.jsonl"), "w") as f:
         for row in pty_log:
@@ -148,7 +218,7 @@ def run(args):
     with open(os.path.join(args.out, "meta.json"), "w") as f:
         json.dump({"scenario": scenario.id, "name": scenario.name, "mode": args.mode, "scale": args.scale,
                    "compressed": args.compressed, "interval": args.interval, "ss_every": args.ss_every,
-                   "sampler": footer, "pty_events": len(pty_log)}, f, indent=2)
+                   "variant": ctx.variant, "sampler": footer, "pty_events": len(pty_log)}, f, indent=2)
     print("ok %s -> %s (sampler cpu %.3f%% of a core)" %
           (scenario.id, args.out, 100 * (footer.get("cpu_fraction") or 0)))
 
