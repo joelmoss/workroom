@@ -178,6 +178,23 @@ def start_shim(interval, verdict_file):
                              verdict_file])
 
 
+def kill_session(sid):
+    """SIGKILL every process whose session id is the pty shell's: the tree walk the agent's terminationTargets
+    does, by session rather than parent, so a setsid'd escapee is left alone and a reparented child is not.
+    In the container the run ends with the container; on a VM (boxd run 4) three agents outlived their
+    sessions, spinning on a closed pty, and poisoned every later scenario."""
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/%s/stat" % name) as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+            if int(fields[3]) == sid and int(name) != os.getpid():
+                os.kill(int(name), signal.SIGKILL)
+        except (OSError, ValueError, IndexError):
+            continue
+
+
 def load_module(scenario_id):
     try:
         return importlib.import_module("scenarios.s_%s" % scenario_id)
@@ -265,6 +282,7 @@ def run(args):
         for p in ctx.spawned:
             p.kill()
         session.close()
+        kill_session(session.pid)  # what SIGHUP did not end: on a real box the session's survivors are ours
         time.sleep(args.interval)  # a sample after the session has gone
         stop_counters.set()
         sampler.send_signal(signal.SIGCONT)  # a scenario may have left it stopped (scenario 18)
