@@ -340,6 +340,38 @@ class ClosedLoop(unittest.TestCase):
         self.assertTrue(any(v == BUSY for _, v in got))
         self.assertEqual(got, expected)
 
+    def test_a_missed_counter_read_keeps_the_last_good_values_and_is_counted(self):
+        """The hold-out's first run: one empty read put a 0 into the pty history and, one window later, the rate
+        looked like out_cum / window. The classifier must reuse the last good counters and count the miss."""
+        import json
+        import tempfile
+        import live
+        run = mk_run("1", [("idle", IDLE, 40)], pty=[{"t": T0 - 1.0, "d": "out", "n": 5000}])  # a prompt, then silence
+        c = cfg("P4", pty=200.0)
+        with tempfile.TemporaryDirectory() as d:
+            counters = os.path.join(d, "counters.json")
+            clf = live.Classifier(c, 10.0, counters, os.path.join(d, "v.jsonl"), os.path.join(d, "verdict"), 1, SAMPLER)
+            for i, smp in enumerate(run.samples):
+                if i == 12:
+                    os.remove(counters)  # the read fails this tick
+                else:
+                    with open(counters, "w") as f:
+                        json.dump({"out": 5000, "last_in": None, "starts": 0, "open": 0}, f)
+                clf.feed(smp)
+            clf.close()
+            rows = A.load_jsonl(os.path.join(d, "v.jsonl"))
+            self.assertEqual(A.counter_read_misses(os.path.join(d, "v.jsonl")), 1)
+            self.assertEqual(rows[-1]["misses"], 1)
+            self.assertFalse(any(r["vote"] for r in rows[5:]), [r for r in rows if r["vote"]])
+            # mutation check: with the old `{}` fallback the same feed votes BUSY one window after the miss
+            clf2 = live.Classifier(c, 10.0, counters, os.path.join(d, "v2.jsonl"), os.path.join(d, "verdict"), 1, SAMPLER)
+            reads = iter([{}] + [{"out": 5000, "last_in": None, "starts": 0, "open": 0}] * 10)
+            clf2.counters = lambda: next(reads)                   # the old fallback: one empty read, then real ones
+            for smp in run.samples[12:20]:
+                clf2.feed(smp)
+            clf2.close()
+            self.assertTrue(any(r["vote"] for r in A.load_jsonl(os.path.join(d, "v2.jsonl"))))
+
     def test_closed_loop_gate_goes_red_when_the_classifier_can_see_itself(self):
         run = mk_run("16", [("idle", IDLE, 120)])
         c = cfg("P4")

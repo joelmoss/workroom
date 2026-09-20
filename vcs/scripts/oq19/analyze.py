@@ -676,6 +676,13 @@ def live_verdicts(path):
     return events
 
 
+def counter_read_misses(path):
+    """How often the live classifier failed to read the agent's counters and fell back to the last good values
+    (live.py logs the running count with every verdict; runs recorded before it did are reported as 0)."""
+    rows = load_jsonl(path)
+    return rows[-1].get("misses", 0) if rows else 0
+
+
 def closed_loop_check(run_dir, pipeline_check=False, d3_fallback=False):
     """F7: score a run made with the real classifier and shim in the box (driver `--closed-loop`).
 
@@ -704,6 +711,7 @@ def closed_loop_check(run_dir, pipeline_check=False, d3_fallback=False):
             "live_vs_replay_mismatch": diff, "agrees_with_replay": diff <= CLOSED_LOOP_MAX_MISMATCH,
             "self_cost_fraction": cost, "self_cost_provisional_pass": cost <= COST_LIMIT,
             "busy_ticks": sum(1 for _, v in live if v == BUSY), "pipeline_check": pipeline_check,
+            "counter_read_misses": counter_read_misses(os.path.join(run_dir, "verdicts.jsonl")),
             "compressed": run.compressed, "mode": run.mode,
             "passes": not bad and diff <= CLOSED_LOOP_MAX_MISMATCH}
 

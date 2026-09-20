@@ -38,6 +38,7 @@ class Classifier:
         self.prev = None
         self.hist_t, self.hist_out = [], []
         self.net = analyze.RateWindow(analyze.NET_WINDOW_S)
+        self.last_ctr, self.misses = {}, 0
         self.prev_starts = 0
         self.last_busy = None
 
@@ -45,11 +46,15 @@ class Classifier:
         self.log.close()
 
     def counters(self):
+        """The agent's counters; on a failed read, the LAST GOOD values (at most one tick stale). A read that came
+        back empty once put a 0 into the pty history and, one window later, made the rate look like thousands of
+        bytes per second. `misses` is logged with every verdict so a run that leaned on this is visible."""
         try:
             with open(self.counters_path) as f:
-                return json.load(f)
+                self.last_ctr = json.load(f)
         except (OSError, ValueError):
-            return {}
+            self.misses += 1
+        return self.last_ctr
 
     def pty_rate(self, t, out_cum):
         """Bytes/s over the last PTY_WINDOW_S, from this process's own history of the cumulative counter."""
@@ -77,7 +82,7 @@ class Classifier:
             self.last_busy = t
         held = self.last_busy is not None and t - self.last_busy < self.window_s
         verdict = BUSY if (vote or held) else IDLE
-        self.log.write(json.dumps({"t": t, "verdict": verdict, "vote": bool(vote)}) + "\n")
+        self.log.write(json.dumps({"t": t, "verdict": verdict, "vote": bool(vote), "misses": self.misses}) + "\n")
         self.log.flush()
         tmp = self.verdict_file + ".tmp"
         with open(tmp, "w") as out:
