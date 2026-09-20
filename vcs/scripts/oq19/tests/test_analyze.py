@@ -563,19 +563,17 @@ class Boxd(unittest.TestCase):
             base = os.path.join(root, name, "oq19-out")
             run = mk_run("5", work, extra=build_extra)
             run.meta["closed_loop"] = {"config": cfg, "window_s": 30}
+            # the sampler stamps wall and uptime on every sample; a provider sleep is a 400 s wall gap
+            w = 1000.0
+            for smp in run.samples:
+                if slept_at is not None and abs(smp["t"] - slept_at) < 0.5:
+                    w += 400
+                smp["wall"], smp["uptime"] = w, w - 900
+                w += 1
             self.write_run(os.path.join(base, "5"), run)
             with open(os.path.join(base, "5", "verdicts.jsonl"), "w") as f:
                 f.write("".join(json.dumps(r) + "\n" for r in verdict_rows))
-            ticks, w, m = [], 1000.0, T0 - 20
-            while m < T0 + 260:
-                ticks.append((w, w - 900, m))
-                if slept_at is not None and abs(m - slept_at) < 5:
-                    w += 400  # a 400 s wall gap: the provider slept the VM
-                w += 10
-                m += 10
-            with open(os.path.join(base, "ticks.log"), "w") as f:
-                f.write("".join("%.1f %.1f %.1f\n" % t for t in ticks))
-            return ticks
+            return A.run_ticks(run)
 
         def verdicts(run_secs=210, start=T0):
             out = []

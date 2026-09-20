@@ -109,7 +109,10 @@ class Sampler:
                 roots = json.loads(read(rf) or "[]")
             except ValueError:
                 roots = []
-        row = {"type": "s", "t": t, "tick": tick, "roots": roots}
+        # wall and uptime beside monotonic: a provider sleep is a wall gap, and whether the VM's other clocks
+        # jump with it is a finding (the fork question). The trace is the boxd run's tick log.
+        row = {"type": "s", "t": t, "tick": tick, "roots": roots, "wall": time.time(),
+               "uptime": float((read("/proc/uptime") or "0 0").split()[0])}
         if "box" in self.groups:
             row.update({
                 "cg_cpu_usec": cpu.get("usage_usec"),
