@@ -26,6 +26,7 @@ import time
 import procfs
 
 CGROUP = "/sys/fs/cgroup"
+PROCS_ALL = os.environ.get("OQ19_PROCS") == "all"  # boxd: the whole box, not one cgroup (see processes())
 GROUPS = ("box", "procs", "sockets")  # box: O(1) reads; procs: O(processes); sockets: one `ss` fork per tick
 
 
@@ -67,9 +68,14 @@ class Sampler:
         return exe
 
     def processes(self):
-        """Every process in the cgroup: (pid, ppid, sid, pgrp, comm, exe, state, ticks, nice, wchan)."""
-        text = read(os.path.join(CGROUP, "cgroup.procs"))
-        pids = procfs.parse_cgroup_procs(text) if text is not None else []
+        """Every process in the cgroup: (pid, ppid, sid, pgrp, comm, exe, state, ticks, nice, wchan). With
+        OQ19_PROCS=all, every process on the box instead (the boxd run: a real VM, where systemd keeps the
+        root cgroup empty and the production boundary is the whole box minus boundary.md's exclusion list)."""
+        if PROCS_ALL:
+            pids = sorted(int(x) for x in os.listdir("/proc") if x.isdigit())
+        else:
+            text = read(os.path.join(CGROUP, "cgroup.procs"))
+            pids = procfs.parse_cgroup_procs(text) if text is not None else []
         rows = []
         for pid in pids:
             st = procfs.parse_stat(read("/proc/%d/stat" % pid) or "")
@@ -133,6 +139,7 @@ class Sampler:
             out.write(json.dumps({
                 "type": "header", "interval": interval, "clk_tck": self.clk_tck, "pid": os.getpid(),
                 "start": start, "nice_ok": nice_ok, "ss_every": self.args.ss_every, "signals": self.groups,
+                "procs_source": "all" if PROCS_ALL else "cgroup",
                 "python": sys.version.split()[0], "ncpu": os.cpu_count(),
                 "cgroup_cpu_stat": os.path.exists(os.path.join(CGROUP, "cpu.stat")),
             }) + "\n")

@@ -815,9 +815,149 @@ def load_tuning(root, pipeline_check=False):
     return runs, excluded
 
 
+# ---- the boxd confirmation run (T7; boxd/boxd.sh records it) --------------------------------------------
+
+TICK_PERIOD_S = 10.0     # boxd/ticks.sh
+ASLEEP = ("hibernat", "suspend", "paused")  # substrings of a boxd status that mean the provider put it to sleep
+
+
+def read_ticks(path):
+    """ticks.sh / clockcheck.sh rows -> [(wall, uptime, monotonic)]."""
+    out = []
+    for line in open(path):
+        parts = line.split()
+        if len(parts) >= 3:
+            out.append((float(parts[0]), float(parts[1]), float(parts[2])))
+    return out
+
+
+def sleep_events(ticks, period=TICK_PERIOD_S):
+    """Where the VM stopped ticking: (wall_before, wall_after, wall_gap, monotonic_gap, uptime_gap) for every
+    wall-clock gap over 3 periods. A provider sleep is a wall gap; whether the VM's clocks jumped with it is
+    reported, not assumed."""
+    out = []
+    for (w0, u0, m0), (w1, u1, m1) in zip(ticks, ticks[1:]):
+        if w1 - w0 > 3 * period:
+            out.append({"wall_before": w0, "wall_after": w1, "wall_gap": w1 - w0, "monotonic_gap": m1 - m0,
+                        "uptime_gap": u1 - u0})
+    return out
+
+
+def wall_of(ticks, monotonic_t):
+    """Monotonic -> wall, using the newest tick at or before that monotonic time (a sleep may shift the offset,
+    and the tick before the event carries the offset that held while the VM ran)."""
+    best = None
+    for w, _, m in ticks:
+        if m <= monotonic_t:
+            best = (w, m)
+    if best is None:
+        best = (ticks[0][0], ticks[0][2])
+    return best[0] + (monotonic_t - best[1])
+
+
+def statuses(path, machine):
+    return [(float(a), s) for a, m, s in (l.split(None, 2) for l in open(path) if l.strip()) if m == machine]
+
+
+def first_asleep_after(status_rows, wall_t):
+    for t, s in status_rows:
+        if t >= wall_t and any(k in s.lower() for k in ASLEEP):
+            return t, s
+    return None
+
+
+def boxd_machine(root, machine, timeout_s, window_s):
+    """One machine's runs: per run the live gates (closed loop) and the sleep events inside BUSY; the machine's
+    first sleep after its last IDLE label."""
+    base = os.path.join(root, machine, "oq19-out")
+    ticks = read_ticks(os.path.join(base, "ticks.log"))
+    events = sleep_events(ticks)
+    status_rows = statuses(os.path.join(root, "status.log"), machine)
+    runs = []
+    last_end_wall = None
+    for name in sorted(os.listdir(base)):
+        d = os.path.join(base, name)
+        if not os.path.isfile(os.path.join(d, "truth.jsonl")):
+            continue
+        run = Run.load(d, key=name)
+        ivs = run.intervals()
+        busy_wall = [(wall_of(ticks, i.start), wall_of(ticks, i.end), i.phase) for i in ivs if i.label == BUSY]
+        slept_in_busy = [e for e in events for a, b, _ in busy_wall if a <= e["wall_before"] <= b]
+        closed = run.meta.get("closed_loop")
+        gates_out = closed_loop_check(d)["gates"] if closed else None
+        runs.append({"scenario": run.scenario, "busy_wall": busy_wall, "slept_in_busy": slept_in_busy,
+                     "gates": gates_out, "failed": [g for g, v in (gates_out or {}).items() if v != gates.PASS]})
+        last_end_wall = max(last_end_wall or 0, wall_of(ticks, ivs[-1].end))
+    asleep = first_asleep_after(status_rows, last_end_wall) if last_end_wall else None
+    deadline = (last_end_wall + window_s + timeout_s + 60) if last_end_wall else None
+    return {"machine": machine, "runs": runs, "sleep_events": events,
+            "asleep_after_last_idle": asleep, "asleep_by_deadline": bool(asleep and asleep[0] <= deadline),
+            "deadline_wall": deadline, "status_samples": len(status_rows)}
+
+
+def clock_rate(path):
+    """clockcheck.sh: monotonic and uptime seconds per wall second over the check."""
+    rows = read_ticks(path)
+    if len(rows) < 2:
+        return None
+    dw = rows[-1][0] - rows[0][0]
+    return {"wall_s": dw, "monotonic_rate": (rows[-1][2] - rows[0][2]) / dw, "uptime_rate": (rows[-1][1] - rows[0][1]) / dw}
+
+
+def run_boxd(root, frozen_path, out_dir, timeout_s=120, echo=True):
+    with open(frozen_path) as f:
+        frozen = json.load(f)
+    window_s = gates.WINDOW_GRID_S[frozen["config"]["window"]]
+    t = boxd_machine(root, "oq19-treatment", timeout_s, window_s)
+    c = boxd_machine(root, "oq19-control", timeout_s, window_s)
+    fork_dir = os.path.join(root, "oq19-fork")
+    fk = boxd_machine(root, "oq19-fork", timeout_s, window_s) if os.path.isdir(fork_dir) else None
+    clock = clock_rate(os.path.join(fork_dir, "oq19-out", "clock.log")) if fk else None
+    checks = {
+        "treatment_never_slept_in_busy": all(not r["slept_in_busy"] for r in t["runs"]),
+        "treatment_live_gates_pass": all(not r["failed"] for r in t["runs"] if r["gates"] is not None),
+        "control_slept_in_busy": any(r["slept_in_busy"] for r in c["runs"]),
+        "treatment_slept_after_last_idle": t["asleep_by_deadline"],
+        "fork_monotonic_at_wall_rate": bool(clock and abs(clock["monotonic_rate"] - 1.0) <= 0.02),
+        "fork_slept_after_idle": bool(fk and fk["asleep_by_deadline"]),
+    }
+    verdict = gates.PASS if all(checks.values()) else gates.FAIL
+    shim = os.path.join(root, "oq19-treatment", "oq19-out", "shim.log")
+    shim_lines = [l.strip() for l in open(shim)] if os.path.exists(shim) else []
+    commit = open(os.path.join(root, "harness_commit")).read().strip()[:8] if os.path.exists(os.path.join(root, "harness_commit")) else "?"
+    L = ["# OQ19 boxd confirmation run", "", "Harness commit `%s`; frozen configuration `%s`; provider timers %d s." % (
+        commit, frozen.get("key"), timeout_s), "", "## Verdict: **%s**" % verdict, ""]
+    L += ["* %s: %s" % (k, "yes" if v else "NO") for k, v in checks.items()]
+    for m in (t, c, fk):
+        if not m:
+            continue
+        L += ["", "## %s" % m["machine"], "sleep events (wall gap > %d s in the tick log): %d" % (3 * TICK_PERIOD_S, len(m["sleep_events"]))]
+        L += ["* asleep %.0f s (VM monotonic advanced %.0f s, uptime %.0f s) starting at wall %.0f" % (
+            e["wall_gap"], e["monotonic_gap"], e["uptime_gap"], e["wall_before"]) for e in m["sleep_events"]]
+        L += ["", "| scenario | BUSY phases (wall) | slept inside BUSY | live gates |", "|---|---|---|---|"]
+        L += ["| %s | %s | %s | %s |" % (r["scenario"], "; ".join("%s %.0f-%.0f" % (p, a, b) for a, b, p in r["busy_wall"]) or "none",
+                                          len(r["slept_in_busy"]), ", ".join(r["failed"]) or ("all pass" if r["gates"] else "open loop"))
+              for r in m["runs"]]
+        L += ["", "first asleep status after the last IDLE label: %s (deadline wall %s)" % (
+            "%s at wall %.0f" % (m["asleep_after_last_idle"][1], m["asleep_after_last_idle"][0]) if m["asleep_after_last_idle"] else "never",
+            "%.0f" % m["deadline_wall"] if m["deadline_wall"] else "-")]
+    if clock:
+        L += ["", "## Fork clock check (%.0f s)" % clock["wall_s"], "monotonic %.4f s/s, uptime %.4f s/s" % (clock["monotonic_rate"], clock["uptime_rate"])]
+    L += ["", "## Shim timeline (treatment)"] + (["* " + l for l in shim_lines] or ["(no shim.log)"])
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "boxd.md"), "w") as f:
+        f.write("\n".join(L) + "\n")
+    with open(os.path.join(out_dir, "boxd.json"), "w") as f:
+        json.dump({"verdict": verdict, "checks": checks, "treatment": t, "control": c, "fork": fk, "clock": clock,
+                   "shim": shim_lines, "commit": commit}, f, indent=1, default=str)
+    if echo:
+        print("\n".join(L))
+    return verdict
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("set", choices=("tuning", "closed-loop", "holdout"))
+    ap.add_argument("set", choices=("tuning", "closed-loop", "holdout", "boxd"))
     ap.add_argument("--frozen", default=os.path.join(HERE, "results", "frozen.json"))
     ap.add_argument("--freeze", action="store_true", help="tuning: write the winner to results/frozen.json")
     ap.add_argument("--run", help="closed-loop: the run directory to check")
@@ -832,6 +972,8 @@ def main():
     if args.set == "holdout":
         sys.exit(0 if run_holdout(args.root or os.path.join(HERE, "traces", "holdout"), args.frozen,
                                   args.pipeline_check, args.out) == gates.PASS else 1)
+    if args.set == "boxd":
+        sys.exit(0 if run_boxd(args.root or os.path.join(HERE, "traces", "boxd"), args.frozen, args.out) == gates.PASS else 1)
     runs, excluded = load_tuning(args.root or os.path.join(HERE, "traces", "tuning"), args.pipeline_check)
     matrix = load_cost_matrix()
     summaries, d3 = evaluate_all(runs, all_configs(), matrix, progress=print)

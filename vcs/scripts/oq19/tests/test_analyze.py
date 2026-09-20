@@ -379,6 +379,19 @@ class ClosedLoop(unittest.TestCase):
             self.assertFalse(run_once("IDLE", 0))
             self.assertTrue(run_once("IDLE", 3))   # older than 2 intervals: the reader assumes work
             self.assertFalse(run_once("IDLE", 1))
+            # boxd: OQ19_ASSERT / OQ19_RELEASE run ONCE per transition (item 5's lever), not once per tick
+            hooks = os.path.join(d, "hooks")
+            env = dict(os.environ, OQ19_ASSERT="echo assert >> %s" % hooks, OQ19_RELEASE="echo release >> %s" % hooks)
+            with open(verdict, "w") as f:
+                f.write("BUSY\n")
+            p = subprocess.Popen(["sh", shim, "1", verdict, awake], env=env)
+            time.sleep(2.5)                      # three ticks BUSY: one assert
+            with open(verdict, "w") as f:
+                f.write("IDLE\n")
+            time.sleep(2.5)                      # three ticks IDLE: one release
+            p.kill()
+            p.wait()
+            self.assertEqual(open(hooks).read().split(), ["assert", "release"])
 
     def test_a_missed_counter_read_keeps_the_last_good_values_and_is_counted(self):
         """The hold-out's first run: one empty read put a 0 into the pty history and, one window later, the rate
@@ -457,6 +470,115 @@ class Report(unittest.TestCase):
         self.assertIn("excluded `x-run`", text)
         # the serial control and the attached and 500-process runs are never scored
         self.assertEqual(sum(1 for s in summaries for _ in [0] if s["runs"] != 4), 0)
+
+
+class Boxd(unittest.TestCase):
+    """T7: the boxd confirmation run's scorer, on synthetic tick/status logs (no cloud)."""
+
+    def write_run(self, d, run):
+        os.makedirs(d, exist_ok=True)
+        import json
+        with open(os.path.join(d, "meta.json"), "w") as f:
+            json.dump(run.meta, f)
+        with open(os.path.join(d, "trace.jsonl"), "w") as f:
+            f.write(json.dumps(dict(run.header, type="header")) + "\n")
+            f.write("".join(json.dumps(dict(s, type="s")) + "\n" for s in run.samples))
+        for name, rows in (("pty", run.pty), ("lifecycle", run.lifecycle), ("truth", run.truth)):
+            with open(os.path.join(d, name + ".jsonl"), "w") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in rows))
+
+    def test_sleep_events_and_the_wall_mapping(self):
+        import tempfile
+        # ticks every 10 s; the VM sleeps 300 s of wall between the 5th and 6th tick, its monotonic clock stops
+        rows = [(1000 + 10 * i, 50 + 10 * i, T0 + 10 * i) for i in range(5)]
+        rows += [(1000 + 50 + 300 + 10 * i, 100 + 10 * i, T0 + 50 + 10 * i) for i in range(5)]
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "ticks.log")
+            with open(p, "w") as f:
+                f.write("".join("%d %d %.1f\n" % r for r in rows))
+            ticks = A.read_ticks(p)
+            ev = A.sleep_events(ticks)
+            self.assertEqual(len(ev), 1)
+            self.assertEqual((ev[0]["wall_gap"], ev[0]["monotonic_gap"]), (310, 10))
+            self.assertEqual(A.wall_of(ticks, T0 + 25), 1025)          # before the sleep: the running offset
+            self.assertEqual(A.wall_of(ticks, T0 + 55), 1000 + 350 + 5)  # after it: the tick before carries the shift
+            self.assertIsNone(A.first_asleep_after([(1000, "running")], 900))
+            self.assertEqual(A.first_asleep_after([(1000, "running"), (1030, "hibernated")], 1010), (1030, "hibernated"))
+
+    def test_run_boxd_passes_only_when_the_treatment_stays_awake_and_the_control_sleeps(self):
+        import json
+        import tempfile
+        work = [("quiet", IDLE, 30), ("work", BUSY, 120), ("post", IDLE, 60)]
+        cfg = {"policy": "P4", "cpu": 0.05, "pty": 30.0, "net": None, "wait": "agnostic", "age": None,
+               "grace": 0.0, "window": 0, "interval": 1, "staleness": True, "exclusions": True, "lifecycle": True}
+
+        def machine(root, name, slept_at, verdict_rows):
+            base = os.path.join(root, name, "oq19-out")
+            run = mk_run("5", work, extra=build_extra)
+            run.meta["closed_loop"] = {"config": cfg, "window_s": 30}
+            self.write_run(os.path.join(base, "5"), run)
+            with open(os.path.join(base, "5", "verdicts.jsonl"), "w") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in verdict_rows))
+            ticks, w, m = [], 1000.0, T0 - 20
+            while m < T0 + 260:
+                ticks.append((w, w - 900, m))
+                if slept_at is not None and abs(m - slept_at) < 5:
+                    w += 400  # a 400 s wall gap: the provider slept the VM
+                w += 10
+                m += 10
+            with open(os.path.join(base, "ticks.log"), "w") as f:
+                f.write("".join("%.1f %.1f %.1f\n" % t for t in ticks))
+            return ticks
+
+        def verdicts(run_secs=210, start=T0):
+            out = []
+            for i in range(run_secs):
+                t = start + i
+                busy = T0 + 30 <= t < T0 + 150 + 30
+                out.append({"t": t, "verdict": BUSY if busy else IDLE, "vote": busy, "misses": 0})
+            return out
+
+        with tempfile.TemporaryDirectory() as root:
+            frozen = os.path.join(root, "frozen.json")
+            with open(frozen, "w") as f:
+                json.dump({"config": cfg, "key": "k"}, f)
+            open(os.path.join(root, "harness_commit"), "w").write("abcdef0123\n")
+            t_ticks = machine(root, "oq19-treatment", None, verdicts())
+            machine(root, "oq19-control", T0 + 90, verdicts())
+            f_ticks = machine(root, "oq19-fork", None, verdicts())
+            with open(os.path.join(root, "oq19-fork", "oq19-out", "clock.log"), "w") as f:
+                f.write("".join("%.3f %.1f %.3f\n" % (500 + 10 * i, 5 + 10 * i, 900 + 10 * i) for i in range(7)))
+            # the treatment and the fork sleep after their post phase: wall of (T0+210) + 60 s
+            last = A.wall_of(t_ticks, T0 + 210)
+            flast = A.wall_of(f_ticks, T0 + 210)
+            with open(os.path.join(root, "status.log"), "w") as f:
+                f.write("%.0f oq19-treatment running\n%.0f oq19-treatment hibernated\n%.0f oq19-control hibernated\n"
+                        "%.0f oq19-fork hibernated\n" % (last - 100, last + 60, 1200, flast + 60))
+            out = os.path.join(root, "results")
+            self.assertEqual(A.run_boxd(root, frozen, out, echo=False), gates.PASS)
+            res = json.load(open(os.path.join(out, "boxd.json")))
+            self.assertTrue(all(res["checks"].values()), res["checks"])
+            # mutation checks: a treatment that never slept afterwards, or a control that never slept, each fail
+            with open(os.path.join(root, "status.log"), "w") as f:
+                f.write("%.0f oq19-treatment running\n%.0f oq19-fork hibernated\n" % (last - 100, flast + 60))
+            self.assertEqual(A.run_boxd(root, frozen, out, echo=False), gates.FAIL)
+            self.assertFalse(json.load(open(os.path.join(out, "boxd.json")))["checks"]["treatment_slept_after_last_idle"])
+            machine(root, "oq19-treatment", T0 + 90, verdicts())   # now the treatment slept mid-work
+            with open(os.path.join(root, "status.log"), "w") as f:
+                f.write("%.0f oq19-treatment hibernated\n%.0f oq19-control hibernated\n%.0f oq19-fork hibernated\n"
+                        % (last + 460, 1200, flast + 60))
+            self.assertEqual(A.run_boxd(root, frozen, out, echo=False), gates.FAIL)
+            self.assertFalse(json.load(open(os.path.join(out, "boxd.json")))["checks"]["treatment_never_slept_in_busy"])
+
+    def test_clock_rate(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "clock.log")
+            with open(p, "w") as f:
+                f.write("".join("%.3f %.1f %.3f\n" % (1000 + 10 * i, 5 + 10 * i, 2000 + 10 * i * 0.5) for i in range(7)))
+            r = A.clock_rate(p)
+            self.assertAlmostEqual(r["monotonic_rate"], 0.5)
+            self.assertAlmostEqual(r["uptime_rate"], 1.0)
 
 
 if __name__ == "__main__":
