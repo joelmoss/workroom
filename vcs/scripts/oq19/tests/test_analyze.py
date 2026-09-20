@@ -124,6 +124,53 @@ class Votes(unittest.TestCase):
         self.assertEqual(ok["no_busy_forever"][0], gates.PASS)
         self.assertEqual(red["no_busy_forever"][0], gates.FAIL)
 
+    def test_amendment_2_exclusion_reach_hosts_keep_their_children_and_daemons_lose_them(self):
+        """On a systemd box pid 1 is the ancestor of everything; the first implementation excluded it WITH its
+        descendants and the candidate set was empty (the boxd run's 4b read as IDLE mid-turn)."""
+        def box(t):  # a real VM: systemd (pid 1) -> sshd -> a user's bash -> a sleep job; cron -> its burn job
+            return [P(300, 1, "sshd", "S", 0, "poll_schedule_timeout"), P(301, 300, "bash", "S", 0, "do_wait"),
+                    P(302, 301, "sleep", "S", 0, "hrtimer_nanosleep"),
+                    P(400, 1, "cron", "S", 0, "hrtimer_nanosleep"), P(401, 400, "python3", "R", ticks_of(t, T0, 100))]
+        run = mk_run("16", [("idle", IDLE, 30)], extra=box)
+        run.samples = [dict(s, procs=[p if p[0] != 1 else P(1, 0, "systemd", "S", 0, "ep_poll") for p in s["procs"]])
+                       for s in run.samples]
+        f = A.features(A.Stream(run, 1))
+        self.assertTrue(all(x["cand_live"] for x in f))          # the user's shell tree under sshd counts
+        self.assertTrue(all(x["timer"] for x in f))              # its sleep job is a timer wait
+        self.assertFalse(any(x["cpu"] >= 0.05 for x in f[2:]))   # cron's burning child does not
+        self.assertIn("systemd", A.EXCLUDED_SELF_ONLY)
+        self.assertIn("cron", A.EXCLUDED_WITH_DESCENDANTS)
+
+    def test_the_net_mask_drops_the_classifiers_own_call_from_the_replay_and_the_live_loop(self):
+        """F7 on boxd: the shim's provider call is eth0 traffic; masked ticks vote nothing on net."""
+        import json
+        import tempfile
+        import time
+        import live
+        quiet = [("idle", IDLE, 30)]
+        burst = mk_run("1", quiet, net=lambda t: 3000.0 if T0 + 10 <= t < T0 + 12 else 0.0)
+        c = cfg("P3", net=500.0)
+        plain = [A.vote(c, f) for f in A.features(A.Stream(burst, 1))]
+        masked = [A.vote(c, f) for f in A.features(A.Stream(burst, 1), True, [s["t"] for s in burst.samples if T0 + 10 <= s["t"] < T0 + 16])]
+        self.assertTrue(any(plain))
+        self.assertFalse(any(masked))
+        with tempfile.TemporaryDirectory() as d:
+            counters = os.path.join(d, "counters.json")
+            with open(counters, "w") as f:
+                json.dump({"out": 0, "last_in": None, "starts": 0, "open": 0}, f)
+            clf = live.Classifier(c, 0.0, counters, os.path.join(d, "v.jsonl"), os.path.join(d, "verdict"), 1, SAMPLER)
+            for smp in burst.samples:
+                if abs(smp["t"] - (T0 + 10)) < 0.5:
+                    open(os.path.join(d, "selfcall"), "w").close()   # the shim marks its call now
+                clf.feed(smp)
+            clf.close()
+            rows = A.load_jsonl(os.path.join(d, "v.jsonl"))
+            self.assertTrue(any(r["masked"] for r in rows))
+            self.assertFalse(any(r["vote"] for r in rows))
+            # time-based: an old marker masks nothing
+            os.utime(os.path.join(d, "selfcall"), (time.time() - 60, time.time() - 60))
+            self.assertFalse(clf.own_call_recent())
+
     def test_idle_tui_is_idle_and_a_sleepy_job_is_busy(self):
         vim = mk_run("2a", [("idle", IDLE, 60)],
                      extra=lambda t: [P(60, ROOT, "vim", "S", 5, "poll_schedule_timeout.constprop.0")])

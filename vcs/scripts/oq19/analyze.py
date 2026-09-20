@@ -78,10 +78,16 @@ CLK_TCK = 100.0
 
 TIMER_WCHAN = ("hrtimer_nanosleep", "do_nanosleep", "common_nsleep")
 TTY_WCHAN = ("wait_woken", "n_tty_read")
-# The production exclusion list (boundary.md), applied by process name and, for the sampler, by pid. A match
-# excludes the process AND its descendants (cron's children are cron's housekeeping).
-EXCLUDED_COMMS = ("sshd", "cron", "systemd", "systemd-journal", "systemd-logind", "dbus-daemon", "rsyslogd",
-                  "unattended-upgr", "apt.systemd.dai", "wr-agent", "wr-wakeshim")
+# The production exclusion list (boundary.md), applied by process name and, for the sampler, by pid. A daemon
+# whose children are its own housekeeping (cron's jobs, apt's timers, the shim's forks) excludes its
+# descendants too; a process that HOSTS user work (init, sshd, the agent) excludes only itself: boundary.md
+# says a command started through sshd counts, and on a real VM systemd is pid 1, the ancestor of everything.
+# AMENDMENT 2 (2026-09-20, found by the boxd run): the first implementation excluded every match's
+# descendants, which emptied the candidate set on a systemd box; in the container nothing had descendants
+# under a named match except cron, so the hold-out scores identically under both readings (re-scored).
+EXCLUDED_WITH_DESCENDANTS = ("cron", "unattended-upgr", "apt.systemd.dai", "wr-wakeshim")
+EXCLUDED_SELF_ONLY = ("sshd", "systemd", "systemd-journal", "systemd-logind", "dbus-daemon", "rsyslogd", "wr-agent")
+EXCLUDED_COMMS = EXCLUDED_WITH_DESCENDANTS + EXCLUDED_SELF_ONLY
 OWN_PIDS = (1,)                    # container init: the driver in the harness, systemd in production
 CEILINGS_S = (1800, 3600, 14400)   # OQ22: candidate awake ceilings, reported for scenario 17 only
 CONTROL_MAX_MISMATCH = 0.02        # D7: a serial control may differ from its parallel twin in at most this share of seconds
@@ -273,8 +279,9 @@ def tick_features(s, prev, interval_s, sampler_pid, exclusions, pty_rate, since_
     excluded = set()
     if exclusions:
         excluded = set(OWN_PIDS) | {sampler_pid} | _closure([sampler_pid], kids)
-        named = [p[0] for p in procs if p[4] in EXCLUDED_COMMS]
-        excluded |= set(named) | _closure(named, kids)
+        hosts = [p[0] for p in procs if p[4] in EXCLUDED_SELF_ONLY]
+        daemons = [p[0] for p in procs if p[4] in EXCLUDED_WITH_DESCENDANTS]
+        excluded |= set(hosts) | set(daemons) | _closure(daemons, kids)
     cand = [p for p in procs if p[0] not in excluded and p[0] not in roots and p[6] != "Z"]
     wchan = {p[0]: p[9] for p in procs}
     dt = (s["t"] - prev["t"]) if prev else interval_s
@@ -314,10 +321,13 @@ def tick_features(s, prev, interval_s, sampler_pid, exclusions, pty_rate, since_
     }
 
 
-def features(stream, exclusions=True):
-    """Everything a vote needs, per tick, computed once per (stream, exclusions) and reused across the grid."""
+def features(stream, exclusions=True, net_mask=()):
+    """Everything a vote needs, per tick, computed once per (stream, exclusions) and reused across the grid.
+    `net_mask`: tick times whose net rate is the classifier's own provider call (F7: self-activity is
+    subtracted); the live classifier logs them, and the replay of a closed-loop run applies the same mask."""
     out, prev = [], None
     net = RateWindow(NET_WINDOW_S)
+    net_mask = set(net_mask)
     for s in stream.samples:
         prev_t = prev["t"] if prev else s["t"] - stream.interval_s
         last_in = stream.last_input_before(s["t"])
@@ -326,7 +336,9 @@ def features(stream, exclusions=True):
             s, prev, stream.interval_s, stream.header["pid"], exclusions,
             stream.pty_out_between(s["t"] - PTY_WINDOW_S, s["t"]) / PTY_WINDOW_S,
             (s["t"] - last_in) if last_in is not None else float("inf"), open_ops > 0 or started > 0,
-            net.feed(s["t"], s["net_rx"] + s["net_tx"])))
+            0.0 if s["t"] in net_mask else net.feed(s["t"], s["net_rx"] + s["net_tx"])))
+        if s["t"] in net_mask:
+            net.feed(s["t"], s["net_rx"] + s["net_tx"])  # the history still advances
         prev = s
     return out
 
@@ -722,7 +734,8 @@ def closed_loop_check(run_dir, pipeline_check=False, d3_fallback=False):
     c = Config(**cl["config"])
     window_s = cl["window_s"]
     live = live_verdicts(os.path.join(run_dir, "verdicts.jsonl"), c.interval if c.staleness else None)
-    replay = verdict_series(c, run.feats(c.interval, c.exclusions), window_s)
+    masked = [row["t"] for row in load_jsonl(os.path.join(run_dir, "verdicts.jsonl")) if row.get("masked")]
+    replay = verdict_series(c, features(Stream(run, c.interval), c.exclusions, masked), window_s)
     start, end = run.truth[0]["start"], run.truth[-1]["end"]
     diff = mismatch(live, replay, start, start, end - start)
     footer = run.footer or {}

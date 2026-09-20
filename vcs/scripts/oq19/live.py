@@ -24,6 +24,7 @@ import bisect
 import json
 import os
 import sys
+import time
 
 import analyze
 import sampler as sampler_mod
@@ -39,11 +40,20 @@ class Classifier:
         self.hist_t, self.hist_out = [], []
         self.net = analyze.RateWindow(analyze.NET_WINDOW_S)
         self.last_ctr, self.misses = {}, 0
+        self.selfcall = os.path.join(os.path.dirname(counters_path), "selfcall")  # touched by the shim's hooks
         self.prev_starts = 0
         self.last_busy = None
 
     def close(self):
         self.log.close()
+
+    def own_call_recent(self):
+        """True while the shim's last assert/release call is inside the net window: that traffic is ours. Found on
+        the boxd run, where the release's own HTTPS call re-voted BUSY and the timers flapped every 34 s."""
+        try:
+            return time.time() - os.stat(self.selfcall).st_mtime < analyze.NET_WINDOW_S + 1.0
+        except OSError:
+            return False
 
     def counters(self):
         """The agent's counters; on a failed read, the LAST GOOD values (at most one tick stale). A read that came
@@ -73,16 +83,19 @@ class Classifier:
         starts = ctr.get("starts", 0)
         lifecycle = ctr.get("open", 0) > 0 or starts > self.prev_starts
         self.prev_starts = starts
+        net = self.net.feed(t, s["net_rx"] + s["net_tx"])
+        masked = self.own_call_recent()  # F7: the shim's provider call is our traffic, not the workroom's
         f = analyze.tick_features(s, self.prev, self.interval, self.pid, self.cfg.exclusions,
                                   self.pty_rate(t, ctr.get("out", 0)),
                                   (t - last_in) if last_in is not None else float("inf"), lifecycle,
-                                  self.net.feed(t, s["net_rx"] + s["net_tx"]))
+                                  0.0 if masked else net)
         vote = analyze.vote(self.cfg, f)
         if vote:
             self.last_busy = t
         held = self.last_busy is not None and t - self.last_busy < self.window_s
         verdict = BUSY if (vote or held) else IDLE
-        self.log.write(json.dumps({"t": t, "verdict": verdict, "vote": bool(vote), "misses": self.misses}) + "\n")
+        self.log.write(json.dumps({"t": t, "verdict": verdict, "vote": bool(vote), "misses": self.misses,
+                                   "masked": masked}) + "\n")
         self.log.flush()
         tmp = self.verdict_file + ".tmp"
         with open(tmp, "w") as out:

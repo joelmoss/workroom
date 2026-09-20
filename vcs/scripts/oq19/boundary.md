@@ -37,6 +37,14 @@ a box-level or cgroup view (P1b to P5):
 * init/systemd, journald, dbus, cron and its scheduled housekeeping, apt/unattended-upgrades timers, package
   update daemons, and the provider's in-guest agent/CLI.
 
+**Amendment 2 (2026-09-20, found by the boxd run, disclosed).** How far a name match reaches was left
+implicit here and the first implementation excluded every match's descendants. On a real VM `systemd` is
+pid 1 and the ancestor of everything, so the candidate set was empty and a silent agent turn read as IDLE.
+The rule, now explicit: a daemon whose children are its own housekeeping (cron, apt's timers,
+unattended-upgrades, the shim's forks) excludes its descendants; a process that hosts user work (init,
+`sshd`, the agent) excludes only itself, as the `sshd` bullet above already said. In the container nothing
+but cron had descendants under a named match, and the hold-out re-scored identically under the explicit rule.
+
 Scenario 16 exists to prove the list works: an idle box running all of the above at their real cadence must
 stay IDLE, with the sampler and shim running in closed loop (F7).
 
@@ -45,7 +53,11 @@ stay IDLE, with the sampler and shim running in closed loop (F7).
 The sampler, the agent and the shim generate CPU and network activity of their own. Attribution is fixed
 now: their pids are excluded by the list above, and any residual self-activity that cannot be attributed by
 pid is measured once on an idle box (scenario 16) and subtracted. A policy is not allowed to be sustained
-BUSY by its own monitoring; scenario 16 in closed loop gates exactly that.
+BUSY by its own monitoring; scenario 16 in closed loop gates exactly that. **Measured on boxd (amendment 2):**
+the shim's provider call (the in-VM CLI restoring the idle timer) is itself network traffic on `eth0`, and
+without subtraction the classifier re-voted BUSY within a second of every release, so the timers flapped
+every 34 s and the box never slept. The subtraction is: the shim marks the moment of each call, and the
+classifier masks the net signal from then until one net window after it (`live.py`, `own_call_recent`).
 
 ## Permissions (what each signal needs; to be VERIFIED in the pipeline check, T2)
 

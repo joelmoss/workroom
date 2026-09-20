@@ -107,7 +107,13 @@ ids = sys.argv[2].split()
 print(int(sum(labels.seconds(p) for i in ids for p in labels.BY_ID[i].phases) + 20 * len(ids)))' "$HERE" "$TREATMENT_IDS")
 WAIT=$((EXPECT + 30 + TIMEOUT + 180))
 log "waiting $WAIT s for the runs, the post-run idle and the provider timer"
-while [ $(( $(date +%s) - START )) -lt $WAIT ]; do sleep $POLL; done
+# The treatment sleeps after each scenario's post-idle phase (that is a pass criterion) and that freezes the
+# next scenario, so a sleeping treatment is woken after a minute: every sleep is in the tick log either way.
+while [ $(( $(date +%s) - START )) -lt $WAIT ]; do
+  sleep $POLL
+  st=$(status_of oq19-treatment)
+  case "$st" in *hibernat*|*suspend*|*paused*) log "treatment $st: waking it in 60 s for the next scenario"; sleep 60; boxd machine wake oq19-treatment >/dev/null 2>&1 || true;; esac
+done
 
 log "waking both machines to collect"
 for m in oq19-treatment oq19-control; do boxd machine wake "$m" >/dev/null 2>&1 || true; done
