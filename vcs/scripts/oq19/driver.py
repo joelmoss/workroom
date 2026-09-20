@@ -208,8 +208,12 @@ def run(args):
     stop_counters = threading.Event()
     ctx = Context(session, None, args.scale, args.compressed, args.out)
     if closed:  # the real classifier and shim run in the box, at the real cadence (F7)
-        counters = os.path.join(args.out, "counters.json")
-        verdict_file = os.path.join(args.out, "verdict")
+        # The two files the box's processes exchange live on the container's own filesystem, never the bind
+        # mount: on Docker Desktop a bind-mounted os.replace is not atomic for a reader (measured: 219
+        # FileNotFoundError in 15 s of polling, 0 on /run), and a missed read is a wrong verdict.
+        os.makedirs("/run/oq19", exist_ok=True)
+        counters = "/run/oq19/counters.json"
+        verdict_file = "/run/oq19/verdict"
         threading.Thread(target=publish_counters, args=(session, ctx, counters, stop_counters), daemon=True).start()
         time.sleep(0.3)
         sampler = subprocess.Popen([
