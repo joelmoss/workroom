@@ -62,8 +62,8 @@ git -C "$HERE" rev-parse HEAD > "$OUT/harness_commit"
 
 # The harness as committed, never the working tree (record.py's rule), without traces/.
 STAGE=$(mktemp -d)
-git -C "$HERE" archive HEAD "$(git -C "$HERE" rev-parse --show-prefix)" | tar -x -C "$STAGE"
-HARNESS="$STAGE/$(git -C "$HERE" rev-parse --show-prefix)"
+git -C "$HERE" archive HEAD . | tar -x -C "$STAGE"   # paths relative to the harness directory
+HARNESS="$STAGE"
 
 new() { # name suspend hibernate
   log "creating $1 (timers $2/$3)"
