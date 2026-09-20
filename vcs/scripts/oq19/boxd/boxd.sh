@@ -68,8 +68,8 @@ HARNESS="$STAGE"
 new() { # name suspend hibernate
   log "creating $1 (timers $2/$3)"
   boxd machine new "$1" --auto-suspend-timeout "$2" --auto-hibernate-timeout "$3" --json > "$OUT/$1.create.json"
-  boxd machine cp -r "$HARNESS" "$1:/oq19" >/dev/null   # `boxd machine cp --help`: <machine>:/path
-  boxd machine exec "$1" --timeout 900 -- sh /oq19/setup.sh > "$OUT/$1.setup.log" 2>&1
+  boxd machine cp -r "$HARNESS" "$1:/home/boxd/oq19" >/dev/null   # `boxd machine cp --help`: <machine>:/path
+  boxd machine exec "$1" --timeout 900 -- sudo -n sh /home/boxd/oq19/setup.sh > "$OUT/$1.setup.log" 2>&1
   log "  $1 ready: $(tail -1 "$OUT/$1.setup.log")"
 }
 detach() { # name command...  (a detached job: the exec session ends at once; no quotes inside the command)
@@ -83,20 +83,20 @@ put() { # name path content
 new oq19-peer 0 0
 PEER_IP=$(boxd machine exec oq19-peer -- sh -c "hostname -I | awk '{print \$1}'" | tr -d '[:space:]')
 log "peer at $PEER_IP"
-detach oq19-peer python3 /oq19/scenarios/tools/peer.py
+detach oq19-peer python3 /home/boxd/oq19/scenarios/tools/peer.py
 
 new oq19-treatment "$TIMEOUT" "$TIMEOUT"
 new oq19-control "$TIMEOUT" "$TIMEOUT"
-for m in oq19-treatment oq19-control; do detach "$m" sh /oq19/boxd/ticks.sh /oq19-out/ticks.log; done
+for m in oq19-treatment oq19-control; do detach "$m" sh /home/boxd/oq19/boxd/ticks.sh /home/boxd/oq19-out/ticks.log; done
 
 # Control-plane status poll, host wall clock, for as long as the script runs.
 ( while :; do for m in $(machines); do echo "$(date +%s) $m $(status_of "$m")"; done >> "$OUT/status.log"; sleep $POLL; done ) &
 POLLER=$!
 
 START=$(date +%s)
-put oq19-treatment /oq19-out/closed.json "$CLOSED"
-detach oq19-treatment sh /oq19/boxd/runall.sh treatment "'$TREATMENT_IDS'" "$PEER_IP:9000" /oq19-out/closed.json
-detach oq19-control sh /oq19/boxd/runall.sh control "'$CONTROL_IDS'" "$PEER_IP:9000"
+put oq19-treatment /home/boxd/oq19-out/closed.json "$CLOSED"
+detach oq19-treatment sh /home/boxd/oq19/boxd/runall.sh treatment "'$TREATMENT_IDS'" "$PEER_IP:9000" /home/boxd/oq19-out/closed.json
+detach oq19-control sh /home/boxd/oq19/boxd/runall.sh control "'$CONTROL_IDS'" "$PEER_IP:9000"
 log "runs launched on the treatment ($TREATMENT_IDS) and the control ($CONTROL_IDS)"
 
 # Expected wall time of the treatment's list plus the post-run idle window and provider timeout, then margin.
@@ -113,17 +113,17 @@ for m in oq19-treatment oq19-control; do boxd machine wake "$m" >/dev/null 2>&1 
 sleep 5
 for m in oq19-treatment oq19-control; do
   mkdir -p "$OUT/$m"
-  boxd machine cp -r "$m:/oq19-out" "$OUT/$m/"
-  log "  collected $m: $(ls "$OUT/$m/oq19-out" 2>/dev/null | tr '\n' ' ')"
+  boxd machine cp -r "$m:/home/boxd/oq19-out" "$OUT/$m/"
+  log "  collected $m: $(ls "$OUT/$m/home/boxd/oq19-out" 2>/dev/null | tr '\n' ' ')"
 done
 
 # The fork: a derived machine, where the design doc says /proc/uptime lies.
 log "forking the treatment"
 boxd machine fork oq19-treatment oq19-fork --auto-suspend-timeout "$TIMEOUT" --auto-hibernate-timeout "$TIMEOUT" --json > "$OUT/oq19-fork.create.json"
-boxd machine exec oq19-fork --timeout 120 -- sh -c "rm -rf /oq19-out; mkdir -p /oq19-out; sh /oq19/boxd/clockcheck.sh /oq19-out/clock.log" || true
-put oq19-fork /oq19-out/closed.json "$CLOSED"
-detach oq19-fork sh /oq19/boxd/ticks.sh /oq19-out/ticks.log
-detach oq19-fork sh /oq19/boxd/runall.sh fork 1 "$PEER_IP:9000" /oq19-out/closed.json
+boxd machine exec oq19-fork --timeout 120 -- sh -c "rm -rf /home/boxd/oq19-out; mkdir -p /home/boxd/oq19-out; sh /home/boxd/oq19/boxd/clockcheck.sh /home/boxd/oq19-out/clock.log" || true
+put oq19-fork /home/boxd/oq19-out/closed.json "$CLOSED"
+detach oq19-fork sh /home/boxd/oq19/boxd/ticks.sh /home/boxd/oq19-out/ticks.log
+detach oq19-fork sh /home/boxd/oq19/boxd/runall.sh fork 1 "$PEER_IP:9000" /home/boxd/oq19-out/closed.json
 FSTART=$(date +%s)
 FWAIT=$((300 + 20 + 30 + TIMEOUT + 180))
 log "fork: clock check done, scenario 1 launched; waiting $FWAIT s"
@@ -131,5 +131,5 @@ while [ $(( $(date +%s) - FSTART )) -lt $FWAIT ]; do sleep $POLL; done
 boxd machine wake oq19-fork >/dev/null 2>&1 || true
 sleep 5
 mkdir -p "$OUT/oq19-fork"
-boxd machine cp -r "oq19-fork:/oq19-out" "$OUT/oq19-fork/"
+boxd machine cp -r "oq19-fork:/home/boxd/oq19-out" "$OUT/oq19-fork/"
 log "collected the fork; done. Now: analyze.py boxd"
