@@ -1,0 +1,3 @@
+{"scenario": "9", "phase": "quiet", "label": "IDLE", "start": 374552.003856269, "end": 374662.00625261}
+{"scenario": "9", "phase": "traffic", "label": "BUSY", "start": 374662.00628861, "end": 374962.017294163}
+{"scenario": "9", "phase": "post", "label": "IDLE", "start": 374962.01739833, "end": 375602.026573662}

@@ -1,0 +1,42 @@
+{
+  "scenario": "5",
+  "name": "bg-cpu-build",
+  "mode": "detached",
+  "scale": 1.0,
+  "compressed": false,
+  "interval": 1.0,
+  "ss_every": 1,
+  "closed_loop": {
+    "config": {
+      "policy": "P4",
+      "cpu": 0.05,
+      "pty": 200.0,
+      "net": 500.0,
+      "wait": "agnostic",
+      "age": null,
+      "grace": 10.0,
+      "window": 0,
+      "interval": 1,
+      "staleness": true,
+      "exclusions": true,
+      "lifecycle": true
+    },
+    "window_s": 30
+  },
+  "shim_cpu_s": 3.1169650000000004,
+  "variant": "",
+  "jitter_seed": 1706412118,
+  "preroll": 2.3582199103064903,
+  "sampler": {
+    "type": "footer",
+    "wall_s": 1054.0073596880538,
+    "cpu_s": 8.016425,
+    "cpu_fraction": 0.007605663211282089,
+    "cpu_fraction_steady": 0.0075549612567270994,
+    "samples": 1054,
+    "overran_ticks": 0,
+    "max_late_s": 0.0015364580322057009,
+    "maxrss_kb": 13772
+  },
+  "pty_events": 6
+}

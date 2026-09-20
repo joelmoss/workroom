@@ -9,6 +9,31 @@
 
 ## P2 — perf, correctness, and the next VCS phase
 
+### Record a real Claude Code trace on Linux for the OQ19 harness (vcs) — #208 measurement follow-up
+
+**What:** Run real Claude Code (not `scenarios/tools/agent.py`) in the OQ19 measurement image through
+the scenario-3 and scenario-4 shapes (idle at its prompt with and without a keepalive connection; a
+silent 15-minute turn; a streaming turn), record it with `vcs/scripts/oq19/sampler.py`, and replay it
+with `analyze.py` at the frozen configuration and under the tty-aware wait rule.
+
+**Why:** Every scored OQ19 run used a synthetic agent that blocks in a tty read at its prompt
+(`wait_woken`). The real agent is an event loop. Two results depend on that difference: the
+tty-aware rule, which separates an idle keepalive (3b) from a silent turn (4b) and would remove the
+D3 accepted cost (an idle agent holding a connection keeps its box awake 24 h/day), passed 16
+configurations on the synthetic agent and is unselectable until a real trace confirms the wait
+class; and P5's exec-lifecycle signal was unneeded on the synthetic set and may matter on the real
+one. See `docs/designs/oq19-wakefulness-measurements.md`, "What is not measured".
+
+**How to start:** `run.sh scenario 3b --closed-loop '<frozen config>'` with the agent command in
+`scenarios/lib.py` swapped for `claude` (it needs a credential in the container and a peer that looks
+like the API; the keepalive is the real one). Compare `wchan` of the idle agent against
+`analyze.TTY_WCHAN`. If it blocks in `poll`/`epoll`, the tty-aware rule is dead and D3's cost stands.
+
+**Depends on / blocked by:** A Linux Claude Code build in the image, and a way to run it non-interactively
+against a stub API. Do it before the Rust wakefulness service picks its wait rule.
+
+**Priority:** P2, effort M.
+
 ### Ordinary connection failures blank the PR/CI badges (macapp) — #207 eng-review follow-up
 
 **What:** Classify plain connection failures (`error connecting to api.github.com`, `dial tcp`,

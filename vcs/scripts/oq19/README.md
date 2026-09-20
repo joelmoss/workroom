@@ -12,11 +12,14 @@ once any trace has been recorded: a gate the results embarrass is a finding, not
 
 **Amendment 1 (2026-09-20, owner-approved, post hoc).** The pre-registered tuning outcome was NO WINNER
 (`results/tuning-preregistered.md`). Every residual failure traced to a registration fault, not to the
-signal, so the owner chose a disclosed amendment: `gates.py` (an idle interval's opening BUSY run is excused
-up to the window + 10 s, and a run spanning the whole interval fails regardless) and the `analyze.py` grid
-(grace 10 s; net as a 10 s windowed rate). Labels are untouched. The amended contract is tag
-`oq19-amendment-1`, which `record.py` now checks; the hold-out set was recorded after the amendment and is
-what the claim rests on. Both headers carry the full rationale.
+signal, so the owner chose a disclosed amendment: `gates.py` (an idle interval's opening BUSY run, one that
+begins within a sampling interval of the open, is excused up to the window + 10 s, and a run spanning the
+whole interval fails regardless) and the `analyze.py` grid (grace 10 s; net as a 3 s windowed rate; pty
+window 10 -> 5 s; compressed runs scale the grace like the window). Labels are untouched. The amended
+contract is tag `oq19-amendment-1`, which `record.py` now checks; the hold-out set was recorded after the
+amendment and is what the claim rests on. Both headers carry the full rationale. Results:
+`results/holdout.md` (the claim), `results/tuning.md`, `results/tuning-preregistered.md`, and the write-up in
+`docs/designs/oq19-wakefulness-measurements.md`.
 
 ## Layout
 

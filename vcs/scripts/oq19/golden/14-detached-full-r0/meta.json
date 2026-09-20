@@ -1,0 +1,42 @@
+{
+  "scenario": "14",
+  "name": "keystroke-activity",
+  "mode": "detached",
+  "scale": 1.0,
+  "compressed": false,
+  "interval": 1.0,
+  "ss_every": 1,
+  "closed_loop": {
+    "config": {
+      "policy": "P4",
+      "cpu": 0.05,
+      "pty": 200.0,
+      "net": 500.0,
+      "wait": "agnostic",
+      "age": null,
+      "grace": 10.0,
+      "window": 0,
+      "interval": 1,
+      "staleness": true,
+      "exclusions": true,
+      "lifecycle": true
+    },
+    "window_s": 30
+  },
+  "shim_cpu_s": 1.995397,
+  "variant": "",
+  "jitter_seed": 199377481,
+  "preroll": 2.513252666942852,
+  "sampler": {
+    "type": "footer",
+    "wall_s": 815.0002678720048,
+    "cpu_s": 5.4597809999999996,
+    "cpu_fraction": 0.006699115589563775,
+    "cpu_fraction_steady": 0.006629454783346749,
+    "samples": 815,
+    "overran_ticks": 0,
+    "max_late_s": 0.0003761249827221036,
+    "maxrss_kb": 13676
+  },
+  "pty_events": 69
+}
