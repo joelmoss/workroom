@@ -178,6 +178,16 @@ class Votes(unittest.TestCase):
         self.assertLess(max(x["net"] for x in f), 500.0)
         self.assertIn(10.0, A.GRACE_GRID)
         self.assertEqual(len(A.all_configs()), 2991)
+        self.assertEqual((A.PTY_WINDOW_S, A.NET_WINDOW_S, A.COMPRESSION), (5.0, 3.0, 0.1))
+        # a compressed run scales the grace: one keystroke at T0+10 holds a 10 s grace for 1 s, not 10
+        typing = [{"t": T0 + 10, "d": "in", "n": 1}]
+        comp = mk_run("14", quiet, pty=typing, compressed=True)
+        c = cfg("P4", grace=10.0)
+        self.assertEqual(A.effective(c, comp).grace, 1.0)
+        self.assertEqual(A.effective(c, mk_run("14", quiet, pty=typing)).grace, 10.0)
+        v = A.score_run(c, comp, A.features(A.Stream(comp, 1)))[1]
+        busy_end = [t for t, x in v if x == IDLE and t > T0 + 10]
+        self.assertTrue(busy_end and busy_end[0] < T0 + 10 + 1 + 3 + 1.5, v)  # grace 1 + compressed window 3
         w = A.RateWindow(10.0)
         self.assertEqual(w.feed(0.0, 1000), 0.0)            # the counter's starting value is the base, not 0
         self.assertEqual(w.feed(1.0, 1525), 52.5)

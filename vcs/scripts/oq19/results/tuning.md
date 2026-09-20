@@ -1,0 +1,33 @@
+# OQ19 tuning analysis
+
+Scored tuning set (scale 1.0). Parameters are chosen here and frozen; the hold-out set (T6) carries the claim.
+
+**Post-hoc amendment 1 applies** (see `gates.py` and `analyze.py` headers; the pre-registered outcome is `results/tuning-preregistered.md`): grace 10 s added to GRACE_GRID; net rate over NET_WINDOW_S instead of per tick; gates: every idle interval's opening BUSY run gets the window as its tail; a run spanning the whole interval fails.
+
+Analysis code at `30ed8827`. Runs scored: 165 detached (full 105, compressed 60); attached 19; 500-process variant 3; serial controls 2; excluded 1.
+* excluded `11-attached-full-r0`: check_trace failed (kept in the manifest; not scored)
+
+## D3 (3b vs 4b)
+The fallback FIRES over the agent-agnostic grid: no candidate had 4b false-idle = 0 AND 3b no-busy-forever, so 3b and 4b are treated as inseparable, both BUSY (never-idle wins), and 3b is exempt from no-busy-forever as an accepted cost (OQ7: an idle agent with a held connection keeps its box awake).
+
+## The ladder: best config per policy (fewest failed runs, then least false-busy)
+| policy | best config | failed runs / runs | failing gates | downsampled |
+|---|---|---|---|---|
+| P0 | `P0|None|None|None|agnostic|None|0.0|None|1|True|True|True` | 130 / 165 | false_idle x75, no_busy_forever x55, provider_deadline x75, staleness x5, time_to_idle x35 | no |
+| P1 | `P1|None|None|None|agnostic|None|0.0|None|5|True|True|True` | 100 / 165 | false_idle x35, no_busy_forever x65, provider_deadline x35, staleness x5, time_to_idle x40 | yes |
+| P1b | `P1b|None|None|None|agnostic|None|0.0|None|5|True|True|True` | 70 / 165 | false_idle x5, no_busy_forever x65, provider_deadline x5, staleness x5, time_to_idle x40 | yes |
+| P2 | `P2|0.05|None|None|agnostic|None|0.0|None|5|True|True|True` | 80 / 165 | false_idle x80, provider_deadline x75, staleness x5 | yes |
+| P3 | `P3|0.05|200.0|None|agnostic|None|0.0|None|5|True|True|True` | 21 / 165 | false_idle x20, no_busy_forever x1, provider_deadline x15, staleness x5 | yes |
+| P4 | `P4|0.05|200.0|None|agnostic|None|10.0|0|1|True|True|True` | 5 / 165 | false_idle x5, provider_deadline x5 | no |
+| P5 | `P5|0.05|200.0|None|agnostic|None|10.0|0|1|True|True|True` | 5 / 165 | false_idle x5, provider_deadline x5 | no |
+
+## Winner (pre-registered rule, `select_winner`)
+**NONE: no agent-agnostic config passes every gate on every tuning run. That is a FAIL finding, not a reason to loosen a gate.**
+
+## Conditional alternative (tty-aware wait rule; requires an agent that blocks in a tty read)
+0 passing tty-aware config(s). Not selectable until a real agent trace confirms the wait class.
+
+## 500-process build (sampler starvation)
+* `5-detached-full-500proc-r0`: 835 samples, longest silence 7.9 s; sampler cost 1.13% of a core (steady)
+* `5-detached-full-500proc-r1`: 786 samples, longest silence 14.3 s; sampler cost 0.87% of a core (steady)
+* `5-detached-full-500proc-r2`: 851 samples, longest silence 9.0 s; sampler cost 0.97% of a core (steady)
