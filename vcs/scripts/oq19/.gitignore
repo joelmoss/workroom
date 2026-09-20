@@ -1,2 +1,3 @@
 traces/
 __pycache__/
+results/*.log
