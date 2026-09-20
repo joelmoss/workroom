@@ -86,7 +86,8 @@ TTY_WCHAN = ("wait_woken", "n_tty_read")
 # descendants, which emptied the candidate set on a systemd box; in the container nothing had descendants
 # under a named match except cron, so the hold-out scores identically under both readings (re-scored).
 EXCLUDED_WITH_DESCENDANTS = ("cron", "unattended-upgr", "apt.systemd.dai", "wr-wakeshim")
-EXCLUDED_SELF_ONLY = ("sshd", "systemd", "systemd-journal", "systemd-logind", "dbus-daemon", "rsyslogd", "wr-agent")
+EXCLUDED_SELF_ONLY = ("sshd", "systemd", "systemd-journal", "systemd-logind", "dbus-daemon", "rsyslogd", "wr-agent",
+                      "boxd-automation")  # boundary.md's "provider's in-guest agent": its name on boxd (measured)
 EXCLUDED_COMMS = EXCLUDED_WITH_DESCENDANTS + EXCLUDED_SELF_ONLY
 OWN_PIDS = (1,)                    # container init: the driver in the harness, systemd in production
 CEILINGS_S = (1800, 3600, 14400)   # OQ22: candidate awake ceilings, reported for scenario 17 only
@@ -884,27 +885,37 @@ def first_asleep_after(status_rows, wall_t):
     return None
 
 
+def run_ticks(run):
+    """The run's own samples as (wall, uptime, monotonic): the sampler stamps all three, so a provider sleep
+    inside a run is a wall gap between two of its samples, and monotonic -> wall needs no separate log."""
+    return [(s["wall"], s.get("uptime", 0.0), s["t"]) for s in run.samples if "wall" in s]
+
+
 def boxd_machine(root, machine, timeout_s, window_s):
     """One machine's runs: per run the live gates (closed loop) and the sleep events inside BUSY; the machine's
-    first sleep after its last IDLE label."""
+    first sleep after its last IDLE label. A run with no truth rows yet (cut short before its first phase
+    ended) is skipped; a partial one is scored on the phases it has."""
     base = os.path.join(root, machine, "oq19-out")
-    ticks = read_ticks(os.path.join(base, "ticks.log"))
-    events = sleep_events(ticks)
     status_rows = statuses(os.path.join(root, "status.log"), machine)
-    runs = []
+    runs, events = [], []
     last_end_wall = None
     for name in sorted(os.listdir(base)):
         d = os.path.join(base, name)
-        if not os.path.isfile(os.path.join(d, "truth.jsonl")):
+        if not os.path.isfile(os.path.join(d, "truth.jsonl")) or os.path.getsize(os.path.join(d, "truth.jsonl")) == 0:
             continue
         run = Run.load(d, key=name)
         ivs = run.intervals()
+        ticks = run_ticks(run)
+        if not ticks:
+            continue
+        events_here = sleep_events(ticks, run.header.get("interval", 1.0))
+        events += events_here
         busy_wall = [(wall_of(ticks, i.start), wall_of(ticks, i.end), i.phase) for i in ivs if i.label == BUSY]
-        slept_in_busy = [e for e in events for a, b, _ in busy_wall if a <= e["wall_before"] <= b]
+        slept_in_busy = [e for e in events_here for a, b, _ in busy_wall if a <= e["wall_before"] <= b]
         run_wall = (wall_of(ticks, ivs[0].start), wall_of(ticks, ivs[-1].end))
-        slept_in_run = [e for e in events if run_wall[0] <= e["wall_before"] <= run_wall[1]]
+        slept_in_run = [e for e in events_here if run_wall[0] <= e["wall_before"] <= run_wall[1]]
         closed = run.meta.get("closed_loop")
-        gates_out = closed_loop_check(d)["gates"] if closed else None
+        gates_out = closed_loop_check(d)["gates"] if closed and run.meta.get("complete", True) else None
         runs.append({"scenario": run.scenario, "busy_wall": busy_wall, "slept_in_busy": slept_in_busy,
                      "slept_in_run": slept_in_run,
                      "gates": gates_out, "failed": [g for g, v in (gates_out or {}).items() if v != gates.PASS]})
@@ -955,7 +966,7 @@ def run_boxd(root, frozen_path, out_dir, timeout_s=120, echo=True):
     for m in (t, c, fk):
         if not m:
             continue
-        L += ["", "## %s" % m["machine"], "sleep events (wall gap > %d s in the tick log): %d" % (3 * TICK_PERIOD_S, len(m["sleep_events"]))]
+        L += ["", "## %s" % m["machine"], "sleep events (a wall gap over 3 sampling intervals inside a run): %d" % len(m["sleep_events"])]
         L += ["* asleep %.0f s (VM monotonic advanced %.0f s, uptime %.0f s) starting at wall %.0f" % (
             e["wall_gap"], e["monotonic_gap"], e["uptime_gap"], e["wall_before"]) for e in m["sleep_events"]]
         L += ["", "| scenario | BUSY phases (wall) | slept inside BUSY | live gates |", "|---|---|---|---|"]

@@ -88,7 +88,8 @@ detach oq19-peer python3 /home/boxd/oq19/scenarios/tools/peer.py
 
 new oq19-treatment "$TIMEOUT" "$TIMEOUT"
 new oq19-control "$TIMEOUT" "$TIMEOUT"
-for m in oq19-treatment oq19-control; do detach "$m" sh /home/boxd/oq19/boxd/ticks.sh /home/boxd/oq19-out/ticks.log; done
+# No harness loop runs on the box besides the driver: the sampler stamps wall time on every sample, so each
+# run's trace is its own tick log (a `sleep 10` logger of ours was a nanosleep candidate: BUSY forever).
 
 # Control-plane status poll, host wall clock, for as long as the script runs.
 ( while :; do for m in $(machines); do echo "$(date +%s) $m $(status_of "$m")"; done >> "$OUT/status.log"; sleep $POLL; done ) &
@@ -129,7 +130,6 @@ log "forking the treatment"
 boxd machine fork oq19-treatment oq19-fork --auto-suspend-timeout "$TIMEOUT" --auto-hibernate-timeout "$TIMEOUT" --json > "$OUT/oq19-fork.create.json"
 boxd machine exec oq19-fork --timeout 120 -- sh -c "rm -rf /home/boxd/oq19-out; mkdir -p /home/boxd/oq19-out; sh /home/boxd/oq19/boxd/clockcheck.sh /home/boxd/oq19-out/clock.log" || true
 put oq19-fork /home/boxd/oq19-out/closed.json "$CLOSED"
-detach oq19-fork sh /home/boxd/oq19/boxd/ticks.sh /home/boxd/oq19-out/ticks.log
 detach oq19-fork sh /home/boxd/oq19/boxd/runall.sh fork 1 "$PEER_IP:9000" /home/boxd/oq19-out/closed.json
 FSTART=$(date +%s)
 FWAIT=$((300 + 20 + 30 + TIMEOUT + 180))
