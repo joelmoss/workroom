@@ -38,6 +38,7 @@ what the claim rests on. Both headers carry the full rationale.
 | `cost_matrix.json` | The measured sampler cost per signal set, interval and load (from `run.sh cost`), so the analysis charges each policy what its signals cost. |
 | `cost.py` | Sampler cost per signal group, interval and process load (`run.sh cost`). |
 | `Dockerfile` | The measurement image. `setup.sh` (boxd) installs the same package list. |
+| `setup.sh`, `boxd/` | T7, the boxd confirmation run: `boxd/boxd.sh` creates `oq19-peer`, `oq19-treatment` (the frozen policy driving the shim through the in-VM CLI), `oq19-control` (no policy; must hibernate mid-wait) and `oq19-fork`, runs 4b/3a/3b/5/16 detached (`boxd/runall.sh`, `OQ19_PROCS=all`: the whole box minus the exclusion list), logs ticks and control-plane status, collects, destroys everything in an EXIT trap. `analyze.py boxd` scores it (`results/boxd.md`). |
 | `pipeline-check.md` | What the pipeline check found in the image, and what it corrected. |
 | `tests/` | Self-checks; real fixtures in `tests/fixtures/`. Run by file name, never `unittest discover`. |
 
@@ -58,6 +59,9 @@ vcs/scripts/oq19/analyze.py holdout                      # the final claim: PASS
 # closed loop (F7): the real classifier and shim in the box, at the real cadence
 vcs/scripts/oq19/run.sh scenario 16 --closed-loop '{"config": {<analyze.Config fields>}, "window_s": 30}' --out DIR
 vcs/scripts/oq19/analyze.py closed-loop --run DIR        # live verdicts vs the gates, vs a replay, and the cost
+# T7, boxd (creates cloud machines; ~1.7 h; the boxd CLI must be signed in)
+caffeinate -i vcs/scripts/oq19/boxd/boxd.sh              # treatment + control + fork, cleanup in a trap
+vcs/scripts/oq19/analyze.py boxd                         # results/boxd.md: PASS iff the treatment stayed awake through BUSY, the control did not, both slept after IDLE, the fork's clock is sane
 ```
 
 `--scale` is for pipeline checks only and is recorded in `meta.json`; a scored run always uses scale 1.0.
