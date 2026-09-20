@@ -62,13 +62,14 @@ git -C "$HERE" rev-parse HEAD > "$OUT/harness_commit"
 
 # The harness as committed, never the working tree (record.py's rule), without traces/.
 STAGE=$(mktemp -d)
-git -C "$HERE" archive HEAD . | tar -x -C "$STAGE"   # paths relative to the harness directory
-HARNESS="$STAGE"
+mkdir -p "$STAGE/oq19"
+git -C "$HERE" archive HEAD . | tar -x -C "$STAGE/oq19"   # paths relative to the harness directory
+HARNESS="$STAGE/oq19"
 
 new() { # name suspend hibernate
   log "creating $1 (timers $2/$3)"
   boxd machine new "$1" --auto-suspend-timeout "$2" --auto-hibernate-timeout "$3" --json > "$OUT/$1.create.json"
-  boxd machine cp -r "$HARNESS" "$1:/home/boxd/oq19" >/dev/null   # `boxd machine cp --help`: <machine>:/path
+  boxd machine cp -r "$HARNESS" "$1:/home/boxd" >/dev/null   # cp copies the directory INTO the destination (measured)
   boxd machine exec "$1" --timeout 900 -- sudo -n sh /home/boxd/oq19/setup.sh > "$OUT/$1.setup.log" 2>&1
   log "  $1 ready: $(tail -1 "$OUT/$1.setup.log")"
 }
