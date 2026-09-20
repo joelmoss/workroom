@@ -646,9 +646,10 @@ def report(runs, excluded, summaries, d3, winner, matrix, pipeline_check, commit
         w("")
         w("### Attached vs detached (scenario 15: reported, never scored)")
         w("PREDICTION, written before any attached trace was analysed: the harness's fake client resizes the window "
-          "every 30 s, which redraws a full-screen TUI (several KB of pty output). That lands in the 10 s pty-rate "
-          "window for a third of the time, above both grid values, so attached 2a/2c/3a will look false-busy. "
-          "That is the harness's client, not a policy defect, and it does not enter the claim.")
+          "every 30 s, which redraws a full-screen TUI (several KB of pty output). That lands in the pty-rate "
+          "window (10 s when this was written, 5 s after amendment 1) for part of the time, above both grid values, "
+          "so attached 2a/2c/3a will look false-busy. That is the harness's client, not a policy defect, and it "
+          "does not enter the claim.")
         for r in runs:
             if r.mode == "attached" and labels.BY_ID[r.scenario].gated:
                 res, _ = score_run(c, r, r.feats(c.interval, c.exclusions), d3 and r.scenario == "3b")
