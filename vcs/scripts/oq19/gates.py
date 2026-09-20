@@ -22,8 +22,11 @@ to a registration fault rather than to the signal: `gate_no_busy_forever` excuse
 post-work intervals, so a pure-idle label had a 10 s budget for its opening BUSY run while every window in
 the grid is >= 30 s. Any launch-time activity (vim painting its screen, the box's startup network burst)
 therefore failed the run outright. The amendment: (a) EVERY idle interval's opening BUSY run is excused up
-to the policy's window + 10 s, and (b) a BUSY run that spans the whole idle interval is "busy forever" and
-FAILS whatever the window, so the headline failure (an idle TUI declared busy for good) cannot pass. The
+to the policy's window + 10 s, (b) a BUSY run that spans the whole idle interval is "busy forever" and
+FAILS whatever the window, so the headline failure (an idle TUI declared busy for good) cannot pass, and
+(c) "opening" means within one sampling interval of the interval's start: the launch keystroke lands just
+before the label opens, and whether the next tick falls before or after the boundary must not decide the
+gate (at 2 s cadence it did, failing the same 38 s run that passed at 1 s). The
 tuning set was re-scored under the amended gate and grid (`analyze.py` AMENDMENTS); the hold-out set was
 recorded after that and carries the claim. Tag `oq19-preregistration-frozen` is the original contract;
 `oq19-amendment-1` is this one.
@@ -201,7 +204,7 @@ def gate_provider_deadline(verdicts, busy_intervals):
     return PASS, worst
 
 
-def gate_no_busy_forever(verdicts, idle_intervals, tails, exempt=()):
+def gate_no_busy_forever(verdicts, idle_intervals, tails, exempt=(), open_tolerance_s=0.0):
     """No idle-labelled interval is declared BUSY for longer than allowed, and the BUSY time that is NOT an
     excused hysteresis tail is at most 5% of the idle time that is not an excused tail.
 
@@ -209,6 +212,8 @@ def gate_no_busy_forever(verdicts, idle_intervals, tails, exempt=()):
     after whatever happened as the interval opened: amendment 1) and may last `tails[interval]` + 10 s
     (`tails` maps interval -> tail seconds); any BUSY run that begins later has no such excuse and may last
     10 s. A BUSY run that spans the whole interval is busy forever and FAILS whatever the tail (amendment 1).
+    A run begins "at the start" if it begins within `open_tolerance_s` of it (one sampling interval, from
+    `evaluate`; amendment 1c).
     The excused tail is left out of BOTH the numerator and the denominator of the 5% fraction, so a policy
     is neither failed twice for the window it was tuned with nor helped by the idle time that window covers.
     `exempt` may hold only the D3 scenario (3b): excusing anything else would let a policy excuse itself."""
@@ -221,7 +226,7 @@ def gate_no_busy_forever(verdicts, idle_intervals, tails, exempt=()):
         tail = tails.get(i, 0.0)
         opening = 0.0
         for a, b in busy_runs(verdicts, i):
-            starts_at_open = abs(a - i.start) < 1e-9
+            starts_at_open = a - i.start <= open_tolerance_s + 1e-9
             if starts_at_open and b >= i.end - 1e-9:
                 return FAIL, b - a  # busy for the whole interval: forever, whatever the window
             if b - a > (NO_BUSY_FOREVER_TAIL_S + tail if starts_at_open else NO_BUSY_FOREVER_TAIL_S):
@@ -289,7 +294,8 @@ def evaluate(verdicts, intervals, interval_s, idle_window_s, d3_fallback=False, 
     out = {
         "false_idle": gate_false_idle(verdicts, busy, interval_s),
         "provider_deadline": gate_provider_deadline(verdicts, busy),
-        "no_busy_forever": gate_no_busy_forever(verdicts, idle, tails, ("3b",) if d3_fallback else ()),
+        "no_busy_forever": gate_no_busy_forever(verdicts, idle, tails, ("3b",) if d3_fallback else (),
+                                                open_tolerance_s=interval_s),
         "time_to_idle": gate_time_to_idle(verdicts, post, idle_window_s),
     }
     if gaps:

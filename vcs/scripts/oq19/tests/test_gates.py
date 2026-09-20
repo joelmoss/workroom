@@ -327,6 +327,11 @@ class Evaluate(unittest.TestCase):
         i = quiet[0]
         self.assertEqual(gates.gate_no_busy_forever([(0, BUSY)], quiet, {i: 600})[0], FAIL)
         self.assertEqual(gates.gate_no_busy_forever([(0, BUSY), (299, IDLE)], quiet, {i: 600})[0], PASS)
+        # 1c: a run that begins within one sampling interval of the open is an opening run; later is not
+        late = [(0, IDLE), (0.6, BUSY), (38.6, IDLE)]
+        self.assertEqual(gates.evaluate(late, quiet, 1, 30)["no_busy_forever"][0], PASS)
+        self.assertEqual(gates.evaluate([(0, IDLE), (1.5, BUSY), (39.5, IDLE)], quiet, 1, 30)["no_busy_forever"][0], FAIL)
+        self.assertEqual(gates.gate_no_busy_forever(late, quiet, {i: 30})[0], FAIL)  # tolerance 0: not opening
 
     def test_unsorted_verdicts_are_rejected_rather_than_silently_misread(self):
         with self.assertRaises(ValueError):

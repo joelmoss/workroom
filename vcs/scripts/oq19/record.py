@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 
+import analyze
 import gates
 import labels
 
@@ -107,9 +108,12 @@ def plan_holdout(frozen, scale=1.0, reps=None):
         key = job_key(sid, "detached", compressed, rep, "", interval)
         idx = cfg.get("window")
         window = 0.0 if idx is None else (gates.WINDOW_GRID_COMPRESSED_S if compressed else gates.WINDOW_GRID_S)[idx]
+        live_cfg = dict(cfg)
+        if compressed:  # the policy's grace scales with its window (analyze.effective), so the box runs the scaled one
+            live_cfg["grace"] = cfg.get("grace", 0.0) * analyze.COMPRESSION
         return {"key": key, "id": sid, "mode": "detached", "compressed": compressed, "rep": rep, "variant": "",
                 "role": "parallel", "seed": job_seed(key, "holdout:"), "scale": scale, "interval": interval,
-                "closed_loop": json.dumps({"config": cfg, "window_s": window})}
+                "closed_loop": json.dumps({"config": live_cfg, "window_s": window})}
 
     for s in labels.GATED:
         jobs += [job(s.id, False, r) for r in range(reps)]

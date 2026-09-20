@@ -40,6 +40,12 @@ class Plan(unittest.TestCase):
             self.assertEqual(cl["config"], FROZEN["config"])
             grid = gates.WINDOW_GRID_COMPRESSED_S if j["compressed"] else gates.WINDOW_GRID_S
             self.assertEqual(cl["window_s"], grid[2])  # the compressed run scales the policy's window
+
+    def test_a_compressed_holdout_run_scales_the_grace_like_the_window(self):
+        frozen = {"config": dict(FROZEN["config"], grace=10.0)}
+        for j in record.plan_holdout(frozen)[0]:
+            grace = json.loads(j["closed_loop"])["config"]["grace"]
+            self.assertEqual(grace, 1.0 if j["compressed"] else 10.0, j["key"])
             self.assertTrue(j["key"].endswith("-r%d" % j["rep"]) and "-i2-" in j["key"])
 
     def test_holdout_seeds_never_repeat_a_tuning_seed(self):
