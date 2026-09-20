@@ -141,6 +141,7 @@ class Sampler:
         with open(self.args.out, "w") as out:
             out.write(json.dumps({
                 "type": "header", "interval": interval, "clk_tck": self.clk_tck, "pid": os.getpid(),
+                "driver_pid": os.getppid(),  # the harness driver plays the agent: excluded by pid, self only
                 "start": start, "nice_ok": nice_ok, "ss_every": self.args.ss_every, "signals": self.groups,
                 "procs_source": "all" if PROCS_ALL else "cgroup",
                 "python": sys.version.split()[0], "ncpu": os.cpu_count(),
