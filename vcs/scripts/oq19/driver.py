@@ -235,6 +235,16 @@ def run(args):
 
     truth = []
     shim_cpu = [None]
+    truth_path = os.path.join(args.out, "truth.jsonl")
+    meta = {"scenario": scenario.id, "name": scenario.name, "mode": args.mode, "scale": args.scale,
+            "compressed": args.compressed, "interval": args.interval, "ss_every": args.ss_every,
+            "closed_loop": closed, "shim_cpu_s": None, "variant": ctx.variant, "jitter_seed": args.jitter_seed,
+            "preroll": preroll, "sampler": {}, "pty_events": 0, "complete": False}
+    # Written up front and after every phase, so a run cut short (a provider that hibernated the box, the
+    # boxd control) still carries the labels of the phases it completed; `complete` says which it was.
+    with open(os.path.join(args.out, "meta.json"), "w") as f:
+        json.dump(meta, f, indent=2)
+    open(truth_path, "w").close()
     if args.mode == "attached":  # a client is present: it resizes the window now and then, as a GUI does
         threading.Thread(target=resizer, args=(session,), daemon=True).start()
     try:
@@ -249,6 +259,8 @@ def run(args):
                 time.sleep(remaining)
             truth.append({"scenario": scenario.id, "phase": phase.name, "label": phase.label,
                           "start": start, "end": time.monotonic()})
+            with open(truth_path, "a") as f:
+                f.write(json.dumps(truth[-1]) + "\n")
     finally:
         for p in ctx.spawned:
             p.kill()
@@ -263,7 +275,7 @@ def run(args):
             _, _, usage = os.wait4(shim.pid, 0)  # its own CPU plus the `cat`/`sleep`/`touch` it forked
             shim_cpu[0] = usage.ru_utime + usage.ru_stime
 
-    with open(os.path.join(args.out, "truth.jsonl"), "w") as f:
+    with open(truth_path, "w") as f:
         for row in truth + ctx.extra_truth:
             f.write(json.dumps(row) + "\n")
     with open(os.path.join(args.out, "lifecycle.jsonl"), "w") as f:
@@ -277,10 +289,9 @@ def run(args):
         for line in f:
             if line.startswith('{"type": "footer"'):
                 footer = json.loads(line)
+    meta.update({"shim_cpu_s": shim_cpu[0], "sampler": footer, "pty_events": len(pty_log), "complete": True})
     with open(os.path.join(args.out, "meta.json"), "w") as f:
-        json.dump({"scenario": scenario.id, "name": scenario.name, "mode": args.mode, "scale": args.scale,
-                   "compressed": args.compressed, "interval": args.interval, "ss_every": args.ss_every,
-                   "closed_loop": closed, "shim_cpu_s": shim_cpu[0], "variant": ctx.variant, "jitter_seed": args.jitter_seed, "preroll": preroll, "sampler": footer, "pty_events": len(pty_log)}, f, indent=2)
+        json.dump(meta, f, indent=2)
     print("ok %s -> %s (sampler cpu %.3f%% of a core)" %
           (scenario.id, args.out, 100 * (footer.get("cpu_fraction") or 0)))
 
