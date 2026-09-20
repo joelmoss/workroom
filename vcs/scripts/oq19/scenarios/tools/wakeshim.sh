@@ -21,14 +21,15 @@ awake="${3:-/run/oq19/awake}"
 assert="${OQ19_ASSERT:-touch \"$awake\"}"
 release="${OQ19_RELEASE:-rm -f \"$awake\"}"
 mkdir -p "$(dirname "$awake")"
+selfcall="$(dirname "$awake")/selfcall"   # touched around each hook: live.py masks the net signal meanwhile (F7)
 asserted=0
 while :; do
   mtime=$(stat -c %Y "$verdict" 2>/dev/null || stat -f %m "$verdict" 2>/dev/null || echo 0)
   if [ "$(cat "$verdict" 2>/dev/null)" = BUSY ] || awk -v now="$(date +%s)" -v m="$mtime" -v i="$interval" \
       'BEGIN { exit !(now - m > 2 * i) }'; then
-    if [ "$asserted" = 0 ]; then sh -c "$assert" && asserted=1; fi
+    if [ "$asserted" = 0 ]; then touch "$selfcall"; sh -c "$assert" && asserted=1; touch "$selfcall"; fi
   elif [ "$asserted" = 1 ]; then
-    sh -c "$release" && asserted=0
+    touch "$selfcall"; sh -c "$release" && asserted=0; touch "$selfcall"
   fi
   sleep "$interval"
 done

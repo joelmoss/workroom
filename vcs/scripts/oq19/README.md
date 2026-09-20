@@ -21,6 +21,12 @@ amendment and is what the claim rests on. Both headers carry the full rationale.
 `results/holdout.md` (the claim), `results/tuning.md`, `results/tuning-preregistered.md`, and the write-up in
 `docs/designs/oq19-wakefulness-measurements.md`.
 
+**Amendment 2 (2026-09-20, from the boxd run, disclosed).** Two F7 attribution rules the container could not
+exercise: a name match on the exclusion list excludes descendants only for housekeeping daemons (on a VM
+`systemd` is pid 1, so the old reading emptied the candidate set), and the classifier masks the net signal
+around the shim's own provider call (whose traffic re-voted BUSY and flapped the timers every 34 s).
+`boundary.md` carries the rule; tag `oq19-amendment-2`; the hold-out re-scores identically.
+
 ## Layout
 
 | File | Role |
