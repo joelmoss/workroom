@@ -1,0 +1,32 @@
+{
+ "claim": "PASS",
+ "pipeline_check": false,
+ "runs": 150,
+ "failing": 0,
+ "table": {
+  "holdout/full/detached": {
+   "runs": 90,
+   "busy_runs": 50,
+   "failures_any": 0,
+   "failures_false_idle": 0,
+   "critical_runs": 15,
+   "critical_failures": 0,
+   "sample_size_ok": true,
+   "bound_false_idle": 0.05815507911697221,
+   "bound_any": 0.03273803383353452,
+   "critical_bound": 0.1810362725220846
+  },
+  "holdout/compressed/detached": {
+   "runs": 60,
+   "busy_runs": 60,
+   "failures_any": 0,
+   "failures_false_idle": 0,
+   "critical_runs": 60,
+   "critical_failures": 0,
+   "sample_size_ok": true,
+   "bound_false_idle": 0.04870291331009752,
+   "bound_any": 0.04870291331009752,
+   "critical_bound": 0.04870291331009752
+  }
+ }
+}

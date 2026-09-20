@@ -402,6 +402,15 @@ def effective(c, run):
     return c._replace(grace=c.grace * COMPRESSION) if run.compressed else c
 
 
+def live_config(frozen_cfg, compressed):
+    """The config dict the box runs for a hold-out job (record.py) and the one run_holdout expects to find in the
+    row: the frozen one, with the grace scaled for a compressed run exactly as `effective` scales it."""
+    out = dict(frozen_cfg)
+    if compressed:
+        out["grace"] = frozen_cfg.get("grace", 0.0) * COMPRESSION
+    return out
+
+
 def score_run(c, run, feats, d3_fallback=False, cost=None):
     verdicts = verdict_series(effective(c, run), feats, window_for(c, run))
     idle_window = window_for(c, run)
@@ -747,7 +756,7 @@ def run_holdout(root, frozen_path, pipeline_check, out_dir):
             continue
         res = closed_loop_check(os.path.join(root, row["dir"]), pipeline_check, frozen.get("d3_fallback", False))
         recorded = json.loads(row["closed_loop"])["config"] if row.get("closed_loop") else None
-        if recorded != frozen["config"]:
+        if recorded != live_config(frozen["config"], row.get("compressed", False)):
             sys.exit("%s was not recorded at the frozen configuration: the hold-out is void" % row["key"])
         results.append(res)
     verdict, table = holdout_claim(results)
