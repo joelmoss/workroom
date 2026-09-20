@@ -37,6 +37,7 @@ class Classifier:
         self.log = open(verdicts_path, "w")
         self.prev = None
         self.hist_t, self.hist_out = [], []
+        self.net = analyze.RateWindow(analyze.NET_WINDOW_S)
         self.prev_starts = 0
         self.last_busy = None
 
@@ -69,7 +70,8 @@ class Classifier:
         self.prev_starts = starts
         f = analyze.tick_features(s, self.prev, self.interval, self.pid, self.cfg.exclusions,
                                   self.pty_rate(t, ctr.get("out", 0)),
-                                  (t - last_in) if last_in is not None else float("inf"), lifecycle)
+                                  (t - last_in) if last_in is not None else float("inf"), lifecycle,
+                                  self.net.feed(t, s["net_rx"] + s["net_tx"]))
         vote = analyze.vote(self.cfg, f)
         if vote:
             self.last_busy = t

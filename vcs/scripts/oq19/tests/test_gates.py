@@ -314,6 +314,20 @@ class Evaluate(unittest.TestCase):
         self.assertEqual(gates.evaluate(tail_60, post, 1, 60)["no_busy_forever"][0], PASS)
         self.assertEqual(gates.evaluate(tail_60, post, 1, 20)["no_busy_forever"][0], FAIL)  # 60 > 20 + 10
 
+    def test_amendment_1_a_pure_idle_opening_run_gets_the_window_but_spanning_the_interval_still_fails(self):
+        """Amendment 1: launch-time activity (vim painting, a startup burst) plus the window is excused on ANY
+        idle interval; a BUSY run covering the whole interval is busy forever whatever the window."""
+        quiet = [idle(0, 300, "2a")]
+        paint = [(0, BUSY), (40, IDLE)]                     # vim's paint + a 30 s window
+        self.assertEqual(gates.evaluate(paint, quiet, 1, 30)["no_busy_forever"][0], PASS)
+        self.assertEqual(gates.evaluate([(0, BUSY), (41, IDLE)], quiet, 1, 30)["no_busy_forever"][0], FAIL)
+        self.assertEqual(gates.evaluate([(0, BUSY)], quiet, 1, 600)["no_busy_forever"][0], FAIL)   # 300 < 610, still forever
+        self.assertEqual(gates.evaluate([(0, BUSY), (299, IDLE)], quiet, 1, 600)["no_busy_forever"][0], PASS)
+        # mutation check: without the span rule the 600 s window would excuse the whole run
+        i = quiet[0]
+        self.assertEqual(gates.gate_no_busy_forever([(0, BUSY)], quiet, {i: 600})[0], FAIL)
+        self.assertEqual(gates.gate_no_busy_forever([(0, BUSY), (299, IDLE)], quiet, {i: 600})[0], PASS)
+
     def test_unsorted_verdicts_are_rejected_rather_than_silently_misread(self):
         with self.assertRaises(ValueError):
             gates.evaluate([(300, IDLE), (100, BUSY)], [busy(0, 400)], 1, 60)
