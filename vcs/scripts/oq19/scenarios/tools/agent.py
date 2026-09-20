@@ -59,7 +59,10 @@ def ui(scr):
         keep.sendall(b"HOLD\n")
     curses.echo()
     while True:
-        line = scr.getstr(0, 7, 60).decode().split()  # blocks on the tty
+        raw = scr.getstr(0, 7, 60)  # blocks on the tty
+        if not raw:  # EOF: the pty went away. On a real box the process outlives the session and this loop
+            return   # would spin at 100% CPU forever (boxd run 4: three leftover agents at 2 cores).
+        line = raw.decode().split()
         if line[:1] == ["go"]:
             turn(scr, line[1], line[2], line[3])
         scr.move(0, 7)
