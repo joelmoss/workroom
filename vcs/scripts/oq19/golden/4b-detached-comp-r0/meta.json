@@ -1,0 +1,42 @@
+{
+  "scenario": "4b",
+  "name": "agent-turn-silent",
+  "mode": "detached",
+  "scale": 1.0,
+  "compressed": true,
+  "interval": 1.0,
+  "ss_every": 1,
+  "closed_loop": {
+    "config": {
+      "policy": "P4",
+      "cpu": 0.05,
+      "pty": 200.0,
+      "net": 500.0,
+      "wait": "agnostic",
+      "age": null,
+      "grace": 1.0,
+      "window": 0,
+      "interval": 1,
+      "staleness": true,
+      "exclusions": true,
+      "lifecycle": true
+    },
+    "window_s": 3
+  },
+  "shim_cpu_s": 1.348223,
+  "variant": "",
+  "jitter_seed": 3343372308,
+  "preroll": 2.857446353699237,
+  "sampler": {
+    "type": "footer",
+    "wall_s": 406.00276230904274,
+    "cpu_s": 2.547846,
+    "cpu_fraction": 0.006275440062303371,
+    "cpu_fraction_steady": 0.006200112571800424,
+    "samples": 406,
+    "overran_ticks": 0,
+    "max_late_s": 0.00032650004141032696,
+    "maxrss_kb": 13552
+  },
+  "pty_events": 166
+}

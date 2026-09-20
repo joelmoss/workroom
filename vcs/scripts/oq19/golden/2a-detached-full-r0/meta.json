@@ -1,0 +1,42 @@
+{
+  "scenario": "2a",
+  "name": "idle-vim",
+  "mode": "detached",
+  "scale": 1.0,
+  "compressed": false,
+  "interval": 1.0,
+  "ss_every": 1,
+  "closed_loop": {
+    "config": {
+      "policy": "P4",
+      "cpu": 0.05,
+      "pty": 200.0,
+      "net": 500.0,
+      "wait": "agnostic",
+      "age": null,
+      "grace": 10.0,
+      "window": 0,
+      "interval": 1,
+      "staleness": true,
+      "exclusions": true,
+      "lifecycle": true
+    },
+    "window_s": 30
+  },
+  "shim_cpu_s": 0.7688149999999999,
+  "variant": "",
+  "jitter_seed": 1650024064,
+  "preroll": 2.2142741921318216,
+  "sampler": {
+    "type": "footer",
+    "wall_s": 305.00634180702036,
+    "cpu_s": 2.1261229999999998,
+    "cpu_fraction": 0.006970750140484661,
+    "cpu_fraction_steady": 0.006816356519538955,
+    "samples": 305,
+    "overran_ticks": 0,
+    "max_late_s": 0.000406834005843848,
+    "maxrss_kb": 13804
+  },
+  "pty_events": 8
+}

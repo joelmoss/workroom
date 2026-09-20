@@ -124,7 +124,12 @@ Interval = gates.Interval
 
 
 def load_jsonl(path):
+    """A JSONL file, or its gzipped twin (`golden/` keeps traces gzipped)."""
     if not os.path.exists(path):
+        if os.path.exists(path + ".gz"):
+            import gzip
+            with gzip.open(path + ".gz", "rt") as f:
+                return [json.loads(line) for line in f if line.strip()]
         return []
     with open(path) as f:
         return [json.loads(line) for line in f if line.strip()]

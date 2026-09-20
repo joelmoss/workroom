@@ -1,0 +1,42 @@
+{
+  "scenario": "18",
+  "name": "gap-injection",
+  "mode": "detached",
+  "scale": 1.0,
+  "compressed": false,
+  "interval": 1.0,
+  "ss_every": 1,
+  "closed_loop": {
+    "config": {
+      "policy": "P4",
+      "cpu": 0.05,
+      "pty": 200.0,
+      "net": 500.0,
+      "wait": "agnostic",
+      "age": null,
+      "grace": 10.0,
+      "window": 0,
+      "interval": 1,
+      "staleness": true,
+      "exclusions": true,
+      "lifecycle": true
+    },
+    "window_s": 30
+  },
+  "shim_cpu_s": 6.804708,
+  "variant": "",
+  "jitter_seed": 3749658531,
+  "preroll": 2.610124607194736,
+  "sampler": {
+    "type": "footer",
+    "wall_s": 1054.003038270981,
+    "cpu_s": 8.149705,
+    "cpu_fraction": 0.007732145642928153,
+    "cpu_fraction_steady": 0.0076639701028801575,
+    "samples": 1054,
+    "overran_ticks": 0,
+    "max_late_s": 0.5603196379961446,
+    "maxrss_kb": 14276
+  },
+  "pty_events": 6
+}
