@@ -32,7 +32,7 @@ what the claim rests on. Both headers carry the full rationale.
 | `scenarios/` | One action module per scenario (`s_<id>.py`), `lib.py`, and `tools/` (`agent.py` the synthetic agent TUI, `peer.py` the network peer, `burn.py`, `burst.py`). |
 | `check_trace.py` | Proves a recorded run did what its label claims, from the sampler's trace rather than the driver's intent. |
 | `live.py` | The classifier ONLINE (sampler + chosen policy in one process): the closed loop of F7. Uses `analyze.tick_features` and `analyze.vote`, the code the replay was scored with. |
-| `scenarios/tools/wakeshim.sh` | The item-5-shaped lifecycle shim, run as `wr-wakeshim` (on the exclusion list); its CPU is measured. |
+| `scenarios/tools/wakeshim.sh` | The item-5-shaped lifecycle shim, run as `wr-wakeshim` (on the exclusion list); its CPU is measured. It owns the staleness rule (D10): a verdict file older than 2 intervals is BUSY, because a stopped classifier cannot say so itself (found by scenario 18's hold-out runs). `analyze.live_verdicts` scores the live log the same way. |
 | `record.py` | Records the whole tuning set (or a hold-out) a few containers at a time from a snapshot of the committed harness; resumable, never discards a failed run. |
 | `analyze.py` | Replays recorded runs through policies P0 to P5 with the pre-registered gates; the candidate grid and the winner-selection rule are fixed in the file before any tuning trace existed. `--pipeline-check` for scaled runs. |
 | `cost_matrix.json` | The measured sampler cost per signal set, interval and load (from `run.sh cost`), so the analysis charges each policy what its signals cost. |

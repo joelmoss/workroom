@@ -340,6 +340,46 @@ class ClosedLoop(unittest.TestCase):
         self.assertTrue(any(v == BUSY for _, v in got))
         self.assertEqual(got, expected)
 
+    def test_the_live_series_applies_the_readers_staleness_rule_over_a_gap(self):
+        """Scenario 18 in the closed loop: the classifier is SIGSTOPped, so its log has a hole and its last verdict
+        (IDLE) would otherwise stand for the whole gap. The shim reads a stale verdict as BUSY; so does the scorer."""
+        import json
+        import tempfile
+        rows = [{"t": T0 + i, "verdict": IDLE, "vote": False} for i in range(5)]
+        rows += [{"t": T0 + 20 + i, "verdict": BUSY if i else IDLE, "vote": bool(i)} for i in range(3)]  # 15 s hole
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "v.jsonl")
+            with open(p, "w") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in rows))
+            self.assertEqual(A.live_verdicts(p), [(T0, IDLE), (T0 + 21, BUSY)])                  # the log alone
+            self.assertEqual(A.live_verdicts(p, 1), [(T0, IDLE), (T0 + 6, BUSY), (T0 + 20, IDLE), (T0 + 21, BUSY)])
+            self.assertEqual(A.live_verdicts(p, 10), [(T0, IDLE), (T0 + 21, BUSY)])              # 15 s < 2 x 10
+
+    def test_the_shim_asserts_awake_on_a_stale_verdict_file(self):
+        import subprocess
+        import tempfile
+        import time
+        shim = os.path.join(os.path.dirname(A.__file__), "scenarios", "tools", "wakeshim.sh")
+        with tempfile.TemporaryDirectory() as d:
+            verdict, awake = os.path.join(d, "verdict"), os.path.join(d, "awake")
+
+            def run_once(text, age_s):
+                with open(verdict, "w") as f:
+                    f.write(text + "\n")
+                os.utime(verdict, (time.time() - age_s, time.time() - age_s))
+                if os.path.exists(awake):
+                    os.remove(awake)
+                p = subprocess.Popen(["sh", shim, "1", verdict, awake])
+                time.sleep(0.5)
+                p.kill()
+                p.wait()
+                return os.path.exists(awake)
+
+            self.assertTrue(run_once("BUSY", 0))
+            self.assertFalse(run_once("IDLE", 0))
+            self.assertTrue(run_once("IDLE", 3))   # older than 2 intervals: the reader assumes work
+            self.assertFalse(run_once("IDLE", 1))
+
     def test_a_missed_counter_read_keeps_the_last_good_values_and_is_counted(self):
         """The hold-out's first run: one empty read put a 0 into the pty history and, one window later, the rate
         looked like out_cum / window. The classifier must reuse the last good counters and count the miss."""
