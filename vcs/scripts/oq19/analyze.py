@@ -667,12 +667,22 @@ def report(runs, excluded, summaries, d3, winner, matrix, pipeline_check, commit
     return "\n".join(L) + "\n"
 
 
-def live_verdicts(path):
-    """verdicts.jsonl (one line per tick) -> a change-point series."""
-    events = []
+def live_verdicts(path, interval_s=None):
+    """verdicts.jsonl (one line per tick) -> a change-point series, AS THE SHIM READS IT: with `interval_s`, a
+    verdict older than STALENESS_FACTOR intervals is BUSY until the next one (wakeshim.sh's rule, D10). The
+    classifier cannot write while it is stopped, so the rule has to be the reader's; scenario 18's hold-out runs
+    showed a series taken from the log alone reads a 15 s gap as the last verdict, IDLE."""
+    events, prev_t = [], None
+
+    def put(t, verdict):
+        if not events or events[-1][1] != verdict:
+            events.append((t, verdict))
+
     for row in load_jsonl(path):
-        if not events or events[-1][1] != row["verdict"]:
-            events.append((row["t"], row["verdict"]))
+        if interval_s and prev_t is not None and row["t"] - prev_t > gates.STALENESS_FACTOR * interval_s:
+            put(prev_t + gates.STALENESS_FACTOR * interval_s, BUSY)
+        put(row["t"], row["verdict"])
+        prev_t = row["t"]
     return events
 
 
@@ -697,7 +707,7 @@ def closed_loop_check(run_dir, pipeline_check=False, d3_fallback=False):
         sys.exit("%s was not recorded with --closed-loop" % run_dir)
     c = Config(**cl["config"])
     window_s = cl["window_s"]
-    live = live_verdicts(os.path.join(run_dir, "verdicts.jsonl"))
+    live = live_verdicts(os.path.join(run_dir, "verdicts.jsonl"), c.interval if c.staleness else None)
     replay = verdict_series(c, run.feats(c.interval, c.exclusions), window_s)
     start, end = run.truth[0]["start"], run.truth[-1]["end"]
     diff = mismatch(live, replay, start, start, end - start)
@@ -741,10 +751,14 @@ def run_holdout(root, frozen_path, pipeline_check, out_dir):
             sys.exit("%s was not recorded at the frozen configuration: the hold-out is void" % row["key"])
         results.append(res)
     verdict, table = holdout_claim(results)
+    commits = collections.Counter((row.get("harness_commit") or "unknown")[:8] for row in rows)
     text = ["# OQ19 hold-out result", "",
             "**PIPELINE CHECK ONLY: NOT A RESULT.**" if pipeline_check else "Scored hold-out set (scale 1.0, closed loop).",
             "", "Frozen configuration `%s` (tuning commit `%s`, D3 fallback %s)." % (
                 frozen.get("key"), frozen.get("tuning_commit"), "applied" if frozen.get("d3_fallback") else "not needed"),
+            "", "Harness commit per run: " + ", ".join("`%s` x%d" % kv for kv in sorted(commits.items())) +
+            (" (more than one: a run re-recorded under a later harness is disclosed in the results doc)."
+             if len(commits) > 1 else "."),
             "", "## Claim: **%s**" % verdict, "",
             "PASS requires zero failures on all gates in the hold-out set, detached, at BOTH scales, and the "
             "pre-registered sample size (every gated scenario x5 full-length, every critical scenario x20 compressed).",

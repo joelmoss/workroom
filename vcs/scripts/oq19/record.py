@@ -178,6 +178,7 @@ class Recorder:
     def __init__(self, root, harness, parallel, retries=INFRA_RETRIES):
         self.root, self.harness, self.parallel, self.retries = root, harness, parallel, retries
         self.set = "tuning"  # the manifest's `set` column; main() sets it from the CLI
+        self.commit = None   # the harness commit each row was recorded with; main() sets it
         self.cv = threading.Condition()
         self.pending, self.running = [], []
         self.manifest = os.path.join(root, "manifest.jsonl")
@@ -239,7 +240,7 @@ class Recorder:
             c = subprocess.run([sys.executable, os.path.join(self.harness, "check_trace.py"), out],
                                capture_output=True, text=True, env=dict(env, PYTHONDONTWRITEBYTECODE="1"))
             check = {"ok": c.returncode == 0, "output": c.stdout.strip()[-1500:]}
-        row = dict(job, set=self.set, status=status, attempts=attempts, check=check,
+        row = dict(job, set=self.set, harness_commit=self.commit, status=status, attempts=attempts, check=check,
                    dir=os.path.relpath(out, self.root), wall_s=round(time.time() - started, 1))
         with self.cv:  # one writer at a time; the manifest is the record of what exists
             with open(self.manifest, "a") as f:
@@ -311,6 +312,7 @@ def main():
     print("harness snapshot of %s, image %s" % (env["commit"][:8], (env["image_id"] or "?")[:19]))
     rec = Recorder(args.root, harness, args.parallel)
     rec.set = args.set
+    rec.commit = env["commit"]  # stamped on every row: a set may be completed by a later, disclosed harness
     rec.run(jobs)
     rec.parallel = 1  # the controls run alone: no neighbours, the D7 comparison
     rec.run(controls)
