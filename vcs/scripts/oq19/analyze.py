@@ -48,9 +48,20 @@ CPU_GRID = (0.05, 0.20)            # cores of non-excluded process CPU that coun
 PTY_RATE_GRID = (30.0, 200.0)      # pty output bytes/s over PTY_WINDOW_S (tmux's clock is ~10, a spinner ~200)
 PTY_WINDOW_S = 10.0
 NET_GRID = (None, 500.0)           # eth0 rx+tx bytes/s that count as activity (None = signal not used)
+NET_WINDOW_S = 10.0                # amendment 1: net is a rate over this window, like pty, not per tick
 WAIT_RULES = ("agnostic", "tty-aware")
 SOCKET_AGE_GRID = (None, 30.0)     # an ESTAB socket counts only if its last send/receive is this recent (S6b)
-GRACE_GRID = (0.0, 30.0)           # seconds after the last pty input that still count as activity (S5)
+GRACE_GRID = (0.0, 10.0, 30.0)     # seconds after the last pty input that still count as activity (S5); 10 = amendment 1
+
+# POST-HOC AMENDMENT 1 (2026-09-20, owner-approved; see gates.py for the gate half). Made after the
+# pre-registered tuning result (commit a8246fb3, results/tuning-preregistered.md: no winner). Grid changes:
+# GRACE_GRID gained 10 s, because (0, 30) bracketed the passing range for scenario 14 (0 never sees a
+# keystroke's echo, 30 stacks on the window past the time-to-idle allowance); the net signal became a rate
+# over NET_WINDOW_S, because per-tick bytes at 1 s cadence let a single ~500 B startup burst vote BUSY while
+# scenario 9's steady 2 s traffic needs the signal. Labels are untouched. The hold-out was recorded after.
+AMENDMENTS = ("grace 10 s added to GRACE_GRID", "net rate over NET_WINDOW_S instead of per tick",
+              "gates: every idle interval's opening BUSY run gets the window as its tail; a run spanning the "
+              "whole interval fails")
 INTERVALS = gates.INTERVAL_GRID_S
 WINDOWS = tuple(range(len(gates.WINDOW_GRID_S)))  # index into the full or the compressed grid
 POLICIES = ("P0", "P1", "P1b", "P2", "P3", "P4", "P5")
@@ -218,9 +229,27 @@ def _min_age(a, b):
     return min(vals) / 1000.0 if vals else 0.0  # unknown age counts as recent: the conservative reading
 
 
-def tick_features(s, prev, interval_s, sampler_pid, exclusions, pty_rate, since_input, lifecycle):
+class RateWindow:
+    """Bytes/s of a cumulative counter over the last `window_s`, from the caller's own history of it. The base
+    is the newest sample at or before t - window (or the earliest seen), and the divisor is always the window, so
+    a burst counts for exactly one window and the first ticks under-count rather than divide by a tiny dt."""
+
+    def __init__(self, window_s):
+        self.window_s, self.t, self.v = window_s, [], []
+
+    def feed(self, t, v):
+        self.t.append(t)
+        self.v.append(v)
+        i = max(0, bisect.bisect_right(self.t, t - self.window_s) - 1)
+        base = self.v[i]
+        del self.t[:i], self.v[:i]
+        return (v - base) / self.window_s
+
+
+def tick_features(s, prev, interval_s, sampler_pid, exclusions, pty_rate, since_input, lifecycle, net_rate):
     """One tick's features from a sample, the previous sample and the counters the caller owns (pty rate over
-    PTY_WINDOW_S, seconds since the last pty input, whether an agent-owned operation is open or just started).
+    PTY_WINDOW_S, seconds since the last pty input, whether an agent-owned operation is open or just started,
+    net rate over NET_WINDOW_S).
     Shared by the replay (`features`) and the live classifier (`live.py`), so the closed loop cannot drift from
     the code the gates were scored with."""
     procs = s.get("procs") or []
@@ -267,7 +296,7 @@ def tick_features(s, prev, interval_s, sampler_pid, exclusions, pty_rate, since_
         "age_agnostic": age_agn, "age_tty_aware": age_tty,
         "pty_rate": pty_rate,
         "since_input": since_input,
-        "net": ((s["net_rx"] + s["net_tx"] - prev["net_rx"] - prev["net_tx"]) / dt) if prev else 0.0,
+        "net": net_rate,
         "lifecycle": lifecycle,
     }
 
@@ -275,6 +304,7 @@ def tick_features(s, prev, interval_s, sampler_pid, exclusions, pty_rate, since_
 def features(stream, exclusions=True):
     """Everything a vote needs, per tick, computed once per (stream, exclusions) and reused across the grid."""
     out, prev = [], None
+    net = RateWindow(NET_WINDOW_S)
     for s in stream.samples:
         prev_t = prev["t"] if prev else s["t"] - stream.interval_s
         last_in = stream.last_input_before(s["t"])
@@ -282,7 +312,8 @@ def features(stream, exclusions=True):
         out.append(tick_features(
             s, prev, stream.interval_s, stream.header["pid"], exclusions,
             stream.pty_out_between(s["t"] - PTY_WINDOW_S, s["t"]) / PTY_WINDOW_S,
-            (s["t"] - last_in) if last_in is not None else float("inf"), open_ops > 0 or started > 0))
+            (s["t"] - last_in) if last_in is not None else float("inf"), open_ops > 0 or started > 0,
+            net.feed(s["t"], s["net_rx"] + s["net_tx"])))
         prev = s
     return out
 
@@ -501,6 +532,9 @@ def report(runs, excluded, summaries, d3, winner, matrix, pipeline_check, commit
     w("")
     w("**PIPELINE CHECK ONLY: NOT A RESULT.** Scaled runs; the windows cannot be exercised." if pipeline_check
       else "Scored tuning set (scale 1.0). Parameters are chosen here and frozen; the hold-out set (T6) carries the claim.")
+    w("")
+    w("**Post-hoc amendment 1 applies** (see `gates.py` and `analyze.py` headers; the pre-registered outcome is "
+      "`results/tuning-preregistered.md`): " + "; ".join(AMENDMENTS) + ".")
     w("")
     w("Analysis code at `%s`. Runs scored: %d detached (full %d, compressed %d); attached %d; 500-process variant %d; "
       "serial controls %d; excluded %d." % (

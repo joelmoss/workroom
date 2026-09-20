@@ -15,6 +15,18 @@ Contract (all times are CLOCK_MONOTONIC seconds, floats):
   tails from the idle window the policy is configured with, and the exemption only from `d3_fallback`.
 
 Gate definitions match the approved plan (`OQ19 measurement plan`, decisions D1 to D12 and F1 to F8).
+
+POST-HOC AMENDMENT 1 (2026-09-20, owner-approved, made AFTER the tuning set was scored). The pre-registered
+outcome (commit a8246fb3, `results/tuning-preregistered.md`) was NO WINNER. Every residual failure traced
+to a registration fault rather than to the signal: `gate_no_busy_forever` excused a hysteresis tail only in
+post-work intervals, so a pure-idle label had a 10 s budget for its opening BUSY run while every window in
+the grid is >= 30 s. Any launch-time activity (vim painting its screen, the box's startup network burst)
+therefore failed the run outright. The amendment: (a) EVERY idle interval's opening BUSY run is excused up
+to the policy's window + 10 s, and (b) a BUSY run that spans the whole idle interval is "busy forever" and
+FAILS whatever the window, so the headline failure (an idle TUI declared busy for good) cannot pass. The
+tuning set was re-scored under the amended gate and grid (`analyze.py` AMENDMENTS); the hold-out set was
+recorded after that and carries the claim. Tag `oq19-preregistration-frozen` is the original contract;
+`oq19-amendment-1` is this one.
 """
 
 import math
@@ -193,12 +205,13 @@ def gate_no_busy_forever(verdicts, idle_intervals, tails, exempt=()):
     """No idle-labelled interval is declared BUSY for longer than allowed, and the BUSY time that is NOT an
     excused hysteresis tail is at most 5% of the idle time that is not an excused tail.
 
-    A BUSY run that begins at the interval's start is the policy's hysteresis tail after work ended and may
-    last `tails[interval]` + 10 s (`tails` maps interval -> tail seconds, 0 for a pure-idle scenario); any
-    BUSY run that begins later has no such excuse and may last 10 s. The excused tail is left out of BOTH
-    the numerator and the denominator of the 5% fraction, so a policy is neither failed twice for the window
-    it was tuned with nor helped by the idle time that window covers. `exempt` may hold only the D3
-    scenario (3b): excusing anything else would let a policy excuse itself."""
+    A BUSY run that begins at the interval's start is the policy's hysteresis tail (after work ended, or
+    after whatever happened as the interval opened: amendment 1) and may last `tails[interval]` + 10 s
+    (`tails` maps interval -> tail seconds); any BUSY run that begins later has no such excuse and may last
+    10 s. A BUSY run that spans the whole interval is busy forever and FAILS whatever the tail (amendment 1).
+    The excused tail is left out of BOTH the numerator and the denominator of the 5% fraction, so a policy
+    is neither failed twice for the window it was tuned with nor helped by the idle time that window covers.
+    `exempt` may hold only the D3 scenario (3b): excusing anything else would let a policy excuse itself."""
     if not set(exempt) <= {"3b"}:
         raise ValueError("only the pre-registered D3 scenario may be exempt")
     scored = [i for i in idle_intervals if i.scenario not in exempt]
@@ -209,6 +222,8 @@ def gate_no_busy_forever(verdicts, idle_intervals, tails, exempt=()):
         opening = 0.0
         for a, b in busy_runs(verdicts, i):
             starts_at_open = abs(a - i.start) < 1e-9
+            if starts_at_open and b >= i.end - 1e-9:
+                return FAIL, b - a  # busy for the whole interval: forever, whatever the window
             if b - a > (NO_BUSY_FOREVER_TAIL_S + tail if starts_at_open else NO_BUSY_FOREVER_TAIL_S):
                 return FAIL, b - a
             if starts_at_open:
@@ -270,7 +285,7 @@ def evaluate(verdicts, intervals, interval_s, idle_window_s, d3_fallback=False, 
     if any(i.scenario == "18" for i in gated) and not gaps:
         raise ValueError("scenario 18 requires its STALE gap interval; a missing one must not skip the gate")
     post = [i for i in idle if i.phase == "post"]
-    tails = {i: idle_window_s for i in post}
+    tails = {i: idle_window_s for i in idle}  # amendment 1: every idle interval, not only post-work ones
     out = {
         "false_idle": gate_false_idle(verdicts, busy, interval_s),
         "provider_deadline": gate_provider_deadline(verdicts, busy),

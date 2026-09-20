@@ -166,6 +166,23 @@ class Votes(unittest.TestCase):
         self.assertTrue(graced and max(graced) <= T0 + 40 and min(graced) >= T0 + 10)
         self.assertFalse(any(self.votes(run, cfg("P4", grace=0.0))))
 
+    def test_amendment_1_net_is_a_windowed_rate_and_grace_10_is_in_the_grid(self):
+        """A single ~500 B startup burst must not vote at 1 s cadence; steady 2 s traffic must. The grid has 10 s."""
+        quiet = [("idle", IDLE, 60)]
+        burst = mk_run("1", quiet, net=lambda t: 525.0 if int(t - T0) == 2 else 0.0)
+        self.assertFalse(any(self.votes(burst, cfg("P3", net=500.0))))
+        steady = mk_run("9", quiet, net=lambda t: 1500.0 if int(t) % 2 == 0 else 0.0)   # 750 B/s over any window
+        self.assertTrue(any(self.votes(steady, cfg("P3", net=500.0))))
+        f = A.features(A.Stream(burst, 1))
+        self.assertGreater(max(x["net"] for x in f), 0.0)  # the burst is seen, at 525 / NET_WINDOW_S
+        self.assertLess(max(x["net"] for x in f), 500.0)
+        self.assertIn(10.0, A.GRACE_GRID)
+        self.assertEqual(len(A.all_configs()), 2991)
+        w = A.RateWindow(10.0)
+        self.assertEqual(w.feed(0.0, 1000), 0.0)            # the counter's starting value is the base, not 0
+        self.assertEqual(w.feed(1.0, 1525), 52.5)
+        self.assertEqual(w.feed(12.0, 1525), 0.0)           # the burst counts for one window only
+
 
 class GatesGoRed(unittest.TestCase):
     """Each protection, disabled at the source, must turn its gate red."""
