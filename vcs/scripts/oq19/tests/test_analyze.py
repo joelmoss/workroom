@@ -124,6 +124,19 @@ class Votes(unittest.TestCase):
         self.assertEqual(ok["no_busy_forever"][0], gates.PASS)
         self.assertEqual(red["no_busy_forever"][0], gates.FAIL)
 
+    def test_the_driver_is_excluded_by_pid_when_it_is_not_init(self):
+        """boxd run 3: the driver (pid 1539 under sh under systemd) sleeps through its phases in nanosleep and
+        read as a timer candidate; the header names it and it is excluded, self only (its pty root and the shim
+        are handled by the roots list and the name list)."""
+        def vm(t):
+            return [P(1535, 1, "sh", "S", 0, "do_wait"), P(1539, 1535, "python3", "S", 0, "hrtimer_nanosleep")]
+        run = mk_run("1", [("idle", IDLE, 30)], extra=vm)
+        run.samples = [dict(s, procs=[p if p[0] != 1 else P(1, 0, "systemd", "S", 0, "ep_poll") for p in s["procs"]])
+                       for s in run.samples]
+        self.assertTrue(all(x["timer"] for x in A.features(A.Stream(run, 1))))        # not named: a timer wait
+        run.header["driver_pid"] = 1539
+        self.assertFalse(any(x["timer"] for x in A.features(A.Stream(run, 1))))       # named: excluded
+
     def test_amendment_2_exclusion_reach_hosts_keep_their_children_and_daemons_lose_them(self):
         """On a systemd box pid 1 is the ancestor of everything; the first implementation excluded it WITH its
         descendants and the candidate set was empty (the boxd run's 4b read as IDLE mid-turn)."""

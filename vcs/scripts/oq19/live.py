@@ -88,7 +88,7 @@ class Classifier:
         f = analyze.tick_features(s, self.prev, self.interval, self.pid, self.cfg.exclusions,
                                   self.pty_rate(t, ctr.get("out", 0)),
                                   (t - last_in) if last_in is not None else float("inf"), lifecycle,
-                                  0.0 if masked else net)
+                                  0.0 if masked else net, os.getppid())
         vote = analyze.vote(self.cfg, f)
         if vote:
             self.last_busy = t

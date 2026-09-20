@@ -89,7 +89,7 @@ EXCLUDED_WITH_DESCENDANTS = ("cron", "unattended-upgr", "apt.systemd.dai", "wr-w
 EXCLUDED_SELF_ONLY = ("sshd", "systemd", "systemd-journal", "systemd-logind", "dbus-daemon", "rsyslogd", "wr-agent",
                       "boxd-automation")  # boundary.md's "provider's in-guest agent": its name on boxd (measured)
 EXCLUDED_COMMS = EXCLUDED_WITH_DESCENDANTS + EXCLUDED_SELF_ONLY
-OWN_PIDS = (1,)                    # container init: the driver in the harness, systemd in production
+OWN_PIDS = (1,)                    # init: the driver in the container harness, systemd on a real box (self only)
 CEILINGS_S = (1800, 3600, 14400)   # OQ22: candidate awake ceilings, reported for scenario 17 only
 CONTROL_MAX_MISMATCH = 0.02        # D7: a serial control may differ from its parallel twin in at most this share of seconds
 CLOSED_LOOP_MAX_MISMATCH = 0.02    # F7: the live verdicts may differ from a replay of their own trace in at most this share
@@ -266,7 +266,8 @@ class RateWindow:
         return (v - base) / self.window_s
 
 
-def tick_features(s, prev, interval_s, sampler_pid, exclusions, pty_rate, since_input, lifecycle, net_rate):
+def tick_features(s, prev, interval_s, sampler_pid, exclusions, pty_rate, since_input, lifecycle, net_rate,
+                  driver_pid=None):
     """One tick's features from a sample, the previous sample and the counters the caller owns (pty rate over
     PTY_WINDOW_S, seconds since the last pty input, whether an agent-owned operation is open or just started,
     net rate over NET_WINDOW_S).
@@ -279,7 +280,12 @@ def tick_features(s, prev, interval_s, sampler_pid, exclusions, pty_rate, since_
     roots = set(s.get("roots") or [])
     excluded = set()
     if exclusions:
+        # The sampler and its forks; the driver (the harness's stand-in for the agent, which owns the pty and
+        # sleeps through its phases in nanosleep) by pid, self only: found on the boxd run, where it is not
+        # pid 1 and its sleep read as a timer wait. Its children are the session (the root) and the shim.
         excluded = set(OWN_PIDS) | {sampler_pid} | _closure([sampler_pid], kids)
+        if driver_pid:
+            excluded.add(driver_pid)
         hosts = [p[0] for p in procs if p[4] in EXCLUDED_SELF_ONLY]
         daemons = [p[0] for p in procs if p[4] in EXCLUDED_WITH_DESCENDANTS]
         excluded |= set(hosts) | set(daemons) | _closure(daemons, kids)
@@ -337,7 +343,8 @@ def features(stream, exclusions=True, net_mask=()):
             s, prev, stream.interval_s, stream.header["pid"], exclusions,
             stream.pty_out_between(s["t"] - PTY_WINDOW_S, s["t"]) / PTY_WINDOW_S,
             (s["t"] - last_in) if last_in is not None else float("inf"), open_ops > 0 or started > 0,
-            0.0 if s["t"] in net_mask else net.feed(s["t"], s["net_rx"] + s["net_tx"])))
+            0.0 if s["t"] in net_mask else net.feed(s["t"], s["net_rx"] + s["net_tx"]),
+            stream.header.get("driver_pid")))
         if s["t"] in net_mask:
             net.feed(s["t"], s["net_rx"] + s["net_tx"])  # the history still advances
         prev = s
