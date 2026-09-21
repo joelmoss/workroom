@@ -1830,15 +1830,20 @@ disagreement passes every test on either side alone while presenting as an empty
     stays exactly what Phase 1 says it is: `wr-agent serve|attach`. The cost, stated deliberately
     rather than drifted into: driver authors write Swift, so a driver cannot be shared with a
     non-Apple client if Workroom ever has one. Small, but it shapes where every driver lives.
-22. **What are the awake ceiling's semantics: force-sleep, advisory-only, or ask the user?** Opened
-    2026-09-20 by the OQ19 measurements (D8); **blocks the wakefulness service**. Measurement cannot
-    decide it: scenario 17 ran legitimate work for 5400 s five times, and a force-sleep ceiling of
-    1800 s or 3600 s kills the job every time while 14400 s lets it finish. The ceiling exists because
-    a false-busy state has no natural end (the D3 case, an idle agent holding a keepalive connection,
-    is BUSY 24 h/day by design), so the trade is a killed long job against an unbounded bill (OQ7).
-    Candidates: force-sleep at N hours; advisory-only (report, never act); ask the user through the
-    app when the ceiling is reached, sleep on no answer. The owner decides; the results doc records
-    what each does to scenario 17.
+22. **What are the awake ceiling's semantics: force-sleep, advisory-only, or ask the user?**
+    **DECIDED — 2026-09-21, owner: advisory-only by default, with a setting that enables ask-the-user.**
+    By default the wakefulness service never hibernates a BUSY box on its own; a box BUSY past the
+    ceiling is reported (the app shows it, so the idle-agent bill is visible rather than capped). With
+    the setting on, reaching the ceiling raises a prompt in the app; "keep" resets the ceiling, no
+    answer within the prompt's timeout hibernates the box. Force-sleep is not offered. The ceiling
+    value and the prompt timeout are settings too (proposed defaults 4 h and 10 min; the measurement
+    only says 4 h spares the longest job it ran). Consequence accepted: with the default, OQ7's bill for
+    an idle agent holding a connection is unbounded until the user acts. Opened 2026-09-20 by the OQ19
+    measurements (D8). Measurement could not decide it: scenario 17 ran legitimate work for 5400 s five
+    times, and a force-sleep ceiling of 1800 s or 3600 s kills the job every time while 14400 s lets it
+    finish. The ceiling exists because a false-busy state has no natural end (the D3 case, an idle agent
+    holding a keepalive connection, is BUSY 24 h/day by design), so the trade was a killed long job
+    against an unbounded bill (OQ7); the owner chose the bill, visible, with an opt-in cap.
 
 ## Success Criteria
 
@@ -2219,8 +2224,8 @@ service milestones below so each layer can be reviewed and landed independently.
      hysteresis (30 s), explicit-activity grace (10 s) and reader-side staleness rule (2 s) are
      defined, and the boxd confirmation run passed (2026-09-21, `results/boxd.md`). Still owed before
      the wakefulness service is ready: a real Claude Code trace (TODOS), a re-measured sampler cost in
-     Rust against the 0.5% gate, masking the agent's own resume (the wake blip), and OQ22 (the
-     ceiling's semantics).
+     Rust against the 0.5% gate, and masking the agent's own resume (the wake blip). OQ22 is decided
+     (advisory-only ceiling by default, ask-the-user behind a setting).
 
    **Two Phase 3 questions this milestone opened rather than answered**, both consequences of the
    exec service being the thing Phase 3 moves host-side. *Auth resolution*: the child environment is

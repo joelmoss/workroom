@@ -202,12 +202,17 @@ Not root on the VM: the sampler ran without `nice -5` (its cost there: 0.63 to 0
 throttling), and the container check's phase-duration tolerance flags the wake latency (4b's post phase
 ran 687 s for 640 labelled) because monotonic keeps counting while the box sleeps.
 
-## OQ22: the awake ceiling (reported, not decided)
+## OQ22: the awake ceiling (decided 2026-09-21)
 
 Scenario 17 ran legitimate work for 5400 s five times. With a force-sleep ceiling of 1800 s or 3600 s
 the job is killed every time; at 14400 s it completes. The measurement cannot choose between
 force-sleep, advisory-only and ask-the-user, and a false-busy state has no natural ceiling other than
-this one (3b is the case). The owner decides; OQ22 blocks the wakefulness service.
+this one (3b is the case). **Owner's decision: advisory-only by default (a box BUSY past the ceiling is
+reported, never hibernated by the service), with a setting that enables ask-the-user (a prompt in the
+app at the ceiling; "keep" resets it, no answer hibernates). Force-sleep is not offered.** The ceiling
+value and the prompt timeout are settings; the measurement only says 4 h spares the longest job it ran.
+The accepted consequence is that, by default, an idle agent holding a connection keeps its box awake
+until the user notices (OQ7's bill is visible, not capped).
 
 ## What is not measured
 
