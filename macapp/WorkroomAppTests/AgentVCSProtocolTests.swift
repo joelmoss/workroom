@@ -228,6 +228,7 @@ final class AgentVCSProtocolTests: XCTestCase {
     XCTAssertEqual(AgentControlClient.protocolVersion, 4)
     XCTAssertEqual(AgentControlClient.minVCSVersion, 2)
     XCTAssertEqual(AgentControlClient.minFileVersion, 3)
+    XCTAssertEqual(AgentControlClient.minStatusVersion, 4)
     let process = Process()
     process.executableURL = try AgentHarness.binaryURL()
     process.arguments = ["protocol"]

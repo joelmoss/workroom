@@ -112,12 +112,11 @@ actor LocalAgentVCS {
                 let process = Process()
                 process.executableURL = binary
                 // The wakefulness preferences are flags, so they are fixed for this agent's whole
-                // life. KNOWN GAP: this is not the only thing that starts an agent — `wr-agent
-                // attach` spawns `serve --socket <path>` itself (`serve::spawn_agent`) with no
-                // flags at all, and whichever candidate wins the single-instance flock decides. A
-                // pane opening before any VCS read therefore gets the agent's own defaults. Closing
-                // that needs the agent to read these from its environment, which the app already
-                // controls on the attach path (`launchEnvironment`); it cannot be closed here.
+                // life. This is not the only thing that starts an agent: `wr-agent attach` spawns
+                // `serve --socket <path>` itself (`serve::spawn_agent`) with no flags, and whichever
+                // candidate wins the single-instance flock decides. That path gets the same values
+                // from the environment (`AgentWakefulnessSettings.serveEnvironment`, appended by
+                // `PersistentSessionService.launchEnvironment`), which the agent reads as a fallback.
                 process.arguments = AgentWakefulnessSettings.current.serveArguments(socket: path)
                 var environment = ProcessInfo.processInfo.environment
                 environment["PATH"] = ShellEnvironment.path()

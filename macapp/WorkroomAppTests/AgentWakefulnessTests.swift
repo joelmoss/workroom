@@ -121,8 +121,8 @@ final class AgentWakefulnessTests: XCTestCase {
 
   /// A peer below `minStatusVersion` silently DROPS a Status envelope, so none is sent — otherwise
   /// `connect()` would wait out the probe timeout against an agent that can never answer.
-  func testAProtocol2AgentIsNeverSentAStatusEnvelope() async throws {
-    let fake = try FakeAgent(version: 2)
+  func testAProtocol3AgentIsNeverSentAStatusEnvelope() async throws {
+    let fake = try FakeAgent(version: 3)
     fakes.append(fake)
     let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
     connections.append(connection)
@@ -139,11 +139,11 @@ final class AgentWakefulnessTests: XCTestCase {
   /// must NOT take the connection down with it, unlike the File service: wakefulness is a badge, and
   /// retiring a connection that VCS and the file service are sharing costs far more than it is worth.
   func testAnUnansweredStatusProbeLeavesTheConnectionUsable() async throws {
-    let fake = try FakeAgent(version: 3)
+    let fake = try FakeAgent(version: 4)
     fakes.append(fake)
     let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
     connections.append(connection)
-    XCTAssertTrue(fake.receivedServices.contains(4), "a protocol-3 peer IS probed")
+    XCTAssertTrue(fake.receivedServices.contains(4), "a protocol-4 peer IS probed")
     XCTAssertThrowsError(try connection.wakefulness())
     // Still alive: a VCS request on it still gets an answer.
     let reply = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 2)
@@ -151,7 +151,7 @@ final class AgentWakefulnessTests: XCTestCase {
   }
 
   func testAStatusCapableAgentAnswersTheVerdictAndAcceptsKeep() async throws {
-    let fake = try FakeAgent(version: 3, status: true)
+    let fake = try FakeAgent(version: 4, status: true)
     fakes.append(fake)
     let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
     connections.append(connection)
@@ -165,7 +165,7 @@ final class AgentWakefulnessTests: XCTestCase {
   /// prompt timeout the app is guaranteed to have before a ceiling prompt arrives, because the poll
   /// that would otherwise supply it runs only while the Changes inspector is open.
   func testTheConnectProbeKeepsTheAgentsPromptTimeout() async throws {
-    let fake = try FakeAgent(version: 3, status: true)
+    let fake = try FakeAgent(version: 4, status: true)
     fakes.append(fake)
     let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
     connections.append(connection)
@@ -175,7 +175,7 @@ final class AgentWakefulnessTests: XCTestCase {
   /// The prompt arrives unsolicited on stream 0 of service 4. Before #208 that envelope would have
   /// failed `receive()`'s validity guard and torn down every in-flight VCS and File request with it.
   func testACeilingPromptOnStreamZeroIsDeliveredAndDoesNotFailTheConnection() async throws {
-    let fake = try FakeAgent(version: 3, status: true)
+    let fake = try FakeAgent(version: 4, status: true)
     fakes.append(fake)
     let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
     connections.append(connection)
@@ -227,6 +227,19 @@ final class AgentWakefulnessTests: XCTestCase {
         "--awake-prompt-timeout", "300",
         "--ask-at-awake-ceiling",
       ])
+  }
+
+  /// The environment form carries the same three values, so the `serve` that `attach` spawns with no
+  /// flags is configured the same way as the one the app spawns directly.
+  func testTheEnvironmentFormMatchesTheFlags() {
+    let settings = AgentWakefulnessSettings(ceiling: 7200, promptTimeout: 300, ask: true)
+    let environment = Dictionary(uniqueKeysWithValues: settings.serveEnvironment)
+    XCTAssertEqual(environment["WR_AGENT_AWAKE_CEILING"], "7200")
+    XCTAssertEqual(environment["WR_AGENT_AWAKE_PROMPT_TIMEOUT"], "300")
+    XCTAssertEqual(environment["WR_AGENT_ASK_AT_AWAKE_CEILING"], "1")
+    XCTAssertNil(
+      Dictionary(uniqueKeysWithValues: AgentWakefulnessSettings().serveEnvironment)[
+        "WR_AGENT_ASK_AT_AWAKE_CEILING"], "off is absent, not \"0\": the agent reads presence")
   }
 
   /// The socket flag has to stay first and unchanged: `LocalAgentVCS` connects to that exact path,

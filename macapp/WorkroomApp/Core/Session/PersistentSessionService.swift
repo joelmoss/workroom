@@ -391,6 +391,9 @@ final class PersistentSessionService {
     if let resourcesDirectory {
       entries.append(("WORKROOM_SESSION_RESOURCES", resourcesDirectory))
     }
+    if backend == .rustAgent {
+      entries.append(contentsOf: AgentWakefulnessSettings.current.serveEnvironment)
+    }
     let variables = Dictionary(
       uniqueKeysWithValues: SessionMetadataKey.environmentVariables)
     for entry in metadata {

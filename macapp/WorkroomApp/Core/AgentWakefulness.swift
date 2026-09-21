@@ -154,6 +154,18 @@ struct AgentWakefulnessSettings: Equatable, Sendable {
     if ask { arguments.append("--ask-at-awake-ceiling") }
     return arguments
   }
+
+  /// The same settings as the agent's environment fallback. `wr-agent attach` self-spawns `serve`
+  /// with no flags when no agent is listening, and the app reaches that spawn only through the
+  /// environment it launches `attach` with (`PersistentSessionService.launchEnvironment`).
+  var serveEnvironment: [(key: String, value: String)] {
+    var entries = [
+      ("WR_AGENT_AWAKE_CEILING", String(format: "%g", ceiling)),
+      ("WR_AGENT_AWAKE_PROMPT_TIMEOUT", String(format: "%g", promptTimeout)),
+    ]
+    if ask { entries.append(("WR_AGENT_ASK_AT_AWAKE_CEILING", "1")) }
+    return entries
+  }
 }
 
 /// An unsolicited frame on the Status service, stream 0. The payload fields are optional so an event

@@ -48,16 +48,9 @@ struct AgentControlClient: SessionControlPlane {
   /// which would refuse Terminal traffic to an older agent that is still running someone's shell.
   static let minVCSVersion: UInt16 = 2
   static let minFileVersion: UInt16 = 3
-  /// The first peer version that answers `Service::Status` (issue #208).
-  ///
-  /// **3, not 4, and that is a known compromise.** `Service::Status` was added to the agent without
-  /// bumping `PROTOCOL_VERSION`, so there is no `MIN_STATUS_VERSION` in `protocol::envelope` and the
-  /// greeting carries nothing that separates "speaks File" from "speaks File and Status". Gating on 4
-  /// would refuse every agent that exists; gating on 3 means a protocol-3 agent built before the
-  /// Status service (only a developer's own worktree mid-stack — no such build has shipped) pays one
-  /// probe timeout per connection and is then permanently `unsupported` for it, exactly as an
-  /// unanswered File probe already behaves. Change this to 4 the moment `MIN_STATUS_VERSION` exists.
-  static let minStatusVersion: UInt16 = 3
+  /// `MIN_STATUS_VERSION`: the first peer version that answers `Service::Status` (issue #208). A
+  /// protocol-3 agent drops a Status envelope without answering, so it is never sent one.
+  static let minStatusVersion: UInt16 = 4
   static let magic: [UInt8] = Array("WRA1".utf8)
 
   enum Service: UInt8 {
