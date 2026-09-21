@@ -765,10 +765,14 @@ final class FakeAgent: @unchecked Sendable {
       // the whole response goes out, and the peer half-closes immediately behind it. DATA and EOF
       // land back to back on the client's reader thread, which is what makes a teardown that does
       // not wait for its own write queue lose the response.
-      if forwardEpilogue > 0 {
-        sendForward(
-          client, stream: stream, opcode: 0x03,
-          body: Data(repeating: 0xAB, count: forwardEpilogue))
+      // Chunked at 64 KiB, the real agent's read size (`forward.rs` `READ_BUFFER`): one envelope
+      // per chunk means one queued socket write per chunk on the client, and a teardown that lands
+      // between two of them is the truncation. A single envelope would hide it.
+      var sent = 0
+      while sent < forwardEpilogue {
+        let count = min(64 * 1024, forwardEpilogue - sent)
+        sendForward(client, stream: stream, opcode: 0x03, body: Data(repeating: 0xAB, count: count))
+        sent += count
       }
       sendForward(client, stream: stream, opcode: 0x04, body: Data())
     default:
