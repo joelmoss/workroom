@@ -622,13 +622,23 @@ class Boxd(unittest.TestCase):
             with open(os.path.join(root, "status.log"), "w") as f:
                 f.write("%.0f oq19-treatment running\n%.0f oq19-fork hibernated\n" % (last - 100, flast + 60))
             self.assertEqual(A.run_boxd(root, frozen, out, echo=False), gates.FAIL)
-            self.assertFalse(json.load(open(os.path.join(out, "boxd.json")))["checks"]["treatment_slept_after_last_idle"])
+            self.assertFalse(json.load(open(os.path.join(out, "boxd.json")))["checks"]["treatment_slept_after_idle"])
             machine(root, "oq19-treatment", T0 + 90, verdicts())   # now the treatment slept mid-work
             with open(os.path.join(root, "status.log"), "w") as f:
                 f.write("%.0f oq19-treatment hibernated\n%.0f oq19-control hibernated\n%.0f oq19-fork hibernated\n"
                         % (last + 460, 1200, flast + 60))
             self.assertEqual(A.run_boxd(root, frozen, out, echo=False), gates.FAIL)
             self.assertFalse(json.load(open(os.path.join(out, "boxd.json")))["checks"]["treatment_never_slept_in_busy"])
+
+    def test_wake_tails_are_excused_but_not_real_work_after_a_wake(self):
+        gaps = [(T0 + 100, T0 + 190)]
+        burst = [(T0, IDLE), (T0 + 191, BUSY), (T0 + 221, IDLE)]           # 30 s after the wake: the burst
+        got, ex = A.excuse_wake_tails(burst, gaps, 30, 1)
+        self.assertEqual((got, ex), ([(T0, IDLE)], [30.0]))
+        work = [(T0, IDLE), (T0 + 191, BUSY), (T0 + 400, IDLE)]            # 209 s: work, not a tail
+        self.assertEqual(A.excuse_wake_tails(work, gaps, 30, 1), (work, []))
+        late = [(T0, IDLE), (T0 + 230, BUSY), (T0 + 260, IDLE)]            # 40 s after the wake: not the wake
+        self.assertEqual(A.excuse_wake_tails(late, gaps, 30, 1), (late, []))
 
     def test_clock_rate(self):
         import tempfile

@@ -1,11 +1,14 @@
 # OQ19 — can the agent tell BUSY from IDLE? Measurements
 
-**Answer (signal half): yes, on the hold-out, with one accepted cost and one open question.** A
-policy exists (P4 below, numeric parameters frozen in `vcs/scripts/oq19/results/frozen.json`) that
-made zero false-idle and zero busy-forever errors on 150 fresh closed-loop runs it was not tuned on,
-with the classifier's own activity in the box. The accepted cost is that an idle agent holding a
-keepalive connection stays BUSY (D3). The open question is the awake ceiling, split out as OQ22.
-The boxd confirmation run (T7) is scripted and not yet run: see "What is not measured".
+**Answer (signal half): yes, on the hold-out and on the provider, with one accepted cost and one
+open question.** A policy exists (P4 below, numeric parameters frozen in
+`vcs/scripts/oq19/results/frozen.json`) that made zero false-idle and zero busy-forever errors on 150
+fresh closed-loop runs it was not tuned on, with the classifier's own activity in the box. On boxd
+(2026-09-21, `results/boxd.md`, PASS) the same policy driving the item-5 lever kept a machine awake
+through a 15-minute silent agent turn while an unprotected control was hibernated 4.5 minutes into the
+same wait, and put the machine to sleep within 3 minutes of every IDLE stretch, thirteen times. The
+accepted cost is that an idle agent holding a keepalive connection stays BUSY (D3). The open question is
+the awake ceiling, split out as OQ22.
 
 Plan: `~/.claude/plans/polished-cooking-feather.md` (approved after `/plan-eng-review`,
 2026-09-19). Harness: `vcs/scripts/oq19/` (its README is the operator's guide). Issue: #208.
@@ -128,6 +131,55 @@ once, then nothing. The table's "awake hours per day" column extrapolates that t
   walk 2.5% at 500 processes, one `ss` fork about 0.75% per Hz. The Rust port has to be re-measured
   against the gate; the signal set the winner needs (box + procs + sockets at 1 s) is the expensive one.
 
+## The boxd confirmation run (T7) — PASS, on the fifth attempt, and the four failures are the findings
+
+`vcs/scripts/oq19/boxd/boxd.sh` (harness 7ac2136d, 2026-09-21 00:45 to 01:12): four machines with
+120 s auto-suspend and auto-hibernate timers. `oq19-treatment` ran the frozen policy live, the shim
+translating BUSY/IDLE into the in-VM CLI setting the machine's own timers to 0 and back (item 5's lever),
+through 4b, 3a, 3b, 5 and 16; `oq19-control` ran 4b with no policy; `oq19-fork` was forked from the
+treatment afterwards for a clock check and an idle run; `oq19-peer` served the network scenarios. Every
+machine was destroyed by the script's exit trap; `boxd machine list` was empty afterwards.
+
+| Check | Result |
+|---|---|
+| treatment never slept inside a BUSY label | yes: awake through 4b's 900 s silent wait and 5's build |
+| treatment's live gates | all pass on all five scenarios; live verdicts equal a replay of each trace (0.0%) |
+| control slept during its run | yes: hibernated 283 s in, inside the silent wait, for 4120 s |
+| treatment slept after IDLE | yes: 9 sleeps of 79 to 97 s inside idle stretches, each ~3 min after the IDLE verdict |
+| fork's `CLOCK_MONOTONIC` | 0.9991 s/s against wall over 60 s; `/proc/uptime` 0.9999 s/s |
+| fork slept after IDLE | yes: 424 s, inside scenario 1 |
+
+Two provider facts the container could not show. **A hibernate is visible to the VM's clocks on boxd**:
+monotonic and uptime both advanced by the full wall gap on every sleep, so a phase timed in monotonic
+ends on wall time even if the box slept through it, and the design doc's "`/proc/uptime` lies on a
+derived machine" did not reproduce on a fork here. **Every wake is a 30 s BUSY blip**: the box comes
+back with 0.2 to 0.4 core of system CPU and ~1.5 KB/s of provider traffic for a few seconds, the policy
+votes BUSY once, and the window holds it 30 s before the box goes back to sleep 2.5 min later. The scorer
+excuses a BUSY run that begins within one net window of a wake and lasts no longer than the window's
+allowance, and reports each one (30 to 31 s, twelve of them); the agent should mask its own resume the
+way it masks its own provider call.
+
+The four failed attempts each removed a harness artefact that a container hides, and each is an
+attribution rule the production service needs (amendment 2, `boundary.md`):
+
+1. **Exclusion reach.** On a systemd box pid 1 is the ancestor of everything; the first implementation
+   excluded a matched name's descendants and the candidate set was empty. Hosts of user work (init,
+   `sshd`, the agent) exclude only themselves; housekeeping daemons (cron, apt, the shim) keep excluding
+   their children. The hold-out re-scored identically.
+2. **The lever's own traffic.** Restoring the idle timer is an HTTPS call on `eth0`; the classifier
+   re-voted BUSY within a second of every release and the timers flapped every 34 s. The shim marks each
+   call and the classifier masks the net signal from the call until one net window after it.
+3. **The harness's own loops.** A tick logger's `sleep 10` and the driver's own `time.sleep` are
+   nanosleep waits, BUSY under the timer rule once they count. The sampler stamps wall time itself and
+   the driver is excluded by pid.
+4. **Survivors of a closed pty.** Three synthetic agents outlived their sessions, spinning at a core each
+   on an empty read, one still holding its keepalive socket. The driver now kills its session's
+   survivors, the way `terminationTargets` walks the tree.
+
+Not root on the VM: the sampler ran without `nice -5` (its cost there: 0.63 to 0.75% of a core, no
+throttling), and the container check's phase-duration tolerance flags the wake latency (4b's post phase
+ran 687 s for 640 labelled) because monotonic keeps counting while the box sleeps.
+
 ## OQ22: the awake ceiling (reported, not decided)
 
 Scenario 17 ran legitimate work for 5400 s five times. With a force-sleep ceiling of 1800 s or 3600 s
@@ -140,12 +192,11 @@ this one (3b is the case). The owner decides; OQ22 blocks the wakefulness servic
 - **A real Claude Code trace.** The agent here is synthetic (`scenarios/tools/agent.py`: alt screen,
   process title rewrite, blocks in a tty read at its prompt, spinner or silence mid-turn, keepalive).
   The tty-aware rule and the lifecycle signal (P5) both wait on a real trace (TODOS).
-- **The target machine.** Every scored run is a Docker container on a Mac. The boxd confirmation run
-  (`boxd/boxd.sh`: a treatment machine with the frozen policy driving the item-5 shim through the in-VM
-  CLI, a control that must hibernate mid-wait, a fork with a clock check; `analyze.py boxd` scores it)
-  is written and tested on synthetic logs, and has not been run: creating cloud machines is a
-  real-world transaction the authoring session could not make. Until it runs, the provider half of
-  the claim rests on Phase 0 item 5 (the lever works) plus this document (the decision works).
+- **The claim's sample sizes are the container's.** The boxd run is one machine per role and five
+  scenarios, a confirmation that the policy and the lever work together on the provider, not a second
+  hold-out. Scenario 5 and 3a/3b/16 ran once each there; 4b once on each machine.
+- **The wake blip is excused by the scorer, not handled by the classifier.** Twelve 30 s BUSY blips
+  after wakes were excused and reported; a production service should mask its own resume.
 - **P0 was reconstructed**, not recorded: `tcgetpgrp` was not sampled, so the baseline is bash blocked
   in `do_wait`, which holds exactly while a foreground job has the terminal.
 - **The peer sidecar is container-only.** On boxd the peer is a fourth machine.

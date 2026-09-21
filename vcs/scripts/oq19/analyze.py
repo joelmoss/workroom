@@ -727,7 +727,7 @@ def counter_read_misses(path):
     return rows[-1].get("misses", 0) if rows else 0
 
 
-def closed_loop_check(run_dir, pipeline_check=False, d3_fallback=False):
+def closed_loop_check(run_dir, pipeline_check=False, d3_fallback=False, staleness=True):
     """F7: score a run made with the real classifier and shim in the box (driver `--closed-loop`).
 
     Three questions, none answerable by replay: (1) do the LIVE verdicts pass the gates, with the classifier's own
@@ -741,9 +741,12 @@ def closed_loop_check(run_dir, pipeline_check=False, d3_fallback=False):
         sys.exit("%s was not recorded with --closed-loop" % run_dir)
     c = Config(**cl["config"])
     window_s = cl["window_s"]
-    live = live_verdicts(os.path.join(run_dir, "verdicts.jsonl"), c.interval if c.staleness else None)
+    # `staleness=False` for a run on the provider: there a hole in the classifier's log is the box asleep, the
+    # outcome the run exists to produce, not a starved sampler; the reader's rule is scored in the container.
+    live = live_verdicts(os.path.join(run_dir, "verdicts.jsonl"), c.interval if c.staleness and staleness else None)
     masked = [row["t"] for row in load_jsonl(os.path.join(run_dir, "verdicts.jsonl")) if row.get("masked")]
-    replay = verdict_series(c, features(Stream(run, c.interval), c.exclusions, masked), window_s)
+    rc = c if staleness else c._replace(staleness=False)
+    replay = verdict_series(rc, features(Stream(run, c.interval), c.exclusions, masked), window_s)
     start, end = run.truth[0]["start"], run.truth[-1]["end"]
     diff = mismatch(live, replay, start, start, end - start)
     footer = run.footer or {}
@@ -898,7 +901,36 @@ def run_ticks(run):
     return [(s["wall"], s.get("uptime", 0.0), s["t"]) for s in run.samples if "wall" in s]
 
 
-def boxd_machine(root, machine, timeout_s, window_s):
+def sample_gaps(run, factor=3):
+    """(gap_start, gap_end) in monotonic time wherever the sampler missed more than `factor` intervals: on the
+    provider that is the box asleep (the tick log's wall gaps say so too)."""
+    iv = run.header.get("interval", 1.0)
+    ts = [s["t"] for s in run.samples]
+    return [(a, b) for a, b in zip(ts, ts[1:]) if b - a > factor * iv]
+
+
+def excuse_wake_tails(live, gaps, window_s, interval_s):
+    """A provider wake is a burst of CPU and network that is nobody's work (measured on boxd: 0.2 to 0.4 core
+    and ~1.5 KB/s for a few seconds after every wake), and it votes BUSY for one window. A BUSY run that begins
+    within one net window of a gap's end and lasts no longer than the window + the tail allowance is that
+    burst: it is dropped from the series, counted and reported. Anything longer, or later, stays."""
+    out, excused = list(live), []
+    for _, end in gaps:
+        for i, (t, v) in enumerate(out):
+            if v == BUSY and end - interval_s <= t <= end + NET_WINDOW_S + 2 * interval_s:
+                stop = out[i + 1][0] if i + 1 < len(out) else None
+                if stop is not None and stop - t <= window_s + gates.NO_BUSY_FOREVER_TAIL_S + NET_WINDOW_S:
+                    excused.append(stop - t)
+                    del out[i:i + 2]
+                break
+    merged = []
+    for t, v in out:  # dropping a pair can leave two equal verdicts in a row
+        if not merged or merged[-1][1] != v:
+            merged.append((t, v))
+    return merged, excused
+
+
+def boxd_machine(root, machine, timeout_s, window_s, d3_fallback=False):
     """One machine's runs: per run the live gates (closed loop) and the sleep events inside BUSY; the machine's
     first sleep after its last IDLE label. A run with no truth rows yet (cut short before its first phase
     ended) is skipped; a partial one is scored on the phases it has."""
@@ -919,17 +951,31 @@ def boxd_machine(root, machine, timeout_s, window_s):
         events += events_here
         busy_wall = [(wall_of(ticks, i.start), wall_of(ticks, i.end), i.phase) for i in ivs if i.label == BUSY]
         slept_in_busy = [e for e in events_here for a, b, _ in busy_wall if a <= e["wall_before"] <= b]
+        idle_wall = [(wall_of(ticks, i.start), wall_of(ticks, i.end)) for i in ivs if i.label == IDLE]
+        slept_in_idle = [e for e in events_here for a, b in idle_wall if a <= e["wall_before"] <= b]
         run_wall = (wall_of(ticks, ivs[0].start), wall_of(ticks, ivs[-1].end))
         slept_in_run = [e for e in events_here if run_wall[0] <= e["wall_before"] <= run_wall[1]]
         closed = run.meta.get("closed_loop")
-        gates_out = closed_loop_check(d)["gates"] if closed and run.meta.get("complete", True) else None
+        gates_out, wake_tails, mismatch_frac = None, [], None
+        if closed and run.meta.get("complete", True):
+            c = Config(**closed["config"])
+            live = live_verdicts(os.path.join(d, "verdicts.jsonl"), None)  # no staleness fill: a hole is the box asleep
+            live, wake_tails = excuse_wake_tails(live, sample_gaps(run), closed["window_s"], c.interval)
+            res = gates.evaluate(live, ivs, c.interval, closed["window_s"], d3_fallback=d3_fallback and run.scenario == "3b")
+            gates_out = {g: v for g, (v, _) in res.items()}
+            mismatch_frac = closed_loop_check(d, staleness=False)["live_vs_replay_mismatch"]
         runs.append({"scenario": run.scenario, "busy_wall": busy_wall, "slept_in_busy": slept_in_busy,
-                     "slept_in_run": slept_in_run,
+                     "slept_in_run": slept_in_run, "slept_in_idle": slept_in_idle,
+                     "wake_tails_excused_s": [round(x, 1) for x in wake_tails],
+                     "live_vs_replay_mismatch": mismatch_frac,
                      "gates": gates_out, "failed": [g for g, v in (gates_out or {}).items() if v != gates.PASS]})
         last_end_wall = max(last_end_wall or 0, wall_of(ticks, ivs[-1].end))
     asleep = first_asleep_after(status_rows, last_end_wall) if last_end_wall else None
     deadline = (last_end_wall + window_s + timeout_s + 60) if last_end_wall else None
-    return {"machine": machine, "runs": runs, "sleep_events": events,
+    # "Slept after IDLE": the provider put the box to sleep inside an IDLE-labelled stretch of a run (the tick
+    # log shows it), or its status read asleep within the window + the provider timer of the last label.
+    slept_after_idle = any(r["slept_in_idle"] for r in runs) or bool(asleep and asleep[0] <= deadline)
+    return {"machine": machine, "runs": runs, "sleep_events": events, "slept_after_idle": slept_after_idle,
             "asleep_after_last_idle": asleep, "asleep_by_deadline": bool(asleep and asleep[0] <= deadline),
             "deadline_wall": deadline, "status_samples": len(status_rows)}
 
@@ -947,10 +993,11 @@ def run_boxd(root, frozen_path, out_dir, timeout_s=120, echo=True):
     with open(frozen_path) as f:
         frozen = json.load(f)
     window_s = gates.WINDOW_GRID_S[frozen["config"]["window"]]
-    t = boxd_machine(root, "oq19-treatment", timeout_s, window_s)
-    c = boxd_machine(root, "oq19-control", timeout_s, window_s)
+    d3 = frozen.get("d3_fallback", False)
+    t = boxd_machine(root, "oq19-treatment", timeout_s, window_s, d3)
+    c = boxd_machine(root, "oq19-control", timeout_s, window_s, d3)
     fork_dir = os.path.join(root, "oq19-fork")
-    fk = boxd_machine(root, "oq19-fork", timeout_s, window_s) if os.path.isdir(fork_dir) else None
+    fk = boxd_machine(root, "oq19-fork", timeout_s, window_s, d3) if os.path.isdir(fork_dir) else None
     clock = clock_rate(os.path.join(fork_dir, "oq19-out", "clock.log")) if fk else None
     checks = {
         "treatment_never_slept_in_busy": all(not r["slept_in_busy"] for r in t["runs"]),
@@ -959,9 +1006,9 @@ def run_boxd(root, frozen_path, out_dir, timeout_s=120, echo=True):
         # hibernated ~5 min into 4b's run, before the wait began). What the control proves is that the provider
         # sleeps an unprotected machine during the run; the phase it happened in is reported.
         "control_slept_during_run": any(r["slept_in_run"] for r in c["runs"]),
-        "treatment_slept_after_last_idle": t["asleep_by_deadline"],
+        "treatment_slept_after_idle": t["slept_after_idle"],
         "fork_monotonic_at_wall_rate": bool(clock and abs(clock["monotonic_rate"] - 1.0) <= 0.02),
-        "fork_slept_after_idle": bool(fk and fk["asleep_by_deadline"]),
+        "fork_slept_after_idle": bool(fk and fk["slept_after_idle"]),
     }
     verdict = gates.PASS if all(checks.values()) else gates.FAIL
     shim = os.path.join(root, "oq19-treatment", "oq19-out", "shim.log")
@@ -976,9 +1023,13 @@ def run_boxd(root, frozen_path, out_dir, timeout_s=120, echo=True):
         L += ["", "## %s" % m["machine"], "sleep events (a wall gap over 3 sampling intervals inside a run): %d" % len(m["sleep_events"])]
         L += ["* asleep %.0f s (VM monotonic advanced %.0f s, uptime %.0f s) starting at wall %.0f" % (
             e["wall_gap"], e["monotonic_gap"], e["uptime_gap"], e["wall_before"]) for e in m["sleep_events"]]
-        L += ["", "| scenario | BUSY phases (wall) | slept inside BUSY | live gates |", "|---|---|---|---|"]
-        L += ["| %s | %s | %s | %s |" % (r["scenario"], "; ".join("%s %.0f-%.0f" % (p, a, b) for a, b, p in r["busy_wall"]) or "none",
-                                          len(r["slept_in_busy"]), ", ".join(r["failed"]) or ("all pass" if r["gates"] else "open loop"))
+        L += ["", "| scenario | BUSY phases (wall) | slept inside BUSY / IDLE | live gates | wake tails excused (s) | live vs replay |",
+              "|---|---|---|---|---|---|"]
+        L += ["| %s | %s | %s / %s | %s | %s | %s |" % (
+            r["scenario"], "; ".join("%s %.0f-%.0f" % (p, a, b) for a, b, p in r["busy_wall"]) or "none",
+            len(r["slept_in_busy"]), len(r["slept_in_idle"]), ", ".join(r["failed"]) or ("all pass" if r["gates"] else "open loop"),
+            ", ".join("%.0f" % x for x in r["wake_tails_excused_s"]) or "-",
+            "-" if r["live_vs_replay_mismatch"] is None else "%.1f%%" % (100 * r["live_vs_replay_mismatch"]))
               for r in m["runs"]]
         L += ["", "first asleep status after the last IDLE label: %s (deadline wall %s)" % (
             "%s at wall %.0f" % (m["asleep_after_last_idle"][1], m["asleep_after_last_idle"][0]) if m["asleep_after_last_idle"] else "never",
