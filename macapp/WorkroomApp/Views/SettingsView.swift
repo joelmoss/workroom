@@ -350,6 +350,10 @@ private struct TerminalSettingsPane: View {
   @Default(.copyOnSelect) private var copyOnSelect
   @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
   @Default(.backgroundSessions) private var backgroundSessions
+  // Only the ask-at-ceiling toggle has a row: the ceiling and the prompt timeout are durations most
+  // people never touch, so they stay defaults-only keys (`awakeCeilingHours`,
+  // `awakePromptTimeoutMinutes`) until someone asks for them.
+  @Default(.askAtAwakeCeiling) private var askAtAwakeCeiling
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @Default(.filePathEditor) private var pathEditor
   @State private var pendingDisable = false
@@ -407,6 +411,22 @@ private struct TerminalSettingsPane: View {
           "Ordinary terminals keep running in the background after you quit, and reattach "
             + "automatically when you relaunch Workroom. Closing a terminal ends its session "
             + "immediately. Run commands and the Quick Terminal are never persisted."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
+
+      VStack(alignment: .leading, spacing: 4) {
+        Toggle("Ask before a busy machine sleeps", isOn: $askAtAwakeCeiling)
+          .help(
+            "When a machine has been busy past its awake ceiling, ask whether to keep it awake."
+          )
+          .accessibilityIdentifier("settings.control.askAtAwakeCeiling")
+        Text(
+          "The session agent reports whether a machine is busy so a remote one isn't hibernated "
+            + "mid-job. Past the ceiling that's only reported — nothing is ever put to sleep by "
+            + "Workroom. Turn this on to be asked instead; no answer lets the machine sleep. "
+            + "Takes effect the next time an agent starts."
         )
         .font(.caption)
         .foregroundStyle(.secondary)

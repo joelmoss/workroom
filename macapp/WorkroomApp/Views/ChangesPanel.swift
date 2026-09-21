@@ -129,6 +129,7 @@ struct RightInspector: View {
           indicator: changesIndicator, indicatorLabel: changesIndicatorLabel, shortcut: "⌥⌘C"
         ) {
           HStack(spacing: 0) {
+            WakefulnessBadge()
             InspectorHeaderButton(
               systemImage: "checkmark.circle", help: commitButtonHelp,
               disabled: !canCommitSelectedTarget
@@ -391,6 +392,62 @@ private struct ChangedFileCountBadge: View {
       .padding(.horizontal, 5).padding(.vertical, 1)
       .background(.quaternary, in: Capsule())
       .help(Self.phrase(count: count))
+  }
+}
+
+/// Whether this box is busy, as the agent's wakefulness service reports it (issue #208).
+///
+/// In the Changes header rather than in the sidebar row, matching the PR badge it sits beside: the
+/// verdict is per BOX, not per workroom, so every sidebar row would carry the same glyph — the
+/// inspector shows it once, for whatever is selected.
+///
+/// It owns its polling through `.task`, which is what makes "no polling while hidden" true rather
+/// than merely intended: closing the inspector or the window unmounts this view and cancels the poll.
+/// Nothing is drawn when the agent has no status service (an older agent, or macOS, where the
+/// classifier does not run), so this is invisible on a local-only setup.
+private struct WakefulnessBadge: View {
+  @ObservedObject private var model = WakefulnessModel.shared
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    Group {
+      if let status = model.status, status.running {
+        let glyph = Self.glyph(for: status.display, theme: theme)
+        Image(systemName: glyph.symbol)
+          .font(.caption)
+          .foregroundStyle(glyph.tint)
+          .padding(.horizontal, 4)
+          .help(Self.help(for: status))
+          .accessibilityLabel(glyph.label)
+          .accessibilityIdentifier("changes.wakefulness")
+      }
+    }
+    .task { await model.poll() }
+  }
+
+  static func glyph(for display: AgentWakefulness.Display, theme: ThemeService)
+    -> (symbol: String, tint: Color, label: String)
+  {
+    switch display {
+    case .idle: return ("moon.zzz", .secondary, "Idle")
+    case .busy: return ("bolt.fill", theme.tokens.fgMuted, "Busy")
+    // The ceiling is advisory: this warns that the box has been busy a long time, it does not report
+    // anything having been done about it.
+    case .busyPastCeiling:
+      return ("exclamationmark.triangle.fill", theme.tokens.warning, "Busy past the awake ceiling")
+    }
+  }
+
+  static func help(for status: AgentWakefulness) -> String {
+    let awake = Duration.seconds(status.awakeSeconds).formatted(
+      .units(allowed: [.hours, .minutes], width: .narrow))
+    switch status.display {
+    case .idle: return "This machine is idle."
+    case .busy: return "This machine is busy (awake \(awake))."
+    case .busyPastCeiling:
+      return "This machine has been busy for \(awake), past its awake ceiling. Nothing has been "
+        + "slept — this is a report."
+    }
   }
 }
 
