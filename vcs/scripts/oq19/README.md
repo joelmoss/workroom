@@ -19,7 +19,9 @@ window 10 -> 5 s; compressed runs scale the grace like the window). Labels are u
 contract is tag `oq19-amendment-1`, which `record.py` now checks; the hold-out set was recorded after the
 amendment and is what the claim rests on. Both headers carry the full rationale. Results:
 `results/holdout.md` (the claim), `results/tuning.md`, `results/tuning-preregistered.md`, and the write-up in
-`docs/designs/oq19-wakefulness-measurements.md`.
+`docs/designs/oq19-wakefulness-measurements.md`. The per-config tuning detail (`tuning.json`,
+`tuning-preregistered.json`, ~1 MB each) is committed gzipped; `analyze.py tuning` regenerates the plain files
+from the local traces.
 
 **Amendment 2 (2026-09-20, from the boxd run, disclosed).** Two F7 attribution rules the container could not
 exercise: a name match on the exclusion list excludes descendants only for housekeeping daemons (on a VM
