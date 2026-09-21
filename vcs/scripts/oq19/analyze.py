@@ -43,33 +43,8 @@ from labels import BUSY, IDLE
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# ---- the pre-registered candidate grid ------------------------------------------------------------------
-CPU_GRID = (0.05, 0.20)            # cores of non-excluded process CPU that count as activity
-PTY_RATE_GRID = (30.0, 200.0)      # pty output bytes/s over PTY_WINDOW_S (tmux's clock is ~10, a spinner ~200)
-PTY_WINDOW_S = 5.0                 # amendment 1: was 10 (see the note below)
-NET_GRID = (None, 500.0)           # eth0 rx+tx bytes/s that count as activity (None = signal not used)
-NET_WINDOW_S = 3.0                 # amendment 1: net is a rate over this window, like pty, not per tick
-COMPRESSION = gates.WINDOW_GRID_COMPRESSED_S[0] / gates.WINDOW_GRID_S[0]  # a compressed run scales the policy's grace too
-WAIT_RULES = ("agnostic", "tty-aware")
-SOCKET_AGE_GRID = (None, 30.0)     # an ESTAB socket counts only if its last send/receive is this recent (S6b)
-GRACE_GRID = (0.0, 10.0, 30.0)     # seconds after the last pty input that still count as activity (S5); 10 = amendment 1
-
-# POST-HOC AMENDMENT 1 (2026-09-20, owner-approved; see gates.py for the gate half). Made after the
-# pre-registered tuning result (commit a8246fb3, results/tuning-preregistered.md: no winner). Grid changes:
-# GRACE_GRID gained 10 s, because (0, 30) bracketed the passing range for scenario 14 (0 never sees a
-# keystroke's echo, 30 stacks on the window past the time-to-idle allowance); the net signal became a rate
-# over NET_WINDOW_S = 3 s, because per-tick bytes at 1 s cadence let the box's ~800 B startup burst vote BUSY
-# while scenario 9's steady ~750 B/s traffic needs the signal (a 10 s window averaged the burst away but
-# delayed 9's onset past the 3 s allowance; 3 s does both); PTY_WINDOW_S went from 10 to 5 s, because vim's
-# 2.2 KB paint at 10 s held the pty vote for the full window and the opening run landed at exactly the
-# 40 s allowance (5 s keeps tmux's 100 B / 15 s clock under the 30 B/s threshold and clears the paint in 5 s);
-# and a compressed run scales the policy's grace by COMPRESSION like its window, since grace is a policy time
-# constant and an uncompressed 10 s grace was 10% of a 90 s post phase. Labels are untouched. The hold-out
-# was recorded after all of this.
-AMENDMENTS = ("grace 10 s added to GRACE_GRID", "net rate over NET_WINDOW_S = 3 s instead of per tick",
-              "PTY_WINDOW_S 10 -> 5 s", "compressed runs scale grace by COMPRESSION",
-              "gates: every idle interval's opening BUSY run (within one interval of the open) gets the window as "
-              "its tail; a run spanning the whole interval fails")
+# ---- the pre-registered candidate grid lives in grid.py (frozen; see record.py FROZEN_FILES) ------------
+from grid import (CPU_GRID, PTY_RATE_GRID, PTY_WINDOW_S, NET_GRID, NET_WINDOW_S, COMPRESSION, WAIT_RULES, SOCKET_AGE_GRID, GRACE_GRID, AMENDMENTS)  # noqa: E402
 INTERVALS = gates.INTERVAL_GRID_S
 WINDOWS = tuple(range(len(gates.WINDOW_GRID_S)))  # index into the full or the compressed grid
 POLICIES = ("P0", "P1", "P1b", "P2", "P3", "P4", "P5")
@@ -651,6 +626,9 @@ def report(runs, excluded, summaries, d3, winner, matrix, pipeline_check, commit
                 g["critical_runs"], g["critical_bound"]))
         w("")
         w("### What an idle box costs (the OQ7 input): BUSY verdict time on the idle-only scenarios, winner config")
+        w("A BUSY fraction near 0.13 on a 300 s idle run is the launch tail (keystroke grace + paint + window, ~40 s), "
+          "paid once when the TUI opens, not a steady state; the hours column extrapolates it and overstates.")
+        w("")
         w("| scenario | runs | mean BUSY fraction | awake hours per day if left like this |")
         w("|---|---|---|---|")
         for sid in ("1", "2a", "2b", "2c", "3a", "3b", "8", "16"):
@@ -800,12 +778,12 @@ def run_holdout(root, frozen_path, pipeline_check, out_dir):
             "", "## Claim: **%s**" % verdict, "",
             "PASS requires zero failures on all gates in the hold-out set, detached, at BOTH scales, and the "
             "pre-registered sample size (every gated scenario x5 full-length, every critical scenario x20 compressed).",
-            "", "| set / scale / mode | runs | can false-idle | failing | 95% bound false-idle | sample size ok |",
-            "|---|---|---|---|---|---|"]
+            "", "| set / scale / mode | runs | can false-idle | failing | 95% bound false-idle | 95% bound any gate | critical (4b, 7, 10): runs / 95% bound | sample size ok |",
+            "|---|---|---|---|---|---|---|---|"]
     for (kset, kscale, kmode), g in sorted(table.items()):
-        text.append("| %s / %s / %s | %d | %d | %d | %.2f | %s |" % (
-            kset, kscale, kmode, g["runs"], g["busy_runs"], g["failures_any"], g["bound_false_idle"],
-            g["sample_size_ok"]))
+        text.append("| %s / %s / %s | %d | %d | %d | %.2f | %.2f | %d / %.2f | %s |" % (
+            kset, kscale, kmode, g["runs"], g["busy_runs"], g["failures_any"], g["bound_false_idle"], g["bound_any"],
+            g["critical_runs"], g["critical_bound"], g["sample_size_ok"]))
     bad = [r for r in results if not r["passes"]]
     text += ["", "## Failing runs (%d)" % len(bad)]
     text += ["* `%s`: %s%s" % (r["run"], ", ".join(r["failed"]) or "no gate", "" if r["agrees_with_replay"]
@@ -953,6 +931,11 @@ def boxd_machine(root, machine, timeout_s, window_s, d3_fallback=False):
         slept_in_busy = [e for e in events_here for a, b, _ in busy_wall if a <= e["wall_before"] <= b]
         idle_wall = [(wall_of(ticks, i.start), wall_of(ticks, i.end)) for i in ivs if i.label == IDLE]
         slept_in_idle = [e for e in events_here for a, b in idle_wall if a <= e["wall_before"] <= b]
+        # window + two provider timer periods: the provider re-arms its idle timer at its own cadence after the
+        # shim restores it (measured release-to-sleep on boxd: 119 to 190 s against a 120 s timer).
+        slept_in_idle_by_deadline = [e for e in events_here for a, b in idle_wall
+                                     if a <= e["wall_before"] <= min(b, a + window_s + 2 * timeout_s)]
+        idle_sleep_delays = [round(e["wall_before"] - a, 1) for e in events_here for a, b in idle_wall if a <= e["wall_before"] <= b]
         run_wall = (wall_of(ticks, ivs[0].start), wall_of(ticks, ivs[-1].end))
         slept_in_run = [e for e in events_here if run_wall[0] <= e["wall_before"] <= run_wall[1]]
         closed = run.meta.get("closed_loop")
@@ -966,16 +949,20 @@ def boxd_machine(root, machine, timeout_s, window_s, d3_fallback=False):
             mismatch_frac = closed_loop_check(d, staleness=False)["live_vs_replay_mismatch"]
         runs.append({"scenario": run.scenario, "busy_wall": busy_wall, "slept_in_busy": slept_in_busy,
                      "slept_in_run": slept_in_run, "slept_in_idle": slept_in_idle,
+                     "slept_in_idle_by_deadline": slept_in_idle_by_deadline, "idle_sleep_delays_s": idle_sleep_delays,
                      "wake_tails_excused_s": [round(x, 1) for x in wake_tails],
                      "live_vs_replay_mismatch": mismatch_frac,
                      "gates": gates_out, "failed": [g for g, v in (gates_out or {}).items() if v != gates.PASS]})
         last_end_wall = max(last_end_wall or 0, wall_of(ticks, ivs[-1].end))
     asleep = first_asleep_after(status_rows, last_end_wall) if last_end_wall else None
-    deadline = (last_end_wall + window_s + timeout_s + 60) if last_end_wall else None
-    # "Slept after IDLE": the provider put the box to sleep inside an IDLE-labelled stretch of a run (the tick
-    # log shows it), or its status read asleep within the window + the provider timer of the last label.
-    slept_after_idle = any(r["slept_in_idle"] for r in runs) or bool(asleep and asleep[0] <= deadline)
+    deadline = (last_end_wall + window_s + 2 * timeout_s) if last_end_wall else None
+    # "Slept within the idle window after IDLE" (the plan's wording): a sleep that begins inside an IDLE label
+    # within window + provider timer + 60 s of that label's start (the tick log shows it), or a status read of
+    # asleep within the same deadline after the last label. A sleep later inside a long idle label does not count.
+    slept_after_idle = any(r["slept_in_idle_by_deadline"] for r in runs) or bool(asleep and asleep[0] <= deadline)
+    idle_sleep_delays = [x for r in runs for x in r["idle_sleep_delays_s"]]
     return {"machine": machine, "runs": runs, "sleep_events": events, "slept_after_idle": slept_after_idle,
+            "idle_sleep_delays_s": idle_sleep_delays, "idle_sleep_deadline_s": window_s + 2 * timeout_s,
             "asleep_after_last_idle": asleep, "asleep_by_deadline": bool(asleep and asleep[0] <= deadline),
             "deadline_wall": deadline, "status_samples": len(status_rows)}
 
@@ -1002,9 +989,9 @@ def run_boxd(root, frozen_path, out_dir, timeout_s=120, echo=True):
     checks = {
         "treatment_never_slept_in_busy": all(not r["slept_in_busy"] for r in t["runs"]),
         "treatment_live_gates_pass": all(not r["failed"] for r in t["runs"] if r["gates"] is not None),
-        # The control has no policy, so a 120 s network-idle timer sleeps it in the QUIET phase already (measured:
-        # hibernated ~5 min into 4b's run, before the wait began). What the control proves is that the provider
-        # sleeps an unprotected machine during the run; the phase it happened in is reported.
+        # D11: the control "must actually hibernate mid-wait". Measured on every run: 167 to 315 s into 4b's run,
+        # inside the silent turn (its label opens at 110 s). Any sleep during the run is reported beside it.
+        "control_slept_in_busy": any(r["slept_in_busy"] for r in c["runs"]),
         "control_slept_during_run": any(r["slept_in_run"] for r in c["runs"]),
         "treatment_slept_after_idle": t["slept_after_idle"],
         "fork_monotonic_at_wall_rate": bool(clock and abs(clock["monotonic_rate"] - 1.0) <= 0.02),
@@ -1031,7 +1018,9 @@ def run_boxd(root, frozen_path, out_dir, timeout_s=120, echo=True):
             ", ".join("%.0f" % x for x in r["wake_tails_excused_s"]) or "-",
             "-" if r["live_vs_replay_mismatch"] is None else "%.1f%%" % (100 * r["live_vs_replay_mismatch"]))
               for r in m["runs"]]
-        L += ["", "first asleep status after the last IDLE label: %s (deadline wall %s)" % (
+        L += ["", "seconds from an IDLE label's start to a sleep inside it: %s (deadline %d s)" % (
+            ", ".join("%.0f" % x for x in m["idle_sleep_delays_s"]) or "none", m["idle_sleep_deadline_s"])]
+        L += ["first asleep status after the last IDLE label: %s (deadline wall %s)" % (
             "%s at wall %.0f" % (m["asleep_after_last_idle"][1], m["asleep_after_last_idle"][0]) if m["asleep_after_last_idle"] else "never",
             "%.0f" % m["deadline_wall"] if m["deadline_wall"] else "-")]
     if clock:

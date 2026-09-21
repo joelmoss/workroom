@@ -38,8 +38,8 @@ import labels
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
-FROZEN_TAG = "oq19-amendment-2"  # oq19-preregistration-frozen -> amendment 1 (gates.py) -> amendment 2 (boundary.md)
-FROZEN_FILES = ("labels.py", "gates.py", "boundary.md")
+FROZEN_TAG = "oq19-amendment-3"  # preregistration-frozen -> 1 (gates.py) -> 2 (boundary.md) -> 3 (grid.py frozen, boundary notes)
+FROZEN_FILES = ("labels.py", "gates.py", "boundary.md", "grid.py")
 CPU_BOUND = {"5", "10", "12", "18"}  # saturate or burst a full core; never co-scheduled with each other
 NO_ATTACHED = {"17"}                 # 1.7 h each and the attach effect is the same resize: skipped, stated
 VARIANT_500_REPEATS = 3
