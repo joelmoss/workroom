@@ -841,7 +841,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     - *And it is not free.* Today the read is one line fired once per attach, inside the attach
       handler. This needs a continuous poll loop that runs **while detached**, a busy/idle policy,
       and a ceiling. That is a new service, not a reuse of an existing one.
-  - **Port forwarding over the agent's own stream.** A forwarded port becomes another service on the
+  - **Port forwarding over the agent's own stream** — ships (2026-09-21, `wr-agent/src/forward.rs`),
+    agent half. A forwarded port becomes another service on the
     multiplex, so no provider public hostname is required, and it works identically on a local
     container. **Caveat:** it only carries while a client is attached, so "come back to a running
     preview URL" still wants a provider hostname — the same structural limit as wakefulness.
@@ -2245,6 +2246,43 @@ service milestones below so each layer can be reviewed and landed independently.
      OQ22 ceiling (advisory-only by default, ask-the-user behind `--ask-at-awake-ceiling`). Still
      owed: a real Claude Code trace (TODOS), the app side of the status and the ceiling prompt, and
      the far-side shim reading `<socket>.wake` (Phase 3).
+
+     **Port forwarding is implemented (#208, agent half).** `Service::Forward` (`0x05`) carries one
+     TCP connection per multiplex stream: the client sends `open` on a fresh stream naming a host and
+     port, the agent connects and answers `{"opened":true}` or a typed error, and after that the
+     stream's payloads are the connection's bytes both ways. The payloads cannot all be JSON, so
+     each one is an opcode byte and a body — `OPEN`/`REPLY`/`DATA`/`EOF`/`CLOSE`, the same
+     marker-byte shape the VCS, File and Status services put in front of their chunked JSON, reusing
+     the envelope rather than adding a second framing. EOF and CLOSE are both there because a
+     half-close and an abort are different things to a TCP peer, and a client that could only say
+     "done" would leave the agent holding a socket nobody will read. `PROTOCOL_VERSION` is 5 and
+     `MIN_FORWARD_VERSION` is 5, checked against a peer's raw greeting before any Forward envelope is
+     sent — a protocol-4 agent silently drops them — and never folded into `negotiate`.
+
+     *The target is loopback, matched as text*: `127.0.0.1`, `::1` and `localhost`, which the agent
+     maps to those two addresses itself. Nothing is resolved, for two reasons that point the same
+     way: a lookup is an unbounded blocking call on the dispatch path, and an allowlist checked
+     before resolution is the classic bypass. So `127.0.0.2` is refused with everything else, and
+     reverse (remote → Mac) forwarding is not this service. The connect is bounded at 3 s and a
+     refusal or a timeout is an error reply on the stream, never a stream that goes quiet.
+
+     *Isolation is the part that needed designing.* The connection's envelope reader must never block
+     on a forwarded socket, or a stalled preview server makes the terminal beside it unresponsive —
+     so the connect runs on the spawned thread and the queue toward the socket is unbounded, in the
+     pty and file services' thread-per-thing shape rather than a new runtime. What bounds that queue
+     is a byte budget per forward; one that falls further behind is killed with CLOSE. The multiplex
+     has no per-stream flow control, and of the three available answers — buffer without limit, block
+     the reader, drop one stalled connection — only the third keeps the other streams honest. Per-
+     stream flow control is the upgrade path if it ever matters. A forward takes no request permit: like
+     a watch subscription it is a resource held across many requests, so it is capped separately at
+     64 per connection.
+
+     *The design's caveat is now structural rather than aspirational*: `Forwards` lives in
+     `ConnectionServices`, so every forwarded socket dies when the client detaches or the connection
+     drops, and "come back to a running preview URL" still wants a provider hostname. Not done here:
+     the app half (the Swift client, which is writable from the module doc alone, and the UI that
+     picks a port), and the Phase 3 remote transport this exists for — the service is not OS-gated
+     and runs on macOS, but a forward is only interesting once the agent is on another box.
 
    **Two Phase 3 questions this milestone opened rather than answered**, both consequences of the
    exec service being the thing Phase 3 moves host-side. *Auth resolution*: the child environment is
