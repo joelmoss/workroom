@@ -439,7 +439,7 @@ private struct WakefulnessBadge: View {
   }
 
   static func help(for status: AgentWakefulness) -> String {
-    let awake = Duration.seconds(status.awakeSeconds).formatted(
+    let awake = wakefulnessDuration(status.awakeSeconds).formatted(
       .units(allowed: [.hours, .minutes], width: .narrow))
     switch status.display {
     case .idle: return "This machine is idle."

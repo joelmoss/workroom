@@ -161,6 +161,17 @@ final class AgentWakefulnessTests: XCTestCase {
     try await service.keep()
   }
 
+  /// The connect-time probe's reply is kept, not discarded: it is the only reading of the agent's
+  /// prompt timeout the app is guaranteed to have before a ceiling prompt arrives, because the poll
+  /// that would otherwise supply it runs only while the Changes inspector is open.
+  func testTheConnectProbeKeepsTheAgentsPromptTimeout() async throws {
+    let fake = try FakeAgent(version: 3, status: true)
+    fakes.append(fake)
+    let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
+    connections.append(connection)
+    XCTAssertEqual(try connection.wakefulness().negotiatedPromptTimeout ?? 0, 600, accuracy: 0.001)
+  }
+
   /// The prompt arrives unsolicited on stream 0 of service 4. Before #208 that envelope would have
   /// failed `receive()`'s validity guard and torn down every in-flight VCS and File request with it.
   func testACeilingPromptOnStreamZeroIsDeliveredAndDoesNotFailTheConnection() async throws {
@@ -169,8 +180,10 @@ final class AgentWakefulnessTests: XCTestCase {
     let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
     connections.append(connection)
     let service = try connection.wakefulness()
-    // Listening BEFORE the push, and bounded: a prompt that never arrives must fail the test rather
-    // than hang the suite.
+    // Bounded, so a prompt that never arrives fails the test instead of hanging the suite. Note what
+    // actually makes this race-free: NOT the ordering below — `Task {}` does not start
+    // synchronously, so the push can land first — but the stream's `.bufferingNewest(1)` policy,
+    // which holds the prompt until someone iterates. Change that policy and this goes flaky.
     let waiter = Task { () -> AgentCeilingPrompt? in
       for await prompt in service.prompts { return prompt }
       return nil
@@ -257,6 +270,74 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertFalse(state.isShowing)
     XCTAssertNil(state.remaining(now: origin))
     XCTAssertNil(state.awakeSeconds)
+    XCTAssertFalse(state.keepFailed)
+  }
+
+  /// A `keep` that never reached the agent must NOT leave the card cleared. The agent moves
+  /// `Prompted` to `Suppressed` at the deadline and publishes IDLE, so a swallowed failure sleeps the
+  /// box after the user asked for the opposite. The card comes back on the ORIGINAL deadline — the
+  /// agent's clock never moved — and says why.
+  func testAFailedKeepPutsThePromptBackOnItsOriginalDeadline() {
+    var state = AwakeCeilingPromptState()
+    state.raise(raised, promptTimeout: 600, now: origin)
+    let beforeKeep = state
+    state.keep()
+    XCTAssertFalse(state.isShowing)
+
+    state.restoreAfterFailedKeep(beforeKeep)
+    XCTAssertTrue(state.isShowing)
+    XCTAssertTrue(state.keepFailed)
+    XCTAssertEqual(state.awakeSeconds ?? 0, 14400.5, accuracy: 0.001)
+    XCTAssertEqual(
+      try XCTUnwrap(state.remaining(now: origin)), 600, accuracy: 0.001,
+      "the agent's deadline did not move because the request failed")
+  }
+
+  /// A restored prompt still expires on its own: the retry window is the time that was already left,
+  /// not a fresh one.
+  func testARestoredPromptStillExpiresOnTheOriginalDeadline() {
+    var state = AwakeCeilingPromptState()
+    state.raise(raised, promptTimeout: 600, now: origin)
+    let beforeKeep = state
+    state.keep()
+    state.restoreAfterFailedKeep(beforeKeep)
+    state.tick(now: origin.addingTimeInterval(599))
+    XCTAssertTrue(state.isShowing)
+    state.tick(now: origin.addingTimeInterval(600))
+    XCTAssertFalse(state.isShowing)
+    XCTAssertFalse(state.keepFailed, "clearing drops the failure flag with everything else")
+  }
+
+  /// A fresh prompt after a failed keep is a clean slate, not a retry.
+  func testANewPromptClearsTheFailedKeepFlag() {
+    var state = AwakeCeilingPromptState()
+    state.raise(raised, promptTimeout: 600, now: origin)
+    let beforeKeep = state
+    state.keep()
+    state.restoreAfterFailedKeep(beforeKeep)
+    XCTAssertTrue(state.keepFailed)
+    state.raise(raised, promptTimeout: 600, now: origin.addingTimeInterval(9000))
+    XCTAssertFalse(state.keepFailed)
+  }
+
+  /// `Duration.seconds(Double)` traps on an out-of-range value, and `awakeSeconds` is a
+  /// non-optional `Double` straight off the socket. Every other wire path here drops garbage; the
+  /// formatter must not be the exception that crashes the app.
+  func testAnAbsurdDurationOffTheWireIsClampedRatherThanTrapping() {
+    XCTAssertEqual(wakefulnessDuration(0), .seconds(0))
+    XCTAssertEqual(wakefulnessDuration(90), .seconds(90))
+    XCTAssertEqual(wakefulnessDuration(-5), .seconds(0))
+    XCTAssertEqual(wakefulnessDuration(.nan), .seconds(0))
+    XCTAssertEqual(wakefulnessDuration(-.infinity), .seconds(0))
+    // +∞ clamps to the ceiling like any other too-large value: "longer than the UI can say", not
+    // "not busy at all".
+    XCTAssertEqual(wakefulnessDuration(.infinity), wakefulnessDuration(1e30))
+    XCTAssertGreaterThan(wakefulnessDuration(.infinity), .seconds(365 * 24 * 3600))
+    // The point of the test: formatting these must not crash.
+    for seconds in [1e30, -1e30, Double.infinity, Double.nan] {
+      _ = wakefulnessDuration(seconds).formatted(
+        .units(allowed: [.hours, .minutes], width: .narrow))
+    }
   }
 
   /// The deadline passing and the user dismissing are the same outcome, which is OQ22's rule: no

@@ -147,6 +147,12 @@ private struct AwakeCeilingToastView: View {
       VStack(alignment: .leading, spacing: 4) {
         Text("Keep this machine awake?").font(.callout).fontWeight(.semibold).lineLimit(2)
         Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+        // Only after a `keep` came back from the card: the request did not reach the agent, so the
+        // deadline is still running and the click has to be made again.
+        if model.prompt.keepFailed {
+          Text("Couldn't reach the agent. Try again.")
+            .font(.caption).foregroundStyle(theme.tokens.warning).lineLimit(2)
+        }
         Button("Keep awake") { model.keep() }
           .controlSize(.small)
           .accessibilityIdentifier("wakefulness.keepAwake")
@@ -173,12 +179,12 @@ private struct AwakeCeilingToastView: View {
 
   private var detail: String {
     let remaining = model.prompt.remaining(now: now) ?? 0
-    let countdown = Duration.seconds(Int(remaining.rounded()))
+    let countdown = wakefulnessDuration(remaining.rounded())
       .formatted(.units(allowed: [.minutes, .seconds], width: .narrow))
     guard let awake = model.prompt.awakeSeconds else {
       return "No answer in \(countdown) and it may go to sleep."
     }
-    let busy = Duration.seconds(awake).formatted(
+    let busy = wakefulnessDuration(awake).formatted(
       .units(allowed: [.hours, .minutes], width: .narrow))
     return "Busy for \(busy). No answer in \(countdown) and it may go to sleep."
   }

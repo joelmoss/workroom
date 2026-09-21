@@ -11,6 +11,9 @@ import Foundation
 /// idle timer may sleep the box. Nothing in the app sleeps a box either.
 struct AgentWakefulnessService: Sendable {
   let connection: AgentVCSConnection
+  /// `prompt_timeout_seconds` from the connect-time probe, or nil if the agent did not report one.
+  /// The ceiling prompt event carries no clock reading, so this is what its countdown runs on.
+  let negotiatedPromptTimeout: TimeInterval?
 
   func status() async throws -> AgentWakefulness {
     try AgentStatusReply<AgentWakefulness>.decode(
@@ -89,13 +92,34 @@ struct AgentCeilingPrompt: Decodable, Sendable, Equatable {
   let awakeSeconds: Double
   let promptDeadline: Double
 
-  /// How long the user has, given the timeout a `status` poll last reported. Falls back to the
-  /// agent's own default when nothing has been polled yet.
+  /// Last-resort fallback, matching `wakefulness::Settings::default()`. Reached only when neither the
+  /// connect-time probe nor a poll reported the agent's own timeout.
   static let defaultPromptTimeout: TimeInterval = 600
 
+  /// Deliberately ignores `promptDeadline`: it is an instant on the agent's monotonic clock and this
+  /// event carries no reading of that clock, so only the duration can cross. The consequence, worth
+  /// knowing, is that the countdown restarts from the full timeout and is therefore optimistic by
+  /// however long the event spent in flight — milliseconds on a unix socket.
   func remaining(promptTimeout: TimeInterval?) -> TimeInterval {
     promptTimeout ?? Self.defaultPromptTimeout
   }
+}
+
+/// Seconds off the wire, as a `Duration` safe to format.
+///
+/// `Duration.seconds(_: Double)` traps on an out-of-range value (`Fatal error: Overflow in
+/// multiplication`), and `awakeSeconds` is a non-optional `Double` straight off the socket. Nothing a
+/// healthy agent reports comes close — it is bounded by uptime — but every other wire path in this
+/// feature drops garbage rather than trusting it, and a formatter is no place to be the exception.
+/// A century is far past any duration the UI renders meaningfully.
+///
+/// `min`/`max` rather than an `isFinite` gate, so an infinite value clamps to the ceiling like any
+/// other too-large one instead of reading as zero — "busy longer than the UI can say" is the truer
+/// answer to +∞ than "not busy". Only NaN needs its own arm, because every comparison with it is
+/// false and it would otherwise fall through unclamped.
+func wakefulnessDuration(_ seconds: Double) -> Duration {
+  guard !seconds.isNaN else { return .zero }
+  return .seconds(min(max(seconds, 0), 100 * 365 * 24 * 3600))
 }
 
 /// The three wakefulness preferences, as the agent takes them: flags on `wr-agent serve`.
@@ -154,23 +178,36 @@ struct AgentStatusRequest: Encodable, Sendable {
 struct AwakeCeilingPromptState: Equatable {
   private(set) var awakeSeconds: Double?
   private(set) var expiresAt: Date?
+  /// A `keep` left but the agent never acknowledged it. The card comes back, saying so — see
+  /// `WakefulnessModel.keep()` for why this is not the same as never having asked.
+  private(set) var keepFailed = false
 
   var isShowing: Bool { expiresAt != nil }
 
-  /// A prompt arrived. `promptTimeout` is what a `status` poll last reported; nil falls back to the
-  /// agent's own default.
+  /// A prompt arrived. `promptTimeout` is the agent's own configured timeout, from the connect-time
+  /// probe or a `status` poll; nil falls back to the agent's default.
   mutating func raise(_ prompt: AgentCeilingPrompt, promptTimeout: TimeInterval?, now: Date) {
     awakeSeconds = prompt.awakeSeconds
     expiresAt = now.addingTimeInterval(prompt.remaining(promptTimeout: promptTimeout))
+    keepFailed = false
   }
 
   /// The user said keep it awake. The agent restarts the ceiling and will raise a fresh prompt a
-  /// whole ceiling later, so nothing is left to show.
+  /// whole ceiling later, so nothing is left to show — PROVIDED the agent heard it. See
+  /// `restoreAfterFailedKeep`.
   mutating func keep() { clear() }
 
   /// Dismissed, or the deadline passed — the same outcome either way, which is the point of OQ22's
   /// "no answer lets the box sleep": the app never tells the agent anything here.
   mutating func dismiss() { clear() }
+
+  /// The optimistic `keep` did not reach the agent. Puts the card back exactly as it was — the
+  /// agent's deadline never moved — and flags why, so this is distinguishable from both a
+  /// still-unanswered prompt and a dismissal.
+  mutating func restoreAfterFailedKeep(_ previous: AwakeCeilingPromptState) {
+    self = previous
+    keepFailed = true
+  }
 
   /// Drops the prompt once its deadline has passed. Idempotent.
   mutating func tick(now: Date) {
@@ -186,6 +223,7 @@ struct AwakeCeilingPromptState: Equatable {
   private mutating func clear() {
     awakeSeconds = nil
     expiresAt = nil
+    keepFailed = false
   }
 }
 
@@ -207,10 +245,17 @@ final class WakefulnessModel: ObservableObject {
 
   /// Polls for as long as the caller's task lives. Driven by a SwiftUI `.task`, so closing the
   /// inspector or the window ends it — there is no polling while nothing is showing the result.
+  ///
+  /// A cancelled poll leaves the last verdict standing rather than clearing it. Clearing on exit
+  /// read as tidy and was wrong in two ways: this model is shared by every window, so one window
+  /// closing its inspector blanked the others' badge; and the value is only ever rendered by a badge
+  /// whose own `.task` refreshes it before its first sleep, so a stale value cannot be displayed.
+  /// A FAILED poll still clears it — that assignment is the `try?` below.
   func poll() async {
-    defer { status = nil }
     while !Task.isCancelled {
-      status = try? await LocalAgentVCS.shared.wakefulness().status()
+      let next = try? await LocalAgentVCS.shared.wakefulness().status()
+      guard !Task.isCancelled else { return }
+      status = next
       try? await Task.sleep(for: Self.pollInterval)
     }
   }
@@ -239,17 +284,39 @@ final class WakefulnessModel: ObservableObject {
         continue
       }
       for await raised in service.prompts {
-        prompt.raise(raised, promptTimeout: status?.promptTimeoutSeconds, now: Date())
+        // The connect-time probe, not just a poll: `poll()` only runs while the Changes inspector is
+        // mounted, while this watch is app-lifetime, so `status` is usually nil here and the
+        // countdown would silently fall back to the hardcoded default. `negotiatedPromptTimeout` is
+        // the agent's own answer and is always available on a connection that has a status service.
+        let timeout = status?.promptTimeoutSeconds ?? service.negotiatedPromptTimeout
+        prompt.raise(raised, promptTimeout: timeout, now: Date())
       }
     }
   }
 
-  /// "Keep awake": tell the agent to restart the ceiling, and drop the prompt immediately rather
-  /// than waiting for the reply — a `keep` the agent never received leaves the ceiling where it was,
-  /// which is the advisory-only status quo, not a harm.
+  /// "Keep awake": tell the agent to restart the ceiling.
+  ///
+  /// The card clears optimistically so the click feels immediate, and comes BACK if the request did
+  /// not land. That second half is not politeness — an earlier version swallowed the error on the
+  /// premise that "a `keep` the agent never received leaves the ceiling where it was", and that
+  /// premise is false. `Ceiling::step` moves `Prompted` to `Suppressed` at the deadline
+  /// (`wakefulness.rs`), and `suppressing()` makes the published verdict IDLE, which is what lets the
+  /// provider's own timer sleep the box. A successful `keep` round-trip is the ONLY other way out of
+  /// `Prompted`. So a dropped request meant the card vanished, nothing retried, and the box slept
+  /// under a running job after the user had asked for exactly the opposite.
+  ///
+  /// Re-raising is safe in the other direction too: `Ceiling::keep` just restarts from now, so a
+  /// retry that duplicates a `keep` which did land costs nothing.
   func keep() {
+    let raised = prompt
     prompt.keep()
-    Task { try? await LocalAgentVCS.shared.wakefulness().keep() }
+    Task { [weak self] in
+      do {
+        try await LocalAgentVCS.shared.wakefulness().keep()
+      } catch {
+        self?.prompt.restoreAfterFailedKeep(raised)
+      }
+    }
   }
 
   func dismissPrompt() { prompt.dismiss() }
