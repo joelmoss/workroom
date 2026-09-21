@@ -4,7 +4,7 @@ Scored tuning set (scale 1.0). Parameters are chosen here and frozen; the hold-o
 
 **Post-hoc amendment 1 applies** (see `gates.py` and `analyze.py` headers; the pre-registered outcome is `results/tuning-preregistered.md`): grace 10 s added to GRACE_GRID; net rate over NET_WINDOW_S = 3 s instead of per tick; PTY_WINDOW_S 10 -> 5 s; compressed runs scale grace by COMPRESSION; gates: every idle interval's opening BUSY run (within one interval of the open) gets the window as its tail; a run spanning the whole interval fails.
 
-Analysis code at `0edbc2e9`. Runs scored: 165 detached (full 105, compressed 60); attached 19; 500-process variant 3; serial controls 2; excluded 1.
+Analysis code at `0500d6f5`. Runs scored: 165 detached (full 105, compressed 60); attached 19; 500-process variant 3; serial controls 2; excluded 1.
 * excluded `11-attached-full-r0`: check_trace failed (kept in the manifest; not scored)
 
 ## D3 (3b vs 4b)
@@ -63,6 +63,8 @@ Per-group table (`gates.final_claim`; the tuning set never carries the claim, an
 | tuning / full / detached | 90 | 50 | 0 | 0.06 | 15 / 0.18 |
 
 ### What an idle box costs (the OQ7 input): BUSY verdict time on the idle-only scenarios, winner config
+A BUSY fraction near 0.13 on a 300 s idle run is the launch tail (keystroke grace + paint + window, ~40 s), paid once when the TUI opens, not a steady state; the hours column extrapolates it and overstates.
+
 | scenario | runs | mean BUSY fraction | awake hours per day if left like this |
 |---|---|---|---|
 | 1 | 5 | 0.000 | 0.0 |
@@ -86,7 +88,7 @@ Per-group table (`gates.final_claim`; the tuning set never carries the claim, an
 * `17-detached-full-r4`: longest continuous BUSY 5400 s; ceiling 1800 s -> force-sleep kills the job; ceiling 3600 s -> force-sleep kills the job; ceiling 14400 s -> force-sleep ok
 
 ### Attached vs detached (scenario 15: reported, never scored)
-PREDICTION, written before any attached trace was analysed: the harness's fake client resizes the window every 30 s, which redraws a full-screen TUI (several KB of pty output). That lands in the 10 s pty-rate window for a third of the time, above both grid values, so attached 2a/2c/3a will look false-busy. That is the harness's client, not a policy defect, and it does not enter the claim.
+PREDICTION, written before any attached trace was analysed: the harness's fake client resizes the window every 30 s, which redraws a full-screen TUI (several KB of pty output). That lands in the pty-rate window (10 s when this was written, 5 s after amendment 1) for part of the time, above both grid values, so attached 2a/2c/3a will look false-busy. That is the harness's client, not a policy defect, and it does not enter the claim.
 * `4b-attached-full-r0`: all gates pass
 * `7-attached-full-r0`: all gates pass
 * `6-attached-full-r0`: all gates pass

@@ -45,6 +45,13 @@ unattended-upgrades, the shim's forks) excludes its descendants; a process that 
 `sshd`, the agent) excludes only itself, as the `sshd` bullet above already said. In the container nothing
 but cron had descendants under a named match, and the hold-out re-scored identically under the explicit rule.
 
+**Amendment 3 (2026-09-21, after the independent review, disclosed).** Two more concrete rules the boxd runs
+applied that had not been written here: the provider's in-guest agent (`boxd-automation` on boxd) is the
+named instance of the "provider's in-guest agent/CLI" bullet, self only; and the harness's stand-in for the
+agent (`driver.py`, which owns the pty and sleeps through its phases) is excluded by pid, self only, because
+on a real box it is not init. The candidate grid (`grid.py`) joined the frozen set at the same time, since the
+amended grid had lived outside the preflight guard.
+
 Scenario 16 exists to prove the list works: an idle box running all of the above at their real cadence must
 stay IDLE, with the sampler and shim running in closed loop (F7).
 

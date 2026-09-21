@@ -10,10 +10,10 @@ Harness commit per run: `5a15d432` x5, `d6ea0e39` x145 (more than one: a run re-
 
 PASS requires zero failures on all gates in the hold-out set, detached, at BOTH scales, and the pre-registered sample size (every gated scenario x5 full-length, every critical scenario x20 compressed).
 
-| set / scale / mode | runs | can false-idle | failing | 95% bound false-idle | sample size ok |
-|---|---|---|---|---|---|
-| holdout / compressed / detached | 60 | 60 | 0 | 0.05 | True |
-| holdout / full / detached | 90 | 50 | 0 | 0.06 | True |
+| set / scale / mode | runs | can false-idle | failing | 95% bound false-idle | 95% bound any gate | critical (4b, 7, 10): runs / 95% bound | sample size ok |
+|---|---|---|---|---|---|---|---|
+| holdout / compressed / detached | 60 | 60 | 0 | 0.05 | 0.05 | 60 / 0.05 | True |
+| holdout / full / detached | 90 | 50 | 0 | 0.06 | 0.03 | 15 / 0.18 | True |
 
 ## Failing runs (0)
 

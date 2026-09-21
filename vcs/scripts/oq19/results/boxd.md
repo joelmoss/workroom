@@ -6,6 +6,7 @@ Harness commit `7ac2136d`; frozen configuration `P4|0.05|200.0|500.0|agnostic|No
 
 * treatment_never_slept_in_busy: yes
 * treatment_live_gates_pass: yes
+* control_slept_in_busy: yes
 * control_slept_during_run: yes
 * treatment_slept_after_idle: yes
 * fork_monotonic_at_wall_rate: yes
@@ -31,8 +32,9 @@ sleep events (a wall gap over 3 sampling intervals inside a run): 9
 | 4b | turn 1789944478-1789945378 | 0 / 3 | all pass | 30 | 0.0% |
 | 5 | build 1789946793-1789947093 | 0 / 2 | all pass | 31, 31 | 0.0% |
 
+seconds from an IDLE label's start to a sleep inside it: 146, 388, 157, 152, 353, 595, 149, 397 (deadline 270 s)
 first asleep status after the last IDLE label: hibernated
- at wall 1789948473 (deadline wall 1789948639)
+ at wall 1789948473 (deadline wall 1789948699)
 
 ## oq19-control
 sleep events (a wall gap over 3 sampling intervals inside a run): 1
@@ -42,8 +44,9 @@ sleep events (a wall gap over 3 sampling intervals inside a run): 1
 |---|---|---|---|---|---|
 | 4b | turn 1789944478-1789948765 | 1 / 0 | open loop | - | - |
 
+seconds from an IDLE label's start to a sleep inside it: none (deadline 270 s)
 first asleep status after the last IDLE label: hibernated
- at wall 1789948913 (deadline wall 1789948975)
+ at wall 1789948913 (deadline wall 1789949035)
 
 ## oq19-fork
 sleep events (a wall gap over 3 sampling intervals inside a run): 1
@@ -53,7 +56,8 @@ sleep events (a wall gap over 3 sampling intervals inside a run): 1
 |---|---|---|---|---|---|
 | 1 | none | 0 / 1 | all pass | - | 0.0% |
 
-first asleep status after the last IDLE label: never (deadline wall 1789949706)
+seconds from an IDLE label's start to a sleep inside it: 235 (deadline 270 s)
+first asleep status after the last IDLE label: never (deadline wall 1789949766)
 
 ## Fork clock check (60 s)
 monotonic 0.9991 s/s, uptime 0.9999 s/s

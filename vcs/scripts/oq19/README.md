@@ -27,6 +27,11 @@ exercise: a name match on the exclusion list excludes descendants only for house
 around the shim's own provider call (whose traffic re-voted BUSY and flapped the timers every 34 s).
 `boundary.md` carries the rule; tag `oq19-amendment-2`; the hold-out re-scores identically.
 
+**Amendment 3 (2026-09-21, from the independent review, disclosed).** The candidate grid moved to `grid.py`
+and joined the frozen set (the amended grid had lived in `analyze.py`, outside `record.py`'s preflight guard);
+`boundary.md` names two rules the boxd runs already applied (the provider's guest agent by name, the harness
+driver by pid). Tag `oq19-amendment-3`. No result changes.
+
 ## Layout
 
 | File | Role |

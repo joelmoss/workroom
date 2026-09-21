@@ -3,6 +3,7 @@
  "checks": {
   "treatment_never_slept_in_busy": true,
   "treatment_live_gates_pass": true,
+  "control_slept_in_busy": true,
   "control_slept_during_run": true,
   "treatment_slept_after_idle": true,
   "fork_monotonic_at_wall_rate": true,
@@ -47,6 +48,19 @@
       "uptime_gap": 92.3399999999674
      }
     ],
+    "slept_in_idle_by_deadline": [
+     {
+      "wall_before": 1789947975.0048385,
+      "wall_after": 1789948066.9074533,
+      "wall_gap": 91.90261483192444,
+      "monotonic_gap": 91.83790364698507,
+      "uptime_gap": 91.89999999996508
+     }
+    ],
+    "idle_sleep_delays_s": [
+     146.0,
+     388.0
+    ],
     "wake_tails_excused_s": [
      30.1,
      30.6
@@ -82,6 +96,18 @@
       "uptime_gap": 78.92999999999302
      }
     ],
+    "slept_in_idle_by_deadline": [
+     {
+      "wall_before": 1789946228.5562913,
+      "wall_after": 1789946307.4879234,
+      "wall_gap": 78.93163204193115,
+      "monotonic_gap": 78.87053629098227,
+      "uptime_gap": 78.92999999999302
+     }
+    ],
+    "idle_sleep_delays_s": [
+     157.0
+    ],
     "wake_tails_excused_s": [
      30.0
     ],
@@ -100,6 +126,8 @@
     "slept_in_busy": [],
     "slept_in_run": [],
     "slept_in_idle": [],
+    "slept_in_idle_by_deadline": [],
+    "idle_sleep_delays_s": [],
     "wake_tails_excused_s": [],
     "live_vs_replay_mismatch": 0.0,
     "gates": {
@@ -166,6 +194,20 @@
       "uptime_gap": 92.1600000000326
      }
     ],
+    "slept_in_idle_by_deadline": [
+     {
+      "wall_before": 1789945529.84871,
+      "wall_after": 1789945610.3926444,
+      "wall_gap": 80.54393434524536,
+      "monotonic_gap": 80.53905378101626,
+      "uptime_gap": 80.55000000004657
+     }
+    ],
+    "idle_sleep_delays_s": [
+     152.0,
+     353.0,
+     595.0
+    ],
     "wake_tails_excused_s": [
      30.1
     ],
@@ -219,6 +261,19 @@
       "monotonic_gap": 91.94685261300765,
       "uptime_gap": 91.9900000000489
      }
+    ],
+    "slept_in_idle_by_deadline": [
+     {
+      "wall_before": 1789947241.8368301,
+      "wall_after": 1789947339.1953285,
+      "wall_gap": 97.35849833488464,
+      "monotonic_gap": 97.30753642099444,
+      "uptime_gap": 97.35999999998603
+     }
+    ],
+    "idle_sleep_delays_s": [
+     149.1,
+     397.1
     ],
     "wake_tails_excused_s": [
      30.6,
@@ -300,12 +355,23 @@
    }
   ],
   "slept_after_idle": true,
+  "idle_sleep_delays_s": [
+   146.0,
+   388.0,
+   157.0,
+   152.0,
+   353.0,
+   595.0,
+   149.1,
+   397.1
+  ],
+  "idle_sleep_deadline_s": 270,
   "asleep_after_last_idle": [
    1789948473.0,
    "hibernated\n"
   ],
   "asleep_by_deadline": true,
-  "deadline_wall": 1789948639.0039406,
+  "deadline_wall": 1789948699.0039406,
   "status_samples": 164
  },
  "control": {
@@ -339,6 +405,8 @@
      }
     ],
     "slept_in_idle": [],
+    "slept_in_idle_by_deadline": [],
+    "idle_sleep_delays_s": [],
     "wake_tails_excused_s": [],
     "live_vs_replay_mismatch": null,
     "gates": null,
@@ -355,12 +423,14 @@
    }
   ],
   "slept_after_idle": true,
+  "idle_sleep_delays_s": [],
+  "idle_sleep_deadline_s": 270,
   "asleep_after_last_idle": [
    1789948913.0,
    "hibernated\n"
   ],
   "asleep_by_deadline": true,
-  "deadline_wall": 1789948974.8969672,
+  "deadline_wall": 1789949034.8969672,
   "status_samples": 164
  },
  "fork": {
@@ -388,6 +458,18 @@
       "uptime_gap": 423.8300000000163
      }
     ],
+    "slept_in_idle_by_deadline": [
+     {
+      "wall_before": 1789949072.4837136,
+      "wall_after": 1789949496.3129296,
+      "wall_gap": 423.82921600341797,
+      "monotonic_gap": 423.8241590280086,
+      "uptime_gap": 423.8300000000163
+     }
+    ],
+    "idle_sleep_delays_s": [
+     235.1
+    ],
     "wake_tails_excused_s": [],
     "live_vs_replay_mismatch": 0.0,
     "gates": {
@@ -409,9 +491,13 @@
    }
   ],
   "slept_after_idle": true,
+  "idle_sleep_delays_s": [
+   235.1
+  ],
+  "idle_sleep_deadline_s": 270,
   "asleep_after_last_idle": null,
   "asleep_by_deadline": false,
-  "deadline_wall": 1789949706.295811,
+  "deadline_wall": 1789949766.295811,
   "status_samples": 23
  },
  "clock": {

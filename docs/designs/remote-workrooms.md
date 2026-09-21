@@ -1792,7 +1792,8 @@ disagreement passes every test on either side alone while presenting as an empty
     contract produced NO winner and was amended post hoc, disclosed, with labels untouched; the
     hold-out carries the claim. **Confirmed on boxd (2026-09-21):** the policy driving the item-5 lever
     kept a machine awake through a 15-minute silent turn while an unprotected control hibernated
-    4.5 minutes in, and slept the machine within 3 minutes of every idle stretch; a fork's
+    167 s into that wait, and slept the machine within 3 minutes of every idle stretch except the
+    keepalive one (D3); a fork's
     `CLOCK_MONOTONIC` ran at wall rate. Four attribution rules came out of getting there (a systemd
     box, the lever's own traffic, the harness's own loops, survivors of a closed pty: amendment 2 in
     `boundary.md`). The awake ceiling is split out as OQ22. Not yet measured: a real Claude Code trace

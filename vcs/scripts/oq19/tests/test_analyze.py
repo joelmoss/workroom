@@ -616,7 +616,7 @@ class Boxd(unittest.TestCase):
             self.assertEqual(A.run_boxd(root, frozen, out, echo=False), gates.PASS)
             res = json.load(open(os.path.join(out, "boxd.json")))
             self.assertTrue(all(res["checks"].values()), res["checks"])
-            self.assertTrue(res["checks"]["control_slept_during_run"])
+            self.assertTrue(res["checks"]["control_slept_in_busy"] and res["checks"]["control_slept_during_run"])
             self.assertEqual(len(res["control"]["runs"][0]["slept_in_busy"]), 1)
             # mutation checks: a treatment that never slept afterwards, or a control that never slept, each fail
             with open(os.path.join(root, "status.log"), "w") as f:
