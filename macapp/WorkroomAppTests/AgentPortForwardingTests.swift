@@ -76,7 +76,7 @@ final class AgentPortForwardingTests: XCTestCase {
 
   /// Polls rather than sleeps, so a slow machine costs time instead of a failure.
   private func eventually(
-    _ seconds: TimeInterval = 5, _ message: String, _ condition: () -> Bool,
+    _ message: String, within seconds: TimeInterval = 5, _ condition: () -> Bool,
     file: StaticString = #filePath, line: UInt = #line
   ) {
     let deadline = Date().addingTimeInterval(seconds)
@@ -171,6 +171,14 @@ final class AgentPortForwardingTests: XCTestCase {
 
     eventually("the live streams were not closed") { Set(agent.forwards(opcode: 0x05)).count == 2 }
     XCTAssertEqual(Set(agent.forwards(opcode: 0x05)), Set(opened))
+    // CLOSE is the LAST word on each stream. The shutdown that unblocks the socket reader reads as a
+    // clean EOF to it, so without a finished-check there the reader answers it with a stray EOF
+    // envelope for a stream this client has already released.
+    try await Task.sleep(for: .milliseconds(200))
+    for stream in opened {
+      let opcodes = agent.receivedForwards.filter { $0.stream == stream }.map(\.opcode)
+      XCTAssertEqual(opcodes.last, 0x05, "stream \(stream) sent \(opcodes) — CLOSE must be last")
+    }
     // Both accepted sockets are gone, so a client still reading sees EOF rather than hanging.
     for client in [first, second] { XCTAssertEqual(try client.read(1), Data()) }
     // And the listener no longer answers.

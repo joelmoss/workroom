@@ -241,7 +241,18 @@ private final class ForwardedConnection: @unchecked Sendable {
       finish(tellAgent: false)
       return
     }
-    lock.withLock { stream = id }
+    // The mirror of the agent's own "a CLOSE that lands during a forward's connect must not be
+    // lost": `stop()` can finish this connection between the accept and here, and it had no stream
+    // to release or close when it did. Nothing has been sent, so there is nothing to tell the agent
+    // — the handler is simply given back, and no OPEN is left behind for a forward nobody wants.
+    var abandoned = false
+    lock.withLock {
+      if finished { abandoned = true } else { stream = id }
+    }
+    if abandoned {
+      connection.releaseForward(id)
+      return
+    }
     guard let request = try? JSONEncoder().encode(ForwardOpenRequest(port: remotePort)) else {
       finish(tellAgent: false)
       return
@@ -259,6 +270,10 @@ private final class ForwardedConnection: @unchecked Sendable {
 
   /// One Forward envelope for this stream, on the connection's reader thread. Nothing here blocks.
   private func handle(_ opcode: UInt8, _ body: Data) {
+    // Already over — a REPLY that lost the race with the open timeout, or anything at all after a
+    // `stop()`. Acting on it would start a reader on a socket that has been shut down and pump
+    // bytes onto a stream this client has released.
+    guard !lock.withLock({ finished }) else { return }
     switch opcode {
     case ForwardOpcode.reply:
       guard let detail = ForwardReply.failure(in: body) else {
@@ -295,7 +310,11 @@ private final class ForwardedConnection: @unchecked Sendable {
         Darwin.read(socket, raw.baseAddress, raw.count)
       }
       if count < 0 && errno == EINTR { continue }
-      guard let stream = lock.withLock({ self.stream }) else { return }
+      // A `finish` on another thread shut this socket down to unblock exactly this read, and that
+      // reads as a clean EOF. Bailing here is what stops a stray EOF envelope being sent on a stream
+      // this client has already released and closed.
+      let live: UInt32? = lock.withLock { finished ? nil : stream }
+      guard let stream = live else { return }
       if count == 0 {
         // The local client half-closed. EOF, not CLOSE: it may still be reading the reply.
         connection.sendForward(stream: stream, opcode: ForwardOpcode.eof, body: Data())
