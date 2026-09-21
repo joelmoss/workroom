@@ -24,16 +24,11 @@ const PATIENCE: Duration = Duration::from_secs(10);
 
 // MARK: An echo server
 
-/// What one accepted connection did, reported back to the test.
-enum Served {
-    /// The peer closed its write half, having sent this much.
-    Eof(usize),
-}
-
-/// A listener on an ephemeral loopback port that echoes everything back until EOF.
+/// A listener on an ephemeral loopback port that echoes everything back until EOF. `served`
+/// carries, for each connection that ended, how many bytes its peer sent before going away.
 struct Echo {
     port: u16,
-    served: Receiver<Served>,
+    served: Receiver<usize>,
 }
 
 impl Echo {
@@ -43,14 +38,14 @@ impl Echo {
             let mut buffer = vec![0u8; 8192];
             loop {
                 match socket.read(&mut buffer) {
-                    Ok(0) => return Served::Eof(total),
+                    Ok(0) => return total,
                     Ok(count) => {
                         total += count;
                         if socket.write_all(&buffer[..count]).is_err() {
-                            return Served::Eof(total);
+                            return total;
                         }
                     }
-                    Err(_) => return Served::Eof(total),
+                    Err(_) => return total,
                 }
             }
         })
@@ -58,7 +53,7 @@ impl Echo {
 
     /// A listener running `serve` on every accepted connection, each on its own thread — two
     /// concurrent forwards must be served concurrently or the test that interleaves them deadlocks.
-    fn with(serve: impl Fn(TcpStream) -> Served + Send + Sync + 'static) -> Echo {
+    fn with(serve: impl Fn(TcpStream) -> usize + Send + Sync + 'static) -> Echo {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let port = listener.local_addr().unwrap().port();
         let (tx, served) = channel();
@@ -76,8 +71,9 @@ impl Echo {
         Echo { port, served }
     }
 
-    /// How the last finished connection ended, or `None` if none did within `PATIENCE`.
-    fn finished(&self) -> Option<Served> {
+    /// How much the next connection to finish had received, or `None` if none did within
+    /// `PATIENCE`.
+    fn finished(&self) -> Option<usize> {
         self.served.recv_timeout(PATIENCE).ok()
     }
 }
@@ -247,7 +243,7 @@ fn the_tcp_peer_closing_surfaces_as_eof_and_then_the_stream_ends() {
     // A server that says one thing and hangs up.
     let echo = Echo::with(|mut socket| {
         let _ = socket.write_all(b"bye");
-        Served::Eof(0)
+        0
     });
     let mut client = Client::connect();
     client.opened(1, echo.port);
@@ -255,7 +251,9 @@ fn the_tcp_peer_closing_surfaces_as_eof_and_then_the_stream_ends() {
     assert_eq!(client.read(1, 3), b"bye");
     // EOF, not CLOSE: the peer stopped writing, and a client with more to send may still send it.
     assert_eq!(client.next(1).expect("eof").0, EOF);
-    // The stream is finished once this side is done too.
+    // The stream is finished once this side is done too. Reading "bye" first is what pins the
+    // order: CLOSE follows whichever half finishes SECOND, so it would arrive after the peer's EOF
+    // rather than after this one if the two were sent the other way round.
     client.send(1, EOF, &[]);
     assert_eq!(client.next(1).expect("close").0, CLOSE);
 }
@@ -269,7 +267,7 @@ fn a_client_closing_the_stream_closes_the_tcp_connection() {
     assert_eq!(client.read(1, 16), b"before the close");
 
     client.send(1, CLOSE, &[]);
-    let Some(Served::Eof(total)) = echo.finished() else {
+    let Some(total) = echo.finished() else {
         panic!("the echo server never saw its peer go away");
     };
     assert_eq!(total, 16, "everything sent arrived before the close");
@@ -283,7 +281,7 @@ fn a_client_eof_reaches_the_tcp_peer_as_eof() {
         let mut request = Vec::new();
         let _ = socket.read_to_end(&mut request);
         let _ = socket.write_all(format!("read {} bytes", request.len()).as_bytes());
-        Served::Eof(request.len())
+        request.len()
     });
     let mut client = Client::connect();
     client.opened(1, echo.port);
@@ -330,7 +328,7 @@ fn dropping_the_multiplex_connection_closes_the_forwarded_socket() {
 
     // No close, no EOF: the client simply goes away, as a crashed app would.
     drop(client);
-    let Some(Served::Eof(total)) = echo.finished() else {
+    let Some(total) = echo.finished() else {
         panic!("a forwarded socket outlived the connection that owned it");
     };
     assert_eq!(total, 10);
@@ -347,7 +345,9 @@ fn a_second_connections_forward_survives_the_firsts_departure() {
     second.opened(1, echo.port);
 
     drop(first);
-    assert!(echo.finished().is_some(), "the first forward closed");
+    // A connection finished — this one receiver is fed by both, so it is the two lines below that
+    // establish WHICH: the second forward is still carrying bytes, so it was the first that went.
+    assert!(echo.finished().is_some(), "a forward closed");
     second.send(1, DATA, b"mine");
     assert_eq!(second.read(1, 4), b"mine");
 }

@@ -44,7 +44,13 @@
 //! - `{"version":1,"result":{"opened":true}}` — connected. Every later payload on this stream is
 //!   the connection's bytes.
 //! - `{"version":1,"error":{"<kind>":"<detail>"}}` — not connected, followed immediately by CLOSE.
-//!   The stream id is free again.
+//!
+//! **A stream id is free again only once the client has seen its CLOSE**, which is the one rule a
+//! client has to keep rather than infer. The agent holds the id from the moment OPEN arrives, so a
+//! client that gives up on a slow `open` (the connect is bounded at 3 s, which is longer than a
+//! client's own timeout is likely to be) and re-uses the id will be told `"stream <n> is already
+//! forwarding"` for a forward that is about to fail and vanish. Wait for CLOSE, then re-use — or
+//! simply never re-use, which is what a monotonic stream counter gets for free.
 //!
 //! The error kinds, exhaustively, with the exact detail strings where they are fixed:
 //!
@@ -589,6 +595,37 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter, forwards: &Forwards)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::Receiver as Rx;
+
+    /// Everything the agent wrote toward the client, for the tests that have no socket.
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("capture").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A forward registered by hand, with nothing draining it — the state a socket writer parked on
+    /// a peer that has stopped reading would be in, without needing a peer that stops reading.
+    fn stalled(forwards: &Forwards, stream: u32) -> Rx<Option<Vec<u8>>> {
+        let (tx, rx) = channel();
+        forwards.open.lock().unwrap().insert(
+            stream,
+            Conn {
+                tx,
+                queued: Arc::new(AtomicUsize::new(0)),
+                socket: Arc::new(Mutex::new(None)),
+                token: 0,
+            },
+        );
+        rx
+    }
 
     fn refusal(body: &[u8]) -> Value {
         match target(body) {
@@ -675,6 +712,55 @@ mod tests {
                 String::from_utf8_lossy(body)
             );
         }
+    }
+
+    /// The branch the whole backpressure argument rests on: a forward whose bytes are not being
+    /// taken is dropped at the budget rather than buffered without limit, it is dropped
+    /// COMPLETELY — the entry goes, so a socket writer parked on `recv` rather than on the socket
+    /// still unblocks — and the client is told, so it is never left waiting on a dead stream.
+    #[test]
+    fn a_forward_that_falls_past_the_queue_budget_is_closed_rather_than_buffered() {
+        let forwards = Forwards::new();
+        let capture = Capture::default();
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
+        let rx = stalled(&forwards, 1);
+
+        let chunk = vec![7u8; 256 * 1024];
+        let mut delivered = 0;
+        while forwards.open.lock().unwrap().contains_key(&1) {
+            forwards.deliver(1, chunk.clone(), &writer);
+            delivered += chunk.len();
+            assert!(
+                delivered <= MAX_QUEUED_BYTES + chunk.len(),
+                "the budget was never enforced: {delivered} bytes queued"
+            );
+        }
+        // Enforced at the budget, not somewhere short of it.
+        assert!(delivered > MAX_QUEUED_BYTES, "killed early at {delivered}");
+        // This terminates at all only because the sender went with the entry, which is exactly what
+        // unparks a socket writer blocked on `recv`; every chunk but the one that overflowed is here.
+        assert_eq!(rx.iter().count(), delivered / chunk.len() - 1);
+        // And the client was told, exactly once, on that stream.
+        let written = capture.0.lock().unwrap().clone();
+        let mut decoder = crate::protocol::envelope::EnvelopeDecoder::new();
+        decoder.push(&written);
+        let sent: Vec<(u32, u8)> = std::iter::from_fn(|| decoder.next_envelope().unwrap())
+            .map(|e| (e.stream, e.payload[0]))
+            .collect();
+        assert_eq!(sent, vec![(1, CLOSE)]);
+    }
+
+    /// Bytes for a stream nobody opened are dropped, not answered and not queued — the same silence
+    /// `serve.rs` gives a service byte it does not handle.
+    #[test]
+    fn bytes_for_an_unknown_stream_are_dropped() {
+        let forwards = Forwards::new();
+        let capture = Capture::default();
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
+        forwards.deliver(99, b"nobody is listening".to_vec(), &writer);
+        forwards.half_close(99);
+        forwards.close(99);
+        assert!(capture.0.lock().unwrap().is_empty());
     }
 
     /// The whole request object, and nothing else: the Swift client is written from this shape.
