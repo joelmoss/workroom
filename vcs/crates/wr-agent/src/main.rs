@@ -25,6 +25,8 @@ fn usage() -> &'static str {
         provider's lifecycle shim and writes it beside the socket as <socket>.wake.
         The awake ceiling is advisory by default: past it a BUSY box is reported, never slept.
         --ask-at-awake-ceiling prompts the app instead, and lets the box sleep if nobody answers.
+        Each flag falls back to WR_AGENT_AWAKE_CEILING, WR_AGENT_AWAKE_PROMPT_TIMEOUT and
+        WR_AGENT_ASK_AT_AWAKE_CEILING=1, which is how the serve that attach spawns gets them.
   wr-agent serve --stdio
         serve one connection over stdin/stdout; what a driver opens remotely
   wr-agent attach --socket <path> [--session <uuid>]
@@ -109,14 +111,30 @@ fn run_serve_stdio() -> ExitCode {
     }
 }
 
-/// The awake ceiling's settings (OQ22). Flags, like every other setting this binary has.
+/// The awake ceiling's settings (OQ22). Flags first; then the environment, because `attach`
+/// self-spawns `serve` with no flags (`serve::spawn_agent`) and the app controls that path only
+/// through the environment it launches `attach` with.
 fn wakefulness_settings(args: &[String]) -> Settings {
-    let seconds = |name: &str| flag(args, name).and_then(|s| s.parse::<f64>().ok());
+    wakefulness_settings_from(args, |name| std::env::var(name).ok())
+}
+
+const ENV_AWAKE_CEILING: &str = "WR_AGENT_AWAKE_CEILING";
+const ENV_AWAKE_PROMPT_TIMEOUT: &str = "WR_AGENT_AWAKE_PROMPT_TIMEOUT";
+const ENV_ASK_AT_AWAKE_CEILING: &str = "WR_AGENT_ASK_AT_AWAKE_CEILING";
+
+fn wakefulness_settings_from(args: &[String], env: impl Fn(&str) -> Option<String>) -> Settings {
+    let seconds = |name: &str, var: &str| {
+        flag(args, name)
+            .or_else(|| env(var))
+            .and_then(|s| s.parse::<f64>().ok())
+    };
     let defaults = Settings::default();
     Settings {
-        ceiling: seconds("--awake-ceiling").unwrap_or(defaults.ceiling),
-        prompt_timeout: seconds("--awake-prompt-timeout").unwrap_or(defaults.prompt_timeout),
-        ask: args.iter().any(|a| a == "--ask-at-awake-ceiling"),
+        ceiling: seconds("--awake-ceiling", ENV_AWAKE_CEILING).unwrap_or(defaults.ceiling),
+        prompt_timeout: seconds("--awake-prompt-timeout", ENV_AWAKE_PROMPT_TIMEOUT)
+            .unwrap_or(defaults.prompt_timeout),
+        ask: args.iter().any(|a| a == "--ask-at-awake-ceiling")
+            || env(ENV_ASK_AT_AWAKE_CEILING).is_some_and(|v| v == "1" || v == "true"),
     }
 }
 
@@ -678,6 +696,43 @@ fn handshake<S: Read + Write>(stream: &mut S) -> Result<(), ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A flag wins over the environment; the environment wins over the default; the self-spawned
+    /// `serve` (no flags) still gets the app's settings.
+    #[test]
+    fn wakefulness_settings_fall_back_to_the_environment() {
+        let env = |name: &str| match name {
+            ENV_AWAKE_CEILING => Some("7200".to_string()),
+            ENV_AWAKE_PROMPT_TIMEOUT => Some("bogus".to_string()),
+            ENV_ASK_AT_AWAKE_CEILING => Some("1".to_string()),
+            _ => None,
+        };
+        let none = |_: &str| None;
+        let defaults = Settings::default();
+
+        let from_env = wakefulness_settings_from(&[], env);
+        assert_eq!(from_env.ceiling, 7200.0);
+        assert_eq!(
+            from_env.prompt_timeout, defaults.prompt_timeout,
+            "unparsable env = default"
+        );
+        assert!(from_env.ask);
+
+        let args: Vec<String> = ["--awake-ceiling", "60"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let flag_wins = wakefulness_settings_from(&args, env);
+        assert_eq!(flag_wins.ceiling, 60.0);
+        assert!(
+            flag_wins.ask,
+            "ask has no negative flag; the environment still enables it"
+        );
+
+        let bare = wakefulness_settings_from(&[], none);
+        assert_eq!(bare.ceiling, defaults.ceiling);
+        assert!(!bare.ask);
+    }
 
     /// A stream that serves an endless login banner, counting how much of it is consumed.
     ///

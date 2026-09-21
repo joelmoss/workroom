@@ -31,7 +31,7 @@ use std::collections::VecDeque;
 /// Control), so a newer app still drives an older agent left running rather than replacing it —
 /// only a version-gated service (checked against the peer's raw `Hello.protocol_version`, not the
 /// negotiated minimum) refuses to talk to a peer that predates it.
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 pub const MIN_SUPPORTED_VERSION: u16 = 1;
 /// The minimum peer version that understands `Service::Vcs`. Checked directly against a peer's
 /// `Hello.protocol_version` by VCS clients — never folded into `negotiate`'s minimum, which would
@@ -42,6 +42,9 @@ pub const MIN_VCS_VERSION: u16 = 2;
 /// because a protocol-2 agent drops a File envelope without answering it and the request would
 /// otherwise wait out its own timeout. Never folded into `negotiate`.
 pub const MIN_FILE_VERSION: u16 = 3;
+/// The minimum peer version that understands `Service::Status`. Same rule again: a protocol-3
+/// agent drops a Status envelope without answering it.
+pub const MIN_STATUS_VERSION: u16 = 4;
 
 /// Sent first by both sides. The magic is here so a peer that is not an agent at all — a login
 /// banner, an MOTD, an ssh warning printed onto the stream — fails immediately and legibly
@@ -53,8 +56,8 @@ pub const ENVELOPE_HEADER_SIZE: usize = 9;
 pub const MAX_ENVELOPE_PAYLOAD: usize = 1 << 20;
 
 /// Which service a stream belongs to. Terminal and Control shipped in Phase 1, Vcs and File in
-/// Phase 2. Status is named but unimplemented: the envelope is the thing that has to be right from
-/// the first commit, and adding a service later must not be a wire change.
+/// Phase 2, Status (the wakefulness service, protocol 4) after them. The envelope is the thing that
+/// had to be right from the first commit: adding Status later was not a wire change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Service {
