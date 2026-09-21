@@ -51,6 +51,9 @@ struct AgentControlClient: SessionControlPlane {
   /// `MIN_STATUS_VERSION`: the first peer version that answers `Service::Status` (issue #208). A
   /// protocol-3 agent drops a Status envelope without answering, so it is never sent one.
   static let minStatusVersion: UInt16 = 4
+  /// `MIN_FORWARD_VERSION`: the first peer version that answers `Service::Forward` (issue #208). A
+  /// protocol-4 agent drops a Forward envelope without answering, so it is never sent one.
+  static let minForwardVersion: UInt16 = 5
   static let magic: [UInt8] = Array("WRA1".utf8)
 
   enum Service: UInt8 {
