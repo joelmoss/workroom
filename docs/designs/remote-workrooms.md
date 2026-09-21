@@ -1790,8 +1790,13 @@ disagreement passes every test on either side alone while presenting as an empty
     signal failed 130 of 165 tuning runs. Accepted cost (D3): an idle agent holding a keepalive
     connection is indistinguishable from a silent 15-minute turn, so it stays BUSY. The pre-registered
     contract produced NO winner and was amended post hoc, disclosed, with labels untouched; the
-    hold-out carries the claim. The awake ceiling is split out as OQ22. Not yet measured: the boxd
-    confirmation run (scripted, `vcs/scripts/oq19/boxd/`) and a real Claude Code trace (TODOS).
+    hold-out carries the claim. **Confirmed on boxd (2026-09-21):** the policy driving the item-5 lever
+    kept a machine awake through a 15-minute silent turn while an unprotected control hibernated
+    4.5 minutes in, and slept the machine within 3 minutes of every idle stretch; a fork's
+    `CLOCK_MONOTONIC` ran at wall rate. Four attribution rules came out of getting there (a systemd
+    box, the lever's own traffic, the harness's own loops, survivors of a closed pty: amendment 2 in
+    `boundary.md`). The awake ceiling is split out as OQ22. Not yet measured: a real Claude Code trace
+    (TODOS).
     Original question: its replacement (process-tree liveness plus a CPU-time or
     loadavg delta, with hysteresis and an awake ceiling) is specified in Phase 2 but unbuilt and
     unmeasured. False-busy is a remote workroom's default state under the naive version, and
@@ -2211,9 +2216,10 @@ service milestones below so each layer can be reviewed and landed independently.
      measured on 190 tuning and 150 hold-out runs; the policy (P4) and its numbers are frozen in
      `vcs/scripts/oq19/results/frozen.json`, the port contract is `vcs/scripts/oq19/golden/`, and the
      hysteresis (30 s), explicit-activity grace (10 s) and reader-side staleness rule (2 s) are
-     defined. Still owed before the wakefulness service is ready: the boxd confirmation run
-     (`vcs/scripts/oq19/boxd/boxd.sh`, scripted, not run), a real Claude Code trace (TODOS), a
-     re-measured sampler cost in Rust against the 0.5% gate, and OQ22 (the ceiling's semantics).
+     defined, and the boxd confirmation run passed (2026-09-21, `results/boxd.md`). Still owed before
+     the wakefulness service is ready: a real Claude Code trace (TODOS), a re-measured sampler cost in
+     Rust against the 0.5% gate, masking the agent's own resume (the wake blip), and OQ22 (the
+     ceiling's semantics).
 
    **Two Phase 3 questions this milestone opened rather than answered**, both consequences of the
    exec service being the thing Phase 3 moves host-side. *Auth resolution*: the child environment is

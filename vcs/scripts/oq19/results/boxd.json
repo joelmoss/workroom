@@ -1,0 +1,521 @@
+{
+ "verdict": "PASS",
+ "checks": {
+  "treatment_never_slept_in_busy": true,
+  "treatment_live_gates_pass": true,
+  "control_slept_during_run": true,
+  "treatment_slept_after_idle": true,
+  "fork_monotonic_at_wall_rate": true,
+  "fork_slept_after_idle": true
+ },
+ "treatment": {
+  "machine": "oq19-treatment",
+  "runs": [
+   {
+    "scenario": "16",
+    "busy_wall": [],
+    "slept_in_busy": [],
+    "slept_in_run": [
+     {
+      "wall_before": 1789947975.0048385,
+      "wall_after": 1789948066.9074533,
+      "wall_gap": 91.90261483192444,
+      "monotonic_gap": 91.83790364698507,
+      "uptime_gap": 91.89999999996508
+     },
+     {
+      "wall_before": 1789948217.0149627,
+      "wall_after": 1789948309.3533485,
+      "wall_gap": 92.3383858203888,
+      "monotonic_gap": 92.29553422500612,
+      "uptime_gap": 92.3399999999674
+     }
+    ],
+    "slept_in_idle": [
+     {
+      "wall_before": 1789947975.0048385,
+      "wall_after": 1789948066.9074533,
+      "wall_gap": 91.90261483192444,
+      "monotonic_gap": 91.83790364698507,
+      "uptime_gap": 91.89999999996508
+     },
+     {
+      "wall_before": 1789948217.0149627,
+      "wall_after": 1789948309.3533485,
+      "wall_gap": 92.3383858203888,
+      "monotonic_gap": 92.29553422500612,
+      "uptime_gap": 92.3399999999674
+     }
+    ],
+    "wake_tails_excused_s": [
+     30.1,
+     30.6
+    ],
+    "live_vs_replay_mismatch": 0.0,
+    "gates": {
+     "false_idle": "PASS",
+     "provider_deadline": "PASS",
+     "no_busy_forever": "PASS",
+     "time_to_idle": "PASS"
+    },
+    "failed": []
+   },
+   {
+    "scenario": "3a",
+    "busy_wall": [],
+    "slept_in_busy": [],
+    "slept_in_run": [
+     {
+      "wall_before": 1789946228.5562913,
+      "wall_after": 1789946307.4879234,
+      "wall_gap": 78.93163204193115,
+      "monotonic_gap": 78.87053629098227,
+      "uptime_gap": 78.92999999999302
+     }
+    ],
+    "slept_in_idle": [
+     {
+      "wall_before": 1789946228.5562913,
+      "wall_after": 1789946307.4879234,
+      "wall_gap": 78.93163204193115,
+      "monotonic_gap": 78.87053629098227,
+      "uptime_gap": 78.92999999999302
+     }
+    ],
+    "wake_tails_excused_s": [
+     30.0
+    ],
+    "live_vs_replay_mismatch": 0.0,
+    "gates": {
+     "false_idle": "PASS",
+     "provider_deadline": "PASS",
+     "no_busy_forever": "PASS",
+     "time_to_idle": "PASS"
+    },
+    "failed": []
+   },
+   {
+    "scenario": "3b",
+    "busy_wall": [],
+    "slept_in_busy": [],
+    "slept_in_run": [],
+    "slept_in_idle": [],
+    "wake_tails_excused_s": [],
+    "live_vs_replay_mismatch": 0.0,
+    "gates": {
+     "false_idle": "PASS",
+     "provider_deadline": "PASS",
+     "no_busy_forever": "PASS",
+     "time_to_idle": "PASS"
+    },
+    "failed": []
+   },
+   {
+    "scenario": "4b",
+    "busy_wall": [
+     [
+      1789944477.836299,
+      1789945377.8406405,
+      "turn"
+     ]
+    ],
+    "slept_in_busy": [],
+    "slept_in_run": [
+     {
+      "wall_before": 1789945529.84871,
+      "wall_after": 1789945610.3926444,
+      "wall_gap": 80.54393434524536,
+      "monotonic_gap": 80.53905378101626,
+      "uptime_gap": 80.55000000004657
+     },
+     {
+      "wall_before": 1789945730.8543434,
+      "wall_after": 1789945822.6254945,
+      "wall_gap": 91.77115106582642,
+      "monotonic_gap": 91.76546762202634,
+      "uptime_gap": 91.77000000001863
+     },
+     {
+      "wall_before": 1789945972.8502007,
+      "wall_after": 1789946065.011254,
+      "wall_gap": 92.16105341911316,
+      "monotonic_gap": 92.1121815990191,
+      "uptime_gap": 92.1600000000326
+     }
+    ],
+    "slept_in_idle": [
+     {
+      "wall_before": 1789945529.84871,
+      "wall_after": 1789945610.3926444,
+      "wall_gap": 80.54393434524536,
+      "monotonic_gap": 80.53905378101626,
+      "uptime_gap": 80.55000000004657
+     },
+     {
+      "wall_before": 1789945730.8543434,
+      "wall_after": 1789945822.6254945,
+      "wall_gap": 91.77115106582642,
+      "monotonic_gap": 91.76546762202634,
+      "uptime_gap": 91.77000000001863
+     },
+     {
+      "wall_before": 1789945972.8502007,
+      "wall_after": 1789946065.011254,
+      "wall_gap": 92.16105341911316,
+      "monotonic_gap": 92.1121815990191,
+      "uptime_gap": 92.1600000000326
+     }
+    ],
+    "wake_tails_excused_s": [
+     30.1
+    ],
+    "live_vs_replay_mismatch": 0.0,
+    "gates": {
+     "false_idle": "PASS",
+     "provider_deadline": "PASS",
+     "no_busy_forever": "PASS",
+     "time_to_idle": "PASS"
+    },
+    "failed": []
+   },
+   {
+    "scenario": "5",
+    "busy_wall": [
+     [
+      1789946792.7318192,
+      1789947092.7647223,
+      "build"
+     ]
+    ],
+    "slept_in_busy": [],
+    "slept_in_run": [
+     {
+      "wall_before": 1789947241.8368301,
+      "wall_after": 1789947339.1953285,
+      "wall_gap": 97.35849833488464,
+      "monotonic_gap": 97.30753642099444,
+      "uptime_gap": 97.35999999998603
+     },
+     {
+      "wall_before": 1789947489.8418348,
+      "wall_after": 1789947581.8327892,
+      "wall_gap": 91.99095439910889,
+      "monotonic_gap": 91.94685261300765,
+      "uptime_gap": 91.9900000000489
+     }
+    ],
+    "slept_in_idle": [
+     {
+      "wall_before": 1789947241.8368301,
+      "wall_after": 1789947339.1953285,
+      "wall_gap": 97.35849833488464,
+      "monotonic_gap": 97.30753642099444,
+      "uptime_gap": 97.35999999998603
+     },
+     {
+      "wall_before": 1789947489.8418348,
+      "wall_after": 1789947581.8327892,
+      "wall_gap": 91.99095439910889,
+      "monotonic_gap": 91.94685261300765,
+      "uptime_gap": 91.9900000000489
+     }
+    ],
+    "wake_tails_excused_s": [
+     30.6,
+     31.0
+    ],
+    "live_vs_replay_mismatch": 0.0,
+    "gates": {
+     "false_idle": "PASS",
+     "provider_deadline": "PASS",
+     "no_busy_forever": "PASS",
+     "time_to_idle": "PASS"
+    },
+    "failed": []
+   }
+  ],
+  "sleep_events": [
+   {
+    "wall_before": 1789947975.0048385,
+    "wall_after": 1789948066.9074533,
+    "wall_gap": 91.90261483192444,
+    "monotonic_gap": 91.83790364698507,
+    "uptime_gap": 91.89999999996508
+   },
+   {
+    "wall_before": 1789948217.0149627,
+    "wall_after": 1789948309.3533485,
+    "wall_gap": 92.3383858203888,
+    "monotonic_gap": 92.29553422500612,
+    "uptime_gap": 92.3399999999674
+   },
+   {
+    "wall_before": 1789946228.5562913,
+    "wall_after": 1789946307.4879234,
+    "wall_gap": 78.93163204193115,
+    "monotonic_gap": 78.87053629098227,
+    "uptime_gap": 78.92999999999302
+   },
+   {
+    "wall_before": 1789945529.84871,
+    "wall_after": 1789945610.3926444,
+    "wall_gap": 80.54393434524536,
+    "monotonic_gap": 80.53905378101626,
+    "uptime_gap": 80.55000000004657
+   },
+   {
+    "wall_before": 1789945730.8543434,
+    "wall_after": 1789945822.6254945,
+    "wall_gap": 91.77115106582642,
+    "monotonic_gap": 91.76546762202634,
+    "uptime_gap": 91.77000000001863
+   },
+   {
+    "wall_before": 1789945972.8502007,
+    "wall_after": 1789946065.011254,
+    "wall_gap": 92.16105341911316,
+    "monotonic_gap": 92.1121815990191,
+    "uptime_gap": 92.1600000000326
+   },
+   {
+    "wall_before": 1789947241.8368301,
+    "wall_after": 1789947339.1953285,
+    "wall_gap": 97.35849833488464,
+    "monotonic_gap": 97.30753642099444,
+    "uptime_gap": 97.35999999998603
+   },
+   {
+    "wall_before": 1789947489.8418348,
+    "wall_after": 1789947581.8327892,
+    "wall_gap": 91.99095439910889,
+    "monotonic_gap": 91.94685261300765,
+    "uptime_gap": 91.9900000000489
+   },
+   {
+    "wall_before": 1789947732.808352,
+    "wall_after": 1789947824.2917876,
+    "wall_gap": 91.48343563079834,
+    "monotonic_gap": 91.45578627299983,
+    "uptime_gap": 91.48999999999069
+   }
+  ],
+  "slept_after_idle": true,
+  "asleep_after_last_idle": [
+   1789948473.0,
+   "hibernated\n"
+  ],
+  "asleep_by_deadline": true,
+  "deadline_wall": 1789948639.0039406,
+  "status_samples": 164
+ },
+ "control": {
+  "machine": "oq19-control",
+  "runs": [
+   {
+    "scenario": "4b",
+    "busy_wall": [
+     [
+      1789944477.9555807,
+      1789948764.8969672,
+      "turn"
+     ]
+    ],
+    "slept_in_busy": [
+     {
+      "wall_before": 1789944644.944639,
+      "wall_after": 1789948764.904299,
+      "wall_gap": 4119.959660053253,
+      "monotonic_gap": 4119.955330697994,
+      "uptime_gap": 4119.959999999963
+     }
+    ],
+    "slept_in_run": [
+     {
+      "wall_before": 1789944644.944639,
+      "wall_after": 1789948764.904299,
+      "wall_gap": 4119.959660053253,
+      "monotonic_gap": 4119.955330697994,
+      "uptime_gap": 4119.959999999963
+     }
+    ],
+    "slept_in_idle": [],
+    "wake_tails_excused_s": [],
+    "live_vs_replay_mismatch": null,
+    "gates": null,
+    "failed": []
+   }
+  ],
+  "sleep_events": [
+   {
+    "wall_before": 1789944644.944639,
+    "wall_after": 1789948764.904299,
+    "wall_gap": 4119.959660053253,
+    "monotonic_gap": 4119.955330697994,
+    "uptime_gap": 4119.959999999963
+   }
+  ],
+  "slept_after_idle": true,
+  "asleep_after_last_idle": [
+   1789948913.0,
+   "hibernated\n"
+  ],
+  "asleep_by_deadline": true,
+  "deadline_wall": 1789948974.8969672,
+  "status_samples": 164
+ },
+ "fork": {
+  "machine": "oq19-fork",
+  "runs": [
+   {
+    "scenario": "1",
+    "busy_wall": [],
+    "slept_in_busy": [],
+    "slept_in_run": [
+     {
+      "wall_before": 1789949072.4837136,
+      "wall_after": 1789949496.3129296,
+      "wall_gap": 423.82921600341797,
+      "monotonic_gap": 423.8241590280086,
+      "uptime_gap": 423.8300000000163
+     }
+    ],
+    "slept_in_idle": [
+     {
+      "wall_before": 1789949072.4837136,
+      "wall_after": 1789949496.3129296,
+      "wall_gap": 423.82921600341797,
+      "monotonic_gap": 423.8241590280086,
+      "uptime_gap": 423.8300000000163
+     }
+    ],
+    "wake_tails_excused_s": [],
+    "live_vs_replay_mismatch": 0.0,
+    "gates": {
+     "false_idle": "PASS",
+     "provider_deadline": "PASS",
+     "no_busy_forever": "PASS",
+     "time_to_idle": "PASS"
+    },
+    "failed": []
+   }
+  ],
+  "sleep_events": [
+   {
+    "wall_before": 1789949072.4837136,
+    "wall_after": 1789949496.3129296,
+    "wall_gap": 423.82921600341797,
+    "monotonic_gap": 423.8241590280086,
+    "uptime_gap": 423.8300000000163
+   }
+  ],
+  "slept_after_idle": true,
+  "asleep_after_last_idle": null,
+  "asleep_by_deadline": false,
+  "deadline_wall": 1789949706.295811,
+  "status_samples": 23
+ },
+ "clock": {
+  "wall_s": 60.383139848709106,
+  "monotonic_rate": 0.9991199555235791,
+  "uptime_rate": 0.999948001234909
+ },
+ "shim": [
+  "1789944363 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789944364 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789944366 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789944405 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789944478 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789945410 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789945610 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789945611 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789945822 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789945852 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789946065 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789946066 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789946070 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789946109 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789946307 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789946337 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789946375 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789946680 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789946681 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789946793 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789947122 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789947339 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789947370 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789947581 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789947613 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789947824 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789947825 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789947855 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789948066 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789948097 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s",
+  "1789948309 assert",
+  "auto-hibernate for oq19-treatment: off",
+  "auto-suspend for oq19-treatment: off",
+  "1789948340 release",
+  "auto-hibernate for oq19-treatment: 120s",
+  "auto-suspend for oq19-treatment: 120s"
+ ],
+ "commit": "7ac2136d"
+}
