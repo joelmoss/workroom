@@ -38,7 +38,7 @@ pub mod sample;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use sample::{Proc, Sample};
 use serde_json::{json, Value};
@@ -48,6 +48,9 @@ use crate::session::SharedWriter;
 
 /// Bumped when the Status service's JSON shape changes, exactly as `FILE_SERVICE_VERSION` is.
 pub const STATUS_SERVICE_VERSION: u32 = 1;
+
+/// A `SharedWriter` held without keeping its connection alive.
+type WeakWriter = Weak<Mutex<Box<dyn std::io::Write + Send>>>;
 
 // ---- the frozen policy (results/frozen.json) --------------------------------------------------
 
@@ -695,8 +698,9 @@ pub fn write_verdict(path: &Path, verdict: Verdict, t: f64) -> std::io::Result<(
 /// Everything the app can ask about wakefulness. Process-global: one box, one verdict.
 pub struct Wakefulness {
     state: Mutex<Published>,
-    /// Connections that have asked about status and may be sent a ceiling prompt.
-    listeners: Mutex<Vec<SharedWriter>>,
+    /// Connections that have asked about status and may be sent a ceiling prompt. Weak, so a
+    /// closed connection drops out of the list instead of being kept alive by it.
+    listeners: Mutex<Vec<WeakWriter>>,
 }
 
 #[derive(Debug, Clone)]
@@ -775,15 +779,25 @@ impl Wakefulness {
             .keep_requested = true;
     }
 
+    /// Remembers a connection so the ceiling prompt can reach it.
+    ///
+    /// Weakly, and pruned on every touch. A connection's `Subscriptions` are torn down with it
+    /// because `ConnectionServices` owns them; this list is process-global (one box, one verdict),
+    /// so it has no such teardown and a strong reference here would keep every connection the app
+    /// ever opened alive and eligible for a prompt it can no longer read.
     fn remember(&self, writer: &SharedWriter) {
         let mut listeners = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
-        if listeners.iter().any(|w| std::sync::Arc::ptr_eq(w, writer)) {
+        listeners.retain(|w| w.strong_count() > 0);
+        if listeners
+            .iter()
+            .any(|w| w.upgrade().is_some_and(|w| Arc::ptr_eq(&w, writer)))
+        {
             return;
         }
         if listeners.len() >= MAX_LISTENERS {
             listeners.remove(0);
         }
-        listeners.push(std::sync::Arc::clone(writer));
+        listeners.push(Arc::downgrade(writer));
     }
 
     /// Raises the ceiling prompt on every connection that has asked about status. Unsolicited, on
@@ -797,11 +811,11 @@ impl Wakefulness {
             "awake_seconds": awake_for,
             "prompt_deadline": deadline,
         });
-        let listeners = self
-            .listeners
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let listeners: Vec<SharedWriter> = {
+            let mut held = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
+            held.retain(|w| w.strong_count() > 0);
+            held.iter().filter_map(std::sync::Weak::upgrade).collect()
+        };
         for writer in &listeners {
             crate::vcs::send(writer, Service::Status, 0, event.clone());
         }

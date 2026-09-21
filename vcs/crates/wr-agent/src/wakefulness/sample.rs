@@ -208,10 +208,20 @@ mod linux {
     ///
     /// **Cost.** Two reads per process per second (`stat` and `wchan`), which is what the winning
     /// signal set costs; the plan's gate is 0.5% of one core. Measured in a Linux container on
-    /// 2026-09-21: 0.46% on a quiet box, 1.76% with 500 processes. The per-process walk is the term
-    /// that grows, exactly as the Python measurement found, and shrinking it means reading `wchan`
-    /// only for candidates — which needs the classifier's exclusion pass to run inside the sampler.
-    /// Worth doing if a real box's process count ever puts an idle agent over the gate.
+    /// 2026-09-21, over 120 s of an agent with no clients:
+    ///
+    /// | processes | no connection | one ESTAB socket held |
+    /// |---|---|---|
+    /// | ~5 | 0.46% | 0.43% |
+    /// | ~505 | 1.76% | 2.55% |
+    ///
+    /// So: inside the gate on a box with a handful of processes, over it under the 500-process
+    /// stress case, which is the shape the Python measurement found too (its per-process walk alone
+    /// was 2.5% there). The two terms that grow are this walk and, once the box holds a connection,
+    /// the fd walk below. Shrinking the first means reading `wchan` only for candidates, which needs
+    /// the classifier's exclusion pass to run inside the sampler; shrinking the second means caching
+    /// each process's socket fds across ticks. Worth doing if a real box's process count ever puts
+    /// an idle agent over the gate — it is not worth doing on a guess.
     pub fn sample(roots: Vec<i32>, skip_fd_walk: &[&str]) -> Sample {
         let t = monotonic();
         let mut procs = Vec::new();
@@ -325,6 +335,29 @@ mod tests {
         assert!(parse_stat("").is_none());
         assert!(parse_stat("1 no-parens S 0").is_none());
         assert!(parse_stat("1 (sh)").is_none());
+    }
+
+    /// A real `/proc/net/dev`, captured in a Linux container on 2026-09-21. The Python this port
+    /// replaces reads the same text as `(49268498, 239156)` — the tunnel pseudo-interfaces a real
+    /// box carries are all zero, but they are not `lo` and they must not be skipped.
+    #[test]
+    fn net_dev_matches_the_python_on_a_real_capture() {
+        let text = "\
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+ tunl0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+  gre0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+gretap0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+erspan0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+ip_vti0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+ip6_vti0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+  sit0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+ip6tnl0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+ip6gre0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+  eth0: 49268498    3774    0    0    0     0          0         0   239156    2688    0    0    0     0       0          0
+";
+        assert_eq!(parse_net_dev(text), (49_268_498, 239_156));
     }
 
     #[test]
