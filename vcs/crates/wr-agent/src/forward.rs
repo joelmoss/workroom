@@ -484,8 +484,25 @@ fn connect_and_run(task: ForwardTask) {
         send(&task.writer, task.stream, CLOSE, &[]);
         return;
     };
-    if let Ok(mut held) = task.socket.lock() {
-        *held = socket.try_clone().ok();
+    // Registered under the map lock, so a CLOSE, an overflow kill or the connection's departure
+    // that landed DURING the connect cannot be missed: the entry is gone, so is the client's
+    // interest, and the socket goes with it. Silently — whoever removed the entry already said
+    // CLOSE, or is no longer there to hear one. Without this, the socket would be registered
+    // nowhere, the reader would pump DATA onto a stream id the client has since freed, and no
+    // shutdown could ever reach it.
+    {
+        let open = task.open.lock().unwrap_or_else(|e| e.into_inner());
+        let wanted = open
+            .get(&task.stream)
+            .is_some_and(|conn| conn.token == task.token);
+        if !wanted {
+            drop(open);
+            let _ = socket.shutdown(Shutdown::Both);
+            return;
+        }
+        if let Ok(mut held) = task.socket.lock() {
+            *held = socket.try_clone().ok();
+        }
     }
 
     // Answered BEFORE the reader starts, so the client can never see DATA ahead of the reply.
@@ -748,6 +765,45 @@ mod tests {
             .map(|e| (e.stream, e.payload[0]))
             .collect();
         assert_eq!(sent, vec![(1, CLOSE)]);
+    }
+
+    /// A CLOSE (or an overflow kill, or the connection going away) that lands while the connect is
+    /// still in flight must not be lost: the socket that connect produces belongs to nobody, so it
+    /// is shut down on the spot and the client hears nothing more on that stream — its CLOSE was
+    /// the last word, and a stream id it has since re-used must never receive this forward's bytes.
+    #[test]
+    fn a_close_that_lands_during_the_connect_shuts_the_socket_and_says_nothing() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let forwards = Forwards::new();
+        let capture = Capture::default();
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
+        // The entry a real OPEN would have registered was removed by a CLOSE before the connect
+        // finished, so `open` holds nothing for this stream when the connect completes, and the
+        // sender went with the entry.
+        let (tx, rx) = channel();
+        drop(tx);
+        let task = ForwardTask {
+            stream: 1,
+            token: 0,
+            addresses: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            port,
+            rx,
+            queued: Arc::new(AtomicUsize::new(0)),
+            socket: Arc::new(Mutex::new(None)),
+            open: Arc::clone(&forwards.open),
+            writer,
+        };
+        connect_and_run(task);
+
+        let (mut accepted, _) = listener.accept().unwrap();
+        accepted
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        // The peer sees EOF at once: the socket was shut down, not parked on a reader thread.
+        assert_eq!(accepted.read(&mut [0u8; 8]).unwrap(), 0);
+        assert!(capture.0.lock().unwrap().is_empty(), "no REPLY, no CLOSE");
+        assert!(forwards.open.lock().unwrap().is_empty());
     }
 
     /// Bytes for a stream nobody opened are dropped, not answered and not queued — the same silence
