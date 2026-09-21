@@ -124,13 +124,21 @@ final class PortForward: @unchecked Sendable {
     self.listener = listener
     DispatchQueue.global(qos: .userInitiated).async { [weak self] in
       while true {
-        // Unblocked by `stop()` closing the listener, which makes `accept` fail — there is no
-        // separate wake-up to keep in step with the flag.
         let client = accept(listener, nil, nil)
-        guard client >= 0 else { return }
         guard let self else {
-          Darwin.close(client)
+          if client >= 0 { Darwin.close(client) }
           return
+        }
+        if client < 0 {
+          // What wakes this thread is `stop()` closing the listener, and on Darwin that surfaces as
+          // ECONNABORTED — measured, not assumed — which is the SAME errno a peer that resets
+          // between SYN and accept produces. So the flag decides whether the loop is over, not the
+          // errno: retrying on ECONNABORTED alone would spin forever on a closed descriptor after
+          // every removal, and returning on it would end the listener over one cancelled
+          // speculative connection.
+          if self.lock.withLock({ self.stopped }) { return }
+          guard errno == EINTR || errno == ECONNABORTED else { return }
+          continue
         }
         self.begin(client)
       }
@@ -372,7 +380,22 @@ private final class ForwardedConnection: @unchecked Sendable {
       }
       connection.releaseForward(target)
     }
-    // Unblocks the reading thread without freeing the descriptor — see `deinit`.
+    // BOTH halves, now, synchronously — deliberately, and not the obvious alternative.
+    //
+    // The tempting change is to queue the write half behind whatever DATA is still on `writes`, the
+    // way the EOF case queues its own half-close, so a teardown cannot cut a response short. It was
+    // tried and rejected on measurement: `shutdown(SHUT_RD)` does NOT unblock a `send` already
+    // parked on a full socket buffer, so a queued `SHUT_WR` sitting behind that parked write never
+    // runs against a client that has stopped reading. The socket, the descriptor and this object
+    // then live forever — a certain leak on the commonest teardown path, traded for a truncation
+    // that could not be reproduced: with this shutdown in place, a 1 MB response queued behind it
+    // still delivered in full (`testTheResponseSurvivesTheHalfCloseThatEndsTheForward`).
+    //
+    // What remains is a real but narrow cost, stated rather than hidden: bytes still held by a
+    // `send` that is parked at the moment of teardown are lost. That is the same trade `forward.rs`
+    // makes when it kills an over-budget forward — a bounded ending beats an unbounded wait.
+    //
+    // It does not free the descriptor; `deinit` does, once the last thread has let go — see there.
     _ = Darwin.shutdown(socket, SHUT_RDWR)
     onFinished()
   }
@@ -455,9 +478,14 @@ final class PortForwardingModel: ObservableObject {
       var started = false
       for await snapshot in await HostConnectionManager.shared.updates(for: .local) {
         let live = snapshot.status == .connected ? snapshot.lease : nil
-        if live == nil || (started && live != current) { await self?.dropAll() }
+        let lost = live == nil || (started && live != current)
+        if lost { await self?.dropAll() }
         current = live
-        started = true
+        // Re-baseline after a loss rather than carrying the dropped lease forward. Without this the
+        // NEXT connected snapshot still differs from `current` and drops again — which is harmless
+        // while the list is empty and is not harmless against a forward added in between, since
+        // `add()` is what brings the new connection up and then appends to that same list.
+        started = !lost
       }
     }
   }

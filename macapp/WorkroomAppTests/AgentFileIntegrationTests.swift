@@ -644,12 +644,15 @@ final class FakeAgent: @unchecked Sendable {
 
   private let forward: Bool
   private let forwardRefusal: String?
+  private let forwardEpilogue: Int
 
-  init(version: UInt16, status: Bool = false, forward: Bool = false, forwardRefusal: String? = nil)
-    throws
-  {
+  init(
+    version: UInt16, status: Bool = false, forward: Bool = false, forwardRefusal: String? = nil,
+    forwardEpilogue: Int = 0
+  ) throws {
     self.forward = forward
     self.forwardRefusal = forwardRefusal
+    self.forwardEpilogue = forwardEpilogue
     directory = URL(fileURLWithPath: "/tmp/wra-fake-\(UUID().uuidString.prefix(8))")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     socketPath = directory.appendingPathComponent("a.sock").path
@@ -757,7 +760,16 @@ final class FakeAgent: @unchecked Sendable {
       }
     case 0x03:  // DATA — echoed, so a round trip needs no socket on this side
       sendForward(client, stream: stream, opcode: 0x03, body: body)
-    case 0x04:  // EOF — mirrored, as a peer that stops writing once its input ends would
+    case 0x04:  // EOF
+      // With an epilogue, this is the shape a request/response server has: the request body ends,
+      // the whole response goes out, and the peer half-closes immediately behind it. DATA and EOF
+      // land back to back on the client's reader thread, which is what makes a teardown that does
+      // not wait for its own write queue lose the response.
+      if forwardEpilogue > 0 {
+        sendForward(
+          client, stream: stream, opcode: 0x03,
+          body: Data(repeating: 0xAB, count: forwardEpilogue))
+      }
       sendForward(client, stream: stream, opcode: 0x04, body: Data())
     default:
       break  // CLOSE is recorded and needs no answer.

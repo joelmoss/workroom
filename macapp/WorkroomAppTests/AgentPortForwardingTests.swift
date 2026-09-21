@@ -100,8 +100,11 @@ final class AgentPortForwardingTests: XCTestCase {
         return XCTFail("expected backendVersion, got \(error)")
       }
     }
-    // The fake WOULD answer a Forward envelope — it just never gets one, which is the whole point:
-    // a real protocol-4 agent would drop it in silence and hang the forward.
+    // The refusal above is the gate; this is the other half of it — that nothing SENDS a Forward
+    // envelope either. Unlike Status, this service has no connect-time probe (its only request opens
+    // a real socket), so `connect()` must stay silent on service 5 against every peer, not merely
+    // against an old one. The fake would answer a Forward envelope; it never receives one.
+    // `testEachConnectionGetsAFreshStreamIdAndIdsAreNeverReused` is the positive control.
     XCTAssertFalse(
       agent.receivedServices.contains(5), "a pre-Forward peer must never see a Forward envelope")
   }
@@ -149,6 +152,40 @@ final class AgentPortForwardingTests: XCTestCase {
     let stream = try XCTUnwrap(agent.forwards(opcode: 0x01).first)
     XCTAssertEqual(agent.forwards(opcode: 0x04), [stream])
     XCTAssertEqual(agent.forwards(opcode: 0x05), [stream])
+  }
+
+  /// The response survives the teardown that the half-close triggers.
+  ///
+  /// This is the ordinary request/response shape the contract's EOF exists for: the client sends its
+  /// body and half-closes, the peer writes the whole response and half-closes behind it. DATA and
+  /// EOF then arrive back to back on the connection's reader thread, and that second envelope is
+  /// what completes both halves and tears the forward down — so a teardown that shuts the accepted
+  /// socket's WRITE half synchronously does it underneath a queued write that has not run yet, and
+  /// the client gets a truncated response with no error anywhere. The epilogue is big enough to
+  /// outlast the local socket buffer, so the write is genuinely still in flight.
+  func testTheResponseSurvivesTheHalfCloseThatEndsTheForward() async throws {
+    let epilogue = 1_000_000
+    let agent = try FakeAgent(version: 5, forward: true, forwardEpilogue: epilogue)
+    let connection = try await fake(agent)
+    let forward = try listen(connection, to: 5173, failures: Failures())
+    let client = try connect(to: forward)
+
+    try client.write(Data("request".utf8))
+    XCTAssertEqual(try client.read(7), Data("request".utf8))
+    client.shutdownWrite()
+
+    // Deliberately NOT reading yet. A client that drains as fast as the response arrives never lets
+    // the write block, and the teardown then lands after it rather than during it — the bug is real
+    // and the test would be green by luck. Waiting fills the local socket buffer, parks `write` in
+    // `send` with most of the response still in hand, and puts the teardown squarely on top of it.
+    try await Task.sleep(for: .milliseconds(300))
+    let response = try client.read(epilogue, timeout: 20)
+    XCTAssertEqual(
+      response.count, epilogue,
+      "the response was truncated by the teardown: got \(response.count) of \(epilogue) bytes")
+    XCTAssertTrue(response.allSatisfy { $0 == 0xAB })
+    // And the stream still ended properly toward the agent.
+    eventually("no CLOSE reached the agent") { !agent.forwards(opcode: 0x05).isEmpty }
   }
 
   /// Removing a forward closes its listener AND every connection still running through it, each with
