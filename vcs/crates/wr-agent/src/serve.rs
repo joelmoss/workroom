@@ -154,6 +154,11 @@ impl Agent {
             }
         }
         let _ = std::fs::remove_file(socket);
+        // The verdict goes with the socket. A verdict file that stops being rewritten means BUSY to
+        // its reader — which is right for a classifier that was killed or starved, and wrong for
+        // one that exited because nothing was left to own. Removing it says "no classifier here",
+        // which is a supervisor's problem rather than a reason to hold a box awake forever.
+        let _ = std::fs::remove_file(crate::wakefulness::verdict_path(socket));
         Ok(())
     }
 }
