@@ -867,6 +867,13 @@ mod service {
     }
 
     fn run(sessions: SessionStore, path: std::path::PathBuf, settings: Settings) {
+        // Named so this thread's own cost can be read from outside the process, at
+        // /proc/<pid>/task/<tid>/, against the plan's 0.5%-of-a-core gate. Thread names do not reach
+        // /proc/<pid>/comm, so this cannot change how the classifier sees the agent.
+        // SAFETY: a NUL-terminated name of at most 16 bytes, which is prctl's contract.
+        unsafe {
+            libc::prctl(libc::PR_SET_NAME, c"wr-wakeful".as_ptr());
+        }
         let policy = Policy::production();
         let mut classifier = Classifier::new(policy, Boundary::agent(std::process::id() as i32))
             .with_wake_mask()

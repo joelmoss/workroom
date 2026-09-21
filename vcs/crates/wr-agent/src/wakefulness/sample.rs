@@ -203,8 +203,15 @@ mod linux {
     use std::fs;
 
     /// Reads one tick. `skip_fd_walk` is the exclusion list's name set: a process excluded by name
-    /// can never own a counting socket, so its `/proc/<pid>/fd` is not walked — that walk is the
-    /// only part of a tick whose cost grows with the box.
+    /// can never own a counting socket, so its `/proc/<pid>/fd` is not walked — and no fd is walked
+    /// at all when the box holds no established connection.
+    ///
+    /// **Cost.** Two reads per process per second (`stat` and `wchan`), which is what the winning
+    /// signal set costs; the plan's gate is 0.5% of one core. Measured in a Linux container on
+    /// 2026-09-21: 0.46% on a quiet box, 1.76% with 500 processes. The per-process walk is the term
+    /// that grows, exactly as the Python measurement found, and shrinking it means reading `wchan`
+    /// only for candidates — which needs the classifier's exclusion pass to run inside the sampler.
+    /// Worth doing if a real box's process count ever puts an idle agent over the gate.
     pub fn sample(roots: Vec<i32>, skip_fd_walk: &[&str]) -> Sample {
         let t = monotonic();
         let mut procs = Vec::new();
