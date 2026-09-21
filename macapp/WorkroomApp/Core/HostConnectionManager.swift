@@ -10,6 +10,11 @@ protocol HostServiceConnection: Sendable {
   /// The file service on this connection. Throws `VCSError.backendVersion` when the peer predates it,
   /// which the router answers by falling back to native reads for a LOCAL host.
   func files(context: FileContext) throws -> FileProviding
+  /// The wakefulness service on this connection (issue #208). Concrete rather than behind a protocol
+  /// of its own: only a wr-agent has one, the app has exactly one caller, and a second implementer
+  /// would be a second agent — at which point the protocol can be extracted with a caller to justify
+  /// it. Throws `VCSError.backendVersion` when the peer predates the service.
+  func wakefulness() throws -> AgentWakefulnessService
   func close() async
 }
 
@@ -18,6 +23,10 @@ extension HostServiceConnection {
   /// compiling and report the honest answer.
   func files(context: FileContext) throws -> FileProviding {
     throw HostConnectionError.serviceUnavailable("Host has no file service.")
+  }
+
+  func wakefulness() throws -> AgentWakefulnessService {
+    throw HostConnectionError.serviceUnavailable("Host has no status service.")
   }
 }
 
@@ -210,6 +219,13 @@ actor HostConnectionManager {
     let service = try connection.files(context: context)
     guard service.context == context else { throw HostConnectionError.mismatchedContext }
     return HostFileProvider(context: context, service: service, manager: self, lease: lease)
+  }
+
+  /// Not wrapped in a lease-tracking proxy the way `reader`/`files` are: a wakefulness poll is a
+  /// read-only badge with no repository context to go stale, and its only failure mode — the
+  /// connection ending — is already reported by the request throwing.
+  func wakefulness(host: HostID) throws -> AgentWakefulnessService {
+    try connected(host).1.wakefulness()
   }
 
   private func connected(_ host: HostID) throws -> (Lease, any HostServiceConnection) {

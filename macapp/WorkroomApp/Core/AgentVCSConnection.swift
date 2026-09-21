@@ -66,15 +66,29 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// Marks a chunked request envelope. A whole request is JSON and starts `{`, so the two are
   /// unambiguous — see `REQUEST_CHUNK_MARKER`.
   private static let requestChunkMarker: UInt8 = 0x02
-  /// `Service::Vcs` and `Service::File` in the agent's envelope.
+  /// `Service::Vcs`, `Service::File` and `Service::Status` in the agent's envelope.
   private static let vcsService: UInt8 = 2
   private static let fileService: UInt8 = 3
+  private static let statusService: UInt8 = 4
+  /// How the Status service negotiation ended, with the same three outcomes as `FileNegotiation` and
+  /// for the same reasons — except that a `failed` probe does NOT retire the connection. Wakefulness
+  /// is a read-only badge on a row; taking VCS and the file service down with it to re-probe would
+  /// cost far more than the badge is worth, and the next connection generation probes again anyway.
+  private var _statusNegotiation: FileNegotiation = .unsupported
+  /// The ceiling prompt, delivered to whoever is watching. One stream per connection: the verdict is
+  /// per box, so there is nothing to key subscriptions by.
+  let ceilingPrompts: AsyncStream<AgentCeilingPrompt>
+  private let ceilingPrompt: AsyncStream<AgentCeilingPrompt>.Continuation
 
   private init(host: HostID, descriptor: Int32, helloVersion: UInt16) {
     self.host = host
     self.descriptor = descriptor
     self.helloVersion = helloVersion
     (disconnection, disconnected) = AsyncStream<Void>.makeStream()
+    // Newest-only: a prompt the app never got round to reading is superseded by the next one, and
+    // the deadline in a stale one has passed by definition.
+    (ceilingPrompts, ceilingPrompt) = AsyncStream<AgentCeilingPrompt>.makeStream(
+      bufferingPolicy: .bufferingNewest(1))
   }
 
   deinit { Darwin.close(descriptor) }
@@ -148,7 +162,13 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       // Not yet shared with any other caller, so a plain lock-guarded write is enough — no
       // concurrent reader can observe a half-set value.
       connection.lock.withLock { connection._capabilities = capabilities }
-      await connection.negotiateFiles()
+      // Concurrently, not in sequence: each probe waits up to 2s against a peer that answers
+      // neither, and running them one after the other would double `connect()`'s worst case — which
+      // `LocalAgentVCS`'s 2s respawn-and-retry deadline is budgeted against. They touch different
+      // fields under the same lock, which is what the request pool is built for.
+      async let files: Void = connection.negotiateFiles()
+      async let status: Void = connection.negotiateStatus()
+      _ = await (files, status)
       return connection
     } catch HostConnectionError.connectionLost {
       // Rethrown UNCHANGED, not wrapped. `LocalAgentVCS` catches exactly this case to spawn wr-agent
@@ -243,6 +263,43 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       Task { await close() }
       throw HostConnectionError.serviceUnavailable("File service negotiation failed; reconnecting.")
     }
+  }
+
+  /// Probe the Status service. Runs once in `connect()`, before this connection is shared, and never
+  /// fails it: an agent with no wakefulness service costs the app a badge, not a connection.
+  ///
+  /// There is no `capabilities` method on this service — `status` IS the probe, and its reply is
+  /// discarded because `connect()` is not where a verdict is read. The 2s timeout is the File
+  /// service's, for the same reason: an agent that predates the service drops the envelope silently.
+  private func negotiateStatus() async {
+    guard helloVersion >= AgentControlClient.minStatusVersion else { return }
+    let outcome: FileNegotiation
+    do {
+      let reply = try await request(
+        AgentStatusRequest(method: "status"), timeout: 2, service: Self.statusService)
+      _ = try AgentStatusReply<AgentWakefulness>.decode(reply)
+      outcome = .ready
+    } catch {
+      outcome = .failed
+    }
+    lock.withLock { _statusNegotiation = outcome }
+  }
+
+  /// The wakefulness service on this connection, or `VCSError.backendVersion` when the peer has none.
+  /// A `failed` probe reports the same thing: the badge simply does not appear for this generation.
+  func wakefulness() throws -> AgentWakefulnessService {
+    guard lock.withLock({ !closed }) else { throw HostConnectionError.connectionLost }
+    guard lock.withLock({ _statusNegotiation }) == .ready else {
+      throw VCSError.backendVersion("Agent does not support the status service.")
+    }
+    return AgentWakefulnessService(connection: self)
+  }
+
+  /// A Status request: one envelope, never chunked. 5s — `status` and `keep` both read a mutex the
+  /// service thread holds for microseconds, so anything slower is a wedged agent, and this runs on a
+  /// poll that will simply ask again.
+  func statusRequest(_ request: AgentStatusRequest) async throws -> Data {
+    try await self.request(request, timeout: 5, service: Self.statusService)
   }
 
   /// A File request: one envelope, never chunked (the agent does not reassemble them).
@@ -354,7 +411,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     // before, so the common path pays nothing for this.
     let chunked = service == Self.vcsService && bytes.count > Self.maxEnvelopePayload
     if service != Self.vcsService && bytes.count > Self.maxEnvelopePayload {
-      throw FileServiceError.failed("File request is too large.")
+      throw FileServiceError.failed("Agent request is too large.")
     }
     if chunked {
       guard let exec = capabilities?.exec, exec >= Self.chunkedRequestVersion else {
@@ -441,11 +498,13 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           let stream = header[1..<5].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
           let length = header[5..<9].reduce(0) { ($0 << 8) | Int($1) }
           let service = header[0]
-          // Stream 0 is the agent's own: File-service events, never a reply. On the VCS service it
-          // has always been a violation and still is.
-          let streamIsValid = stream > 0 || service == Self.fileService
-          guard service == Self.vcsService || service == Self.fileService, streamIsValid,
-            length > 0, length <= 1 << 20
+          // Stream 0 is the agent's own: File watch events and the Status service's ceiling prompt,
+          // never a reply. On the VCS service it has always been a violation and still is.
+          let streamIsValid =
+            stream > 0 || service == Self.fileService || service == Self.statusService
+          guard
+            service == Self.vcsService || service == Self.fileService
+              || service == Self.statusService, streamIsValid, length > 0, length <= 1 << 20
           else {
             throw HostConnectionError.serviceUnavailable("Invalid agent envelope.")
           }
@@ -459,9 +518,12 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
             // An event is always ONE final envelope; the agent never chunks one, so a continuation
             // here means the two sides disagree about the protocol.
             guard payload.first == 1 else {
-              throw HostConnectionError.serviceUnavailable("Invalid file event chunk.")
+              throw HostConnectionError.serviceUnavailable("Invalid agent event chunk.")
             }
-            deliver(event: payload.dropFirst())
+            // Branched on the SERVICE, not decoded twice: the two events share nothing but their
+            // stream, and decoding a ceiling prompt as an `AgentFileEvent` would fail and drop it
+            // silently — a bug every existing test stays green through.
+            deliver(event: payload.dropFirst(), service: service)
             continue
           }
           var completed: Pending?
@@ -504,9 +566,20 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// racing an event already in flight — is dropped: it is the normal shape of that race, not a
   /// protocol violation, and treating it as one would fail every other request on the connection. An
   /// undecodable or unrecognized event is dropped too, for forward compatibility.
-  private func deliver(event payload: Data) {
+  private func deliver(event payload: Data, service: UInt8) {
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
+    if service == Self.statusService {
+      // Only the one event kind exists; anything else a newer agent adds is dropped, exactly as an
+      // unknown file event is.
+      guard let wire = try? decoder.decode(AgentStatusEvent.self, from: payload),
+        wire.event == "awake_ceiling_prompt", let awake = wire.awakeSeconds,
+        let deadline = wire.promptDeadline
+      else { return }
+      ceilingPrompt.yield(
+        AgentCeilingPrompt(awakeSeconds: awake, promptDeadline: deadline))
+      return
+    }
     guard let wire = try? decoder.decode(AgentFileEvent.self, from: payload),
       let event = wire.model
     else { return }
@@ -541,6 +614,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
         return (values, watchers)
       }
     guard let failed else { return }
+    ceilingPrompt.finish()
     for operation in failed.pending { operation.continuation.resume(throwing: error) }
     // Outside the lock: a handler is caller code. Every subscription learns its watch is gone, so it
     // can resubscribe on the next generation and refresh whatever it was showing.

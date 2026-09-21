@@ -64,6 +64,16 @@ actor LocalAgentVCS {
     }
   }
 
+  /// The local box's wakefulness service (issue #208). Deliberately does NOT spawn an agent:
+  /// `ensureConnected` starts one, and starting a whole agent so a badge can say IDLE would be the
+  /// tail wagging the dog. No agent means no badge.
+  func wakefulness() async throws -> AgentWakefulnessService {
+    guard await manager.snapshot(for: .local).status == .connected else {
+      throw RepositoryRoutingError.unavailable(.local)
+    }
+    return try await manager.wakefulness(host: .local)
+  }
+
   private func isBackendVersion(_ error: Error) -> Bool {
     if case VCSError.backendVersion = error { return true }
     return false
@@ -101,7 +111,14 @@ actor LocalAgentVCS {
                 }
                 let process = Process()
                 process.executableURL = binary
-                process.arguments = ["serve", "--socket", path]
+                // The wakefulness preferences are flags, so they are fixed for this agent's whole
+                // life. KNOWN GAP: this is not the only thing that starts an agent — `wr-agent
+                // attach` spawns `serve --socket <path>` itself (`serve::spawn_agent`) with no
+                // flags at all, and whichever candidate wins the single-instance flock decides. A
+                // pane opening before any VCS read therefore gets the agent's own defaults. Closing
+                // that needs the agent to read these from its environment, which the app already
+                // controls on the attach path (`launchEnvironment`); it cannot be closed here.
+                process.arguments = AgentWakefulnessSettings.current.serveArguments(socket: path)
                 var environment = ProcessInfo.processInfo.environment
                 environment["PATH"] = ShellEnvironment.path()
                 process.environment = environment

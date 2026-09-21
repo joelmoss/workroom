@@ -583,6 +583,9 @@ final class AgentFileIntegrationTests: XCTestCase {
 
 /// A stand-in for a pre-File agent: greets with `version`, answers the VCS `capabilities` probe so
 /// `connect()` succeeds, and records the service byte of every envelope it receives.
+///
+/// `status: true` also answers `Service::Status` (`0x04`) and can push an unsolicited ceiling prompt;
+/// left off, the Status probe goes unanswered exactly as a pre-#208 protocol-3 agent's would.
 final class FakeAgent: @unchecked Sendable {
   let socketPath: String
   private let listener: Int32
@@ -593,7 +596,35 @@ final class FakeAgent: @unchecked Sendable {
 
   var receivedServices: [UInt8] { lock.withLock { services } }
 
-  init(version: UInt16) throws {
+  /// One `status` reply, with the box busy past a 4h ceiling and a prompt pending.
+  static let statusJSON = """
+    {"version":1,"result":{"running":true,"verdict":"BUSY","busy":true,\
+    "classifier_verdict":"BUSY","monotonic":15000.0,"awake_seconds":14400.5,\
+    "awake_ceiling_exceeded":true,"prompt_pending":true,"prompt_deadline":15600.0,\
+    "asserting":true,"suppressed":false,"ceiling_seconds":14400.0,\
+    "prompt_timeout_seconds":600.0,"ask_at_ceiling":true,"cpu_fraction":0.0021}}
+    """
+
+  /// Pushes an `awake_ceiling_prompt` on the Status service, stream 0 — the agent's own stream.
+  func pushCeilingPrompt() {
+    let body = Data(
+      #"{"version":1,"event":"awake_ceiling_prompt","awake_seconds":14400.5,"prompt_deadline":15600.0}"#
+        .utf8)
+    var envelope = Data([4])
+    for value in [UInt32(0), UInt32(body.count + 1)] {
+      var value = value.bigEndian
+      withUnsafeBytes(of: &value) { envelope.append(contentsOf: $0) }
+    }
+    envelope.append(1)
+    envelope.append(body)
+    lock.withLock {
+      for client in clients {
+        _ = envelope.withUnsafeBytes { send(client, $0.baseAddress, $0.count, 0) }
+      }
+    }
+  }
+
+  init(version: UInt16, status: Bool = false) throws {
     directory = URL(fileURLWithPath: "/tmp/wra-fake-\(UUID().uuidString.prefix(8))")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     socketPath = directory.appendingPathComponent("a.sock").path
@@ -616,7 +647,7 @@ final class FakeAgent: @unchecked Sendable {
         let client = accept(listenerFD, nil, nil)
         guard client >= 0 else { return }
         self?.lock.withLock { self?.clients.append(client) }
-        DispatchQueue.global().async { self?.serve(client, version: version) }
+        DispatchQueue.global().async { self?.serve(client, version: version, status: status) }
       }
     }
   }
@@ -627,7 +658,7 @@ final class FakeAgent: @unchecked Sendable {
     try? FileManager.default.removeItem(at: directory)
   }
 
-  private func serve(_ client: Int32, version: UInt16) {
+  private func serve(_ client: Int32, version: UInt16, status: Bool) {
     let magic = Array("WRA1".utf8)
     let hello = magic + [UInt8(version >> 8), UInt8(version & 0xFF), 0]
     guard send(client, hello, hello.count, 0) == hello.count else { return }
@@ -653,10 +684,19 @@ final class FakeAgent: @unchecked Sendable {
         let payload = Data(buffer.dropFirst(9).prefix(length))
         buffer = Data(buffer.dropFirst(9 + length))
         lock.withLock { services.append(bytes[0]) }
-        guard bytes[0] == 2, String(decoding: payload, as: UTF8.self).contains("capabilities")
-        else { continue }
-        let body = Data(#"{"version":1,"result":{"version":1,"reads":9,"exec":2}}"#.utf8)
-        var reply = Data([2])
+        let request = String(decoding: payload, as: UTF8.self)
+        let body: Data
+        switch bytes[0] {
+        case 2 where request.contains("capabilities"):
+          body = Data(#"{"version":1,"result":{"version":1,"reads":9,"exec":2}}"#.utf8)
+        case 4 where status && request.contains("keep"):
+          body = Data(#"{"version":1,"result":{"kept":true}}"#.utf8)
+        case 4 where status:
+          body = Data(Self.statusJSON.utf8)
+        default:
+          continue
+        }
+        var reply = Data([bytes[0]])
         for value in [stream, UInt32(body.count + 1)] {
           var value = value.bigEndian
           withUnsafeBytes(of: &value) { reply.append(contentsOf: $0) }
