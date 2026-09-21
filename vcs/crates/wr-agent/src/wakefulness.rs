@@ -636,20 +636,30 @@ struct Counters {
     ins: Vec<f64>,
 }
 
+/// Bounds what the counters hold between drains. The service drains every tick, so this is only
+/// reached where no service runs (macOS, a unit test) or under output so torrential that the pty
+/// and CPU signals have voted BUSY many times over. Dropping the overflow keeps a busy box from
+/// growing a queue nobody empties.
+const MAX_PENDING_PTY_EVENTS: usize = 8192;
+
 /// `n` bytes came out of a session's pty.
 pub fn count_pty_out(n: usize) {
     if n == 0 {
         return;
     }
     if let Ok(mut c) = COUNTERS.lock() {
-        c.out.push((sample::monotonic(), n as u64));
+        if c.out.len() < MAX_PENDING_PTY_EVENTS {
+            c.out.push((sample::monotonic(), n as u64));
+        }
     }
 }
 
 /// The user typed into a session.
 pub fn count_pty_input() {
     if let Ok(mut c) = COUNTERS.lock() {
-        c.ins.push(sample::monotonic());
+        if c.ins.len() < MAX_PENDING_PTY_EVENTS {
+            c.ins.push(sample::monotonic());
+        }
     }
 }
 

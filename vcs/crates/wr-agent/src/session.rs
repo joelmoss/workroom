@@ -543,6 +543,9 @@ impl SessionStore {
             }
         };
         apply_size(&pty, &shadow, size);
+        // The keystroke grace (OQ19's S5) needs the moment the user last acted, and this is the one
+        // place input reaches a pty.
+        crate::wakefulness::count_pty_input();
         let _ = pty.write_all(bytes);
     }
 
@@ -813,6 +816,10 @@ fn read_session(
 
         match read {
             Ok(n) => {
+                // Counted here rather than at a client, because a DETACHED session's output is
+                // exactly the case the wakefulness signal exists for: a busy box with nobody
+                // watching.
+                crate::wakefulness::count_pty_out(n);
                 // The shadow absorbs the bytes and the destination is chosen UNDER the slot lock,
                 // as one step — otherwise an attach landing between the two either misses output
                 // or replays it twice. The transport write itself then happens with the lock

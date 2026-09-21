@@ -15,11 +15,16 @@ use wr_agent::protocol::envelope::{
 };
 use wr_agent::protocol::frame::{Frame, FrameDecoder, FrameKind};
 use wr_agent::serve::{self, Agent, BUILD, DEFAULT_IDLE_TIMEOUT};
+use wr_agent::wakefulness::Settings;
 
 fn usage() -> &'static str {
     "usage:
   wr-agent serve --socket <path> [--idle-timeout <secs>]
-        own ptys and services (the daemon role)
+        [--awake-ceiling <secs>] [--awake-prompt-timeout <secs>] [--ask-at-awake-ceiling]
+        own ptys and services (the daemon role). On Linux it also decides BUSY/IDLE for the
+        provider's lifecycle shim and writes it beside the socket as <socket>.wake.
+        The awake ceiling is advisory by default: past it a BUSY box is reported, never slept.
+        --ask-at-awake-ceiling prompts the app instead, and lets the box sleep if nobody answers.
   wr-agent serve --stdio
         serve one connection over stdin/stdout; what a driver opens remotely
   wr-agent attach --socket <path> [--session <uuid>]
@@ -58,7 +63,11 @@ fn main() -> ExitCode {
         }
         Some("serve") if args.iter().any(|a| a == "--stdio") => run_serve_stdio(),
         Some("serve") => match flag(&args, "--socket") {
-            Some(socket) => run_serve(PathBuf::from(socket), flag(&args, "--idle-timeout")),
+            Some(socket) => run_serve(
+                PathBuf::from(socket),
+                flag(&args, "--idle-timeout"),
+                wakefulness_settings(&args),
+            ),
             None => {
                 eprintln!("error: serve needs --socket <path> or --stdio");
                 ExitCode::FAILURE
@@ -100,7 +109,18 @@ fn run_serve_stdio() -> ExitCode {
     }
 }
 
-fn run_serve(socket: PathBuf, idle: Option<String>) -> ExitCode {
+/// The awake ceiling's settings (OQ22). Flags, like every other setting this binary has.
+fn wakefulness_settings(args: &[String]) -> Settings {
+    let seconds = |name: &str| flag(args, name).and_then(|s| s.parse::<f64>().ok());
+    let defaults = Settings::default();
+    Settings {
+        ceiling: seconds("--awake-ceiling").unwrap_or(defaults.ceiling),
+        prompt_timeout: seconds("--awake-prompt-timeout").unwrap_or(defaults.prompt_timeout),
+        ask: args.iter().any(|a| a == "--ask-at-awake-ceiling"),
+    }
+}
+
+fn run_serve(socket: PathBuf, idle: Option<String>, wakefulness: Settings) -> ExitCode {
     // The lock, not the bind, is what guarantees a single agent — see serve.rs. Losing the race is
     // a normal outcome (two clients spawning at once), not an error worth a non-zero exit: the
     // other agent is serving, which is all the caller wanted.
@@ -118,7 +138,7 @@ fn run_serve(socket: PathBuf, idle: Option<String>) -> ExitCode {
         .unwrap_or(DEFAULT_IDLE_TIMEOUT);
 
     let agent = Agent::new();
-    match agent.serve(&socket, timeout) {
+    match agent.serve(&socket, timeout, wakefulness) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");

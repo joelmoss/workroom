@@ -89,7 +89,16 @@ impl Agent {
 
     /// Binds and serves until idle. Returns when no session and no client has existed for
     /// `idle_timeout`.
-    pub fn serve(&self, socket: &Path, idle_timeout: Duration) -> Result<(), ServeError> {
+    ///
+    /// `wakefulness` configures the awake ceiling (OQ22); the wakefulness service itself starts
+    /// unconditionally on Linux, because the verdict has to keep flowing to the provider's lifecycle
+    /// shim while no client is attached at all — that is the whole reason it exists.
+    pub fn serve(
+        &self,
+        socket: &Path,
+        idle_timeout: Duration,
+        wakefulness: crate::wakefulness::Settings,
+    ) -> Result<(), ServeError> {
         // A socket file left by a previous run would make bind fail with EADDRINUSE even though
         // nobody is listening. The flock above is what actually guarantees exclusivity, so
         // removing a stale path here is safe rather than a race.
@@ -101,6 +110,10 @@ impl Agent {
         }
         let listener = UnixListener::bind(socket)?;
         listener.set_nonblocking(true)?;
+        #[cfg(target_os = "linux")]
+        crate::wakefulness::spawn(self.sessions.clone(), socket, wakefulness);
+        #[cfg(not(target_os = "linux"))]
+        let _ = wakefulness;
 
         let mut idle_since = Some(Instant::now());
         loop {
@@ -292,6 +305,10 @@ fn dispatch(
     }
     if envelope.service == Service::File {
         crate::file::dispatch(envelope, writer, &services.subscriptions);
+        return None;
+    }
+    if envelope.service == Service::Status {
+        crate::wakefulness::dispatch(envelope, writer);
         return None;
     }
     if envelope.service != Service::Terminal && envelope.service != Service::Control {
