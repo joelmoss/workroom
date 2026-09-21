@@ -2280,10 +2280,22 @@ service milestones below so each layer can be reviewed and landed independently.
 
      *The design's caveat is now structural rather than aspirational*: `Forwards` lives in
      `ConnectionServices`, so every forwarded socket dies when the client detaches or the connection
-     drops, and "come back to a running preview URL" still wants a provider hostname. Not done here:
-     the app half (the Swift client, which is writable from the module doc alone, and the UI that
-     picks a port), and the Phase 3 remote transport this exists for — the service is not OS-gated
-     and runs on macOS, but a forward is only interesting once the agent is on another box.
+     drops, and "come back to a running preview URL" still wants a provider hostname.
+
+     **The app half is implemented too (#208).** A forward binds a listener on `127.0.0.1` at an
+     *ephemeral* local port — never the remote port, so forwarding this box's own 5173 cannot collide
+     with the dev server already on it — and the bound port is what the UI shows and what the user
+     connects to. Each accepted TCP connection gets a fresh stream off the same monotonic counter
+     every request uses, which is how the client keeps the contract's "a stream id is free only once
+     its CLOSE has been seen" rule without tracking it: an id is simply never handed out twice.
+     Forwards are per HOST, not per workroom, so two workrooms on the same box see one list, and
+     **nothing is persisted across launches** — the agent closes every forwarded socket when the
+     client detaches, so a list restored at launch would name addresses that answer nothing. Losing
+     the connection (a drop, or a new generation) closes every accepted socket and stops the
+     listener. Still owed: the Phase 3 remote transport this exists for — the service is not OS-gated
+     and runs on macOS, but a forward is only interesting once the agent is on another box — and the
+     provider hostname that "come back to a running preview URL" needs, which no amount of
+     client-side forwarding can supply.
 
    **Two Phase 3 questions this milestone opened rather than answered**, both consequences of the
    exec service being the thing Phase 3 moves host-side. *Auth resolution*: the child environment is
