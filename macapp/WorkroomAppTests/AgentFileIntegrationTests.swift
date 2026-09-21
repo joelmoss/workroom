@@ -586,6 +586,13 @@ final class AgentFileIntegrationTests: XCTestCase {
 ///
 /// `status: true` also answers `Service::Status` (`0x04`) and can push an unsolicited ceiling prompt;
 /// left off, the Status probe goes unanswered exactly as a pre-#208 protocol-3 agent's would.
+///
+/// `forward: true` answers `Service::Forward` (`0x05`) — **scripted, not socket-backed**: it replies
+/// to OPEN, echoes DATA straight back and mirrors EOF, and it records the stream id and opcode of
+/// every Forward envelope it receives. The real socket semantics are covered end to end against the
+/// shipped binary in `AgentPortForwardingTests`; this exists for what that structurally cannot show —
+/// which opcodes, and which stream ids, the client actually sent. `forwardRefusal` makes every OPEN
+/// fail with that `connect` detail instead.
 final class FakeAgent: @unchecked Sendable {
   let socketPath: String
   private let listener: Int32
@@ -593,8 +600,16 @@ final class FakeAgent: @unchecked Sendable {
   private let lock = NSLock()
   private var services: [UInt8] = []
   private var clients: [Int32] = []
+  private var forwardTraffic: [(stream: UInt32, opcode: UInt8)] = []
 
   var receivedServices: [UInt8] { lock.withLock { services } }
+
+  /// Every Forward envelope received, in arrival order.
+  var receivedForwards: [(stream: UInt32, opcode: UInt8)] { lock.withLock { forwardTraffic } }
+
+  func forwards(opcode: UInt8) -> [UInt32] {
+    receivedForwards.filter { $0.opcode == opcode }.map(\.stream)
+  }
 
   /// One `status` reply, with the box busy past a 4h ceiling and a prompt pending.
   static let statusJSON = """
@@ -627,7 +642,14 @@ final class FakeAgent: @unchecked Sendable {
     }
   }
 
-  init(version: UInt16, status: Bool = false) throws {
+  private let forward: Bool
+  private let forwardRefusal: String?
+
+  init(version: UInt16, status: Bool = false, forward: Bool = false, forwardRefusal: String? = nil)
+    throws
+  {
+    self.forward = forward
+    self.forwardRefusal = forwardRefusal
     directory = URL(fileURLWithPath: "/tmp/wra-fake-\(UUID().uuidString.prefix(8))")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     socketPath = directory.appendingPathComponent("a.sock").path
@@ -687,6 +709,10 @@ final class FakeAgent: @unchecked Sendable {
         let payload = Data(buffer.dropFirst(9).prefix(length))
         buffer = Data(buffer.dropFirst(9 + length))
         lock.withLock { services.append(bytes[0]) }
+        if bytes[0] == 5 && forward {
+          handleForward(client, stream: stream, payload: payload)
+          continue
+        }
         let request = String(decoding: payload, as: UTF8.self)
         let body: Data
         switch bytes[0] {
@@ -709,5 +735,45 @@ final class FakeAgent: @unchecked Sendable {
         _ = reply.withUnsafeBytes { send(client, $0.baseAddress, $0.count, 0) }
       }
     }
+  }
+
+  /// The agent half of `Service::Forward`. A Forward payload is an OPCODE byte then a body, never a
+  /// chunk flag then JSON, so it is answered here rather than through the reply builder above.
+  private func handleForward(_ client: Int32, stream: UInt32, payload: Data) {
+    guard let opcode = payload.first else { return }
+    lock.withLock { forwardTraffic.append((stream, opcode)) }
+    let body = Data(payload.dropFirst())
+    switch opcode {
+    case 0x01:  // OPEN
+      if let refusal = forwardRefusal {
+        let error = #"{"version":1,"error":{"connect":"\#(refusal)"}}"#
+        sendForward(client, stream: stream, opcode: 0x02, body: Data(error.utf8))
+        // A refusal is followed immediately by CLOSE, exactly as `forward.rs` does it.
+        sendForward(client, stream: stream, opcode: 0x05, body: Data())
+      } else {
+        sendForward(
+          client, stream: stream, opcode: 0x02,
+          body: Data(#"{"version":1,"result":{"opened":true}}"#.utf8))
+      }
+    case 0x03:  // DATA — echoed, so a round trip needs no socket on this side
+      sendForward(client, stream: stream, opcode: 0x03, body: body)
+    case 0x04:  // EOF — mirrored, as a peer that stops writing once its input ends would
+      sendForward(client, stream: stream, opcode: 0x04, body: Data())
+    default:
+      break  // CLOSE is recorded and needs no answer.
+    }
+  }
+
+  /// Deliberately takes no lock: it is called from the per-client serve thread with that client's
+  /// descriptor in hand, and `handleForward` is already holding nothing.
+  private func sendForward(_ client: Int32, stream: UInt32, opcode: UInt8, body: Data) {
+    var envelope = Data([5])
+    for value in [stream, UInt32(body.count + 1)] {
+      var value = value.bigEndian
+      withUnsafeBytes(of: &value) { envelope.append(contentsOf: $0) }
+    }
+    envelope.append(opcode)
+    envelope.append(body)
+    _ = envelope.withUnsafeBytes { send(client, $0.baseAddress, $0.count, 0) }
   }
 }
