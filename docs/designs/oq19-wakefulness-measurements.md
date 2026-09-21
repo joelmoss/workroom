@@ -14,10 +14,11 @@ gate (scenario 18), see "The claim".
 
 Independent review (T9, 2026-09-21): seven findings, all fixed in this revision; the answer stood
 "directionally" before them and stands as written after them. The reviewer's list is in the commit
-message that closed it.
+message that closed it (2d532b28).
 
-Plan: `~/.claude/plans/polished-cooking-feather.md` (approved after `/plan-eng-review`,
-2026-09-19). Harness: `vcs/scripts/oq19/` (its README is the operator's guide). Issue: #208.
+Plan: the owner's approved measurement plan (`/plan-eng-review`, 2026-09-19; not in the repo, its
+decisions D1 to D12 and F6 to F8 are restated where they apply below). Harness: `vcs/scripts/oq19/`
+(its README is the operator's guide). Issue: #208; PR #214, stacked on #213.
 
 ## The claim, and what it rests on
 

@@ -16,8 +16,8 @@ signal, so the owner chose a disclosed amendment: `gates.py` (an idle interval's
 begins within a sampling interval of the open, is excused up to the window + 10 s, and a run spanning the
 whole interval fails regardless) and the `analyze.py` grid (grace 10 s; net as a 3 s windowed rate; pty
 window 10 -> 5 s; compressed runs scale the grace like the window). Labels are untouched. The amended
-contract is tag `oq19-amendment-1`, which `record.py` now checks; the hold-out set was recorded after the
-amendment and is what the claim rests on. Both headers carry the full rationale. Results:
+contract is tag `oq19-amendment-1`; the hold-out set was recorded after the amendment and is what the
+claim rests on. Both headers carry the full rationale. Results:
 `results/holdout.md` (the claim), `results/tuning.md`, `results/tuning-preregistered.md`, and the write-up in
 `docs/designs/oq19-wakefulness-measurements.md`. The per-config tuning detail (`tuning.json`,
 `tuning-preregistered.json`, ~1 MB each) is committed gzipped; `analyze.py tuning` regenerates the plain files
@@ -32,7 +32,8 @@ around the shim's own provider call (whose traffic re-voted BUSY and flapped the
 **Amendment 3 (2026-09-21, from the independent review, disclosed).** The candidate grid moved to `grid.py`
 and joined the frozen set (the amended grid had lived in `analyze.py`, outside `record.py`'s preflight guard);
 `boundary.md` names two rules the boxd runs already applied (the provider's guest agent by name, the harness
-driver by pid). Tag `oq19-amendment-3`. No result changes.
+driver by pid). Tag `oq19-amendment-3`, the tag `record.py` checks (`FROZEN_TAG`); the frozen set is now
+`labels.py`, `gates.py`, `boundary.md`, `grid.py`. No result changes.
 
 ## Layout
 
