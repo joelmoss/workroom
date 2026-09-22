@@ -418,11 +418,11 @@ fn masked_traffic_does_not_vote_the_tick_the_mask_ends() {
     }
 }
 
-/// A session leader is excluded because a shell at its prompt is not work. A leader that `exec`ed
-/// into the job (a command session, or a user typing `exec cargo build`) IS the work, and its CPU
-/// must vote. Every golden fixture's leader is `bash`, so the contract is untouched.
+/// A session leader is a candidate like any other process. One at its prompt votes through no
+/// signal, so excluding it bought nothing (the golden replay is exact either way); one that IS the
+/// work — a leader that `exec`ed into the job, or a shell running a script itself — must vote.
 #[test]
-fn a_leader_that_is_not_a_shell_is_a_candidate() {
+fn a_session_leader_that_does_work_is_work() {
     let burning = |comm: &str| {
         let mut c = Classifier::new(Policy::production(), Boundary::agent(999));
         let mut s = quiet(1000.0, 0);
@@ -433,12 +433,51 @@ fn a_leader_that_is_not_a_shell_is_a_candidate() {
         c.step(&s, false, false);
         c.verdict()
     };
-    assert_eq!(burning("bash"), Verdict::Idle, "a shell leader never votes");
+    assert_eq!(
+        burning("bash"),
+        Verdict::Busy,
+        "a shell looping in a script is work"
+    );
     assert_eq!(
         burning("cargo"),
         Verdict::Busy,
         "an exec'd leader burning a core is work"
     );
+    // And a leader at its prompt still votes nothing.
+    let mut c = Classifier::new(Policy::production(), Boundary::agent(999));
+    for i in 0..3 {
+        c.step(&quiet(1000.0 + f64::from(i), 0), false, false);
+    }
+    assert_eq!(c.verdict(), Verdict::Idle);
+}
+
+/// CPU is a delta over the last interval, so the first tick after the resume mask measures the
+/// last masked second: the wake blip's CPU must not vote there either.
+#[test]
+fn the_resume_masks_cpu_for_the_tick_after_it_too() {
+    let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
+    let mut t = 1000.0;
+    for _ in 0..3 {
+        c.step(&quiet(t, 0), false, false);
+        t += 1.0;
+    }
+    t += 300.0;
+    let resumed = t;
+    let mut s = quiet(t, 0);
+    // 0.4 core per second for the three masked seconds, measured on the ticks up to and including
+    // the first unmasked one.
+    for ticks in [0, 40, 80, 120] {
+        s.t = t;
+        s.procs[1].ticks = ticks;
+        c.step(&s, false, false);
+        assert_eq!(c.verdict(), Verdict::Idle, "at resume + {}", t - resumed);
+        t += 1.0;
+    }
+    // Real CPU after the boundary votes.
+    s.t = t;
+    s.procs[1].ticks = 160;
+    c.step(&s, false, false);
+    assert_eq!(c.verdict(), Verdict::Busy);
 }
 
 /// The shim's self-call mask is about interface bytes. It must not silence CPU: a compute-only

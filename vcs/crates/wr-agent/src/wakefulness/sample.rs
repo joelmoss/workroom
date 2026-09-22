@@ -96,7 +96,9 @@ impl From<SocketRow> for Socket {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct Sample {
     pub t: f64,
-    /// Session-leader pids. A leader is never itself a candidate.
+    /// Session-leader pids, as the trace format records them. Carried, not read: the classifier
+    /// treats a leader like any other process (see `candidates`), and the ten golden fixtures
+    /// replay exactly either way.
     #[serde(default)]
     pub roots: Vec<i32>,
     #[serde(default)]

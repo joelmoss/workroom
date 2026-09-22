@@ -24,6 +24,11 @@
 //!   is boundary.md's amendment 2 ("a process that hosts user work excludes only itself") and the
 //!   failure mode it names, so [`Boundary::own_descendants`] is explicit and the replay is the only
 //!   caller that sets it.
+//! * **Session leaders are not excluded.** `boundary.md` excludes them ("a leader at its prompt is
+//!   not work"), but a leader at its prompt votes through no signal, so the ten fixtures replay
+//!   exactly without the exclusion — and with it, a leader that IS the work (a command session's
+//!   `exec`ed program, a shell running a script) was invisible while burning a core. See
+//!   `candidates`.
 //! * **A resume is masked** — see [`WAKE_GAP_S`].
 //! * **The exec lifecycle votes.** P5 (P4 plus the agent's own exec operations) tied P4 on every gate
 //!   and lost the tie to the earlier policy, so the signal is measured-but-unused. It is real and free
@@ -231,19 +236,16 @@ fn closure(roots: &[i32], kids: &HashMap<i32, Vec<i32>>) -> HashSet<i32> {
     seen
 }
 
-/// The shells a session leader may be. `boundary.md` excludes a session leader because "a leader
-/// sitting at its prompt is not work" — which describes a shell. The pty child keeps its pid
-/// through `exec`, so a session created with a command (`sh -c "exec …"`, `shell::invocation`), or
-/// a user typing `exec`, makes the leader the program itself; excluding THAT would hide a
-/// single-process job's CPU, sleep and sockets from every vote. Every golden fixture's leader is
-/// `bash`, so the contract is unchanged.
-const SHELLS: [&str; 9] = [
-    "bash", "zsh", "sh", "dash", "fish", "ksh", "tcsh", "csh", "nu",
-];
-
-/// The candidate set: every sampled process minus the exclusion list, the session leaders that are
-/// shells (see [`SHELLS`]) and the zombies.
-fn candidates<'a>(procs: &'a [Proc], roots: &[i32], boundary: &Boundary) -> Vec<&'a Proc> {
+/// The candidate set: every sampled process minus the exclusion list and the zombies.
+///
+/// Session leaders are NOT excluded, although `boundary.md` says "a leader sitting at its prompt is
+/// not work". A shell at its prompt votes through no signal — no CPU, blocked in `do_wait` or a
+/// tty read rather than `nanosleep`, no socket — so nothing needs excluding, and the ten golden
+/// fixtures replay exactly with or without the exclusion. What the exclusion DID do was hide a
+/// leader that is the work: the pty child keeps its pid through `exec`, so a command session
+/// (`sh -c "exec …"`), a user typing `exec cargo build`, or a shell running a script itself became
+/// invisible to every vote while burning a core.
+fn candidates<'a>(procs: &'a [Proc], boundary: &Boundary) -> Vec<&'a Proc> {
     let mut kids: HashMap<i32, Vec<i32>> = HashMap::new();
     for p in procs {
         kids.entry(p.ppid).or_default().push(p.pid);
@@ -266,14 +268,9 @@ fn candidates<'a>(procs: &'a [Proc], roots: &[i32], boundary: &Boundary) -> Vec<
     );
     excluded.extend(closure(&daemons, &kids));
     excluded.extend(daemons);
-    let roots: HashSet<i32> = roots.iter().copied().collect();
     procs
         .iter()
-        .filter(|p| {
-            !excluded.contains(&p.pid)
-                && !(roots.contains(&p.pid) && SHELLS.contains(&p.comm.as_str()))
-                && p.state != "Z"
-        })
+        .filter(|p| !excluded.contains(&p.pid) && p.state != "Z")
         .collect()
 }
 
@@ -398,6 +395,8 @@ pub struct Classifier {
     /// The last tick's net vote was masked, so this tick's delta (bytes that arrived during the
     /// last masked second) is masked too.
     net_masked_last: bool,
+    /// Same for the resume mask and CPU: the first tick after it measures the last masked second.
+    wake_masked_last: bool,
     /// The last tick's keystroke age, so the ceiling can tell a user acting from a job running.
     since_input: f64,
 }
@@ -418,6 +417,7 @@ impl Classifier {
             wake_masked_until: None,
             resumed: false,
             net_masked_last: false,
+            wake_masked_last: false,
             since_input: f64::INFINITY,
         }
     }
@@ -462,7 +462,7 @@ impl Classifier {
     }
 
     fn features(&mut self, s: &Sample, lifecycle: bool, net_masked: bool) -> Features {
-        let cand = candidates(&s.procs, &s.roots, &self.boundary);
+        let cand = candidates(&s.procs, &self.boundary);
         let dt = match &self.prev {
             Some((prev_t, _)) => s.t - prev_t,
             None => self.policy.interval,
@@ -484,6 +484,10 @@ impl Classifier {
                 sock.state == "ESTAB" && sock.pids.iter().any(|p| cand_pids.contains(p))
             });
         let wake_masked = self.wake_masked_until.is_some_and(|until| s.t < until);
+        // CPU is a delta over the last interval, so the first tick after the resume mask still
+        // measures the last masked second; it is masked too, exactly as the net window is below.
+        let cpu_masked = wake_masked || self.wake_masked_last;
+        self.wake_masked_last = wake_masked;
         // A masked tick moves the window's base to itself instead of feeding it: bytes that arrive
         // under a mask must not sit in the window and vote BUSY the tick the mask ends (the resume
         // blip is ~1.5 KB/s for three seconds; unmasking on the fourth with those bytes still inside
@@ -505,7 +509,7 @@ impl Classifier {
             // name, and silencing everyone else's for four seconds per provider call would hide a
             // compute-only job for as long as the shim keeps calling. The Python it ports agrees
             // (`live.py`: the self-call mask zeroes `net` alone).
-            cpu: if wake_masked { 0.0 } else { cpu },
+            cpu: if cpu_masked { 0.0 } else { cpu },
             d_state: cand.iter().any(|p| p.state == "D"),
             timer: cand
                 .iter()
@@ -837,6 +841,11 @@ struct Published {
     keep_requested: bool,
     /// The service's own CPU as a fraction of one core, against the 0.5% gate.
     cpu_fraction: f64,
+    /// Whether the last tick's verdict reached the file. False means the reader is NOT seeing
+    /// what `verdict` says (a full disk, a quota): the shim falls back to the provider's own
+    /// timer, and a BUSY box may be slept. Reported so the app can say so instead of showing a
+    /// BUSY badge that protects nothing.
+    verdict_written: bool,
 }
 
 /// At most this many connections are remembered for ceiling prompts. The app is one client.
@@ -855,6 +864,7 @@ pub fn shared() -> &'static Wakefulness {
             settings: Settings::default(),
             keep_requested: false,
             cpu_fraction: 0.0,
+            verdict_written: false,
         }),
         listeners: Mutex::new(Vec::new()),
     })
@@ -886,6 +896,9 @@ impl Wakefulness {
             "prompt_timeout_seconds": s.settings.prompt_timeout,
             "ask_at_ceiling": s.settings.ask,
             "cpu_fraction": s.cpu_fraction,
+            // False while running means the verdict file is not being written (disk full, quota):
+            // the reader sees nothing, and `asserting` above protects nothing.
+            "verdict_written": s.verdict_written,
         })
     }
 
@@ -1041,16 +1054,27 @@ mod service {
         // The shim touches this around each provider call: that traffic is ours, not the workroom's,
         // and without subtracting it the release's own HTTPS call re-votes BUSY and the timers flap.
         // A requirement on the shim, stated here because the shim is not written yet: touch it
-        // once per provider call and no more often than every ~6 s. Each touch masks the net vote
-        // for NET_WINDOW_S + 1 s and the window under-counts for two ticks after (its base is one
-        // sample old, divided by the full window), so a shim calling more often than that would
-        // blind the net signal for as long as it kept calling.
+        // once per provider call and no more often than every ~8 s. One touch at T masks the net
+        // vote for T..T+3 (`own_call_recent`), T+4 (the tick after a mask is masked too), and the
+        // window then under-counts at T+5 and T+6 (its base is one, then two, samples old, divided
+        // by the full 3 s window); the first accurate net sample is T+7. A shim calling more often
+        // than that would blind the net signal for as long as it kept calling.
         let selfcall = path.with_extension("selfcall");
-        shared()
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .running = true;
+        {
+            // Under the same guard the writer uses: `serve` may already have retired the verdict
+            // (an immediate accept failure), and `running` must not be set back to true after it.
+            let stopped = super::VERDICT_STOPPED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if *stopped {
+                return;
+            }
+            shared()
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .running = true;
+        }
         let start = super::sample::monotonic();
         let mut tick: u64 = 0;
         loop {
@@ -1098,16 +1122,17 @@ mod service {
             } else {
                 raw
             };
-            {
+            let written = {
                 let stopped = super::VERDICT_STOPPED
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
                 if *stopped {
                     return;
                 }
-                let _ = write_verdict(&path, verdict, s.t);
-            }
+                write_verdict(&path, verdict, s.t).is_ok()
+            };
             let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
+            state.verdict_written = written;
             state.verdict = verdict;
             state.raw = raw;
             state.t = s.t;
@@ -1135,11 +1160,12 @@ mod service {
         };
         match SystemTime::now().duration_since(modified) {
             Ok(age) => age.as_secs_f64() < NET_WINDOW_S + 1.0,
-            // The stamp is in the future: the wall clock stepped back, which NTP does right after
-            // a resume, and that is the window this mask exists for. A stamp a few seconds ahead
-            // is recent. Bounded, because a masked tick moves the net window's base rather than
-            // deferring its bytes: an unbounded mask would erase the signal for as long as the
-            // clock stayed behind.
+            // The stamp is in the future: the wall clock stepped back between the touch and now.
+            // A small step (NTP slewing, a few seconds) keeps the mask; a large one (a post-resume
+            // correction of minutes) drops it, and the shim's traffic votes BUSY once — failing
+            // awake, not asleep. Bounded on purpose: a masked tick moves the net window's base
+            // rather than deferring its bytes, so an unbounded allowance would erase the signal
+            // for as long as the clock stayed behind.
             Err(ahead) => ahead.duration().as_secs_f64() < NET_WINDOW_S + 1.0,
         }
     }
