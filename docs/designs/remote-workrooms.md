@@ -1935,7 +1935,7 @@ disagreement passes every test on either side alone while presenting as an empty
     whether the versioning is real or ceremonial.
     **DECIDED (2026-09-22, owner): hand off.** A newer agent never kills an older one's sessions,
     and never leaves the old one running indefinitely either: the outgoing agent hands its sessions
-    to its replacement. Four consequences, the first three proposed and not yet built:
+    to its replacement. Four consequences, none built yet:
     - *Replace the program in place: `execve`, not a second process.* The pty masters are only
       descriptors, and passing them to a separate new process (`SCM_RIGHTS`) would keep the shells
       alive but orphan them. `Pty::wait` is a `waitpid` on the child, which only works for the
@@ -1958,9 +1958,19 @@ disagreement passes every test on either side alone while presenting as an empty
       to the old program with nothing lost. What cannot be recovered is a new binary that passes
       the check and then fails while it restores sessions. That is the residual risk, and its
       test is to crash the restore on purpose.
-    - *Open: the local Mac.* Phases 1–2 do not replace an older local agent (Phase 2, item 2). The
-      same hand-off would let a local agent upgrade in place when the app updates. Whether to use
-      it there, or only for Phase 3's pushed agent, is not yet decided.
+    - *The local Mac hands off too — DECIDED (2026-09-22, owner), shipped on Nightly first.* Today
+      an older local agent is never replaced (Phase 2, item 2). It lives until 30 s after its last
+      terminal closes (`serve.rs` `DEFAULT_IDLE_TIMEOUT`), which can be days. Until then, VCS and
+      file work fall back to running natively. GitHub status, port forwarding and the busy/idle
+      verdict have no native fallback and degrade. Agent fixes do not reach sessions that are
+      already open either. Handing off on app update ends that. It also puts one older-agent
+      policy on both hosts, and it proves the mechanism on the host that is easiest to debug
+      before Phase 3 depends on it. The cost is new: a hand-off bug kills local terminals on an
+      update, which has never been possible before. That is why it goes to Nightly first, with
+      the pre-check, the refuse fallback and the deliberately crashed restore gating the stable
+      channel. The pre-check must also confirm that the new binary can *restore* sessions. That
+      way a downgrade to an app that predates hand-off keeps the newer agent running, rather than
+      executing a binary that cannot read the session table.
 - **New CI burden:** a Rust Linux cross-compile for `wr-agent` (note `prost` in the lock means
   `protoc` is a build-time requirement) plus the container-driver integration job. **Add a pinned
   Zig toolchain and a Ghostty checkout** for `libghostty-vt` — checksum-pinned, cache keyed by
