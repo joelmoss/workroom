@@ -36,6 +36,31 @@ fixture and the fixtures would be re-recorded with it.
 
 **Priority:** P2, effort M.
 
+### Port forwarding follow-ups from the #218 review (vcs, macapp) — #208
+
+**What:** Three small things the three-cycle review of the forwarding client left owed. (1) The agent
+never sets `TCP_NODELAY` on the socket it connects to the target (`forward.rs` `connect_and_run`);
+the app side now does on its accepted socket, so small writes still pay Nagle plus delayed ACK on one
+of the two hops. (2) `ForwardedConnection.sendTimeout` and `drainTimeout` (30 s each) are not
+injectable, so the cut-off of a local client that has stopped reading is untested; the drain itself
+is (`testStoppingAForwardDrainsTheResponseAlreadyReceived`). (3) The listener's `EMFILE` backoff and
+its fatal-`accept` path (`Event.stopped`, which takes the row down) are reachable only under
+descriptor exhaustion and untested.
+
+**Why:** (1) is a one-liner with a measurable latency win for HMR and websocket traffic. (2) and (3)
+are the two review findings accepted without a test; a regression in either is silent.
+
+**How to start:** (1) `let _ = socket.set_nodelay(true)` after the successful `connect_timeout`.
+(2) Pass the two intervals through `AgentForwardService.listen`, the way `openTimeout` already is,
+and write the test against a `TCPClient` with a tiny `SO_RCVBUF` that never reads. (3) A
+`setrlimit(RLIMIT_NOFILE)` in the test process, restored in `tearDown`.
+
+**Depends on / blocked by:** nothing. Also known and accepted: a local client that fully closes while
+the target never responds and never closes holds its stream until the connection ends (the same in
+`ssh -L`; the agent has no idle reaping either).
+
+**Priority:** P2, effort S.
+
 ### Confirm the wakefulness net filter on the real box (vcs) — #215 review follow-up
 
 **What:** The net signal now skips internal bridges and their virtual ports (`sample.rs`
