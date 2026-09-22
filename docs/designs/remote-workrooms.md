@@ -1842,7 +1842,15 @@ disagreement passes every test on either side alone while presenting as an empty
     By default the wakefulness service never hibernates a BUSY box on its own; a box BUSY past the
     ceiling is reported (the app shows it, so the idle-agent bill is visible rather than capped). With
     the setting on, reaching the ceiling raises a prompt in the app; "keep" resets the ceiling, no
-    answer within the prompt's timeout hibernates the box. Force-sleep is not offered. The ceiling
+    answer within the prompt's timeout hibernates the box. Force-sleep is not offered. **Amended
+    2026-09-22 (#215 review):** a pending prompt, and the suppression an unanswered one leaves, are
+    also cleared by a keystroke the agent's input classifier calls the user's own (typing is the
+    answer the prompt never got) and by
+    the box resuming (the continuous awake period the ceiling capped has ended, and sleep is not
+    awake time); without those, a user who woke the box and typed was hibernated under, repeatedly.
+    A prompt raised while no app is connected still arms the deadline: ask mode means an unattended
+    box past its ceiling sleeps, and an app connecting during the prompt sees it in its first
+    `status` reply. The ceiling
     value and the prompt timeout are settings too (proposed defaults 4 h and 10 min; the measurement
     only says 4 h spares the longest job it ran). Consequence accepted: with the default, OQ7's bill for
     an idle agent holding a connection is unbounded until the user acts. Opened 2026-09-20 by the OQ19

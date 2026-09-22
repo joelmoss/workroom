@@ -183,6 +183,10 @@ fn claims_ownership(params: &[u8], final_byte: u8) -> bool {
         b'R' | b'n' | b'c' => false,
         // A window-size report answering a query.
         b't' => false,
+        // `CSI ? mode ; value $ y` is DECRPM, the terminal reporting a mode's state (synchronized
+        // output, bracketed paste, ...) to a program that asked. A TUI asks on a timer; no key
+        // produces a `$` intermediate.
+        b'y' if params.ends_with(b"$") => false,
         // `CSI ? flags u` is the kitty keyboard protocol reporting its flags; `CSI n ; m u` with no
         // `?` is an actual key event in that protocol. One character apart, opposite meanings.
         b'u' => !params.starts_with(b"?"),
@@ -236,6 +240,19 @@ mod tests {
     }
 
     /// The whole reason this module exists: a terminal answers on the input channel.
+    /// DECRPM: a TUI asking whether synchronized output is on gets this back on a timer, with
+    /// nobody at the keyboard. Counting it renewed the wakefulness keystroke grace forever.
+    #[test]
+    fn mode_reports_are_not_the_user() {
+        assert!(!user(b"\x1b[?2026;1$y"));
+        assert!(!user(b"\x1b[?2004;2$y"));
+        assert!(!user(b"\x1b[?2026;0$y"));
+        assert!(
+            user(b"\x1b[?2026;1y"),
+            "no `$`: not a report, whatever it is"
+        );
+    }
+
     #[test]
     fn focus_reports_are_not_the_user() {
         assert!(!user(b"\x1b[I"), "focus in");

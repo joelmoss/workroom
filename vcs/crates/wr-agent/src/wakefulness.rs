@@ -32,7 +32,11 @@
 //!
 //! The staleness rule (a verdict older than two intervals means BUSY) belongs to the *reader*: a
 //! stopped classifier cannot say anything. This service therefore must never go quiet while claiming
-//! IDLE, and the verdict file carries the monotonic stamp the reader needs to apply the rule.
+//! IDLE, and the verdict file carries the monotonic stamp the reader needs to apply the rule. A
+//! verdict file that does not EXIST is a different statement: "no classifier here" — the agent has
+//! not started, exited idle, or retired the file after a panic — and the reader lets the provider's
+//! own idle timer decide, because holding a box awake for an agent that is not running would hold
+//! it awake forever.
 
 pub mod sample;
 
@@ -227,8 +231,18 @@ fn closure(roots: &[i32], kids: &HashMap<i32, Vec<i32>>) -> HashSet<i32> {
     seen
 }
 
-/// The candidate set: every sampled process minus the exclusion list, the session leaders and the
-/// zombies. Session leaders are excluded because a leader sitting at its prompt is not work.
+/// The shells a session leader may be. `boundary.md` excludes a session leader because "a leader
+/// sitting at its prompt is not work" — which describes a shell. The pty child keeps its pid
+/// through `exec`, so a session created with a command (`sh -c "exec …"`, `shell::invocation`), or
+/// a user typing `exec`, makes the leader the program itself; excluding THAT would hide a
+/// single-process job's CPU, sleep and sockets from every vote. Every golden fixture's leader is
+/// `bash`, so the contract is unchanged.
+const SHELLS: [&str; 9] = [
+    "bash", "zsh", "sh", "dash", "fish", "ksh", "tcsh", "csh", "nu",
+];
+
+/// The candidate set: every sampled process minus the exclusion list, the session leaders that are
+/// shells (see [`SHELLS`]) and the zombies.
 fn candidates<'a>(procs: &'a [Proc], roots: &[i32], boundary: &Boundary) -> Vec<&'a Proc> {
     let mut kids: HashMap<i32, Vec<i32>> = HashMap::new();
     for p in procs {
@@ -255,7 +269,11 @@ fn candidates<'a>(procs: &'a [Proc], roots: &[i32], boundary: &Boundary) -> Vec<
     let roots: HashSet<i32> = roots.iter().copied().collect();
     procs
         .iter()
-        .filter(|p| !excluded.contains(&p.pid) && !roots.contains(&p.pid) && p.state != "Z")
+        .filter(|p| {
+            !excluded.contains(&p.pid)
+                && !(roots.contains(&p.pid) && SHELLS.contains(&p.comm.as_str()))
+                && p.state != "Z"
+        })
         .collect()
 }
 
@@ -377,6 +395,9 @@ pub struct Classifier {
     wake_masked_until: Option<f64>,
     /// The last tick was the first after a resume (a gap of [`WAKE_GAP_S`] or more).
     resumed: bool,
+    /// The last tick's net vote was masked, so this tick's delta (bytes that arrived during the
+    /// last masked second) is masked too.
+    net_masked_last: bool,
     /// The last tick's keystroke age, so the ceiling can tell a user acting from a job running.
     since_input: f64,
 }
@@ -396,6 +417,7 @@ impl Classifier {
             wake_mask: false,
             wake_masked_until: None,
             resumed: false,
+            net_masked_last: false,
             since_input: f64::INFINITY,
         }
     }
@@ -465,8 +487,11 @@ impl Classifier {
         // A masked tick moves the window's base to itself instead of feeding it: bytes that arrive
         // under a mask must not sit in the window and vote BUSY the tick the mask ends (the resume
         // blip is ~1.5 KB/s for three seconds; unmasking on the fourth with those bytes still inside
-        // a 3 s window is a guaranteed vote and a 30 s hold).
-        let net = if net_masked || wake_masked {
+        // a 3 s window is a guaranteed vote and a 30 s hold). The first tick AFTER a mask is
+        // masked too: its delta is the bytes of the last masked second, counted a tick late.
+        let masked_net = net_masked || wake_masked || self.net_masked_last;
+        self.net_masked_last = net_masked || wake_masked;
+        let net = if masked_net {
             self.net.clear();
             self.net.feed(s.t, s.net_rx + s.net_tx);
             0.0
@@ -641,13 +666,17 @@ impl Ceiling {
         self.state = CeilingState::Below;
     }
 
-    /// The user acted (a keystroke the input classifier called theirs). While the prompt has gone
-    /// unanswered and the service has stopped asserting BUSY, that IS the answer: someone is at
-    /// the box, so it is kept awake from here. Without this, `Suppressed` held until the classifier
-    /// went idle on its own, which a user typing never lets it do — the box was hibernated under
-    /// them, and again after every resume.
+    /// The user acted (a keystroke the input classifier called theirs). While a prompt is pending,
+    /// or has gone unanswered and the service has stopped asserting BUSY, that IS the answer:
+    /// someone is at the box, so it is kept awake from here. Without this, `Suppressed` held until
+    /// the classifier went idle on its own, which a user typing never lets it do — the box was
+    /// hibernated under them, and again after every resume. Past an advisory ceiling there is
+    /// nothing to answer, so typing changes nothing there.
     pub fn user_acted(&mut self, t: f64) {
-        if self.state == CeilingState::Suppressed {
+        if matches!(
+            self.state,
+            CeilingState::Suppressed | CeilingState::Prompted { .. }
+        ) {
             self.keep(t);
         }
     }
@@ -775,7 +804,9 @@ static VERDICT_STOPPED: Mutex<bool> = Mutex::new(false);
 pub fn retire_verdict(socket: &Path) {
     let mut stopped = VERDICT_STOPPED.lock().unwrap_or_else(|e| e.into_inner());
     *stopped = true;
-    let _ = std::fs::remove_file(verdict_path(socket));
+    let path = verdict_path(socket);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("tmp"));
     shared()
         .state
         .lock()
@@ -909,14 +940,15 @@ impl Wakefulness {
             held.retain(|w| w.strong_count() > 0);
             held.iter().filter_map(std::sync::Weak::upgrade).collect()
         };
-        // Off the tick thread: `send` blocks on the writer, and the moment the prompt fires is the
-        // moment the app is likeliest to be wedged (that is why nobody answered). A stalled write
-        // here would stop the verdict being rewritten, and a verdict that stops is BUSY forever.
-        std::thread::spawn(move || {
-            for writer in &listeners {
-                crate::vcs::send(writer, Service::Status, 0, event.clone());
-            }
-        });
+        // Off the tick thread, one thread per listener: `send` blocks on the writer, and the
+        // moment the prompt fires is the moment the app is likeliest to be wedged (that is why
+        // nobody answered). A stalled write on the tick thread would stop the verdict being
+        // rewritten, and a verdict that stops is BUSY forever; a stalled write ahead of another
+        // listener would eat that listener's whole prompt timeout.
+        for writer in listeners {
+            let event = event.clone();
+            std::thread::spawn(move || crate::vcs::send(&writer, Service::Status, 0, event));
+        }
     }
 }
 
@@ -1008,6 +1040,11 @@ mod service {
         let mut ceiling = Ceiling::new(settings);
         // The shim touches this around each provider call: that traffic is ours, not the workroom's,
         // and without subtracting it the release's own HTTPS call re-votes BUSY and the timers flap.
+        // A requirement on the shim, stated here because the shim is not written yet: touch it
+        // once per provider call and no more often than every ~6 s. Each touch masks the net vote
+        // for NET_WINDOW_S + 1 s and the window under-counts for two ticks after (its base is one
+        // sample old, divided by the full window), so a shim calling more often than that would
+        // blind the net signal for as long as it kept calling.
         let selfcall = path.with_extension("selfcall");
         shared()
             .state
@@ -1039,14 +1076,21 @@ mod service {
             }
             if keep {
                 ceiling.keep(s.t);
-            } else if classifier.user_acted() {
+            }
+            let prompted = ceiling.step(s.t, raw);
+            // After the step, so a keystroke inside the grace on the very tick the prompt is
+            // raised or expires answers it at once rather than a tick later.
+            if classifier.user_acted() {
                 ceiling.user_acted(s.t);
             }
-            if ceiling.step(s.t, raw) {
-                if let CeilingState::Prompted { deadline } = ceiling.state() {
-                    shared().prompt(ceiling.awake_for(s.t), deadline);
+            // Raised only after this tick's state is published below: an app that reacts to the
+            // event by asking for `status` must see `prompt_pending`, not the previous tick.
+            let prompt = match ceiling.state() {
+                CeilingState::Prompted { deadline } if prompted => {
+                    Some((ceiling.awake_for(s.t), deadline))
                 }
-            }
+                _ => None,
+            };
             // Advisory-only: the ceiling never sleeps the box. It can only stop the service
             // ASSERTING busy, and only after an unanswered prompt.
             let verdict = if ceiling.suppressing() {
@@ -1071,6 +1115,10 @@ mod service {
             state.ceiling = ceiling.state();
             state.settings = ceiling.settings;
             state.cpu_fraction = thread_cpu_fraction(s.t - start);
+            drop(state);
+            if let Some((awake_for, deadline)) = prompt {
+                shared().prompt(awake_for, deadline);
+            }
 
             // Skip ahead rather than bursting to catch up: a missed tick is a gap the reader's
             // staleness rule already covers, and catching up would hide it. The next due tick is
@@ -1088,8 +1136,11 @@ mod service {
         match SystemTime::now().duration_since(modified) {
             Ok(age) => age.as_secs_f64() < NET_WINDOW_S + 1.0,
             // The stamp is in the future: the wall clock stepped back, which NTP does right after
-            // a resume, and that is the window this mask exists for. A future stamp is recent.
-            Err(_) => true,
+            // a resume, and that is the window this mask exists for. A stamp a few seconds ahead
+            // is recent. Bounded, because a masked tick moves the net window's base rather than
+            // deferring its bytes: an unbounded mask would erase the signal for as long as the
+            // clock stayed behind.
+            Err(ahead) => ahead.duration().as_secs_f64() < NET_WINDOW_S + 1.0,
         }
     }
 

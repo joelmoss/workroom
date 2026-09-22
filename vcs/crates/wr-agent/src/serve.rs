@@ -116,6 +116,7 @@ impl Agent {
         let _ = wakefulness;
 
         let mut idle_since = Some(Instant::now());
+        let mut result = Ok(());
         loop {
             match listener.accept() {
                 Ok((stream, _)) => {
@@ -150,7 +151,13 @@ impl Agent {
                     }
                     std::thread::sleep(Duration::from_millis(25));
                 }
-                Err(e) => return Err(e.into()),
+                // An accept failure (descriptor exhaustion, say) ends the agent, and it must take
+                // the verdict with it exactly as an idle exit does: falling out with the file in
+                // place is BUSY forever to its reader.
+                Err(e) => {
+                    result = Err(e.into());
+                    break;
+                }
             }
         }
         let _ = std::fs::remove_file(socket);
@@ -161,7 +168,7 @@ impl Agent {
         // service thread is still running at this point; `retire_verdict` stops it writing FIRST,
         // under the same lock, so it cannot rename a fresh verdict into place after the removal.
         crate::wakefulness::retire_verdict(socket);
-        Ok(())
+        result
     }
 }
 

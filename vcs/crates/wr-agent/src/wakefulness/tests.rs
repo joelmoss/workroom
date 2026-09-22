@@ -299,6 +299,14 @@ fn typing_or_resuming_clears_a_suppressed_ceiling() {
     assert_eq!(c.awake_for(deadline + 3600.0), 0.0);
     assert!(!c.exceeded());
 
+    // Typing while the prompt is still pending answers it too: the user is there and working.
+    let mut c = Ceiling::new(settings);
+    busy_until(&mut c, 4.0 * 3600.0);
+    assert!(matches!(c.state(), CeilingState::Prompted { .. }));
+    c.user_acted(4.0 * 3600.0 + 30.0);
+    assert_eq!(c.state(), CeilingState::Below);
+    assert_eq!(c.awake_for(4.0 * 3600.0 + 30.0), 0.0);
+
     // Typing while merely past an advisory ceiling changes nothing: there is nothing to answer.
     let mut c = Ceiling::new(Settings::default());
     busy_until(&mut c, 5.0 * 3600.0);
@@ -393,14 +401,44 @@ fn masked_traffic_does_not_vote_the_tick_the_mask_ends() {
             c.step(&quiet(t, net), false, self_call);
             t += 1.0;
         }
-        // The first unmasked tick, with the masked bytes still less than 3 s old.
+        // The first unmasked tick. Its delta is the last masked second's bytes, counted a tick
+        // late, and the earlier masked bytes are still less than 3 s old.
+        net += 1500;
         c.step(&quiet(t, net), false, false);
         assert_eq!(
             c.verdict(),
             Verdict::Idle,
             "self_call={self_call}: masked bytes voted once the mask ended"
         );
+        // From here on, bytes are real again.
+        t += 1.0;
+        net += 1500;
+        c.step(&quiet(t, net), false, false);
+        assert_eq!(c.verdict(), Verdict::Busy, "self_call={self_call}");
     }
+}
+
+/// A session leader is excluded because a shell at its prompt is not work. A leader that `exec`ed
+/// into the job (a command session, or a user typing `exec cargo build`) IS the work, and its CPU
+/// must vote. Every golden fixture's leader is `bash`, so the contract is untouched.
+#[test]
+fn a_leader_that_is_not_a_shell_is_a_candidate() {
+    let burning = |comm: &str| {
+        let mut c = Classifier::new(Policy::production(), Boundary::agent(999));
+        let mut s = quiet(1000.0, 0);
+        s.procs[0].comm = comm.into();
+        c.step(&s, false, false);
+        s.t += 1.0;
+        s.procs[0].ticks = 100;
+        c.step(&s, false, false);
+        c.verdict()
+    };
+    assert_eq!(burning("bash"), Verdict::Idle, "a shell leader never votes");
+    assert_eq!(
+        burning("cargo"),
+        Verdict::Busy,
+        "an exec'd leader burning a core is work"
+    );
 }
 
 /// The shim's self-call mask is about interface bytes. It must not silence CPU: a compute-only
