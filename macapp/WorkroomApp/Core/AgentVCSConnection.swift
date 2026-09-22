@@ -70,19 +70,6 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   private static let vcsService: UInt8 = 2
   private static let fileService: UInt8 = 3
   private static let statusService: UInt8 = 4
-  /// Whether the Status service answered its probe. A plain bool, not `FileNegotiation`: the File
-  /// service's third state exists so an unanswered probe can retire the connection and re-probe, and
-  /// wakefulness deliberately does NOT do that — it is a read-only badge, and taking VCS and the file
-  /// service down with it would cost far more than the badge is worth. "Predates the service" and
-  /// "did not answer" therefore have the same answer here, so they are the same state.
-  private var _statusReady = false
-  /// `prompt_timeout_seconds` as the connect-time probe reported it.
-  ///
-  /// Kept because the ceiling prompt event carries a deadline on the AGENT's clock and no reading of
-  /// that clock, so only a duration can cross the boundary — and this is the agent's own answer,
-  /// which the preference is not: the preference describes what the app WOULD pass to an agent it
-  /// spawned, and `wr-agent attach` spawns one with no flags at all.
-  private var _promptTimeout: TimeInterval?
   /// The ceiling prompt, delivered to whoever is watching. One stream per connection: the verdict is
   /// per box, so there is nothing to key subscriptions by.
   let ceilingPrompts: AsyncStream<AgentCeilingPrompt>
@@ -170,13 +157,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       // Not yet shared with any other caller, so a plain lock-guarded write is enough — no
       // concurrent reader can observe a half-set value.
       connection.lock.withLock { connection._capabilities = capabilities }
-      // Concurrently, not in sequence: each probe waits up to 2s against a peer that answers
-      // neither, and running them one after the other would double `connect()`'s worst case — which
-      // `LocalAgentVCS`'s 2s respawn-and-retry deadline is budgeted against. They touch different
-      // fields under the same lock, which is what the request pool is built for.
-      async let files: Void = connection.negotiateFiles()
-      async let status: Void = connection.negotiateStatus()
-      _ = await (files, status)
+      await connection.negotiateFiles()
       return connection
     } catch HostConnectionError.connectionLost {
       // Rethrown UNCHANGED, not wrapped. `LocalAgentVCS` catches exactly this case to spawn wr-agent
@@ -273,35 +254,23 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     }
   }
 
-  /// Probe the Status service. Runs once in `connect()`, before this connection is shared, and never
-  /// fails it: an agent with no wakefulness service costs the app a badge, not a connection.
+  /// The wakefulness service on this connection, or `VCSError.backendVersion` when the peer predates
+  /// it.
   ///
-  /// There is no `capabilities` method on this service — `status` IS the probe. Its reply is not
-  /// discarded, though: `prompt_timeout_seconds` is kept, because it is the only authoritative
-  /// reading of the agent's prompt timeout the app is guaranteed to have before a ceiling prompt
-  /// arrives. The 2s timeout is the File service's, for the same reason: an agent that predates the
-  /// service drops the envelope silently.
-  private func negotiateStatus() async {
-    guard helloVersion >= AgentControlClient.minStatusVersion else { return }
-    let status = try? await AgentStatusReply<AgentWakefulness>.decode(
-      request(AgentStatusRequest(method: "status"), timeout: 2, service: Self.statusService))
-    lock.withLock {
-      _statusReady = status != nil
-      _promptTimeout = status?.promptTimeoutSeconds
-    }
-  }
-
-  /// The wakefulness service on this connection, or `VCSError.backendVersion` when the peer has none
-  /// — which, per `_statusReady`, also covers a probe that went unanswered.
+  /// Gated on the greeting version alone — there is no connect-time probe, unlike the File service.
+  /// The version IS the contract (`MIN_STATUS_VERSION`: a protocol-4 agent answers Status), and a
+  /// probe added a failure mode with no data to show for it: one reply slower than its timeout, on an
+  /// agent under exactly the load that makes wakefulness matter, left the badge and every ceiling
+  /// prompt off for the life of the connection. The number the probe used to keep, the agent's prompt
+  /// timeout, is in every `status` reply; the watch reads it from its first.
   func wakefulness() throws -> AgentWakefulnessService {
-    let timeout: TimeInterval? = try lock.withLock {
+    try lock.withLock {
       guard !closed else { throw HostConnectionError.connectionLost }
-      guard _statusReady else {
+      guard helloVersion >= AgentControlClient.minStatusVersion else {
         throw VCSError.backendVersion("Agent does not support the status service.")
       }
-      return _promptTimeout
     }
-    return AgentWakefulnessService(connection: self, negotiatedPromptTimeout: timeout)
+    return AgentWakefulnessService(connection: self)
   }
 
   /// A Status request: one envelope, never chunked. 5s — `status` and `keep` both read a mutex the
@@ -580,9 +549,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     if service == Self.statusService {
       // Only the one event kind exists; anything else a newer agent adds is dropped, exactly as an
-      // unknown file event is.
+      // unknown file event is — and so is a version this build does not speak, as a reply's would be.
       guard let wire = try? decoder.decode(AgentStatusEvent.self, from: payload),
-        wire.event == "awake_ceiling_prompt", let awake = wire.awakeSeconds,
+        wire.version == 1, wire.event == "awake_ceiling_prompt", let awake = wire.awakeSeconds,
         let deadline = wire.promptDeadline
       else { return }
       ceilingPrompt.yield(

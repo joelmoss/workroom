@@ -113,10 +113,6 @@ struct ToastStack: View {
       !store.toasts.isEmpty || !store.runToastItems.isEmpty || !store.vcsToolWarnings.isEmpty
         || wakefulness.prompt.isShowing
     )
-    // Started from here because this overlay is always mounted, unlike the inspector badge that
-    // polls the verdict. `startWatchingPrompts` is idempotent and app-lifetime, so a second window
-    // joins the existing watch rather than opening an iterator of its own.
-    .onAppear { wakefulness.startWatchingPrompts() }
   }
 }
 
@@ -138,7 +134,9 @@ private struct AwakeCeilingToastView: View {
 
   /// A whole-second countdown wants a whole-second tick; the deadline itself is enforced by
   /// `AwakeCeilingPromptState.tick`, not by this timer, so a missed tick only delays the card.
-  private let clock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+  /// `@State`, so the one subscription lives as long as the card does: a plain `let` was rebuilt on
+  /// every evaluation of the parent's body.
+  @State private var clock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
   var body: some View {
     HStack(alignment: .top, spacing: 10) {
@@ -171,6 +169,10 @@ private struct AwakeCeilingToastView: View {
       now = instant
       model.tick()
     }
+    // Polls while the card is up, whether or not an inspector is: a `status` reply is how the app
+    // learns the prompt was answered elsewhere (a keystroke on the box, another Workroom's keep, the
+    // job finishing) and how the countdown is corrected to the agent's exact remaining time.
+    .task { await model.poll() }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Keep this machine awake? \(detail)")
     .accessibilityAction(named: "Keep awake") { model.keep() }

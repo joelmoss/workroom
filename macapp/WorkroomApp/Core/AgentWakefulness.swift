@@ -11,9 +11,6 @@ import Foundation
 /// idle timer may sleep the box. Nothing in the app sleeps a box either.
 struct AgentWakefulnessService: Sendable {
   let connection: AgentVCSConnection
-  /// `prompt_timeout_seconds` from the connect-time probe, or nil if the agent did not report one.
-  /// The ceiling prompt event carries no clock reading, so this is what its countdown runs on.
-  let negotiatedPromptTimeout: TimeInterval?
 
   func status() async throws -> AgentWakefulness {
     try AgentStatusReply<AgentWakefulness>.decode(
@@ -21,9 +18,14 @@ struct AgentWakefulnessService: Sendable {
   }
 
   /// "Keep this box awake": the agent restarts the ceiling from now.
+  ///
+  /// A refusal is an error, not a reply: `WakefulnessModel.keep` clears the card on success, and the
+  /// one thing worse than a `keep` that never arrived is one that arrived, was declined and reported
+  /// success. The agent never declines today; the guard is for the day it does.
   func keep() async throws {
-    _ = try AgentStatusReply<AgentKept>.decode(
+    let reply = try AgentStatusReply<AgentKept>.decode(
       await connection.statusRequest(AgentStatusRequest(method: "keep")))
+    guard reply.kept else { throw HostConnectionError.serviceUnavailable("Agent declined keep.") }
   }
 
   /// Unsolicited `awake_ceiling_prompt` events, in arrival order. Finishes when the connection does.
@@ -35,15 +37,15 @@ struct AgentWakefulnessService: Sendable {
 /// `monotonic` is the AGENT's clock (`sample::monotonic()`), not this Mac's and not wall time, so
 /// `promptDeadline` is only ever meaningful relative to `monotonic` from the same reply — never
 /// against `Date()`. `promptRemaining` is the one place that subtraction is allowed to happen.
+///
+/// The fields the app acts on are required. The rest of the contract is decoded as optionals: they
+/// are diagnostics today, and an agent that renames one must not blank the badge for a number nothing
+/// displays. `AgentWakefulnessTests` pins the whole shape against the shipped binary.
 struct AgentWakefulness: Decodable, Sendable, Equatable {
   /// Whether the classifier thread is running at all. False on a macOS agent: the service is Linux
   /// only, so a local agent answers `status` truthfully with `running: false` rather than not at all.
   let running: Bool
-  /// What the reader sees, after the ceiling: `"BUSY"` or `"IDLE"`.
-  let verdict: String
   let busy: Bool
-  /// What the classifier itself decided, before the ceiling had its say.
-  let classifierVerdict: String
   let monotonic: Double
   /// Seconds the box has been continuously BUSY.
   let awakeSeconds: Double
@@ -52,28 +54,60 @@ struct AgentWakefulness: Decodable, Sendable, Equatable {
   let promptPending: Bool
   /// On the agent's monotonic clock. Non-nil only while `promptPending`.
   let promptDeadline: Double?
-  let asserting: Bool
   /// The prompt went unanswered and the agent has stopped asserting BUSY.
   let suppressed: Bool
-  let ceilingSeconds: Double
   let promptTimeoutSeconds: Double
-  let askAtCeiling: Bool
-  let cpuFraction: Double
+  /// Whether the last verdict reached the file the provider's shim reads. False means the box is NOT
+  /// being kept awake, whatever `busy` says — a full disk is the case. Nil from an agent that predates
+  /// the field.
+  let verdictWritten: Bool?
+  /// What the reader sees, after the ceiling: `"BUSY"` or `"IDLE"`.
+  let verdict: String?
+  /// What the classifier itself decided, before the ceiling had its say.
+  let classifierVerdict: String?
+  let asserting: Bool?
+  let ceilingSeconds: Double?
+  let askAtCeiling: Bool?
+  let cpuFraction: Double?
 
   /// Seconds left to answer the prompt, from the two clock readings in THIS reply. Nil when no
   /// prompt is pending.
   var promptRemaining: TimeInterval? {
     guard promptPending, let deadline = promptDeadline else { return nil }
-    return max(0, deadline - monotonic)
+    return wakefulnessSeconds(deadline - monotonic)
   }
 
-  /// What the workroom row shows. Only these three, because only these three are actionable: the
-  /// classifier's raw verdict, the suppression flag and the CPU cost are diagnostics.
-  enum Display: Equatable { case idle, busy, busyPastCeiling }
+  /// Work is running and nothing is keeping the box awake: the prompt went unanswered, or the verdict
+  /// never reached the file the shim reads. The one state the badge must not soften.
+  var unprotected: Bool { suppressed || (busy && verdictWritten == false) }
+
+  /// What the badge shows. Only these four, because only these four are actionable: the classifier's
+  /// raw verdict and the CPU cost are diagnostics.
+  enum Display: Equatable { case idle, busy, busyPastCeiling, busyUnprotected }
 
   var display: Display {
+    if unprotected { return .busyUnprotected }
     if awakeCeilingExceeded { return .busyPastCeiling }
     return busy ? .busy : .idle
+  }
+
+  /// The running agent's ceiling settings against the app's preferences, as one sentence, or nil when
+  /// they agree (or the agent did not say). The settings are flags fixed at the agent's start, and the
+  /// agent is persistent — it outlives the app on purpose — so "takes effect next time an agent
+  /// starts" is, in practice, "not until the agent is restarted"; this is how the user finds out.
+  func settingsMismatch(against settings: AgentWakefulnessSettings) -> String? {
+    var differences: [String] = []
+    if let ask = askAtCeiling, ask != settings.ask {
+      differences.append("ask-before-sleep \(ask ? "on" : "off")")
+    }
+    if let ceiling = ceilingSeconds, abs(ceiling - settings.ceiling) >= 1 {
+      let hours = wakefulnessDuration(ceiling).formatted(
+        .units(allowed: [.hours, .minutes], width: .narrow))
+      differences.append("a \(hours) ceiling")
+    }
+    guard !differences.isEmpty else { return nil }
+    return "The running agent was started with \(differences.joined(separator: " and ")); "
+      + "the current settings apply when it next starts."
   }
 }
 
@@ -87,39 +121,46 @@ struct AgentKept: Decodable, Sendable {
 /// It carries the deadline on the agent's monotonic clock and NO reading of that clock, so the
 /// deadline alone cannot be turned into a duration. The event means "the prompt starts now", and the
 /// agent sets `deadline = now + prompt_timeout`, so the countdown starts from the prompt timeout —
-/// see `AgentCeilingPrompt.remaining(promptTimeout:)`.
-struct AgentCeilingPrompt: Decodable, Sendable, Equatable {
+/// see `remaining(promptTimeout:)`. The deadline is still kept: it is the prompt's IDENTITY, the one
+/// value an event and a `status` reply about the same prompt share.
+struct AgentCeilingPrompt: Sendable, Equatable {
   let awakeSeconds: Double
   let promptDeadline: Double
 
-  /// Last-resort fallback, matching `wakefulness::Settings::default()`. Reached only when neither the
-  /// connect-time probe nor a poll reported the agent's own timeout.
+  /// Last-resort fallback, matching `wakefulness::Settings::default()`. Reached only when no `status`
+  /// reply has reported the agent's own timeout yet.
   static let defaultPromptTimeout: TimeInterval = 600
 
-  /// Deliberately ignores `promptDeadline`: it is an instant on the agent's monotonic clock and this
-  /// event carries no reading of that clock, so only the duration can cross. The consequence, worth
-  /// knowing, is that the countdown restarts from the full timeout and is therefore optimistic by
-  /// however long the event spent in flight — milliseconds on a unix socket.
+  /// Deliberately ignores `promptDeadline` as a duration: it is an instant on the agent's monotonic
+  /// clock and this event carries no reading of that clock. The consequence, worth knowing, is that
+  /// the countdown restarts from the full timeout and is optimistic by however long the event spent
+  /// in flight — milliseconds on a unix socket; the next `status` reply corrects it exactly.
+  /// Clamped: `promptTimeout` is a wire value.
   func remaining(promptTimeout: TimeInterval?) -> TimeInterval {
-    promptTimeout ?? Self.defaultPromptTimeout
+    wakefulnessSeconds(promptTimeout ?? Self.defaultPromptTimeout)
   }
 }
 
-/// Seconds off the wire, as a `Duration` safe to format.
+/// A duration off the wire, made safe to add to a `Date` or format.
 ///
 /// `Duration.seconds(_: Double)` traps on an out-of-range value (`Fatal error: Overflow in
-/// multiplication`), and `awakeSeconds` is a non-optional `Double` straight off the socket. Nothing a
-/// healthy agent reports comes close — it is bounded by uptime — but every other wire path in this
-/// feature drops garbage rather than trusting it, and a formatter is no place to be the exception.
-/// A century is far past any duration the UI renders meaningfully.
+/// multiplication`), and every wire duration here is a non-optional `Double` straight off the socket.
+/// Nothing a healthy agent reports comes close — they are bounded by uptime — but every other wire
+/// path in this feature drops garbage rather than trusting it, and neither a formatter nor a
+/// deadline is a place to be the exception: a NaN deadline is one `tick` can never reach, a card
+/// that never clears. A century is far past any duration the UI renders meaningfully.
 ///
 /// `min`/`max` rather than an `isFinite` gate, so an infinite value clamps to the ceiling like any
 /// other too-large one instead of reading as zero — "busy longer than the UI can say" is the truer
 /// answer to +∞ than "not busy". Only NaN needs its own arm, because every comparison with it is
 /// false and it would otherwise fall through unclamped.
+func wakefulnessSeconds(_ seconds: Double) -> Double {
+  guard !seconds.isNaN else { return 0 }
+  return min(max(seconds, 0), 100 * 365 * 24 * 3600)
+}
+
 func wakefulnessDuration(_ seconds: Double) -> Duration {
-  guard !seconds.isNaN else { return .zero }
-  return .seconds(min(max(seconds, 0), 100 * 365 * 24 * 3600))
+  .seconds(wakefulnessSeconds(seconds))
 }
 
 /// The three wakefulness preferences, as the agent takes them: flags on `wr-agent serve`.
@@ -127,17 +168,43 @@ func wakefulnessDuration(_ seconds: Double) -> Duration {
 /// Defaults match `wakefulness::Settings::default()` — 4 h and 10 min — and the agent applies its own
 /// defaults for any flag the app omits, so the two cannot drift apart silently.
 struct AgentWakefulnessSettings: Equatable, Sendable {
-  var ceiling: TimeInterval = 4 * 3600
-  var promptTimeout: TimeInterval = 600
-  var ask = false
+  var ceiling: TimeInterval
+  var promptTimeout: TimeInterval
+  var ask: Bool
+
+  static let defaultCeiling: TimeInterval = 4 * 3600
+  static let defaultPromptTimeout: TimeInterval = AgentCeilingPrompt.defaultPromptTimeout
+
+  init(
+    ceiling: TimeInterval = Self.defaultCeiling,
+    promptTimeout: TimeInterval = Self.defaultPromptTimeout, ask: Bool = false
+  ) {
+    self.ceiling = ceiling
+    self.promptTimeout = promptTimeout
+    self.ask = ask
+  }
+
+  /// From the preferences' own units. A value the agent would refuse — not finite, not positive —
+  /// becomes the agent's default HERE, so a hand-edited preference (these two keys have no UI) reaches
+  /// the agent as a number it accepts, not as `nan` on its command line.
+  init(ceilingHours: Double, promptTimeoutMinutes: Double, ask: Bool) {
+    self.init(
+      ceiling: Self.usable(ceilingHours * 3600) ?? Self.defaultCeiling,
+      promptTimeout: Self.usable(promptTimeoutMinutes * 60) ?? Self.defaultPromptTimeout,
+      ask: ask)
+  }
+
+  private static func usable(_ seconds: Double) -> TimeInterval? {
+    seconds.isFinite && seconds > 0 ? seconds : nil
+  }
 
   /// Read from preferences at the moment the app spawns an agent. Not observed: the flags are fixed
   /// for an agent's whole life, because the agent is long-lived and negotiated with rather than
   /// replaced — changing a preference takes effect the next time an agent is started.
   static var current: AgentWakefulnessSettings {
     AgentWakefulnessSettings(
-      ceiling: Defaults[.awakeCeilingHours] * 3600,
-      promptTimeout: Defaults[.awakePromptTimeoutMinutes] * 60,
+      ceilingHours: Defaults[.awakeCeilingHours],
+      promptTimeoutMinutes: Defaults[.awakePromptTimeoutMinutes],
       ask: Defaults[.askAtAwakeCeiling])
   }
 
@@ -158,19 +225,24 @@ struct AgentWakefulnessSettings: Equatable, Sendable {
   /// The same settings as the agent's environment fallback. `wr-agent attach` self-spawns `serve`
   /// with no flags when no agent is listening, and the app reaches that spawn only through the
   /// environment it launches `attach` with (`PersistentSessionService.launchEnvironment`).
+  ///
+  /// Under `WORKROOM_SESSION_`, the prefix the agent scrubs from the shell it spawns: the settings
+  /// reach the self-spawned `serve` and never the user's `env`.
   var serveEnvironment: [(key: String, value: String)] {
     var entries = [
-      ("WR_AGENT_AWAKE_CEILING", String(format: "%g", ceiling)),
-      ("WR_AGENT_AWAKE_PROMPT_TIMEOUT", String(format: "%g", promptTimeout)),
+      ("WORKROOM_SESSION_AWAKE_CEILING", String(format: "%g", ceiling)),
+      ("WORKROOM_SESSION_AWAKE_PROMPT_TIMEOUT", String(format: "%g", promptTimeout)),
     ]
-    if ask { entries.append(("WR_AGENT_ASK_AT_AWAKE_CEILING", "1")) }
+    if ask { entries.append(("WORKROOM_SESSION_ASK_AT_AWAKE_CEILING", "1")) }
     return entries
   }
 }
 
 /// An unsolicited frame on the Status service, stream 0. The payload fields are optional so an event
-/// kind this build does not know is dropped rather than failing the decode for the one it does.
+/// kind this build does not know is dropped rather than failing the decode for the one it does. The
+/// version is checked exactly as a reply's is: an event from a newer contract is dropped, not misread.
 struct AgentStatusEvent: Decodable {
+  let version: Int
   let event: String
   var awakeSeconds: Double?
   var promptDeadline: Double?
@@ -181,26 +253,68 @@ struct AgentStatusRequest: Encodable, Sendable {
   let method: String
 }
 
-/// The awake-ceiling prompt as the UI holds it: pure, so the two rules worth testing — "keep" clears
-/// it, and an unanswered deadline clears it — are testable without a socket or a clock.
+/// The awake-ceiling prompt as the UI holds it: pure, so the rules worth testing — "keep" clears it,
+/// an unanswered deadline clears it, a `status` reply raises, corrects or withdraws it — are testable
+/// without a socket or a clock.
 ///
 /// The deadline is converted to a LOCAL `Date` the moment the prompt arrives, because the agent's
 /// `prompt_deadline` is on its own monotonic clock and nothing in this process shares that clock. The
-/// duration is what crosses the boundary, never the instant.
+/// duration is what crosses the boundary, never the instant. The instant IS kept as the prompt's
+/// identity (`agentDeadline`): the event and every `status` reply about the same prompt carry it.
 struct AwakeCeilingPromptState: Equatable {
   private(set) var awakeSeconds: Double?
   private(set) var expiresAt: Date?
+  /// `prompt_deadline` on the agent's clock. Never compared with a local time; only with itself.
+  private(set) var agentDeadline: Double?
   /// A `keep` left but the agent never acknowledged it. The card comes back, saying so — see
   /// `WakefulnessModel.keep()` for why this is not the same as never having asked.
   private(set) var keepFailed = false
 
+  /// The least a failed `keep` leaves on the clock. A retry after the agent's own deadline still
+  /// matters: `keep` is one of the two ways out of `Suppressed` (`Ceiling::user_acted` is the other,
+  /// and it needs a keystroke on the box itself), so the card must not vanish on the next tick
+  /// because the deadline it was restored with has already passed.
+  static let retryGrace: TimeInterval = 60
+
   var isShowing: Bool { expiresAt != nil }
 
-  /// A prompt arrived. `promptTimeout` is the agent's own configured timeout, from the connect-time
-  /// probe or a `status` poll; nil falls back to the agent's default.
+  /// A prompt arrived on the event stream. `promptTimeout` is the agent's own configured timeout,
+  /// from a `status` reply; nil falls back to the agent's default.
+  ///
+  /// The same prompt twice — the event after a `status` reply that already raised it, or a stream
+  /// that replayed — keeps the countdown it has: the reply's is exact, the event's is not.
   mutating func raise(_ prompt: AgentCeilingPrompt, promptTimeout: TimeInterval?, now: Date) {
+    if isShowing, agentDeadline == prompt.promptDeadline { return }
     awakeSeconds = prompt.awakeSeconds
+    agentDeadline = prompt.promptDeadline
     expiresAt = now.addingTimeInterval(prompt.remaining(promptTimeout: promptTimeout))
+    keepFailed = false
+  }
+
+  /// A `status` reply is the agent's authoritative word on the prompt, and the only word it gives
+  /// after the event: a prompt the agent has already answered on its own — the box went idle, the
+  /// user typed into it (`Ceiling::user_acted`), it resumed from sleep, another Workroom sent `keep`
+  /// — is withdrawn with no event. So: pending and unknown here raises the card (an app that
+  /// connects mid-prompt is the common case with a 4 h ceiling); pending and known corrects the
+  /// countdown to the agent's exact remaining time; not pending withdraws the card.
+  ///
+  /// Except after a failed `keep`: that card is the user's retry, not the agent's prompt. It stays
+  /// for its grace (a retry into `Suppressed` still works, and a `keep` whose reply was lost is
+  /// harmless to repeat) and is not the agent's to withdraw.
+  mutating func reconcile(_ status: AgentWakefulness, now: Date) {
+    guard status.promptPending, let deadline = status.promptDeadline,
+      let remaining = status.promptRemaining
+    else {
+      if isShowing, !keepFailed { clear() }
+      return
+    }
+    if isShowing, agentDeadline == deadline {
+      expiresAt = now.addingTimeInterval(remaining)
+      return
+    }
+    awakeSeconds = status.awakeSeconds
+    agentDeadline = deadline
+    expiresAt = now.addingTimeInterval(remaining)
     keepFailed = false
   }
 
@@ -213,12 +327,18 @@ struct AwakeCeilingPromptState: Equatable {
   /// "no answer lets the box sleep": the app never tells the agent anything here.
   mutating func dismiss() { clear() }
 
-  /// The optimistic `keep` did not reach the agent. Puts the card back exactly as it was — the
-  /// agent's deadline never moved — and flags why, so this is distinguishable from both a
-  /// still-unanswered prompt and a dismissal.
-  mutating func restoreAfterFailedKeep(_ previous: AwakeCeilingPromptState) {
+  /// The optimistic `keep` did not reach the agent. Puts the card back as it was — the agent's
+  /// deadline never moved — and flags why, so this is distinguishable from both a still-unanswered
+  /// prompt and a dismissal. Two guards: a prompt raised meanwhile is newer and wins; and a restored
+  /// deadline already in the past (a 5 s request timeout landing after it) gets `retryGrace`, or the
+  /// failure would flash for one tick and the box would sleep with no retry offered. A `keep` from
+  /// the badge, with no card up, restores an empty state the same way: the grace IS the card.
+  mutating func restoreAfterFailedKeep(_ previous: AwakeCeilingPromptState, now: Date) {
+    guard !isShowing else { return }
     self = previous
     keepFailed = true
+    let grace = now.addingTimeInterval(Self.retryGrace)
+    if expiresAt.map({ $0 < grace }) ?? true { expiresAt = grace }
   }
 
   /// Drops the prompt once its deadline has passed. Idempotent.
@@ -235,6 +355,7 @@ struct AwakeCeilingPromptState: Equatable {
   private mutating func clear() {
     awakeSeconds = nil
     expiresAt = nil
+    agentDeadline = nil
     keepFailed = false
   }
 }
@@ -245,6 +366,27 @@ struct AwakeCeilingPromptState: Equatable {
 final class WakefulnessModel: ObservableObject {
   static let shared = WakefulnessModel()
 
+  /// The three calls the model makes, so the model's rules — one poll loop, reconcile from every
+  /// reply, the poll-before-event race, the staleness rule — are testable without an agent. `live`
+  /// is the only production implementation.
+  struct Transport {
+    var status: @Sendable () async throws -> AgentWakefulness
+    var keep: @Sendable () async throws -> Void
+    /// The current connection's prompt stream, or throws when there is no connection.
+    var prompts: @Sendable () async throws -> AsyncStream<AgentCeilingPrompt>
+
+    static let live = Transport(
+      status: { try await LocalAgentVCS.shared.wakefulness().status() },
+      keep: { try await LocalAgentVCS.shared.wakefulness(spawning: true).keep() },
+      prompts: { try await LocalAgentVCS.shared.wakefulness().prompts })
+  }
+
+  private let transport: Transport
+
+  init(transport: Transport = .live) {
+    self.transport = transport
+  }
+
   /// Nil until a poll succeeds, and again once one fails: no agent, an agent that predates the
   /// service, or a macOS agent (which answers `running: false`) all show nothing rather than a
   /// guess.
@@ -252,36 +394,81 @@ final class WakefulnessModel: ObservableObject {
   @Published private(set) var prompt = AwakeCeilingPromptState()
 
   /// Modest on purpose. The verdict changes on a 30 s hysteresis window, so anything faster only
-  /// costs round trips, and this runs only while the badge is on screen.
+  /// costs round trips, and this runs only while something is showing the result.
   static let pollInterval: Duration = .seconds(10)
 
+  private var pollers = 0
+  private var pollTask: Task<Void, Never>?
+  /// The last reply as the agent sent it, before the staleness rule. Separate from `status` so a
+  /// stalled classifier reads as unknown every poll, not every other one.
+  private var lastReply: AgentWakefulness?
+  /// Bumped when a prompt arrives on the event stream. A reply to a `status` request that left
+  /// BEFORE the event can say `prompt_pending: false` about the prompt that has since been raised —
+  /// the agent publishes its state before it sends the event, but a reply already on the wire is
+  /// older — so a reply only reconciles against the prompt state it was requested under.
+  private var promptGeneration = 0
+
   /// Polls for as long as the caller's task lives. Driven by a SwiftUI `.task`, so closing the
-  /// inspector or the window ends it — there is no polling while nothing is showing the result.
+  /// inspector, the card or the window ends it — there is no polling while nothing is showing the
+  /// result. One loop however many callers: N windows with the inspector open are N callers of a
+  /// single poll, not N polls stomping one `status` (one's timeout would blank every window's badge).
   ///
   /// A cancelled poll leaves the last verdict standing rather than clearing it. Clearing on exit
   /// read as tidy and was wrong in two ways: this model is shared by every window, so one window
   /// closing its inspector blanked the others' badge; and the value is only ever rendered by a badge
   /// whose own `.task` refreshes it before its first sleep, so a stale value cannot be displayed.
-  /// A FAILED poll still clears it — that assignment is the `try?` below.
+  /// A FAILED poll still clears it — that assignment is the `try?` in `refresh`.
   func poll() async {
-    while !Task.isCancelled {
-      let next = try? await LocalAgentVCS.shared.wakefulness().status()
-      guard !Task.isCancelled else { return }
-      status = next
-      try? await Task.sleep(for: Self.pollInterval)
+    pollers += 1
+    if pollTask == nil {
+      pollTask = Task { [weak self] in
+        while let self, !Task.isCancelled {
+          await self.refresh()
+          try? await Task.sleep(for: Self.pollInterval)
+        }
+      }
+    }
+    // Parked until the caller is cancelled; the sleep throws the moment that happens.
+    while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }
+    pollers -= 1
+    if pollers == 0 {
+      pollTask?.cancel()
+      pollTask = nil
+    }
+  }
+
+  /// One `status` round trip, applied. Public for the tests; the poll loop is this on a timer.
+  func refresh() async {
+    let generation = promptGeneration
+    let next = try? await transport.status()
+    guard !Task.isCancelled else { return }
+    observe(next, requestedUnder: generation)
+  }
+
+  private func observe(_ next: AgentWakefulness?, requestedUnder generation: Int) {
+    // The reader's staleness rule (`wakefulness.rs`, module doc): a classifier that has not ticked
+    // since the last poll is saying nothing about the box now, whatever its last verdict was. The
+    // agent's own clock is in every reply, so "has not ticked" is exact: the shim's file has the same
+    // rule. `running` is checked because a macOS agent never ticks and never claims to.
+    let stale =
+      next.map { reply in
+        reply.running && lastReply.map { $0.monotonic == reply.monotonic } ?? false
+      } ?? false
+    lastReply = next
+    let shown = stale ? nil : next
+    if shown != status { status = shown }
+    if let shown, generation == promptGeneration {
+      prompt.reconcile(shown, now: Date())
     }
   }
 
   private var watchTask: Task<Void, Never>?
 
-  /// Starts the single ceiling-prompt watch. Idempotent, and deliberately NOT bound to the caller's
+  /// Starts the single ceiling-prompt watch. Idempotent, and deliberately NOT bound to any view's
   /// task: `AsyncStream` supports exactly ONE iterator, and Workroom has N windows sharing this one
-  /// model, so a per-window `for await` would be undefined behaviour. One loop, started by whichever
-  /// window opens first.
-  ///
-  /// Unlike `poll()` this runs for the app's life, and that is the honest trade: a watch blocked on
-  /// `for await` costs nothing, while a prompt missed because no inspector happened to be open is a
-  /// box that sleeps under a running job.
+  /// model, so a per-window `for await` would be undefined behaviour. Started once, at app launch:
+  /// a watch blocked on `for await` costs nothing, while a prompt missed because no window happened
+  /// to be open is a box that sleeps under a running job.
   func startWatchingPrompts() {
     guard watchTask == nil else { return }
     watchTask = Task { [weak self] in await self?.runWatch() }
@@ -291,18 +478,30 @@ final class WakefulnessModel: ObservableObject {
   /// with the connection that carried it.
   private func runWatch() async {
     while !Task.isCancelled {
-      guard let service = try? await LocalAgentVCS.shared.wakefulness() else {
+      guard let prompts = try? await transport.prompts() else {
         try? await Task.sleep(for: Self.pollInterval)
         continue
       }
-      for await raised in service.prompts {
-        // The connect-time probe, not just a poll: `poll()` only runs while the Changes inspector is
-        // mounted, while this watch is app-lifetime, so `status` is usually nil here and the
-        // countdown would silently fall back to the hardcoded default. `negotiatedPromptTimeout` is
-        // the agent's own answer and is always available on a connection that has a status service.
-        let timeout = status?.promptTimeoutSeconds ?? service.negotiatedPromptTimeout
-        prompt.raise(raised, promptTimeout: timeout, now: Date())
+      // The stream first, then the reply: a prompt raised between the two is buffered by the stream
+      // and raised below, and one the reply already raised is the same prompt (same deadline), so
+      // `raise` keeps the reply's exact countdown. The reply is what shows a prompt that was pending
+      // BEFORE this connection existed — the agent sends the event once, to whoever was listening
+      // then, and with a 4 h ceiling and a persistent agent that is usually not this app. Its
+      // prompt timeout is also this agent's own answer, which is what an event's countdown runs on.
+      let generation = promptGeneration
+      let first = try? await transport.status()
+      guard !Task.isCancelled else { return }
+      observe(first, requestedUnder: generation)
+      let timeout = first?.promptTimeoutSeconds
+      for await raised in prompts {
+        promptGeneration += 1
+        prompt.raise(
+          raised, promptTimeout: timeout ?? lastReply?.promptTimeoutSeconds, now: Date())
       }
+      // The connection that carried the prompt is gone. Its card would send `keep` to nothing: if
+      // the agent is still there with the prompt still pending, the next connection's first reply
+      // raises it again, with the exact time left; if the agent is gone, so is the prompt.
+      if prompt.isShowing { prompt.dismiss() }
     }
   }
 
@@ -313,20 +512,23 @@ final class WakefulnessModel: ObservableObject {
   /// premise that "a `keep` the agent never received leaves the ceiling where it was", and that
   /// premise is false. `Ceiling::step` moves `Prompted` to `Suppressed` at the deadline
   /// (`wakefulness.rs`), and `suppressing()` makes the published verdict IDLE, which is what lets the
-  /// provider's own timer sleep the box. A successful `keep` round-trip is the ONLY other way out of
-  /// `Prompted`. So a dropped request meant the card vanished, nothing retried, and the box slept
-  /// under a running job after the user had asked for exactly the opposite.
+  /// provider's own timer sleep the box. A successful `keep` round-trip and a keystroke on the box
+  /// are the only other ways out of `Prompted`. So a dropped request meant the card vanished,
+  /// nothing retried, and the box slept under a running job after the user had asked for exactly
+  /// the opposite.
   ///
   /// Re-raising is safe in the other direction too: `Ceiling::keep` just restarts from now, so a
-  /// retry that duplicates a `keep` which did land costs nothing.
+  /// retry that duplicates a `keep` which did land costs nothing. And the request reconnects
+  /// (`spawning: true`): a click is the one caller for which a dropped connection is not an answer.
   func keep() {
     let raised = prompt
     prompt.keep()
+    let transport = transport
     Task { [weak self] in
       do {
-        try await LocalAgentVCS.shared.wakefulness().keep()
+        try await transport.keep()
       } catch {
-        self?.prompt.restoreAfterFailedKeep(raised)
+        self?.prompt.restoreAfterFailedKeep(raised, now: Date())
       }
     }
   }

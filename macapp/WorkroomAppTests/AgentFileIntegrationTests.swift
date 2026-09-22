@@ -602,14 +602,17 @@ final class FakeAgent: @unchecked Sendable {
     "classifier_verdict":"BUSY","monotonic":15000.0,"awake_seconds":14400.5,\
     "awake_ceiling_exceeded":true,"prompt_pending":true,"prompt_deadline":15600.0,\
     "asserting":true,"suppressed":false,"ceiling_seconds":14400.0,\
-    "prompt_timeout_seconds":600.0,"ask_at_ceiling":true,"cpu_fraction":0.0021}}
+    "prompt_timeout_seconds":600.0,"ask_at_ceiling":true,"cpu_fraction":0.0021,\
+    "verdict_written":true}}
     """
 
-  /// Pushes an `awake_ceiling_prompt` on the Status service, stream 0 — the agent's own stream.
-  func pushCeilingPrompt() {
-    let body = Data(
-      #"{"version":1,"event":"awake_ceiling_prompt","awake_seconds":14400.5,"prompt_deadline":15600.0}"#
-        .utf8)
+  static let ceilingPromptJSON =
+    #"{"version":1,"event":"awake_ceiling_prompt","awake_seconds":14400.5,"prompt_deadline":15600.0}"#
+
+  /// Pushes an event on the Status service, stream 0 — the agent's own stream. The ceiling prompt by
+  /// default; any body, so a malformed or unknown event can be proven dropped.
+  func pushCeilingPrompt(body json: String = FakeAgent.ceilingPromptJSON) {
+    let body = Data(json.utf8)
     var envelope = Data([4])
     for value in [UInt32(0), UInt32(body.count + 1)] {
       var value = value.bigEndian

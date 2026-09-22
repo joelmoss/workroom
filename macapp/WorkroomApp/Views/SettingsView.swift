@@ -354,6 +354,10 @@ private struct TerminalSettingsPane: View {
   // people never touch, so they stay defaults-only keys (`awakeCeilingHours`,
   // `awakePromptTimeoutMinutes`) until someone asks for them.
   @Default(.askAtAwakeCeiling) private var askAtAwakeCeiling
+  // The running agent's own settings, for the mismatch line under the toggle: the flags are fixed at
+  // the agent's start and the agent outlives the app, so a toggle flipped here can sit unapplied for
+  // as long as the agent runs. Polled while this pane is on screen, exactly as the badge polls.
+  @ObservedObject private var wakefulness = WakefulnessModel.shared
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @Default(.filePathEditor) private var pathEditor
   @State private var pendingDisable = false
@@ -430,7 +434,16 @@ private struct TerminalSettingsPane: View {
         )
         .font(.caption)
         .foregroundStyle(.secondary)
+        if let status = wakefulness.status, status.running,
+          let mismatch = status.settingsMismatch(against: .current)
+        {
+          Text(mismatch)
+            .font(.caption)
+            .foregroundStyle(ThemeService.shared.tokens.warning)
+            .accessibilityIdentifier("settings.control.awakeSettingsMismatch")
+        }
       }
+      .task { await wakefulness.poll() }
 
       Picker("Open file paths in", selection: $pathEditor) {
         Text("Default App").tag("")

@@ -64,11 +64,17 @@ actor LocalAgentVCS {
     }
   }
 
-  /// The local box's wakefulness service (issue #208). Deliberately does NOT spawn an agent:
-  /// `ensureConnected` starts one, and starting a whole agent so a badge can say IDLE would be the
-  /// tail wagging the dog. No agent means no badge.
-  func wakefulness() async throws -> AgentWakefulnessService {
-    guard await manager.snapshot(for: .local).status == .connected else {
+  /// The local box's wakefulness service (issue #208).
+  ///
+  /// A poll deliberately does NOT spawn an agent (`spawning: false`): `ensureConnected` starts one,
+  /// and starting a whole agent so a badge can say IDLE would be the tail wagging the dog. No agent
+  /// means no badge. A user's "Keep awake" is the one caller that passes `true`: it is a deliberate
+  /// click on a box the agent said was about to sleep, and a dropped connection is not a reason to
+  /// let it — reconnecting (and, if the agent is gone, respawning) is what the click asked for.
+  func wakefulness(spawning: Bool = false) async throws -> AgentWakefulnessService {
+    if spawning {
+      try await ensureConnected(host: .local)
+    } else if await manager.snapshot(for: .local).status != .connected {
       throw RepositoryRoutingError.unavailable(.local)
     }
     return try await manager.wakefulness(host: .local)

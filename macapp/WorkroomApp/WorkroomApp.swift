@@ -319,6 +319,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // into existence early, so its key-window observer is live before the first window appears.
     menuBarController = MenuBarController(registry: .shared)
 
+    // The awake-ceiling prompt watch (issue #208): app-lifetime, from here rather than a view's
+    // `onAppear`, because a prompt the agent raises while no window is open (onboarding suppresses
+    // the main window; the menu-bar item keeps the app alive with none) is a box that sleeps under
+    // a running job if nobody is listening.
+    MainActor.assumeIsolated { WakefulnessModel.shared.startWatchingPrompts() }
+
     // Build the switcher rail's panel now, ordered out, and connect it to the session controller
     // (issue #132). Pre-created on purpose: the first `NSHostingView` render costs real milliseconds,
     // and the 250 ms reveal is the worst possible moment to pay it.
