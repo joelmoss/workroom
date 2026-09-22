@@ -16,6 +16,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# Test fixtures are found through CARGO_MANIFEST_DIR, which is baked in at compile time as a path on
+# THIS machine. The container mounts the vcs tree read-only at that same path so they resolve.
+VCS_DIR="$(pwd)"
 
 # macOS still ships bash 3.2, where an EMPTY array is "unbound" under `set -u` and neither
 # `mapfile` nor `declare -A` exists. build-helper.sh documents the same trap. So: expand arrays
@@ -201,12 +204,14 @@ if ! cargo zigbuild -p wr-agent ${FEATURES[@]+"${FEATURES[@]}"} --target "$TARGE
 fi
 cp "target/${TARGET}/debug/wr-agent" "$STAGE/wr-agent"
 
-IMAGE="${WR_LINUX_IMAGE:-docker.io/library/debian:stable-slim}"
+# `-scm` rather than `-slim`: the file-service tests `git init` their fixtures, and slim has no git.
+IMAGE="${WR_LINUX_IMAGE:-docker.io/library/buildpack-deps:stable-scm}"
 echo "test-linux: running on $RUNTIME ($IMAGE)"
 # bash, because one test reproduces an argv[0] rewrite with `exec -a`, which is a bashism and skips
 # itself where /bin/bash is absent — silently losing the coverage it exists to provide.
 "$RUNTIME" run --rm \
   --volume "$STAGE:/tests" \
+  --volume "$VCS_DIR:$VCS_DIR:ro" \
   --env WR_AGENT_BIN=/tests/wr-agent \
   --env "WR_AGENT_HAS_TERMINAL_STATE=${WR_AGENT_HAS_TERMINAL_STATE:-}" \
   --env "WR_TEST_SHELL=/bin/sh" \

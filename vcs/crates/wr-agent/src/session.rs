@@ -1234,7 +1234,12 @@ mod tests {
     #[test]
     fn a_client_that_cannot_be_written_to_is_dropped() {
         let store = SessionStore::new();
-        let args = [OsString::from("-c"), OsString::from("echo noisy; sleep 5")];
+        // Output must keep coming AFTER the writer breaks: a single echo raced the break, and a
+        // fast shell printed it into the healthy writer and then said nothing for five seconds.
+        let args = [
+            OsString::from("-c"),
+            OsString::from("while :; do echo noisy; sleep 0.1; done"),
+        ];
         let e = env();
         store.create(spec(id(7), &args, &e)).expect("create");
 
