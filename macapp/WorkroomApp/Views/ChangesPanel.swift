@@ -906,8 +906,7 @@ struct ChangesPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      // Above the change list rather than inside it: a forward is per BOX, like the wakefulness
-      // badge in this section's header, so it must not vanish when no workroom is selected.
+      // Per box, so it must not vanish when no workroom is selected; see `PortsSection`.
       PortsSection()
       Divider()
       Group {

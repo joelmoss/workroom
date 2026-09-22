@@ -785,13 +785,16 @@ final class FakeAgent: @unchecked Sendable {
     case 0x03:  // DATA — echoed, so a round trip needs no socket on this side
       sendForward(client, stream: stream, opcode: 0x03, body: body)
     case 0x04 where forwardEpilogueOnData:
-      break  // The response already went out; the client's EOF is recorded and needs no answer.
+      // The response already went out; with the client's EOF the agent has both halves, and CLOSE
+      // is its last word.
+      sendForward(client, stream: stream, opcode: 0x05, body: Data())
     case 0x04:  // EOF
       // With an epilogue, this is the shape a request/response server has: the request body ends,
       // the whole response goes out, and the peer half-closes immediately behind it. DATA and EOF
-      // land back to back on the client's reader thread, which is what makes a teardown that does
-      // not wait for its own write queue lose the response.
+      // land back to back on the client's reader thread, and CLOSE behind them: both halves are
+      // done on the agent's side, so it sends its last word.
       sendEpilogue(client, stream: stream)
+      sendForward(client, stream: stream, opcode: 0x05, body: Data())
     default:
       break  // CLOSE is recorded and needs no answer.
     }

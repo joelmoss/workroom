@@ -73,7 +73,8 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   private static let statusService: UInt8 = 4
   private static let forwardService: UInt8 = 5
   /// Live forwarded streams, keyed by the multiplex stream id the agent echoes on every envelope.
-  /// Read by `receive()` for each Forward envelope and cleared by `fail()`, so both hold `lock`.
+  /// Every access holds `lock`: the insert in `reserveForward`, the remove in `releaseForward`, the
+  /// read in `receive()` and the clear in `fail()`.
   private var forwardHandlers: [UInt32: @Sendable (UInt8, Data) -> Void] = [:]
   /// The ceiling prompt, delivered to whoever is watching. One stream per connection: the verdict is
   /// per box, so there is nothing to key subscriptions by.

@@ -104,12 +104,21 @@ final class PortForward: @unchecked Sendable {
   enum Event: Sendable, Equatable {
     case opened
     case failed(String)
+    /// The listener itself is gone. The row must go with it: a row that outlived its listener would
+    /// advertise an address that never answers.
+    case stopped(String)
   }
 
   /// The agent bounds its own connect at 3s (`CONNECT_TIMEOUT`) and its module doc warns that a
   /// client which gives up first leaves the id held. This waits longer than that, and the id is
   /// never handed out again either way.
   static let openTimeout: TimeInterval = 5
+  /// The agent's `MAX_FORWARDS`: what it holds per multiplex connection before refusing. Mirrored
+  /// here per listener so a burst of local connects never sends OPENs the agent will certainly
+  /// refuse — each refusal is two more envelopes through the writer VCS, File and Status share.
+  static let maxConnections = 64
+  /// Out of descriptors: how long the accept queue pauses before the backlog is tried again.
+  private static let acceptBackoff: TimeInterval = 0.1
 
   let remotePort: UInt16
   /// The ephemeral port the kernel bound. This is the address the user connects to.
@@ -216,12 +225,12 @@ final class PortForward: @unchecked Sendable {
         // Out of descriptors, or the kernel is: the connection stays in the backlog, and the
         // source would fire again at once. A short pause on this private queue (nothing else runs
         // on it) turns that spin into a retry, and the listener survives the pressure.
-        Thread.sleep(forTimeInterval: 0.1)
+        Thread.sleep(forTimeInterval: Self.acceptBackoff)
         return
       default:
         // The listener itself is broken. Ending here silently would leave a row advertising an
-        // address that never answers; the user is told, and the row's next connection finds it gone.
-        onEvent(.failed("The listener stopped: \(String(cString: strerror(errno)))"))
+        // address that never answers; the owner is told to take the row down.
+        onEvent(.stopped("The listener stopped: \(String(cString: strerror(errno)))"))
         stop()
         return
       }
@@ -229,6 +238,14 @@ final class PortForward: @unchecked Sendable {
   }
 
   private func begin(_ client: Int32) {
+    let admitted = lock.withLock { !stopped && live.count < Self.maxConnections }
+    guard admitted else {
+      // Closed at once, before an OPEN the agent would refuse. A browser sees a reset on its 65th
+      // connection and retries; the row says why.
+      Darwin.close(client)
+      onEvent(.failed("Too many connections through this forward; one was refused."))
+      return
+    }
     // BSD semantics: an accepted socket inherits the listener's `O_NONBLOCK`, and the pump's
     // blocking `read` is the whole design.
     _ = fcntl(client, F_SETFL, fcntl(client, F_GETFL) & ~O_NONBLOCK)
@@ -285,11 +302,16 @@ private final class ForwardedConnection: @unchecked Sendable {
   /// it. Nil only if the stream could never be reserved.
   private var stream: UInt32?
   private var opened = false
-  /// Our read half is done: the local client half-closed and the agent has been told.
-  private var sentEOF = false
-  /// The agent's read half is done: the remote peer half-closed.
-  private var sawEOF = false
   private var finished = false
+  /// A `write` did not deliver: the local client is gone or has stopped reading. Every write still
+  /// queued behind it is skipped, so the drain ends at one failure rather than paying `sendTimeout`
+  /// per queued envelope — with 32 of them queued that was a quarter of an hour.
+  private var deliveryFailed = false
+  /// Set by `finish`: the whole drain, not each `send`, ends here. `SO_SNDTIMEO` is a no-progress
+  /// bound reset by every partial transfer, so on its own a client trickling one byte at a time
+  /// would hold the descriptor for as long as it liked — the same misreading of a per-call bound
+  /// as a total budget that `WRITE_TIMEOUT` once suffered on the agent.
+  private var drainDeadline: Date?
   /// Agent → client bytes accepted off the reader thread and not yet written to the socket.
   private var queuedToSocket = 0
   /// Client → agent bytes handed to the connection's writer and not yet on the wire. The pump
@@ -307,10 +329,15 @@ private final class ForwardedConnection: @unchecked Sendable {
   /// reason; client → agent, the pump simply stops reading the socket until the writer catches up,
   /// which is the backpressure TCP then applies to the local client.
   static let queueBudget = 2 * (1 << 20)
-  /// A `send` parked on a full socket buffer is a local client that has stopped reading. This bounds
-  /// the wait so the queued half-close behind it (see `finish`) always runs: with no bound, a client
-  /// that never reads again keeps the socket, the descriptor and this object forever.
+  /// The agent's `MESSAGE_OVERHEAD`: what one queued envelope costs beyond its bytes, so a flood of
+  /// tiny ones is not free against the budget.
+  static let messageOverhead = 64
+  /// A `send` parked on a full socket buffer is a local client that has stopped reading. Per call:
+  /// what makes a parked `send` return at all, so `write` gets to check `drainDeadline`, which is
+  /// the bound on the drain as a whole.
   static let sendTimeout: TimeInterval = 30
+  /// How long past `finish` the queued writes may keep draining to a client that is still reading.
+  static let drainTimeout: TimeInterval = 30
 
   init(
     socket: Int32, remotePort: UInt16, connection: AgentVCSConnection, openTimeout: TimeInterval,
@@ -360,21 +387,25 @@ private final class ForwardedConnection: @unchecked Sendable {
     let abandoned: Bool = lock.withLock {
       if finished { return true }
       stream = id
-      // The timer runs from the moment OPEN is on the wire, not from this enqueue: behind a busy
-      // shared writer the two can be seconds apart, and a timeout measured from here would blame
-      // the agent for a delay this client caused.
+      // Two clocks. The agent's runs from the moment OPEN is on the wire: behind a busy shared
+      // writer that can be seconds after this enqueue, and a timeout measured from here would blame
+      // the agent for a delay this client caused. The writer's runs from here, at the send bound:
+      // a wedged connection never runs the completion, and without this an accepted socket would
+      // wait forever with no reason on the row.
       connection.sendForward(stream: id, opcode: ForwardOpcode.open, body: request) { [weak self] in
-        self?.armOpenTimer()
+        self?.giveUpOnOpen(
+          after: self?.openTimeout ?? 0, "The agent did not answer the forward request.")
       }
+      giveUpOnOpen(after: Self.sendTimeout, "The agent connection is not sending.")
       return false
     }
     if abandoned { connection.releaseForward(id) }
   }
 
-  private func armOpenTimer() {
-    DispatchQueue.global().asyncAfter(deadline: .now() + openTimeout) { [weak self] in
+  private func giveUpOnOpen(after delay: TimeInterval, _ reason: String) {
+    DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
       guard let self, self.lock.withLock({ !self.opened && !self.finished }) else { return }
-      self.onEvent(.failed("The agent did not answer the forward request."))
+      self.onEvent(.failed(reason))
       self.finish(tellAgent: true)
     }
   }
@@ -403,17 +434,28 @@ private final class ForwardedConnection: @unchecked Sendable {
         thread.start()
         return
       }
-      guard lock.withLock({ !finished }) else { return }
+      // A refusal before the pump started. After it, there is no REPLY in the contract: one that
+      // arrives anyway is dropped like a second success, not allowed to end a working forward with
+      // `tellAgent: false` — which is right only here, where the agent's own CLOSE follows.
+      guard lock.withLock({ !finished && !opened }) else { return }
       onEvent(.failed(detail))
-      // The agent sends CLOSE straight after an error reply; releasing the stream here means
-      // `receive()` drops it, which is what it does for any stream this client no longer holds.
+      // Releasing the stream here means `receive()` drops that CLOSE, which is what it does for any
+      // stream this client no longer holds.
       finish(tellAgent: false)
     case ForwardOpcode.data:
       guard !body.isEmpty else { return }
+      let cost = body.count + Self.messageOverhead
+      // Admitted and enqueued under one lock hold: `finish` enqueues the half-close under the same
+      // lock, so an admitted body can never land behind it and fail.
       let admitted: Bool = lock.withLock {
         guard opened, !finished else { return false }
-        queuedToSocket += body.count
-        return queuedToSocket <= Self.queueBudget
+        queuedToSocket += cost
+        guard queuedToSocket <= Self.queueBudget else { return false }
+        writes.async { [self] in
+          write(body)
+          lock.withLock { queuedToSocket -= cost }
+        }
+        return true
       }
       guard admitted else {
         // Over budget only when the local client has stopped reading: `write` is parked on a full
@@ -425,17 +467,16 @@ private final class ForwardedConnection: @unchecked Sendable {
         }
         return
       }
-      writes.async { [self] in
-        write(body)
-        lock.withLock { queuedToSocket -= body.count }
-      }
     case ForwardOpcode.eof:
-      guard lock.withLock({ opened && !finished }) else { return }
       // The remote peer closed its write half. Queued, not immediate, so it lands AFTER the DATA
       // already waiting — a half-close that overtook the bytes before it would truncate the reply.
-      writes.async { [self] in _ = Darwin.shutdown(socket, SHUT_WR) }
-      lock.withLock { sawEOF = true }
-      finishIfBothHalvesAreDone()
+      // Nothing more is done here: once the local client half-closes too, the agent has both halves
+      // and sends CLOSE, and the stream ends on that. Sending our own CLOSE at that point would make
+      // the agent kill the socket with our last DATA still queued in its writer.
+      lock.withLock {
+        guard opened, !finished else { return }
+        writes.async { [self] in _ = Darwin.shutdown(socket, SHUT_WR) }
+      }
     case ForwardOpcode.close:
       finish(tellAgent: false)
     default:
@@ -455,11 +496,9 @@ private final class ForwardedConnection: @unchecked Sendable {
       if count == 0 {
         // The local client half-closed — or `finish` shut this socket's read half down to unblock
         // exactly this read, which `send` tells apart: a finished stream takes nothing. EOF, not
-        // CLOSE: the client may still be reading the reply.
-        if send(ForwardOpcode.eof, Data()) {
-          lock.withLock { sentEOF = true }
-          finishIfBothHalvesAreDone()
-        }
+        // CLOSE: the client may still be reading the reply, and the CLOSE is the agent's to send
+        // once it has both halves.
+        _ = send(ForwardOpcode.eof, Data())
         return
       }
       guard count > 0 else {
@@ -473,9 +512,14 @@ private final class ForwardedConnection: @unchecked Sendable {
       while queuedToAgentIsOverBudget() && !isFinished() { credit.wait() }
       credit.unlock()
       let body = Data(buffer[0..<count])
-      guard send(ForwardOpcode.data, body, then: { [weak self] in self?.returnCredit(body.count) })
-      else { return }
-      lock.withLock { queuedToAgent += body.count }
+      let cost = body.count + Self.messageOverhead
+      // Charged before the enqueue, so a completion can never run ahead of its charge.
+      lock.withLock { queuedToAgent += cost }
+      guard send(ForwardOpcode.data, body, then: { [weak self] in self?.returnCredit(cost) })
+      else {
+        lock.withLock { queuedToAgent -= cost }
+        return
+      }
     }
   }
 
@@ -503,9 +547,13 @@ private final class ForwardedConnection: @unchecked Sendable {
   }
 
   private func write(_ body: Data) {
+    // A write that already failed makes every queued one behind it pointless, and a drain past its
+    // deadline is over whatever the client is still doing.
+    guard lock.withLock({ !deliveryFailed }) else { return }
     let delivered = body.withUnsafeBytes { bytes -> Bool in
       var sent = 0
       while sent < bytes.count {
+        if let deadline = lock.withLock({ drainDeadline }), Date() >= deadline { return false }
         let count = Darwin.send(
           socket, bytes.baseAddress!.advanced(by: sent), bytes.count - sent, 0)
         if count < 0 && errno == EINTR { continue }
@@ -514,13 +562,14 @@ private final class ForwardedConnection: @unchecked Sendable {
       }
       return true
     }
-    // The local client is gone mid-transfer, or has not read for `sendTimeout`: the agent is told
-    // so it stops holding a socket whose bytes nobody will read.
-    if !delivered { finish(tellAgent: true) }
-  }
-
-  private func finishIfBothHalvesAreDone() {
-    guard lock.withLock({ sentEOF && sawEOF && !finished }) else { return }
+    guard !delivered else { return }
+    // The local client is gone mid-transfer, has not read for `sendTimeout`, or has outlived the
+    // drain: nothing behind this write can arrive either, and the agent is told so it stops holding
+    // a socket whose bytes nobody will read.
+    lock.withLock { deliveryFailed = true }
+    if lock.withLock({ !finished }) {
+      onEvent(.failed("A connection stopped reading and was closed."))
+    }
     finish(tellAgent: true)
   }
 
@@ -536,6 +585,20 @@ private final class ForwardedConnection: @unchecked Sendable {
         }
         connection.releaseForward(stream)
       }
+      // The read half now, the write half behind the DATA still queued — enqueued under this lock,
+      // as every DATA is, so nothing admitted can land behind it. Shutting both down here at once
+      // was measured to lose the response tail: a `stop()` with 1.5 MB of a server's response still
+      // queued failed every one of those `send`s with EPIPE, and the local client got a clean EOF
+      // after a quarter of it. (The half-close-then-read shape never showed it, and never could on
+      // macOS: XNU answers `shutdown(SHUT_RDWR)` with `ENOTCONN` once the peer's FIN has shut the
+      // read side, so the old teardown was a no-op exactly where the earlier test looked.)
+      // `SHUT_RD` alone unblocks the pump's `read` (it returns 0, and a finished stream sends
+      // nothing for it); the queued `SHUT_WR` runs once the writes ahead of it have run, which
+      // `drainDeadline` bounds as a whole. The descriptor is freed by `deinit`, once the pump and
+      // the last queued write have let go.
+      drainDeadline = Date().addingTimeInterval(Self.drainTimeout)
+      _ = Darwin.shutdown(socket, SHUT_RD)
+      writes.async { [self] in _ = Darwin.shutdown(socket, SHUT_WR) }
       return false
     }
     guard !alreadyFinished else { return }
@@ -543,18 +606,6 @@ private final class ForwardedConnection: @unchecked Sendable {
     credit.lock()
     credit.broadcast()
     credit.unlock()
-    // The read half now, the write half behind the DATA still queued. Shutting both down here at
-    // once was measured to lose the response tail: a `stop()` with 1.5 MB of a server's response
-    // still queued failed every one of those `send`s with EPIPE, and the local client got a clean
-    // EOF after a quarter of it. (The half-close-then-read shape never showed it, and never could
-    // on macOS: XNU answers `shutdown(SHUT_RDWR)` with `ENOTCONN` once the peer's FIN has shut the
-    // read side, so the old teardown was a no-op exactly where the earlier test looked.) `SHUT_RD`
-    // alone unblocks the pump's `read` (it returns 0, and a finished stream sends nothing for it);
-    // the queued `SHUT_WR` runs once the writes ahead of it have run, which `sendTimeout` bounds
-    // against a client that has stopped reading. The descriptor is freed by `deinit`, once the
-    // pump and the last queued write have let go.
-    _ = Darwin.shutdown(socket, SHUT_RD)
-    writes.async { [self] in _ = Darwin.shutdown(socket, SHUT_WR) }
     onFinished()
   }
 }
@@ -571,10 +622,8 @@ final class PortForwardingModel: ObservableObject {
   /// How the model reaches the agent, so a test can hand it a scripted agent and a connection
   /// stream it controls — the shape `WakefulnessModel.Transport` set.
   struct Transport {
-    /// The service and the lease of the connection it runs on. Never spawns an agent: adding a
-    /// forward is a deliberate user action, so spawning would be defensible, but a forward only
-    /// carries while a client is attached — so the honest answer to "no agent is running" is that
-    /// there is nothing to forward through yet, not a whole agent started on a port's behalf.
+    /// The service and the lease of the connection it runs on. Never spawns an agent; the reasoning
+    /// is on `LocalAgentVCS.forwarding()`, the decision point.
     var forwarding: @Sendable () async throws -> (HostConnectionManager.Lease, AgentForwardService)
     var updates: @Sendable () async -> AsyncStream<HostConnectionManager.Snapshot>
 
@@ -610,6 +659,11 @@ final class PortForwardingModel: ObservableObject {
   private var listeners: [UUID: PortForward] = [:]
   private var watching = false
   private var adding = false
+  /// The connected lease as of the last snapshot, and how many snapshots the watch has consumed.
+  /// `add()` suspends while the service is acquired; a watch that consumed a disconnect in that
+  /// window has nothing to drop yet, and would never see another snapshot to drop it by.
+  private var latest: HostConnectionManager.Lease?
+  private(set) var snapshotsSeen = 0
 
   init(transport: Transport = .live) {
     self.transport = transport
@@ -639,6 +693,8 @@ final class PortForwardingModel: ObservableObject {
         Entry(id: id, remotePort: remote, localPort: forward.localPort, lease: lease))
       draft = ""
       watch()
+      // Reconciled against what the watch has already seen, since it will not see it again.
+      if snapshotsSeen > 0 { drop { $0.lease != latest } }
     } catch {
       message = Self.describe(error)
     }
@@ -667,6 +723,9 @@ final class PortForwardingModel: ObservableObject {
     switch event {
     case .opened: forwards[index].failure = nil
     case .failed(let detail): forwards[index].failure = detail
+    case .stopped(let detail):
+      remove(id)
+      message = detail
     }
   }
 
@@ -683,6 +742,8 @@ final class PortForwardingModel: ObservableObject {
       for await snapshot in await transport.updates() {
         guard let self else { return }
         let live = snapshot.status == .connected ? snapshot.lease : nil
+        latest = live
+        snapshotsSeen += 1
         connected = live != nil
         drop { $0.lease != live }
       }
