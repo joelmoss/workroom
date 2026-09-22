@@ -60,16 +60,21 @@ final class AgentPortForwardingTests: XCTestCase {
   }
 
   /// A listener whose refusals are collected rather than dropped, so a test can assert on them.
-  private func listen(_ connection: AgentVCSConnection, to remotePort: UInt16, failures: Failures)
-    throws -> PortForward
-  {
-    let forward = try connection.forwarding().listen(remotePort: remotePort) { failures.add($0) }
+  private func listen(
+    _ connection: AgentVCSConnection, to remotePort: UInt16, failures: Failures,
+    openTimeout: TimeInterval = PortForward.openTimeout
+  ) throws -> PortForward {
+    let forward = try connection.forwarding().listen(
+      remotePort: remotePort, openTimeout: openTimeout
+    ) { failures.add($0) }
     forwards.append(forward)
     return forward
   }
 
-  private func connect(to forward: PortForward) throws -> TCPClient {
-    let client = try TCPClient(port: forward.localPort)
+  /// `receiveBuffer` shrinks the client's socket buffer so a response of a few hundred KiB is
+  /// enough to park the forward's `send`, which is what the teardown and budget tests need.
+  private func connect(to forward: PortForward, receiveBuffer: Int? = nil) throws -> TCPClient {
+    let client = try TCPClient(port: forward.localPort, receiveBuffer: receiveBuffer)
     clients.append(client)
     return client
   }
@@ -154,17 +159,17 @@ final class AgentPortForwardingTests: XCTestCase {
     XCTAssertEqual(agent.forwards(opcode: 0x05), [stream])
   }
 
-  /// The response survives the teardown that the half-close triggers.
+  /// The response survives the teardown that the half-close triggers, and the client sees EOF.
   ///
-  /// This is the ordinary request/response shape the contract's EOF exists for: the client sends its
-  /// body and half-closes, the peer writes the whole response and half-closes behind it. DATA and
-  /// EOF then arrive back to back on the connection's reader thread, and that second envelope is
-  /// what completes both halves and tears the forward down — so a teardown that shuts the accepted
-  /// socket's WRITE half synchronously does it underneath a queued write that has not run yet, and
-  /// the client gets a truncated response with no error anywhere. The epilogue is big enough to
-  /// outlast the local socket buffer, so the write is genuinely still in flight.
+  /// The shutdown-then-read-the-response shape the contract's EOF exists for: the client sends its
+  /// body and half-closes, the peer writes the whole response and half-closes behind it, both
+  /// halves are done and the forward finishes with most of the response still queued. Not the
+  /// negative control for the drain — on macOS it never was: XNU refuses `shutdown(SHUT_RDWR)`
+  /// with `ENOTCONN` once the peer's FIN has shut the read side, so the old synchronous teardown
+  /// was a no-op here and this shape delivered in full by accident. The control is
+  /// `testStoppingAForwardDrainsTheResponseAlreadyReceived`, where the client's write half is open.
   func testTheResponseSurvivesTheHalfCloseThatEndsTheForward() async throws {
-    let epilogue = 1_000_000
+    let epilogue = 2_000_000
     let agent = try FakeAgent(version: 5, forward: true, forwardEpilogue: epilogue)
     let connection = try await fake(agent)
     let forward = try listen(connection, to: 5173, failures: Failures())
@@ -174,17 +179,69 @@ final class AgentPortForwardingTests: XCTestCase {
     XCTAssertEqual(try client.read(7), Data("request".utf8))
     client.shutdownWrite()
 
-    // Deliberately NOT reading yet. A client that drains as fast as the response arrives never lets
-    // the write block, and the teardown then lands after it rather than during it — the bug is real
-    // and the test would be green by luck. Waiting fills the local socket buffer, parks `write` in
-    // `send` with most of the response still in hand, and puts the teardown squarely on top of it.
+    eventually("the forward did not finish toward the agent", within: 10) {
+      !agent.forwards(opcode: 0x05).isEmpty
+    }
+    let response = try client.read(epilogue, timeout: 20)
+    XCTAssertEqual(response.count, epilogue, "got \(response.count) of \(epilogue) bytes")
+    XCTAssertTrue(response.allSatisfy { $0 == 0xAB })
+    // And a clean EOF behind it, not a hang.
+    XCTAssertEqual(try client.read(1, timeout: 10), Data())
+  }
+
+  /// Ending a forward drains what the agent had already sent before the local client sees EOF.
+  ///
+  /// The server answered and closed while the client's write half was still open — a plain
+  /// `Connection: close` response — and the user removes the forward (or the connection changes
+  /// generation) before the client has read it. A teardown that shut the socket's write half
+  /// synchronously did it underneath the writes still queued: measured, 1.6 MB queued at the
+  /// moment of `stop()` and every one of those `send`s failed with EPIPE, so the client got a
+  /// clean EOF after a fraction of the response and no error anywhere. The write half is now shut
+  /// behind the queued writes; the read half at once.
+  func testStoppingAForwardDrainsTheResponseAlreadyReceived() async throws {
+    let epilogue = 2_000_000
+    let agent = try FakeAgent(
+      version: 5, forward: true, forwardEpilogue: epilogue, forwardEpilogueOnData: true)
+    let connection = try await fake(agent)
+    let forward = try listen(connection, to: 5173, failures: Failures())
+    let client = try connect(to: forward)
+
+    try client.write(Data("request".utf8))
+    // Not reading. Once the agent has the request, the whole response crosses the unix socket in
+    // milliseconds and sits queued on the forward: ~800 KB in the kernel's buffers, the rest on
+    // its write queue behind a parked `send`.
+    eventually("the request never reached the agent") { !agent.forwards(opcode: 0x03).isEmpty }
     try await Task.sleep(for: .milliseconds(300))
+
+    forward.stop()
+
     let response = try client.read(epilogue, timeout: 20)
     XCTAssertEqual(
       response.count, epilogue,
       "the response was truncated by the teardown: got \(response.count) of \(epilogue) bytes")
     XCTAssertTrue(response.allSatisfy { $0 == 0xAB })
-    // And the stream still ended properly toward the agent.
+    XCTAssertEqual(try client.read(1, timeout: 10), Data(), "then EOF, not a hang")
+    eventually("no CLOSE reached the agent") { !agent.forwards(opcode: 0x05).isEmpty }
+  }
+
+  /// The mirror of the agent's `MAX_QUEUED_BYTES`: a local client that has stopped reading is cut
+  /// off with a reason once its unread response passes the budget, rather than buffered without
+  /// limit for as long as the peer keeps sending.
+  func testAClientThatStopsReadingIsCutOffAtTheBudget() async throws {
+    let agent = try FakeAgent(version: 5, forward: true, forwardEpilogue: 8_000_000)
+    let connection = try await fake(agent)
+    let failures = Failures()
+    let forward = try listen(connection, to: 5173, failures: failures)
+    let client = try connect(to: forward, receiveBuffer: 8192)
+
+    try client.write(Data("request".utf8))
+    XCTAssertEqual(try client.read(7), Data("request".utf8))
+    client.shutdownWrite()
+    // And never reads again.
+
+    eventually("the stalled connection was not cut off", within: 10) { !failures.all.isEmpty }
+    XCTAssertTrue(
+      failures.all.first?.contains("stopped reading") == true, "got \(failures.all)")
     eventually("no CLOSE reached the agent") { !agent.forwards(opcode: 0x05).isEmpty }
   }
 
@@ -235,7 +292,7 @@ final class AgentPortForwardingTests: XCTestCase {
 
     XCTAssertEqual(try client.read(1), Data(), "the accepted socket must be closed")
     eventually("the refusal never surfaced") { !failures.all.isEmpty }
-    XCTAssertEqual(failures.all.first, "Connection refused (os error 61)")
+    XCTAssertEqual(failures.all.first, "Could not connect: Connection refused (os error 61)")
     // The CLOSE that follows a refusal lands on a stream the client has already released. It must be
     // DROPPED, not treated as a protocol violation — the connection is shared with VCS and File.
     let reply = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 2)
@@ -260,6 +317,67 @@ final class AgentPortForwardingTests: XCTestCase {
     // agent will never hear about.
     let orphan = try connect(to: forward)
     XCTAssertEqual(try orphan.read(1), Data())
+  }
+
+  /// Exactly one REPLY starts exactly one pump. A peer that answers OPEN twice must not get a second
+  /// reader on the same socket — two would split one write across two DATA envelopes at arbitrary
+  /// boundaries, and each would hold a thread for the connection's life.
+  func testASecondReplyDoesNotStartASecondPump() async throws {
+    let agent = try FakeAgent(version: 5, forward: true, forwardReplies: 2)
+    let connection = try await fake(agent)
+    let forward = try listen(connection, to: 5173, failures: Failures())
+    let client = try connect(to: forward)
+
+    // Let both replies land before the first byte is written, so a second pump would be running.
+    eventually("no OPEN reached the agent") { !agent.forwards(opcode: 0x01).isEmpty }
+    try await Task.sleep(for: .milliseconds(100))
+    try client.write(Data("abc".utf8))
+    XCTAssertEqual(try client.read(3), Data("abc".utf8))
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertEqual(agent.forwards(opcode: 0x03).count, 1, "one write, one DATA, one pump")
+  }
+
+  /// An agent that never answers OPEN is given up on: the accepted socket closes, the reason is
+  /// reported, and the stream is closed toward the agent so an id is never left half-open.
+  func testAnAgentThatNeverAnswersOpenIsGivenUpOn() async throws {
+    let agent = try FakeAgent(version: 5, forward: true, forwardReplies: 0)
+    let connection = try await fake(agent)
+    let failures = Failures()
+    let forward = try listen(connection, to: 5173, failures: failures, openTimeout: 0.3)
+    let client = try connect(to: forward)
+
+    XCTAssertEqual(try client.read(1, timeout: 5), Data(), "the accepted socket must be closed")
+    eventually("the timeout never surfaced") { !failures.all.isEmpty }
+    XCTAssertEqual(failures.all.first, "The agent did not answer the forward request.")
+    eventually("no CLOSE reached the agent") { !agent.forwards(opcode: 0x05).isEmpty }
+  }
+
+  /// A REPLY this build cannot read is a refusal, never a success: a client that pumped bytes into
+  /// a socket the agent may not have made would be worse than one that reports.
+  func testAnUnreadableReplyIsARefusal() async throws {
+    for body in [Data("not json".utf8), Data(#"{"version":2,"result":{"opened":true}}"#.utf8)] {
+      let agent = try FakeAgent(version: 5, forward: true, forwardReplyBody: body)
+      let connection = try await fake(agent)
+      let failures = Failures()
+      let forward = try listen(connection, to: 5173, failures: failures)
+      let client = try connect(to: forward)
+
+      XCTAssertEqual(try client.read(1), Data(), "the accepted socket must be closed")
+      eventually("the refusal never surfaced") { !failures.all.isEmpty }
+      XCTAssertEqual(failures.all.first, "The agent sent an unreadable forward reply.")
+    }
+  }
+
+  /// A Forward envelope on stream 0 is dropped, as `forward.rs` documents for its own side — not
+  /// treated as a protocol violation that fails the whole shared connection. A future agent that
+  /// adds a stream-0 notification must not take VCS, File and Status down on every shipped client.
+  func testAStreamZeroForwardEnvelopeIsDropped() async throws {
+    let agent = try FakeAgent(version: 5, forward: true)
+    let connection = try await fake(agent)
+    agent.pushForward(stream: 0, opcode: 0x03, body: Data("stray".utf8))
+    try await Task.sleep(for: .milliseconds(100))
+    let reply = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 2)
+    XCTAssertNoThrow(try AgentVCSReply<AgentVCSCapabilities>.decode(reply))
   }
 
   // MARK: The shipped agent
@@ -315,14 +433,193 @@ final class AgentPortForwardingTests: XCTestCase {
   }
 }
 
+/// The model behind the Ports row, against a scripted agent and a connection stream the test
+/// drives. Everything a live agent would do is behind `Transport`, the way `WakefulnessModel` is
+/// tested.
+@MainActor
+final class PortForwardingModelTests: XCTestCase {
+  private var fakes: [FakeAgent] = []
+  private var connections: [AgentVCSConnection] = []
+  private var continuation: AsyncStream<HostConnectionManager.Snapshot>.Continuation?
+
+  override func tearDown() {
+    continuation?.finish()
+    for fake in fakes { fake.stop() }
+    fakes = []
+    connections = []
+    super.tearDown()
+  }
+
+  private func lease() -> HostConnectionManager.Lease {
+    HostConnectionManager.Lease(host: .local, generation: UUID())
+  }
+
+  /// A model whose `forwarding` answers with a service on a fresh scripted agent under `lease`, and
+  /// whose connection stream is whatever the test yields.
+  private func model(
+    lease: HostConnectionManager.Lease,
+    forwarding: (@Sendable () async throws -> (HostConnectionManager.Lease, AgentForwardService))? =
+      nil,
+    refusal: String? = nil, refusals: Int = .max
+  ) async throws -> PortForwardingModel {
+    let agent = try FakeAgent(
+      version: 5, forward: true, forwardRefusal: refusal, forwardRefusals: refusals)
+    fakes.append(agent)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: agent.socketPath)
+    connections.append(connection)
+    let service = try connection.forwarding()
+    let (stream, continuation) = AsyncStream<HostConnectionManager.Snapshot>.makeStream()
+    self.continuation = continuation
+    continuation.yield(HostConnectionManager.Snapshot(lease: lease, status: .connected))
+    return PortForwardingModel(
+      transport: .init(
+        forwarding: forwarding ?? { (lease, service) },
+        updates: { stream }))
+  }
+
+  private func settle(
+    _ message: String, _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line
+  ) async {
+    for _ in 0..<200 {
+      if condition() { return }
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertTrue(condition(), message, file: file, line: line)
+  }
+
+  func testAnInvalidDraftIsRefusedWithoutAListener() async throws {
+    let model = try await model(lease: lease())
+    for draft in ["", "0", "65536", "abc", "-1"] {
+      model.draft = draft
+      await model.add()
+      XCTAssertEqual(model.message, "Enter a port between 1 and 65535.", "draft \(draft)")
+      XCTAssertTrue(model.forwards.isEmpty)
+    }
+  }
+
+  func testAddingBindsAListenerAndRemovingUnbindsIt() async throws {
+    let model = try await model(lease: lease())
+    model.draft = " 5173 "
+    await model.add()
+    XCTAssertNil(model.message)
+    XCTAssertEqual(model.draft, "", "the draft is consumed")
+    let entry = try XCTUnwrap(model.forwards.first)
+    XCTAssertEqual(entry.remotePort, 5173)
+    XCTAssertNotEqual(entry.localPort, 0)
+    let client = try TCPClient(port: entry.localPort)
+    try client.write(Data("x".utf8))
+    XCTAssertEqual(try client.read(1), Data("x".utf8))
+    client.close()
+
+    model.remove(entry.id)
+    XCTAssertTrue(model.forwards.isEmpty)
+    await settle("the listener must be gone") { listenerIsGone(entry.localPort) }
+  }
+
+  /// The listener's descriptor is closed by its source's cancel handler, a moment after `stop()`
+  /// returns; a connection accepted in that moment is dropped, so "gone" is polled, not asserted.
+  private func listenerIsGone(_ port: UInt16) -> Bool {
+    guard let client = try? TCPClient(port: port) else { return true }
+    client.close()
+    return false
+  }
+
+  /// A new connected generation takes the forwards made under the old one with it, and only those:
+  /// the agent closes every socket a departing connection opened, so a listener left bound would
+  /// accept connections it could never carry. A snapshot naming the same lease changes nothing.
+  func testAForwardIsDroppedWhenItsLeaseIsNoLongerTheConnectedOne() async throws {
+    let first = lease()
+    let model = try await model(lease: first)
+    model.draft = "5173"
+    await model.add()
+    let entry = try XCTUnwrap(model.forwards.first)
+    await settle("the watch did not see the connection") { model.connected }
+
+    continuation?.yield(HostConnectionManager.Snapshot(lease: first, status: .connected))
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertEqual(model.forwards.count, 1, "the same lease is not a loss")
+
+    continuation?.yield(HostConnectionManager.Snapshot(lease: lease(), status: .connected))
+    await settle("the forward outlived its connection") { model.forwards.isEmpty }
+    XCTAssertEqual(model.message, "The agent connection ended; forwards were closed.")
+    await settle("the listener must be gone") { listenerIsGone(entry.localPort) }
+    XCTAssertTrue(model.connected, "a new generation is still a connection")
+  }
+
+  func testADisconnectDropsEveryForwardAndClearsTheCaptionState() async throws {
+    let current = lease()
+    let model = try await model(lease: current)
+    model.draft = "5173"
+    await model.add()
+    model.draft = "3000"
+    await model.add()
+    XCTAssertEqual(model.forwards.count, 2)
+
+    continuation?.yield(HostConnectionManager.Snapshot(lease: current, status: .disconnected))
+    await settle("the forwards outlived the connection") { model.forwards.isEmpty }
+    XCTAssertFalse(model.connected)
+  }
+
+  /// The commonest refusal — no agent — is said in this row's words, and a `VCSError` is never
+  /// shown as its Swift case.
+  func testAddFailuresAreDescribedForTheRow() async throws {
+    let unavailable = try await model(
+      lease: lease(), forwarding: { throw RepositoryRoutingError.unavailable(.local) })
+    unavailable.draft = "5173"
+    await unavailable.add()
+    XCTAssertEqual(
+      unavailable.message, "No agent is running on this Mac. Open a workroom to start one.")
+
+    let old = try await model(
+      lease: lease(),
+      forwarding: { throw VCSError.backendVersion("Agent does not support port forwarding.") })
+    old.draft = "5173"
+    await old.add()
+    XCTAssertEqual(old.message, "Agent does not support port forwarding.")
+  }
+
+  /// A refusal on a row is a fact about one connection — the dev server was not up yet — and the
+  /// next connection that opens clears it, so the row is never pinned to a stale failure.
+  func testARowsFailureClearsWhenALaterConnectionOpens() async throws {
+    let model = try await model(
+      lease: lease(), refusal: "Connection refused (os error 61)", refusals: 1)
+    model.draft = "5173"
+    await model.add()
+    let entry = try XCTUnwrap(model.forwards.first)
+
+    let refused = try TCPClient(port: entry.localPort)
+    XCTAssertEqual(try refused.read(1), Data())
+    refused.close()
+    await settle("the refusal never reached the row") { model.forwards.first?.failure != nil }
+    XCTAssertEqual(
+      model.forwards.first?.failure, "Could not connect: Connection refused (os error 61)")
+
+    let opened = try TCPClient(port: entry.localPort)
+    try opened.write(Data("x".utf8))
+    XCTAssertEqual(try opened.read(1), Data("x".utf8))
+    opened.close()
+    await settle("the open never cleared the row") { model.forwards.first?.failure == nil }
+  }
+}
+
 // MARK: - Helpers
 
-/// Refusals collected off the forward's error callback, which fires on whichever thread noticed.
+/// Refusals collected off the forward's event callback, which fires on whichever thread noticed.
 final class Failures: @unchecked Sendable {
   private let lock = NSLock()
   private var values: [String] = []
-  func add(_ value: String) { lock.withLock { values.append(value) } }
+  private var openedCount = 0
+  func add(_ event: PortForward.Event) {
+    lock.withLock {
+      switch event {
+      case .opened: openedCount += 1
+      case .failed(let detail): values.append(detail)
+      }
+    }
+  }
   var all: [String] { lock.withLock { values } }
+  var opened: Int { lock.withLock { openedCount } }
 }
 
 /// A loopback TCP echo server: echoes until its peer half-closes, then half-closes back.
@@ -394,9 +691,15 @@ final class TCPClient: @unchecked Sendable {
   private let lock = NSLock()
   private var closed = false
 
-  init(port: UInt16) throws {
+  init(port: UInt16, receiveBuffer: Int? = nil) throws {
     let descriptor = socket(AF_INET, SOCK_STREAM, 0)
     guard descriptor >= 0 else { throw NSError(domain: "TCPClient", code: Int(errno)) }
+    if var receiveBuffer {
+      // Before `connect`: the window is negotiated then, and a small one keeps the peer's writes
+      // parked instead of absorbed.
+      setsockopt(
+        descriptor, SOL_SOCKET, SO_RCVBUF, &receiveBuffer, socklen_t(MemoryLayout<Int>.size))
+    }
     var address = sockaddr_in()
     address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
     address.sin_family = sa_family_t(AF_INET)

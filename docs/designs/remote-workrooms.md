@@ -2290,11 +2290,20 @@ service milestones below so each layer can be reviewed and landed independently.
      its CLOSE has been seen" rule without tracking it: an id is simply never handed out twice.
      Forwards are per HOST, not per workroom, so two workrooms on the same box see one list, and
      **nothing is persisted across launches** — the agent closes every forwarded socket when the
-     client detaches, so a list restored at launch would name addresses that answer nothing. Losing
-     the connection (a drop, or a new generation) closes every accepted socket and stops the
-     listener. Still owed: the Phase 3 remote transport this exists for — the service is not OS-gated
-     and runs on macOS, but a forward is only interesting once the agent is on another box — and the
-     provider hostname that "come back to a running preview URL" needs, which no amount of
+     client detaches, so a list restored at launch would name addresses that answer nothing. Each
+     forward carries the lease of the connection it was made under, and losing that connection (a
+     drop, or a new generation) closes its accepted sockets and stops its listener. Both directions
+     are budgeted at the agent's own `MAX_QUEUED_BYTES`: a local client that stops reading is cut off
+     with a reason, and a local client that writes faster than the agent takes is made to wait on its
+     own socket rather than on the shared writer every other service uses. Ending a forward drains
+     what the agent had already sent before the local client sees EOF. *A trust boundary, stated:*
+     `127.0.0.1` is not uid-scoped, so a forward grants **every process and every user account on
+     the Mac** unauthenticated access to the target — the property `ssh -L` ships with. It amplifies
+     nothing while the agent is the same box; at Phase 3 it is a real boundary, and peer-uid scoping
+     (or a unix-socket forward in place of TCP) is the mitigation if that ever stops being
+     acceptable. Still owed: the Phase 3 remote transport this exists for — the service is not
+     OS-gated and runs on macOS, but a forward is only interesting once the agent is on another box —
+     and the provider hostname that "come back to a running preview URL" needs, which no amount of
      client-side forwarding can supply.
 
    **Two Phase 3 questions this milestone opened rather than answered**, both consequences of the

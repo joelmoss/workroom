@@ -253,11 +253,13 @@ actor HostConnectionManager {
     try connected(host).1.wakefulness()
   }
 
-  /// Not lease-tracked either, for the same reason: a forward has no repository context to go stale,
-  /// and the one failure that matters — the connection ending — reaches every live forward through
-  /// the connection itself, and the listener through `updates(for:)`.
-  func forwarding(host: HostID) throws -> AgentForwardService {
-    try connected(host).1.forwarding()
+  /// Not lease-tracked either, for the same reason: a forward has no repository context to go stale.
+  /// The lease is returned with the service because the one failure that matters — the connection
+  /// ending — reaches every live stream through the connection itself but not the LISTENER, which
+  /// its owner drops by comparing this lease against `updates(for:)`.
+  func forwarding(host: HostID) throws -> (Lease, AgentForwardService) {
+    let (lease, connection) = try connected(host)
+    return (lease, try connection.forwarding())
   }
 
   private func connected(_ host: HostID) throws -> (Lease, any HostServiceConnection) {

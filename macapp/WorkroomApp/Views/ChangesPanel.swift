@@ -502,10 +502,12 @@ private struct PortsSection: View {
       HStack(spacing: 6) {
         Text("Ports").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
         Spacer(minLength: 0)
+        // `.plain`, as every field embedded in a bar or panel here is; `.roundedBorder` is the
+        // sheets' style.
         TextField("Port", text: $model.draft)
-          .textFieldStyle(.roundedBorder)
-          .font(.caption)
-          .frame(width: 64)
+          .textFieldStyle(.plain)
+          .font(.system(.caption, design: .monospaced))
+          .frame(width: 48)
           .onSubmit { Task { await model.add() } }
           .accessibilityIdentifier("ports.field")
         InspectorHeaderButton(systemImage: "plus", help: "Forward a port from this machine's agent")
@@ -514,8 +516,12 @@ private struct PortsSection: View {
         }
         .accessibilityIdentifier("ports.add")
       }
+      if !model.connected {
+        // Said here rather than discovered from `+`: the controls are useless without an agent.
+        Text("No agent is connected.").font(.caption2).foregroundStyle(.secondary)
+      }
       if let message = model.message {
-        Text(message).font(.caption2).foregroundStyle(.red)
+        Text(message).font(.caption2).foregroundStyle(theme.tokens.failure).lineLimit(3)
       }
       ForEach(model.forwards) { forward in
         row(forward)
@@ -523,6 +529,7 @@ private struct PortsSection: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
+    .task { model.watch() }
   }
 
   @ViewBuilder
@@ -547,10 +554,10 @@ private struct PortsSection: View {
         }
       }
       if let failure = forward.failure {
-        Text(failure).font(.caption2).foregroundStyle(.red)
+        Text(failure).font(.caption2).foregroundStyle(theme.tokens.failure).lineLimit(3)
       }
     }
-    .accessibilityIdentifier("ports.row")
+    .accessibilityIdentifier("ports.row.\(forward.remotePort)")
   }
 }
 

@@ -108,12 +108,12 @@ actor LocalAgentVCS {
     }
   }
 
-  /// The local box's port-forwarding service (issue #208). Mirrors `wakefulness(connecting: .never)`,
-  /// including NOT spawning an agent: adding a forward is a deliberate user action, so spawning
-  /// would be defensible, but a forward only carries while a client is attached — so the honest
-  /// answer to "no agent is running" is that there is nothing to forward through yet, not a whole
-  /// agent started on a port's behalf.
-  func forwarding() async throws -> AgentForwardService {
+  /// The local box's port-forwarding service (issue #208), with the lease of the connection it runs
+  /// on. Mirrors `wakefulness(connecting: .never)`, including NOT spawning an agent: adding a
+  /// forward is a deliberate user action, so spawning would be defensible, but a forward only
+  /// carries while a client is attached — so the honest answer to "no agent is running" is that
+  /// there is nothing to forward through yet, not a whole agent started on a port's behalf.
+  func forwarding() async throws -> (HostConnectionManager.Lease, AgentForwardService) {
     guard await manager.snapshot(for: .local).status == .connected else {
       throw RepositoryRoutingError.unavailable(.local)
     }

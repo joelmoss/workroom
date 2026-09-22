@@ -645,14 +645,30 @@ final class FakeAgent: @unchecked Sendable {
   private let forward: Bool
   private let forwardRefusal: String?
   private let forwardEpilogue: Int
+  /// How many REPLY envelopes answer one OPEN: 0 is an agent that never answers, 2 is a peer that
+  /// is not the agent this client was written against.
+  private let forwardReplies: Int
+  /// A REPLY body to send instead of the well-formed one.
+  private let forwardReplyBody: Data?
+  /// How many OPENs `forwardRefusal` applies to; the rest open. A dev server that came up late.
+  private var forwardRefusals: Int
+  /// Send the epilogue in answer to the first DATA rather than to EOF: the shape of a server that
+  /// answers a request and closes, while the client's write half is still open. That distinction
+  /// is load-bearing on macOS — see `testStoppingAForwardDrainsTheResponseAlreadyReceived`.
+  private let forwardEpilogueOnData: Bool
 
   init(
     version: UInt16, status: Bool = false, forward: Bool = false, forwardRefusal: String? = nil,
-    forwardEpilogue: Int = 0
+    forwardEpilogue: Int = 0, forwardReplies: Int = 1, forwardReplyBody: Data? = nil,
+    forwardRefusals: Int = .max, forwardEpilogueOnData: Bool = false
   ) throws {
     self.forward = forward
     self.forwardRefusal = forwardRefusal
     self.forwardEpilogue = forwardEpilogue
+    self.forwardReplies = forwardReplies
+    self.forwardReplyBody = forwardReplyBody
+    self.forwardRefusals = forwardRefusals
+    self.forwardEpilogueOnData = forwardEpilogueOnData
     directory = URL(fileURLWithPath: "/tmp/wra-fake-\(UUID().uuidString.prefix(8))")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     socketPath = directory.appendingPathComponent("a.sock").path
@@ -748,36 +764,57 @@ final class FakeAgent: @unchecked Sendable {
     let body = Data(payload.dropFirst())
     switch opcode {
     case 0x01:  // OPEN
-      if let refusal = forwardRefusal {
+      let refuse = lock.withLock { () -> Bool in
+        guard forwardRefusals > 0 else { return false }
+        forwardRefusals -= 1
+        return true
+      }
+      if let refusal = forwardRefusal, refuse {
         let error = #"{"version":1,"error":{"connect":"\#(refusal)"}}"#
         sendForward(client, stream: stream, opcode: 0x02, body: Data(error.utf8))
         // A refusal is followed immediately by CLOSE, exactly as `forward.rs` does it.
         sendForward(client, stream: stream, opcode: 0x05, body: Data())
       } else {
-        sendForward(
-          client, stream: stream, opcode: 0x02,
-          body: Data(#"{"version":1,"result":{"opened":true}}"#.utf8))
+        let body = forwardReplyBody ?? Data(#"{"version":1,"result":{"opened":true}}"#.utf8)
+        for _ in 0..<forwardReplies {
+          sendForward(client, stream: stream, opcode: 0x02, body: body)
+        }
       }
+    case 0x03 where forwardEpilogueOnData:  // DATA — answered like a server that then closes
+      sendEpilogue(client, stream: stream)
     case 0x03:  // DATA — echoed, so a round trip needs no socket on this side
       sendForward(client, stream: stream, opcode: 0x03, body: body)
+    case 0x04 where forwardEpilogueOnData:
+      break  // The response already went out; the client's EOF is recorded and needs no answer.
     case 0x04:  // EOF
       // With an epilogue, this is the shape a request/response server has: the request body ends,
       // the whole response goes out, and the peer half-closes immediately behind it. DATA and EOF
       // land back to back on the client's reader thread, which is what makes a teardown that does
       // not wait for its own write queue lose the response.
-      // Chunked at 64 KiB, the real agent's read size (`forward.rs` `READ_BUFFER`): one envelope
-      // per chunk means one queued socket write per chunk on the client, and a teardown that lands
-      // between two of them is the truncation. A single envelope would hide it.
-      var sent = 0
-      while sent < forwardEpilogue {
-        let count = min(64 * 1024, forwardEpilogue - sent)
-        sendForward(client, stream: stream, opcode: 0x03, body: Data(repeating: 0xAB, count: count))
-        sent += count
-      }
-      sendForward(client, stream: stream, opcode: 0x04, body: Data())
+      sendEpilogue(client, stream: stream)
     default:
       break  // CLOSE is recorded and needs no answer.
     }
+  }
+
+  /// Chunked at 64 KiB, the real agent's read size (`forward.rs` `READ_BUFFER`): one envelope per
+  /// chunk means one queued socket write per chunk on the client, and a teardown that lands between
+  /// two of them is the truncation. A single envelope would hide it.
+  private func sendEpilogue(_ client: Int32, stream: UInt32) {
+    var sent = 0
+    while sent < forwardEpilogue {
+      let count = min(64 * 1024, forwardEpilogue - sent)
+      sendForward(client, stream: stream, opcode: 0x03, body: Data(repeating: 0xAB, count: count))
+      sent += count
+    }
+    sendForward(client, stream: stream, opcode: 0x04, body: Data())
+  }
+
+  /// An unsolicited Forward envelope to every connected client — what a future agent's stream-0
+  /// notification, or a misbehaving peer's stray frame, looks like on the wire.
+  func pushForward(stream: UInt32, opcode: UInt8, body: Data = Data()) {
+    let clients = lock.withLock { self.clients }
+    for client in clients { sendForward(client, stream: stream, opcode: opcode, body: body) }
   }
 
   /// Deliberately takes no lock: it is called from the per-client serve thread with that client's

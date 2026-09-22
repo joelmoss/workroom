@@ -314,11 +314,16 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   }
 
   /// One Forward envelope: the opcode byte, then the body. Best effort — a forward whose connection
-  /// has gone is told so by `fail()`, which is the only signal it needs.
-  func sendForward(stream: UInt32, opcode: UInt8, body: Data) {
+  /// has gone is told so by `fail()`, which is the only signal it needs. `then` runs once the
+  /// envelope has left this process, or once it is certain never to: a forward's flow control and
+  /// its open timer both need "on the wire", which the enqueue is not.
+  func sendForward(
+    stream: UInt32, opcode: UInt8, body: Data, then: (@Sendable () -> Void)? = nil
+  ) {
     var payload = Data([opcode])
     payload.append(body)
     writes.async { [self] in
+      defer { then?() }
       guard lock.withLock({ !closed }) else { return }
       do {
         try Self.send(
@@ -539,10 +544,13 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           let length = header[5..<9].reduce(0) { ($0 << 8) | Int($1) }
           let service = header[0]
           // Stream 0 is the agent's own: File watch events and the Status service's ceiling prompt,
-          // never a reply. On the VCS service it has always been a violation and still is, and
-          // `forward.rs` carries nothing there either.
+          // never a reply. On the VCS service it has always been a violation and still is.
+          // `forward.rs` carries nothing there today and documents a stream-0 envelope as DROPPED,
+          // so it is admitted here and dropped by `deliver(forward:)`: a future agent that adds a
+          // stream-0 Forward notification must not fail every shipped client's whole connection.
           let streamIsValid =
             stream > 0 || service == Self.fileService || service == Self.statusService
+            || service == Self.forwardService
           guard
             service == Self.vcsService || service == Self.fileService
               || service == Self.statusService || service == Self.forwardService, streamIsValid,
@@ -620,7 +628,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// the whole connection, taking VCS, File, Status and every other forward down over the normal
   /// shape of a race.
   private func deliver(forward payload: Data, stream: UInt32) {
-    guard let opcode = payload.first else { return }
+    guard stream > 0, let opcode = payload.first else { return }
     let handler = lock.withLock { forwardHandlers[stream] }
     // Copied out of the slice: the handler hands the body to a socket write on another queue, and a
     // `Data` slice carries its parent's whole buffer with it.
