@@ -619,6 +619,11 @@ fn connect_and_run(task: ForwardTask) {
         retire(&task, Some(Refusal("connect", detail)));
         return;
     };
+    // What a forward carries is small writes both ways (chunked HTTP, HMR frames, a wire protocol),
+    // and the app already sets this on its accepted socket: without it here, the other hop still
+    // pays Nagle plus delayed ACK. Before the clones, which share the descriptor and so the option.
+    // Best effort: a socket without it still forwards correctly, only slower.
+    let _ = socket.set_nodelay(true);
 
     // The clones are how the reader thread reads, and how `Forwards::drop`, a client CLOSE and the
     // overflow kill reach this socket. Both or neither: a forward whose shutdown handle failed to
