@@ -153,6 +153,7 @@ private struct AwakeCeilingToastView: View {
         }
         Button("Keep awake") { model.keep() }
           .controlSize(.small)
+          .disabled(model.keepInFlight != nil)
           .accessibilityIdentifier("wakefulness.keepAwake")
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -180,6 +181,11 @@ private struct AwakeCeilingToastView: View {
   }
 
   private var detail: String {
+    // A retry with no prompt behind it (a keep from the badge, on a box past an advisory ceiling
+    // with ask off): nothing is counting down and nothing will sleep, so say neither.
+    if model.prompt.keepFailed, model.prompt.agentDeadline == nil {
+      return "The request to keep it awake did not reach the agent."
+    }
     let remaining = model.prompt.remaining(now: now) ?? 0
     let countdown = wakefulnessDuration(remaining.rounded())
       .formatted(.units(allowed: [.minutes, .seconds], width: .narrow))

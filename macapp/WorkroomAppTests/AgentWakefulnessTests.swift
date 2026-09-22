@@ -486,6 +486,46 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertTrue(state.isShowing, "not cleared on the next tick")
   }
 
+  /// A keep from the badge knows which prompt it answers (the last reply's), and does not forget a
+  /// dismissal that came before it: the agent applies the keep on its next tick, and a reply issued
+  /// in that second still says the prompt is pending.
+  func testABadgeKeepAnswersTheKnownPromptAndKeepsAnEarlierDismissal() throws {
+    var state = AwakeCeilingPromptState()
+    state.keep(answering: 15600)
+    XCTAssertEqual(state.answeredDeadline ?? 0, 15600, accuracy: 0.001)
+    state.reconcile(try status(), now: origin)
+    XCTAssertFalse(state.isShowing, "answered by the badge")
+
+    var dismissed = AwakeCeilingPromptState()
+    dismissed.raise(raised, promptTimeout: 600, now: origin)
+    dismissed.dismiss()
+    dismissed.keep(answering: nil)
+    XCTAssertEqual(
+      dismissed.answeredDeadline ?? 0, 15600, accuracy: 0.001, "the dismissal survives")
+    dismissed.reconcile(try status(), now: origin)
+    XCTAssertFalse(dismissed.isShowing)
+  }
+
+  /// The retry after a failed badge keep carries the prompt's identity, so a reply about that
+  /// prompt neither demotes it to an ordinary card (losing the failure line and the grace) nor
+  /// withdraws it.
+  func testAFailedBadgeKeepsRetryIsNotDemotedByAReply() throws {
+    var state = AwakeCeilingPromptState()
+    state.keep(answering: 15600)
+    let sent = state
+    state.restoreAfterFailedKeep(sent, now: origin)
+    XCTAssertTrue(state.keepFailed)
+    XCTAssertEqual(state.agentDeadline ?? 0, 15600, accuracy: 0.001)
+    state.reconcile(try status([(#""monotonic":15000.0"#, #""monotonic":15599.0"#)]), now: origin)
+    XCTAssertTrue(state.keepFailed, "still the retry")
+    XCTAssertEqual(
+      try XCTUnwrap(state.remaining(now: origin)), AwakeCeilingPromptState.retryGrace,
+      accuracy: 0.001,
+      "the grace is the retry's clock, not the agent's second")
+    state.reconcile(try status(Self.notPending), now: origin)
+    XCTAssertTrue(state.isShowing, "not withdrawn either")
+  }
+
   /// A `keep` from the badge, with no card up, that fails: the grace IS the card, so the click is
   /// answered with the failure and a retry rather than silence.
   func testAFailedKeepWithNoCardRaisesTheFailureAsACard() {
@@ -794,8 +834,12 @@ final class AgentWakefulnessTests: XCTestCase {
     script.hold(call: 2)
     let inFlight = Task { await model.refresh() }
     await eventually("the poll is on the wire") { script.calls == 2 }
+    // The reply the watch issues after the event (call 3) still reports the prompt; the held
+    // poll (call 2) is older and does not.
+    script.reply = .success(try status(Self.ticked(to: 15015)))
     continuation.yield(raised)
     await eventually("the event raised the card") { model.prompt.isShowing }
+    script.reply = .success(try status(Self.notPending + Self.ticked(to: 15010)))
     script.release()
     await inFlight.value
     XCTAssertTrue(
@@ -804,6 +848,45 @@ final class AgentWakefulnessTests: XCTestCase {
     script.reply = .success(try status(Self.notPending + Self.ticked(to: 15020)))
     await model.refresh()
     XCTAssertFalse(model.prompt.isShowing, "a reply requested after the prompt does")
+    continuation.finish()
+  }
+
+  /// A failed reply is no reading: it must not bar an older successful one from being applied. It
+  /// still blanks the verdict when nothing newer is outstanding.
+  @MainActor
+  func testAFailedReplyDoesNotBarAnOlderSuccessfulOne() async throws {
+    let script = Script(try status(Self.notPending))
+    let model = WakefulnessModel(
+      transport: .init(status: script.status, keep: {}, prompts: { throw Unavailable() }))
+    script.hold(call: 1)
+    let older = Task { await model.refresh() }
+    await eventually("the older request is on the wire") { script.calls == 1 }
+    script.reply = .failure(Unavailable())
+    await model.refresh()
+    XCTAssertNil(model.status, "the newest outstanding reply failed")
+    script.reply = .success(try status(Self.notPending))
+    script.release()
+    await older.value
+    XCTAssertNotNil(model.status, "the older success was still applied")
+    script.reply = .failure(Unavailable())
+    await model.refresh()
+    XCTAssertNil(model.status)
+  }
+
+  /// A prompt event that sat buffered while the watch retried describes a prompt the agent may have
+  /// answered since. The event raises the card and the reply the watch then issues settles it.
+  @MainActor
+  func testAnEventForAPromptTheAgentAlreadyAnsweredIsWithdrawnByTheFollowUpReply() async throws {
+    let script = Script(try status(Self.notPending))
+    let (prompts, continuation) = AsyncStream<AgentCeilingPrompt>.makeStream()
+    let model = WakefulnessModel(
+      transport: .init(status: script.status, keep: {}, prompts: script.prompts(prompts)))
+    model.startWatchingPrompts()
+    await eventually("the watch is up") { script.calls == 1 }
+    script.reply = .success(try status(Self.notPending + Self.ticked(to: 15010)))
+    continuation.yield(raised)
+    await eventually("the follow-up reply was issued") { script.calls == 2 }
+    await eventually("and it withdrew the resolved prompt") { !model.prompt.isShowing }
     continuation.finish()
   }
 
@@ -817,6 +900,7 @@ final class AgentWakefulnessTests: XCTestCase {
       transport: .init(status: script.status, keep: {}, prompts: script.prompts(prompts)))
     model.startWatchingPrompts()
     await eventually("the watch is up") { script.calls == 1 }
+    script.reply = .success(try status(Self.ticked(to: 15010)))
     continuation.yield(raised)
     await eventually("raised") { model.prompt.isShowing }
     continuation.finish()
@@ -970,6 +1054,7 @@ final class AgentWakefulnessTests: XCTestCase {
         status: script.status, keep: { throw Unavailable() }, prompts: script.prompts(prompts)))
     model.startWatchingPrompts()
     await eventually("the watch is up") { script.calls == 1 }
+    script.reply = .success(try status(Self.ticked(to: 15010)))
     continuation.yield(raised)
     await eventually("raised") { model.prompt.isShowing }
     model.keep()

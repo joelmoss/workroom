@@ -429,6 +429,7 @@ private struct WakefulnessBadge: View {
               image
             }
             .buttonStyle(.plain)
+            .disabled(model.keepInFlight != nil)
             .accessibilityAction(named: "Keep awake") { model.keep() }
           } else {
             image

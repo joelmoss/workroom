@@ -324,10 +324,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // the main window; the menu-bar item keeps the app alive with none) is a box that sleeps under
     // a running job if nobody is listening.
     //
-    // Not under XCTest, for the same reason as the shell probe above: the watch reconnects to the
+    // Not under test, for the same reason as the shell probe above: the watch reconnects to the
     // developer's REAL agent socket, and a test host talking to that agent every ten seconds is
     // both a leak out of the test sandbox and a source of hangs in tests that own their own agents.
-    if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+    // Both test paths, as `DefaultsSuite` gates them: a hosted unit run sets
+    // `XCTestConfigurationFilePath`; an app launched by XCUITest does not, and is known by its
+    // fixture flags.
+    let underTest =
+      ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+      || UITestFixture.isActive || UITestFixture.isolatesPreferences
+    if !underTest {
       MainActor.assumeIsolated { WakefulnessModel.shared.startWatchingPrompts() }
     }
 

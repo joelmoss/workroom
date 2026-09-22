@@ -311,14 +311,17 @@ struct AwakeCeilingPromptState: Equatable {
   /// to withdraw — a retry into `Suppressed` still works, and a `keep` whose reply was lost is
   /// harmless to repeat.
   mutating func reconcile(_ status: AgentWakefulness, now: Date) {
+    // The retry card is the user's, whatever the agent says about the prompt: not withdrawn, not
+    // corrected, not replaced by the prompt it was a retry for. Its grace is its clock.
+    if keepFailed { return }
     guard status.promptPending, let deadline = status.promptDeadline,
       let remaining = status.promptRemaining
     else {
-      if isShowing, !keepFailed { clear() }
+      if isShowing { clear() }
       return
     }
     if isShowing, agentDeadline == deadline {
-      if !keepFailed { expiresAt = now.addingTimeInterval(remaining) }
+      expiresAt = now.addingTimeInterval(remaining)
       return
     }
     if answeredDeadline == deadline { return }
@@ -326,25 +329,28 @@ struct AwakeCeilingPromptState: Equatable {
     agentDeadline = deadline
     answeredDeadline = nil
     expiresAt = now.addingTimeInterval(remaining)
-    keepFailed = false
   }
 
   /// The user said keep it awake. The agent restarts the ceiling and will raise a fresh prompt a
   /// whole ceiling later, so nothing is left to show — PROVIDED the agent heard it. See
-  /// `restoreAfterFailedKeep`.
-  mutating func keep() { answer() }
+  /// `restoreAfterFailedKeep`. `answering` is the pending prompt's deadline as the last reply
+  /// reported it, for a keep from the badge with no card up: the agent applies the keep on its next
+  /// tick, and a reply issued in that second still says the prompt is pending.
+  mutating func keep(answering deadline: Double? = nil) { answer(deadline) }
 
   /// Dismissed — the same outcome as the deadline passing, which is the point of OQ22's "no answer
   /// lets the box sleep": the app never tells the agent anything here. The prompt is remembered as
   /// answered so the agent's next reply does not put it back.
-  mutating func dismiss() { answer() }
+  mutating func dismiss(answering deadline: Double? = nil) { answer(deadline) }
 
   /// The card's connection is gone, or the agent says nothing is pending: cleared without being
   /// answered, so the same prompt is raised again if a later reply still reports it.
   mutating func withdraw() { clear() }
 
-  private mutating func answer() {
-    let answered = agentDeadline
+  /// The card's prompt, else the one the caller knows about, else whatever was already answered: a
+  /// badge keep after a dismissal must not forget the dismissal.
+  private mutating func answer(_ known: Double?) {
+    let answered = agentDeadline ?? known ?? answeredDeadline
     clear()
     answeredDeadline = answered
   }
@@ -358,8 +364,11 @@ struct AwakeCeilingPromptState: Equatable {
   /// offered. A `keep` from the badge, with no card up, restores an empty state the same way: the
   /// grace IS the card.
   mutating func restoreAfterFailedKeep(_ previous: AwakeCeilingPromptState, now: Date) {
-    if isShowing, agentDeadline != previous.agentDeadline { return }
+    // The prompt the keep was for: the card's, or (a badge keep) the one it answered.
+    let identity = previous.agentDeadline ?? previous.answeredDeadline
+    if isShowing, agentDeadline != identity { return }
     self = previous
+    agentDeadline = identity
     answeredDeadline = nil
     keepFailed = true
     let grace = now.addingTimeInterval(Self.retryGrace)
@@ -490,16 +499,26 @@ final class WakefulnessModel: ObservableObject {
   }
 
   /// Sends one `status` and applies its reply unless a newer one has been applied meanwhile.
+  /// Returns the reply whenever the request succeeded, applied or not: the watch needs to know its
+  /// subscription happened, which is a property of the round trip, not of the ordering.
+  ///
+  /// A failed request takes no place in the ordering — it is not a newer reading, it is no reading
+  /// — but it does blank the verdict when nothing newer is outstanding: no agent, no badge.
   @discardableResult
   private func observe(
     issued: (generation: Int, request: Int),
     status: @Sendable () async throws -> AgentWakefulness
   ) async -> AgentWakefulness? {
     let next = try? await status()
-    guard !Task.isCancelled, issued.request > newestApplied else { return nil }
+    guard !Task.isCancelled else { return next }
+    guard let next else {
+      if issued.request == requestsIssued, self.status != nil { self.status = nil }
+      return nil
+    }
+    guard issued.request > newestApplied else { return next }
     newestApplied = issued.request
     if next != self.status { self.status = next }
-    if let next, issued.generation == promptGeneration {
+    if issued.generation == promptGeneration {
       prompt.reconcile(next, now: Date())
     }
     return next
@@ -541,9 +560,15 @@ final class WakefulnessModel: ObservableObject {
         try? await Task.sleep(for: Self.pollInterval)
         continue
       }
+      var raisedAny = false
       for await raised in prompts {
+        raisedAny = true
         promptGeneration += 1
         prompt.raise(raised, promptTimeout: first.promptTimeoutSeconds, now: Date())
+        // An event is a trigger, not the last word: one that sat buffered while the watch retried
+        // its first reply may describe a prompt the agent has since answered (a keystroke, another
+        // Workroom's keep). The reply issued now, under the new generation, settles it.
+        await refresh()
       }
       // The connection that carried the prompt is gone. Its card would send `keep` to nothing: if
       // the agent is still there with the prompt still pending, the next connection's first reply
@@ -551,6 +576,9 @@ final class WakefulnessModel: ObservableObject {
       // answered — withdrawn — so that reply CAN raise it again. A failed keep's retry card stays:
       // its `keep` reconnects on its own.
       if prompt.isShowing, !prompt.keepFailed { prompt.withdraw() }
+      // A stream that ended without carrying anything (handed out already finished, the connection
+      // replaced between the two acquisitions) must not spin this loop.
+      if !raisedAny { try? await Task.sleep(for: Self.pollInterval) }
     }
   }
 
@@ -575,7 +603,7 @@ final class WakefulnessModel: ObservableObject {
   func keep() {
     guard keepInFlight == nil else { return }
     let raised = prompt
-    prompt.keep()
+    prompt.keep(answering: status?.promptDeadline)
     promptGeneration += 1
     let transport = transport
     keepInFlight = Task { [weak self] in
@@ -588,12 +616,16 @@ final class WakefulnessModel: ObservableObject {
     }
   }
 
-  private var keepInFlight: Task<Void, Never>?
+  /// Published so the buttons can show the click was taken: a second click is dropped while one is
+  /// in flight, and a reconnecting keep can take seconds.
+  @Published private(set) var keepInFlight: Task<Void, Never>?
 
   /// Waits, briefly, for a `keep` that is on its way. Quitting right after the click would
   /// otherwise exit with the card cleared and the request never sent, and the agent's deadline
-  /// where it was. Bounded: a `keep` that is reconnecting is worth two seconds of a quit, not more.
-  func drainKeep(timeout: Duration = .seconds(2)) async {
+  /// where it was. Bounded, at a little more than a reconnect costs (a 2 s handshake, a 2 s
+  /// capabilities probe, the request itself): a `keep` that is respawning an agent as well is
+  /// worth no more of a quit than that.
+  func drainKeep(timeout: Duration = .seconds(6)) async {
     // Polled rather than awaited: `await task.value` cannot be given up on, and a task group
     // waits for every child before it returns, so the bound would not have been one.
     let deadline = ContinuousClock.now + timeout
@@ -603,7 +635,7 @@ final class WakefulnessModel: ObservableObject {
   }
 
   func dismissPrompt() {
-    prompt.dismiss()
+    prompt.dismiss(answering: status?.promptDeadline)
     promptGeneration += 1
   }
 

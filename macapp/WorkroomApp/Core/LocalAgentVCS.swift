@@ -96,17 +96,13 @@ actor LocalAgentVCS {
 
   /// `ensureConnected` without the spawn. Not routed through `connecting`, whose one attempt is
   /// shared by every caller: a spawning caller that joined a non-spawning attempt would inherit a
-  /// refusal it did not ask for. Instead this defers to any attempt already in flight (`.connecting`
-  /// — the next retry finds it connected), and otherwise makes its own; a spawning attempt that
-  /// starts meanwhile replaces this generation, which fails this call and succeeds theirs.
+  /// refusal it did not ask for. Instead this fills a gap and nothing else: the manager decides in
+  /// one step whether there is a gap (`.connecting` — the next retry finds it connected), so an
+  /// attempt some other caller is waiting on is never replaced by this one. A spawning attempt that
+  /// starts a moment later replaces this generation, which fails this call and succeeds theirs.
   private func reconnect() async throws {
-    switch await manager.snapshot(for: .local).status {
-    case .connected: return
-    case .connecting: throw RepositoryRoutingError.unavailable(.local)
-    case .disconnected: break
-    }
     let resolveSocketPath = self.resolveSocketPath
-    _ = try await manager.connect(host: .local) {
+    _ = try await manager.connectIfDisconnected(host: .local) {
       let path = try await runBlocking { try resolveSocketPath() }
       return try await AgentVCSConnection.connect(host: .local, socketPath: path)
     }

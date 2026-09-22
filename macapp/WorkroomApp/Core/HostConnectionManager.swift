@@ -124,6 +124,24 @@ actor HostConnectionManager {
     return stream
   }
 
+  /// `connect`, unless a connection is already there (returned as is) or one is being made (an
+  /// error: the next retry finds it). One actor step from the check to the `invalidate` that
+  /// `connect` opens with, so a caller that only wants to fill a gap can never replace an attempt
+  /// some other caller is waiting on — which a snapshot read across a suspension could.
+  func connectIfDisconnected(
+    host: HostID,
+    using factory: @escaping @Sendable () async throws -> any HostServiceConnection
+  ) async throws -> Lease {
+    if let slot = slots[host] {
+      switch slot.status {
+      case .connected: return slot.lease
+      case .connecting: throw RepositoryRoutingError.unavailable(host)
+      case .disconnected: break
+      }
+    }
+    return try await connect(host: host, using: factory)
+  }
+
   /// Explicit connection attempts replace earlier attempts. A late successful handshake is closed
   /// rather than installed over its successor. There is no automatic reconnect or write retry.
   func connect(
