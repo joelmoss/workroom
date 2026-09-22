@@ -64,20 +64,52 @@ actor LocalAgentVCS {
     }
   }
 
+  /// What `wakefulness(connecting:)` may do about a connection that is not there.
+  enum Connecting: Sendable {
+    /// Fail. A poll: no agent, no badge — starting a whole agent so a badge can say IDLE would be
+    /// the tail wagging the dog.
+    case never
+    /// Connect to an agent that is listening; never start one. The prompt watch: its whole job is
+    /// to be subscribed, and a watch that waited for an unrelated VCS read to reconnect it was off
+    /// after every drop.
+    case reconnect
+    /// `ensureConnected`: connect, or start an agent and connect. A user's "Keep awake": a deliberate
+    /// click on a box the agent said was about to sleep, and a dropped connection is not a reason
+    /// to let it.
+    case spawn
+  }
+
   /// The local box's wakefulness service (issue #208).
-  ///
-  /// A poll deliberately does NOT spawn an agent (`spawning: false`): `ensureConnected` starts one,
-  /// and starting a whole agent so a badge can say IDLE would be the tail wagging the dog. No agent
-  /// means no badge. A user's "Keep awake" is the one caller that passes `true`: it is a deliberate
-  /// click on a box the agent said was about to sleep, and a dropped connection is not a reason to
-  /// let it — reconnecting (and, if the agent is gone, respawning) is what the click asked for.
-  func wakefulness(spawning: Bool = false) async throws -> AgentWakefulnessService {
-    if spawning {
+  func wakefulness(connecting: Connecting) async throws -> AgentWakefulnessService {
+    switch connecting {
+    case .never:
+      guard await manager.snapshot(for: .local).status == .connected else {
+        throw RepositoryRoutingError.unavailable(.local)
+      }
+    case .reconnect:
+      try await reconnect()
+    case .spawn:
       try await ensureConnected(host: .local)
-    } else if await manager.snapshot(for: .local).status != .connected {
-      throw RepositoryRoutingError.unavailable(.local)
     }
     return try await manager.wakefulness(host: .local)
+  }
+
+  /// `ensureConnected` without the spawn. Not routed through `connecting`, whose one attempt is
+  /// shared by every caller: a spawning caller that joined a non-spawning attempt would inherit a
+  /// refusal it did not ask for. Instead this defers to any attempt already in flight (`.connecting`
+  /// — the next retry finds it connected), and otherwise makes its own; a spawning attempt that
+  /// starts meanwhile replaces this generation, which fails this call and succeeds theirs.
+  private func reconnect() async throws {
+    switch await manager.snapshot(for: .local).status {
+    case .connected: return
+    case .connecting: throw RepositoryRoutingError.unavailable(.local)
+    case .disconnected: break
+    }
+    let resolveSocketPath = self.resolveSocketPath
+    _ = try await manager.connect(host: .local) {
+      let path = try await runBlocking { try resolveSocketPath() }
+      return try await AgentVCSConnection.connect(host: .local, socketPath: path)
+    }
   }
 
   private func isBackendVersion(_ error: Error) -> Bool {

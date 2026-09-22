@@ -4,7 +4,8 @@ import XCTest
 
 /// The app's half of the wakefulness service (issue #208): the wire decode, the protocol-version
 /// gate, the settings-to-flags mapping, the ceiling prompt's state machine, and the model's rules
-/// (one poll loop, reconcile from every reply, the poll-before-event race, the staleness rule).
+/// (one poll loop, reconcile from every reply, the poll-before-event and poll-before-click races,
+/// reply ordering, answered prompts, the retry after a failed keep).
 ///
 /// `FakeAgent` (`AgentFileIntegrationTests`) is the transport double throughout, for the same reason
 /// the File service uses it: the cases worth pinning are ones the real binary cannot produce on
@@ -561,14 +562,25 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertFalse(state.isShowing, "ticking an already-cleared prompt is a no-op")
   }
 
-  func testDismissingIsTheSameAsLettingItExpire() {
+  /// Both clear the card and tell the agent nothing. They differ in one thing: a dismissal is an
+  /// answer, remembered so a later reply cannot put the same prompt back; an expiry is not, so a
+  /// later reply that still reports the prompt may (a retry card's grace outlasting it, say).
+  func testDismissingAndExpiringBothClearTheCardButOnlyDismissingAnswers() throws {
     var dismissed = AwakeCeilingPromptState()
     dismissed.raise(raised, promptTimeout: 600, now: origin)
     dismissed.dismiss()
     var expired = AwakeCeilingPromptState()
     expired.raise(raised, promptTimeout: 600, now: origin)
     expired.tick(now: origin.addingTimeInterval(600))
-    XCTAssertEqual(dismissed, expired)
+    XCTAssertFalse(dismissed.isShowing)
+    XCTAssertFalse(expired.isShowing)
+    XCTAssertEqual(dismissed.answeredDeadline ?? 0, 15600, accuracy: 0.001)
+    XCTAssertNil(expired.answeredDeadline)
+    let stillPending = try status()
+    dismissed.reconcile(stillPending, now: origin)
+    expired.reconcile(stillPending, now: origin)
+    XCTAssertFalse(dismissed.isShowing, "answered")
+    XCTAssertTrue(expired.isShowing, "not answered")
   }
 
   /// A second prompt supersedes the first rather than stacking: there is one box and one ceiling.
@@ -811,27 +823,209 @@ final class AgentWakefulnessTests: XCTestCase {
     await eventually("withdrawn with the connection") { !model.prompt.isShowing }
   }
 
-  /// The reader's staleness rule: a classifier that has not ticked between two polls is saying
-  /// nothing about the box now. Its last verdict is not shown; when it ticks again, it is.
+  /// Two replies from inside one 1 s agent tick carry the same `monotonic` — the watch's first reply
+  /// and the poll's do on every connection. Both are taken: there is no staleness rule here (the
+  /// shim's is the one that matters, and it fails awake), and one that hid the second reply blanked
+  /// the badge and its "Keep awake" for a whole poll interval.
   @MainActor
-  func testAClassifierThatStoppedTickingIsNotShown() async throws {
+  func testTwoRepliesFromOneAgentTickAreBothTaken() async throws {
     let script = Script(try status(Self.notPending))
     let model = WakefulnessModel(
       transport: .init(status: script.status, keep: {}, prompts: { throw Unavailable() }))
     await model.refresh()
+    await model.refresh()
     XCTAssertNotNil(model.status)
+  }
+
+  /// Two `status` requests in flight (the watch's and the poll's) resume in either order. The older
+  /// reply, applied second, must not run the verdict backwards or withdraw what the newer raised.
+  @MainActor
+  func testAnOlderReplyDoesNotOverrideANewerOne() async throws {
+    let script = Script(try status(Self.notPending))
+    let model = WakefulnessModel(
+      transport: .init(status: script.status, keep: {}, prompts: { throw Unavailable() }))
+    script.hold(call: 1)
+    let older = Task { await model.refresh() }
+    await eventually("the older request is on the wire") { script.calls == 1 }
+    script.reply = .success(try status(Self.ticked(to: 15010)))
     await model.refresh()
-    XCTAssertNil(model.status, "same monotonic twice while running: stale")
+    XCTAssertTrue(model.prompt.isShowing, "the newer reply raised the prompt")
+    XCTAssertEqual(model.status?.monotonic ?? 0, 15010, accuracy: 0.001)
+    script.reply = .success(try status(Self.notPending))
+    script.release()
+    await older.value
+    XCTAssertTrue(model.prompt.isShowing, "the older reply was dropped")
+    XCTAssertEqual(model.status?.monotonic ?? 0, 15010, accuracy: 0.001, "and so was its verdict")
+  }
+
+  /// The agent remembers a connection for prompts when it first asks for `status`. A first request
+  /// that never reached the wire leaves the watch subscribed to nothing, so it must not sit in the
+  /// stream: no reply, no stream, try again.
+  @MainActor
+  func testTheWatchDoesNotEnterTheStreamWithoutItsFirstReply() async throws {
+    let script = Script(try status(Self.notPending))
+    script.reply = .failure(Unavailable())
+    let (prompts, continuation) = AsyncStream<AgentCeilingPrompt>.makeStream()
+    let model = WakefulnessModel(
+      transport: .init(status: script.status, keep: {}, prompts: script.prompts(prompts)))
+    model.startWatchingPrompts()
+    await eventually("the watch asked") { script.calls == 1 }
+    continuation.yield(raised)
+    try await Task.sleep(for: .milliseconds(200))
+    XCTAssertFalse(model.prompt.isShowing, "the stream was not consumed")
+    continuation.finish()
+  }
+
+  /// A dismissal tells the agent nothing, so the agent keeps reporting the prompt pending; the next
+  /// reply must not put the card the user just closed straight back. A different prompt may.
+  @MainActor
+  func testADismissedPromptStaysDismissedThroughLaterReplies() async throws {
+    let script = Script(try status())
+    let model = WakefulnessModel(
+      transport: .init(status: script.status, keep: {}, prompts: { throw Unavailable() }))
+    await model.refresh()
+    XCTAssertTrue(model.prompt.isShowing)
+    model.dismissPrompt()
+    script.reply = .success(try status(Self.ticked(to: 15010)))
+    await model.refresh()
+    XCTAssertFalse(model.prompt.isShowing, "same prompt, already answered")
     script.reply = .success(
-      try status(Self.notPending + Self.ticked(to: 15010)))
+      try status(
+        Self.ticked(to: 30000) + [(#""prompt_deadline":15600.0"#, #""prompt_deadline":30600.0"#)]))
     await model.refresh()
-    XCTAssertNotNil(model.status, "it ticked again")
-    // A macOS agent never ticks and never claims to: not stale, just not running.
-    script.reply = .success(
-      try status(Self.notPending + [(#""running":true"#, #""running":false"#)]))
+    XCTAssertTrue(model.prompt.isShowing, "a different prompt is new")
+  }
+
+  /// The same, for `keep`: the agent applies it on its next tick, and a reply that crossed the click
+  /// still says pending. Not re-raised — and if the `keep` then fails, the card that comes back is
+  /// the retry, flagged as such, even though a crossing reply tried to put the original back first.
+  @MainActor
+  func testAReplyCrossingAKeepDoesNotResurrectTheCard() async throws {
+    let script = Script(try status())
+    let gate = Script(try status())
+    gate.hold(call: 1)
+    let model = WakefulnessModel(
+      transport: .init(
+        status: script.status,
+        keep: {
+          _ = try await gate.status()
+          throw Unavailable()
+        },
+        prompts: { throw Unavailable() }))
     await model.refresh()
+    // A poll leaves, then the click, then the poll's reply (still pending) lands.
+    script.hold(call: 2)
+    let crossing = Task { await model.refresh() }
+    await eventually("the poll is on the wire") { script.calls == 2 }
+    model.keep()
+    XCTAssertFalse(model.prompt.isShowing)
+    script.release()
+    await crossing.value
+    XCTAssertFalse(model.prompt.isShowing, "a reply requested before the click is not believed")
+    // A reply requested after the click, still pending (the agent has not ticked yet): also not.
+    script.reply = .success(try status(Self.ticked(to: 15001)))
     await model.refresh()
-    XCTAssertEqual(model.status?.running, false)
+    XCTAssertFalse(model.prompt.isShowing, "answered prompts stay answered")
+    // The keep fails: the retry card comes back, as a retry.
+    gate.release()
+    await eventually("the failure brought the retry back") { model.prompt.keepFailed }
+    XCTAssertTrue(model.prompt.isShowing)
+  }
+
+  /// A second click while the first is in flight would capture an empty card and restore that.
+  @MainActor
+  func testASecondKeepWhileOneIsInFlightIsIgnored() async throws {
+    let script = Script(try status())
+    let gate = Script(try status())
+    gate.hold(call: 1)
+    let sends = Script(try status())
+    let model = WakefulnessModel(
+      transport: .init(
+        status: script.status,
+        keep: {
+          _ = try await sends.status()
+          _ = try await gate.status()
+          throw Unavailable()
+        },
+        prompts: { throw Unavailable() }))
+    await model.refresh()
+    model.keep()
+    model.keep()
+    await eventually("one send") { sends.calls == 1 }
+    gate.release()
+    await eventually("restored") { model.prompt.keepFailed }
+    XCTAssertEqual(sends.calls, 1)
+    XCTAssertEqual(
+      model.prompt.awakeSeconds ?? 0, 14400.5, accuracy: 0.001, "the real card, not an empty one")
+  }
+
+  /// The card's connection ended with a failed keep's retry up: the retry stays (its `keep`
+  /// reconnects), while an ordinary card is withdrawn.
+  @MainActor
+  func testAConnectionEndingSparesAFailedKeepsRetry() async throws {
+    let script = Script(try status(Self.notPending))
+    let (prompts, continuation) = AsyncStream<AgentCeilingPrompt>.makeStream()
+    let model = WakefulnessModel(
+      transport: .init(
+        status: script.status, keep: { throw Unavailable() }, prompts: script.prompts(prompts)))
+    model.startWatchingPrompts()
+    await eventually("the watch is up") { script.calls == 1 }
+    continuation.yield(raised)
+    await eventually("raised") { model.prompt.isShowing }
+    model.keep()
+    await eventually("the keep failed") { model.prompt.keepFailed }
+    continuation.finish()
+    try await Task.sleep(for: .milliseconds(200))
+    XCTAssertTrue(model.prompt.isShowing, "the retry outlives the connection")
+  }
+
+  /// Quitting right after the click waits, briefly, for the request to go.
+  @MainActor
+  func testDrainKeepWaitsForTheRequestAndNotForever() async throws {
+    let script = Script(try status())
+    let gate = Script(try status())
+    gate.hold(call: 1)
+    let model = WakefulnessModel(
+      transport: .init(
+        status: script.status, keep: { _ = try await gate.status() },
+        prompts: { throw Unavailable() }))
+    await model.drainKeep(timeout: .seconds(1))
+    await model.refresh()
+    model.keep()
+    let started = ContinuousClock.now
+    await model.drainKeep(timeout: .milliseconds(200))
+    XCTAssertGreaterThanOrEqual(ContinuousClock.now - started, .milliseconds(150), "bounded wait")
+    gate.release()
+    await eventually("the keep completed") { !model.prompt.isShowing && script.calls >= 1 }
+  }
+
+  /// The watch reconnects to an agent that is listening, and never starts one; a poll does neither.
+  func testTheWatchReconnectsWithoutSpawning() async throws {
+    let agent = try AgentHarness.start()
+    agents.append(agent)
+    let local = LocalAgentVCS(
+      manager: HostConnectionManager(), resolveSocketPath: { agent.socketPath },
+      binaryURL: { nil })
+    do {
+      _ = try await local.wakefulness(connecting: .never)
+      XCTFail("a poll must not connect")
+    } catch {}
+    let service = try await local.wakefulness(connecting: .reconnect)
+    let running = try await service.status().running
+    XCTAssertFalse(running)
+    _ = try await local.wakefulness(connecting: .never)
+    // With no agent to reach and no binary to start, `.reconnect` and `.spawn` both fail — and
+    // neither hangs.
+    agent.stop()
+    let gone = LocalAgentVCS(
+      manager: HostConnectionManager(), resolveSocketPath: { agent.socketPath },
+      binaryURL: { nil })
+    for mode in [LocalAgentVCS.Connecting.reconnect, .spawn] {
+      do {
+        _ = try await gone.wakefulness(connecting: mode)
+        XCTFail("\(mode) connected to nothing")
+      } catch {}
+    }
   }
 
   /// A failed `keep` brings the card back; a successful one leaves it cleared.

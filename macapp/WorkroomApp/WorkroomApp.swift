@@ -323,7 +323,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // `onAppear`, because a prompt the agent raises while no window is open (onboarding suppresses
     // the main window; the menu-bar item keeps the app alive with none) is a box that sleeps under
     // a running job if nobody is listening.
-    MainActor.assumeIsolated { WakefulnessModel.shared.startWatchingPrompts() }
+    //
+    // Not under XCTest, for the same reason as the shell probe above: the watch reconnects to the
+    // developer's REAL agent socket, and a test host talking to that agent every ten seconds is
+    // both a leak out of the test sandbox and a source of hangs in tests that own their own agents.
+    if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+      MainActor.assumeIsolated { WakefulnessModel.shared.startWatchingPrompts() }
+    }
 
     // Build the switcher rail's panel now, ordered out, and connect it to the session controller
     // (issue #132). Pre-created on purpose: the first `NSHostingView` render costs real milliseconds,
@@ -754,6 +760,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       group.enter()
       // Stop every window's run commands, not just the focused one's.
       registry.gracefullyStopAllWindows(timeout: 5) { group.leave() }
+    }
+    // A "Keep awake" clicked moments before quitting (issue #208): the card cleared on the click,
+    // the request may still be reconnecting. Bounded; a box the user asked to keep awake is worth
+    // two seconds of a quit.
+    group.enter()
+    Task {
+      await WakefulnessModel.shared.drainKeep()
+      group.leave()
     }
     group.notify(queue: .main) { sender.reply(toApplicationShouldTerminate: true) }
     return .terminateLater
