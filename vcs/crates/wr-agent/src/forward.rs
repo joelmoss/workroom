@@ -62,13 +62,15 @@
 //! | kind | when |
 //! |---|---|
 //! | `unsupported` | `"forward requests are a single JSON object"` — the OPEN body does not start with `{` |
-//! | `unsupported` | a serde message — malformed JSON, an unknown field, a missing or out-of-range `host`/`port` |
+//! | `unsupported` | a serde message (abbreviated) — malformed JSON, an unknown field, a missing `method`, an out-of-range `port` |
+//! | `unsupported` | `"missing host"` / `"missing port"` — the field is absent or null |
 //! | `unsupported` | `"forward requests are {\"method\": \"open\", \"host\": …, \"port\": …}"` — a method other than `open` |
 //! | `refused` | `"<host> is not a loopback address"` — the host is not one of the three literals below (a long host is abbreviated) |
 //! | `refused` | `"stream <n> is already forwarding"` — OPEN for a stream id that already has a connection, whatever the body; NOT followed by CLOSE, the stream is the running forward's |
 //! | `refused` | `"too many forwarded connections"` — this multiplex connection already holds 64 |
 //! | `connect` | the OS error text — connection refused, timed out (3s), unreachable |
 //! | `connect` | `"could not duplicate the socket"` — out of descriptors |
+//! | `connect` | `"no address to connect to"` — unreachable today (every accepted host names an address); listed because the string exists |
 //!
 //! ## Target
 //!
@@ -86,7 +88,7 @@
 //! - The client sends EOF → the agent shuts down the socket's write half, so the peer sees EOF.
 //!   DATA after the client's own EOF is dropped.
 //! - The client sends CLOSE → the agent shuts the socket down entirely and answers CLOSE, after
-//!   any DATA or EOF the socket's reader was still delivering.
+//!   any DATA or EOF its reader had already sent; bytes read after the CLOSE are discarded.
 //! - The multiplex connection drops (or the client detaches) → every socket it opened is shut down.
 //!
 //! A client that violates the contract is ignored rather than answered: DATA/EOF/CLOSE for a stream
@@ -123,8 +125,9 @@
 //!
 //! A forward takes no request [`Permit`](crate::vcs::Permit): like a `watch` subscription it is a
 //! resource that lives across many requests, not a request in flight, so it is capped separately
-//! ([`MAX_FORWARDS`] per connection). The cap counts threads alive, not map entries: a forward
-//! whose connect is failing holds its slot until its thread has said so and gone.
+//! ([`MAX_FORWARDS`] per connection). The cap counts forwards with a thread alive, not map
+//! entries: a forward whose connect is failing holds its slot until its thread has said so and
+//! gone, and one whose client half-closed holds it until its reader is gone too.
 
 use crate::protocol::envelope::{Envelope, Service, MAX_ENVELOPE_PAYLOAD};
 use crate::session::SharedWriter;
@@ -158,9 +161,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// to the byte does not matter; what matters is that an empty message is not free.
 const MESSAGE_OVERHEAD: usize = 64;
 
-/// How much of a refused host is echoed back. The rest of the reply is fixed text, so this is what
-/// keeps a maximum-sized OPEN from producing a reply larger than an envelope may be.
+/// How much of a refused host, and of a parse error's message, is echoed back. The rest of the
+/// reply is fixed text, so this is what keeps a maximum-sized OPEN from producing a reply larger
+/// than an envelope may be.
 const ECHOED_HOST: usize = 64;
+const ECHOED_MESSAGE: usize = 256;
 
 /// Forwarded connections one multiplex connection may hold at once, matching the spirit of the file
 /// service's subscription cap: a resource the client holds, bounded so it cannot be held without
@@ -168,11 +173,11 @@ const ECHOED_HOST: usize = 64;
 pub const MAX_FORWARDS: usize = 64;
 
 /// Client bytes that may sit undelivered for ONE forward before it is killed. Two envelopes'
-/// worth, so a maximum-sized envelope always fits even behind another.
+/// worth, overhead included, so a maximum-sized envelope always fits even behind another.
 ///
 /// ponytail: a fixed per-stream budget, 64 × 2 MiB per connection worst case. Per-stream flow
 /// control on the multiplex — a window the peer credits — is the upgrade path if that ever matters.
-const MAX_QUEUED_BYTES: usize = 2 * crate::protocol::envelope::MAX_ENVELOPE_PAYLOAD;
+const MAX_QUEUED_BYTES: usize = 2 * (MAX_ENVELOPE_PAYLOAD + MESSAGE_OVERHEAD);
 
 /// How much of the socket is read at once. Well under the envelope cap, so a DATA envelope is
 /// always sendable.
@@ -232,8 +237,11 @@ fn target(body: &[u8]) -> Result<(Vec<IpAddr>, u16), Refusal> {
             "forward requests are a single JSON object",
         ));
     }
-    let request: Request =
-        serde_json::from_slice(body).map_err(|error| Refusal::unsupported(error.to_string()))?;
+    let request: Request = serde_json::from_slice(body).map_err(|error| {
+        // serde echoes input in some messages (an unknown field's name, an invalid value), so
+        // a maximum-sized OPEN could otherwise produce a reply larger than an envelope.
+        Refusal::unsupported(abbreviated(&error.to_string(), ECHOED_MESSAGE))
+    })?;
     if request.method != "open" {
         return Err(Refusal::unsupported(
             r#"forward requests are {"method": "open", "host": …, "port": …}"#,
@@ -246,18 +254,22 @@ fn target(body: &[u8]) -> Result<(Vec<IpAddr>, u16), Refusal> {
         .port
         .ok_or_else(|| Refusal::unsupported("missing port"))?;
     let addresses = loopback_addresses(&host).ok_or_else(|| {
-        Refusal::refused(format!("{} is not a loopback address", abbreviated(&host)))
+        Refusal::refused(format!(
+            "{} is not a loopback address",
+            abbreviated(&host, ECHOED_HOST)
+        ))
     })?;
     Ok((addresses, port))
 }
 
-/// The host as a refusal echoes it: whole if short, abbreviated if not. A host can be as long as an
-/// envelope allows, and reflecting all of it would make the reply longer than one.
-fn abbreviated(host: &str) -> String {
-    if host.chars().count() <= ECHOED_HOST {
-        return host.to_string();
+/// Text as a refusal echoes it: whole if short, abbreviated if not. A host, or a serde message
+/// quoting one, can be as long as an envelope allows, and reflecting all of it would make the reply
+/// longer than one.
+fn abbreviated(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
     }
-    let mut short: String = host.chars().take(ECHOED_HOST).collect();
+    let mut short: String = text.chars().take(limit).collect();
     short.push('…');
     short
 }
@@ -326,7 +338,11 @@ impl Conn {
     /// write in flight, and the message unblocks a writer parked on the channel. The threads say
     /// CLOSE when they are both done — see `finish`; nothing here writes to the client.
     fn kill(&self) {
-        self.killed.store(true, Ordering::Release);
+        // Once: a second CLOSE (or a reset arriving behind one) must not queue a second message
+        // behind a writer that cannot drain the channel yet.
+        if self.killed.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let _ = self.tx.send(Msg::Kill);
         self.shutdown();
     }
@@ -384,18 +400,22 @@ impl Forwards {
         // whatever its body says, and NOT closed — the stream belongs to the forward that is
         // already running there, and a CLOSE for a malformed duplicate would tell the client the
         // stream is free while the agent kept pumping the old socket's bytes onto it.
-        let taken = |open: &HashMap<u32, Conn>| {
-            if !open.contains_key(&stream) {
-                return false;
-            }
+        //
+        // Checked once: every OPEN on a connection arrives on its one dispatch thread, so nothing
+        // can take the id between here and the insert below. The reply goes out with the map
+        // unlocked — a client that has stopped reading would otherwise hold every forward's
+        // `deliver`, `close` and `finish` behind one refusal.
+        let taken = self
+            .open
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&stream);
+        if taken {
             send_reply(
                 writer,
                 stream,
                 &Refusal::refused(format!("stream {stream} is already forwarding")).value(),
             );
-            true
-        };
-        if taken(&self.open.lock().unwrap_or_else(|e| e.into_inner())) {
             return;
         }
         let (addresses, port) = match target(body) {
@@ -414,10 +434,6 @@ impl Forwards {
         let token = self.next_token.fetch_add(1, Ordering::Relaxed) as u64;
         let slot = {
             let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
-            // Parsed with the lock released, so checked again.
-            if taken(&open) {
-                return;
-            }
             if self.live.load(Ordering::Acquire) >= MAX_FORWARDS {
                 drop(open);
                 send_reply(
@@ -441,7 +457,7 @@ impl Forwards {
                     half_closed: AtomicBool::new(false),
                 },
             );
-            Slot(Arc::clone(&self.live))
+            Arc::new(Slot(Arc::clone(&self.live)))
         };
 
         // The connect runs HERE, not on the caller: `connect_timeout` blocks for up to three
@@ -449,7 +465,6 @@ impl Forwards {
         let open_map = Arc::clone(&self.open);
         let writer = Arc::clone(writer);
         std::thread::spawn(move || {
-            let _slot = slot;
             connect_and_run(ForwardTask {
                 stream,
                 token,
@@ -459,6 +474,7 @@ impl Forwards {
                 queued,
                 socket,
                 killed,
+                slot,
                 open: open_map,
                 writer,
             });
@@ -513,8 +529,11 @@ impl Forwards {
 impl Drop for Forwards {
     fn drop(&mut self) {
         let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        // Killed, not merely shut down: a bare shutdown makes a reader report the peer's EOF on a
+        // stream that will get no CLOSE, and the transport may still be writable (a decoder error
+        // ends the connection with the client still reading).
         for (_, conn) in open.drain() {
-            conn.shutdown();
+            conn.kill();
         }
     }
 }
@@ -530,6 +549,8 @@ struct ForwardTask {
     queued: Arc<AtomicUsize>,
     socket: Arc<Mutex<Option<TcpStream>>>,
     killed: Arc<AtomicBool>,
+    /// The forward's place under the cap, shared with the reader thread: released when BOTH are gone.
+    slot: Arc<Slot>,
     open: Arc<Mutex<HashMap<u32, Conn>>>,
     writer: SharedWriter,
 }
@@ -660,8 +681,12 @@ fn connect_and_run(task: ForwardTask) {
         let writer = Arc::clone(&task.writer);
         let open = Arc::clone(&task.open);
         let killed = Arc::clone(&task.killed);
+        // The slot is both threads': a client half-close ends this thread while the reader and
+        // the entry live on, and the cap counts that forward until the reader is gone too.
+        let slot = Arc::clone(&task.slot);
         let (stream, token) = (task.stream, task.token);
         std::thread::spawn(move || {
+            let _slot = slot;
             pump_to_client(reader_socket, stream, &writer, &killed, &open, token);
             finish(&halves, &open, stream, token, &writer);
         })
@@ -674,9 +699,10 @@ fn connect_and_run(task: ForwardTask) {
                 task.queued
                     .fetch_sub(bytes.len() + MESSAGE_OVERHEAD, Ordering::AcqRel);
                 if wrote.is_err() {
-                    // The peer is gone. The reader will see the same and kill the forward, or
-                    // has already; either way the pair finishes.
-                    let _ = socket.shutdown(Shutdown::Both);
+                    // The peer is gone mid-transfer. A kill, not a bare shutdown: a shutdown alone
+                    // makes the reader's `read` return `Ok(0)`, which it would report as the peer
+                    // finishing cleanly — a truncated body delivered as a complete one.
+                    kill_own(&task.open, task.stream, task.token);
                     break;
                 }
             }
@@ -720,11 +746,16 @@ fn pump_to_client(
             }
             // The peer closed its write half. EOF rather than CLOSE: it may still be reading.
             Ok(0) => {
-                send(writer, stream, EOF, &[]);
+                if !send(writer, stream, EOF, &[]) {
+                    kill_own(open, stream, token);
+                }
                 return;
             }
             Ok(count) => {
                 if !send(writer, stream, DATA, &buffer[..count]) {
+                    // The client is not taking output. The writer may be parked on the channel
+                    // holding the socket and the slot; it is told, as for a reset.
+                    kill_own(open, stream, token);
                     return;
                 }
             }
@@ -849,6 +880,7 @@ mod tests {
             half_closed: AtomicBool::new(false),
         };
         forwards.open.lock().unwrap().insert(1, conn);
+        forwards.live.fetch_add(1, Ordering::AcqRel);
         let task = ForwardTask {
             stream: 1,
             token: 0,
@@ -858,6 +890,7 @@ mod tests {
             queued: Arc::new(AtomicUsize::new(0)),
             socket,
             killed,
+            slot: Arc::new(Slot(Arc::clone(&forwards.live))),
             open: Arc::clone(&forwards.open),
             writer,
         };
@@ -1204,6 +1237,49 @@ mod tests {
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
         assert!(!send(&writer, 1, DATA, &vec![0u8; MAX_ENVELOPE_PAYLOAD]));
         assert!(sent(&capture).is_empty());
+    }
+
+    /// A second CLOSE (or a reset behind one) must not queue a second message behind a writer that
+    /// cannot drain the channel yet: a kill happens once.
+    #[test]
+    fn a_kill_happens_once() {
+        let forwards = Forwards::new();
+        let rx = stalled(&forwards, 1);
+        for _ in 0..10_000 {
+            forwards.close(1);
+        }
+        let mut kills = 0;
+        while let Ok(message) = rx.try_recv() {
+            assert!(matches!(message, Msg::Kill));
+            kills += 1;
+        }
+        assert_eq!(kills, 1);
+    }
+
+    /// serde echoes input in some messages (an unknown field's name): a maximum-sized OPEN must still
+    /// get a refusal that fits an envelope, so the REPLY is not silently dropped before the CLOSE.
+    #[test]
+    fn a_huge_unknown_field_gets_a_bounded_refusal() {
+        let field = "f".repeat(MAX_ENVELOPE_PAYLOAD - 80);
+        let body = format!(r#"{{"method":"open","host":"127.0.0.1","port":1,"{field}":1}}"#);
+        let error = refusal(body.as_bytes());
+        let detail = error["error"]["unsupported"].as_str().unwrap();
+        assert!(detail.len() < 400, "{}", detail.len());
+        assert!(serde_json::to_vec(&error).unwrap().len() < 1024);
+    }
+
+    /// The budget is sized so two maximum-sized envelopes fit, overhead included: a forward that
+    /// stalled for one round trip behind a full envelope is not killed for it.
+    #[test]
+    fn two_maximum_envelopes_fit_the_budget() {
+        let forwards = Forwards::new();
+        let _rx = stalled(&forwards, 1);
+        let full = vec![0u8; MAX_ENVELOPE_PAYLOAD - 1];
+        forwards.deliver(1, &full);
+        forwards.deliver(1, &full);
+        assert!(!killed(&forwards, 1));
+        forwards.deliver(1, &[1]);
+        assert!(killed(&forwards, 1));
     }
 
     /// Bytes for a stream nobody opened are dropped, not answered and not queued — the same silence

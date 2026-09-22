@@ -387,6 +387,31 @@ fn localhost_reaches_a_server_bound_only_to_the_v6_loopback() {
     assert_eq!(client.read(1, 2), b"v6");
 }
 
+/// The cap counts a forward until BOTH its threads are gone. A client half-close ends the writer
+/// thread while the reader and the socket live on; sixty-four of those are still sixty-four.
+#[test]
+fn a_half_closed_forward_still_counts_against_the_cap() {
+    // A server that keeps the connection open after its peer's EOF, as a keep-alive server does.
+    let echo = Echo::with(|socket| {
+        std::thread::sleep(Duration::from_secs(30));
+        drop(socket);
+        0
+    });
+    let mut client = Client::connect();
+    for stream in 1..=64u32 {
+        client.opened(stream, echo.port);
+        client.send(stream, EOF, &[]);
+    }
+    // The writer threads have had time to exit; the readers are parked on the peer.
+    std::thread::sleep(Duration::from_millis(300));
+    let reply = client.open(65, "127.0.0.1", echo.port);
+    assert_eq!(
+        reply["error"]["refused"], "too many forwarded connections",
+        "{reply}"
+    );
+    assert_eq!(client.next(65).expect("close").0, CLOSE);
+}
+
 /// A DATA body may be empty, and it changes nothing.
 #[test]
 fn an_empty_data_body_is_harmless() {
