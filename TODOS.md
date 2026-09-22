@@ -44,8 +44,13 @@ image, not on boxd. Check `/sys/class/net/*/{bridge,brport,device}` on a boxd VM
 container running, and decide whether the boxd confirmation run needs repeating.
 
 **Why:** The golden fixtures carry pre-summed bytes, so they cannot see the filter; only a live box can.
-The rule fails awake on anything it cannot classify. The remaining false-idle risk is a box whose
-only default route lives in a policy routing table, which `/proc/net/route` does not show.
+The rule fails awake on anything it cannot classify, and with no default route at all it counts
+every interface. Accepted false-idle gaps, all needing a bridged uplink whose ports have no `device`:
+the default leaves by a VLAN or macvlan on top of the bridge (`br0.100`), so the bridge under it is
+treated as internal; the only IPv4 default sits in a policy table (IPv6 lists every table); the box's
+egress uses a specific gatewayed route on the bridge while the default leaves elsewhere. And when a
+default route is deleted and re-added between ticks, the net rate reads 0 for up to 3 s; the 30 s
+BUSY hold covers that when the box was already busy on the network.
 
 **How to start:** `boxd machine exec <vm> -- sh -c 'for i in /sys/class/net/*; do ls $i; done'`.
 Expect a plain `eth0` with a `device` entry and no `brport`, in which case nothing changed there.

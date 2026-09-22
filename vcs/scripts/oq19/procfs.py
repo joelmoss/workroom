@@ -98,6 +98,8 @@ def crosses_the_box(name, uplinks, sys_net="/sys/class/net"):
     """Mirror of wr-agent `crosses_the_box`: False for a bridge no default route leaves by, and for a
     port with no backing `device` (a container's veth, a VM's tap) whose `master` is such a bridge. The
     bridge the box routes out by, and everything on it, is the uplink; any unreadable case counts."""
+    if not uplinks:
+        return True  # no default route: no telling the uplink bridge from an internal one
     def internal_bridge(bridge):
         return os.path.exists(os.path.join(sys_net, bridge, "bridge")) and bridge not in uplinks
     if internal_bridge(name):

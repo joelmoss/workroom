@@ -95,6 +95,8 @@ class CgroupAndBox(unittest.TestCase):
             # docker0 and its veth are internal; the uplink bridge br0, the LXC eth0 on it, a port whose
             # bridge cannot be read, and an interface sysfs does not know all count.
             self.assertEqual(procfs.net_bytes(net, counted=counted), (1111001, 2222002))
+            no_default = lambda name: procfs.crosses_the_box(name, set(), sys_net)
+            self.assertEqual(procfs.net_bytes(net, counted=no_default), (1111111, 2222222))
 
     def test_default_route_interfaces_reads_both_families(self):
         route = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n" \

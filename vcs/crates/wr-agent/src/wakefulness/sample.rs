@@ -162,8 +162,9 @@ pub fn parse_net_dev(text: &str, counted: impl Fn(&str) -> bool) -> (u64, u64) {
 }
 
 /// The interfaces a default route leaves by, IPv4 (`/proc/net/route`) or IPv6
-/// (`/proc/net/ipv6_route`): the box's uplink as the kernel itself routes it. Only the main table
-/// is visible here; a default that lives solely in a policy table is not.
+/// (`/proc/net/ipv6_route`): the box's uplink as the kernel itself routes it. IPv4 shows the main
+/// table only, so an IPv4 default that lives solely in a policy table is missed; IPv6 lists every
+/// table, so a policy-table IPv6 default counts.
 pub fn default_route_interfaces(route: &str, ipv6_route: &str) -> HashSet<String> {
     let mut out = HashSet::new();
     for line in route.lines().skip(1) {
@@ -210,9 +211,16 @@ pub fn default_route_interfaces(route: &str, ipv6_route: &str) -> HashSet<String
 /// classification cannot be read: every miss fails awake. Inside a container `eth0` is neither a
 /// bridge nor a port (checked in the OQ19 image), so the signal there is unchanged.
 ///
+/// **No default route at all counts every interface.** Without one there is no way to tell the
+/// uplink bridge from an internal one, and a box reaching a LAN service over a connected route (or
+/// one whose route files could not be read) must not read idle.
+///
 /// `sys_net` is `/sys/class/net` and `uplinks` is [`default_route_interfaces`]; both are parameters
 /// so the rule that ships is the rule the tests pin.
 pub fn crosses_the_box(sys_net: &std::path::Path, uplinks: &HashSet<String>, name: &str) -> bool {
+    if uplinks.is_empty() {
+        return true;
+    }
     // `/proc/net/dev` names are kernel interface names, never `.`/`..` or a path.
     let internal_bridge =
         |bridge: &str| sys_net.join(bridge).join("bridge").exists() && !uplinks.contains(bridge);
@@ -545,6 +553,12 @@ veth0ee9903: 25774917  354214    0    0    0     0          0         0 58177989
         );
         assert!(crosses("tunl0"), "a pseudo-interface with no bridge role");
         assert!(crosses("wr-no-such-if"), "unrecognised fails awake");
+        let none = HashSet::new();
+        assert!(
+            crosses_the_box(&sys_net, &none, "docker0")
+                && crosses_the_box(&sys_net, &none, "veth1"),
+            "with no default route there is no telling an internal bridge from the uplink"
+        );
         let _ = std::fs::remove_dir_all(&sys_net);
     }
 
