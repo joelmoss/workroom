@@ -246,6 +246,67 @@ fn keep_resets_the_ceiling_and_going_idle_clears_it() {
     assert_eq!(c.state(), CeilingState::Below, "idle clears the ceiling");
 }
 
+/// The two exits from `Suppressed` a real user gets without the prompt card: typing, and the box
+/// coming back from the sleep the suppression allowed. Neither existed at first, so a user who
+/// woke the box and typed kept the classifier BUSY while the service kept publishing IDLE, and the
+/// provider hibernated the box under them, again after every resume.
+#[test]
+fn typing_or_resuming_clears_a_suppressed_ceiling() {
+    let settings = Settings {
+        ask: true,
+        ..Settings::default()
+    };
+    let suppressed = || {
+        let mut c = Ceiling::new(settings);
+        busy_until(&mut c, 4.0 * 3600.0);
+        let CeilingState::Prompted { deadline } = c.state() else {
+            panic!("expected a prompt")
+        };
+        c.step(deadline, Verdict::Busy);
+        assert!(c.suppressing());
+        (c, deadline)
+    };
+
+    // A job still running is not an answer.
+    let (mut c, deadline) = suppressed();
+    c.step(deadline + 60.0, Verdict::Busy);
+    assert!(c.suppressing(), "BUSY alone never clears suppression");
+
+    // The user typing is.
+    let (mut c, deadline) = suppressed();
+    c.user_acted(deadline + 60.0);
+    assert_eq!(c.state(), CeilingState::Below);
+    assert_eq!(
+        c.awake_for(deadline + 60.0),
+        0.0,
+        "the ceiling restarts from the keystroke"
+    );
+    assert!(
+        !c.step(deadline + 120.0, Verdict::Busy),
+        "well inside the new ceiling"
+    );
+
+    // So is the box resuming: the continuous awake period the ceiling capped has ended.
+    let (mut c, deadline) = suppressed();
+    c.resumed();
+    assert_eq!(c.state(), CeilingState::Below);
+    assert_eq!(
+        c.awake_for(deadline + 3600.0),
+        0.0,
+        "sleep is not awake time"
+    );
+    c.step(deadline + 3600.0, Verdict::Busy);
+    assert_eq!(c.awake_for(deadline + 3600.0), 0.0);
+    assert!(!c.exceeded());
+
+    // Typing while merely past an advisory ceiling changes nothing: there is nothing to answer.
+    let mut c = Ceiling::new(Settings::default());
+    busy_until(&mut c, 5.0 * 3600.0);
+    assert_eq!(c.state(), CeilingState::Exceeded);
+    c.user_acted(5.0 * 3600.0);
+    assert_eq!(c.state(), CeilingState::Exceeded);
+}
+
 // ---- the wake mask ----------------------------------------------------------------------------
 
 /// A quiet box: one candidate process burning nothing, no sockets, no pty.
@@ -309,6 +370,136 @@ fn resume_run(mask: bool) -> (Verdict, Verdict) {
 #[test]
 fn the_wake_mask_swallows_the_resume_blip() {
     assert_eq!(resume_run(true), (Verdict::Idle, Verdict::Idle));
+}
+
+/// Masked bytes must not sit in the rate window and vote the tick the mask ends: the blip is three
+/// seconds of 1.5 KB/s and the mask is three seconds, so the fourth tick sees the whole blip inside
+/// a 3 s window unless the base moved with the mask. Same rule for the shim's self-call mask.
+#[test]
+fn masked_traffic_does_not_vote_the_tick_the_mask_ends() {
+    for self_call in [false, true] {
+        let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
+        let mut t = 1000.0;
+        let mut net = 10_000u64;
+        for _ in 0..5 {
+            c.step(&quiet(t, net), false, false);
+            t += 1.0;
+        }
+        if !self_call {
+            t += 300.0;
+        }
+        for _ in 0..3 {
+            net += 1500;
+            c.step(&quiet(t, net), false, self_call);
+            t += 1.0;
+        }
+        // The first unmasked tick, with the masked bytes still less than 3 s old.
+        c.step(&quiet(t, net), false, false);
+        assert_eq!(
+            c.verdict(),
+            Verdict::Idle,
+            "self_call={self_call}: masked bytes voted once the mask ended"
+        );
+    }
+}
+
+/// The shim's self-call mask is about interface bytes. It must not silence CPU: a compute-only
+/// job that starts while the shim is talking to the provider is work, and the shim's own CPU is
+/// already excluded by name.
+#[test]
+fn the_self_call_mask_leaves_cpu_voting() {
+    let mut c = Classifier::new(Policy::production(), Boundary::agent(999));
+    let mut s = quiet(1000.0, 10_000);
+    c.step(&s, false, true);
+    // One full core over the next second, under the mask.
+    s.t += 1.0;
+    s.procs[1].ticks = 100;
+    c.step(&s, false, true);
+    assert_eq!(
+        c.verdict(),
+        Verdict::Busy,
+        "a core of work is work, masked or not"
+    );
+}
+
+/// What the service reads off the classifier to drive the ceiling: the resume flag is up for the
+/// first tick after the gap only, and the keystroke signal reflects the last tick's grace.
+#[test]
+fn the_classifier_reports_a_resume_and_a_recent_keystroke() {
+    let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
+    let mut t = 1000.0;
+    for _ in 0..3 {
+        c.step(&quiet(t, 10_000), false, false);
+        assert!(!c.resumed());
+        t += 1.0;
+    }
+    t += 300.0;
+    c.step(&quiet(t, 10_000), false, false);
+    assert!(c.resumed(), "the first tick after the gap");
+    t += 1.0;
+    c.step(&quiet(t, 10_000), false, false);
+    assert!(!c.resumed(), "only that tick");
+    assert!(!c.user_acted());
+    c.push_pty_input(t + 0.5);
+    t += 1.0;
+    c.step(&quiet(t, 10_000), false, false);
+    assert!(c.user_acted());
+    t += 11.0;
+    c.step(&quiet(t, 10_000), false, false);
+    assert!(!c.user_acted(), "past the 10 s grace");
+    // Without a wake mask (the replay) a gap is never a resume.
+    let mut plain = Classifier::new(FROZEN, Boundary::agent(999));
+    plain.step(&quiet(1000.0, 0), false, false);
+    plain.step(&quiet(2000.0, 0), false, false);
+    assert!(!plain.resumed());
+}
+
+/// Output produced after the box woke is exactly what the resume mask promises to keep: a job that
+/// resumes with the box is seen on the first tick, not after the pty window has refilled.
+#[test]
+fn output_since_the_wake_votes_on_the_first_resumed_tick() {
+    let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
+    let mut t = 1000.0;
+    for _ in 0..5 {
+        c.step(&quiet(t, 10_000), false, false);
+        t += 1.0;
+    }
+    t += 300.0;
+    // 2 KB in the second before this tick: 400 B/s over the 5 s window, double the threshold.
+    c.push_pty_out(t - 0.5, 2000);
+    c.step(&quiet(t, 10_000), false, false);
+    assert_eq!(c.verdict(), Verdict::Busy);
+}
+
+/// `keep` over the wire flags the service thread; the reply alone proves nothing, since it is
+/// unconditional.
+#[test]
+fn keep_flags_the_service_thread() {
+    let w = shared();
+    w.keep();
+    let flagged = std::mem::take(
+        &mut w
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keep_requested,
+    );
+    assert!(
+        flagged,
+        "keep() must leave keep_requested for the next tick"
+    );
+}
+
+/// The exclusion pre-filter is the union of the two lists, by construction; if either list changes
+/// shape, the derivation still has to produce exactly the union.
+#[test]
+fn the_socket_prefilter_is_exactly_the_exclusion_lists() {
+    let expected: Vec<&str> = EXCLUDED_WITH_DESCENDANTS
+        .iter()
+        .chain(EXCLUDED_SELF_ONLY.iter())
+        .copied()
+        .collect();
+    assert_eq!(EXCLUDED_COMMS.to_vec(), expected);
 }
 
 #[test]

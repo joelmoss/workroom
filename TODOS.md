@@ -30,9 +30,31 @@ like the API; the keepalive is the real one). Compare `wchan` of the idle agent 
 `analyze.TTY_WCHAN`. If it blocks in `poll`/`epoll`, the tty-aware rule is dead and D3's cost stands.
 
 **Depends on / blocked by:** A Linux Claude Code build in the image, and a way to run it non-interactively
-against a stub API. Do it before the Rust wakefulness service picks its wait rule.
+against a stub API. The Rust wakefulness service (#215) shipped with the frozen agnostic wait rule;
+a real trace that confirms the tty-aware rule can still swap it, since the golden contract is by
+fixture and the fixtures would be re-recorded with it.
 
 **Priority:** P2, effort M.
+
+### The wakefulness net signal counts container bridges (vcs) — #215 review follow-up
+
+**What:** `wakefulness/sample.rs` `parse_net_dev` sums every interface but `lo`, as the measured
+Python did. On a box running containers, `docker0`, `veth*` and `br-*` carry every internal packet
+twice, so container chatter alone clears the 500 B/s threshold and the box never hibernates.
+Decide the interface filter (physical devices only, or by `/sys/class/net/<if>/device` presence)
+and re-measure.
+
+**Why:** The signal was frozen on a bare provider image with one `eth0`; it fails safe (awake), but
+a workroom that runs a database in a container would pay the provider's uncapped hourly rate for
+nothing. Reviewed on #215 (2026-09-22) and deliberately left as measured rather than changed unmeasured.
+
+**How to start:** Record scenario 8/9 (detached server, idle and hit) in the OQ19 image with a
+container running alongside; check what `parse_net_dev` sees on the bridge; pick the filter that
+keeps the ten golden fixtures exact (they have only `eth0`) and re-run the boxd confirmation.
+
+**Depends on / blocked by:** Phase 3's real box, where the process and interface mix is real.
+
+**Priority:** P2, effort S.
 
 ### Ordinary connection failures blank the PR/CI badges (macapp) — #207 eng-review follow-up
 

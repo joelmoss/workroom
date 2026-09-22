@@ -81,21 +81,25 @@ const EXCLUDED_SELF_ONLY: [&str; 8] = [
     "boxd-automation",
 ];
 
-/// Every name on the exclusion list, for the socket reader's cheap pre-filter.
-pub const EXCLUDED_COMMS: [&str; 12] = [
-    "cron",
-    "unattended-upgr",
-    "apt.systemd.dai",
-    "wr-wakeshim",
-    "sshd",
-    "systemd",
-    "systemd-journal",
-    "systemd-logind",
-    "dbus-daemon",
-    "rsyslogd",
-    "wr-agent",
-    "boxd-automation",
-];
+/// Every name on the exclusion list, for the socket reader's cheap pre-filter. Derived from the two
+/// lists above rather than typed a third time: a name present there and missing here would leave a
+/// candidate's sockets unwalked, which is a silent false IDLE.
+pub const EXCLUDED_COMMS: [&str; 12] = excluded_comms();
+
+const fn excluded_comms() -> [&'static str; 12] {
+    let mut out = [""; 12];
+    let mut i = 0;
+    while i < EXCLUDED_WITH_DESCENDANTS.len() {
+        out[i] = EXCLUDED_WITH_DESCENDANTS[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < EXCLUDED_SELF_ONLY.len() {
+        out[i + j] = EXCLUDED_SELF_ONLY[j];
+        j += 1;
+    }
+    out
+}
 
 /// A tick gap of at least this long is a resume, not a slow tick. Derived, not picked: the provider
 /// sleeps measured on boxd were 79-424 s, while a CFS quota starved the sampler for 7.9-14.3 s and
@@ -337,10 +341,6 @@ impl PtyWindow {
         self.ins.drain(..i - 1);
         t - last
     }
-
-    fn clear_out(&mut self) {
-        self.out.clear();
-    }
 }
 
 // ---- the classifier ---------------------------------------------------------------------------
@@ -375,6 +375,10 @@ pub struct Classifier {
     /// Production only: see [`WAKE_GAP_S`] and [`Classifier::wake_masked_until`].
     wake_mask: bool,
     wake_masked_until: Option<f64>,
+    /// The last tick was the first after a resume (a gap of [`WAKE_GAP_S`] or more).
+    resumed: bool,
+    /// The last tick's keystroke age, so the ceiling can tell a user acting from a job running.
+    since_input: f64,
 }
 
 impl Classifier {
@@ -391,7 +395,20 @@ impl Classifier {
             last_t: None,
             wake_mask: false,
             wake_masked_until: None,
+            resumed: false,
+            since_input: f64::INFINITY,
         }
+    }
+
+    /// Whether the last tick was the first after a resume. Production only, like the mask.
+    pub fn resumed(&self) -> bool {
+        self.resumed
+    }
+
+    /// Whether the user acted within the policy's grace as of the last tick: the keystroke signal,
+    /// which `session.rs` feeds only for input its classifier calls the user's own.
+    pub fn user_acted(&self) -> bool {
+        self.policy.grace > 0.0 && self.since_input <= self.policy.grace
     }
 
     /// Mask the box's own resume. After a wake the provider's guest tooling burns 0.2-0.4 core and
@@ -444,11 +461,26 @@ impl Classifier {
             s.sockets.iter().flatten().any(|sock| {
                 sock.state == "ESTAB" && sock.pids.iter().any(|p| cand_pids.contains(p))
             });
-        let net_rate = self.net.feed(s.t, s.net_rx + s.net_tx);
-        let masked = net_masked || self.wake_masked_until.is_some_and(|until| s.t < until);
+        let wake_masked = self.wake_masked_until.is_some_and(|until| s.t < until);
+        // A masked tick moves the window's base to itself instead of feeding it: bytes that arrive
+        // under a mask must not sit in the window and vote BUSY the tick the mask ends (the resume
+        // blip is ~1.5 KB/s for three seconds; unmasking on the fourth with those bytes still inside
+        // a 3 s window is a guaranteed vote and a 30 s hold).
+        let net = if net_masked || wake_masked {
+            self.net.clear();
+            self.net.feed(s.t, s.net_rx + s.net_tx);
+            0.0
+        } else {
+            self.net.feed(s.t, s.net_rx + s.net_tx)
+        };
         Features {
             t: s.t,
-            cpu: if masked { 0.0 } else { cpu },
+            // Only the resume mask silences CPU. The shim's self-call mask is about interface bytes,
+            // which no process exclusion can attribute; the shim's own CPU is already excluded by
+            // name, and silencing everyone else's for four seconds per provider call would hide a
+            // compute-only job for as long as the shim keeps calling. The Python it ports agrees
+            // (`live.py`: the self-call mask zeroes `net` alone).
+            cpu: if wake_masked { 0.0 } else { cpu },
             d_state: cand.iter().any(|p| p.state == "D"),
             timer: cand
                 .iter()
@@ -456,8 +488,7 @@ impl Classifier {
             socket,
             pty_rate: self.pty.rate(s.t),
             since_input: self.pty.since_input(s.t),
-            // The history still advances while masked; only the vote ignores it.
-            net: if masked { 0.0 } else { net_rate },
+            net,
             lifecycle,
         }
     }
@@ -466,6 +497,7 @@ impl Classifier {
     /// staleness BUSY for the gap that just ended, then this tick's own verdict).
     pub fn step(&mut self, s: &Sample, lifecycle: bool, net_masked: bool) -> Vec<(f64, Verdict)> {
         let mut events = Vec::new();
+        self.resumed = false;
         if let Some(prev_t) = self.last_t {
             let gap = s.t - prev_t;
             if gap > STALENESS_FACTOR * self.policy.interval {
@@ -478,12 +510,17 @@ impl Classifier {
                 );
             }
             if self.wake_mask && gap >= WAKE_GAP_S {
+                // The net window's base is pre-sleep and has to go. The pty window is NOT cleared:
+                // its own expiry is by timestamp, so pre-sleep output is already outside it, and
+                // clearing it would also drop the output a job produced since the box woke — the
+                // one signal the doc above promises survives a resume.
                 self.net.clear();
-                self.pty.clear_out();
                 self.wake_masked_until = Some(s.t + NET_WINDOW_S);
+                self.resumed = true;
             }
         }
         let f = self.features(s, lifecycle, net_masked);
+        self.since_input = f.since_input;
         if f.votes_busy(&self.policy) {
             self.last_busy = Some(f.t);
         }
@@ -604,6 +641,25 @@ impl Ceiling {
         self.state = CeilingState::Below;
     }
 
+    /// The user acted (a keystroke the input classifier called theirs). While the prompt has gone
+    /// unanswered and the service has stopped asserting BUSY, that IS the answer: someone is at
+    /// the box, so it is kept awake from here. Without this, `Suppressed` held until the classifier
+    /// went idle on its own, which a user typing never lets it do — the box was hibernated under
+    /// them, and again after every resume.
+    pub fn user_acted(&mut self, t: f64) {
+        if self.state == CeilingState::Suppressed {
+            self.keep(t);
+        }
+    }
+
+    /// The box resumed from a sleep. Whatever continuous awake period the ceiling was capping has
+    /// ended, so it starts over: a job that resumes with the box gets the full ceiling again, and
+    /// `awake_for` does not count the hours the box spent asleep.
+    pub fn resumed(&mut self) {
+        self.busy_since = None;
+        self.state = CeilingState::Below;
+    }
+
     pub fn state(&self) -> CeilingState {
         self.state
     }
@@ -628,11 +684,13 @@ impl Ceiling {
 
 /// Pty bytes, counted where they already move. Process-global like `vcs::ACTIVE`, because the
 /// verdict is per machine and not per connection.
+#[cfg(target_os = "linux")]
 static COUNTERS: Mutex<Counters> = Mutex::new(Counters {
     out: Vec::new(),
     ins: Vec::new(),
 });
 
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 struct Counters {
     out: Vec<(f64, u64)>,
@@ -643,22 +701,28 @@ struct Counters {
 /// reached where no service runs (macOS, a unit test) or under output so torrential that the pty
 /// and CPU signals have voted BUSY many times over. Dropping the overflow keeps a busy box from
 /// growing a queue nobody empties.
+#[cfg(target_os = "linux")]
 const MAX_PENDING_PTY_EVENTS: usize = 8192;
 
-/// `n` bytes came out of a session's pty.
+/// `n` bytes came out of a session's pty. A no-op where no service drains: the pty read path pays
+/// no lock and no clock read for a counter nothing will ever empty.
 pub fn count_pty_out(n: usize) {
-    if n == 0 {
-        return;
-    }
-    if let Ok(mut c) = COUNTERS.lock() {
-        if c.out.len() < MAX_PENDING_PTY_EVENTS {
-            c.out.push((sample::monotonic(), n as u64));
+    #[cfg(target_os = "linux")]
+    if n > 0 {
+        if let Ok(mut c) = COUNTERS.lock() {
+            if c.out.len() < MAX_PENDING_PTY_EVENTS {
+                c.out.push((sample::monotonic(), n as u64));
+            }
         }
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = n;
 }
 
-/// The user typed into a session.
+/// The user typed into a session. The caller decides what "typed" means (`session.rs` gates this
+/// on its input classifier): a terminal answering a query is not the user acting.
 pub fn count_pty_input() {
+    #[cfg(target_os = "linux")]
     if let Ok(mut c) = COUNTERS.lock() {
         if c.ins.len() < MAX_PENDING_PTY_EVENTS {
             c.ins.push(sample::monotonic());
@@ -667,16 +731,20 @@ pub fn count_pty_input() {
 }
 
 /// Moves what the ptys have counted since the last tick into the classifier. Only the service
-/// drains, and the service only exists where the signals do.
+/// drains, and the service only exists where the signals do. The lock is held for the swap only,
+/// so a pty reader never waits behind the classifier's own bookkeeping.
 #[cfg(target_os = "linux")]
 fn drain_counters(classifier: &mut Classifier) {
-    let Ok(mut c) = COUNTERS.lock() else {
-        return;
+    let (out, ins) = {
+        let Ok(mut c) = COUNTERS.lock() else {
+            return;
+        };
+        (std::mem::take(&mut c.out), std::mem::take(&mut c.ins))
     };
-    for (t, n) in c.out.drain(..) {
+    for (t, n) in out {
         classifier.push_pty_out(t, n);
     }
-    for t in c.ins.drain(..) {
+    for t in ins {
         classifier.push_pty_input(t);
     }
 }
@@ -693,6 +761,26 @@ pub fn write_verdict(path: &Path, verdict: Verdict, t: f64) -> std::io::Result<(
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, format!("{} {:.3}\n", verdict.as_str(), t))?;
     std::fs::rename(&tmp, path)
+}
+
+/// Whether the verdict may still be written. Shared by the service thread and the exiting `serve`,
+/// so "stop writing" and "remove the file" happen in that order under one lock: a thread that
+/// renamed a fresh verdict into place a moment after the removal would leave a file that stops
+/// changing, which its reader takes as BUSY forever, with no agent left to correct it.
+static VERDICT_STOPPED: Mutex<bool> = Mutex::new(false);
+
+/// Ends the verdict's life: nothing writes it again, the file goes, and `status` says the service
+/// is not running. Called by `serve` on its way out, and by the service thread if it panics, so a
+/// dead classifier is never mistaken for a busy one.
+pub fn retire_verdict(socket: &Path) {
+    let mut stopped = VERDICT_STOPPED.lock().unwrap_or_else(|e| e.into_inner());
+    *stopped = true;
+    let _ = std::fs::remove_file(verdict_path(socket));
+    shared()
+        .state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .running = false;
 }
 
 /// Everything the app can ask about wakefulness. Process-global: one box, one verdict.
@@ -803,6 +891,11 @@ impl Wakefulness {
     /// Raises the ceiling prompt on every connection that has asked about status. Unsolicited, on
     /// stream 0, exactly as the file service pushes watch events. Raised by the service thread, so
     /// it exists where the service does.
+    ///
+    /// Nobody listening is not an error and does not stop the deadline: ask mode means an
+    /// unattended box past its ceiling gets to sleep, and "the app is closed" is the commonest way
+    /// to be unattended. An app that connects during the prompt sees `prompt_pending` and the
+    /// deadline in its first `status` reply, so it can still answer in time.
     #[cfg(target_os = "linux")]
     fn prompt(&self, awake_for: f64, deadline: f64) {
         let event = json!({
@@ -816,9 +909,14 @@ impl Wakefulness {
             held.retain(|w| w.strong_count() > 0);
             held.iter().filter_map(std::sync::Weak::upgrade).collect()
         };
-        for writer in &listeners {
-            crate::vcs::send(writer, Service::Status, 0, event.clone());
-        }
+        // Off the tick thread: `send` blocks on the writer, and the moment the prompt fires is the
+        // moment the app is likeliest to be wedged (that is why nobody answered). A stalled write
+        // here would stop the verdict being rewritten, and a verdict that stops is BUSY forever.
+        std::thread::spawn(move || {
+            for writer in &listeners {
+                crate::vcs::send(writer, Service::Status, 0, event.clone());
+            }
+        });
     }
 }
 
@@ -856,6 +954,12 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter) {
 /// Where the verdict file sits for a given socket. The reader is a local process on the same box, so
 /// it is a sibling of the socket and never on a bind mount: `os.replace` on a Docker Desktop mount
 /// is not atomic for a reader, which the measurement found the hard way.
+///
+/// Derived from the socket path and nothing else, so it is exactly as private as the socket: the
+/// app puts that under Application Support per bundle id, and Dev, Nightly and Release therefore
+/// each get their own agent, verdict, temp and self-call files. `.tmp` is a fixed sibling name
+/// written without `O_EXCL`; a same-user peer who could plant a symlink there could write these
+/// files directly, so nothing is gained by guarding against them.
 pub fn verdict_path(socket: &Path) -> PathBuf {
     socket.with_extension("wake")
 }
@@ -876,8 +980,17 @@ mod service {
     /// Starts the wakefulness thread. One per agent; it runs whether or not a client is attached,
     /// because the whole point is to keep reporting while the user's Mac is asleep.
     pub fn spawn(sessions: SessionStore, socket: &Path, settings: Settings) {
-        let path = verdict_path(socket);
-        std::thread::spawn(move || run(sessions, path, settings));
+        let socket = socket.to_path_buf();
+        std::thread::spawn(move || {
+            let path = verdict_path(&socket);
+            let run = std::panic::AssertUnwindSafe(|| run(sessions, path, settings));
+            // A panic here is otherwise silent: the handle is dropped, nothing restarts the thread,
+            // and the verdict file freezes at its last line, which its reader takes as BUSY for the
+            // rest of the box's life. Retiring the verdict says "no classifier here" instead.
+            if std::panic::catch_unwind(run).is_err() {
+                super::retire_verdict(&socket);
+            }
+        });
     }
 
     fn run(sessions: SessionStore, path: std::path::PathBuf, settings: Settings) {
@@ -911,7 +1024,7 @@ mod service {
             }
             tick += 1;
 
-            let roots: Vec<i32> = sessions.list().iter().map(|s| s.pid).collect();
+            let roots = sessions.pids();
             let s = super::sample::sample(roots, &EXCLUDED_COMMS);
             drain_counters(&mut classifier);
             classifier.step(&s, crate::vcs::is_busy(), own_call_recent(&selfcall));
@@ -921,8 +1034,13 @@ mod service {
                 let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
                 std::mem::take(&mut state.keep_requested)
             };
+            if classifier.resumed() {
+                ceiling.resumed();
+            }
             if keep {
                 ceiling.keep(s.t);
+            } else if classifier.user_acted() {
+                ceiling.user_acted(s.t);
             }
             if ceiling.step(s.t, raw) {
                 if let CeilingState::Prompted { deadline } = ceiling.state() {
@@ -936,7 +1054,15 @@ mod service {
             } else {
                 raw
             };
-            let _ = write_verdict(&path, verdict, s.t);
+            {
+                let stopped = super::VERDICT_STOPPED
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if *stopped {
+                    return;
+                }
+                let _ = write_verdict(&path, verdict, s.t);
+            }
             let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
             state.verdict = verdict;
             state.raw = raw;
@@ -947,9 +1073,11 @@ mod service {
             state.cpu_fraction = thread_cpu_fraction(s.t - start);
 
             // Skip ahead rather than bursting to catch up: a missed tick is a gap the reader's
-            // staleness rule already covers, and catching up would hide it.
+            // staleness rule already covers, and catching up would hide it. The next due tick is
+            // the first one strictly after now: `behind` alone is the tick just passed, and
+            // scheduling that again means an immediate second sample.
             let behind = ((super::sample::monotonic() - start) / policy.interval) as u64;
-            tick = tick.max(behind);
+            tick = tick.max(behind + 1);
         }
     }
 
@@ -957,9 +1085,12 @@ mod service {
         let Ok(modified) = selfcall.metadata().and_then(|m| m.modified()) else {
             return false;
         };
-        SystemTime::now()
-            .duration_since(modified)
-            .is_ok_and(|age| age.as_secs_f64() < NET_WINDOW_S + 1.0)
+        match SystemTime::now().duration_since(modified) {
+            Ok(age) => age.as_secs_f64() < NET_WINDOW_S + 1.0,
+            // The stamp is in the future: the wall clock stepped back, which NTP does right after
+            // a resume, and that is the window this mask exists for. A future stamp is recent.
+            Err(_) => true,
+        }
     }
 
     /// This thread's own CPU as a fraction of one core, for the plan's 0.5% gate. `RUSAGE_THREAD` so

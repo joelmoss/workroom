@@ -231,17 +231,20 @@ mod linux {
                 let Some(pid) = name.to_str().and_then(|n| n.parse::<i32>().ok()) else {
                     continue;
                 };
-                // Exited between the listing and the read: skipped, never guessed at.
-                let Some(mut proc) = fs::read_to_string(format!("/proc/{pid}/stat"))
+                // Exited between the listing and the read: skipped, never guessed at. Read as
+                // bytes, not as a `String`: `comm` is arbitrary bytes, and a process that named
+                // itself with one invalid UTF-8 byte must not vanish from every signal.
+                let Some(mut proc) = fs::read(format!("/proc/{pid}/stat"))
                     .ok()
-                    .and_then(|s| parse_stat(&s))
+                    .and_then(|s| parse_stat(&String::from_utf8_lossy(&s)))
                 else {
                     continue;
                 };
-                proc.wchan = fs::read_to_string(format!("/proc/{pid}/wchan"))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
+                proc.wchan = String::from_utf8_lossy(
+                    &fs::read(format!("/proc/{pid}/wchan")).unwrap_or_default(),
+                )
+                .trim()
+                .to_string();
                 procs.push(proc);
             }
         }

@@ -117,6 +117,34 @@ fn status_answers_with_the_verdict_and_the_ceiling() {
     assert_eq!(result["ask_at_ceiling"], false);
 }
 
+/// Stream 0 is the agent's: it is where the ceiling prompt goes, never where a request arrives. A
+/// request sent there is dropped, and the connection stays usable.
+#[test]
+fn a_request_on_stream_zero_gets_no_reply() {
+    let mut client = Client::connect();
+    client
+        .stream
+        .write_all(
+            &Envelope::new(
+                Service::Status,
+                0,
+                serde_json::to_vec(&json!({"method": "status"})).unwrap(),
+            )
+            .encode(),
+        )
+        .unwrap();
+    let mut bytes = [0u8; 64];
+    match client.stream.read(&mut bytes) {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) => {}
+        other => panic!("stream 0 must never be answered, got {other:?}"),
+    }
+    assert_eq!(client.request(&json!({"method": "status"}))["version"], 1);
+}
+
 #[test]
 fn keep_is_acknowledged_and_an_unknown_method_is_refused() {
     let mut client = Client::connect();

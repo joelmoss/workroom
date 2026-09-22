@@ -123,10 +123,15 @@ const ENV_AWAKE_PROMPT_TIMEOUT: &str = "WR_AGENT_AWAKE_PROMPT_TIMEOUT";
 const ENV_ASK_AT_AWAKE_CEILING: &str = "WR_AGENT_ASK_AT_AWAKE_CEILING";
 
 fn wakefulness_settings_from(args: &[String], env: impl Fn(&str) -> Option<String>) -> Settings {
+    // Finite and positive, or the default. `f64::parse` accepts "nan", "inf" and "-1", and each
+    // one breaks the ceiling a different way: NaN trips it on the first BUSY tick (every comparison
+    // is false), infinity never trips it, and a non-positive prompt timeout expires the prompt on
+    // the next tick and lets the box sleep with no grace at all.
     let seconds = |name: &str, var: &str| {
         flag(args, name)
             .or_else(|| env(var))
             .and_then(|s| s.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
     };
     let defaults = Settings::default();
     Settings {
@@ -732,6 +737,30 @@ mod tests {
         let bare = wakefulness_settings_from(&[], none);
         assert_eq!(bare.ceiling, defaults.ceiling);
         assert!(!bare.ask);
+    }
+
+    /// Values that parse but cannot run a ceiling fall back to the default rather than trip it on
+    /// the first tick (NaN, zero, negative), never trip it (infinity), or void the prompt's grace.
+    #[test]
+    fn wakefulness_settings_reject_values_that_parse_but_cannot_work() {
+        let defaults = Settings::default();
+        for bad in ["nan", "inf", "-inf", "0", "-5", "1e400"] {
+            let args: Vec<String> = ["--awake-ceiling", bad, "--awake-prompt-timeout", bad]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let settings = wakefulness_settings_from(&args, |_| None);
+            assert_eq!(settings.ceiling, defaults.ceiling, "ceiling {bad:?}");
+            assert_eq!(
+                settings.prompt_timeout, defaults.prompt_timeout,
+                "prompt timeout {bad:?}"
+            );
+        }
+        let args: Vec<String> = ["--awake-ceiling", "0.5"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(wakefulness_settings_from(&args, |_| None).ceiling, 0.5);
     }
 
     /// A stream that serves an endless login banner, counting how much of it is consumed.
