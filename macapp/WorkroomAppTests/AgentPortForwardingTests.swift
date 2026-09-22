@@ -62,10 +62,13 @@ final class AgentPortForwardingTests: XCTestCase {
   /// A listener whose refusals are collected rather than dropped, so a test can assert on them.
   private func listen(
     _ connection: AgentVCSConnection, to remotePort: UInt16, failures: Failures,
-    openTimeout: TimeInterval = PortForward.openTimeout
+    openTimeout: TimeInterval = PortForward.openTimeout,
+    sendTimeout: TimeInterval = PortForward.sendTimeout,
+    drainTimeout: TimeInterval = PortForward.drainTimeout
   ) throws -> PortForward {
     let forward = try connection.forwarding().listen(
-      remotePort: remotePort, openTimeout: openTimeout
+      remotePort: remotePort, openTimeout: openTimeout, sendTimeout: sendTimeout,
+      drainTimeout: drainTimeout
     ) { failures.add($0) }
     forwards.append(forward)
     return forward
@@ -244,6 +247,106 @@ final class AgentPortForwardingTests: XCTestCase {
     XCTAssertTrue(
       failures.all.first?.contains("stopped reading") == true, "got \(failures.all)")
     eventually("no CLOSE reached the agent") { !agent.forwards(opcode: 0x05).isEmpty }
+  }
+
+  /// A local client that stops reading while its connection is still open is cut off by the send
+  /// timeout, not held forever. The response stays under `queueBudget` even if every chunk queues at
+  /// once, so the budget cut-off in the test above cannot be what fires here: the only way out is a
+  /// parked `send` returning at the timeout. At the default 30 s this fails.
+  func testAClientThatStopsReadingIsCutOffAtTheSendTimeout() async throws {
+    let agent = try FakeAgent(
+      version: 5, forward: true, forwardEpilogue: 2_000_000, forwardEpilogueOnData: true)
+    let connection = try await fake(agent)
+    let failures = Failures()
+    let forward = try listen(connection, to: 5173, failures: failures, sendTimeout: 0.5)
+    let client = try connect(to: forward, receiveBuffer: 8192)
+
+    // The write half stays open, so the agent never sends CLOSE: the stream is live when the send
+    // gives up, and the reason is reported.
+    try client.write(Data("request".utf8))
+
+    eventually("the stalled connection was not cut off", within: 5) { !failures.all.isEmpty }
+    XCTAssertEqual(failures.all, ["A connection stopped reading and was closed."])
+    eventually("no CLOSE reached the agent") { !agent.forwards(opcode: 0x05).isEmpty }
+  }
+
+  /// Ending a forward drains to a client that is still reading, but only for `drainTimeout`: a
+  /// client that trickles keeps every `send` making progress, so the send timeout never fires, and
+  /// the deadline is the only thing that ends the drain. The negative control is
+  /// `testStoppingAForwardDrainsTheResponseAlreadyReceived`, where the default drain delivers all.
+  func testATricklingClientIsCutOffAtTheDrainTimeout() async throws {
+    let epilogue = 2_000_000
+    let agent = try FakeAgent(
+      version: 5, forward: true, forwardEpilogue: epilogue, forwardEpilogueOnData: true)
+    let connection = try await fake(agent)
+    let forward = try listen(
+      connection, to: 5173, failures: Failures(), drainTimeout: 0.3)
+    let client = try connect(to: forward, receiveBuffer: 8192)
+
+    try client.write(Data("request".utf8))
+    eventually("the request never reached the agent") { !agent.forwards(opcode: 0x03).isEmpty }
+    try await Task.sleep(for: .milliseconds(300))
+
+    forward.stop()
+
+    // 400 KB/s: the whole response would take five seconds, far past the deadline.
+    var received = 0
+    let started = Date()
+    while Date().timeIntervalSince(started) < 20 {
+      let chunk = try client.read(8192, timeout: 5)
+      if chunk.isEmpty { break }
+      received += chunk.count
+      Thread.sleep(forTimeInterval: 0.02)
+    }
+    XCTAssertLessThan(received, epilogue, "the drain outlived its deadline: got all \(received)")
+    XCTAssertEqual(try client.read(1, timeout: 1), Data(), "the drain ended in EOF, not a hang")
+  }
+
+  /// Out of descriptors, `accept` fails with `EMFILE` — and XNU has already dequeued and closed the
+  /// connection by then, so that one is lost: its client reads EOF and the row says why. What must
+  /// survive is the listener. One that treated `EMFILE` as fatal would stop here, take its row down,
+  /// and refuse the next connection too.
+  func testTheListenerSurvivesRunningOutOfDescriptors() async throws {
+    let agent = try FakeAgent(version: 5, forward: true)
+    let connection = try await fake(agent)
+    let failures = Failures()
+    let forward = try listen(connection, to: 5173, failures: failures)
+
+    // A soft limit just above what the process holds, so filling it takes a few dozen descriptors
+    // rather than every one the test host is allowed. Restored whatever happens.
+    var original = rlimit()
+    XCTAssertEqual(getrlimit(RLIMIT_NOFILE, &original), 0)
+    var held: [Int32] = []
+    do {
+      defer {
+        for descriptor in held { Darwin.close(descriptor) }
+        setrlimit(RLIMIT_NOFILE, &original)
+      }
+      let open = try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count
+      var lowered = original
+      lowered.rlim_cur = rlim_t(open + 32)
+      XCTAssertEqual(setrlimit(RLIMIT_NOFILE, &lowered), 0)
+      while true {
+        let descriptor = dup(STDERR_FILENO)
+        guard descriptor >= 0 else { break }
+        held.append(descriptor)
+      }
+      XCTAssertEqual(errno, EMFILE)
+      // One back, for the client's own socket: its connect completes in the kernel, and `accept`
+      // then has no descriptor to give it.
+      Darwin.close(held.removeLast())
+      let lost = try connect(to: forward)
+      eventually("the lost connection was not reported") { !failures.all.isEmpty }
+      XCTAssertEqual(try lost.read(1, timeout: 5), Data(), "the lost connection was not closed")
+    }
+    XCTAssertEqual(failures.all, ["Out of file descriptors; a connection was refused."])
+    XCTAssertEqual(
+      agent.forwards(opcode: 0x01), [], "an OPEN for a connection that was never accepted")
+
+    let next = try connect(to: forward)
+    try next.write(Data("late".utf8))
+    XCTAssertEqual(try next.read(4), Data("late".utf8), "the listener did not survive")
+    XCTAssertEqual(failures.all.count, 1, "got \(failures.all)")
   }
 
   /// Removing a forward closes its listener AND every connection still running through it, each with

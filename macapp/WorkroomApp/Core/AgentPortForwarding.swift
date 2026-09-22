@@ -33,13 +33,17 @@ struct AgentForwardService: Sendable {
   let connection: AgentVCSConnection
 
   /// Bind a listener on `127.0.0.1` and forward everything accepted on it to `remotePort` on the
-  /// agent's box. `openTimeout` is how long one accepted connection waits for the agent's REPLY.
+  /// agent's box. `openTimeout` is how long one accepted connection waits for the agent's REPLY;
+  /// `sendTimeout` and `drainTimeout` bound a local client that stops reading (see `PortForward`).
   func listen(
     remotePort: UInt16, openTimeout: TimeInterval = PortForward.openTimeout,
+    sendTimeout: TimeInterval = PortForward.sendTimeout,
+    drainTimeout: TimeInterval = PortForward.drainTimeout,
     onEvent: @escaping @Sendable (PortForward.Event) -> Void
   ) throws -> PortForward {
     try PortForward(
-      remotePort: remotePort, connection: connection, openTimeout: openTimeout, onEvent: onEvent)
+      remotePort: remotePort, connection: connection,
+      timeouts: .init(open: openTimeout, send: sendTimeout, drain: drainTimeout), onEvent: onEvent)
   }
 }
 
@@ -113,6 +117,21 @@ final class PortForward: @unchecked Sendable {
   /// client which gives up first leaves the id held. This waits longer than that, and the id is
   /// never handed out again either way.
   static let openTimeout: TimeInterval = 5
+  /// A `send` parked on a full socket buffer is a local client that has stopped reading. Per call:
+  /// what makes a parked `send` return at all, so a write gets to check the drain deadline, which is
+  /// the bound on the drain as a whole.
+  static let sendTimeout: TimeInterval = 30
+  /// How long past a connection's end the queued writes may keep draining to a client that is still
+  /// reading. Checked between `send`s, so the true worst case is this plus one `sendTimeout` for a
+  /// `send` already parked when the deadline was set.
+  static let drainTimeout: TimeInterval = 30
+
+  /// The three clocks one forwarded connection runs on, passed down as one value.
+  struct Timeouts {
+    let open: TimeInterval
+    let send: TimeInterval
+    let drain: TimeInterval
+  }
   /// The agent's `MAX_FORWARDS`: what it holds per multiplex connection before refusing. Mirrored
   /// here per listener so a burst of local connects never sends OPENs the agent will certainly
   /// refuse — each refusal is two more envelopes through the writer VCS, File and Status share.
@@ -125,7 +144,7 @@ final class PortForward: @unchecked Sendable {
   let localPort: UInt16
   private let listener: Int32
   private let connection: AgentVCSConnection
-  private let openTimeout: TimeInterval
+  private let timeouts: Timeouts
   private let onEvent: @Sendable (Event) -> Void
   private let lock = NSLock()
   private var live: [UUID: ForwardedConnection] = [:]
@@ -140,12 +159,12 @@ final class PortForward: @unchecked Sendable {
   private let source: DispatchSourceRead
 
   init(
-    remotePort: UInt16, connection: AgentVCSConnection, openTimeout: TimeInterval,
+    remotePort: UInt16, connection: AgentVCSConnection, timeouts: Timeouts,
     onEvent: @escaping @Sendable (Event) -> Void
   ) throws {
     self.remotePort = remotePort
     self.connection = connection
-    self.openTimeout = openTimeout
+    self.timeouts = timeouts
     self.onEvent = onEvent
     let listener = socket(AF_INET, SOCK_STREAM, 0)
     guard listener >= 0 else {
@@ -222,9 +241,12 @@ final class PortForward: @unchecked Sendable {
       case EWOULDBLOCK: return
       case EINTR, ECONNABORTED: continue
       case EMFILE, ENFILE, ENOBUFS, ENOMEM:
-        // Out of descriptors, or the kernel is: the connection stays in the backlog, and the
-        // source would fire again at once. A short pause on this private queue (nothing else runs
-        // on it) turns that spin into a retry, and the listener survives the pressure.
+        // Out of descriptors, or the kernel is. XNU has already taken the connection off the
+        // backlog and closed it (measured: the client reads EOF, and a retried `accept` finds
+        // nothing), so it is lost either way — the row says why, as it does for the 65th. The
+        // listener survives, and the pause on this private queue (nothing else runs on it) gives
+        // descriptors a chance to free before the next queued connection is tried and lost too.
+        onEvent(.failed("Out of file descriptors; a connection was refused."))
         Thread.sleep(forTimeInterval: Self.acceptBackoff)
         return
       default:
@@ -256,7 +278,7 @@ final class PortForward: @unchecked Sendable {
     setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &enabled, socklen_t(MemoryLayout<Int32>.size))
     let id = UUID()
     let forwarded = ForwardedConnection(
-      socket: client, remotePort: remotePort, connection: connection, openTimeout: openTimeout,
+      socket: client, remotePort: remotePort, connection: connection, timeouts: timeouts,
       onEvent: onEvent, onFinished: { [weak self] in self?.forget(id) })
     let accepted = lock.withLock { () -> Bool in
       guard !stopped else { return false }
@@ -290,7 +312,7 @@ private final class ForwardedConnection: @unchecked Sendable {
   private let socket: Int32
   private let remotePort: UInt16
   private let connection: AgentVCSConnection
-  private let openTimeout: TimeInterval
+  private let timeouts: PortForward.Timeouts
   private let onEvent: @Sendable (PortForward.Event) -> Void
   private let onFinished: @Sendable () -> Void
   /// Agent bytes reach the accepted socket HERE, never on the connection's reader thread: writing
@@ -304,7 +326,7 @@ private final class ForwardedConnection: @unchecked Sendable {
   private var opened = false
   private var finished = false
   /// A `write` did not deliver: the local client is gone or has stopped reading. Every write still
-  /// queued behind it is skipped, so the drain ends at one failure rather than paying `sendTimeout`
+  /// queued behind it is skipped, so the drain ends at one failure rather than paying the send timeout
   /// per queued envelope — with 32 of them queued that was a quarter of an hour.
   private var deliveryFailed = false
   /// Set by `finish`: the whole drain, not each `send`, ends here. `SO_SNDTIMEO` is a no-progress
@@ -332,28 +354,24 @@ private final class ForwardedConnection: @unchecked Sendable {
   /// The agent's `MESSAGE_OVERHEAD`: what one queued envelope costs beyond its bytes, so a flood of
   /// tiny ones is not free against the budget.
   static let messageOverhead = 64
-  /// A `send` parked on a full socket buffer is a local client that has stopped reading. Per call:
-  /// what makes a parked `send` return at all, so `write` gets to check `drainDeadline`, which is
-  /// the bound on the drain as a whole.
-  static let sendTimeout: TimeInterval = 30
-  /// How long past `finish` the queued writes may keep draining to a client that is still reading.
-  /// Checked between `send`s, so the true worst case is this plus one `sendTimeout` for a `send`
-  /// already parked when the deadline was set.
-  static let drainTimeout: TimeInterval = 30
 
   init(
-    socket: Int32, remotePort: UInt16, connection: AgentVCSConnection, openTimeout: TimeInterval,
+    socket: Int32, remotePort: UInt16, connection: AgentVCSConnection,
+    timeouts: PortForward.Timeouts,
     onEvent: @escaping @Sendable (PortForward.Event) -> Void,
     onFinished: @escaping @Sendable () -> Void
   ) {
     self.socket = socket
     self.remotePort = remotePort
     self.connection = connection
-    self.openTimeout = openTimeout
+    self.timeouts = timeouts
     self.onEvent = onEvent
     self.onFinished = onFinished
+    // The fraction goes in `tv_usec`: a sub-second timeout truncated to `tv_sec: 0` would be no
+    // timeout at all, and the parked `send` it exists to end would block forever.
+    let seconds = timeouts.send.rounded(.down)
     var timeout = timeval(
-      tv_sec: Int(Self.sendTimeout), tv_usec: 0)
+      tv_sec: Int(seconds), tv_usec: Int32((timeouts.send - seconds) * 1_000_000))
     setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
   }
 
@@ -396,9 +414,9 @@ private final class ForwardedConnection: @unchecked Sendable {
       // wait forever with no reason on the row.
       connection.sendForward(stream: id, opcode: ForwardOpcode.open, body: request) { [weak self] in
         self?.giveUpOnOpen(
-          after: self?.openTimeout ?? 0, "The agent did not answer the forward request.")
+          after: self?.timeouts.open ?? 0, "The agent did not answer the forward request.")
       }
-      giveUpOnOpen(after: Self.sendTimeout, "The agent connection is not sending.")
+      giveUpOnOpen(after: timeouts.send, "The agent connection is not sending.")
       return false
     }
     if abandoned { connection.releaseForward(id) }
@@ -565,7 +583,7 @@ private final class ForwardedConnection: @unchecked Sendable {
       return true
     }
     guard !delivered else { return }
-    // The local client is gone mid-transfer, has not read for `sendTimeout`, or has outlived the
+    // The local client is gone mid-transfer, has not read for the send timeout, or has outlived the
     // drain: nothing behind this write can arrive either, and the agent is told so it stops holding
     // a socket whose bytes nobody will read.
     lock.withLock { deliveryFailed = true }
@@ -599,7 +617,7 @@ private final class ForwardedConnection: @unchecked Sendable {
       // nothing for it); the queued `SHUT_WR` runs once the writes ahead of it have run, which
       // `drainDeadline` bounds as a whole. The descriptor is freed by `deinit`, once the pump and
       // the last queued write have let go.
-      drainDeadline = Date().addingTimeInterval(Self.drainTimeout)
+      drainDeadline = Date().addingTimeInterval(timeouts.drain)
       _ = Darwin.shutdown(socket, SHUT_RD)
       writes.async { [self] in _ = Darwin.shutdown(socket, SHUT_WR) }
       return false
