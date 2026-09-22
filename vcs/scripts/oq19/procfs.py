@@ -93,7 +93,11 @@ def crosses_the_box(name, sys_net="/sys/class/net"):
 def net_bytes(net_dev, exclude=("lo",), counted=lambda name: True):
     """Total (rx, tx) over the non-loopback interfaces `counted` keeps: what a provider's network-idle
     timer can see. The live sampler passes `crosses_the_box`; recorded traces predate it (2026-09-22)."""
-    keep = [v for k, v in net_dev.items() if k not in exclude and counted(k)]
+    every = [(k, v) for k, v in net_dev.items() if k not in exclude]
+    keep = [v for k, v in every if counted(k)]
+    # Mirror of the Rust fallback: a filter that left nothing with traffic dropped the uplink itself.
+    if not any(v[0] or v[1] for v in keep):
+        keep = [v for _, v in every]
     return sum(v[0] for v in keep), sum(v[1] for v in keep)
 
 

@@ -89,6 +89,9 @@ class CgroupAndBox(unittest.TestCase):
                    "ens5": (10000, 20000), "unknown0": (100000, 200000)}
             # eth0, the NIC enslaved to br0 (ens5), and an interface sysfs does not know (fails awake).
             self.assertEqual(procfs.net_bytes(net, counted=counted), (110001, 220002))
+            # An LXC box bridging its own veth eth0: nothing with traffic survives the filter.
+            lxc = {"veth1": (5000, 3000), "docker0": (4000, 2500), "tunl0": (0, 0)}
+            self.assertEqual(procfs.net_bytes(lxc, counted=counted), (9000, 5500))
 
 
 class Sockets(unittest.TestCase):

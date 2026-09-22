@@ -44,8 +44,8 @@ image, not on boxd. Check `/sys/class/net/*/{bridge,brport,device}` on a boxd VM
 container running, and decide whether the boxd confirmation run needs repeating.
 
 **Why:** The golden fixtures carry pre-summed bytes, so they cannot see the filter; only a live box can.
-The design fails awake on anything it does not recognise, so the remaining risk is a provider whose
-uplink is a bridge port with no `device`, which would read zero network forever.
+The design fails awake on anything it does not recognise, and a filter that drops the uplink itself
+(a bridge port with no `device`) falls back to counting everything, so the remaining risk is only cost.
 
 **How to start:** `boxd machine exec <vm> -- sh -c 'for i in /sys/class/net/*; do ls $i; done'`.
 Expect a plain `eth0` with a `device` entry and no `brport`, in which case nothing changed there.
@@ -3908,7 +3908,9 @@ classification, not interface names: a bridge (`/sys/class/net/<if>/bridge`) and
 `device` (a veth or tap) are skipped. **Trap: "physical devices only" would have been wrong.** Inside a
 container `eth0` has no `device` entry, so that filter zeroes the signal in the OQ19 image and in any
 containerised agent. A port that *has* a `device` stays counted, because a host whose NIC is enslaved to a
-bridge (libvirt, LXD) would otherwise read zero network forever and hibernate under load. `procfs.py`
+bridge (libvirt, LXD) would otherwise read zero network forever and hibernate under load. And if the
+filter leaves nothing that has ever carried a byte (an LXC container bridging its own veth), every
+interface counts again: double counting keeps the box awake, reading zero would not. `procfs.py`
 mirrors it so future recordings measure the signal that ships; the golden fixtures carry pre-summed bytes
 and are unaffected.
 

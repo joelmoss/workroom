@@ -135,16 +135,21 @@ pub fn parse_stat(text: &str) -> Option<Proc> {
 }
 
 /// `/proc/net/dev` -> `(rx, tx)` totals over the non-loopback interfaces `counted` keeps: what a
-/// provider's network-idle timer sees. The live reader passes [`linux::crosses_the_box`]; the
-/// predicate is a parameter so the parse stays testable against a capture on any platform.
+/// provider's network-idle timer sees. The live reader passes [`crosses_the_box`]; the predicate is
+/// a parameter so the parse stays testable against a capture on any platform.
+///
+/// **If what `counted` keeps has never carried a byte, every non-loopback interface counts.** Any
+/// box that talks to anything has an uplink with bytes since boot, so the fallback only engages
+/// when the filter has dropped the uplink itself (see [`crosses_the_box`]). Then the signal double
+/// counts, which keeps the box awake; reading zero forever would hibernate it under load.
 pub fn parse_net_dev(text: &str, counted: impl Fn(&str) -> bool) -> (u64, u64) {
-    let (mut rx, mut tx) = (0u64, 0u64);
+    let (mut kept, mut all) = ((0u64, 0u64), (0u64, 0u64));
     for line in text.lines().skip(2) {
         let Some((name, data)) = line.split_once(':') else {
             continue;
         };
         let name = name.trim();
-        if name == "lo" || !counted(name) {
+        if name == "lo" {
             continue;
         }
         let f: Vec<&str> = data.split_whitespace().collect();
@@ -152,11 +157,46 @@ pub fn parse_net_dev(text: &str, counted: impl Fn(&str) -> bool) -> (u64, u64) {
             f.first().map(|v| v.parse::<u64>()),
             f.get(8).map(|v| v.parse::<u64>()),
         ) {
-            rx += r;
-            tx += t;
+            all = (all.0 + r, all.1 + t);
+            if counted(name) {
+                kept = (kept.0 + r, kept.1 + t);
+            }
         }
     }
-    (rx, tx)
+    if kept == (0, 0) {
+        all
+    } else {
+        kept
+    }
+}
+
+/// Whether an interface's bytes can have crossed the box's boundary, by the kernel's own
+/// classification rather than by name (`docker0`, `br-*`, `podman0`, `cni0`, `virbr0` all look
+/// alike to it). Two kinds are internal: a **bridge** device, and a **virtual bridge port** — a
+/// port with no backing `device`, i.e. the host end of a container's `veth` or a VM's `tap`.
+/// Container-to-container chatter is counted on both veths and host-to-container traffic on the
+/// bridge too, while traffic that leaves the box also shows up on the uplink, so dropping them
+/// loses nothing a provider's idle timer sees. Measured 2026-09-22 in Docker's VM: one
+/// `pg_isready` a second between two containers is 1804 B/s on their veths, 3.6x the 500 B/s
+/// threshold on its own, and none of it reaches the uplink.
+///
+/// **A port with a `device` stays counted.** A host whose uplink is itself enslaved to a bridge
+/// (libvirt's or LXD's bridged networking) has its physical or virtio NIC as a port: dropping
+/// every port would zero the net signal there, and a signal that reads zero forever is a box
+/// hibernated under load. Kept, the NIC carries the traffic and its bridge is the double count.
+/// Inside a container, `eth0` is neither a bridge nor a port (checked in the OQ19 image), so the
+/// signal there is unchanged. Anything unrecognised is counted: a miss fails awake.
+///
+/// **The one topology this drops the uplink on** is a box whose uplink is a bridge port with no
+/// `device` — an LXC/Incus system container that bridges its own veth `eth0` for nested guests.
+/// [`parse_net_dev`]'s fallback covers it. `sys_net` is `/sys/class/net`, a parameter so the rule
+/// that ships is the rule the tests pin.
+pub fn crosses_the_box(sys_net: &std::path::Path, name: &str) -> bool {
+    // `/proc/net/dev` names are kernel interface names, never `.`/`..` or a path.
+    let dir = sys_net.join(name);
+    let bridge = dir.join("bridge").exists();
+    let virtual_port = dir.join("brport").exists() && !dir.join("device").exists();
+    !(bridge || virtual_port)
 }
 
 /// Inodes of the ESTAB sockets in one `/proc/net/tcp`-shaped table (state `01`).
@@ -203,34 +243,13 @@ pub use linux::sample;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{monotonic, parse_net_dev, parse_net_tcp_estab, parse_stat, Proc, Sample, Socket};
+    use super::{
+        crosses_the_box, monotonic, parse_net_dev, parse_net_tcp_estab, parse_stat, Proc, Sample,
+        Socket,
+    };
     use std::collections::HashSet;
     use std::fs;
     use std::path::Path;
-
-    /// Whether an interface's bytes can have crossed the box's boundary, by the kernel's own
-    /// classification rather than by name (`docker0`, `br-*`, `podman0`, `cni0`, `virbr0` all look
-    /// alike to it). Two kinds are internal: a **bridge** device, and a **virtual bridge port** — a
-    /// port with no backing `device`, i.e. the host end of a container's `veth` or a VM's `tap`.
-    /// Container-to-container chatter is counted on both veths and host-to-container traffic on the
-    /// bridge too, while traffic that leaves the box also shows up on the uplink, so dropping them
-    /// loses nothing a provider's idle timer sees. Measured 2026-09-22 in Docker's VM: one
-    /// `pg_isready` a second between two containers is 1804 B/s on their veths, 3.6x the 500 B/s
-    /// threshold on its own, and none of it reaches the uplink.
-    ///
-    /// **A port with a `device` stays counted.** A host whose uplink is itself enslaved to a bridge
-    /// (libvirt's or LXD's bridged networking) has its physical or virtio NIC as a port: dropping
-    /// every port would zero the net signal there, and a signal that reads zero forever is a box
-    /// hibernated under load. Kept, the NIC carries the traffic and its bridge is the double count.
-    /// Inside a container, `eth0` is neither a bridge nor a port (checked in the OQ19 image), so the
-    /// signal there is unchanged. Anything unrecognised is counted: a miss fails awake.
-    pub fn crosses_the_box(name: &str) -> bool {
-        // `/proc/net/dev` names are kernel interface names, never `.`/`..` or a path.
-        let dir = Path::new("/sys/class/net").join(name);
-        let bridge = dir.join("bridge").exists();
-        let virtual_port = dir.join("brport").exists() && !dir.join("device").exists();
-        !(bridge || virtual_port)
-    }
 
     /// Reads one tick. `skip_fd_walk` is the exclusion list's name set: a process excluded by name
     /// can never own a counting socket, so its `/proc/<pid>/fd` is not walked — and no fd is walked
@@ -280,7 +299,7 @@ mod linux {
         }
         let (net_rx, net_tx) = parse_net_dev(
             &fs::read_to_string("/proc/net/dev").unwrap_or_default(),
-            crosses_the_box,
+            |name| crosses_the_box(Path::new("/sys/class/net"), name),
         );
         let sockets = Some(estab_sockets(&procs, skip_fd_walk));
         Sample {
@@ -432,11 +451,51 @@ veth0ee9903: 25774917  354214    0    0    0     0          0         0 58177989
         );
     }
 
-    /// Unrecognised is counted: an interface the kernel has no entry for fails awake, never idle.
-    #[cfg(target_os = "linux")]
+    /// The rule that ships, against a fake `/sys/class/net` shaped like the kernel's.
     #[test]
-    fn an_interface_sysfs_does_not_know_crosses_the_box() {
-        assert!(super::linux::crosses_the_box("wr-no-such-if"));
+    fn crosses_the_box_drops_bridges_and_virtual_ports_only() {
+        let sys_net = std::env::temp_dir().join(format!("wr-sysnet-{}", std::process::id()));
+        for (name, entries) in [
+            ("eth0", &["device"][..]),
+            ("docker0", &["bridge"]),
+            ("veth1", &["brport"]),
+            ("ens5", &["brport", "device"]),
+            ("tunl0", &[]),
+        ] {
+            for entry in entries {
+                std::fs::create_dir_all(sys_net.join(name).join(entry)).unwrap();
+            }
+        }
+        let crosses = |name| crosses_the_box(&sys_net, name);
+        assert!(crosses("eth0"), "a NIC");
+        assert!(!crosses("docker0"), "a bridge");
+        assert!(!crosses("veth1"), "a container's veth, enslaved");
+        assert!(
+            crosses("ens5"),
+            "a NIC enslaved to a bridge carries the uplink"
+        );
+        assert!(crosses("tunl0"), "a pseudo-interface with no bridge role");
+        assert!(crosses("wr-no-such-if"), "unrecognised fails awake");
+        let _ = std::fs::remove_dir_all(&sys_net);
+    }
+
+    /// An LXC system container that bridges its own veth `eth0` into `br0`: the filter drops both,
+    /// and what is left (a tunnel pseudo-interface) has never carried a byte. Every interface counts
+    /// again rather than the signal reading zero forever.
+    #[test]
+    fn net_dev_counts_everything_when_the_filter_leaves_no_traffic() {
+        let text = "\
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo:     140       2    0    0    0     0          0         0      140       2    0    0    0     0       0          0
+ tunl0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+  eth0:    5000      40    0    0    0     0          0         0     3000      30    0    0    0     0       0          0
+   br0:    4000      35    0    0    0     0          0         0     2500      25    0    0    0     0       0          0
+";
+        assert_eq!(
+            parse_net_dev(text, |name| !["eth0", "br0"].contains(&name)),
+            (9000, 5500)
+        );
     }
 
     #[test]
