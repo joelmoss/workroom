@@ -9,6 +9,8 @@
 //! Everything but the `/proc` reader compiles on every platform, so the golden replay test runs on
 //! a developer's Mac and not only in CI.
 
+use std::collections::HashSet;
+
 /// One process, as `/proc/<pid>/stat` and `/proc/<pid>/wchan` report it.
 ///
 /// Deserializes from the trace's positional row
@@ -137,19 +139,14 @@ pub fn parse_stat(text: &str) -> Option<Proc> {
 /// `/proc/net/dev` -> `(rx, tx)` totals over the non-loopback interfaces `counted` keeps: what a
 /// provider's network-idle timer sees. The live reader passes [`crosses_the_box`]; the predicate is
 /// a parameter so the parse stays testable against a capture on any platform.
-///
-/// **If what `counted` keeps has never carried a byte, every non-loopback interface counts.** Any
-/// box that talks to anything has an uplink with bytes since boot, so the fallback only engages
-/// when the filter has dropped the uplink itself (see [`crosses_the_box`]). Then the signal double
-/// counts, which keeps the box awake; reading zero forever would hibernate it under load.
 pub fn parse_net_dev(text: &str, counted: impl Fn(&str) -> bool) -> (u64, u64) {
-    let (mut kept, mut all) = ((0u64, 0u64), (0u64, 0u64));
+    let (mut rx, mut tx) = (0u64, 0u64);
     for line in text.lines().skip(2) {
         let Some((name, data)) = line.split_once(':') else {
             continue;
         };
         let name = name.trim();
-        if name == "lo" {
+        if name == "lo" || !counted(name) {
             continue;
         }
         let f: Vec<&str> = data.split_whitespace().collect();
@@ -157,46 +154,85 @@ pub fn parse_net_dev(text: &str, counted: impl Fn(&str) -> bool) -> (u64, u64) {
             f.first().map(|v| v.parse::<u64>()),
             f.get(8).map(|v| v.parse::<u64>()),
         ) {
-            all = (all.0 + r, all.1 + t);
-            if counted(name) {
-                kept = (kept.0 + r, kept.1 + t);
+            rx += r;
+            tx += t;
+        }
+    }
+    (rx, tx)
+}
+
+/// The interfaces a default route leaves by, IPv4 (`/proc/net/route`) or IPv6
+/// (`/proc/net/ipv6_route`): the box's uplink as the kernel itself routes it. Only the main table
+/// is visible here; a default that lives solely in a policy table is not.
+pub fn default_route_interfaces(route: &str, ipv6_route: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for line in route.lines().skip(1) {
+        // Iface Destination Gateway Flags RefCnt Use Metric Mask ...
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.get(1) == Some(&"00000000") && f.get(7) == Some(&"00000000") {
+            out.insert(f[0].to_string());
+        }
+    }
+    for line in ipv6_route.lines() {
+        // dest dest_prefix src src_prefix next_hop metric refcnt use flags iface
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let is_default =
+            f.first().is_some_and(|d| d.bytes().all(|b| b == b'0')) && f.get(1) == Some(&"00");
+        if let (true, Some(iface)) = (is_default, f.get(9)) {
+            if *iface != "lo" {
+                out.insert((*iface).to_string());
             }
         }
     }
-    if kept == (0, 0) {
-        all
-    } else {
-        kept
-    }
+    out
 }
 
 /// Whether an interface's bytes can have crossed the box's boundary, by the kernel's own
 /// classification rather than by name (`docker0`, `br-*`, `podman0`, `cni0`, `virbr0` all look
-/// alike to it). Two kinds are internal: a **bridge** device, and a **virtual bridge port** — a
-/// port with no backing `device`, i.e. the host end of a container's `veth` or a VM's `tap`.
+/// alike to it). Two kinds are internal:
+///
+/// - an **internal bridge**: a bridge device (`bridge/`) that no default route leaves by, and
+/// - a **virtual port of one**: a port (`brport/`) with no backing `device` — the host end of a
+///   container's `veth` or a VM's `tap` — whose `master` is an internal bridge.
+///
 /// Container-to-container chatter is counted on both veths and host-to-container traffic on the
 /// bridge too, while traffic that leaves the box also shows up on the uplink, so dropping them
 /// loses nothing a provider's idle timer sees. Measured 2026-09-22 in Docker's VM: one
 /// `pg_isready` a second between two containers is 1804 B/s on their veths, 3.6x the 500 B/s
 /// threshold on its own, and none of it reaches the uplink.
 ///
-/// **A port with a `device` stays counted.** A host whose uplink is itself enslaved to a bridge
-/// (libvirt's or LXD's bridged networking) has its physical or virtio NIC as a port: dropping
-/// every port would zero the net signal there, and a signal that reads zero forever is a box
-/// hibernated under load. Kept, the NIC carries the traffic and its bridge is the double count.
-/// Inside a container, `eth0` is neither a bridge nor a port (checked in the OQ19 image), so the
-/// signal there is unchanged. Anything unrecognised is counted: a miss fails awake.
+/// **A bridge the box routes out by is the uplink, and so is everything on it.** An LXC/Incus
+/// system container that bridges its own veth `eth0` into `br0` for nested guests has no NIC with
+/// a `device` at all: its default route leaves by `br0`, so `br0` and every port on it — `eth0`
+/// included — stay counted. That over-counts (the nested guests' chatter too), which keeps the box
+/// awake; dropping them would read only a tunnel's keepalives, which hibernates it under load. A
+/// port with a `device` (a NIC enslaved to any bridge) always counts, and so does anything whose
+/// classification cannot be read: every miss fails awake. Inside a container `eth0` is neither a
+/// bridge nor a port (checked in the OQ19 image), so the signal there is unchanged.
 ///
-/// **The one topology this drops the uplink on** is a box whose uplink is a bridge port with no
-/// `device` — an LXC/Incus system container that bridges its own veth `eth0` for nested guests.
-/// [`parse_net_dev`]'s fallback covers it. `sys_net` is `/sys/class/net`, a parameter so the rule
-/// that ships is the rule the tests pin.
-pub fn crosses_the_box(sys_net: &std::path::Path, name: &str) -> bool {
+/// `sys_net` is `/sys/class/net` and `uplinks` is [`default_route_interfaces`]; both are parameters
+/// so the rule that ships is the rule the tests pin.
+pub fn crosses_the_box(sys_net: &std::path::Path, uplinks: &HashSet<String>, name: &str) -> bool {
     // `/proc/net/dev` names are kernel interface names, never `.`/`..` or a path.
+    let internal_bridge =
+        |bridge: &str| sys_net.join(bridge).join("bridge").exists() && !uplinks.contains(bridge);
+    if internal_bridge(name) {
+        return false;
+    }
     let dir = sys_net.join(name);
-    let bridge = dir.join("bridge").exists();
-    let virtual_port = dir.join("brport").exists() && !dir.join("device").exists();
-    !(bridge || virtual_port)
+    if !dir.join("brport").exists() || dir.join("device").exists() {
+        return true;
+    }
+    // `master` is a symlink to the bridge's own sysfs directory.
+    let master = std::fs::read_link(dir.join("master")).ok();
+    match master
+        .as_deref()
+        .and_then(|m| m.file_name())
+        .and_then(|m| m.to_str())
+    {
+        Some(bridge) => !internal_bridge(bridge),
+        None => true,
+    }
 }
 
 /// Inodes of the ESTAB sockets in one `/proc/net/tcp`-shaped table (state `01`).
@@ -244,8 +280,8 @@ pub use linux::sample;
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{
-        crosses_the_box, monotonic, parse_net_dev, parse_net_tcp_estab, parse_stat, Proc, Sample,
-        Socket,
+        crosses_the_box, default_route_interfaces, monotonic, parse_net_dev, parse_net_tcp_estab,
+        parse_stat, Proc, Sample, Socket,
     };
     use std::collections::HashSet;
     use std::fs;
@@ -297,9 +333,15 @@ mod linux {
                 procs.push(proc);
             }
         }
+        // Read per tick, like `/proc/net/dev`: a box that brings a bridge up or moves its default
+        // route is classified by the routes it has now.
+        let uplinks = default_route_interfaces(
+            &fs::read_to_string("/proc/net/route").unwrap_or_default(),
+            &fs::read_to_string("/proc/net/ipv6_route").unwrap_or_default(),
+        );
         let (net_rx, net_tx) = parse_net_dev(
             &fs::read_to_string("/proc/net/dev").unwrap_or_default(),
-            |name| crosses_the_box(Path::new("/sys/class/net"), name),
+            |name| crosses_the_box(Path::new("/sys/class/net"), &uplinks, name),
         );
         let sockets = Some(estab_sockets(&procs, skip_fd_walk));
         Sample {
@@ -451,51 +493,86 @@ veth0ee9903: 25774917  354214    0    0    0     0          0         0 58177989
         );
     }
 
-    /// The rule that ships, against a fake `/sys/class/net` shaped like the kernel's.
+    /// The rule that ships, against a fake `/sys/class/net` shaped like the kernel's: a Docker
+    /// bridge with a veth on it, a NIC enslaved to a bridge, and an LXC container's own `eth0`
+    /// bridged into the `br0` its default route leaves by, with a nested guest's veth beside it.
     #[test]
-    fn crosses_the_box_drops_bridges_and_virtual_ports_only() {
+    fn crosses_the_box_drops_internal_bridges_and_their_virtual_ports_only() {
         let sys_net = std::env::temp_dir().join(format!("wr-sysnet-{}", std::process::id()));
-        for (name, entries) in [
-            ("eth0", &["device"][..]),
-            ("docker0", &["bridge"]),
-            ("veth1", &["brport"]),
-            ("ens5", &["brport", "device"]),
-            ("tunl0", &[]),
+        let _ = std::fs::remove_dir_all(&sys_net);
+        for (name, entries, master) in [
+            ("eth0", &["device"][..], None),
+            ("docker0", &["bridge"], None),
+            ("veth1", &["brport"], Some("docker0")),
+            ("virbr0", &["bridge"], None),
+            ("ens5", &["brport", "device"], Some("virbr0")),
+            ("br0", &["bridge"], None),
+            ("lxc-eth0", &["brport"], Some("br0")),
+            ("nested1", &["brport"], Some("br0")),
+            ("orphan", &["brport"], None),
+            ("tunl0", &[], None),
         ] {
+            std::fs::create_dir_all(sys_net.join(name)).unwrap();
             for entry in entries {
                 std::fs::create_dir_all(sys_net.join(name).join(entry)).unwrap();
             }
+            if let Some(bridge) = master {
+                std::os::unix::fs::symlink(
+                    format!("../{bridge}"),
+                    sys_net.join(name).join("master"),
+                )
+                .unwrap();
+            }
         }
-        let crosses = |name| crosses_the_box(&sys_net, name);
+        let uplinks: HashSet<String> = ["br0".to_string()].into();
+        let crosses = |name| crosses_the_box(&sys_net, &uplinks, name);
         assert!(crosses("eth0"), "a NIC");
-        assert!(!crosses("docker0"), "a bridge");
-        assert!(!crosses("veth1"), "a container's veth, enslaved");
+        assert!(!crosses("docker0"), "a bridge no default route leaves by");
+        assert!(!crosses("veth1"), "a container's veth on that bridge");
+        assert!(crosses("ens5"), "a NIC enslaved to a bridge still counts");
         assert!(
-            crosses("ens5"),
-            "a NIC enslaved to a bridge carries the uplink"
+            crosses("br0"),
+            "the bridge the default route leaves by is the uplink"
+        );
+        assert!(crosses("lxc-eth0"), "and a device-less port on it is too");
+        assert!(
+            crosses("nested1"),
+            "everything on the uplink bridge over-counts, awake"
+        );
+        assert!(
+            crosses("orphan"),
+            "a port whose bridge cannot be read fails awake"
         );
         assert!(crosses("tunl0"), "a pseudo-interface with no bridge role");
         assert!(crosses("wr-no-such-if"), "unrecognised fails awake");
         let _ = std::fs::remove_dir_all(&sys_net);
     }
 
-    /// An LXC system container that bridges its own veth `eth0` into `br0`: the filter drops both,
-    /// and what is left (a tunnel pseudo-interface) has never carried a byte. Every interface counts
-    /// again rather than the signal reading zero forever.
+    /// Docker's own VM (2026-09-22) has no IPv4 default in the main table, only IPv6 defaults by
+    /// `eth0` and `eth1`; a plain VM has one IPv4 default. `lo`'s unreachable defaults never count.
     #[test]
-    fn net_dev_counts_everything_when_the_filter_leaves_no_traffic() {
-        let text = "\
-Inter-|   Receive                                                |  Transmit
- face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
-    lo:     140       2    0    0    0     0          0         0      140       2    0    0    0     0       0          0
- tunl0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
-  eth0:    5000      40    0    0    0     0          0         0     3000      30    0    0    0     0       0          0
-   br0:    4000      35    0    0    0     0          0         0     2500      25    0    0    0     0       0          0
+    fn default_route_interfaces_reads_both_families() {
+        let route = "\
+Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+docker0\t0000C80A\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0
+eth0\t0041A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0
 ";
-        assert_eq!(
-            parse_net_dev(text, |name| !["eth0", "br0"].contains(&name)),
-            (9000, 5500)
-        );
+        let ipv6 = "\
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 fdc4f303932400000000000000000001 00000400 00000001 00000000 00000003     eth1
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 fdc4f303932400000000000000000001 00000400 00000001 00000000 00000003     eth0
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo
+fe800000000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001  docker0
+";
+        let expected: HashSet<String> = ["eth0".to_string(), "eth1".to_string()].into();
+        assert_eq!(default_route_interfaces(route, ipv6), expected);
+
+        let plain = "\
+Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+br0\t00000000\t0101A8C0\t0003\t0\t0\t0\t00000000\t0\t0\t0
+br0\t0001A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0
+";
+        let expected: HashSet<String> = ["br0".to_string()].into();
+        assert_eq!(default_route_interfaces(plain, ""), expected);
     }
 
     #[test]

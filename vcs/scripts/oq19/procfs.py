@@ -80,24 +80,42 @@ def parse_net_dev(text):
     return out
 
 
-def crosses_the_box(name, sys_net="/sys/class/net"):
-    """Mirror of wr-agent `crosses_the_box`: False for a bridge device and for a bridge port with no
-    backing `device` (a container's veth, a VM's tap), whose bytes are internal chatter counted twice.
-    A port with a `device` is a real NIC enslaved to a bridge, and stays counted."""
+def default_route_interfaces(route, ipv6_route):
+    """Mirror of wr-agent `default_route_interfaces`: interfaces an IPv4 or IPv6 default route leaves by."""
+    out = set()
+    for line in route.splitlines()[1:]:
+        f = line.split()
+        if len(f) > 7 and f[1] == "00000000" and f[7] == "00000000":
+            out.add(f[0])
+    for line in ipv6_route.splitlines():
+        f = line.split()
+        if len(f) > 9 and set(f[0]) == {"0"} and f[1] == "00" and f[9] != "lo":
+            out.add(f[9])
+    return out
+
+
+def crosses_the_box(name, uplinks, sys_net="/sys/class/net"):
+    """Mirror of wr-agent `crosses_the_box`: False for a bridge no default route leaves by, and for a
+    port with no backing `device` (a container's veth, a VM's tap) whose `master` is such a bridge. The
+    bridge the box routes out by, and everything on it, is the uplink; any unreadable case counts."""
+    def internal_bridge(bridge):
+        return os.path.exists(os.path.join(sys_net, bridge, "bridge")) and bridge not in uplinks
+    if internal_bridge(name):
+        return False
     d = os.path.join(sys_net, name)
-    bridge = os.path.exists(os.path.join(d, "bridge"))
-    virtual_port = os.path.exists(os.path.join(d, "brport")) and not os.path.exists(os.path.join(d, "device"))
-    return not (bridge or virtual_port)
+    if not os.path.exists(os.path.join(d, "brport")) or os.path.exists(os.path.join(d, "device")):
+        return True
+    try:
+        master = os.path.basename(os.readlink(os.path.join(d, "master")))
+    except OSError:
+        return True
+    return not internal_bridge(master)
 
 
 def net_bytes(net_dev, exclude=("lo",), counted=lambda name: True):
     """Total (rx, tx) over the non-loopback interfaces `counted` keeps: what a provider's network-idle
     timer can see. The live sampler passes `crosses_the_box`; recorded traces predate it (2026-09-22)."""
-    every = [(k, v) for k, v in net_dev.items() if k not in exclude]
-    keep = [v for k, v in every if counted(k)]
-    # Mirror of the Rust fallback: a filter that left nothing with traffic dropped the uplink itself.
-    if not any(v[0] or v[1] for v in keep):
-        keep = [v for _, v in every]
+    keep = [v for k, v in net_dev.items() if k not in exclude and counted(k)]
     return sum(v[0] for v in keep), sum(v[1] for v in keep)
 
 

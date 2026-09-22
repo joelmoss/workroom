@@ -38,14 +38,14 @@ fixture and the fixtures would be re-recorded with it.
 
 ### Confirm the wakefulness net filter on the real box (vcs) — #215 review follow-up
 
-**What:** The net signal now skips bridges and virtual bridge ports (`sample.rs` `crosses_the_box`,
-mirrored in `procfs.py`; see Recently done, 2026-09-22). It was verified in Docker's VM and in the OQ19
+**What:** The net signal now skips internal bridges and their virtual ports (`sample.rs`
+`crosses_the_box`, mirrored in `procfs.py`; see Recently done, 2026-09-22). It was verified in Docker's VM and in the OQ19
 image, not on boxd. Check `/sys/class/net/*/{bridge,brport,device}` on a boxd VM, with and without a
 container running, and decide whether the boxd confirmation run needs repeating.
 
 **Why:** The golden fixtures carry pre-summed bytes, so they cannot see the filter; only a live box can.
-The design fails awake on anything it does not recognise, and a filter that drops the uplink itself
-(a bridge port with no `device`) falls back to counting everything, so the remaining risk is only cost.
+The rule fails awake on anything it cannot classify. The remaining false-idle risk is a box whose
+only default route lives in a policy routing table, which `/proc/net/route` does not show.
 
 **How to start:** `boxd machine exec <vm> -- sh -c 'for i in /sys/class/net/*; do ls $i; done'`.
 Expect a plain `eth0` with a `device` entry and no `brport`, in which case nothing changed there.
@@ -3903,16 +3903,16 @@ history. Kept here for the parts that stay useful: what changed, and the traps f
 **2026-09-22 — the wakefulness net signal no longer counts container bridges.** `parse_net_dev` took
 every interface but `lo`, so a container's traffic was counted on its veth, its bridge, and again on the
 uplink. Measured in Docker's VM: one `pg_isready` a second between two containers is 1804 B/s on their
-veths, 3.6x the 500 B/s busy threshold with nothing leaving the box. The filter is the kernel's own
-classification, not interface names: a bridge (`/sys/class/net/<if>/bridge`) and a bridge port with no
-`device` (a veth or tap) are skipped. **Trap: "physical devices only" would have been wrong.** Inside a
-container `eth0` has no `device` entry, so that filter zeroes the signal in the OQ19 image and in any
-containerised agent. A port that *has* a `device` stays counted, because a host whose NIC is enslaved to a
-bridge (libvirt, LXD) would otherwise read zero network forever and hibernate under load. And if the
-filter leaves nothing that has ever carried a byte (an LXC container bridging its own veth), every
-interface counts again: double counting keeps the box awake, reading zero would not. `procfs.py`
-mirrors it so future recordings measure the signal that ships; the golden fixtures carry pre-summed bytes
-and are unaffected.
+veths, 3.6x the 500 B/s busy threshold with nothing leaving the box. The filter reads the kernel's own
+classification, not interface names. It skips a bridge (`/sys/class/net/<if>/bridge`) that no default
+route leaves by, and a device-less port (a veth or tap) whose `master` is such a bridge. **Two traps.**
+"Physical devices only" is wrong: inside a container `eth0` has no `device`, so it zeroes the signal.
+"Every bridge and device-less port" is wrong too: an LXC container that bridges its own veth `eth0` into
+`br0` then loses its whole uplink. A byte-count fallback for that case failed review, because once a
+tunnel (`tailscale0`, `wg0`) carries one byte the fallback switches off for good, and the box reads idle
+under load. The default route is the uplink as the kernel routes it, so that bridge and everything on it
+count. `procfs.py` mirrors the rule, so future recordings measure the signal that ships. The golden
+fixtures carry pre-summed bytes and are unaffected.
 
 **2026-09-03 — the 9 "Publishing changes from within view updates" faults per launch: found and
 fixed. Both filed hypotheses were wrong, and so was the blocker.** The entry said Xcode's runtime-issue
