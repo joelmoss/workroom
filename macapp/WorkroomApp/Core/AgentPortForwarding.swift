@@ -35,6 +35,7 @@ struct AgentForwardService: Sendable {
   /// Bind a listener on `127.0.0.1` and forward everything accepted on it to `remotePort` on the
   /// agent's box. `openTimeout` is how long one accepted connection waits for the agent's REPLY;
   /// `sendTimeout` and `drainTimeout` bound a local client that stops reading (see `PortForward`).
+  /// `sendTimeout` also bounds how long an OPEN may sit unsent behind a stalled connection writer.
   func listen(
     remotePort: UInt16, openTimeout: TimeInterval = PortForward.openTimeout,
     sendTimeout: TimeInterval = PortForward.sendTimeout,
@@ -246,7 +247,7 @@ final class PortForward: @unchecked Sendable {
         // nothing), so it is lost either way — the row says why, as it does for the 65th. The
         // listener survives, and the pause on this private queue (nothing else runs on it) gives
         // descriptors a chance to free before the next queued connection is tried and lost too.
-        onEvent(.failed("Out of file descriptors; a connection was refused."))
+        onEvent(.failed("Out of file descriptors or memory; a connection was refused."))
         Thread.sleep(forTimeInterval: Self.acceptBackoff)
         return
       default:

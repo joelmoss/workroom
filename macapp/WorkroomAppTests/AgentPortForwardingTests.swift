@@ -252,13 +252,14 @@ final class AgentPortForwardingTests: XCTestCase {
   /// A local client that stops reading while its connection is still open is cut off by the send
   /// timeout, not held forever. The response stays under `queueBudget` even if every chunk queues at
   /// once, so the budget cut-off in the test above cannot be what fires here: the only way out is a
-  /// parked `send` returning at the timeout. At the default 30 s this fails.
+  /// parked `send` returning at the timeout. At the default 30 s this fails. One second, not less:
+  /// the same value bounds the OPEN's writer-stall clock, which must not fire first on a slow box.
   func testAClientThatStopsReadingIsCutOffAtTheSendTimeout() async throws {
     let agent = try FakeAgent(
       version: 5, forward: true, forwardEpilogue: 2_000_000, forwardEpilogueOnData: true)
     let connection = try await fake(agent)
     let failures = Failures()
-    let forward = try listen(connection, to: 5173, failures: failures, sendTimeout: 0.5)
+    let forward = try listen(connection, to: 5173, failures: failures, sendTimeout: 1)
     let client = try connect(to: forward, receiveBuffer: 8192)
 
     // The write half stays open, so the agent never sends CLOSE: the stream is live when the send
@@ -272,8 +273,12 @@ final class AgentPortForwardingTests: XCTestCase {
 
   /// Ending a forward drains to a client that is still reading, but only for `drainTimeout`: a
   /// client that trickles keeps every `send` making progress, so the send timeout never fires, and
-  /// the deadline is the only thing that ends the drain. The negative control is
-  /// `testStoppingAForwardDrainsTheResponseAlreadyReceived`, where the default drain delivers all.
+  /// the deadline is the only thing that ends the drain.
+  ///
+  /// Ended by the agent's CLOSE, not by `stop()`: the CLOSE follows every DATA on the same stream, so
+  /// the whole response is already queued when the drain starts, and a truncation can only be the
+  /// deadline. A `stop()` could land before the reader had taken every envelope, and the ones it
+  /// drops would pass this test with no deadline at all. At the default 30 s this fails.
   func testATricklingClientIsCutOffAtTheDrainTimeout() async throws {
     let epilogue = 2_000_000
     let agent = try FakeAgent(
@@ -285,21 +290,26 @@ final class AgentPortForwardingTests: XCTestCase {
 
     try client.write(Data("request".utf8))
     eventually("the request never reached the agent") { !agent.forwards(opcode: 0x03).isEmpty }
-    try await Task.sleep(for: .milliseconds(300))
+    // The agent answers the client's EOF with its CLOSE, behind the whole response.
+    client.shutdownWrite()
 
-    forward.stop()
-
-    // 400 KB/s: the whole response would take five seconds, far past the deadline.
+    // 400 KB/s: the whole response would take five seconds, far past the deadline. `read` returns
+    // empty for EOF and for a timeout alike, so the empty read is timed: EOF is prompt.
     var received = 0
+    var ended = false
     let started = Date()
     while Date().timeIntervalSince(started) < 20 {
+      let asked = Date()
       let chunk = try client.read(8192, timeout: 5)
-      if chunk.isEmpty { break }
+      if chunk.isEmpty {
+        ended = Date().timeIntervalSince(asked) < 4
+        break
+      }
       received += chunk.count
       Thread.sleep(forTimeInterval: 0.02)
     }
+    XCTAssertTrue(ended, "the drain hung instead of ending in EOF")
     XCTAssertLessThan(received, epilogue, "the drain outlived its deadline: got all \(received)")
-    XCTAssertEqual(try client.read(1, timeout: 1), Data(), "the drain ended in EOF, not a hang")
   }
 
   /// Out of descriptors, `accept` fails with `EMFILE` — and XNU has already dequeued and closed the
@@ -325,7 +335,10 @@ final class AgentPortForwardingTests: XCTestCase {
       let open = try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count
       var lowered = original
       lowered.rlim_cur = rlim_t(open + 32)
-      XCTAssertEqual(setrlimit(RLIMIT_NOFILE, &lowered), 0)
+      // Not merely asserted: without the lowered limit the loop below would fill the host's real one.
+      guard setrlimit(RLIMIT_NOFILE, &lowered) == 0 else {
+        return XCTFail("could not lower RLIMIT_NOFILE: \(String(cString: strerror(errno)))")
+      }
       while true {
         let descriptor = dup(STDERR_FILENO)
         guard descriptor >= 0 else { break }
@@ -337,9 +350,13 @@ final class AgentPortForwardingTests: XCTestCase {
       Darwin.close(held.removeLast())
       let lost = try connect(to: forward)
       eventually("the lost connection was not reported") { !failures.all.isEmpty }
+      // Timed, because `read` returns empty on a timeout too: a connection left in the backlog would
+      // read the same.
+      let asked = Date()
       XCTAssertEqual(try lost.read(1, timeout: 5), Data(), "the lost connection was not closed")
+      XCTAssertLessThan(Date().timeIntervalSince(asked), 4, "the lost connection was never closed")
     }
-    XCTAssertEqual(failures.all, ["Out of file descriptors; a connection was refused."])
+    XCTAssertEqual(failures.all, ["Out of file descriptors or memory; a connection was refused."])
     XCTAssertEqual(
       agent.forwards(opcode: 0x01), [], "an OPEN for a connection that was never accepted")
 
