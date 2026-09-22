@@ -2263,7 +2263,8 @@ service milestones below so each layer can be reviewed and landed independently.
      maps to those two addresses itself. Nothing is resolved, for two reasons that point the same
      way: a lookup is an unbounded blocking call on the dispatch path, and an allowlist checked
      before resolution is the classic bypass. So `127.0.0.2` is refused with everything else, and
-     reverse (remote → Mac) forwarding is not this service. The connect is bounded at 3 s and a
+     reverse (remote → Mac) forwarding is not this service. The connect is bounded at 3 s (one
+     budget across both loopback addresses for `localhost`) and a
      refusal or a timeout is an error reply on the stream, never a stream that goes quiet.
 
      *Isolation is the part that needed designing.* The connection's envelope reader must never block

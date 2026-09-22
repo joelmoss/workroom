@@ -271,6 +271,131 @@ fn a_client_closing_the_stream_closes_the_tcp_connection() {
         panic!("the echo server never saw its peer go away");
     };
     assert_eq!(total, 16, "everything sent arrived before the close");
+    // And the client gets the CLOSE that frees the id — the agent's last word on the stream, and
+    // NOT an EOF for the shutdown the close performed. Then the id is usable again.
+    assert_eq!(client.next(1).expect("close").0, CLOSE);
+    assert!(
+        client.next_within(1, Duration::from_millis(300)).is_none(),
+        "nothing after CLOSE"
+    );
+    client.opened(1, echo.port);
+}
+
+/// A forward the client stops draining is killed at the budget, and the client's last envelope
+/// on that stream is the CLOSE: nothing the socket's reader still had (DATA, its EOF) follows it,
+/// so a client that re-uses the id on CLOSE cannot receive the old forward's bytes.
+#[test]
+fn a_stalled_forward_is_closed_and_close_is_its_last_envelope() {
+    // A server that never reads: the agent's socket writes stall once the kernel buffers fill,
+    // and the client's bytes pile up in the agent's queue.
+    let echo = Echo::with(|socket| {
+        std::thread::sleep(Duration::from_secs(30));
+        drop(socket);
+        0
+    });
+    let mut client = Client::connect();
+    client.opened(1, echo.port);
+    let chunk = vec![1u8; 512 * 1024];
+    // Past the budget plus whatever the kernel absorbs; the agent is entitled to kill the forward
+    // anywhere past the budget, and this asserts only what happens when it does.
+    for _ in 0..16 {
+        client.send(1, DATA, &chunk);
+    }
+    let (opcode, _) = client.next(1).expect("the kill's CLOSE");
+    assert_eq!(
+        opcode, CLOSE,
+        "CLOSE, not an EOF for the agent's own shutdown"
+    );
+    assert!(
+        client.next_within(1, Duration::from_millis(300)).is_none(),
+        "nothing after CLOSE"
+    );
+    // The id is free: a fresh forward on it works.
+    let alive = Echo::start();
+    client.opened(1, alive.port);
+    client.send(1, DATA, b"reused");
+    assert_eq!(client.read(1, 6), b"reused");
+}
+
+/// A peer that resets the connection (rather than closing it) ends the stream too: the reader's
+/// error wakes the writer, and the pair finishes with CLOSE instead of holding the slot until
+/// the client notices on its own.
+#[test]
+fn a_peer_reset_ends_the_stream_with_close() {
+    // Reads one message, then drops the socket with unread data pending, which makes the kernel
+    // send RST rather than FIN.
+    let echo = Echo::with(|mut socket| {
+        let mut buffer = [0u8; 8];
+        let _ = socket.read(&mut buffer);
+        // Unread bytes at close = RST on most stacks; SO_LINGER 0 makes it certain.
+        let linger = libc::linger {
+            l_onoff: 1,
+            l_linger: 0,
+        };
+        unsafe {
+            use std::os::unix::io::AsRawFd;
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_LINGER,
+                &linger as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::linger>() as libc::socklen_t,
+            );
+        }
+        drop(socket);
+        0
+    });
+    let mut client = Client::connect();
+    client.opened(1, echo.port);
+    client.send(1, DATA, b"one");
+    // Whatever arrives (an EOF if the FIN raced the RST, nothing if not), the stream ends with
+    // CLOSE, and nothing follows it.
+    let mut last = None;
+    while let Some((opcode, _)) = client.next(1) {
+        last = Some(opcode);
+        if opcode == CLOSE {
+            break;
+        }
+    }
+    assert_eq!(last, Some(CLOSE));
+    assert!(client.next_within(1, Duration::from_millis(300)).is_none());
+    // The slot and the id are free.
+    let alive = Echo::start();
+    client.opened(1, alive.port);
+}
+
+/// `localhost` names both loopback families; a server bound to only `::1` is still reached.
+#[test]
+fn localhost_reaches_a_server_bound_only_to_the_v6_loopback() {
+    let Ok(listener) = TcpListener::bind("[::1]:0") else {
+        eprintln!("no IPv6 loopback here; skipping");
+        return;
+    };
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        if let Ok((mut socket, _)) = listener.accept() {
+            let mut buffer = [0u8; 16];
+            if let Ok(count) = socket.read(&mut buffer) {
+                let _ = socket.write_all(&buffer[..count]);
+            }
+        }
+    });
+    let mut client = Client::connect();
+    let reply = client.open(1, "localhost", port);
+    assert_eq!(reply["result"]["opened"], true, "{reply}");
+    client.send(1, DATA, b"v6");
+    assert_eq!(client.read(1, 2), b"v6");
+}
+
+/// A DATA body may be empty, and it changes nothing.
+#[test]
+fn an_empty_data_body_is_harmless() {
+    let echo = Echo::start();
+    let mut client = Client::connect();
+    client.opened(1, echo.port);
+    client.send(1, DATA, &[]);
+    client.send(1, DATA, b"after");
+    assert_eq!(client.read(1, 5), b"after");
 }
 
 /// A half-close is a half-close: the peer sees EOF while the agent keeps relaying what comes back.
