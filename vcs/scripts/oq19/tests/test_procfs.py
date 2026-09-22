@@ -77,6 +77,19 @@ class CgroupAndBox(unittest.TestCase):
         lo = {"lo": (10**9, 10**9), "eth0": (5, 7)}
         self.assertEqual(procfs.net_bytes(lo), (5, 7))  # loopback chatter must not look like network activity
 
+    def test_bridges_and_virtual_bridge_ports_are_not_counted(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as sys_net:
+            for name, entries in {"eth0": ["device"], "docker0": ["bridge"], "veth1": ["brport"],
+                                  "br0": ["bridge"], "ens5": ["brport", "device"]}.items():
+                for entry in entries:
+                    os.makedirs(os.path.join(sys_net, name, entry))
+            counted = lambda name: procfs.crosses_the_box(name, sys_net)
+            net = {"eth0": (1, 2), "docker0": (10, 20), "veth1": (100, 200), "br0": (1000, 2000),
+                   "ens5": (10000, 20000), "unknown0": (100000, 200000)}
+            # eth0, the NIC enslaved to br0 (ens5), and an interface sysfs does not know (fails awake).
+            self.assertEqual(procfs.net_bytes(net, counted=counted), (110001, 220002))
+
 
 class Sockets(unittest.TestCase):
     def test_ss_tinp_gives_socket_ages_and_owners(self):

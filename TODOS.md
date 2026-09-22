@@ -36,25 +36,23 @@ fixture and the fixtures would be re-recorded with it.
 
 **Priority:** P2, effort M.
 
-### The wakefulness net signal counts container bridges (vcs) — #215 review follow-up
+### Confirm the wakefulness net filter on the real box (vcs) — #215 review follow-up
 
-**What:** `wakefulness/sample.rs` `parse_net_dev` sums every interface but `lo`, as the measured
-Python did. On a box running containers, `docker0`, `veth*` and `br-*` carry every internal packet
-twice, so container chatter alone clears the 500 B/s threshold and the box never hibernates.
-Decide the interface filter (physical devices only, or by `/sys/class/net/<if>/device` presence)
-and re-measure.
+**What:** The net signal now skips bridges and virtual bridge ports (`sample.rs` `crosses_the_box`,
+mirrored in `procfs.py`; see Recently done, 2026-09-22). It was verified in Docker's VM and in the OQ19
+image, not on boxd. Check `/sys/class/net/*/{bridge,brport,device}` on a boxd VM, with and without a
+container running, and decide whether the boxd confirmation run needs repeating.
 
-**Why:** The signal was frozen on a bare provider image with one `eth0`; it fails safe (awake), but
-a workroom that runs a database in a container would pay the provider's uncapped hourly rate for
-nothing. Reviewed on #215 (2026-09-22) and deliberately left as measured rather than changed unmeasured.
+**Why:** The golden fixtures carry pre-summed bytes, so they cannot see the filter; only a live box can.
+The design fails awake on anything it does not recognise, so the remaining risk is a provider whose
+uplink is a bridge port with no `device`, which would read zero network forever.
 
-**How to start:** Record scenario 8/9 (detached server, idle and hit) in the OQ19 image with a
-container running alongside; check what `parse_net_dev` sees on the bridge; pick the filter that
-keeps the ten golden fixtures exact (they have only `eth0`) and re-run the boxd confirmation.
+**How to start:** `boxd machine exec <vm> -- sh -c 'for i in /sys/class/net/*; do ls $i; done'`.
+Expect a plain `eth0` with a `device` entry and no `brport`, in which case nothing changed there.
 
-**Depends on / blocked by:** Phase 3's real box, where the process and interface mix is real.
+**Depends on / blocked by:** a boxd VM (owner's call, it costs a machine).
 
-**Priority:** P2, effort S.
+**Priority:** P3, effort S.
 
 ### Ordinary connection failures blank the PR/CI badges (macapp) — #207 eng-review follow-up
 
@@ -3901,6 +3899,18 @@ error) is one of the hardest to diagnose from a bug report.
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-09-22 — the wakefulness net signal no longer counts container bridges.** `parse_net_dev` took
+every interface but `lo`, so a container's traffic was counted on its veth, its bridge, and again on the
+uplink. Measured in Docker's VM: one `pg_isready` a second between two containers is 1804 B/s on their
+veths, 3.6x the 500 B/s busy threshold with nothing leaving the box. The filter is the kernel's own
+classification, not interface names: a bridge (`/sys/class/net/<if>/bridge`) and a bridge port with no
+`device` (a veth or tap) are skipped. **Trap: "physical devices only" would have been wrong.** Inside a
+container `eth0` has no `device` entry, so that filter zeroes the signal in the OQ19 image and in any
+containerised agent. A port that *has* a `device` stays counted, because a host whose NIC is enslaved to a
+bridge (libvirt, LXD) would otherwise read zero network forever and hibernate under load. `procfs.py`
+mirrors it so future recordings measure the signal that ships; the golden fixtures carry pre-summed bytes
+and are unaffected.
 
 **2026-09-03 — the 9 "Publishing changes from within view updates" faults per launch: found and
 fixed. Both filed hypotheses were wrong, and so was the blocker.** The entry said Xcode's runtime-issue

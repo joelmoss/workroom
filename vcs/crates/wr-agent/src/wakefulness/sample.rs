@@ -134,14 +134,17 @@ pub fn parse_stat(text: &str) -> Option<Proc> {
     })
 }
 
-/// `/proc/net/dev` -> non-loopback `(rx, tx)` totals: what a provider's network-idle timer sees.
-pub fn parse_net_dev(text: &str) -> (u64, u64) {
+/// `/proc/net/dev` -> `(rx, tx)` totals over the non-loopback interfaces `counted` keeps: what a
+/// provider's network-idle timer sees. The live reader passes [`linux::crosses_the_box`]; the
+/// predicate is a parameter so the parse stays testable against a capture on any platform.
+pub fn parse_net_dev(text: &str, counted: impl Fn(&str) -> bool) -> (u64, u64) {
     let (mut rx, mut tx) = (0u64, 0u64);
     for line in text.lines().skip(2) {
         let Some((name, data)) = line.split_once(':') else {
             continue;
         };
-        if name.trim() == "lo" {
+        let name = name.trim();
+        if name == "lo" || !counted(name) {
             continue;
         }
         let f: Vec<&str> = data.split_whitespace().collect();
@@ -203,6 +206,31 @@ mod linux {
     use super::{monotonic, parse_net_dev, parse_net_tcp_estab, parse_stat, Proc, Sample, Socket};
     use std::collections::HashSet;
     use std::fs;
+    use std::path::Path;
+
+    /// Whether an interface's bytes can have crossed the box's boundary, by the kernel's own
+    /// classification rather than by name (`docker0`, `br-*`, `podman0`, `cni0`, `virbr0` all look
+    /// alike to it). Two kinds are internal: a **bridge** device, and a **virtual bridge port** — a
+    /// port with no backing `device`, i.e. the host end of a container's `veth` or a VM's `tap`.
+    /// Container-to-container chatter is counted on both veths and host-to-container traffic on the
+    /// bridge too, while traffic that leaves the box also shows up on the uplink, so dropping them
+    /// loses nothing a provider's idle timer sees. Measured 2026-09-22 in Docker's VM: one
+    /// `pg_isready` a second between two containers is 1804 B/s on their veths, 3.6x the 500 B/s
+    /// threshold on its own, and none of it reaches the uplink.
+    ///
+    /// **A port with a `device` stays counted.** A host whose uplink is itself enslaved to a bridge
+    /// (libvirt's or LXD's bridged networking) has its physical or virtio NIC as a port: dropping
+    /// every port would zero the net signal there, and a signal that reads zero forever is a box
+    /// hibernated under load. Kept, the NIC carries the traffic and its bridge is the double count.
+    /// Inside a container, `eth0` is neither a bridge nor a port (checked in the OQ19 image), so the
+    /// signal there is unchanged. Anything unrecognised is counted: a miss fails awake.
+    pub fn crosses_the_box(name: &str) -> bool {
+        // `/proc/net/dev` names are kernel interface names, never `.`/`..` or a path.
+        let dir = Path::new("/sys/class/net").join(name);
+        let bridge = dir.join("bridge").exists();
+        let virtual_port = dir.join("brport").exists() && !dir.join("device").exists();
+        !(bridge || virtual_port)
+    }
 
     /// Reads one tick. `skip_fd_walk` is the exclusion list's name set: a process excluded by name
     /// can never own a counting socket, so its `/proc/<pid>/fd` is not walked — and no fd is walked
@@ -250,8 +278,10 @@ mod linux {
                 procs.push(proc);
             }
         }
-        let (net_rx, net_tx) =
-            parse_net_dev(&fs::read_to_string("/proc/net/dev").unwrap_or_default());
+        let (net_rx, net_tx) = parse_net_dev(
+            &fs::read_to_string("/proc/net/dev").unwrap_or_default(),
+            crosses_the_box,
+        );
         let sockets = Some(estab_sockets(&procs, skip_fd_walk));
         Sample {
             t,
@@ -362,7 +392,7 @@ ip6tnl0:       0       0    0    0    0     0          0         0        0     
 ip6gre0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
   eth0: 49268498    3774    0    0    0     0          0         0   239156    2688    0    0    0     0       0          0
 ";
-        assert_eq!(parse_net_dev(text), (49_268_498, 239_156));
+        assert_eq!(parse_net_dev(text, |_| true), (49_268_498, 239_156));
     }
 
     #[test]
@@ -371,7 +401,42 @@ ip6gre0:       0       0    0    0    0     0          0         0        0     
              face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets\n    \
              lo:  1000       9    0    0    0     0          0         0     2000       9\n  \
              eth0:  1660      12    0    0    0     0          0         0      421       8\n";
-        assert_eq!(parse_net_dev(text), (1660, 421));
+        assert_eq!(parse_net_dev(text, |_| true), (1660, 421));
+    }
+
+    /// Docker's own VM, captured 2026-09-22 with a two-container app running (trimmed to the rows
+    /// that carry bytes). Only `eth0`, `eth1` and `services1` cross the box; the bridge and its
+    /// veth ports are what the predicate — `crosses_the_box` classified them — drops.
+    #[test]
+    fn net_dev_skips_the_interfaces_the_predicate_rejects() {
+        let text = "\
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo:     140       2    0    0    0     0          0         0      140       2    0    0    0     0       0          0
+  eth0: 2806764297 3750852    0    0    0     0          0         0 3743670997 4802266    0    0    0     0       0          0
+  eth1: 10672637   73769    0    0    0     0          0         0   300470    1163    0    0    0     0       0          0
+services1: 3567478382 2314288    0    0    0     0          0         0 133087979 1921256    0    0    0     0       0          0
+br-bdbc7725768f: 38470859  643210    0    0    0     0          0         0 127911359  949280    0    2    0     0       0          0
+docker0: 3336549   53067    0    0    0     0          0         0 1155792318   83978    0    2    0     0       0          0
+veth1072cbd: 47475799  643210    0    0    0     0          0         0 127912231  949290    0    0    0     0       0          0
+veth0ee9903: 25774917  354214    0    0    0     0          0         0 58177989  473605    0    0    0     0       0          0
+";
+        let internal =
+            |name: &str| name == "docker0" || name.starts_with("br-") || name.starts_with("veth");
+        assert_eq!(
+            parse_net_dev(text, |name| !internal(name)),
+            (
+                2_806_764_297 + 10_672_637 + 3_567_478_382,
+                3_743_670_997 + 300_470 + 133_087_979
+            )
+        );
+    }
+
+    /// Unrecognised is counted: an interface the kernel has no entry for fails awake, never idle.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_interface_sysfs_does_not_know_crosses_the_box() {
+        assert!(super::linux::crosses_the_box("wr-no-such-if"));
     }
 
     #[test]

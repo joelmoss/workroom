@@ -6,6 +6,7 @@ in a trace is worse than a missing one, and the staleness rule (D10) already def
 means.
 """
 
+import os
 import re
 
 
@@ -79,11 +80,21 @@ def parse_net_dev(text):
     return out
 
 
-def net_bytes(net_dev, exclude=("lo",)):
-    """Total (rx, tx) over the non-loopback interfaces: what a provider's network-idle timer can see."""
-    rx = sum(v[0] for k, v in net_dev.items() if k not in exclude)
-    tx = sum(v[1] for k, v in net_dev.items() if k not in exclude)
-    return rx, tx
+def crosses_the_box(name, sys_net="/sys/class/net"):
+    """Mirror of wr-agent `crosses_the_box`: False for a bridge device and for a bridge port with no
+    backing `device` (a container's veth, a VM's tap), whose bytes are internal chatter counted twice.
+    A port with a `device` is a real NIC enslaved to a bridge, and stays counted."""
+    d = os.path.join(sys_net, name)
+    bridge = os.path.exists(os.path.join(d, "bridge"))
+    virtual_port = os.path.exists(os.path.join(d, "brport")) and not os.path.exists(os.path.join(d, "device"))
+    return not (bridge or virtual_port)
+
+
+def net_bytes(net_dev, exclude=("lo",), counted=lambda name: True):
+    """Total (rx, tx) over the non-loopback interfaces `counted` keeps: what a provider's network-idle
+    timer can see. The live sampler passes `crosses_the_box`; recorded traces predate it (2026-09-22)."""
+    keep = [v for k, v in net_dev.items() if k not in exclude and counted(k)]
+    return sum(v[0] for v in keep), sum(v[1] for v in keep)
 
 
 def parse_cgroup_procs(text):
