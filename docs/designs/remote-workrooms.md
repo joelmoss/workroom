@@ -2306,6 +2306,21 @@ service milestones below so each layer can be reviewed and landed independently.
      and the provider hostname that "come back to a running preview URL" needs, which no amount of
      client-side forwarding can supply.
 
+     **Terminal-state durability: the in-memory half is already done, and it shipped with Phase 1**
+     (the shadow terminal, `wr-agent/src/terminal.rs`). "The scenarios already proven for local
+     sessions" are detach, client crash and app restart. Each of them leaves the agent alive, and
+     every one is an integration test in `wr-agent/tests/attach_survives_detach.rs` that kills a
+     real client process: the same shell survives (`a_session_outlives_the_client_that_created_it`,
+     `shell_state_survives_the_drop`), and the reattaching client is repainted with its screen, its
+     scrollback, and a full-screen program's alternate screen
+     (`a_reattaching_client_gets_a_full_screen_programs_screen`, added for #208 — the case the Swift
+     replay buffer returned empty for). `remote_transport.rs` covers the same survival over a pipe.
+     CI runs all of these with the feature on (`agent-terminal-state`). **Not in this milestone:**
+     stop-and-reboot screen restoration. That needs a snapshot persisted to disk. It is Phase 3
+     (item 4 below), it is blocked on the resume policy (the snapshot format carries no
+     compatibility guarantee, see Distribution Plan), and it is lossy by construction: a decoded
+     snapshot cannot report the parser continuation.
+
    **Two Phase 3 questions this milestone opened rather than answered**, both consequences of the
    exec service being the thing Phase 3 moves host-side. *Auth resolution*: the child environment is
    resolved entirely client-side, and every value in it is a path into the client's filesystem —
