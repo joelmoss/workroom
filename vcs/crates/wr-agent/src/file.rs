@@ -30,7 +30,6 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::os::fd::{AsRawFd, RawFd};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -444,6 +443,7 @@ fn read(request: &Request) -> Result<Value, FileError> {
 fn descriptor_path(fd: RawFd) -> std::io::Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
+        use std::os::unix::ffi::OsStrExt;
         let mut buffer = [0u8; libc::PATH_MAX as usize];
         // SAFETY: `F_GETPATH` writes at most PATH_MAX bytes, NUL-terminated, into the buffer.
         if unsafe { libc::fcntl(fd, libc::F_GETPATH, buffer.as_mut_ptr()) } < 0 {
@@ -550,6 +550,7 @@ fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::symlink;
     use std::process::Command;
 
