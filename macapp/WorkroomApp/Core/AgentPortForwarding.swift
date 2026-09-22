@@ -337,6 +337,8 @@ private final class ForwardedConnection: @unchecked Sendable {
   /// the bound on the drain as a whole.
   static let sendTimeout: TimeInterval = 30
   /// How long past `finish` the queued writes may keep draining to a client that is still reading.
+  /// Checked between `send`s, so the true worst case is this plus one `sendTimeout` for a `send`
+  /// already parked when the deadline was set.
   static let drainTimeout: TimeInterval = 30
 
   init(
@@ -405,8 +407,9 @@ private final class ForwardedConnection: @unchecked Sendable {
   private func giveUpOnOpen(after delay: TimeInterval, _ reason: String) {
     DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
       guard let self, self.lock.withLock({ !self.opened && !self.finished }) else { return }
-      self.onEvent(.failed(reason))
-      self.finish(tellAgent: true)
+      // Reported only by the clock that actually ended the stream: the two can fire together
+      // when the writer is slow but not wedged, and `finish` decides which one did.
+      if self.finish(tellAgent: true) { self.onEvent(.failed(reason)) }
     }
   }
 
@@ -461,9 +464,8 @@ private final class ForwardedConnection: @unchecked Sendable {
         // Over budget only when the local client has stopped reading: `write` is parked on a full
         // socket buffer and everything behind it is this queue. The agent makes the same call for
         // a client that falls too far behind.
-        if lock.withLock({ opened && !finished }) {
+        if lock.withLock({ opened }), finish(tellAgent: true) {
           onEvent(.failed("A connection stopped reading and was closed."))
-          finish(tellAgent: true)
         }
         return
       }
@@ -567,15 +569,16 @@ private final class ForwardedConnection: @unchecked Sendable {
     // drain: nothing behind this write can arrive either, and the agent is told so it stops holding
     // a socket whose bytes nobody will read.
     lock.withLock { deliveryFailed = true }
-    if lock.withLock({ !finished }) {
+    if finish(tellAgent: true) {
       onEvent(.failed("A connection stopped reading and was closed."))
     }
-    finish(tellAgent: true)
   }
 
-  /// Idempotent from any thread. `tellAgent` is false when the agent already knows — it sent the
+  /// Idempotent from any thread; true for the one caller that actually ended the stream, so a
+  /// reason is reported once. `tellAgent` is false when the agent already knows — it sent the
   /// CLOSE, or refused the open and will send one — or when no OPEN was ever sent for this stream.
-  func finish(tellAgent: Bool) {
+  @discardableResult
+  func finish(tellAgent: Bool) -> Bool {
     let alreadyFinished: Bool = lock.withLock {
       guard !finished else { return true }
       finished = true
@@ -601,12 +604,13 @@ private final class ForwardedConnection: @unchecked Sendable {
       writes.async { [self] in _ = Darwin.shutdown(socket, SHUT_WR) }
       return false
     }
-    guard !alreadyFinished else { return }
+    guard !alreadyFinished else { return false }
     // The pump may be parked on the budget; it wakes, sees `finished`, and returns.
     credit.lock()
     credit.broadcast()
     credit.unlock()
     onFinished()
+    return true
   }
 }
 
