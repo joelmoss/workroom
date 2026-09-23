@@ -163,7 +163,14 @@ enum FileListing {
   /// - jj: the working-copy files (jj auto-tracks, so this reflects new files too).
   static func command(_ vcs: FileListVCS) -> (executable: String, args: [String]) {
     switch vcs {
-    case .git: return ("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
+    // `--others` would run a repository-configured `core.fsmonitor` command; see `gitHardening`.
+    case .git:
+      return (
+        "git",
+        WorkroomStatusResolver.gitHardening + [
+          "ls-files", "--cached", "--others", "--exclude-standard", "-z",
+        ]
+      )
     case .jj: return ("jj", ["file", "list"])
     }
   }

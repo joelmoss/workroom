@@ -73,12 +73,12 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
       reply = try await connection.request(request, timeout: timeout + 15)
     } catch let error as VCSError {
       // Raised before anything left this process — today only the 1 MiB single-envelope request
-      // ceiling. Nothing ran.
-      return Self.neverRan("\(error)")
+      // ceiling. Nothing ran, and the workroom is fine.
+      return Self.refused("\(error)")
     } catch HostConnectionError.notDispatched {
-      // Refused locally with nothing written to the socket (closed connection, exhausted stream
-      // counter, full request pool). Definitively never ran.
-      return Self.neverRan(HostConnectionError.notDispatched.localizedDescription)
+      // Refused locally with nothing written to the socket (exhausted stream counter, full request
+      // pool). Definitively never ran. A closed connection throws `connectionLost` instead.
+      return Self.refused(HostConnectionError.notDispatched.localizedDescription)
     } catch {
       // The request reached the socket and no reply came back: connection loss, the client-side
       // deadline, or cancellation. The command may have completed host-side.
@@ -90,11 +90,29 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
         stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode,
         timedOut: result.timedOut, signaled: result.signaled)
     } catch {
-      // A reply ARRIVED carrying an error. wr-agent answers one only for a request it refused
-      // before spawning (bad version, unusable `dir`, non-Latin-1 stdin) or for a reply too large
-      // to send — see `neverRan`'s caveat on that last case.
-      return Self.neverRan("\(error)")
+      return Self.replyRefusal(error)
     }
+  }
+
+  /// A reply that ARRIVED carrying an error, as a result.
+  ///
+  /// wr-agent answers one only for a request it refused before spawning, with one exception: the
+  /// reply-size guard in `vcs.rs` fires after the command ran, so that one is an unknown outcome.
+  /// Lock contention (the `ACTIVE` budget is spent) and the other `PartialData` refusals (a
+  /// truncated chunk, too many large requests) are "try again"; everything else (bad version,
+  /// unusable `dir`, non-Latin-1 stdin) keeps `neverRan`.
+  static func replyRefusal(_ error: Error) -> CommandResult {
+    switch error {
+    case VCSError.partialData("VCS reply exceeds 16 MiB"): return outcomeUnknown(error)
+    case VCSError.lockContention: return refused("The agent is busy; nothing ran. Try again.")
+    case VCSError.partialData(let reason): return refused(reason)
+    default: return neverRan("\(error)")
+    }
+  }
+
+  /// Refused before it ran, with the workroom intact — see `CommandResult.refused`.
+  static func refused(_ reason: String) -> CommandResult {
+    CommandResult(stdout: "", stderr: reason, exitCode: CommandResult.refused, timedOut: false)
   }
 
   /// The command never started. `CommandResult.launchFailed`'s own doc is strict about this value:

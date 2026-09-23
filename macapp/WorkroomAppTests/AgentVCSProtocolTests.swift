@@ -63,6 +63,35 @@ final class AgentVCSProtocolTests: XCTestCase {
       AgentCommandRunner.neverRan("too large").exitCode, CommandResult.launchFailed)
   }
 
+  /// A full request pool or agent lock contention used to read as `launchFailed`: "This workroom's
+  /// folder is no longer there", and no Retry. Nothing ran and the workroom is fine, so both write
+  /// taxonomies say what happened and offer the retry. The one reply error sent AFTER the command
+  /// ran (the agent's reply-size guard) stays an unknown outcome.
+  func testRefusalsBeforeRunningAreRetryableNotAMissingFolder() {
+    let refusals = [
+      AgentCommandRunner.replyRefusal(VCSError.lockContention),
+      AgentCommandRunner.replyRefusal(
+        VCSError.partialData("too many large VCS requests in flight")),
+      AgentCommandRunner.refused(HostConnectionError.notDispatched.localizedDescription),
+    ]
+    for refused in refusals {
+      XCTAssertEqual(refused.exitCode, CommandResult.refused)
+      guard case .other(let reason) = CLIVCSWriter.classifyCommit(refused, tool: "git") else {
+        return XCTFail("a refusal is a plain, retryable failure: \(refused)")
+      }
+      XCTAssertFalse(reason.isEmpty)
+      guard case .other = CLIVCSWriter.classify(refused, action: .push, tool: "git") else {
+        return XCTFail("a refused push is a plain, retryable failure: \(refused)")
+      }
+    }
+    XCTAssertEqual(
+      AgentCommandRunner.replyRefusal(VCSError.partialData("VCS reply exceeds 16 MiB")).exitCode,
+      CommandResult.outcomeUnknown)
+    XCTAssertEqual(
+      AgentCommandRunner.replyRefusal(VCSError.unsupportedRepo("no dir")).exitCode,
+      CommandResult.launchFailed)
+  }
+
   /// The sentinel has to survive the whole way to the button, on both write taxonomies. This is the
   /// end-to-end form of the defect: an honest message with a Retry beside it is still a retry that
   /// double-applies the push.
