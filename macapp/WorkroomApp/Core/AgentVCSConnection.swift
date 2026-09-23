@@ -25,6 +25,8 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// at most `maxEnvelopePayload`, so a send still running after half a request's timeout means the
   /// peer is connected but not reading: the transport is wedged. See the deadline in `request`.
   private var sendStarted: ContinuousClock.Instant?
+  /// Counts sends, so a request send's own stall watchdog knows whether it is still that send.
+  private var sendCount: UInt64 = 0
   /// Live watch subscriptions, keyed by the client-chosen id the agent echoes in every event. Read by
   /// `receive()` for each event and cleared by `fail()`, so both hold `lock`.
   private var watchHandlers: [UInt64: @Sendable (FileWatchEvent) -> Void] = [:]
@@ -535,7 +537,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           guard lock.withLock({ !closed }) else { return }
           do {
             for payload in Self.payloads(for: bytes, chunked: chunked) {
-              try sendOnWrites(Self.envelope(service: service, stream: stream, payload: payload))
+              try sendOnWrites(
+                Self.envelope(service: service, stream: stream, payload: payload),
+                stallAfter: timeout / 2)
             }
           } catch {
             fail(error)
@@ -554,7 +558,8 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           // might need a per-host floor.
           //
           // Only for a request still pending: one that already completed says nothing about a send
-          // some other request has in flight. Monotonic, so a clock change cannot fake a stall.
+          // some other request has in flight. A request cancelled mid-send is covered by its send's
+          // own watchdog (`sendOnWrites`). Monotonic, so a clock change cannot fake a stall.
           let (pending, stalled) = lock.withLock {
             (
               self.pending[stream] != nil,
@@ -578,9 +583,24 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
 
   /// `Self.send` on the connection's descriptor, for the `writes` queue only, recording when it
   /// started so a request deadline can tell a stalled send from a slow queue.
-  private func sendOnWrites(_ data: Data) throws {
-    lock.withLock { sendStarted = ContinuousClock.now }
+  ///
+  /// `stallAfter` arms a watchdog on THIS send: still running then, the transport is wedged and the
+  /// connection fails. A request's deadline cannot cover it alone — a request cancelled mid-send, or
+  /// one whose send only began late in its window, has no deadline left to notice its bytes stuck.
+  private func sendOnWrites(_ data: Data, stallAfter: Double? = nil) throws {
+    let count = lock.withLock {
+      sendStarted = ContinuousClock.now
+      sendCount += 1
+      return sendCount
+    }
     defer { lock.withLock { sendStarted = nil } }
+    if let stallAfter {
+      DispatchQueue.global().asyncAfter(deadline: .now() + stallAfter) { [weak self] in
+        guard let self, lock.withLock({ self.sendStarted != nil && self.sendCount == count })
+        else { return }
+        fail(HostConnectionError.connectionLost)
+      }
+    }
     try Self.send(descriptor, data)
   }
 

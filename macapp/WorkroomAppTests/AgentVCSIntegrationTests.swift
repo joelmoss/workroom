@@ -785,7 +785,13 @@ final class AgentVCSIntegrationTests: XCTestCase {
   func testAWriteOnALostConnectionReportsAnUnknownOutcomeAndOffersNoSelfRetry() async throws {
     let root = try gitRepo()
     try run("git", ["config", "protocol.ext.allow", "always"], at: root)
-    try run("git", ["remote", "add", "origin", "ext::sleep 30"], at: root)
+    // The helper marks when it starts, so the drop is known to land after the fetch was sent.
+    let marker = root.appendingPathComponent("fetch-started")
+    let helper = root.appendingPathComponent("hang.sh")
+    try "#!/bin/sh\ntouch '\(marker.path)'\nsleep 30\n".write(
+      to: helper, atomically: true, encoding: .utf8)
+    try run("chmod", ["+x", helper.path], at: root)
+    try run("git", ["remote", "add", "origin", "ext::\(helper.path)"], at: root)
     let connection = try await connect()
     let location = try await RepositoryLocation.local(root.path)
     let router = RepositoryRouter(
@@ -795,7 +801,11 @@ final class AgentVCSIntegrationTests: XCTestCase {
     let writer = try await router.writer(for: location)
 
     let fetch = Task { await writer.fetch(remote: "origin") }
-    try await Task.sleep(for: .seconds(1))
+    let deadline = ContinuousClock.now + .seconds(10)
+    while !FileManager.default.fileExists(atPath: marker.path), ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "the fetch never started")
     await connection.close()
     let result = await fetch.value
     guard case .failed(let failure) = result else {

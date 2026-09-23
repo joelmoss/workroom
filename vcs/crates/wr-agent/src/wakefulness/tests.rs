@@ -749,4 +749,22 @@ fn a_session_process_renamed_to_an_excluded_name_still_votes() {
         !cand.contains(&5),
         "a `cron` process outside every session must still be excluded"
     );
+
+    // A real `cron` that is an ANCESTOR of a session root (an agent started by an `@reboot` job):
+    // the daemon and its other children go, the session tree beneath it stays.
+    let procs = vec![
+        proc(10, 1, "cron"),
+        proc(11, 10, "backup"), // cron's own job: excluded with it
+        proc(20, 10, "bash"),   // a session root under cron
+        proc(21, 20, "worker"),
+    ];
+    let cand: HashSet<i32> = candidates(&procs, &[20], &boundary)
+        .iter()
+        .map(|p| p.pid)
+        .collect();
+    assert!(!cand.contains(&10) && !cand.contains(&11), "{cand:?}");
+    assert!(
+        cand.contains(&20) && cand.contains(&21),
+        "a session beneath a `cron` ancestor was swept out with it: {cand:?}"
+    );
 }

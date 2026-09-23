@@ -18,14 +18,15 @@ import XCTest
 ///   forever.
 final class VCSRemoteIntegrationTests: XCTestCase {
   private var dirs: [String] = []
-  private var exportedJJConfig = false
+  /// The test host's seeded `JJ_CONFIG`, put back in `tearDown` while a fixture's is exported.
+  private var seededJJConfig: String?
 
   override func tearDown() {
     for d in dirs { try? FileManager.default.removeItem(atPath: d) }
     dirs = []
-    if exportedJJConfig {
-      unsetenv("JJ_CONFIG")
-      exportedJJConfig = false
+    if let seeded = seededJJConfig {
+      setenv("JJ_CONFIG", seeded, 1)
+      seededJJConfig = nil
     }
     super.tearDown()
   }
@@ -45,11 +46,21 @@ final class VCSRemoteIntegrationTests: XCTestCase {
   /// and/or committer set". Pinning the config fixes the identity, and also makes a developer's own
   /// `templates.git_push_bookmark` (or any other jj customisation) unable to reach these assertions.
   ///
-  /// Process-wide mutation is safe here: XCTest runs a test process's tests serially — parallel testing
-  /// distributes test *classes* across processes — and `tearDown` clears it either way.
+  /// Process-wide mutation is safe for the tests: XCTest runs a test process's tests serially —
+  /// parallel testing distributes test *classes* across processes — and `tearDown` restores it.
+  ///
+  /// It is only safe for libghostty because it OVERWRITES the value `main.swift` seeds before
+  /// `ghostty_init`, and restores rather than `unsetenv`s: the engine keeps a fixed-length copy of
+  /// `environ`, and adding or removing a variable after init crashed a later surface in the same
+  /// test host.
   private func exportJJConfig(_ path: String) {
+    guard let seeded = getenv("JJ_CONFIG").map({ String(cString: $0) }) else {
+      // Fail, not skip or add it: adding a variable after `ghostty_init` is the crash.
+      XCTFail("JJ_CONFIG is not seeded by the test host (see main.swift)")
+      return
+    }
+    if seededJJConfig == nil { seededJJConfig = seeded }
     setenv("JJ_CONFIG", path, 1)
-    exportedJJConfig = true
   }
 
   private func tool(_ name: String) -> Bool {

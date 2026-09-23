@@ -175,6 +175,32 @@ final class AgentFileIntegrationTests: XCTestCase {
     await outcome.value
   }
 
+  /// A request cancelled while its OWN send is stuck: cancellation takes it out of `pending`, but its
+  /// bytes are still blocking the write queue, and nothing else would ever notice. Its deadline must
+  /// still retire the connection, so the next request fails at once rather than queueing forever.
+  func testACancelledRequestsStuckSendStillRetiresTheConnection() async throws {
+    let fake = try FakeAgent(version: 2, stallAfterCapabilities: true)
+    fakes.append(fake)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: fake.socketPath)
+    connections.append(connection)
+    let stuck = AgentVCSRequest(method: "status", path: String(repeating: "x", count: 900_000))
+    let request = Task { _ = try? await connection.request(stuck, timeout: 1) }
+    try await Task.sleep(for: .milliseconds(200))
+    request.cancel()
+    await request.value
+    try await Task.sleep(for: .seconds(1.5))
+    let started = ContinuousClock.now
+    do {
+      _ = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
+      XCTFail("the wedged connection must be retired")
+    } catch {
+      XCTAssertEqual(error as? HostConnectionError, .notDispatched)
+    }
+    XCTAssertLessThan(
+      ContinuousClock.now - started, .seconds(1), "must fail at once, not queue behind the send")
+  }
+
   private final class Flag: @unchecked Sendable {
     private let lock = NSLock()
     private var value = false

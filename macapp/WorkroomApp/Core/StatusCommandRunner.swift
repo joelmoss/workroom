@@ -220,8 +220,14 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
   /// the whole environment is the only construction under which the two paths agree.
   ///
   /// Pure, so `StatusCommandRunnerEnvironmentTests` can assert native/agent parity without spawning.
-  static func childEnvironment(network: Bool) -> [String: String] {
-    var env = ProcessInfo.processInfo.environment
+  /// `inherited` exists so a test can feed it variables WITHOUT `setenv`: libghostty snapshots
+  /// `environ` at `ghostty_init` and keeps reading that fixed-length copy, so adding or removing a
+  /// process variable afterwards leaves it reading freed memory — a later `ghostty_surface_new` in
+  /// the same test host then segfaults.
+  static func childEnvironment(
+    network: Bool, inherited: [String: String] = ProcessInfo.processInfo.environment
+  ) -> [String: String] {
+    var env = inherited
     env["PATH"] = ShellEnvironment.path()
     env["GIT_OPTIONAL_LOCKS"] = "0"
     env["GIT_TERMINAL_PROMPT"] = "0"

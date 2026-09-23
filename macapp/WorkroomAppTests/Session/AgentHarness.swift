@@ -106,8 +106,27 @@ final class AgentHarness {
     }
     attachments.removeAll()
     process.terminate()
-    process.waitUntilExit()
+    Self.waitForExit(process)
     try? FileManager.default.removeItem(at: directory)
+  }
+
+  /// Not `waitUntilExit`. In the serial test host (`-only-testing` turns parallel testing off, so
+  /// every class shares one process) it intermittently never returned: the agent had exited and been
+  /// reaped, no zombie was left, yet `isRunning` stayed true and the main thread blocked for good —
+  /// the whole test host hung. Not reproduced outside the host; see TODOS "AgentHarness.stop hang".
+  /// So the OS decides: once `waitpid` says the pid is no longer an unexited child of ours, it is
+  /// gone. Not `kill(pid, 0)`: after a reap the pid can be reused, and the SIGKILL below would hit
+  /// whatever got it. An unreaped child's pid cannot be reused, so the kill only ever reaches ours.
+  static func waitForExit(_ process: Process, timeout: TimeInterval = 5) {
+    let pid = process.processIdentifier
+    let deadline = Date().addingTimeInterval(timeout)
+    while process.isRunning, waitpid(pid, nil, WNOHANG) == 0 {
+      guard Date() < deadline else {
+        kill(pid, SIGKILL)
+        return
+      }
+      Thread.sleep(forTimeInterval: 0.02)
+    }
   }
 
   static func binaryURL() throws -> URL {

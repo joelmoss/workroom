@@ -686,6 +686,8 @@ final class PortForwardingModel: ObservableObject {
     /// connection opened, so a forward outlives its lease as a listener that accepts connections it
     /// can never carry — which is why a lease that is no longer the connected one drops the row.
     let lease: HostConnectionManager.Lease
+    /// Order of creation, so a reconcile judges only the rows that existed when its read began.
+    let sequence: Int
     /// The last refusal any connection through this forward hit — `connection refused` and friends.
     /// Kept on the row rather than raised as a toast because it is a property of the forward, and it
     /// arrives when someone connects, not when the forward is added. Cleared by the next connection
@@ -705,6 +707,8 @@ final class PortForwardingModel: ObservableObject {
   private var listeners: [UUID: PortForward] = [:]
   private var watching = false
   private var adding = false
+  /// The `Entry.sequence` the next row gets.
+  private var nextSequence = 0
   /// How many snapshots the watch has consumed, for the tests.
   private(set) var snapshotsSeen = 0
 
@@ -733,7 +737,10 @@ final class PortForwardingModel: ObservableObject {
       }
       listeners[id] = forward
       forwards.append(
-        Entry(id: id, remotePort: remote, localPort: forward.localPort, lease: lease))
+        Entry(
+          id: id, remotePort: remote, localPort: forward.localPort, lease: lease,
+          sequence: nextSequence))
+      nextSequence += 1
       draft = ""
       watch()
       // `add()` suspended while the service was acquired, and a watch that consumed a disconnect in
@@ -786,12 +793,20 @@ final class PortForwardingModel: ObservableObject {
     guard !watching else { return }
     watching = true
     Task { [weak self, transport] in
-      for await snapshot in await transport.updates() {
+      // Each snapshot is a prompt to look, not the answer: `add()` and this loop resume in either
+      // order, so a disconnect delivered late would otherwise drop a forward `add()` already made
+      // on the reconnected lease. Both reconcile against the manager's current lease instead.
+      //
+      // Only rows that existed when the read began: `add()` can append a row on a lease this read
+      // predates while it is in flight, and that row is judged by `add()`'s own read, which starts
+      // after its append.
+      for await _ in await transport.updates() {
         guard let self else { return }
-        let live = snapshot.status == .connected ? snapshot.lease : nil
+        let horizon = nextSequence
+        let live = await transport.current()
         snapshotsSeen += 1
         connected = live != nil
-        drop { $0.lease != live }
+        drop { $0.sequence < horizon && $0.lease != live }
       }
     }
   }

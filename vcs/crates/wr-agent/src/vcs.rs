@@ -147,8 +147,9 @@ enum Backend {
 /// the child sees the same environment (`env_clear` below), a missing tool exits 127 rather than
 /// failing to spawn (`/usr/bin/env`), and a transport failure is not reported as "never ran"
 /// (`AgentCommandRunner.outcomeUnknown`). An outcome-unknown result is its own
-/// `VCSRemoteFailure`/`VCSCommitFailure` case, whose Retry is `.fetch` — the idempotent action that
-/// resolves the unknown — never a re-run of the write.
+/// `VCSRemoteFailure`/`VCSCommitFailure` case, and its recovery follows idempotence
+/// (`VCSSyncPresenter.retryAction`): a lost push or pull offers `.fetch`, which resolves the doubt,
+/// a lost fetch or rebase abort offers itself, and a lost commit offers no action at all.
 ///
 /// **Never acquires `SnapshotLock`.** A caller that needs the JJ working-copy barrier for a
 /// mutating command already holds it — `CLIVCSWriter`'s `gate: JJSnapshotGate` takes the same

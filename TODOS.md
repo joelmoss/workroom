@@ -36,6 +36,28 @@ fixture and the fixtures would be re-recorded with it.
 
 **Priority:** P2, effort M.
 
+### AgentHarness.stop hang: `waitUntilExit` never returned for an exited agent (macapp tests) — #223
+
+**What:** In the serial test host (`make app-test APP_TEST_FLAGS=-only-testing:…`, which turns
+parallel testing off so every class shares one process), `AgentHarness.stop()` intermittently
+blocked the main thread in `Process.waitUntilExit` for good. It hit 3 of 7 narrowed runs on the
+#223 branch and never in the full parallel suite or on CI. Captured once under a watchdog
+(`sample` of every thread, `ps`, `lsof`): the agent had exited and been reaped (no process, no
+zombie), every other thread was idle in `__workq_kernreturn`, and `isRunning` stayed true.
+
+**Ruled out:** a stuck agent; waiting inside a main-queue block; launching on another thread;
+a child that exits slowly after SIGTERM (all return in < 0.4 s in a standalone repro); a reaper
+in our code (no `waitpid`/`posix_spawn` in the app's Swift, and the only Rust the app links,
+`wr-vcs-core`, spawns nothing; `ProcessTree.killTree` only signals).
+
+**Worked around, not fixed:** `AgentHarness.waitForExit` polls `waitpid(pid, WNOHANG)` for up to 5 s and
+SIGKILLs past it, so the host can no longer hang on it. The cause is still unknown and depends on
+state an earlier test in the same process leaves behind. **How to start:** reproduce with the
+watchdog loop (run the four agent classes serially, `sample` on a 60 s stall), then bisect which
+earlier class has to run first.
+
+**Priority:** P3. Test-only, and worked around.
+
 ### The forward listener's fatal-`accept` path is untested (macapp) — #218 review follow-up
 
 **What:** `PortForward.acceptPending`'s `default:` branch (`Event.stopped`, which takes the row down)
@@ -1246,8 +1268,9 @@ are fixed in `ed51faa9`; each entry below was reproduced or read off the code, n
 
 3. ~~**The agent kills a process GROUP where native kills a process TREE.**~~ **Fixed.** `run_exec`
    now snapshots the child's descendants before signalling and `kill_recorded` SIGKILLs the ones
-   that are still the same process (start time checked), so a descendant that `setsid`s out of the
-   group is killed too. Covered by `exec_kills_a_descendant_that_escaped_the_process_group`.
+   that are still the same process, so a descendant that `setsid`s out of the group is killed too.
+   Identity is the start time when both the recorded and the current one can be read; otherwise it
+   falls back to bare pid existence (`process::Descendant::is_running`), the old behaviour. Covered by `exec_kills_a_descendant_that_escaped_the_process_group`.
 
 4. ~~**`writes: 8` is not a capability.**~~ **Fixed.** The count described a CLIENT-side Swift
    protocol (`LocalVCSWriting`); wr-agent implements one generic exec service and never had eight
@@ -1317,7 +1340,7 @@ stuck request.
 #205), so land the stack first.
 
 **Priority:** P3. Everything user-visible here is fixed; what remains is test coverage (9), a
-contention risk (7) and a bounded leak (2).
+contention risk (7) and one possibly indefinite wait thread per unreapable child (2).
 
 ### VCS toolbar: the findings the `/review` pass didn't fix (macapp)
 
