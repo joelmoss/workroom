@@ -148,7 +148,7 @@ struct WorkroomStatusResolver: Sendable {
       }
     } catch RepositoryRoutingError.registrationRequired {
       status = WorkroomStatus(dirty: nil, failure: .registrationRequired)
-    } catch is RepositoryRoutingError {
+    } catch is RepositoryRoutingError, is HostConnectionError {
       status = WorkroomStatus(dirty: nil, failure: .unavailable)
     } catch is VCSTimeoutError, is VCSCancellationError {
       status = WorkroomStatus(dirty: nil, failure: .timeout)
