@@ -1,0 +1,5 @@
+State Recv-Q Send-Q Local Address:Port  Peer Address:Port Process                                                                                                                                                                                                                                                                                                                   
+ESTAB 0      0          127.0.0.1:8001     127.0.0.1:60898 users:(("python3",pid=17,fd=4))
+	 cubic wscale:10,10 rto:201 rtt:0.026/0.013 mss:32768 pmtu:65535 rcvmss:536 advmss:65483 cwnd:10 segs_in:2 send 100824615385bps lastsnd:3004 lastrcv:3004 lastack:3004 pacing_rate 201649230768bps delivered:1 app_limited rcv_space:65483 rcv_ssthresh:65483 minrtt:0.026 snd_wnd:65536
+ESTAB 0      0          127.0.0.1:60898    127.0.0.1:8001  users:(("python3",pid=19,fd=3))
+	 cubic wscale:10,10 rto:201 rtt:0.036/0.018 mss:32741 pmtu:65535 rcvmss:536 advmss:65483 cwnd:10 bytes_acked:1 segs_out:2 segs_in:1 send 72757777778bps lastsnd:3004 lastrcv:3004 lastack:3004 pacing_rate 145515555552bps delivered:1 app_limited rcv_space:65495 rcv_ssthresh:65495 minrtt:0.036 snd_wnd:65483

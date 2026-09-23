@@ -1,0 +1,42 @@
+{
+  "scenario": "1",
+  "name": "idle-shell",
+  "mode": "detached",
+  "scale": 1.0,
+  "compressed": false,
+  "interval": 1.0,
+  "ss_every": 1,
+  "closed_loop": {
+    "config": {
+      "policy": "P4",
+      "cpu": 0.05,
+      "pty": 200.0,
+      "net": 500.0,
+      "wait": "agnostic",
+      "age": null,
+      "grace": 10.0,
+      "window": 0,
+      "interval": 1,
+      "staleness": true,
+      "exclusions": true,
+      "lifecycle": true
+    },
+    "window_s": 30
+  },
+  "shim_cpu_s": 1.1934779999999998,
+  "variant": "",
+  "jitter_seed": 4248650145,
+  "preroll": 2.7426656902878417,
+  "sampler": {
+    "type": "footer",
+    "wall_s": 304.0069774290314,
+    "cpu_s": 2.843141,
+    "cpu_fraction": 0.009352222847134205,
+    "cpu_fraction_steady": 0.009258952583370991,
+    "samples": 304,
+    "overran_ticks": 0,
+    "max_late_s": 0.00028683297568932176,
+    "maxrss_kb": 13424
+  },
+  "pty_events": 2
+}

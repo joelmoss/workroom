@@ -1,0 +1,42 @@
+{
+  "scenario": "3b",
+  "name": "idle-agent-keepalive",
+  "mode": "detached",
+  "scale": 1.0,
+  "compressed": false,
+  "interval": 1.0,
+  "ss_every": 1,
+  "closed_loop": {
+    "config": {
+      "policy": "P4",
+      "cpu": 0.05,
+      "pty": 200.0,
+      "net": 500.0,
+      "wait": "agnostic",
+      "age": null,
+      "grace": 10.0,
+      "window": 0,
+      "interval": 1,
+      "staleness": true,
+      "exclusions": true,
+      "lifecycle": true
+    },
+    "window_s": 30
+  },
+  "shim_cpu_s": 1.1965139999999999,
+  "variant": "",
+  "jitter_seed": 3252574494,
+  "preroll": 2.7004859570032287,
+  "sampler": {
+    "type": "footer",
+    "wall_s": 306.0101006400073,
+    "cpu_s": 2.309428,
+    "cpu_fraction": 0.007546901213946625,
+    "cpu_fraction_steady": 0.007440639426199322,
+    "samples": 306,
+    "overran_ticks": 0,
+    "max_late_s": 0.00040662498213350773,
+    "maxrss_kb": 13564
+  },
+  "pty_events": 5
+}

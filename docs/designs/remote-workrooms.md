@@ -1782,7 +1782,23 @@ disagreement passes every test on either side alone while presenting as an empty
     decide whether it counts. If it does, the success criterion is nearly free and worth little; if
     it does not, a second real provider (E2B over REST, or Hetzner) needs scheduling, and nothing
     schedules one.
-19. **Does the busy signal work at all?** Its replacement (process-tree liveness plus a CPU-time or
+19. **Does the busy signal work at all?** **ANSWERED for the signal half — 2026-09-20, see
+    `docs/designs/oq19-wakefulness-measurements.md`.** A policy (P4: CPU, pty-output rate, network
+    rate, a nanosleep wait, an owned TCP socket, keystroke grace, 30 s hysteresis, a reader-side
+    staleness rule, at 1 s) made zero false-idle and zero busy-forever errors on 150 fresh closed-loop
+    runs it was not tuned on, with the classifier's own activity in the box; the naive foreground-pgid
+    signal failed 130 of 165 tuning runs. Accepted cost (D3): an idle agent holding a keepalive
+    connection is indistinguishable from a silent 15-minute turn, so it stays BUSY. The pre-registered
+    contract produced NO winner and was amended post hoc, disclosed, with labels untouched; the
+    hold-out carries the claim. **Confirmed on boxd (2026-09-21):** the policy driving the item-5 lever
+    kept a machine awake through a 15-minute silent turn while an unprotected control hibernated
+    167 s into that wait, and slept the machine within 3 minutes of every idle stretch except the
+    keepalive one (D3); a fork's
+    `CLOCK_MONOTONIC` ran at wall rate. Four attribution rules came out of getting there (a systemd
+    box, the lever's own traffic, the harness's own loops, survivors of a closed pty: amendment 2 in
+    `boundary.md`). The awake ceiling is split out as OQ22. Not yet measured: a real Claude Code trace
+    (TODOS).
+    Original question: its replacement (process-tree liveness plus a CPU-time or
     loadavg delta, with hysteresis and an awake ceiling) is specified in Phase 2 but unbuilt and
     unmeasured. False-busy is a remote workroom's default state under the naive version, and
     false-busy costs money continuously with no ceiling (OQ7).
@@ -1814,6 +1830,20 @@ disagreement passes every test on either side alone while presenting as an empty
     stays exactly what Phase 1 says it is: `wr-agent serve|attach`. The cost, stated deliberately
     rather than drifted into: driver authors write Swift, so a driver cannot be shared with a
     non-Apple client if Workroom ever has one. Small, but it shapes where every driver lives.
+22. **What are the awake ceiling's semantics: force-sleep, advisory-only, or ask the user?**
+    **DECIDED — 2026-09-21, owner: advisory-only by default, with a setting that enables ask-the-user.**
+    By default the wakefulness service never hibernates a BUSY box on its own; a box BUSY past the
+    ceiling is reported (the app shows it, so the idle-agent bill is visible rather than capped). With
+    the setting on, reaching the ceiling raises a prompt in the app; "keep" resets the ceiling, no
+    answer within the prompt's timeout hibernates the box. Force-sleep is not offered. The ceiling
+    value and the prompt timeout are settings too (proposed defaults 4 h and 10 min; the measurement
+    only says 4 h spares the longest job it ran). Consequence accepted: with the default, OQ7's bill for
+    an idle agent holding a connection is unbounded until the user acts. Opened 2026-09-20 by the OQ19
+    measurements (D8). Measurement could not decide it: scenario 17 ran legitimate work for 5400 s five
+    times, and a force-sleep ceiling of 1800 s or 3600 s kills the job every time while 14400 s lets it
+    finish. The ceiling exists because a false-busy state has no natural end (the D3 case, an idle agent
+    holding a keepalive connection, is BUSY 24 h/day by design), so the trade was a killed long job
+    against an unbounded bill (OQ7); the owner chose the bill, visible, with an opt-in cap.
 
 ## Success Criteria
 
@@ -2186,9 +2216,16 @@ service milestones below so each layer can be reviewed and landed independently.
      they did before, so a fully offline refresh blanks the PR panel; only a timeout, a signal, a
      rate limit or a 503 keeps the prior state (see TODOS.md).
    - Interchangeability services: implement port forwarding, terminal-state durability and the
-     busy/idle decision. Measure idle TUIs, background jobs, detached servers and agents waiting on
-     network responses. Define hysteresis, explicit activity handling and the awake-ceiling policy
-     before declaring the wakefulness service ready. OQ19 remains open until those results exist.
+     busy/idle decision. **The measurement half is done (2026-09-20,
+     `docs/designs/oq19-wakefulness-measurements.md`):** idle TUIs, background jobs, detached
+     servers, agents waiting on network responses, keystrokes, sampler gaps and a noisy box were
+     measured on 190 tuning and 150 hold-out runs; the policy (P4) and its numbers are frozen in
+     `vcs/scripts/oq19/results/frozen.json`, the port contract is `vcs/scripts/oq19/golden/`, and the
+     hysteresis (30 s), explicit-activity grace (10 s) and reader-side staleness rule (2 s) are
+     defined, and the boxd confirmation run passed (2026-09-21, `results/boxd.md`). Still owed before
+     the wakefulness service is ready: a real Claude Code trace (TODOS), a re-measured sampler cost in
+     Rust against the 0.5% gate, and masking the agent's own resume (the wake blip). OQ22 is decided
+     (advisory-only ceiling by default, ask-the-user behind a setting).
 
    **Two Phase 3 questions this milestone opened rather than answered**, both consequences of the
    exec service being the thing Phase 3 moves host-side. *Auth resolution*: the child environment is

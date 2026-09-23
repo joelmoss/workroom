@@ -1,0 +1,20 @@
+{
+ "config": {
+  "policy": "P4",
+  "cpu": 0.05,
+  "pty": 200.0,
+  "net": 500.0,
+  "wait": "agnostic",
+  "age": null,
+  "grace": 10.0,
+  "window": 0,
+  "interval": 1,
+  "staleness": true,
+  "exclusions": true,
+  "lifecycle": true
+ },
+ "key": "P4|0.05|200.0|500.0|agnostic|None|10.0|0|1|True|True|True",
+ "d3_fallback": true,
+ "tuning_commit": "0edbc2e9",
+ "note": "Frozen by `analyze.py tuning --freeze`. Commit this file BEFORE recording the hold-out: record.py holdout refuses an uncommitted or modified file."
+}

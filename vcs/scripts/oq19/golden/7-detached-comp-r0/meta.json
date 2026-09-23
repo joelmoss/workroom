@@ -1,0 +1,42 @@
+{
+  "scenario": "7",
+  "name": "sleepy-job",
+  "mode": "detached",
+  "scale": 1.0,
+  "compressed": true,
+  "interval": 1.0,
+  "ss_every": 1,
+  "closed_loop": {
+    "config": {
+      "policy": "P4",
+      "cpu": 0.05,
+      "pty": 200.0,
+      "net": 500.0,
+      "wait": "agnostic",
+      "age": null,
+      "grace": 1.0,
+      "window": 0,
+      "interval": 1,
+      "staleness": true,
+      "exclusions": true,
+      "lifecycle": true
+    },
+    "window_s": 3
+  },
+  "shim_cpu_s": 0.71742,
+  "variant": "",
+  "jitter_seed": 2821861411,
+  "preroll": 2.5148387257451343,
+  "sampler": {
+    "type": "footer",
+    "wall_s": 404.00228835101007,
+    "cpu_s": 1.916991,
+    "cpu_fraction": 0.0047450003509248865,
+    "cpu_fraction_steady": 0.0046266138475454825,
+    "samples": 404,
+    "overran_ticks": 0,
+    "max_late_s": 0.00039858301170170307,
+    "maxrss_kb": 13852
+  },
+  "pty_events": 7
+}

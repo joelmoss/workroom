@@ -1,0 +1,42 @@
+{
+  "scenario": "9",
+  "name": "detached-server-active",
+  "mode": "detached",
+  "scale": 1.0,
+  "compressed": false,
+  "interval": 1.0,
+  "ss_every": 1,
+  "closed_loop": {
+    "config": {
+      "policy": "P4",
+      "cpu": 0.05,
+      "pty": 200.0,
+      "net": 500.0,
+      "wait": "agnostic",
+      "age": null,
+      "grace": 10.0,
+      "window": 0,
+      "interval": 1,
+      "staleness": true,
+      "exclusions": true,
+      "lifecycle": true
+    },
+    "window_s": 30
+  },
+  "shim_cpu_s": 3.40038,
+  "variant": "",
+  "jitter_seed": 3697918749,
+  "preroll": 2.671767590655067,
+  "sampler": {
+    "type": "footer",
+    "wall_s": 1055.0034526870004,
+    "cpu_s": 9.071987,
+    "cpu_fraction": 0.008599011668534783,
+    "cpu_fraction_steady": 0.00856908174231373,
+    "samples": 1055,
+    "overran_ticks": 0,
+    "max_late_s": 0.0002810410223901272,
+    "maxrss_kb": 13804
+  },
+  "pty_events": 8
+}

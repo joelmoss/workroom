@@ -1,0 +1,42 @@
+{
+  "scenario": "16",
+  "name": "idle-noisy-box",
+  "mode": "detached",
+  "scale": 1.0,
+  "compressed": false,
+  "interval": 1.0,
+  "ss_every": 1,
+  "closed_loop": {
+    "config": {
+      "policy": "P4",
+      "cpu": 0.05,
+      "pty": 200.0,
+      "net": 500.0,
+      "wait": "agnostic",
+      "age": null,
+      "grace": 10.0,
+      "window": 0,
+      "interval": 1,
+      "staleness": true,
+      "exclusions": true,
+      "lifecycle": true
+    },
+    "window_s": 30
+  },
+  "shim_cpu_s": 1.665759,
+  "variant": "",
+  "jitter_seed": 3039915205,
+  "preroll": 2.876630759176054,
+  "sampler": {
+    "type": "footer",
+    "wall_s": 606.0010404450004,
+    "cpu_s": 4.3016179999999995,
+    "cpu_fraction": 0.007098367350724717,
+    "cpu_fraction_steady": 0.007047542313680091,
+    "samples": 606,
+    "overran_ticks": 0,
+    "max_late_s": 0.0003282079705968499,
+    "maxrss_kb": 13936
+  },
+  "pty_events": 2
+}
