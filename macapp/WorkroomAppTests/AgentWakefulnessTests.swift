@@ -735,11 +735,16 @@ final class AgentWakefulnessTests: XCTestCase {
       gate?.resume()
     }
 
+    /// An un-held call takes its reply in the same lock that counts it, so a test that changes
+    /// `reply` right after seeing call N cannot hand call N the next reply. A held call reads it
+    /// at release, which is what holding it is for.
     @Sendable func status() async throws -> AgentWakefulness {
-      let held = lock.withLock { () -> Bool in
+      let (held, early) = lock.withLock { () -> (Bool, Result<AgentWakefulness, Error>?) in
         _calls += 1
-        return _holdCall == _calls
+        let held = _holdCall == _calls
+        return (held, held ? nil : _reply)
       }
+      if let early { return try early.get() }
       if held {
         await withCheckedContinuation { continuation in
           lock.withLock { _gate = continuation }
@@ -839,6 +844,8 @@ final class AgentWakefulnessTests: XCTestCase {
     script.reply = .success(try status(Self.ticked(to: 15015)))
     continuation.yield(raised)
     await eventually("the event raised the card") { model.prompt.isShowing }
+    // The watch's follow-up (call 3) must have taken its reply before the held poll's is set.
+    await eventually("the follow-up reply was issued") { script.calls == 3 }
     script.reply = .success(try status(Self.notPending + Self.ticked(to: 15010)))
     script.release()
     await inFlight.value

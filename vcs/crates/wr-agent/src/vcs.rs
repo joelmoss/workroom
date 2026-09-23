@@ -146,8 +146,9 @@ enum Backend {
 /// the two paths fed it different input. Identical output needs three things, all now true —
 /// the child sees the same environment (`env_clear` below), a missing tool exits 127 rather than
 /// failing to spawn (`/usr/bin/env`), and a transport failure is not reported as "never ran"
-/// (`AgentCommandRunner.outcomeUnknown`). One documented gap remains: an outcome-unknown result is
-/// still offered a Retry, because suppressing it needs a new `VCSRemoteFailure` case.
+/// (`AgentCommandRunner.outcomeUnknown`). An outcome-unknown result is its own
+/// `VCSRemoteFailure`/`VCSCommitFailure` case, whose Retry is `.fetch` — the idempotent action that
+/// resolves the unknown — never a re-run of the write.
 ///
 /// **Never acquires `SnapshotLock`.** A caller that needs the JJ working-copy barrier for a
 /// mutating command already holds it — `CLIVCSWriter`'s `gate: JJSnapshotGate` takes the same
@@ -418,67 +419,42 @@ fn drain_capped_flagged(
     }
 }
 
-/// Direct children of `pid`, via `/usr/bin/pgrep -P` — the exact mechanism (and the exact reasoning)
-/// of native's `ProcessTree.childPids`: `proc_listchildpids`' return value is ambiguous across
-/// sources (bytes vs count), and mis-reading it would target the wrong pid for a SIGKILL, which is a
-/// far worse failure than missing a child. Empty on any error.
-fn child_pids(pid: i32) -> Vec<i32> {
-    let Ok(output) = Command::new("/usr/bin/pgrep")
-        .args(["-P", &pid.to_string()])
-        .stderr(Stdio::null())
-        .output()
-    else {
-        return Vec::new();
-    };
-    String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
-        .filter_map(|field| field.parse::<i32>().ok())
-        .filter(|&child| child > 1)
-        .collect()
-}
-
-/// Every descendant of `pid`, breadth-first, nearest first. The Rust half of
-/// `ProcessTree.descendants`, and split from the killing for a reason that file did not need to
-/// face: this must be SNAPSHOTTED WHILE THE PARENT IS STILL ALIVE.
+/// Every descendant of `pid`, snapshotted with its start time via [`crate::process::descendants`] —
+/// the same walk `session::terminate` uses to reach a `setsid` grandchild, and split from the
+/// killing for a reason that file did not need to face: this must be SNAPSHOTTED WHILE THE PARENT
+/// IS STILL ALIVE.
 ///
 /// A descendant that calls `setsid` leaves the process group, so `kill(-pid, …)` never reaches it —
-/// but it keeps its real ppid until its parent dies, so `pgrep -P` finds it right up to that moment.
+/// but it keeps its real ppid until its parent dies, so the walk finds it right up to that moment.
 /// Once the parent is reaped the orphan re-parents to init and both handles are gone: the group it
 /// left, and a lineage that no longer leads back to us. Walking the tree at KILL time therefore
 /// finds nothing, which is the hole native's `killTree` also has — it is called at `timeout + 2`,
 /// by which point a `git` that exited on SIGTERM has long been reaped.
 ///
-/// So the walk happens when SIGTERM is sent, and the recorded pids are what gets SIGKILLed later.
-fn descendants(pid: i32) -> Vec<i32> {
-    let mut collected: Vec<i32> = Vec::new();
+/// So the walk happens when SIGTERM is sent, and the recorded descendants are what gets checked and
+/// SIGKILLed later. `pid <= 1` is refused outright: `process::descendants` does not special-case
+/// init the way this call site must not — `pid` is always a freshly spawned child's own pid, but a
+/// SIGKILL aimed at init's whole descendant tree is the worst outcome a bug here could have.
+fn descendants(pid: i32) -> Vec<crate::process::Descendant> {
     if pid <= 1 {
-        return collected;
+        return Vec::new();
     }
-    let mut seen: Vec<i32> = vec![pid];
-    let mut queue = child_pids(pid);
-    while !queue.is_empty() {
-        let next = queue.remove(0);
-        if next <= 1 || seen.contains(&next) {
-            continue;
-        }
-        seen.push(next);
-        collected.push(next);
-        queue.extend(child_pids(next));
-    }
-    collected
+    crate::process::descendants(&[pid])
 }
 
-/// SIGKILL the recorded descendants deepest first, so a parent cannot observe a child's death and
-/// respawn before it is itself killed — `ProcessTree.killTree`'s ordering, for its reason.
+/// SIGKILL whichever recorded descendants are still the SAME process, checked with
+/// [`crate::process::Descendant::is_running`] rather than by bare pid — the identity check
+/// `session::terminate` already applies before its own SIGKILL sweep.
 ///
-/// Carries the same small, unavoidable PID-reuse window native does, and slightly more of it because
-/// these pids were read earlier: by the time this runs some may have exited, and a pid could in
-/// principle have been reused. Native accepted that trade at `timeout + 2` for the same reason —
-/// the alternative is leaving a process running against the user's repository after the call that
-/// started it has returned.
-fn kill_recorded(descendants: &[i32]) {
-    for pid in descendants.iter().rev() {
-        unsafe { libc::kill(*pid, libc::SIGKILL) };
+/// Without it this call carried a PID-reuse window strictly worse than native's: these pids were
+/// read at SIGTERM time and this runs roughly two seconds later, long enough on a busy machine for
+/// a descendant to exit and its number to be handed to something unrelated. `is_running` compares
+/// the process's start time against the one recorded at the snapshot, so a pid whose occupant has
+/// changed reads as not-running and is left alone — the small, unavoidable window native accepts is
+/// only "the pid exited and nothing new has it yet", never "the pid now names someone else".
+fn kill_recorded(descendants: &[crate::process::Descendant]) {
+    for descendant in descendants.iter().filter(|d| d.is_running()) {
+        unsafe { libc::kill(descendant.pid, libc::SIGKILL) };
     }
 }
 
@@ -607,7 +583,7 @@ pub(crate) fn run_exec_with(
     let mut killed_at: Option<Instant> = None;
     // Recorded at SIGTERM time, used at SIGKILL time — see `descendants`' doc for why it cannot be
     // walked at the point of the kill.
-    let mut recorded: Vec<i32> = Vec::new();
+    let mut recorded: Vec<crate::process::Descendant> = Vec::new();
     // `None` ⇒ we killed it and it never became reapable within `REAP_GRACE`. Reported rather than
     // waited on: this used to be `break 'wait child.wait()`, an UNBOUNDED wait, and a child that had
     // left the process group never received the SIGKILL above it, so that wait had nothing to wait
@@ -654,9 +630,11 @@ pub(crate) fn run_exec_with(
     //    not been scheduled yet would kill a hook's legitimate background work, measured at ~1.5% of
     //    successful large-output runs.
     //
-    //    Like native's `ProcessTree.killTree` at `timeout + 2`, this signals a pid that has already
-    //    been reaped, so it carries the same (small, unavoidable) PID-reuse window. It reaches only
-    //    the process group; a descendant that `setsid`s escapes both this and native.
+    //    It first SIGKILLs the descendants recorded before the SIGTERM (`kill_recorded`, which
+    //    skips any whose start time changed, so a reused pid is never signalled) — that is what
+    //    reaches one that `setsid`ed out of the group — and then the process group itself. The group
+    //    signal, like native's `ProcessTree.killTree` at `timeout + 2`, still names a leader pid that
+    //    has already been reaped, the same small PID-reuse window.
     if timed_out && !sent_kill {
         let kill_at = start + timeout + Duration::from_secs(2);
         while Instant::now() < kill_at {
@@ -1751,22 +1729,44 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// `descendants` walks parsed `pgrep` output, so it must terminate on shapes a process table
-    /// cannot produce but a parse can — and it must never reach init. A SIGKILL aimed at pid 1 is
-    /// the worst outcome a bug here could have, so the floor is enforced by value.
+    /// `descendants` must never walk init's own tree — a SIGKILL aimed at pid 1's descendants is
+    /// the worst outcome a bug here could have — and must terminate on a pid nothing can have.
     #[test]
     fn the_descendant_walk_refuses_init_and_terminates() {
         assert!(descendants(0).is_empty());
         assert!(descendants(1).is_empty());
         assert!(descendants(-1).is_empty());
-        // An impossible pid has no children, so the walk ends immediately rather than looping.
-        assert!(
-            child_pids(i32::MAX).is_empty(),
-            "pgrep invented children for an impossible pid"
-        );
         assert!(descendants(i32::MAX).is_empty());
         // Killing an empty set is a no-op, not a signal to the current process group.
         kill_recorded(&[]);
+    }
+
+    /// LOW 1: the bug this whole identity check exists for. `kill_recorded` used to SIGKILL by bare
+    /// pid, so a descendant that exited during the SIGTERM-to-SIGKILL grace period and whose pid was
+    /// handed to something else would be killed in its place. A `Descendant` whose recorded start
+    /// time cannot match anything real (`u64::MAX`) reproduces exactly that shape — the number is
+    /// right, the process behind it is not — without needing to actually win a real pid-reuse race.
+    #[test]
+    fn kill_recorded_never_signals_a_pid_whose_start_time_has_changed() {
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id() as i32;
+        let impostor = crate::process::Descendant {
+            pid,
+            started: u64::MAX,
+        };
+        kill_recorded(&[impostor]);
+        // Give a real SIGKILL time to land before checking: without the identity check this reaps
+        // almost immediately.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            child.try_wait().expect("try_wait").is_none(),
+            "kill_recorded signalled a pid it no longer identifies"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     /// The two caps could not both be satisfied: `MAX_EXEC_STREAM` allows 4 MiB per stream, and a

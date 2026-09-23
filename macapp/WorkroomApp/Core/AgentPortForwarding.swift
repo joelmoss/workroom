@@ -134,8 +134,9 @@ final class PortForward: @unchecked Sendable {
     let drain: TimeInterval
   }
   /// The agent's `MAX_FORWARDS`: what it holds per multiplex connection before refusing. Mirrored
-  /// here per listener so a burst of local connects never sends OPENs the agent will certainly
-  /// refuse — each refusal is two more envelopes through the writer VCS, File and Status share.
+  /// on the connection (`AgentVCSConnection.reserveForwardSlot`), across every listener on it, so a
+  /// burst of local connects never sends OPENs the agent will certainly refuse — each refusal is two
+  /// more envelopes through the writer VCS, File and Status share.
   static let maxConnections = 64
   /// Out of descriptors: how long the accept queue pauses before the backlog is tried again.
   private static let acceptBackoff: TimeInterval = 0.1
@@ -148,7 +149,8 @@ final class PortForward: @unchecked Sendable {
   private let timeouts: Timeouts
   private let onEvent: @Sendable (Event) -> Void
   private let lock = NSLock()
-  private var live: [UUID: ForwardedConnection] = [:]
+  /// Each with the connection-wide slot it holds, released when the entry leaves this table.
+  private var live: [UUID: (connection: ForwardedConnection, slot: ForwardSlot)] = [:]
   private var stopped = false
   /// Accepts are event-driven, not a thread parked in `accept`: the source fires on this serial
   /// queue when the backlog has something, `accept` never blocks (the listener is non-blocking),
@@ -216,14 +218,16 @@ final class PortForward: @unchecked Sendable {
   /// CLOSE, so the agent drops the socket it is holding rather than waiting for the whole multiplex
   /// connection to end.
   func stop() {
-    let connections: [ForwardedConnection]? = lock.withLock {
+    // Taken out whole so the slots are released after the lock, not under it: a slot's release
+    // takes the connection's lock.
+    let entries: [UUID: (connection: ForwardedConnection, slot: ForwardSlot)]? = lock.withLock {
       guard !stopped else { return nil }
       stopped = true
-      let values = Array(live.values)
-      live.removeAll()
-      return values
+      defer { live = [:] }
+      return live
     }
-    guard let connections else { return }
+    guard let entries else { return }
+    let connections = entries.values.map(\.connection)
     source.cancel()
     for connection in connections { connection.finish(tellAgent: true) }
   }
@@ -261,12 +265,13 @@ final class PortForward: @unchecked Sendable {
   }
 
   private func begin(_ client: Int32) {
-    let admitted = lock.withLock { !stopped && live.count < Self.maxConnections }
-    guard admitted else {
+    let slot = lock.withLock({ stopped }) ? nil : connection.reserveForwardSlot()
+    guard let slot else {
       // Closed at once, before an OPEN the agent would refuse. A browser sees a reset on its 65th
       // connection and retries; the row says why.
       Darwin.close(client)
-      onEvent(.failed("Too many connections through this forward; one was refused."))
+      onEvent(
+        .failed("Too many connections through the forwards on this agent; one was refused."))
       return
     }
     // BSD semantics: an accepted socket inherits the listener's `O_NONBLOCK`, and the pump's
@@ -283,7 +288,7 @@ final class PortForward: @unchecked Sendable {
       onEvent: onEvent, onFinished: { [weak self] in self?.forget(id) })
     let accepted = lock.withLock { () -> Bool in
       guard !stopped else { return false }
-      live[id] = forwarded
+      live[id] = (forwarded, slot)
       return true
     }
     // Dropped rather than closed by hand: nothing has been sent for it, and its `deinit` owns the
@@ -292,7 +297,15 @@ final class PortForward: @unchecked Sendable {
     forwarded.start()
   }
 
-  private func forget(_ id: UUID) { lock.withLock { _ = live.removeValue(forKey: id) } }
+  /// The removed entry, and so its slot, is dropped after the lock (see `stop`).
+  private func forget(_ id: UUID) { _ = lock.withLock { live.removeValue(forKey: id) } }
+}
+
+/// A held `MAX_FORWARDS` slot on one agent connection; dropping it gives the slot back.
+final class ForwardSlot: @unchecked Sendable {
+  private let release: @Sendable () -> Void
+  init(release: @escaping @Sendable () -> Void) { self.release = release }
+  deinit { release() }
 }
 
 /// One accepted TCP connection, pumped over one multiplex stream.
@@ -334,7 +347,8 @@ private final class ForwardedConnection: @unchecked Sendable {
   /// bound reset by every partial transfer, so on its own a client trickling one byte at a time
   /// would hold the descriptor for as long as it liked — the same misreading of a per-call bound
   /// as a total budget that `WRITE_TIMEOUT` once suffered on the agent.
-  private var drainDeadline: Date?
+  /// Monotonic: a wall clock set backwards mid-drain would stretch the bound.
+  private var drainDeadline: ContinuousClock.Instant?
   /// Agent → client bytes accepted off the reader thread and not yet written to the socket.
   private var queuedToSocket = 0
   /// Client → agent bytes handed to the connection's writer and not yet on the wire. The pump
@@ -574,7 +588,9 @@ private final class ForwardedConnection: @unchecked Sendable {
     let delivered = body.withUnsafeBytes { bytes -> Bool in
       var sent = 0
       while sent < bytes.count {
-        if let deadline = lock.withLock({ drainDeadline }), Date() >= deadline { return false }
+        if let deadline = lock.withLock({ drainDeadline }), ContinuousClock.now >= deadline {
+          return false
+        }
         let count = Darwin.send(
           socket, bytes.baseAddress!.advanced(by: sent), bytes.count - sent, 0)
         if count < 0 && errno == EINTR { continue }
@@ -618,7 +634,7 @@ private final class ForwardedConnection: @unchecked Sendable {
       // nothing for it); the queued `SHUT_WR` runs once the writes ahead of it have run, which
       // `drainDeadline` bounds as a whole. The descriptor is freed by `deinit`, once the pump and
       // the last queued write have let go.
-      drainDeadline = Date().addingTimeInterval(timeouts.drain)
+      drainDeadline = ContinuousClock.now + .seconds(timeouts.drain)
       _ = Darwin.shutdown(socket, SHUT_RD)
       writes.async { [self] in _ = Darwin.shutdown(socket, SHUT_WR) }
       return false
@@ -649,10 +665,17 @@ final class PortForwardingModel: ObservableObject {
     /// is on `LocalAgentVCS.forwarding()`, the decision point.
     var forwarding: @Sendable () async throws -> (HostConnectionManager.Lease, AgentForwardService)
     var updates: @Sendable () async -> AsyncStream<HostConnectionManager.Snapshot>
+    /// The connected lease right now, or nil. What `add()` reconciles against: the watch's last
+    /// snapshot can lag a reconnect that `forwarding` has already seen.
+    var current: @Sendable () async -> HostConnectionManager.Lease?
 
     static let live = Transport(
       forwarding: { try await LocalAgentVCS.shared.forwarding() },
-      updates: { await HostConnectionManager.shared.updates(for: .local) })
+      updates: { await HostConnectionManager.shared.updates(for: .local) },
+      current: {
+        let snapshot = await HostConnectionManager.shared.snapshot(for: .local)
+        return snapshot.status == .connected ? snapshot.lease : nil
+      })
   }
 
   struct Entry: Identifiable, Equatable {
@@ -682,10 +705,7 @@ final class PortForwardingModel: ObservableObject {
   private var listeners: [UUID: PortForward] = [:]
   private var watching = false
   private var adding = false
-  /// The connected lease as of the last snapshot, and how many snapshots the watch has consumed.
-  /// `add()` suspends while the service is acquired; a watch that consumed a disconnect in that
-  /// window has nothing to drop yet, and would never see another snapshot to drop it by.
-  private var latest: HostConnectionManager.Lease?
+  /// How many snapshots the watch has consumed, for the tests.
   private(set) var snapshotsSeen = 0
 
   init(transport: Transport = .live) {
@@ -716,8 +736,12 @@ final class PortForwardingModel: ObservableObject {
         Entry(id: id, remotePort: remote, localPort: forward.localPort, lease: lease))
       draft = ""
       watch()
-      // Reconciled against what the watch has already seen, since it will not see it again.
-      if snapshotsSeen > 0 { drop { $0.lease != latest } }
+      // `add()` suspended while the service was acquired, and a watch that consumed a disconnect in
+      // that window had nothing to drop then and may see no further snapshot to drop it by. So ask
+      // the manager, not the watch's last snapshot: that one can still name the disconnect when
+      // `forwarding` has already answered on the reconnected lease, and would drop a valid row.
+      let current = await transport.current()
+      drop { $0.lease != current }
     } catch {
       message = Self.describe(error)
     }
@@ -765,7 +789,6 @@ final class PortForwardingModel: ObservableObject {
       for await snapshot in await transport.updates() {
         guard let self else { return }
         let live = snapshot.status == .connected ? snapshot.lease : nil
-        latest = live
         snapshotsSeen += 1
         connected = live != nil
         drop { $0.lease != live }

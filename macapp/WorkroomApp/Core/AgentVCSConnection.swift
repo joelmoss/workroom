@@ -24,7 +24,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// When the envelope `send` now running on `writes` started, or nil between sends. One envelope is
   /// at most `maxEnvelopePayload`, so a send still running after half a request's timeout means the
   /// peer is connected but not reading: the transport is wedged. See the deadline in `request`.
-  private var sendStarted: Date?
+  private var sendStarted: ContinuousClock.Instant?
   /// Live watch subscriptions, keyed by the client-chosen id the agent echoes in every event. Read by
   /// `receive()` for each event and cleared by `fail()`, so both hold `lock`.
   private var watchHandlers: [UInt64: @Sendable (FileWatchEvent) -> Void] = [:]
@@ -80,6 +80,10 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// Every access holds `lock`: the insert in `reserveForward`, the remove in `releaseForward`, the
   /// read in `receive()` and the clear in `fail()`.
   private var forwardHandlers: [UInt32: @Sendable (UInt8, Data) -> Void] = [:]
+  /// Forwarded connections held on this connection, across every listener: the agent's
+  /// `MAX_FORWARDS` is per multiplex connection, so a per-listener count let several rows together
+  /// send OPENs it would certainly refuse.
+  private var forwardsHeld = 0
   /// The ceiling prompt, delivered to whoever is watching. One stream per connection: the verdict is
   /// per box, so there is nothing to key subscriptions by.
   let ceilingPrompts: AsyncStream<AgentCeilingPrompt>
@@ -172,8 +176,11 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       connection.lock.withLock { connection._capabilities = capabilities }
       await connection.negotiateFiles()
       return connection
-    } catch HostConnectionError.connectionLost {
-      // Rethrown UNCHANGED, not wrapped. `LocalAgentVCS` catches exactly this case to spawn wr-agent
+    } catch HostConnectionError.connectionLost, HostConnectionError.notDispatched {
+      // `notDispatched` too: `request` refuses with it once the connection is closed, and a fresh
+      // connection is only closed before its first request if the peer already hung up.
+      //
+      // Rethrown as `connectionLost`, not wrapped. `LocalAgentVCS` catches exactly this case to spawn wr-agent
       // and retry, and flattening it into `serviceUnavailable` routed a dropped handshake around
       // that recovery entirely — leaving the VCS service dead until the app was restarted, over a
       // stale socket, which is the common case rather than an exotic one (the daemon leaves
@@ -304,6 +311,18 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       }
     }
     return AgentForwardService(connection: self)
+  }
+
+  /// One of the agent's `MAX_FORWARDS` slots, or nil when this connection holds them all. Released
+  /// when the returned value is dropped.
+  func reserveForwardSlot() -> ForwardSlot? {
+    let reserved = lock.withLock { () -> Bool in
+      guard forwardsHeld < PortForward.maxConnections else { return false }
+      forwardsHeld += 1
+      return true
+    }
+    guard reserved else { return nil }
+    return ForwardSlot { [weak self] in self?.lock.withLock { self?.forwardsHeld -= 1 } }
   }
 
   /// Reserve a Forward stream and register its handler. Nothing is sent: the caller sends OPEN with
@@ -480,13 +499,13 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     let cancellation = RequestCancellationBox()
     return try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
-        // Two refusals, two errors. Both happen before a byte reaches the socket, but they must
-        // NOT collapse: `connect()` issues its own `capabilities` request through here, and
-        // `LocalAgentVCS` catches exactly `.connectionLost` from it to spawn the agent and retry —
-        // the stale-`session.sock` case, which is common, not exotic. Reporting a closed connection
-        // as anything else would silently stop the agent ever being started.
+        // Both refusals happen before a byte reaches the socket, so both are `.notDispatched`: a
+        // WRITE caller must be able to say "this definitely did not run" (`AgentCommandRunner`),
+        // and a closed connection reported as `.connectionLost` read as "may have completed".
+        // `connect()` still turns a closed fresh connection back into `.connectionLost`, which
+        // `LocalAgentVCS` catches to spawn the agent and retry.
         let refusal: (stream: UInt32?, error: HostConnectionError) = lock.withLock {
-          if closed { return (nil, .connectionLost) }
+          if closed { return (nil, .notDispatched) }
           // ponytail: one 32-slot pool shared by every read AND write on this connection, app-wide.
           // A write can now legitimately hold a slot for minutes (`commitTimeout` = 600s), where only
           // reads (seconds at most) used to compete for these slots. Split reads and writes onto
@@ -533,13 +552,22 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           // making progress (a large chunked exec) is a slow queue, not a wedged transport.
           // ponytail: half the timeout is a heuristic stall bound; a remote host on a slow link
           // might need a per-host floor.
-          let stalled = lock.withLock {
-            self.sendStarted.map { Date().timeIntervalSince($0) >= timeout / 2 } ?? false
+          //
+          // Only for a request still pending: one that already completed says nothing about a send
+          // some other request has in flight. Monotonic, so a clock change cannot fake a stall.
+          let (pending, stalled) = lock.withLock {
+            (
+              self.pending[stream] != nil,
+              self.sendStarted.map { ContinuousClock.now - $0 >= .seconds(timeout / 2) } ?? false
+            )
           }
+          guard pending else { return }
           if stalled {
             fail(HostConnectionError.connectionLost)
           } else {
-            timeoutStream(stream, error: HostConnectionError.connectionLost)
+            // A deadline, not a lost connection: `connect()` sends `.connectionLost` down the
+            // respawn path, which cannot fix an agent that is alive but not answering.
+            timeoutStream(stream, error: HostConnectionError.requestTimedOut)
           }
         }
       }
@@ -551,7 +579,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// `Self.send` on the connection's descriptor, for the `writes` queue only, recording when it
   /// started so a request deadline can tell a stalled send from a slow queue.
   private func sendOnWrites(_ data: Data) throws {
-    lock.withLock { sendStarted = Date() }
+    lock.withLock { sendStarted = ContinuousClock.now }
     defer { lock.withLock { sendStarted = nil } }
     try Self.send(descriptor, data)
   }

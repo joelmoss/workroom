@@ -124,11 +124,23 @@ impl Agent {
                     self.connections.fetch_add(1, Ordering::SeqCst);
                     let sessions = self.sessions.clone();
                     let connections = Arc::clone(&self.connections);
-                    std::thread::spawn(move || {
-                        let _ = stream.set_nonblocking(false);
-                        let _ = handle_connection(stream, sessions);
-                        connections.fetch_sub(1, Ordering::SeqCst);
-                    });
+                    // `std::thread::spawn` panics when the OS cannot create a thread. That would
+                    // unwind THIS accept loop — the fetch_add above already ran, so `connections`
+                    // would be stuck one high forever with nothing left to correct it (worse, an
+                    // uncaught panic here takes the whole agent down with it, over one transient
+                    // thread-exhaustion failure). `Builder::spawn` turns it into an `Err`; the
+                    // closure is dropped without running, so undo the count ourselves and drop this
+                    // one connection rather than the agent.
+                    if std::thread::Builder::new()
+                        .spawn(move || {
+                            let _ = stream.set_nonblocking(false);
+                            let _ = handle_connection(stream, sessions);
+                            connections.fetch_sub(1, Ordering::SeqCst);
+                        })
+                        .is_err()
+                    {
+                        self.connections.fetch_sub(1, Ordering::SeqCst);
+                    }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     // `connections` drops as soon as `handle_connection` returns, but `vcs::dispatch`

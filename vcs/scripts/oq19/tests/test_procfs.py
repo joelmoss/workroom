@@ -106,6 +106,14 @@ class CgroupAndBox(unittest.TestCase):
                 + "0" * 32 + " 00 " + "0" * 32 + " 00 " + "0" * 32 + " ffffffff 00000001 00000000 00200200 lo\n")
         self.assertEqual(procfs.default_route_interfaces(route, ipv6), {"br0", "eth1"})
 
+    def test_a_reject_route_default_is_not_an_uplink(self):
+        # `ip route add unreachable default metric …` has destination and mask "00000000" too, but
+        # iface "*" and RTF_REJECT (0x0200) set. It must not count as a usable uplink.
+        route = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n" \
+                "*\t00000000\t00000000\t0205\t0\t0\tFFFFFFFF\t00000000\n" \
+                "eth0\t00000000\t0101A8C0\t0003\t0\t0\t0\t00000000\n"
+        self.assertEqual(procfs.default_route_interfaces(route, ""), {"eth0"})
+
 class Sockets(unittest.TestCase):
     def test_ss_tinp_gives_socket_ages_and_owners(self):
         socks = procfs.parse_ss_tinp(fixture("ss_tinp.txt"))

@@ -313,9 +313,12 @@ fn shell_state_survives_the_drop() {
 
     first.kill().expect("kill");
     first.wait().expect("reap");
-    wait_for(Duration::from_secs(5), || {
-        list_sessions(&socket).contains("detached")
-    });
+    assert!(
+        wait_for(Duration::from_secs(5), || {
+            list_sessions(&socket).contains("detached")
+        }),
+        "session did not detach"
+    );
 
     let mut second = attach(&socket, session);
     {
@@ -480,9 +483,12 @@ fn a_reattaching_client_is_shown_the_screen() {
 
     first.kill().expect("kill");
     first.wait().expect("reap");
-    wait_for(Duration::from_secs(5), || {
-        list_sessions(&socket).contains("detached")
-    });
+    assert!(
+        wait_for(Duration::from_secs(5), || {
+            list_sessions(&socket).contains("detached")
+        }),
+        "session did not detach"
+    );
 
     // The second client types NOTHING, and OLD-MARKER's bytes were consumed by the first client
     // long before it died. Seeing it now means the screen was repainted from state.
@@ -544,9 +550,12 @@ fn a_reattaching_client_gets_its_scrollback() {
 
     first.kill().expect("kill");
     first.wait().expect("reap");
-    wait_for(Duration::from_secs(5), || {
-        list_sessions(&socket).contains("detached")
-    });
+    assert!(
+        wait_for(Duration::from_secs(5), || {
+            list_sessions(&socket).contains("detached")
+        }),
+        "session did not detach"
+    );
 
     let mut second = attach(&socket, session);
     let mut reader = ClientReader::new(&mut second);
@@ -597,9 +606,12 @@ fn a_reattaching_client_gets_a_full_screen_programs_screen() {
 
     first.kill().expect("kill");
     first.wait().expect("reap");
-    wait_for(Duration::from_secs(5), || {
-        list_sessions(&socket).contains("detached")
-    });
+    assert!(
+        wait_for(Duration::from_secs(5), || {
+            list_sessions(&socket).contains("detached")
+        }),
+        "session did not detach"
+    );
 
     let mut second = attach(&socket, session);
     let mut reader = ClientReader::new(&mut second);

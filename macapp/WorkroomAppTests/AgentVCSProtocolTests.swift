@@ -123,6 +123,12 @@ final class AgentVCSProtocolTests: XCTestCase {
     XCTAssertTrue(VCSSyncPresenter.describe(.outcomeUnknown(reason)).contains("may have"))
     XCTAssertTrue(
       VCSSyncPresenter.describeCommit(.outcomeUnknown(reason)).contains("may have"))
+    // The heading too: for VoiceOver it is the whole message.
+    XCTAssertEqual(
+      VCSSyncPresenter.commitFailureDialog(.outcomeUnknown(reason), mode: .commit).title,
+      "Commit may not have completed")
+    XCTAssertEqual(
+      VCSSyncPresenter.commitFailureDialog(.other("x"), mode: .commit).title, "Commit failed")
   }
 
   /// The recovery rule is IDEMPOTENCE, not "never the failed verb". A lost `abortRebase` used to be
@@ -275,6 +281,19 @@ final class AgentVCSProtocolTests: XCTestCase {
     XCTAssertTrue(
       output.contains("protocol \(AgentControlClient.protocolVersion) "),
       "the agent reports a different protocol version than this client speaks: \(output)")
+    // The minimums too, from the agent's own report rather than the literals above alone: a bump
+    // on the agent side would otherwise leave this client sending envelopes an agent drops.
+    let tokens = output.split(separator: "\n").first.map { $0.split(separator: " ") } ?? []
+    func reported(_ name: String) -> UInt16? {
+      guard let index = tokens.firstIndex(of: Substring(name)), index + 1 < tokens.count else {
+        return nil
+      }
+      return UInt16(tokens[index + 1])
+    }
+    XCTAssertEqual(reported("min-vcs"), AgentControlClient.minVCSVersion, output)
+    XCTAssertEqual(reported("min-file"), AgentControlClient.minFileVersion, output)
+    XCTAssertEqual(reported("min-status"), AgentControlClient.minStatusVersion, output)
+    XCTAssertEqual(reported("min-forward"), AgentControlClient.minForwardVersion, output)
   }
 
   /// Every failure the agent's `FileError` can produce keeps its meaning across the wire.

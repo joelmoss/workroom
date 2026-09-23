@@ -685,7 +685,12 @@ enum VCSSyncPresenter {
     -> VCSFailureDialog
   {
     VCSFailureDialog(
-      title: "\(commitVerb(mode)) failed",
+      // Same rule as `headline`: calling an unknown outcome a failure contradicts the body, and for
+      // VoiceOver the heading is the whole message.
+      title: {
+        if case .outcomeUnknown = failure { return "\(commitVerb(mode)) may not have completed" }
+        return "\(commitVerb(mode)) failed"
+      }(),
       message: [describeCommit(failure), commitRemedy(for: failure)].compactMap { $0 }
         .joined(separator: "\n\n"),
       details: commitRawOutput(of: failure),

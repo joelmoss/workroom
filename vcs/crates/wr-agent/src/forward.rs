@@ -463,8 +463,8 @@ impl Forwards {
         // The connect runs HERE, not on the caller: `connect_timeout` blocks for up to three
         // seconds, and the caller is the connection's envelope reader.
         let open_map = Arc::clone(&self.open);
-        let writer = Arc::clone(writer);
-        std::thread::spawn(move || {
+        let thread_writer = Arc::clone(writer);
+        let spawned = std::thread::Builder::new().spawn(move || {
             connect_and_run(ForwardTask {
                 stream,
                 token,
@@ -476,9 +476,19 @@ impl Forwards {
                 killed,
                 slot,
                 open: open_map,
-                writer,
+                writer: thread_writer,
             });
         });
+        // `std::thread::spawn` PANICS when the OS cannot create a thread (`RLIMIT_NPROC`, memory
+        // pressure) — reachable here on the connection's own dispatch thread, so the panic would
+        // unwind `handle_connection` itself: `Server::serve`'s `connections.fetch_sub` never runs,
+        // and this stream's entry is never forgotten, so its id is held for the rest of the
+        // connection's life. `Builder::spawn` turns that into an `Err`; the closure above (and the
+        // `Slot` it captured) is dropped without running, so `live` is already back down — only the
+        // map entry and the reply are still ours to retire, the same way a failed connect does.
+        if spawned.is_err() {
+            retire_after_spawn_failure(&self.open, writer, stream, token);
+        }
     }
 
     /// Client bytes for a forwarded socket. Dropped if the stream is not forwarding (or the client
@@ -565,6 +575,26 @@ fn forget(open: &Mutex<HashMap<u32, Conn>>, stream: u32, token: u64) -> Option<C
     }
 }
 
+/// The connect thread never started: retire the entry exactly as a connect failure does — an error
+/// reply, then CLOSE — so the stream id is freed rather than held for the rest of the connection.
+/// Split out from the call site so the failure path is testable without exhausting real OS threads:
+/// constructing the `Err` a real `pthread_create` failure would produce needs no such thing.
+fn retire_after_spawn_failure(
+    open: &Mutex<HashMap<u32, Conn>>,
+    writer: &SharedWriter,
+    stream: u32,
+    token: u64,
+) {
+    if forget(open, stream, token).is_some() {
+        send_reply(
+            writer,
+            stream,
+            &Refusal::refused("could not start the forward").value(),
+        );
+        send(writer, stream, CLOSE, &[]);
+    }
+}
+
 /// Kill this forward from one of its own threads (a reset seen by the reader), if it is still
 /// registered: the same kill a client CLOSE performs, so the other thread wakes and the pair
 /// finishes with the one CLOSE.
@@ -588,6 +618,15 @@ fn retire(task: &ForwardTask, refusal: Option<Refusal>) {
         send_reply(&task.writer, task.stream, &refusal.value());
     }
     send(&task.writer, task.stream, CLOSE, &[]);
+}
+
+/// The reader thread failed to start after the REPLY already went out. Shutting the socket ends
+/// `reader_socket` too (both are clones of the one connection), and `retire(task, None)` forgets the
+/// entry and sends the CLOSE — no refusal, since a REPLY already shipped and the contract is one.
+/// Split out so this is testable without exhausting real OS threads.
+fn retire_after_reader_spawn_failure(task: &ForwardTask, socket: &TcpStream) {
+    let _ = socket.shutdown(Shutdown::Both);
+    retire(task, None);
 }
 
 /// Connect, answer, then pump client bytes into the socket until either side is done.
@@ -690,11 +729,23 @@ fn connect_and_run(task: ForwardTask) {
         // the entry live on, and the cap counts that forward until the reader is gone too.
         let slot = Arc::clone(&task.slot);
         let (stream, token) = (task.stream, task.token);
-        std::thread::spawn(move || {
+        let spawned = std::thread::Builder::new().spawn(move || {
             let _slot = slot;
             pump_to_client(reader_socket, stream, &writer, &killed, &open, token);
             finish(&halves, &open, stream, token, &writer);
-        })
+        });
+        match spawned {
+            Ok(handle) => handle,
+            Err(_) => {
+                // The REPLY already promised `"opened": true`, so a second REPLY is off the table —
+                // the contract is REPLY once. The only honest way to end the stream now is the CLOSE
+                // that promise requires. Without this, `halves` never reaches zero (the reader's half
+                // of `finish` never runs), so no thread would ever send CLOSE and the id would be
+                // held for the rest of the connection — the writer-thread half of the same LOW11 bug.
+                retire_after_reader_spawn_failure(&task, &socket);
+                return;
+            }
+        }
     };
 
     while let Ok(message) = task.rx.recv() {
@@ -1225,6 +1276,59 @@ mod tests {
         forwards.open.lock().unwrap().clear();
         connect_and_run(task);
         assert!(sent(&capture).is_empty(), "gone: nothing");
+    }
+
+    /// LOW 11 (connection thread): if `Forwards::open`'s connect-thread spawn fails, the stream must
+    /// still be freed rather than held for the rest of the connection. `retire_after_spawn_failure`
+    /// is the code that runs on that `Err`; exercised directly, since forcing a real
+    /// `std::thread::Builder::spawn` failure means exhausting real OS threads.
+    #[test]
+    fn a_forward_whose_connect_thread_failed_to_spawn_is_retired_not_left_open() {
+        let forwards = Forwards::new();
+        let capture = Capture::default();
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
+        let _rx = stalled(&forwards, 1); // registers a Conn with token 0, as `open` would have.
+        retire_after_spawn_failure(&forwards.open, &writer, 1, 0);
+        assert!(
+            !forwards.open.lock().unwrap().contains_key(&1),
+            "the stream id must be freed"
+        );
+        assert_eq!(sent(&capture), vec![(1, REPLY), (1, CLOSE)]);
+    }
+
+    /// LOW 11 (forward writer thread): if the READER thread's spawn fails after the `opened: true`
+    /// REPLY already went out, the entry must still be retired — with CLOSE alone, never a second
+    /// REPLY — rather than left open with nothing left to ever send the CLOSE that frees it.
+    #[test]
+    fn a_forward_whose_reader_thread_failed_to_spawn_is_retired_with_close_alone() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let forwards = Forwards::new();
+        let capture = Capture::default();
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
+        let (task, _probe) = task_for(&forwards, port, writer);
+        let socket = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (mut accepted, _) = listener.accept().unwrap();
+        accepted
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+
+        retire_after_reader_spawn_failure(&task, &socket);
+
+        assert_eq!(
+            sent(&capture),
+            vec![(1, CLOSE)],
+            "CLOSE alone: a REPLY already shipped, so there is no second one to send"
+        );
+        assert!(
+            forwards.open.lock().unwrap().is_empty(),
+            "the id must be freed"
+        );
+        assert_eq!(
+            accepted.read(&mut [0u8; 8]).unwrap(),
+            0,
+            "the socket must actually be shut down, not merely forgotten"
+        );
     }
 
     /// A host as long as an envelope allows must not produce a reply longer than one: the refusal

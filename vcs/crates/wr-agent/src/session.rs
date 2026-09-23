@@ -200,6 +200,9 @@ pub enum SessionError {
     /// `Failure` frame and can retry from a clean terminal.
     #[error("session {0} could not be repainted")]
     RepaintFailed(String),
+    /// The OS could not start the session's reader thread, so the session was ended again at once.
+    #[error("session {0} could not start: no thread for its output")]
+    ReaderFailed(String),
 }
 
 /// Owns every live session. Cheap to clone; all clones share one map.
@@ -295,7 +298,24 @@ impl SessionStore {
         // against this very lock.
         drop(sessions);
         let result = register(info);
-        std::thread::spawn(move || read_session(spec.id, pty, shadow, attached, store));
+        // `std::thread::spawn` panics when the OS cannot create a thread. Reachable here on the
+        // connection's own dispatch thread (this runs inside `handle_connection`), so the panic
+        // would unwind past `Server::serve`'s `connections.fetch_sub` exactly as an unhandled
+        // `forward.rs` spawn failure does — and leave this session in the map forever with a real
+        // forked pty and nothing left to ever drain, notice it exit, or let `read_session`'s `ended`
+        // cleanup remove it. `Builder::spawn` turns that into an `Err`; retire the session the same
+        // way `kill` ends any other one rather than leave a permanently undrained entry behind.
+        //
+        // And say so: `register` has already succeeded for an attaching client, and returning its
+        // `Ok` would hand that client a token for a session that no longer exists and will never
+        // send it a CLOSE.
+        if std::thread::Builder::new()
+            .spawn(move || read_session(spec.id, pty, shadow, attached, store))
+            .is_err()
+        {
+            self.kill(spec.id);
+            return Err(SessionError::ReaderFailed(spec.id.to_hyphenated()));
+        }
         result
     }
 

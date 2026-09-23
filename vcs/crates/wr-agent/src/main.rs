@@ -11,7 +11,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use wr_agent::protocol::envelope::{
-    negotiate, Envelope, EnvelopeDecoder, Hello, Service, MIN_SUPPORTED_VERSION, PROTOCOL_VERSION,
+    negotiate, Envelope, EnvelopeDecoder, Hello, Service, MIN_FILE_VERSION, MIN_FORWARD_VERSION,
+    MIN_STATUS_VERSION, MIN_SUPPORTED_VERSION, MIN_VCS_VERSION, PROTOCOL_VERSION,
 };
 use wr_agent::protocol::frame::{Frame, FrameDecoder, FrameKind};
 use wr_agent::serve::{self, Agent, BUILD, DEFAULT_IDLE_TIMEOUT};
@@ -49,7 +50,16 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("protocol") => {
-            println!("protocol {PROTOCOL_VERSION} (minimum supported {MIN_SUPPORTED_VERSION})");
+            // The per-service minimums appended at the end, in the order they were introduced —
+            // `SessionBackendProbe.parseProtocolVersion` (Swift) is explicitly "tolerant of trailing
+            // detail by design", reading only the leading `protocol <n>` token, so this is safe to
+            // grow without a matching app release. `AgentVCSProtocolTests` checks these five numbers
+            // against the shipped binary; keep this line's tokens in this order if it grows again.
+            println!(
+                "protocol {PROTOCOL_VERSION} (minimum supported {MIN_SUPPORTED_VERSION}) \
+                 min-vcs {MIN_VCS_VERSION} min-file {MIN_FILE_VERSION} \
+                 min-status {MIN_STATUS_VERSION} min-forward {MIN_FORWARD_VERSION}"
+            );
             println!("build {BUILD}");
             // Whether this build can repaint a reattaching client. A build without it serves
             // sessions perfectly well and then hands a reconnecting pane a blank screen, which is
