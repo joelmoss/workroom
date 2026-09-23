@@ -31,7 +31,7 @@ enum ChecksResolution: Equatable, Sendable {
 ///
 /// ONE protocol, where there were two. They were separate because the two backends' `workingStatus`
 /// returned different concrete types, which is also why `workingStatus` was the one VCS read never
-/// on `VCSProviding`. It is on it now and both return `WorkroomStatus`, so the split has nothing
+/// on `LocalVCSProviding`. It is on it now and both return `WorkroomStatus`, so the split has nothing
 /// left to express. A single seam is also the precondition for a third implementation — a remote
 /// backend cannot satisfy a protocol whose shape depends on which backend it is.
 protocol VCSWorkingStatusReading: Sendable {
@@ -53,11 +53,11 @@ struct WorkroomStatusResolver: Sendable {
   /// workrooms share a backing repo, so concurrent snapshots can contend on it.
   var gate: JJSnapshotGate
   /// `resolveGit`/`resolveJJ`'s native status seam — real reads by default (`GitProvider`/
-  /// `RustJJProvider`), a gated/counting double in tests. `workingStatus` IS on `VCSProviding` now
+  /// `RustJJProvider`), a gated/counting double in tests. `workingStatus` IS on `LocalVCSProviding` now
   /// and both backends return `WorkroomStatus`; these stay as injection points for the doubles, not
   /// because the two sides differ. See `VCSWorkingStatusReading`.
-  var gitStatus: VCSWorkingStatusReading
-  var jjStatus: VCSWorkingStatusReading
+  var gitStatus: VCSWorkingStatusReading?
+  var jjStatus: VCSWorkingStatusReading?
 
   /// How long `resolveJJ` waits its turn behind other same-project jj snapshots, before the row
   /// reports `.timeout`. Deliberately larger than `timeout`: with the gate serializing a busy
@@ -69,8 +69,8 @@ struct WorkroomStatusResolver: Sendable {
   init(
     runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 3,
     ciTimeout: TimeInterval = 10, gate: JJSnapshotGate = .shared,
-    gitStatus: VCSWorkingStatusReading = GitProvider(),
-    jjStatus: VCSWorkingStatusReading = RustJJProvider()
+    gitStatus: VCSWorkingStatusReading? = nil,
+    jjStatus: VCSWorkingStatusReading? = nil
   ) {
     self.runner = runner
     self.timeout = timeout
@@ -93,6 +93,11 @@ struct WorkroomStatusResolver: Sendable {
   /// defaulted, so every call site is forced to supply the key `resolveJJ`'s snapshot gate needs;
   /// `resolveGit` ignores it (git reads are never gated).
   func resolveLocal(path: String, vcs: String, projectRoot: String) async -> WorkroomStatus {
+    if gitStatus == nil, jjStatus == nil {
+      do { return await resolve(location: try await RepositoryLocation.local(path)) } catch {
+        return WorkroomStatus(dirty: nil, failure: .unavailable)
+      }
+    }
     var status: WorkroomStatus
     if FileManager.default.fileExists(atPath: path) {
       switch vcs {
@@ -109,6 +114,47 @@ struct WorkroomStatusResolver: Sendable {
     // say a probe is older when it actually saw a LATER tree. Completion is the closest observable
     // bound on when the tree was seen. (Two overlapping reads can still finish in the opposite order
     // to their observations; closing that needs a filesystem generation number, not a clock.)
+    status.localReadAt = Date()
+    return status
+  }
+
+  func resolve(item: AppStore.StatusWorkItem) async -> WorkroomStatus {
+    if let location = item.location {
+      if location.host != .local || (gitStatus == nil && jjStatus == nil) {
+        return await resolve(location: location)
+      }
+    }
+    return await resolveLocal(path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+  }
+
+  func resolve(location: RepositoryLocation, router: RepositoryRouter = .shared) async
+    -> WorkroomStatus
+  {
+    var status: WorkroomStatus
+    do {
+      if location.host == .local {
+        let exists = try await runBlocking { FileManager.default.fileExists(atPath: location.path) }
+        guard exists else {
+          var missing = WorkroomStatus(dirty: nil, failure: .missingPath)
+          missing.localReadAt = Date()
+          return missing
+        }
+      }
+      let reader = try await router.reader(for: location)
+      status = try await withTimeout(
+        seconds: reader.context.backend == .jj ? Self.jjGatedWaitTimeout : timeout
+      ) {
+        try await reader.workingStatus()
+      }
+    } catch RepositoryRoutingError.registrationRequired {
+      status = WorkroomStatus(dirty: nil, failure: .registrationRequired)
+    } catch is RepositoryRoutingError {
+      status = WorkroomStatus(dirty: nil, failure: .unavailable)
+    } catch is VCSTimeoutError, is VCSCancellationError {
+      status = WorkroomStatus(dirty: nil, failure: .timeout)
+    } catch let error as VCSError {
+      status = WorkroomStatus(dirty: nil, failure: Self.failure(for: error))
+    } catch { status = WorkroomStatus(dirty: nil, failure: .notRepository) }
     status.localReadAt = Date()
     return status
   }
@@ -132,7 +178,7 @@ struct WorkroomStatusResolver: Sendable {
 
   private func resolveGit(_ dir: String) async -> WorkroomStatus {
     // Read git status structurally through libgit2 (SwiftGitX) instead of shelling `git status` +
-    // `git diff --shortstat`. `VCSProviding` has no built-in timeout, so bound the (synchronous,
+    // `git diff --shortstat`. `LocalVCSProviding` has no built-in timeout, so bound the (synchronous,
     // off-main) read with `withTimeout` — a wedged repo abandons only its own row.
     let root = URL(fileURLWithPath: dir, isDirectory: true)
     do {
@@ -140,7 +186,7 @@ struct WorkroomStatusResolver: Sendable {
         // `runBlocking` (GCD), NOT `Task.detached`: the cooperative pool is fixed-width and this read
         // is fanned out ~5-wide per sweep (`runLocalSweep`), overlapping History/diff/branch reads —
         // exactly the burst the `runBlocking` doc flags as the "History loads forever" starvation.
-        let gitStatus = self.gitStatus
+        let gitStatus = self.gitStatus ?? GitProvider()
         return try await runBlocking { try gitStatus.workingStatus(root: root) }
       }
       return ws
@@ -159,7 +205,7 @@ struct WorkroomStatusResolver: Sendable {
     // — replacing the old serial-snapshot-then-concurrent-CLI-reads dance. ONE read, deliberately: the
     // counts used to come from a `jj diff -r @ --stat` process fired after this one, which stated them
     // against a merge `@`'s auto-merged parents (a different base than the file list) and could be
-    // read across an intervening edit. `VCSProviding` has no built-in timeout, so
+    // read across an intervening edit. `LocalVCSProviding` has no built-in timeout, so
     // bound the (synchronous, off-main) read with `withTimeout` — for `resolveGit` a wedged repo
     // abandons only its own caller. For THIS jj path that's no longer the full story: the read is
     // additionally serialized per project root through `gate` (the ONE jj read that mutates — takes
@@ -177,7 +223,7 @@ struct WorkroomStatusResolver: Sendable {
           // `runBlocking` (GCD), NOT `Task.detached` — the blocking, snapshot-taking jj-lib read
           // must stay off the fixed-width cooperative pool (see `resolveGit` / the `runBlocking`
           // doc). Left un-timed inside the gate on purpose — see `JJSnapshotGate`'s doc.
-          let jjStatus = self.jjStatus
+          let jjStatus = self.jjStatus ?? RustJJProvider()
           return try await runBlocking { try jjStatus.workingStatus(root: root) }
         }
       }

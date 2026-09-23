@@ -922,16 +922,21 @@ interdiff).
 
 **Where the write seam actually is — this changed.** The original plan put write methods on
 `VCSProviding` with a `CLIVCSProvider` fallback. That is **not** what shipped, and new work should not
-follow it. Writes live behind a **separate** `VCSWriting` protocol (`Core/VCSWriting.swift`) with its
-own factory `VCS.writer(for:)`, conformed by `CLIVCSWriter`. Two reasons, both load-bearing:
+follow it. Writes live behind a **separate**, context-bound `VCSWriting` protocol
+(`Core/RepositoryServices.swift`), constructed by `RepositoryRouter.writer(for:)`. Its local adapter
+delegates to `CLIVCSWriter`, which implements `LocalVCSWriting`. Three properties hold it there:
 
-- `VCSProviding`'s doc calls it "the single seam the app **reads** VCS data through", and four
-  resolvers construct providers freely and call them with no gate. A `fetch` on that protocol means
-  nothing structurally stops a read path firing a network mutation — the opposite of what
-  `JJSnapshotGate` exists to guarantee.
-- A CLI-backed method needs an injected `StatusCommandRunning`, and `GitProvider`/`RustJJProvider` are
-  stateless value types constructed at four call sites with nowhere to put one. A new conformer has
-  somewhere.
+- **Context binding.** `RepositoryRouter.reader(for:)` and `writer(for:)` each capture one
+  `RepositoryContext` (host, path, backend, shared ownership), and the returned `BoundLocalReader` /
+  `BoundLocalWriter` take no path or backend from the caller, so a service cannot be pointed at a
+  different repository after it is built.
+- **Snapshot-gate coordination.** `BoundLocalReader` runs the jj working-copy snapshots (status and
+  working-copy diffs) through `JJSnapshotGate`, and `CLIVCSWriter` is built with the same gate, so
+  reads and writes to one repository are serialized per shared root.
+- **Write authorization.** `writer(for:)` requires a registered context with shared ownership
+  (`registeredContext(for:)` + `requireOwnership()`) and throws `registrationRequired` otherwise. An
+  unknown local repository can still be read, but it cannot be written to or snapshotted.
+  `VCSProviding` stays read-only: it has no `fetch` or other network mutation.
 
 So: add commit/amend and the rest as `VCSWriting` members, and they inherit the gate, the network
 environment hardening and the failure taxonomy for free.

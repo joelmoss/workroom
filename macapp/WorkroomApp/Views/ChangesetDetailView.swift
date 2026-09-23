@@ -9,6 +9,7 @@ struct ChangesetDetailView: View {
   let descriptor: ChangesetDescriptor
   /// The workroom directory the VCS reads in.
   let directory: String
+  var repositoryLocation: RepositoryLocation? = nil
   /// This changeset tab's id + target — so a file tap routes through the store (which records a
   /// back/forward step and updates the tab), rather than a view-local `@State`.
   let tabID: TerminalTab.ID
@@ -32,7 +33,15 @@ struct ChangesetDetailView: View {
   /// (`DiffViewerStaleLoadTests`). The harness is not the app's view tree and the flag's delivery is
   /// an unspecified SwiftUI detail, so the flag is the guard the test proves and the token is the
   /// belt. `@State` survives the slot being reused, so whichever invocation started LAST wins.
-  @State private var activeCommitID: String?
+  private struct LoadKey: Hashable {
+    let location: RepositoryLocation?
+    let directory: String
+    let commit: String
+  }
+  private var loadKey: LoadKey {
+    LoadKey(location: repositoryLocation, directory: directory, commit: descriptor.commitID)
+  }
+  @State private var activeCommitID: LoadKey?
   /// Committed width of the file-list pane. Starts intentionally narrow.
   @State private var listWidth: CGFloat = 230
   /// Live width during a divider drag (`nil` when not dragging). Kept in local `@State` so the drag
@@ -73,10 +82,10 @@ struct ChangesetDetailView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       .background(theme.tokens.bg)
       // Fetch on appear + whenever the tab is retargeted to another commit (preview reuse).
-      .task(id: descriptor.commitID) {
+      .task(id: loadKey) {
         let myCommitID = descriptor.commitID
-        activeCommitID = myCommitID
-        await load(commitID: myCommitID)
+        activeCommitID = loadKey
+        await load(commitID: myCommitID, key: loadKey)
       }
       // Close find whenever there's nothing to search (loading, failed, empty changeset, or a
       // selection that doesn't match any current file) — otherwise a retarget (history back/forward,
@@ -137,7 +146,7 @@ struct ChangesetDetailView: View {
     }
   }
 
-  private func load(commitID: String) async {
+  private func load(commitID: String, key: LoadKey) async {
     state = .loading
     let root = URL(fileURLWithPath: directory, isDirectory: true)
     do {
@@ -147,16 +156,23 @@ struct ChangesetDetailView: View {
       } else {
         // The provider self-offloads its blocking read to GCD (`runBlocking`), so a plain await here
         // stays off the cooperative pool — no `Task.detached` wrapper needed.
-        changeset = try await VCS.provider(for: root).changeset(root: root, commitID: commitID)
+        let location: RepositoryLocation
+        if let repositoryLocation {
+          location = repositoryLocation
+        } else {
+          location = try await RepositoryLocation.local(root.path)
+        }
+        changeset = try await RepositoryRouter.shared.reader(for: location).changeset(
+          commitID: commitID)
       }
       // Stale-write guard (see `activeCommitID`). Worth more here than anywhere else: a stale
       // changeset doesn't just show the wrong commit, it also drives `selectedPath`'s
       // first-file fallback, so the embedded `DiffViewer` is retargeted at the wrong commit's file
       // too.
-      guard !Task.isCancelled, activeCommitID == commitID else { return }
+      guard !Task.isCancelled, activeCommitID == key else { return }
       state = .loaded(changeset)
     } catch {
-      guard !Task.isCancelled, activeCommitID == commitID else { return }
+      guard !Task.isCancelled, activeCommitID == key else { return }
       state = .failed("\(error)")
     }
   }
@@ -414,7 +430,7 @@ struct ChangesetDetailView: View {
         descriptor: DiffDescriptor(
           path: file.path, change: Self.change(file.kind),
           source: .commit(descriptor.commitID), isPreview: false),
-        directory: directory,
+        directory: directory, repositoryLocation: repositoryLocation,
         // Always `.commit(...)` here, never `.jjWorkingCopy` — this pane never snapshots, so no
         // project root is needed to key `JJSnapshotGate`.
         projectRoot: nil,

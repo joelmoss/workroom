@@ -21,13 +21,35 @@ extension AppStore {
   static let ciConcurrency = 2
   fileprivate static let selectionDebounce: TimeInterval = 0.3  // arrow-key row cycling coalesce
 
-  struct StatusWorkItem: Sendable {
+  struct StatusWorkItem: Sendable, Equatable {
     let sid: SidebarID
     let path: String
     let vcs: String
     /// The colocated project root. Equals `path` for the root row; for a workroom it's the parent
     /// project's path — where stage-2 `gh` probes run for a jj workspace (which has no `.git`).
     let projectRoot: String
+    let location: RepositoryLocation?
+
+    init(
+      sid: SidebarID, path: String, vcs: String, projectRoot: String,
+      location: RepositoryLocation? = nil
+    ) {
+      self.sid = sid
+      self.path = path
+      self.vcs = vcs
+      self.projectRoot = projectRoot
+      self.location = location ?? RepositoryRouter.shared.localLocation(for: path)
+    }
+
+    func resolvedLocation() async throws -> RepositoryLocation {
+      if let location { return location }
+      return try await RepositoryLocation.local(path)
+    }
+
+    var permitsLocalAccess: Bool { location == nil || location?.host == .local }
+    var sharedLocation: RepositoryLocation? {
+      location.flatMap { RepositoryRouter.shared.entry(for: $0)?.sharedLocation }
+    }
   }
 
   /// Every root + workroom as a status work item.
@@ -73,7 +95,7 @@ extension AppStore {
       // Nor one whose PROJECT has a commit in flight — see `isCommittingProject`. Also honoured on
       // `force`, because a manual Refresh during a long hook races the write just as readily as the
       // timer does.
-      if isCommittingProject(item.projectRoot) { return false }
+      if isCommittingProject(item.sharedLocation) { return false }
       guard !force else { return true }
       guard let checked = workroomStatuses[item.sid]?.lastChecked else { return true }
       return now.timeIntervalSince(checked) >= localTTL
@@ -142,12 +164,12 @@ extension AppStore {
     if UITestFixture.isActive { return }
     guard let item = selectedStatusWorkItem(for: sid) else { return }
     // Same two suppressions the selection path applies — another create/commit may still be writing.
-    if isCreating(sid) || isCommittingProject(item.projectRoot) { return }
+    if isCreating(sid) || isCommittingProject(item.sharedLocation) { return }
     let resolver = statusResolver
     Task { [weak self] in
-      let fresh = await resolver.resolveLocal(
-        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
-      self?.mergeLocalStatus(fresh, into: sid)
+      let fresh = await resolver.resolve(item: item)
+      guard let self, self.selectedStatusWorkItem(for: sid) == item else { return }
+      self.mergeLocalStatus(fresh, into: sid)
     }
   }
 
@@ -168,44 +190,51 @@ extension AppStore {
     if isCreating(sid) { return }
     // By project root, not by row: a git worktree's index and refs live in the MAIN repo, so probing
     // workroom B while workroom A of the same project commits contends on the same `index.lock`.
-    if isCommittingProject(item.projectRoot) { return }
+    if isCommittingProject(item.sharedLocation) { return }
     let resolver = statusResolver
     selectionStatusTask = Task { [weak self] in
       try? await Task.sleep(nanoseconds: UInt64(Self.selectionDebounce * 1_000_000_000))
       if Task.isCancelled { return }
       guard let self else { return }
-      let fresh = await resolver.resolveLocal(
-        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+      let fresh = await resolver.resolve(item: item)
       if Task.isCancelled { return }
+      guard self.selectedStatusWorkItem(for: sid) == item else { return }
       self.mergeLocalStatus(fresh, into: sid)
+      guard item.permitsLocalAccess else { return }
+      let github: RepositoryGitHub
+      do {
+        let location: RepositoryLocation
+        if let supplied = item.location {
+          location = supplied
+        } else {
+          location = try await RepositoryLocation.local(item.path)
+        }
+        github = try await RepositoryRouter.shared.gitHub(for: location, resolver: resolver)
+      } catch { return }
       // Skip the network CI/PR probes when `gh` isn't usable (the inspector shows a warning instead).
       await self.refreshGitHubCLI(resolver: resolver)
       if Task.isCancelled { return }
       guard self.githubCLIStatus == .available else { return }
       // CI and the PR list are independent — run them concurrently. Apply CI the moment it lands so
       // the sidebar/tab glyph never waits on the PR probe.
-      async let ciRes = resolver.resolveCI(
-        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: fresh.branchForCI)
-      async let prRawRes = resolver.resolvePRRaw(
-        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: fresh.branchForCI)
+      async let ciRes = github.ci(branch: fresh.branchForCI)
+      async let prRawRes = github.pullRequest(branch: fresh.branchForCI)
       let ci = await ciRes
-      if Task.isCancelled { return }
+      guard !Task.isCancelled, self.selectedStatusWorkItem(for: sid) == item else { return }
       self.applyCIStatus(ci, to: sid)
       let prRaw = await prRawRes
-      if Task.isCancelled { return }
+      guard !Task.isCancelled, self.selectedStatusWorkItem(for: sid) == item else { return }
       self.applyPRStatus(prRaw, to: sid)
       // With the PR number in hand, fetch its checks and enrich reviewer permalinks concurrently —
       // checks must not wait behind the (conditional) reviewer-URL GraphQL round-trip (issue #75).
       guard case .info(let info) = prRaw else { return }
-      async let enrichedRes = resolver.enrichPR(
-        prRaw, path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
-      async let checksRes = resolver.resolveChecks(
-        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, number: info.number)
+      async let enrichedRes = github.enrich(prRaw)
+      async let checksRes = github.checks(number: info.number)
       let enriched = await enrichedRes
-      if Task.isCancelled { return }
+      guard !Task.isCancelled, self.selectedStatusWorkItem(for: sid) == item else { return }
       self.applyPRStatus(enriched, to: sid)
       let checks = await checksRes
-      if Task.isCancelled { return }
+      guard !Task.isCancelled, self.selectedStatusWorkItem(for: sid) == item else { return }
       self.applyChecksStatus(checks, to: sid)
     }
   }
@@ -227,8 +256,13 @@ extension AppStore {
   /// status instead of spawning `gh`, so the actions menu is exercisable hermetically. Delegates the
   /// whole lifecycle to `performPRWrite`, shared with `performMerge`.
   func performPRAction(_ action: PRAction, number: Int, on sid: SidebarID) {
+    guard let item = selectedStatusWorkItem(for: sid) else { return }
+    performPRAction(action, number: number, on: item)
+  }
+
+  func performPRAction(_ action: PRAction, number: Int, on item: StatusWorkItem) {
     performPRWrite(
-      arguments: action.arguments(number: number), on: sid,
+      arguments: action.arguments(number: number), on: item,
       applyOptimistic: { self.applyOptimisticPRAction(action, on: $0) },
       errorTitle: "Couldn’t \(action.label.lowercased())")
   }
@@ -242,10 +276,33 @@ extension AppStore {
   /// `UITestFixture.isActive` must be checked AFTER `applyOptimistic` but BEFORE `prActionInFlight`
   /// flips — fixture-mode tests rely on seeing the optimistic update with no in-flight flag ever set.
   private func performPRWrite(
-    arguments: [String], on sid: SidebarID,
+    arguments: [String], on item: StatusWorkItem,
     applyOptimistic: (SidebarID) -> Void, errorTitle: String
   ) {
-    guard let item = selectedStatusWorkItem(for: sid) else { return }
+    let sid = item.sid
+    guard item.permitsLocalAccess else {
+      self.errorTitle = errorTitle
+      self.errorMessage =
+        RepositoryRoutingError.unavailable(item.location!.host).localizedDescription
+      return
+    }
+    let github: RepositoryGitHub?
+    if UITestFixture.isActive {
+      github = nil
+    } else {
+      do {
+        guard let location = item.location else {
+          throw RepositoryRoutingError.registrationRequired
+        }
+        github = try RepositoryGitHub(
+          context: RepositoryRouter.shared.registeredContext(for: location),
+          resolver: statusResolver)
+      } catch {
+        self.errorTitle = errorTitle
+        self.errorMessage = error.localizedDescription
+        return
+      }
+    }
     // Flip the PR state immediately so the badge/buttons react the instant the user acts — otherwise
     // nothing visibly changes during the (multi-second) `gh` call + status re-probe, which reads as
     // "the click did nothing". Keep the prior PR to restore if `gh` fails (and in fixture mode, this
@@ -254,15 +311,12 @@ extension AppStore {
     applyOptimistic(sid)
     if UITestFixture.isActive { return }
     prActionInFlight = true
-    let resolver = statusResolver
-    // Run `gh pr …` where the read probes run: in-place for git, but the colocated project root for
-    // a jj workspace (gitless), else the action fails / targets the wrong repo context.
-    let dir = WorkroomStatusResolver.ghProbeDirectory(
-      path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
     Task { [weak self] in
-      let r = await resolver.runPRCommand(arguments, in: dir)
+      guard let github else { return }
+      let r = await github.run(arguments)
       guard let self else { return }
       self.prActionInFlight = false
+      guard self.selectedStatusWorkItem(for: sid) == item else { return }
       if r.ok {
         // Re-probe to replace the optimistic state with GitHub's authoritative one.
         self.scheduleSelectedStatusRefresh()
@@ -300,32 +354,45 @@ extension AppStore {
     // an early return here instead skipped the whole store-side lane (the in-flight marks, the
     // captured-sid refresh), so the one tier that drives this code end to end exercised none of it.
     // `refreshStatus(for:)` already no-ops under the fixture, so the rest is safe to run.
-    let root = item.projectRoot
-    // Refuse outright rather than queue behind another write (commit/fetch/push/pull, this window
-    // or another) on the same project root — see `isWritingProject`'s doc for why queuing into
-    // `JJSnapshotGate` here would risk racing it past the gate's own wedge-detection ceiling.
-    guard !isWritingProject(root) else {
-      return completion(.failed(.locked(nil)))
-    }
-    committingTargets.insert(sid)
-    committingProjectRoots[root, default: 0] += 1
-    beginWrite(projectRoot: root)
-    // Captured STRONGLY, not through `self`: `committingProjectRoots`/`writingProjectRoots` live on
-    // this shared, cross-window store, and their release below must run even if THIS window's
-    // `AppStore` is deallocated before the write finishes (e.g. the window is closed mid-commit). A
-    // release gated on `self` staying alive would leak both counters — `writingProjectRoots`
-    // permanently, since nothing else ever decrements it, refusing every future write for this
-    // project, in every window, until the app restarts.
-    let projectStore = self.projectStore
     Task { [weak self] in
+      guard let self else { return }
+      let root: RepositoryLocation
+      let writer: VCSWriting?
+      do {
+        if UITestFixture.isActive {
+          root = try await RepositoryLocation.local(item.projectRoot)
+          writer = nil
+        } else {
+          let location = try await item.resolvedLocation()
+          let captured = try await RepositoryRouter.shared.writer(for: location)
+          root = try captured.context.requireOwnership()
+          writer = captured
+        }
+      } catch { return completion(.failed(.other(error.localizedDescription))) }
+      // Refuse outright rather than queue behind another write (commit/fetch/push/pull, this window
+      // or another) on the same project root — see `isWritingProject`'s doc for why queuing into
+      // `JJSnapshotGate` here would risk racing it past the gate's own wedge-detection ceiling.
+      guard !isWritingProject(root) else {
+        return completion(.failed(.locked(nil)))
+      }
+      committingTargets.insert(sid)
+      committingProjectRoots[root, default: 0] += 1
+      beginWrite(projectRoot: root)
+      // Captured STRONGLY, not through `self`: `committingProjectRoots`/`writingProjectRoots` live on
+      // this shared, cross-window store, and their release below must run even if THIS window's
+      // `AppStore` is deallocated before the write finishes (e.g. the window is closed mid-commit). A
+      // release gated on `self` staying alive would leak both counters — `writingProjectRoots`
+      // permanently, since nothing else ever decrements it, refusing every future write for this
+      // project, in every window, until the app restarts.
+      let projectStore = self.projectStore
       let result: VCSCommitResult
       if UITestFixture.isActive {
         result = await FixtureVCSWriter().commit(
-          path: item.path, projectRoot: root, request: request)
+          path: item.path, projectRoot: root.path, request: request)
       } else {
         do {
-          let writer = try VCS.writer(for: URL(fileURLWithPath: item.path, isDirectory: true))
-          result = await writer.commit(path: item.path, projectRoot: root, request: request)
+          guard let writer else { throw RepositoryRoutingError.registrationRequired }
+          result = await writer.commit(request: request)
         } catch {
           result = .failed(.other("\(error)"))
         }
@@ -339,7 +406,6 @@ extension AppStore {
         projectStore.committingProjectRoots.removeValue(forKey: root)
       }
       Self.releaseWrite(projectRoot: root, in: projectStore)
-      guard let self else { return }
       self.committingTargets.remove(sid)
       switch result {
       case .ok, .committedThenFailed:
@@ -363,40 +429,46 @@ extension AppStore {
 
   /// Ask which selected paths hold staged content a commit would discard, before committing.
   ///
-  /// Read-only and ungated: it runs one `git status`, which takes no lock. Returns empty on any
-  /// failure so a guard that cannot answer never blocks the commit — the guard exists to inform, and
-  /// a broken guard must not become a broken commit.
+  /// Read-only and ungated. A failed staged-content check is an explicit failure: the sheet must
+  /// not authorize a commit when it cannot determine whether staged work would be discarded.
   func stagedContentAtRisk(
-    on sid: SidebarID, files: [ChangedFile], completion: @escaping ([String]) -> Void
+    on sid: SidebarID, files: [ChangedFile], completion: @escaping (Result<[String], Error>) -> Void
   ) {
-    guard !UITestFixture.isActive, let item = selectedStatusWorkItem(for: sid), item.vcs != "jj"
-    else { return completion([]) }
+    if UITestFixture.isActive { return completion(.success([])) }
+    guard let item = selectedStatusWorkItem(for: sid) else {
+      return completion(.failure(RepositoryRoutingError.registrationRequired))
+    }
     Task {
-      guard let writer = try? VCS.writer(for: URL(fileURLWithPath: item.path, isDirectory: true))
-      else { return completion([]) }
-      completion(await writer.stagedContentAtRisk(path: item.path, files: files))
+      do {
+        let location = try await item.resolvedLocation()
+        let writer = try await RepositoryRouter.shared.writer(for: location)
+        completion(.success(try await writer.stagedContentAtRisk(files: files)))
+      } catch { completion(.failure(error)) }
     }
   }
 
   /// Ask what the commit dialog should show before it writes — the amend target, `@`'s description,
   /// and any parked git operation.
   ///
-  /// Read-only and ungated, for `stagedContentAtRisk`'s reasons. Routed through `VCS.writer` rather
+  /// Read-only and ungated, for `stagedContentAtRisk`'s reasons. Routed through `RepositoryRouter` rather
   /// than spawning `git`/`jj` from the dialog, which is what made these reads work only for a repo
   /// on this Mac (issue #154, Phase 2).
   ///
-  /// Degrades to `.none` on any failure: every field is optional and the dialog renders each one's
-  /// absence honestly, so a read that cannot answer costs a label rather than blocking the commit.
+  /// Failures remain explicit and block the write until preflight succeeds.
   /// The fixture is NOT short-circuited here — `CommitSheet` seeds its own values, because the jj
   /// half comes from the seeded status rather than from anything a writer could know.
   func commitPreflight(
-    on sid: SidebarID, completion: @escaping (VCSCommitPreflight) -> Void
+    on sid: SidebarID, completion: @escaping (Result<VCSCommitPreflight, Error>) -> Void
   ) {
-    guard let item = selectedStatusWorkItem(for: sid) else { return completion(.none) }
+    guard let item = selectedStatusWorkItem(for: sid) else {
+      return completion(.failure(RepositoryRoutingError.registrationRequired))
+    }
     Task {
-      guard let writer = try? VCS.writer(for: URL(fileURLWithPath: item.path, isDirectory: true))
-      else { return completion(.none) }
-      completion(await writer.commitPreflight(path: item.path))
+      do {
+        let location = try await item.resolvedLocation()
+        let writer = try await RepositoryRouter.shared.writer(for: location)
+        completion(.success(try await writer.commitPreflight()))
+      } catch { completion(.failure(error)) }
     }
   }
 
@@ -436,8 +508,9 @@ extension AppStore {
   /// strategy is a parameter, so it's kept separate from the state-only `PRAction` verbs. In fixture
   /// mode it optimistically flips the PR to merged instead of spawning `gh`.
   func performMerge(_ method: PRMergeMethod, number: Int, on sid: SidebarID) {
+    guard let item = selectedStatusWorkItem(for: sid) else { return }
     performPRWrite(
-      arguments: method.arguments(number: number), on: sid,
+      arguments: method.arguments(number: number), on: item,
       applyOptimistic: { self.applyOptimisticMerge(on: $0) },
       errorTitle: "Couldn’t merge pull request")
   }
@@ -508,7 +581,7 @@ extension AppStore {
     async
   {
     guard !items.isEmpty else { return }
-    await withTaskGroup(of: (SidebarID, WorkroomStatus).self) { group in
+    await withTaskGroup(of: (StatusWorkItem, WorkroomStatus).self) { group in
       var idx = 0
       let initial = min(cap, items.count)
       while idx < initial {
@@ -516,23 +589,21 @@ extension AppStore {
         idx += 1
         group.addTask {
           (
-            item.sid,
-            await resolver.resolveLocal(
-              path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+            item,
+            await resolver.resolve(item: item)
           )
         }
       }
-      while let (sid, fresh) = await group.next() {
+      while let (item, fresh) = await group.next() {
         if Task.isCancelled { break }
-        mergeLocalStatus(fresh, into: sid)
+        if selectedStatusWorkItem(for: item.sid) == item { mergeLocalStatus(fresh, into: item.sid) }
         if idx < items.count {
           let item = items[idx]
           idx += 1
           group.addTask {
             (
-              item.sid,
-              await resolver.resolveLocal(
-                path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+              item,
+              await resolver.resolve(item: item)
             )
           }
         }
@@ -543,49 +614,43 @@ extension AppStore {
   private func runCISweep(_ items: [StatusWorkItem], resolver: WorkroomStatusResolver, cap: Int)
     async
   {
-    guard !items.isEmpty else { return }
-    // The CI rollup probe (#76) needs the repo's `owner/repo`. It's per-project, so resolve it once
-    // per distinct project root and reuse it across that project's workrooms — not one `gh repo view`
-    // per workroom. A project that can't resolve maps to `nil` (its workrooms then report CI absent).
-    var nwoCache: [String: String?] = [:]
-    for root in Set(items.map(\.projectRoot)) {
+    var services: [(StatusWorkItem, RepositoryGitHub)] = []
+    var names: [RepositoryLocation: String] = [:]
+    var probed: Set<RepositoryLocation> = []
+    for item in items where item.permitsLocalAccess {
       if Task.isCancelled { return }
-      nwoCache[root] = await resolver.resolveNameWithOwner(in: root)
+      do {
+        let location: RepositoryLocation
+        if let supplied = item.location {
+          location = supplied
+        } else {
+          location = try await RepositoryLocation.local(item.path)
+        }
+        let service = try await RepositoryRouter.shared.gitHub(for: location, resolver: resolver)
+        let key = service.context.sharedLocation ?? location
+        if probed.insert(key).inserted { names[key] = await service.nameWithOwner() }
+        services.append((item, service))
+      } catch { continue }
     }
-    await withTaskGroup(of: (SidebarID, CIResolution).self) { group in
-      var idx = 0
-      let initial = min(cap, items.count)
-      while idx < initial {
-        let item = items[idx]
-        idx += 1
-        let branch = workroomStatuses[item.sid]?.branchForCI
-        let nwo = nwoCache[item.projectRoot] ?? nil
-        group.addTask {
-          (
-            item.sid,
-            await resolver.resolveCI(
-              path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: branch,
-              nameWithOwner: nwo)
-          )
-        }
+    let branches = workroomStatuses.mapValues(\.branchForCI)
+    await withTaskGroup(of: (StatusWorkItem, CIResolution).self) { group in
+      var index = 0
+      func enqueue() {
+        guard index < services.count else { return }
+        let (item, service) = services[index]
+        index += 1
+        let branch = branches[item.sid] ?? nil
+        let key = service.context.sharedLocation ?? service.context.location
+        let name = names[key]
+        group.addTask { (item, await service.ci(branch: branch, nameWithOwner: name)) }
       }
-      while let (sid, res) = await group.next() {
+      for _ in 0..<min(cap, services.count) { enqueue() }
+      while let (item, result) = await group.next() {
         if Task.isCancelled { break }
-        applyCIStatus(res, to: sid)
-        if idx < items.count {
-          let item = items[idx]
-          idx += 1
-          let branch = workroomStatuses[item.sid]?.branchForCI
-          let nwo = nwoCache[item.projectRoot] ?? nil
-          group.addTask {
-            (
-              item.sid,
-              await resolver.resolveCI(
-                path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: branch,
-                nameWithOwner: nwo)
-            )
-          }
+        if selectedStatusWorkItem(for: item.sid) == item {
+          applyCIStatus(result, to: item.sid)
         }
+        enqueue()
       }
     }
   }
@@ -757,8 +822,16 @@ extension AppStore {
   /// serializes on the project root, and its `maxChainWait` self-heal (30s) is far shorter than
   /// `commitTimeout` (600s) — so a probe queued behind a slow hook stops waiting and runs anyway.
   /// Suppression is what actually keeps these lanes off a repo mid-write; the gate alone does not.
+  func isCommittingProject(_ repository: RepositoryLocation?) -> Bool {
+    guard let repository else { return false }
+    return committingProjectRoots[repository, default: 0] > 0
+  }
+
   func isCommittingProject(_ projectRoot: String) -> Bool {
-    committingProjectRoots[projectRoot, default: 0] > 0
+    guard let location = RepositoryRouter.shared.localLocation(for: projectRoot) else {
+      return false
+    }
+    return committingProjectRoots[location, default: 0] > 0
   }
 
   /// Whether ANY write (commit, fetch, push, or pull) is in flight against this project root, in
@@ -769,13 +842,20 @@ extension AppStore {
   /// refuses outright (surfaced as `.locked(nil)` — "The repository was busy. Try again.") rather
   /// than queuing into the gate and racing the one already running.
   func isWritingProject(_ projectRoot: String) -> Bool {
-    writingProjectRoots[projectRoot, default: 0] > 0
+    guard let location = RepositoryRouter.shared.localLocation(for: projectRoot) else {
+      return false
+    }
+    return isWritingProject(location)
+  }
+
+  func isWritingProject(_ repository: RepositoryLocation) -> Bool {
+    writingProjectRoots[repository, default: 0] > 0
   }
 
   /// Mark a write starting against `projectRoot`. Pair with `endWrite(projectRoot:)` — always in a
   /// `defer` or an equivalent unconditional cleanup, mirroring how `committingProjectRoots` is
   /// incremented/decremented around `performCommit`'s own write below.
-  func beginWrite(projectRoot: String) {
+  func beginWrite(projectRoot: RepositoryLocation) {
     writingProjectRoots[projectRoot, default: 0] += 1
   }
 
@@ -784,7 +864,7 @@ extension AppStore {
   /// `isWritingProject` refuses a second write before `beginWrite` is ever called for it — but
   /// decrementing (not clearing) is the robust form if that invariant is ever violated by a future
   /// caller, the same defensive reasoning `committingProjectRoots` already applies.
-  func endWrite(projectRoot: String) {
+  func endWrite(projectRoot: RepositoryLocation) {
     Self.releaseWrite(projectRoot: projectRoot, in: projectStore)
   }
 
@@ -792,7 +872,7 @@ extension AppStore {
   /// a STRONGLY-captured `ProjectStore` (not a live `AppStore`) can release the mark directly —
   /// `performCommit`'s Task and the `writeDidFinish` closure wired in `AppStore.init` both need this,
   /// since either can run after the `AppStore`/`RemoteStateModel` that started the write is gone.
-  static func releaseWrite(projectRoot: String, in projectStore: ProjectStore) {
+  static func releaseWrite(projectRoot: RepositoryLocation, in projectStore: ProjectStore) {
     let remaining = (projectStore.writingProjectRoots[projectRoot] ?? 1) - 1
     if remaining > 0 {
       projectStore.writingProjectRoots[projectRoot] = remaining
@@ -811,9 +891,9 @@ extension AppStore {
     guard !UITestFixture.isActive, let item = selectedStatusWorkItem(for: sid) else { return }
     let resolver = statusResolver
     Task { [weak self] in
-      let fresh = await resolver.resolveLocal(
-        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+      let fresh = await resolver.resolve(item: item)
       guard let self, self.targetExists(sid) else { return }
+      guard self.selectedStatusWorkItem(for: sid) == item else { return }
       self.mergeLocalStatus(fresh, into: sid)
     }
   }
@@ -824,7 +904,7 @@ extension AppStore {
   /// deterministic).
   func updateSelectedWorkroomWatch() {
     guard !UITestFixture.isActive, let sid = selectedTargetID, !isCreating(sid),
-      let item = selectedStatusWorkItem(for: sid)
+      let item = selectedStatusWorkItem(for: sid), item.permitsLocalAccess
     else {
       workroomFileWatcher.stop()
       return
@@ -840,7 +920,7 @@ extension AppStore {
   /// ordering is `JJSnapshotGate`'s job (via `WorkroomStatusResolver.resolveLocal`).
   func handleWorkroomFileChange(_ paths: [String]) {
     guard !UITestFixture.isActive, let sid = selectedTargetID,
-      let item = selectedStatusWorkItem(for: sid)
+      let item = selectedStatusWorkItem(for: sid), item.permitsLocalAccess
     else { return }
     // Defensive: never probe a mid-setup worktree. The watcher shouldn't be armed while creating
     // (updateSelectedWorkroomWatch stops it), but a stray in-flight FSEvents callback can land during
@@ -851,7 +931,7 @@ extension AppStore {
     // one that would fire MOST during a git commit: the `.jj/` filter below saves jj from
     // self-triggering, but git's own index and ref churn is deliberately let through as real signal,
     // so `git add`/`git commit` would each fork a probe against a tree mid-write.
-    if isCommittingProject(item.projectRoot) { return }
+    if isCommittingProject(item.sharedLocation) { return }
     // A jj *local* probe snapshots `@` (writes under `.jj/`), which would itself trip the watcher —
     // an endless refresh loop. So ignore a burst that touched ONLY jj-internal paths. (git probes are
     // read-only, and `.git/index` changes from `git add` are real signal, so git events pass through.)
@@ -859,9 +939,9 @@ extension AppStore {
     let resolver = statusResolver
     watchRefreshTask?.cancel()
     watchRefreshTask = Task { [weak self] in
-      let fresh = await resolver.resolveLocal(
-        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+      let fresh = await resolver.resolve(item: item)
       guard let self, !Task.isCancelled, self.selectedTargetID == sid else { return }
+      guard self.selectedStatusWorkItem(for: sid) == item else { return }
       self.mergeLocalStatus(fresh, into: sid)
     }
   }

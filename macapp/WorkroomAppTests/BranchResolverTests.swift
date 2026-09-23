@@ -2,9 +2,9 @@ import XCTest
 
 @testable import Workroom
 
-/// A `VCSProviding` whose `currentRef` is a closure; the other reads are unused here. Lets
+/// A `LocalVCSProviding` whose `currentRef` is a closure; the other reads are unused here. Lets
 /// `BranchResolver` be tested without a real repo now that it reads through the provider seam.
-private struct StubProvider: VCSProviding {
+private struct StubProvider: LocalVCSProviding {
   let ref: @Sendable () async throws -> VCSRef
   func log(root: URL, limit: Int) throws -> VCSHistoryPage {
     .init(commits: [], reachedEnd: true)

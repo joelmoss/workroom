@@ -156,3 +156,26 @@ enum CommitDraft {
       ? "Write a summary to describe this change." : nil
   }
 }
+
+/// Only a failed preflight can be retried. Clicks while a read is pending cannot start another
+/// callback that might arrive after the sheet has begun committing.
+struct CommitPreflightState {
+  private enum State { case idle, loading, ready, failed }
+  private var state: State = .idle
+  var isReady: Bool { state == .ready }
+  /// The sheet's actions are disabled while this is true: a click would only be rejected by `begin()`.
+  var isLoading: Bool { state == .loading }
+
+  mutating func begin() -> Bool {
+    guard state == .idle || state == .failed else { return false }
+    state = .loading
+    return true
+  }
+
+  @discardableResult
+  mutating func finish(succeeded: Bool) -> Bool {
+    guard state == .loading else { return false }
+    state = succeeded ? .ready : .failed
+    return true
+  }
+}

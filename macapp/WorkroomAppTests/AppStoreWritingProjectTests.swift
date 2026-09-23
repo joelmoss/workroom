@@ -11,7 +11,8 @@ import XCTest
 @MainActor
 final class AppStoreWritingProjectTests: XCTestCase {
 
-  private func makeStore(_ projects: [Project]) -> AppStore {
+  private func makeStore(_ projects: [Project]) async throws -> AppStore {
+    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(projects))
     let store = AppStore()
     store.projects = projects
     return store
@@ -25,54 +26,65 @@ final class AppStoreWritingProjectTests: XCTestCase {
       })
   }
 
-  func testIsWritingProjectTracksBeginAndEnd() {
-    let store = makeStore([])
-    XCTAssertFalse(store.isWritingProject("/proj"))
-    store.beginWrite(projectRoot: "/proj")
-    XCTAssertTrue(store.isWritingProject("/proj"))
-    store.endWrite(projectRoot: "/proj")
-    XCTAssertFalse(store.isWritingProject("/proj"))
+  func testIsWritingProjectTracksBeginAndEnd() async throws {
+    let proj = try await RepositoryLocation.local("/proj")
+    let store = try await makeStore([])
+    XCTAssertFalse(store.isWritingProject(proj))
+    store.beginWrite(projectRoot: proj)
+    XCTAssertTrue(store.isWritingProject(proj))
+    store.endWrite(projectRoot: proj)
+    XCTAssertFalse(store.isWritingProject(proj))
   }
 
-  func testIsWritingProjectIsPerProjectRoot() {
-    let store = makeStore([])
-    store.beginWrite(projectRoot: "/a")
-    XCTAssertTrue(store.isWritingProject("/a"))
-    XCTAssertFalse(store.isWritingProject("/b"), "a different project root must be unaffected")
+  func testIsWritingProjectIsPerProjectRoot() async throws {
+    let a = try await RepositoryLocation.local("/a")
+    let b = try await RepositoryLocation.local("/b")
+    let store = try await makeStore([])
+    store.beginWrite(projectRoot: a)
+    XCTAssertTrue(store.isWritingProject(a))
+    XCTAssertFalse(store.isWritingProject(b), "a different project root must be unaffected")
   }
 
   /// Counted, not a flag: two sibling writes can legitimately be marked in flight against one root
   /// (defensive symmetry with `committingProjectRoots`, even though in steady state
   /// `isWritingProject` refuses a second write before a second `beginWrite` is ever reached).
-  func testEndWriteDecrementsRatherThanClears() {
-    let store = makeStore([])
-    store.beginWrite(projectRoot: "/proj")
-    store.beginWrite(projectRoot: "/proj")
-    store.endWrite(projectRoot: "/proj")
+  func testEndWriteDecrementsRatherThanClears() async throws {
+    let proj = try await RepositoryLocation.local("/proj")
+    let store = try await makeStore([])
+    store.beginWrite(projectRoot: proj)
+    store.beginWrite(projectRoot: proj)
+    store.endWrite(projectRoot: proj)
     XCTAssertTrue(
-      store.isWritingProject("/proj"), "one of two writes finished — the other is still in flight")
-    store.endWrite(projectRoot: "/proj")
-    XCTAssertFalse(store.isWritingProject("/proj"))
+      store.isWritingProject(proj), "one of two writes finished — the other is still in flight")
+    store.endWrite(projectRoot: proj)
+    XCTAssertFalse(store.isWritingProject(proj))
   }
 
   /// `endWrite` on a root with no recorded write must not underflow into a negative count that
   /// would make `isWritingProject` report busy forever.
-  func testEndWriteOnAnUntrackedRootIsSafe() {
-    let store = makeStore([])
-    store.endWrite(projectRoot: "/never-began")
-    XCTAssertFalse(store.isWritingProject("/never-began"))
+  func testEndWriteOnAnUntrackedRootIsSafe() async throws {
+    let never = try await RepositoryLocation.local("/never-began")
+    let store = try await makeStore([])
+    store.endWrite(projectRoot: never)
+    XCTAssertFalse(store.isWritingProject(never))
   }
 
   /// `performCommit` must refuse immediately — never touching the writer, never entering
   /// `committingTargets` — when another write is already in flight for the same project root.
-  func testPerformCommitRefusesWhenAnotherWriteIsInFlight() {
-    let store = makeStore([project("/proj", workrooms: ["feat"])])
+  func testPerformCommitRefusesWhenAnotherWriteIsInFlight() async throws {
+    let proj = try await RepositoryLocation.local("/proj")
+    let store = try await makeStore([project("/proj", workrooms: ["feat"])])
     let sid = SidebarID.workroom(project: "/proj", name: "feat")
-    store.beginWrite(projectRoot: "/proj")
+    store.beginWrite(projectRoot: proj)
 
     let request = VCSCommitRequest(message: "msg", files: [], mode: .commit)
     var results: [VCSCommitResult] = []
-    store.performCommit(request, on: sid) { results.append($0) }
+    await withCheckedContinuation { continuation in
+      store.performCommit(request, on: sid) {
+        results.append($0)
+        continuation.resume()
+      }
+    }
 
     XCTAssertEqual(results, [.failed(.locked(nil))])
     XCTAssertFalse(
@@ -86,36 +98,57 @@ final class AppStoreWritingProjectTests: XCTestCase {
   /// deallocated (e.g. the window closed mid-write). If this ever required a live `AppStore`, a
   /// closed window mid-write would leak the mark forever and refuse every future write for that
   /// project, in every window, until the app restarts.
-  func testReleaseWriteWorksAgainstAProjectStoreAloneNoAppStoreNeeded() {
+  func testReleaseWriteWorksAgainstAProjectStoreAloneNoAppStoreNeeded() async throws {
+    let proj = try await RepositoryLocation.local("/proj")
     let projectStore = ProjectStore()
-    projectStore.writingProjectRoots["/proj"] = 1
-    AppStore.releaseWrite(projectRoot: "/proj", in: projectStore)
+    projectStore.writingProjectRoots[proj] = 1
+    AppStore.releaseWrite(projectRoot: proj, in: projectStore)
     XCTAssertNil(
-      projectStore.writingProjectRoots["/proj"],
+      projectStore.writingProjectRoots[proj],
       "the mark must clear even though no AppStore instance was ever touched")
   }
 
   /// Two writes marked against the same root (defensive symmetry, mirrors `testEndWriteDecrements
   /// RatherThanClears`): releasing must decrement, not clear outright, so a sibling write still in
   /// flight isn't falsely freed.
-  func testReleaseWriteDecrementsRatherThanClears() {
+  func testReleaseWriteDecrementsRatherThanClears() async throws {
+    let proj = try await RepositoryLocation.local("/proj")
     let projectStore = ProjectStore()
-    projectStore.writingProjectRoots["/proj"] = 2
-    AppStore.releaseWrite(projectRoot: "/proj", in: projectStore)
-    XCTAssertEqual(projectStore.writingProjectRoots["/proj"], 1)
+    projectStore.writingProjectRoots[proj] = 2
+    AppStore.releaseWrite(projectRoot: proj, in: projectStore)
+    XCTAssertEqual(projectStore.writingProjectRoots[proj], 1)
   }
 
-  /// The common case: no other write in flight, so `performCommit` must proceed past the guard (it
-  /// marks `committingTargets`/`committingProjectRoots`/`writingProjectRoots` synchronously before
-  /// its `Task` even starts) rather than refusing.
-  func testPerformCommitProceedsWhenNoOtherWriteIsInFlight() {
-    let store = makeStore([project("/proj", workrooms: ["feat"])])
-    let sid = SidebarID.workroom(project: "/proj", name: "feat")
-
+  /// Unknown ownership refuses the commit before reserving any cross-window suppression.
+  func testUnregisteredCommitFailsWithoutMarkingAWrite() async throws {
+    let store = AppStore(projectStore: ProjectStore())
+    store.projects = [project("/missing-project", workrooms: ["feat"])]
+    let sid = SidebarID.workroom(project: "/missing-project", name: "feat")
     let request = VCSCommitRequest(message: "msg", files: [], mode: .commit)
-    store.performCommit(request, on: sid) { _ in }
+    let result: VCSCommitResult = await withCheckedContinuation { continuation in
+      store.performCommit(request, on: sid) { continuation.resume(returning: $0) }
+    }
+    guard case .failed = result else { return XCTFail("unregistered write succeeded") }
+    XCTAssertFalse(store.isCommitting(sid))
+    XCTAssertTrue(store.writingProjectRoots.isEmpty)
+  }
+}
 
-    XCTAssertTrue(store.isCommitting(sid), "a real attempt must mark itself as committing")
-    XCTAssertTrue(store.isWritingProject("/proj"))
+extension AppStoreWritingProjectTests {
+  func testSamePathOnDifferentHostsHasIndependentCrossWindowSuppression() throws {
+    let shared = ProjectStore()
+    let firstWindow = AppStore(projectStore: shared)
+    let secondWindow = AppStore(projectStore: shared)
+    let one = try RepositoryLocation.remote(host: UUID(), path: "/repo")
+    let two = try RepositoryLocation.remote(host: UUID(), path: "/repo")
+    firstWindow.beginWrite(projectRoot: one)
+    XCTAssertTrue(secondWindow.isWritingProject(one))
+    XCTAssertFalse(secondWindow.isWritingProject(two))
+    secondWindow.beginWrite(projectRoot: two)
+    firstWindow.endWrite(projectRoot: one)
+    XCTAssertFalse(secondWindow.isWritingProject(one))
+    XCTAssertTrue(secondWindow.isWritingProject(two))
+    secondWindow.endWrite(projectRoot: two)
+    XCTAssertTrue(shared.writingProjectRoots.isEmpty)
   }
 }

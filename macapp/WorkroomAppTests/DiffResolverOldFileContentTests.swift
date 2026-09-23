@@ -12,8 +12,8 @@ import XCTest
 final class DiffResolverOldFileContentTests: XCTestCase {
 
   /// Records which pre-image method was called (and with what commit id / base), returning a
-  /// configurable result. The two recorded methods override `VCSProviding`'s nil-returning defaults.
-  private final class StubOldContentProvider: VCSProviding, @unchecked Sendable {
+  /// configurable result. The two recorded methods override `LocalVCSProviding`'s nil-returning defaults.
+  private final class StubOldContentProvider: LocalVCSProviding, @unchecked Sendable {
     var result: Result<String?, Error> = .success(nil)
     private let lock = NSLock()
     private var _parentCalls: [(commitID: String, path: String)] = []

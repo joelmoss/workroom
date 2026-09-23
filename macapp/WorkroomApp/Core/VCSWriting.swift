@@ -248,7 +248,7 @@ struct VCSCommitPreflight: Equatable, Sendable {
 
 /// The seam for VCS operations that **write** — remote state reads plus fetch/push/pull.
 ///
-/// Separate from `VCSProviding` on purpose. That protocol's doc calls it "the single seam the app
+/// Separate from `LocalVCSProviding` on purpose. That protocol's doc calls it "the single seam the app
 /// **reads** VCS data through", and four resolvers construct providers freely and call them with no
 /// gate. Putting `fetch` there would mean nothing structurally prevented a read path from firing a
 /// network mutation — the opposite of what `JJSnapshotGate` exists to guarantee. Keeping writes on
@@ -258,7 +258,7 @@ struct VCSCommitPreflight: Equatable, Sendable {
 /// This is the growth surface for the rest of the VCS write phase (commit/amend, bookmark management,
 /// the deep jj ops), which is why it's a protocol with a factory rather than one standalone resolver —
 /// otherwise each later operation re-derives repo kind and wires its own runner.
-protocol VCSWriting: Sendable {
+protocol LocalVCSWriting: Sendable {
   /// Everything the toolbar renders, as ONE coherent snapshot.
   func remoteState(path: String, projectRoot: String) async -> VCSRemoteResolution
   func fetch(path: String, projectRoot: String, remote: String) async -> VCSRemoteActionResult
@@ -279,7 +279,7 @@ protocol VCSWriting: Sendable {
   func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult
 
   /// Record a commit. **Local**, unlike everything above it, so it takes no `remote` and never runs
-  /// through `runNetwork` — but it lands here rather than on `VCSProviding` for the reason this
+  /// through `runNetwork` — but it lands here rather than on `LocalVCSProviding` for the reason this
   /// protocol's own doc gives: writes belong behind the gate, and a read seam that could commit is
   /// exactly what that separation prevents.
   ///
@@ -290,95 +290,39 @@ protocol VCSWriting: Sendable {
 
   /// Selected paths whose STAGED content a commit would silently discard, so the caller can confirm
   /// first. Empty when there is nothing at risk. See `CLIVCSWriter.stagedContentAtRisk`.
-  func stagedContentAtRisk(path: String, files: [ChangedFile]) async -> [String]
+  func stagedContentAtRisk(path: String, files: [ChangedFile]) async throws -> [String]
 
   /// What the commit dialog shows before it writes — see `VCSCommitPreflight`.
   ///
-  /// **Here rather than on `VCSProviding`, even though every field is a read.** The same reasoning
+  /// **Here rather than on `LocalVCSProviding`, even though every field is a read.** The same reasoning
   /// that put `stagedContentAtRisk` here: these are facts about whether and how a WRITE will land,
   /// asked by the one screen that is about to perform one, and two of the three have no meaning
   /// outside that question. It also keeps the git sequencer check — a `.git` directory listing —
   /// behind the seam rather than in a View, which is what made the dialog fail for any path not on
   /// this Mac (issue #154, Phase 2).
   ///
-  /// Deliberately NOT served by `VCSProviding.log(limit: 1)`, which could otherwise answer both
+  /// Deliberately NOT served by `LocalVCSProviding.log(limit: 1)`, which could otherwise answer both
   /// message fields: it returns `VCSCommit.summary` + `.body`, already split and trimmed, and jj's
   /// description has to survive byte for byte. See `VCSCommitPreflight.currentMessage`.
-  func commitPreflight(path: String) async -> VCSCommitPreflight
+  func commitPreflight(path: String) async throws -> VCSCommitPreflight
 }
 
-extension VCSWriting {
+extension LocalVCSWriting {
   /// Test doubles and the fixture have no index to put anything at risk — same reasoning as
   /// `runNetwork`'s default, so they stay short.
-  func stagedContentAtRisk(path: String, files: [ChangedFile]) async -> [String] { [] }
+  func stagedContentAtRisk(path: String, files: [ChangedFile]) async throws -> [String] { [] }
 
   /// Default: nothing to report, so the dialog opens with empty fields.
   ///
-  /// Non-throwing, unlike `VCSProviding.workingStatus`'s default, and the difference is deliberate.
+  /// Non-throwing, unlike `LocalVCSProviding.workingStatus`'s default, and the difference is deliberate.
   /// A wrong `workingStatus` default reports every workroom clean — a plausible-looking lie that
   /// survives a release. Every field here is optional and the dialog renders each one's absence
   /// honestly: no amend label, no parked-operation notice, an empty message box. A conformer that
   /// forgets this degrades visibly and cannot mislabel anything.
-  func commitPreflight(path: String) async -> VCSCommitPreflight { .none }
+  func commitPreflight(path: String) async throws -> VCSCommitPreflight { .none }
 }
 
-extension VCS {
-  /// The writer for a repo, or a typed error for an unsupported path.
-  ///
-  /// Routes like `provider(for:)`, registry included: **the declaration is consulted first and
-  /// `repoKind(at:)` is the fallback.** The probe answers by looking for `.jj`/`.git` on THIS Mac,
-  /// so it reports `.unsupported` for every path in a remote workroom — and this was the last
-  /// routing site still asking it (issue #154, Phase 2). `VCSProviderRegistry` stores the backend
-  /// name rather than a provider factory precisely so this call has something to read.
-  ///
-  /// **It routes ONCE and derives both answers from that, rather than calling `provider(for:)` and
-  /// letting it read the registry a second time.** The writer needs two things — the tool its
-  /// commands run (`CLIVCSWriter.vcs`) and a provider for `remoteState`'s `currentRef` — and they
-  /// are resolved at different moments: the first when the writer is built, the second when
-  /// `remoteState` actually runs. Two reads of a map that `AppStore.apply` rewrites on every
-  /// `list --json` can straddle a project whose VCS changed, pairing `GitProvider.currentRef` with
-  /// `jjRemoteState`. One read cannot. (Before this routed on the registry at all the gap was
-  /// wider, and needed no race to open: `vcs` came from the probe while the provider already came
-  /// from the registry, so a declaration the probe disagreed with diverged every time.)
-  ///
-  /// An explicitly-passed `makeProvider` still wins — it is the seam the integration tests and any
-  /// future caller inject through, and pinning is about the DEFAULT not going back to the registry
-  /// behind the caller's back.
-  ///
-  /// Nothing is registered until a `list --json` lands, and a purely local session then registers
-  /// only what it already resolves to, so the probe's answers are unchanged. This is the seam, not
-  /// the feature.
-  static func writer(
-    for root: URL, runner: StatusCommandRunning = StatusCommandRunner(),
-    makeProvider: (@Sendable (URL) throws -> VCSProviding)? = nil,
-    gate: JJSnapshotGate = .shared
-  ) throws -> VCSWriting {
-    let vcs: String
-    if let registered = VCSProviderRegistry.shared.vcs(for: root) {
-      vcs = registered
-    } else {
-      switch repoKind(at: root) {
-      case .jjColocated, .jjNonColocated: vcs = "jj"
-      case .plainGit: vcs = "git"
-      case .unsupported(let reason): throw VCSError.unsupportedRepo(reason)
-      }
-    }
-    // The `guard` cannot fire in practice — the registry refuses any name `factory(forVCS:)` does
-    // not know and the probe only ever produces these two — but the name is a `String`, so the
-    // impossible case still needs an answer that isn't a crash.
-    let provider =
-      makeProvider
-      ?? { _ in
-        guard let factory = VCSProviderRegistry.factory(forVCS: vcs) else {
-          throw VCSError.unsupportedRepo("no provider for \(vcs)")
-        }
-        return factory()
-      }
-    return CLIVCSWriter(vcs: vcs, runner: runner, makeProvider: provider, gate: gate)
-  }
-}
-
-/// `VCSWriting` over the real `git` / `jj` CLIs.
+/// `LocalVCSWriting` over the real `git` / `jj` CLIs.
 ///
 /// **Why the CLI and not the libraries.** SwiftGitX 0.4.0's `fetch`/`push` pass `NULL` for the options
 /// struct that would carry `git_remote_callbacks.credentials`, so they have no credential path at all —
@@ -409,13 +353,13 @@ extension VCS {
 ///  pull  → root (fetch) + workroom     │   pull  → root (fetch) + workroom (rebase)
 ///  abort → workroom                    │
 /// ```
-struct CLIVCSWriter: VCSWriting, Sendable {
-  /// `"git"` or `"jj"` — resolved once by `VCS.writer(for:)` so no method re-derives it.
+struct CLIVCSWriter: LocalVCSWriting, Sendable {
+  /// `"git"` or `"jj"` — resolved once by `RepositoryRouter` so no method re-derives it.
   let vcs: String
   let runner: StatusCommandRunning
   /// For `currentRef` only. The app already has a canonical answer including jj `.ancestor` and git
   /// `.detached`; re-deriving it from `%(HEAD)` would lose both.
-  let makeProvider: @Sendable (URL) throws -> VCSProviding
+  let makeProvider: @Sendable (URL) throws -> LocalVCSProviding
   /// Serializes writes per project root. Applied to **git** as well as jj: a project's workrooms are
   /// `git worktree add` worktrees sharing one `.git`, so a lock lost mid-`pull --rebase` can leave a
   /// workroom wedged in a rebase.
@@ -790,7 +734,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
   // MARK: - jj argument builders
 
   /// Read-only jj flags. `--ignore-working-copy` is REQUIRED on reads: without it every toolbar poll
-  /// would snapshot `@` and take the working-copy lock (the house rule on `VCSProviding`).
+  /// would snapshot `@` and take the working-copy lock (the house rule on `LocalVCSProviding`).
   static let jjReadFlags = ["--ignore-working-copy", "--color", "never", "--no-pager"]
   /// Mutating jj commands must NOT carry `--ignore-working-copy` — the snapshot is what preserves
   /// uncommitted edits into the old `@` before the working copy is rewritten.
@@ -1941,10 +1885,10 @@ struct CLIVCSWriter: VCSWriting, Sendable {
   /// A pre-flight rather than a refusal: a partially-staged file is a legitimate thing to commit from
   /// — the user just has to know that the version on disk is the one that lands. Silence is the only
   /// unacceptable option, because the loss leaves no trace (`git status` is clean afterwards).
-  func stagedContentAtRisk(path: String, files: [ChangedFile]) async -> [String] {
+  func stagedContentAtRisk(path: String, files: [ChangedFile]) async throws -> [String] {
     guard vcs != "jj", !files.isEmpty else { return [] }
     let result = await run(Self.gitStatusPorcelainArgs(), in: path, timeout: refTimeout)
-    guard result.ok else { return [] }
+    guard result.ok else { throw VCSError.io("Could not check staged content: \(result.stderr)") }
     return Self.stagedContentAtRisk(
       porcelainZ: result.stdout, selecting: Set(files.map(\.path)))
   }
@@ -1957,14 +1901,31 @@ struct CLIVCSWriter: VCSWriting, Sendable {
   /// even though `sequencerState` would happily run against a colocated jj root: the dialog
   /// discards it for jj (a jj commit is not path-limited, so a parked git operation does not block
   /// it), and computing an answer nobody reads is how a check ends up silently changing meaning.
-  func commitPreflight(path: String) async -> VCSCommitPreflight {
+  func commitPreflight(path: String) async throws -> VCSCommitPreflight {
     if vcs == "jj" {
       let result = await run(Self.jjDescriptionArgs(), in: path, timeout: refTimeout)
+      guard result.ok else {
+        throw VCSError.io("Could not read change description: \(result.stderr)")
+      }
       // Verbatim — no trim. See `VCSCommitPreflight.currentMessage`.
       return VCSCommitPreflight(
         sequencer: nil, amendTarget: nil, currentMessage: result.ok ? result.stdout : nil)
     }
     let head = await run(Self.gitHeadSubjectArgs(), in: path, timeout: refTimeout)
+    if !head.ok {
+      // An unborn branch is a valid preflight. A missing/corrupt repository or failed runner isn't.
+      let unborn = await run(["symbolic-ref", "--quiet", "HEAD"], in: path, timeout: refTimeout)
+      let refs = await run(
+        [
+          "show-ref", "--verify", "--quiet",
+          unborn.stdout.trimmingCharacters(in: .whitespacesAndNewlines),
+        ], in: path, timeout: refTimeout)
+      guard unborn.ok, refs.exitCode == 1, !refs.timedOut, !refs.signaled,
+        refs.exitCode != CommandResult.launchFailed
+      else {
+        throw VCSError.io("Could not read commit preflight: \(head.stderr)")
+      }
+    }
     let subject =
       head.ok ? head.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : ""
     return VCSCommitPreflight(

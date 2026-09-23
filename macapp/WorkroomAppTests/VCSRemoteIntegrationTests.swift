@@ -99,7 +99,10 @@ final class VCSRemoteIntegrationTests: XCTestCase {
 
   private func writer(_ vcs: String) -> CLIVCSWriter {
     CLIVCSWriter(
-      vcs: vcs, runner: StatusCommandRunner(), makeProvider: { try VCS.provider(for: $0) },
+      vcs: vcs, runner: StatusCommandRunner(),
+      makeProvider: { _ in
+        vcs == "jj" ? RustJJProvider() as LocalVCSProviding : GitProvider() as LocalVCSProviding
+      },
       gate: JJSnapshotGate(maxChainWait: 5))
   }
 

@@ -86,13 +86,30 @@ final class FileTreeTests: XCTestCase {
     XCTAssertEqual(FileListing.parse("x.txt\r\n", vcs: .jj), ["x.txt"])
   }
 
+  private func registeredList(
+    path: String, projectRoot: String?, runner: StatusCommandRunning,
+    gate: JJSnapshotGate = .shared
+  ) async -> FileTreeModel.ListResult {
+    do {
+      let location = try await RepositoryLocation.local(path)
+      let shared = try await RepositoryLocation.local(projectRoot ?? path)
+      let router = RepositoryRouter()
+      try router.register(.init(location: location, backend: .jj, sharedLocation: shared))
+      return await FileTreeModel.list(
+        location: location, runner: runner, gate: gate, router: router)
+    } catch {
+      XCTFail("\(error)")
+      return .unavailable
+    }
+  }
+
   // MARK: FileTreeModel.list (git → jj fallthrough)
 
   func testListPrefersGitWhenAvailable() async {
     let runner = StubRunner(byExecutable: [
       "git": CommandResult(stdout: "a.txt\u{0}b.txt\u{0}", stderr: "", exitCode: 0, timedOut: false)
     ])
-    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
+    let result = await registeredList(path: "/repo", projectRoot: nil, runner: runner)
     XCTAssertEqual(result, .listing(["a.txt", "b.txt"]))
   }
 
@@ -101,13 +118,13 @@ final class FileTreeTests: XCTestCase {
       "git": CommandResult(stdout: "", stderr: "not a repo", exitCode: 128, timedOut: false),
       "jj": CommandResult(stdout: "x.txt\ny.txt\n", stderr: "", exitCode: 0, timedOut: false),
     ])
-    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
+    let result = await registeredList(path: "/repo", projectRoot: nil, runner: runner)
     XCTAssertEqual(result, .listing(["x.txt", "y.txt"]))
   }
 
   func testListReturnsUnavailableWhenNeitherVCSResponds() async {
     let runner = StubRunner(byExecutable: [:])  // every command → not-found
-    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
+    let result = await registeredList(path: "/repo", projectRoot: nil, runner: runner)
     XCTAssertEqual(result, .unavailable)
   }
 
@@ -118,7 +135,7 @@ final class FileTreeTests: XCTestCase {
       "git": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true),
       "jj": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true),
     ])
-    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
+    let result = await registeredList(path: "/repo", projectRoot: nil, runner: runner)
     XCTAssertEqual(result, .interrupted)
   }
 
@@ -128,7 +145,7 @@ final class FileTreeTests: XCTestCase {
       "git": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true),
       "jj": CommandResult(stdout: "x.txt\n", stderr: "", exitCode: 0, timedOut: false),
     ])
-    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
+    let result = await registeredList(path: "/repo", projectRoot: nil, runner: runner)
     XCTAssertEqual(result, .listing(["x.txt"]))
   }
 
@@ -139,9 +156,9 @@ final class FileTreeTests: XCTestCase {
     let recorder = ListConcurrencyRecorder()
     let runner = DelayedJJRunner(recorder: recorder)
     let gate = JJSnapshotGate()
-    async let first = FileTreeModel.list(
+    async let first = registeredList(
       path: "/proj/main", projectRoot: "/proj", runner: runner, gate: gate)
-    async let second = FileTreeModel.list(
+    async let second = registeredList(
       path: "/proj/ws", projectRoot: "/proj", runner: runner, gate: gate)
     _ = await (first, second)
     let maxConcurrent = await recorder.maxConcurrent
