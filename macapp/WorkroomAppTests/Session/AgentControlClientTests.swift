@@ -17,7 +17,7 @@ final class AgentControlClientTests: XCTestCase {
     let bytes = AgentControlClient.encodeHello(build: "Workroom")
     XCTAssertEqual(Array(bytes.prefix(4)), Array("WRA1".utf8))
     XCTAssertEqual(bytes[4], 0, "protocol version is a big-endian u16")
-    XCTAssertEqual(bytes[5], 4, "PROTOCOL_VERSION in the agent, bumped for Service::Status")
+    XCTAssertEqual(bytes[5], 5, "PROTOCOL_VERSION in the agent, bumped for Service::Forward")
     XCTAssertEqual(Int(bytes[6]), "Workroom".utf8.count)
   }
 
