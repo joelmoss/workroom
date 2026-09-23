@@ -179,9 +179,12 @@ impl Agent {
 /// launch's identically-numbered request (see `PartialRequests`). And for `subscriptions` the
 /// teardown matters more than the isolation: dropping it on ANY exit from `handle_connection` stops
 /// every filesystem watcher the client started, so an OS watcher never outlives the peer it reports to.
+/// `forwards` is there for the same reason, and it is what makes the design's "a forwarded port only
+/// carries while a client is attached" true rather than aspirational.
 struct ConnectionServices {
     partial: crate::vcs::PartialRequests,
     subscriptions: crate::watch::Subscriptions,
+    forwards: crate::forward::Forwards,
 }
 
 /// Greets, negotiates, then serves envelopes until the peer goes away.
@@ -242,6 +245,7 @@ pub fn handle_connection<T: Transport>(
     let mut services = ConnectionServices {
         partial: crate::vcs::PartialRequests::default(),
         subscriptions: crate::watch::Subscriptions::new(Arc::clone(&writer), closer),
+        forwards: crate::forward::Forwards::new(),
     };
     // Identifies THIS attachment, so ending this connection cannot detach a client that has since
     // taken the session over.
@@ -323,6 +327,10 @@ fn dispatch(
     }
     if envelope.service == Service::Status {
         crate::wakefulness::dispatch(envelope, writer);
+        return None;
+    }
+    if envelope.service == Service::Forward {
+        crate::forward::dispatch(envelope, writer, &services.forwards);
         return None;
     }
     if envelope.service != Service::Terminal && envelope.service != Service::Control {

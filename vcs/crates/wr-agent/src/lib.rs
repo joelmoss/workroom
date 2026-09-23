@@ -5,10 +5,11 @@
 //! whatever bidirectional stream a driver opens — and because local is the same code path minus
 //! the network, every local session is the remote path's test harness.
 //!
-//! See docs/designs/remote-workrooms.md. Phase 1 is the protocol and the terminal service; the VCS
-//! and file services are Phase 2 over the same envelope, and the status service is still to come.
+//! See docs/designs/remote-workrooms.md. Phase 1 is the protocol and the terminal service; the VCS,
+//! file, status and port-forwarding services are Phase 2 over the same envelope.
 
 pub mod file;
+pub mod forward;
 pub mod input;
 pub mod process;
 pub mod protocol;

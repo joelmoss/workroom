@@ -25,13 +25,14 @@ use std::collections::VecDeque;
 /// Bumped when the wire changes in a way an older peer cannot parse, OR when a new service is
 /// added that an older agent would silently drop rather than answer (`Service::Vcs`, added at 2 —
 /// an older agent has no `vcs::dispatch` at all, so an unversioned capability probe would just
-/// hang until its own timeout; `Service::File`, added at 3, for the same reason — `serve.rs`'s
+/// hang until its own timeout; `Service::File` at 3, `Service::Status` at 4 and `Service::Forward`
+/// at 5, all for the same reason — `serve.rs`'s
 /// dispatch returns silently for a service byte it does not handle). `MIN_SUPPORTED` stays untouched by such bumps: negotiation still
 /// takes the lower of the two sides' versions for the services both already understand (Terminal,
 /// Control), so a newer app still drives an older agent left running rather than replacing it —
 /// only a version-gated service (checked against the peer's raw `Hello.protocol_version`, not the
 /// negotiated minimum) refuses to talk to a peer that predates it.
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 pub const MIN_SUPPORTED_VERSION: u16 = 1;
 /// The minimum peer version that understands `Service::Vcs`. Checked directly against a peer's
 /// `Hello.protocol_version` by VCS clients — never folded into `negotiate`'s minimum, which would
@@ -45,6 +46,11 @@ pub const MIN_FILE_VERSION: u16 = 3;
 /// The minimum peer version that understands `Service::Status`. Same rule again: a protocol-3
 /// agent drops a Status envelope without answering it.
 pub const MIN_STATUS_VERSION: u16 = 4;
+/// The minimum peer version that understands `Service::Forward`. Same rule again: a protocol-4
+/// agent drops a Forward envelope without answering it, so a client checks the peer's raw
+/// `Hello.protocol_version` against this BEFORE sending an `open` — otherwise the forwarded
+/// connection hangs until the client's own timeout. Never folded into `negotiate`.
+pub const MIN_FORWARD_VERSION: u16 = 5;
 
 /// Sent first by both sides. The magic is here so a peer that is not an agent at all — a login
 /// banner, an MOTD, an ssh warning printed onto the stream — fails immediately and legibly
@@ -56,8 +62,9 @@ pub const ENVELOPE_HEADER_SIZE: usize = 9;
 pub const MAX_ENVELOPE_PAYLOAD: usize = 1 << 20;
 
 /// Which service a stream belongs to. Terminal and Control shipped in Phase 1, Vcs and File in
-/// Phase 2, Status (the wakefulness service, protocol 4) after them. The envelope is the thing that
-/// had to be right from the first commit: adding Status later was not a wire change.
+/// Phase 2, Status (the wakefulness service, protocol 4) and Forward (port forwarding, protocol 5)
+/// after them. The envelope is the thing that
+/// had to be right from the first commit: adding Status and Forward later was not a wire change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Service {
@@ -67,6 +74,8 @@ pub enum Service {
     Vcs = 0x02,
     File = 0x03,
     Status = 0x04,
+    /// One loopback TCP connection per stream — see `forward.rs`.
+    Forward = 0x05,
 }
 
 impl Service {
@@ -77,6 +86,7 @@ impl Service {
             0x02 => Self::Vcs,
             0x03 => Self::File,
             0x04 => Self::Status,
+            0x05 => Self::Forward,
             _ => return None,
         })
     }
