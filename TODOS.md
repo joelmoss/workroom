@@ -1745,6 +1745,33 @@ boundary today).
 
 ## P3 — Terminal, panes, and focus
 
+### Four UI tests fail on a developer Mac, and CI never runs them (macapp) — found cutting v2.1.0
+
+**What:** `make app-uitest` fails 4 tests deterministically on the maintainer's machine (macOS 27):
+`DiffPaneFocusUITests.testClickingTerminalPaneFocusesItWhenDiffPaneIsFocused`,
+`SplitPaneUITests.testDraggingCurrentTabCreatesSplitWithoutAddingTab`,
+`WindowDragUITests.testDraggingEmptyTitlebarMovesWindow` and
+`WorkroomPaneHeaderUITests.testSoloOpenInMenuOpens`.
+
+**Why it is not a 2.1 regression:** the first, third and fourth fail identically on `v2.0.0`
+(checked 2026-09-23). The split test is new in 2.1 (`275b45f6`) and cannot run there, but it uses the
+same `press(forDuration:thenDragTo:)` gesture that fails in `DiffPaneFocusUITests`. The three drag
+tests all fail because the drag never registers: no split appears, or the window does not move. The
+fourth finds no editor in the "Open in" menu, which depends on which editors the machine has
+installed.
+
+**Why it matters:** the drag-to-split fix shipped in 2.1 has no test coverage that actually runs.
+CI does not run `app-uitest` at all, since it needs a GUI login session, so these failures only show
+up when someone runs the suite by hand before a release.
+
+**How to start:** check whether `press(forDuration:thenDragTo:)` registers at all on macOS 27. A
+one-line drag in a scratch UI test is enough. If it does not, drive the drag with explicit
+`XCUICoordinate` moves. For the editor menu, stub the installed-editor lookup in `UITestFixture` so
+the test does not depend on the machine.
+
+**Priority:** P3. `SplitPaneUITests` and `VCSToolbarGitUITests` also flaked once each during the
+same run and passed on re-run.
+
 ### The ✦ diagnosis badge was unreachable to accessibility (macapp) — FIXED (2026-09-03)
 
 **Found by the pre-release XCUITest run:** `TerminalAgentUITests.testFailedTabShowsAgentBadge` was
