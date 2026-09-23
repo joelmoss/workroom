@@ -213,6 +213,116 @@ final class VCSCommitIntegrationTests: XCTestCase {
       "a failed commit must not break the user's own stash: \(stash.out)")
   }
 
+  /// The rollback is for a commit that did NOT land. One killed in its `post-commit` hook has
+  /// already written the commit, and `rm --cached` on the files it just added would stage their
+  /// deletion — the user's next commit would then remove them.
+  func testACommitThatLandedBeforeFailingKeepsItsNewFilesInTheIndex() async throws {
+    try requireTool("git")
+    let dir = gitRepo(files: ["base.txt": "base\n"])
+    write("fresh\n", to: "untracked.txt", in: dir)
+    write("#!/bin/sh\nsleep 30\n", to: ".git/hooks/post-commit", in: dir)
+    sh("chmod +x .git/hooks/post-commit", in: dir)
+    var landing = writer("git")
+    landing.commitTimeout = 1
+
+    let result = await landing.commit(
+      path: dir, projectRoot: dir,
+      request: VCSCommitRequest(
+        message: "lands, then times out",
+        files: [ChangedFile(path: "untracked.txt", change: .untracked)], mode: .commit))
+
+    guard case .committedThenFailed = result else {
+      return XCTFail("the commit landed before the timeout: \(result)")
+    }
+    XCTAssertEqual(committedFiles(dir), ["untracked.txt"])
+    XCTAssertEqual(status(dir), "", "the committed file must not be staged for deletion")
+  }
+
+  /// The real runner, except that a HEAD read fails once HEAD names a commit: the read after the
+  /// commit is lost to a timeout, a dropped agent, or a signal.
+  private struct HeadReadsFailOnceItExists: StatusCommandRunning {
+    let real = StatusCommandRunner()
+    let failure: CommandResult
+
+    func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+      async -> CommandResult
+    {
+      await run(executable, args, in: directory, timeout: timeout, stdin: nil)
+    }
+
+    func run(
+      _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+      stdin: Data?
+    ) async -> CommandResult {
+      let result = await real.run(executable, args, in: directory, timeout: timeout, stdin: stdin)
+      guard args.contains("rev-parse"), result.ok else { return result }
+      return failure
+    }
+  }
+
+  private func unbornGitRepo() -> String {
+    let dir = tempDir()
+    sh("git init -q . && git config user.email t@e.com && git config user.name T", in: dir)
+    return dir
+  }
+
+  /// A first commit starts from no HEAD, and a failed read after it also gives none, so "HEAD did
+  /// not move" has to be proved (HEAD still unborn), not inferred from two nils.
+  func testALandedFirstCommitWhoseHeadCannotBeReReadKeepsItsNewFiles() async throws {
+    try await assertALandedFirstCommitKeepsItsNewFiles(
+      whenHeadReads: CommandResult(stdout: "", stderr: "lost", exitCode: 128, timedOut: false))
+  }
+
+  /// A killed probe reports its signal as the exit code, and SIGHUP's 1 is also "HEAD is unborn".
+  func testALandedFirstCommitWhoseHeadProbeIsSignaledKeepsItsNewFiles() async throws {
+    try await assertALandedFirstCommitKeepsItsNewFiles(
+      whenHeadReads: CommandResult(
+        stdout: "", stderr: "", exitCode: 1, timedOut: false, signaled: true))
+  }
+
+  private func assertALandedFirstCommitKeepsItsNewFiles(
+    whenHeadReads failure: CommandResult
+  ) async throws {
+    try requireTool("git")
+    let dir = unbornGitRepo()
+    write("fresh\n", to: "untracked.txt", in: dir)
+    write("#!/bin/sh\nsleep 30\n", to: ".git/hooks/post-commit", in: dir)
+    sh("chmod +x .git/hooks/post-commit", in: dir)
+    var landing = CLIVCSWriter(
+      vcs: "git", runner: HeadReadsFailOnceItExists(failure: failure),
+      makeProvider: { _ in GitProvider() as LocalVCSProviding },
+      gate: JJSnapshotGate(maxChainWait: 5))
+    landing.commitTimeout = 1
+
+    let result = await landing.commit(
+      path: dir, projectRoot: dir,
+      request: VCSCommitRequest(
+        message: "first, then times out",
+        files: [ChangedFile(path: "untracked.txt", change: .untracked)], mode: .commit))
+
+    if case .ok = result { return XCTFail("the commit timed out: \(result)") }
+    XCTAssertEqual(committedFiles(dir), ["untracked.txt"])
+    XCTAssertEqual(status(dir), "", "the committed file must not be staged for deletion")
+  }
+
+  /// The other half: a first commit that really failed still leaves no intent-to-add residue.
+  func testAFailedFirstCommitLeavesNoIntentToAddResidue() async throws {
+    try requireTool("git")
+    let dir = unbornGitRepo()
+    write("fresh\n", to: "untracked.txt", in: dir)
+    write("#!/bin/sh\nexit 1\n", to: ".git/hooks/commit-msg", in: dir)
+    sh("chmod +x .git/hooks/commit-msg", in: dir)
+
+    let result = await writer("git").commit(
+      path: dir, projectRoot: dir,
+      request: VCSCommitRequest(
+        message: "will be rejected",
+        files: [ChangedFile(path: "untracked.txt", change: .untracked)], mode: .commit))
+
+    guard case .failed = result else { return XCTFail("the hook should have rejected: \(result)") }
+    XCTAssertEqual(status(dir), "?? untracked.txt")
+  }
+
   /// `--` ends option parsing, not magic parsing. Bare, `a[b].txt` is a glob that also matches
   /// `ab.txt`; `:(literal)` is what stops it. This is the selection model's whole promise.
   func testGlobMagicCannotReachAnUnselectedFile() async throws {

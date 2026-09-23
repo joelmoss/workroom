@@ -752,6 +752,11 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     WorkroomStatusResolver.gitHardening + ["rev-parse", "--verify", "HEAD"]
   }
 
+  /// Exits 1 with no output only when HEAD names no commit yet; any failed read exits 128.
+  static func gitUnbornHeadArgs() -> [String] {
+    WorkroomStatusResolver.gitHardening + ["rev-parse", "--verify", "-q", "HEAD"]
+  }
+
   // MARK: - jj argument builders
 
   /// Read-only jj flags. `--ignore-working-copy` is REQUIRED on reads: without it every toolbar poll
@@ -1812,7 +1817,8 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
       projectRoot,
       { [self] in
         let before = await currentRevision(path: path)
-        return CommitAttempt(before: before, result: await runCommitSequence(request, in: path))
+        return CommitAttempt(
+          before: before, result: await runCommitSequence(request, in: path, before: before))
       })
     guard let attempt = outcome else { return .failed(.other("commit was cancelled")) }
     let (before, result) = (attempt.before, attempt.result)
@@ -1843,9 +1849,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// Returns the FIRST failing result, so the caller classifies whichever step broke. The
   /// intent-to-add step only runs when the selection actually contains paths git may not know, so the
   /// common case is one process.
-  private func runCommitSequence(_ request: VCSCommitRequest, in path: String) async
-    -> CommandResult
-  {
+  private func runCommitSequence(
+    _ request: VCSCommitRequest, in path: String, before: String?
+  ) async -> CommandResult {
     if vcs == "jj" {
       let args =
         request.mode == .describe
@@ -1903,7 +1909,16 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
       vcs, Self.gitCommitOnlyArgs(message: request.message), in: path, timeout: commitTimeout,
       stdin: Self.gitPathspecPayload(request.files))
 
-    if !result.ok { await rollBackIntentToAdd() }
+    // Only a commit that definitely did not land. One killed in a `post-commit` hook has already
+    // moved HEAD, and `rm --cached` would then stage the deletion of every file it just added. An
+    // unknown outcome may still be running on the agent, and a HEAD that moved or can no longer be
+    // read may hold the commit, so all three keep the marker: residue the user can clear beats a
+    // deletion their next commit records.
+    if !result.ok, result.exitCode != CommandResult.outcomeUnknown,
+      await headIsStill(before, path: path)
+    {
+      await rollBackIntentToAdd()
+    }
     return result
   }
 
@@ -1997,6 +2012,16 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   ///
   /// Nil for an unborn branch (a repo with no commits), which is a legitimate state to commit from —
   /// `nil != "abc123"` then reads correctly as "the ref moved".
+  /// Whether HEAD provably still reads `before`. `currentRevision`'s nil is either an unborn branch
+  /// or a failed read, so a nil `before` needs HEAD proved unborn now: a first commit that landed
+  /// and whose re-read then failed would otherwise compare `nil == nil`.
+  private func headIsStill(_ before: String?, path: String) async -> Bool {
+    guard before == nil else { return await currentRevision(path: path) == before }
+    let result = await run(Self.gitUnbornHeadArgs(), in: path, timeout: refTimeout)
+    // A killed probe reports its signal as the exit code, and SIGHUP is 1.
+    return result.exitCode == 1 && !result.signaled && !result.timedOut && result.stdout.isEmpty
+  }
+
   private func currentRevision(path: String) async -> String? {
     let args = vcs == "jj" ? Self.jjOpHeadArgs() : Self.gitHeadArgs()
     let result = await run(args, in: path, timeout: refTimeout)

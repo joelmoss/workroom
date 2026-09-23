@@ -235,6 +235,59 @@ fn a_submodule_filter_driver_never_runs_during_reads() {
 }
 
 #[test]
+fn a_submodule_external_diff_never_runs_during_reads() {
+    let sub = Repo::new();
+    sub.write("file", "base\n");
+    sub.commit();
+    let repo = Repo::new();
+    repo.write("top", "top\n");
+    repo.commit();
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        sub.0.to_str().unwrap(),
+        "sub",
+    ]);
+    repo.commit();
+    // `diff.submodule=diff` makes the parent's diff run a child `git diff` inside the submodule,
+    // which reads the submodule's own config and does not inherit `--no-ext-diff`.
+    repo.git(&["config", "diff.submodule", "diff"]);
+    let marker = repo.0.join("ran");
+    let external = format!("touch '{}'; true", marker.display());
+    let in_sub = |args: &[&str]| {
+        diff::run_with_env(
+            &repo.0.join("sub"),
+            "git",
+            args,
+            &[
+                ("GIT_CONFIG_GLOBAL", "/dev/null"),
+                ("GIT_CONFIG_SYSTEM", "/dev/null"),
+            ],
+        )
+        .unwrap();
+    };
+    in_sub(&["config", "diff.external", &external]);
+    std::fs::write(repo.0.join("sub/file"), "next\n").unwrap();
+    in_sub(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-am",
+        "next",
+    ]);
+    let patch = diff::working_patch(&repo.0, "sub");
+    assert!(
+        !marker.exists(),
+        "a submodule's external diff ran during a read"
+    );
+    assert!(patch.unwrap().contains("+Subproject commit"));
+}
+
+#[test]
 fn rename_newline_path_and_missing_final_newline() {
     let repo = Repo::new();
     repo.write("old", "one\ntwo\n");
