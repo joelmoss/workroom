@@ -1812,7 +1812,8 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
       projectRoot,
       { [self] in
         let before = await currentRevision(path: path)
-        return CommitAttempt(before: before, result: await runCommitSequence(request, in: path))
+        return CommitAttempt(
+          before: before, result: await runCommitSequence(request, in: path, before: before))
       })
     guard let attempt = outcome else { return .failed(.other("commit was cancelled")) }
     let (before, result) = (attempt.before, attempt.result)
@@ -1843,9 +1844,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// Returns the FIRST failing result, so the caller classifies whichever step broke. The
   /// intent-to-add step only runs when the selection actually contains paths git may not know, so the
   /// common case is one process.
-  private func runCommitSequence(_ request: VCSCommitRequest, in path: String) async
-    -> CommandResult
-  {
+  private func runCommitSequence(
+    _ request: VCSCommitRequest, in path: String, before: String?
+  ) async -> CommandResult {
     if vcs == "jj" {
       let args =
         request.mode == .describe
@@ -1903,7 +1904,16 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
       vcs, Self.gitCommitOnlyArgs(message: request.message), in: path, timeout: commitTimeout,
       stdin: Self.gitPathspecPayload(request.files))
 
-    if !result.ok { await rollBackIntentToAdd() }
+    // Only a commit that definitely did not land. One killed in a `post-commit` hook has already
+    // moved HEAD, and `rm --cached` would then stage the deletion of every file it just added. An
+    // unknown outcome may still be running on the agent, and a HEAD that moved or can no longer be
+    // read may hold the commit, so all three keep the marker: residue the user can clear beats a
+    // deletion their next commit records.
+    if !result.ok, result.exitCode != CommandResult.outcomeUnknown,
+      await currentRevision(path: path) == before
+    {
+      await rollBackIntentToAdd()
+    }
     return result
   }
 

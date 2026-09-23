@@ -213,6 +213,31 @@ final class VCSCommitIntegrationTests: XCTestCase {
       "a failed commit must not break the user's own stash: \(stash.out)")
   }
 
+  /// The rollback is for a commit that did NOT land. One killed in its `post-commit` hook has
+  /// already written the commit, and `rm --cached` on the files it just added would stage their
+  /// deletion — the user's next commit would then remove them.
+  func testACommitThatLandedBeforeFailingKeepsItsNewFilesInTheIndex() async throws {
+    try requireTool("git")
+    let dir = gitRepo(files: ["base.txt": "base\n"])
+    write("fresh\n", to: "untracked.txt", in: dir)
+    write("#!/bin/sh\nsleep 30\n", to: ".git/hooks/post-commit", in: dir)
+    sh("chmod +x .git/hooks/post-commit", in: dir)
+    var landing = writer("git")
+    landing.commitTimeout = 1
+
+    let result = await landing.commit(
+      path: dir, projectRoot: dir,
+      request: VCSCommitRequest(
+        message: "lands, then times out",
+        files: [ChangedFile(path: "untracked.txt", change: .untracked)], mode: .commit))
+
+    guard case .committedThenFailed = result else {
+      return XCTFail("the commit landed before the timeout: \(result)")
+    }
+    XCTAssertEqual(committedFiles(dir), ["untracked.txt"])
+    XCTAssertEqual(status(dir), "", "the committed file must not be staged for deletion")
+  }
+
   /// `--` ends option parsing, not magic parsing. Bare, `a[b].txt` is a glob that also matches
   /// `ab.txt`; `:(literal)` is what stops it. This is the selection model's whole promise.
   func testGlobMagicCannotReachAnUnselectedFile() async throws {

@@ -233,7 +233,9 @@ fn run_bounded(
 /// Submodules keep their config under the same untrusted `.git/modules/`, and a working-tree
 /// `status`/`diff` would run a `status` inside each one, so both pass `--ignore-submodules=dirty`
 /// (a flag, because it outranks a `submodule.<name>.ignore` in that same config). A submodule
-/// with new commits is still reported; one with only working-tree changes is not.
+/// with new commits is still reported; one with only working-tree changes is not. `diff` also
+/// passes `--submodule=short`: a `diff.submodule` of `diff` or `log` would run a child git inside
+/// the submodule, which reads that config and inherits none of these flags (`diff.external`).
 fn git(root: &Path, args: &[&str]) -> model::Result<Vec<u8>> {
     git_with_status(root, args, false)
 }
@@ -331,12 +333,14 @@ fn read_diff(
     paths: &[&str],
 ) -> model::Result<Vec<u8>> {
     let mut args: Vec<&str> = comparison.iter().map(String::as_str).collect();
-    // See `git`: a working-tree diff would otherwise run a status inside each submodule.
+    // See `git`: a working-tree diff would otherwise run a status inside each submodule, and a
+    // `diff.submodule=diff`/`log` setting a `diff`/`log` inside each one.
     args.extend([
         "--no-ext-diff",
         "--no-textconv",
         "--no-color",
         "--ignore-submodules=dirty",
+        "--submodule=short",
     ]);
     args.extend_from_slice(format);
     args.push("--");
