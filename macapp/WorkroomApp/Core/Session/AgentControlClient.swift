@@ -38,8 +38,10 @@ extension PersistentSessionControlClient: SessionControlPlane {}
 struct AgentControlClient: SessionControlPlane {
   let socketPath: String
 
-  /// Matches `PROTOCOL_VERSION` in the agent's `protocol::envelope`. Bumped together.
-  static let protocolVersion: UInt16 = 1
+  /// Matches `PROTOCOL_VERSION` in the agent's `protocol::envelope`. Bumped together. `negotiate`
+  /// on the agent side takes the lower of the two sides' versions for Terminal/Control, so
+  /// advertising a newer version here never breaks talking to an older agent left running.
+  static let protocolVersion: UInt16 = 2
   static let magic: [UInt8] = Array("WRA1".utf8)
 
   enum Service: UInt8 {

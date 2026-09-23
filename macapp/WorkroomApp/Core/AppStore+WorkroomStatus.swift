@@ -283,7 +283,7 @@ extension AppStore {
     guard item.permitsLocalAccess else {
       self.errorTitle = errorTitle
       self.errorMessage =
-        RepositoryRoutingError.unavailable(item.location!.host).localizedDescription
+        RepositoryRoutingError.unavailable(item.location?.host ?? .local).localizedDescription
       return
     }
     let github: RepositoryGitHub?

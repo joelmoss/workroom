@@ -149,7 +149,8 @@ final class RemoteStateModel: ObservableObject {
       let context = try await isolated.context(for: location)
       return try BoundLocalWriter(
         context: context,
-        reader: BoundLocalReader(context: context, provider: GitProvider()),
+        reader: BoundLocalReader(
+          context: context, provider: target.vcs == .jj ? RustJJProvider() : GitProvider()),
         writer: try makeWriter(root))
     }
     return try await router.writer(for: location)

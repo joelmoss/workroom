@@ -12,8 +12,8 @@
 # ever changes, drop the exclusion — edits here would otherwise be invisible to the hash and CI
 # would link a stale engine and pass.
 #
-# No jj-lib and no gix here: this crate is the transport and process layer. VCS reads arrive later
-# as a service, and they come from the existing wr-vcs-* crates rather than being reimplemented.
+# VCS reads are a service over wr-vcs-core (JJ) and wr-vcs-git. Backend libraries remain behind
+# those crates; the agent owns request framing, capability negotiation and snapshot coordination.
 [package]
 name = "wr-agent"
 version.workspace = true
@@ -27,6 +27,11 @@ thiserror = { workspace = true }
 # and no C libraries beyond libc itself, so the tree stays as free of native deps as the VCS
 # crates are.
 libc = "0.2"
+serde = { workspace = true }
+serde_json = "1"
+wr-vcs-core = { path = "../wr-vcs-core" }
+wr-vcs-git = { path = "../wr-vcs-git" }
+wr-vcs-model = { path = "../wr-vcs-model" }
 
 [dev-dependencies]
 # The raw-mode test reads the pty's line discipline directly. `libc` is already a runtime

@@ -1,0 +1,508 @@
+import XCTest
+
+@testable import Workroom
+
+/// The shipped Rust binary and the real Swift client, with repositories created only for each test.
+final class AgentVCSIntegrationTests: XCTestCase {
+  private var roots: [URL] = []
+  private var agents: [AgentHarness] = []
+
+  override func tearDown() {
+    for agent in agents { agent.stop() }
+    for root in roots { try? FileManager.default.removeItem(at: root) }
+    agents = []
+    roots = []
+    super.tearDown()
+  }
+
+  private var environment: [String: String] {
+    var env = ProcessInfo.processInfo.environment
+    // An inherited repository-location override must never redirect a setup command away from
+    // the fresh temporary root, same hardening `wr-vcs-git`'s subprocess runner applies.
+    for key in [
+      "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+      "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+      env.removeValue(forKey: key)
+    }
+    env["PATH"] = ShellEnvironment.path()
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    env["GIT_CONFIG_SYSTEM"] = "/dev/null"
+    return env
+  }
+  private func root() throws -> URL {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    roots.append(root)
+    return root
+  }
+  @discardableResult
+  private func run(_ tool: String, _ args: [String], at root: URL) throws -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = [tool] + args
+    process.environment = environment
+    process.currentDirectoryURL = root
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = pipe
+    try process.run()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    let text = String(decoding: data, as: UTF8.self)
+    guard process.terminationStatus == 0 else {
+      XCTFail("\(tool) failed: \(text)")
+      throw VCSError.io(text)
+    }
+    return text.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+  private func connect(host: HostID = .local) async throws -> AgentVCSConnection {
+    let agent = try AgentHarness.start(environment: environment)
+    agents.append(agent)
+    return try await AgentVCSConnection.connect(host: host, socketPath: agent.socketPath)
+  }
+  private func gitRepo() throws -> URL {
+    let root = try root()
+    try run("git", ["init", "-b", "main"], at: root)
+    try run("git", ["config", "user.name", "Test"], at: root)
+    try run("git", ["config", "user.email", "test@example.com"], at: root)
+    try "base\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    try run("git", ["add", "."], at: root)
+    try run("git", ["commit", "-m", "initial"], at: root)
+    return root
+  }
+  private func router(
+    root: URL, backend: RepositoryBackend, connection: AgentVCSConnection
+  ) async throws -> (RepositoryRouter, RepositoryLocation) {
+    let location = try await RepositoryLocation.local(root.path)
+    let router = RepositoryRouter(localReader: { try connection.reader(context: $0) })
+    try router.register(.init(location: location, backend: backend, sharedLocation: location))
+    return (router, location)
+  }
+
+  func testAllNineGitReadsMatchNativeProvider() async throws {
+    let root = try gitRepo()
+    try "next\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    try run(
+      "git", ["commit", "-am", "second line\ncontinued\n\nbody", "--date", "2001-01-01T00:00:00Z"],
+      at: root)
+    let connection = try await connect()
+    let (router, location) = try await router(root: root, backend: .git, connection: connection)
+    let reader = try await router.reader(for: location)
+    let native = BoundLocalReader(context: reader.context, provider: GitProvider())
+    let page = try await reader.log(limit: 10)
+    let nativePage = try await native.log(limit: 10)
+    XCTAssertEqual(page.commits.map(\.commitID), nativePage.commits.map(\.commitID))
+    XCTAssertEqual(page.commits.map(\.authors), nativePage.commits.map(\.authors))
+    XCTAssertEqual(page.commits.map(\.timestamp), nativePage.commits.map(\.timestamp))
+    XCTAssertEqual(page.commits.map(\.summary), nativePage.commits.map(\.summary))
+    XCTAssertEqual(page.commits.map(\.body), nativePage.commits.map(\.body))
+    XCTAssertEqual(page.commits.map(\.refs), nativePage.commits.map(\.refs))
+    XCTAssertEqual(page.reachedEnd, nativePage.reachedEnd)
+    let id = try XCTUnwrap(page.commits.first?.commitID)
+    let change = try await reader.changeset(commitID: id)
+    let nativeChange = try await native.changeset(commitID: id)
+    XCTAssertEqual(change.files, nativeChange.files)
+    XCTAssertEqual(change.insertions, nativeChange.insertions)
+    XCTAssertEqual(change.deletions, nativeChange.deletions)
+    let patch = try await reader.fileDiff(commitID: id, path: "file")
+    XCTAssertTrue(patch.contains("-base\n+next"))
+    let content = try await reader.fileContent(rev: id, path: "file")
+    let parent = try await reader.commitParentFileContent(commitID: id, path: "file")
+    let base = try await reader.workingBaseFileContent(base: .workingCopy, path: "file")
+    XCTAssertEqual(content, "next\n")
+    XCTAssertEqual(parent, "base\n")
+    XCTAssertEqual(base, "next\n")
+    let ref = try await reader.currentRef()
+    XCTAssertEqual(ref, VCSRef(name: "main", kind: .branch))
+    try "working\n".write(
+      to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    let status = try await reader.workingStatus()
+    let workingPatch = try await reader.workingFileDiff(path: "file", base: .workingCopy)
+    XCTAssertEqual(status.dirty, true)
+    XCTAssertEqual(status.insertions, 1)
+    XCTAssertEqual(status.deletions, 1)
+    XCTAssertTrue(workingPatch.contains("-next\n+working"))
+    await connection.close()
+  }
+
+  func testAllNineJJReadsAndUnknownOwnership() async throws {
+    let root = try root()
+    try run("jj", ["git", "init", "--colocate"], at: root)
+    try "base\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    try run("jj", ["commit", "-m", "initial"], at: root)
+    try "working\n".write(
+      to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    let connection = try await connect()
+    let (router, location) = try await router(root: root, backend: .jj, connection: connection)
+    let reader = try await router.reader(for: location)
+    let status = try await reader.workingStatus()
+    XCTAssertEqual(status.dirty, true)
+    XCTAssertEqual(status.changedFiles?.map(\.path), ["file"])
+    let page = try await reader.log(limit: 20)
+    let id = try XCTUnwrap(page.commits.first?.commitID)
+    let change = try await reader.changeset(commitID: id)
+    XCTAssertEqual(change.files.map(\.path), ["file"])
+    let patch = try await reader.fileDiff(commitID: id, path: "file")
+    let working = try await reader.workingFileDiff(path: "file", base: .workingCopy)
+    XCTAssertTrue(patch.contains("-base\n+working"))
+    XCTAssertTrue(working.contains("-base\n+working"))
+    let content = try await reader.fileContent(rev: id, path: "file")
+    let parent = try await reader.commitParentFileContent(commitID: id, path: "file")
+    let base = try await reader.workingBaseFileContent(base: .workingCopy, path: "file")
+    XCTAssertEqual(content, "working\n")
+    XCTAssertEqual(parent, "base\n")
+    XCTAssertEqual(base, "base\n")
+    _ = try await reader.currentRef()
+    let fallback = RepositoryRouter(localReader: { try connection.reader(context: $0) })
+    let unknown = try await fallback.reader(for: location)
+    _ = try await unknown.log(limit: 1)
+    do {
+      _ = try await unknown.workingStatus()
+      XCTFail("Unknown ownership permitted a snapshot")
+    } catch RepositoryRoutingError.registrationRequired {}
+    await connection.close()
+  }
+
+  func testChunkedReplyAndConcurrentRequests() async throws {
+    let root = try gitRepo()
+    // Over one envelope after JSON escaping; this must arrive as a single complete patch.
+    let large = String(repeating: "0123456789abcdef\n", count: 75000)
+    try large.write(to: root.appendingPathComponent("large"), atomically: true, encoding: .utf8)
+    try run("git", ["add", "."], at: root)
+    try run("git", ["commit", "-m", "large"], at: root)
+    let connection = try await connect()
+    let (router, location) = try await router(root: root, backend: .git, connection: connection)
+    let reader = try await router.reader(for: location)
+    let page = try await reader.log(limit: 1)
+    let id = try XCTUnwrap(page.commits.first?.commitID)
+    async let patch = reader.fileDiff(commitID: id, path: "large")
+    async let ref = reader.currentRef()
+    let values = try await (patch, ref)
+    XCTAssertGreaterThan(values.0.utf8.count, 1 << 20)
+    XCTAssertEqual(values.1.name, "main")
+    await connection.close()
+  }
+
+  func testConnectionLossIsUnavailableAndCannotReturnCleanStatus() async throws {
+    let root = try gitRepo()
+    let connection = try await connect()
+    let (router, location) = try await router(root: root, backend: .git, connection: connection)
+    let reader = try await router.reader(for: location)
+    await connection.close()
+    do {
+      _ = try await reader.workingStatus()
+      XCTFail("closed channel returned status")
+    } catch is HostConnectionError {}
+    let status = await WorkroomStatusResolver().resolve(location: location, router: router)
+    XCTAssertNil(status.dirty)
+    XCTAssertEqual(status.failure, .unavailable)
+  }
+
+  func testSamePathRemoteHostsCannotSubstituteConnections() async throws {
+    let root = try gitRepo()
+    let hostID = UUID()
+    let otherID = UUID()
+    let host = HostID.remote(hostID)
+    let manager = HostConnectionManager()
+    let connection = try await connect(host: host)
+    _ = try await manager.connect(host: host) { connection }
+    let router = RepositoryRouter(connections: manager)
+    let location = try RepositoryLocation.remote(host: hostID, path: root.path)
+    let otherLocation = try RepositoryLocation.remote(host: otherID, path: root.path)
+    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(
+      .init(location: otherLocation, backend: .git, sharedLocation: otherLocation))
+    let reader = try await router.reader(for: location)
+    let ref = try await reader.currentRef()
+    XCTAssertEqual(ref.name, "main")
+    do {
+      _ = try await router.reader(for: otherLocation)
+      XCTFail("cross-host service")
+    } catch RepositoryRoutingError.unavailable {}
+    await connection.close()
+  }
+
+  func testAgentDeathKeepsSnapshotChildBarrierUntilActualCompletion() async throws {
+    let root = try root()
+    try run("jj", ["git", "init", "--colocate"], at: root)
+    try "base\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    try run("jj", ["commit", "-m", "initial"], at: root)
+    try "changed\n".write(
+      to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    let bin = root.appendingPathComponent("bin")
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    let realJJ = try run("which", ["jj"], at: root)
+    let marker = root.appendingPathComponent("accepted")
+    let release = root.appendingPathComponent("release")
+    let wrapper = bin.appendingPathComponent("jj")
+    let quote = CommandLineInstaller.shellQuoted
+    let script = """
+      #!/bin/sh
+      if [ "$1" = diff ]; then
+        echo "$$" > \(quote(marker.path))
+        attempts=0
+        while [ ! -e \(quote(release.path)) ]; do
+          attempts=$((attempts + 1))
+          [ "$attempts" -lt 500 ] || exit 124
+          sleep 0.02
+        done
+      fi
+      exec \(quote(realJJ)) "$@"
+      """
+    try script.write(to: wrapper, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: wrapper.path)
+    var env = environment
+    env["PATH"] = bin.path + ":" + (env["PATH"] ?? "")
+    let agent = try AgentHarness.start(environment: env)
+    agents.append(agent)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: agent.socketPath)
+    let (router, location) = try await router(root: root, backend: .jj, connection: connection)
+    let reader = try await router.reader(for: location)
+    let pending = Task { try await reader.workingFileDiff(path: "file", base: .workingCopy) }
+    defer { try? Data().write(to: release) }
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !FileManager.default.fileExists(atPath: marker.path), ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "snapshot CLI never started")
+    agent.stop()
+    agents.removeLast()
+    do {
+      _ = try await pending.value
+      XCTFail("dead agent returned a patch")
+    } catch is HostConnectionError {}
+    // Agent is dead; its accepted child still owns the exact barrier native writers use.
+    actor Completion {
+      var entered = false
+      func mark() { entered = true }
+    }
+    let completion = Completion()
+    let native = Task {
+      try await JJSnapshotGate().run(repository: location) {
+        await completion.mark()
+      }
+    }
+    try await Task.sleep(for: .milliseconds(150))
+    let prematurelyEntered = await completion.entered
+    XCTAssertFalse(prematurelyEntered)
+    try Data().write(to: release)
+    try await native.value
+    let didEnter = await completion.entered
+    XCTAssertTrue(didEnter)
+    await connection.close()
+  }
+
+  /// A single overdue reply must fail only its own waiter, never the shared connection: the agent's
+  /// own bounded waits (JJ snapshot contention, subprocess timeout) can legitimately run at or above
+  /// the client's per-request timeout, so treating one slow reply as "the channel is unusable" would
+  /// make every other in-flight window's read fail too — see `AgentVCSConnection.request`/`fail`.
+  func testOneRequestTimingOutDoesNotDisconnectAnUnrelatedInFlightRequest() async throws {
+    let root = try gitRepo()
+    try "next\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    try run("git", ["commit", "-am", "second"], at: root)
+    let bin = root.appendingPathComponent("bin")
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    let realGit = try run("which", ["git"], at: root)
+    let marker = root.appendingPathComponent("accepted")
+    let release = root.appendingPathComponent("release")
+    let wrapper = bin.appendingPathComponent("git")
+    let quote = CommandLineInstaller.shellQuoted
+    // Matched by exact positional word, not `$1`: `git()`'s hardening flags land before the
+    // caller's own arguments, so the literal `diff` this is standing in for is never first.
+    let script = """
+      #!/bin/sh
+      for arg; do
+        if [ "$arg" = diff ]; then
+          echo "$$" > \(quote(marker.path))
+          attempts=0
+          while [ ! -e \(quote(release.path)) ]; do
+            attempts=$((attempts + 1))
+            [ "$attempts" -lt 500 ] || exit 124
+            sleep 0.02
+          done
+          break
+        fi
+      done
+      exec \(quote(realGit)) "$@"
+      """
+    try script.write(to: wrapper, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: wrapper.path)
+    var env = environment
+    env["PATH"] = bin.path + ":" + (env["PATH"] ?? "")
+    let agent = try AgentHarness.start(environment: env)
+    agents.append(agent)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: agent.socketPath)
+    let (router, location) = try await router(root: root, backend: .git, connection: connection)
+    let reader = try await router.reader(for: location)
+    defer { try? Data().write(to: release) }
+    let page = try await reader.log(limit: 1)
+    let id = try XCTUnwrap(page.commits.first?.commitID)
+    // Direct on the connection, with a short timeout — `AgentVCSReader` always uses the 30s
+    // default, which this test cannot afford to wait out.
+    let slowRequest = AgentVCSRequest(
+      root: location.path, sharedRoot: location.path, backend: RepositoryBackend.git.rawValue,
+      method: "file_diff", revision: id, path: "file")
+    let slow = Task { try await connection.request(slowRequest, timeout: 0.2) }
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !FileManager.default.fileExists(atPath: marker.path), ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "wrapped git never started")
+    do {
+      _ = try await slow.value
+      XCTFail("expected the short per-request timeout to fire while the wrapper is still blocked")
+    } catch let error as HostConnectionError {
+      XCTAssertEqual(error, .connectionLost)
+    }
+    // A DIFFERENT, unrelated request on the SAME connection must still succeed — the whole
+    // connection was never torn down for one overdue reply.
+    let ref = try await reader.currentRef()
+    XCTAssertEqual(ref.name, "main")
+    // Releasing the wrapper lets the abandoned reply finally arrive; it must drain harmlessly
+    // rather than being delivered as a stray/unexpected chunk that kills the connection.
+    try Data().write(to: release)
+    try await Task.sleep(for: .milliseconds(300))
+    let refAgain = try await reader.currentRef()
+    XCTAssertEqual(refAgain.name, "main")
+    await connection.close()
+  }
+
+  /// Before this fix, `request` registered no cancellation handler: cancelling the calling `Task`
+  /// did nothing to its suspended continuation, so it stayed in `pending` — occupying one of the
+  /// 32 concurrent-request slots — until the request's own 30s timeout finally fired. A cancelled
+  /// caller (e.g. a superseded status-sweep read) must fail immediately instead.
+  func testCancellingARequestFailsImmediatelyInsteadOfWaitingOutTheTimeout() async throws {
+    let root = try gitRepo()
+    try "next\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    try run("git", ["commit", "-am", "second"], at: root)
+    let bin = root.appendingPathComponent("bin")
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    let realGit = try run("which", ["git"], at: root)
+    let marker = root.appendingPathComponent("accepted")
+    let release = root.appendingPathComponent("release")
+    let wrapper = bin.appendingPathComponent("git")
+    let quote = CommandLineInstaller.shellQuoted
+    let script = """
+      #!/bin/sh
+      for arg; do
+        if [ "$arg" = diff ]; then
+          echo "$$" > \(quote(marker.path))
+          attempts=0
+          while [ ! -e \(quote(release.path)) ]; do
+            attempts=$((attempts + 1))
+            [ "$attempts" -lt 500 ] || exit 124
+            sleep 0.02
+          done
+          break
+        fi
+      done
+      exec \(quote(realGit)) "$@"
+      """
+    try script.write(to: wrapper, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: wrapper.path)
+    var env = environment
+    env["PATH"] = bin.path + ":" + (env["PATH"] ?? "")
+    let agent = try AgentHarness.start(environment: env)
+    agents.append(agent)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: agent.socketPath)
+    let (router, location) = try await router(root: root, backend: .git, connection: connection)
+    let reader = try await router.reader(for: location)
+    defer { try? Data().write(to: release) }
+    let page = try await reader.log(limit: 1)
+    let id = try XCTUnwrap(page.commits.first?.commitID)
+    let slowRequest = AgentVCSRequest(
+      root: location.path, sharedRoot: location.path, backend: RepositoryBackend.git.rawValue,
+      method: "file_diff", revision: id, path: "file")
+    let slow = Task { try await connection.request(slowRequest, timeout: 30) }
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !FileManager.default.fileExists(atPath: marker.path), ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "wrapped git never started")
+    let cancelledAt = ContinuousClock.now
+    slow.cancel()
+    do {
+      _ = try await slow.value
+      XCTFail("expected cancellation")
+    } catch is CancellationError {
+      XCTAssertLessThan(
+        cancelledAt.duration(to: .now), .seconds(2),
+        "cancellation must fail the request immediately, not wait out its 30s timeout")
+    } catch {
+      XCTFail("expected CancellationError, got \(error)")
+    }
+    // The connection itself, and the slot the cancelled request freed, both stay usable.
+    let ref = try await reader.currentRef()
+    XCTAssertEqual(ref.name, "main")
+    try Data().write(to: release)
+    await connection.close()
+  }
+
+  /// A still-running pre-upgrade agent (kept alive because it may own terminals) truthfully
+  /// reports its own lower `Hello` version and has no VCS service at all — `AgentVCSConnection`
+  /// surfaces that as `VCSError.backendVersion`. The router must serve the read natively rather
+  /// than leaving the repository unavailable until the agent is manually restarted.
+  func testAgentPredatingVCSSupportFallsBackToNativeReads() async throws {
+    let root = try gitRepo()
+    let location = try await RepositoryLocation.local(root.path)
+    let router = RepositoryRouter(localReader: { _ in
+      throw VCSError.backendVersion("Agent predates VCS support.")
+    })
+    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    let reader = try await router.reader(for: location)
+    let ref = try await reader.currentRef()
+    XCTAssertEqual(ref.name, "main")
+  }
+
+  /// `LocalAgentVCS` had zero coverage — its whole reason to exist is coalescing concurrent callers
+  /// racing to connect onto ONE attempt, exactly the class of concurrency bug `macapp/CLAUDE.md`
+  /// mandates review for. Injecting `resolveSocketPath`/`binaryURL` (rather than `LocalAgentVCS`'s
+  /// hardcoded `PersistentSessionPaths` statics) is what makes this testable in isolation, without
+  /// touching the real per-bundle Application Support socket a live Workroom Dev instance might
+  /// already own.
+  func testConcurrentReadersCoalesceOntoOneConnectAttempt() async throws {
+    final class Counter: @unchecked Sendable {
+      private let lock = NSLock()
+      private var count = 0
+      func increment() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+      }
+      func value() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+      }
+    }
+    let root = try gitRepo()
+    let agent = try AgentHarness.start(environment: environment)
+    agents.append(agent)
+    let attempts = Counter()
+    let localAgent = LocalAgentVCS(
+      manager: HostConnectionManager(),
+      resolveSocketPath: {
+        attempts.increment()
+        return agent.socketPath
+      },
+      binaryURL: { try? AgentHarness.binaryURL() })
+    let location = try await RepositoryLocation.local(root.path)
+    let testRouter = RepositoryRouter(localReader: { try await localAgent.reader(context: $0) })
+    try testRouter.register(.init(location: location, backend: .git, sharedLocation: location))
+    async let first = testRouter.reader(for: location).currentRef()
+    async let second = testRouter.reader(for: location).currentRef()
+    async let third = testRouter.reader(for: location).currentRef()
+    async let fourth = testRouter.reader(for: location).currentRef()
+    let refs = try await (first, second, third, fourth)
+    XCTAssertEqual(refs.0.name, "main")
+    XCTAssertEqual(refs.1.name, "main")
+    XCTAssertEqual(refs.2.name, "main")
+    XCTAssertEqual(refs.3.name, "main")
+    XCTAssertEqual(
+      attempts.value(), 1, "four concurrent callers must coalesce onto one connect attempt")
+  }
+}

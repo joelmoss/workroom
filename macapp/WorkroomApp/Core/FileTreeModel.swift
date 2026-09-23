@@ -57,9 +57,12 @@ final class FileTreeModel: ObservableObject {
   /// watching it and lists it. No-op if already on this path (so re-renders don't re-list).
   /// Raw paths are the local persisted-record boundary; normalization finishes before watching.
   func activate(path: String?) {
-    guard path != currentPath || (currentLocation != nil && currentLocation?.host != .local) else {
-      return
-    }
+    // Compared against the RAW path, never against `currentLocation.path`: `RepositoryLocation`
+    // canonicalizes (resolves symlinks — `/tmp` is `/private/tmp` on macOS), so re-selecting the
+    // same on-screen target would otherwise look like a fresh activation on every re-render,
+    // dropping `expanded` and re-listing. `currentPath` is this method's own bookkeeping and is
+    // never overwritten by `activate(location:)`.
+    guard path != currentPath else { return }
     loadTask?.cancel()
     currentPath = path
     expanded = []
@@ -87,7 +90,6 @@ final class FileTreeModel: ObservableObject {
     watcher?.stop()
     watcher = nil
     currentLocation = location
-    currentPath = location?.path
     roots = []
     expanded = []
     guard let location else {

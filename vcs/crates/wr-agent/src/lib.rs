@@ -17,6 +17,7 @@ pub mod session;
 pub mod shadow;
 pub mod shell;
 pub mod transport;
+pub mod vcs;
 
 /// The shadow terminal that makes a reattaching client see the session instead of a blank screen.
 /// Behind a feature because it links libghostty-vt — see the crate's Cargo.toml.

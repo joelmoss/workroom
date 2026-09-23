@@ -1,17 +1,17 @@
-# SPIKE — prices open question 1 of docs/designs/remote-workrooms.md: can gix serve the git half of
-# the agent's VCS reads, matching what GitProvider (SwiftGitX/libgit2) returns today?
+# Agent Git reads. gix supplies history, refs and object content; owning-host Git supplies exact
+# patches and counts with matching comparison/configuration. The original log spike remains a bin.
 #
 # gix is already in this workspace's lockfile transitively via jj-lib =0.43.0, so this crate is a
 # direct dependency on something already vendored rather than a new one. `default-features = false`
 # is deliberate: the point of preferring gix over git2-rs is that the tree stays free of C-linking
 # crates (libgit2-sys / openssl-sys), and gix's default feature set pulls network transports that
-# would undo that. If this spike graduates, that constraint is the thing to keep testing.
+# would undo that. Keep the direct dependency free of additional network transports.
 #
-# ALSO on graduation: this crate is excluded from `input_hash()` in vcs/scripts/build-apple.sh,
+# This crate remains excluded from `input_hash()` in vcs/scripts/build-apple.sh,
 # which keys the app's xcframework cache and the Xcode `--check` freshness gate. The moment
 # anything wr-vcs-uniffi links takes a path dependency on this crate, drop that exclusion — edits
-# here would otherwise be invisible to the hash (a path dep carries no content hash in Cargo.lock
-# either), so CI would link a stale engine and pass.
+# here would otherwise be invisible to the hash. Today only wr-agent links it; build-agent.sh
+# invokes Cargo independently, so the agent's dependency tracking covers this crate.
 #
 # It lives in its own crate because both existing homes forbid it by written invariant:
 # wr-vcs-core is "the ONLY crate allowed to depend on jj-lib ... jj-only by design" and
@@ -32,6 +32,7 @@ gix = { version = "0.85", default-features = false, features = ["revision", "sha
 wr-vcs-model = { path = "../wr-vcs-model" }
 serde = { workspace = true }
 serde_json = "1"
+libc = "0.2"
 
 [[bin]]
 name = "gix-log-spike"
