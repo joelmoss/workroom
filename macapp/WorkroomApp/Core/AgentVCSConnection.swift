@@ -21,6 +21,10 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     var bytes = Data()
   }
   private var pending: [UInt32: Pending] = [:]
+  /// When the envelope `send` now running on `writes` started, or nil between sends. One envelope is
+  /// at most `maxEnvelopePayload`, so a send still running after half a request's timeout means the
+  /// peer is connected but not reading: the transport is wedged. See the deadline in `request`.
+  private var sendStarted: Date?
   /// Live watch subscriptions, keyed by the client-chosen id the agent echoes in every event. Read by
   /// `receive()` for each event and cleared by `fail()`, so both hold `lock`.
   private var watchHandlers: [UInt64: @Sendable (FileWatchEvent) -> Void] = [:]
@@ -66,10 +70,16 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// Marks a chunked request envelope. A whole request is JSON and starts `{`, so the two are
   /// unambiguous — see `REQUEST_CHUNK_MARKER`.
   private static let requestChunkMarker: UInt8 = 0x02
-  /// `Service::Vcs`, `Service::File` and `Service::Status` in the agent's envelope.
+  /// `Service::Vcs`, `Service::File`, `Service::Status` and `Service::Forward` in the agent's
+  /// envelope.
   private static let vcsService: UInt8 = 2
   private static let fileService: UInt8 = 3
   private static let statusService: UInt8 = 4
+  private static let forwardService: UInt8 = 5
+  /// Live forwarded streams, keyed by the multiplex stream id the agent echoes on every envelope.
+  /// Every access holds `lock`: the insert in `reserveForward`, the remove in `releaseForward`, the
+  /// read in `receive()` and the clear in `fail()`.
+  private var forwardHandlers: [UInt32: @Sendable (UInt8, Data) -> Void] = [:]
   /// The ceiling prompt, delivered to whoever is watching. One stream per connection: the verdict is
   /// per box, so there is nothing to key subscriptions by.
   let ceilingPrompts: AsyncStream<AgentCeilingPrompt>
@@ -151,8 +161,11 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       let reply = try await connection.request(
         AgentVCSRequest(method: "capabilities"), timeout: 2)
       let capabilities = try AgentVCSReply<AgentVCSCapabilities>.decode(reply)
+      // `backendVersion`, not `serviceUnavailable`: an agent that answers but speaks different reads
+      // (a newer one left running across an app rollback — it outlives the app and may own
+      // terminals) is not transient, and `backendVersion` is what the router serves natively on.
       guard capabilities.version == 1, capabilities.reads == 9 else {
-        throw HostConnectionError.serviceUnavailable("Agent does not support these VCS reads.")
+        throw VCSError.backendVersion("Agent does not support these VCS reads.")
       }
       // Not yet shared with any other caller, so a plain lock-guarded write is enough — no
       // concurrent reader can observe a half-set value.
@@ -166,13 +179,16 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       // stale socket, which is the common case rather than an exotic one (the daemon leaves
       // `session.sock` behind on any `pkill`).
       //
-      // Only this case. A `capabilities` reply that arrives and says the agent is incompatible, and a
-      // handshake that times out against a HUNG agent (`.requestTimedOut` — which is the reason that
-      // case exists; it used to arrive here as `.connectionLost` and take the respawn path), are both
-      // still `serviceUnavailable`: a respawn cannot fix either, since the second candidate exits
-      // without binding while the first holds the single-instance flock.
+      // Only this case. A handshake that times out against a HUNG agent (`.requestTimedOut` — which
+      // is the reason that case exists; it used to arrive here as `.connectionLost` and take the
+      // respawn path) is still `serviceUnavailable`: a respawn cannot fix it, since the second
+      // candidate exits without binding while the first holds the single-instance flock. An agent
+      // that answers `capabilities` as incompatible is `backendVersion` (below), served natively.
       await connection.close()
       throw HostConnectionError.connectionLost
+    } catch VCSError.backendVersion(let detail) {
+      await connection.close()
+      throw VCSError.backendVersion(detail)
     } catch {
       await connection.close()
       throw HostConnectionError.serviceUnavailable("VCS negotiation failed: \(error)")
@@ -271,6 +287,68 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       }
     }
     return AgentWakefulnessService(connection: self)
+  }
+
+  /// The port-forwarding service on this connection, or `VCSError.backendVersion` when the peer
+  /// predates it (issue #208).
+  ///
+  /// There is no probe and no negotiation state to keep: `Service::Forward` has no `capabilities`
+  /// method — its only request opens a real socket — so the peer's raw greeting version is the whole
+  /// answer, checked the way File and Status check theirs. A protocol-4 agent drops a Forward
+  /// envelope without answering it, so it is never sent one.
+  func forwarding() throws -> AgentForwardService {
+    try lock.withLock {
+      guard !closed else { throw HostConnectionError.connectionLost }
+      guard helloVersion >= AgentControlClient.minForwardVersion else {
+        throw VCSError.backendVersion("Agent does not support port forwarding.")
+      }
+    }
+    return AgentForwardService(connection: self)
+  }
+
+  /// Reserve a Forward stream and register its handler. Nothing is sent: the caller sends OPEN with
+  /// `sendForward` once the id is somewhere the handler can read it, so a REPLY can never arrive
+  /// before the handler knows which stream it belongs to.
+  ///
+  /// The id comes from the SAME counter every request uses, and is never handed out twice.
+  /// `forward.rs` frees a stream id only once its CLOSE has been seen, and its module doc says a
+  /// monotonic counter is how a client gets that rule for free — this is that counter.
+  func reserveForward(onOpcode: @escaping @Sendable (UInt8, Data) -> Void) throws -> UInt32 {
+    try lock.withLock {
+      guard !closed else { throw HostConnectionError.connectionLost }
+      guard nextStream < UInt32.max else { throw HostConnectionError.notDispatched }
+      let stream = nextStream
+      nextStream += 1
+      forwardHandlers[stream] = onOpcode
+      return stream
+    }
+  }
+
+  /// One Forward envelope: the opcode byte, then the body. Best effort — a forward whose connection
+  /// has gone is told so by `fail()`, which is the only signal it needs. `then` runs once the
+  /// envelope has left this process, or once it is certain never to: a forward's flow control and
+  /// its open timer both need "on the wire", which the enqueue is not.
+  func sendForward(
+    stream: UInt32, opcode: UInt8, body: Data, then: (@Sendable () -> Void)? = nil
+  ) {
+    var payload = Data([opcode])
+    payload.append(body)
+    writes.async { [self] in
+      defer { then?() }
+      guard lock.withLock({ !closed }) else { return }
+      do {
+        try sendOnWrites(
+          Self.envelope(service: Self.forwardService, stream: stream, payload: payload))
+      } catch {
+        fail(error)
+      }
+    }
+  }
+
+  /// Stop listening on a forward stream. Anything that still arrives for it is dropped by
+  /// `receive()`, which is the normal end of a stream the client closed itself.
+  func releaseForward(_ stream: UInt32) {
+    lock.withLock { _ = forwardHandlers.removeValue(forKey: stream) }
   }
 
   /// A Status request: one envelope, never chunked. 5s — `status` and `keep` both read a mutex the
@@ -438,20 +516,44 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           guard lock.withLock({ !closed }) else { return }
           do {
             for payload in Self.payloads(for: bytes, chunked: chunked) {
-              try Self.send(
-                descriptor, Self.envelope(service: service, stream: stream, payload: payload))
+              try sendOnWrites(Self.envelope(service: service, stream: stream, payload: payload))
             }
           } catch {
             fail(error)
           }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
-          self?.timeoutStream(stream, error: HostConnectionError.connectionLost)
+          guard let self else { return }
+          // The send timeout is off after the handshake (see `connect`), so a peer that stops
+          // reading leaves `send` blocked for good on the serial `writes` queue, and every later
+          // write queues behind it. Failing only this stream would leave that connection in use
+          // forever; failing the connection shuts the socket down, which unblocks the send, and the
+          // next acquisition reconnects. Judged by the send in progress, not by whether this
+          // stream's own bytes went out: a request merely queued behind a send that is still
+          // making progress (a large chunked exec) is a slow queue, not a wedged transport.
+          // ponytail: half the timeout is a heuristic stall bound; a remote host on a slow link
+          // might need a per-host floor.
+          let stalled = lock.withLock {
+            self.sendStarted.map { Date().timeIntervalSince($0) >= timeout / 2 } ?? false
+          }
+          if stalled {
+            fail(HostConnectionError.connectionLost)
+          } else {
+            timeoutStream(stream, error: HostConnectionError.connectionLost)
+          }
         }
       }
     } onCancel: {
       cancellation.fire()
     }
+  }
+
+  /// `Self.send` on the connection's descriptor, for the `writes` queue only, recording when it
+  /// started so a request deadline can tell a stalled send from a slow queue.
+  private func sendOnWrites(_ data: Data) throws {
+    lock.withLock { sendStarted = Date() }
+    defer { lock.withLock { sendStarted = nil } }
+    try Self.send(descriptor, data)
   }
 
   private static func send(_ fd: Int32, _ data: Data) throws {
@@ -478,17 +580,30 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           let service = header[0]
           // Stream 0 is the agent's own: File watch events and the Status service's ceiling prompt,
           // never a reply. On the VCS service it has always been a violation and still is.
+          // `forward.rs` carries nothing there today and documents a stream-0 envelope as DROPPED,
+          // so it is admitted here and dropped by `deliver(forward:)`: a future agent that adds a
+          // stream-0 Forward notification must not fail every shipped client's whole connection.
           let streamIsValid =
             stream > 0 || service == Self.fileService || service == Self.statusService
+            || service == Self.forwardService
           guard
             service == Self.vcsService || service == Self.fileService
-              || service == Self.statusService, streamIsValid, length > 0, length <= 1 << 20
+              || service == Self.statusService || service == Self.forwardService, streamIsValid,
+            length > 0, length <= 1 << 20
           else {
             throw HostConnectionError.serviceUnavailable("Invalid agent envelope.")
           }
           guard buffer.count >= 9 + length else { break }
           let payload = Data(buffer.dropFirst(9).prefix(length))
           buffer = Data(buffer.dropFirst(9 + length))
+          // A Forward payload is one OPCODE byte then raw connection bytes, NOT a chunk flag then
+          // JSON, so it is routed before the chunk guard every other service's payload satisfies.
+          // Three of the five opcodes (DATA, EOF, CLOSE) are neither 0 nor 1, so leaving this below
+          // the guard would tear the connection down on the first half-close.
+          if service == Self.forwardService {
+            deliver(forward: payload, stream: stream)
+            continue
+          }
           guard payload.first == 0 || payload.first == 1 else {
             throw HostConnectionError.serviceUnavailable("Invalid agent chunk.")
           }
@@ -540,6 +655,21 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     } catch { fail(error) }
   }
 
+  /// Hand one Forward envelope to the stream it names.
+  ///
+  /// An envelope for a stream this client has already released — a CLOSE that raced the client's
+  /// own, or DATA for a forward that has just ended — is DROPPED, exactly as `forward.rs` drops
+  /// client traffic for a stream it has forgotten. Treating it as a protocol violation would fail
+  /// the whole connection, taking VCS, File, Status and every other forward down over the normal
+  /// shape of a race.
+  private func deliver(forward payload: Data, stream: UInt32) {
+    guard stream > 0, let opcode = payload.first else { return }
+    let handler = lock.withLock { forwardHandlers[stream] }
+    // Copied out of the slice: the handler hands the body to a socket write on another queue, and a
+    // `Data` slice carries its parent's whole buffer with it.
+    handler?(opcode, Data(payload.dropFirst()))
+  }
+
   /// Hand one agent-initiated event to the subscription it names. An unknown id — an unsubscribe
   /// racing an event already in flight — is dropped: it is the normal shape of that race, not a
   /// protocol violation, and treating it as one would fail every other request on the connection. An
@@ -579,24 +709,33 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   }
 
   private func fail(_ error: Error) {
-    let failed: (pending: [Pending], watchers: [@Sendable (FileWatchEvent) -> Void])? =
-      lock.withLock {
-        guard !closed else { return nil }
-        closed = true
-        let values = Array(pending.values)
-        let watchers = Array(watchHandlers.values)
-        pending.removeAll()
-        abandoned.removeAll()
-        watchHandlers.removeAll()
-        shutdown(descriptor, SHUT_RDWR)
-        return (values, watchers)
-      }
+    let failed:
+      (
+        pending: [Pending], watchers: [@Sendable (FileWatchEvent) -> Void],
+        forwards: [@Sendable (UInt8, Data) -> Void]
+      )? =
+        lock.withLock {
+          guard !closed else { return nil }
+          closed = true
+          let values = Array(pending.values)
+          let watchers = Array(watchHandlers.values)
+          let forwards = Array(forwardHandlers.values)
+          pending.removeAll()
+          abandoned.removeAll()
+          watchHandlers.removeAll()
+          forwardHandlers.removeAll()
+          shutdown(descriptor, SHUT_RDWR)
+          return (values, watchers, forwards)
+        }
     guard let failed else { return }
     ceilingPrompt.finish()
     for operation in failed.pending { operation.continuation.resume(throwing: error) }
     // Outside the lock: a handler is caller code. Every subscription learns its watch is gone, so it
     // can resubscribe on the next generation and refresh whatever it was showing.
     for watcher in failed.watchers { watcher(.lost) }
+    // Every live forward hears exactly what the agent would have said, because it is true: the agent
+    // closes every socket a departing connection opened. Each one closes the socket it owns.
+    for forward in failed.forwards { forward(ForwardOpcode.close, Data()) }
     disconnected.finish()
   }
 }

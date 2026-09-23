@@ -1933,6 +1933,44 @@ disagreement passes every test on either side alone while presenting as an empty
     **replace** the running agent — killing the pty children this feature exists to preserve — or
     negotiate with the old one over the versioned envelope? Unspecified today, and it decides
     whether the versioning is real or ceremonial.
+    **DECIDED (2026-09-22, owner): hand off.** A newer agent never kills an older one's sessions,
+    and never leaves the old one running indefinitely either: the outgoing agent hands its sessions
+    to its replacement. Four consequences, none built yet:
+    - *Replace the program in place: `execve`, not a second process.* The pty masters are only
+      descriptors, and passing them to a separate new process (`SCM_RIGHTS`) would keep the shells
+      alive but orphan them. `Pty::wait` is a `waitpid` on the child, which only works for the
+      child's parent, so every session would lose its exit code, and a client would lose
+      `the_shells_exit_code_becomes_the_clients`. The old agent `execve`s the new binary
+      instead. Its pid stays the same, so it stays every shell's parent. The pty masters and the
+      listening socket survive once their close-on-exec flag is cleared, so there is no gap in
+      which the socket is unbound. The session table (ids, pids, fds, sizes, size owner) crosses
+      in an inherited pipe or memfd.
+    - *The screen crosses as VT bytes, never as a snapshot.* Two agent revisions share no snapshot
+      format (see the next item). They do share VT. The outgoing agent calls `replay()` for each
+      session on its **live** terminal, which is the only place the parser continuation can be
+      read. The incoming agent feeds those bytes to a fresh terminal of the same size. The
+      fidelity is exactly what a reattaching client already gets, including its one-row
+      scrollback offset (Phase 0 Results, item 3).
+    - *Check first, and refuse rather than kill.* Before it `execve`s, the old agent runs the new
+      binary once to confirm it starts on this box. If that check fails, or the old agent predates
+      the hand-off request entirely, it keeps running and the app talks to it over the versioned
+      envelope, which is the refuse-to-replace policy as the fallback. A failed `execve` returns
+      to the old program with nothing lost. What cannot be recovered is a new binary that passes
+      the check and then fails while it restores sessions. That is the residual risk, and its
+      test is to crash the restore on purpose.
+    - *The local Mac hands off too — DECIDED (2026-09-22, owner), shipped on Nightly first.* Today
+      an older local agent is never replaced (Phase 2, item 2). It lives until 30 s after its last
+      terminal closes (`serve.rs` `DEFAULT_IDLE_TIMEOUT`), which can be days. Until then, VCS and
+      file work fall back to running natively. GitHub status, port forwarding and the busy/idle
+      verdict have no native fallback and degrade. Agent fixes do not reach sessions that are
+      already open either. Handing off on app update ends that. It also puts one older-agent
+      policy on both hosts, and it proves the mechanism on the host that is easiest to debug
+      before Phase 3 depends on it. The cost is new: a hand-off bug kills local terminals on an
+      update, which has never been possible before. That is why it goes to Nightly first, with
+      the pre-check, the refuse fallback and the deliberately crashed restore gating the stable
+      channel. The pre-check must also confirm that the new binary can *restore* sessions. That
+      way a downgrade to an app that predates hand-off keeps the newer agent running, rather than
+      executing a binary that cannot read the session table.
 - **New CI burden:** a Rust Linux cross-compile for `wr-agent` (note `prost` in the lock means
   `protoc` is a build-time requirement) plus the container-driver integration job. **Add a pinned
   Zig toolchain and a Ghostty checkout** for `libghostty-vt` — checksum-pinned, cache keyed by
@@ -1958,6 +1996,14 @@ disagreement passes every test on either side alone while presenting as an empty
   version it cannot read and keeps the old one running. Either way, "replace the running agent on
   reconnect" is not safe unconditionally — which is the resume-policy question below, now with a
   forcing case rather than an abstraction.
+  **Chosen: hand-off (see the resume-policy item above).** The proposal also removes the forcing
+  case: what goes to disk for a reboot should be `replay()`'s VT bytes rather than a snapshot. At
+  write time the terminal is live, so the bytes carry the parser continuation. A snapshot decoded
+  after a reboot cannot report that continuation (Phase 0 Results, the API limitation). VT does not
+  change between agent revisions either, so after a reboot agent B reads what agent A wrote
+  without starting A's binary. After a reboot the children are dead. That needs a session state
+  that does not exist today, a screen with no pty behind it, because a `Session` is currently a
+  pty plus the identity a client reattaches by.
 - **A past trap, already fixed, worth not re-introducing.** Xcode's `ARCHS` is a space-separated
   list, and this repo once case-matched it as a single token, silently falling back to arm64 on
   universal builds and shipping an arm64-only Go CLI inside a fat `.app` for 23 betas.
@@ -2280,10 +2326,46 @@ service milestones below so each layer can be reviewed and landed independently.
 
      *The design's caveat is now structural rather than aspirational*: `Forwards` lives in
      `ConnectionServices`, so every forwarded socket dies when the client detaches or the connection
-     drops, and "come back to a running preview URL" still wants a provider hostname. Not done here:
-     the app half (the Swift client, which is writable from the module doc alone, and the UI that
-     picks a port), and the Phase 3 remote transport this exists for — the service is not OS-gated
-     and runs on macOS, but a forward is only interesting once the agent is on another box.
+     drops, and "come back to a running preview URL" still wants a provider hostname.
+
+     **The app half is implemented too (#208).** A forward binds a listener on `127.0.0.1` at an
+     *ephemeral* local port — never the remote port, so forwarding this box's own 5173 cannot collide
+     with the dev server already on it — and the bound port is what the UI shows and what the user
+     connects to. Each accepted TCP connection gets a fresh stream off the same monotonic counter
+     every request uses, which is how the client keeps the contract's "a stream id is free only once
+     its CLOSE has been seen" rule without tracking it: an id is simply never handed out twice.
+     Forwards are per HOST, not per workroom, so two workrooms on the same box see one list, and
+     **nothing is persisted across launches** — the agent closes every forwarded socket when the
+     client detaches, so a list restored at launch would name addresses that answer nothing. Each
+     forward carries the lease of the connection it was made under, and losing that connection (a
+     drop, or a new generation) closes its accepted sockets and stops its listener. Both directions
+     are budgeted at the agent's own `MAX_QUEUED_BYTES`: a local client that stops reading is cut off
+     with a reason, and a local client that writes faster than the agent takes is made to wait on its
+     own socket rather than on the shared writer every other service uses. Ending a forward drains
+     what the agent had already sent before the local client sees EOF. *A trust boundary, stated:*
+     `127.0.0.1` is not uid-scoped, so a forward grants **every process and every user account on
+     the Mac** unauthenticated access to the target — the property `ssh -L` ships with. It amplifies
+     nothing while the agent is the same box; at Phase 3 it is a real boundary, and peer-uid scoping
+     (or a unix-socket forward in place of TCP) is the mitigation if that ever stops being
+     acceptable. Still owed: the Phase 3 remote transport this exists for — the service is not
+     OS-gated and runs on macOS, but a forward is only interesting once the agent is on another box —
+     and the provider hostname that "come back to a running preview URL" needs, which no amount of
+     client-side forwarding can supply.
+
+     **Terminal-state durability: the in-memory half is already done, and it shipped with Phase 1**
+     (the shadow terminal, `wr-agent/src/terminal.rs`). "The scenarios already proven for local
+     sessions" are detach, client crash and app restart. Each of them leaves the agent alive, and
+     every one is an integration test in `wr-agent/tests/attach_survives_detach.rs` that kills a
+     real client process: the same shell survives (`a_session_outlives_the_client_that_created_it`,
+     `shell_state_survives_the_drop`), and the reattaching client is repainted with its screen, its
+     scrollback, and a full-screen program's alternate screen
+     (`a_reattaching_client_gets_a_full_screen_programs_screen`, added for #208 — the case the Swift
+     replay buffer returned empty for). `remote_transport.rs` covers the same survival over a pipe.
+     CI runs all of these with the feature on (`agent-terminal-state`). **Not in this milestone:**
+     stop-and-reboot screen restoration. That needs a snapshot persisted to disk. It is Phase 3
+     (item 4 below). The resume policy it waited on is now decided (hand-off, 2026-09-22, see
+     Distribution Plan), and the proposal there persists `replay()`'s VT bytes rather than a
+     snapshot. That keeps the parser continuation and avoids depending on the snapshot format.
 
    **Two Phase 3 questions this milestone opened rather than answered**, both consequences of the
    exec service being the thing Phase 3 moves host-side. *Auth resolution*: the child environment is
@@ -2306,8 +2388,11 @@ service milestones below so each layer can be reviewed and landed independently.
    connect to a supervised agent. Do not use connection-scoped `serve --stdio` as the persistent
    owner: it kills its sessions when the stream ends. Gate completion on transport loss, app
    restart and laptop sleep preserving the same child process and restoring terminal state.
-   Exercise reconnection to an older agent without replacing it and killing its ptys. Treat
-   stop-and-reboot screen restoration separately from live-process survival.
+   Exercise reconnection to an older agent under the hand-off policy (Distribution Plan): the
+   same shells survive the upgrade with their pids and their exit codes. An agent that predates
+   hand-off, or a new binary that fails its pre-check, leaves the old agent running. Deliberately
+   crash the restore to measure the one case that is not recoverable. Treat stop-and-reboot screen
+   restoration separately from live-process survival.
 
 5. **Phase 4: credentials, provisioning, lifecycle and the Nightly UI.** Resolve the non-admin
    repository credential path (OQ20) before claiming ordinary organization-repository support.

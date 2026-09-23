@@ -129,6 +129,53 @@ final class AgentFileIntegrationTests: XCTestCase {
     await connection.close()
   }
 
+  /// An agent that greets fine but answers `capabilities` with reads this client doesn't speak — a
+  /// newer agent left running across an app rollback — is a version fact, not an outage. It must be
+  /// `backendVersion`, the one error the router serves natively on, not `serviceUnavailable`, which
+  /// left every local repository unreadable until the agent restarted.
+  func testIncompatibleVCSCapabilitiesReportBackendVersion() async throws {
+    let fake = try FakeAgent(
+      version: 3, capabilities: #"{"version":1,"result":{"version":2,"reads":12,"exec":2}}"#)
+    fakes.append(fake)
+    do {
+      let connection = try await AgentVCSConnection.connect(
+        host: .local, socketPath: fake.socketPath)
+      connections.append(connection)
+      XCTFail("an incompatible agent must not connect")
+    } catch VCSError.backendVersion {
+    } catch {
+      XCTFail("expected backendVersion, got \(error)")
+    }
+  }
+
+  /// A peer that stays connected but stops reading leaves `send` blocked on the serial write queue
+  /// (the send timeout is off after the handshake). Timing out only the stuck request left the
+  /// connection in use, so every later request queued behind that send and timed out in turn. The
+  /// stuck request's deadline must retire the connection, so the next request fails at once and the
+  /// next acquisition reconnects.
+  func testARequestStuckBehindAPeerThatStoppedReadingRetiresTheConnection() async throws {
+    let fake = try FakeAgent(version: 2, stallAfterCapabilities: true)
+    fakes.append(fake)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: fake.socketPath)
+    connections.append(connection)
+    // Far larger than a Unix socket's send buffer, and under the one-envelope ceiling.
+    let stuck = AgentVCSRequest(method: "status", path: String(repeating: "x", count: 900_000))
+    do {
+      _ = try await connection.request(stuck, timeout: 0.5)
+      XCTFail("a peer that never reads cannot answer")
+    } catch {}
+    let started = Date()
+    do {
+      _ = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
+      XCTFail("the wedged connection must be retired")
+    } catch {
+      XCTAssertEqual(error as? HostConnectionError, .connectionLost)
+    }
+    XCTAssertLessThan(
+      Date().timeIntervalSince(started), 1, "must fail at once, not queue behind the stuck send")
+  }
+
   /// A protocol-3 peer HAS the service, so a probe that goes unanswered is a transient failure, not
   /// proof of an old agent. Reporting `backendVersion` here silently selected native access for the
   /// connection's whole life; it must be an explicit failure (and retire the connection so the next
@@ -586,6 +633,13 @@ final class AgentFileIntegrationTests: XCTestCase {
 ///
 /// `status: true` also answers `Service::Status` (`0x04`) and can push an unsolicited ceiling prompt;
 /// left off, the Status probe goes unanswered exactly as a pre-#208 protocol-3 agent's would.
+///
+/// `forward: true` answers `Service::Forward` (`0x05`) — **scripted, not socket-backed**: it replies
+/// to OPEN, echoes DATA straight back and mirrors EOF, and it records the stream id and opcode of
+/// every Forward envelope it receives. The real socket semantics are covered end to end against the
+/// shipped binary in `AgentPortForwardingTests`; this exists for what that structurally cannot show —
+/// which opcodes, and which stream ids, the client actually sent. `forwardRefusal` makes every OPEN
+/// fail with that `connect` detail instead.
 final class FakeAgent: @unchecked Sendable {
   let socketPath: String
   private let listener: Int32
@@ -593,8 +647,16 @@ final class FakeAgent: @unchecked Sendable {
   private let lock = NSLock()
   private var services: [UInt8] = []
   private var clients: [Int32] = []
+  private var forwardTraffic: [(stream: UInt32, opcode: UInt8)] = []
 
   var receivedServices: [UInt8] { lock.withLock { services } }
+
+  /// Every Forward envelope received, in arrival order.
+  var receivedForwards: [(stream: UInt32, opcode: UInt8)] { lock.withLock { forwardTraffic } }
+
+  func forwards(opcode: UInt8) -> [UInt32] {
+    receivedForwards.filter { $0.opcode == opcode }.map(\.stream)
+  }
 
   /// One `status` reply, with the box busy past a 4h ceiling and a prompt pending.
   static let statusJSON = """
@@ -627,7 +689,41 @@ final class FakeAgent: @unchecked Sendable {
     }
   }
 
-  init(version: UInt16, status: Bool = false) throws {
+  /// The VCS `capabilities` reply body.
+  private let capabilities: Data
+  /// Stop reading the client's socket (without closing it) once `capabilities` is answered.
+  private let stallAfterCapabilities: Bool
+  private let forward: Bool
+  private let forwardRefusal: String?
+  private let forwardEpilogue: Int
+  /// How many REPLY envelopes answer one OPEN: 0 is an agent that never answers, 2 is a peer that
+  /// is not the agent this client was written against.
+  private let forwardReplies: Int
+  /// A REPLY body to send instead of the well-formed one.
+  private let forwardReplyBody: Data?
+  /// How many OPENs `forwardRefusal` applies to; the rest open. A dev server that came up late.
+  private var forwardRefusals: Int
+  /// Send the epilogue in answer to the first DATA rather than to EOF: the shape of a server that
+  /// answers a request and closes, while the client's write half is still open. That distinction
+  /// is load-bearing on macOS — see `testStoppingAForwardDrainsTheResponseAlreadyReceived`.
+  private let forwardEpilogueOnData: Bool
+
+  init(
+    version: UInt16, status: Bool = false, forward: Bool = false, forwardRefusal: String? = nil,
+    forwardEpilogue: Int = 0, forwardReplies: Int = 1, forwardReplyBody: Data? = nil,
+    forwardRefusals: Int = .max, forwardEpilogueOnData: Bool = false,
+    capabilities: String = #"{"version":1,"result":{"version":1,"reads":9,"exec":2}}"#,
+    stallAfterCapabilities: Bool = false
+  ) throws {
+    self.capabilities = Data(capabilities.utf8)
+    self.stallAfterCapabilities = stallAfterCapabilities
+    self.forward = forward
+    self.forwardRefusal = forwardRefusal
+    self.forwardEpilogue = forwardEpilogue
+    self.forwardReplies = forwardReplies
+    self.forwardReplyBody = forwardReplyBody
+    self.forwardRefusals = forwardRefusals
+    self.forwardEpilogueOnData = forwardEpilogueOnData
     directory = URL(fileURLWithPath: "/tmp/wra-fake-\(UUID().uuidString.prefix(8))")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     socketPath = directory.appendingPathComponent("a.sock").path
@@ -687,11 +783,15 @@ final class FakeAgent: @unchecked Sendable {
         let payload = Data(buffer.dropFirst(9).prefix(length))
         buffer = Data(buffer.dropFirst(9 + length))
         lock.withLock { services.append(bytes[0]) }
+        if bytes[0] == 5 && forward {
+          handleForward(client, stream: stream, payload: payload)
+          continue
+        }
         let request = String(decoding: payload, as: UTF8.self)
         let body: Data
         switch bytes[0] {
         case 2 where request.contains("capabilities"):
-          body = Data(#"{"version":1,"result":{"version":1,"reads":9,"exec":2}}"#.utf8)
+          body = capabilities
         case 4 where status && request.contains("keep"):
           body = Data(#"{"version":1,"result":{"kept":true}}"#.utf8)
         case 4 where status:
@@ -707,7 +807,85 @@ final class FakeAgent: @unchecked Sendable {
         reply.append(1)
         reply.append(body)
         _ = reply.withUnsafeBytes { send(client, $0.baseAddress, $0.count, 0) }
+        if stallAfterCapabilities && bytes[0] == 2 { return }
       }
     }
+  }
+
+  /// The agent half of `Service::Forward`. A Forward payload is an OPCODE byte then a body, never a
+  /// chunk flag then JSON, so it is answered here rather than through the reply builder above.
+  private func handleForward(_ client: Int32, stream: UInt32, payload: Data) {
+    guard let opcode = payload.first else { return }
+    lock.withLock { forwardTraffic.append((stream, opcode)) }
+    let body = Data(payload.dropFirst())
+    switch opcode {
+    case 0x01:  // OPEN
+      let refuse = lock.withLock { () -> Bool in
+        guard forwardRefusals > 0 else { return false }
+        forwardRefusals -= 1
+        return true
+      }
+      if let refusal = forwardRefusal, refuse {
+        let error = #"{"version":1,"error":{"connect":"\#(refusal)"}}"#
+        sendForward(client, stream: stream, opcode: 0x02, body: Data(error.utf8))
+        // A refusal is followed immediately by CLOSE, exactly as `forward.rs` does it.
+        sendForward(client, stream: stream, opcode: 0x05, body: Data())
+      } else {
+        let body = forwardReplyBody ?? Data(#"{"version":1,"result":{"opened":true}}"#.utf8)
+        for _ in 0..<forwardReplies {
+          sendForward(client, stream: stream, opcode: 0x02, body: body)
+        }
+      }
+    case 0x03 where forwardEpilogueOnData:  // DATA — answered like a server that then closes
+      sendEpilogue(client, stream: stream)
+    case 0x03:  // DATA — echoed, so a round trip needs no socket on this side
+      sendForward(client, stream: stream, opcode: 0x03, body: body)
+    case 0x04 where forwardEpilogueOnData:
+      // The response already went out; with the client's EOF the agent has both halves, and CLOSE
+      // is its last word.
+      sendForward(client, stream: stream, opcode: 0x05, body: Data())
+    case 0x04:  // EOF
+      // With an epilogue, this is the shape a request/response server has: the request body ends,
+      // the whole response goes out, and the peer half-closes immediately behind it. DATA and EOF
+      // land back to back on the client's reader thread, and CLOSE behind them: both halves are
+      // done on the agent's side, so it sends its last word.
+      sendEpilogue(client, stream: stream)
+      sendForward(client, stream: stream, opcode: 0x05, body: Data())
+    default:
+      break  // CLOSE is recorded and needs no answer.
+    }
+  }
+
+  /// Chunked at 64 KiB, the real agent's read size (`forward.rs` `READ_BUFFER`): one envelope per
+  /// chunk means one queued socket write per chunk on the client, and a teardown that lands between
+  /// two of them is the truncation. A single envelope would hide it.
+  private func sendEpilogue(_ client: Int32, stream: UInt32) {
+    var sent = 0
+    while sent < forwardEpilogue {
+      let count = min(64 * 1024, forwardEpilogue - sent)
+      sendForward(client, stream: stream, opcode: 0x03, body: Data(repeating: 0xAB, count: count))
+      sent += count
+    }
+    sendForward(client, stream: stream, opcode: 0x04, body: Data())
+  }
+
+  /// An unsolicited Forward envelope to every connected client — what a future agent's stream-0
+  /// notification, or a misbehaving peer's stray frame, looks like on the wire.
+  func pushForward(stream: UInt32, opcode: UInt8, body: Data = Data()) {
+    let clients = lock.withLock { self.clients }
+    for client in clients { sendForward(client, stream: stream, opcode: opcode, body: body) }
+  }
+
+  /// Deliberately takes no lock: it is called from the per-client serve thread with that client's
+  /// descriptor in hand, and `handleForward` is already holding nothing.
+  private func sendForward(_ client: Int32, stream: UInt32, opcode: UInt8, body: Data) {
+    var envelope = Data([5])
+    for value in [stream, UInt32(body.count + 1)] {
+      var value = value.bigEndian
+      withUnsafeBytes(of: &value) { envelope.append(contentsOf: $0) }
+    }
+    envelope.append(opcode)
+    envelope.append(body)
+    _ = envelope.withUnsafeBytes { send(client, $0.baseAddress, $0.count, 0) }
   }
 }

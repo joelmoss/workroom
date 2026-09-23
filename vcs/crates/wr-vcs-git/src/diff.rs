@@ -223,6 +223,17 @@ fn run_bounded(
 /// at all — this subprocess path can, so every invocation needs it. `git`/`git_with_status` are
 /// the only two call sites that shell out to `git` in this crate, precisely so that hardening
 /// cannot be forgotten on a future one.
+///
+/// The same threat covers filter drivers: `status` and a working-tree `diff` run a driver's
+/// `clean`/`process` command on any stat-dirty file its attributes select. Drivers defined in the
+/// repository's own config (`local`/`worktree` scope) are overridden to nothing. Global and system
+/// drivers, git-lfs's among them, are the user's own and keep working. The cost: a driver a tool
+/// installs into `.git/config` on purpose (nbstripout, git-crypt) is not applied either, so for a
+/// stat-dirty file its line counts and patch can differ from what the user's own `git diff` shows.
+/// Submodules keep their config under the same untrusted `.git/modules/`, and a working-tree
+/// `status`/`diff` would run a `status` inside each one, so both pass `--ignore-submodules=dirty`
+/// (a flag, because it outranks a `submodule.<name>.ignore` in that same config). A submodule
+/// with new commits is still reported; one with only working-tree changes is not.
 fn git(root: &Path, args: &[&str]) -> model::Result<Vec<u8>> {
     git_with_status(root, args, false)
 }
@@ -233,6 +244,7 @@ fn git_with_status(
     args: &[&str],
     difference_is_success: bool,
 ) -> model::Result<Vec<u8>> {
+    let filters = repository_filter_overrides(root)?;
     let mut full = vec![
         "--literal-pathspecs",
         "-c",
@@ -240,8 +252,62 @@ fn git_with_status(
         "-c",
         "core.fsmonitor=",
     ];
+    for setting in &filters {
+        full.extend(["-c", setting.as_str()]);
+    }
     full.extend_from_slice(args);
     run_with_status(root, "git", &full, difference_is_success)
+}
+
+/// `-c` settings that disable every filter driver whose `clean` or `process` command comes from
+/// the repository's own config. Reading config runs no filter.
+// ponytail: one extra `git config` spawn per git call (a few ms); compute once per public entry
+// point and pass it down if status polling cost ever shows.
+fn repository_filter_overrides(root: &Path) -> model::Result<Vec<String>> {
+    // Exit 1 is "no such keys", the common case.
+    let listing = run_with_status(
+        root,
+        "git",
+        &[
+            "config",
+            "--null",
+            "--show-scope",
+            "--get-regexp",
+            r"^filter\..*\.(clean|process)$",
+        ],
+        true,
+    )?;
+    let mut names: Vec<&str> = Vec::new();
+    // `scope NUL key LF value NUL`, repeated.
+    let mut fields = listing.split(|&b| b == 0);
+    while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
+        if scope != b"local" && scope != b"worktree" {
+            continue;
+        }
+        let key = entry.split(|&b| b == b'\n').next().unwrap_or(&[]);
+        // Fail closed: a driver this cannot name in a `-c` setting (which splits at the first `=`)
+        // would otherwise run unopposed.
+        let name = std::str::from_utf8(key)
+            .ok()
+            .and_then(|key| key.strip_prefix("filter."))
+            .and_then(|rest| rest.rsplit_once('.'))
+            .map(|(name, _)| name)
+            .filter(|name| !name.contains('='))
+            .ok_or_else(|| VcsError::PartialData("unreadable filter driver name".into()))?;
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    Ok(names
+        .iter()
+        .flat_map(|name| {
+            [
+                format!("filter.{name}.clean="),
+                format!("filter.{name}.process="),
+                format!("filter.{name}.required=false"),
+            ]
+        })
+        .collect())
 }
 
 fn comparison(commit: &Commit) -> Vec<String> {
@@ -265,7 +331,13 @@ fn read_diff(
     paths: &[&str],
 ) -> model::Result<Vec<u8>> {
     let mut args: Vec<&str> = comparison.iter().map(String::as_str).collect();
-    args.extend(["--no-ext-diff", "--no-textconv", "--no-color"]);
+    // See `git`: a working-tree diff would otherwise run a status inside each submodule.
+    args.extend([
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--ignore-submodules=dirty",
+    ]);
     args.extend_from_slice(format);
     args.push("--");
     args.extend_from_slice(paths);
@@ -389,38 +461,55 @@ fn selected_patch(
     }) else {
         return Ok(String::new());
     };
-    // Preserve whole-comparison copy detection, then select exactly one delta. Restricting paths
-    // can turn a copy into an add; including its source can append an unrelated source patch.
-    let patch = text(&read_diff(
-        root,
-        comparison,
-        &["--patch", "--src-prefix=a/", "--dst-prefix=b/"],
-        &[],
-    )?)?;
-    let starts: Vec<usize> = patch
-        .match_indices("diff --git ")
-        .filter(|(i, _)| *i == 0 || patch.as_bytes()[i - 1] == b'\n')
-        .map(|(i, _)| i)
-        .collect();
-    let mut groups: Vec<(&str, String)> = Vec::new();
-    for (position, start) in starts.iter().enumerate() {
-        let block = &patch[*start..starts.get(position + 1).copied().unwrap_or(patch.len())];
-        let header = block.lines().next().unwrap_or("");
-        // Git prints deletion and addition blocks with the same header for a typechange.
-        if let Some((previous, contents)) = groups
-            .last_mut()
-            .filter(|(previous, _)| *previous == header)
-        {
-            let _ = previous;
-            contents.push_str(block);
-        } else {
-            groups.push((header, block.to_owned()));
+    let patch_args = ["--patch", "--src-prefix=a/", "--dst-prefix=b/"];
+    // Read only this file's delta where that is exact: its own path, plus its source for a rename
+    // so rename detection still pairs them. Reading the whole comparison made one file's patch fail
+    // whenever the comparison's total patch passed `MAX_OUTPUT`. A copy keeps the whole read:
+    // restricting paths can turn a copy into an add, and including its source can append an
+    // unrelated source patch. So does any other delta that shares one of these paths, which the
+    // restricted read reports as more than one group.
+    let file = &files[index];
+    if file.kind != ChangeKind::Copied {
+        let mut paths = vec![file.path.as_str()];
+        paths.extend(file.old_path.as_deref());
+        let patch = read_diff(root, comparison, &patch_args, &paths)?;
+        if let [only] = patch_groups(&patch)[..] {
+            return text(only);
         }
     }
+    let patch = read_diff(root, comparison, &patch_args, &[])?;
+    let groups = patch_groups(&patch);
     if groups.len() != files.len() {
         return Err(VcsError::PartialData("patch/file list mismatch".into()));
     }
-    Ok(groups.swap_remove(index).1)
+    // Decode only the selected delta: another file's non-UTF-8 text must not fail this one.
+    text(groups[index])
+}
+
+/// One slice per changed file, in git's order, split on `diff --git ` at the start of a line.
+/// Git prints the deletion and addition blocks of a typechange with the same header; those are
+/// adjacent, so they form one group.
+fn patch_groups(patch: &[u8]) -> Vec<&[u8]> {
+    const MARKER: &[u8] = b"diff --git ";
+    let starts: Vec<usize> = (0..patch.len())
+        .filter(|&i| (i == 0 || patch[i - 1] == b'\n') && patch[i..].starts_with(MARKER))
+        .collect();
+    let mut groups: Vec<(&[u8], usize, usize)> = Vec::new();
+    for (position, &start) in starts.iter().enumerate() {
+        let end = starts.get(position + 1).copied().unwrap_or(patch.len());
+        let header = patch[start..end]
+            .split(|&b| b == b'\n')
+            .next()
+            .unwrap_or(&[]);
+        match groups.last_mut() {
+            Some((previous, _, group_end)) if *previous == header => *group_end = end,
+            _ => groups.push((header, start, end)),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(_, start, end)| &patch[start..end])
+        .collect()
 }
 
 #[derive(serde::Serialize)]
@@ -447,7 +536,13 @@ fn working_comparison(root: &Path) -> model::Result<Vec<String>> {
 pub fn working_status(root: &Path) -> model::Result<WorkingStatus> {
     let raw = git(
         root,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=dirty",
+        ],
     )?;
     let mut fields = raw.split(|b| *b == 0).filter(|s| !s.is_empty());
     let mut result = Vec::new();

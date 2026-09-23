@@ -36,6 +36,25 @@ fixture and the fixtures would be re-recorded with it.
 
 **Priority:** P2, effort M.
 
+### The forward listener's fatal-`accept` path is untested (macapp) — #218 review follow-up
+
+**What:** `PortForward.acceptPending`'s `default:` branch (`Event.stopped`, which takes the row down)
+has no test. The other two #218 follow-ups are done (see Recently done, 2026-09-22).
+
+**Why:** A regression there is silent: a row that outlives its listener advertises an address that
+never answers.
+
+**How to start:** It needs an `accept` errno outside `EWOULDBLOCK`/`EINTR`/`ECONNABORTED` and the
+descriptor-exhaustion set, and no obvious userspace action on a healthy listening socket produces one.
+Either find one (probe `shutdown` on the listener and read what `accept` returns) or inject the
+`accept` call. Do not bend the listener's design to reach it.
+
+**Depends on / blocked by:** nothing. Also known and accepted: a local client that fully closes while
+the target never responds and never closes holds its stream until the connection ends (the same in
+`ssh -L`; the agent has no idle reaping either).
+
+**Priority:** P3, effort S.
+
 ### Confirm the wakefulness net filter on the real box (vcs) — #215 review follow-up
 
 **What:** The net signal now skips internal bridges and their virtual ports (`sample.rs`
@@ -3918,6 +3937,16 @@ tunnel (`tailscale0`, `wg0`) carries one byte the fallback switches off for good
 under load. The default route is the uplink as the kernel routes it, so that bridge and everything on it
 count. `procfs.py` mirrors the rule, so future recordings measure the signal that ships. The golden
 fixtures carry pre-summed bytes and are unaffected.
+
+**2026-09-22 — the #218 review's port-forwarding follow-ups.** The agent sets `TCP_NODELAY` on the
+socket it connects to the target (`forward.rs`), matching the app's accepted socket. The forward's send
+and drain timeouts are injectable through `AgentForwardService.listen` and each has a test that fails at
+the 30 s default. A sub-second `SO_SNDTIMEO` puts its fraction in `tv_usec`, because `tv_sec: 0` means
+no timeout. **Trap: on `EMFILE`, XNU has already dequeued and closed the connection.** The old comment
+said it "stays in the backlog" and gets retried after the backoff. Measured: the client reads EOF, and
+a retried `accept` returns `EWOULDBLOCK`. The listener did survive, but the lost connection went
+unreported, so the row now says why. `testTheListenerSurvivesRunningOutOfDescriptors` lowers
+`RLIMIT_NOFILE` to just above what the process holds, rather than exhausting the host's real limit.
 
 **2026-09-03 — the 9 "Publishing changes from within view updates" faults per launch: found and
 fixed. Both filed hypotheses were wrong, and so was the blocker.** The entry said Xcode's runtime-issue

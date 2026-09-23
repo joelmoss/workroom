@@ -565,6 +565,60 @@ fn a_reattaching_client_gets_its_scrollback() {
     let _ = agent.wait();
 }
 
+/// The case the Swift replay buffer could not handle at all: it emptied itself on entering the
+/// alternate screen, so a full-screen program — every long-running agent — reattached to a blank
+/// pane. The marker is assembled by `printf` so the typed command line, which stays on the PRIMARY
+/// screen, never contains it; seeing it means the alternate screen itself was restored.
+#[test]
+fn a_reattaching_client_gets_a_full_screen_programs_screen() {
+    if !has_terminal_state() {
+        eprintln!("skipping: agent built without the terminal-state feature");
+        return;
+    }
+
+    let workspace = Workspace::new("altscreen");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+    let session = "2c2c2c2c-3d3d-4e4e-5f5f-6a6a6a6a6a6a";
+
+    let mut first = attach(&socket, session);
+    {
+        let stdin = first.stdin.as_mut().expect("stdin");
+        std::thread::sleep(Duration::from_millis(400));
+        stdin
+            .write_all(b"printf '\\033[?1049h\\033[H%s-%s\\n' ALT SCREEN; sleep 30\n")
+            .expect("write");
+        stdin.flush().expect("flush");
+    }
+    let mut reader = ClientReader::new(&mut first);
+    let seen = reader.read_until("ALT-SCREEN", Duration::from_secs(10));
+    assert!(seen.contains("ALT-SCREEN"), "setup failed; got {seen:?}");
+    reader.drain(Duration::from_millis(500));
+
+    first.kill().expect("kill");
+    first.wait().expect("reap");
+    wait_for(Duration::from_secs(5), || {
+        list_sessions(&socket).contains("detached")
+    });
+
+    let mut second = attach(&socket, session);
+    let mut reader = ClientReader::new(&mut second);
+    let seen = reader
+        .read_until("ALT-SCREEN", Duration::from_secs(10))
+        .to_string();
+    let entered = seen.find("\x1b[?1049h");
+    let marker = seen.find("ALT-SCREEN");
+    assert!(
+        matches!((entered, marker), (Some(e), Some(m)) if e < m),
+        "the alternate screen was not restored; the client saw {seen:?}"
+    );
+
+    let _ = second.kill();
+    let _ = second.wait();
+    let _ = agent.kill();
+    let _ = agent.wait();
+}
+
 /// `PersistentSessionService.attachCommand()` builds the command line as `<binary> attach` with no
 /// arguments — everything else is environment. So the agent has to be drivable that way, or the
 /// Swift side needs a special case for which backend it picked.

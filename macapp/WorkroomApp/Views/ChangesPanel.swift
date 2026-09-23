@@ -487,6 +487,80 @@ private struct WakefulnessBadge: View {
   }
 }
 
+/// Ports forwarded from the agent's box to this Mac (issue #208).
+///
+/// Per HOST, not per workroom — two workrooms on the same box share this list, which is why it sits
+/// above the change list rather than inside the workroom-dependent part of it. Nothing is persisted
+/// across launches: the agent closes every forwarded socket when the client detaches, so a list
+/// restored at launch would name addresses that no longer answer.
+private struct PortsSection: View {
+  @ObservedObject private var model = PortForwardingModel.shared
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 6) {
+        Text("Ports").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+        Spacer(minLength: 0)
+        // `.plain`, as every field embedded in a bar or panel here is; `.roundedBorder` is the
+        // sheets' style.
+        TextField("Port", text: $model.draft)
+          .textFieldStyle(.plain)
+          .font(.system(.caption, design: .monospaced))
+          .frame(width: 48)
+          .onSubmit { Task { await model.add() } }
+          .accessibilityIdentifier("ports.field")
+        InspectorHeaderButton(systemImage: "plus", help: "Forward a port from this machine's agent")
+        {
+          Task { await model.add() }
+        }
+        .accessibilityIdentifier("ports.add")
+      }
+      if !model.connected {
+        // Said here rather than discovered from `+`: the controls are useless without an agent.
+        Text("No agent is connected.").font(.caption2).foregroundStyle(.secondary)
+      }
+      if let message = model.message {
+        Text(message).font(.caption2).foregroundStyle(theme.tokens.failure).lineLimit(3)
+      }
+      ForEach(model.forwards) { forward in
+        row(forward)
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 8)
+    .task { model.watch() }
+  }
+
+  @ViewBuilder
+  private func row(_ forward: PortForwardingModel.Entry) -> some View {
+    let address = "127.0.0.1:\(forward.localPort)"
+    VStack(alignment: .leading, spacing: 1) {
+      HStack(spacing: 6) {
+        Text("\(String(forward.remotePort)) → \(address)")
+          .font(.system(.caption, design: .monospaced))
+          .foregroundStyle(theme.tokens.fgMuted)
+          .textSelection(.enabled)
+        Spacer(minLength: 0)
+        InspectorHeaderButton(systemImage: "doc.on.doc", help: "Copy \(address)") {
+          NSPasteboard.general.clearContents()
+          NSPasteboard.general.setString(address, forType: .string)
+        }
+        InspectorHeaderButton(
+          systemImage: "xmark", help: "Stop forwarding port \(String(forward.remotePort))",
+          destructive: true
+        ) {
+          model.remove(forward.id)
+        }
+      }
+      if let failure = forward.failure {
+        Text(failure).font(.caption2).foregroundStyle(theme.tokens.failure).lineLimit(3)
+      }
+    }
+    .accessibilityIdentifier("ports.row.\(forward.remotePort)")
+  }
+}
+
 /// The Pull Request section header's number badge (issue #77): a capsule "#N" link that opens the PR
 /// in the browser, tinted by PR state (red when checks fail). A standalone view so it can carry its
 /// own `@State` hover, which the `@ViewBuilder` accessory can't — the capsule fill deepens on hover.
@@ -831,11 +905,16 @@ struct ChangesPanel: View {
   private let renderCap = 200
 
   var body: some View {
-    Group {
-      if let sid = store.inspectorTargetID, sid.isStatusable {
-        content(for: sid)
-      } else {
-        inspectorMessage("Select a workroom to see its changes.")
+    VStack(alignment: .leading, spacing: 0) {
+      // Per box, so it must not vanish when no workroom is selected; see `PortsSection`.
+      PortsSection()
+      Divider()
+      Group {
+        if let sid = store.inspectorTargetID, sid.isStatusable {
+          content(for: sid)
+        } else {
+          inspectorMessage("Select a workroom to see its changes.")
+        }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)

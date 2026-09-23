@@ -15,6 +15,9 @@ protocol HostServiceConnection: Sendable {
   /// would be a second agent — at which point the protocol can be extracted with a caller to justify
   /// it. Throws `VCSError.backendVersion` when the peer predates the service.
   func wakefulness() throws -> AgentWakefulnessService
+  /// The port-forwarding service on this connection (issue #208). Concrete for the same reason
+  /// `wakefulness()` is. Throws `VCSError.backendVersion` when the peer predates the service.
+  func forwarding() throws -> AgentForwardService
   func close() async
 }
 
@@ -27,6 +30,10 @@ extension HostServiceConnection {
 
   func wakefulness() throws -> AgentWakefulnessService {
     throw HostConnectionError.serviceUnavailable("Host has no status service.")
+  }
+
+  func forwarding() throws -> AgentForwardService {
+    throw HostConnectionError.serviceUnavailable("Host has no port-forwarding service.")
   }
 }
 
@@ -244,6 +251,15 @@ actor HostConnectionManager {
   /// connection ending — is already reported by the request throwing.
   func wakefulness(host: HostID) throws -> AgentWakefulnessService {
     try connected(host).1.wakefulness()
+  }
+
+  /// Not lease-tracked either, for the same reason: a forward has no repository context to go stale.
+  /// The lease is returned with the service because the one failure that matters — the connection
+  /// ending — reaches every live stream through the connection itself but not the LISTENER, which
+  /// its owner drops by comparing this lease against `updates(for:)`.
+  func forwarding(host: HostID) throws -> (Lease, AgentForwardService) {
+    let (lease, connection) = try connected(host)
+    return (lease, try connection.forwarding())
   }
 
   private func connected(_ host: HostID) throws -> (Lease, any HostServiceConnection) {

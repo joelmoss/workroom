@@ -221,14 +221,16 @@ final class AgentVCSProtocolTests: XCTestCase {
 
   // MARK: File service (#211)
 
-  /// The client's three version constants are the agent's `PROTOCOL_VERSION`, `MIN_VCS_VERSION` and
-  /// `MIN_FILE_VERSION` declared a second time, in a second language. Checked against the shipped
-  /// binary's own report so a bump on one side alone fails here rather than as a dead File service.
+  /// The client's five version constants are the agent's `PROTOCOL_VERSION`, `MIN_VCS_VERSION`,
+  /// `MIN_FILE_VERSION`, `MIN_STATUS_VERSION` and `MIN_FORWARD_VERSION` declared a second time, in a
+  /// second language. Checked against the shipped binary's own report so a bump on one side alone
+  /// fails here rather than as a dead File, Status or Forward service.
   func testTheClientsProtocolConstantsMatchTheShippedAgent() throws {
     XCTAssertEqual(AgentControlClient.protocolVersion, 5)
     XCTAssertEqual(AgentControlClient.minVCSVersion, 2)
     XCTAssertEqual(AgentControlClient.minFileVersion, 3)
     XCTAssertEqual(AgentControlClient.minStatusVersion, 4)
+    XCTAssertEqual(AgentControlClient.minForwardVersion, 5)
     let process = Process()
     process.executableURL = try AgentHarness.binaryURL()
     process.arguments = ["protocol"]
