@@ -87,6 +87,10 @@ final class AgentVCSProtocolTests: XCTestCase {
     XCTAssertEqual(
       AgentCommandRunner.replyRefusal(VCSError.partialData("VCS reply exceeds 16 MiB")).exitCode,
       CommandResult.outcomeUnknown)
+    // Fails safe: a message this side does not know is an unknown outcome, never a free retry.
+    XCTAssertEqual(
+      AgentCommandRunner.replyRefusal(VCSError.partialData("a reworded message")).exitCode,
+      CommandResult.outcomeUnknown)
     XCTAssertEqual(
       AgentCommandRunner.replyRefusal(VCSError.unsupportedRepo("no dir")).exitCode,
       CommandResult.launchFailed)

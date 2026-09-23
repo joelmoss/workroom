@@ -97,18 +97,28 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
   /// A reply that ARRIVED carrying an error, as a result.
   ///
   /// wr-agent answers one only for a request it refused before spawning, with one exception: the
-  /// reply-size guard in `vcs.rs` fires after the command ran, so that one is an unknown outcome.
-  /// Lock contention (the `ACTIVE` budget is spent) and the other `PartialData` refusals (a
-  /// truncated chunk, too many large requests) are "try again"; everything else (bad version,
-  /// unusable `dir`, non-Latin-1 stdin) keeps `neverRan`.
+  /// reply-size guard in `vcs.rs` sends `PartialData` after the command ran. Lock contention (the
+  /// `ACTIVE` budget is spent) and the request-reassembly refusals named below are "try again";
+  /// everything else (bad version, unusable `dir`, non-Latin-1 stdin) keeps `neverRan`.
+  ///
+  /// `PartialData` is sorted by an allowlist of pre-run messages, never a denylist of the one
+  /// post-run message: a reworded agent message then costs a Retry button (unknown outcome), not a
+  /// retry that double-applies a push.
   static func replyRefusal(_ error: Error) -> CommandResult {
     switch error {
-    case VCSError.partialData("VCS reply exceeds 16 MiB"): return outcomeUnknown(error)
     case VCSError.lockContention: return refused("The agent is busy; nothing ran. Try again.")
-    case VCSError.partialData(let reason): return refused(reason)
+    case VCSError.partialData(let reason) where preRunRefusals.contains(reason):
+      return refused(reason)
+    case VCSError.partialData: return outcomeUnknown(error)
     default: return neverRan("\(error)")
     }
   }
+
+  /// `vcs.rs`'s request-reassembly refusals, sent before a request is dispatched at all.
+  static let preRunRefusals: Set<String> = [
+    "truncated request chunk", "too many large VCS requests in flight",
+    "VCS request exceeds 16 MiB",
+  ]
 
   /// Refused before it ran, with the workroom intact — see `CommandResult.refused`.
   static func refused(_ reason: String) -> CommandResult {
