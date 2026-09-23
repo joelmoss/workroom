@@ -69,7 +69,7 @@ private final class WatchCore {
   /// Begin watching `path` recursively. No-op if already watching it; otherwise replaces the prior
   /// watch.
   func start(path: String) {
-    let alreadyWatching: Bool = lock.withLock { self.path == path && task != nil }
+    let alreadyWatching: Bool = lock.withLock { self.path == path && self.task != nil }
     if alreadyWatching { return }
     stop()
     let generation: Int = lock.withLock {
