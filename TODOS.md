@@ -1119,6 +1119,102 @@ deferred on its own merits.
 
 **Priority:** done.
 
+### Agent-routed VCS writes: the findings the `/review` pass didn't fix (macapp) — issue #205
+
+**What:** What the writes review (#205, PR pending) verified and left standing. The five P1s it found
+are fixed in `ed51faa9`; each entry below was reproduced or read off the code, none is speculative.
+
+1. ~~**An outcome-unknown write still offers Retry.**~~ **Fixed.** `AgentCommandRunner.outcomeUnknown`
+   had stopped claiming a cancelled or disconnected write "never ran", but it still classified as
+   `.other`, whose `retryAction` is `lastAction` — an honest message with a button one click from
+   re-running a push that may already have landed. Closed with the taxonomy change it needed:
+   `CommandResult.outcomeUnknown` (a sentinel exit code beside `launchFailed`, since the old
+   SIGTERM-shaped result was indistinguishable from a genuinely signaled git), a
+   `VCSRemoteFailure`/`VCSCommitFailure` case each, and a `retryAction` arm answering `.fetch` —
+   not nil, as this entry originally proposed. Nil would have left the failure tier dead on a
+   *transient* state; fetch is idempotent, it is what resolves the unknown, and a successful one
+   clears `lastFailure`. Same shape as `.rejected → .pull`.
+
+2. **`child.wait()` after SIGKILL is unbounded.** `run_exec`'s timeout path ends
+   `break 'wait child.wait().map_err(io)?`. `kill(-pid, …)` only reaches the process group, so a
+   descendant that `setsid`s away (or a wrapper that re-parents) leaves that wait blocking. Codex
+   reproduced 4.1s on a 100ms timeout via `os.setpgid`. The drain bound means this no longer leaks an
+   `ACTIVE` permit, but the wait itself has no ceiling. Predates the agent-writes work.
+
+3. **The agent kills a process GROUP where native kills a process TREE.** `StatusCommandRunner`
+   escalates through `ProcessTree.killTree`, which walks real ppid lineage via `pgrep -P` — that file
+   explicitly rejected group-based kill because "helpers spawned by git/gh can outlive the parent".
+   `run_exec` has only `kill(-pid, …)`. Same gap as (2), and the two share a fix.
+
+4. ~~**`writes: 8` is not a capability.**~~ **Fixed.** The count described a CLIENT-side Swift
+   protocol (`LocalVCSWriting`); wr-agent implements one generic exec service and never had eight
+   write methods to report, so nothing could keep the number true — and the client compared it for
+   equality, so adding a ninth method there would have dropped every user to native writes on a
+   fully capable agent with no log line. Replaced by `exec`, the exec service's own wire version,
+   compared `>=` so a future version 2 doesn't refuse a client speaking 1 (the agent answers that on
+   the request itself, which is the only place that can know). (`reads: 9` is fine and stays; those
+   are nine real agent-side methods.)
+
+5. ~~**Two caps that can't both be satisfied.**~~ **Fixed.** `MAX_EXEC_STREAM` (4 MiB/stream) against
+   `MAX_RESPONSE` (16 MiB), with a control byte escaping to six — so `send` replaced the whole reply
+   with `PartialData` and discarded a completed command's exit status, reporting a known outcome as
+   an unknown one. Now truncated in `exec` itself, by MEASURED escaped length rather than by lowering
+   the stream cap (which would have dropped ordinary output to ~1.3 MiB to survive a worst case that
+   almost never occurs). stderr gets first call on the budget — it is what `classify` matches on —
+   and stdout takes the slack, which is nearly all of it in practice. Head-truncated and silent,
+   matching `drain_capped` and native's `readCapped`.
+
+6. ~~**The 1 MiB request cap regresses large selective commits.**~~ **Fixed.** Requests now chunk
+   across envelopes on one stream, mirroring how replies always have. Framed with a marker byte
+   (`0x02`) rather than a header on every request, so an UNCHUNKED request stays byte-identical and
+   the common path pays nothing; gated on the agent's `exec >= 2`, since a pre-chunking agent would
+   read the marker as the start of a JSON document. Reassembly is bounded per stream (16 MiB), in
+   total (32 MiB) and by stream count (32), and a refused request POISONS its stream so its
+   remaining chunks are swallowed — without that, the tail would reassemble as a fresh request and
+   put a second reply on a completed stream, which the client treats as a protocol violation that
+   tears down every other request on the connection. `is_busy()` counts partial requests too, or the
+   daemon could idle-exit under a half-sent one.
+
+7. **The 32-slot request pool is shared between reads and writes.** A write can hold a slot for
+   `commitTimeout` (600s) where only seconds-long reads used to compete. Exhaustion now degrades to
+   a typed `.notDispatched`, so it is no longer misreported, but the contention is real. Split reads
+   and writes onto separate pools or connections if it shows up in practice. Marked `ponytail:` in
+   `AgentVCSConnection.request`.
+
+8. ~~**A capabilities-negotiation disconnect never reaches the agent respawn.**~~ **Fixed.**
+   `AgentVCSConnection.connect` flattened every negotiation failure into `serviceUnavailable`, but
+   `LocalAgentVCS` catches exactly `connectionLost` to spawn wr-agent and retry — so a dropped
+   handshake was routed around the stale-socket recovery and left the VCS service dead until the app
+   restarted. `connectionLost` is now rethrown unchanged; an incompatible reply or a hung agent stays
+   `serviceUnavailable`, since a respawn cannot fix either (the second candidate exits without
+   binding while the first holds the flock).
+
+9. **Seven test gaps, all with stubs available.** Nothing covers: the exec timeout clamp boundaries;
+   the `version != 1` guard; `drain_capped`'s 4 MiB cap and its drain-past-cap property;
+   `latin1_bytes`' rejection branch; a wrong-but-present `writes` count (only absent is tested);
+   `writer(context:reader:)`'s host-mismatch and closed-connection guards; and the write path's
+   transport-failure mapping. Items (2), (5) and the two fixed env/127 defects all lived in exactly
+   this untested region, which is the argument for closing it.
+
+**Also worth knowing, not a defect:** `serve::tests::instance_lock_is_exclusive` flaked once under the
+full parallel `cargo test -p wr-agent` run and passes in isolation and on re-run. Left alone; if it
+recurs, the exec tests' spawned processes are the likely interference.
+
+**Why:** These are the residue of a three-cycle review (critical pass + 6 specialists + two Claude
+adversarial passes + three Codex passes, one structured). Its P1s — a leaked concurrency permit that
+kills the VCS service, a completed push reported as never run, a cancelled write releasing the jj
+barrier, commits authored under a stale identity, and a missing tool reported as a deleted workroom —
+are fixed. Nothing left here is silent data loss; (1) is the closest, and it needs a UI decision.
+
+**How to start:** (1) is self-contained and the most user-visible. (2)+(3) are one change in
+`run_exec`. (4) is a two-line protocol simplification. (9) is mechanical and makes the rest safe to
+touch.
+
+**Depends on / blocked by:** nothing. All of it sits on the stacked branch (#201 → #202 → #204 →
+#205), so land the stack first.
+
+**Priority:** P2. (1) is the only one worth pulling forward.
+
 ### VCS toolbar: the findings the `/review` pass didn't fix (macapp)
 
 **What:** Everything the toolbar review verified but left standing. Each was reproduced or read off the
@@ -1275,6 +1371,85 @@ enumerate remote refs cheaply, and its doc explains why the symref row must be d
 **Priority:** P3 (a real gap, but ⌘O plus a terminal covers it today).
 
 ## P3 — VCS engine, diffs, and status
+
+### Rename `AgentVCSConnection` once it carries files and events (macapp) — #211 follow-up
+
+**What:** rename `AgentVCSConnection` to `AgentConnection` (and `AgentVCSReader` / `LocalAgentVCS` where
+the name is now too narrow), and update its doc comment and error strings.
+
+**Why:** after #211 the class owns the File service and an always-open events stream as well as VCS.
+A name that says VCS on a class that carries three services misleads the next reader. #211 itself
+fixes only the comment and the strings that became false (`Invalid VCS envelope`).
+
+**Pros:** the name matches what the class does. **Cons:** pure churn across `LocalAgentVCS`,
+`HostConnectionManager`, `AgentVCSIntegrationTests` and `AgentVCSProtocolTests`; done inside #211 it
+would bury a security-sensitive change in mechanical noise.
+
+**How to start:** one pure-rename commit right after #211 merges, so `git diff --color-moved` verifies it.
+
+**Depends on:** #211 merged.
+
+**Priority:** P3.
+
+### Extract the agent's shared service plumbing out of `vcs.rs` (wr-agent) — #211 follow-up
+
+**What:** move `send` (chunked reply writer, parameterized by service byte), `Permit` / `ACTIVE` /
+`is_busy`, and the exec runner from `vcs.rs` into `service.rs`; `vcs.rs`, `file.rs` and the watcher import it.
+
+**Why:** #211 chose `pub(crate)` reuse over an extraction to keep its diff on new behavior. Three
+services (VCS, File, watch) now share this code, `vcs.rs` is ~1900 lines, and the helpers are the
+agent's service layer in all but name.
+
+**Pros:** honest module boundary; `vcs.rs` becomes the VCS service again. **Cons:** ~300 moved lines,
+in a crate whose changes need the mandatory adversarial review (`macapp/AGENTS.md` rule 3).
+
+**How to start:** one pure-move commit with no behavior change, verified by `git diff --color-moved`
+and the existing suite, immediately after #211 merges so the review does not re-read moved code.
+
+**Depends on:** #211 merged.
+
+**Priority:** P3.
+
+### One OS watcher per subscription duplicates watches across windows (wr-agent) — #211 accepted shortcut
+
+**What:** share one OS watcher per canonical root across subscriptions and connections, fanning events
+into per-subscription coalescers.
+
+**Why:** #211 creates one `notify` watcher per subscription. `AppStore` is per window, so N windows on
+the same workroom, plus one `.git`/`.jj` watch per project per window, duplicate identical recursive
+watches. Cheap on macOS FSEvents; on Linux inotify needs one watch per directory per watcher and
+duplicates multiply toward `fs.inotify.max_user_watches`.
+
+**Pros:** correct on both platforms with one OS watch per tree. **Cons:** a cross-connection registry
+(refcounts, canonical-path keys, start/stop races) in the daemon that owns terminals, and a
+shutdown-ordering case against per-connection teardown.
+
+**How to start:** find the `gstack-shortcut(dec-8742d8a5-42ac-4348-827b-9c15d9330f5a)` marker at the
+watcher creation site. Measure FSEvents duplication first; build the shared registry when the Linux
+agent lands.
+
+**Depends on:** Phase 3 Linux agent, or a measured FSEvents problem.
+
+**Priority:** P3 — no cost on the only platform it ships on today.
+
+### Listings above the 4 MiB capture ceiling fail instead of paginating (macapp + wr-agent) — #211 follow-up
+
+**What:** raise the listing-specific cap (the reply ceiling is 16 MiB) or paginate `list`, so very
+large repositories get a tree instead of a "too many files to list" failure.
+
+**Why:** #211 makes an over-cap listing an explicit typed failure on both paths. Before, both paths
+silently returned a stdout cut at an arbitrary byte, possibly mid-filename. A repository above about 70k
+paths now sees an error where it used to see a truncated tree with a bogus last entry.
+
+**Pros:** big monorepos get a usable Files panel. **Cons:** more memory per listing on the agent
+(bounded by the shared `ACTIVE` pool) and, for pagination, a stateful protocol.
+
+**How to start:** confirm users actually hit the error, then raise the cap for `list` only, keeping the
+16 MiB `MAX_RESPONSE` as the hard bound and re-running the differential and boundary tests.
+
+**Depends on:** #211 merged; evidence that the cap is reached.
+
+**Priority:** P3.
 
 ### `XDG_CONFIG_HOME` never reaches the `gh` auth probe (macapp) — gh-flap eng-review follow-up
 
