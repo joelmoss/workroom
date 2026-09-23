@@ -610,10 +610,10 @@ final class FakeAgent: @unchecked Sendable {
     guard bound == 0, listen(listener, 4) == 0 else {
       throw NSError(domain: "FakeAgent", code: Int(errno))
     }
-    let listener = self.listener
+    let listenerFD = self.listener
     DispatchQueue.global().async { [weak self] in
       while true {
-        let client = accept(listener, nil, nil)
+        let client = accept(listenerFD, nil, nil)
         guard client >= 0 else { return }
         self?.lock.withLock { self?.clients.append(client) }
         DispatchQueue.global().async { self?.serve(client, version: version) }
