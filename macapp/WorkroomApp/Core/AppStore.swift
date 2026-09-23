@@ -867,8 +867,8 @@ final class AppStore: ObservableObject {
   /// Keeps the selected workroom's local VCS status live (without polling) by watching its directory
   /// for filesystem changes (issue #24 follow-up). Retargeted on selection; see
   /// `updateSelectedWorkroomWatch` / `handleWorkroomFileChange`.
-  lazy var workroomFileWatcher = WorkroomFileWatcher { [weak self] paths in
-    self?.handleWorkroomFileChange(paths)
+  lazy var workroomFileWatcher = HostFileWatcher { [weak self] paths, overflow in
+    self?.handleWorkroomFileChange(paths, overflow: overflow)
   }
   /// The watcher's local-refresh task — cancel-and-replace so the latest filesystem change wins and
   /// at most one probe from THIS lane is in flight. That alone does NOT serialize jj snapshots
@@ -883,7 +883,12 @@ final class AppStore: ObservableObject {
   /// project (unlike the single `workroomFileWatcher`) because root labels are global, not
   /// selection-scoped. The watch is naturally quiet — working-tree edits don't touch `.git`/`.jj`,
   /// only VCS operations do — and resolution is read-only + deduped, so it can't loop or churn.
-  private var rootBranchWatchers: [Project.ID: WorkroomFileWatcher] = [:]
+  ///
+  /// LOCAL projects only, by design. For a remote clone a worktree's refs live in the same clone as
+  /// the workroom, so this watch collapses into the workroom watch above and there is nothing separate
+  /// to port: the local and remote watch layouts differ on purpose (#211). Every project here is a
+  /// local one today, so the routing needs no host check yet.
+  private var rootBranchWatchers: [Project.ID: HostFileWatcher] = [:]
   /// Per-project re-resolve task (cancel-and-replace) so a burst of metadata writes resolves once.
   private var rootBranchRefreshTasks: [Project.ID: Task<Void, Never>] = [:]
   /// When the project list was last loaded — used to throttle the on-focus refresh.
@@ -3201,7 +3206,7 @@ final class AppStore: ObservableObject {
       let id = p.id
       let watcher =
         rootBranchWatchers[id]
-        ?? WorkroomFileWatcher { [weak self] _ in self?.handleRootBranchChange(projectID: id) }
+        ?? HostFileWatcher { [weak self] _, _ in self?.handleRootBranchChange(projectID: id) }
       rootBranchWatchers[id] = watcher
       watcher.start(path: dir)
     }

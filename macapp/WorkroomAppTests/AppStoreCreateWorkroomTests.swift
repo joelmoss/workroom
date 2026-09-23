@@ -582,6 +582,46 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       "once setup completes the worktree must be probed again")
   }
 
+  /// The jj self-trigger guard, both sides of it. A jj local probe snapshots `@`, which writes under
+  /// `.jj/` and would trip its own watcher forever, so a burst that touched ONLY jj-internal paths is
+  /// ignored — but an `overflow` batch says its path list is incomplete, so the same paths must NOT be
+  /// ignored then, or a refresh after an overflowed burst (or a reconnect's synthetic refresh) would
+  /// be silently dropped. Observed through `watchRefreshTask`, which only a started probe sets.
+  func testAJJInternalOnlyBurstIsIgnoredUnlessItOverflowed() async {
+    let root = NSTemporaryDirectory() + "wr-jj-\(UUID().uuidString)"
+    let wrPath = "\(root)/.workrooms/wr"
+    try? FileManager.default.createDirectory(atPath: wrPath, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: root) }
+    let proj = Project(
+      path: root, vcs: "jj",
+      workrooms: [Workroom(name: "wr", path: wrPath, vcsName: "jj", warnings: [])])
+    let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
+    await store.reload()
+    store.selectedTargetID = SidebarID.workroom(project: root, name: "wr")
+    let internalOnly = ["\(wrPath)/.jj/working_copy/checkout"]
+    func reset() {
+      store.watchRefreshTask?.cancel()
+      store.watchRefreshTask = nil
+    }
+
+    reset()
+    store.handleWorkroomFileChange(internalOnly, overflow: false)
+    XCTAssertNil(store.watchRefreshTask, "a jj-internal-only burst is the snapshot's own write")
+
+    reset()
+    store.handleWorkroomFileChange(internalOnly, overflow: true)
+    XCTAssertNotNil(store.watchRefreshTask, "an overflowed batch cannot be trusted to be internal")
+
+    reset()
+    store.handleWorkroomFileChange([], overflow: true)
+    XCTAssertNotNil(store.watchRefreshTask, "the synthetic refresh after a gap carries no paths")
+
+    reset()
+    store.handleWorkroomFileChange(["\(wrPath)/src/main.swift"], overflow: false)
+    XCTAssertNotNil(store.watchRefreshTask, "a working-tree edit always refreshes")
+    reset()
+  }
+
   /// A landing that arrives after its create has ended (a late `onReady` echo) must record NOTHING:
   /// its create's release points have already run, so a `creatingWorkrooms` insert here would strand
   /// the workroom undeletable — with its status probes suppressed — until relaunch. Reachable only by

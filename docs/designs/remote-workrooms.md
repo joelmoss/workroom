@@ -23,8 +23,10 @@ stayed in `CLIVCSWriter` unmodified — only the `StatusCommandRunning` conforme
 found it reaching opposite verdicts on the two paths because they fed it different input (stale
 environment, a different exit code for a missing tool, and transport failures reported as "never
 ran"). Parity is now three explicit properties rather than an architectural claim — see Next Steps
-item 3. File and notification services remain unbuilt. All four PRs stay draft, stacked,
-until the next stable release cuts from master.
+item 3. The File service is implemented too (#211): directory listing, containment-checked raw reads
+and change notification on `Service::File`, with the app's watch sites routed through it. The GitHub
+status and interchangeability services remain unbuilt. All five PRs stay draft, stacked, until the
+next stable release cuts from master.
 OQ1's gix measurements and OQ21's Swift driver decision are answered. The gix code remains a spike.
 Phases 3 and 4 — persistent remote transport, distribution, provisioning and UI — remain planned.
 The implementation sequence and remaining decisions are in **Next Steps**.
@@ -1932,12 +1934,11 @@ disagreement passes every test on either side alone while presenting as an empty
 
 ## Next Steps
 
-**Corrected 2026-09-18.** Phase 1 is complete, OQ1's feasibility gate is lifted, and items 1, 2 and
-the VCS-writes half of item 3 are implemented on the draft stack (#201, #202, #204, #205) — the
-exact-line-count decision item 1 demanded is delivered, not deferred. File access/notifications,
-GitHub status and interchangeability (the rest of item 3) are the next milestones. The remaining
-work is split into the service milestones below so each layer can be reviewed and landed
-independently.
+**Corrected 2026-09-19.** Phase 1 is complete, OQ1's feasibility gate is lifted, and items 1, 2 and
+the VCS-writes and File halves of item 3 are implemented on the draft stack (#201, #202, #204, #205,
+#211) — the exact-line-count decision item 1 demanded is delivered, not deferred. GitHub status and
+interchangeability (the rest of item 3) are the next milestones. The remaining work is split into the
+service milestones below so each layer can be reviewed and landed independently.
 
 1. **Host-owned connection lifecycle implemented on the stacked branch.** The app-wide manager
    binds remote repository services to a connection generation, fails pending calls on disconnect,
@@ -2052,9 +2053,78 @@ independently.
    `gitLastFetch`, `existingLockFile`) are the one deliberate remaining gap — correct for today's
    local-only agent, and exactly the piece Phase 3's remote transport will need to move host-side.
 
-   - File access and notifications: move directory listing, raw reads and watches behind the agent;
-     preserve coalescing and account for the different local-worktree and remote-clone watch layouts.
-     Reconnect must refresh state and restore subscriptions without leaving stale panels.
+   - **File access and notifications are implemented (#211).** `Service::File` (`0x03`) carries
+     three things, for *local* repositories (remote hosts stay unavailable until Phase 3's
+     transport). The service serves any directory a same-user peer names — containment is relative to
+     the root the client supplies, and a host-side path allowlist is the deferred remote-registration
+     work recorded elsewhere, so it is not a guard this milestone provides. `PROTOCOL_VERSION` is 3 and `MIN_FILE_VERSION` is 3, checked against a
+     peer's raw greeting before any File envelope is sent — a protocol-2 agent silently drops them —
+     and never folded into `negotiate`. A failed File negotiation does not fail the connection: VCS
+     keeps working. **A local host never loses its files to its agent**: a local file is readable
+     without one, so when the agent cannot be obtained (missing from the bundle, failed to start, or
+     too old — it outlives the app, so this is the normal state on the first launch after every update
+     for anyone with a terminal still open) the router returns a provider that lists and reads
+     natively, and when a working agent fails mid-request at the TRANSPORT level (connection lost,
+     timeout, exhausted budget, replaced generation, undecodable reply) the same idempotent request is
+     re-run natively. Nothing else falls back: a real answer from a healthy agent (refused, too
+     large, not found, truncated, lock contention) is the answer, and cancellation propagates. A
+     failed acquisition makes the file service fail fast for 5s so a persistently dead agent does not
+     cost every call a spawn-and-handshake wait. `watch` is the exception that keeps trying: it throws
+     while the agent is unavailable, so the watcher runs local FSEvents in the meantime and retries the
+     agent with backoff. A REMOTE host has no native path, so its unavailability stays an explicit
+     failure rather than empty data.
+
+     *Listing* takes no argv from the client. The two commands are fixed in the agent, chosen by
+     `backend`, and the Swift side keeps its git-then-jj loop so a colocated jj repository still
+     lists through immutable git. The result comes back raw (stdout/stderr/exit/timed-out/signaled)
+     and `FileListing.parse` stays the only parser. The jj branch takes `SnapshotLock` and hands the
+     barrier descriptor to the child, so agent death does not free the lock under a snapshotting
+     `jj`; the client-side `JJSnapshotGate` wrapper is gone from the agent path (holding both
+     self-deadlocks for 30s) and stays on the native fallback. A listing past the 4 MiB capture cap
+     is a typed failure on both paths, never a tree cut off mid-filename.
+
+     *Reads* verify the opened descriptor, not the path: open non-blocking (so a FIFO cannot hang
+     the agent), ask the kernel where the descriptor points (`F_GETPATH`), require it under the
+     root's real path by component, require a regular file, and check the size before reading.
+     One function serves two symlink policies — the viewer follows links that stay inside the root,
+     diff highlighting refuses a leaf link because a link's diff is its target's path text. The
+     native path was hardened to the same descriptor-verified read and one matrix runs against
+     both, since the two client-side checks it replaced differed from each other and neither
+     guarded against a FIFO.
+
+     *Notification* is the one new protocol mechanism: agent-initiated frames. Events travel on
+     **stream 0 of the File service**, one stream per connection, discriminated by a
+     client-chosen subscription id — a stream per subscription would let an `unwatch` race an
+     in-flight event onto a forgotten stream, which the client treats as a violation and answers by
+     failing the whole connection. An event for an unknown id is dropped. The agent is the watcher
+     (`notify`: FSEvents now, inotify in Phase 3) and owns the leading + trailing coalescer, because
+     an uncoalesced burst is ~70 callbacks a second and a consumer that re-probes per callback forks
+     git/jj at that rate; a sustained burst costs about two deliveries. `notify` reports per-file,
+     per-flag events (an in-place save measured 4 within 0.1ms, an atomic save 6) where the old
+     directory-granularity FSEvents stream reported one, so the leading edge waits a 50ms settle:
+     without it every ordinary save was two panel refreshes, a leading one and a trailing one a second
+     later. The buffer between the OS watcher and the coalescer is bounded and overflows into the
+     `overflow` flag rather than growing behind a slow client. Events carry absolute host
+     paths (capped at 2048, non-`.git`/`.jj` first) plus an `overflow` flag that every consumer
+     filter treats as relevant. Subscriptions belong to the connection and stop with it; they take no
+     request permit (a resource, capped at 64 per connection, not a request in flight). A client that
+     stops reading is evicted by *closing its connection*, so it reconnects into a new generation
+     rather than showing a panel that silently stopped updating. `HostFileWatcher` owns the client
+     half: routing, re-acquiring a connection whenever a subscription ends (the manager never
+     reconnects by itself), one synthetic refresh per gap, and a local FSEvents fallback so a panel
+     is never left with no watch. The per-project `.git`/`.jj` watch is not ported to the remote
+     topology: for a remote clone it collapses into the workroom watch, so the two layouts differ by
+     design.
+
+     Cancellation on this path only abandons the *wait*, as it does everywhere else: there is still
+     no cancel message, so the host keeps listing. `FileTreeModel.reload()` therefore keeps one
+     listing in flight plus one follow-up instead of cancelling and restarting on every watch event.
+     Recorded shortcut: one OS watcher per subscription, so two windows on one workroom duplicate
+     watches (a real inotify-limit concern on Linux); sharing one per root is the fix. Errors are the
+     agent's own `FileError`, not `VcsError`, because `build-apple.sh` hashes `wr-vcs-model`. Adding
+     `notify` changed `Cargo.lock`, which it also hashes, so the first build after this lands
+     rebuilds the VCS xcframework once. Not done here: remote file access, listing pagination past
+     the cap, a watch heartbeat, and agent-side request cancel.
    - GitHub status: keep `gh` on the Mac and supply explicit repository identity rather than a
      remote working directory; exercise both Git and JJ badge resolution.
    - Interchangeability services: implement port forwarding, terminal-state durability and the

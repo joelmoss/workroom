@@ -29,6 +29,10 @@ thiserror = { workspace = true }
 libc = "0.2"
 serde = { workspace = true }
 serde_json = "1"
+# Filesystem change notification for the File service (FSEvents on macOS, inotify on Linux). Adding it
+# changes Cargo.lock, which `build-apple.sh` hashes, so the first build after this lands rebuilds the
+# VCS xcframework once even though nothing wr-vcs-uniffi links changed.
+notify = "8"
 wr-vcs-core = { path = "../wr-vcs-core" }
 wr-vcs-git = { path = "../wr-vcs-git" }
 wr-vcs-model = { path = "../wr-vcs-model" }

@@ -58,6 +58,10 @@ input_hash() {
     find crates -type f -not -path '*/target/*' \
       -not -path 'crates/wr-agent/*' -not -path 'crates/wr-vcs-git/*' \
       -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256
+    # Cargo.lock is hashed for the WHOLE workspace, so a dependency added to a crate excluded above
+    # (wr-agent's `notify`) still moves this hash and forces one rebuild — even though nothing
+    # wr-vcs-uniffi links changed. That is the cost of hashing the lockfile rather than resolving
+    # the dependency closure, and it is the safe direction: see the denylist note above.
     shasum -a 256 Cargo.toml Cargo.lock
     if [ -d .cargo ]; then
       find .cargo -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256
