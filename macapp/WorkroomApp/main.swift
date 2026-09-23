@@ -54,4 +54,20 @@ if invokedAsGhosttyCLI {
   exit(1)
 }
 
+#if DEBUG
+  // Hosted unit tests only. libghostty snapshots `environ` at `ghostty_init` and keeps reading that
+  // fixed-length copy, so a test that later ADDS or REMOVES a process variable can leave it reading
+  // freed memory — the next `ghostty_surface_new` in that test host segfaults. Overwriting a
+  // variable that already exists never resizes or moves the `environ` array (measured), which is
+  // all the engine's copy spans, so the one variable tests must set
+  // process-wide (in-process jj-lib reads `JJ_CONFIG` at call time) is seeded here, before any
+  // init. An empty file, so no test host reads the developer's own jj config either — the same
+  // configuration CI already runs with.
+  if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+    let path = NSTemporaryDirectory() + "wr-tests-jj-\(getpid()).toml"
+    FileManager.default.createFile(atPath: path, contents: Data())
+    setenv("JJ_CONFIG", path, 1)
+  }
+#endif
+
 WorkroomApp.main()

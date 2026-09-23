@@ -643,7 +643,8 @@ final class PortForwardingModelTests: XCTestCase {
     lease: HostConnectionManager.Lease,
     forwarding: (@Sendable () async throws -> (HostConnectionManager.Lease, AgentForwardService))? =
       nil,
-    refusal: String? = nil, refusals: Int = .max
+    refusal: String? = nil, refusals: Int = .max,
+    current override: (@Sendable () async -> HostConnectionManager.Lease?)? = nil
   ) async throws -> PortForwardingModel {
     let agent = try FakeAgent(
       version: 5, forward: true, forwardRefusal: refusal, forwardRefusals: refusals)
@@ -661,7 +662,7 @@ final class PortForwardingModelTests: XCTestCase {
       transport: .init(
         forwarding: forwarding ?? { (lease, service) },
         updates: { stream },
-        current: { current.get() }))
+        current: override ?? { current.get() }))
     models.append(model)
     return model
   }
@@ -818,6 +819,80 @@ final class PortForwardingModelTests: XCTestCase {
     XCTAssertNil(model.message)
   }
 
+  /// The other order: `add()` finishes on the reconnected lease FIRST, and only then does the watch
+  /// receive the old disconnect. That stale snapshot must not drop the new forward.
+  func testALateDisconnectDoesNotDropAForwardMadeOnTheReconnectedLease() async throws {
+    let first = lease()
+    let second = lease()
+    let held = try await service(on: second)
+    let current = self.current
+    let model = try await model(lease: first) {
+      // The manager already reconnected when `add()` asked.
+      current.set(second)
+      return held
+    }
+    model.watch()
+    await settle("the watch did not see the connection") { model.connected }
+    model.draft = "5173"
+    await model.add()
+    XCTAssertEqual(model.forwards.map(\.lease), [second])
+
+    // Delivered late: the disconnect of the connection `add()` never used.
+    let seen = model.snapshotsSeen
+    continuation?.yield(HostConnectionManager.Snapshot(lease: first, status: .disconnected))
+    await settle("the late snapshot was not consumed") { model.snapshotsSeen > seen }
+    XCTAssertEqual(model.forwards.map(\.lease), [second], "a stale disconnect dropped it")
+    XCTAssertTrue(model.connected)
+  }
+
+  /// The watch's read answered "disconnected" before `add()` made a forward on the reconnected
+  /// lease, and resumed after it. Judging the new row by that read closed a live forward.
+  func testAWatchReadThatPredatesAnAddDoesNotDropItsForward() async throws {
+    let first = lease()
+    let second = lease()
+    let held = try await service(on: second)
+    let current = self.current
+    let gate = Gate()
+    let reads = Reads()
+    let model = try await model(
+      lease: first,
+      forwarding: {
+        current.set(second)
+        return held
+      },
+      current: { [gate] in
+        // The second read is the watch's, for the disconnect below: hold it across the add.
+        guard reads.next() == 2 else { return current.get() }
+        await gate.wait()
+        return nil
+      })
+    model.watch()
+    await settle("the watch did not see the connection") { model.connected }
+    current.set(nil)
+    continuation?.yield(HostConnectionManager.Snapshot(lease: first, status: .disconnected))
+    await settle("the watch never started its read") { reads.count >= 2 }
+
+    model.draft = "5173"
+    await model.add()
+    XCTAssertEqual(model.forwards.map(\.lease), [second])
+
+    let seen = model.snapshotsSeen
+    await gate.open()
+    await settle("the held read never resumed") { model.snapshotsSeen > seen }
+    XCTAssertEqual(model.forwards.map(\.lease), [second], "a read older than the row dropped it")
+  }
+
+  private func service(on lease: HostConnectionManager.Lease) async throws -> (
+    HostConnectionManager.Lease, AgentForwardService
+  ) {
+    let agent = try FakeAgent(version: 5, forward: true)
+    fakes.append(agent)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: agent.socketPath)
+    connections.append(connection)
+    return (lease, try connection.forwarding())
+  }
+
   /// Two adds in flight at once (a click and a Return) make one listener, not two.
   func testASecondAddWhileOneIsInFlightIsIgnored() async throws {
     let first = lease()
@@ -927,6 +1002,19 @@ actor Gate {
     opened = true
     for waiter in waiters { waiter.resume() }
     waiters = []
+  }
+}
+
+/// Counts `current()` reads, which arrive from the watch's task and `add()` alike.
+final class Reads: @unchecked Sendable {
+  private let lock = NSLock()
+  private var calls = 0
+  var count: Int { lock.withLock { calls } }
+  func next() -> Int {
+    lock.withLock {
+      calls += 1
+      return calls
+    }
   }
 }
 

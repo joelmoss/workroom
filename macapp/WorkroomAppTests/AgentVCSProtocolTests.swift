@@ -238,10 +238,12 @@ final class AgentVCSProtocolTests: XCTestCase {
       "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
       "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     ]
-    for key in keys { setenv(key, "/tmp/some-other-repo", 1) }
-    defer { for key in keys { unsetenv(key) } }
+    // Not `setenv`: see `childEnvironment`'s `inherited` — mutating this process's environment
+    // crashes a later libghostty surface in the same test host.
+    var inherited = ProcessInfo.processInfo.environment
+    for key in keys { inherited[key] = "/tmp/some-other-repo" }
     for network in [false, true] {
-      let env = StatusCommandRunner.childEnvironment(network: network)
+      let env = StatusCommandRunner.childEnvironment(network: network, inherited: inherited)
       for key in keys {
         XCTAssertNil(env[key], "\(key) reached the child (network: \(network))")
       }

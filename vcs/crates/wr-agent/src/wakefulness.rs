@@ -252,7 +252,7 @@ fn closure(roots: &[i32], kids: &HashMap<i32, Vec<i32>>) -> HashSet<i32> {
 /// set along with every one of its descendants, and could then burn CPU indefinitely without ever
 /// voting BUSY. A process that IS part of a live session's tree is never excluded by name: only a
 /// `cron`/`wr-wakeshim` outside every session — the real housekeeping daemon this list exists for —
-/// still is. `roots` is carried by `Sample` already (see its doc); the ten golden fixtures contain
+/// still is, along with its descendants that are not session work. `roots` is carried by `Sample` already (see its doc); the ten golden fixtures contain
 /// no process named `cron` or `wr-wakeshim`, so this cannot change what they replay to.
 fn candidates<'a>(procs: &'a [Proc], roots: &[i32], boundary: &Boundary) -> Vec<&'a Proc> {
     let mut kids: HashMap<i32, Vec<i32>> = HashMap::new();
@@ -279,7 +279,9 @@ fn candidates<'a>(procs: &'a [Proc], roots: &[i32], boundary: &Boundary) -> Vec<
             .filter(|p| EXCLUDED_SELF_ONLY.contains(&p.comm.as_str()))
             .map(|p| p.pid),
     );
-    excluded.extend(closure(&daemons, &kids));
+    // Minus the session trees: a real `cron` can be an ANCESTOR of a session root (an agent started
+    // by an `@reboot` job), and its closure would otherwise sweep every session out with it.
+    excluded.extend(closure(&daemons, &kids).difference(&protected));
     excluded.extend(daemons);
     procs
         .iter()
