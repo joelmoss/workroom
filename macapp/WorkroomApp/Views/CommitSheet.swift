@@ -326,6 +326,10 @@ struct CommitSheet: View {
       if phase == .committing {
         ProgressView().controlSize(.small)
         Text("Running hooks…").font(.caption).foregroundStyle(.secondary)
+      } else if preflightState.isLoading {
+        ProgressView().controlSize(.small)
+        Text("Reading repository…").font(.caption).foregroundStyle(.secondary)
+          .accessibilityIdentifier("commit.preflight")
       }
       Spacer(minLength: 0)
       // Disabled mid-commit, Escape included. The subprocess cannot be called back — a hook is
@@ -348,7 +352,9 @@ struct CommitSheet: View {
       }
       .keyboardShortcut(.defaultAction)
       .buttonStyle(.borderedProminent)
-      .disabled(blockedReason != nil || phase == .committing || isSpent)
+      .disabled(
+        blockedReason != nil || phase == .committing || isSpent || preflightState.isLoading
+      )
       .help(isJJ ? "Describe this change and start a new one on top" : "Commit the selected files")
       .accessibilityIdentifier("commit.commit")
     }
@@ -368,7 +374,10 @@ struct CommitSheet: View {
     Button(isJJ ? "Describe" : "Amend last commit") {
       commit(mode: isJJ ? .describe : .amendMessage)
     }
-    .disabled(secondaryBlockedReason != nil || phase == .committing || isSpent)
+    .disabled(
+      secondaryBlockedReason != nil || phase == .committing || isSpent
+        || preflightState.isLoading
+    )
     .help(
       isJJ
         ? "Set this change’s message and stay on it, instead of starting a new change (jj describe)"

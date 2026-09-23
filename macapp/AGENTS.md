@@ -86,12 +86,16 @@ identity; native engines implement `LocalVCSProviding` behind its local adapter.
 maps `WrVcs.*` → app-native models, and `GitProvider` wraps SwiftGitX. `WorkroomStatusResolver` and `BranchResolver` read through this layer — **the jj CLI
 parsers are gone** (log/changeset/currentRef/workingStatus are all native jj-lib).
 
-**The one mutating read: `RustJJProvider.workingStatus`.** jj's working copy is itself a commit, so
-on-disk edits don't exist to jj-lib until snapshotted — a working-copy status read therefore *must*
-snapshot `@` first: it takes the working-copy lock and rewrites `@` (modeled on jayjay's
-`refresh_working_copy`). Everything else (log/changeset/currentRef) is a read-only `load_at_head`
-with no lock. Because it mutates, **only test snapshot changes on throwaway repos** (corruption
-risk). Line counts come from the SAME native read — `changed_files` materializes each changed file's
+**The two mutating reads: jj working-copy status and working-copy diffs.** jj's working copy is
+itself a commit, so on-disk edits don't exist to jj-lib until snapshotted — a working-copy status
+read (`RustJJProvider.workingStatus`) therefore *must* snapshot `@` first: it takes the working-copy
+lock and rewrites `@` (modeled on jayjay's `refresh_working_copy`). A working-copy file diff
+(`workingFileDiff` with base `.workingCopy`) runs `jj diff` without `--ignore-working-copy`, so it
+snapshots too. `BoundLocalReader` routes both through `JJSnapshotGate` and requires the context's
+shared ownership (`requireOwnership()`), so an unregistered repository cannot snapshot. Immutable
+revision reads (log/changeset/currentRef) stay a read-only `load_at_head` with no lock and no gate.
+Because they mutate, **only test snapshot changes on throwaway repos** (corruption risk). Status
+line counts come from the SAME native status read — `changed_files` materializes each changed file's
 two sides and counts them, so `resolveJJ` fires no `jj diff --stat` process (it used to; see
 `40456bae`). Oversized and binary files report no count rather than being read whole. Cargo coverage:
 `vcs/crates/wr-vcs-core/tests/working_status.rs` + `line_stats.rs`; Swift coverage:

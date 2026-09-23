@@ -163,6 +163,8 @@ struct CommitPreflightState {
   private enum State { case idle, loading, ready, failed }
   private var state: State = .idle
   var isReady: Bool { state == .ready }
+  /// The sheet's actions are disabled while this is true: a click would only be rejected by `begin()`.
+  var isLoading: Bool { state == .loading }
 
   mutating func begin() -> Bool {
     guard state == .idle || state == .failed else { return false }
