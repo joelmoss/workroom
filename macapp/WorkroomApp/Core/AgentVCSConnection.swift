@@ -21,6 +21,10 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     var bytes = Data()
   }
   private var pending: [UInt32: Pending] = [:]
+  /// When the envelope `send` now running on `writes` started, or nil between sends. One envelope is
+  /// at most `maxEnvelopePayload`, so a send still running after half a request's timeout means the
+  /// peer is connected but not reading: the transport is wedged. See the deadline in `request`.
+  private var sendStarted: Date?
   /// Live watch subscriptions, keyed by the client-chosen id the agent echoes in every event. Read by
   /// `receive()` for each event and cleared by `fail()`, so both hold `lock`.
   private var watchHandlers: [UInt64: @Sendable (FileWatchEvent) -> Void] = [:]
@@ -157,8 +161,11 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       let reply = try await connection.request(
         AgentVCSRequest(method: "capabilities"), timeout: 2)
       let capabilities = try AgentVCSReply<AgentVCSCapabilities>.decode(reply)
+      // `backendVersion`, not `serviceUnavailable`: an agent that answers but speaks different reads
+      // (a newer one left running across an app rollback — it outlives the app and may own
+      // terminals) is not transient, and `backendVersion` is what the router serves natively on.
       guard capabilities.version == 1, capabilities.reads == 9 else {
-        throw HostConnectionError.serviceUnavailable("Agent does not support these VCS reads.")
+        throw VCSError.backendVersion("Agent does not support these VCS reads.")
       }
       // Not yet shared with any other caller, so a plain lock-guarded write is enough — no
       // concurrent reader can observe a half-set value.
@@ -172,13 +179,16 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       // stale socket, which is the common case rather than an exotic one (the daemon leaves
       // `session.sock` behind on any `pkill`).
       //
-      // Only this case. A `capabilities` reply that arrives and says the agent is incompatible, and a
-      // handshake that times out against a HUNG agent (`.requestTimedOut` — which is the reason that
-      // case exists; it used to arrive here as `.connectionLost` and take the respawn path), are both
-      // still `serviceUnavailable`: a respawn cannot fix either, since the second candidate exits
-      // without binding while the first holds the single-instance flock.
+      // Only this case. A handshake that times out against a HUNG agent (`.requestTimedOut` — which
+      // is the reason that case exists; it used to arrive here as `.connectionLost` and take the
+      // respawn path) is still `serviceUnavailable`: a respawn cannot fix it, since the second
+      // candidate exits without binding while the first holds the single-instance flock. An agent
+      // that answers `capabilities` as incompatible is `backendVersion` (below), served natively.
       await connection.close()
       throw HostConnectionError.connectionLost
+    } catch VCSError.backendVersion(let detail) {
+      await connection.close()
+      throw VCSError.backendVersion(detail)
     } catch {
       await connection.close()
       throw HostConnectionError.serviceUnavailable("VCS negotiation failed: \(error)")
@@ -327,8 +337,8 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       defer { then?() }
       guard lock.withLock({ !closed }) else { return }
       do {
-        try Self.send(
-          descriptor, Self.envelope(service: Self.forwardService, stream: stream, payload: payload))
+        try sendOnWrites(
+          Self.envelope(service: Self.forwardService, stream: stream, payload: payload))
       } catch {
         fail(error)
       }
@@ -506,20 +516,44 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           guard lock.withLock({ !closed }) else { return }
           do {
             for payload in Self.payloads(for: bytes, chunked: chunked) {
-              try Self.send(
-                descriptor, Self.envelope(service: service, stream: stream, payload: payload))
+              try sendOnWrites(Self.envelope(service: service, stream: stream, payload: payload))
             }
           } catch {
             fail(error)
           }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
-          self?.timeoutStream(stream, error: HostConnectionError.connectionLost)
+          guard let self else { return }
+          // The send timeout is off after the handshake (see `connect`), so a peer that stops
+          // reading leaves `send` blocked for good on the serial `writes` queue, and every later
+          // write queues behind it. Failing only this stream would leave that connection in use
+          // forever; failing the connection shuts the socket down, which unblocks the send, and the
+          // next acquisition reconnects. Judged by the send in progress, not by whether this
+          // stream's own bytes went out: a request merely queued behind a send that is still
+          // making progress (a large chunked exec) is a slow queue, not a wedged transport.
+          // ponytail: half the timeout is a heuristic stall bound; a remote host on a slow link
+          // might need a per-host floor.
+          let stalled = lock.withLock {
+            self.sendStarted.map { Date().timeIntervalSince($0) >= timeout / 2 } ?? false
+          }
+          if stalled {
+            fail(HostConnectionError.connectionLost)
+          } else {
+            timeoutStream(stream, error: HostConnectionError.connectionLost)
+          }
         }
       }
     } onCancel: {
       cancellation.fire()
     }
+  }
+
+  /// `Self.send` on the connection's descriptor, for the `writes` queue only, recording when it
+  /// started so a request deadline can tell a stalled send from a slow queue.
+  private func sendOnWrites(_ data: Data) throws {
+    lock.withLock { sendStarted = Date() }
+    defer { lock.withLock { sendStarted = nil } }
+    try Self.send(descriptor, data)
   }
 
   private static func send(_ fd: Int32, _ data: Data) throws {

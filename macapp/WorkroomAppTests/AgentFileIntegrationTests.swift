@@ -129,6 +129,53 @@ final class AgentFileIntegrationTests: XCTestCase {
     await connection.close()
   }
 
+  /// An agent that greets fine but answers `capabilities` with reads this client doesn't speak — a
+  /// newer agent left running across an app rollback — is a version fact, not an outage. It must be
+  /// `backendVersion`, the one error the router serves natively on, not `serviceUnavailable`, which
+  /// left every local repository unreadable until the agent restarted.
+  func testIncompatibleVCSCapabilitiesReportBackendVersion() async throws {
+    let fake = try FakeAgent(
+      version: 3, capabilities: #"{"version":1,"result":{"version":2,"reads":12,"exec":2}}"#)
+    fakes.append(fake)
+    do {
+      let connection = try await AgentVCSConnection.connect(
+        host: .local, socketPath: fake.socketPath)
+      connections.append(connection)
+      XCTFail("an incompatible agent must not connect")
+    } catch VCSError.backendVersion {
+    } catch {
+      XCTFail("expected backendVersion, got \(error)")
+    }
+  }
+
+  /// A peer that stays connected but stops reading leaves `send` blocked on the serial write queue
+  /// (the send timeout is off after the handshake). Timing out only the stuck request left the
+  /// connection in use, so every later request queued behind that send and timed out in turn. The
+  /// stuck request's deadline must retire the connection, so the next request fails at once and the
+  /// next acquisition reconnects.
+  func testARequestStuckBehindAPeerThatStoppedReadingRetiresTheConnection() async throws {
+    let fake = try FakeAgent(version: 2, stallAfterCapabilities: true)
+    fakes.append(fake)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: fake.socketPath)
+    connections.append(connection)
+    // Far larger than a Unix socket's send buffer, and under the one-envelope ceiling.
+    let stuck = AgentVCSRequest(method: "status", path: String(repeating: "x", count: 900_000))
+    do {
+      _ = try await connection.request(stuck, timeout: 0.5)
+      XCTFail("a peer that never reads cannot answer")
+    } catch {}
+    let started = Date()
+    do {
+      _ = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
+      XCTFail("the wedged connection must be retired")
+    } catch {
+      XCTAssertEqual(error as? HostConnectionError, .connectionLost)
+    }
+    XCTAssertLessThan(
+      Date().timeIntervalSince(started), 1, "must fail at once, not queue behind the stuck send")
+  }
+
   /// A protocol-3 peer HAS the service, so a probe that goes unanswered is a transient failure, not
   /// proof of an old agent. Reporting `backendVersion` here silently selected native access for the
   /// connection's whole life; it must be an explicit failure (and retire the connection so the next
@@ -642,6 +689,10 @@ final class FakeAgent: @unchecked Sendable {
     }
   }
 
+  /// The VCS `capabilities` reply body.
+  private let capabilities: Data
+  /// Stop reading the client's socket (without closing it) once `capabilities` is answered.
+  private let stallAfterCapabilities: Bool
   private let forward: Bool
   private let forwardRefusal: String?
   private let forwardEpilogue: Int
@@ -660,8 +711,12 @@ final class FakeAgent: @unchecked Sendable {
   init(
     version: UInt16, status: Bool = false, forward: Bool = false, forwardRefusal: String? = nil,
     forwardEpilogue: Int = 0, forwardReplies: Int = 1, forwardReplyBody: Data? = nil,
-    forwardRefusals: Int = .max, forwardEpilogueOnData: Bool = false
+    forwardRefusals: Int = .max, forwardEpilogueOnData: Bool = false,
+    capabilities: String = #"{"version":1,"result":{"version":1,"reads":9,"exec":2}}"#,
+    stallAfterCapabilities: Bool = false
   ) throws {
+    self.capabilities = Data(capabilities.utf8)
+    self.stallAfterCapabilities = stallAfterCapabilities
     self.forward = forward
     self.forwardRefusal = forwardRefusal
     self.forwardEpilogue = forwardEpilogue
@@ -736,7 +791,7 @@ final class FakeAgent: @unchecked Sendable {
         let body: Data
         switch bytes[0] {
         case 2 where request.contains("capabilities"):
-          body = Data(#"{"version":1,"result":{"version":1,"reads":9,"exec":2}}"#.utf8)
+          body = capabilities
         case 4 where status && request.contains("keep"):
           body = Data(#"{"version":1,"result":{"kept":true}}"#.utf8)
         case 4 where status:
@@ -752,6 +807,7 @@ final class FakeAgent: @unchecked Sendable {
         reply.append(1)
         reply.append(body)
         _ = reply.withUnsafeBytes { send(client, $0.baseAddress, $0.count, 0) }
+        if stallAfterCapabilities && bytes[0] == 2 { return }
       }
     }
   }

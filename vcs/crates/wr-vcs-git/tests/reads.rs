@@ -125,6 +125,115 @@ fn copied_file_patch_excludes_modified_source_and_counts_match_git() {
     assert_eq!(patch.matches("diff --git ").count(), 1);
 }
 
+/// One file's patch must not depend on the rest of the comparison: a sibling with non-UTF-8 text
+/// (which git still diffs as text) or a sibling whose patch alone passes `MAX_OUTPUT` used to fail
+/// every file in the commit, because the whole comparison was read and decoded.
+#[test]
+fn a_file_patch_survives_a_non_utf8_or_oversized_sibling() {
+    let repo = Repo::new();
+    repo.write("small", "one\n");
+    repo.commit();
+    repo.write("small", "two\n");
+    std::fs::write(repo.0.join("latin1"), b"caf\xe9\n").unwrap();
+    let big: String = (0..300_000).map(|i| format!("line {i:030}\n")).collect();
+    assert!(big.len() > 8 * 1024 * 1024);
+    repo.write("big", &big);
+    let id = repo.commit();
+    let change = vcs::changeset(&repo.0, &id).unwrap();
+    let patch = diff::committed_patch(&repo.0, &change.commit, "small").unwrap();
+    assert!(patch.contains("-one") && patch.contains("+two"));
+    assert_eq!(patch.matches("diff --git ").count(), 1);
+}
+
+/// `.git/config` is not versioned and so not trusted: a filter driver defined there runs its
+/// `clean` command during `status` and a working-tree `diff` for any stat-dirty file it selects.
+/// The edit keeps the size unchanged, so git has to hash the file, which is when it filters.
+#[test]
+fn a_repository_filter_driver_never_runs_during_reads() {
+    let repo = Repo::new();
+    let marker = repo.0.join("ran");
+    repo.write(".gitattributes", "file filter=evil\n");
+    repo.write("file", "base\n");
+    repo.commit();
+    // Configured after the commit, so the fixture's own `git add` never runs it.
+    let clean = format!("touch '{}'; cat", marker.display());
+    repo.git(&["config", "filter.evil.clean", &clean]);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    repo.write("file", "bass\n");
+    let status = diff::working_status(&repo.0).unwrap();
+    assert!(status.files.iter().any(|f| f.path == "file"));
+    assert!(diff::working_patch(&repo.0, "file")
+        .unwrap()
+        .contains("+bass"));
+    assert!(
+        !marker.exists(),
+        "a filter from .git/config ran during a read"
+    );
+}
+
+/// `[filter ""]` is a valid driver (`filter=` selects it), and an empty name is exactly what a
+/// `.+` in the key pattern would have skipped.
+#[test]
+fn an_empty_named_repository_filter_driver_never_runs_during_reads() {
+    let repo = Repo::new();
+    let marker = repo.0.join("ran");
+    repo.write(".gitattributes", "file filter=\n");
+    repo.write("file", "base\n");
+    repo.commit();
+    let config = repo.0.join(".git/config");
+    let mut text = std::fs::read_to_string(&config).unwrap();
+    text.push_str(&format!(
+        "[filter \"\"]\n\tclean = \"touch '{}'; cat\"\n",
+        marker.display()
+    ));
+    std::fs::write(&config, text).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    repo.write("file", "bass\n");
+    diff::working_status(&repo.0).unwrap();
+    assert!(diff::working_patch(&repo.0, "file")
+        .unwrap()
+        .contains("+bass"));
+    assert!(!marker.exists(), "an empty-named driver ran during a read");
+}
+
+/// A submodule's config lives under the superproject's untrusted `.git/modules/`, and a
+/// working-tree `status`/`diff` runs a `status` inside every submodule, which applies its filters.
+#[test]
+fn a_submodule_filter_driver_never_runs_during_reads() {
+    let sub = Repo::new();
+    sub.write(".gitattributes", "file filter=evil\n");
+    sub.write("file", "base\n");
+    sub.commit();
+    let repo = Repo::new();
+    repo.write("top", "top\n");
+    repo.commit();
+    repo.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        sub.0.to_str().unwrap(),
+        "sub",
+    ]);
+    repo.commit();
+    let marker = repo.0.join("ran");
+    let clean = format!("touch '{}'; cat", marker.display());
+    diff::run_with_env(
+        &repo.0.join("sub"),
+        "git",
+        &["config", "filter.evil.clean", &clean],
+        &[
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_SYSTEM", "/dev/null"),
+        ],
+    )
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::fs::write(repo.0.join("sub/file"), "bass\n").unwrap();
+    diff::working_status(&repo.0).unwrap();
+    assert!(!marker.exists(), "a submodule's filter ran during a read");
+}
+
 #[test]
 fn rename_newline_path_and_missing_final_newline() {
     let repo = Repo::new();
