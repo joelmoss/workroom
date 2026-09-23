@@ -405,8 +405,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// Where an operation must run.
   ///
   /// **fetch always runs at the project root, for both backends.** For jj because a secondary
-  /// workspace has no `.git` (the rule `WorkroomStatusResolver.ghProbeDirectory` already encodes for
-  /// `gh`). For git because `FETCH_HEAD` is **per-worktree** — fetching inside a workroom would leave
+  /// workspace has no `.git` (the same reason `gh` used to have to run there, until its probes named
+  /// their repository explicitly — see `WorkroomStatusResolver.ghDirectory`). For git because
+  /// `FETCH_HEAD` is **per-worktree** — fetching inside a workroom would leave
   /// the project and every sibling workroom reading "never fetched" while their remote refs were
   /// perfectly fresh. At the root it's one fact every workroom of the project agrees on.
   ///

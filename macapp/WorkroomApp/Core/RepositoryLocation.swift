@@ -99,6 +99,10 @@ final class RepositoryRouter: @unchecked Sendable {
   struct Entry: Hashable, Sendable {
     let backend: RepositoryBackend
     let sharedLocation: RepositoryLocation
+    /// The GitHub repository this registration is a checkout of, when the registrant knows it. A
+    /// local host leaves it nil (its identity comes from its own git remote); a remote host has no
+    /// checkout on this Mac, so the identity is registered with it (issue #207).
+    let github: GitHubRepository?
   }
 
   struct Registration: Sendable {
@@ -108,12 +112,13 @@ final class RepositoryRouter: @unchecked Sendable {
 
     init(
       location: RepositoryLocation, backend: RepositoryBackend,
-      sharedLocation: RepositoryLocation, localSourcePath: String? = nil
+      sharedLocation: RepositoryLocation, localSourcePath: String? = nil,
+      github: GitHubRepository? = nil
     ) throws {
       guard location.host == sharedLocation.host else { throw RepositoryRoutingError.mixedHosts }
       self.location = location
       self.localSourcePath = localSourcePath
-      self.entry = Entry(backend: backend, sharedLocation: sharedLocation)
+      self.entry = Entry(backend: backend, sharedLocation: sharedLocation, github: github)
     }
   }
 
@@ -310,21 +315,51 @@ final class RepositoryRouter: @unchecked Sendable {
     return LocalFallbackFileProvider(primary: agent, fallback: native)
   }
 
-  func registeredContext(for location: RepositoryLocation) throws -> RepositoryContext {
+  private func registeredEntry(for location: RepositoryLocation) throws -> Entry {
     guard let entry = entry(for: location) else {
       if location.host == .local { throw RepositoryRoutingError.registrationRequired }
       throw RepositoryRoutingError.unavailable(location.host)
     }
+    return entry
+  }
+
+  func registeredContext(for location: RepositoryLocation) throws -> RepositoryContext {
+    let entry = try registeredEntry(for: location)
     return try RepositoryContext(
       location: location, backend: entry.backend,
       sharedLocation: entry.sharedLocation)
   }
 
+  /// GitHub status for a REGISTERED location, bound to the identity it was registered with. The one
+  /// way to build a service from a registration: context and identity come from the same captured
+  /// entry, so a caller (a PR write, a sweep) cannot end up with one and not the other.
+  func registeredGitHub(
+    for location: RepositoryLocation,
+    resolver: WorkroomStatusResolver = WorkroomStatusResolver()
+  ) throws -> RepositoryGitHub {
+    try makeGitHub(for: location, entry: registeredEntry(for: location), resolver: resolver)
+  }
+
+  private func makeGitHub(
+    for location: RepositoryLocation, entry: Entry, resolver: WorkroomStatusResolver
+  ) throws -> RepositoryGitHub {
+    try RepositoryGitHub(
+      context: RepositoryContext(
+        location: location, backend: entry.backend, sharedLocation: entry.sharedLocation),
+      resolver: resolver, repository: entry.github)
+  }
+
+  /// A registered location goes through `registeredGitHub`; an unregistered LOCAL one is probed, so
+  /// it can still be read (status only — a write needs a registration).
   func gitHub(
     for location: RepositoryLocation,
     resolver: WorkroomStatusResolver = WorkroomStatusResolver()
   ) async throws -> RepositoryGitHub {
-    try RepositoryGitHub(context: await context(for: location), resolver: resolver)
+    // ONE registry read: a registration cleared between two reads must fall through to the probe.
+    if let entry = entry(for: location) {
+      return try makeGitHub(for: location, entry: entry, resolver: resolver)
+    }
+    return try RepositoryGitHub(context: await context(for: location), resolver: resolver)
   }
 
   func writer(for location: RepositoryLocation) async throws -> VCSWriting {

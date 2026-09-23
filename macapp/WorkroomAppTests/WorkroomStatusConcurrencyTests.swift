@@ -48,10 +48,49 @@ private struct MissingToolRunner: StatusCommandRunning {
   }
 }
 
+/// Counts `gh repo view` (the repository lookup) and `gh api graphql` (a CI probe), and answers just
+/// enough for the CI stage to run: `gh auth` available, a branch, a sha, and a repository named after
+/// the directory the lookup ran in — so a test can tell WHICH project a CI query was built for.
+/// `lookupResult` replaces the lookup's answer (e.g. a timeout).
+private final class LookupCountingRunner: StatusCommandRunning, @unchecked Sendable {
+  private let lock = NSLock()
+  private var _lookups = 0
+  private var _queries: [String] = []
+  private let lookupResult: CommandResult?
+  var lookups: Int { lock.withLock { _lookups } }
+  var queries: [String] { lock.withLock { _queries } }
+
+  init(lookupResult: CommandResult? = nil) { self.lookupResult = lookupResult }
+
+  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+    async -> CommandResult
+  {
+    func ok(_ stdout: String) -> CommandResult {
+      CommandResult(stdout: stdout, stderr: "", exitCode: 0, timedOut: false)
+    }
+    if executable == "gh", args.contains("auth") {
+      return ok("github.com\n  \u{2713} Logged in to github.com account test")
+    }
+    if args.contains("symbolic-ref") { return ok("main") }
+    if args.contains("rev-parse") { return ok(String(repeating: "a", count: 40)) }
+    if executable == "gh", args.prefix(2) == ["repo", "view"] {
+      lock.withLock { _lookups += 1 }
+      if let lookupResult { return lookupResult }
+      let name = (directory as NSString).lastPathComponent
+      return ok("https://github.com/acme/\(name)")
+    }
+    if executable == "gh", args.contains("graphql") {
+      lock.withLock { _queries.append(args.first { $0.hasPrefix("query=") } ?? "") }
+      return ok("")
+    }
+    return ok("")
+  }
+}
+
 /// A `StatusCommandRunning` double that counts concurrent `gh` calls while returning just enough of
 /// a real answer to keep `resolveCI`'s chain moving: `gh auth status` reports available (so the CI
 /// stage's `githubCLIStatus == .available` gate opens at all), `git symbolic-ref`/`rev-parse` report
-/// a plausible branch/sha (so `ghProbeTarget`/`ciMatchCommit` don't bail before the counted work
+/// a plausible branch/sha (so `localCICommit` doesn't bail before the counted work
 /// happens), and the final `gh api graphql` call returns an empty body — `classifyCheckRollup` reads
 /// that as `.keepPrior` on a decode failure, which is fine: this test only cares about `counter.peak`.
 private struct CountingGHRunner: StatusCommandRunning, @unchecked Sendable {
@@ -75,8 +114,9 @@ private struct CountingGHRunner: StatusCommandRunning, @unchecked Sendable {
       return CommandResult(
         stdout: String(repeating: "a", count: 40), stderr: "", exitCode: 0, timedOut: false)
     }
-    if args.contains("nameWithOwner") {
-      return CommandResult(stdout: "acme/repo", stderr: "", exitCode: 0, timedOut: false)
+    if args.contains("view") {  // `gh repo view --json url` — the repository lookup
+      return CommandResult(
+        stdout: "https://github.com/acme/repo", stderr: "", exitCode: 0, timedOut: false)
     }
     return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
   }
@@ -136,7 +176,7 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
 
   /// The `runCISweep` half TODOS.md left open: same shape as the local-sweep test above, but over
   /// `resolveCI`/`gh`. 8 items across 8 distinct project roots (so each becomes CI-eligible in one
-  /// pass, and the per-project `nwoCache` prefetch — sequential by construction — can't be mistaken
+  /// pass, and the per-project repository prefetch — sequential by construction — can't be mistaken
   /// for the bound under test) must never run more than `ciConcurrency` (2) `gh`/`git` calls at once.
   @MainActor
   func testCISweepNeverExceedsItsConcurrencyCap() async throws {
@@ -161,5 +201,65 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
       ghCounter.peak, 1,
       "the fan-out never actually overlapped — this test would pass even against a fully serial "
         + "sweep, so it isn't proving the cap does any work")
+  }
+
+  /// A throwaway project with `count` workrooms, each an existing directory.
+  private func project(_ name: String, workrooms count: Int) -> Project {
+    let root = throwawayProject(name)
+    let workrooms = (0..<count).map { index -> Workroom in
+      let path = root.path + "/w\(index)"
+      try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+      return Workroom(name: "w\(index)", path: path, vcsName: "git", warnings: [])
+    }
+    return Project(path: root.path, vcs: "git", workrooms: workrooms)
+  }
+
+  /// D8: the CI sweep asks for a project's repository ONCE and hands the answer to every workroom of
+  /// it. Each workroom gets its own `RepositoryGitHub`, so its per-instance lookup cannot span them —
+  /// only the sweep's cache can. TWO projects (root + 2 workrooms each): one lookup PER project, and
+  /// every CI query is built for its own project's repository — a cache keyed too coarsely would send
+  /// project A's repository to project B's workrooms.
+  @MainActor
+  func testCISweepLooksUpTheRepositoryOncePerProject() async throws {
+    let store = AppStore()
+    let projects = [project("once-a", workrooms: 2), project("once-b", workrooms: 2)]
+    store.projects = projects
+    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+
+    let runner = LookupCountingRunner()
+    store.statusResolver = WorkroomStatusResolver(
+      runner: runner, gitStatus: CountingGitStatus(counter: InFlightCounter()))
+
+    store.refreshWorkroomStatuses(force: true)
+    await store.statusSweepTask?.value
+
+    XCTAssertEqual(runner.lookups, 2, "expected one repository lookup per project")
+    XCTAssertEqual(runner.queries.count, 6, "every root and workroom should get a CI probe")
+    for project in projects {
+      let name = (project.path as NSString).lastPathComponent
+      let own = runner.queries.filter { $0.contains("name:\"\(name)\"") }
+      XCTAssertEqual(own.count, 3, "project \(name) should get exactly its own 3 CI probes")
+    }
+  }
+
+  /// D8 / D6: a transient failure of a project's lookup reaches EVERY workroom of it as `keepPrior` —
+  /// one lookup, no CI probe (so nothing is blanked and nothing is guessed), and no workroom retries it.
+  @MainActor
+  func testCISweepSharesATransientLookupFailureAcrossWorkrooms() async throws {
+    let store = AppStore()
+    store.projects = [project("blip", workrooms: 3)]
+    RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
+
+    let runner = LookupCountingRunner(
+      lookupResult: CommandResult(
+        stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true))
+    store.statusResolver = WorkroomStatusResolver(
+      runner: runner, gitStatus: CountingGitStatus(counter: InFlightCounter()))
+
+    store.refreshWorkroomStatuses(force: true)
+    await store.statusSweepTask?.value
+
+    XCTAssertEqual(runner.lookups, 1, "a failed lookup was retried by the project's workrooms")
+    XCTAssertTrue(runner.queries.isEmpty, "a CI probe ran against an unresolved repository")
   }
 }

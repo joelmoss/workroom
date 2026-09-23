@@ -238,61 +238,66 @@ struct WorkroomStatusResolver: Sendable {
 
   // MARK: Stage 2 — CI (slow, network; never blocks stage 1)
 
-  /// CI for `branch` (stage 1's branch/bookmark), as GitHub's own combined **status check rollup**
-  /// for the branch-tip commit — the same aggregate the GitHub UI shows, covering *all* check types
-  /// (Actions check-runs + external commit statuses + check-run apps), not just Actions runs (#76).
-  ///
-  /// `vcs`/`projectRoot` pick where `gh` runs (`ghProbeTarget`; jj → colocated project root). The
-  /// commit is `ciMatchCommit`'s tip (for jj that's the bookmark's tip, since `@` is an unpushed
-  /// empty change). `nameWithOwner` (`owner/repo`) keys the GraphQL `repository(owner:name:)` lookup;
-  /// pass it from the sweep's per-project cache, or leave `nil` to resolve it inline (one extra
-  /// `gh repo view`). Everything goes through the authenticated `gh` token, so private repos work
-  /// with no extra config. CI is hidden whenever the branch / commit / repo / gh context can't be
-  /// resolved.
-  func resolveCI(
-    path: String, vcs: String, projectRoot: String, branch: String?, nameWithOwner: String? = nil
-  ) async -> CIResolution {
-    guard
-      let target = await ghProbeTarget(
-        path: path, vcs: vcs, projectRoot: projectRoot, branch: branch)
-    else { return .absent }
-    guard let head = await ciMatchCommit(path: path, vcs: vcs, branch: target.branch) else {
-      return .absent
-    }
-    // Use the caller's cached `owner/repo` when given (the sweep's per-project cache); otherwise
-    // resolve it inline. (`??` can't wrap an `await` — its rhs is a non-async autoclosure.)
-    let resolvedNWO: String?
-    if let nameWithOwner {
-      resolvedNWO = nameWithOwner
-    } else {
-      resolvedNWO = await resolveNameWithOwner(in: target.dir)
-    }
-    guard let nwo = resolvedNWO, let slash = nwo.firstIndex(of: "/") else { return .absent }
-    let owner = String(nwo[..<slash])
-    let name = String(nwo[nwo.index(after: slash)...])
-    guard !owner.isEmpty, !name.isEmpty else { return .absent }
+  /// Where every `gh` probe runs. Each one names its repository explicitly (`--repo` /
+  /// `--hostname`), so none depends on a working directory: a remote workroom has no local one, and
+  /// for jj it used to have to be the colocated project root because a secondary workspace has no
+  /// `.git` of its own (issue #207). A neutral directory that always exists keeps that true.
+  static var ghDirectory: String { NSTemporaryDirectory() }
 
-    let r = await runner.run(
-      "gh",
-      [
-        "api", "graphql", "-f",
-        "query=\(Self.checkRollupQuery(owner: owner, name: name, oid: head))",
-      ],
-      in: target.dir, timeout: ciTimeout)
-    return Self.classifyCheckRollup(r)
+  /// `gh pr …` takes `--repo`; `gh api …` takes `--hostname` (it has no repository of its own — the
+  /// GraphQL query names it). Callers pass the WHOLE command, subcommand included, and the helper
+  /// appends the flag. Both run in `ghDirectory` with the network timeout. The one place a probe's
+  /// working directory and repository are decided, so a new probe cannot quietly go back to
+  /// depending on the folder it happens to run in.
+  private enum GHFlavor { case pr, api }
+
+  private func gh(_ flavor: GHFlavor, _ arguments: [String], repo: GitHubRepository) async
+    -> CommandResult
+  {
+    let full: [String]
+    switch flavor {
+    case .pr: full = arguments + ["--repo", repo.flag]
+    case .api: full = arguments + ["--hostname", repo.host]
+    }
+    return await runner.run("gh", full, in: Self.ghDirectory, timeout: ciTimeout)
   }
 
-  /// The repo's `owner/repo` for the GraphQL rollup lookup, from `gh repo view` in the probe dir
-  /// (resolves via the dir's git remote — works for git worktrees and a jj colocated project root).
-  /// The sweep caches this per project; `resolveCI` falls back to calling it inline. `nil` ⇒ no
-  /// remote / not a gh repo ⇒ caller treats CI as absent.
-  func resolveNameWithOwner(in dir: String) async -> String? {
+  /// The repository `dir`'s git remote points at, from `gh repo view` — the ONE `gh` call that
+  /// still needs a directory, and local-only. Classified with `ghPreflight` like every other `gh`
+  /// probe, so a transient failure is `keepPrior` (the PR panel, checks list and CI badge all depend
+  /// on this answer and must not blank on a blip) rather than collapsing into "no repository".
+  func resolveRepository(in dir: String) async -> GitHubRepositoryResolution {
     let r = await runner.run(
-      "gh", ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], in: dir,
-      timeout: ciTimeout)
-    guard r.ok else { return nil }
-    let s = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-    return s.isEmpty ? nil : s
+      "gh", ["repo", "view", "--json", "url", "-q", ".url"], in: dir, timeout: ciTimeout)
+    switch Self.ghPreflight(r) {
+    case .absent: return .absent
+    case .keepPrior: return .keepPrior
+    case .proceed: break
+    }
+    guard let repo = GitHubRepository(url: r.stdout) else { return .absent }
+    return .found(repo)
+  }
+
+  /// CI for `commit`, as GitHub's own combined **status check rollup** for that commit — the same
+  /// aggregate the GitHub UI shows, covering *all* check types (Actions check-runs + external commit
+  /// statuses + check-run apps), not just Actions runs (#76).
+  ///
+  /// `commit` is the branch tip the caller resolved (`localCICommit` for a local host; for jj that's
+  /// the bookmark's tip, since `@` is an unpushed empty change). Everything goes through the
+  /// authenticated `gh` token, so private repos work with no extra config. CI is hidden whenever the
+  /// commit can't be resolved.
+  func resolveCI(repo: GitHubRepository, commit: String) async -> CIResolution {
+    // `commit` is interpolated into the query; a real one is hex. Anything else is not a commit.
+    guard commit.count >= 7, commit.count <= 64, commit.allSatisfy(\.isHexDigit) else {
+      return .absent
+    }
+    let r = await gh(
+      .api,
+      [
+        "api", "graphql", "-f",
+        "query=\(Self.checkRollupQuery(owner: repo.owner, name: repo.name, oid: commit))",
+      ], repo: repo)
+    return Self.classifyCheckRollup(r)
   }
 
   /// GraphQL query for a commit's status-check rollup state. Uses `repository(owner:name:)` +
@@ -303,79 +308,42 @@ struct WorkroomStatusResolver: Sendable {
     "{repository(owner:\"\(owner)\",name:\"\(name)\"){object(oid:\"\(oid)\"){... on Commit{statusCheckRollup{state}}}}}"
   }
 
-  /// The pull request for `branch`. Like `resolveCI`, `vcs`/`projectRoot` pick where `gh` runs (a
-  /// jj workspace has no `.git` of its own, so `gh` must run from the colocated project root). `gh
-  /// pr list --head` returns a JSON array — empty when the branch has no PR — so "no PR" is a clean
-  /// `.absent`, not an error.
-  func resolvePR(path: String, vcs: String, projectRoot: String, branch: String?) async
-    -> PRResolution
-  {
-    let res = await resolvePRRaw(path: path, vcs: vcs, projectRoot: projectRoot, branch: branch)
-    return await enrichPR(res, path: path, vcs: vcs, projectRoot: projectRoot)
-  }
-
-  /// The classified PR (`gh pr list`) *without* the reviewer-permalink enrichment round-trip. The
-  /// selection flow uses this so it has the PR `number` immediately — letting `resolveChecks` and the
-  /// (slower, conditional) reviewer-URL enrichment run concurrently instead of checks waiting behind
-  /// enrichment (issue #75, Codex #5). `resolvePR` composes this + `enrichPR` to preserve its old
-  /// behaviour for any other caller.
-  func resolvePRRaw(path: String, vcs: String, projectRoot: String, branch: String?) async
-    -> PRResolution
-  {
-    guard
-      let target = await ghProbeTarget(
-        path: path, vcs: vcs, projectRoot: projectRoot, branch: branch)
-    else { return .absent }
-
-    let r = await runner.run(
-      "gh",
+  /// The pull request for `branch`. `gh pr list --head` returns a JSON array — empty when the
+  /// branch has no PR — so "no PR" is a clean `.absent`, not an error.
+  func resolvePRRaw(repo: GitHubRepository, branch: String) async -> PRResolution {
+    let r = await gh(
+      .pr,
       [
-        "pr", "list", "--head", target.branch, "--state", "all", "--limit", "1", "--json",
+        "pr", "list", "--head", branch, "--state", "all", "--limit", "1", "--json",
         "number,title,state,isDraft,url,reviewDecision,latestReviews,reviewRequests,"
           + "mergeable,mergeStateStatus",
-      ], in: target.dir, timeout: ciTimeout)
+      ], repo: repo)
     return Self.classifyPR(r)
   }
 
-  /// Attach reviewer permalinks to an already-classified PR. Runs `gh` in the same repo context as
-  /// the read probes (jj → colocated project root). A no-op for `.absent`/`.keepPrior` (and for a PR
-  /// with no submitted reviews — see `enrichReviewURLs`), so it's safe to call unconditionally.
-  func enrichPR(_ res: PRResolution, path: String, vcs: String, projectRoot: String) async
-    -> PRResolution
-  {
-    let dir = Self.ghProbeDirectory(path: path, vcs: vcs, projectRoot: projectRoot)
-    return await enrichReviewURLs(res, in: dir)
-  }
-
   /// The PR's individual CI checks (issue #75) via `gh pr checks <number>`. Keyed off the PR
-  /// `number`, so unlike CI/PR it needs no branch resolution — just the gh repo context (jj →
-  /// colocated project root, like the other probes). The pure `classifyChecks` decides from stdout
-  /// regardless of exit code (see its doc), so a "pending" (exit 8) or "a check failed" (exit 1) run
-  /// still yields the list rather than being misread as a hard failure.
-  func resolveChecks(path: String, vcs: String, projectRoot: String, number: Int) async
-    -> ChecksResolution
-  {
-    let dir = Self.ghProbeDirectory(path: path, vcs: vcs, projectRoot: projectRoot)
-    let r = await runner.run(
-      "gh",
-      ["pr", "checks", "\(number)", "--json", "name,state,bucket,link,workflow"],
-      in: dir, timeout: ciTimeout)
+  /// `number`, so unlike CI/PR it needs no branch resolution. The pure `classifyChecks` decides from
+  /// stdout regardless of exit code (see its doc), so a "pending" (exit 8) or "a check failed"
+  /// (exit 1) run still yields the list rather than being misread as a hard failure.
+  func resolveChecks(repo: GitHubRepository, number: Int) async -> ChecksResolution {
+    let r = await gh(
+      .pr, ["pr", "checks", "\(number)", "--json", "name,state,bucket,link,workflow"], repo: repo)
     return Self.classifyChecks(r)
   }
 
-  /// Attach each submitted reviewer's review permalink so the PR panel can deep-link a row to its
-  /// comment. `gh pr list --json` blanks review urls/ids, so fetch them with a GraphQL
+  /// Attach each submitted reviewer's review permalink to an already-classified PR so the PR panel can
+  /// deep-link a row to its comment. A no-op for `.absent`/`.keepPrior`, so it is safe to call
+  /// unconditionally. `gh pr list --json` blanks review urls/ids, so fetch them with a GraphQL
   /// `resource(url:)` follow-up keyed by the PR's own URL. Best-effort: any failure (the probe
   /// errors, returns nothing, or the PR has no submitted reviews) leaves urls `nil` and returns the
   /// already-resolved PR unchanged — it never downgrades a good result. Only fires when there's a
   /// submitted (non-`requested`) reviewer, so PRs awaiting first review skip the extra round-trip.
-  private func enrichReviewURLs(_ res: PRResolution, in dir: String) async -> PRResolution {
+  func enrichPR(_ res: PRResolution, repo: GitHubRepository) async -> PRResolution {
     guard case .info(let pr) = res,
       pr.reviewers.contains(where: { $0.state != .requested })
     else { return res }
-    let g = await runner.run(
-      "gh", ["api", "graphql", "-f", "query=\(Self.reviewURLQuery(prURL: pr.url))"],
-      in: dir, timeout: ciTimeout)
+    let g = await gh(
+      .api, ["api", "graphql", "-f", "query=\(Self.reviewURLQuery(prURL: pr.url))"], repo: repo)
     let urls = Self.parseReviewURLs(g)
     guard !urls.isEmpty else { return res }
     let enriched = pr.reviewers.map { rev -> Reviewer in
@@ -421,29 +389,25 @@ struct WorkroomStatusResolver: Sendable {
     return map
   }
 
-  /// Where a stage-2 `gh` probe must run and which branch it keys off, per VCS. A **git worktree**
-  /// has its own `.git`, so `gh` runs in-place (`path`) keyed by the git branch (stage-1 branch, or
-  /// the colocated ref via `git symbolic-ref`). A **jj workspace** has no `.git` of its own — only
-  /// the colocated `projectRoot` does — so `gh` runs from `projectRoot`, keyed by the bookmark.
-  /// `nil` ⇒ no resolvable branch ⇒ caller returns `.absent`.
-  private func ghProbeTarget(path: String, vcs: String, projectRoot: String, branch: String?) async
-    -> (dir: String, branch: String)?
-  {
-    let dir = Self.ghProbeDirectory(path: path, vcs: vcs, projectRoot: projectRoot)
+  // MARK: Local-only derivation (a local host reads these from its own checkout)
+
+  /// The branch a PR/CI probe keys off, for a **local** host: the stage-1 branch/bookmark when known;
+  /// else, for git, the colocated ref via `git symbolic-ref` (nil for a detached HEAD); for jj, nil
+  /// — a bookmark-less `@` has no branch to look up. A remote host has no checkout to ask, so it
+  /// never calls this and treats a nil branch as absent.
+  func localBranch(path: String, vcs: String, branch: String?) async -> String? {
     if vcs == "jj" {
       guard let branch, !branch.isEmpty else { return nil }
-      return (dir, branch)
+      return branch
     }
-    guard let branchName = await resolveBranchName(branch, in: path) else { return nil }
-    return (dir, branchName)
+    return await resolveBranchName(branch, in: path)
   }
 
-  /// The directory a `gh` invocation must run in for this workroom: in-place for a git worktree
-  /// (it has its own `.git` + remote), but the colocated `projectRoot` for a jj workspace (a
-  /// secondary jj workspace has no `.git`, so `gh` can't resolve the repo there). Shared by the
-  /// read probes (`ghProbeTarget`) and the PR write actions (`performPRAction`) so they agree.
-  static func ghProbeDirectory(path: String, vcs: String, projectRoot: String) -> String {
-    vcs == "jj" ? projectRoot : path
+  /// The commit CI must match for a **local** host — see `ciMatchCommit`. nil ⇒ no resolvable
+  /// branch or commit ⇒ the caller treats CI as absent.
+  func localCICommit(path: String, vcs: String, branch: String?) async -> String? {
+    guard let branch = await localBranch(path: path, vcs: vcs, branch: branch) else { return nil }
+    return await ciMatchCommit(path: path, vcs: vcs, branch: branch)
   }
 
   /// The commit a `gh run` must match to count as "this branch's CI". For a **git worktree** that's
@@ -481,10 +445,11 @@ struct WorkroomStatusResolver: Sendable {
     return branchName
   }
 
-  /// Run a mutating `gh pr …` command (Phase 2b PR actions). Network timeout, like the read probes.
-  /// Returns the raw result so the caller can refresh on success or surface `stderr` on failure.
-  func runPRCommand(_ arguments: [String], in dir: String) async -> CommandResult {
-    await runner.run("gh", arguments, in: dir, timeout: ciTimeout)
+  /// Run a mutating `gh pr …` command (Phase 2b PR actions) against `repo`. Network timeout, like
+  /// the read probes. Returns the raw result so the caller can refresh on success or surface
+  /// `stderr` on failure.
+  func runPRCommand(_ arguments: [String], repo: GitHubRepository) async -> CommandResult {
+    await gh(.pr, arguments, repo: repo)
   }
 
   /// Probe whether `gh` is installed and authenticated (machine-global, not per-workroom). Runs
@@ -509,7 +474,7 @@ struct WorkroomStatusResolver: Sendable {
   /// all (`{"hosts":{}}`). So a non-zero exit means we learned nothing, not that you're logged out.
   func resolveGitHubCLI() async -> GHAuthProbe {
     let r = await runner.run(
-      "gh", ["auth", "status", "--active", "--json", "hosts"], in: NSTemporaryDirectory(),
+      "gh", ["auth", "status", "--active", "--json", "hosts"], in: Self.ghDirectory,
       timeout: ciTimeout)
     return Self.classifyGitHubCLI(r)
   }

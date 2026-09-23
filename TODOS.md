@@ -9,6 +9,39 @@
 
 ## P2 — perf, correctness, and the next VCS phase
 
+### Ordinary connection failures blank the PR/CI badges (macapp) — #207 eng-review follow-up
+
+**What:** Classify plain connection failures (`error connecting to api.github.com`, `dial tcp`,
+`no such host`, `connection refused`) as `keepPrior` in `WorkroomStatusResolver.ghPreflight`, so the PR
+panel, checks list and CI badge keep their last state when the Mac goes offline mid-session.
+
+**Why:** `ghPreflight` returns `keepPrior` only for a timeout, a signal, or stderr containing
+`rate limit`, `503` or `timeout`; every other non-zero exit is `.absent`. A fully offline `gh pr list`
+therefore blanks the PR panel today. Found by the #207 outside voice while checking a claim in that
+plan ("network off keeps the prior state") that the code does not support. It is old behaviour, not
+something #207 introduced, and #207 deliberately leaves it alone.
+
+**Pros:** One change in the shared classifier fixes every `gh` probe at once (PR, checks, CI, and the
+repository lookup #207 added, which reuses `ghPreflight`).
+
+**Cons:** It matches `gh`'s English error text, which varies by `gh` version and locale, and it decides
+a product question: offline, is stale data better than a blank panel? `keepPrior` shows stale state as
+if it were current.
+
+**Also in `ghPreflight`:** the `503`/`timeout` rule is a bare substring match on stderr, and `gh`'s
+stderr echoes repository names, so a repository called `timeout-lib` reads as a transient blip
+instead of "absent". Match `HTTP 503` / `rate limit` instead when this is touched. (The repository
+lookup #207 added is a new call site for the rule.)
+
+**How to start:** Drive each error string through `classifyPR`, `classifyChecks`,
+`classifyCheckRollup` and `resolveRepository` (all go through `ghPreflight`) before touching the
+classifier. `gh` has no machine-readable offline code; `gh auth status --json hosts` already tells a
+transport failure from a 401 (#86), so it may be a better signal than string matching.
+
+**Depends on / blocked by:** None. Do it after #207 lands so the repository lookup exists to test.
+
+**Priority:** P2, effort S.
+
 ### Retire the attach-only `workroom-session` shim (macapp) — issue #154 follow-up
 
 **What:** Delete the remaining `macapp/WorkroomSession/` client, its pinned v2.0.0 binary fixture
