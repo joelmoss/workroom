@@ -175,9 +175,10 @@ final class AgentFileIntegrationTests: XCTestCase {
     await outcome.value
   }
 
-  /// A request cancelled while its OWN send is stuck: cancellation takes it out of `pending`, but its
-  /// bytes are still blocking the write queue, and nothing else would ever notice. Its deadline must
-  /// still retire the connection, so the next request fails at once rather than queueing forever.
+  /// A request cancelled while its OWN send is stuck: cancellation takes it out of `pending`, but
+  /// its bytes are still blocking the write queue, and nothing else would ever notice. Its send's
+  /// own watchdog must still retire the connection, so the next request fails at once rather than
+  /// queueing forever.
   func testACancelledRequestsStuckSendStillRetiresTheConnection() async throws {
     let fake = try FakeAgent(version: 2, stallAfterCapabilities: true)
     fakes.append(fake)
