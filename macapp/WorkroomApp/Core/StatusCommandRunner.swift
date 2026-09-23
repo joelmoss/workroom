@@ -58,6 +58,15 @@ struct CommandResult: Sendable, Equatable {
   /// Negative and outside 0-255 for `launchFailed`'s reason, and distinct from it because "nothing
   /// happened" and "something may have happened" need opposite recoveries.
   static let outcomeUnknown: Int32 = -2
+  /// Known NOT to have happened, and nothing is wrong with the workroom: the agent (or this side of
+  /// the connection) refused the request before running it — a full request pool, agent lock
+  /// contention — or a commit whose staging step lost contact was never sent. Retrying is safe.
+  ///
+  /// Not `launchFailed`, whose one cause is a vanished working directory ("This workroom's folder
+  /// is no longer there", no Retry). Not any real exit code either: readers give exit 1 meaning
+  /// (`rev-parse --verify -q`'s "no commit yet", `show-ref --quiet`'s "no such ref"), and a refused
+  /// probe read that way would be mistaken for an answer.
+  static let refused: Int32 = -3
 
   /// Written out rather than synthesized: a `let` with an initial value is EXCLUDED from the
   /// memberwise init entirely, so `let signaled = false` would compile at all ~60 construction

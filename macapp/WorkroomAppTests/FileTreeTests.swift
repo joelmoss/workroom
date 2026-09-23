@@ -70,7 +70,7 @@ final class FileTreeTests: XCTestCase {
     XCTAssertEqual(FileListing.command(.git).executable, "git")
     XCTAssertEqual(
       FileListing.command(.git).args,
-      ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
+      ["-c", "core.fsmonitor=", "ls-files", "--cached", "--others", "--exclude-standard", "-z"])
     XCTAssertEqual(FileListing.command(.jj).executable, "jj")
     XCTAssertEqual(FileListing.command(.jj).args, ["file", "list"])
   }
@@ -262,6 +262,27 @@ final class FileTreeTests: XCTestCase {
     guard case .text = PlainFileViewer.classify(data: Data(bytes)) else {
       return XCTFail("a NUL past the 8 KB scan window must not trip the binary probe")
     }
+  }
+
+  /// Agent lock contention or an I/O failure during a reload used to read as "unavailable", which
+  /// blanked a valid tree. Neither says anything about the tree.
+  func testAgentRefusalsAreTransientNotUnavailable() async throws {
+    let dir = NSTemporaryDirectory() + "transient-\(UUID().uuidString)"
+    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    let busy = await FileTreeModel.listFailure(VCSError.lockContention, path: dir)
+    XCTAssertEqual(busy, .transient("The repository is busy. Reload to try again."))
+    let io = await FileTreeModel.listFailure(FileServiceError.failed("spawn failed"), path: dir)
+    XCTAssertEqual(io, .transient("spawn failed"))
+  }
+
+  /// The agent reports a vanished working directory as the same `Io` failure as a hiccup, so a
+  /// folder that is gone must still blank the tree rather than keep showing its files.
+  func testAnAgentIOFailureOnAVanishedFolderIsUnavailable() async {
+    let gone = NSTemporaryDirectory() + "gone-\(UUID().uuidString)"
+    let result = await FileTreeModel.listFailure(
+      FileServiceError.failed("No such file"), path: gone)
+    XCTAssertEqual(result, .unavailable)
   }
 
   // MARK: timeouts vs external kills (#211)

@@ -260,6 +260,51 @@ final class VCSCommitIntegrationTests: XCTestCase {
     }
   }
 
+  /// The real runner, except that the intent-to-add step loses contact with the agent.
+  private struct StagingLosesContact: StatusCommandRunning {
+    let real = StatusCommandRunner()
+
+    func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+      async -> CommandResult
+    {
+      await run(executable, args, in: directory, timeout: timeout, stdin: nil)
+    }
+
+    func run(
+      _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+      stdin: Data?
+    ) async -> CommandResult {
+      if args.contains("--intent-to-add") {
+        return AgentCommandRunner.outcomeUnknown(HostConnectionError.connectionLost)
+      }
+      return await real.run(executable, args, in: directory, timeout: timeout, stdin: stdin)
+    }
+  }
+
+  /// A lost staging step is not a lost commit: the commit was never sent, so the dialog must not
+  /// say it may have been written (which also spends the Commit button).
+  func testLosingContactWhileStagingIsNotAnUnknownCommit() async throws {
+    try requireTool("git")
+    let dir = gitRepo()
+    write("fresh\n", to: "untracked.txt", in: dir)
+    let staging = CLIVCSWriter(
+      vcs: "git", runner: StagingLosesContact(),
+      makeProvider: { _ in GitProvider() as LocalVCSProviding },
+      gate: JJSnapshotGate(maxChainWait: 5))
+
+    let result = await staging.commit(
+      path: dir, projectRoot: dir,
+      request: VCSCommitRequest(
+        message: "never sent",
+        files: [ChangedFile(path: "untracked.txt", change: .untracked)], mode: .commit))
+
+    guard case .failed(.other(let reason)) = result else {
+      return XCTFail("a commit that was never sent is a plain failure: \(result)")
+    }
+    XCTAssertTrue(reason.contains("nothing was committed"), reason)
+    XCTAssertEqual(committedFiles(dir), ["base.txt"])
+  }
+
   private func unbornGitRepo() -> String {
     let dir = tempDir()
     sh("git init -q . && git config user.email t@e.com && git config user.name T", in: dir)

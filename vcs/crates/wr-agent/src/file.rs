@@ -273,6 +273,10 @@ fn listing_command(backend: Backend) -> (&'static str, Vec<String>) {
         Backend::Git => (
             "git",
             [
+                // `--others` refreshes the fsmonitor state, which runs a repository-configured
+                // `core.fsmonitor` command (measured). `.git/config` is not trusted.
+                "-c",
+                "core.fsmonitor=",
                 "ls-files",
                 "--cached",
                 "--others",
@@ -810,6 +814,28 @@ mod tests {
         assert!(names.contains(&"untracked.txt"));
         assert!(names.contains(&"with\nnewline.txt"));
         assert!(!names.contains(&"ignored.txt"), "{names:?}");
+    }
+
+    #[test]
+    fn a_repository_fsmonitor_never_runs_during_a_listing() {
+        let root = scratch("fsmonitor");
+        git(&root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("tracked.txt"), b"a").unwrap();
+        git(&root, &["add", "tracked.txt"]);
+        let marker = root.join("ran");
+        let hook = root.join(".git/fsmonitor.sh");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        git(&root, &["config", "core.fsmonitor", hook.to_str().unwrap()]);
+        std::fs::write(root.join("untracked.txt"), b"c").unwrap();
+        let request = json!({"version": 1, "method": "list", "backend": "git", "root": root});
+        let reply = execute(&serde_json::to_vec(&request).unwrap());
+        assert_eq!(reply["result"]["exit_code"], 0, "{reply}");
+        assert!(
+            !marker.exists(),
+            "a .git/config fsmonitor ran during a listing"
+        );
     }
 
     #[test]

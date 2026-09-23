@@ -205,6 +205,9 @@ final class FileTreeModel: ObservableObject {
       if state == .loading {
         state = .failed("The file listing was interrupted. Reload to try again.")
       }
+    case .transient(let message):
+      // As `.interrupted`: the service said no this time, which says nothing about the tree.
+      if state == .loading { state = .failed(message) }
     }
   }
 
@@ -247,7 +250,26 @@ final class FileTreeModel: ObservableObject {
     /// the caller must not blank an existing tree over it — the sensible read is "try again", not
     /// "this isn't a repo any more".
     case interrupted
+    /// The file service refused or failed this once (agent lock contention, a full request budget,
+    /// an I/O error). Like `.interrupted`, it says nothing about the tree, so an existing one stays.
+    case transient(String)
     case failed(RepositoryRoutingError)
+  }
+
+  /// A listing error that is neither truncation nor a routing verdict. The agent reports a vanished
+  /// working directory and an I/O hiccup as the same `Io` failure, so the disk decides: a folder that
+  /// is gone is `.unavailable` (blank the tree), one that is still there keeps it.
+  nonisolated static func listFailure(_ error: Error, path: String) async -> ListResult {
+    if case VCSError.lockContention = error {
+      return .transient("The repository is busy. Reload to try again.")
+    }
+    let exists =
+      (try? await runBlocking {
+        var directory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &directory)
+          && directory.boolValue
+      }) ?? false
+    return exists ? .transient(error.localizedDescription) : .unavailable
   }
 
   /// Immutable git listing is allowed without registration. The JJ fallback snapshots and needs the
@@ -276,7 +298,7 @@ final class FileTreeModel: ObservableObject {
       } catch let error as RepositoryRoutingError {
         return .failed(error)
       } catch {
-        return .failed(.unavailable(location.host))
+        return await listFailure(error, path: location.path)
       }
       if result.ok { return .listing(FileListing.parse(result.stdout, vcs: vcs)) }
       // A killed probe is not evidence `path` isn't a repo — remember it, but still try the other

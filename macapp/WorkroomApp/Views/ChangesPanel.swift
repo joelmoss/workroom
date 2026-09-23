@@ -405,8 +405,8 @@ private struct ChangedFileCountBadge: View {
 /// than merely intended: closing the inspector or the window unmounts this view and cancels the poll.
 /// Nothing is drawn when the agent has no status service (an older agent, or macOS, where the
 /// classifier does not run), so this is invisible on a local-only setup.
-private struct WakefulnessBadge: View {
-  @ObservedObject private var model = WakefulnessModel.shared
+struct WakefulnessBadge: View {
+  @ObservedObject var model: WakefulnessModel = .shared
   private let theme = ThemeService.shared
 
   var body: some View {

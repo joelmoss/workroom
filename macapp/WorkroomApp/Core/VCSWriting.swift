@@ -1160,6 +1160,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     // Checked BEFORE commandNotFound: launchFailed means the process never ran at all (dominated by
     // a vanished cwd), which is a different fact from commandNotFound's "env ran and searched PATH".
     if result.exitCode == CommandResult.launchFailed { return .launchFailed }
+    // Refused before it ran: the reason is the whole message, and `.other` offers the Retry that is
+    // safe precisely because nothing happened.
+    if result.exitCode == CommandResult.refused { return .other(result.stderr) }
     // Before every output check, for `launchFailed`'s reason: this is a fact about whether we heard
     // an answer, not about what the answer said. There is no output to match on anyway — the stderr
     // is the transport's own description, and matching git's prose against it could only misfire.
@@ -1305,6 +1308,8 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// perfectly good commit behind a non-zero exit.
   static func classifyCommit(_ result: CommandResult, tool: String) -> VCSCommitFailure? {
     if result.exitCode == CommandResult.launchFailed { return .launchFailed }
+    // See `classify`.
+    if result.exitCode == CommandResult.refused { return .other(result.stderr) }
     // See `classify` — a fact about the round trip, not about the command's output.
     if result.exitCode == CommandResult.outcomeUnknown {
       return .outcomeUnknown(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1896,13 +1901,19 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
         await rollBackIntentToAdd()
         // Relabelled as its own step, so the copy downstream ("The commit was sent…") cannot claim
         // a commit was attempted when only the staging was. The exit code is carried through
-        // unchanged, so `classifyCommit` still reaches the same case.
+        // unchanged, so `classifyCommit` still reaches the same case — except an unknown outcome,
+        // which is the STAGING's: the commit was never sent, so it is known not to have happened,
+        // and reporting "may have been written" disabled Commit over a commit nobody attempted.
+        let lost = ita.exitCode == CommandResult.outcomeUnknown
         return CommandResult(
           stdout: ita.stdout,
           stderr: ita.stderr.isEmpty
             ? "git could not stage the new files"
-            : "Staging the new files failed: \(ita.stderr)",
-          exitCode: ita.exitCode, timedOut: ita.timedOut, signaled: ita.signaled)
+            : lost
+              ? "Lost contact while staging the new files; nothing was committed. \(ita.stderr)"
+              : "Staging the new files failed: \(ita.stderr)",
+          exitCode: lost ? CommandResult.refused : ita.exitCode, timedOut: ita.timedOut,
+          signaled: ita.signaled)
       }
     }
     let result = await runner.run(
