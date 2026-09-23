@@ -257,19 +257,28 @@ final class FileTreeModel: ObservableObject {
   }
 
   /// A listing error that is neither truncation nor a routing verdict. The agent reports a vanished
-  /// working directory and an I/O hiccup as the same `Io` failure, so the disk decides: a folder that
-  /// is gone is `.unavailable` (blank the tree), one that is still there keeps it.
+  /// working directory and an I/O hiccup as the same `Io` failure, so the disk decides, for every
+  /// error: a folder that is confirmed gone (or no longer a directory) is `.unavailable` and blanks
+  /// the tree; anything else, including a check that itself failed, keeps it.
   nonisolated static func listFailure(_ error: Error, path: String) async -> ListResult {
+    let gone =
+      (try? await runBlocking { () -> Bool in
+        // Not `fileExists`, which is also false when existence cannot be determined (a parent
+        // directory that became unreadable), and would blank a tree that is still there.
+        do {
+          let values = try URL(fileURLWithPath: path).resourceValues(forKeys: [.isDirectoryKey])
+          return values.isDirectory == false
+        } catch CocoaError.fileReadNoSuchFile {
+          return true
+        } catch {
+          return false
+        }
+      }) ?? false
+    if gone { return .unavailable }
     if case VCSError.lockContention = error {
       return .transient("The repository is busy. Reload to try again.")
     }
-    let exists =
-      (try? await runBlocking {
-        var directory: ObjCBool = false
-        return FileManager.default.fileExists(atPath: path, isDirectory: &directory)
-          && directory.boolValue
-      }) ?? false
-    return exists ? .transient(error.localizedDescription) : .unavailable
+    return .transient(error.localizedDescription)
   }
 
   /// Immutable git listing is allowed without registration. The JJ fallback snapshots and needs the

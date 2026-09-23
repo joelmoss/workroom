@@ -283,6 +283,22 @@ final class FileTreeTests: XCTestCase {
     let result = await FileTreeModel.listFailure(
       FileServiceError.failed("No such file"), path: gone)
     XCTAssertEqual(result, .unavailable)
+    let busy = await FileTreeModel.listFailure(VCSError.lockContention, path: gone)
+    XCTAssertEqual(busy, .unavailable, "a busy agent does not make a deleted folder come back")
+  }
+
+  /// An unreadable parent makes existence unknowable, which is not the same as gone.
+  func testAnUnreadableParentKeepsTheTree() async throws {
+    let parent = NSTemporaryDirectory() + "locked-\(UUID().uuidString)"
+    let dir = parent + "/repo"
+    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: parent)
+    defer {
+      try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent)
+      try? FileManager.default.removeItem(atPath: parent)
+    }
+    let result = await FileTreeModel.listFailure(FileServiceError.failed("EACCES"), path: dir)
+    XCTAssertEqual(result, .transient("EACCES"))
   }
 
   // MARK: timeouts vs external kills (#211)
