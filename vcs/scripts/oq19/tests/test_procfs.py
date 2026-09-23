@@ -77,6 +77,34 @@ class CgroupAndBox(unittest.TestCase):
         lo = {"lo": (10**9, 10**9), "eth0": (5, 7)}
         self.assertEqual(procfs.net_bytes(lo), (5, 7))  # loopback chatter must not look like network activity
 
+    def test_internal_bridges_and_their_virtual_ports_are_not_counted(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as sys_net:
+            layout = {"eth0": (["device"], None), "docker0": (["bridge"], None),
+                      "veth1": (["brport"], "docker0"), "br0": (["bridge"], None),
+                      "lxc-eth0": (["brport"], "br0"), "orphan": (["brport"], None)}
+            for name, (entries, master) in layout.items():
+                os.makedirs(os.path.join(sys_net, name))
+                for entry in entries:
+                    os.makedirs(os.path.join(sys_net, name, entry))
+                if master:
+                    os.symlink("../" + master, os.path.join(sys_net, name, "master"))
+            counted = lambda name: procfs.crosses_the_box(name, {"br0"}, sys_net)
+            net = {"eth0": (1, 2), "docker0": (10, 20), "veth1": (100, 200), "br0": (1000, 2000),
+                   "lxc-eth0": (10000, 20000), "orphan": (100000, 200000), "unknown0": (1000000, 2000000)}
+            # docker0 and its veth are internal; the uplink bridge br0, the LXC eth0 on it, a port whose
+            # bridge cannot be read, and an interface sysfs does not know all count.
+            self.assertEqual(procfs.net_bytes(net, counted=counted), (1111001, 2222002))
+            no_default = lambda name: procfs.crosses_the_box(name, set(), sys_net)
+            self.assertEqual(procfs.net_bytes(net, counted=no_default), (1111111, 2222222))
+
+    def test_default_route_interfaces_reads_both_families(self):
+        route = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n" \
+                "br0\t00000000\t0101A8C0\t0003\t0\t0\t0\t00000000\n" \
+                "docker0\t0000C80A\t00000000\t0001\t0\t0\t0\t00FFFFFF\n"
+        ipv6 = ("0" * 32 + " 00 " + "0" * 32 + " 00 " + "0" * 32 + " 00000400 00000001 00000000 00000003 eth1\n"
+                + "0" * 32 + " 00 " + "0" * 32 + " 00 " + "0" * 32 + " ffffffff 00000001 00000000 00200200 lo\n")
+        self.assertEqual(procfs.default_route_interfaces(route, ipv6), {"br0", "eth1"})
 
 class Sockets(unittest.TestCase):
     def test_ss_tinp_gives_socket_ages_and_owners(self):

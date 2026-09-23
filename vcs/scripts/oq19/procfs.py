@@ -6,6 +6,7 @@ in a trace is worse than a missing one, and the staleness rule (D10) already def
 means.
 """
 
+import os
 import re
 
 
@@ -79,11 +80,45 @@ def parse_net_dev(text):
     return out
 
 
-def net_bytes(net_dev, exclude=("lo",)):
-    """Total (rx, tx) over the non-loopback interfaces: what a provider's network-idle timer can see."""
-    rx = sum(v[0] for k, v in net_dev.items() if k not in exclude)
-    tx = sum(v[1] for k, v in net_dev.items() if k not in exclude)
-    return rx, tx
+def default_route_interfaces(route, ipv6_route):
+    """Mirror of wr-agent `default_route_interfaces`: interfaces an IPv4 or IPv6 default route leaves by."""
+    out = set()
+    for line in route.splitlines()[1:]:
+        f = line.split()
+        if len(f) > 7 and f[1] == "00000000" and f[7] == "00000000":
+            out.add(f[0])
+    for line in ipv6_route.splitlines():
+        f = line.split()
+        if len(f) > 9 and set(f[0]) == {"0"} and f[1] == "00" and f[9] != "lo":
+            out.add(f[9])
+    return out
+
+
+def crosses_the_box(name, uplinks, sys_net="/sys/class/net"):
+    """Mirror of wr-agent `crosses_the_box`: False for a bridge no default route leaves by, and for a
+    port with no backing `device` (a container's veth, a VM's tap) whose `master` is such a bridge. The
+    bridge the box routes out by, and everything on it, is the uplink; any unreadable case counts."""
+    if not uplinks:
+        return True  # no default route: no telling the uplink bridge from an internal one
+    def internal_bridge(bridge):
+        return os.path.exists(os.path.join(sys_net, bridge, "bridge")) and bridge not in uplinks
+    if internal_bridge(name):
+        return False
+    d = os.path.join(sys_net, name)
+    if not os.path.exists(os.path.join(d, "brport")) or os.path.exists(os.path.join(d, "device")):
+        return True
+    try:
+        master = os.path.basename(os.readlink(os.path.join(d, "master")))
+    except OSError:
+        return True
+    return not internal_bridge(master)
+
+
+def net_bytes(net_dev, exclude=("lo",), counted=lambda name: True):
+    """Total (rx, tx) over the non-loopback interfaces `counted` keeps: what a provider's network-idle
+    timer can see. The live sampler passes `crosses_the_box`; recorded traces predate it (2026-09-22)."""
+    keep = [v for k, v in net_dev.items() if k not in exclude and counted(k)]
+    return sum(v[0] for v in keep), sum(v[1] for v in keep)
 
 
 def parse_cgroup_procs(text):

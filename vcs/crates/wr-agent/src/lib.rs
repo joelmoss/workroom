@@ -19,6 +19,7 @@ pub mod shadow;
 pub mod shell;
 pub mod transport;
 pub mod vcs;
+pub mod wakefulness;
 pub mod watch;
 
 /// The shadow terminal that makes a reattaching client see the session instead of a blank screen.

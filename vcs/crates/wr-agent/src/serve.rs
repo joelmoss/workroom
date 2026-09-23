@@ -89,7 +89,16 @@ impl Agent {
 
     /// Binds and serves until idle. Returns when no session and no client has existed for
     /// `idle_timeout`.
-    pub fn serve(&self, socket: &Path, idle_timeout: Duration) -> Result<(), ServeError> {
+    ///
+    /// `wakefulness` configures the awake ceiling (OQ22); the wakefulness service itself starts
+    /// unconditionally on Linux, because the verdict has to keep flowing to the provider's lifecycle
+    /// shim while no client is attached at all — that is the whole reason it exists.
+    pub fn serve(
+        &self,
+        socket: &Path,
+        idle_timeout: Duration,
+        wakefulness: crate::wakefulness::Settings,
+    ) -> Result<(), ServeError> {
         // A socket file left by a previous run would make bind fail with EADDRINUSE even though
         // nobody is listening. The flock above is what actually guarantees exclusivity, so
         // removing a stale path here is safe rather than a race.
@@ -101,8 +110,13 @@ impl Agent {
         }
         let listener = UnixListener::bind(socket)?;
         listener.set_nonblocking(true)?;
+        #[cfg(target_os = "linux")]
+        crate::wakefulness::spawn(self.sessions.clone(), socket, wakefulness);
+        #[cfg(not(target_os = "linux"))]
+        let _ = wakefulness;
 
         let mut idle_since = Some(Instant::now());
+        let mut result = Ok(());
         loop {
             match listener.accept() {
                 Ok((stream, _)) => {
@@ -137,11 +151,24 @@ impl Agent {
                     }
                     std::thread::sleep(Duration::from_millis(25));
                 }
-                Err(e) => return Err(e.into()),
+                // An accept failure (descriptor exhaustion, say) ends the agent, and it must take
+                // the verdict with it exactly as an idle exit does: falling out with the file in
+                // place is BUSY forever to its reader.
+                Err(e) => {
+                    result = Err(e.into());
+                    break;
+                }
             }
         }
         let _ = std::fs::remove_file(socket);
-        Ok(())
+        // The verdict goes with the socket. A verdict file that stops being rewritten means BUSY to
+        // its reader — which is right for a classifier that was killed or starved, and wrong for
+        // one that exited because nothing was left to own. Retiring it says "no classifier here",
+        // which is a supervisor's problem rather than a reason to hold a box awake forever. The
+        // service thread is still running at this point; `retire_verdict` stops it writing FIRST,
+        // under the same lock, so it cannot rename a fresh verdict into place after the removal.
+        crate::wakefulness::retire_verdict(socket);
+        result
     }
 }
 
@@ -292,6 +319,10 @@ fn dispatch(
     }
     if envelope.service == Service::File {
         crate::file::dispatch(envelope, writer, &services.subscriptions);
+        return None;
+    }
+    if envelope.service == Service::Status {
+        crate::wakefulness::dispatch(envelope, writer);
         return None;
     }
     if envelope.service != Service::Terminal && envelope.service != Service::Control {

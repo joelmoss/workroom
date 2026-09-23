@@ -30,9 +30,34 @@ like the API; the keepalive is the real one). Compare `wchan` of the idle agent 
 `analyze.TTY_WCHAN`. If it blocks in `poll`/`epoll`, the tty-aware rule is dead and D3's cost stands.
 
 **Depends on / blocked by:** A Linux Claude Code build in the image, and a way to run it non-interactively
-against a stub API. Do it before the Rust wakefulness service picks its wait rule.
+against a stub API. The Rust wakefulness service (#215) shipped with the frozen agnostic wait rule;
+a real trace that confirms the tty-aware rule can still swap it, since the golden contract is by
+fixture and the fixtures would be re-recorded with it.
 
 **Priority:** P2, effort M.
+
+### Confirm the wakefulness net filter on the real box (vcs) — #215 review follow-up
+
+**What:** The net signal now skips internal bridges and their virtual ports (`sample.rs`
+`crosses_the_box`, mirrored in `procfs.py`; see Recently done, 2026-09-22). It was verified in Docker's VM and in the OQ19
+image, not on boxd. Check `/sys/class/net/*/{bridge,brport,device}` on a boxd VM, with and without a
+container running, and decide whether the boxd confirmation run needs repeating.
+
+**Why:** The golden fixtures carry pre-summed bytes, so they cannot see the filter; only a live box can.
+The rule fails awake on anything it cannot classify, and with no default route at all it counts
+every interface. Accepted false-idle gaps, all needing a bridged uplink whose ports have no `device`:
+the default leaves by a VLAN or macvlan on top of the bridge (`br0.100`), so the bridge under it is
+treated as internal; the only IPv4 default sits in a policy table (IPv6 lists every table); the box's
+egress uses a specific gatewayed route on the bridge while the default leaves elsewhere. And when a
+default route is deleted and re-added between ticks, the net rate reads 0 for up to 3 s; the 30 s
+BUSY hold covers that when the box was already busy on the network.
+
+**How to start:** `boxd machine exec <vm> -- sh -c 'for i in /sys/class/net/*; do ls $i; done'`.
+Expect a plain `eth0` with a `device` entry and no `brport`, in which case nothing changed there.
+
+**Depends on / blocked by:** a boxd VM (owner's call, it costs a machine).
+
+**Priority:** P3, effort S.
 
 ### Ordinary connection failures blank the PR/CI badges (macapp) — #207 eng-review follow-up
 
@@ -3879,6 +3904,20 @@ error) is one of the hardest to diagnose from a bug report.
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-09-22 — the wakefulness net signal no longer counts container bridges.** `parse_net_dev` took
+every interface but `lo`, so a container's traffic was counted on its veth, its bridge, and again on the
+uplink. Measured in Docker's VM: one `pg_isready` a second between two containers is 1804 B/s on their
+veths, 3.6x the 500 B/s busy threshold with nothing leaving the box. The filter reads the kernel's own
+classification, not interface names. It skips a bridge (`/sys/class/net/<if>/bridge`) that no default
+route leaves by, and a device-less port (a veth or tap) whose `master` is such a bridge. **Two traps.**
+"Physical devices only" is wrong: inside a container `eth0` has no `device`, so it zeroes the signal.
+"Every bridge and device-less port" is wrong too: an LXC container that bridges its own veth `eth0` into
+`br0` then loses its whole uplink. A byte-count fallback for that case failed review, because once a
+tunnel (`tailscale0`, `wg0`) carries one byte the fallback switches off for good, and the box reads idle
+under load. The default route is the uplink as the kernel routes it, so that bridge and everything on it
+count. `procfs.py` mirrors the rule, so future recordings measure the signal that ships. The golden
+fixtures carry pre-summed bytes and are unaffected.
 
 **2026-09-03 — the 9 "Publishing changes from within view updates" faults per launch: found and
 fixed. Both filed hypotheses were wrong, and so was the blocker.** The entry said Xcode's runtime-issue

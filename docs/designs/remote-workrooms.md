@@ -809,10 +809,17 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
 - **Three services that exist to make providers interchangeable.** These are the concrete cost of
   the agnosticism decision. An earlier draft called them cheap and called the wakefulness signal
   free; review proved both claims wrong, so here they are honestly:
-  - **Busy/idle decision — the design's load-bearing piece, and the signal is not yet sound.** Note
-    the split settled in Provider Decision: this service only *decides* busy or idle and reports it;
-    a per-driver far-side shim does the provider-specific translating (Phase 3). Two problems remain
-    on the deciding half:
+  - **Busy/idle decision — the design's load-bearing piece.** **The deciding half now ships
+    (2026-09-21, `wr-agent/src/wakefulness.rs`):** the measured policy (OQ19, P4) sampled at 1 s
+    from `CLOCK_MONOTONIC`, replaying the ten golden traces exactly, writing a monotonic-stamped
+    verdict file for the shim (`<socket>.wake`, reader-side staleness), published on
+    `Service::Status` (`status`, `keep`, and an `awake_ceiling_prompt` event) with the OQ22 ceiling
+    (advisory by default; `--ask-at-awake-ceiling`), and masking its own resume. Idle cost measured
+    in a container: 0.46% of one core on a ~5-process box (the 0.5% gate), 1.8% at 500 processes;
+    the provider re-measure is owed. Note the split settled in Provider Decision: this service only
+    *decides* busy or idle and reports it; a per-driver far-side shim does the provider-specific
+    translating (Phase 3). The two problems the draft below records are what the measurement and
+    the port resolved; kept as the history of why:
     - *The signal is wrong in both directions.* "Foreground pgid is not the shell"
       (`SessionPTY.foregroundProcessGroup`, `tcgetpgrp`; used once today at
       `SessionDaemon.swift:376-377`) reports **idle** for `make &`, `npm run dev &`, or any
@@ -1835,7 +1842,15 @@ disagreement passes every test on either side alone while presenting as an empty
     By default the wakefulness service never hibernates a BUSY box on its own; a box BUSY past the
     ceiling is reported (the app shows it, so the idle-agent bill is visible rather than capped). With
     the setting on, reaching the ceiling raises a prompt in the app; "keep" resets the ceiling, no
-    answer within the prompt's timeout hibernates the box. Force-sleep is not offered. The ceiling
+    answer within the prompt's timeout hibernates the box. Force-sleep is not offered. **Amended
+    2026-09-22 (#215 review):** a pending prompt, and the suppression an unanswered one leaves, are
+    also cleared by a keystroke the agent's input classifier calls the user's own (typing is the
+    answer the prompt never got) and by
+    the box resuming (the continuous awake period the ceiling capped has ended, and sleep is not
+    awake time); without those, a user who woke the box and typed was hibernated under, repeatedly.
+    A prompt raised while no app is connected still arms the deadline: ask mode means an unattended
+    box past its ceiling sleeps, and an app connecting during the prompt sees it in its first
+    `status` reply. The ceiling
     value and the prompt timeout are settings too (proposed defaults 4 h and 10 min; the measurement
     only says 4 h spares the longest job it ran). Consequence accepted: with the default, OQ7's bill for
     an idle agent holding a connection is unbounded until the user acts. Opened 2026-09-20 by the OQ19
@@ -2222,10 +2237,14 @@ service milestones below so each layer can be reviewed and landed independently.
      measured on 190 tuning and 150 hold-out runs; the policy (P4) and its numbers are frozen in
      `vcs/scripts/oq19/results/frozen.json`, the port contract is `vcs/scripts/oq19/golden/`, and the
      hysteresis (30 s), explicit-activity grace (10 s) and reader-side staleness rule (2 s) are
-     defined, and the boxd confirmation run passed (2026-09-21, `results/boxd.md`). Still owed before
-     the wakefulness service is ready: a real Claude Code trace (TODOS), a re-measured sampler cost in
-     Rust against the 0.5% gate, and masking the agent's own resume (the wake blip). OQ22 is decided
-     (advisory-only ceiling by default, ask-the-user behind a setting).
+     defined, and the boxd confirmation run passed (2026-09-21, `results/boxd.md`). **The service
+     half ships too (2026-09-21, `wr-agent/src/wakefulness.rs`):** the Rust port replays the golden
+     traces exactly, masks its own resume (a tick gap of 30 s or more clears the rate windows and
+     ignores CPU and net for 3 s), costs 0.46% of one core idle on a ~5-process box in a container
+     (1.8% at 500 processes; the provider figure is owed), and publishes `Service::Status` with the
+     OQ22 ceiling (advisory-only by default, ask-the-user behind `--ask-at-awake-ceiling`). Still
+     owed: a real Claude Code trace (TODOS), the app side of the status and the ceiling prompt, and
+     the far-side shim reading `<socket>.wake` (Phase 3).
 
    **Two Phase 3 questions this milestone opened rather than answered**, both consequences of the
    exec service being the thing Phase 3 moves host-side. *Auth resolution*: the child environment is

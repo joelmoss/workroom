@@ -101,7 +101,10 @@ class Sampler:
         if "box" in self.groups:
             cpu = procfs.parse_cgroup_cpu_stat(read(os.path.join(CGROUP, "cpu.stat")) or "")
             stat = procfs.parse_proc_stat_cpu(read("/proc/stat") or "")
-            net = procfs.net_bytes(procfs.parse_net_dev(read("/proc/net/dev") or ""))
+            uplinks = procfs.default_route_interfaces(read("/proc/net/route") or "",
+                                                      read("/proc/net/ipv6_route") or "")
+            net = procfs.net_bytes(procfs.parse_net_dev(read("/proc/net/dev") or ""),
+                                   counted=lambda name: procfs.crosses_the_box(name, uplinks))
         roots = []
         rf = self.args.roots_file
         if rf:
