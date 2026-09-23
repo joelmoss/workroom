@@ -391,6 +391,12 @@ final class PersistentSessionService {
     if let resourcesDirectory {
       entries.append(("WORKROOM_SESSION_RESOURCES", resourcesDirectory))
     }
+    // Under the `WORKROOM_SESSION_` prefix, like everything else here: the agent scrubs that prefix
+    // from the shell it spawns, so these reach the `serve` that `attach` self-spawns and never the
+    // user's `env`.
+    if backend == .rustAgent {
+      entries.append(contentsOf: AgentWakefulnessSettings.current.serveEnvironment)
+    }
     let variables = Dictionary(
       uniqueKeysWithValues: SessionMetadataKey.environmentVariables)
     for entry in metadata {

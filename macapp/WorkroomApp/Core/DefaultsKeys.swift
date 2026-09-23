@@ -77,6 +77,19 @@ extension Defaults.Keys {
   /// On by default; turn off to restore in-process PTYs that die with the app.
   static let backgroundSessions = Key<Bool>("backgroundSessions", default: true, suite: .app)
 
+  /// How long a remote box may stay continuously busy before the agent reports it as past its awake
+  /// ceiling (issue #208, OQ22). Advisory: the ceiling never sleeps a box. Hours, because that is the
+  /// unit the setting is written in; `AgentWakefulnessSettings` converts to the seconds the agent
+  /// takes. 4 h spares the longest job the OQ19 measurement ran.
+  static let awakeCeilingHours = Key<Double>("awakeCeilingHours", default: 4, suite: .app)
+  /// How long there is to answer the awake-ceiling prompt before the agent stops asserting busy and
+  /// lets the provider's own idle timer sleep the box. Only used when `askAtAwakeCeiling` is on.
+  static let awakePromptTimeoutMinutes = Key<Double>(
+    "awakePromptTimeoutMinutes", default: 10, suite: .app)
+  /// Ask before letting a box past its awake ceiling sleep. Off by default, which is the decided
+  /// OQ22 semantics: report only, and never let a box sleep on its own.
+  static let askAtAwakeCeiling = Key<Bool>("askAtAwakeCeiling", default: false, suite: .app)
+
   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
   static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true, suite: .app)
 

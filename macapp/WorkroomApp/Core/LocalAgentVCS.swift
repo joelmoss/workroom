@@ -64,6 +64,50 @@ actor LocalAgentVCS {
     }
   }
 
+  /// What `wakefulness(connecting:)` may do about a connection that is not there.
+  enum Connecting: Sendable {
+    /// Fail. A poll: no agent, no badge — starting a whole agent so a badge can say IDLE would be
+    /// the tail wagging the dog.
+    case never
+    /// Connect to an agent that is listening; never start one. The prompt watch: its whole job is
+    /// to be subscribed, and a watch that waited for an unrelated VCS read to reconnect it was off
+    /// after every drop.
+    case reconnect
+    /// `ensureConnected`: connect, or start an agent and connect. A user's "Keep awake": a deliberate
+    /// click on a box the agent said was about to sleep, and a dropped connection is not a reason
+    /// to let it.
+    case spawn
+  }
+
+  /// The local box's wakefulness service (issue #208).
+  func wakefulness(connecting: Connecting) async throws -> AgentWakefulnessService {
+    switch connecting {
+    case .never:
+      guard await manager.snapshot(for: .local).status == .connected else {
+        throw RepositoryRoutingError.unavailable(.local)
+      }
+    case .reconnect:
+      try await reconnect()
+    case .spawn:
+      try await ensureConnected(host: .local)
+    }
+    return try await manager.wakefulness(host: .local)
+  }
+
+  /// `ensureConnected` without the spawn. Not routed through `connecting`, whose one attempt is
+  /// shared by every caller: a spawning caller that joined a non-spawning attempt would inherit a
+  /// refusal it did not ask for. Instead this fills a gap and nothing else: the manager decides in
+  /// one step whether there is a gap (`.connecting` — the next retry finds it connected), so an
+  /// attempt some other caller is waiting on is never replaced by this one. A spawning attempt that
+  /// starts a moment later replaces this generation, which fails this call and succeeds theirs.
+  private func reconnect() async throws {
+    let resolveSocketPath = self.resolveSocketPath
+    _ = try await manager.connectIfDisconnected(host: .local) {
+      let path = try await runBlocking { try resolveSocketPath() }
+      return try await AgentVCSConnection.connect(host: .local, socketPath: path)
+    }
+  }
+
   private func isBackendVersion(_ error: Error) -> Bool {
     if case VCSError.backendVersion = error { return true }
     return false
@@ -101,7 +145,13 @@ actor LocalAgentVCS {
                 }
                 let process = Process()
                 process.executableURL = binary
-                process.arguments = ["serve", "--socket", path]
+                // The wakefulness preferences are flags, so they are fixed for this agent's whole
+                // life. This is not the only thing that starts an agent: `wr-agent attach` spawns
+                // `serve --socket <path>` itself (`serve::spawn_agent`) with no flags, and whichever
+                // candidate wins the single-instance flock decides. That path gets the same values
+                // from the environment (`AgentWakefulnessSettings.serveEnvironment`, appended by
+                // `PersistentSessionService.launchEnvironment`), which the agent reads as a fallback.
+                process.arguments = AgentWakefulnessSettings.current.serveArguments(socket: path)
                 var environment = ProcessInfo.processInfo.environment
                 environment["PATH"] = ShellEnvironment.path()
                 process.environment = environment

@@ -129,6 +129,7 @@ struct RightInspector: View {
           indicator: changesIndicator, indicatorLabel: changesIndicatorLabel, shortcut: "⌥⌘C"
         ) {
           HStack(spacing: 0) {
+            WakefulnessBadge()
             InspectorHeaderButton(
               systemImage: "checkmark.circle", help: commitButtonHelp,
               disabled: !canCommitSelectedTarget
@@ -391,6 +392,98 @@ private struct ChangedFileCountBadge: View {
       .padding(.horizontal, 5).padding(.vertical, 1)
       .background(.quaternary, in: Capsule())
       .help(Self.phrase(count: count))
+  }
+}
+
+/// Whether this box is busy, as the agent's wakefulness service reports it (issue #208).
+///
+/// In the Changes header rather than in the sidebar row, matching the PR badge it sits beside: the
+/// verdict is per BOX, not per workroom, so every sidebar row would carry the same glyph — the
+/// inspector shows it once, for whatever is selected.
+///
+/// It owns its polling through `.task`, which is what makes "no polling while hidden" true rather
+/// than merely intended: closing the inspector or the window unmounts this view and cancels the poll.
+/// Nothing is drawn when the agent has no status service (an older agent, or macOS, where the
+/// classifier does not run), so this is invisible on a local-only setup.
+private struct WakefulnessBadge: View {
+  @ObservedObject private var model = WakefulnessModel.shared
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    Group {
+      if let status = model.status, status.running {
+        let glyph = Self.glyph(for: status.display, theme: theme)
+        let image = Image(systemName: glyph.symbol)
+          .font(.caption)
+          .foregroundStyle(glyph.tint)
+          .padding(.horizontal, 4)
+        Group {
+          // Past the ceiling, or unprotected, the badge IS the "Keep awake" control: the prompt card
+          // is gone four ordinary ways (✕, its deadline, no window open when it was raised, the
+          // connection it came on) and a box in `Suppressed` has no other way out from here — the
+          // agent's own exits are a keystroke on the box itself or the job finishing.
+          if Self.offersKeep(status.display) {
+            Button {
+              model.keep()
+            } label: {
+              image
+            }
+            .buttonStyle(.plain)
+            .disabled(model.keepInFlight != nil)
+            .accessibilityAction(named: "Keep awake") { model.keep() }
+          } else {
+            image
+          }
+        }
+        .help(Self.help(for: status, settings: .current))
+        .accessibilityLabel(glyph.label)
+        .accessibilityIdentifier("changes.wakefulness")
+      }
+    }
+    .task { await model.poll() }
+  }
+
+  static func offersKeep(_ display: AgentWakefulness.Display) -> Bool {
+    display == .busyPastCeiling || display == .busyUnprotected
+  }
+
+  static func glyph(for display: AgentWakefulness.Display, theme: ThemeService)
+    -> (symbol: String, tint: Color, label: String)
+  {
+    switch display {
+    case .idle: return ("moon.zzz", .secondary, "Idle")
+    case .busy: return ("bolt.fill", theme.tokens.fgMuted, "Busy")
+    // The ceiling is advisory: this warns that the box has been busy a long time, it does not report
+    // anything having been done about it.
+    case .busyPastCeiling:
+      return ("exclamationmark.triangle.fill", theme.tokens.warning, "Busy past the awake ceiling")
+    // The one state that must not be softened: work is running and nothing is keeping the box awake.
+    case .busyUnprotected:
+      return ("bolt.slash.fill", theme.tokens.warning, "Busy but not kept awake")
+    }
+  }
+
+  static func help(for status: AgentWakefulness, settings: AgentWakefulnessSettings) -> String {
+    let awake = wakefulnessDuration(status.awakeSeconds).formatted(
+      .units(allowed: [.hours, .minutes], width: .narrow))
+    var text: String
+    switch status.display {
+    case .idle: text = "This machine is idle."
+    case .busy: text = "This machine is busy (awake \(awake))."
+    case .busyPastCeiling:
+      text =
+        "This machine has been busy for \(awake), past its awake ceiling. Nothing has been "
+        + "slept — this is a report. Click to keep it awake."
+    case .busyUnprotected:
+      text =
+        status.suppressed
+        ? "This machine is busy, but the awake-ceiling prompt went unanswered, so it is no longer "
+          + "being kept awake and may sleep. Click to keep it awake."
+        : "This machine is busy, but the agent could not write its verdict, so nothing is keeping "
+          + "it awake. Click to keep it awake."
+    }
+    if let mismatch = status.settingsMismatch(against: settings) { text += " " + mismatch }
+    return text
   }
 }
 

@@ -25,8 +25,10 @@ fn usage() -> &'static str {
         provider's lifecycle shim and writes it beside the socket as <socket>.wake.
         The awake ceiling is advisory by default: past it a BUSY box is reported, never slept.
         --ask-at-awake-ceiling prompts the app instead, and lets the box sleep if nobody answers.
-        Each flag falls back to WR_AGENT_AWAKE_CEILING, WR_AGENT_AWAKE_PROMPT_TIMEOUT and
-        WR_AGENT_ASK_AT_AWAKE_CEILING=1, which is how the serve that attach spawns gets them.
+        Each flag falls back to WORKROOM_SESSION_AWAKE_CEILING,
+        WORKROOM_SESSION_AWAKE_PROMPT_TIMEOUT and WORKROOM_SESSION_ASK_AT_AWAKE_CEILING=1, which
+        is how the serve that attach spawns gets them. The WORKROOM_SESSION_ prefix is what keeps
+        them out of every session's shell, with the rest of the app's launch variables.
   wr-agent serve --stdio
         serve one connection over stdin/stdout; what a driver opens remotely
   wr-agent attach --socket <path> [--session <uuid>]
@@ -118,9 +120,11 @@ fn wakefulness_settings(args: &[String]) -> Settings {
     wakefulness_settings_from(args, |name| std::env::var(name).ok())
 }
 
-const ENV_AWAKE_CEILING: &str = "WR_AGENT_AWAKE_CEILING";
-const ENV_AWAKE_PROMPT_TIMEOUT: &str = "WR_AGENT_AWAKE_PROMPT_TIMEOUT";
-const ENV_ASK_AT_AWAKE_CEILING: &str = "WR_AGENT_ASK_AT_AWAKE_CEILING";
+/// Under `WORKROOM_SESSION_` on purpose: `spawn_session` scrubs that prefix from the child's
+/// environment, so the settings reach the self-spawned `serve` and never the user's shell.
+const ENV_AWAKE_CEILING: &str = "WORKROOM_SESSION_AWAKE_CEILING";
+const ENV_AWAKE_PROMPT_TIMEOUT: &str = "WORKROOM_SESSION_AWAKE_PROMPT_TIMEOUT";
+const ENV_ASK_AT_AWAKE_CEILING: &str = "WORKROOM_SESSION_ASK_AT_AWAKE_CEILING";
 
 fn wakefulness_settings_from(args: &[String], env: impl Fn(&str) -> Option<String>) -> Settings {
     // Finite and positive, or the default. `f64::parse` accepts "nan", "inf" and "-1", and each

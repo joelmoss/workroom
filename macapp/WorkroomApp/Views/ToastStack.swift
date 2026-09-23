@@ -12,6 +12,7 @@ import SwiftUI
 struct ToastStack: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
+  @ObservedObject private var wakefulness = WakefulnessModel.shared
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   /// Toasts to render. Notifications no longer live in the right inspector (moved to the left
@@ -33,6 +34,12 @@ struct ToastStack: View {
     // ONE container (issue #67): live run toasts ride above the transient notification toasts, so the
     // two never overlap in the bottom-right corner (they'd collide as separate overlays).
     VStack(alignment: .trailing, spacing: 8) {
+      // The awake-ceiling prompt (issue #208), above everything else: it is the only card here with
+      // a deadline, and ignoring it is a real choice — no answer lets the box sleep.
+      if wakefulness.prompt.isShowing {
+        AwakeCeilingToastView(model: wakefulness)
+          .transition(.move(edge: .trailing).combined(with: .opacity))
+      }
       // Tool-version warnings ride at the top: unlike the two below, these describe a STANDING
       // condition (an old `git` doesn't fix itself), so they never auto-dismiss and stay until the
       // user closes them. See `VCSToolVersions`.
@@ -103,7 +110,112 @@ struct ToastStack: View {
     )
     // An empty stack must not eat clicks meant for the content beneath it.
     .allowsHitTesting(
-      !store.toasts.isEmpty || !store.runToastItems.isEmpty || !store.vcsToolWarnings.isEmpty)
+      !store.toasts.isEmpty || !store.runToastItems.isEmpty || !store.vcsToolWarnings.isEmpty
+        || wakefulness.prompt.isShowing
+    )
+  }
+}
+
+/// The awake-ceiling prompt (issue #208, OQ22): this box has been busy past its ceiling and the agent
+/// is asking whether to keep it awake.
+///
+/// Non-modal, and deliberately asymmetric: "Keep awake" sends `keep` and restarts the ceiling, while
+/// ✕ — and simply ignoring the card until the countdown runs out — does exactly the same nothing.
+/// That is the decided semantics: no answer means the agent stops asserting busy and lets the
+/// provider's own idle timer sleep the box. The app never sleeps anything, so there is no
+/// "Let it sleep" button to press.
+private struct AwakeCeilingToastView: View {
+  @ObservedObject var model: WakefulnessModel
+
+  @State private var hovering = false
+  @State private var now = Date()
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  private let theme = ThemeService.shared
+
+  /// A whole-second countdown wants a whole-second tick; the deadline itself is enforced by
+  /// `AwakeCeilingPromptState.tick`, not by this timer, so a missed tick only delays the card.
+  /// `@State`, so the one subscription lives as long as the card does: a plain `let` was rebuilt on
+  /// every evaluation of the parent's body.
+  @State private var clock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      Image(systemName: "exclamationmark.triangle.fill")
+        .foregroundStyle(theme.tokens.warning)
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Keep this machine awake?").font(.callout).fontWeight(.semibold).lineLimit(2)
+        Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+        // Only after a `keep` came back from the card: the request did not reach the agent, so the
+        // deadline is still running and the click has to be made again.
+        if model.prompt.keepFailed {
+          Text("Couldn't reach the agent. Try again.")
+            .font(.caption).foregroundStyle(theme.tokens.warning).lineLimit(2)
+        }
+        Button("Keep awake") { model.keep() }
+          .controlSize(.small)
+          .disabled(model.keepInFlight != nil)
+          .accessibilityIdentifier("wakefulness.keepAwake")
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .frame(width: 300, alignment: .leading)
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.tokens.border, lineWidth: 0.5))
+    .overlay(alignment: .topTrailing) { closeButton }
+    .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
+    .onHover { hovering = $0 }
+    .onReceive(clock) { instant in
+      now = instant
+      model.tick()
+    }
+    // Polls while the card is up, whether or not an inspector is: a `status` reply is how the app
+    // learns the prompt was answered elsewhere (a keystroke on the box, another Workroom's keep, the
+    // job finishing) and how the countdown is corrected to the agent's exact remaining time.
+    .task { await model.poll() }
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Keep this machine awake? \(detail)")
+    .accessibilityAction(named: "Keep awake") { model.keep() }
+    .accessibilityAction(named: "Dismiss") { model.dismissPrompt() }
+  }
+
+  private var detail: String {
+    // A retry with no prompt behind it (a keep from the badge, on a box past an advisory ceiling
+    // with ask off): nothing is counting down and nothing will sleep, so say neither.
+    if model.prompt.keepFailed, model.prompt.agentDeadline == nil {
+      return "The request to keep it awake did not reach the agent."
+    }
+    let remaining = model.prompt.remaining(now: now) ?? 0
+    let countdown = wakefulnessDuration(remaining.rounded())
+      .formatted(.units(allowed: [.minutes, .seconds], width: .narrow))
+    guard let awake = model.prompt.awakeSeconds else {
+      return "No answer in \(countdown) and it may go to sleep."
+    }
+    let busy = wakefulnessDuration(awake).formatted(
+      .units(allowed: [.hours, .minutes], width: .narrow))
+    return "Busy for \(busy). No answer in \(countdown) and it may go to sleep."
+  }
+
+  private var closeButton: some View {
+    Button {
+      model.dismissPrompt()
+    } label: {
+      Image(systemName: "xmark")
+        .font(.system(size: 9, weight: .bold))
+        .foregroundStyle(.secondary)
+        .frame(width: 18, height: 18)
+        .background(.regularMaterial, in: Circle())
+        .overlay(Circle().strokeBorder(theme.tokens.border, lineWidth: 0.5))
+        .contentShape(Circle())
+    }
+    .buttonStyle(.plain)
+    .padding(6)
+    .opacity(hovering ? 1 : 0)
+    .allowsHitTesting(hovering)
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: hovering)
+    .help("Dismiss — the machine may go to sleep")
+    .accessibilityHidden(true)
   }
 }
 
