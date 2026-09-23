@@ -40,11 +40,17 @@ NOTES_HTML="$(gh api --method POST /markdown -f mode=gfm -f context="$REPO" -f t
 # A CDATA section can't contain the literal "]]>"; split any occurrence so it stays well-formed.
 NOTES_HTML="${NOTES_HTML//]]>/]]]]><![CDATA[>}"
 
-# Fetch the published feed. If it doesn't exist yet there's nothing to refresh (the build publishes it).
-if ! gh release download "$FEED_TAG" --repo "$REPO" --dir "$BUILD" -p appcast.xml --clobber 2>/dev/null; then
-  echo "note: no published appcast.xml yet; nothing to refresh." >&2
-  exit 0
-fi
+# Fetch the published feed. Only a clean 404 means there is no feed yet (the build publishes it);
+# any other failure fails the run, so a refresh that did nothing can never report success.
+# shellcheck source=appcast-feed.sh
+. "${MACAPP_DIR}/Scripts/appcast-feed.sh"
+rc=0
+wr_fetch_feed "$REPO" "$FEED_TAG" appcast.xml "$FEED" || rc=$?
+case "$rc" in
+  0) ;;
+  2) echo "note: no published appcast.xml yet; nothing to refresh." >&2; exit 0 ;;
+  *) exit 1 ;;
+esac
 
 # Exit 0 = feed rewritten (upload it); 9 = item missing or already current (skip the upload).
 set +e

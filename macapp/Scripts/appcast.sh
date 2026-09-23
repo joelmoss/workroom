@@ -101,8 +101,20 @@ fi
 # So the ONLY thing that authorizes the skeleton is gh reporting the release or its asset explicitly
 # ABSENT. Every other failure is fatal: an outage takes out the probe as readily as the download, so
 # "the probe also failed" must not fall through to initialize either.
-if gh release download "$FEED_TAG" --repo "$REPO" --dir "$BUILD" -p appcast.xml --clobber 2>/dev/null; then
+#
+# The download uses the public URL, not `gh release download`: the API's asset listing can go stale
+# after a --clobber re-upload (see appcast-feed.sh). A stale listing still names appcast.xml, so the
+# probe below refuses rather than initializing.
+# shellcheck source=appcast-feed.sh
+. "${MACAPP_DIR}/Scripts/appcast-feed.sh"
+FETCH_RC=0
+wr_fetch_feed "$REPO" "$FEED_TAG" appcast.xml "$FEED" || FETCH_RC=$?
+if [ "$FETCH_RC" -eq 0 ]; then
   echo "Fetched existing appcast.xml"
+elif [ "$FETCH_RC" -ne 2 ]; then
+  echo "error: could not fetch the live appcast.xml, and it is not a clean 404." \
+    "Refusing to overwrite the live feed with a fresh skeleton." >&2
+  exit 1
 else
   if FEED_ASSETS=$(gh release view "$FEED_TAG" --repo "$REPO" --json assets -q '.assets[].name' 2>&1); then
     if printf '%s\n' "$FEED_ASSETS" | grep -qx 'appcast.xml'; then
