@@ -2018,7 +2018,8 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   private func headIsStill(_ before: String?, path: String) async -> Bool {
     guard before == nil else { return await currentRevision(path: path) == before }
     let result = await run(Self.gitUnbornHeadArgs(), in: path, timeout: refTimeout)
-    return result.exitCode == 1 && !result.timedOut && result.stdout.isEmpty
+    // A killed probe reports its signal as the exit code, and SIGHUP is 1.
+    return result.exitCode == 1 && !result.signaled && !result.timedOut && result.stdout.isEmpty
   }
 
   private func currentRevision(path: String) async -> String? {

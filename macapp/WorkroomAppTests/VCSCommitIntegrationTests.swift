@@ -239,9 +239,10 @@ final class VCSCommitIntegrationTests: XCTestCase {
   }
 
   /// The real runner, except that a HEAD read fails once HEAD names a commit: the read after the
-  /// commit is lost to a timeout or a dropped agent.
+  /// commit is lost to a timeout, a dropped agent, or a signal.
   private struct HeadReadsFailOnceItExists: StatusCommandRunning {
     let real = StatusCommandRunner()
+    let failure: CommandResult
 
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
       async -> CommandResult
@@ -255,7 +256,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     ) async -> CommandResult {
       let result = await real.run(executable, args, in: directory, timeout: timeout, stdin: stdin)
       guard args.contains("rev-parse"), result.ok else { return result }
-      return CommandResult(stdout: "", stderr: "HEAD read lost", exitCode: 128, timedOut: false)
+      return failure
     }
   }
 
@@ -268,13 +269,27 @@ final class VCSCommitIntegrationTests: XCTestCase {
   /// A first commit starts from no HEAD, and a failed read after it also gives none, so "HEAD did
   /// not move" has to be proved (HEAD still unborn), not inferred from two nils.
   func testALandedFirstCommitWhoseHeadCannotBeReReadKeepsItsNewFiles() async throws {
+    try await assertALandedFirstCommitKeepsItsNewFiles(
+      whenHeadReads: CommandResult(stdout: "", stderr: "lost", exitCode: 128, timedOut: false))
+  }
+
+  /// A killed probe reports its signal as the exit code, and SIGHUP's 1 is also "HEAD is unborn".
+  func testALandedFirstCommitWhoseHeadProbeIsSignaledKeepsItsNewFiles() async throws {
+    try await assertALandedFirstCommitKeepsItsNewFiles(
+      whenHeadReads: CommandResult(
+        stdout: "", stderr: "", exitCode: 1, timedOut: false, signaled: true))
+  }
+
+  private func assertALandedFirstCommitKeepsItsNewFiles(
+    whenHeadReads failure: CommandResult
+  ) async throws {
     try requireTool("git")
     let dir = unbornGitRepo()
     write("fresh\n", to: "untracked.txt", in: dir)
     write("#!/bin/sh\nsleep 30\n", to: ".git/hooks/post-commit", in: dir)
     sh("chmod +x .git/hooks/post-commit", in: dir)
     var landing = CLIVCSWriter(
-      vcs: "git", runner: HeadReadsFailOnceItExists(),
+      vcs: "git", runner: HeadReadsFailOnceItExists(failure: failure),
       makeProvider: { _ in GitProvider() as LocalVCSProviding },
       gate: JJSnapshotGate(maxChainWait: 5))
     landing.commitTimeout = 1
