@@ -135,8 +135,8 @@ final class PortForward: @unchecked Sendable {
   }
   /// The agent's `MAX_FORWARDS`: what it holds per multiplex connection before refusing. Mirrored
   /// on the connection (`AgentVCSConnection.reserveForwardSlot`), across every listener on it, so a
-  /// burst of local connects never sends OPENs the agent will certainly refuse — each refusal is two
-  /// more envelopes through the writer VCS, File and Status share.
+  /// burst of local connects never sends OPENs the agent will certainly refuse — each refusal is
+  /// two more envelopes through the writer VCS, File and Status share.
   static let maxConnections = 64
   /// Out of descriptors: how long the accept queue pauses before the backlog is tried again.
   private static let acceptBackoff: TimeInterval = 0.1

@@ -143,9 +143,9 @@ final class AgentPortForwardingTests: XCTestCase {
     XCTAssertEqual(ids, ids.sorted(), "stream ids are monotonic: \(ids)")
   }
 
-  /// The agent holds `MAX_FORWARDS` per multiplex CONNECTION, so the client's cap is shared by every
-  /// listener on it: 64 connections split across two forwards fill it, and a 65th through either one
-  /// is refused locally rather than sent as an OPEN the agent must refuse.
+  /// The agent holds `MAX_FORWARDS` per multiplex CONNECTION, so the client's cap is shared by
+  /// every listener on it: 64 connections split across two forwards fill it, and a 65th through
+  /// either one is refused locally rather than sent as an OPEN the agent must refuse.
   func testTheConnectionCapIsSharedAcrossForwards() async throws {
     let agent = try FakeAgent(version: 5, forward: true)
     let connection = try await fake(agent)
@@ -786,8 +786,8 @@ final class PortForwardingModelTests: XCTestCase {
   }
 
   /// The reverse race: `add()` resumes on the RECONNECTED lease while the watch still holds the
-  /// disconnect. Reconciling against the watch's snapshot dropped a valid row; the manager's current
-  /// lease keeps it.
+  /// disconnect. Reconciling against the watch's snapshot dropped a valid row; the manager's
+  /// current lease keeps it.
   func testAnAddThatResumesOnAReconnectKeepsItsForward() async throws {
     let first = lease()
     let second = lease()

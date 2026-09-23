@@ -182,11 +182,11 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       // `notDispatched` too: `request` refuses with it once the connection is closed, and a fresh
       // connection is only closed before its first request if the peer already hung up.
       //
-      // Rethrown as `connectionLost`, not wrapped. `LocalAgentVCS` catches exactly this case to spawn wr-agent
-      // and retry, and flattening it into `serviceUnavailable` routed a dropped handshake around
-      // that recovery entirely — leaving the VCS service dead until the app was restarted, over a
-      // stale socket, which is the common case rather than an exotic one (the daemon leaves
-      // `session.sock` behind on any `pkill`).
+      // Rethrown as `connectionLost`, not wrapped. `LocalAgentVCS` catches exactly this case to
+      // spawn wr-agent and retry, and flattening it into `serviceUnavailable` routed a dropped
+      // handshake around that recovery entirely — leaving the VCS service dead until the app was
+      // restarted, over a stale socket, which is the common case rather than an exotic one (the
+      // daemon leaves `session.sock` behind on any `pkill`).
       //
       // Only this case. A handshake that times out against a HUNG agent (`.requestTimedOut` — which
       // is the reason that case exists; it used to arrive here as `.connectionLost` and take the
@@ -585,8 +585,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// started so a request deadline can tell a stalled send from a slow queue.
   ///
   /// `stallAfter` arms a watchdog on THIS send: still running then, the transport is wedged and the
-  /// connection fails. A request's deadline cannot cover it alone — a request cancelled mid-send, or
-  /// one whose send only began late in its window, has no deadline left to notice its bytes stuck.
+  /// connection fails. A request's deadline cannot cover it alone — a request cancelled mid-send,
+  /// or one whose send only began late in its window, has no deadline left to notice its bytes
+  /// stuck.
   private func sendOnWrites(_ data: Data, stallAfter: Double? = nil) throws {
     let count = lock.withLock {
       sendStarted = ContinuousClock.now
