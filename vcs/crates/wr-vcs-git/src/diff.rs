@@ -211,7 +211,7 @@ fn run_bounded(
         return Err(super::io("VCS command timed out"));
     }
     let status = status.unwrap().map_err(super::io)?;
-    if !status.success() && !(difference_is_success && status.code() == Some(1)) {
+    if !(status.success() || difference_is_success && status.code() == Some(1)) {
         return Err(super::io(String::from_utf8_lossy(&stderr)));
     }
     Ok(stdout)
