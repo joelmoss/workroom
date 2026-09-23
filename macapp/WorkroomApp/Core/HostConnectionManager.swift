@@ -64,7 +64,7 @@ enum HostConnectionError: Error, Equatable, Sendable, LocalizedError, CustomStri
     case .connectionLost:
       return "Host connection lost. An operation may have completed; refresh before retrying."
     case .notDispatched:
-      return "Host service is busy; the request was not sent."
+      return "Host service did not take the request; nothing was sent. Try again."
     case .requestTimedOut:
       return "Host service did not answer in time. An operation may have completed; refresh before "
         + "retrying."

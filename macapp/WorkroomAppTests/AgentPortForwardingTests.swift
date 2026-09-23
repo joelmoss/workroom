@@ -143,6 +143,31 @@ final class AgentPortForwardingTests: XCTestCase {
     XCTAssertEqual(ids, ids.sorted(), "stream ids are monotonic: \(ids)")
   }
 
+  /// The agent holds `MAX_FORWARDS` per multiplex CONNECTION, so the client's cap is shared by every
+  /// listener on it: 64 connections split across two forwards fill it, and a 65th through either one
+  /// is refused locally rather than sent as an OPEN the agent must refuse.
+  func testTheConnectionCapIsSharedAcrossForwards() async throws {
+    let agent = try FakeAgent(version: 5, forward: true)
+    let connection = try await fake(agent)
+    let failures = Failures()
+    let first = try listen(connection, to: 5173, failures: failures)
+    let second = try listen(connection, to: 3000, failures: failures)
+    var clients: [TCPClient] = []
+    defer { for client in clients { client.close() } }
+    for index in 0..<PortForward.maxConnections {
+      let client = try connect(to: index.isMultiple(of: 2) ? first : second)
+      try client.write(Data("x".utf8))
+      XCTAssertEqual(try client.read(1), Data("x".utf8), "connection \(index) did not open")
+      clients.append(client)
+    }
+    let overflow = try connect(to: second)
+    clients.append(overflow)
+    eventually("the 65th connection was not refused locally") {
+      failures.all.contains { $0.contains("Too many connections") }
+    }
+    XCTAssertEqual(agent.forwards(opcode: 0x01).count, PortForward.maxConnections)
+  }
+
   /// The local client half-closing sends EOF, and only EOF: the CLOSE is the agent's, once it has
   /// both halves. A client CLOSE there would make the agent kill the socket with the client's last
   /// DATA still queued in its writer. The fake mirrors EOF the way a peer whose input has ended
@@ -586,8 +611,16 @@ final class PortForwardingModelTests: XCTestCase {
   private var fakes: [FakeAgent] = []
   private var connections: [AgentVCSConnection] = []
   private var continuation: AsyncStream<HostConnectionManager.Snapshot>.Continuation?
+  /// What the manager would answer for the connected lease right now; `publish` keeps it in step
+  /// with the stream, and a test can move it ahead of the stream to model a watch that lags.
+  private let current = CurrentLease()
 
   private var models: [PortForwardingModel] = []
+
+  private func publish(_ snapshot: HostConnectionManager.Snapshot) {
+    current.set(snapshot.status == .connected ? snapshot.lease : nil)
+    continuation?.yield(snapshot)
+  }
 
   override func tearDown() {
     continuation?.finish()
@@ -621,11 +654,14 @@ final class PortForwardingModelTests: XCTestCase {
     let service = try connection.forwarding()
     let (stream, continuation) = AsyncStream<HostConnectionManager.Snapshot>.makeStream()
     self.continuation = continuation
+    current.set(lease)
     continuation.yield(HostConnectionManager.Snapshot(lease: lease, status: .connected))
+    let current = self.current
     let model = PortForwardingModel(
       transport: .init(
         forwarding: forwarding ?? { (lease, service) },
-        updates: { stream }))
+        updates: { stream },
+        current: { current.get() }))
     models.append(model)
     return model
   }
@@ -688,11 +724,11 @@ final class PortForwardingModelTests: XCTestCase {
     let entry = try XCTUnwrap(model.forwards.first)
     await settle("the watch did not see the connection") { model.connected }
 
-    continuation?.yield(HostConnectionManager.Snapshot(lease: first, status: .connected))
+    publish(HostConnectionManager.Snapshot(lease: first, status: .connected))
     await settle("the second snapshot was not consumed") { model.snapshotsSeen >= 2 }
     XCTAssertEqual(model.forwards.count, 1, "the same lease is not a loss")
 
-    continuation?.yield(HostConnectionManager.Snapshot(lease: lease(), status: .connected))
+    publish(HostConnectionManager.Snapshot(lease: lease(), status: .connected))
     await settle("the forward outlived its connection") { model.forwards.isEmpty }
     XCTAssertEqual(model.message, "The agent connection ended; forwards were closed.")
     await settle("the listener must be gone") { listenerIsGone(entry.localPort) }
@@ -708,7 +744,7 @@ final class PortForwardingModelTests: XCTestCase {
     await model.add()
     XCTAssertEqual(model.forwards.count, 2)
 
-    continuation?.yield(HostConnectionManager.Snapshot(lease: current, status: .disconnected))
+    publish(HostConnectionManager.Snapshot(lease: current, status: .disconnected))
     await settle("the forwards outlived the connection") { model.forwards.isEmpty }
     XCTAssertFalse(model.connected)
   }
@@ -739,13 +775,47 @@ final class PortForwardingModelTests: XCTestCase {
     let adding = Task { await model.add() }
     try await Task.sleep(for: .milliseconds(50))
     // The connection ends while `add()` is suspended acquiring the service.
-    continuation?.yield(HostConnectionManager.Snapshot(lease: first, status: .disconnected))
+    publish(HostConnectionManager.Snapshot(lease: first, status: .disconnected))
     await settle("the disconnect was not consumed") { !model.connected }
     await gate.open()
     await adding.value
 
     XCTAssertTrue(model.forwards.isEmpty, "a row for a dead connection: \(model.forwards)")
     XCTAssertEqual(model.message, "The agent connection ended; forwards were closed.")
+  }
+
+  /// The reverse race: `add()` resumes on the RECONNECTED lease while the watch still holds the
+  /// disconnect. Reconciling against the watch's snapshot dropped a valid row; the manager's current
+  /// lease keeps it.
+  func testAnAddThatResumesOnAReconnectKeepsItsForward() async throws {
+    let first = lease()
+    let second = lease()
+    let gate = Gate()
+    let model = try await model(lease: first) { [gate] in
+      await gate.wait()
+      return try await gate.held()
+    }
+    model.watch()
+    await settle("the watch did not see the connection") { model.connected }
+    let agent = try FakeAgent(version: 5, forward: true)
+    fakes.append(agent)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: agent.socketPath)
+    connections.append(connection)
+    await gate.hold((second, try connection.forwarding()))
+
+    model.draft = "5173"
+    let adding = Task { await model.add() }
+    try await Task.sleep(for: .milliseconds(50))
+    publish(HostConnectionManager.Snapshot(lease: first, status: .disconnected))
+    await settle("the disconnect was not consumed") { !model.connected }
+    // Reconnected: the manager knows, the watch has not been told yet.
+    current.set(second)
+    await gate.open()
+    await adding.value
+
+    XCTAssertEqual(model.forwards.map(\.lease), [second], "a valid forward was dropped")
+    XCTAssertNil(model.message)
   }
 
   /// Two adds in flight at once (a click and a Return) make one listener, not two.
@@ -829,6 +899,13 @@ final class PortForwardingModelTests: XCTestCase {
 
 /// Holds a transport's answer until the test lets it through, so the test can act while `add()` is
 /// suspended.
+final class CurrentLease: @unchecked Sendable {
+  private let lock = NSLock()
+  private var lease: HostConnectionManager.Lease?
+  func set(_ lease: HostConnectionManager.Lease?) { lock.withLock { self.lease = lease } }
+  func get() -> HostConnectionManager.Lease? { lock.withLock { lease } }
+}
+
 actor Gate {
   private var opened = false
   private var waiters: [CheckedContinuation<Void, Never>] = []

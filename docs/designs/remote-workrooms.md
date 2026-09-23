@@ -1843,7 +1843,9 @@ disagreement passes every test on either side alone while presenting as an empty
     By default the wakefulness service never hibernates a BUSY box on its own; a box BUSY past the
     ceiling is reported (the app shows it, so the idle-agent bill is visible rather than capped). With
     the setting on, reaching the ceiling raises a prompt in the app; "keep" resets the ceiling, no
-    answer within the prompt's timeout hibernates the box. Force-sleep is not offered. **Amended
+    answer within the prompt's timeout stops the agent asserting BUSY, so the provider's own idle
+    timer can then hibernate the box — the agent never hibernates it itself, and an app or shim must
+    not describe it as doing so. Force-sleep is not offered. **Amended
     2026-09-22 (#215 review):** a pending prompt, and the suppression an unanswered one leaves, are
     also cleared by a keystroke the agent's input classifier calls the user's own (typing is the
     answer the prompt never got) and by

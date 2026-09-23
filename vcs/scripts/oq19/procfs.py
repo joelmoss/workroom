@@ -81,11 +81,23 @@ def parse_net_dev(text):
 
 
 def default_route_interfaces(route, ipv6_route):
-    """Mirror of wr-agent `default_route_interfaces`: interfaces an IPv4 or IPv6 default route leaves by."""
+    """Mirror of wr-agent `default_route_interfaces`: interfaces an IPv4 or IPv6 default route leaves by.
+
+    A `blackhole`/`unreachable`/`prohibit` fallback default (`ip route add unreachable default metric
+    …`) has destination and mask `00000000` too, but iface `*` and `RTF_REJECT` (0x0200) set, without
+    `RTF_UP` (0x0001) necessarily meaning anything real is reachable that way. Skipped, or a box with no
+    usable default route would read as having one and stop counting every interface (see
+    `crosses_the_box`)."""
     out = set()
     for line in route.splitlines()[1:]:
         f = line.split()
-        if len(f) > 7 and f[1] == "00000000" and f[7] == "00000000":
+        if len(f) > 7 and f[0] != "*" and f[1] == "00000000" and f[7] == "00000000":
+            try:
+                flags = int(f[3], 16)
+            except ValueError:
+                continue
+            if not flags & 0x0001 or flags & 0x0200:  # not RTF_UP, or RTF_REJECT
+                continue
             out.add(f[0])
     for line in ipv6_route.splitlines():
         f = line.split()

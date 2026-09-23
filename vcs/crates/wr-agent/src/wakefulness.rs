@@ -245,7 +245,16 @@ fn closure(roots: &[i32], kids: &HashMap<i32, Vec<i32>>) -> HashSet<i32> {
 /// leader that is the work: the pty child keeps its pid through `exec`, so a command session
 /// (`sh -c "exec …"`), a user typing `exec cargo build`, or a shell running a script itself became
 /// invisible to every vote while burning a core.
-fn candidates<'a>(procs: &'a [Proc], boundary: &Boundary) -> Vec<&'a Proc> {
+///
+/// **`roots` (a session's own pty leaders) protects `EXCLUDED_WITH_DESCENDANTS` from `comm`.**
+/// `comm` is mutable at runtime (`prctl(PR_SET_NAME)`, or `exec -a`) — unlike the process's ancestry
+/// — so a session program renamed to `cron` or `wr-wakeshim` used to be swept out of the candidate
+/// set along with every one of its descendants, and could then burn CPU indefinitely without ever
+/// voting BUSY. A process that IS part of a live session's tree is never excluded by name: only a
+/// `cron`/`wr-wakeshim` outside every session — the real housekeeping daemon this list exists for —
+/// still is. `roots` is carried by `Sample` already (see its doc); the ten golden fixtures contain
+/// no process named `cron` or `wr-wakeshim`, so this cannot change what they replay to.
+fn candidates<'a>(procs: &'a [Proc], roots: &[i32], boundary: &Boundary) -> Vec<&'a Proc> {
     let mut kids: HashMap<i32, Vec<i32>> = HashMap::new();
     for p in procs {
         kids.entry(p.ppid).or_default().push(p.pid);
@@ -255,9 +264,13 @@ fn candidates<'a>(procs: &'a [Proc], boundary: &Boundary) -> Vec<&'a Proc> {
     if boundary.own_descendants {
         excluded.extend(closure(&[boundary.own_pid], &kids));
     }
+    let mut protected: HashSet<i32> = roots.iter().copied().collect();
+    protected.extend(closure(roots, &kids));
     let daemons: Vec<i32> = procs
         .iter()
-        .filter(|p| EXCLUDED_WITH_DESCENDANTS.contains(&p.comm.as_str()))
+        .filter(|p| {
+            EXCLUDED_WITH_DESCENDANTS.contains(&p.comm.as_str()) && !protected.contains(&p.pid)
+        })
         .map(|p| p.pid)
         .collect();
     excluded.extend(
@@ -462,7 +475,7 @@ impl Classifier {
     }
 
     fn features(&mut self, s: &Sample, lifecycle: bool, net_masked: bool) -> Features {
-        let cand = candidates(&s.procs, &self.boundary);
+        let cand = candidates(&s.procs, &s.roots, &self.boundary);
         let dt = match &self.prev {
             Some((prev_t, _)) => s.t - prev_t,
             None => self.policy.interval,
@@ -1006,7 +1019,12 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter) {
 /// written without `O_EXCL`; a same-user peer who could plant a symlink there could write these
 /// files directly, so nothing is gained by guarding against them.
 pub fn verdict_path(socket: &Path) -> PathBuf {
-    socket.with_extension("wake")
+    // `with_extension` REPLACES the existing one, so `agent.sock` produced `agent.wake` — not the
+    // documented `agent.sock.wake` (`main.rs`'s own `usage()` and `docs/designs/remote-workrooms.md`
+    // both say `<socket>.wake`, appended). Appending onto the full path is what actually matches.
+    let mut name = socket.as_os_str().to_owned();
+    name.push(".wake");
+    PathBuf::from(name)
 }
 
 #[cfg(target_os = "linux")]

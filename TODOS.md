@@ -1237,16 +1237,17 @@ are fixed in `ed51faa9`; each entry below was reproduced or read off the code, n
    *transient* state; fetch is idempotent, it is what resolves the unknown, and a successful one
    clears `lastFailure`. Same shape as `.rejected → .pull`.
 
-2. **`child.wait()` after SIGKILL is unbounded.** `run_exec`'s timeout path ends
-   `break 'wait child.wait().map_err(io)?`. `kill(-pid, …)` only reaches the process group, so a
-   descendant that `setsid`s away (or a wrapper that re-parents) leaves that wait blocking. Codex
-   reproduced 4.1s on a 100ms timeout via `os.setpgid`. The drain bound means this no longer leaks an
-   `ACTIVE` permit, but the wait itself has no ceiling. Predates the agent-writes work.
+2. **A child that never becomes reapable is waited on by a detached thread, without a bound.**
+   The foreground wait is gone: `run_exec` now tries to reap for `REAP_GRACE` after the kill and then
+   reports the timeout, so it no longer blocks `run_exec` or holds the `ACTIVE` permit. What remains
+   is the fallback for a child still unreapable after that grace: its handle moves to a detached
+   thread whose `child.wait()` has no ceiling (so a zombie is still reaped eventually). The cost is
+   one parked thread per such child, not a stuck request.
 
-3. **The agent kills a process GROUP where native kills a process TREE.** `StatusCommandRunner`
-   escalates through `ProcessTree.killTree`, which walks real ppid lineage via `pgrep -P` — that file
-   explicitly rejected group-based kill because "helpers spawned by git/gh can outlive the parent".
-   `run_exec` has only `kill(-pid, …)`. Same gap as (2), and the two share a fix.
+3. ~~**The agent kills a process GROUP where native kills a process TREE.**~~ **Fixed.** `run_exec`
+   now snapshots the child's descendants before signalling and `kill_recorded` SIGKILLs the ones
+   that are still the same process (start time checked), so a descendant that `setsid`s out of the
+   group is killed too. Covered by `exec_kills_a_descendant_that_escaped_the_process_group`.
 
 4. ~~**`writes: 8` is not a capability.**~~ **Fixed.** The count described a CLIENT-side Swift
    protocol (`LocalVCSWriting`); wr-agent implements one generic exec service and never had eight
@@ -1308,14 +1309,15 @@ kills the VCS service, a completed push reported as never run, a cancelled write
 barrier, commits authored under a stale identity, and a missing tool reported as a deleted workroom —
 are fixed. Nothing left here is silent data loss; (1) is the closest, and it needs a UI decision.
 
-**How to start:** (1) is self-contained and the most user-visible. (2)+(3) are one change in
-`run_exec`. (4) is a two-line protocol simplification. (9) is mechanical and makes the rest safe to
-touch.
+**How to start:** (9) is mechanical and makes the rest safe to touch. (7) needs evidence of real
+contention before it is worth splitting the pool. (2) is a thread per pathological child, not a
+stuck request.
 
 **Depends on / blocked by:** nothing. All of it sits on the stacked branch (#201 → #202 → #204 →
 #205), so land the stack first.
 
-**Priority:** P2. (1) is the only one worth pulling forward.
+**Priority:** P3. Everything user-visible here is fixed; what remains is test coverage (9), a
+contention risk (7) and a bounded leak (2).
 
 ### VCS toolbar: the findings the `/review` pass didn't fix (macapp)
 

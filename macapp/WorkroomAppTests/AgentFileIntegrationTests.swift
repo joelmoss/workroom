@@ -153,6 +153,35 @@ final class AgentFileIntegrationTests: XCTestCase {
   /// connection in use, so every later request queued behind that send and timed out in turn. The
   /// stuck request's deadline must retire the connection, so the next request fails at once and the
   /// next acquisition reconnects.
+  /// A request that already completed must not retire the connection when its deadline fires: the
+  /// send in progress then belongs to another request, which keeps its own deadline. `connect()`'s
+  /// own `capabilities` request (2 s) is answered, then a request that cannot be read stalls.
+  func testACompletedRequestsDeadlineDoesNotRetireTheConnection() async throws {
+    let fake = try FakeAgent(version: 2, stallAfterCapabilities: true)
+    fakes.append(fake)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: fake.socketPath)
+    connections.append(connection)
+    let stuck = AgentVCSRequest(method: "status", path: String(repeating: "x", count: 900_000))
+    let finished = Flag()
+    let outcome = Task {
+      _ = try? await connection.request(stuck, timeout: 20)
+      finished.set()
+    }
+    try await Task.sleep(for: .seconds(3))
+    XCTAssertFalse(
+      finished.isSet, "the handshake's expired deadline retired the connection under a live send")
+    await connection.close()
+    await outcome.value
+  }
+
+  private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.withLock { value = true } }
+    var isSet: Bool { lock.withLock { value } }
+  }
+
   func testARequestStuckBehindAPeerThatStoppedReadingRetiresTheConnection() async throws {
     let fake = try FakeAgent(version: 2, stallAfterCapabilities: true)
     fakes.append(fake)
@@ -170,7 +199,8 @@ final class AgentFileIntegrationTests: XCTestCase {
       _ = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
       XCTFail("the wedged connection must be retired")
     } catch {
-      XCTAssertEqual(error as? HostConnectionError, .connectionLost)
+      // Refused, nothing sent: the connection is already closed.
+      XCTAssertEqual(error as? HostConnectionError, .notDispatched)
     }
     XCTAssertLessThan(
       Date().timeIntervalSince(started), 1, "must fail at once, not queue behind the stuck send")
@@ -289,11 +319,13 @@ final class AgentFileIntegrationTests: XCTestCase {
     XCTAssertThrowsError(try connection.files(context: fileContext)) {
       XCTAssertEqual($0 as? HostConnectionError, .connectionLost)
     }
-    // A provider that outlived its connection fails explicitly rather than returning empty data.
+    // A provider that outlived its connection fails explicitly rather than returning empty data,
+    // and says nothing was sent: for a write that is the difference between "may have completed"
+    // and a safe retry.
     do {
       _ = try await files.list(.git)
       XCTFail("a closed connection must fail")
-    } catch { XCTAssertEqual(error as? HostConnectionError, .connectionLost) }
+    } catch { XCTAssertEqual(error as? HostConnectionError, .notDispatched) }
   }
 
   // MARK: Listing

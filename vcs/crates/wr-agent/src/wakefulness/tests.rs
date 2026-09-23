@@ -6,7 +6,7 @@
 
 use super::sample::Sample;
 use super::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn golden_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/oq19/golden")
@@ -143,8 +143,9 @@ fn fixtures() -> Vec<Fixture> {
 #[test]
 fn golden_fixtures_replay_to_their_expected_change_points() {
     let fixtures = fixtures();
-    assert!(
-        fixtures.len() >= 8,
+    assert_eq!(
+        fixtures.len(),
+        10,
         "expected the ten golden fixtures, found {}",
         fixtures.len()
     );
@@ -676,6 +677,23 @@ fn a_compressed_run_scales_the_window_and_the_grace_and_nothing_else() {
     assert_eq!((c.cpu, c.pty, c.net, c.interval), (0.05, 200.0, 500.0, 1.0));
 }
 
+/// LOW 17: `<socket>.wake` means append, not replace. `PathBuf::with_extension` replaces the
+/// existing extension, so a naive port of `<socket>.wake` (`main.rs`'s own `usage()` text and
+/// `docs/designs/remote-workrooms.md`) turned `agent.sock` into `agent.wake` — silently dropping
+/// `.sock` — rather than `agent.sock.wake`.
+#[test]
+fn verdict_path_appends_wake_rather_than_replacing_the_sockets_extension() {
+    assert_eq!(
+        verdict_path(Path::new("/run/workroom/agent.sock")),
+        Path::new("/run/workroom/agent.sock.wake")
+    );
+    // A socket with no extension at all must still gain one rather than staying bare.
+    assert_eq!(
+        verdict_path(Path::new("/run/workroom/agent")),
+        Path::new("/run/workroom/agent.wake")
+    );
+}
+
 #[test]
 fn the_verdict_file_carries_the_monotonic_stamp() {
     let dir = std::env::temp_dir().join(format!("wr-wake-{}", std::process::id()));
@@ -687,4 +705,48 @@ fn the_verdict_file_carries_the_monotonic_stamp() {
         "BUSY 389975.387\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// LOW 14: `comm` is mutable at runtime, so excluding `EXCLUDED_WITH_DESCENDANTS` by name alone lets
+/// a session's own work escape detection by renaming itself `cron` — a real risk the frozen policy
+/// never had to consider because the golden fixtures contain no such process. `roots` (a live
+/// session's pty leaders) is the identity check: a process inside a session's own tree keeps voting
+/// no matter what it calls itself, and only a `cron`/`wr-wakeshim` OUTSIDE every session — the actual
+/// housekeeping daemon the list exists for — is still swept out with its descendants.
+#[test]
+fn a_session_process_renamed_to_an_excluded_name_still_votes() {
+    fn proc(pid: i32, ppid: i32, comm: &str) -> Proc {
+        Proc {
+            pid,
+            ppid,
+            comm: comm.to_string(),
+            state: "R".to_string(),
+            ticks: 100,
+            wchan: String::new(),
+        }
+    }
+    let procs = vec![
+        proc(2, 1, "bash"),   // the session leader (root)
+        proc(3, 2, "cron"),   // session work, renamed to an excluded name
+        proc(4, 3, "worker"), // its own descendant
+        proc(5, 1, "cron"),   // the real daemon: not part of any session
+    ];
+    let boundary = Boundary::agent(999);
+    let cand: HashSet<i32> = candidates(&procs, &[2], &boundary)
+        .iter()
+        .map(|p| p.pid)
+        .collect();
+    assert!(cand.contains(&2), "the session leader must still vote");
+    assert!(
+        cand.contains(&3),
+        "a session process renamed to `cron` must not be excluded"
+    );
+    assert!(
+        cand.contains(&4),
+        "a session process's own descendant must not be swept out with a renamed ancestor"
+    );
+    assert!(
+        !cand.contains(&5),
+        "a `cron` process outside every session must still be excluded"
+    );
 }

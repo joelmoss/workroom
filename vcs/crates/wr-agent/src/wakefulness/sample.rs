@@ -170,7 +170,20 @@ pub fn default_route_interfaces(route: &str, ipv6_route: &str) -> HashSet<String
     for line in route.lines().skip(1) {
         // Iface Destination Gateway Flags RefCnt Use Metric Mask ...
         let f: Vec<&str> = line.split_whitespace().collect();
-        if f.get(1) == Some(&"00000000") && f.get(7) == Some(&"00000000") {
+        // A `blackhole`/`unreachable`/`prohibit` fallback default (`ip route add unreachable
+        // default metric …`) also has destination and mask `00000000` — but iface `*` and
+        // `RTF_REJECT` (0x0200) set, without `RTF_UP` (0x0001). That is not a usable uplink: a box
+        // with no real default route must count every interface (see `crosses_the_box`'s doc), and
+        // treating a reject route as one silently swallowed that case instead.
+        let usable = f
+            .get(3)
+            .and_then(|flags| u32::from_str_radix(flags, 16).ok())
+            .is_some_and(|flags| flags & 0x0001 != 0 && flags & 0x0200 == 0);
+        if usable
+            && f.first() != Some(&"*")
+            && f.get(1) == Some(&"00000000")
+            && f.get(7) == Some(&"00000000")
+        {
             out.insert(f[0].to_string());
         }
     }
@@ -587,6 +600,22 @@ br0\t0001A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0
 ";
         let expected: HashSet<String> = ["br0".to_string()].into();
         assert_eq!(default_route_interfaces(plain, ""), expected);
+    }
+
+    /// LOW15: a `blackhole`/`unreachable`/`prohibit` fallback default (`ip route add unreachable
+    /// default metric 4278198272`) shows up in `/proc/net/route` with iface `*` and `RTF_REJECT`
+    /// (0x0200) set, but destination and mask both `00000000` — the same shape a real default has.
+    /// It must never count as an uplink: `crosses_the_box` treats a non-empty uplink set as "we know
+    /// the real uplink", and a reject route is not one.
+    #[test]
+    fn a_reject_route_default_is_not_an_uplink() {
+        let route = "\
+Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+*\t00000000\t00000000\t0205\t0\t0\tFFFFFFFF\t00000000\t0\t0\t0
+eth0\t00000000\t0101A8C0\t0003\t0\t0\t0\t00000000\t0\t0\t0
+";
+        let expected: HashSet<String> = ["eth0".to_string()].into();
+        assert_eq!(default_route_interfaces(route, ""), expected);
     }
 
     #[test]

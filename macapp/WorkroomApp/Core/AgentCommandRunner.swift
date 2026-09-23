@@ -76,8 +76,8 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
       // ceiling. Nothing ran, and the workroom is fine.
       return Self.refused("\(error)")
     } catch HostConnectionError.notDispatched {
-      // Refused locally with nothing written to the socket (exhausted stream counter, full request
-      // pool). Definitively never ran. A closed connection throws `connectionLost` instead.
+      // Refused locally with nothing written to the socket (a closed connection, an exhausted
+      // stream counter, a full request pool). Definitively never ran.
       return Self.refused(HostConnectionError.notDispatched.localizedDescription)
     } catch {
       // The request reached the socket and no reply came back: connection loss, the client-side
