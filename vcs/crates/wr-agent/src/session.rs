@@ -297,7 +297,6 @@ impl SessionStore {
         // Drop the store lock before the reader starts, or its first `ended` removal deadlocks
         // against this very lock.
         drop(sessions);
-        let result = register(info);
         // `std::thread::spawn` panics when the OS cannot create a thread. Reachable here on the
         // connection's own dispatch thread (this runs inside `handle_connection`), so the panic
         // would unwind past `Server::serve`'s `connections.fetch_sub` exactly as an unhandled
@@ -306,16 +305,23 @@ impl SessionStore {
         // cleanup remove it. `Builder::spawn` turns that into an `Err`; retire the session the same
         // way `kill` ends any other one rather than leave a permanently undrained entry behind.
         //
-        // And say so: `register` has already succeeded for an attaching client, and returning its
-        // `Ok` would hand that client a token for a session that no longer exists and will never
-        // send it a CLOSE.
-        if std::thread::Builder::new()
-            .spawn(move || read_session(spec.id, pty, shadow, attached, store))
-            .is_err()
-        {
+        // Spawned BEFORE `register`, parked until it returns: registering first is what keeps a
+        // short-lived command from being drained and retired before its client is attached, and
+        // spawning first is what lets a failed spawn fail the request before any client has been
+        // told `Attached` (which would be followed by a `Failure` and no session to ever close).
+        let (go, start) = std::sync::mpsc::channel::<()>();
+        let spawned = std::thread::Builder::new().spawn(move || {
+            // An `Err` is the sender dropped without a send, which only a panicking `register` can
+            // do; draining anyway is what that case needs too.
+            let _ = start.recv();
+            read_session(spec.id, pty, shadow, attached, store)
+        });
+        if spawned.is_err() {
             self.kill(spec.id);
             return Err(SessionError::ReaderFailed(spec.id.to_hyphenated()));
         }
+        let result = register(info);
+        let _ = go.send(());
         result
     }
 
