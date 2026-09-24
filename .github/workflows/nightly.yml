@@ -182,6 +182,13 @@ jobs:
       - name: Add Rust darwin targets (universal VCS core)
         run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
 
+      # The app bundle carries a static Linux wr-agent per arch for remote hosts (issue #227),
+      # cross-built by build-agent.sh with cargo-zigbuild and the Zig installed above.
+      - name: Add Linux agent toolchain
+        run: |
+          rustup target add aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+          cargo install cargo-zigbuild --locked --version 0.23.4
+
       - name: Import Developer ID signing certificate
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}

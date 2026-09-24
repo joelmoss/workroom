@@ -6,7 +6,15 @@ Repo: joelmoss/workroom
 Status: APPROVED
 Mode: Builder
 
-## Current Status — 2026-09-17
+## Current Status — 2026-09-24
+
+**Phase 2 is merged to master** (2026-09-23, #201 through #218; review follow-ups #220–#226), and
+**Phase 3 has started.** Its milestones are sub-issues of #154: the Linux agent artifact (#227, in
+progress), the supervised far-side agent with its stdio relay and container fixture (#228), the
+app-side transport with `HostDriver` and the container driver (#229), `execve` hand-off (#230),
+push-on-first-connect bootstrap (#231) and stop-and-reboot screen restoration (#232). The rest of
+this section is the 2026-09-17 status, kept for the Phase 2 detail it records and corrected where
+it had gone stale.
 
 Phase 0's feasibility results are recorded and Phase 1 is complete (closed out by #192).
 New persistent local sessions use `wr-agent`; an attach-only Swift shim preserves access to
@@ -25,10 +33,9 @@ environment, a different exit code for a missing tool, and transport failures re
 ran"). Parity is now three explicit properties rather than an architectural claim — see Next Steps
 item 3. The File service is implemented too (#211): directory listing, containment-checked raw reads
 and change notification on `Service::File`, with the app's watch sites routed through it. The GitHub
-status and interchangeability services remain unbuilt. All five PRs stay draft, stacked, until the
-next stable release cuts from master.
+status and interchangeability services followed (#207, #208), and the whole stack is now merged.
 OQ1's gix measurements and OQ21's Swift driver decision are answered. The gix code remains a spike.
-Phases 3 and 4 — persistent remote transport, distribution, provisioning and UI — remain planned.
+Phase 4 (provisioning, credentials, the lifecycle shim and the UI) remains planned.
 The implementation sequence and remaining decisions are in **Next Steps**.
 
 ## Problem Statement
@@ -1929,6 +1936,17 @@ disagreement passes every test on either side alone while presenting as an empty
     the exposure is the reverse. The ELF must **not** land in `Contents/MacOS` and must be sealed
     as a resource. Confirm codesign and notarization accept it before Phase 3 depends on push-the-
     binary bootstrap; if they do not, the "no provider images" claim collapses.
+    **In progress (#227, 2026-09-24).** Release and Nightly builds now put a static musl agent per
+    Linux arch at `Contents/Resources/wr-agent-linux-{aarch64,x86_64}`, cross-built by
+    `build-agent.sh` with cargo-zigbuild and the pinned Zig, with `terminal-state`, and not
+    codesigned themselves. Both arches ship regardless of `ARCHS`. A local cross-build takes 1m51s
+    cold per arch. `release.sh` fails the release if either ELF is missing or not static, and the
+    `agent-linux` CI job runs `protocol` on each under Linux. The notarization answer is still owed:
+    `release.sh` notarizes and fails on rejection, so the first Nightly built with them either
+    confirms it or fails. Record the result here when it runs. Size: 10.9 MB (aarch64) and
+    12.3 MB (x86_64) raw, and the aarch64 one is 5.1 MB gzipped, so the pair adds about 23 MB to
+    the installed app and roughly 11 MB to the DMG. A Debug build with `WR_AGENT_LINUX=1` passes
+    `codesign --verify --strict` with both inside, and both run `protocol` in a Linux container.
   - **Resume policy versus version lockstep.** Phase 1 versions the envelope because an agent
     on a suspended VM can be older than the app reconnecting to it; Phase 3's bootstrap implies
     lockstep. These reconcile only with a stated policy: does reconnecting to a suspended box
@@ -2394,7 +2412,10 @@ service milestones below so each layer can be reviewed and landed independently.
    same shells survive the upgrade with their pids and their exit codes. An agent that predates
    hand-off, or a new binary that fails its pre-check, leaves the old agent running. Deliberately
    crash the restore to measure the one case that is not recoverable. Treat stop-and-reboot screen
-   restoration separately from live-process survival.
+   restoration separately from live-process survival. **Filed 2026-09-24** as #227 (Linux artifact)
+   → #228 (supervised agent, relay, container fixture) → #229 (app-side transport, `HostDriver`,
+   container driver), with #230 (hand-off, independent), #231 (bootstrap, after #227, #229 and
+   #230) and #232 (stop-and-reboot restore, after #228).
 
 5. **Phase 4: credentials, provisioning, lifecycle and the Nightly UI.** Resolve the non-admin
    repository credential path (OQ20) before claiming ordinary organization-repository support.

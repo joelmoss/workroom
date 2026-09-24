@@ -107,7 +107,9 @@ before `app-build`/`app-test`/`app-generate`** (a Makefile prerequisite). Requir
 - **`protoc`** on PATH (`brew install protobuf`) — a build-time dep of jj-lib.
 - arm64 by default; **`make app-release` builds universal** (`VCS_APPLE_FLAGS=--universal`), which
   needs **rustup `stable` ≥ 1.93** + `rustup target add x86_64-apple-darwin aarch64-apple-darwin`
-  (Homebrew's rust can't cross-compile; the script preflights this and errors clearly).
+  (Homebrew's rust can't cross-compile; the script preflights this and errors clearly). It also
+  cross-builds the Linux agents, which need cargo-zigbuild and the two musl targets (see "Linux
+  agents" below).
 - **Unchanged inputs are a no-op.** The script hashes the Rust sources, manifests/lockfile, itself,
   `rustc --version` and the arch flavour into `vcs/swift/WrVcs/Frameworks/.build-stamp`, and exits
   early when that matches and the outputs exist. `WR_VCS_FORCE=1 make app-vcs` rebuilds regardless.
@@ -161,6 +163,15 @@ universal betas — and its cross cases need `rustup target add x86_64-apple-dar
 which CI installs. `terminal-state` is **not optional for the app**: without it a reattaching pane
 repaints blank, which only shows up after a quit-and-relaunch. `wr-agent protocol` reports
 `terminal-state yes|no`, and the build test asserts it against the shipped binary.
+
+**Linux agents (issue #227).** Release and Nightly builds also put a static musl `wr-agent` per
+Linux arch in `Contents/Resources/wr-agent-linux-{aarch64,x86_64}`, for pushing to remote hosts.
+Both arches ship always, whatever `ARCHS` says, because a remote box's arch has nothing to do with
+the Mac's. They are not codesigned; the app's signature seals them as resources. Debug skips them
+(and removes stale ones) unless `WR_AGENT_LINUX=1`. Building them needs `cargo install
+cargo-zigbuild --locked` and `rustup target add aarch64-unknown-linux-musl
+x86_64-unknown-linux-musl`, which the release workflows install. `release.sh` asserts both ELFs are
+present and static, and the `agent-linux` CI job runs `protocol` on each under Linux.
 
 The Zig toolchain and the pinned Ghostty engine come from `vcs/scripts/build-ghostty-vt.sh`
 (cached per `(engine sha, target)` outside the repo). That pin must stay in step with the
