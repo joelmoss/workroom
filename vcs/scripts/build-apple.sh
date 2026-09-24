@@ -69,8 +69,8 @@ input_hash() {
     shasum -a 256 < "$self"   # content only: the path itself varies with how we were invoked
     rustc --version
     # Flags change codegen without touching a single hashed file. Known remaining gaps: a .cargo
-    # config ABOVE vcs/ (cargo walks parents, this only reads vcs/.cargo), and the rustup toolchain
-    # `--universal` selects via `rustup run stable`, which need not be the PATH rustc above.
+    # config ABOVE vcs/ (cargo walks parents, this only reads vcs/.cargo), and the rustup `stable`
+    # rustc that `--universal` pins, which need not be the PATH rustc above.
     echo "RUSTFLAGS=${RUSTFLAGS:-}"
     echo "CARGO_ENCODED_RUSTFLAGS=${CARGO_ENCODED_RUSTFLAGS:-}"
   } | shasum -a 256 | awk '{print $1}'
@@ -129,6 +129,13 @@ if $universal; then
     echo "error: --universal needs rustup 'stable' >= $need (have '${have:-none}'). Run 'rustup update stable && rustup target add x86_64-apple-darwin aarch64-apple-darwin'." >&2
     exit 1
   fi
+  # `rustup run stable` selects stable's cargo, NOT its rustc: cargo takes `rustc` from PATH, and the
+  # Makefile puts /opt/homebrew/bin first. With Homebrew rust installed, the x86_64 build therefore
+  # ran Homebrew's compiler, which ships only the host std, and failed with "can't find crate for
+  # `core`" while `rustup target list --installed` listed the target. Pin stable's own rustc, as
+  # macapp/Scripts/build-agent.sh does. CI has no Homebrew rust, so it never saw this.
+  RUSTC="$(rustup which --toolchain stable rustc)"
+  export RUSTC
   rustup run stable cargo build --release -p wr-vcs-uniffi --target x86_64-apple-darwin
   rustup run stable cargo build --release -p wr-vcs-uniffi --target aarch64-apple-darwin
   mkdir -p target/apple
