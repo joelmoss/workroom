@@ -68,9 +68,14 @@ input_hash() {
     fi
     shasum -a 256 < "$self"   # content only: the path itself varies with how we were invoked
     rustc --version
-    # Flags change codegen without touching a single hashed file. Known remaining gaps: a .cargo
-    # config ABOVE vcs/ (cargo walks parents, this only reads vcs/.cargo), and the rustup `stable`
-    # rustc that `--universal` pins, which need not be the PATH rustc above.
+    # `--universal` compiles with rustup's stable (see RUSTC below), which need not be the PATH
+    # rustc above, so hash it too. For EVERY flavour, not only `--universal`: `--check` and CI's
+    # `--print-input-hash` never pass the flag, and a hash that differed by flavour would fail the
+    # Xcode gate after every `make app-release` (the trap described above input_hash). A rustup
+    # update therefore also rebuilds a host core it did not compile, which is the safe direction.
+    rustup run stable rustc --version 2>/dev/null || echo "rustup stable: none"
+    # Flags change codegen without touching a single hashed file. Known remaining gap: a .cargo
+    # config ABOVE vcs/ (cargo walks parents, this only reads vcs/.cargo).
     echo "RUSTFLAGS=${RUSTFLAGS:-}"
     echo "CARGO_ENCODED_RUSTFLAGS=${CARGO_ENCODED_RUSTFLAGS:-}"
   } | shasum -a 256 | awk '{print $1}'
