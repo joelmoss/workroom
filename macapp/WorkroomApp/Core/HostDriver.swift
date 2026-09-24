@@ -192,11 +192,16 @@ final class HostStream: @unchecked Sendable {
     let reason = said.trimmingCharacters(in: .whitespacesAndNewlines)
     if !reason.isEmpty { return reason }
     let name = process.executableURL?.lastPathComponent ?? "carrier"
+    // `isRunning` first: `terminationReason` and `terminationStatus` raise an Objective-C
+    // exception for a process that has not been reaped yet, which Swift cannot catch. A carrier
+    // stopped a moment ago can still be running once the wait above gives up.
+    if process.isRunning { return "\(name) did not answer in time" }
     // Our own SIGTERM, from `end()`: the carrier was still running when the handshake gave up.
-    let stoppedByUs =
-      endedByUs && process.terminationReason == .uncaughtSignal
-      && process.terminationStatus == SIGTERM
-    if process.isRunning || stoppedByUs { return "\(name) did not answer in time" }
+    if endedByUs, process.terminationReason == .uncaughtSignal,
+      process.terminationStatus == SIGTERM
+    {
+      return "\(name) did not answer in time"
+    }
     return "\(name) exited with status \(process.terminationStatus)"
   }
 
