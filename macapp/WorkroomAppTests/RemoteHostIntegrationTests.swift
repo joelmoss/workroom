@@ -99,8 +99,8 @@ final class RemoteHostIntegrationTests: XCTestCase {
     return path
   }
 
-  /// VCS reads, File, Status and Forward, all through one ssh-stdio connection and the same manager
-  /// and router the app uses.
+  /// VCS reads and writes, File, Status and Forward, all through one ssh-stdio connection and the
+  /// same manager and router the app uses.
   func testEveryServiceAnswersThroughTheDriversStream() async throws {
     let fixture = try fixture()
     let path = try repository(fixture)
@@ -119,13 +119,18 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let page = try await reader.log(limit: 5)
     XCTAssertEqual(page.commits.map(\.summary), ["initial"])
 
-    // Writes are refused by name, not attempted: see `AgentVCSConnection.writer`.
-    do {
-      _ = try await router.writer(for: location)
-      XCTFail("a remote writer was handed out")
-    } catch HostConnectionError.serviceUnavailable(let detail) {
-      XCTAssertTrue(detail.contains("remote repository"), detail)
-    }
+    // A VCS write, through the exec service in the host's environment.
+    try onHost(fixture, "echo next > \(path)/file")
+    let writer = try await router.writer(for: location)
+    let result = await writer.commit(
+      request: VCSCommitRequest(
+        message: "remote commit",
+        files: [ChangedFile(path: "file", change: .modified, oldPath: nil)],
+        mode: .commit))
+    guard case .ok = result else { return XCTFail("commit failed: \(result)") }
+    XCTAssertEqual(
+      try onHost(fixture, "git -C \(path) log -1 --format='%s %ae'"),
+      "remote commit remote@example.com")
 
     // File.
     let files = try connection.files(
@@ -133,7 +138,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let listing = try await files.list(.git)
     XCTAssertEqual(FileListing.parse(listing.stdout, vcs: .git), ["file"])
     let data = try await files.read(path: "file", symlinks: .refuse, maxBytes: 100)
-    XCTAssertEqual(data, Data("base\n".utf8))
+    XCTAssertEqual(data, Data("next\n".utf8))
 
     // Status.
     _ = try await connection.wakefulness().status()
@@ -145,6 +150,32 @@ final class RemoteHostIntegrationTests: XCTestCase {
     defer { client.close() }
     let banner = String(decoding: try client.read(8, timeout: 10), as: UTF8.self)
     XCTAssertEqual(banner, "SSH-2.0-")
+  }
+
+  /// A failed remote write is classified from the HOST's disk (#229): a leftover `index.lock` there
+  /// is named by its path on the host. Read from this Mac's disk, that path is not there, and the
+  /// failure would name no lock at all.
+  func testARemoteCommitBlockedByALockNamesTheLockOnTheHost() async throws {
+    let fixture = try fixture()
+    let path = try repository(fixture)
+    try onHost(fixture, "echo next > \(path)/file && touch \(path)/.git/index.lock")
+    let (connection, id) = try await connect(fixture.host)
+    let host = HostID.remote(id)
+    let manager = HostConnectionManager()
+    _ = try await manager.connect(host: host) { connection }
+    let router = RepositoryRouter(connections: manager)
+    let location = try RepositoryLocation.remote(host: id, path: path)
+    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    let writer = try await router.writer(for: location)
+    let result = await writer.commit(
+      request: VCSCommitRequest(
+        message: "blocked",
+        files: [ChangedFile(path: "file", change: .modified, oldPath: nil)],
+        mode: .commit))
+    guard case .failed(.locked(let lock)) = result else {
+      return XCTFail("expected a lock failure, got \(result)")
+    }
+    XCTAssertEqual(lock?.path, "\(path)/.git/index.lock")
   }
 
   /// Nothing from the Mac's environment reaches a remote git (#229): the child runs with the

@@ -65,6 +65,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// because it gates a FRAMING capability, not the request body: a version-1 agent speaks the same
   /// `AgentExecRequest` and is fully usable, it just cannot be sent one in pieces.
   private static let chunkedRequestVersion = 2
+  /// The first exec service version a remote host's writes can use: it takes `host_environment`
+  /// and `barrier_root`, and answers `stat`.
+  private static let remoteWriteVersion = 3
   /// `MAX_ENVELOPE_PAYLOAD` in `protocol/envelope.rs`.
   private static let maxEnvelopePayload = 1 << 20
   /// `MAX_REQUEST` in `vcs.rs` — the reassembled ceiling, mirroring the reply side's.
@@ -270,17 +273,15 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   func writer(context: RepositoryContext, reader: VCSProviding) throws -> VCSWriting {
     guard context.location.host == host else { throw HostConnectionError.mismatchedContext }
     guard lock.withLock({ !closed }) else { throw HostConnectionError.connectionLost }
-    // ponytail: no writes to a remote host yet. Refused here, by name, because two parts of the write
-    // path are local-only in ways that would not fail but quietly be wrong. `CLIVCSWriter` classifies
-    // failures by reading the repository's `.git` on THIS disk (rebase in progress, a leftover
-    // `index.lock`), which for a remote path is a different machine or nothing at all. And a jj
-    // write relies on the caller holding the working-copy barrier for the whole operation
-    // (`JJSnapshotGate`), which a Mac cannot flock on another host, while the agent's exec service
-    // deliberately never takes it. Upgrade path: host-side probes, and an exec request that asks the
-    // agent to hold the barrier itself.
-    guard host == .local else {
-      throw HostConnectionError.serviceUnavailable(
-        "Changes to a remote repository are not supported yet.")
+    // A remote host's writes need what exec version 3 added (#229): the host's own environment,
+    // the jj barrier taken for each command, and `stat` for the classifier's disk facts. An older
+    // agent there fails closed rather than writing on Mac-side assumptions.
+    let remote = host != .local
+    if remote {
+      guard let exec = capabilities?.exec, exec >= Self.remoteWriteVersion else {
+        throw HostConnectionError.serviceUnavailable(
+          "The host's agent is too old to change a repository there.")
+      }
     }
     // Presence and version of the SERVICE, not a count of the caller's own methods. `>=` rather
     // than `==` so an agent that gains a version 3 does not refuse a client speaking 1 — the agent
@@ -297,10 +298,38 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     guard let exec = capabilities?.exec, exec >= Self.execVersion else {
       throw VCSError.backendVersion("Agent does not support VCS writes.")
     }
-    let engine = CLIVCSWriter(
-      vcs: context.backend.rawValue, runner: AgentCommandRunner(connection: self),
+    // A Mac cannot flock the jj barrier on another host, so there the agent takes it for each
+    // command, under the shared root the local gate would have locked.
+    let barrierRoot = remote && context.backend == .jj ? try context.requireOwnership().path : nil
+    var engine = CLIVCSWriter(
+      vcs: context.backend.rawValue,
+      runner: AgentCommandRunner(connection: self, barrierRoot: barrierRoot),
       makeProvider: { _ in AgentCurrentRefProvider(reader: reader) }, gate: .shared)
+    if remote {
+      engine.host = host
+      engine.stat = { [self] paths, read in try await stat(paths: paths, read: read) }
+    }
     return try BoundLocalWriter(context: context, reader: reader, writer: engine)
+  }
+
+  /// Facts from the host's disk for `CLIVCSWriter`'s failure classifier (`stat` in `vcs.rs`):
+  /// whether each path exists, is a directory and when it changed, and the text of those in `read`.
+  func stat(paths: [String], read: [String]) async throws -> DiskSnapshot {
+    let reply = try await request(AgentStatRequest(paths: paths, read: read), timeout: 15)
+    var entries: [String: DiskEntry?] = [:]
+    var texts: [String: String] = [:]
+    for entry in try AgentVCSReply<AgentStatReply>.decode(reply).entries {
+      let found =
+        entry.exists
+        ? DiskEntry(
+          isDirectory: entry.isDir,
+          modifiedAt: entry.modifiedAt.map { Date(timeIntervalSince1970: $0) })
+        : nil
+      // `.some(nil)`: asked about and absent, which a snapshot tells apart from never asked.
+      entries[entry.path] = .some(found)
+      if let text = entry.text { texts[entry.path] = text }
+    }
+    return DiskSnapshot(entries: entries, texts: texts)
   }
 
   /// Probe the File service, if the peer's greeting says it exists. Runs once in `connect()`, before
@@ -866,6 +895,25 @@ struct AgentVCSCapabilities: Decodable {
   /// check below fail against a completely capable agent and silently dropped every user to native
   /// writes with no log line.
   let exec: Int?
+}
+
+/// `StatRequest` in `vcs.rs`, which rejects unknown fields.
+struct AgentStatRequest: Encodable, Sendable {
+  var version = 1
+  var kind = "stat"
+  let paths: [String]
+  let read: [String]
+}
+
+struct AgentStatReply: Decodable {
+  struct Entry: Decodable {
+    let path: String
+    let exists: Bool
+    let isDir: Bool
+    let modifiedAt: Double?
+    let text: String?
+  }
+  let entries: [Entry]
 }
 
 struct AgentVCSRequest: Encodable, Sendable {

@@ -139,6 +139,9 @@ struct VCSFailureReport: Identifiable, Equatable, Sendable {
 struct VCSLockFile: Equatable, Sendable {
   let path: String
   let modifiedAt: Date
+  /// False for a lock file on a remote host: its path names nothing on this Mac, so there is nothing
+  /// here to reveal in Finder (`VCSSyncPresenter.lockPath`).
+  var isOnThisMac = true
 
   var filename: String { (path as NSString).lastPathComponent }
 }
@@ -384,6 +387,12 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// `git worktree add` worktrees sharing one `.git`, so a lock lost mid-`pull --rebase` can leave a
   /// workroom wedged in a rebase.
   let gate: JJSnapshotGate
+  /// The host the repository is on. It keys the write gate (`gated`), so a remote path is never
+  /// resolved against this disk, nor shares a queue with a local repository at the same path.
+  var host: HostID = .local
+  /// Where the classifier's disk facts come from for a repository on a remote host: that host's
+  /// agent (`AgentVCSConnection.stat`). Nil for a local repository, which reads this Mac's disk.
+  var stat: (@Sendable (_ paths: [String], _ read: [String]) async throws -> DiskSnapshot)?
 
   var refTimeout: TimeInterval = 5
   var fetchTimeout: TimeInterval = 120
@@ -441,15 +450,12 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   ///
   /// Pure string work, no subprocess: `git rev-parse --git-common-dir` is authoritative but costs a
   /// process for something two file reads answer.
-  static func commonGitDir(at path: String) -> URL? {
+  static func commonGitDir(at path: String, disk: any RepositoryDisk = LocalDisk()) -> URL? {
     let dotGit = URL(fileURLWithPath: path, isDirectory: true).appendingPathComponent(".git")
-    var isDir: ObjCBool = false
-    guard FileManager.default.fileExists(atPath: dotGit.path, isDirectory: &isDir) else {
-      return nil
-    }
-    if isDir.boolValue { return dotGit }
+    guard let entry = disk.entry(dotGit.path) else { return nil }
+    if entry.isDirectory { return dotGit }
     // A worktree's `.git` file: `gitdir: /abs/or/relative/path`.
-    guard let contents = try? String(contentsOf: dotGit, encoding: .utf8) else { return nil }
+    guard let contents = disk.text(dotGit.path) else { return nil }
     let line = contents.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
     guard line.hasPrefix("gitdir:") else { return nil }
     let raw = String(line.dropFirst("gitdir:".count)).trimmingCharacters(in: .whitespaces)
@@ -466,14 +472,13 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
 
   /// `FETCH_HEAD`'s modification time. git rewrites it on **every** fetch, no-ops included (verified),
   /// so its mtime is a complete record of git fetches — including one the user ran in a terminal.
-  static func gitLastFetch(commonGitDir: URL?) -> VCSLastFetch {
+  static func gitLastFetch(commonGitDir: URL?, disk: any RepositoryDisk = LocalDisk())
+    -> VCSLastFetch
+  {
     guard let dir = commonGitDir else { return .unknown }
     let head = dir.appendingPathComponent("FETCH_HEAD")
-    guard FileManager.default.fileExists(atPath: head.path) else { return .never }
-    guard
-      let attrs = try? FileManager.default.attributesOfItem(atPath: head.path),
-      let date = attrs[.modificationDate] as? Date
-    else { return .unknown }
+    guard let entry = disk.entry(head.path) else { return .never }
+    guard let date = entry.modifiedAt else { return .unknown }
     return .at(date)
   }
 
@@ -1155,7 +1160,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// that state must offer Abort, not Retry.
   static func classify(
     _ result: CommandResult, action: VCSRemoteAction, tool: String,
-    gitDir: URL? = nil
+    gitDir: URL? = nil, disk: any RepositoryDisk = LocalDisk()
   ) -> VCSRemoteFailure? {
     // Checked BEFORE commandNotFound: launchFailed means the process never ran at all (dominated by
     // a vanished cwd), which is a different fact from commandNotFound's "env ran and searched PATH".
@@ -1176,14 +1181,14 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     // It races a host-side git that is still rebasing, and that is accepted here for the reason the
     // `timedOut` branch already accepts it: a parked rebase the user cannot see is the worse state.
     if result.exitCode == CommandResult.outcomeUnknown {
-      if action == .pull, rebaseInProgress(gitDir: gitDir) { return .rebaseInProgress }
+      if action == .pull, rebaseInProgress(gitDir: gitDir, disk: disk) { return .rebaseInProgress }
       return .outcomeUnknown(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
     let err = result.stderr + "\n" + result.stdout
     // A timed-out pull may have left a rebase behind; that reads better than "timed out".
     if result.timedOut {
-      if action == .pull, rebaseInProgress(gitDir: gitDir) { return .rebaseInProgress }
+      if action == .pull, rebaseInProgress(gitDir: gitDir, disk: disk) { return .rebaseInProgress }
       return .timedOut(action, err)
     }
     guard !result.ok else { return nil }
@@ -1224,9 +1229,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
         && (err.contains("could not be obtained") || err.contains("File exists")
           || err.contains("Unable to create")))
     {
-      return .locked(lockFile(in: err))
+      return .locked(lockFile(in: err, disk: disk))
     }
-    if action == .pull, rebaseInProgress(gitDir: gitDir) { return .rebaseInProgress }
+    if action == .pull, rebaseInProgress(gitDir: gitDir, disk: disk) { return .rebaseInProgress }
     // A lock failure that never names a lock. git's message depends on WHICH internal step hit the lock:
     // a fast-forward pull reports `Unable to create '<path>': File exists.`, but a pull that must really
     // rebase fails in autostash first and says only `error: could not write index` / `fatal: Cannot
@@ -1236,7 +1241,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     // So when the symptoms are lock-shaped, ask the DISK instead of the message. Deliberately last: any
     // failure git explains properly keeps its own classification, and this only speaks for the ones it
     // doesn't.
-    if lockSymptom(err), let lock = existingLockFile(gitDir: gitDir) { return .locked(lock) }
+    if lockSymptom(err), let lock = existingLockFile(gitDir: gitDir, disk: disk) { return .locked(lock) }
     let trimmed = err.trimmingCharacters(in: .whitespacesAndNewlines)
     // Killed rather than finished, with nothing to say for itself: `exitCode` is the SIGNAL number,
     // so the fallback below would render "git exited 15" — literally the dialog `a64e4269` ("stop
@@ -1306,7 +1311,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// commit. The reachable case is a `post-commit` hook: git has already written the commit and
   /// moved `HEAD` by the time it runs, so a hook that fails or runs past the timeout leaves a
   /// perfectly good commit behind a non-zero exit.
-  static func classifyCommit(_ result: CommandResult, tool: String) -> VCSCommitFailure? {
+  static func classifyCommit(
+    _ result: CommandResult, tool: String, disk: any RepositoryDisk = LocalDisk()
+  ) -> VCSCommitFailure? {
     if result.exitCode == CommandResult.launchFailed { return .launchFailed }
     // See `classify`.
     if result.exitCode == CommandResult.refused { return .other(result.stderr) }
@@ -1347,7 +1354,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
         && (err.contains("could not be obtained") || err.contains("File exists")
           || err.contains("Unable to create")))
     {
-      return .locked(lockFile(in: err))
+      return .locked(lockFile(in: err, disk: disk))
     }
     let trimmed = err.trimmingCharacters(in: .whitespacesAndNewlines)
     // Same reasoning as `classify`: a signal number is not an exit status, so don't print it as one.
@@ -1357,11 +1364,10 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
 
   /// Whether a rebase is parked in this worktree. Both directory names are checked: `rebase-merge` for
   /// an interactive/merge rebase, `rebase-apply` for the am-based one.
-  static func rebaseInProgress(gitDir: URL?) -> Bool {
+  static func rebaseInProgress(gitDir: URL?, disk: any RepositoryDisk = LocalDisk()) -> Bool {
     guard let gitDir else { return false }
-    let fm = FileManager.default
-    return fm.fileExists(atPath: gitDir.appendingPathComponent("rebase-merge").path)
-      || fm.fileExists(atPath: gitDir.appendingPathComponent("rebase-apply").path)
+    return disk.entry(gitDir.appendingPathComponent("rebase-merge").path) != nil
+      || disk.entry(gitDir.appendingPathComponent("rebase-apply").path) != nil
   }
 
   /// Which multi-step git operation is parked in this worktree, named for the user, or nil if none.
@@ -1373,23 +1379,23 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   ///
   /// Ordered by specificity: a cherry-pick and a revert both also leave `MERGE_HEAD` behind, so they
   /// are tested first or every one of them would report "merge".
-  static func sequencerState(gitDir: URL?) -> String? {
+  static func sequencerState(gitDir: URL?, disk: any RepositoryDisk = LocalDisk()) -> String? {
     guard let gitDir else { return nil }
-    let fm = FileManager.default
-    let markers: [(String, String)] = [
+    for (file, label) in sequencerMarkers
+    where disk.entry(gitDir.appendingPathComponent(file).path) != nil {
+      return label
+    }
+    return nil
+  }
+
+  static let sequencerMarkers: [(String, String)] = [
       ("CHERRY_PICK_HEAD", "cherry-pick"),
       ("REVERT_HEAD", "revert"),
       ("rebase-merge", "rebase"),
       ("rebase-apply", "rebase"),
       ("BISECT_LOG", "bisect"),
       ("MERGE_HEAD", "merge"),
-    ]
-    for (file, label) in markers
-    where fm.fileExists(atPath: gitDir.appendingPathComponent(file).path) {
-      return label
-    }
-    return nil
-  }
+  ]
 
   /// The lock file a failure is complaining about, or nil if we can't point at one.
   ///
@@ -1401,12 +1407,11 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// Returns nil for jj's import/export lock, whose message carries no path, and — deliberately — when
   /// the named file no longer exists: a lock that cleared between the failure and this check WAS
   /// transient contention, which is exactly the case where Retry is the right offer.
-  static func lockFile(in stderr: String) -> VCSLockFile? {
-    guard let path = parseLockPath(stderr) else { return nil }
-    guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-      let modified = attrs[.modificationDate] as? Date
-    else { return nil }
-    return VCSLockFile(path: path, modifiedAt: modified)
+  static func lockFile(in stderr: String, disk: any RepositoryDisk = LocalDisk()) -> VCSLockFile? {
+    guard let path = parseLockPath(stderr), let modified = disk.entry(path)?.modifiedAt else {
+      return nil
+    }
+    return VCSLockFile(path: path, modifiedAt: modified, isOnThisMac: disk is LocalDisk)
   }
 
   /// Whether a failure LOOKS like it was caused by a lock, without saying so.
@@ -1426,25 +1431,43 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// The first lock file actually present in this repo, checking both the worktree's git dir and the
   /// common one — a workroom is a `git worktree`, so its `index.lock` and the repo's `packed-refs.lock`
   /// are in different directories.
-  static func existingLockFile(gitDir: URL?) -> VCSLockFile? {
-    guard let gitDir else { return nil }
-    let fm = FileManager.default
+  static func existingLockFile(gitDir: URL?, disk: any RepositoryDisk = LocalDisk())
+    -> VCSLockFile?
+  {
+    for candidate in lockCandidates(gitDir: gitDir) {
+      guard let modified = disk.entry(candidate.path)?.modifiedAt else { continue }
+      return VCSLockFile(
+        path: candidate.path, modifiedAt: modified, isOnThisMac: disk is LocalDisk)
+    }
+    return nil
+  }
+
+  /// Where a lock file can be, in the order `existingLockFile` checks.
+  static func lockCandidates(gitDir: URL?) -> [URL] {
+    guard let gitDir else { return [] }
     var dirs = [gitDir]
     // `<common>/worktrees/<name>` → `<common>`. Cheap and string-only; `commonGitDir` does the same trip
     // from a path rather than from an already-resolved git dir.
     if gitDir.deletingLastPathComponent().lastPathComponent == "worktrees" {
       dirs.append(gitDir.deletingLastPathComponent().deletingLastPathComponent())
     }
-    for dir in dirs {
-      for name in knownLockNames {
-        let candidate = dir.appendingPathComponent(name)
-        guard let attrs = try? fm.attributesOfItem(atPath: candidate.path),
-          let modified = attrs[.modificationDate] as? Date
-        else { continue }
-        return VCSLockFile(path: candidate.path, modifiedAt: modified)
-      }
+    return dirs.flatMap { dir in knownLockNames.map { dir.appendingPathComponent($0) } }
+  }
+
+  /// Every path the classifier can read for a command run in the worktree whose git directories
+  /// these are, and whose stderr this is: the set a remote host's `stat` must report, so a
+  /// `DiskSnapshot` answers each probe above. A probe that reads a path not listed here traps in
+  /// a debug build.
+  static func classificationPaths(gitDir: URL?, commonGitDir: URL?, stderr: String) -> [String] {
+    var paths: [URL] = lockCandidates(gitDir: gitDir)
+    if let gitDir {
+      paths += sequencerMarkers.map { gitDir.appendingPathComponent($0.0) }
     }
-    return nil
+    if let commonGitDir { paths.append(commonGitDir.appendingPathComponent("FETCH_HEAD")) }
+    var unique = paths.map(\.path)
+    if let lock = parseLockPath(stderr) { unique.append(lock) }
+    var seen = Set<String>()
+    return unique.filter { seen.insert($0).inserted }
   }
 
   /// The quoted path out of git's lock errors. Pure, so the parsing is testable without a repo.
@@ -1466,14 +1489,11 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// This worktree's OWN git directory — `<common>/worktrees/<name>` for a workroom, the same as the
   /// common dir for a project root. Rebase state (`rebase-merge`), `HEAD` and `index` live here, unlike
   /// `FETCH_HEAD` which `commonGitDir` deliberately resolves to the shared copy.
-  static func worktreeGitDir(at path: String) -> URL? {
+  static func worktreeGitDir(at path: String, disk: any RepositoryDisk = LocalDisk()) -> URL? {
     let dotGit = URL(fileURLWithPath: path, isDirectory: true).appendingPathComponent(".git")
-    var isDir: ObjCBool = false
-    guard FileManager.default.fileExists(atPath: dotGit.path, isDirectory: &isDir) else {
-      return nil
-    }
-    if isDir.boolValue { return dotGit }
-    guard let contents = try? String(contentsOf: dotGit, encoding: .utf8) else { return nil }
+    guard let entry = disk.entry(dotGit.path) else { return nil }
+    if entry.isDirectory { return dotGit }
+    guard let contents = disk.text(dotGit.path) else { return nil }
     let line = contents.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
     guard line.hasPrefix("gitdir:") else { return nil }
     let raw = String(line.dropFirst("gitdir:".count)).trimmingCharacters(in: .whitespaces)
@@ -1504,7 +1524,72 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   private func gated<T: Sendable>(
     _ projectRoot: String, _ body: @Sendable @escaping () async -> T
   ) async -> T? {
-    try? await gate.run(projectRoot: projectRoot, body)
+    guard case .remote(let id) = host else {
+      return try? await gate.run(projectRoot: projectRoot, body)
+    }
+    // Keyed as the remote location it is: validated, not resolved against this disk. The gate takes
+    // no process barrier for it, having none to take on another host (`JJProcessBarrier`); the
+    // agent takes jj's for each command instead (`AgentCommandRunner.barrierRoot`).
+    guard let repository = try? RepositoryLocation.remote(host: id, path: projectRoot) else {
+      return nil
+    }
+    return try? await gate.run(repository: repository, body)
+  }
+
+  // MARK: - Disk facts
+
+  /// The disk a classification reads, and the worktree's git directory on it, read AFTER the command
+  /// it explains: a parked rebase or a leftover lock exists only once that command has failed.
+  ///
+  /// Locally, this Mac's disk, live. On a remote host, two round trips to its agent: the worktree's
+  /// `.git` says where its git directories are, then everything in them at once. A host that cannot
+  /// be asked reads as no evidence (`DiskSnapshot.unknown`), as a missing file would.
+  ///
+  /// The git directories come from the FIRST read, and are what the second was built for: resolved
+  /// again from the second, a `.git` that changed in between would name paths it never asked about.
+  private func disk(at path: String, stderr: String = "") async -> (
+    disk: any RepositoryDisk, gitDir: URL?, commonGitDir: URL?
+  ) {
+    guard let stat else {
+      return (LocalDisk(), Self.worktreeGitDir(at: path), Self.commonGitDir(at: path))
+    }
+    let dotGit = URL(fileURLWithPath: path, isDirectory: true).appendingPathComponent(".git").path
+    guard let pointer = try? await stat([dotGit], [dotGit]) else {
+      return (DiskSnapshot.unknown, nil, nil)
+    }
+    let gitDir = Self.worktreeGitDir(at: path, disk: pointer)
+    let commonGitDir = Self.commonGitDir(at: path, disk: pointer)
+    let paths =
+      [dotGit]
+      + Self.classificationPaths(gitDir: gitDir, commonGitDir: commonGitDir, stderr: stderr)
+    guard let facts = try? await stat(paths, [dotGit]) else {
+      return (DiskSnapshot.unknown, gitDir, commonGitDir)
+    }
+    return (facts, gitDir, commonGitDir)
+  }
+
+  private func rebaseParked(at path: String) async -> Bool {
+    let facts = await disk(at: path)
+    return Self.rebaseInProgress(gitDir: facts.gitDir, disk: facts.disk)
+  }
+
+  private func parkedOperation(at path: String) async -> String? {
+    let facts = await disk(at: path)
+    return Self.sequencerState(gitDir: facts.gitDir, disk: facts.disk)
+  }
+
+  /// `Self.classify`, reading the disk of wherever this repository lives. `withGitDir: false` for a
+  /// command whose classification never consulted the worktree's git directory.
+  private func classify(
+    _ result: CommandResult, action: VCSRemoteAction, tool: String, at path: String,
+    withGitDir: Bool = true
+  ) async -> VCSRemoteFailure? {
+    // Nothing on disk explains a success, so a remote host is not asked about one.
+    if result.ok { return Self.classify(result, action: action, tool: tool) }
+    let facts = await disk(at: path, stderr: result.stderr + "\n" + result.stdout)
+    return Self.classify(
+      result, action: action, tool: tool, gitDir: withGitDir ? facts.gitDir : nil,
+      disk: facts.disk)
   }
 
   // MARK: - Remote state
@@ -1524,7 +1609,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
 
   private func gitRemoteState(path: String, current: VCSRef) async -> VCSRemoteResolution {
     let refs = await run(Self.gitRemoteRefsArgs(), in: path, timeout: refTimeout)
-    if let failure = Self.classify(refs, action: .fetch, tool: "git") {
+    if let failure = await classify(
+      refs, action: .fetch, tool: "git", at: path, withGitDir: false)
+    {
       // A blip must not blank a good toolbar; a missing tool or a real error should show.
       if case .timedOut = failure { return .keepPrior }
       return .failed(failure)
@@ -1553,10 +1640,11 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
         tracking = VCSTracking(comparedTo: counterpart, ahead: nil, behind: nil, gone: true)
       }
     }
+    let facts = await disk(at: path)
     return .state(
       VCSRemoteState(
         current: current, tracking: tracking, remotes: remotes, primaryRemote: primary,
-        lastFetch: Self.gitLastFetch(commonGitDir: Self.commonGitDir(at: path)),
+        lastFetch: Self.gitLastFetch(commonGitDir: facts.commonGitDir, disk: facts.disk),
         resolvedAt: Date()))
   }
 
@@ -1565,7 +1653,8 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   {
     // Reads take no lock, so they stay ungated.
     let list = await run(Self.jjBookmarkListArgs(), in: path, timeout: refTimeout)
-    if let failure = Self.classify(list, action: .fetch, tool: "jj") {
+    if let failure = await classify(list, action: .fetch, tool: "jj", at: path, withGitDir: false)
+    {
       if case .timedOut = failure { return .keepPrior }
       return .failed(failure)
     }
@@ -1663,9 +1752,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
           await run(args, in: dir, timeout: fetchTimeout, network: true)
         })
     else { return .failed(.other("fetch was cancelled")) }
-    if let failure = Self.classify(
-      result, action: .fetch, tool: vcs, gitDir: Self.worktreeGitDir(at: path))
-    {
+    if let failure = await classify(result, action: .fetch, tool: vcs, at: path) {
       return .failed(failure)
     }
     return .ok(summary: "Fetched \(remote)")
@@ -1697,9 +1784,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
           await run(args, in: dir, timeout: pushTimeout, network: true)
         })
     else { return .failed(.other("push was cancelled")) }
-    if let failure = Self.classify(
-      result, action: .push, tool: vcs, gitDir: Self.worktreeGitDir(at: path))
-    {
+    if let failure = await classify(result, action: .push, tool: vcs, at: path) {
       return .failed(failure)
     }
     return .ok(summary: "Pushed to \(remote)")
@@ -1712,8 +1797,6 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     // Both backends fetch first, at the project root, for the reasons `opDirectory` documents. For git
     // `pull` would fetch too, but doing it explicitly at the root keeps `FETCH_HEAD` — and so the
     // "last fetched" label — correct for every workroom of the project.
-    // Hoisted above the fetch: BOTH steps classify against it, since a lock can block either one.
-    let gitDir = Self.worktreeGitDir(at: path)
     let fetchDir = Self.opDirectory(.fetch, path: path, projectRoot: projectRoot)
     let fetchArgs =
       vcs == "jj" ? Self.jjFetchArgs(remote: remote) : Self.gitFetchArgs(remote: remote)
@@ -1724,7 +1807,8 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
           await run(fetchArgs, in: fetchDir, timeout: fetchTimeout, network: true)
         })
     else { return .failed(.other("pull was cancelled")) }
-    if let failure = Self.classify(fetched, action: .pull, tool: vcs, gitDir: gitDir) {
+    // Both steps classify against the worktree's git directory, since a lock can block either one.
+    if let failure = await classify(fetched, action: .pull, tool: vcs, at: path) {
       return .failed(failure)
     }
 
@@ -1750,7 +1834,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
           await run(args, in: dir, timeout: pullTimeout, network: true)
         })
     else { return .failed(.other("pull was cancelled")) }
-    if let failure = Self.classify(result, action: .pull, tool: vcs, gitDir: gitDir) {
+    if let failure = await classify(result, action: .pull, tool: vcs, at: path) {
       return .failed(failure)
     }
     return .ok(summary: "Pulled from \(remote)")
@@ -1766,7 +1850,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   }
 
   func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult {
-    if vcs == "jj", !Self.rebaseInProgress(gitDir: Self.worktreeGitDir(at: path)) {
+    if vcs == "jj", !(await rebaseParked(at: path)) {
       // jj's own rebase is atomic and undoable — there is no half-finished state to abort. But a
       // COLOCATED jj root still has a real `.git`, and a `git rebase` run in that root's terminal
       // can leave a real `rebase-merge`/`rebase-apply` behind — exactly what `classify` checks for
@@ -1790,7 +1874,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     else { return .failed(.other("abort was cancelled")) }
     // Always "git" here too, never `vcs`, for the same reason: attributing a failure to the wrong
     // tool would misdirect ".toolMissing"/"exited N" messages.
-    if let failure = Self.classify(result, action: .abortRebase, tool: "git") {
+    if let failure = await classify(
+      result, action: .abortRebase, tool: "git", at: path, withGitDir: false)
+    {
       return .failed(failure)
     }
     return .ok(summary: "Rebase aborted")
@@ -1801,10 +1887,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   func commit(path: String, projectRoot: String, request: VCSCommitRequest) async -> VCSCommitResult
   {
     guard Self.supports(mode: request.mode, vcs: vcs) else { return .failed(.unsupportedMode) }
-    let gitDir = Self.worktreeGitDir(at: path)
     // A parked merge/cherry-pick/rebase/bisect makes a path-limited commit outright invalid, and
     // finishing it is the user's call. Checked before the ref snapshot so nothing is spawned at all.
-    if vcs != "jj", let sequencer = Self.sequencerState(gitDir: gitDir) {
+    if vcs != "jj", let sequencer = await parkedOperation(at: path) {
       return .failed(.sequencerInProgress(sequencer))
     }
 
@@ -1828,7 +1913,15 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     guard let attempt = outcome else { return .failed(.other("commit was cancelled")) }
     let (before, result) = (attempt.before, attempt.result)
 
-    if let failure = Self.classifyCommit(result, tool: vcs) {
+    // Read only for a failure, as `classify` does: jj's "Nothing changed." exits 0 and is classified
+    // here too, but no probe reads the disk for it.
+    let commitDisk: any RepositoryDisk =
+      stat == nil
+      ? LocalDisk()
+      : result.ok
+        ? DiskSnapshot.unknown
+        : await disk(at: path, stderr: result.stderr + "\n" + result.stdout).disk
+    if let failure = Self.classifyCommit(result, tool: vcs, disk: commitDisk) {
       // The command failed, but did the ref move anyway? A `post-commit` hook runs AFTER git has
       // written the commit and moved HEAD, so a hook that fails — or that we killed at the timeout —
       // leaves a real commit behind a non-zero exit. Reporting that as a plain failure invites a
@@ -2012,7 +2105,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     let subject =
       head.ok ? head.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : ""
     return VCSCommitPreflight(
-      sequencer: Self.sequencerState(gitDir: Self.worktreeGitDir(at: path)),
+      sequencer: await parkedOperation(at: path),
       // Empty on an unborn branch — a repo with no commits has nothing to amend.
       amendTarget: subject.isEmpty ? nil : subject,
       currentMessage: nil)

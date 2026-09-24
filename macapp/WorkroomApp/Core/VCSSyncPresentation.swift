@@ -644,9 +644,12 @@ enum VCSSyncPresenter {
   }
 
   /// The blocking lock file's path, when the failure has one.
+  /// Nil for a lock file on a remote host too: both things offered for the path, Reveal in Finder
+  /// and Copy Lock File Path, are for a file on this Mac. git's own message, in the failure's
+  /// details, still names it.
   static func lockPath(of failure: VCSRemoteFailure) -> String? {
-    guard case .locked(let file) = failure else { return nil }
-    return file?.path
+    guard case .locked(let file) = failure, let file, file.isOnThisMac else { return nil }
+    return file.path
   }
 
   /// The tooltip form of a failure: `describe`'s one-liner plus, where there is one, the remedy.
@@ -696,8 +699,8 @@ enum VCSSyncPresenter {
       details: commitRawOutput(of: failure),
       recovery: nil,
       lockPath: {
-        guard case .locked(let file) = failure else { return nil }
-        return file?.path
+        guard case .locked(let file) = failure, let file, file.isOnThisMac else { return nil }
+        return file.path
       }())
   }
 

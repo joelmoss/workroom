@@ -10,6 +10,10 @@ import Foundation
 /// distinction is load-bearing — see `neverRan` and `outcomeUnknown`.
 struct AgentCommandRunner: StatusCommandRunning, Sendable {
   let connection: AgentVCSConnection
+  /// The shared root of a jj repository on a REMOTE host, whose working-copy barrier the agent
+  /// takes around each command (`barrier_root` in `vcs.rs`). Nil locally, where the caller's gate
+  /// holds it for the whole operation and the agent must never take it again.
+  var barrierRoot: String?
 
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
@@ -57,7 +61,7 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
     }
     let request = Self.request(
       executable, args, in: directory, timeout: timeout, stdin: payload, network: network,
-      host: connection.host)
+      host: connection.host, barrierRoot: barrierRoot)
     let reply: Data
     do {
       // Slack above the command's own timeout: the round trip and the agent's own bookkeeping
@@ -174,7 +178,7 @@ extension AgentCommandRunner {
   /// pins ssh to fail rather than prompt, as `networkEnvironment` does here.
   static func request(
     _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
-    stdin: String?, network: Bool, host: HostID
+    stdin: String?, network: Bool, host: HostID, barrierRoot: String? = nil
   ) -> AgentExecRequest {
     let remote = host != .local
     return AgentExecRequest(
@@ -184,7 +188,12 @@ extension AgentCommandRunner {
       env: remote
         ? StatusCommandRunner.remoteEnvironment
         : StatusCommandRunner.childEnvironment(network: network),
-      hostEnvironment: remote ? true : nil)
+      hostEnvironment: remote ? true : nil,
+      // Not for a network command (`jj git fetch`/`push`): the barrier is handed to the child, and
+      // git's detached helpers (`git maintenance --auto`, a credential cache daemon) would inherit
+      // it and hold it long after jj exits. jj's own op log reconciles a snapshot that runs
+      // alongside one of those.
+      barrierRoot: remote && !network ? barrierRoot : nil)
   }
 }
 
@@ -200,6 +209,8 @@ struct AgentExecRequest: Encodable, Sendable {
   /// Set only for a remote host, and omitted otherwise: an agent that predates the field rejects
   /// any request carrying it (`deny_unknown_fields`), and a local agent may be one.
   var hostEnvironment: Bool?
+  /// Remote only, for the same reason: see `AgentCommandRunner.barrierRoot`.
+  var barrierRoot: String?
 }
 
 struct AgentExecResult: Decodable, Sendable {

@@ -32,6 +32,16 @@ final class VCSSyncPresentationTests: XCTestCase {
 
   // MARK: States
 
+  /// A lock file on a remote host names nothing on this Mac, so neither Reveal in Finder nor Copy
+  /// Lock File Path is offered for it (#229).
+  func testALockFileOnARemoteHostIsNotOfferedAsAPathOnThisMac() {
+    let local = VCSLockFile(path: "/repo/.git/index.lock", modifiedAt: Date())
+    var remote = local
+    remote.isOnThisMac = false
+    XCTAssertEqual(VCSSyncPresenter.lockPath(of: .locked(local)), "/repo/.git/index.lock")
+    XCTAssertNil(VCSSyncPresenter.lockPath(of: .locked(remote)))
+  }
+
   func testNoTargetIsDisabled() {
     let p = VCSSyncPresenter.make(state: nil, hasTarget: false, now: now)
     XCTAssertEqual(p.subtitle, "No workroom selected")
