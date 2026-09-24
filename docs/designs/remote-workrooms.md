@@ -9,8 +9,9 @@ Mode: Builder
 ## Current Status — 2026-09-24
 
 **Phase 2 is merged to master** (2026-09-23, #201 through #218; review follow-ups #220–#226), and
-**Phase 3 has started.** Its milestones are sub-issues of #154: the Linux agent artifact (#227, in
-progress), the supervised far-side agent with its stdio relay and container fixture (#228), the
+**Phase 3 has started.** Its milestones are sub-issues of #154: the Linux agent artifact (#227,
+merged; its first Nightly DMG is still to be checked), the supervised far-side agent with its stdio
+relay and container fixture (#228, in progress), the
 app-side transport with `HostDriver` and the container driver (#229), `execve` hand-off (#230),
 push-on-first-connect bootstrap (#231) and stop-and-reboot screen restoration (#232). The rest of
 this section is the 2026-09-17 status, kept for the Phase 2 detail it records and corrected where
@@ -974,6 +975,22 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   socket and ptys. Reconnecting must reach that same owner, not launch a second store. Acceptance:
   forcibly drop the transport, leave a job running with no client, reconnect, and verify the same
   child process and terminal state survive. Repeat after client app restart and laptop sleep.
+  **Far side built (#228):** `wr-agent relay --socket <path>` copies stdio to the socket and
+  nothing else (it never starts an agent, and fails fast when none listens), and
+  `serve --idle-timeout never` is the supervised owner. `vcs/scripts/ssh-fixture/run.sh` proves the
+  acceptance above over real ssh into a container, whose entrypoint loop is the supervisor, and
+  CI runs it in the `agent-linux` job. App restart and laptop sleep need the app-side transport
+  (#229).
+  **Two requirements on #229's real supervisor**, which only the fixture meets today:
+  - *The socket's directory is mode 0700 and owned by the ssh user.* The agent never idles out,
+    so on a shared host that mode is the only thing keeping another account from a
+    shell-spawning socket. It also stops anyone planting a socket at the path for the relay to
+    reach. Neither `serve` nor `relay` checks it: `serve` binds with the umask's defaults, and
+    `relay` does not check the peer's credentials.
+  - *A restart kills the agent's whole cgroup, not only its pid.* A killed agent's sessions do
+    not die with it: their jobs run on, orphaned, while the replacement agent reports no
+    sessions. systemd's default `KillMode=control-group` does this. The fixture's loop does not,
+    which is fine for a test box and wrong for a host with real work on it.
 - **Local needs no supervisor at all. DECIDED — and an earlier claim in this document was wrong.**
   A previous revision asserted that `SessionDaemon.swift:97-107`'s self-exit
   (`sessions.isEmpty && connections.isEmpty`) had to go, because the agent would also own VCS reads

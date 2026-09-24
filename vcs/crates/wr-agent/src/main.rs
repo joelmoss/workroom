@@ -6,6 +6,7 @@
 //! frame codec in one language instead of duplicating it forever.
 
 use std::io::{Read, Write};
+use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -20,7 +21,7 @@ use wr_agent::wakefulness::Settings;
 
 fn usage() -> &'static str {
     "usage:
-  wr-agent serve --socket <path> [--idle-timeout <secs>]
+  wr-agent serve --socket <path> [--idle-timeout <secs>|never]
         [--awake-ceiling <secs>] [--awake-prompt-timeout <secs>] [--ask-at-awake-ceiling]
         own ptys and services (the daemon role). On Linux it also decides BUSY/IDLE for the
         provider's lifecycle shim and writes it beside the socket as <socket>.wake.
@@ -30,10 +31,16 @@ fn usage() -> &'static str {
         WORKROOM_SESSION_AWAKE_PROMPT_TIMEOUT and WORKROOM_SESSION_ASK_AT_AWAKE_CEILING=1, which
         is how the serve that attach spawns gets them. The WORKROOM_SESSION_ prefix is what keeps
         them out of every session's shell, with the rest of the app's launch variables.
+        --idle-timeout never is for a supervised remote agent, which must keep running (and keep
+        reporting BUSY/IDLE) with no client attached.
   wr-agent serve --stdio
-        serve one connection over stdin/stdout; what a driver opens remotely
+        serve one connection over stdin/stdout, whose sessions die with it; a transport test
+        entry point, not a persistent remote agent (that is serve --idle-timeout never + relay)
   wr-agent attach --socket <path> [--session <uuid>]
         relay stdio to a session; what libghostty forks
+  wr-agent relay --socket <path>
+        copy bytes between stdio and a running agent's socket, and nothing else;
+        what a driver runs on the far side (`ssh host wr-agent relay --socket <path>`)
   wr-agent list --socket <path>
         print the agent's live sessions
   wr-agent protocol
@@ -88,6 +95,7 @@ fn main() -> ExitCode {
             }
         },
         Some("attach") => run_attach(&args),
+        Some("relay") => run_relay(&args),
         Some("list") => run_list(&args),
         _ => {
             eprint!("{}", usage());
@@ -98,14 +106,14 @@ fn main() -> ExitCode {
 
 /// Serves exactly one connection over stdin/stdout, then exits.
 ///
-/// This is the remote entry point: `ssh host wr-agent serve --stdio` is the first implementation
-/// of the driver contract's `openStream`, and a provider SDK's exec call produces the same shape.
-/// There is no socket, no listener and no single-instance lock, because the caller already decided
-/// which machine and which process — the stream IS the session's address.
+/// A transport test entry point: `ssh host wr-agent serve --stdio` has the shape of the driver
+/// contract's `openStream`, and so does a provider SDK's exec call. There is no socket, no listener
+/// and no single-instance lock, because the caller already decided which machine and which
+/// process — the stream IS the session's address.
 ///
-/// Note what this deliberately does NOT do: outlive the connection. A remote agent that must
-/// survive a dropped link is a supervised process on the far side owning its own socket; this mode
-/// is one client, one stream, which is what an ssh hop gives you.
+/// Note what this deliberately does NOT do: outlive the connection. Production reaches a supervised
+/// `serve --idle-timeout never` through `relay` instead (see `run_relay`), because a remote session
+/// must survive a dropped link and these die with it.
 fn run_serve_stdio() -> ExitCode {
     let sessions = wr_agent::session::SessionStore::new();
     match wr_agent::serve::handle_connection(wr_agent::transport::StdioTransport, sessions.clone())
@@ -158,6 +166,13 @@ fn wakefulness_settings_from(args: &[String], env: impl Fn(&str) -> Option<Strin
 }
 
 fn run_serve(socket: PathBuf, idle: Option<String>, wakefulness: Settings) -> ExitCode {
+    let timeout = match idle_timeout(idle.as_deref()) {
+        Ok(timeout) => timeout,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     // The lock, not the bind, is what guarantees a single agent — see serve.rs. Losing the race is
     // a normal outcome (two clients spawning at once), not an error worth a non-zero exit: the
     // other agent is serving, which is all the caller wanted.
@@ -169,11 +184,6 @@ fn run_serve(socket: PathBuf, idle: Option<String>, wakefulness: Settings) -> Ex
             return ExitCode::FAILURE;
         }
     };
-    let timeout = idle
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(DEFAULT_IDLE_TIMEOUT);
-
     let agent = Agent::new();
     match agent.serve(&socket, timeout, wakefulness) {
         Ok(()) => ExitCode::SUCCESS,
@@ -182,6 +192,121 @@ fn run_serve(socket: PathBuf, idle: Option<String>, wakefulness: Settings) -> Ex
             ExitCode::FAILURE
         }
     }
+}
+
+/// `--idle-timeout`: seconds, or `never` for a supervised remote agent (issue #228).
+///
+/// A value that does not parse is an error, not the default. A supervisor that asked for `never`
+/// and got 30 seconds would see its agent exit 30 seconds after the last client left, which looks
+/// like a crash and takes the no-client busy/idle reports with it.
+fn idle_timeout(value: Option<&str>) -> Result<Duration, String> {
+    match value {
+        None => Ok(DEFAULT_IDLE_TIMEOUT),
+        // `serve` compares elapsed idle time with `>=`, and no elapsed time reaches this.
+        Some("never") => Ok(Duration::MAX),
+        Some(text) => text
+            .parse::<u64>()
+            .map(Duration::from_secs)
+            .map_err(|_| format!("--idle-timeout takes seconds or `never`, not {text:?}")),
+    }
+}
+
+/// Copies bytes between stdin/stdout and a running agent's socket, and does nothing else.
+///
+/// This is the far side of a persistent remote stream: `ssh host wr-agent relay --socket <path>`
+/// is the ssh implementation of the driver contract's byte stream, and the agent behind the socket
+/// is a supervised `serve --idle-timeout never` that owns the ptys. A dropped link ends this
+/// process and only this process, so the sessions survive and the next relay reaches the same
+/// owner. `serve --stdio` cannot do that: its session store dies with its stream.
+///
+/// **It never starts an agent**, unlike `attach`. On the far side, starting the agent is the
+/// supervisor's job, and a relay that spawned one would bring back the idle-exit agent a remote
+/// host must not have. So no agent means a fast failure the driver can report.
+///
+/// **It never writes a byte of its own to stdout.** The client handshakes with the agent THROUGH
+/// this process, and anything else on the stream is a banner the handshake rejects.
+fn run_relay(args: &[String]) -> ExitCode {
+    let Some(socket) = flag(args, "--socket").map(PathBuf::from) else {
+        eprintln!("error: relay needs --socket <path>");
+        return ExitCode::FAILURE;
+    };
+    let Some(stream) = serve::connect(&socket) else {
+        eprintln!(
+            "error: no agent listening on {}; on a remote host, its supervisor starts it",
+            socket.display()
+        );
+        return ExitCode::from(DAEMON_UNAVAILABLE);
+    };
+
+    // stdin -> agent. EOF is a half-close: the client has nothing more to send, and it is also how
+    // sshd reports a dead link. Shutting down the write half tells the agent, which detaches this
+    // client's sessions, and still lets its last replies through below.
+    let mut to_agent = match stream.try_clone() {
+        Ok(clone) => clone,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut std::io::stdin().lock(), &mut to_agent);
+        let _ = to_agent.shutdown(std::net::Shutdown::Write);
+    });
+
+    // agent -> stdout, unbuffered: `Stdout` is line-buffered, and would hold a frame with no newline
+    // in it until the next one pushed it out. Bounded like `serve --stdio`'s writer to the same
+    // stdout, so a link that stops draining with no FIN (a dead network) ends this process after
+    // `WRITE_TIMEOUT` rather than whenever TCP gives up.
+    //
+    // A poll loop rather than `io::copy`, because the copy can only notice a dead link by WRITING to
+    // it. An agent that has gone quiet (and stopped reading, so the thread above is stuck mid-write
+    // and never sees stdin's EOF either) would leave this process blocked on the socket forever.
+    // Watching stdout for a hang-up ends it the moment sshd closes the channel. That is Linux, where
+    // a pipe whose readers are gone reports POLLERR; macOS's poll does not report it for a pipe,
+    // and there the relay falls back to noticing on its next write.
+    let mut to_client = wr_agent::transport::FdStream::writer(libc::STDOUT_FILENO);
+    let mut from_agent = &stream;
+    let mut buffer = vec![0u8; 65536];
+    let mut watched = [
+        libc::pollfd {
+            fd: stream.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        // No events requested: POLLERR and POLLHUP are always reported, and they are the only
+        // thing this entry is for.
+        libc::pollfd {
+            fd: libc::STDOUT_FILENO,
+            events: 0,
+            revents: 0,
+        },
+    ];
+    loop {
+        if unsafe { libc::poll(watched.as_mut_ptr(), 2, -1) } < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        }
+        // POLLNVAL too: a stdout that was never open would otherwise make every poll return at
+        // once with nothing to read, and this loop would spin.
+        if watched[1].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            break;
+        }
+        if watched[0].revents == 0 {
+            continue;
+        }
+        match from_agent.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            // Rust ignores SIGPIPE, so a closed link arrives here as an error too.
+            Ok(n) => {
+                if to_client.write_all(&buffer[..n]).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 /// Exit code the app already knows: `SessionAttachClient.daemonUnavailable`.
@@ -775,6 +900,16 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert_eq!(wakefulness_settings_from(&args, |_| None).ceiling, 0.5);
+    }
+
+    #[test]
+    fn idle_timeout_takes_seconds_or_never_and_rejects_anything_else() {
+        assert_eq!(idle_timeout(None), Ok(DEFAULT_IDLE_TIMEOUT));
+        assert_eq!(idle_timeout(Some("60")), Ok(Duration::from_secs(60)));
+        assert_eq!(idle_timeout(Some("never")), Ok(Duration::MAX));
+        for bad in ["", "-1", "1.5", "Never", "forever"] {
+            assert!(idle_timeout(Some(bad)).is_err(), "{bad:?}");
+        }
     }
 
     /// A stream that serves an endless login banner, counting how much of it is consumed.

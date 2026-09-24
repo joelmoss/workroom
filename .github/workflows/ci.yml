@@ -337,6 +337,16 @@ jobs:
           echo "$out" | grep -q '^protocol '
           echo "$out" | grep -qx 'terminal-state yes'
 
+      # The persistent remote path over real ssh (issue #228): this ELF, supervised in a container
+      # with sshd, driven from the runner by the ignored `over_ssh_*` tests in remote_transport.rs.
+      # x86_64 only, because the runner is x86_64: the aarch64 ELF would need an emulated container.
+      # Bounded, because an agent that wedges mid-reply would hang an ssh call with no deadline of
+      # its own, and the job's default timeout is six hours.
+      - name: ssh fixture
+        if: matrix.arch == 'x86_64'
+        timeout-minutes: 15
+        run: vcs/scripts/ssh-fixture/run.sh "vcs/target/$TARGET/release/wr-agent"
+
   app:
     needs: changes
     if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
