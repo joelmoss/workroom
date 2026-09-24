@@ -337,14 +337,29 @@ jobs:
           echo "$out" | grep -q '^protocol '
           echo "$out" | grep -qx 'terminal-state yes'
 
+      # The fixture image's apt layer, cached in the Actions cache. A `run` step cannot reach that
+      # cache on its own: buildx needs a docker-container builder, and the runtime token that the
+      # second action exports.
+      - name: Set up Docker Buildx (ssh fixture)
+        if: matrix.arch == 'x86_64'
+        uses: docker/setup-buildx-action@v4
+      - name: Expose the Actions cache to buildx (ssh fixture)
+        if: matrix.arch == 'x86_64'
+        uses: crazy-max/ghaction-github-runtime@v4
+
       # The persistent remote path over real ssh (issue #228): this ELF, supervised in a container
       # with sshd, driven from the runner by the ignored `over_ssh_*` tests in remote_transport.rs.
       # x86_64 only, because the runner is x86_64: the aarch64 ELF would need an emulated container.
       # Bounded, because an agent that wedges mid-reply would hang an ssh call with no deadline of
-      # its own, and the job's default timeout is six hours.
+      # its own, and the job's default timeout is six hours. `--load`, because a docker-container
+      # builder does not put the image where `docker run` looks otherwise.
       - name: ssh fixture
         if: matrix.arch == 'x86_64'
         timeout-minutes: 15
+        env:
+          WR_FIXTURE_BUILD_FLAGS: >-
+            --load --cache-from type=gha,scope=ssh-fixture
+            --cache-to type=gha,mode=max,scope=ssh-fixture
         run: vcs/scripts/ssh-fixture/run.sh "vcs/target/$TARGET/release/wr-agent"
 
   app:
