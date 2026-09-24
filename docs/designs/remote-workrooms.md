@@ -12,8 +12,8 @@ Mode: Builder
 **Phase 3 has started.** Its milestones are sub-issues of #154: the Linux agent artifact (#227,
 merged; its first Nightly DMG is still to be checked), the supervised far-side agent with its stdio
 relay and container fixture (#228, merged), the
-app-side transport with `HostDriver` and the container driver (#229, in progress: services first,
-terminal panes second), `execve` hand-off (#230),
+app-side transport with `HostDriver` and the container driver, services and terminal panes (#229,
+merged 2026-09-24 in #237), `execve` hand-off (#230),
 push-on-first-connect bootstrap (#231) and stop-and-reboot screen restoration (#232). The rest of
 this section is the 2026-09-17 status, kept for the Phase 2 detail it records and corrected where
 it had gone stale.
@@ -1000,8 +1000,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   socketpair whose other end is ssh's stdin and stdout, and `AgentVCSConnection.connect(host:stream:)`
   runs the same negotiation over it as over a local socket, so VCS, File, Status and Forward need
   no change. ssh exiting is the connection ending, through the same generation and
-  fail-pending-calls rules as a dead local agent. Terminal panes through the driver are the second
-  half of #229.
+  fail-pending-calls rules as a dead local agent. Terminal panes are below.
   **Remote writes (#229)** keep every decision in the Swift writer (`CLIVCSWriter`) and move only
   two things to the host:
   - *The disk the failure classifier reads.* It decides a parked rebase, a leftover lock or the last
@@ -1043,7 +1042,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     remote attach, so it never reads as a dropped link. The pane's ssh has `EscapeChar none`: what
     the user types is theirs, and `~.` would otherwise disconnect it.
   - *Closing a remote pane does not end its session yet.* Nothing on the service connection can
-    ask the host's agent to, so the session is left running and reported as not killed. That
+    ask the host's agent to, so the session is left running and reported as not killed. It stays
+    registered as remote, so a second close is never handed to the local helpers. Ending it
     belongs with the host's lifecycle (Phase 4).
   - *`CREATE=0` is only as good as the agent that reads it.* An agent older than the flag ignores
     it and creates the session. The version hand-off (#230) and the bootstrap (#231) keep the
