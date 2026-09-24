@@ -388,7 +388,12 @@ fn dispatch(
             // Refused, not created, for a client that asked to attach only to what exists: see
             // `AttachRequest::existing_only`. Before any `Attached`, so the client can tell it
             // apart from a failure on a session it is already showing.
-            if request.existing_only && !sessions.contains(id) {
+            //
+            // Read ONCE, for both this and the choice below: read twice, a session that exited in
+            // between would pass the refusal and then be created. With one read, that race ends in
+            // `attach()` finding nothing, which the client already takes as "ended".
+            let exists = sessions.contains(id);
+            if request.existing_only && !exists {
                 return reply(Frame::new(
                     FrameKind::Failure,
                     format!("session ended: {}", id.to_hyphenated()).into_bytes(),
@@ -396,7 +401,7 @@ fn dispatch(
             }
             // Create on first attach, reattach afterwards. One code path, so a client that
             // crashed and came back does not have to know which case it is in.
-            let result = if sessions.contains(id) {
+            let result = if exists {
                 attach()
             } else {
                 // Not `<shell>` with no arguments: see `shell::invocation`. Spawning the shell
