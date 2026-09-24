@@ -35,7 +35,7 @@ sleep events (a wall gap over 3 sampling intervals inside a run): 9
 
 seconds from an IDLE label's start to a sleep inside it: 146, 388, 157, 152, 353, 595, 149, 397 (deadline 270 s)
 first asleep status after the last IDLE label: hibernated
- at wall 1789948473 (deadline wall 1789948699)
+ at wall 1789948473 (deadline wall 1789948099)
 
 ## oq19-control
 sleep events (a wall gap over 3 sampling intervals inside a run): 1
@@ -58,7 +58,7 @@ sleep events (a wall gap over 3 sampling intervals inside a run): 1
 | 1 | none | 0 / 1 | all pass | - | 0.0% |
 
 seconds from an IDLE label's start to a sleep inside it: 235 (deadline 270 s)
-first asleep status after the last IDLE label: never (deadline wall 1789949766)
+first asleep status after the last IDLE label: never (deadline wall 1789949107)
 
 ## Fork clock check (60 s)
 monotonic 0.9991 s/s, uptime 0.9999 s/s

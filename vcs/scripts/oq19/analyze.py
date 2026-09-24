@@ -945,9 +945,13 @@ def boxd_machine(root, machine, timeout_s, window_s, d3_fallback=False):
         slept_in_busy = [e for e in events_here for a, b, _ in busy_wall if a <= e["wall_before"] <= b]
         idle_wall = [(wall_of(ticks, i.start), wall_of(ticks, i.end)) for i in ivs if i.label == IDLE]
         slept_in_idle = [e for e in events_here for a, b in idle_wall if a <= e["wall_before"] <= b]
+        # Only IDLE that follows the run's last BUSY phase shows the box sleeping once the work is done: 4b's
+        # `quiet` precedes its turn. A run with no BUSY phase (3a, 3b, 16) keeps every IDLE label.
+        work_end = max((b for _, b, _ in busy_wall), default=None)
+        after_work = [(a, b) for a, b in idle_wall if work_end is None or a >= work_end]
         # window + two provider timer periods: the provider re-arms its idle timer at its own cadence after the
         # shim restores it (measured release-to-sleep on boxd: 119 to 190 s against a 120 s timer).
-        slept_in_idle_by_deadline = [e for e in events_here for a, b in idle_wall
+        slept_in_idle_by_deadline = [e for e in events_here for a, b in after_work
                                      if a <= e["wall_before"] <= min(b, a + window_s + 2 * timeout_s)]
         idle_sleep_delays = [round(e["wall_before"] - a, 1) for e in events_here for a, b in idle_wall if a <= e["wall_before"] <= b]
         run_wall = (wall_of(ticks, ivs[0].start), wall_of(ticks, ivs[-1].end))
@@ -967,10 +971,15 @@ def boxd_machine(root, machine, timeout_s, window_s, d3_fallback=False):
                      "wake_tails_excused_s": [round(x, 1) for x in wake_tails],
                      "live_vs_replay_mismatch": mismatch_frac,
                      "gates": gates_out, "failed": [g for g, v in (gates_out or {}).items() if v != gates.PASS],
-                     "end_wall": wall_of(ticks, ivs[-1].end)})
+                     "end_wall": wall_of(ticks, ivs[-1].end),
+                     "last_idle_start_wall": max((a for a, _ in after_work), default=None)})
         last_end_wall = max(last_end_wall or 0, wall_of(ticks, ivs[-1].end))
     asleep = first_asleep_after(status_rows, last_end_wall) if last_end_wall else None
-    deadline = (last_end_wall + window_s + 2 * timeout_s) if last_end_wall else None
+    # Measured from where the in-run deadline starts, the last qualifying IDLE label's start, not from the run's
+    # end: a 90 s IDLE tail would otherwise give the status read 90 s more than a sleep seen in the tick log.
+    final = [r for r in runs if r["end_wall"] == last_end_wall]
+    base = (final[0]["last_idle_start_wall"] if final else None) or last_end_wall
+    deadline = (base + window_s + 2 * timeout_s) if last_end_wall else None
     # "Slept within the idle window after IDLE" (the plan's wording): a sleep that begins inside an IDLE label
     # within window + two provider timer periods of that label's start (the tick log shows it), or a status read
     # of asleep within the same deadline after the last label. A sleep later inside a long idle label does not

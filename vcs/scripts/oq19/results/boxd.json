@@ -74,7 +74,8 @@
      "time_to_idle": "PASS"
     },
     "failed": [],
-    "end_wall": 1789948429.0039406
+    "end_wall": 1789948429.0039406,
+    "last_idle_start_wall": 1789947828.968722
    },
    {
     "scenario": "3a",
@@ -121,7 +122,8 @@
      "time_to_idle": "PASS"
     },
     "failed": [],
-    "end_wall": 1789946371.5452425
+    "end_wall": 1789946371.5452425,
+    "last_idle_start_wall": 1789946071.5259898
    },
    {
     "scenario": "3b",
@@ -140,7 +142,8 @@
      "time_to_idle": "PASS"
     },
     "failed": [],
-    "end_wall": 1789946678.1683905
+    "end_wall": 1789946678.1683905,
+    "last_idle_start_wall": 1789946378.1334324
    },
    {
     "scenario": "4b",
@@ -223,7 +226,8 @@
      "time_to_idle": "PASS"
     },
     "failed": [],
-    "end_wall": 1789946065.042037
+    "end_wall": 1789946065.042037,
+    "last_idle_start_wall": 1789945377.8408911
    },
    {
     "scenario": "5",
@@ -292,7 +296,8 @@
      "time_to_idle": "PASS"
     },
     "failed": [],
-    "end_wall": 1789947732.8041918
+    "end_wall": 1789947732.8041918,
+    "last_idle_start_wall": 1789947092.7649221
    }
   ],
   "sleep_events": [
@@ -377,8 +382,8 @@
    1789948473.0,
    "hibernated\n"
   ],
-  "asleep_by_deadline": true,
-  "deadline_wall": 1789948699.0039406,
+  "asleep_by_deadline": false,
+  "deadline_wall": 1789948098.968722,
   "status_samples": 164
  },
  "control": {
@@ -418,7 +423,8 @@
     "live_vs_replay_mismatch": null,
     "gates": null,
     "failed": [],
-    "end_wall": 1789948764.8969672
+    "end_wall": 1789948764.8969672,
+    "last_idle_start_wall": null
    }
   ],
   "sleep_events": [
@@ -488,7 +494,8 @@
      "time_to_idle": "PASS"
     },
     "failed": [],
-    "end_wall": 1789949496.295811
+    "end_wall": 1789949496.295811,
+    "last_idle_start_wall": 1789948837.433102
    }
   ],
   "sleep_events": [
@@ -508,7 +515,7 @@
   "idle_sleep_deadline_s": 270,
   "asleep_after_last_idle": null,
   "asleep_by_deadline": false,
-  "deadline_wall": 1789949766.295811,
+  "deadline_wall": 1789949107.433102,
   "status_samples": 23
  },
  "clock": {

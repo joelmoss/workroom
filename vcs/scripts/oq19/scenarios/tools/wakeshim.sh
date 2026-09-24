@@ -23,20 +23,37 @@ release="${OQ19_RELEASE:-rm -f \"$awake\"}"
 mkdir -p "$(dirname "$awake")"
 selfcall="$(dirname "$awake")/selfcall"   # touched around each hook: live.py masks the net signal meanwhile (F7)
 asserted=0
-# Terminated (the driver ends every run with SIGTERM) while asserting: release first. The next shim starts at
-# asserted=0 and never releases what it did not assert, so exiting while BUSY left boxd's idle timers at 0 with
-# nothing left to restore them. sh runs the trap once the current `sleep` returns: at most one interval late,
-# and driver.py waits for the shim (`os.wait4`).
-trap 'if [ "$asserted" = 1 ]; then touch "$selfcall"; sh -c "$release"; touch "$selfcall"; fi; exit 0' TERM INT
-while :; do
+# Terminated (the driver ends every run with SIGTERM) while asserting: release before exiting. The next shim
+# starts at asserted=0 and never releases what it did not assert, so exiting while BUSY left boxd's idle timers
+# at 0 with nothing left to restore them. The trap only RECORDS the signal and the loop acts on it between
+# transitions, so no signal can land between a hook and the flag that says what the hook did. sh runs the trap
+# once the current `sleep` or hook returns: at most one interval late, and driver.py waits (`os.wait4`).
+stop=0
+trap 'stop=1' TERM INT
+while [ "$stop" = 0 ]; do
   mtime=$(stat -c %Y "$verdict" 2>/dev/null || stat -f %m "$verdict" 2>/dev/null || echo 0)
   if [ "$(cat "$verdict" 2>/dev/null)" = BUSY ] || awk -v now="$(date +%s)" -v m="$mtime" -v i="$interval" \
       'BEGIN { exit !(now - m > 2 * i) }'; then
-    # The flag flips BEFORE the hook and back if it fails: a SIGTERM delivered during the hook is handled
-    # when it returns, and must see what the hook did, or the trap skips a release (or runs one twice).
-    if [ "$asserted" = 0 ]; then asserted=1; touch "$selfcall"; sh -c "$assert" || asserted=0; touch "$selfcall"; fi
+    if [ "$asserted" = 0 ]; then
+      touch "$selfcall"
+      # A hook that fails part-way (boxd's sets two timers) may have changed one: undo it; the next tick retries.
+      if sh -c "$assert"; then asserted=1; else sh -c "$release"; fi
+      touch "$selfcall"
+    fi
   elif [ "$asserted" = 1 ]; then
-    asserted=0; touch "$selfcall"; sh -c "$release" || asserted=1; touch "$selfcall"
+    touch "$selfcall"; sh -c "$release" && asserted=0; touch "$selfcall"  # a failed release retries next tick
   fi
-  sleep "$interval"
+  [ "$stop" = 0 ] && sleep "$interval"
 done
+if [ "$asserted" = 1 ]; then
+  # The last chance: nothing runs after this shim to restore the provider's timers, so retry a failed release.
+  touch "$selfcall"
+  tries=1
+  until sh -c "$release"; do
+    [ "$tries" -ge 3 ] && { echo "wr-wakeshim: release failed $tries times; provider idle timers may be held" >&2; break; }
+    tries=$((tries + 1))
+    sleep 1
+  done
+  touch "$selfcall"
+fi
+exit 0
