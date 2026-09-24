@@ -636,25 +636,29 @@ mod tests {
     fn reports_the_foreground_process() {
         let pty = spawn(
             OsStr::new("/bin/sh"),
-            &[OsString::from("-c"), OsString::from("sleep 2")],
+            &[OsString::from("-c"), OsString::from("sleep 10")],
             &env(),
             None,
             80,
             24,
         )
         .expect("spawn");
-        // The pty's foreground group exists as soon as the child is session leader.
-        let mut pgid = None;
-        for _ in 0..50 {
-            pgid = pty.foreground_pgid();
-            if pgid.is_some() {
-                break;
+        // The pty's foreground group exists as soon as the child is session leader — which is
+        // BEFORE it execs, and a process between fork and exec has no arguments to read yet
+        // (#224: read the name in that window and it is `None`). So wait for both, for up to 5 s
+        // of the child's 10 (closing the master when `pty` drops hangs it up).
+        let mut found = None;
+        for _ in 0..250 {
+            if let Some(pgid) = pty.foreground_pgid() {
+                if let Some(name) = crate::process::executable_name(pgid) {
+                    found = Some((pgid, name));
+                    break;
+                }
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        let pgid = pgid.expect("a foreground process group");
+        let (pgid, _name) = found.expect("a foreground process group with a readable name");
         assert!(pgid > 0);
-        assert!(crate::process::executable_name(pgid).is_some());
     }
 
     #[test]
