@@ -1941,9 +1941,12 @@ disagreement passes every test on either side alone while presenting as an empty
     `build-agent.sh` with cargo-zigbuild and the pinned Zig, with `terminal-state`, and not
     codesigned themselves. Both arches ship regardless of `ARCHS`. A local cross-build takes 1m51s
     cold per arch. `release.sh` fails the release if either ELF is missing or not static, and the
-    `agent-linux` CI job runs `protocol` on each under Linux. The notarization answer is still owed:
-    `release.sh` notarizes and fails on rejection, so the first Nightly built with them either
-    confirms it or fails. Record the result here when it runs. Size: 10.9 MB (aarch64) and
+    `agent-linux` CI job runs `protocol` on each under Linux. **Confirmed (2026-09-24): notarization
+    accepts them.** A local `make app-release` of #233 (Developer ID, the same `release.sh` path the
+    workflows run) notarized the app with both ELFs inside with status `Accepted`, stapled, and
+    passed `codesign --verify --deep --strict` and `spctl --assess` (`source=Notarized Developer
+    ID`). The DMG was not built in that run, because create-dmg's Finder AppleScript cannot run in
+    a non-interactive session, so the first Nightly is still the end-to-end check. Size: 10.9 MB (aarch64) and
     12.3 MB (x86_64) raw, and the aarch64 one is 5.1 MB gzipped, so the pair adds about 23 MB to
     the installed app and roughly 11 MB to the DMG. A Debug build with `WR_AGENT_LINUX=1` passes
     `codesign --verify --strict` with both inside, and both run `protocol` in a Linux container.
