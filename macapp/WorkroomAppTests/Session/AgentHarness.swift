@@ -33,13 +33,18 @@ final class AgentHarness {
     process.standardError = FileHandle(forWritingAtPath: errorURL.path)
     try process.run()
 
+    // Until a connect succeeds, not until the path exists: `UnixListener::bind` creates the path at
+    // `bind()` and only then calls `listen()`, and a connect in between is refused, which a test then
+    // reads as `.connectionLost` (#224; measured 3 in 300 when connecting the moment the path appears).
+    // The app never needed this: it retries `connect` after spawning an agent (`LocalAgentVCS`).
     let deadline = Date().addingTimeInterval(5)
-    while Date() < deadline {
-      if FileManager.default.fileExists(atPath: socketPath) { break }
-      if !process.isRunning { break }
-      Thread.sleep(forTimeInterval: 0.02)
+    var accepting = false
+    while Date() < deadline, !accepting {
+      accepting = accepts(socketPath)
+      if !accepting, !process.isRunning { break }
+      if !accepting { Thread.sleep(forTimeInterval: 0.02) }
     }
-    guard FileManager.default.fileExists(atPath: socketPath) else {
+    guard accepting else {
       let error = (try? String(contentsOf: errorURL, encoding: .utf8)) ?? ""
       let status = process.isRunning ? "running" : "exited \(process.terminationStatus)"
       process.terminate()
@@ -47,10 +52,28 @@ final class AgentHarness {
         domain: "AgentHarness", code: 1,
         userInfo: [
           NSLocalizedDescriptionKey:
-            "agent socket never appeared at \(socketPath) (\(status), binary=\(binary.path), stderr=\(error))"
+            "agent never accepted a connection at \(socketPath) (\(status), binary=\(binary.path), stderr=\(error))"
         ])
     }
     return AgentHarness(socketPath: socketPath, process: process, directory: directory)
+  }
+
+  /// Whether a connect to `path` succeeds right now. The probe connection is closed at once; the
+  /// agent drops a client that hangs up before its greeting.
+  private static func accepts(_ path: String) -> Bool {
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else { return false }
+    defer { close(fd) }
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let bytes = Array(path.utf8)
+    guard bytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
+    withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes) }
+    return withUnsafePointer(to: &address) {
+      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
+      }
+    }
   }
 
   private init(socketPath: String, process: Process, directory: URL) {

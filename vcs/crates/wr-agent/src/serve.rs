@@ -828,8 +828,13 @@ mod tests {
             "a second agent must not be able to take the lock"
         );
         drop(first);
-        // Released on drop, so a restart after a clean exit works.
-        acquire_instance_lock(&socket).expect("lock after release");
+        // Released on drop, so a restart after a clean exit works. Retried briefly: a process
+        // another test forks at that moment holds the lock until it execs (see #224).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while acquire_instance_lock(&socket).is_err() {
+            assert!(std::time::Instant::now() < deadline, "lock after release");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

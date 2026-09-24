@@ -1145,13 +1145,29 @@ mod tests {
         );
     }
 
-    /// Whether another open of the lock file can take the flock right now.
-    fn lock_is_free(lock_file: &Path) -> bool {
+    /// Whether another open of the lock file can take the flock within `within`.
+    ///
+    /// Polled, not tried once: any test in this binary that spawns a process forks the whole fd
+    /// table, CLOEXEC descriptors included, and holds it until that child execs. A child forked
+    /// while the lock was held keeps its open file description — and so the flock — for those
+    /// microseconds after the parent drops it (#224: measured 4 in 3000 back-to-back release checks
+    /// with a concurrent spawner, 0 in 3000 without). Keep `within` well under any window in which
+    /// a REAL holder would still hold it, so a poll cannot hide one.
+    fn lock_is_free(lock_file: &Path, within: Duration) -> bool {
         let file = std::fs::OpenOptions::new()
             .write(true)
             .open(lock_file)
             .unwrap();
-        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// Run `sleep 1` through `run_exec_with` under `barrier_of(lock)`, drop the parent's lock while
@@ -1177,9 +1193,14 @@ mod tests {
         // The child is running by now; the parent's descriptor is the only other holder.
         std::thread::sleep(Duration::from_millis(400));
         drop(lock);
-        let free_while_running = lock_is_free(&root.join(".jj/workroom-vcs.lock"));
+        // 200 ms of polling ends ~600 ms into the child's 1 s sleep: a child that really holds
+        // the lock still does, so the barrier case cannot read as free.
+        let free_while_running = lock_is_free(
+            &root.join(".jj/workroom-vcs.lock"),
+            Duration::from_millis(200),
+        );
         runner.join().unwrap().unwrap();
-        let free_after = lock_is_free(&root.join(".jj/workroom-vcs.lock"));
+        let free_after = lock_is_free(&root.join(".jj/workroom-vcs.lock"), Duration::from_secs(1));
         std::fs::remove_dir_all(root).unwrap();
         (free_while_running, free_after)
     }
