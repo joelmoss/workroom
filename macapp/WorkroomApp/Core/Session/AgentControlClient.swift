@@ -159,6 +159,8 @@ struct AgentControlClient: SessionControlPlane {
     let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return nil }
     defer { close(descriptor) }
+    // Before `connect`, not after: see `AgentVCSConnection.noSignalOnWrite`.
+    AgentVCSConnection.noSignalOnWrite(descriptor)
 
     var address = sockaddr_un()
     address.sun_family = sa_family_t(AF_UNIX)

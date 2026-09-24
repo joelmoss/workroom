@@ -125,6 +125,9 @@ struct PersistentSessionControlClient {
     let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return .silent }
     defer { close(descriptor) }
+    // A daemon that hangs up mid-write must fail the write, not kill the app. Set before `connect`:
+    // see `AgentVCSConnection.noSignalOnWrite`.
+    AgentVCSConnection.noSignalOnWrite(descriptor)
 
     guard var address = Self.address(for: socketPath) else { return .noListener }
     let connected = withUnsafePointer(to: &address) { pointer in

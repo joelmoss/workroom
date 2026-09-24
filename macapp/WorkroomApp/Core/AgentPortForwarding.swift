@@ -278,7 +278,17 @@ final class PortForward: @unchecked Sendable {
     // blocking `read` is the whole design.
     _ = fcntl(client, F_SETFL, fcntl(client, F_GETFL) & ~O_NONBLOCK)
     var enabled: Int32 = 1
-    setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size))
+    // Checked, because it can only be set here, after `accept`: a client that has already reset
+    // leaves the socket shut down, `setsockopt` fails with EINVAL, and the pump's first write would
+    // then raise SIGPIPE and kill the app. Such a client is gone, so there is nothing to forward.
+    // The slot is released as it goes out of scope.
+    guard
+      setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size))
+        == 0
+    else {
+      Darwin.close(client)
+      return
+    }
     // What a forward carries is small writes in both directions (chunked HTTP, HMR frames, a wire
     // protocol); Nagle plus delayed ACK on a loopback hop is latency for nothing.
     setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &enabled, socklen_t(MemoryLayout<Int32>.size))
