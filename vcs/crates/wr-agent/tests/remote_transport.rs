@@ -16,6 +16,7 @@
 //! that are ignored unless `vcs/scripts/ssh-fixture/run.sh` has started the container they need.
 
 use std::io::{Read, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -113,14 +114,15 @@ impl Client {
             return false;
         };
         self.decoder.push(&buffer[..n]);
-        while let Ok(Some(envelope)) = self.decoder.next_envelope() {
+        // A decode error panics here, naming itself, rather than surfacing later as a timeout.
+        while let Some(envelope) = self.decoder.next_envelope().expect("a malformed envelope") {
             if envelope.service != Service::Terminal {
                 self.other.push(envelope);
                 continue;
             }
             let mut frames = FrameDecoder::new();
             frames.push(&envelope.payload);
-            while let Ok(Some(frame)) = frames.next_frame() {
+            while let Some(frame) = frames.next_frame().expect("a malformed frame") {
                 if frame.kind == FrameKind::Output {
                     self.seen.extend_from_slice(&frame.payload);
                 }
@@ -862,6 +864,41 @@ fn a_relay_with_no_agent_fails_fast_and_says_so() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("no agent listening on"), "{stderr}");
     }
+}
+
+/// A tty, or an exec channel that is one socket, hands the relay ONE open file as both stdin and
+/// stdout. Making stdout non-blocking for its bounded writes makes stdin non-blocking too, and a
+/// relay that took "nothing to read yet" for the end of its input would hang up on the agent.
+#[test]
+fn a_relay_whose_stdin_and_stdout_are_one_socket_keeps_reading() {
+    let scratch = Scratch::new("one-socket");
+    let socket = scratch.0.join("agent.sock");
+    let _agent = start_agent(&socket);
+
+    let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+    let mut relay = relay_command(&socket)
+        .stdin(OwnedFd::from(theirs.try_clone().expect("clone")))
+        .stdout(OwnedFd::from(theirs))
+        .spawn()
+        .expect("spawn relay");
+    // Long enough for the relay's first read of stdin to find nothing there.
+    std::thread::sleep(Duration::from_millis(300));
+
+    let reader = FdStream::new(ours.as_raw_fd());
+    set_nonblocking(&reader).expect("non-blocking client reader");
+    let mut client = Client {
+        reader,
+        writer: FdStream::new(ours.as_raw_fd()),
+        decoder: EnvelopeDecoder::new(),
+        seen: Vec::new(),
+        other: Vec::new(),
+    };
+    client.handshake();
+    let reply = client.request(Service::Status, 1, &json!({"method": "status"}));
+
+    let _ = relay.kill();
+    let _ = relay.wait();
+    assert!(reply["result"]["verdict"].is_string(), "{reply}");
 }
 
 // ---------------------------------------------------------------------------

@@ -980,8 +980,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   `serve --idle-timeout never` is the supervised owner. `vcs/scripts/ssh-fixture/run.sh` proves the
   acceptance above over real ssh into a container, whose entrypoint loop is the supervisor, and
   CI runs it in the `agent-linux` job. App restart and laptop sleep need the app-side transport
-  (#229).
-  **Two requirements on #229's real supervisor**, which only the fixture meets today:
+  (#229). A link that dies with nothing to send leaves its relay behind until sshd closes the
+  channel. That is harmless, since sessions take more than one client, but only ssh keepalives
+  bound it: #229's driver should set `ServerAliveInterval` to notice a dead link on its own side.
+  **Two requirements on #229's real supervisor.** The fixture meets only the first:
   - *The socket's directory is mode 0700 and owned by the ssh user.* The agent never idles out,
     so on a shared host that mode is the only thing keeping another account from a
     shell-spawning socket. It also stops anyone planting a socket at the path for the relay to

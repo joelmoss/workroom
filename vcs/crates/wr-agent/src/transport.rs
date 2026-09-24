@@ -82,10 +82,7 @@ impl Transport for StdioTransport {
     type Writer = FdStream;
 
     fn split(self) -> io::Result<(FdStream, FdStream)> {
-        Ok((
-            FdStream::new(libc::STDIN_FILENO),
-            FdStream::writer(libc::STDOUT_FILENO),
-        ))
+        Ok((FdStream::stdin(), FdStream::writer(libc::STDOUT_FILENO)))
     }
 }
 
@@ -106,6 +103,11 @@ pub struct FdStream {
     /// Set on writers so a stalled peer cannot block the agent indefinitely. Readers stay
     /// blocking: waiting for a client that has nothing to say is exactly what they should do.
     bounded_writes: bool,
+    /// Set on stdin, which can be the same open file as stdout: a tty, or an exec channel that is
+    /// one socket. `writer` makes stdout non-blocking, and with it such a stdin, whose reads then
+    /// return `WouldBlock` when there is nothing yet. This reader waits for input instead, as a
+    /// blocking one would; taking `WouldBlock` for the end of input hangs up on a live client.
+    waits: bool,
 }
 
 impl FdStream {
@@ -113,6 +115,16 @@ impl FdStream {
         FdStream {
             fd,
             bounded_writes: false,
+            waits: false,
+        }
+    }
+
+    /// stdin, read so that it still waits for input once `writer` has set up stdout.
+    pub fn stdin() -> FdStream {
+        FdStream {
+            fd: libc::STDIN_FILENO,
+            bounded_writes: false,
+            waits: true,
         }
     }
 
@@ -121,6 +133,7 @@ impl FdStream {
         let stream = FdStream {
             fd,
             bounded_writes: true,
+            waits: false,
         };
         // Best effort: if this fails the write simply blocks as before, which is no worse than
         // the behaviour this replaces.
@@ -131,17 +144,28 @@ impl FdStream {
 
 impl Read for FdStream {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let n = unsafe {
-            libc::read(
-                self.fd,
-                buffer.as_mut_ptr() as *mut libc::c_void,
-                buffer.len(),
-            )
-        };
-        if n < 0 {
-            return Err(io::Error::last_os_error());
+        loop {
+            let n = unsafe {
+                libc::read(
+                    self.fd,
+                    buffer.as_mut_ptr() as *mut libc::c_void,
+                    buffer.len(),
+                )
+            };
+            if n >= 0 {
+                return Ok(n as usize);
+            }
+            let error = io::Error::last_os_error();
+            if !self.waits || error.kind() != io::ErrorKind::WouldBlock {
+                return Err(error);
+            }
+            let mut ready = libc::pollfd {
+                fd: self.fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            unsafe { libc::poll(&mut ready, 1, -1) };
         }
-        Ok(n as usize)
     }
 }
 

@@ -249,14 +249,17 @@ fn run_relay(args: &[String]) -> ExitCode {
         }
     };
     std::thread::spawn(move || {
-        let _ = std::io::copy(&mut std::io::stdin().lock(), &mut to_agent);
+        let _ = std::io::copy(&mut wr_agent::transport::FdStream::stdin(), &mut to_agent);
         let _ = to_agent.shutdown(std::net::Shutdown::Write);
     });
 
     // agent -> stdout, unbuffered: `Stdout` is line-buffered, and would hold a frame with no newline
     // in it until the next one pushed it out. Bounded like `serve --stdio`'s writer to the same
-    // stdout, so a link that stops draining with no FIN (a dead network) ends this process after
-    // `WRITE_TIMEOUT` rather than whenever TCP gives up.
+    // stdout, so a dead link with output queued for it ends this process `WRITE_TIMEOUT` after its
+    // buffers fill. A dead link with nothing to send is not noticed here at all: no process on this
+    // end can tell it from a quiet one. The relay then lives until sshd closes the channel (its
+    // keepalives, or TCP's), which costs an idle process and an agent connection, never a
+    // session: sessions take more than one client, so the next relay attaches as usual.
     //
     // A poll loop rather than `io::copy`, because the copy can only notice a dead link by WRITING to
     // it. An agent that has gone quiet (and stopped reading, so the thread above is stuck mid-write
