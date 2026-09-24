@@ -117,7 +117,7 @@ impl FdStream {
     }
 
     /// A writer that gives up rather than blocking forever on a peer that stopped reading.
-    fn writer(fd: RawFd) -> FdStream {
+    pub fn writer(fd: RawFd) -> FdStream {
         let stream = FdStream {
             fd,
             bounded_writes: true,
