@@ -659,6 +659,10 @@ mod tests {
         }
         let (pgid, _name) = found.expect("a foreground process group with a readable name");
         assert!(pgid > 0);
+        // Not left to the hangup when `pty` drops: kill the child's whole group (it is a session
+        // leader, so `sh` and a `sleep` it forked share it) and reap it.
+        unsafe { libc::kill(-pty.child_pid(), libc::SIGKILL) };
+        assert!(pty.wait().is_some(), "the child was not reaped");
     }
 
     #[test]
