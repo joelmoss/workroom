@@ -385,7 +385,8 @@ final class PersistentSessionService {
           restored: restored)
       } catch {
         logger.error(
-          "no attach command for remote session \(sessionID.uuidString, privacy: .public): \(error)")
+          "no attach command for remote session \(sessionID.uuidString, privacy: .public): \(error)"
+        )
         // Not nil: nil opens a plain shell, which for this pane would run on the Mac while it
         // reads as the remote workroom's. A pane that says why it could not reach the host is
         // honest; one on the wrong machine is not.

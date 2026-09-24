@@ -1241,7 +1241,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     // So when the symptoms are lock-shaped, ask the DISK instead of the message. Deliberately last: any
     // failure git explains properly keeps its own classification, and this only speaks for the ones it
     // doesn't.
-    if lockSymptom(err), let lock = existingLockFile(gitDir: gitDir, disk: disk) { return .locked(lock) }
+    if lockSymptom(err), let lock = existingLockFile(gitDir: gitDir, disk: disk) {
+      return .locked(lock)
+    }
     let trimmed = err.trimmingCharacters(in: .whitespacesAndNewlines)
     // Killed rather than finished, with nothing to say for itself: `exitCode` is the SIGNAL number,
     // so the fallback below would render "git exited 15" — literally the dialog `a64e4269` ("stop
@@ -1389,12 +1391,12 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   }
 
   static let sequencerMarkers: [(String, String)] = [
-      ("CHERRY_PICK_HEAD", "cherry-pick"),
-      ("REVERT_HEAD", "revert"),
-      ("rebase-merge", "rebase"),
-      ("rebase-apply", "rebase"),
-      ("BISECT_LOG", "bisect"),
-      ("MERGE_HEAD", "merge"),
+    ("CHERRY_PICK_HEAD", "cherry-pick"),
+    ("REVERT_HEAD", "revert"),
+    ("rebase-merge", "rebase"),
+    ("rebase-apply", "rebase"),
+    ("BISECT_LOG", "bisect"),
+    ("MERGE_HEAD", "merge"),
   ]
 
   /// The lock file a failure is complaining about, or nil if we can't point at one.
@@ -1653,8 +1655,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   {
     // Reads take no lock, so they stay ungated.
     let list = await run(Self.jjBookmarkListArgs(), in: path, timeout: refTimeout)
-    if let failure = await classify(list, action: .fetch, tool: "jj", at: path, withGitDir: false)
-    {
+    if let failure = await classify(list, action: .fetch, tool: "jj", at: path, withGitDir: false) {
       if case .timedOut = failure { return .keepPrior }
       return .failed(failure)
     }

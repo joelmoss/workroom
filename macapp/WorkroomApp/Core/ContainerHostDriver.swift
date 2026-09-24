@@ -44,7 +44,8 @@ struct ContainerHostDriver: HostTerminalDriver {
     guard case .remote(let id) = host, let target = hosts[id] else {
       throw HostDriverError.unknownHost(host)
     }
-    let config = try Self.writeConfiguration(for: target, in: directory.appendingPathComponent(id.uuidString))
+    let config = try Self.writeConfiguration(
+      for: target, in: directory.appendingPathComponent(id.uuidString))
     return try HostStream.spawn(
       URL(fileURLWithPath: "/usr/bin/ssh"),
       ["-F", config.path, Self.alias, Self.relayCommand(socket: target.agentSocket)],
@@ -94,7 +95,8 @@ struct ContainerHostDriver: HostTerminalDriver {
       "WORKROOM_SESSION_SOCKET=\(socket)",
       "WORKROOM_SESSION_CWD=\(workingDirectory)",
     ]
-    return (["env"] + variables + ["wr-agent", "attach", "--no-spawn"]
+    return
+      (["env"] + variables + ["wr-agent", "attach", "--no-spawn"]
       + (restored ? ["--no-create"] : []))
       .map(shellQuoted).joined(separator: " ")
   }
