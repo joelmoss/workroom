@@ -43,12 +43,14 @@ if [ -z "$target" ]; then
   esac
 fi
 
-# Cache outside the repo: this is a third-party build artifact keyed by (sha, target), shared by
-# every checkout and worktree on the machine, and it must not land in `git status`.
+# Cache outside the repo: this is a third-party build artifact keyed by (sha, zig, target), shared
+# by every checkout and worktree on the machine, and it must not land in `git status`.
 CACHE_ROOT="${WR_GHOSTTY_VT_CACHE:-${HOME}/.cache/workroom/ghostty-vt}"
 # The cache is keyed by target triple as well as sha. Sharing one Zig cache across two -Dtarget
 # values yields a non-reproducible second binary — a trap exe-scroll's own build script documents.
-PREFIX="${CACHE_ROOT}/${GHOSTTY_SHA}/${target}"
+# And by the Zig version, since both pins above decide what gets built: keyed by sha alone, a
+# Zig-only bump found the old archive here and kept linking it.
+PREFIX="${CACHE_ROOT}/${GHOSTTY_SHA}-zig${ZIG_VERSION}/${target}"
 
 if $print_prefix; then
   echo "$PREFIX"
