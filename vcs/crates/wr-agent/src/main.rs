@@ -472,6 +472,12 @@ fn run_attach(args: &[String]) -> ExitCode {
     // shell: `fall_back_to_shell` reads the shell, cwd and resources the app exported, and those
     // arrive in the same environment.
     let mut request = serve::AttachRequest::from_env();
+    // `--no-create`: attach only if the session exists (see `AttachRequest::existing_only`).
+    request.existing_only = args.iter().any(|arg| arg == "--no-create");
+    // `--no-spawn`: never start an agent. On a remote host that is the supervisor's job, and an
+    // agent started here would be the idle-exit kind a remote host must not have, racing the
+    // supervised one for the socket (#228).
+    let no_spawn = args.iter().any(|arg| arg == "--no-spawn");
 
     let give_up = |reason: &str| -> ExitCode {
         if invoked_by_the_app {
@@ -509,6 +515,12 @@ fn run_attach(args: &[String]) -> ExitCode {
     // `wr-agent protocol` probe can still reach.
     let mut stream = match serve::connect(&socket) {
         Some(stream) => stream,
+        None if no_spawn => {
+            return fall_back_to_shell(
+                &request,
+                "no session agent is listening, and on a remote host only its supervisor starts one",
+            );
+        }
         None => {
             let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wr-agent"));
             if serve::spawn_agent(&binary, &socket).is_err() {
@@ -549,6 +561,31 @@ fn run_attach(args: &[String]) -> ExitCode {
         );
     }
 
+    let mut decoder = EnvelopeDecoder::new();
+    let mut buffer = [0u8; 8192];
+
+    // A restored pane's attach (`--no-create`) is answered before raw mode and the relay threads:
+    // a session that ended becomes the notice-and-shell the app shows locally, and that has to
+    // start from a cooked terminal with nothing else running. Whatever follows `Attached` stays in
+    // `decoder` for the loop below.
+    if request.existing_only {
+        match await_attached(&mut stream, &mut decoder, &mut buffer) {
+            Some(true) => {}
+            Some(false) => {
+                return fall_back_to_shell(
+                    &request,
+                    "the terminal that was running here has ended, so this is a new shell",
+                );
+            }
+            None => {
+                return fall_back_to_shell(
+                    &request,
+                    "the session agent closed before accepting the attach",
+                );
+            }
+        }
+    }
+
     // Before anything reads stdin: a relay that leaves its own tty cooked is not a relay. Held to
     // the end of this function so every `return` below restores the terminal.
     let _raw = RawMode::enter();
@@ -568,14 +605,9 @@ fn run_attach(args: &[String]) -> ExitCode {
         std::thread::spawn(move || relay_resizes(resize_stream, columns, rows));
     }
 
-    let mut decoder = EnvelopeDecoder::new();
-    let mut buffer = [0u8; 8192];
     let mut stdout = std::io::stdout();
     loop {
-        match stream.read(&mut buffer) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => decoder.push(&buffer[..n]),
-        }
+        // What is already decoded first: `await_attached` may have left the repaint in `decoder`.
         loop {
             match decoder.next_envelope() {
                 Ok(Some(envelope)) => {
@@ -600,7 +632,16 @@ fn run_attach(args: &[String]) -> ExitCode {
                                     .map(|b| i32::from_be_bytes(b.try_into().unwrap()))
                                     .unwrap_or(0);
                                 // `ExitCode` is a byte; a shell status is already 0-255.
-                                return ExitCode::from(code.clamp(0, 255) as u8);
+                                let code = code.clamp(0, 255) as u8;
+                                // On a remote host (`--no-spawn`) this status is ssh's, and 255 is
+                                // what ssh reports for its OWN failure, which the app answers by
+                                // reconnecting. A session that ended with 255 must not read as a
+                                // dropped link, so it becomes 254.
+                                return ExitCode::from(if no_spawn && code == 255 {
+                                    254
+                                } else {
+                                    code
+                                });
                             }
                             // **Deliberately NOT a fallback**, and an earlier version of this made
                             // it one. That was wrong in the worst available direction.
@@ -620,6 +661,20 @@ fn run_attach(args: &[String]) -> ExitCode {
                             // the app side: the one that looks like success. A visible error and a
                             // non-zero exit is the honest answer, and it leaves the session where
                             // the user can still reach it from the detached-sessions list.
+                            // The one exception: a `--no-create` attach whose session exited
+                            // between the agent's check and its attach. That is "ended", not a
+                            // failure on a live session, so it gets the same shell as a check that
+                            // came back negative.
+                            FrameKind::Failure
+                                if request.existing_only
+                                    && frame.payload.starts_with(b"no session ") =>
+                            {
+                                drop(_raw);
+                                return fall_back_to_shell(
+                                    &request,
+                                    "the terminal that was running here has ended, so this is a new shell",
+                                );
+                            }
                             FrameKind::Failure => {
                                 eprintln!("wr-agent: {}", String::from_utf8_lossy(&frame.payload));
                                 return ExitCode::FAILURE;
@@ -632,8 +687,39 @@ fn run_attach(args: &[String]) -> ExitCode {
                 Err(_) => return ExitCode::FAILURE,
             }
         }
+        match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => decoder.push(&buffer[..n]),
+        }
     }
     ExitCode::SUCCESS
+}
+
+/// Reads until the agent answers an attach: `Some(true)` for `Attached`, `Some(false)` for a
+/// `Failure` (for a `--no-create` attach, the only one before `Attached` is "session ended"), and
+/// `None` when the stream ends first. Envelopes after `Attached` stay in `decoder`.
+fn await_attached(
+    stream: &mut std::os::unix::net::UnixStream,
+    decoder: &mut EnvelopeDecoder,
+    buffer: &mut [u8],
+) -> Option<bool> {
+    loop {
+        while let Ok(Some(envelope)) = decoder.next_envelope() {
+            let mut frames = FrameDecoder::new();
+            frames.push(&envelope.payload);
+            while let Ok(Some(frame)) = frames.next_frame() {
+                match frame.kind {
+                    FrameKind::Attached => return Some(true),
+                    FrameKind::Failure => return Some(false),
+                    _ => {}
+                }
+            }
+        }
+        match stream.read(buffer) {
+            Ok(0) | Err(_) => return None,
+            Ok(n) => decoder.push(&buffer[..n]),
+        }
+    }
 }
 
 /// The size of the terminal this process was forked into, or zero when there is none (a pipe, a

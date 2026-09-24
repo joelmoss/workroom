@@ -1025,6 +1025,38 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   before-read and the commit can make a failed commit read as one that landed. Locally the after-read
   already sits outside the gate; the per-command barrier widens the gap. The fix is to compare
   `@-`, which a snapshot never rewrites, for jj's `.commit` mode.
+  **Terminal panes (#229).** A pane is a process libghostty spawns on its own pty, which a socketpair
+  made in the app cannot become, so a pane does not use `openStream`. A driver that can host panes
+  implements `HostTerminalDriver.attachCommand`. For ssh that runs
+  `ssh -t <host> 'env TERM=xterm-256color WORKROOM_SESSION_{ID,SOCKET,CWD}=… wr-agent attach
+  --no-spawn [--no-create]'`, the far side's attach client in the pty ssh allocates there.
+  - *`--no-spawn`:* with no agent listening, a shell rather than a spawned agent. Only the
+    supervisor starts one there.
+  - *`--no-create` (a restored pane):* the agent refuses a session it does not hold (`CREATE=0` in
+    the attach request, which older agents ignore). The pane becomes a shell that says the session
+    ended. Locally the app asks first (`confirmBeforeAttach`); remotely one request answers and
+    attaches, so the answer cannot go stale in between.
+  - *A dropped link reconnects.* ssh's own failure (exit 255, as after sleep or a network change)
+    reattaches the pane as a restored one, backing off to 30s while the host stays unreachable,
+    and stopping after five quick failures in a row so a permanent one (a mismatched host key)
+    leaves its message on screen. A session that itself exited 255 is reported as 254 by the
+    remote attach, so it never reads as a dropped link. The pane's ssh has `EscapeChar none`: what
+    the user types is theirs, and `~.` would otherwise disconnect it.
+  - *Closing a remote pane does not end its session yet.* Nothing on the service connection can
+    ask the host's agent to, so the session is left running and reported as not killed. That
+    belongs with the host's lifecycle (Phase 4).
+  - *`CREATE=0` is only as good as the agent that reads it.* An agent older than the flag ignores
+    it and creates the session. The version hand-off (#230) and the bootstrap (#231) keep the
+    host's agent current; until they land, a host running an older agent can still hand a
+    restored pane a fresh shell.
+  - *Degraded until the agent bootstrap (#231):* `TERM` is `xterm-256color`, since a host rarely
+    has `xterm-ghostty` terminfo, and there is no shell integration there (its resources are in the
+    Mac's app bundle), so the title and footer do not follow the shell.
+  - *Not persisted:* a session is marked remote in memory (`registerRemoteSession`). Phase 4's
+    remote workrooms re-register their panes on relaunch.
+  - *An SDK-exec driver has no command to hand libghostty.* It needs a local bridge process, which
+    is a Phase 4 question.
+
 - **Local needs no supervisor at all. DECIDED — and an earlier claim in this document was wrong.**
   A previous revision asserted that `SessionDaemon.swift:97-107`'s self-exit
   (`sessions.isEmpty && connections.isEmpty`) had to go, because the agent would also own VCS reads

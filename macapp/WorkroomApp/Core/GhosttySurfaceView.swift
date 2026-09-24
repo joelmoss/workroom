@@ -458,7 +458,7 @@ final class GhosttySurfaceView: NSView {
     // the owning backend has no binary, so the global check bought nothing on this path.
     guard
       let attach = PersistentSessionService.shared.attachCommand(
-        forSession: persistentSessionID),
+        forSession: persistentSessionID, restored: persistentSessionIsRestored),
       let attachPointer = strdup(attach)
     else {
       // A pane that expected a persisted session fell back to a plain login shell. Whatever the
@@ -519,8 +519,37 @@ final class GhosttySurfaceView: NSView {
     return "/bin/sh -c \(shellQuoted(script))"
   }
 
+  /// A pane on a remote host whose ssh lost the link reattaches, rather than sitting on a dead
+  /// process while its session runs on: 255 is ssh's own failure, as after laptop sleep, a network
+  /// change or the host rebooting. It reattaches as a restored pane, so a session that ended
+  /// meanwhile becomes a shell that says so. Backs off to 30s while the host stays unreachable.
+  private func reconnectIfTheLinkDropped(exitCode: UInt32) {
+    guard exitCode == 255, let session = persistentSessionID, !isTornDown,
+      PersistentSessionService.shared.isRemote(session)
+    else { return }
+    if Date().timeIntervalSince(lastAttachAt) > 30 {
+      remoteReconnectDelay = 1
+      failedReconnects = 0
+    } else {
+      failedReconnects += 1
+      guard failedReconnects < Self.maxFailedReconnects else { return }
+    }
+    let delay = remoteReconnectDelay
+    remoteReconnectDelay = min(delay * 2, 30)
+    let reconnect = DispatchWorkItem { [weak self] in
+      guard let self, !self.isTornDown, self.persistentSessionID == session else { return }
+      self.persistentSessionIsRestored = true
+      self.reattachPersistentSession()
+    }
+    pendingReconnect = reconnect
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: reconnect)
+  }
+
   func reattachPersistentSession() {
     guard persistentSessionID != nil, !isTornDown else { return }
+    pendingReconnect?.cancel()
+    pendingReconnect = nil
+    lastAttachAt = Date()
     destroySurface()
     if bounds.width <= 0 || bounds.height <= 0 {
       setFrameSize(CGSize(width: 800, height: 480))
@@ -883,7 +912,22 @@ final class GhosttySurfaceView: NSView {
 
   /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_SHOW_CHILD_EXITED` — the surface's child
   /// process exited. Forwards to the host; only run tabs act on it (issue #7).
+  /// How long the next reconnect of a remote pane waits, doubling while the host stays unreachable.
+  private var remoteReconnectDelay: TimeInterval = 1
+  /// When this pane last attached, to tell a link that dropped after a while (start the backoff
+  /// again) from one that never came up (keep backing off).
+  private var lastAttachAt = Date.distantPast
+  /// Reconnects in a row that failed within 30s. Past `maxFailedReconnects` the pane stops and
+  /// leaves ssh's last error on screen: a mismatched host key or a destroyed host does not heal,
+  /// and each retry would wipe the message that says so.
+  private var failedReconnects = 0
+  private static let maxFailedReconnects = 5
+  /// The reconnect waiting out its delay, cancelled by any other reattach so the pane does not
+  /// attach twice.
+  private var pendingReconnect: DispatchWorkItem?
+
   func handleChildExited(exitCode: UInt32) {
+    reconnectIfTheLinkDropped(exitCode: exitCode)
     onChildExited?(exitCode)
   }
 

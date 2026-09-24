@@ -7,7 +7,7 @@ import Foundation
 ///
 /// Provisioning is Phase 4, so `create`, `deriveFromBase` and `destroy` say so rather than pretend.
 /// Which hosts exist is whatever the caller hands in; nothing here persists.
-struct ContainerHostDriver: HostDriver {
+struct ContainerHostDriver: HostTerminalDriver {
   struct Host: Sendable {
     let address: String
     let port: Int
@@ -57,6 +57,48 @@ struct ContainerHostDriver: HostDriver {
       handshakeTimeout: 20)
   }
 
+  func attachCommand(
+    to host: HostID, session: UUID, workingDirectory: String, restored: Bool
+  ) throws -> String {
+    guard case .remote(let id) = host, let target = hosts[id] else {
+      throw HostDriverError.unknownHost(host)
+    }
+    let config = try Self.writeConfiguration(
+      for: target, in: directory.appendingPathComponent(id.uuidString))
+    // `-t`: the attach client on the far side wants a terminal, for raw mode and the pane's size,
+    // and ssh forwards the pane's resizes to it. It outranks the config's `RequestTTY no`, which
+    // is right for the service stream.
+    return ["/usr/bin/ssh", "-F", config.path, "-t", Self.alias]
+      .map(Self.shellQuoted).joined(separator: " ")
+      + " "
+      + Self.shellQuoted(
+        Self.remoteAttachCommand(
+          session: session, socket: target.agentSocket, workingDirectory: workingDirectory,
+          restored: restored))
+  }
+
+  /// What runs on the host, in the pty ssh allocates there.
+  ///
+  /// The session contract is the environment `wr-agent attach` reads, set with `env` because ssh
+  /// carries none of the pane's own. Deliberately absent: the shell (the host's own login shell
+  /// applies), Ghostty's resources directory (a path in this Mac's app bundle), and the wakefulness
+  /// settings (they configure an agent the attach starts, and `--no-spawn` never starts one).
+  /// `TERM` is `xterm-256color`, not the pane's `xterm-ghostty`, which a host rarely has terminfo
+  /// for; shipping that terminfo belongs to the agent bootstrap (#231).
+  static func remoteAttachCommand(
+    session: UUID, socket: String, workingDirectory: String, restored: Bool
+  ) -> String {
+    let variables = [
+      "TERM=xterm-256color",
+      "WORKROOM_SESSION_ID=\(session.uuidString)",
+      "WORKROOM_SESSION_SOCKET=\(socket)",
+      "WORKROOM_SESSION_CWD=\(workingDirectory)",
+    ]
+    return (["env"] + variables + ["wr-agent", "attach", "--no-spawn"]
+      + (restored ? ["--no-create"] : []))
+      .map(shellQuoted).joined(separator: " ")
+  }
+
   static let alias = "workroom-host"
 
   /// The command ssh runs on the host, quoted for the remote shell.
@@ -74,6 +116,9 @@ struct ContainerHostDriver: HostDriver {
   ///   8.8+ servers no longer offer.
   /// - **No Mac credential crosses.** No agent forwarding, no X11, no port forwards, and the Mac's
   ///   ssh agent is not consulted for keys.
+  /// - **What a pane types is only ever the user's.** A pane's ssh has a terminal, and ssh reads
+  ///   `~.` and friends from one as its own commands (`~.` disconnects, `~^Z` suspends ssh and
+  ///   freezes the pane), so `EscapeChar none`.
   /// - **A dead link is noticed.** `ServerAliveInterval` ends ssh after about 45s of silence from a
   ///   host that stopped answering, which ends the stream and so the connection. It is what bounds
   ///   a link that dies with nothing to send (#228).
@@ -117,6 +162,7 @@ struct ContainerHostDriver: HostDriver {
       ClearAllForwardings yes
       ControlMaster no
       ControlPath none
+      EscapeChar none
       RequestTTY no
       ServerAliveInterval 15
       ServerAliveCountMax 3

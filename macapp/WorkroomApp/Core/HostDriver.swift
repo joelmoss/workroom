@@ -38,6 +38,22 @@ protocol HostDriver: Sendable {
   func openStream(to host: HostID) async throws -> HostStream
 }
 
+/// A driver whose hosts a terminal pane can attach to.
+///
+/// Not a fifth `HostDriver` method, and not `openStream`: a pane is a process libghostty spawns and
+/// wires to its own pty, and a socketpair made in this process cannot become one. So the driver
+/// hands over a command instead. For ssh that is `ssh -t <host> wr-agent attach …`, the far side's
+/// attach client running in the pty ssh allocates there. An SDK-exec driver has no such command,
+/// and would need a local bridge process: a Phase 4 question (design doc, Phase 3).
+protocol HostTerminalDriver: HostDriver {
+  /// The command a pane runs to attach to `session` on `host`, starting in `workingDirectory` if
+  /// the session is new. `restored` for a pane reattaching after a relaunch or a lost link: the
+  /// session must already exist there, and if it has ended the pane gets a shell that says so
+  /// rather than a fresh one that looks like it (`wr-agent attach --no-create`).
+  func attachCommand(to host: HostID, session: UUID, workingDirectory: String, restored: Bool)
+    throws -> String
+}
+
 enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
   case unknownHost(HostID)
   /// Provisioning lands in Phase 4, which is what says how a base and an instance come to exist.

@@ -57,6 +57,17 @@ final class PersistentSessionService {
   /// Which helper owns each session, resolved once. See `backend(forSession:)` for why one answer
   /// per session rather than one per call — a pane asks twice and the two must agree.
   private var owners: [UUID: SessionBackend] = [:]
+  /// Sessions on a remote host, and the driver that reaches it (#229). Checked before any local
+  /// owner: a remote session's owner is known by construction, and no local socket can answer for
+  /// it. Registered by whoever makes a pane for a remote workroom; nothing persists it yet, so a
+  /// relaunch re-registers it (Phase 4).
+  private var remoteSessions: [UUID: RemoteSession] = [:]
+
+  private struct RemoteSession {
+    let host: HostID
+    let driver: any HostTerminalDriver
+    let workingDirectory: String
+  }
 
   /// How the agent's health is measured. Injected so a test can drive the unhealthy path without
   /// a real `wr-agent` to break.
@@ -326,6 +337,9 @@ final class PersistentSessionService {
     // and asking would refuse every new pane. Only an id carried over from a previous launch can
     // name a session that has since died.
     guard wasRestored else { return .attachable }
+    // Asked of the host's agent in the attach itself (`--no-create`): one request, so the answer
+    // cannot go stale between the question and the attach.
+    if isRemote(sessionID) { return .attachable }
     guard let owner = backend(forSession: sessionID) else { return .attachable }
     switch ownership(of: sessionID, in: owner) {
     case .owned, .unreachable:
@@ -351,7 +365,36 @@ final class PersistentSessionService {
   /// empty environment: `workroom-session attach` then started with no `WORKROOM_SESSION_ID` or
   /// `_SOCKET` and exited 2 immediately, and because the plain-shell fallback is decided BEFORE the
   /// command is spawned, the pane died rather than degrading. Refusing here degrades properly.
-  func attachCommand(forSession sessionID: UUID) -> String? {
+  /// Points `sessionID` at `host`: its pane attaches there, through `driver`, starting in
+  /// `workingDirectory` (a path on that host) if the session is new.
+  func registerRemoteSession(
+    _ sessionID: UUID, on host: HostID, via driver: any HostTerminalDriver,
+    workingDirectory: String
+  ) {
+    remoteSessions[sessionID] = RemoteSession(
+      host: host, driver: driver, workingDirectory: workingDirectory)
+  }
+
+  func isRemote(_ sessionID: UUID) -> Bool { remoteSessions[sessionID] != nil }
+
+  func attachCommand(forSession sessionID: UUID, restored: Bool = false) -> String? {
+    if let remote = remoteSessions[sessionID] {
+      do {
+        return try remote.driver.attachCommand(
+          to: remote.host, session: sessionID, workingDirectory: remote.workingDirectory,
+          restored: restored)
+      } catch {
+        logger.error(
+          "no attach command for remote session \(sessionID.uuidString, privacy: .public): \(error)")
+        // Not nil: nil opens a plain shell, which for this pane would run on the Mac while it
+        // reads as the remote workroom's. A pane that says why it could not reach the host is
+        // honest; one on the wrong machine is not.
+        let notice = "Could not reach this terminal's host: \(error.localizedDescription)"
+        return "/bin/sh -c "
+          + ContainerHostDriver.shellQuoted(
+            "printf '%s\\n' " + ContainerHostDriver.shellQuoted(notice))
+      }
+    }
     // Nil owner ⇒ nil command ⇒ the caller opens a plain shell rather than guessing a helper.
     guard let owner = backend(forSession: sessionID),
       let path = binaryPath(for: owner),
@@ -369,6 +412,10 @@ final class PersistentSessionService {
       .defaultShell,
     resourcesDirectory: String? = GhosttyResources.bundledURL?.path
   ) -> [(key: String, value: String)] {
+    // None for a pane on a remote host: its command carries the session's variables to the host
+    // itself (`HostTerminalDriver.attachCommand`), and a `WORKROOM_SESSION_*` left in this pane's
+    // environment would point a local `wr-agent` typed there at a session it cannot reach.
+    if isRemote(sessionID) { return [] }
     // Socket and binary must both come from the helper that owns THIS session, or the relay is
     // pointed at one implementation while being told to use the other's socket.
     // `WORKROOM_SESSION_BINARY` used to be set here. Its only reader was the attach client's
@@ -449,6 +496,9 @@ final class PersistentSessionService {
   }
 
   func lookup(sessionID: UUID) async -> PersistentSessionLookup {
+    // A remote session is not on any local helper, and asking one would probe (and wait on) a
+    // socket that cannot know it. Its host answers for it; this build has no channel for that yet.
+    if isRemote(sessionID) { return .unreachable }
     // Routed by OWNER, with no gate on the preferred backend's socket. That gate was left over
     // from before per-session routing and inverted the drain: with the agent preferred but no
     // `agent.sock` yet, every session the daemon still owned reported `.unreachable` — and the
@@ -470,6 +520,15 @@ final class PersistentSessionService {
 
   @discardableResult
   func endSession(sessionID: UUID) async -> Bool {
+    // Never routed to a local helper, which would be asked to kill an id it does not hold. Ending
+    // a session on its host belongs to that host's lifecycle (Phase 4); until then it is reported
+    // as not killed, which is true, and nothing that gates on this deletes a local directory for
+    // it.
+    if remoteSessions.removeValue(forKey: sessionID) != nil {
+      logger.error(
+        "remote session \(sessionID.uuidString, privacy: .public) left running on its host")
+      return false
+    }
     // An UNKNOWN owner must report failure, not success. `reap` gates deleting the workroom's
     // directory on this (issue #7), so answering "killed" for a session we could not even route to
     // would delete a worktree out from under a live shell. A malformed id or a missing socket is

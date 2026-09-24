@@ -178,6 +178,98 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertEqual(lock?.path, "\(path)/.git/index.lock")
   }
 
+  /// A pane's process, running the command the driver hands libghostty, with its output collected.
+  /// Run through `/bin/sh -c`, as libghostty runs a pane's command. No local terminal, so ssh
+  /// allocates none on the host either, and the attach there relays over pipes, as the Rust
+  /// harnesses' do.
+  private final class Pane: @unchecked Sendable {
+    let process = Process()
+    private let input = Pipe()
+    private let lock = NSLock()
+    private var seen = ""
+
+    init(command: String) throws {
+      process.executableURL = URL(fileURLWithPath: "/bin/sh")
+      process.arguments = ["-c", command]
+      process.environment = [:]
+      process.standardInput = input
+      let output = Pipe()
+      process.standardOutput = output
+      process.standardError = output
+      output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        let data = handle.availableData
+        guard !data.isEmpty else {
+          handle.readabilityHandler = nil
+          return
+        }
+        self?.lock.withLock { self?.seen += String(decoding: data, as: UTF8.self) }
+      }
+      try process.run()
+    }
+
+    func type(_ text: String) { input.fileHandleForWriting.write(Data(text.utf8)) }
+
+    func read(until needle: String, within seconds: TimeInterval = 20) -> String {
+      let deadline = Date().addingTimeInterval(seconds)
+      while Date() < deadline, !lock.withLock({ seen.contains(needle) }) {
+        Thread.sleep(forTimeInterval: 0.05)
+      }
+      return lock.withLock { seen }
+    }
+
+    /// The link dropping hard: ssh killed, with no goodbye to the host.
+    func dropLink() {
+      kill(process.processIdentifier, SIGKILL)
+      process.waitUntilExit()
+    }
+  }
+
+  /// The app half of the Phase 3 acceptance (#229): a pane attached through the driver keeps its
+  /// session across a dropped link, and the pane that comes back (a reconnect after sleep, or a
+  /// relaunch) reaches the SAME shell: its pid, and a variable set before the drop.
+  func testARemotePaneSurvivesADroppedLinkAndReachesTheSameShell() throws {
+    let fixture = try fixture()
+    let id = UUID()
+    let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
+    let session = UUID()
+
+    let first = try Pane(
+      command: driver.attachCommand(
+        to: .remote(id), session: session, workingDirectory: "/home/workroom", restored: false))
+    Thread.sleep(forTimeInterval: 1)
+    // Quotes split each marker, so the terminal echoing the typed line cannot satisfy the wait.
+    first.type("MARK=kept; echo PID=$$; echo READ\"\"Y\n")
+    let before = first.read(until: "READY")
+    let pid = try XCTUnwrap(
+      before.range(of: #"PID=\d+"#, options: .regularExpression).map { String(before[$0]) },
+      before)
+    first.dropLink()
+
+    let second = try Pane(
+      command: driver.attachCommand(
+        to: .remote(id), session: session, workingDirectory: "/home/workroom", restored: true))
+    defer { second.dropLink() }
+    Thread.sleep(forTimeInterval: 1)
+    second.type("echo VALUE=$MARK PID=$$ DO\"\"NE\n")
+    let after = second.read(until: "DONE")
+    XCTAssertTrue(after.contains("VALUE=kept \(pid) DONE"), after)
+    XCTAssertFalse(after.contains("has ended"), after)
+  }
+
+  /// A restored pane whose session ended on the host gets a shell that says so, never a fresh
+  /// session passed off as the old one: the host's agent refuses to create it (`--no-create`).
+  func testARestoredPaneWhoseSessionEndedGetsAShellThatSaysSo() throws {
+    let fixture = try fixture()
+    let id = UUID()
+    let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
+    let pane = try Pane(
+      command: driver.attachCommand(
+        to: .remote(id), session: UUID(), workingDirectory: "/home/workroom", restored: true))
+    defer { pane.dropLink() }
+    let seen = pane.read(until: "has ended")
+    XCTAssertTrue(seen.contains("has ended"), seen)
+  }
+
   /// Nothing from the Mac's environment reaches a remote git (#229): the child runs with the
   /// host's `HOME` and `PATH`, no `SSH_AUTH_SOCK`, and no way for ssh to prompt. Read back from the
   /// child itself, through a git alias that prints its environment.

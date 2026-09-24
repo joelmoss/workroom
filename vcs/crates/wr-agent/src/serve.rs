@@ -385,6 +385,15 @@ fn dispatch(
                     request.rows,
                 )
             };
+            // Refused, not created, for a client that asked to attach only to what exists: see
+            // `AttachRequest::existing_only`. Before any `Attached`, so the client can tell it
+            // apart from a failure on a session it is already showing.
+            if request.existing_only && !sessions.contains(id) {
+                return reply(Frame::new(
+                    FrameKind::Failure,
+                    format!("session ended: {}", id.to_hyphenated()).into_bytes(),
+                ));
+            }
             // Create on first attach, reattach afterwards. One code path, so a client that
             // crashed and came back does not have to know which case it is in.
             let result = if sessions.contains(id) {
@@ -670,6 +679,12 @@ pub struct AttachRequest {
     pub rows: u16,
     /// Passed to the child verbatim. The client's environment, not the agent's.
     pub env: Vec<(OsString, OsString)>,
+    /// Attach only if the session exists; never create it (`CREATE=0`). A restored pane sends it,
+    /// because creating would hand back a fresh shell that looks like the one that was running
+    /// there. The app asks first on a local host (`confirmBeforeAttach`); a pane on a remote host
+    /// has no such channel, and one request cannot race the answer. Inverted so the default,
+    /// and an older client that never sends it, keeps create-on-attach.
+    pub existing_only: bool,
 }
 
 impl AttachRequest {
@@ -699,6 +714,9 @@ impl AttachRequest {
         }
         put("COLS", self.columns.to_string().as_bytes());
         put("ROWS", self.rows.to_string().as_bytes());
+        if self.existing_only {
+            put("CREATE", b"0");
+        }
         for (key, value) in &self.env {
             let mut entry = b"ENV:".to_vec();
             entry.extend_from_slice(key.as_bytes());
@@ -736,6 +754,7 @@ impl AttachRequest {
                 b"ROWS" => {
                     request.rows = value.to_string_lossy().parse().unwrap_or(0);
                 }
+                b"CREATE" => request.existing_only = value == "0",
                 _ => {
                     if let Some(name) = key.strip_prefix(b"ENV:") {
                         request.env.push((OsString::from_vec(name.to_vec()), value));
@@ -774,6 +793,7 @@ impl AttachRequest {
             columns: 0,
             rows: 0,
             env,
+            existing_only: false,
         }
     }
 }
@@ -959,6 +979,7 @@ mod tests {
                 (OsString::from("TERM"), OsString::from("xterm-ghostty")),
                 (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
             ],
+            existing_only: true,
         };
         let decoded = AttachRequest::decode(&request.encode()).expect("decode");
         assert_eq!(decoded, request);
