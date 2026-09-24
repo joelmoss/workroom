@@ -112,6 +112,11 @@ trap 'rm -f "$SLICE_DIR/${HELPER_NAME}-slice-"*' EXIT
 # its own assertions passing against a binary this script never produced.
 OUT_ROOT="${CARGO_TARGET_DIR:-$CARGO_DIR/target}"
 
+# One feature list for the Mac and Linux builds alike. Only the Mac agent can be run here, and the
+# build test asserts `terminal-state yes` on it; sharing the list is what extends that check to the
+# Linux ELFs, which this Mac cannot run.
+AGENT_FEATURES="terminal-state"
+
 SLICES=()
 for target in "${TARGETS[@]}"; do
   # `terminal-state` is not optional for the app, whatever its name suggests. Without it the
@@ -122,7 +127,7 @@ for target in "${TARGETS[@]}"; do
   #
   # The library is cached per (engine sha, target) outside the repo, so only the first build of a
   # given pin pays for it; see vcs/scripts/build-ghostty-vt.sh.
-  ( cd "$CARGO_DIR" && $CARGO build --release -p wr-agent --features terminal-state --target "$target" )
+  ( cd "$CARGO_DIR" && $CARGO build --release -p wr-agent --features "$AGENT_FEATURES" --target "$target" )
   cp -f "$OUT_ROOT/$target/release/$HELPER_NAME" "$SLICE_DIR/${HELPER_NAME}-slice-$target"
   SLICES+=("$SLICE_DIR/${HELPER_NAME}-slice-$target")
 done
@@ -215,6 +220,6 @@ for arch in $LINUX_ARCHES; do
   target="$arch-unknown-linux-musl"
   echo "Building $HELPER_NAME ($target) -> $RES_DIR/${HELPER_NAME}-linux-$arch"
   ( cd "$CARGO_DIR" && PATH="$LINUX_PATH" cargo zigbuild --release -p wr-agent \
-    --features terminal-state --target "$target" )
+    --features "$AGENT_FEATURES" --target "$target" )
   cp -f "$OUT_ROOT/$target/release/$HELPER_NAME" "$RES_DIR/${HELPER_NAME}-linux-$arch"
 done
