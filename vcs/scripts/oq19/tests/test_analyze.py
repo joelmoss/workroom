@@ -470,6 +470,23 @@ class ClosedLoop(unittest.TestCase):
             p.terminate()
             self.assertEqual(p.wait(timeout=5), 0)
             self.assertEqual(open(hooks).read().split(), ["assert", "release"])
+            # an assert hook that fails part-way (boxd's sets two timers) is undone, then retried next tick
+            os.remove(hooks)
+            partial = dict(env, OQ19_ASSERT="echo assert >> %s; false" % hooks)
+            p = subprocess.Popen(["sh", shim, "1", verdict, awake], env=partial)
+            time.sleep(1.5)
+            p.terminate()
+            p.wait(timeout=5)
+            self.assertEqual(open(hooks).read().split()[:4], ["assert", "release", "assert", "release"])
+            # the release at exit is the last chance, so a failed one is retried
+            os.remove(hooks)
+            once = os.path.join(d, "failed-once")
+            flaky = dict(env, OQ19_RELEASE="echo release >> %s; [ -f %s ] || { touch %s; false; }" % (hooks, once, once))
+            p = subprocess.Popen(["sh", shim, "1", verdict, awake], env=flaky)
+            time.sleep(0.5)
+            p.terminate()
+            self.assertEqual(p.wait(timeout=10), 0)
+            self.assertEqual(open(hooks).read().split(), ["assert", "release", "release"])
 
     def test_a_missed_counter_read_keeps_the_last_good_values_and_is_counted(self):
         """The hold-out's first run: one empty read put a 0 into the pty history and, one window later, the rate
@@ -717,6 +734,19 @@ class Boxd(unittest.TestCase):
             self.assertTrue(checks(("3a", "5"))["treatment_slept_after_idle"])
             machine(root, "oq19-treatment", "5")  # 5 no longer sleeps: 3a's status read must not vouch for it
             self.assertFalse(checks(("3a", "5"))["treatment_slept_after_idle"])
+
+            # A sleep during the IDLE BEFORE the work (4b's `quiet`) proves nothing about sleeping after it.
+            machine(root, "oq19-treatment", "5", slept_at=T0 + 10)
+            self.assertFalse(checks(("3a", "5"))["treatment_slept_after_idle"])
+            machine(root, "oq19-treatment", "5", slept_at=T0 + 170)
+            self.assertTrue(checks(("3a", "5"))["treatment_slept_after_idle"])
+            # The post-run status read is held to the in-run deadline: from the last IDLE label's START (the
+            # 60 s `post`), not from the run's end. window 30 + 2 x 120 s: start + 270 s = end + 210 s.
+            end = A.wall_of(a_ticks, T0 + 210)
+            for at, counts in ((end + 200, True), (end + 240, False)):
+                with open(os.path.join(root, "status.log"), "w") as f:
+                    f.write("%.0f oq19-treatment hibernated\n" % at)
+                self.assertEqual(checks(("3a", "5"))["treatment_slept_after_idle"], counts, at - end)
 
     def test_wake_tails_are_excused_but_not_real_work_after_a_wake(self):
         gaps = [(T0 + 100, T0 + 190)]
