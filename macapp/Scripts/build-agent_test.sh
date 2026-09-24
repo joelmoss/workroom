@@ -43,8 +43,12 @@ trap 'rm -rf "$WORK"' EXIT
 # the developer's build tree. The agent includes the VCS backends, so this is a full Cargo build.
 REPO="$(cd "$DIR/../.." && pwd)"
 export CARGO_TARGET_DIR="$WORK/cargo-target"
+# Set only by the case that tests it. Inherited from the developer's shell, it would make every
+# Debug case build the Linux agents and the stale-removal case fail.
+unset WR_AGENT_LINUX
 
-# run_agent <case-name> <ARCHS value> -> sets $OUT to the built helper path, $RC to the exit code
+# run_agent <case-name> <ARCHS value> [CONFIGURATION] -> sets $OUT to the built helper path, $RC to
+# the exit code. CONFIGURATION defaults to unset, which the script treats as Debug.
 run_agent() {
   case_name="$1"
   archs="$2"
@@ -54,7 +58,9 @@ run_agent() {
   SRCROOT="$REPO/macapp" \
   TARGET_BUILD_DIR="$dest" \
   EXECUTABLE_FOLDER_PATH="MacOS" \
+  UNLOCALIZED_RESOURCES_FOLDER_PATH="Resources" \
   DERIVED_FILE_DIR="$dest/intermediates" \
+  CONFIGURATION="${3:-}" \
   ARCHS="$archs" \
     sh "$HELPER" >"$dest/log" 2>&1
   RC=$?
@@ -134,6 +140,67 @@ expect_failure unknown_arch "arm64 ppc64" "unsupported arch"
 # Whitespace-only ARCHS survives `${ARCHS:-...}` (it is set and non-empty) and yields no
 # iterations; that must be a readable error, not a bash "unbound variable" death.
 expect_failure blank_archs "   " "no architectures"
+
+# A Debug build ships no Linux agents, including ones an earlier WR_AGENT_LINUX=1 build left behind
+# in the same bundle.
+mkdir -p "$WORK/out-debug_stale/Resources"
+: >"$WORK/out-debug_stale/Resources/wr-agent-linux-aarch64"
+run_agent debug_stale "$HOST_ARCH"
+if [ "$RC" -ne 0 ]; then
+  echo "FAIL: Debug build exited $RC, want 0. Log:"
+  sed 's/^/    /' "$WORK/out-debug_stale/log"
+  fails=$((fails + 1))
+elif ls "$WORK/out-debug_stale/Resources"/wr-agent-linux-* >/dev/null 2>&1; then
+  echo "FAIL: Debug build left a Linux agent in Resources"
+  fails=$((fails + 1))
+fi
+
+# A Release build ships a static Linux agent for EVERY Linux arch, whatever ARCHS says: the remote
+# box's arch has nothing to do with the Mac's. Needs cargo-zigbuild and both musl targets, so it
+# skips without them like the universal cases. The Linux CI job runs `protocol` on the ELFs, which
+# this Mac cannot.
+LINUX=1
+command -v cargo-zigbuild >/dev/null 2>&1 || LINUX=0
+for t in aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
+  command -v rustup >/dev/null 2>&1 \
+    && rustup target list --installed --toolchain "${WR_AGENT_RUST_TOOLCHAIN:-stable}" 2>/dev/null | grep -qx "$t" \
+    || LINUX=0
+done
+
+# expect_linux_agents <case-name>: both ELFs present, static, and the right arch.
+expect_linux_agents() {
+  if [ "$RC" -ne 0 ]; then
+    echo "FAIL: $1 exited $RC, want 0. Log:"
+    sed 's/^/    /' "$WORK/out-$1/log"
+    fails=$((fails + 1))
+    return
+  fi
+  for pair in "aarch64:ARM aarch64" "x86_64:x86-64"; do
+    arch="${pair%%:*}"
+    want="${pair#*:}"
+    desc="$(file -b "$WORK/out-$1/Resources/wr-agent-linux-$arch" 2>/dev/null)"
+    case "$desc" in
+      *"ELF 64-bit"*"$want"*"statically linked"*) ;;
+      *)
+        echo "FAIL: $1: wr-agent-linux-$arch is not a static $want ELF: '${desc:-missing}'"
+        fails=$((fails + 1))
+        ;;
+    esac
+  done
+}
+
+if [ "$LINUX" -eq 1 ]; then
+  run_agent release_linux "$HOST_ARCH" Release
+  expect_linux_agents release_linux
+  # The Debug opt-in. Reuses the Linux builds above, so it costs a copy, not a compile.
+  WR_AGENT_LINUX=1
+  export WR_AGENT_LINUX
+  run_agent debug_optin "$HOST_ARCH"
+  unset WR_AGENT_LINUX
+  expect_linux_agents debug_optin
+else
+  echo "build-agent_test: SKIP Linux agent cases (cargo-zigbuild or musl targets not installed)"
+fi
 
 if [ "$fails" -eq 0 ]; then
   echo "build-agent_test: OK"

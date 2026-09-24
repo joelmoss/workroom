@@ -215,6 +215,21 @@ rm -rf "$GHOSTTY_PROBE_STATE"
   || { echo "error: shipped ghostty cannot dispatch '+ssh-cache' — the libghostty action layer is broken." >&2; exit 1; }
 echo "    ghostty -> $GHOSTTY_TARGET (relative, dispatches +ssh-cache)"
 
+# The Linux agents for remote hosts (issue #227). Asserted on the artifact for the same reason as the
+# checks above: build-agent.sh skips them for Debug, and nothing downstream would notice a Release
+# that shipped without them, or with a dynamically linked one that fails on a box with no glibc.
+echo "==> Verifying Linux agents"
+for pair in "aarch64:ARM aarch64" "x86_64:x86-64"; do
+  arch="${pair%%:*}"
+  want="${pair#*:}"
+  elf="$APP/Contents/Resources/wr-agent-linux-$arch"
+  desc="$(file -b "$elf" 2>/dev/null || true)"
+  case "$desc" in
+    *"ELF 64-bit"*"$want"*"statically linked"*) echo "    wr-agent-linux-$arch: $desc" ;;
+    *) echo "error: $elf is not a static $want ELF: '${desc:-missing}'." >&2; exit 1 ;;
+  esac
+done
+
 echo "==> Verifying signatures"
 codesign --verify --strict --verbose=2 "$APP"
 echo "--- embedded helper ---"

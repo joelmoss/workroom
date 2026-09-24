@@ -35,7 +35,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Run the BASE branch's selector, never the PR's own. This job decides whether the four
+      # Run the BASE branch's selector, never the PR's own. This job decides whether the
       # native jobs run at all, and GitHub counts a conditionally-SKIPPED required check as
       # passing — so a PR that edited changes.py to emit `run=false` (its `__main__` line alone,
       # leaving should_run() and every test untouched) would merge green with no native coverage.
@@ -43,7 +43,7 @@ jobs:
       # where github.sha is already the trusted commit.
       # Absent on the base ref when that ref predates the selector — the PR introducing it (this
       # one) included. No trusted selector means NO gate: the two steps below are skipped, `run`
-      # stays empty, and the `!= 'false'` tests on the four native jobs all pass, so everything
+      # stays empty, and the `!= 'false'` tests on the native jobs all pass, so everything
       # runs. Never fall back to the PR's own copy; that is the bypass this whole step exists for.
       - name: Restore the trusted selector
         id: selector
@@ -265,6 +265,78 @@ jobs:
           WR_AGENT_HAS_TERMINAL_STATE: "1"
         run: cargo test --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state
 
+  # The Linux agents Workroom.app ships for remote hosts (issue #227), built the way the app bundle
+  # builds them (cargo-zigbuild, static musl, terminal-state) and then RUN. The Mac-side check in
+  # build-agent_test.sh can only see that each ELF is static and the right arch, not that it starts.
+  # aarch64 runs under qemu-user, which needs no sysroot for a static binary.
+  agent-linux:
+    needs: changes
+    if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    env:
+      TARGET: ${{ matrix.arch }}-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.96.1 --profile minimal --target "$TARGET"
+          rustup default 1.96.1
+
+      # Pinned by version AND checksum, as in `agent-terminal-state`. cargo-zigbuild links with it
+      # and libghostty-vt is built with it.
+      - name: Install Zig
+        env:
+          ZIG_VERSION: "0.16.0"
+          ZIG_SHA256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
+        run: |
+          url="https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          curl -fsSL "$url" -o zig.tar.xz
+          echo "${ZIG_SHA256}  zig.tar.xz" | sha256sum -c -
+          mkdir -p "$HOME/.zig" && tar -xJf zig.tar.xz -C "$HOME/.zig" --strip-components=1
+          echo "$HOME/.zig" >> "$GITHUB_PATH"
+
+      # Its own key per arch. Sharing `agent-terminal-state`'s key would restore that job's glibc
+      # prefix, count as a hit, never save the musl one, and rebuild it on every run.
+      - name: Cache libghostty-vt
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/workroom/ghostty-vt
+          key: ghostty-vt-${{ runner.os }}-${{ env.TARGET }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vcs
+          key: ${{ env.TARGET }}
+
+      - name: Install cargo-zigbuild and qemu
+        run: |
+          cargo install cargo-zigbuild --locked --version 0.23.4
+          if [ "${{ matrix.arch }}" = aarch64 ]; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+          fi
+
+      - name: Build
+        run: |
+          cargo zigbuild --manifest-path vcs/Cargo.toml --release -p wr-agent \
+            --features terminal-state --target "$TARGET"
+
+      - name: Check
+        run: |
+          bin="vcs/target/$TARGET/release/wr-agent"
+          file "$bin"
+          file -b "$bin" | grep -q 'statically linked'
+          run=""
+          if [ "${{ matrix.arch }}" = aarch64 ]; then run=qemu-aarch64-static; fi
+          out="$($run "$bin" protocol)"
+          echo "$out"
+          echo "$out" | grep -q '^protocol '
+          echo "$out" | grep -qx 'terminal-state yes'
+
   app:
     needs: changes
     if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
@@ -475,8 +547,15 @@ jobs:
       # `rustup target list --installed --toolchain stable` query checks. A bare `rustup target add`
       # installs into the DEFAULT toolchain, which would leave the query — and so the skip —
       # unchanged if the default is ever not `stable`.
-      - name: Install darwin cross targets (for the universal-arch script tests)
-        run: rustup target add --toolchain stable x86_64-apple-darwin aarch64-apple-darwin
+      #
+      # The musl targets and cargo-zigbuild are the same gap for the Linux agents (#227): without
+      # them the Linux case skips, and build-agent.sh's Linux branch would first run on a nightly.
+      # `agent-linux` does not cover it, because it calls `cargo zigbuild` directly.
+      - name: Install cross targets (for the universal-arch and Linux-agent script tests)
+        run: |
+          rustup target add --toolchain stable x86_64-apple-darwin aarch64-apple-darwin \
+            aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+          cargo install cargo-zigbuild --locked --version 0.23.4
 
       # Shell-script tests. `make app-test` builds Debug with a single native arch, so it can never
       # exercise build-helper.sh's / build-agent.sh's multi-arch path — the branch whose absence

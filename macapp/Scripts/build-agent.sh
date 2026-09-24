@@ -9,8 +9,12 @@
 # not collide with the app executable "Workroom" on a case-insensitive filesystem. It goes there
 # because that is where `PersistentSessionPaths.binaryURL(for:)` looks, beside workroom-session.
 #
+# Release and Nightly builds also put a static Linux agent per arch in Contents/Resources, for remote
+# hosts. See the end of this file.
+#
 # Env vars provided by Xcode: SRCROOT, TARGET_BUILD_DIR, EXECUTABLE_FOLDER_PATH,
-# EXPANDED_CODE_SIGN_IDENTITY, ARCHS, DERIVED_FILE_DIR.
+# UNLOCALIZED_RESOURCES_FOLDER_PATH, EXPANDED_CODE_SIGN_IDENTITY, ARCHS, DERIVED_FILE_DIR,
+# CONFIGURATION.
 set -euo pipefail
 
 HELPER_NAME="wr-agent"
@@ -143,3 +147,74 @@ else
   echo "Signing $HELPER_NAME with $IDENTITY (hardened runtime + timestamp)"
   codesign --force --options runtime --timestamp --sign "$IDENTITY" "$DEST"
 fi
+
+# Linux agents (issue #227). Workroom.app pushes the agent to a remote box on first connect
+# (docs/designs/remote-workrooms.md, Distribution Plan), so the bundle carries a static musl build
+# for each Linux arch, named by what `uname -m` prints there.
+#
+# Both ship ALWAYS. A remote box's arch has nothing to do with the Mac's, so these do not follow
+# `ARCHS`, and the ARCH_LIST rule above (for universal MAC binaries) does not apply to them.
+#
+# Resources, not MacOS, and not codesigned. codesign sees an ELF as data, and the app's own
+# signature seals it like any other resource.
+#
+# Release and Nightly only, unless WR_AGENT_LINUX=1. They are two more release builds of the agent,
+# and a Debug app has no remote host to push them to yet. A build that skips them also removes any
+# that an earlier opt-in build left, so a bundle never carries a stale agent.
+RES_DIR="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+if [ "${CONFIGURATION:-Debug}" = "Debug" ] && [ "${WR_AGENT_LINUX:-}" != "1" ]; then
+  rm -f "$RES_DIR/${HELPER_NAME}-linux-"*
+  exit 0
+fi
+
+if ! command -v cargo-zigbuild >/dev/null 2>&1; then
+  echo "error: the Linux agents need cargo-zigbuild. Run 'cargo install cargo-zigbuild --locked'." >&2
+  exit 1
+fi
+if ! command -v rustup >/dev/null 2>&1; then
+  echo "error: the Linux agents need rustup (Homebrew rust cannot cross-compile)." >&2
+  exit 1
+fi
+LINUX_ARCHES="aarch64 x86_64"
+for arch in $LINUX_ARCHES; do
+  if ! rustup target list --installed --toolchain "$AGENT_TOOLCHAIN" 2>/dev/null | grep -qx "$arch-unknown-linux-musl"; then
+    echo "error: rustup target '$arch-unknown-linux-musl' is not installed. Run 'rustup target add --toolchain $AGENT_TOOLCHAIN $arch-unknown-linux-musl'." >&2
+    exit 1
+  fi
+done
+
+# cargo-zigbuild re-invokes `cargo` from PATH, so a Homebrew cargo earlier on PATH (see the export at
+# the top) would build against a std with no musl target: "can't find crate for `core`". Put the
+# toolchain's own bin directory first. vcs/scripts/test-linux.sh documents the same trap.
+TOOLCHAIN_BIN="$(dirname "$(rustup which --toolchain "$AGENT_TOOLCHAIN" cargo)")"
+
+# cargo-zigbuild links with `zig`, at the version libghostty-vt is pinned to. mise's copy when mise
+# has one, otherwise whatever is on PATH, and checked either way. The directory goes on PATH rather
+# than using `mise exec`, which would also put the user's other mise tools (a rust, say) ahead of
+# TOOLCHAIN_BIN.
+ZIG_VERSION="$(awk -F'"' '/^ZIG_VERSION=/{print $2}' "$CARGO_DIR/scripts/build-ghostty-vt.sh")"
+ZIG_DIR=""
+if command -v mise >/dev/null 2>&1; then
+  mise install "zig@${ZIG_VERSION}" >/dev/null 2>&1 || true
+  ZIG_HOME="$(mise where "zig@${ZIG_VERSION}" 2>/dev/null || true)"
+  for candidate in "$ZIG_HOME/bin" "$ZIG_HOME"; do
+    if [ -n "$ZIG_HOME" ] && [ -x "$candidate/zig" ]; then
+      ZIG_DIR="$candidate"
+      break
+    fi
+  done
+fi
+LINUX_PATH="$TOOLCHAIN_BIN:${ZIG_DIR:+$ZIG_DIR:}$PATH"
+if [ "$(PATH="$LINUX_PATH" zig version 2>/dev/null)" != "$ZIG_VERSION" ]; then
+  echo "error: the Linux agents need zig $ZIG_VERSION. Install mise, or put zig $ZIG_VERSION on PATH." >&2
+  exit 1
+fi
+
+mkdir -p "$RES_DIR"
+for arch in $LINUX_ARCHES; do
+  target="$arch-unknown-linux-musl"
+  echo "Building $HELPER_NAME ($target) -> $RES_DIR/${HELPER_NAME}-linux-$arch"
+  ( cd "$CARGO_DIR" && PATH="$LINUX_PATH" cargo zigbuild --release -p wr-agent \
+    --features terminal-state --target "$target" )
+  cp -f "$OUT_ROOT/$target/release/$HELPER_NAME" "$RES_DIR/${HELPER_NAME}-linux-$arch"
+done
