@@ -524,8 +524,10 @@ final class PersistentSessionService {
     // Never routed to a local helper, which would be asked to kill an id it does not hold. Ending
     // a session on its host belongs to that host's lifecycle (Phase 4); until then it is reported
     // as not killed, which is true, and nothing that gates on this deletes a local directory for
-    // it.
-    if remoteSessions.removeValue(forKey: sessionID) != nil {
+    // it. The registration STAYS: the session is still running there, and without it a retry
+    // would ask the local agent (which "kills" an id it never held) and a reattach would open a
+    // new session on this Mac.
+    if isRemote(sessionID) {
       logger.error(
         "remote session \(sessionID.uuidString, privacy: .public) left running on its host")
       return false

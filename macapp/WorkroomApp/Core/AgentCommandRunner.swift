@@ -72,7 +72,12 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
       // once it holds the flock — see the comment there. Shielding HERE instead would also cover
       // `remoteState`'s ungated reads, and a superseded `RemoteStateModel` refresh would then squat
       // one of this connection's 32 shared slots until the agent answered.
-      reply = try await connection.request(request, timeout: timeout + 15)
+      //
+      // Plus the barrier's own wait where the agent takes one (a remote jj command): it can wait
+      // up to 30s for the barrier before the command starts (`SnapshotLock::acquire`), and a
+      // deadline that did not cover that would give up on a command still running.
+      let barrierWait: TimeInterval = request.barrierRoot == nil ? 0 : 30
+      reply = try await connection.request(request, timeout: timeout + 15 + barrierWait)
     } catch let error as VCSError {
       // Raised before anything left this process — today only the 1 MiB single-envelope request
       // ceiling. Nothing ran, and the workroom is fine.

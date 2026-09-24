@@ -204,7 +204,12 @@ final class HostStreamTests: XCTestCase {
     // and reports it not killed, which is true.
     let killed = await service.endSession(sessionID: session)
     XCTAssertFalse(killed)
-    XCTAssertFalse(service.isRemote(session))
+    // Still remote: the session runs on, and a retry or a reattach must not go local.
+    XCTAssertTrue(service.isRemote(session))
+    let again = await service.endSession(sessionID: session)
+    XCTAssertFalse(again)
+    XCTAssertTrue(
+      service.attachCommand(forSession: session, restored: true)?.contains("/usr/bin/ssh") == true)
   }
 
   func testTheRelayCommandQuotesItsSocketForTheRemoteShell() {
