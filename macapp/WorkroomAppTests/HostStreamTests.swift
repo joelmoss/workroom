@@ -106,6 +106,7 @@ final class HostStreamTests: XCTestCase {
       "BatchMode yes", "StrictHostKeyChecking yes", "GlobalKnownHostsFile /dev/null",
       "IdentitiesOnly yes", "IdentityAgent none",
       "ForwardAgent no", "ClearAllForwardings yes", "ServerAliveInterval 15",
+      "EscapeChar none",
     ] {
       XCTAssertTrue(config.contains("  \(line)\n"), "missing \(line)")
     }
@@ -123,6 +124,87 @@ final class HostStreamTests: XCTestCase {
     XCTAssertThrowsError(
       try ContainerHostDriver.writeConfiguration(
         for: host, in: FileManager.default.temporaryDirectory))
+  }
+
+  /// A remote pane's command (#229): the session contract rides in `env` on the host, and the
+  /// Mac-only parts of it (the shell, the app bundle's resources) stay behind.
+  func testARemotePanesCommandCarriesTheSessionAndNothingOfTheMacs() throws {
+    let session = UUID()
+    let fresh = ContainerHostDriver.remoteAttachCommand(
+      session: session, socket: "/run/workroom/agent.sock",
+      workingDirectory: "/home/w/it's here", restored: false)
+    XCTAssertEqual(
+      fresh,
+      "'env' 'TERM=xterm-256color' 'WORKROOM_SESSION_ID=\(session.uuidString)' "
+        + "'WORKROOM_SESSION_SOCKET=/run/workroom/agent.sock' "
+        + "'WORKROOM_SESSION_CWD=/home/w/it'\\''s here' 'wr-agent' 'attach' '--no-spawn'")
+    let restored = ContainerHostDriver.remoteAttachCommand(
+      session: session, socket: "/s", workingDirectory: "/w", restored: true)
+    XCTAssertTrue(restored.hasSuffix("'--no-spawn' '--no-create'"), restored)
+    for absent in ["WORKROOM_SESSION_SHELL", "WORKROOM_SESSION_RESOURCES", "AWAKE"] {
+      XCTAssertFalse(fresh.contains(absent), absent)
+    }
+
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let id = UUID()
+    let driver = ContainerHostDriver(
+      hosts: [
+        id: .init(
+          address: "127.0.0.1", port: 2222, user: "workroom", identityFile: "/keys/id",
+          hostKey: "ssh-ed25519 AAAA", agentSocket: "/s")
+      ], directory: directory)
+    let command = try driver.attachCommand(
+      to: .remote(id), session: session, workingDirectory: "/w", restored: true)
+    XCTAssertTrue(command.hasPrefix("'/usr/bin/ssh' '-F' "), command)
+    XCTAssertTrue(command.contains(" '-t' 'workroom-host' "), command)
+  }
+
+  /// A remote session is routed to its driver, not to a local helper: its command is the driver's,
+  /// the pane's own environment carries no session variables, and a restored pane is not asked
+  /// about locally (the host's agent answers that, in the attach).
+  @MainActor
+  func testARemoteSessionIsRoutedToItsDriverNotALocalHelper() async throws {
+    let service = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "none here") },
+      ownership: { _ in
+        XCTFail("a local helper was asked about a remote session")
+        return .notOwned
+      })
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let host = UUID()
+    let driver = ContainerHostDriver(
+      hosts: [
+        host: .init(
+          address: "127.0.0.1", port: 2222, user: "workroom", identityFile: "/keys/id",
+          hostKey: "ssh-ed25519 AAAA", agentSocket: "/s")
+      ], directory: directory)
+    let session = UUID()
+    service.registerRemoteSession(
+      session, on: .remote(host), via: driver, workingDirectory: "/home/w")
+
+    XCTAssertEqual(service.confirmBeforeAttach(sessionID: session, wasRestored: true), .attachable)
+    let command = try XCTUnwrap(service.attachCommand(forSession: session, restored: true))
+    XCTAssertTrue(command.contains("/usr/bin/ssh"), command)
+    XCTAssertTrue(command.contains("--no-create"), command)
+    XCTAssertTrue(service.launchEnvironment(sessionID: session, workingDirectory: "/w").isEmpty)
+
+    // A host the driver cannot reach gets a pane that says so, never a plain shell on this Mac.
+    let stranded = UUID()
+    service.registerRemoteSession(
+      stranded, on: .remote(UUID()), via: driver, workingDirectory: "/home/w")
+    let notice = try XCTUnwrap(service.attachCommand(forSession: stranded))
+    XCTAssertTrue(notice.hasPrefix("/bin/sh -c "), notice)
+    XCTAssertTrue(notice.contains("Could not reach this terminal"), notice)
+
+    // Closing it reaches no local helper (the ownership closure above fails the test if asked),
+    // and reports it not killed, which is true.
+    let killed = await service.endSession(sessionID: session)
+    XCTAssertFalse(killed)
+    XCTAssertFalse(service.isRemote(session))
   }
 
   func testTheRelayCommandQuotesItsSocketForTheRemoteShell() {

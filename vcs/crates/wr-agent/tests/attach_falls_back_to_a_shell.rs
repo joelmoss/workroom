@@ -44,8 +44,16 @@ fn attach_with_stdin(env: &[(&str, &str)], stdin: &str) -> (String, Option<i32>)
 }
 
 fn attach_inner(env: &[(&str, &str)], stdin: Option<&str>) -> (String, Option<i32>) {
+    attach_with_args(&[], env, stdin)
+}
+
+fn attach_with_args(
+    args: &[&str],
+    env: &[(&str, &str)],
+    stdin: Option<&str>,
+) -> (String, Option<i32>) {
     let mut command = Command::new(agent_binary());
-    command.arg("attach");
+    command.arg("attach").args(args);
     command.env_clear();
     command.env("PATH", "/usr/bin:/bin");
     for (key, value) in env {
@@ -700,4 +708,184 @@ fn a_deleted_working_directory_falls_back_to_home_before_root() {
         "a pane whose directory was deleted landed somewhere other than the user's home. got: \
          {output:?}"
     );
+}
+
+/// A healthy agent on `socket`, killed when the guard drops.
+struct Agent(std::process::Child);
+
+impl Drop for Agent {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn start_agent(socket: &std::path::Path) -> Agent {
+    let agent = Agent(
+        Command::new(agent_binary())
+            .args(["serve", "--socket"])
+            .arg(socket)
+            .args(["--idle-timeout", "30"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn agent"),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !socket.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(socket.exists(), "the agent never bound its socket");
+    agent
+}
+
+/// `--no-spawn` (a pane on a remote host, #229): with no agent listening, a shell rather than a
+/// spawned agent. On a remote host the supervisor starts the agent, and one started here would be
+/// the idle-exit kind, racing the supervised one for the socket.
+#[test]
+fn no_spawn_falls_back_to_a_shell_instead_of_starting_an_agent() {
+    let dir = scratch("no-spawn");
+    let socket = dir.join("a.sock");
+    let (output, _) = attach_with_args(
+        &["--no-spawn"],
+        &[
+            (
+                "WORKROOM_SESSION_ID",
+                "6B9B968D-0BD7-4172-850A-A373DA73BC72",
+            ),
+            ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+            ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+            ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+            (
+                "WORKROOM_SESSION_COMMAND",
+                "echo FELL-BACK fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
+            ),
+        ],
+        None,
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let spawned = socket.exists();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        output.contains("FELL-BACK fb=[1]"),
+        "expected the fallback shell. got: {output:?}"
+    );
+    assert!(!spawned, "an agent was started despite --no-spawn");
+}
+
+/// `--no-create` (a restored pane): a session the agent does not hold is refused, not created,
+/// and the pane becomes a shell that says so. Created instead, it would be a fresh shell passed off
+/// as the one that was running there.
+#[test]
+fn no_create_turns_an_ended_session_into_a_shell_with_a_notice() {
+    let dir = scratch("no-create-ended");
+    let socket = dir.join("a.sock");
+    let _agent = start_agent(&socket);
+    let (output, _) = attach_with_args(
+        &["--no-create"],
+        &[
+            (
+                "WORKROOM_SESSION_ID",
+                "6B9B968D-0BD7-4172-850A-A373DA73BC73",
+            ),
+            ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+            ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+            ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+            (
+                "WORKROOM_SESSION_COMMAND",
+                "echo NEW-SHELL fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
+            ),
+        ],
+        None,
+    );
+    let listed = Command::new(agent_binary())
+        .args(["list", "--socket"])
+        .arg(&socket)
+        .output()
+        .expect("list");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        output.contains("has ended") && output.contains("NEW-SHELL fb=[1]"),
+        "expected the ended-session notice and a fallback shell. got: {output:?}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&listed.stdout).contains("6b9b968d"),
+        "the agent created the session anyway: {:?}",
+        String::from_utf8_lossy(&listed.stdout)
+    );
+}
+
+/// And a session that exists is reattached as usual: `--no-create` only refuses to make one.
+#[test]
+fn no_create_reattaches_a_session_that_exists() {
+    let dir = scratch("no-create-live");
+    let socket = dir.join("a.sock");
+    let _agent = start_agent(&socket);
+    let env = [
+        (
+            "WORKROOM_SESSION_ID",
+            "6B9B968D-0BD7-4172-850A-A373DA73BC74",
+        ),
+        ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+        ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+        ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+        (
+            "WORKROOM_SESSION_COMMAND",
+            // Its own `sh -c`: a session's command is run as `exec <command>`, which would end at
+            // `sleep`.
+            "sh -c 'sleep 2; echo STILL-THE-SAME fb=[${WORKROOM_SESSION_FALLBACK:-unset}]'",
+        ),
+    ];
+    // The first attach creates it; killed at once, it leaves the session running with no client.
+    let mut first = Command::new(agent_binary());
+    first.arg("attach").env_clear().env("PATH", "/usr/bin:/bin");
+    for (key, value) in env {
+        first.env(key, value);
+    }
+    let mut first = first
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn first attach");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let _ = first.kill();
+    let _ = first.wait();
+
+    let (output, _) = attach_with_args(&["--no-create"], &env, None);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        output.contains("STILL-THE-SAME fb=[unset]"),
+        "expected the running session's own output. got: {output:?}"
+    );
+    assert!(!output.contains("has ended"), "got: {output:?}");
+}
+
+/// On a remote host (`--no-spawn`) the attach's exit status is ssh's, and 255 is ssh's own
+/// failure, which the app answers by reconnecting. So a session that ended with 255 exits 254
+/// there; locally it stays 255.
+#[test]
+fn a_remote_attach_never_exits_255_for_a_session_that_did() {
+    let dir = scratch("exit-255");
+    let socket = dir.join("a.sock");
+    let _agent = start_agent(&socket);
+    let run = |id: &str, args: &[&str]| {
+        attach_with_args(
+            args,
+            &[
+                ("WORKROOM_SESSION_ID", id),
+                ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+                ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+                ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+                ("WORKROOM_SESSION_COMMAND", "sh -c 'exit 255'"),
+            ],
+            None,
+        )
+        .1
+    };
+    let local = run("6B9B968D-0BD7-4172-850A-A373DA73BC75", &[]);
+    let remote = run("6B9B968D-0BD7-4172-850A-A373DA73BC76", &["--no-spawn"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(local, Some(255));
+    assert_eq!(remote, Some(254));
 }
