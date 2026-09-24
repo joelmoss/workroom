@@ -25,6 +25,11 @@ fn link_ghostty_vt() {
         None => {
             let script =
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/build-ghostty-vt.sh");
+            // The script pins the Ghostty revision and the Zig that builds it, and the cache it
+            // builds into is where the library is linked from. Without these, bumping the pin
+            // kept linking the old library until a `cargo clean`.
+            println!("cargo:rerun-if-changed={}", script.display());
+            println!("cargo:rerun-if-env-changed=WR_GHOSTTY_VT_CACHE");
             // Map the cargo target to a zig triple. Unknown combinations are a hard error: a
             // silent fallback to the host would link the wrong architecture and fail at the far
             // end of the build with something unreadable.
