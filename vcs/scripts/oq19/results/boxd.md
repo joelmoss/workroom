@@ -4,6 +4,7 @@ Harness commit `7ac2136d`; frozen configuration `P4|0.05|200.0|500.0|agnostic|No
 
 ## Verdict: **PASS**
 
+* treatment_ran_every_scenario: yes
 * treatment_never_slept_in_busy: yes
 * treatment_live_gates_pass: yes
 * control_slept_in_busy: yes

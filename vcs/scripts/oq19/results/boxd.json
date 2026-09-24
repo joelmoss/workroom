@@ -1,6 +1,7 @@
 {
  "verdict": "PASS",
  "checks": {
+  "treatment_ran_every_scenario": true,
   "treatment_never_slept_in_busy": true,
   "treatment_live_gates_pass": true,
   "control_slept_in_busy": true,
@@ -72,7 +73,8 @@
      "no_busy_forever": "PASS",
      "time_to_idle": "PASS"
     },
-    "failed": []
+    "failed": [],
+    "end_wall": 1789948429.0039406
    },
    {
     "scenario": "3a",
@@ -118,7 +120,8 @@
      "no_busy_forever": "PASS",
      "time_to_idle": "PASS"
     },
-    "failed": []
+    "failed": [],
+    "end_wall": 1789946371.5452425
    },
    {
     "scenario": "3b",
@@ -136,7 +139,8 @@
      "no_busy_forever": "PASS",
      "time_to_idle": "PASS"
     },
-    "failed": []
+    "failed": [],
+    "end_wall": 1789946678.1683905
    },
    {
     "scenario": "4b",
@@ -218,7 +222,8 @@
      "no_busy_forever": "PASS",
      "time_to_idle": "PASS"
     },
-    "failed": []
+    "failed": [],
+    "end_wall": 1789946065.042037
    },
    {
     "scenario": "5",
@@ -286,7 +291,8 @@
      "no_busy_forever": "PASS",
      "time_to_idle": "PASS"
     },
-    "failed": []
+    "failed": [],
+    "end_wall": 1789947732.8041918
    }
   ],
   "sleep_events": [
@@ -355,6 +361,7 @@
    }
   ],
   "slept_after_idle": true,
+  "every_run_slept_after_idle": true,
   "idle_sleep_delays_s": [
    146.0,
    388.0,
@@ -410,7 +417,8 @@
     "wake_tails_excused_s": [],
     "live_vs_replay_mismatch": null,
     "gates": null,
-    "failed": []
+    "failed": [],
+    "end_wall": 1789948764.8969672
    }
   ],
   "sleep_events": [
@@ -423,6 +431,7 @@
    }
   ],
   "slept_after_idle": true,
+  "every_run_slept_after_idle": true,
   "idle_sleep_delays_s": [],
   "idle_sleep_deadline_s": 270,
   "asleep_after_last_idle": [
@@ -478,7 +487,8 @@
      "no_busy_forever": "PASS",
      "time_to_idle": "PASS"
     },
-    "failed": []
+    "failed": [],
+    "end_wall": 1789949496.295811
    }
   ],
   "sleep_events": [
@@ -491,6 +501,7 @@
    }
   ],
   "slept_after_idle": true,
+  "every_run_slept_after_idle": true,
   "idle_sleep_delays_s": [
    235.1
   ],

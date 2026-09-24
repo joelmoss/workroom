@@ -329,7 +329,12 @@ def main():
     ap.add_argument("--compressed", action="store_true")
     ap.add_argument("--scale", type=float, default=1.0,
                     help="multiply every phase duration: PIPELINE CHECKS ONLY, never for a scored run")
-    run(ap.parse_args())
+    args = ap.parse_args()
+    # Before anything can fail: `record.py` reads this marker to tell a driver that ran and failed (a result,
+    # kept) from a container that never started it (infrastructure, retried).
+    os.makedirs(args.out, exist_ok=True)
+    open(os.path.join(args.out, "driver.started"), "w").close()
+    run(args)
 
 
 if __name__ == "__main__":
