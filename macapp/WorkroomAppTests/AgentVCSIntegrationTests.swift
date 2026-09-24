@@ -555,6 +555,45 @@ final class AgentVCSIntegrationTests: XCTestCase {
   /// `exec_never_contends_with_a_held_snapshot_barrier` for the Rust-side proof of the same
   /// property. If this ever regressed, the commit below would hang for up to 30s and fail the test
   /// on timeout instead of completing.
+  /// A remote host's jj writes run under the working-copy barrier, which the agent takes around each
+  /// command because a Mac cannot flock a file on another host (#229). Driven through a local agent
+  /// under a remote host id, which takes that path end to end: while this test holds the barrier the
+  /// commit waits, and it lands once the barrier is released.
+  func testARemoteJJCommitWaitsOnTheBarrierTheAgentTakes() async throws {
+    let root = try root()
+    try run("jj", ["git", "init", "--colocate"], at: root)
+    try "base\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    try run("jj", ["commit", "-m", "initial"], at: root)
+    try "changed\n".write(
+      to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
+    let hostID = UUID()
+    let host = HostID.remote(hostID)
+    let manager = HostConnectionManager()
+    let connection = try await connect(host: host)
+    _ = try await manager.connect(host: host) { connection }
+    let router = RepositoryRouter(connections: manager)
+    let location = try RepositoryLocation.remote(host: hostID, path: root.path)
+    try router.register(.init(location: location, backend: .jj, sharedLocation: location))
+    let writer = try await router.writer(for: location)
+
+    let local = try await RepositoryLocation.local(root.path)
+    let held = try XCTUnwrap(JJProcessBarrier.acquire(local))
+    let release = Task {
+      try? await Task.sleep(for: .milliseconds(1500))
+      held.release()
+    }
+    let started = ContinuousClock.now
+    let result = await writer.commit(
+      request: VCSCommitRequest(message: "remote jj commit", files: [], mode: .commit))
+    let waited = ContinuousClock.now - started
+    await release.value
+    guard case .ok = result else { return XCTFail("jj commit failed: \(result)") }
+    XCTAssertGreaterThanOrEqual(waited, .milliseconds(1200), "the commit ran without the barrier")
+    let log = try run("jj", ["log", "--no-graph", "-r", "@-", "-T", "description"], at: root)
+    XCTAssertTrue(log.contains("remote jj commit"), log)
+    await connection.close()
+  }
+
   func testJJCommitRoutesThroughTheAgentWithoutContendingItsOwnSnapshotBarrier() async throws {
     let root = try root()
     try run("jj", ["git", "init", "--colocate"], at: root)

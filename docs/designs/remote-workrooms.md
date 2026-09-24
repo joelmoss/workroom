@@ -1002,6 +1002,29 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   no change. ssh exiting is the connection ending, through the same generation and
   fail-pending-calls rules as a dead local agent. Terminal panes through the driver are the second
   half of #229.
+  **Remote writes (#229)** keep every decision in the Swift writer (`CLIVCSWriter`) and move only
+  two things to the host:
+  - *The disk the failure classifier reads.* It decides a parked rebase, a leftover lock or the last
+    fetch from the repository's git directory, and on a remote host that directory is there. The
+    agent's `stat` request reports the facts (existence, directory, modification time, a worktree's
+    `.git` text) for the paths the classifier names, read after the command they explain.
+  - *The jj working-copy barrier.* Locally the app's gate holds it for a whole operation, and exec
+    never takes it. A Mac cannot flock a file on another host, so an exec request for a remote jj
+    repository names its shared root (`barrier_root`) and the agent takes the barrier around that
+    command. **Known ceiling:** that is per command, where the local gate is per operation, so a
+    remote snapshot can land between two commands of one write. The upgrade is an
+    operation-scoped barrier the client acquires and releases, held by the connection and dropped
+    when it goes. Two kinds of command skip it:
+    - A read that cannot snapshot (`--ignore-working-copy`), which has nothing to protect.
+    - A network command (`jj git fetch`/`push`), because the barrier is handed to the child, and
+      git's detached helpers would inherit it and hold it after jj exits. jj's op log reconciles a
+      snapshot that runs alongside one.
+  Both came with exec service version 3, and the app refuses a remote write to an older agent.
+  **Known residual, wider remotely:** a jj commit tells "committed, then failed" from "failed" by
+  whether the op head moved, and a snapshot also moves it. A snapshot in the gap between the
+  before-read and the commit can make a failed commit read as one that landed. Locally the after-read
+  already sits outside the gate; the per-command barrier widens the gap. The fix is to compare
+  `@-`, which a snapshot never rewrites, for jj's `.commit` mode.
 - **Local needs no supervisor at all. DECIDED — and an earlier claim in this document was wrong.**
   A previous revision asserted that `SessionDaemon.swift:97-107`'s self-exit
   (`sessions.isEmpty && connections.isEmpty`) had to go, because the agent would also own VCS reads

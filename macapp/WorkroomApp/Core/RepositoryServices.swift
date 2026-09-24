@@ -90,8 +90,17 @@ struct BoundLocalWriter: VCSWriting {
   private var path: String { context.location.path }
   private let projectRoot: String
 
+  /// For a local repository, or a remote one whose writer reads that host's disk and holds its
+  /// barrier through the agent (`AgentVCSConnection.writer`). The paths here are only ever handed to
+  /// the writer as strings, never resolved against this disk.
   init(context: RepositoryContext, reader: VCSProviding, writer: LocalVCSWriting) throws {
-    _ = try context.location.requireLocalURL()
+    // A remote repository only with a writer that knows it is one; anything else would run git on
+    // this Mac against a path on another machine.
+    if context.location.host != .local {
+      guard let engine = writer as? CLIVCSWriter, engine.host == context.location.host else {
+        throw RepositoryRoutingError.unavailable(context.location.host)
+      }
+    }
     projectRoot = try context.requireOwnership().path
     self.context = context
     self.reader = reader

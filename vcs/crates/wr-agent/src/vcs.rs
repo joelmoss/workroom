@@ -57,8 +57,9 @@ const MAX_HISTORY_LIMIT: usize = 10000;
 /// The exec service's wire version, reported in `capabilities` so a client can tell a capable agent
 /// from one that predates the service. A version, not a count — see the `capabilities` reply.
 ///
-/// 2 added chunked request reassembly; 1 accepted only single-envelope requests.
-const EXEC_SERVICE_VERSION: u32 = 2;
+/// 3 added what a REMOTE host's writes need (#229): `host_environment`, `barrier_root`, and the
+/// `stat` request. 2 added chunked request reassembly; 1 accepted only single-envelope requests.
+const EXEC_SERVICE_VERSION: u32 = 3;
 /// `CLIVCSWriter.commitTimeout` (Swift) is 600s, the longest legitimate write timeout. Bounds a
 /// hostile/buggy request from wedging an exec thread indefinitely; the 32-slot `ACTIVE` permit
 /// already bounds concurrency, this bounds duration.
@@ -204,6 +205,17 @@ struct ExecRequest {
     /// its `SSH_AUTH_SOCK` and git identity are the user's Mac credentials.
     #[serde(default)]
     host_environment: bool,
+    /// The shared root of a jj repository whose working-copy barrier this command must run under,
+    /// set by the app for a REMOTE host only. Locally the app holds that barrier itself
+    /// (`JJSnapshotGate`) for the whole operation, which is why exec never takes it; a Mac cannot
+    /// flock a file on another host, so there the agent takes it for each command instead.
+    ///
+    /// ponytail: per command, where the local gate holds it for a whole operation (a commit's
+    /// several commands under one acquisition). A snapshot can land between two commands of one
+    /// remote write. Upgrade path: an operation-scoped barrier the client acquires and releases,
+    /// held by this connection and dropped when it goes.
+    #[serde(default)]
+    barrier_root: Option<String>,
 }
 
 /// The child environment for a remote host: this agent's own, which is the host's, with the file
@@ -242,6 +254,83 @@ fn host_environment(
 #[serde(rename_all = "snake_case")]
 enum ExecKind {
     Exec,
+}
+
+/// Filesystem facts for the app's write-failure classifier (`CLIVCSWriter`), which reads a
+/// repository's git directory to tell a parked rebase, a leftover lock file or the last fetch. On a
+/// remote host that directory is here, so the app asks for the facts and keeps every decision on
+/// its own side (#229): one classifier, fed the same facts either way. Added with exec version 3.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatRequest {
+    version: u32,
+    kind: StatKind,
+    /// Absolute paths. What exists there, whether it is a directory, and when it was modified.
+    paths: Vec<String>,
+    /// Paths among `paths` whose text to return as well, when a small regular file: a worktree's
+    /// `.git` is a file that names its git directory.
+    #[serde(default)]
+    read: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StatKind {
+    Stat,
+}
+
+/// Far more than the dozen paths one classification asks about, and small enough that a request
+/// cannot turn this into a filesystem walk.
+const MAX_STAT_PATHS: usize = 64;
+/// A worktree's `.git` file is one line.
+const MAX_STAT_TEXT: u64 = 4096;
+
+fn stat(request: StatRequest) -> model::Result<Value> {
+    let StatRequest {
+        version,
+        kind: StatKind::Stat,
+        paths,
+        read,
+    } = request;
+    if version != 1 {
+        return Err(VcsError::BackendVersion(
+            "unsupported VCS service version".into(),
+        ));
+    }
+    if paths.len() > MAX_STAT_PATHS {
+        return Err(io("too many paths in one stat request"));
+    }
+    let entries = paths
+        .iter()
+        .map(|path| {
+            // One path this cannot take (relative, or with a `..` from an unstandardized `gitdir:`
+            // or a hook's message) reads as absent, as a missing file would, rather than failing the
+            // whole request and taking every other fact with it.
+            let Ok(target) = absolute(path) else {
+                return Ok(json!({ "path": path, "exists": false, "is_dir": false,
+                                  "modified_at": null, "text": null }));
+            };
+            // Follows links, as `FileManager.fileExists` does for the same question in the app.
+            let metadata = std::fs::metadata(&target).ok();
+            let text = metadata
+                .as_ref()
+                .filter(|m| read.contains(path) && m.is_file() && m.len() <= MAX_STAT_TEXT)
+                .and_then(|_| std::fs::read_to_string(&target).ok());
+            let modified = metadata
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|since| since.as_secs_f64());
+            Ok(json!({
+                "path": path,
+                "exists": metadata.is_some(),
+                "is_dir": metadata.as_ref().is_some_and(|m| m.is_dir()),
+                "modified_at": modified,
+                "text": text,
+            }))
+        })
+        .collect::<model::Result<Vec<Value>>>()?;
+    Ok(json!({ "entries": entries }))
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -390,16 +479,16 @@ pub fn execute(bytes: &[u8]) -> Value {
     // wire format already spoken by `AgentVCSReader` is untouched.
     let result = serde_json::from_slice::<Value>(bytes)
         .map_err(io)
-        .and_then(|value| {
-            if value.get("kind").and_then(Value::as_str) == Some("exec") {
-                serde_json::from_value::<ExecRequest>(value)
-                    .map_err(io)
-                    .and_then(exec)
-            } else {
-                serde_json::from_value::<Request>(value)
-                    .map_err(io)
-                    .and_then(read)
-            }
+        .and_then(|value| match value.get("kind").and_then(Value::as_str) {
+            Some("exec") => serde_json::from_value::<ExecRequest>(value)
+                .map_err(io)
+                .and_then(exec),
+            Some("stat") => serde_json::from_value::<StatRequest>(value)
+                .map_err(io)
+                .and_then(stat),
+            _ => serde_json::from_value::<Request>(value)
+                .map_err(io)
+                .and_then(read),
         });
     match result {
         Ok(result) => json!({"version": 1, "result": result}),
@@ -508,6 +597,7 @@ const REAP_GRACE: Duration = Duration::from_secs(2);
 /// SIGTERM-then-grace-then-SIGKILL shape (`CLIVCSWriter.commitTimeout`'s doc: "Killing a commit is
 /// categorically more dangerous than killing a fetch" — an immediate SIGKILL denies a `post-commit`
 /// hook the chance to exit cleanly and can leave `index.lock` behind).
+#[cfg(test)]
 fn run_exec(
     dir: &Path,
     executable: &str,
@@ -834,6 +924,7 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
         stdin,
         env,
         host_environment: from_host,
+        barrier_root,
     } = request;
     if version != 1 {
         return Err(VcsError::BackendVersion(
@@ -842,6 +933,19 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
     }
     let dir = absolute(&dir)?;
     let timeout = exec_timeout(timeout_ms);
+    // Held until the child exits, and handed to it, so an agent that dies mid-command leaves the
+    // barrier held by the child rather than released under it. No `.jj` there, no barrier: a git
+    // repository has none to take, as `JJProcessBarrier.acquire` decides in the app.
+    //
+    // Nor for a command that cannot snapshot (`--ignore-working-copy`): there is nothing to protect,
+    // and a read waiting out a long push's barrier would time out as a failure the toolbar shows.
+    let snapshots = !args.iter().any(|arg| arg == "--ignore-working-copy");
+    let barrier = match barrier_root.as_deref() {
+        Some(shared) if snapshots && absolute(shared)?.join(".jj").exists() => {
+            Some(SnapshotLock::acquire(&dir, Some(shared))?)
+        }
+        _ => None,
+    };
     let env = if from_host {
         host_environment(std::env::vars_os(), env)
     } else {
@@ -849,14 +953,16 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
     };
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let stdin = stdin.as_deref().map(latin1_bytes).transpose()?;
-    let captured = run_exec(
+    let captured = run_exec_with(
         &dir,
         executable.as_str(),
         &args,
         timeout,
         stdin.as_deref(),
         &env,
+        barrier.as_ref().map(SnapshotLock::fd),
     )?;
+    drop(barrier);
     let stdout = String::from_utf8_lossy(&captured.stdout);
     let stderr = String::from_utf8_lossy(&captured.stderr);
     // Truncate HERE rather than letting `send` refuse the reply. `send`'s blanket
@@ -1528,6 +1634,109 @@ mod tests {
             "exec waited on the snapshot barrier instead of running independently"
         );
         drop(held);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The remote half of that property (#229): a Mac cannot flock the barrier on another host, so
+    /// an exec request that names a `barrier_root` must run under the barrier, taken here. Held by
+    /// another holder, the command waits for it rather than running alongside.
+    #[test]
+    fn exec_with_a_barrier_root_waits_on_a_held_barrier() {
+        let root =
+            std::env::temp_dir().join(format!("wr-vcs-exec-barrier-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".jj/repo")).unwrap();
+        let held = SnapshotLock::acquire(&root, root.to_str()).unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(700));
+            drop(held);
+        });
+        let mut request: Value =
+            serde_json::from_slice(&exec_request(&root, "git", &["--version"])).unwrap();
+        request["barrier_root"] = json!(root.to_str().unwrap());
+        let start = Instant::now();
+        let reply = execute(&serde_json::to_vec(&request).unwrap());
+        assert!(reply.get("result").is_some(), "exec failed: {reply:?}");
+        assert!(
+            start.elapsed() >= Duration::from_millis(600),
+            "the command ran without waiting for the barrier"
+        );
+        releaser.join().unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A command that cannot snapshot has nothing for the barrier to protect, so it does not wait.
+    #[test]
+    fn a_command_that_cannot_snapshot_skips_the_barrier() {
+        let root =
+            std::env::temp_dir().join(format!("wr-vcs-exec-barrier-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".jj/repo")).unwrap();
+        let held = SnapshotLock::acquire(&root, root.to_str()).unwrap();
+        let mut request: Value = serde_json::from_slice(&exec_request(
+            &root,
+            "git",
+            &["--version", "--ignore-working-copy"],
+        ))
+        .unwrap();
+        request["barrier_root"] = json!(root.to_str().unwrap());
+        let start = Instant::now();
+        let _ = execute(&serde_json::to_vec(&request).unwrap());
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "a read waited on the barrier"
+        );
+        drop(held);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A git repository has no barrier to take, and naming one is not an error: the app sends the
+    /// shared root for every remote jj command, and decides nothing about git from it.
+    #[test]
+    fn a_barrier_root_without_jj_runs_the_command_unlocked() {
+        let root = git_repo("barrier-root-git");
+        let mut request: Value =
+            serde_json::from_slice(&exec_request(&root, "git", &["status"])).unwrap();
+        request["barrier_root"] = json!(root.to_str().unwrap());
+        let reply = execute(&serde_json::to_vec(&request).unwrap());
+        assert_eq!(reply["result"]["exit_code"], 0, "{reply}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The facts the app's classifier reads from a git directory (#229), for a path that is a
+    /// directory, a file whose text was asked for, and one that is not there.
+    #[test]
+    fn stat_reports_what_is_at_each_path() {
+        let root = git_repo("stat");
+        let git = root.join(".git");
+        std::fs::write(root.join("pointer"), "gitdir: /elsewhere\n").unwrap();
+        let request = json!({
+            "version": 1,
+            "kind": "stat",
+            "paths": [git, root.join("pointer"), git.join("rebase-merge")],
+            "read": [root.join("pointer")],
+        });
+        let reply = execute(&serde_json::to_vec(&request).unwrap());
+        let entries = reply["result"]["entries"].as_array().expect("entries");
+        assert_eq!(entries[0]["exists"], true);
+        assert_eq!(entries[0]["is_dir"], true);
+        assert!(entries[0]["modified_at"].as_f64().unwrap() > 0.0);
+        assert_eq!(entries[0]["text"], Value::Null, "text was not asked for");
+        assert_eq!(entries[1]["is_dir"], false);
+        assert_eq!(entries[1]["text"], "gitdir: /elsewhere\n");
+        assert_eq!(entries[2]["exists"], false);
+        assert_eq!(entries[2]["modified_at"], Value::Null);
+
+        let relative = json!({"version": 1, "kind": "stat", "paths": ["relative/path", git]});
+        let reply = execute(&serde_json::to_vec(&relative).unwrap());
+        assert_eq!(reply["result"]["entries"][0]["exists"], false, "{reply}");
+        assert_eq!(
+            reply["result"]["entries"][1]["exists"], true,
+            "one bad path spoiled the rest"
+        );
+        let many: Vec<String> = (0..=MAX_STAT_PATHS).map(|i| format!("/tmp/{i}")).collect();
+        let too_many = json!({"version": 1, "kind": "stat", "paths": many});
+        assert!(execute(&serde_json::to_vec(&too_many).unwrap())["error"].is_object());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
