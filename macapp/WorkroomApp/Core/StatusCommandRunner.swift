@@ -207,6 +207,13 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
     return env
   }
 
+  /// The whole environment a REMOTE exec request carries: the pins that are policy, not identity.
+  /// The remote agent builds everything else from the host's own environment. See
+  /// `AgentCommandRunner.request` for why nothing else crosses.
+  static let remoteEnvironment = [
+    "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C",
+  ]
+
   /// The complete environment a `git`/`jj` child gets, native or agent-routed.
   ///
   /// Extracted from `run` and made static so `AgentCommandRunner` can send the SAME map to

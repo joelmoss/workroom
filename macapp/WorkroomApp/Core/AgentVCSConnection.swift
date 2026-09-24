@@ -90,11 +90,15 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// per box, so there is nothing to key subscriptions by.
   let ceilingPrompts: AsyncStream<AgentCeilingPrompt>
   private let ceilingPrompt: AsyncStream<AgentCeilingPrompt>.Continuation
+  /// The local process carrying a driver's stream (`ssh host wr-agent relay`), or nil for a local
+  /// agent's socket. Ended when the connection fails, so a closed connection leaves no ssh behind.
+  private let carrier: HostStream?
 
-  private init(host: HostID, descriptor: Int32, helloVersion: UInt16) {
+  private init(host: HostID, descriptor: Int32, helloVersion: UInt16, carrier: HostStream?) {
     self.host = host
     self.descriptor = descriptor
     self.helloVersion = helloVersion
+    self.carrier = carrier
     (disconnection, disconnected) = AsyncStream<Void>.makeStream()
     // Newest-only: a prompt the app never got round to reading is superseded by the next one, and
     // the deadline in a stale one has passed by definition.
@@ -105,32 +109,77 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   deinit { Darwin.close(descriptor) }
 
   static func connect(host: HostID, socketPath: String) async throws -> AgentVCSConnection {
-    let connection = try await runBlocking {
+    let fd = try await runBlocking {
       let fd = socket(AF_UNIX, SOCK_STREAM, 0)
       guard fd >= 0 else { throw HostConnectionError.connectionLost }
+      noSignalOnWrite(fd)
+      var address = sockaddr_un()
+      address.sun_family = sa_family_t(AF_UNIX)
+      let path = Array(socketPath.utf8)
+      guard !path.contains(0), path.count < MemoryLayout.size(ofValue: address.sun_path) else {
+        Darwin.close(fd)
+        throw VCSError.io("Agent socket path is invalid.")
+      }
+      withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: path) }
+      let connected = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+          Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+      }
+      guard connected == 0 else {
+        Darwin.close(fd)
+        throw HostConnectionError.connectionLost
+      }
+      return fd
+    }
+    return try await negotiate(host: host, descriptor: fd, carrier: nil, handshakeTimeout: 2)
+  }
+
+  /// Over a driver's stream (`HostDriver.openStream`), which this connection now owns: its
+  /// descriptor is closed and its process ended with the connection, including when this throws.
+  ///
+  /// A handshake the stream never answered is `serviceUnavailable` with what the carrier said, not
+  /// `connectionLost`. There is nothing to respawn on a remote host, and "Host key verification
+  /// failed." or the relay's "no agent listening" is the whole diagnosis.
+  static func connect(host: HostID, stream: HostStream) async throws -> AgentVCSConnection {
+    do {
+      return try await negotiate(
+        host: host, descriptor: stream.handOff(), carrier: stream,
+        handshakeTimeout: stream.handshakeTimeout)
+    } catch HostConnectionError.connectionLost {
+      throw HostConnectionError.serviceUnavailable(await stream.failure())
+    } catch AgentControlClient.AgentProtocolError.notAnAgent {
+      // Commonly a shell startup file on the host that prints to stdout ahead of the relay. Not
+      // `failure()`: the carrier answered, and saying it did not would contradict this.
+      throw HostConnectionError.serviceUnavailable(
+        "The host sent something other than an agent's greeting (does a shell startup file print?)."
+      )
+    }
+  }
+
+  /// `SO_NOSIGPIPE`, set as soon as the socket exists: a write to a peer that has hung up then
+  /// fails with `EPIPE` rather than killing the app. Not later: once the peer has gone, `setsockopt`
+  /// itself fails, and a peer that greets and hangs up before the first write left the flag unset
+  /// and the hello's `send` raising SIGPIPE.
+  static func noSignalOnWrite(_ fd: Int32) {
+    var on: Int32 = 1
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+  }
+
+  private static func negotiate(
+    host: HostID, descriptor fd: Int32, carrier: HostStream?, handshakeTimeout: TimeInterval
+  ) async throws -> AgentVCSConnection {
+    // `SO_NOSIGPIPE` is already set: by `connect(host:socketPath:)` or `HostStream.spawn`, when
+    // the socket was made (see `noSignalOnWrite`).
+    let connection = try await runBlocking {
       do {
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let path = Array(socketPath.utf8)
-        guard !path.contains(0), path.count < MemoryLayout.size(ofValue: address.sun_path) else {
-          throw VCSError.io("Agent socket path is invalid.")
-        }
-        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: path) }
-        let connected = withUnsafePointer(to: &address) {
-          $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-          }
-        }
-        guard connected == 0 else { throw HostConnectionError.connectionLost }
-        var noSignal: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
-        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        var timeout = timeval(tv_sec: max(1, Int(handshakeTimeout.rounded(.up))), tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         try send(fd, Data(AgentControlClient.encodeHello(build: "Workroom VCS")))
         var hello: [UInt8] = []
         var helloVersion: UInt16 = 0
-        let deadline = Date().addingTimeInterval(2)
+        let deadline = Date().addingTimeInterval(handshakeTimeout)
         while true {
           if let greeting = try AgentControlClient.decodeHello(hello) {
             helloVersion = greeting.version
@@ -152,20 +201,22 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
         }
         timeout = timeval(tv_sec: 0, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        // The 2s handshake bound must not linger onto ordinary request sends — a legitimately busy
-        // agent (mid VCS request on another thread) can leave the socket buffer full past 2s with
+        // The handshake bound must not linger onto ordinary request sends — a legitimately busy
+        // agent (mid VCS request on another thread) can leave the socket buffer full past it with
         // no fault of its own; a lingering SO_SNDTIMEO would then report that as connection loss.
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        return AgentVCSConnection(host: host, descriptor: fd, helloVersion: helloVersion)
+        return AgentVCSConnection(
+          host: host, descriptor: fd, helloVersion: helloVersion, carrier: carrier)
       } catch {
         Darwin.close(fd)
+        carrier?.end()
         throw error
       }
     }
     DispatchQueue.global(qos: .userInitiated).async { connection.receive() }
     do {
       let reply = try await connection.request(
-        AgentVCSRequest(method: "capabilities"), timeout: 2)
+        AgentVCSRequest(method: "capabilities"), timeout: handshakeTimeout)
       let capabilities = try AgentVCSReply<AgentVCSCapabilities>.decode(reply)
       // `backendVersion`, not `serviceUnavailable`: an agent that answers but speaks different reads
       // (a newer one left running across an app rollback — it outlives the app and may own
@@ -176,7 +227,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       // Not yet shared with any other caller, so a plain lock-guarded write is enough — no
       // concurrent reader can observe a half-set value.
       connection.lock.withLock { connection._capabilities = capabilities }
-      await connection.negotiateFiles()
+      await connection.negotiateFiles(timeout: handshakeTimeout)
       return connection
     } catch HostConnectionError.connectionLost, HostConnectionError.notDispatched {
       // `notDispatched` too: `request` refuses with it once the connection is closed, and a fresh
@@ -219,6 +270,18 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   func writer(context: RepositoryContext, reader: VCSProviding) throws -> VCSWriting {
     guard context.location.host == host else { throw HostConnectionError.mismatchedContext }
     guard lock.withLock({ !closed }) else { throw HostConnectionError.connectionLost }
+    // ponytail: no writes to a remote host yet. Refused here, by name, because two parts of the write
+    // path are local-only in ways that would not fail but quietly be wrong. `CLIVCSWriter` classifies
+    // failures by reading the repository's `.git` on THIS disk (rebase in progress, a leftover
+    // `index.lock`), which for a remote path is a different machine or nothing at all. And a jj
+    // write relies on the caller holding the working-copy barrier for the whole operation
+    // (`JJSnapshotGate`), which a Mac cannot flock on another host, while the agent's exec service
+    // deliberately never takes it. Upgrade path: host-side probes, and an exec request that asks the
+    // agent to hold the barrier itself.
+    guard host == .local else {
+      throw HostConnectionError.serviceUnavailable(
+        "Changes to a remote repository are not supported yet.")
+    }
     // Presence and version of the SERVICE, not a count of the caller's own methods. `>=` rather
     // than `==` so an agent that gains a version 3 does not refuse a client speaking 1 — the agent
     // is what decides whether it still accepts this request, and it answers that on the request
@@ -249,14 +312,14 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   ///
   /// Probed on `Service::File` itself, never through the VCS `capabilities` reply, whose `reads`
   /// count is compared for equality by every existing client.
-  private func negotiateFiles() async {
+  private func negotiateFiles(timeout: TimeInterval) async {
     // Against the peer's RAW greeting, before any File envelope: a protocol-2 agent silently drops
     // them, so the probe would otherwise wait out its whole timeout.
     guard helloVersion >= AgentControlClient.minFileVersion else { return }
     let outcome: FileNegotiation
     do {
       let reply = try await request(
-        AgentFileRequest(method: "capabilities"), timeout: 2, service: Self.fileService)
+        AgentFileRequest(method: "capabilities"), timeout: timeout, service: Self.fileService)
       let capabilities = try AgentFileReply<AgentFileCapabilities>.decode(reply)
       outcome = capabilities.version == 1 ? .ready : .unsupported
     } catch {
@@ -777,6 +840,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           return (values, watchers, forwards)
         }
     guard let failed else { return }
+    carrier?.end()
     ceilingPrompt.finish()
     for operation in failed.pending { operation.continuation.resume(throwing: error) }
     // Outside the lock: a handler is caller code. Every subscription learns its watch is gone, so it

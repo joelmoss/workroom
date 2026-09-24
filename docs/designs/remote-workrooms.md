@@ -11,8 +11,9 @@ Mode: Builder
 **Phase 2 is merged to master** (2026-09-23, #201 through #218; review follow-ups #220–#226), and
 **Phase 3 has started.** Its milestones are sub-issues of #154: the Linux agent artifact (#227,
 merged; its first Nightly DMG is still to be checked), the supervised far-side agent with its stdio
-relay and container fixture (#228, in progress), the
-app-side transport with `HostDriver` and the container driver (#229), `execve` hand-off (#230),
+relay and container fixture (#228, merged), the
+app-side transport with `HostDriver` and the container driver (#229, in progress: services first,
+terminal panes second), `execve` hand-off (#230),
 push-on-first-connect bootstrap (#231) and stop-and-reboot screen restoration (#232). The rest of
 this section is the 2026-09-17 status, kept for the Phase 2 detail it records and corrected where
 it had gone stale.
@@ -993,6 +994,14 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     not die with it: their jobs run on, orphaned, while the replacement agent reports no
     sessions. systemd's default `KillMode=control-group` does this. The fixture's loop does not,
     which is fine for a test box and wrong for a host with real work on it.
+  **App side, services built (#229):** `HostDriver` (`Core/HostDriver.swift`) has the four methods
+  and the declared traits, and `ContainerHostDriver` implements `openStream` as
+  `ssh -F <its own config> <host> wr-agent relay --socket <path>`. The stream is one end of a
+  socketpair whose other end is ssh's stdin and stdout, and `AgentVCSConnection.connect(host:stream:)`
+  runs the same negotiation over it as over a local socket, so VCS, File, Status and Forward need
+  no change. ssh exiting is the connection ending, through the same generation and
+  fail-pending-calls rules as a dead local agent. Terminal panes through the driver are the second
+  half of #229.
 - **Local needs no supervisor at all. DECIDED — and an earlier claim in this document was wrong.**
   A previous revision asserted that `SessionDaemon.swift:97-107`'s self-exit
   (`sessions.isEmpty && connections.isEmpty`) had to go, because the agent would also own VCS reads
@@ -1023,8 +1032,30 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   product uses everywhere, the container fixture exercises the real path rather than a fallback
   nobody runs. What remains uncovered by CI is boxd's *live-process* derivation specifically — a
   narrower gap than the whole fork path, and one a nightly boxd job can cover if it earns it.
-- **State a host-key policy** (see Provider Decision). Fresh-key-per-fork plus `BatchMode=yes` cannot prompt, so
-  the driver has to deliver the expected host key out of band or pin the base's.
+- **Host-key policy: pinned and delivered out of band. DECIDED (#229).** The driver writes its own
+  `ssh_config` and passes it with `-F`, so nothing in `~/.ssh/config` or `/etc/ssh/ssh_config`
+  applies. The host's key is the only known key (`GlobalKnownHostsFile /dev/null`), with
+  `StrictHostKeyChecking yes` and `BatchMode yes`: a mismatched key fails at once with "Host key
+  verification failed." and there is no prompt to hang on. A fresh-key-per-fork driver delivers each
+  instance's key the same way, from its provider's API.
+- **Auth resolution for the ssh transport: host-resolved credentials, no forwarding. DECIDED
+  (#229).** Nothing from the Mac's environment crosses. A remote exec request carries only policy
+  pins (`GIT_OPTIONAL_LOCKS`, `GIT_TERMINAL_PROMPT`, `LC_ALL`), and the agent builds the rest from
+  its own environment (`host_environment` in `vcs.rs`), less variables that redirect git to
+  another repository. That makes the supervisor's environment what every remote git gets, so a
+  supervisor should start the agent from a clean one. ssh is kept from prompting without setting
+  `GIT_SSH_COMMAND`, which would outrank a repository's own `core.sshCommand`: no askpass helper,
+  and a supervised agent has no terminal. ssh itself runs with an empty environment,
+  `ForwardAgent no` and `ClearAllForwardings yes`. git on the host authenticates with what the host
+  has, which in production is a per-workroom deploy key minted on the box (Decisions Made; Phase 4).
+  Agent forwarding stays rejected (premise 6). The container driver also logs in with a key file
+  and `IdentityAgent none`; whether a real driver may use the Mac's ssh agent to LOG IN, which is
+  not forwarding it, is that driver's decision.
+- **Peer authentication to shell grade, on every driver. DECIDED (#229).** The exec service runs
+  `git` with arbitrary arguments, which is arbitrary code execution, so a stream that reaches an
+  agent is a shell whatever it is called. ssh authenticates to that grade. Every later driver (SDK
+  exec, WebSocket) must show that it does too before it counts as a driver; `HostDriver`'s doc
+  carries the requirement.
 - **Agent bootstrap over the transport.** Workroom.app ships the Linux agent binary and pushes it on
   first connect rather than baking provider images. One source of truth, no image maintenance, and
   it works for SDK-transport providers with no image concept. (This is the one piece of Coder's and

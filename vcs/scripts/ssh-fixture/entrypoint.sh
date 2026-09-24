@@ -17,11 +17,12 @@ chmod 600 /home/workroom/.ssh/authorized_keys
 
 # `--idle-timeout never`: a remote agent must keep running with no client attached, because its
 # BUSY/IDLE reports have to keep flowing while the Mac sleeps. Run as the ssh user, so the relay
-# that user runs can reach the socket.
+# that user runs can reach the socket. `env -i`, because the agent's environment is what every git
+# it runs gets (the app sends none from the Mac), and this script's own holds AUTHORIZED_KEY.
 (
   while :; do
     setpriv --reuid=workroom --regid=workroom --init-groups \
-      env HOME=/home/workroom USER=workroom SHELL=/bin/bash \
+      env -i HOME=/home/workroom USER=workroom SHELL=/bin/bash PATH=/usr/local/bin:/usr/bin:/bin \
       wr-agent serve --socket /run/workroom/agent.sock --idle-timeout never || true
     sleep 1
   done
