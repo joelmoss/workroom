@@ -305,7 +305,7 @@ fn listing_environment() -> Vec<(String, String)> {
 
 /// `listing_environment` over an explicit variable set, so the scrub and the pins can be tested
 /// without mutating this process's own environment — which other tests' child processes inherit.
-fn scrubbed_environment(
+pub(crate) fn scrubbed_environment(
     vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
 ) -> Vec<(String, String)> {
     const SCRUBBED: [&str; 7] = [

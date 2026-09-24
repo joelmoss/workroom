@@ -198,6 +198,44 @@ struct ExecRequest {
     stdin: Option<String>,
     #[serde(default)]
     env: std::collections::BTreeMap<String, String>,
+    /// Set by the app for a REMOTE host (#229): `env` is then only policy pins, and the child's
+    /// environment is built from this agent's own, which is the host's (`host_environment`). The
+    /// app sends nothing from the Mac there: its `HOME` and `PATH` name nothing on this machine, and
+    /// its `SSH_AUTH_SOCK` and git identity are the user's Mac credentials.
+    #[serde(default)]
+    host_environment: bool,
+}
+
+/// The child environment for a remote host: this agent's own, which is the host's, with the file
+/// service's scrub and pins (`scrubbed_environment`, so the two host-side paths agree), no graphical
+/// prompt helper, and the request's pins on top.
+///
+/// ssh is kept from prompting WITHOUT setting `GIT_SSH_COMMAND`, which would outrank a repository's
+/// own `core.sshCommand`, the usual home of a deploy key, and so replace the host's ssh for every
+/// repository on it. It cannot prompt anyway: `SSH_ASKPASS_REQUIRE=never` rules out a helper, and a
+/// supervised agent has no terminal for one. A `GIT_SSH_COMMAND` the host sets itself is kept and
+/// gets `BatchMode`, as the app does locally (`StatusCommandRunner.networkEnvironment`).
+///
+/// Built from `vars_os`, not `vars`, which panics on one variable that is not UTF-8 and would take
+/// the exec thread down before it replied.
+fn host_environment(
+    own: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    pins: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut env: std::collections::BTreeMap<String, String> =
+        crate::file::scrubbed_environment(own).into_iter().collect();
+    env.remove("SSH_ASKPASS");
+    env.remove("DISPLAY");
+    env.extend(pins);
+    if let Some(ssh) = env
+        .get("GIT_SSH_COMMAND")
+        .map(|command| command.trim().to_string())
+        .filter(|command| !command.is_empty())
+    {
+        env.insert("GIT_SSH_COMMAND".into(), format!("{ssh} -o BatchMode=yes"));
+    }
+    env.insert("SSH_ASKPASS_REQUIRE".into(), "never".into());
+    env
 }
 
 #[derive(Deserialize)]
@@ -795,6 +833,7 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
         timeout_ms,
         stdin,
         env,
+        host_environment: from_host,
     } = request;
     if version != 1 {
         return Err(VcsError::BackendVersion(
@@ -803,6 +842,11 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
     }
     let dir = absolute(&dir)?;
     let timeout = exec_timeout(timeout_ms);
+    let env = if from_host {
+        host_environment(std::env::vars_os(), env)
+    } else {
+        env
+    };
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let stdin = stdin.as_deref().map(latin1_bytes).transpose()?;
     let captured = run_exec(
@@ -1530,6 +1574,62 @@ mod tests {
         assert!(!stdout.contains("WORKROOM_DAEMON_ONLY"));
         std::env::remove_var("WORKROOM_DAEMON_ONLY");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A remote host's child environment (#229): the host's own, less what could point git at
+    /// another repository or let ssh prompt, with the app's pins on top.
+    #[test]
+    fn a_host_environment_is_the_hosts_own_with_the_pins_on_top_and_ssh_unable_to_prompt() {
+        let pairs = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<Vec<_>>()
+        };
+        let os = |pairs: Vec<(String, String)>| {
+            pairs
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect::<Vec<(std::ffi::OsString, std::ffi::OsString)>>()
+        };
+        let own = pairs(&[
+            ("HOME", "/home/workroom"),
+            ("PATH", "/usr/bin:/bin"),
+            ("GIT_DIR", "/elsewhere/.git"),
+            ("SSH_ASKPASS", "/usr/bin/ask"),
+            ("LC_ALL", "fr_FR.UTF-8"),
+            ("GIT_SSH_COMMAND", "ssh -i /home/workroom/.ssh/deploy"),
+        ]);
+        let pins = pairs(&[("LC_ALL", "C"), ("GIT_TERMINAL_PROMPT", "0")])
+            .into_iter()
+            .collect();
+        let env = host_environment(os(own).into_iter(), pins);
+        assert_eq!(env["HOME"], "/home/workroom");
+        assert_eq!(env["PATH"], "/usr/bin:/bin");
+        assert!(!env.contains_key("GIT_DIR"));
+        assert!(!env.contains_key("SSH_ASKPASS"));
+        assert_eq!(env["LC_ALL"], "C", "a pin outranks the host's value");
+        assert_eq!(env["GIT_TERMINAL_PROMPT"], "0");
+        assert_eq!(
+            env["GIT_SSH_COMMAND"],
+            "ssh -i /home/workroom/.ssh/deploy -o BatchMode=yes"
+        );
+        assert_eq!(env["SSH_ASKPASS_REQUIRE"], "never");
+
+        // With none of its own, it gets none: set, it would outrank a repository's
+        // `core.sshCommand`, where a deploy key usually lives.
+        let bare = host_environment(std::iter::empty(), Default::default());
+        assert!(!bare.contains_key("GIT_SSH_COMMAND"));
+        assert_eq!(bare["SSH_ASKPASS_REQUIRE"], "never");
+
+        // A variable that is not UTF-8 is dropped, not a panic.
+        use std::os::unix::ffi::OsStringExt;
+        let latin1 = vec![(
+            std::ffi::OsString::from("LEGACY"),
+            std::ffi::OsString::from_vec(vec![0xe9]),
+        )];
+        let env = host_environment(latin1.into_iter(), Default::default());
+        assert!(!env.contains_key("LEGACY"));
     }
 
     /// The regression that motivated bounding the drain: a child that exits promptly while leaving

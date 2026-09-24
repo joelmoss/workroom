@@ -55,11 +55,9 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
       }
       payload = encoded
     }
-    let request = AgentExecRequest(
-      executable: executable, args: args, dir: directory,
-      timeoutMs: Int((timeout * 1000).rounded(.up)),
-      stdin: payload,
-      env: StatusCommandRunner.childEnvironment(network: network))
+    let request = Self.request(
+      executable, args, in: directory, timeout: timeout, stdin: payload, network: network,
+      host: connection.host)
     let reply: Data
     do {
       // Slack above the command's own timeout: the round trip and the agent's own bookkeeping
@@ -163,6 +161,33 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
   }
 }
 
+extension AgentCommandRunner {
+  /// The exec request for `host`. **Nothing from the Mac's environment goes to a remote host.**
+  ///
+  /// Locally the request carries the app's whole child environment, which the agent adopts in place
+  /// of its own stale one (see `StatusCommandRunner.childEnvironment`). A remote host is a different
+  /// machine: the Mac's `HOME` and `PATH` name nothing there, and its `SSH_AUTH_SOCK`, git identity
+  /// and credential variables are the user's Mac credentials, which must not cross (design doc,
+  /// premise 6: agent forwarding was rejected, and git on a remote host authenticates with what the
+  /// host has). So a remote request sends only `remoteEnvironment`'s policy pins and asks the agent
+  /// to build the rest from the host's own environment (`host_environment` in `vcs.rs`), which also
+  /// pins ssh to fail rather than prompt, as `networkEnvironment` does here.
+  static func request(
+    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+    stdin: String?, network: Bool, host: HostID
+  ) -> AgentExecRequest {
+    let remote = host != .local
+    return AgentExecRequest(
+      executable: executable, args: args, dir: directory,
+      timeoutMs: Int((timeout * 1000).rounded(.up)),
+      stdin: stdin,
+      env: remote
+        ? StatusCommandRunner.remoteEnvironment
+        : StatusCommandRunner.childEnvironment(network: network),
+      hostEnvironment: remote ? true : nil)
+  }
+}
+
 struct AgentExecRequest: Encodable, Sendable {
   var version = 1
   var kind = "exec"
@@ -172,6 +197,9 @@ struct AgentExecRequest: Encodable, Sendable {
   let timeoutMs: Int
   var stdin: String?
   var env: [String: String]
+  /// Set only for a remote host, and omitted otherwise: an agent that predates the field rejects
+  /// any request carrying it (`deny_unknown_fields`), and a local agent may be one.
+  var hostEnvironment: Bool?
 }
 
 struct AgentExecResult: Decodable, Sendable {

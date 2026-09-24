@@ -260,6 +260,33 @@ final class AgentVCSProtocolTests: XCTestCase {
     XCTAssertEqual(request.kind, "exec")
   }
 
+  /// Nothing from the Mac's environment reaches a remote host's exec request (#229): its `HOME` and
+  /// `PATH` name nothing there, and its `SSH_AUTH_SOCK` is a Mac credential. Checked on the encoded
+  /// wire bytes, which are what crosses.
+  func testARemoteExecRequestCarriesNothingFromTheMacsEnvironment() throws {
+    let encoder = JSONEncoder()
+    encoder.keyEncodingStrategy = .convertToSnakeCase
+    for network in [false, true] {
+      let local = AgentCommandRunner.request(
+        "git", ["push"], in: "/r", timeout: 1, stdin: nil, network: network, host: .local)
+      // The control: locally the Mac's environment is the point.
+      XCTAssertNotNil(local.env["PATH"])
+      let localWire = String(decoding: try encoder.encode(local), as: UTF8.self)
+      // An agent that predates the field rejects a request carrying it, and a local one may.
+      XCTAssertFalse(localWire.contains("host_environment"), localWire)
+
+      let remote = AgentCommandRunner.request(
+        "git", ["push"], in: "/r", timeout: 1, stdin: nil, network: network,
+        host: .remote(UUID()))
+      XCTAssertEqual(remote.env, StatusCommandRunner.remoteEnvironment)
+      let wire = String(decoding: try encoder.encode(remote), as: UTF8.self)
+      for key in ["HOME", "PATH", "SSH_AUTH_SOCK", "USER", "GIT_SSH_COMMAND"] {
+        XCTAssertFalse(wire.contains("\"\(key)\""), "\(key) crossed (network: \(network)): \(wire)")
+      }
+      XCTAssertTrue(wire.contains("\"host_environment\":true"), wire)
+    }
+  }
+
   // MARK: File service (#211)
 
   /// The client's five version constants are the agent's `PROTOCOL_VERSION`, `MIN_VCS_VERSION`,

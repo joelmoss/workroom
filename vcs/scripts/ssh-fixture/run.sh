@@ -2,7 +2,7 @@
 #
 # Runs the remote-path tests over real ssh, into a container (issue #228).
 #
-#   vcs/scripts/ssh-fixture/run.sh <linux wr-agent>
+#   vcs/scripts/ssh-fixture/run.sh <linux wr-agent> [command...]
 #
 # The argument is a Linux wr-agent for the CONTAINER's architecture, built the way the app bundles
 # it: static musl, with terminal-state. CI passes the one its `agent-linux` job just built. On an
@@ -17,6 +17,14 @@
 # pins the container's host key out of band, and runs the ignored `over_ssh_*` tests in
 # remote_transport.rs against it with BatchMode ssh. The tests run on THIS machine; only the agent
 # and sshd are in the container, as they will be on a real remote host.
+#
+# Given a command, it runs that instead, with the fixture's whereabouts in WR_SSH_FIXTURE_*. The
+# app's tests take them from there, run from the repository root:
+#
+#   vcs/scripts/ssh-fixture/run.sh <linux wr-agent> \
+#     make app-test APP_TEST_FLAGS=-only-testing:WorkroomAppTests/RemoteHostIntegrationTests
+#
+# xcodebuild hands a test only the variables prefixed TEST_RUNNER_, so each is exported twice.
 set -euo pipefail
 
 AGENT="${1:?usage: run.sh <path to a Linux wr-agent for the container architecture>}"
@@ -87,10 +95,18 @@ for attempt in $(seq 1 100); do
   sleep 0.2
 done
 
-# One thread: the tests share one agent, and the supervisor test kills it.
-cd "$VCS_DIR"
-if ! WR_SSH_FIXTURE_CONFIG="$STAGE/ssh_config" WR_SSH_FIXTURE_SOCKET="$SOCKET" \
-  cargo test -p wr-agent --test remote_transport -- --ignored --test-threads=1; then
+for pair in "CONFIG=$STAGE/ssh_config" "SOCKET=$SOCKET" "ADDRESS=127.0.0.1" "PORT=$PORT" \
+  "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY"; do
+  export "WR_SSH_FIXTURE_$pair" "TEST_RUNNER_WR_SSH_FIXTURE_$pair"
+done
+
+shift
+if [ "$#" -eq 0 ]; then
+  # One thread: the tests share one agent, and the supervisor test kills it.
+  cd "$VCS_DIR"
+  set -- cargo test -p wr-agent --test remote_transport -- --ignored --test-threads=1
+fi
+if ! "$@"; then
   echo "error: the ssh fixture tests failed; the container's log:" >&2
   "$RUNTIME" logs "$NAME" >&2
   exit 1
