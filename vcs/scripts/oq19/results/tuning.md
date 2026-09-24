@@ -13,13 +13,13 @@ The fallback FIRES over the agent-agnostic grid: no candidate had 4b false-idle 
 ## The ladder: best config per policy (fewest failed runs, then least false-busy)
 | policy | best config | failed runs / runs | failing gates | downsampled |
 |---|---|---|---|---|
-| P0 | `P0|None|None|None|agnostic|None|0.0|None|1|True|True|True` | 130 / 165 | false_idle x75, no_busy_forever x55, provider_deadline x75, staleness x5, time_to_idle x35 | no |
-| P1 | `P1|None|None|None|agnostic|None|0.0|None|5|True|True|True` | 100 / 165 | false_idle x35, no_busy_forever x65, provider_deadline x35, staleness x5, time_to_idle x40 | yes |
-| P1b | `P1b|None|None|None|agnostic|None|0.0|None|5|True|True|True` | 70 / 165 | false_idle x5, no_busy_forever x65, provider_deadline x5, staleness x5, time_to_idle x40 | yes |
-| P2 | `P2|0.05|None|None|agnostic|None|0.0|None|5|True|True|True` | 80 / 165 | false_idle x80, provider_deadline x75, staleness x5 | yes |
-| P3 | `P3|0.05|200.0|500.0|agnostic|None|0.0|None|5|True|True|True` | 15 / 165 | false_idle x15, provider_deadline x10, staleness x5 | yes |
-| P4 | `P4|0.05|200.0|500.0|agnostic|None|10.0|0|1|True|True|True` | 0 / 165 | none | no |
-| P5 | `P5|0.05|200.0|500.0|agnostic|None|10.0|0|1|True|True|True` | 0 / 165 | none | no |
+| P0 | `P0\|None\|None\|None\|agnostic\|None\|0.0\|None\|1\|True\|True\|True` | 130 / 165 | false_idle x75, no_busy_forever x55, provider_deadline x75, staleness x5, time_to_idle x35 | no |
+| P1 | `P1\|None\|None\|None\|agnostic\|None\|0.0\|None\|5\|True\|True\|True` | 100 / 165 | false_idle x35, no_busy_forever x65, provider_deadline x35, staleness x5, time_to_idle x40 | yes |
+| P1b | `P1b\|None\|None\|None\|agnostic\|None\|0.0\|None\|5\|True\|True\|True` | 70 / 165 | false_idle x5, no_busy_forever x65, provider_deadline x5, staleness x5, time_to_idle x40 | yes |
+| P2 | `P2\|0.05\|None\|None\|agnostic\|None\|0.0\|None\|5\|True\|True\|True` | 80 / 165 | false_idle x80, provider_deadline x75, staleness x5 | yes |
+| P3 | `P3\|0.05\|200.0\|500.0\|agnostic\|None\|0.0\|None\|5\|True\|True\|True` | 15 / 165 | false_idle x15, provider_deadline x10, staleness x5 | yes |
+| P4 | `P4\|0.05\|200.0\|500.0\|agnostic\|None\|10.0\|0\|1\|True\|True\|True` | 0 / 165 | none | no |
+| P5 | `P5\|0.05\|200.0\|500.0\|agnostic\|None\|10.0\|0\|1\|True\|True\|True` | 0 / 165 | none | no |
 
 ## Winner (pre-registered rule, `select_winner`)
 `P4|0.05|200.0|500.0|agnostic|None|10.0|0|1|True|True|True`

@@ -546,7 +546,8 @@ impl Classifier {
             let gap = s.t - prev_t;
             if gap > STALENESS_FACTOR * self.policy.interval {
                 // The reader already called this BUSY; recording it keeps the change-point series
-                // equal to what the shim asserted.
+                // equal to the golden fixtures'. The reader itself asserts up to a second later: it
+                // reads the verdict file's mtime at 1 s resolution with a strict `age > 2 * interval`.
                 self.put(
                     &mut events,
                     prev_t + STALENESS_FACTOR * self.policy.interval,

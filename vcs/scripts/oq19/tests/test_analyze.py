@@ -452,6 +452,24 @@ class ClosedLoop(unittest.TestCase):
             p.kill()
             p.wait()
             self.assertEqual(open(hooks).read().split(), ["assert", "release"])
+            # terminated while BUSY (how every run ends): it releases what it asserted before exiting
+            os.remove(hooks)
+            with open(verdict, "w") as f:
+                f.write("BUSY\n")
+            p = subprocess.Popen(["sh", shim, "1", verdict, awake], env=env)
+            time.sleep(1.5)
+            p.terminate()
+            self.assertEqual(p.wait(timeout=5), 0)
+            self.assertEqual(open(hooks).read().split(), ["assert", "release"])
+            # terminated DURING the assert hook: sh handles the signal when the hook returns, and the trap must
+            # already know it asserted
+            os.remove(hooks)
+            slow = dict(env, OQ19_ASSERT="sleep 1; echo assert >> %s" % hooks)
+            p = subprocess.Popen(["sh", shim, "1", verdict, awake], env=slow)
+            time.sleep(0.3)
+            p.terminate()
+            self.assertEqual(p.wait(timeout=5), 0)
+            self.assertEqual(open(hooks).read().split(), ["assert", "release"])
 
     def test_a_missed_counter_read_keeps_the_last_good_values_and_is_counted(self):
         """The hold-out's first run: one empty read put a 0 into the pty history and, one window later, the rate
@@ -528,6 +546,15 @@ class Report(unittest.TestCase):
             self.assertIn(heading, text)
         self.assertIn("5-detached-full-r0-serial", text)   # the control was paired with its twin
         self.assertIn("excluded `x-run`", text)
+        # `config_key` joins with `|`: unescaped, GFM splits a ladder row into 16 cells, not 5 (MD056)
+        import re
+        results = os.path.join(os.path.dirname(A.__file__), "results")
+        committed = [open(os.path.join(results, n)).read() for n in ("tuning.md", "tuning-preregistered.md")]
+        for doc in [text] + committed:
+            ladder = [l for l in doc.splitlines() if re.match(r"\| P\d\w* \| `", l)]  # P1b too
+            self.assertTrue(ladder)
+            for line in ladder:
+                self.assertEqual(len(re.split(r"(?<!\\)\|", line.strip())) - 2, 5, line)
         # the serial control and the attached and 500-process runs are never scored
         self.assertEqual(sum(1 for s in summaries for _ in [0] if s["runs"] != 4), 0)
 
@@ -572,9 +599,9 @@ class Boxd(unittest.TestCase):
         cfg = {"policy": "P4", "cpu": 0.05, "pty": 30.0, "net": None, "wait": "agnostic", "age": None,
                "grace": 0.0, "window": 0, "interval": 1, "staleness": True, "exclusions": True, "lifecycle": True}
 
-        def machine(root, name, slept_at, verdict_rows):
+        def machine(root, name, slept_at, verdict_rows, scenario="5"):
             base = os.path.join(root, name, "oq19-out")
-            run = mk_run("5", work, extra=build_extra)
+            run = mk_run(scenario, work, extra=build_extra)
             run.meta["closed_loop"] = {"config": cfg, "window_s": 30}
             # the sampler stamps wall and uptime on every sample; a provider sleep is a 400 s wall gap
             w = 1000.0
@@ -583,8 +610,8 @@ class Boxd(unittest.TestCase):
                     w += 400
                 smp["wall"], smp["uptime"] = w, w - 900
                 w += 1
-            self.write_run(os.path.join(base, "5"), run)
-            with open(os.path.join(base, "5", "verdicts.jsonl"), "w") as f:
+            self.write_run(os.path.join(base, scenario), run)
+            with open(os.path.join(base, scenario, "verdicts.jsonl"), "w") as f:
                 f.write("".join(json.dumps(r) + "\n" for r in verdict_rows))
             return A.run_ticks(run)
 
@@ -613,7 +640,7 @@ class Boxd(unittest.TestCase):
                 f.write("%.0f oq19-treatment running\n%.0f oq19-treatment hibernated\n%.0f oq19-control hibernated\n"
                         "%.0f oq19-fork hibernated\n" % (last - 100, last + 60, 1200, flast + 60))
             out = os.path.join(root, "results")
-            self.assertEqual(A.run_boxd(root, frozen, out, echo=False), gates.PASS)
+            self.assertEqual(A.run_boxd(root, frozen, out, echo=False, required=("5",)), gates.PASS)
             res = json.load(open(os.path.join(out, "boxd.json")))
             self.assertTrue(all(res["checks"].values()), res["checks"])
             self.assertTrue(res["checks"]["control_slept_in_busy"] and res["checks"]["control_slept_during_run"])
@@ -621,14 +648,75 @@ class Boxd(unittest.TestCase):
             # mutation checks: a treatment that never slept afterwards, or a control that never slept, each fail
             with open(os.path.join(root, "status.log"), "w") as f:
                 f.write("%.0f oq19-treatment running\n%.0f oq19-fork hibernated\n" % (last - 100, flast + 60))
-            self.assertEqual(A.run_boxd(root, frozen, out, echo=False), gates.FAIL)
+            self.assertEqual(A.run_boxd(root, frozen, out, echo=False, required=("5",)), gates.FAIL)
             self.assertFalse(json.load(open(os.path.join(out, "boxd.json")))["checks"]["treatment_slept_after_idle"])
             machine(root, "oq19-treatment", T0 + 90, verdicts())   # now the treatment slept mid-work
             with open(os.path.join(root, "status.log"), "w") as f:
                 f.write("%.0f oq19-treatment hibernated\n%.0f oq19-control hibernated\n%.0f oq19-fork hibernated\n"
                         % (last + 460, 1200, flast + 60))
-            self.assertEqual(A.run_boxd(root, frozen, out, echo=False), gates.FAIL)
+            self.assertEqual(A.run_boxd(root, frozen, out, echo=False, required=("5",)), gates.FAIL)
             self.assertFalse(json.load(open(os.path.join(out, "boxd.json")))["checks"]["treatment_never_slept_in_busy"])
+
+    def test_run_boxd_fails_a_partial_matrix_and_a_run_that_never_slept_after_idle(self):
+        """Every `all()` over the treatment's runs passes vacuously when scenarios are missing, and one run's
+        sleep (or the post-run status read) used to vouch for every other run."""
+        import json
+        import tempfile
+        work = [("quiet", IDLE, 30), ("work", BUSY, 120), ("post", IDLE, 60)]
+        cfg = {"policy": "P4", "cpu": 0.05, "pty": 30.0, "net": None, "wait": "agnostic", "age": None,
+               "grace": 0.0, "window": 0, "interval": 1, "staleness": True, "exclusions": True, "lifecycle": True}
+
+        def machine(root, name, scenario, slept_at=None, wall=1000.0):
+            d = os.path.join(root, name, "oq19-out", scenario)
+            run = mk_run(scenario, work, extra=build_extra)
+            run.meta["closed_loop"] = {"config": cfg, "window_s": 30}
+            w = wall
+            for smp in run.samples:
+                if slept_at is not None and abs(smp["t"] - slept_at) < 0.5:
+                    w += 400
+                smp["wall"], smp["uptime"] = w, w - 900
+                w += 1
+            self.write_run(d, run)
+            with open(os.path.join(d, "verdicts.jsonl"), "w") as f:
+                for i in range(210):
+                    t = T0 + i
+                    busy = T0 + 30 <= t < T0 + 180
+                    f.write(json.dumps({"t": t, "verdict": BUSY if busy else IDLE, "vote": busy, "misses": 0}) + "\n")
+            return A.run_ticks(run)
+
+        with tempfile.TemporaryDirectory() as root:
+            frozen = os.path.join(root, "frozen.json")
+            with open(frozen, "w") as f:
+                json.dump({"config": cfg, "key": "k"}, f)
+            # 3a sleeps inside its post IDLE label; 5 (the last run) is vouched for by the status read
+            machine(root, "oq19-control", "4b")
+            machine(root, "oq19-treatment", "3a", slept_at=T0 + 170)
+            t_ticks = machine(root, "oq19-treatment", "5", wall=3000.0)  # recorded after 3a, as boxd.sh runs them
+            last = A.wall_of(t_ticks, T0 + 210)
+            with open(os.path.join(root, "status.log"), "w") as f:
+                f.write("%.0f oq19-treatment hibernated\n" % (last + 60))
+            out = os.path.join(root, "results")
+
+            def checks(required):
+                A.run_boxd(root, frozen, out, echo=False, required=required)
+                return json.load(open(os.path.join(out, "boxd.json")))["checks"]
+
+            self.assertTrue(checks(("3a", "5"))["treatment_slept_after_idle"])
+            self.assertTrue(checks(("3a", "5"))["treatment_ran_every_scenario"])
+            self.assertFalse(checks(("3a", "4b", "5"))["treatment_ran_every_scenario"], "4b never ran")
+            # 3a no longer sleeps: the last run's status read must not vouch for it
+            machine(root, "oq19-treatment", "3a")
+            self.assertFalse(checks(("3a", "5"))["treatment_slept_after_idle"])
+
+            # Name order is not run order ("5" sorts after "16"): the credit goes to the run that ENDED last. Here
+            # 5 ran first and slept in its own IDLE label; 3a ran last and is vouched for by the status read.
+            machine(root, "oq19-treatment", "5", slept_at=T0 + 170)
+            a_ticks = machine(root, "oq19-treatment", "3a", wall=3000.0)
+            with open(os.path.join(root, "status.log"), "w") as f:
+                f.write("%.0f oq19-treatment hibernated\n" % (A.wall_of(a_ticks, T0 + 210) + 60))
+            self.assertTrue(checks(("3a", "5"))["treatment_slept_after_idle"])
+            machine(root, "oq19-treatment", "5")  # 5 no longer sleeps: 3a's status read must not vouch for it
+            self.assertFalse(checks(("3a", "5"))["treatment_slept_after_idle"])
 
     def test_wake_tails_are_excused_but_not_real_work_after_a_wake(self):
         gaps = [(T0 + 100, T0 + 190)]

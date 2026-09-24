@@ -83,6 +83,55 @@ class Claim(unittest.TestCase):
         rs[3] = self.result(rs[3]["scenario"], agrees=False)
         self.assertEqual(A.holdout_claim(rs)[0], gates.FAIL)
 
+    def test_a_driver_failure_is_a_failed_run_not_a_smaller_sample(self):
+        rs = self.full_set()
+        row = {"key": "k", "id": rs[0]["scenario"], "mode": "detached", "compressed": False}
+        rs[0] = A.run_failed_result(row)
+        self.assertEqual(A.holdout_claim(rs)[0], gates.FAIL)
+        _, table = A.holdout_claim(rs)
+        self.assertEqual(table[("holdout", "full", "detached")]["failures_any"], 1)
+
+
+class Classify(unittest.TestCase):
+    """`Recorder.run_one` against a fake `run.sh`: which failures are retried, and which are kept."""
+
+    def recorder(self, script):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        root, harness = os.path.join(self.tmp.name, "root"), os.path.join(self.tmp.name, "harness")
+        os.makedirs(os.path.join(root, "runs"))
+        os.makedirs(harness)
+        path = os.path.join(harness, "run.sh")
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\n# run.sh scenario <id> --out <dir> ...\nout=$4\n" + script + "\n")
+        os.chmod(path, 0o755)
+        return record.Recorder(root, harness, 1, retries=2), root
+
+    def job(self):
+        return {"key": "k1", "id": "5", "variant": None, "mode": "detached", "seed": 1, "scale": 1.0,
+                "interval": 1.0, "compressed": False}
+
+    def row(self, root):
+        with open(os.path.join(root, "manifest.jsonl")) as f:
+            return json.loads(f.readline())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_driver_that_ran_and_failed_is_kept_and_not_retried(self):
+        rec, root = self.recorder('mkdir -p "$out"; touch "$out/driver.started"; exit 1')
+        rec.run_one(self.job())
+        row = self.row(root)
+        self.assertEqual((row["status"], row["attempts"]), ("run_failed", 1))
+        self.assertTrue(os.path.exists(os.path.join(root, "runs", "k1", "driver.started")), "output was removed")
+
+    def test_a_container_that_never_started_the_driver_is_retried_then_infra(self):
+        rec, root = self.recorder('mkdir -p "$out"; exit 125')
+        rec.run_one(self.job())
+        row = self.row(root)
+        self.assertEqual((row["status"], row["attempts"]), ("infra_fail", 3))
+        self.assertFalse(os.path.exists(os.path.join(root, "runs", "k1")))
+
 
 if __name__ == "__main__":
     unittest.main()

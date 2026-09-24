@@ -23,13 +23,20 @@ release="${OQ19_RELEASE:-rm -f \"$awake\"}"
 mkdir -p "$(dirname "$awake")"
 selfcall="$(dirname "$awake")/selfcall"   # touched around each hook: live.py masks the net signal meanwhile (F7)
 asserted=0
+# Terminated (the driver ends every run with SIGTERM) while asserting: release first. The next shim starts at
+# asserted=0 and never releases what it did not assert, so exiting while BUSY left boxd's idle timers at 0 with
+# nothing left to restore them. sh runs the trap once the current `sleep` returns: at most one interval late,
+# and driver.py waits for the shim (`os.wait4`).
+trap 'if [ "$asserted" = 1 ]; then touch "$selfcall"; sh -c "$release"; touch "$selfcall"; fi; exit 0' TERM INT
 while :; do
   mtime=$(stat -c %Y "$verdict" 2>/dev/null || stat -f %m "$verdict" 2>/dev/null || echo 0)
   if [ "$(cat "$verdict" 2>/dev/null)" = BUSY ] || awk -v now="$(date +%s)" -v m="$mtime" -v i="$interval" \
       'BEGIN { exit !(now - m > 2 * i) }'; then
-    if [ "$asserted" = 0 ]; then touch "$selfcall"; sh -c "$assert" && asserted=1; touch "$selfcall"; fi
+    # The flag flips BEFORE the hook and back if it fails: a SIGTERM delivered during the hook is handled
+    # when it returns, and must see what the hook did, or the trap skips a release (or runs one twice).
+    if [ "$asserted" = 0 ]; then asserted=1; touch "$selfcall"; sh -c "$assert" || asserted=0; touch "$selfcall"; fi
   elif [ "$asserted" = 1 ]; then
-    touch "$selfcall"; sh -c "$release" && asserted=0; touch "$selfcall"
+    asserted=0; touch "$selfcall"; sh -c "$release" || asserted=1; touch "$selfcall"
   fi
   sleep "$interval"
 done

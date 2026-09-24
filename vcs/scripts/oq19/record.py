@@ -231,6 +231,12 @@ class Recorder:
                 break
             with open(os.path.join(self.root, "runs", job["key"] + ".err"), "w") as f:
                 f.write(r.stdout[-2000:] + r.stderr[-4000:])
+            # The exit code cannot say which failed: `run.sh` passes the runtime's own failures through, and
+            # exits 0 when there is no runtime at all. The driver's marker can. A driver that ran and failed is
+            # a result: kept, never retried, and scored as a failed run (`analyze.run_failed_result`).
+            if os.path.exists(os.path.join(out, "driver.started")):
+                status = "run_failed"
+                break
             shutil.rmtree(out, ignore_errors=True)
         check = None
         if status == "recorded":
