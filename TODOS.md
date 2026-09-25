@@ -2106,6 +2106,38 @@ boundary today).
 
 ## P3 — Terminal, panes, and focus
 
+### Agent bootstrap (#231): the review findings the /ship pass deferred (macapp, wr-agent)
+
+**What:** Six items the #231 review raised and the branch did not take, cheapest first:
+1. `wr-agent hand-off` exit 92 covers both "nothing listening" and "accepted but did not greet in
+   5 s"; `install.sh` and `AgentBootstrap` tell them apart by the CLI's stderr wording
+   (`no agent listening`). Give did-not-greet its own exit code in `run_hand_off` and branch on it.
+2. `ContainerHostDriver.shellQuoted` is a one-line forwarder to `PosixShell.quoted` (~14 call
+   sites, plus `PersistentSessionService`); two older copies exist in `CommandLineInstaller` and
+   `GhosttySurfaceView`. Point everything at `PosixShell.quoted`.
+3. `AgentBootstrapTests`' `StubDriver`/`LocalShellDriver` and `RemoteHostIntegrationTests`' six
+   identical `ensure` calls repeat their traits and stubs; one closure-backed driver and a
+   `bootstrap(_:agent:)` helper would cut ~30 lines.
+4. `install.sh` sets `listening=yes` in four arms; a `[ -S "$socket" ]` default cleared only by the
+   92 "no agent listening" arm is the same table in three fewer lines (no local test covers that
+   arm, so add one first).
+5. The Rust attach tests (`attach_falls_back_to_a_shell.rs`) read and `wait()` with no deadline, so
+   a regression hangs `cargo test` rather than failing it; poll `try_wait` as `Pane::exit_code`
+   in `remote_transport.rs` does.
+6. The scripts run whatever file sits beside the socket and never check the directory is 0700 and
+   the ssh user's (#228's requirement). Refusing a shared or symlinked directory (`WRB outcome
+   refused unsafe-dir`, and the probe reporting it so the app fails before any relay runs) belongs
+   with the host configuration work in Phase 4, where a real `Host` is first produced.
+
+**Why:** 1 is the only one that changes behaviour (a CLI wording change would silently read a dead
+socket as a live agent); the rest are duplication and test hygiene the design doc's "As built
+(#231)" already names.
+
+**How to start:** 1 in `vcs/crates/wr-agent/src/main.rs` (`run_hand_off`, the 92 arms) with the
+fixture's `over_ssh_the_bootstrap_*` test; 2–5 are mechanical; 6 with Phase 4's host setup.
+
+**Priority:** P3, effort S each.
+
 ### Four UI tests fail on a developer Mac, and CI never runs them (macapp) — found cutting v2.1.0
 
 **What:** `make app-uitest` fails 4 tests deterministically on the maintainer's machine (macOS 27):
