@@ -572,7 +572,8 @@ fn run_attach(args: &[String]) -> ExitCode {
     request.existing_only = args.iter().any(|arg| arg == "--no-create");
     // `--no-spawn`: never start an agent. On a remote host that is the supervisor's job, and an
     // agent started here would be the idle-exit kind a remote host must not have, racing the
-    // supervised one for the socket (#228).
+    // supervised one for the socket (#228). It also changes what a lost agent connection means:
+    // see the main loop's `Ok(0) | Err(_)` arm.
     let no_spawn = args.iter().any(|arg| arg == "--no-spawn");
 
     let give_up = |reason: &str| -> ExitCode {
@@ -799,7 +800,20 @@ fn run_attach(args: &[String]) -> ExitCode {
             Ok(n) => decoder.push(&buffer[..n]),
         }
     }
-    ExitCode::SUCCESS
+    // The agent went away without saying the shell had ended: it handed off to a new program
+    // (#230; the exec closes every connection and the session carries on) or it died. On a remote
+    // host this status is ssh's, and 255 is what the app reads as a dropped link, which it answers
+    // by attaching the pane again as a restored one (`--no-create`, #231): the new program repaints
+    // it, or the notice-and-shell says the session has ended. The `Exited` arm above keeps 255
+    // meaning only this, by reporting a shell that itself exited 255 as 254.
+    //
+    // Locally the app has no such path, and a pane is attached only after the launch's hand-off
+    // has been asked for, so this is left as it was: the pane ends as if the shell had.
+    if no_spawn {
+        ExitCode::from(255)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// How the agent answered an attach.

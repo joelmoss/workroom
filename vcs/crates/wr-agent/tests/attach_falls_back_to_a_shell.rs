@@ -889,3 +889,65 @@ fn a_remote_attach_never_exits_255_for_a_session_that_did() {
     assert_eq!(local, Some(255));
     assert_eq!(remote, Some(254));
 }
+
+/// The other half of that contract (#231): a remote attach whose agent goes away WITHOUT saying
+/// the shell ended exits 255, which the app reads as a dropped link and answers by attaching the
+/// pane again as a restored one. The session may well be alive: a hand-off (#230) closes every
+/// connection and carries the sessions to the new program. A local attach ends as it always has,
+/// as if the shell had.
+#[test]
+fn a_remote_attach_whose_agent_goes_away_exits_255() {
+    let dir = scratch("agent-gone");
+    let run = |name: &str, id: &str, args: &[&str]| -> Option<i32> {
+        // A socket per run: a killed agent leaves its file behind, which `start_agent` would take
+        // for the next one having bound.
+        let socket = dir.join(format!("{name}.sock"));
+        let agent = start_agent(&socket);
+        let mut command = Command::new(agent_binary());
+        command.arg("attach").args(args);
+        command.env_clear();
+        command.env("PATH", "/usr/bin:/bin");
+        for (key, value) in [
+            ("WORKROOM_SESSION_ID", id),
+            ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+            ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+            ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+            // Quotes split the marker so nothing but the command's own output can satisfy it.
+            (
+                "WORKROOM_SESSION_COMMAND",
+                "sh -c 'echo REA\"\"DY; sleep 30'",
+            ),
+        ] {
+            command.env(key, value);
+        }
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::null());
+        let mut child = command.spawn().expect("spawn attach");
+        let mut stdout = child.stdout.take().expect("stdout");
+        let mut seen = Vec::new();
+        let mut byte = [0u8; 1];
+        while !String::from_utf8_lossy(&seen).contains("READY") {
+            match stdout.read(&mut byte) {
+                Ok(1) => seen.push(byte[0]),
+                _ => panic!(
+                    "the attach ended before its command ran: {}",
+                    String::from_utf8_lossy(&seen)
+                ),
+            }
+        }
+        // SIGKILL: the connection ends with nothing said, as it does at a hand-off's exec.
+        drop(agent);
+        let _ = std::io::copy(&mut stdout, &mut std::io::sink());
+        child.wait().expect("wait").code()
+    };
+    let local = run("local", "6B9B968D-0BD7-4172-850A-A373DA73BC77", &[]);
+    let remote = run(
+        "remote",
+        "6B9B968D-0BD7-4172-850A-A373DA73BC78",
+        &["--no-spawn"],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(local, Some(0));
+    assert_eq!(remote, Some(255));
+}
