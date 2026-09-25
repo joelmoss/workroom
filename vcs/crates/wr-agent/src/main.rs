@@ -682,7 +682,8 @@ fn run_attach(args: &[String]) -> ExitCode {
 
     // The attach is answered before raw mode and the relay threads. A restored pane's
     // (`--no-create`) session that ended becomes the notice-and-shell the app shows locally, and
-    // that has to start from a cooked terminal with nothing else running.
+    // that has to start from a cooked terminal with nothing else running. When the agent kept a
+    // record of the session (`wr_agent::screens`), it answers `Attached` and the record instead.
     //
     // An agent that closes before answering at all is most likely handing off to a new program
     // (`wr_agent::handoff`). Its listener stays open across the exec, so the attach is sent again,
