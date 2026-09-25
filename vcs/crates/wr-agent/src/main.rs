@@ -24,7 +24,7 @@ use wr_agent::wakefulness::Settings;
 
 fn usage() -> &'static str {
     "usage:
-  wr-agent serve --socket <path> [--idle-timeout <secs>|never]
+  wr-agent serve --socket <path> [--idle-timeout <secs>|never] [--screens <dir>]
         [--awake-ceiling <secs>] [--awake-prompt-timeout <secs>] [--ask-at-awake-ceiling]
         own ptys and services (the daemon role). On Linux it also decides BUSY/IDLE for the
         provider's lifecycle shim and writes it beside the socket as <socket>.wake.
@@ -36,6 +36,8 @@ fn usage() -> &'static str {
         them out of every session's shell, with the rest of the app's launch variables.
         --idle-timeout never is for a supervised remote agent, which must keep running (and keep
         reporting BUSY/IDLE) with no client attached.
+        --screens <dir> keeps each session's screen in <dir>, so a pane reattaching after the
+        host reboots is shown its last one. <dir> must survive a reboot: not the socket's.
   wr-agent serve --stdio
         serve one connection over stdin/stdout, whose sessions die with it; a transport test
         entry point, not a persistent remote agent (that is serve --idle-timeout never + relay)
@@ -102,6 +104,7 @@ fn main() -> ExitCode {
                 flag(&args, "--idle-timeout"),
                 wakefulness_settings(&args),
                 flag(&args, "--handoff").map(PathBuf::from),
+                flag(&args, "--screens").map(PathBuf::from),
             ),
             None => {
                 eprintln!("error: serve needs --socket <path> or --stdio");
@@ -201,6 +204,7 @@ fn run_serve(
     idle: Option<String>,
     wakefulness: Settings,
     handoff: Option<PathBuf>,
+    screens: Option<PathBuf>,
 ) -> ExitCode {
     let timeout = match idle_timeout(idle.as_deref()) {
         Ok(timeout) => timeout,
@@ -246,6 +250,20 @@ fn run_serve(
             }
         }
     };
+    // A directory that cannot be used costs the records, never the agent: a supervisor with a bad
+    // path must still get terminals. The flag is in `arguments` below, so a hand-off keeps it.
+    if let Some(dir) = screens {
+        match wr_agent::screens::Screens::open(&dir) {
+            Ok(screens) => {
+                agent.sessions.keep_screens(screens);
+                wr_agent::screens::spawn(agent.sessions.clone());
+            }
+            Err(e) => eprintln!(
+                "wr-agent: not keeping screens in {}: {e}",
+                dir.to_string_lossy()
+            ),
+        }
+    }
     handoff::install(handoff::Context {
         socket: socket.clone(),
         listener: listener.as_raw_fd(),
@@ -643,6 +661,19 @@ fn run_attach(args: &[String]) -> ExitCode {
         Ok(stream)
     };
     let _ = session;
+    // A restored pane on a remote host whose agent is not answering exits 255, which the app
+    // answers by attaching again with a backoff. After a reboot sshd can accept before the
+    // supervisor's agent has bound its socket, and a shell here would be a live one in a pane whose
+    // session is gone, so its last screen would never be shown (#232). A new remote pane still gets
+    // the shell (#229): it has no session to wait for.
+    let unreachable = |reason: &str| -> ExitCode {
+        if no_spawn && request.existing_only {
+            eprintln!("wr-agent: {reason}\r");
+            ExitCode::from(255)
+        } else {
+            fall_back_to_shell(&request, reason)
+        }
+    };
     let attach = Frame::new(FrameKind::Attach, request.encode());
     let attach = Envelope::new(Service::Terminal, 1, attach.encode()).encode();
 
@@ -661,7 +692,7 @@ fn run_attach(args: &[String]) -> ExitCode {
     let (mut stream, mut decoder) = loop {
         let mut stream = match open() {
             Ok(stream) => stream,
-            Err(reason) => return fall_back_to_shell(&request, reason),
+            Err(reason) => return unreachable(reason),
         };
         let mut decoder = EnvelopeDecoder::new();
         let answer = match stream.write_all(&attach) {
@@ -686,10 +717,7 @@ fn run_attach(args: &[String]) -> ExitCode {
                 std::thread::sleep(Duration::from_millis(100));
             }
             Answer::Closed => {
-                return fall_back_to_shell(
-                    &request,
-                    "the session agent closed before accepting the attach",
-                );
+                return unreachable("the session agent closed before accepting the attach");
             }
         }
     };

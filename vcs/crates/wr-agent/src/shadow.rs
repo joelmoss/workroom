@@ -39,6 +39,12 @@ impl Shadow {
         self.0.as_ref().map(|t| t.replay()).unwrap_or_default()
     }
 
+    /// What to keep on disk for this screen (`crate::screens`): `replay()` without the parser
+    /// continuation.
+    pub fn record(&self) -> Vec<u8> {
+        self.0.as_ref().map(|t| t.record()).unwrap_or_default()
+    }
+
     pub fn visible_text(&self) -> String {
         self.0
             .as_ref()
@@ -57,6 +63,9 @@ impl Shadow {
     /// No shadow, so nothing to repaint: a reattaching client resumes the live stream, which is
     /// how the agent behaved before terminal state existed.
     pub fn replay(&self) -> Vec<u8> {
+        Vec::new()
+    }
+    pub fn record(&self) -> Vec<u8> {
         Vec::new()
     }
     pub fn visible_text(&self) -> String {

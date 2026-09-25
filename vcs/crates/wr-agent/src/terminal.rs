@@ -298,6 +298,17 @@ impl ShadowTerminal {
     /// The bytes to send a client that has just attached, so it sees what the session looks like
     /// instead of a blank screen. See the module doc for why this is four pieces and not one.
     pub fn replay(&self) -> Vec<u8> {
+        let mut out = self.record();
+        // Last: the continuation leaves the client's parser mid-sequence, exactly as the
+        // producer's is, so the bytes that arrive next complete it instead of printing as text.
+        out.extend_from_slice(&self.continuation());
+        out
+    }
+
+    /// `replay()` without the parser continuation: the record kept on disk (`crate::screens`).
+    /// Nothing will ever complete a continuation in a record, and the notice written after one
+    /// would.
+    pub fn record(&self) -> Vec<u8> {
         // The primary screen first, then re-entering the alt screen, then the alt screen's own
         // paint below — the order a real session produced them in.
         let mut out = match self.primary_screen() {
@@ -323,10 +334,6 @@ impl ShadowTerminal {
         }
 
         out.extend_from_slice(&self.cursor_position());
-
-        // Last: the continuation leaves the client's parser mid-sequence, exactly as the
-        // producer's is, so the bytes that arrive next complete it instead of printing as text.
-        out.extend_from_slice(&self.continuation());
         out
     }
 
@@ -594,6 +601,28 @@ mod tests {
             client.visible_text().contains("line 0"),
             "the oldest line did not survive into the client's history"
         );
+    }
+
+    /// A record is the replay without its continuation: the screen, both screens when a program
+    /// is on the alternate one, and nothing left open for the notice written after it to complete.
+    #[test]
+    fn a_record_is_the_screen_without_a_continuation() {
+        let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+        producer.write(b"shell history\r\n\x1b[?1049h\x1b[HFULL-SCREEN\x1b[3");
+        let record = producer.record();
+        assert!(
+            producer.replay().ends_with(b"\x1b[3"),
+            "fixture has no continuation"
+        );
+        assert!(producer.replay().starts_with(&record));
+        assert!(!record.ends_with(b"\x1b[3"), "a continuation was kept");
+
+        let mut client = ShadowTerminal::new(80, 24).expect("client");
+        client.write(&record);
+        assert_eq!(client.mode(modes::ALT_SCREEN), Some(true));
+        assert!(client.visible_text().contains("FULL-SCREEN"));
+        client.write(b"\x1b[?1049l");
+        assert!(client.visible_text().contains("shell history"));
     }
 
     /// A session with nothing scrolled off must not gain phantom history.

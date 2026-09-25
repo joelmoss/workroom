@@ -773,6 +773,38 @@ fn no_spawn_falls_back_to_a_shell_instead_of_starting_an_agent() {
     assert!(!spawned, "an agent was started despite --no-spawn");
 }
 
+/// A restored pane on a remote host (`--no-spawn --no-create`) with no agent listening yet exits
+/// 255, so the app attaches it again. After a reboot sshd can accept before the supervisor's agent
+/// binds, and a shell here would be a live one hiding the session's last screen (#232).
+#[test]
+fn a_restored_remote_pane_with_no_agent_yet_exits_255_to_be_retried() {
+    let dir = scratch("no-agent-yet");
+    let socket = dir.join("a.sock");
+    let (output, status) = attach_with_args(
+        &["--no-spawn", "--no-create"],
+        &[
+            (
+                "WORKROOM_SESSION_ID",
+                "6B9B968D-0BD7-4172-850A-A373DA73BC77",
+            ),
+            ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+            ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+            ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+            (
+                "WORKROOM_SESSION_COMMAND",
+                "echo FELL-BACK fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
+            ),
+        ],
+        None,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(status, Some(255), "got: {output:?}");
+    assert!(
+        !output.contains("FELL-BACK"),
+        "a shell was started: {output:?}"
+    );
+}
+
 /// `--no-create` (a restored pane): a session the agent does not hold is refused, not created,
 /// and the pane becomes a shell that says so. Created instead, it would be a fresh shell passed off
 /// as the one that was running there.

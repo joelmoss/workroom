@@ -442,6 +442,77 @@ fn a_reattaching_client_gets_a_full_screen_programs_screen() {
     let _ = agent.wait();
 }
 
+/// A reboot, as the agent sees one (#232): it and every shell die at once, with no chance to write
+/// anything, and a new agent starts over the same records. A restored pane (`--no-create`) is shown
+/// the full-screen program's last screen with the notice, and stays that way: frozen, not a shell.
+#[test]
+fn a_restored_pane_is_shown_its_last_screen_after_a_reboot() {
+    if !has_terminal_state() {
+        eprintln!("skipping: agent built without the terminal-state feature");
+        return;
+    }
+
+    let workspace = Workspace::new("reboot");
+    let socket = workspace.socket();
+    let records = workspace.dir.join("screens");
+    let flags = [std::ffi::OsStr::new("--screens"), records.as_os_str()];
+    let session = "3e3e3e3e-4f4f-5a5a-6b6b-7c7c7c7c7c7c";
+    let record = records.join(format!("{session}.vt"));
+
+    let mut agent = start_agent_with(&socket, &flags);
+    let mut first = attach(&socket, session);
+    {
+        let stdin = first.stdin.as_mut().expect("stdin");
+        std::thread::sleep(Duration::from_millis(400));
+        stdin
+            .write_all(b"printf '\\033[?1049h\\033[H%s-%s\\n' LAST SCREEN; sleep 30\n")
+            .expect("write");
+        stdin.flush().expect("flush");
+    }
+    let mut reader = ClientReader::new(&mut first);
+    let seen = reader.read_until("LAST-SCREEN", Duration::from_secs(10));
+    assert!(seen.contains("LAST-SCREEN"), "setup failed; got {seen:?}");
+    assert!(
+        wait_for(Duration::from_secs(10), || std::fs::read(&record)
+            .is_ok_and(
+                |bytes| String::from_utf8_lossy(&bytes).contains("LAST-SCREEN")
+            )),
+        "the screen was never written to {}",
+        record.display()
+    );
+
+    // SIGKILL: the agent writes nothing more, and closing its ptys hangs up every shell.
+    agent.kill().expect("kill agent");
+    agent.wait().expect("reap agent");
+    let _ = first.kill();
+    let _ = first.wait();
+
+    // The dead agent's socket file is still there, and `start_agent_with` waits for the file. Left
+    // in place, the restored attach could reach it first, find nobody, and spawn an agent of its
+    // own that keeps no records.
+    std::fs::remove_file(&socket).expect("remove the dead agent's socket");
+    let _agent = start_agent_with(&socket, &flags);
+    let mut restored = attach_with(&socket, session, &["--no-create"]);
+    let mut reader = ClientReader::new(&mut restored);
+    let seen = reader
+        .read_until("Close it to start again", Duration::from_secs(10))
+        .to_string();
+    assert!(
+        seen.contains("LAST-SCREEN") && seen.contains("Close it to start again"),
+        "the restored pane was not shown its last screen; got {seen:?}"
+    );
+    // Frozen: the client stays attached to the record, and nothing was created behind it.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        restored.try_wait().expect("wait").is_none(),
+        "the restored pane exited instead of showing the record"
+    );
+    assert!(
+        !list_sessions(&socket).contains(session),
+        "a session was created for a pane that asked only for what exists"
+    );
+}
+
 /// `PersistentSessionService.attachCommand()` builds the command line as `<binary> attach` with no
 /// arguments — everything else is environment. So the agent has to be drivable that way, or the
 /// Swift side needs a special case for which backend it picked.
