@@ -963,6 +963,401 @@ impl Fixture {
     }
 }
 
+/// The supervised agent's pid on the fixture. Its argv0 is the installed binary beside the socket
+/// (#231): `/run/workroom/wr-agent`, or the staged `/run/workroom/wr-agent.new.<pid>` a hand-off
+/// exec'd, which the install then renamed into place.
+const SUPERVISED_AGENT: &str = "pgrep -f '^/run/workroom/wr-agent[^ ]* serve'";
+/// Where the app installs the agent on the fixture: beside the socket (#231).
+const INSTALLED_AGENT: &str = "/run/workroom/wr-agent";
+
+/// One POSIX shell word, as `AgentBootstrap` quotes for the host's shell.
+fn sh_quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// SHA-256 as `sha256sum` prints it, of a file on THIS machine (a Mac has `shasum`, not
+/// `sha256sum`).
+fn sha256_hex(path: &Path) -> String {
+    let output = Command::new("sh")
+        .args([
+            "-c",
+            "sha256sum \"$1\" 2>/dev/null || shasum -a 256 \"$1\"",
+            "sha",
+        ])
+        .arg(path)
+        .output()
+        .expect("hash");
+    String::from_utf8_lossy(&output.stdout)[..64].to_string()
+}
+
+/// The value of a `WRB <key> …` line in a bootstrap script's output.
+fn reported(output: &str, key: &str) -> Option<String> {
+    output
+        .lines()
+        .filter_map(|line| line.strip_prefix("WRB "))
+        .find_map(|line| {
+            line.strip_prefix(key)
+                .and_then(|rest| rest.strip_prefix(' '))
+        })
+        .map(str::to_string)
+}
+
+impl Fixture {
+    /// One of the app's far-side scripts (`macapp/Resources/agent-bootstrap`), run on the
+    /// fixture the way `AgentBootstrap` runs it: `sh -c '<script>' <name> <args>`, with `stdin`
+    /// piped in. Returns the exit status and what it printed, stderr after stdout.
+    fn bootstrap(&self, name: &str, args: &[&str], stdin: Option<&Path>) -> (Option<i32>, String) {
+        let script = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../macapp/Resources/agent-bootstrap")
+                .join(format!("{name}.sh")),
+        )
+        .expect("the app's bootstrap script");
+        let mut command = format!("sh -c {} {name}", sh_quoted(&script));
+        for arg in args {
+            command.push(' ');
+            command.push_str(&sh_quoted(arg));
+        }
+        let mut ssh = self.ssh();
+        ssh.arg(command);
+        match stdin {
+            Some(path) => {
+                ssh.stdin(std::fs::File::open(path).expect("open stdin"));
+            }
+            None => {
+                ssh.stdin(Stdio::null());
+            }
+        }
+        let output = ssh.output().expect("run ssh");
+        (
+            output.status.code(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    }
+
+    /// The supervised agent's pid, once there is exactly one.
+    fn supervised_agent(&self) -> u32 {
+        let pid = std::cell::Cell::new(None);
+        assert!(
+            self.wait_for(&format!("{SUPERVISED_AGENT} || true"), |out| {
+                pid.set(out.trim().parse::<u32>().ok());
+                pid.get().is_some()
+            }),
+            "no supervised agent is running"
+        );
+        pid.get().expect("pid")
+    }
+}
+
+/// A pane as the app runs one on a remote host (#229): `wr-agent attach --no-spawn` over ssh,
+/// its stdin and stdout piped here. No terminal on this side, so ssh allocates none on the host
+/// either, and the attach there relays over pipes.
+struct Pane {
+    child: Child,
+    stdin: ChildStdin,
+    reader: FdStream,
+    _stdout: ChildStdout,
+    seen: Vec<u8>,
+}
+
+impl Pane {
+    fn attach(fixture: &Fixture, session: &str, restored: bool) -> Pane {
+        let mut command = fixture.ssh();
+        command.arg(format!(
+            "env WORKROOM_SESSION_ID={session} WORKROOM_SESSION_SOCKET={} \
+             WORKROOM_SESSION_CWD=/home/workroom TERM=xterm-256color {INSTALLED_AGENT} attach \
+             --no-spawn{}",
+            fixture.socket,
+            if restored { " --no-create" } else { "" }
+        ));
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn pane");
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = child.stdout.take().expect("stdout");
+        let reader = FdStream::new(stdout.as_raw_fd());
+        set_nonblocking(&reader).expect("non-blocking pane stdout");
+        Pane {
+            child,
+            stdin,
+            reader,
+            _stdout: stdout,
+            seen: Vec::new(),
+        }
+    }
+
+    fn type_line(&mut self, line: &str) {
+        self.stdin.write_all(line.as_bytes()).expect("type");
+        self.stdin.write_all(b"\n").expect("type");
+        self.stdin.flush().expect("flush");
+    }
+
+    fn read_until(&mut self, needle: &str, timeout: Duration) -> String {
+        let deadline = Instant::now() + timeout;
+        let mut buffer = [0u8; 65536];
+        while Instant::now() < deadline && !String::from_utf8_lossy(&self.seen).contains(needle) {
+            match self.reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => self.seen.extend_from_slice(&buffer[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
+        }
+        String::from_utf8_lossy(&self.seen).into_owned()
+    }
+
+    /// ssh's exit status, which is the attach's: the shell's own once it exits, or 255 for a lost
+    /// link. Stdin stays open until then, as a pane's does.
+    fn exit_code(&mut self, timeout: Duration) -> Option<i32> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                return status.code();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        None
+    }
+}
+
+/// SIGKILL to ssh: the link drops with no goodbye, and the session detaches.
+impl Drop for Pane {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The bootstrap's far side (#231), through the app's own scripts over ssh: a host with no agent
+/// gets this build installed and started; a host already holding it is pushed nothing; a host
+/// running another build is handed off to this one with an attached pane's shell, its pid and
+/// its exit code intact, and the pane comes back; and a binary that passes every check and then
+/// dies restoring is refused after the fact, leaving the old file for the supervisor to restart.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_the_bootstrap_installs_hands_off_and_survives_a_crashed_restore() {
+    let fixture = fixture();
+    let elf = PathBuf::from(
+        std::env::var("WR_SSH_FIXTURE_AGENT").expect("run.sh exports WR_SSH_FIXTURE_AGENT"),
+    );
+    let sha = sha256_hex(&elf);
+    let probe = |bundled: &str| {
+        // The same digest for both architectures: the container's is whichever this machine runs.
+        let (status, output) = fixture.bootstrap(
+            "probe",
+            &[INSTALLED_AGENT, &fixture.socket, "1", bundled, bundled],
+            None,
+        );
+        assert_eq!(status, Some(0), "probe: {output}");
+        output
+    };
+    let install = |binary: &Path| {
+        fixture.bootstrap(
+            "install",
+            &[INSTALLED_AGENT, &fixture.socket, "1", &sha256_hex(binary)],
+            Some(binary),
+        )
+    };
+
+    // A host holding this build already: the probe finds it, and the running agent is current.
+    let output = probe(&sha);
+    assert!(output.contains("WRB host Linux "), "{output}");
+    assert_eq!(
+        reported(&output, "installed").as_deref(),
+        Some(sha.as_str())
+    );
+    assert_eq!(
+        reported(&output, "hand-off").as_deref(),
+        Some("0 current"),
+        "{output}"
+    );
+
+    // A host with no agent: the file removed first, so the supervisor's loop finds nothing to
+    // restart once the agent is killed, and idles.
+    // By argv0, not `pkill -x wr-agent`: after a hand-off the process name is the staged file's.
+    fixture.run(&format!(
+        "rm -f {INSTALLED_AGENT}; {} || true",
+        SUPERVISED_AGENT.replace("pgrep", "pkill")
+    ));
+    assert!(
+        fixture.wait_for(&format!("{SUPERVISED_AGENT} || true"), |out| out
+            .trim()
+            .is_empty()),
+        "the supervisor kept an agent running with no binary"
+    );
+    let output = probe(&sha);
+    assert_eq!(
+        reported(&output, "installed").as_deref(),
+        Some("none"),
+        "{output}"
+    );
+    assert_eq!(
+        reported(&output, "hand-off").as_deref(),
+        Some("none"),
+        "{output}"
+    );
+    let (status, output) = install(&elf);
+    assert_eq!(status, Some(0), "install: {output}");
+    assert_eq!(
+        reported(&output, "outcome").as_deref(),
+        Some("installed"),
+        "{output}"
+    );
+    assert_eq!(
+        reported(&output, "serving").as_deref(),
+        Some("yes"),
+        "{output}"
+    );
+    fixture.run(&format!("wr-agent list --socket {}", fixture.socket));
+    fixture.run(&format!(
+        "test -x {INSTALLED_AGENT} && ! ls {INSTALLED_AGENT}.new.* 2>/dev/null"
+    ));
+    let agent = fixture.supervised_agent();
+
+    // A newer app: the same ELF with a byte appended, which the loader ignores and both hashes
+    // notice. A pane is attached throughout.
+    let newer = elf.with_file_name("wr-agent-newer");
+    let mut bytes = std::fs::read(&elf).expect("read the agent");
+    bytes.push(b'\n');
+    std::fs::write(&newer, &bytes).expect("write the newer agent");
+    let newer_sha = sha256_hex(&newer);
+    let session = "7b7b7b7b-0000-4000-8000-000000000001";
+    let mut pane = Pane::attach(&fixture, session, false);
+    std::thread::sleep(Duration::from_millis(500));
+    pane.type_line("echo SHELL=$$ MARK-$((40+2))");
+    let seen = pane.read_until("MARK-42", Duration::from_secs(10));
+    let shell = number_after(&seen, "SHELL=").unwrap_or_else(|| panic!("no shell pid in {seen:?}"));
+
+    let output = probe(&newer_sha);
+    assert_eq!(
+        reported(&output, "installed").as_deref(),
+        Some(sha.as_str())
+    );
+    assert_eq!(
+        reported(&output, "hand-off").as_deref(),
+        Some("none"),
+        "{output}"
+    );
+    let (status, output) = install(&newer);
+    assert_eq!(status, Some(0), "install: {output}");
+    assert_eq!(
+        reported(&output, "outcome").as_deref(),
+        Some("handed-off"),
+        "{output}"
+    );
+    assert_eq!(
+        fixture.supervised_agent(),
+        agent,
+        "the agent's pid must survive the hand-off"
+    );
+    fixture.run(&format!("kill -0 {shell}"));
+    // The pane's link to the agent ended with the exec, and it says so with ssh's own status for
+    // a dropped link, which the app answers by attaching it again as a restored one.
+    assert_eq!(pane.exit_code(Duration::from_secs(10)), Some(255));
+    drop(pane);
+
+    // Repainted by the new program, the same shell, and its exit code still reaches the pane.
+    let mut pane = Pane::attach(&fixture, session, true);
+    let seen = pane.read_until("MARK-42", Duration::from_secs(10));
+    assert!(
+        seen.contains("MARK-42"),
+        "the new program did not repaint; got {seen:?}"
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    pane.type_line("echo SHELL-NOW=$$; exit 7");
+    let seen = pane.read_until(&format!("SHELL-NOW={shell}"), Duration::from_secs(10));
+    assert!(
+        seen.contains(&format!("SHELL-NOW={shell}")),
+        "another shell answered: {seen:?}"
+    );
+    assert_eq!(pane.exit_code(Duration::from_secs(10)), Some(7));
+    drop(pane);
+
+    // The same build again pushes nothing: the probe finds the file, and the agent is current.
+    let output = probe(&newer_sha);
+    assert_eq!(
+        reported(&output, "installed").as_deref(),
+        Some(newer_sha.as_str())
+    );
+    assert_eq!(
+        reported(&output, "hand-off").as_deref(),
+        Some("0 current"),
+        "{output}"
+    );
+
+    // The one unrecoverable case: a binary that passes `protocol` and the restore check (both
+    // handed to the real agent, as is `hand-off` itself: the staged file is the hand-off client)
+    // and then dies as the new program. The hand-off reports it, the install refuses after the
+    // fact and leaves the on-disk file alone, and the supervisor restarts THAT, so the host
+    // recovers with a clean agent. The session is lost: its shell is hung up with its pty.
+    let session = "7b7b7b7b-0000-4000-8000-000000000002";
+    let mut pane = Pane::attach(&fixture, session, false);
+    std::thread::sleep(Duration::from_millis(500));
+    pane.type_line("echo SHELL=$$ MARK-$((40+3))");
+    let seen = pane.read_until("MARK-43", Duration::from_secs(10));
+    let shell = number_after(&seen, "SHELL=").unwrap_or_else(|| panic!("no shell pid in {seen:?}"));
+    drop(pane);
+    let dying = elf.with_file_name("wr-agent-dying");
+    std::fs::write(
+        &dying,
+        format!(
+            "#!/bin/sh\ncase $1 in protocol|handoff-check|hand-off) exec {INSTALLED_AGENT} \"$@\" ;; esac\nexit 70\n"
+        ),
+    )
+    .expect("write the dying agent");
+    let before = fixture.supervised_agent();
+    let started = Instant::now();
+    let (status, output) = install(&dying);
+    assert_eq!(status, Some(1), "install: {output}");
+    let outcome = reported(&output, "outcome").unwrap_or_default();
+    assert!(
+        outcome.starts_with("refused ") && outcome.contains("did not answer"),
+        "{output}"
+    );
+    assert!(
+        fixture.wait_for(&format!("{SUPERVISED_AGENT} || true"), |out| out
+            .trim()
+            .parse::<u32>()
+            .is_ok_and(|after| after != before)),
+        "the supervisor did not restart the agent after the crash"
+    );
+    let list = format!("wr-agent list --socket {} && echo SERVING", fixture.socket);
+    assert!(
+        fixture.wait_for(&list, |out| out.contains("SERVING")),
+        "the restarted agent never served"
+    );
+    let recovered = started.elapsed();
+    // The table is `socket.with_extension("handoff")`: `agent.handoff`, beside `agent.sock`.
+    fixture.run(&format!(
+        "test \"$(sha256sum {INSTALLED_AGENT} | cut -c1-64)\" = {newer_sha} \
+         && ! ls {INSTALLED_AGENT}.new.* 2>/dev/null && ! kill -0 {shell} 2>/dev/null \
+         && test ! -e {}.handoff",
+        fixture.socket.trim_end_matches(".sock")
+    ));
+    assert!(
+        !fixture
+            .run(&format!("wr-agent list --socket {}", fixture.socket))
+            .contains(session),
+        "the lost session came back"
+    );
+    // For the design doc's record of the one unrecoverable case.
+    println!(
+        "crashed restore: the supervisor served a clean agent {recovered:?} after the install \
+         was refused"
+    );
+    let _ = std::fs::remove_file(&newer);
+    let _ = std::fs::remove_file(&dying);
+}
+
 /// The number that follows `label` in terminal output, skipping the tty's echo of the command
 /// itself, which shows `label` followed by `$`.
 fn number_after(text: &str, label: &str) -> Option<u32> {
@@ -1162,14 +1557,15 @@ fn over_ssh_every_service_answers_through_the_relay() {
 #[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
 fn over_ssh_the_supervisor_restarts_a_crashed_agent() {
     let fixture = fixture();
-    // `^wr-agent serve` matches the supervised agent and never this command's own shell.
+    // Anchored on the supervisor's argv0, so it matches the supervised agent and never this
+    // command's own shell.
     let pid = |out: &str| out.trim().parse::<u32>().ok();
-    let before = pid(&fixture.run("pgrep -f '^wr-agent serve'"))
-        .expect("exactly one supervised agent is running");
+    let before =
+        pid(&fixture.run(SUPERVISED_AGENT)).expect("exactly one supervised agent is running");
 
     fixture.run(&format!("kill -KILL {before}"));
     assert!(
-        fixture.wait_for("pgrep -f '^wr-agent serve' || true", |out| pid(out)
+        fixture.wait_for(&format!("{SUPERVISED_AGENT} || true"), |out| pid(out)
             .is_some_and(|after| after != before)),
         "the supervisor did not restart the agent"
     );

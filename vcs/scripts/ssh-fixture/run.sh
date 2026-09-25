@@ -95,8 +95,10 @@ for attempt in $(seq 1 100); do
   sleep 0.2
 done
 
+# AGENT: the ELF itself, for the tests of the bootstrap that pushes it (#231). The app's tests
+# take it as their bundled agent, since a Debug build carries no Linux agent of its own.
 for pair in "CONFIG=$STAGE/ssh_config" "SOCKET=$SOCKET" "ADDRESS=127.0.0.1" "PORT=$PORT" \
-  "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY"; do
+  "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY" "AGENT=$STAGE/wr-agent"; do
   export "WR_SSH_FIXTURE_$pair" "TEST_RUNNER_WR_SSH_FIXTURE_$pair"
 done
 
