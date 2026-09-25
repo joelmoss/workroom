@@ -1030,7 +1030,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   **Terminal panes (#229).** A pane is a process libghostty spawns on its own pty, which a socketpair
   made in the app cannot become, so a pane does not use `openStream`. A driver that can host panes
   implements `HostTerminalDriver.attachCommand`. For ssh that runs
-  `ssh -t <host> 'env TERM=xterm-256color WORKROOM_SESSION_{ID,SOCKET,CWD}=… wr-agent attach
+  `ssh -t <host> 'env TERM=… WORKROOM_SESSION_{ID,SOCKET,CWD}=… wr-agent attach
   --no-spawn [--no-create]'`, the far side's attach client in the pty ssh allocates there.
   - *`--no-spawn`:* with no agent listening, a shell rather than a spawned agent. Only the
     supervisor starts one there.
@@ -1063,10 +1063,36 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     it and creates the session. The version hand-off (#230) and the bootstrap (#231) keep the
     host's agent current; a host whose agent predates hand-off, which the bootstrap leaves
     running, can still hand a restored pane a fresh shell.
-  - *Degraded, a follow-up to the bootstrap (#231 pushes only the agent):* `TERM` is
-    `xterm-256color`, since a host rarely has `xterm-ghostty` terminfo, and there is no shell
-    integration there (its resources are in the Mac's app bundle), so the title and footer do not
-    follow the shell.
+  - *Ghostty's terminfo and shell integration go with the agent (#239).* The bootstrap pushes the
+    set `Resources/ghostty/CHECKSUMS` lists (the `xterm-ghostty` terminfo and the per-shell
+    integration, about 70 KB), with `CHECKSUMS` itself, to `<directory of agentSocket>/ghostty`
+    (`resources.sh`). The probe reports the hash of the host's `CHECKSUMS` (`WRB resources`), and
+    the set is keyed by that hash, so the same build pushes nothing and a Ghostty pin bump that
+    changes the files pushes them again. The push stages the files (`dd bs=1`, which reads exactly
+    a file's bytes from the stream, where `head -c` may read ahead), checks them with
+    `sha256sum -c CHECKSUMS`, copies each terminfo entry from macOS's hex directory
+    (`terminfo/78/xterm-ghostty`) to the letter directory Linux's ncurses reads
+    (`terminfo/x/xterm-ghostty`; verified on the fixture's Debian: the hex layout alone is not
+    found, and the macOS-compiled entry reads fine once it is), and renames the set into place.
+    It is one fixed directory updated in place, not one per set, because running shells keep
+    `TERMINFO` and `ZDOTDIR` paths into it. A failed push is reported in the outcome and never
+    fails the connect. The attach decides on the host as it starts: with the set there, `TERM` is
+    `xterm-ghostty` with `TERMINFO` and `WORKROOM_SESSION_RESOURCES` pointing at it and
+    `GHOSTTY_SHELL_FEATURES=cursor,title` (Ghostty's defaults less `path`, which needs the `ghostty`
+    binary on the host); without it, `xterm-256color` and no integration, as before. So the title
+    follows the shell (OSC 133 and OSC 2).
+  - *`sudo` on the host loses the terminfo.* `sudo` keeps `TERM` and drops `TERMINFO`, so under
+    it `xterm-ghostty` is an unknown terminal (`sudo vim`, `sudo -i` then `clear`; measured on the
+    fixture's Debian), where `xterm-256color` worked. A local pane has the same gap, since macOS
+    has no system `xterm-ghostty` either and the app leaves Ghostty's `sudo` feature off. That
+    feature (`sudo --preserve-env=TERMINFO`) would cover `sudo` to root, not `sudo -u` another
+    user (the set is in the ssh user's 0700 directory) or `su -`, and a `sudoers` that refuses
+    to preserve the variable would fail the command outright. Undecided; off for now.
+  - *The footer's working directory does not follow a remote shell yet.* The integration reports
+    it (OSC 7, `kitty-shell-cwd://$HOST$PWD`), but libghostty drops a report whose host is not
+    this Mac's ("OSC 7 host must be local"), and faking the host would put a remote path where
+    ⌘-click resolves files against the Mac's disk. The host's agent already knows each session's
+    working directory (`SessionInfo.cwd`); carrying that to the pane is the follow-up.
   - *Not persisted:* a session is marked remote in memory (`registerRemoteSession`). Phase 4's
     remote workrooms re-register their panes on relaunch.
   - *An SDK-exec driver has no command to hand libghostty.* It needs a local bridge process, which
@@ -2229,7 +2255,7 @@ disagreement passes every test on either side alone while presenting as an empty
       as if the shell had ended; it exits 255 now (below).
 
     **As built (#231, `Core/Session/AgentBootstrap.swift` and
-    `Resources/agent-bootstrap/{probe,install}.sh`).** `AgentBootstrap.connect` is the way to a
+    `Resources/agent-bootstrap/{probe,install}.sh`, and `resources.sh` since #239).** `AgentBootstrap.connect` is the way to a
     remote host's services: the bootstrap, then `openStream` and the negotiation. Nothing else
     should open a service stream to a host; no production path does yet (Phase 4's), and the
     fixture tests go through it.

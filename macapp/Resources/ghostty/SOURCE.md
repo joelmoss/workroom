@@ -15,6 +15,12 @@
   break the theme picker. Its provenance is recorded separately in `themes/SOURCE.md` +
   `themes/CHECKSUMS`, and it is deliberately NOT covered by the `CHECKSUMS` file in this directory.
 
+**`CHECKSUMS` is also the remote set's key (#239).** `AgentBootstrap` pushes exactly the files it
+lists, and `CHECKSUMS` itself, to a remote host so its panes get the same terminfo and integration,
+and it pushes again whenever the hash of `CHECKSUMS` differs from the host's. So a file added under
+`terminfo/` or `shell-integration/` reaches remote hosts only once `CHECKSUMS` lists it, which
+`GhosttyResourcesTests` already requires.
+
 ## Provenance
 
 The `libghostty-spm` package ships no terminfo or shell-integration, so both are vendored here (once,

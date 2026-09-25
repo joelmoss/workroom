@@ -67,11 +67,15 @@ final class AgentBootstrapTests: XCTestCase {
     architecture == "aarch64" ? agentFile : nil
   }
 
+  /// The bootstrap with no Ghostty resource set, so each stub answers the agent's exchanges only;
+  /// the set's own tests pass one.
   private func ensure(
-    _ driver: StubDriver, agent: ((String) -> URL?)? = nil, handOff: Bool = true
+    _ driver: StubDriver, agent: ((String) -> URL?)? = nil, handOff: Bool = true,
+    resources: URL? = nil
   ) async throws -> AgentBootstrap.Outcome {
     try await AgentBootstrap.ensure(
-      host: host, driver: driver, socket: socket, agent: agent ?? bundled(_:), handOff: handOff)
+      host: host, driver: driver, socket: socket, agent: agent ?? bundled(_:), handOff: handOff,
+      resources: resources)
   }
 
   private func probe(installed: String, handOff: String) -> StubDriver.Answer {
@@ -86,9 +90,12 @@ final class AgentBootstrapTests: XCTestCase {
     let outcome = try await ensure(driver)
     XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: true, agent: .installed))
     XCTAssertEqual(driver.commands.count, 2)
-    // The probe carries the bundled digest per architecture, and `-` for one this build lacks.
+    // The probe carries the bundled digest per architecture, `-` for one this build lacks, and
+    // where the Ghostty resource set goes.
     XCTAssertTrue(driver.commands[0].contains("'probe' '/run/workroom/wr-agent' "))
-    XCTAssertTrue(driver.commands[0].hasSuffix("'1' '\(digest)' '-'"), driver.commands[0])
+    XCTAssertTrue(
+      driver.commands[0].hasSuffix("'1' '\(digest)' '-' '/run/workroom/ghostty'"),
+      driver.commands[0])
     // The install carries the digest, for the host to check what arrived against.
     XCTAssertTrue(driver.commands[1].contains("'install' '/run/workroom/wr-agent' "))
     XCTAssertTrue(driver.commands[1].hasSuffix("'1' '\(digest)'"), driver.commands[1])
@@ -322,18 +329,58 @@ final class AgentBootstrapTests: XCTestCase {
     let mac = StubDriver([.init(output: "WRB host Darwin arm64\nWRB installed none\n")])
     do {
       _ = try await AgentBootstrap.connect(
-        host: host, driver: mac, socket: socket, agent: bundled(_:), handOff: true)
+        host: host, driver: mac, socket: socket, agent: bundled(_:), handOff: true,
+        resources: nil)
       XCTFail("connected to a Mac")
     } catch AgentBootstrap.Error.unsupportedHost {}
     XCTAssertEqual(mac.commands.count, 1)
     let current = StubDriver([probe(installed: digest, handOff: "0 current")])
     do {
       _ = try await AgentBootstrap.connect(
-        host: host, driver: current, socket: socket, agent: bundled(_:), handOff: true)
+        host: host, driver: current, socket: socket, agent: bundled(_:), handOff: true,
+        resources: nil)
       XCTFail("the stub's openStream answered")
     } catch HostDriverError.notImplemented(let what) {
       XCTAssertEqual(what, "openStream")
     }
+  }
+
+  /// The Ghostty resource set (#239) is keyed by the hash of its `CHECKSUMS`: a host the probe
+  /// finds holding it is pushed nothing, one without it gets every file the manifest lists and the
+  /// manifest itself, and a push that fails is reported without failing the connect.
+  func testTheResourceSetIsPushedOnlyToAHostWithoutIt() async throws {
+    let bundle = try XCTUnwrap(GhosttyResources.bundledURL)
+    let set = try AgentBootstrap.digest(of: bundle.appendingPathComponent("CHECKSUMS"))
+    let resources = "WRB resources \(set)\n"
+    let current = StubDriver([
+      .init(output: probe(installed: digest, handOff: "0 current").output + resources)
+    ])
+    let kept = try await ensure(current, resources: bundle)
+    XCTAssertEqual(kept.resources, .current)
+    XCTAssertEqual(current.commands.count, 1)
+    XCTAssertTrue(
+      current.commands[0].hasSuffix(" '-' '/run/workroom/ghostty'"), current.commands[0])
+
+    let empty = StubDriver([
+      probe(installed: digest, handOff: "0 current"),
+      .init(output: "WRB received\nWRB outcome installed\n"),
+    ])
+    let pushed = try await ensure(empty, resources: bundle)
+    XCTAssertEqual(pushed.resources, .pushed)
+    XCTAssertEqual(pushed.agent, .current)
+    let command = empty.commands[1]
+    XCTAssertTrue(command.contains("'resources' '/run/workroom/ghostty' "), command)
+    XCTAssertTrue(command.contains(" 'terminfo/78/xterm-ghostty' "), command)
+    XCTAssertTrue(command.contains(" 'shell-integration/zsh/.zshenv' "), command)
+    XCTAssertTrue(command.hasSuffix(" 'CHECKSUMS'"), command)
+
+    let failing = StubDriver([
+      probe(installed: digest, handOff: "0 current"),
+      .init(output: "WRB received\nWRB outcome corrupt\n", status: 1),
+    ])
+    let failed = try await ensure(failing, resources: bundle)
+    XCTAssertEqual(failed.resources, .notPushed("corrupt"))
+    XCTAssertEqual(failed.agent, .current)
   }
 
   /// The bundled binary's digest is the one `sha256sum` prints (the SHA-256 of "abc", FIPS 180-2),
@@ -383,7 +430,7 @@ final class AgentBootstrapTests: XCTestCase {
 
   /// The scripts ship in the bundle, and parse.
   func testTheFarSideScriptsAreBundledAndParse() throws {
-    for name in ["probe", "install"] {
+    for name in ["probe", "install", "resources"] {
       let script = try AgentBootstrap.script(named: name)
       XCTAssertTrue(script.hasPrefix("#!/bin/sh\n"), name)
       let (status, output) = try SessionBackendProbe.run(
@@ -560,12 +607,12 @@ final class AgentBootstrapTests: XCTestCase {
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: host.binary)
   }
 
-  private func ensure(_ host: LocalHost, bundling build: URL, handOff: Bool = true) async throws
-    -> AgentBootstrap.Outcome
-  {
+  private func ensure(
+    _ host: LocalHost, bundling build: URL, handOff: Bool = true, resources: URL? = nil
+  ) async throws -> AgentBootstrap.Outcome {
     try await AgentBootstrap.ensure(
       host: self.host, driver: host.driver, socket: host.socket,
-      agent: { $0 == "aarch64" ? build : nil }, handOff: handOff)
+      agent: { $0 == "aarch64" ? build : nil }, handOff: handOff, resources: resources)
   }
 
   /// The installed file's digest, and that no staged copy was left beside it.
@@ -612,6 +659,20 @@ final class AgentBootstrapTests: XCTestCase {
     XCTAssertEqual(
       outcome,
       .init(architecture: "aarch64", pushed: false, agent: .keptOlder("the host has no sha256sum")))
+  }
+
+  /// A host that cannot hash is not pushed the resource set either (#239), whether or not one is
+  /// there: the push would be refused on every connect for the same reason.
+  func testTheRealProbeKeepsTheResourceSetOffAHostThatCannotHash() async throws {
+    let host = try localHost(sha256sum: false)
+    try preinstall(try standIn(), on: host)
+    try listen(on: host)
+    let outcome = try await ensure(
+      host, bundling: try standIn(), resources: try XCTUnwrap(GhosttyResources.bundledURL))
+    XCTAssertEqual(outcome.resources, .notPushed("the host has no sha256sum"))
+    XCTAssertFalse(
+      try FileManager.default.contentsOfDirectory(atPath: host.directory.path)
+        .contains { $0.hasPrefix("ghostty") })
   }
 
   /// Refuse rather than kill: a build the running agent refuses, or one that does not run on the
@@ -694,5 +755,48 @@ final class AgentBootstrapTests: XCTestCase {
       XCTAssertEqual(AgentBootstrap.parseInstall(output).outcome.joined(separator: " "), said)
       XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: host.directory.path), [])
     }
+  }
+
+  /// The real probe and push against this Mac's `sh` (#239): the set lands beside the socket with
+  /// every entry also in the letter directory Linux's ncurses looks under, the same build again
+  /// pushes nothing, and a push that arrives short leaves the set that was there.
+  func testTheRealScriptsPushTheResourceSetOnceAndKeepItWhole() async throws {
+    let host = try localHost()
+    let build = try standIn()
+    let bundle = try XCTUnwrap(GhosttyResources.bundledURL)
+    let first = try await ensure(host, bundling: build, resources: bundle)
+    XCTAssertEqual(first.resources, .pushed)
+    let set = host.directory.appendingPathComponent("ghostty")
+    for path in [
+      "CHECKSUMS", "terminfo/78/xterm-ghostty", "terminfo/x/xterm-ghostty", "terminfo/g/ghostty",
+      "shell-integration/zsh/.zshenv", "shell-integration/bash/ghostty.bash",
+    ] {
+      XCTAssertEqual(
+        FileManager.default.contents(atPath: set.appendingPathComponent(path).path),
+        FileManager.default.contents(
+          atPath: bundle.appendingPathComponent(
+            path.replacingOccurrences(of: "/x/", with: "/78/")
+              .replacingOccurrences(of: "/g/", with: "/67/")
+          ).path), path)
+    }
+    XCTAssertFalse(
+      try FileManager.default.contentsOfDirectory(atPath: host.directory.path)
+        .contains { $0.hasPrefix("ghostty.") })
+    let again = try await ensure(host, bundling: build, resources: bundle)
+    XCTAssertEqual(again.resources, .current)
+
+    // A push cut short: the stream ends before the last file's bytes.
+    let script = try AgentBootstrap.script(named: "resources")
+    let command = (["sh", "-c", script, "resources", set.path, "4", "a", "4", "CHECKSUMS"])
+      .map(PosixShell.quoted).joined(separator: " ")
+    let stream = try await host.driver.exec(command, on: self.host)
+    let (status, output) = try await stream.communicate(Data("abcdCH".utf8), timeout: 10)
+    XCTAssertEqual(status, 1, output)
+    XCTAssertEqual(AgentBootstrap.parseInstall(output).outcome, ["truncated", "CHECKSUMS"])
+    let after = try await ensure(host, bundling: build, resources: bundle)
+    XCTAssertEqual(after.resources, .current)
+    XCTAssertFalse(
+      try FileManager.default.contentsOfDirectory(atPath: host.directory.path)
+        .contains { $0.hasPrefix("ghostty.") })
   }
 }

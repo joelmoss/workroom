@@ -191,7 +191,9 @@ x86_64-unknown-linux-musl`, which the release workflows install. `release.sh` as
 present and static, and the `agent-linux` CI job runs `protocol` on each under Linux.
 `AgentBootstrap.connect` (#231) pushes the matching one to a remote host on first connect, beside
 the agent's socket, and hands the running agent off to it; the far side is
-`Resources/agent-bootstrap/{probe,install}.sh`, run through `HostDriver.exec`. See the "As built
+`Resources/agent-bootstrap/{probe,install,resources}.sh`, run through `HostDriver.exec`. The same
+connect pushes Ghostty's terminfo and shell integration beside the agent (#239), so a remote pane
+runs as `xterm-ghostty` with the integration. See the "As built
 (#231)" section of the design doc, and `vcs/scripts/ssh-fixture/run.sh` for running its tests.
 
 The Zig toolchain and the pinned Ghostty engine come from `vcs/scripts/build-ghostty-vt.sh`

@@ -301,7 +301,49 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let again = try await AgentBootstrap.ensure(
       host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
       agent: { _ in fixture.agent }, handOff: true)
-    XCTAssertEqual(again, .init(architecture: again.architecture, pushed: false, agent: .current))
+    XCTAssertEqual(
+      again,
+      .init(
+        architecture: again.architecture, pushed: false, agent: .current, resources: .current))
+  }
+
+  /// A remote pane is a Ghostty terminal with the shell integration once the bootstrap has pushed
+  /// the resource set (#239): its `TERM` resolves on the host, and the shell reports its prompts
+  /// (OSC 133) and sets the title (OSC 2), which is what the pane's title follows. A host without
+  /// the set still gets a working `xterm-256color` pane.
+  func testARemotePaneHasGhosttysTerminfoAndShellIntegrationOnceTheSetIsPushed() async throws {
+    let fixture = try fixture()
+    let id = UUID()
+    let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
+    let outcome = try await AgentBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
+      agent: { _ in fixture.agent }, handOff: true)
+    XCTAssertTrue(
+      outcome.resources == .pushed || outcome.resources == .current,
+      String(describing: outcome.resources))
+
+    let pane = try Pane(
+      command: driver.attachCommand(
+        to: .remote(id), session: UUID(), workingDirectory: "/home/workroom", restored: false))
+    defer { pane.dropLink() }
+    Thread.sleep(forTimeInterval: 1)
+    pane.type("echo \"T=$TERM\"; infocmp -x \"$TERM\" >/dev/null && echo FOU\"\"ND\n")
+    let seen = pane.read(until: "FOUND")
+    XCTAssertTrue(seen.contains("T=xterm-ghostty"), seen)
+    XCTAssertTrue(seen.contains("FOUND"), seen)
+    XCTAssertTrue(seen.contains("\u{1b}]133;"), "no prompt marks: \(seen)")
+    XCTAssertTrue(seen.contains("\u{1b}]2;"), "no title: \(seen)")
+
+    try onHost(fixture, "rm -rf \(fixture.host.resources)")
+    let plain = try Pane(
+      command: driver.attachCommand(
+        to: .remote(id), session: UUID(), workingDirectory: "/home/workroom", restored: false))
+    defer { plain.dropLink() }
+    Thread.sleep(forTimeInterval: 1)
+    plain.type("echo \"T=$TERM\"; echo DO\"\"NE\n")
+    let fallback = plain.read(until: "DONE")
+    XCTAssertTrue(fallback.contains("T=xterm-256color"), fallback)
+    XCTAssertFalse(fallback.contains("\u{1b}]133;"), fallback)
   }
 
   /// A newer app reconnecting (#231): the host's agent is handed off to the pushed binary (#230)
