@@ -376,7 +376,8 @@ mod tests {
     }
 
     /// A new session under an id with a record replaces it at once, so a shell that exits before
-    /// its first write leaves nothing of the old one to show.
+    /// its first write leaves nothing of the old one to show. A create that loses to a live session
+    /// under the same id leaves that session's record alone.
     #[test]
     fn a_new_session_supersedes_its_ids_record() {
         let dir = scratch("supersede");
@@ -389,23 +390,32 @@ mod tests {
 
         let args = [
             std::ffi::OsString::from("-c"),
-            std::ffi::OsString::from("exit 0"),
+            std::ffi::OsString::from("sleep 5"),
         ];
-        sessions
-            .create(crate::session::SessionSpec {
-                id: ID,
-                program: std::ffi::OsStr::new("/bin/sh"),
-                argv0: None,
-                args: &args,
-                env: &[],
-                cwd: None,
-                columns: 80,
-                rows: 24,
-            })
-            .expect("create");
+        let spec = || crate::session::SessionSpec {
+            id: ID,
+            program: std::ffi::OsStr::new("/bin/sh"),
+            argv0: None,
+            args: &args,
+            env: &[],
+            cwd: None,
+            columns: 80,
+            rows: 24,
+        };
+        sessions.create(spec()).expect("create");
         assert!(
             screens.load(ID).is_none(),
             "the old record outlived its id's reuse"
+        );
+
+        screens.save(ID, 80, 24, b"the live session").expect("save");
+        assert!(
+            sessions.create(spec()).is_err(),
+            "a second session took the id"
+        );
+        assert!(
+            screens.load(ID).is_some(),
+            "a create that lost removed the live record"
         );
         sessions.kill_all();
         let _ = fs::remove_dir_all(&dir);
