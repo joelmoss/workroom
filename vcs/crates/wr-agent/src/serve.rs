@@ -433,7 +433,10 @@ fn dispatch(
                 // unset, so this connection's input and resizes go nowhere, and the pane shows the
                 // screen until its user closes it. Chunked, as `SessionStore::attach` chunks a
                 // repaint: `Frame::encode` panics above the frame cap.
-                if let Some(screen) = sessions.ended_screen(id, request.columns, request.rows) {
+                let ended = sessions
+                    .screens()
+                    .and_then(|screens| screens.render(id, request.columns, request.rows));
+                if let Some(screen) = ended {
                     let attached = Frame::control(FrameKind::Attached).encode();
                     if send(&Envelope::new(Service::Control, envelope.stream, attached).encode()) {
                         for chunk in screen.chunks(crate::session::READ_CHUNK) {

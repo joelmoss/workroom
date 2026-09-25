@@ -363,6 +363,65 @@ fn a_restored_pane_is_shown_the_record_of_a_session_that_ended_with_its_host() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The record dispatch chunks with `crate::session::READ_CHUNK`, precisely because `Frame::encode`
+/// PANICS above the protocol's frame cap rather than truncating (see the comment on that call
+/// site in `serve.rs`). A record wide enough that its repaint needs more than one 8 KiB frame must
+/// still arrive whole, not merely not panic.
+#[test]
+fn a_restored_pane_with_a_screen_over_one_frame_still_gets_it_whole() {
+    if !cfg!(feature = "terminal-state") {
+        eprintln!("skipping: built without the terminal-state feature, so no record repaints");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("wr-records-big-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let sessions = SessionStore::new();
+    sessions.keep_screens(Screens::open(&dir).expect("records"));
+    let id = SessionId([0x32; 16]);
+    let screens = sessions.screens().expect("screens");
+
+    // A grid wide and tall enough that redrawing every cell needs well over 8 KiB — one row of 200
+    // 'x's, on every one of 100 rows, each row positioned explicitly so the emulator cannot fold it
+    // into a single run.
+    let mut big = Vec::new();
+    for row in 1..=100u16 {
+        big.extend_from_slice(format!("\x1b[{row};1H").as_bytes());
+        big.extend_from_slice(&[b'x'; 200]);
+    }
+    big.extend_from_slice(b"RECORD-TAIL");
+    screens.save(id, 200, 100, &big).expect("record");
+
+    let (mut client, handle) = serve_over_pipe(sessions.clone());
+    client.handshake();
+    let restored = AttachRequest {
+        id: Some(id),
+        columns: 200,
+        rows: 100,
+        existing_only: true,
+        ..Default::default()
+    };
+    client.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Attach, restored.encode()),
+    );
+    let seen = client.read_until("Close it to start again", Duration::from_secs(10));
+    assert!(
+        seen.len() > 8192,
+        "the record fit in one frame; this test proves nothing about chunking. got {} bytes",
+        seen.len()
+    );
+    assert!(
+        seen.contains("RECORD-TAIL") && seen.contains("Close it to start again"),
+        "a multi-frame record arrived truncated or out of order; got {} bytes",
+        seen.len()
+    );
+
+    close(&client.writer);
+    let _ = handle.join();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A peer that is not an agent — an ssh banner, an MOTD, a login message — must be rejected, not
 /// waited on. This is the failure mode of a real ssh hop, where the remote shell prints before the
 /// agent ever starts.

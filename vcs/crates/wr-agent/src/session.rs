@@ -790,17 +790,18 @@ impl SessionStore {
     /// termination now scans the process table and waits out a shell's exit traps, and holding the
     /// store lock across that would stall every `list` and `attach` for the duration.
     pub fn kill(&self, id: SessionId) -> bool {
-        // Killing is how the app says its user closed the pane, and that ends a record too: of a
-        // session that ended with its host, or of this one.
-        if let Some(screens) = self.screens.get() {
-            screens.remove(id);
-        }
         let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
         let session = self
             .sessions
             .lock()
             .expect("session store poisoned")
             .remove(&id);
+        // Killing is how the app says its user closed the pane, and that ends a record too: of a
+        // session that ended with its host, or of this one. After the session leaves the map, so
+        // the screens thread cannot take it as live and write the record back.
+        if let Some(screens) = self.screens.get() {
+            screens.remove(id);
+        }
         match session {
             Some(session) => {
                 terminate(&[&session.pty]);
@@ -814,14 +815,14 @@ impl SessionStore {
     /// happens once and every shell gets its hangup at the same moment instead of each waiting out
     /// the one before it. That matters on quit, where this runs with the user watching.
     pub fn kill_all(&self) -> usize {
-        if let Some(screens) = self.screens.get() {
-            screens.remove_all();
-        }
         let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
         let ending: Vec<Session> = {
             let mut sessions = self.sessions.lock().expect("session store poisoned");
             sessions.drain().map(|(_, session)| session).collect()
         };
+        if let Some(screens) = self.screens.get() {
+            screens.remove_all();
+        }
         let ptys: Vec<&Arc<Pty>> = ending.iter().map(|session| &session.pty).collect();
         terminate(&ptys);
         ending.len()
@@ -841,17 +842,16 @@ impl SessionStore {
         self.screens.get()
     }
 
-    /// What a restored pane is shown for a session the agent does not hold but has a record of: a
-    /// session that ended with its host (`crate::screens`).
-    pub fn ended_screen(&self, id: SessionId, columns: u16, rows: u16) -> Option<Vec<u8>> {
-        self.screens.get()?.render(id, columns, rows)
-    }
-
     /// `(id, columns, rows, record)` for each session whose screen changed since it was last
     /// taken. Read under the session's attachment lock, as `frozen` reads a screen, so the size is
     /// the one the screen was drawn at.
+    ///
+    /// A session whose lock is not free within `RECORD_WAIT` is left for the next call. An attach
+    /// holds that lock for as long as a slow client takes its repaint, and one such session must
+    /// not hold up every other session's record.
     pub fn changed_screens(&self) -> Vec<(SessionId, u16, u16, Vec<u8>)> {
-        let parts: Vec<(SessionId, SessionParts)> = {
+        use std::sync::TryLockError;
+        let parts: Vec<(SessionId, SessionParts, Arc<AtomicBool>)> = {
             let sessions = self.sessions.lock().expect("session store poisoned");
             sessions
                 .values()
@@ -864,19 +864,28 @@ impl SessionStore {
                             Arc::clone(&session.shadow),
                             Arc::clone(&session.attached),
                         ),
+                        Arc::clone(&session.changed),
                     )
                 })
                 .collect()
         };
         parts
             .into_iter()
-            .map(|(id, (pty, shadow, attached))| {
-                let _held = attached.lock().unwrap_or_else(|e| e.into_inner());
+            .filter_map(|(id, (pty, shadow, attached), changed)| {
+                let held = until(Instant::now() + RECORD_WAIT, || match attached.try_lock() {
+                    Ok(guard) => Some(guard),
+                    Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+                    Err(TryLockError::WouldBlock) => None,
+                });
+                let Some(_held) = held else {
+                    changed.store(true, Ordering::Relaxed);
+                    return None;
+                };
                 let (columns, rows) = pty
                     .size()
                     .unwrap_or((crate::pty::DEFAULT_COLUMNS, crate::pty::DEFAULT_ROWS));
                 let record = shadow.lock().map(|s| s.record()).unwrap_or_default();
-                (id, columns, rows, record)
+                Some((id, columns, rows, record))
             })
             .collect()
     }
@@ -1030,10 +1039,16 @@ fn terminal_envelope(stream: u32, frame: Frame) -> Vec<u8> {
 /// to.
 /// How much output travels in one frame.
 ///
-/// The pty reader's buffer, and also the repaint's chunk size in `attach` — both must stay under
-/// the protocol's 1 MiB frame cap, which `Frame::encode` enforces with a panic rather than a
-/// truncation. Sharing one constant means the two paths cannot drift apart.
+/// The pty reader's buffer, and also the chunk size of a repaint: `attach`'s, and the one
+/// `serve::dispatch` sends a restored pane from a record. All of them must stay under the
+/// protocol's 1 MiB frame cap, which `Frame::encode` enforces with a panic rather than a
+/// truncation. Sharing one constant means those paths cannot drift apart.
 pub(crate) const READ_CHUNK: usize = 8192;
+
+/// How long `changed_screens` waits for a session's attachment lock. The reader holds it only
+/// around each read, so a busy session frees it within milliseconds; a repaint to a slow client
+/// can hold it for seconds.
+const RECORD_WAIT: Duration = Duration::from_millis(100);
 
 /// The slowest a peer may take its repaint before the agent gives up on it, in bytes per second.
 ///

@@ -80,8 +80,8 @@ impl Screens {
         self.dir.join(format!("{}.vt", id.to_hyphenated()))
     }
 
-    /// Replaces a session's record: temporary file, sync, rename, then sync the directory, which
-    /// is what makes the rename itself survive a reboot.
+    /// Replaces a session's record: temporary file, sync, rename. The rename survives a reboot
+    /// only once the directory is synced too, which `sync` does once for a tick's writes.
     pub fn save(&self, id: SessionId, columns: u16, rows: u16, screen: &[u8]) -> io::Result<()> {
         let path = self.path(id);
         if screen.len() > MAX_RECORD {
@@ -100,7 +100,11 @@ impl Screens {
             .open(&temporary)?;
         file.write_all(&encode(columns, rows, screen))?;
         file.sync_all()?;
-        fs::rename(&temporary, &path)?;
+        fs::rename(&temporary, &path)
+    }
+
+    /// Makes the renames of earlier `save`s durable.
+    pub fn sync(&self) -> io::Result<()> {
         File::open(&self.dir)?.sync_all()
     }
 
@@ -213,6 +217,9 @@ fn decode(bytes: &[u8]) -> Option<(u16, u16, &[u8])> {
 
 /// Keeps every session's record current for the life of the agent. Does nothing unless the store
 /// has records (`SessionStore::keep_screens`).
+///
+/// Writes at once, then every `INTERVAL`: the sessions a hand-off carried in get their records
+/// straight away, not a tick after `open` may have pruned them.
 pub fn spawn(sessions: SessionStore) {
     let spawned = std::thread::Builder::new()
         .name("screens".into())
@@ -220,8 +227,8 @@ pub fn spawn(sessions: SessionStore) {
             let mut written = HashSet::new();
             let mut failing = HashSet::new();
             loop {
-                std::thread::sleep(INTERVAL);
                 flush(&sessions, &mut written, &mut failing);
+                std::thread::sleep(INTERVAL);
             }
         });
     if let Err(e) = spawned {
@@ -241,6 +248,7 @@ fn flush(
     let Some(screens) = sessions.screens() else {
         return;
     };
+    let mut saved = false;
     for (id, columns, rows, screen) in sessions.changed_screens() {
         if screen.is_empty() {
             continue;
@@ -249,6 +257,7 @@ fn flush(
             Ok(()) => {
                 written.insert(id);
                 failing.remove(&id);
+                saved = true;
             }
             Err(e) => {
                 // Tried again next tick, not only after more output: a program waiting for input
@@ -261,6 +270,11 @@ fn flush(
                     );
                 }
             }
+        }
+    }
+    if saved {
+        if let Err(e) = screens.sync() {
+            eprintln!("wr-agent: could not sync the screens directory: {e}");
         }
     }
     // After the writes, so a session killed while its screen was being written loses the record
@@ -279,6 +293,8 @@ fn flush(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "terminal-state")]
+    use std::ffi::{OsStr, OsString};
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("wr-screens-{name}-{}", std::process::id()));
@@ -431,6 +447,108 @@ mod tests {
         assert!(text.contains("FULL-SCREEN-PROGRAM"), "{text:?}");
         assert!(text.contains(NOTICE), "{text:?}");
         assert!(screens.render(SessionId([9u8; 16]), 100, 30).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A zero size means "the client has none yet" — `run_attach` reports that before it knows its
+    /// own terminal's geometry — and `render` must not resize the shadow down to it. The record's
+    /// own size is what gets used instead.
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn render_with_no_client_size_keeps_the_records_own() {
+        let dir = scratch("norequestedsize");
+        let screens = Screens::open(&dir).expect("open");
+        let mut shadow = Shadow::new(40, 10);
+        shadow.write(b"RECORDED-AT-40x10");
+        screens.save(ID, 40, 10, &shadow.record()).expect("save");
+
+        let painted = screens.render(ID, 0, 0).expect("render");
+        let mut client = Shadow::new(40, 10);
+        client.write(&painted);
+        assert!(client.visible_text().contains("RECORDED-AT-40x10"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The module doc: "A record goes when its session ends while the agent runs." That is
+    /// `flush`'s cleanup half, not `SessionStore::kill` — the shell exits on its own, nobody closes
+    /// the pane, and the NEXT tick is what notices the id is no longer live and drops its record.
+    #[test]
+    fn a_session_that_ends_while_the_agent_runs_loses_its_record_on_the_next_tick() {
+        let dir = scratch("endedwhilerunning");
+        let screens = Screens::open(&dir).expect("open");
+        let sessions = SessionStore::new();
+        sessions.keep_screens(screens);
+        let live = sessions.screens().expect("screens");
+        live.save(ID, 80, 24, b"was-on-screen").expect("save");
+
+        // `written` simulates an earlier tick having written this id's record; `sessions` holds no
+        // session for it, exactly as if the shell had already exited on its own.
+        let mut written: HashSet<SessionId> = [ID].into_iter().collect();
+        let mut failing = HashSet::new();
+        flush(&sessions, &mut written, &mut failing);
+
+        assert!(
+            live.load(ID).is_none(),
+            "a session that ended kept its record"
+        );
+        assert!(!written.contains(&ID));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `flush`'s error arm: a write that fails is retried on the very next tick (via
+    /// `sessions.mark_changed`) rather than only after more output, and the session leaves
+    /// `failing` once a write finally lands.
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_failing_write_is_retried_and_clears_once_it_succeeds() {
+        // Root writes through a read-only directory, so there is no failure to retry.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: running as root");
+            return;
+        }
+        let dir = scratch("writefails");
+        let screens = Screens::open(&dir).expect("open");
+        // No write permission left on the directory, so `save`'s temporary file cannot be created.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).expect("chmod");
+        let sessions = SessionStore::new();
+        sessions.keep_screens(screens);
+
+        let args = vec![
+            OsString::from("-c"),
+            OsString::from("echo screen-content; sleep 5"),
+        ];
+        sessions
+            .create(crate::session::SessionSpec {
+                id: ID,
+                program: OsStr::new("/bin/sh"),
+                argv0: None,
+                args: &args,
+                env: &[],
+                cwd: None,
+                columns: 80,
+                rows: 24,
+            })
+            .expect("create");
+        std::thread::sleep(Duration::from_millis(400));
+
+        let mut written = HashSet::new();
+        let mut failing = HashSet::new();
+        flush(&sessions, &mut written, &mut failing);
+        assert!(failing.contains(&ID), "a failed write was not tracked");
+        assert!(!written.contains(&ID));
+        assert!(
+            sessions.screens().expect("screens").load(ID).is_none(),
+            "a failed write still left a record"
+        );
+
+        // Fixed now: `mark_changed` in the error arm means the next tick tries again with no new
+        // output needed.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).expect("chmod back");
+        flush(&sessions, &mut written, &mut failing);
+        assert!(written.contains(&ID), "the recovered write was not retried");
+        assert!(!failing.contains(&ID), "failing was not cleared on success");
+
+        sessions.kill_all();
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -25,11 +25,13 @@ AGENT=/run/workroom/wr-agent
 install -o workroom -g workroom -m 700 /usr/local/bin/wr-agent "$AGENT"
 
 # `--idle-timeout never`: a remote agent must keep running with no client attached, because its
-# BUSY/IDLE reports have to keep flowing while the Mac sleeps. `--screens`: each session's screen
-# is kept, so a pane that reattaches after the box reboots is shown its last one (#232). In the home
-# directory, never beside the socket: /run is tmpfs on a real host, so a reboot would take them. Run as the ssh user, so the relay
+# BUSY/IDLE reports have to keep flowing while the Mac sleeps. Run as the ssh user, so the relay
 # that user runs can reach the socket. `env -i`, because the agent's environment is what every git
 # it runs gets (the app sends none from the Mac), and this script's own holds AUTHORIZED_KEY.
+#
+# `--screens`: each session's screen is kept, so a pane that reattaches after the box reboots is
+# shown its last one (#232). In the home directory, never beside the socket: /run is tmpfs on a real
+# host, so a reboot would take them.
 (
   while :; do
     if [ -x "$AGENT" ]; then
