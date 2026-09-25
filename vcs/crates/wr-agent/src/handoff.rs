@@ -64,9 +64,12 @@ const QUIET_TIMEOUT: Duration = Duration::from_secs(2);
 /// raising either one past it fails the build rather than quietly defeating every busy hand-off.
 const APP_TIMEOUT: Duration = Duration::from_secs(6);
 const _: () = assert!(QUIET_TIMEOUT.as_secs() + CHECK_TIMEOUT.as_secs() < APP_TIMEOUT.as_secs());
-/// How much of the check's stderr a refusal repeats. The rest is drained and dropped: the reason
-/// travels in one frame, and a frame over the protocol's cap is a panic, not a truncation.
-const MAX_CHECK_STDERR: u64 = 4096;
+/// How much of a refusal reaches the requester (`serve.rs` truncates to it). The reason can quote
+/// the requester's path and the check's stderr, and a frame over the protocol's cap is a panic in
+/// `encode`, not a truncation.
+pub(crate) const MAX_REASON: usize = 4096;
+/// How much of the check's stderr a refusal repeats. The rest is drained and dropped.
+const MAX_CHECK_STDERR: u64 = MAX_REASON as u64;
 
 /// One hand-off at a time: a second would take the same slots and locks, and release them under
 /// the first.

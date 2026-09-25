@@ -2179,9 +2179,11 @@ disagreement passes every test on either side alone while presenting as an empty
       - a requester that leaves mid-check calls the hand-off off;
       - two sessions carried together, then handed off again;
       - a check that times out, one that floods stderr, a relative path and a non-regular file;
-      - a second request, which waits while a hand-off is under way;
+      - a second request, which waits while a hand-off is under way, and one on a connection
+        accepted before it, which is refused;
       - a client connecting mid-hand-off, attached by the new program;
-      - an attach the agent drops unanswered, sent again;
+      - an attach the agent drops unanswered, sent again, and one never answered, which falls back
+        to a plain shell after 10s;
       - the deliberate crash. A binary that passes the check and then exits as the new program
         loses every session: every shell is hung up with its pty. The socket's path stays, with
         nothing listening, and the unread table stays too. The next agent starts clean on the same
