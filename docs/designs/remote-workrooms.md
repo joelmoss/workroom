@@ -2757,7 +2757,8 @@ service milestones below so each layer can be reviewed and landed independently.
        4 MiB is removed rather than left stale. Files are 0600 in a 0700 directory: a record is
        whatever was on the user's screen.
      - *When a record goes.* When its session ends while the agent runs (on the next tick), and
-       when a client kills it: `Kill` is how the app says its user closed the pane. At startup the
+       when a client kills it: `Kill` is how the app says its user closed the pane. A removal is
+       synced like a write, so a record cannot come back after a power cut. At startup the
        agent removes interrupted writes and keeps only the newest 64 records.
      - *What a restored pane sees.* A restored attach (`CREATE=0`) naming an id the agent does
        not hold but has a record of gets `Attached`, then the record, repainted through a fresh
@@ -2773,8 +2774,9 @@ service milestones below so each layer can be reviewed and landed independently.
        --no-create`) that finds no agent, or one that closes before answering, now exits 255, and
        the app attaches it again with its backoff (1 s doubling, five tries). It used to fall back
        to a shell, which would have been a live shell in a pane whose session was gone, with the
-       record never shown. A new remote pane still gets that shell (#229), since it has no session
-       to wait for.
+       record never shown. A peer that answers and fails the handshake still gets the shell:
+       asking it again cannot help. A new remote pane still gets that shell (#229), since it has no
+       session to wait for.
      - *Limits.* The agent does not flush on SIGTERM, so a stop can lose up to 2 s of screen. The
        container test's `restart -t 0` is a SIGKILL, which is the harder case. The app cannot end
        a remote session when its pane closes (Phase 4), so the record of a remote pane closed

@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -69,9 +69,21 @@ struct Attached {
     clients: Vec<Client>,
     /// The token of the client whose size the pty follows, if any.
     owner: Option<u64>,
+    /// Whether the screen changed since its record was last taken (`changed_screens`): set by the
+    /// reader on output and by `apply_size` on a resize, so an idle session is not rewritten to
+    /// disk every tick. Here, under the lock both of them already take.
+    changed: bool,
 }
 
 impl Attached {
+    /// A new session's: nobody attached yet, and a screen no record has been taken of.
+    fn unrecorded() -> Attached {
+        Attached {
+            changed: true,
+            ..Attached::default()
+        }
+    }
+
     fn client(&mut self, token: u64) -> Option<&mut Client> {
         self.clients.iter_mut().find(|client| client.token == token)
     }
@@ -180,9 +192,6 @@ pub struct Session {
     /// Every attached client and the size owner among them. Shared with the reader, which
     /// forwards to all of them and to the shadow alone when there are none.
     attached: Arc<Mutex<Attached>>,
-    /// Set by the reader whenever the screen changes, and cleared when its record is taken
-    /// (`changed_screens`), so an idle session is not rewritten to disk every tick.
-    changed: Arc<AtomicBool>,
 }
 
 impl Session {
@@ -313,14 +322,12 @@ impl SessionStore {
             id: spec.id,
             pty: Arc::new(pty),
             shadow: Arc::new(Mutex::new(Shadow::new(columns, rows))),
-            attached: Arc::new(Mutex::new(Attached::default())),
-            changed: Arc::new(AtomicBool::new(true)),
+            attached: Arc::new(Mutex::new(Attached::unrecorded())),
         };
         let info = session.info();
         let pty = Arc::clone(&session.pty);
         let shadow = Arc::clone(&session.shadow);
         let attached = Arc::clone(&session.attached);
-        let changed = Arc::clone(&session.changed);
         let store = Arc::clone(&self.sessions);
         sessions.insert(spec.id, session);
         // Drop the store lock before the reader starts, or its first `ended` removal deadlocks
@@ -343,7 +350,7 @@ impl SessionStore {
             // An `Err` is the sender dropped without a send, which only a panicking `register` can
             // do; draining anyway is what that case needs too.
             let _ = start.recv();
-            read_session(spec.id, pty, shadow, attached, changed, store)
+            read_session(spec.id, pty, shadow, attached, store)
         });
         if spawned.is_err() {
             self.kill(spec.id);
@@ -760,13 +767,11 @@ impl SessionStore {
             id,
             pty: Arc::new(pty),
             shadow: Arc::new(Mutex::new(shadow)),
-            attached: Arc::new(Mutex::new(Attached::default())),
-            changed: Arc::new(AtomicBool::new(true)),
+            attached: Arc::new(Mutex::new(Attached::unrecorded())),
         };
         let pty = Arc::clone(&session.pty);
         let shadow = Arc::clone(&session.shadow);
         let attached = Arc::clone(&session.attached);
-        let changed = Arc::clone(&session.changed);
         let store = Arc::clone(&self.sessions);
         {
             let mut sessions = self.sessions.lock().expect("session store poisoned");
@@ -776,7 +781,7 @@ impl SessionStore {
             sessions.insert(id, session);
         }
         let spawned = std::thread::Builder::new()
-            .spawn(move || read_session(id, pty, shadow, attached, changed, store));
+            .spawn(move || read_session(id, pty, shadow, attached, store));
         if spawned.is_err() {
             self.kill(id);
             return Err(SessionError::ReaderFailed(id.to_hyphenated()));
@@ -847,15 +852,15 @@ impl SessionStore {
     /// the one the screen was drawn at.
     ///
     /// A session whose lock is not free by `RECORD_WAIT` from the start of the call is left for the
-    /// next call. An attach holds that lock for as long as a slow client takes its repaint, and
-    /// such sessions must not hold up every other session's record, however many there are.
+    /// next call, still marked changed. An attach holds that lock for as long as a slow client
+    /// takes its repaint, and such sessions must not hold up every other session's record, however
+    /// many there are.
     pub fn changed_screens(&self) -> Vec<(SessionId, u16, u16, Vec<u8>)> {
         use std::sync::TryLockError;
-        let parts: Vec<(SessionId, SessionParts, Arc<AtomicBool>)> = {
+        let parts: Vec<(SessionId, SessionParts)> = {
             let sessions = self.sessions.lock().expect("session store poisoned");
             sessions
                 .values()
-                .filter(|session| session.changed.swap(false, Ordering::Relaxed))
                 .map(|session| {
                     (
                         session.id,
@@ -864,7 +869,6 @@ impl SessionStore {
                             Arc::clone(&session.shadow),
                             Arc::clone(&session.attached),
                         ),
-                        Arc::clone(&session.changed),
                     )
                 })
                 .collect()
@@ -872,16 +876,15 @@ impl SessionStore {
         let deadline = Instant::now() + RECORD_WAIT;
         parts
             .into_iter()
-            .filter_map(|(id, (pty, shadow, attached), changed)| {
-                let held = until(deadline, || match attached.try_lock() {
+            .filter_map(|(id, (pty, shadow, attached))| {
+                let mut held = until(deadline, || match attached.try_lock() {
                     Ok(guard) => Some(guard),
                     Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
                     Err(TryLockError::WouldBlock) => None,
-                });
-                let Some(_held) = held else {
-                    changed.store(true, Ordering::Relaxed);
+                })?;
+                if !std::mem::take(&mut held.changed) {
                     return None;
-                };
+                }
                 let (columns, rows) = pty
                     .size()
                     .unwrap_or((crate::pty::DEFAULT_COLUMNS, crate::pty::DEFAULT_ROWS));
@@ -893,13 +896,8 @@ impl SessionStore {
 
     /// Takes this session's screen again on the next `changed_screens`.
     pub fn mark_changed(&self, id: SessionId) {
-        if let Some(session) = self
-            .sessions
-            .lock()
-            .expect("session store poisoned")
-            .get(&id)
-        {
-            session.changed.store(true, Ordering::Relaxed);
+        if let Some((_, _, attached)) = self.parts(id) {
+            attached.lock().unwrap_or_else(|e| e.into_inner()).changed = true;
         }
     }
 
@@ -1015,11 +1013,13 @@ fn apply_size(
     let Some((columns, rows)) = size else {
         return;
     };
-    let _held = attached.lock().unwrap_or_else(|e| e.into_inner());
+    let mut held = attached.lock().unwrap_or_else(|e| e.into_inner());
     let _ = pty.resize(columns, rows);
     if let Ok(mut shadow) = shadow.lock() {
         shadow.resize(columns, rows);
     }
+    // A resize reflows the screen even when the program prints nothing after it.
+    held.changed = true;
 }
 
 fn terminal_envelope(stream: u32, frame: Frame) -> Vec<u8> {
@@ -1073,7 +1073,6 @@ fn read_session(
     pty: Arc<Pty>,
     shadow: Arc<Mutex<Shadow>>,
     attached: Arc<Mutex<Attached>>,
-    changed: Arc<AtomicBool>,
     store: Arc<Mutex<HashMap<SessionId, Session>>>,
 ) {
     let mut buffer = [0u8; READ_CHUNK];
@@ -1096,14 +1095,14 @@ fn read_session(
         // bytes; it cannot receive them twice, and the superseded client's writer is the one this
         // write goes to.
         let (read, clients) = {
-            let held = attached.lock().expect("attachment lock poisoned");
+            let mut held = attached.lock().expect("attachment lock poisoned");
             let read = pty.read(&mut buffer);
             let clients = match read {
                 Ok(n) if n > 0 => {
                     if let Ok(mut shadow) = shadow.lock() {
                         shadow.write(&buffer[..n]);
                     }
-                    changed.store(true, Ordering::Relaxed);
+                    held.changed = true;
                     held.clients.iter().map(Client::target).collect::<Vec<_>>()
                 }
                 _ => Vec::new(),
@@ -1520,6 +1519,39 @@ mod tests {
             taken,
             vec![id(11)],
             "the busy session was not taken next time"
+        );
+        store.kill_all();
+    }
+
+    /// A resize changes the screen even when the program prints nothing after it, so the record
+    /// is taken again at the new size.
+    #[test]
+    fn a_resize_alone_makes_the_screen_changed() {
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 30")];
+        let e = env();
+        store.create(spec(id(13), &args, &e)).expect("create");
+        assert_eq!(
+            store.changed_screens().len(),
+            1,
+            "a new session has no record yet"
+        );
+        assert!(
+            store.changed_screens().is_empty(),
+            "an idle session was taken again"
+        );
+
+        let (pty, shadow, attached) = store.parts(id(13)).expect("parts");
+        apply_size(&pty, &shadow, &attached, Some((100, 30)));
+        let taken: Vec<(SessionId, u16, u16)> = store
+            .changed_screens()
+            .into_iter()
+            .map(|r| (r.0, r.1, r.2))
+            .collect();
+        assert_eq!(
+            taken,
+            vec![(id(13), 100, 30)],
+            "the resized screen was not taken at its new size"
         );
         store.kill_all();
     }
