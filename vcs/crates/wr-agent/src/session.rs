@@ -681,7 +681,13 @@ impl SessionStore {
             Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
             Err(TryLockError::WouldBlock) => None,
         })?;
-        let store = self.sessions.lock().expect("session store poisoned");
+        // Within the deadline too: `list` and the end of `attach` hold the store lock while they
+        // wait on a session's attachment lock, so a repaint holds the store lock as well.
+        let store = until(deadline, || match self.sessions.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(_)) => panic!("session store poisoned"),
+            Err(TryLockError::WouldBlock) => None,
+        })?;
         let parts: Vec<(SessionId, SessionParts)> = store
             .values()
             .map(|session| {
@@ -1380,7 +1386,7 @@ mod tests {
     #[test]
     fn a_freeze_that_cannot_take_every_lock_gives_up() {
         let store = SessionStore::new();
-        let args = [OsString::from("-c"), OsString::from("sleep 2")];
+        let args = [OsString::from("-c"), OsString::from("sleep 30")];
         let e = env();
         store.create(spec(id(10), &args, &e)).expect("create");
         let (_, _, attached) = store.parts(id(10)).expect("parts");
@@ -1388,7 +1394,11 @@ mod tests {
         let repainting = attached.lock().expect("lock");
         let started = Instant::now();
         assert!(store.frozen(Duration::from_millis(50), |_| ()).is_none());
-        assert!(started.elapsed() < Duration::from_secs(1));
+        let waited = started.elapsed();
+        assert!(
+            waited >= Duration::from_millis(50) && waited < Duration::from_millis(300),
+            "gave up after {waited:?}"
+        );
         assert!(!store.is_empty(), "the store lock was released");
 
         drop(repainting);
@@ -1396,6 +1406,41 @@ mod tests {
         // holds it for half a second.
         let frozen = store.frozen(Duration::from_secs(5), |sessions| sessions.len());
         assert_eq!(frozen, Some(1));
+        store.kill_all();
+    }
+
+    /// The same when what is held is the store lock: `list` holds it while it waits on a
+    /// repainting session, so a freeze that waited on the store without its deadline waited out
+    /// the whole repaint.
+    #[test]
+    fn a_freeze_behind_a_list_waiting_on_a_repaint_gives_up() {
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 30")];
+        let e = env();
+        store.create(spec(id(11), &args, &e)).expect("create");
+        let (_, _, attached) = store.parts(id(11)).expect("parts");
+
+        std::thread::scope(|scope| {
+            let (locked, is_locked) = std::sync::mpsc::channel();
+            scope.spawn(move || {
+                let _repainting = attached.lock().expect("lock");
+                locked.send(()).expect("send");
+                std::thread::sleep(Duration::from_secs(2));
+            });
+            is_locked.recv().expect("recv");
+            let listing = scope.spawn(|| store.list().len());
+            // Long enough for `list` to be holding the store lock, waiting on the repaint.
+            std::thread::sleep(Duration::from_millis(100));
+
+            let started = Instant::now();
+            let frozen = store.frozen(Duration::from_millis(50), |_| ());
+            let waited = started.elapsed();
+            assert!(
+                frozen.is_none() && waited < Duration::from_millis(300),
+                "{frozen:?} after {waited:?}"
+            );
+            assert_eq!(listing.join().expect("list"), 1);
+        });
         store.kill_all();
     }
 

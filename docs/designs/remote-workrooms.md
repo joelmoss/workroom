@@ -2172,8 +2172,8 @@ disagreement passes every test on either side alone while presenting as an empty
     - *Known limits.*
       - The binary is read three times by path (hash, check, exec), so a file swapped in between
         is not caught. Only a same-user process can do that, per the trust model above.
-      - A refused hand-off (a repository command still running, say) is not retried until the next
-        launch.
+      - A refused hand-off (a repository command still running, or a session being ended or
+        repainted) is not retried until the next launch.
       - An agent that could not read its own binary at startup hands off on every request, even to
         the same binary.
     - *Tests* (`wr-agent/tests/hand_off.rs`):
