@@ -127,24 +127,30 @@ final class HostStreamTests: XCTestCase {
   }
 
   /// A remote pane's command (#229): the session contract rides in `env` on the host, and the
-  /// Mac-only parts of it (the shell, the app bundle's resources) stay behind.
+  /// Mac-only parts of it (the shell, the app bundle's paths) stay behind. The terminal type and
+  /// the shell integration are the host's set's, when it has one (#239).
   func testARemotePanesCommandCarriesTheSessionAndNothingOfTheMacs() throws {
     let session = UUID()
     let fresh = ContainerHostDriver.remoteAttachCommand(
       binary: "/run/workroom/wr-agent", session: session, socket: "/run/workroom/agent.sock",
-      workingDirectory: "/home/w/it's here", restored: false)
+      resources: "/run/workroom/ghostty", workingDirectory: "/home/w/it's here", restored: false)
     XCTAssertEqual(
       fresh,
       "test -x '/run/workroom/wr-agent' || { echo "
         + "'workroom: no agent is installed at /run/workroom/wr-agent yet' >&2; exit 255; }; "
-        + "'env' 'TERM=xterm-256color' 'WORKROOM_SESSION_ID=\(session.uuidString)' "
+        + "if test -r '/run/workroom/ghostty/terminfo/x/xterm-ghostty'; then set -- "
+        + "'TERM=xterm-ghostty' 'TERMINFO=/run/workroom/ghostty/terminfo' "
+        + "'WORKROOM_SESSION_RESOURCES=/run/workroom/ghostty' "
+        + "'GHOSTTY_SHELL_FEATURES=cursor,title'; else set -- 'TERM=xterm-256color'; fi; "
+        + "'env' \"$@\" 'WORKROOM_SESSION_ID=\(session.uuidString)' "
         + "'WORKROOM_SESSION_SOCKET=/run/workroom/agent.sock' "
         + "'WORKROOM_SESSION_CWD=/home/w/it'\\''s here' '/run/workroom/wr-agent' 'attach' "
         + "'--no-spawn'")
     let restored = ContainerHostDriver.remoteAttachCommand(
-      binary: "/b", session: session, socket: "/s", workingDirectory: "/w", restored: true)
+      binary: "/b", session: session, socket: "/s", resources: "/r", workingDirectory: "/w",
+      restored: true)
     XCTAssertTrue(restored.hasSuffix("'--no-spawn' '--no-create'"), restored)
-    for absent in ["WORKROOM_SESSION_SHELL", "WORKROOM_SESSION_RESOURCES", "AWAKE"] {
+    for absent in ["WORKROOM_SESSION_SHELL", "AWAKE", "Contents/Resources"] {
       XCTAssertFalse(fresh.contains(absent), absent)
     }
 
@@ -341,7 +347,8 @@ final class HostStreamTests: XCTestCase {
       arguments: [
         "-c",
         ContainerHostDriver.remoteAttachCommand(
-          binary: missing, session: UUID(), socket: "/s", workingDirectory: "/w", restored: true),
+          binary: missing, session: UUID(), socket: "/s", resources: "/r", workingDirectory: "/w",
+          restored: true),
       ], timeout: 5)
     XCTAssertEqual(absent.status, 255)
     XCTAssertTrue(absent.output.contains("no agent is installed at \(missing)"), absent.output)
@@ -350,10 +357,49 @@ final class HostStreamTests: XCTestCase {
       arguments: [
         "-c",
         ContainerHostDriver.remoteAttachCommand(
-          binary: "/usr/bin/true", session: UUID(), socket: "/s", workingDirectory: "/w",
-          restored: false),
+          binary: "/usr/bin/true", session: UUID(), socket: "/s", resources: "/r",
+          workingDirectory: "/w", restored: false),
       ], timeout: 5)
     XCTAssertEqual(present.status, 0, present.output)
+  }
+
+  /// A remote pane's terminal, run by a shell (#239): `xterm-ghostty` with the shell integration
+  /// once the host holds the resource set, and `xterm-256color` without it on a host that does
+  /// not, as before the set was pushed.
+  func testARemotePaneIsAGhosttyTerminalOnlyOnAHostHoldingTheSet() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-set-\(UUID().uuidString.prefix(8))")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let resources = root.appendingPathComponent("ghostty")
+    // Stands in for the agent: prints what it was started with.
+    let binary = root.appendingPathComponent("wr-agent")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data(
+      "#!/bin/sh\necho \"TERM=$TERM TERMINFO=${TERMINFO-} RESOURCES=${WORKROOM_SESSION_RESOURCES-} FEATURES=${GHOSTTY_SHELL_FEATURES-}\"\n"
+        .utf8
+    ).write(to: binary)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+    func attach() throws -> String {
+      // A clean environment, as ssh gives the host's shell: the app host exports `TERMINFO`.
+      let result = try SessionBackendProbe.run(
+        URL(fileURLWithPath: "/usr/bin/env"),
+        arguments: [
+          "-i", "PATH=/usr/bin:/bin", "/bin/sh", "-c",
+          ContainerHostDriver.remoteAttachCommand(
+            binary: binary.path, session: UUID(), socket: "/s", resources: resources.path,
+            workingDirectory: "/w", restored: false),
+        ], timeout: 5)
+      XCTAssertEqual(result.status, 0, result.output)
+      return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    XCTAssertEqual(try attach(), "TERM=xterm-256color TERMINFO= RESOURCES= FEATURES=")
+    let entry = resources.appendingPathComponent("terminfo/x")
+    try FileManager.default.createDirectory(at: entry, withIntermediateDirectories: true)
+    try Data().write(to: entry.appendingPathComponent("xterm-ghostty"))
+    XCTAssertEqual(
+      try attach(),
+      "TERM=xterm-ghostty TERMINFO=\(resources.path)/terminfo RESOURCES=\(resources.path) "
+        + "FEATURES=cursor,title")
   }
 
   func testAnUnknownHostIsRefusedByExecAndOpenStream() async {

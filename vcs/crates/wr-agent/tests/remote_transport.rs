@@ -1332,12 +1332,21 @@ fn over_ssh_the_bootstrap_installs_hands_off_and_survives_a_crashed_restore() {
     let sha = sha256_hex(&elf);
     let probe = |bundled: &str| {
         // The same digest for both architectures: the container's is whichever this machine runs.
+        // The last argument is where the app's Ghostty resource set goes (#239).
         let (status, output) = fixture.bootstrap(
             "probe",
-            &[INSTALLED_AGENT, &fixture.socket, "1", bundled, bundled],
+            &[
+                INSTALLED_AGENT,
+                &fixture.socket,
+                "1",
+                bundled,
+                bundled,
+                "/run/workroom/ghostty",
+            ],
             None,
         );
         assert_eq!(status, Some(0), "probe: {output}");
+        assert!(reported(&output, "resources").is_some(), "{output}");
         output
     };
     let install = |binary: &Path| {

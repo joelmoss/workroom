@@ -26,6 +26,8 @@ struct ContainerHostDriver: HostTerminalDriver {
     /// the socket's 0700 one, so the file has the socket's protection (design doc, the hand-off
     /// trust model: the socket is the boundary).
     var agentBinary: String { AgentBootstrap.binary(besideSocket: agentSocket) }
+    /// Ghostty's terminfo and shell integration, which the bootstrap puts beside the agent (#239).
+    var resources: String { AgentBootstrap.resources(besideSocket: agentSocket) }
   }
 
   let traits = HostDriverTraits(
@@ -89,7 +91,7 @@ struct ContainerHostDriver: HostTerminalDriver {
       "LocalCommand=printf '\\0338\\033[J'", "-t", Self.alias,
       Self.remoteAttachCommand(
         binary: target.agentBinary, session: session, socket: target.agentSocket,
-        workingDirectory: workingDirectory, restored: restored),
+        resources: target.resources, workingDirectory: workingDirectory, restored: restored),
     ]
     return (["/bin/sh", "-c", Self.attachWrapper, "workroom-attach", log] + ssh)
       .map(Self.shellQuoted).joined(separator: " ")
@@ -145,29 +147,42 @@ struct ContainerHostDriver: HostTerminalDriver {
   ///
   /// The session contract is the environment `wr-agent attach` reads, set with `env` because ssh
   /// carries none of the pane's own. Deliberately absent: the shell (the host's own login shell
-  /// applies), Ghostty's resources directory (a path in this Mac's app bundle), and the wakefulness
-  /// settings (they configure an agent the attach starts, and `--no-spawn` never starts one).
-  /// `TERM` is `xterm-256color`, not the pane's `xterm-ghostty`, which a host rarely has terminfo
-  /// for; pushing that terminfo, and the shell integration, is a follow-up to the bootstrap
-  /// (#231, which pushes only the agent; #239).
+  /// applies) and the wakefulness settings (they configure an agent the attach starts, and
+  /// `--no-spawn` never starts one).
+  ///
+  /// The terminal is the pane's own `xterm-ghostty`, with Ghostty's shell integration, when the
+  /// bootstrap has put its terminfo and integration at `resources` (#239), and `xterm-256color`
+  /// without the integration when it has not: a host rarely has `xterm-ghostty` terminfo of its
+  /// own, and a `TERM` the host cannot look up is worse than a plainer one. Decided on the host as
+  /// the attach starts, since the set may be gone (a reboot empties a tmpfs `/run`) or not there
+  /// yet. The integration's features are Ghostty's defaults less `path`, which needs the `ghostty`
+  /// binary on the host, and the `ssh-*` ones, which are off by default and need it too. The title
+  /// then follows the shell; the pane's working directory does not, because libghostty takes an
+  /// OSC 7 report only from its own host.
   ///
   /// A host with no agent installed yet (rebooted from tmpfs, or never bootstrapped) has no
   /// binary to run, and the shell's 127 for that would read as the session's own exit. It exits
   /// 255 instead, ssh's own status for a lost link, which the app answers by attaching again with
   /// backoff: by then the bootstrap, which nothing orders panes after, has installed it.
   static func remoteAttachCommand(
-    binary: String, session: UUID, socket: String, workingDirectory: String, restored: Bool
+    binary: String, session: UUID, socket: String, resources: String, workingDirectory: String,
+    restored: Bool
   ) -> String {
+    let integrated = [
+      "TERM=xterm-ghostty", "TERMINFO=\(resources)/terminfo",
+      "WORKROOM_SESSION_RESOURCES=\(resources)", "GHOSTTY_SHELL_FEATURES=cursor,title",
+    ]
     let variables = [
-      "TERM=xterm-256color",
       "WORKROOM_SESSION_ID=\(session.uuidString)",
       "WORKROOM_SESSION_SOCKET=\(socket)",
       "WORKROOM_SESSION_CWD=\(workingDirectory)",
     ]
     return "test -x \(shellQuoted(binary)) || { echo "
       + shellQuoted("workroom: no agent is installed at \(binary) yet") + " >&2; exit 255; }; "
-      + (["env"] + variables + [binary, "attach", "--no-spawn"]
-      + (restored ? ["--no-create"] : []))
+      + "if test -r \(shellQuoted(resources + "/terminfo/x/xterm-ghostty")); then set -- "
+      + integrated.map(shellQuoted).joined(separator: " ")
+      + "; else set -- 'TERM=xterm-256color'; fi; 'env' \"$@\" "
+      + (variables + [binary, "attach", "--no-spawn"] + (restored ? ["--no-create"] : []))
       .map(shellQuoted).joined(separator: " ")
   }
 

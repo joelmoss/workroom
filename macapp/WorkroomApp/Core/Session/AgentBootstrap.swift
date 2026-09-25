@@ -45,10 +45,21 @@ enum AgentBootstrap {
       /// The app connects to whatever runs, over the versioned envelope.
       case keptOlder(String)
     }
+    /// Ghostty's terminfo and shell integration beside the agent (#239), for the host's panes.
+    enum Resources: Equatable, Sendable {
+      /// The host holds this build's set; nothing crossed.
+      case current
+      case pushed
+      /// The host has no set from this build, with why. Its panes run as `xterm-256color`, without
+      /// the integration: the remote attach checks for the set when it starts.
+      case notPushed(String)
+    }
     let architecture: String
     /// Whether the binary crossed the transport. False for a host already holding this build.
     let pushed: Bool
     let agent: Agent
+    /// Nil when this build had no set to push (a test's).
+    var resources: Resources? = nil
   }
 
   enum Error: Swift.Error, Equatable, LocalizedError {
@@ -93,14 +104,21 @@ enum AgentBootstrap {
     (socket as NSString).deletingLastPathComponent + "/wr-agent"
   }
 
+  /// Where Ghostty's terminfo and shell integration live on a host: beside the agent, in the
+  /// socket's 0700 directory (#239).
+  static func resources(besideSocket socket: String) -> String {
+    (socket as NSString).deletingLastPathComponent + "/ghostty"
+  }
+
   /// The bootstrap, then the connection: the one way to a remote host's services.
   static func connect(
     host: HostID, driver: any HostDriver, socket: String,
     agent: (String) -> URL? = PersistentSessionPaths.linuxAgentURL(architecture:),
-    handOff: Bool = AgentHandOff.isEnabled
+    handOff: Bool = AgentHandOff.isEnabled, resources: URL? = GhosttyResources.bundledURL
   ) async throws -> AgentVCSConnection {
     let outcome = try await ensure(
-      host: host, driver: driver, socket: socket, agent: agent, handOff: handOff)
+      host: host, driver: driver, socket: socket, agent: agent, handOff: handOff,
+      resources: resources)
     logger.notice("agent bootstrap: \(String(describing: outcome), privacy: .public)")
     return try await AgentVCSConnection.connect(
       host: host, stream: try await driver.openStream(to: host))
@@ -109,11 +127,12 @@ enum AgentBootstrap {
   /// Makes sure the host runs this app's agent, as far as the policy above allows, and says what
   /// it found. Safe to run on every connect: a host already holding this build costs one probe.
   ///
-  /// `agent` finds the bundled binary for an architecture (the bundle's, or a test's).
+  /// `agent` finds the bundled binary for an architecture (the bundle's, or a test's), and
+  /// `resources` is the bundled Ghostty tree whose terminfo and shell integration go beside it.
   static func ensure(
     host: HostID, driver: any HostDriver, socket: String,
     agent: (String) -> URL? = PersistentSessionPaths.linuxAgentURL(architecture:),
-    handOff: Bool = AgentHandOff.isEnabled
+    handOff: Bool = AgentHandOff.isEnabled, resources: URL? = GhosttyResources.bundledURL
   ) async throws -> Outcome {
     let binary = binary(besideSocket: socket)
     let urls = architectures.compactMap { architecture in
@@ -126,7 +145,7 @@ enum AgentBootstrap {
     let probe = try await run(
       script: "probe", on: host, driver: driver, input: nil,
       arguments: [binary, socket, handOff ? "1" : "0"]
-        + architectures.map { bundled[$0]?.digest ?? "-" })
+        + architectures.map { bundled[$0]?.digest ?? "-" } + [Self.resources(besideSocket: socket)])
     let report = try parseProbe(probe.output)
     // A probe cut off part way (its hand-off is the long step) would read as "not asked".
     guard probe.status == 0 else {
@@ -136,17 +155,20 @@ enum AgentBootstrap {
       throw Error.unsupportedHost("\(report.system) \(report.architecture)")
     }
     let architecture = report.architecture
+    let set = await ensureResources(
+      resources, installed: report.resources, directory: Self.resources(besideSocket: socket),
+      on: host, driver: driver)
     guard let (url, digest) = bundled[architecture].map({ ($0.url, $0.digest) }) else {
       guard report.installed != nil else { throw Error.noBundledAgent(architecture) }
       return Outcome(
         architecture: architecture, pushed: false,
-        agent: .keptOlder("this build has no agent for \(architecture)"))
+        agent: .keptOlder("this build has no agent for \(architecture)"), resources: set)
     }
     // Nothing to compare against, and the install would refuse the push for the same reason.
     if report.installed == "unknown" {
       return Outcome(
         architecture: architecture, pushed: false,
-        agent: .keptOlder("the host has no sha256sum"))
+        agent: .keptOlder("the host has no sha256sum"), resources: set)
     }
     if report.installed == digest {
       let agent: Outcome.Agent
@@ -163,7 +185,7 @@ enum AgentBootstrap {
       case .answered(_, let said):
         agent = .keptOlder(said.isEmpty ? "the hand-off was refused" : said)
       }
-      return Outcome(architecture: architecture, pushed: false, agent: agent)
+      return Outcome(architecture: architecture, pushed: false, agent: agent, resources: set)
     }
 
     let elf = try await runBlocking { try Data(contentsOf: url) }
@@ -179,7 +201,7 @@ enum AgentBootstrap {
       guard report.installed != nil else { throw Error.transportFailed(detail) }
       return Outcome(
         architecture: architecture, pushed: true,
-        agent: .keptOlder("the install failed: \(detail)"))
+        agent: .keptOlder("the install failed: \(detail)"), resources: set)
     }
     let (outcome, serving) = parseInstall(install.output)
     let agent: Outcome.Agent
@@ -208,7 +230,48 @@ enum AgentBootstrap {
       guard report.installed != nil else { throw Error.installFailed(why) }
       agent = .keptOlder("the install did not finish: \(why)")
     }
-    return Outcome(architecture: architecture, pushed: true, agent: agent)
+    return Outcome(architecture: architecture, pushed: true, agent: agent, resources: set)
+  }
+
+  /// Puts `bundle`'s terminfo and shell integration at `directory` on the host, unless the probe
+  /// found this build's set there already (#239). A failure here is logged in the outcome and
+  /// never fails the connect: the host's panes run without the integration, as they did before.
+  ///
+  /// The set is what `CHECKSUMS` lists, plus `CHECKSUMS` itself, and its hash is the set's key: it
+  /// changes with the files, so a Ghostty pin bump that changes them pushes them again.
+  private static func ensureResources(
+    _ bundle: URL?, installed: String?, directory: String, on host: HostID,
+    driver: any HostDriver
+  ) async -> Outcome.Resources? {
+    guard let bundle else { return nil }
+    if installed == "unknown" { return .notPushed("the host has no sha256sum") }
+    do {
+      let (digest, files) = try await runBlocking { () throws -> (String, [(String, Data)]) in
+        let manifest = bundle.appendingPathComponent("CHECKSUMS")
+        let paths = try String(contentsOf: manifest, encoding: .utf8)
+          .split(whereSeparator: \.isNewline)
+          .compactMap { line in line.range(of: "  ").map { String(line[$0.upperBound...]) } }
+        let files = try (paths + ["CHECKSUMS"]).map { path in
+          (path, try Data(contentsOf: bundle.appendingPathComponent(path)))
+        }
+        return (try Self.digest(of: manifest), files)
+      }
+      if installed == digest { return .current }
+      let result = try await run(
+        script: "resources", on: host, driver: driver,
+        input: files.reduce(into: Data()) { $0 += $1.1 },
+        arguments: [directory] + files.flatMap { [String($0.1.count), $0.0] })
+      let outcome = parseInstall(result.output).outcome
+      guard outcome.first == "installed" else {
+        return .notPushed(
+          outcome.isEmpty
+            ? "the push said nothing (exit \(result.status))"
+            : outcome.joined(separator: " "))
+      }
+      return .pushed
+    } catch {
+      return .notPushed(error.localizedDescription)
+    }
   }
 
   /// An install outcome the script ended on, in words a person can act on; the raw words are in
@@ -240,10 +303,12 @@ enum AgentBootstrap {
     /// none. A host that cannot hash is not pushed to (`ensure` keeps what is there): the install
     /// would refuse the push for the same reason.
     let installed: String?
+    /// The hash of the Ghostty resource set there, `unknown`, or nil for none (#239).
+    var resources: String? = nil
     let handOff: HandOff
   }
 
-  /// The probe's three lines. Anything not prefixed `WRB ` is whatever the host's shell startup
+  /// The probe's four lines. Anything not prefixed `WRB ` is whatever the host's shell startup
   /// printed, and skipped.
   static func parseProbe(_ output: String) throws -> ProbeReport {
     let fields = reports(in: output)
@@ -266,9 +331,11 @@ enum AgentBootstrap {
       }
       handOff = .answered(status, answer.dropFirst().joined(separator: " "))
     }
+    let resources = fields["resources"]?.first
     return ProbeReport(
       system: host[0], architecture: host[1],
-      installed: installed == nil || installed == "none" ? nil : installed, handOff: handOff)
+      installed: installed == nil || installed == "none" ? nil : installed,
+      resources: resources == "none" ? nil : resources, handOff: handOff)
   }
 
   /// The install's outcome words, and whether the supervisor started the agent (nil when that was
