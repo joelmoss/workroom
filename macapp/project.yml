@@ -193,6 +193,13 @@ targets:
       - path: Resources/tool-logos
         type: folder
         buildPhase: resources
+      # The agent bootstrap's far-side scripts (issue #231): what the app runs on a remote host to
+      # probe for, install and hand off to the Linux wr-agent it bundles. Folder reference → copied
+      # to Contents/Resources/agent-bootstrap; AgentBootstrap loads them from Bundle.main. Files
+      # rather than Swift strings so the Rust ssh-fixture test can run the same ones.
+      - path: Resources/agent-bootstrap
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: Sparkle
       # Workroom VCS core: the Rust engine (jj-lib + gix) exposed via UniFFI, wrapped as a local SPM

@@ -16,8 +16,10 @@ import os
 /// Panes do not wait for it, so launch never freezes on it. The agent stops accepting while it
 /// hands off, so a pane that connects meanwhile is attached by the new program, and `wr-agent
 /// attach` sends an attach again when the agent closes before answering. A pane already attached
-/// when the exec lands still loses its connection (the session carries on, detached); reattaching
-/// it is #231's.
+/// when the exec lands still loses its connection and ends as if its shell had, with the session
+/// carrying on detached: a launch-only race, since panes attach after this is asked for. A REMOTE
+/// pane's attach exits 255 instead, and the app attaches it again (#231; `AgentBootstrap` is the
+/// remote side of this policy).
 enum AgentHandOff {
   /// Nightly and Dev only for now. A hand-off bug kills local terminals on an update, which has
   /// never been possible before, so stable waits until Nightly has proven it.

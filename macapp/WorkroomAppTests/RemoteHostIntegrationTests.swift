@@ -32,6 +32,9 @@ final class RemoteHostIntegrationTests: XCTestCase {
   private struct Fixture {
     let config: String
     let host: ContainerHostDriver.Host
+    /// The Linux agent the fixture was built around: what the bootstrap tests push as the app's
+    /// bundled one, since a Debug build carries none.
+    let agent: URL
   }
 
   private func fixture() throws -> Fixture {
@@ -50,7 +53,8 @@ final class RemoteHostIntegrationTests: XCTestCase {
         user: try need("WR_SSH_FIXTURE_USER"),
         identityFile: try need("WR_SSH_FIXTURE_IDENTITY"),
         hostKey: try need("WR_SSH_FIXTURE_HOST_KEY"),
-        agentSocket: try need("WR_SSH_FIXTURE_SOCKET")))
+        agentSocket: try need("WR_SSH_FIXTURE_SOCKET")),
+      agent: URL(fileURLWithPath: try need("WR_SSH_FIXTURE_AGENT")))
   }
 
   private func connect(_ host: ContainerHostDriver.Host) async throws -> (
@@ -187,6 +191,9 @@ final class RemoteHostIntegrationTests: XCTestCase {
     private let input = Pipe()
     private let lock = NSLock()
     private var seen = ""
+    /// From `terminationHandler`: `waitUntilExit`/`isRunning` are not reliable for a process
+    /// launched from an async test (see `HostStream.spawn`).
+    private var exited: Int32?
 
     init(command: String) throws {
       process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -204,6 +211,9 @@ final class RemoteHostIntegrationTests: XCTestCase {
         }
         self?.lock.withLock { self?.seen += String(decoding: data, as: UTF8.self) }
       }
+      process.terminationHandler = { [weak self] finished in
+        self?.lock.withLock { self?.exited = finished.terminationStatus }
+      }
       try process.run()
     }
 
@@ -219,9 +229,165 @@ final class RemoteHostIntegrationTests: XCTestCase {
 
     /// The link dropping hard: ssh killed, with no goodbye to the host.
     func dropLink() {
+      // Never a pid already reaped, which may be someone else's by now.
+      guard lock.withLock({ exited == nil }) else { return }
       kill(process.processIdentifier, SIGKILL)
-      process.waitUntilExit()
+      _ = exitCode(within: 10)
     }
+
+    /// ssh's exit status, which is the attach's: the shell's own once it exits, or 255 for a
+    /// lost link. Nil while it is still running at the deadline.
+    func exitCode(within seconds: TimeInterval) -> Int32? {
+      let deadline = Date().addingTimeInterval(seconds)
+      while lock.withLock({ exited }) == nil, Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.05)
+      }
+      return lock.withLock { exited }
+    }
+  }
+
+  /// The supervised agent's pid on the fixture, by argv0: the installed binary, or the staged
+  /// file a hand-off exec'd. Not `pkill -x wr-agent`, which misses the latter.
+  private static let supervisedAgent = "pgrep -f '^/run/workroom/wr-agent[^ ]* serve'"
+
+  /// A "bundled" agent for a bootstrap test: a file written beside the fixture's ELF.
+  private func bundledAgent(named name: String, _ contents: Data) throws -> URL {
+    let url = directory.appendingPathComponent(name)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try contents.write(to: url)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    return url
+  }
+
+  /// The app's first connect to a host with no agent (#231): the bootstrap installs the one this
+  /// build bundles for the host's architecture, the supervisor starts it, and the services answer
+  /// through it. The fixture models the host by having its installed agent removed and killed;
+  /// its supervisor then idles until something is installed.
+  func testAHostWithNoAgentGetsThisBuildInstalledAndConnects() async throws {
+    let fixture = try fixture()
+    try onHost(
+      fixture,
+      "rm -f /run/workroom/wr-agent; \(Self.supervisedAgent.replacingOccurrences(of: "pgrep", with: "pkill")) || true"
+    )
+    let gone = Date().addingTimeInterval(10)
+    while try onHost(fixture, "\(Self.supervisedAgent) || true") != "", Date() < gone {
+      Thread.sleep(forTimeInterval: 0.2)
+    }
+    XCTAssertEqual(try onHost(fixture, "\(Self.supervisedAgent) || true"), "")
+    let id = UUID()
+    let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
+    let outcome = try await AgentBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
+      agent: { _ in fixture.agent }, handOff: true)
+    XCTAssertTrue(outcome.pushed)
+    XCTAssertEqual(outcome.agent, .installed)
+    let connection = try await AgentBootstrap.connect(
+      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
+      agent: { _ in fixture.agent }, handOff: true)
+    connections.append(connection)
+    _ = try await connection.wakefulness().status()
+  }
+
+  /// Connecting again with the same build pushes nothing: the probe finds the file, and the
+  /// running agent answers that it is current. Self-contained, whatever an earlier test left
+  /// running: the first `ensure` gets the host to this build, the second is the one measured.
+  func testConnectingAgainWithTheSameBuildPushesNothing() async throws {
+    let fixture = try fixture()
+    let id = UUID()
+    let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
+    _ = try await AgentBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
+      agent: { _ in fixture.agent }, handOff: true)
+    let again = try await AgentBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
+      agent: { _ in fixture.agent }, handOff: true)
+    XCTAssertEqual(again, .init(architecture: again.architecture, pushed: false, agent: .current))
+  }
+
+  /// A newer app reconnecting (#231): the host's agent is handed off to the pushed binary (#230)
+  /// with an attached pane's shell, its pid and its exit code intact. The pane's link ends with
+  /// the exec and it exits 255, which is what the app reattaches on; the pane that comes back is
+  /// repainted by the new program and reaches the same shell.
+  func testANewerAppHandsOffAndAnAttachedPaneComesBack() async throws {
+    let fixture = try fixture()
+    // The same ELF with a byte appended: the loader ignores it, and both hashes notice.
+    let newer = try bundledAgent(
+      named: "wr-agent-newer", try Data(contentsOf: fixture.agent) + Data("\n".utf8))
+    let id = UUID()
+    let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
+    // Whatever build is there, get it to the fixture's ELF first, so the hand-off below is real.
+    _ = try await AgentBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
+      agent: { _ in fixture.agent }, handOff: true)
+    let session = UUID()
+    let first = try Pane(
+      command: driver.attachCommand(
+        to: .remote(id), session: session, workingDirectory: "/home/workroom", restored: false))
+    defer { first.dropLink() }
+    Thread.sleep(forTimeInterval: 1)
+    first.type("echo PID=$$; echo READ\"\"Y\n")
+    let before = first.read(until: "READY")
+    let pid = try XCTUnwrap(
+      before.range(of: #"PID=\d+"#, options: .regularExpression).map { String(before[$0]) },
+      before)
+
+    let outcome = try await AgentBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
+      agent: { _ in newer }, handOff: true)
+    XCTAssertEqual(outcome.agent, .handedOff)
+    XCTAssertTrue(outcome.pushed)
+    XCTAssertEqual(first.exitCode(within: 10), 255)
+
+    let second = try Pane(
+      command: driver.attachCommand(
+        to: .remote(id), session: session, workingDirectory: "/home/workroom", restored: true))
+    defer { second.dropLink() }
+    let repainted = second.read(until: "READY")
+    XCTAssertTrue(repainted.contains(pid), repainted)
+    Thread.sleep(forTimeInterval: 0.5)
+    second.type("echo NOW=$$ DO\"\"NE; exit 7\n")
+    let after = second.read(until: "DONE")
+    XCTAssertTrue(after.contains("NOW=\(pid.dropFirst(4)) DONE"), after)
+    XCTAssertEqual(second.exitCode(within: 10), 7)
+  }
+
+  /// Refuse rather than kill (#231): a pushed binary that fails the restore check leaves the old
+  /// agent running, with its sessions, and the app connects to it. Here the binary runs on the
+  /// host (`protocol` answers, and `hand-off` asks, both handed to the installed agent) but its
+  /// `handoff-check` fails, so the agent refuses it.
+  func testABinaryThatFailsItsCheckLeavesTheOldAgentRunningAndConnects() async throws {
+    let fixture = try fixture()
+    let broken = try bundledAgent(
+      named: "wr-agent-broken",
+      Data(
+        """
+        #!/bin/sh
+        case $1 in protocol|hand-off) exec /run/workroom/wr-agent "$@" ;; esac
+        exit 1
+
+        """.utf8))
+    let id = UUID()
+    let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
+    let agentBefore = try onHost(fixture, Self.supervisedAgent)
+    let outcome = try await AgentBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
+      agent: { _ in broken }, handOff: true)
+    XCTAssertTrue(outcome.pushed)
+    guard case .keptOlder(let why) = outcome.agent else { return XCTFail("\(outcome)") }
+    XCTAssertTrue(why.hasPrefix("refused: ") && why.contains("cannot restore"), why)
+    XCTAssertEqual(try onHost(fixture, Self.supervisedAgent), agentBefore)
+    // The same pid is also what a hand-off keeps, so the file is what tells the two apart.
+    XCTAssertEqual(
+      try onHost(fixture, "sha256sum < /run/workroom/wr-agent | cut -c1-64"),
+      try AgentBootstrap.digest(of: fixture.agent))
+    // Nothing staged is left where the supervisor starts from.
+    XCTAssertEqual(
+      try onHost(fixture, "ls /run/workroom/wr-agent.new.* 2>/dev/null || echo none"), "none")
+    let connection = try await AgentBootstrap.connect(
+      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
+      agent: { _ in broken }, handOff: true)
+    connections.append(connection)
+    _ = try await connection.wakefulness().status()
   }
 
   /// The app half of the Phase 3 acceptance (#229): a pane attached through the driver keeps its
@@ -236,6 +402,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let first = try Pane(
       command: driver.attachCommand(
         to: .remote(id), session: session, workingDirectory: "/home/workroom", restored: false))
+    defer { first.dropLink() }
     Thread.sleep(forTimeInterval: 1)
     // Quotes split each marker, so the terminal echoing the typed line cannot satisfy the wait.
     first.type("MARK=kept; echo PID=$$; echo READ\"\"Y\n")
