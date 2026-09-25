@@ -792,9 +792,14 @@ fn the_client_puts_its_own_terminal_into_raw_mode() {
         }),
         "the session never registered; the client is not relaying"
     );
-    pty.write_all(b"echo ready\n").expect("write");
+    // `$((1+1))`, so the marker is only ever the SHELL's output. The client enters raw mode after
+    // the agent answers its attach, which is after the session registers, so this line can arrive
+    // while the terminal is still cooked. Its local echo then read `ready` too, and the flags below
+    // were checked before raw mode was entered. The shell sees the line only once the client relays
+    // stdin, and it starts that after entering raw mode.
+    pty.write_all(b"echo ready-$((1+1))\n").expect("write");
     assert!(
-        read_until_on_pty(&pty, "ready", Duration::from_secs(10)),
+        read_until_on_pty(&pty, "ready-2", Duration::from_secs(10)),
         "the shell never answered through the pty"
     );
 
