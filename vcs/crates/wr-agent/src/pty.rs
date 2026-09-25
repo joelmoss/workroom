@@ -114,8 +114,8 @@ impl Pty {
             return Err(PtyError::Pipe(std::io::Error::last_os_error()));
         }
         let (err_read, err_write) = (err_pipe[0], err_pipe[1]);
-        set_cloexec(err_read);
-        set_cloexec(err_write);
+        crate::handoff::set_cloexec(err_read, true);
+        crate::handoff::set_cloexec(err_write, true);
 
         // `forkpty` takes the size as a const pointer — it reads the requested geometry and does
         // not write back — so this never needs to be mutable.
@@ -218,7 +218,7 @@ impl Pty {
         }
 
         set_nonblocking(master);
-        set_cloexec(master);
+        crate::handoff::set_cloexec(master, true);
         Ok(Pty { master, pid })
     }
 
@@ -229,7 +229,7 @@ impl Pty {
     /// outgoing agent cleared it, and left clear, every shell this agent forks later would inherit
     /// this session's master.
     pub fn adopt(master: libc::c_int, pid: libc::pid_t) -> Pty {
-        set_cloexec(master);
+        crate::handoff::set_cloexec(master, true);
         set_nonblocking(master);
         Pty { master, pid }
     }
@@ -384,15 +384,6 @@ fn errno_value() -> i32 {
     #[cfg(not(target_vendor = "apple"))]
     unsafe {
         *libc::__errno_location()
-    }
-}
-
-fn set_cloexec(fd: libc::c_int) {
-    unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFD);
-        if flags >= 0 {
-            libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
-        }
     }
 }
 

@@ -60,10 +60,35 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 /// requester that gives up first calls the hand-off off, so a longer agent-side wait would only
 /// hold every repository request off for a hand-off that can no longer happen.
 const QUIET_TIMEOUT: Duration = Duration::from_secs(2);
+/// `AgentHandOff.timeout` in the app, which these two must stay under. Checked at compile time, so
+/// raising either one past it fails the build rather than quietly defeating every busy hand-off.
+const APP_TIMEOUT: Duration = Duration::from_secs(6);
+const _: () = assert!(QUIET_TIMEOUT.as_secs() + CHECK_TIMEOUT.as_secs() < APP_TIMEOUT.as_secs());
+/// How much of the check's stderr a refusal repeats. The rest is drained and dropped: the reason
+/// travels in one frame, and a frame over the protocol's cap is a panic, not a truncation.
+const MAX_CHECK_STDERR: u64 = 4096;
 
 /// One hand-off at a time: a second would take the same slots and locks, and release them under
 /// the first.
 static IN_PROGRESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Set while a hand-off is under way, so `serve` stops accepting. A client that connects meanwhile
+/// waits in the listener's backlog and is answered by whichever program comes out of it, where one
+/// accepted now would be dropped at the exec.
+static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether `serve` should accept connections now.
+pub fn accepting() -> bool {
+    !PAUSED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+struct Paused;
+
+impl Drop for Paused {
+    fn drop(&mut self) {
+        PAUSED.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
 
 /// What crosses the exec, apart from the descriptors themselves.
 #[derive(Debug, PartialEq, Eq)]
@@ -222,6 +247,14 @@ pub fn hand_off(
     if !binary.is_absolute() {
         return Err(format!("{} is not an absolute path", binary.display()));
     }
+    // A regular file only: reading a FIFO or a device to its end could block this connection's
+    // thread for good.
+    if !std::fs::metadata(binary).is_ok_and(|meta| meta.is_file()) {
+        return Err(format!(
+            "cannot read {}: not a regular file",
+            binary.display()
+        ));
+    }
     let offered = digest(binary).map_err(|e| format!("cannot read {}: {e}", binary.display()))?;
     if !force && context.digest == Some(offered) {
         return Ok(());
@@ -235,6 +268,8 @@ pub fn hand_off(
             return Err("another hand-off is in progress".into())
         }
     };
+    PAUSED.store(true, std::sync::atomic::Ordering::Release);
+    let _paused = Paused;
     // A repository command cut off by the exec could leave a repository half-written, so none may
     // be running, and none may start: every slot is taken until the exec, or until this returns.
     let _quiet = crate::vcs::Quiet::acquire(QUIET_TIMEOUT)
@@ -249,7 +284,9 @@ impl Carried {
     fn dup(&mut self, fd: RawFd) -> Result<RawFd, String> {
         // Close-on-exec at first, so the check below does not inherit them; cleared just before
         // the exec.
-        let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        // At 3 or above: a copy on 0, 1 or 2 would be the new program's stdio, and its diagnostics
+        // would be written into a pty or the listening socket.
+        let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
         if copy < 0 {
             return Err(format!(
                 "could not duplicate descriptor {fd}: {}",
@@ -318,9 +355,10 @@ fn check(binary: &Path, table: &Path) -> Result<(), String> {
     // otherwise block on the write and read as a timeout, hiding what it said.
     let stderr = child.stderr.take().map(|mut pipe| {
         std::thread::spawn(move || {
-            let mut text = String::new();
-            let _ = pipe.read_to_string(&mut text);
-            text
+            let mut kept = Vec::new();
+            let _ = (&mut pipe).take(MAX_CHECK_STDERR).read_to_end(&mut kept);
+            let _ = std::io::copy(&mut pipe, &mut std::io::sink());
+            String::from_utf8_lossy(&kept).into_owned()
         })
     });
     let deadline = Instant::now() + CHECK_TIMEOUT;
@@ -418,6 +456,11 @@ pub fn set_cloexec(fd: RawFd, on: bool) {
 pub fn check_table(path: &Path) -> Result<usize, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let table = Table::decode(&bytes)?;
+    // A build without the shadow terminal would accept these screens and paint nothing, so every
+    // pane would reattach blank. Refusing keeps the agent that has them.
+    if !cfg!(feature = "terminal-state") && table.sessions.iter().any(|s| !s.screen.is_empty()) {
+        return Err("this build cannot restore screens (built without terminal-state)".into());
+    }
     for session in &table.sessions {
         let mut shadow = crate::shadow::Shadow::new(session.columns, session.rows);
         shadow.write(&session.screen);
@@ -461,6 +504,32 @@ mod tests {
             ],
         };
         assert_eq!(Table::decode(&table.encode()), Ok(table));
+    }
+
+    /// A build without the shadow terminal refuses a table with screens, which it could only drop.
+    #[test]
+    fn screens_are_refused_by_a_build_that_cannot_paint_them() {
+        let path = std::env::temp_dir().join(format!("wr-agent-table-{}", std::process::id()));
+        let table = Table {
+            listener: 3,
+            lock: 4,
+            sessions: vec![FrozenSession {
+                id: SessionId([7; 16]),
+                pid: 1,
+                master: 5,
+                columns: 80,
+                rows: 24,
+                screen: b"on screen".to_vec(),
+            }],
+        };
+        std::fs::write(&path, table.encode()).expect("table");
+        let checked = check_table(&path);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            checked.is_ok(),
+            cfg!(feature = "terminal-state"),
+            "{checked:?}"
+        );
     }
 
     /// A table that is cut short or carries more than it declares is refused, not half-restored.

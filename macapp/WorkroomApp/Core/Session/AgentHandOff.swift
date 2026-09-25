@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Replaces the running local agent's program with the one this app bundles, keeping every session
 /// and its shell's pid (#230; `wr-agent hand-off`, `vcs/crates/wr-agent/src/handoff.rs`).
@@ -7,11 +8,16 @@ import Foundation
 /// be days, and meanwhile the services it predates degrade (design doc, "The local Mac hands off
 /// too").
 ///
-/// **Once a launch, just before its first pane attaches, and synchronously.** A pane attached to
-/// the old program loses its connection when the program is replaced, so this has to finish first.
-/// The agent does the deciding: it answers `current` at once when it is already this binary, so a
-/// launch with nothing to hand off pays one connection and one read of the binary. An agent that
-/// predates hand-off is never asked and keeps running.
+/// **Once a launch, in the background, as early as the launch allows** (`start`, from
+/// `applicationDidFinishLaunching`). The agent does the deciding: it answers `current` at once when
+/// it is already this binary, so a launch with nothing to hand off costs one connection and one
+/// read of the binary. An agent that predates hand-off is never asked and keeps running.
+///
+/// Panes do not wait for it, so launch never freezes on it. The agent stops accepting while it
+/// hands off, so a pane that connects meanwhile is attached by the new program, and `wr-agent
+/// attach` sends an attach again when the agent closes before answering. A pane already attached
+/// when the exec lands still loses its connection (the session carries on, detached); reattaching
+/// it is #231's.
 enum AgentHandOff {
   /// Nightly and Dev only for now. A hand-off bug kills local terminals on an update, which has
   /// never been possible before, so stable waits until Nightly has proven it.
@@ -23,14 +29,28 @@ enum AgentHandOff {
     #endif
   }
 
-  /// How long the app waits before killing the request and going on to attach its panes. Safe to
-  /// give up: the agent tells its requester just before it replaces itself, and calls the hand-off
-  /// off when the requester is gone. Longer than the agent's own worst case before that point
-  /// (`QUIET_TIMEOUT` plus `CHECK_TIMEOUT` in `handoff.rs`, 5 s), so a busy launch is not given
-  /// up on only for being busy. Giving up after the exec, while the command checks that the new
-  /// program answers, costs only the log line: the hand-off has happened, and panes attach to the
-  /// new program.
+  /// How long the app waits before killing the request. Safe to give up: the agent tells its
+  /// requester just before it replaces itself, and calls the hand-off off when the requester is
+  /// gone. Longer than the agent's own worst case before that point (`QUIET_TIMEOUT` plus
+  /// `CHECK_TIMEOUT` in `handoff.rs`, 5 s, checked there against this value), so a busy launch is
+  /// not given up on only for being busy. Giving up after the exec, while the command checks that
+  /// the new program answers, costs only the log line.
   static let timeout: TimeInterval = 6
+
+  private static let logger = Logger(
+    subsystem: "com.developwithstyle.workroom", category: "PersistentSession")
+
+  /// Starts this launch's hand-off and returns at once. The outcome is logged at `notice`, which
+  /// the log store keeps, where `info` is dropped unless someone is streaming.
+  @MainActor static func start() {
+    guard isEnabled, let binary = PersistentSessionPaths.binaryURL(for: .rustAgent),
+      let socket = PersistentSessionService.shared.existingSocketPath(for: .rustAgent)
+    else { return }
+    Task.detached(priority: .userInitiated) {
+      let result = run(binary: binary, socket: socket)
+      logger.notice("agent hand-off: \(result, privacy: .public)")
+    }
+  }
 
   /// What the hand-off said, for the log.
   static func run(binary: URL, socket: String) -> String {

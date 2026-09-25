@@ -107,24 +107,13 @@ impl Agent {
         }
     }
 
-    /// Binds and serves until idle. Returns when no session and no client has existed for
-    /// `idle_timeout`.
+    /// Serves on a bound listener until idle. Returns when no session and no client has existed
+    /// for `idle_timeout`. The listener is the one `bind` returns, or the one a hand-off carried
+    /// across `execve` (`crate::handoff`), which must never be unbound and bound again.
     ///
     /// `wakefulness` configures the awake ceiling (OQ22); the wakefulness service itself starts
     /// unconditionally on Linux, because the verdict has to keep flowing to the provider's lifecycle
     /// shim while no client is attached at all — that is the whole reason it exists.
-    pub fn serve(
-        &self,
-        socket: &Path,
-        idle_timeout: Duration,
-        wakefulness: crate::wakefulness::Settings,
-    ) -> Result<(), ServeError> {
-        let listener = bind(socket)?;
-        self.run(listener, socket, idle_timeout, wakefulness)
-    }
-
-    /// `serve` on a listener that is already bound: the one `bind` returns, or the one a hand-off
-    /// carried across `execve` (`crate::handoff`), which must never be unbound and bound again.
     pub fn run(
         &self,
         listener: UnixListener,
@@ -141,6 +130,13 @@ impl Agent {
         let mut idle_since = Some(Instant::now());
         let mut result = Ok(());
         loop {
+            // During a hand-off a new client waits in the backlog for the next program
+            // (`crate::handoff::accepting`), rather than being accepted and dropped at the exec.
+            if !crate::handoff::accepting() {
+                idle_since = None;
+                std::thread::sleep(Duration::from_millis(25));
+                continue;
+            }
             match listener.accept() {
                 Ok((stream, _)) => {
                     idle_since = None;
@@ -540,7 +536,13 @@ fn dispatch(
             };
             match crate::handoff::hand_off(sessions, &binary, force != 0, handing_off) {
                 Ok(()) => reply(Frame::new(FrameKind::Acknowledged, b"current".to_vec())),
-                Err(reason) => reply(Frame::new(FrameKind::Failure, reason.into_bytes())),
+                // Capped: the reason can quote the client's path and the check's stderr, and a
+                // frame over the protocol's limit panics in `encode`.
+                Err(reason) => {
+                    let mut reason = reason.into_bytes();
+                    reason.truncate(4096);
+                    reply(Frame::new(FrameKind::Failure, reason))
+                }
             }
         }
         _ => None,

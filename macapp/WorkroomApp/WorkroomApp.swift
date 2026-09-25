@@ -335,6 +335,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       || UITestFixture.isActive || UITestFixture.isolatesPreferences
     if !underTest {
       MainActor.assumeIsolated { WakefulnessModel.shared.startWatchingPrompts() }
+      // Hand an older running agent to the bundled one (#230), before panes are likely to attach.
+      // Not under test for the same reason: it would replace the developer's real agent.
+      MainActor.assumeIsolated { AgentHandOff.start() }
     }
 
     // Build the switcher rail's panel now, ordered out, and connect it to the session controller
