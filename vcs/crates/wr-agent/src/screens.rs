@@ -124,9 +124,15 @@ impl Screens {
     /// Removes a session's record, durably: a record that came back after a power cut would show
     /// a pane its user closed as one that ended with its host.
     pub fn remove(&self, id: SessionId) {
-        if fs::remove_file(self.path(id)).is_ok() {
+        if self.remove_unsynced(id) {
             let _ = self.sync();
         }
+    }
+
+    /// Removes a session's record without syncing the directory, for a caller holding a lock
+    /// other work waits on, which then `sync`s after releasing it. True if there was one.
+    pub fn remove_unsynced(&self, id: SessionId) -> bool {
+        fs::remove_file(self.path(id)).is_ok()
     }
 
     pub fn remove_all(&self) {

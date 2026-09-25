@@ -322,10 +322,12 @@ impl SessionStore {
         // before its first record would leave the old one to be shown as its last screen. Only
         // once it exists, so a create that loses a race or fails to spawn leaves the record
         // alone, and before it enters the map, so the screens thread cannot write its record
-        // first and have it removed here.
-        if let Some(screens) = self.screens.get() {
-            screens.remove(spec.id);
-        }
+        // first and have it removed here. The directory is synced after the store lock is
+        // released, so no other session waits on the disk.
+        let superseded = self
+            .screens
+            .get()
+            .is_some_and(|screens| screens.remove_unsynced(spec.id));
         let session = Session {
             id: spec.id,
             pty: Arc::new(pty),
@@ -341,6 +343,11 @@ impl SessionStore {
         // Drop the store lock before the reader starts, or its first `ended` removal deadlocks
         // against this very lock.
         drop(sessions);
+        if superseded {
+            if let Some(screens) = self.screens.get() {
+                let _ = screens.sync();
+            }
+        }
         // `std::thread::spawn` panics when the OS cannot create a thread. Reachable here on the
         // connection's own dispatch thread (this runs inside `handle_connection`), so the panic
         // would unwind past `Server::serve`'s `connections.fetch_sub` exactly as an unhandled
