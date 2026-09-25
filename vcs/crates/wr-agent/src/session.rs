@@ -112,6 +112,11 @@ impl Attached {
 /// Hands out attachment tokens. Process-wide and monotonic; the value means nothing but "later".
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 
+/// Numbers every session this process holds, so two sessions under one id are never mistaken for
+/// each other (`SessionStore::still_holds`). A pointer would not do: the allocator reuses a freed
+/// session's address for the next one.
+static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+
 /// Held for reading while a session that has left the store is still being ended (`terminate`),
 /// and for writing by a hand-off (`SessionStore::frozen`). A termination runs outside the store
 /// lock, so without this an exec could land in its grace period: the SIGKILL sweep would never
@@ -192,6 +197,8 @@ pub struct Session {
     /// Every attached client and the size owner among them. Shared with the reader, which
     /// forwards to all of them and to the shadow alone when there are none.
     attached: Arc<Mutex<Attached>>,
+    /// This session's number, from `NEXT_SESSION`.
+    number: u64,
 }
 
 impl Session {
@@ -236,6 +243,16 @@ pub enum SessionError {
     /// The OS could not start the session's reader thread, so the session was ended again at once.
     #[error("session {0} could not start: no thread for its output")]
     ReaderFailed(String),
+}
+
+/// A session's screen as `SessionStore::changed_screens` takes it, for its record.
+pub struct TakenScreen {
+    pub id: SessionId,
+    /// Which session under `id` this was, for `SessionStore::still_holds`.
+    pub session: u64,
+    pub columns: u16,
+    pub rows: u16,
+    pub record: Vec<u8>,
 }
 
 /// Owns every live session. Cheap to clone; all clones share one map.
@@ -333,6 +350,7 @@ impl SessionStore {
             pty: Arc::new(pty),
             shadow: Arc::new(Mutex::new(Shadow::new(columns, rows))),
             attached: Arc::new(Mutex::new(Attached::unrecorded())),
+            number: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
         };
         let info = session.info();
         let pty = Arc::clone(&session.pty);
@@ -783,6 +801,7 @@ impl SessionStore {
             pty: Arc::new(pty),
             shadow: Arc::new(Mutex::new(shadow)),
             attached: Arc::new(Mutex::new(Attached::unrecorded())),
+            number: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
         };
         let pty = Arc::clone(&session.pty);
         let shadow = Arc::clone(&session.shadow);
@@ -870,15 +889,16 @@ impl SessionStore {
     /// next call, still marked changed. An attach holds that lock for as long as a slow client
     /// takes its repaint, and such sessions must not hold up every other session's record, however
     /// many there are.
-    pub fn changed_screens(&self) -> Vec<(SessionId, u16, u16, Vec<u8>)> {
+    pub fn changed_screens(&self) -> Vec<TakenScreen> {
         use std::sync::TryLockError;
-        let parts: Vec<(SessionId, SessionParts)> = {
+        let parts: Vec<(SessionId, u64, SessionParts)> = {
             let sessions = self.sessions.lock().expect("session store poisoned");
             sessions
                 .values()
                 .map(|session| {
                     (
                         session.id,
+                        session.number,
                         (
                             Arc::clone(&session.pty),
                             Arc::clone(&session.shadow),
@@ -891,7 +911,7 @@ impl SessionStore {
         let deadline = Instant::now() + RECORD_WAIT;
         parts
             .into_iter()
-            .filter_map(|(id, (pty, shadow, attached))| {
+            .filter_map(|(id, number, (pty, shadow, attached))| {
                 let mut held = until(deadline, || match attached.try_lock() {
                     Ok(guard) => Some(guard),
                     Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
@@ -904,9 +924,25 @@ impl SessionStore {
                     .size()
                     .unwrap_or((crate::pty::DEFAULT_COLUMNS, crate::pty::DEFAULT_ROWS));
                 let record = shadow.lock().map(|s| s.record()).unwrap_or_default();
-                Some((id, columns, rows, record))
+                Some(TakenScreen {
+                    id,
+                    session: number,
+                    columns,
+                    rows,
+                    record,
+                })
             })
             .collect()
+    }
+
+    /// Whether `id` is still the session `changed_screens` took a screen of (`TakenScreen::session`)
+    /// rather than a later one under the same id, or none.
+    pub fn still_holds(&self, id: SessionId, session: u64) -> bool {
+        self.sessions
+            .lock()
+            .expect("session store poisoned")
+            .get(&id)
+            .is_some_and(|s| s.number == session)
     }
 
     /// Takes this session's screen again on the next `changed_screens`.
@@ -1516,7 +1552,7 @@ mod tests {
 
         let repainting = attached.lock().expect("lock");
         let started = Instant::now();
-        let taken: Vec<SessionId> = store.changed_screens().into_iter().map(|r| r.0).collect();
+        let taken: Vec<SessionId> = store.changed_screens().into_iter().map(|r| r.id).collect();
         assert!(
             started.elapsed() < RECORD_WAIT * 3,
             "waited {:?} on the busy session",
@@ -1529,11 +1565,36 @@ mod tests {
         );
 
         drop(repainting);
-        let taken: Vec<SessionId> = store.changed_screens().into_iter().map(|r| r.0).collect();
+        let taken: Vec<SessionId> = store.changed_screens().into_iter().map(|r| r.id).collect();
         assert_eq!(
             taken,
             vec![id(11)],
             "the busy session was not taken next time"
+        );
+        store.kill_all();
+    }
+
+    /// A screen taken of one session is not taken for a later session under the same id, so the
+    /// screens thread can tell a record it wrote belongs to a session that has since been
+    /// replaced.
+    #[test]
+    fn a_screen_is_held_only_by_the_session_it_was_taken_of() {
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 30")];
+        let e = env();
+        store.create(spec(id(14), &args, &e)).expect("create");
+        let taken = store.changed_screens().pop().expect("taken");
+        assert!(store.still_holds(id(14), taken.session));
+
+        store.kill(id(14));
+        assert!(
+            !store.still_holds(id(14), taken.session),
+            "an ended session held it"
+        );
+        store.create(spec(id(14), &args, &e)).expect("create again");
+        assert!(
+            !store.still_holds(id(14), taken.session),
+            "a later session held it"
         );
         store.kill_all();
     }
@@ -1561,7 +1622,7 @@ mod tests {
         let taken: Vec<(SessionId, u16, u16)> = store
             .changed_screens()
             .into_iter()
-            .map(|r| (r.0, r.1, r.2))
+            .map(|r| (r.id, r.columns, r.rows))
             .collect();
         assert_eq!(
             taken,

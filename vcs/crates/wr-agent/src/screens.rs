@@ -272,11 +272,19 @@ fn flush(
         return;
     };
     let mut saved = Vec::new();
-    for (id, columns, rows, screen) in sessions.changed_screens() {
-        if screen.is_empty() {
+    for taken in sessions.changed_screens() {
+        let id = taken.id;
+        if taken.record.is_empty() {
             continue;
         }
-        match screens.save(id, columns, rows, &screen) {
+        match screens.save(id, taken.columns, taken.rows, &taken.record) {
+            // The id was reused, or its session ended, after its screen was taken: the record just
+            // written is of a session that no longer holds it. This thread is the only writer, so
+            // checking after the write is enough.
+            Ok(()) if !sessions.still_holds(id, taken.session) => {
+                screens.remove(id);
+                failing.remove(&id);
+            }
             Ok(()) => {
                 written.insert(id);
                 failing.remove(&id);
