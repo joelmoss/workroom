@@ -26,6 +26,7 @@ use serde_json::{json, Value};
 
 use wr_agent::protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
 use wr_agent::protocol::frame::{Frame, FrameDecoder, FrameKind};
+use wr_agent::screens::Screens;
 use wr_agent::serve::{handle_connection, AttachRequest};
 use wr_agent::session::{SessionId, SessionStore};
 use wr_agent::transport::{close, set_nonblocking, FdStream, PipeTransport};
@@ -294,6 +295,72 @@ fn the_session_survives_the_stream_dropping() {
     close(&second.writer);
     let _ = handle.join();
     sessions.kill_all();
+}
+
+/// A restored pane (`CREATE=0`) naming a session that ended with its host is shown the record the
+/// agent kept of it (#232): `Attached`, the screen and the notice, then nothing. What it types
+/// reaches no shell and creates no session. Killing it, which is the app closing the pane, removes
+/// the record.
+#[test]
+fn a_restored_pane_is_shown_the_record_of_a_session_that_ended_with_its_host() {
+    if !cfg!(feature = "terminal-state") {
+        eprintln!("skipping: built without the terminal-state feature, so no record repaints");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("wr-records-pipe-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let sessions = SessionStore::new();
+    sessions.keep_screens(Screens::open(&dir).expect("records"));
+    let id = SessionId([0x31; 16]);
+    let screens = sessions.screens().expect("screens");
+    screens
+        .save(id, 80, 24, b"RECORD-MARK\r\n$ ")
+        .expect("record");
+
+    let (mut client, handle) = serve_over_pipe(sessions.clone());
+    client.handshake();
+    let restored = AttachRequest {
+        id: Some(id),
+        columns: 80,
+        rows: 24,
+        existing_only: true,
+        ..Default::default()
+    };
+    client.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Attach, restored.encode()),
+    );
+    let seen = client.read_until("Close it to start again", Duration::from_secs(10));
+    assert!(
+        seen.contains("RECORD-MARK") && seen.contains("Close it to start again"),
+        "the record was not shown; got {seen:?}"
+    );
+
+    client.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Input, b"echo LIVE-$((1+1))\n".to_vec()),
+    );
+    let seen = client.read_until("LIVE-2", Duration::from_millis(500));
+    assert!(!seen.contains("LIVE-2"), "input reached a shell: {seen:?}");
+    assert!(sessions.list().is_empty(), "a session was created");
+
+    // On Control, so the acknowledgement lands where `envelope` can wait for it.
+    client.send(
+        Service::Control,
+        2,
+        Frame::new(FrameKind::Kill, id.0.to_vec()),
+    );
+    client.envelope(Service::Control, 2, Duration::from_secs(5));
+    assert!(
+        screens.load(id).is_none(),
+        "closing the pane kept its record"
+    );
+
+    close(&client.writer);
+    let _ = handle.join();
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A peer that is not an agent — an ssh banner, an MOTD, a login message — must be rejected, not
@@ -949,6 +1016,60 @@ impl Fixture {
         String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
+    /// Stops and starts the container, as a provider stops and reboots a box: every process in it
+    /// is killed outright (`-t 0`), and its disk is kept. The restart publishes a new port, so the
+    /// config is pointed at it. run.sh pins the host key by alias, so the key still matches.
+    fn reboot(&self) {
+        let need = |name: &str| {
+            std::env::var(name).unwrap_or_else(|_| {
+                panic!("{name} is unset; run these through vcs/scripts/ssh-fixture/run.sh")
+            })
+        };
+        let runtime = need("WR_SSH_FIXTURE_RUNTIME");
+        let container = need("WR_SSH_FIXTURE_CONTAINER");
+        let restarted = Command::new(&runtime)
+            .args(["restart", "-t", "0", &container])
+            .output()
+            .expect("restart the fixture");
+        assert!(
+            restarted.status.success(),
+            "`{runtime} restart` failed: {}",
+            String::from_utf8_lossy(&restarted.stderr)
+        );
+        let published = Command::new(&runtime)
+            .args(["port", &container, "22/tcp"])
+            .output()
+            .expect("read the fixture's port");
+        let published = String::from_utf8_lossy(&published.stdout);
+        let port = published
+            .lines()
+            .next()
+            .and_then(|line| line.rsplit(':').next())
+            .unwrap_or_else(|| panic!("no published port in {published:?}"))
+            .trim()
+            .to_string();
+        let config: String = std::fs::read_to_string(&self.config)
+            .expect("read the ssh config")
+            .lines()
+            .map(|line| match line.trim_start().starts_with("Port ") {
+                true => format!("  Port {port}\n"),
+                false => format!("{line}\n"),
+            })
+            .collect();
+        std::fs::write(&self.config, config).expect("write the ssh config");
+        // Up means sshd answers AND the supervisor has the agent serving, as run.sh waits for it.
+        assert!(
+            self.wait_for(
+                &format!(
+                    "wr-agent list --socket {} >/dev/null && echo up",
+                    self.socket
+                ),
+                |out| out.contains("up")
+            ),
+            "the fixture did not come back from its reboot"
+        );
+    }
+
     /// Polls a command until its output satisfies `done`.
     fn wait_for(&self, script: &str, done: impl Fn(&str) -> bool) -> bool {
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -1448,6 +1569,98 @@ fn over_ssh_a_job_outlives_a_dropped_link_and_the_screen_comes_back() {
         Service::Terminal,
         1,
         Frame::new(FrameKind::Kill, id.to_vec()),
+    );
+}
+
+/// The design doc's stop-and-reboot criterion (#232): a full-screen program is running, the box
+/// stops and starts (every process killed, the disk kept), and a restored pane is shown that
+/// program's last screen, marked as ended. What it types reaches nothing, and closing the pane
+/// removes the record.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_a_restored_pane_is_shown_its_last_screen_after_a_reboot() {
+    let fixture = fixture();
+    let protocol = fixture.run("wr-agent protocol");
+    assert!(
+        protocol.contains("terminal-state yes"),
+        "the fixture's agent must be built with terminal-state:\n{protocol}"
+    );
+
+    let id = SessionId([0x84; 16]);
+    let record = format!("~/.local/state/workroom/screens/{}.vt", id.to_hyphenated());
+    let mut relay = fixture.relay();
+    relay.client.handshake();
+    relay.client.send(Service::Terminal, 1, attach_frame(id.0));
+    std::thread::sleep(Duration::from_millis(500));
+    relay.client.send(
+        Service::Terminal,
+        1,
+        Frame::new(
+            FrameKind::Input,
+            b"printf '\\033[?1049h\\033[HFULL-SCREEN-%s\\n' $((40+2)); sleep 600\n".to_vec(),
+        ),
+    );
+    let seen = relay
+        .client
+        .read_until("FULL-SCREEN-42", Duration::from_secs(10));
+    assert!(
+        seen.contains("FULL-SCREEN-42"),
+        "setup failed; got {seen:?}"
+    );
+    // The reboot kills the agent outright, so only what it has already written can survive.
+    assert!(
+        fixture.wait_for(&format!("grep -c FULL-SCREEN-42 {record} || true"), |out| {
+            out.trim().parse::<u32>().is_ok_and(|n| n > 0)
+        }),
+        "the screen was never written to {record}"
+    );
+    drop(relay);
+
+    fixture.reboot();
+
+    let mut relay = fixture.relay();
+    relay.client.handshake();
+    let restored = AttachRequest {
+        id: Some(id),
+        columns: 80,
+        rows: 24,
+        existing_only: true,
+        ..Default::default()
+    };
+    relay.client.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Attach, restored.encode()),
+    );
+    let seen = relay
+        .client
+        .read_until("Close it to start again", Duration::from_secs(10));
+    assert!(
+        seen.contains("FULL-SCREEN-42") && seen.contains("Close it to start again"),
+        "the restored pane was not shown its last screen; got {seen:?}"
+    );
+    relay.client.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Input, b"echo LIVE-$((1+1))\n".to_vec()),
+    );
+    let seen = relay.client.read_until("LIVE-2", Duration::from_secs(1));
+    assert!(!seen.contains("LIVE-2"), "input reached a shell: {seen:?}");
+
+    // Closing the pane is the app killing the session by id.
+    relay.client.send(
+        Service::Control,
+        2,
+        Frame::new(FrameKind::Kill, id.0.to_vec()),
+    );
+    relay
+        .client
+        .envelope(Service::Control, 2, Duration::from_secs(5));
+    assert!(
+        fixture
+            .run(&format!("test -e {record} || echo gone"))
+            .contains("gone"),
+        "closing the pane kept its record"
     );
 }
 

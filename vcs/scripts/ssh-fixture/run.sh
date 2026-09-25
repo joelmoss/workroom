@@ -65,11 +65,14 @@ PORT="$("$RUNTIME" port "$NAME" 22/tcp | head -1 | sed 's/.*://')"
 
 # BatchMode cannot prompt to accept a host key, so the expected key is delivered out of band (here,
 # read straight out of the container) and pinned. That is the same policy a real driver needs.
+# Pinned under an alias rather than the port: a restart publishes a new port (the reboot test,
+# #232), and the key must still match.
 HOST_KEY="$("$RUNTIME" exec "$NAME" cat /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f1,2)"
-printf '[127.0.0.1]:%s %s\n' "$PORT" "$HOST_KEY" > "$STAGE/known_hosts"
+printf 'wr-ssh-fixture %s\n' "$HOST_KEY" > "$STAGE/known_hosts"
 cat > "$STAGE/ssh_config" <<EOF
 Host fixture
   HostName 127.0.0.1
+  HostKeyAlias wr-ssh-fixture
   Port $PORT
   User workroom
   IdentityFile $STAGE/id_ed25519
@@ -96,9 +99,11 @@ for attempt in $(seq 1 100); do
 done
 
 # AGENT: the ELF itself, for the tests of the bootstrap that pushes it (#231). The app's tests
-# take it as their bundled agent, since a Debug build carries no Linux agent of its own.
+# take it as their bundled agent, since a Debug build carries no Linux agent of its own. CONTAINER
+# and RUNTIME: for the test that reboots the box (#232).
 for pair in "CONFIG=$STAGE/ssh_config" "SOCKET=$SOCKET" "ADDRESS=127.0.0.1" "PORT=$PORT" \
-  "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY" "AGENT=$STAGE/wr-agent"; do
+  "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY" "AGENT=$STAGE/wr-agent" \
+  "CONTAINER=$NAME" "RUNTIME=$RUNTIME"; do
   export "WR_SSH_FIXTURE_$pair" "TEST_RUNNER_WR_SSH_FIXTURE_$pair"
 done
 

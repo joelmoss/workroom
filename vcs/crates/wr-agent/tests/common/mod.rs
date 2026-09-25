@@ -70,10 +70,16 @@ impl Drop for Workspace {
 }
 
 pub fn start_agent(socket: &Path) -> Spawned {
+    start_agent_with(socket, &[])
+}
+
+/// `start_agent` with more `serve` flags.
+pub fn start_agent_with(socket: &Path, flags: &[&std::ffi::OsStr]) -> Spawned {
     let child = Command::new(agent_binary())
         .args(["serve", "--socket"])
         .arg(socket)
         .args(["--idle-timeout", "60"])
+        .args(flags)
         // The agent spawns $SHELL, so without this these tests run the DEVELOPER's shell — an
         // interactive zsh with a git-aware prompt and a line editor that redraws pending typeahead
         // on reattach. That redraw looks exactly like a repaint and made an earlier version of the
@@ -102,10 +108,16 @@ pub fn wait_for(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool 
 }
 
 pub fn attach(socket: &Path, session: &str) -> Spawned {
+    attach_with(socket, session, &[])
+}
+
+/// `attach` with more flags, such as `--no-create` for a restored pane.
+pub fn attach_with(socket: &Path, session: &str, flags: &[&str]) -> Spawned {
     let child = Command::new(agent_binary())
         .args(["attach", "--socket"])
         .arg(socket)
         .args(["--session", session])
+        .args(flags)
         // The shell now comes from the CLIENT's environment, which is the point — the agent is
         // long-lived and shared, so its own environment is the wrong source. That makes this pin
         // load-bearing rather than tidy: without it these tests run the developer's interactive

@@ -16,7 +16,8 @@ app-side transport with `HostDriver` and the container driver, services and term
 merged 2026-09-24 in #237), `execve` hand-off (#230,
 merged 2026-09-25 in #238; on for Nightly and Dev),
 push-on-first-connect bootstrap (#231, built 2026-09-25; "As built (#231)" in the Distribution
-Plan) and stop-and-reboot screen restoration (#232). The rest of
+Plan) and stop-and-reboot screen restoration (#232, built 2026-09-25; "As built (#232)" under
+Next Steps item 3). The rest of
 this section is the 2026-09-17 status, kept for the Phase 2 detail it records and corrected where
 it had gone stale.
 
@@ -2033,7 +2034,10 @@ disagreement passes every test on either side alone while presenting as an empty
 - **The far-side terminal state survives a provider stop-and-reboot**: reopen after one, and the
   alternate-screen program's screen is still there (the process is not — that is the live-process
   suspend gate, not a bug). This criterion did not previously exist because nothing could satisfy
-  it; `snapshot.h` persisted across the reboot is what makes it testable.
+  it; `snapshot.h` persisted across the reboot is what makes it testable. **Met (#232)**, with
+  `replay()`'s VT bytes persisted rather than a snapshot (Distribution Plan). The container test
+  `over_ssh_a_restored_pane_is_shown_its_last_screen_after_a_reboot` stops and starts the box
+  with a full-screen program running.
 
 ## Distribution Plan
 
@@ -2728,11 +2732,61 @@ service milestones below so each layer can be reviewed and landed independently.
      scrollback, and a full-screen program's alternate screen
      (`a_reattaching_client_gets_a_full_screen_programs_screen`, added for #208 — the case the Swift
      replay buffer returned empty for). `remote_transport.rs` covers the same survival over a pipe.
-     CI runs all of these with the feature on (`agent-terminal-state`). **Not in this milestone:**
-     stop-and-reboot screen restoration. That needs a snapshot persisted to disk. It is Phase 3
-     (item 4 below). The resume policy it waited on is now decided (hand-off, 2026-09-22, see
-     Distribution Plan), and the proposal there persists `replay()`'s VT bytes rather than a
-     snapshot. That keeps the parser continuation and avoids depending on the snapshot format.
+     CI runs all of these with the feature on (`agent-terminal-state`). Stop-and-reboot screen
+     restoration was left out of this milestone and is now built too (#232), so #208's durability
+     criterion is met.
+
+     **As built (#232, `wr-agent/src/screens.rs`).** After a reboot the shells are dead, so what
+     comes back is each session's last screen, frozen. A pane is not given a new shell.
+     - *Opt-in, on durable disk.* `serve --screens <dir>` turns it on. The directory must survive a
+       reboot, so it is never the socket's, which is on tmpfs on a real host. The fixture's
+       supervisor passes `~/.local/state/workroom/screens`. The local Mac passes nothing, so
+       restoring local screens after a Mac restart is still a separate decision. The flag is in
+       the arguments a hand-off re-executes with, so a new program keeps it.
+     - *What is kept: a record, not a snapshot.* `ShadowTerminal::record()` is `replay()` without
+       the parser continuation. Nothing will ever complete a continuation in a record, and the
+       notice written after one would. A small header (magic, version 1, columns, rows, length)
+       precedes the VT, so a newer agent reads what an older one wrote without running it
+       (`a_version_one_record_still_reads`).
+     - *Write policy.* One thread writes, every 2 s, the record of each session whose screen
+       changed, through a temporary file, `fsync`, `rename` and a directory `fsync`. A reboot
+       mid-write leaves the previous record or none, never a torn one. A failed write is tried
+       again on the next tick, since a program waiting for input may never print again. A record
+       carries the shadow's own scrollback, which libghostty bounds (10 KB by default). One over
+       4 MiB is removed rather than left stale. Files are 0600 in a 0700 directory: a record is
+       whatever was on the user's screen.
+     - *When a record goes.* When its session ends while the agent runs (on the next tick), and
+       when a client kills it: `Kill` is how the app says its user closed the pane. At startup the
+       agent removes interrupted writes and keeps only the newest 64 records.
+     - *What a restored pane sees.* A restored attach (`CREATE=0`) naming an id the agent does
+       not hold but has a record of gets `Attached`, then the record, repainted through a fresh
+       shadow at the pane's size, as a hand-off adopts a screen. A notice follows on the bottom
+       row in inverse video: "This terminal ended when its host restarted. Close it to start
+       again." Mouse reporting goes off so the screen can be selected, and the cursor is hidden.
+       Nothing else happens on that connection: there is no pty, so input and resizes go nowhere,
+       and no session is created. A pane that is still open shows the record again after its link
+       drops. An attach that may create gets a new session, as before, and that session's record
+       replaces the old one. Records are not in `list`.
+     - *A restored remote pane waits for its agent.* After a reboot sshd can accept before the
+       supervisor's agent binds its socket. A restored attach on a remote host (`--no-spawn
+       --no-create`) that finds no agent, or one that closes before answering, now exits 255, and
+       the app attaches it again with its backoff (1 s doubling, five tries). It used to fall back
+       to a shell, which would have been a live shell in a pane whose session was gone, with the
+       record never shown. A new remote pane still gets that shell (#229), since it has no session
+       to wait for.
+     - *Limits.* The agent does not flush on SIGTERM, so a stop can lose up to 2 s of screen. The
+       container test's `restart -t 0` is a SIGKILL, which is the harder case. The app cannot end
+       a remote session when its pane closes (Phase 4), so the record of a remote pane closed
+       while its host was down stays until the 64-record bound drops it. An agent that crashes
+       without a reboot leaves orphaned shells running (the `KillMode` caveat in "Two requirements
+       on #229's real supervisor"), and their records then read as ended while their shells live.
+       The notice says "host restarted" in that case too.
+     - *Tests.* `a_restored_pane_is_shown_its_last_screen_after_a_reboot` SIGKILLs a local agent
+       and its shells and starts a new agent over the records.
+       `a_restored_pane_is_shown_the_record_of_a_session_that_ended_with_its_host` covers the
+       protocol over a pipe. The `over_ssh_` test of the same name stops and starts the container.
+       A restart publishes a new port, so `run.sh` pins the host key under an alias
+       (`HostKeyAlias`) rather than `[127.0.0.1]:<port>`.
 
    **Two Phase 3 questions this milestone opened rather than answered**, both consequences of the
    exec service being the thing Phase 3 moves host-side. *Auth resolution*: the child environment is
@@ -2762,7 +2816,7 @@ service milestones below so each layer can be reviewed and landed independently.
    restoration separately from live-process survival. **Filed 2026-09-24** as #227 (Linux artifact)
    → #228 (supervised agent, relay, container fixture) → #229 (app-side transport, `HostDriver`,
    container driver), with #230 (hand-off, independent), #231 (bootstrap, after #227, #229 and
-   #230) and #232 (stop-and-reboot restore, after #228).
+   #230) and #232 (stop-and-reboot restore, after #228; built 2026-09-25).
 
 5. **Phase 4: credentials, provisioning, lifecycle and the Nightly UI.** Resolve the non-admin
    repository credential path (OQ20) before claiming ordinary organization-repository support.

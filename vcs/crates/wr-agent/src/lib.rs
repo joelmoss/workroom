@@ -15,6 +15,7 @@ pub mod input;
 pub mod process;
 pub mod protocol;
 pub mod pty;
+pub mod screens;
 pub mod serve;
 pub mod session;
 pub mod shadow;

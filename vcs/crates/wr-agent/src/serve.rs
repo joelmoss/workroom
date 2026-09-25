@@ -428,6 +428,24 @@ fn dispatch(
             // `attach()` finding nothing, which the client already takes as "ended".
             let exists = sessions.contains(id);
             if request.existing_only && !exists {
+                // A session that ended with its host, whose last screen was kept (#232,
+                // `crate::screens`): `Attached`, the screen, and nothing after. `attached` stays
+                // unset, so this connection's input and resizes go nowhere, and the pane shows the
+                // screen until its user closes it. Chunked, as `SessionStore::attach` chunks a
+                // repaint: `Frame::encode` panics above the frame cap.
+                if let Some(screen) = sessions.ended_screen(id, request.columns, request.rows) {
+                    let attached = Frame::control(FrameKind::Attached).encode();
+                    if send(&Envelope::new(Service::Control, envelope.stream, attached).encode()) {
+                        for chunk in screen.chunks(crate::session::READ_CHUNK) {
+                            let output = Frame::new(FrameKind::Output, chunk.to_vec()).encode();
+                            let output = Envelope::new(Service::Terminal, envelope.stream, output);
+                            if !send(&output.encode()) {
+                                break;
+                            }
+                        }
+                    }
+                    return None;
+                }
                 return reply(Frame::new(
                     FrameKind::Failure,
                     format!("session ended: {}", id.to_hyphenated()).into_bytes(),

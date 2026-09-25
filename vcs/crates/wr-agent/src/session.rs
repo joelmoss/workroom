@@ -15,14 +15,15 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::input::InputClassifier;
 use crate::protocol::envelope::{Envelope, Service};
 use crate::protocol::frame::{Frame, FrameKind};
 use crate::pty::{Pty, PtyError};
+use crate::screens::Screens;
 use crate::shadow::Shadow;
 use crate::transport::WRITE_TIMEOUT;
 
@@ -179,6 +180,9 @@ pub struct Session {
     /// Every attached client and the size owner among them. Shared with the reader, which
     /// forwards to all of them and to the shadow alone when there are none.
     attached: Arc<Mutex<Attached>>,
+    /// Set by the reader whenever the screen changes, and cleared when its record is taken
+    /// (`changed_screens`), so an idle session is not rewritten to disk every tick.
+    changed: Arc<AtomicBool>,
 }
 
 impl Session {
@@ -229,6 +233,9 @@ pub enum SessionError {
 #[derive(Clone, Default)]
 pub struct SessionStore {
     sessions: Arc<Mutex<HashMap<SessionId, Session>>>,
+    /// Where each session's screen is kept for after a reboot, when the agent was asked to keep
+    /// them (`serve --screens`). See `crate::screens`.
+    screens: Arc<OnceLock<Screens>>,
 }
 
 /// How a session's pty should be started. Grouped into one struct because the list is long enough
@@ -307,11 +314,13 @@ impl SessionStore {
             pty: Arc::new(pty),
             shadow: Arc::new(Mutex::new(Shadow::new(columns, rows))),
             attached: Arc::new(Mutex::new(Attached::default())),
+            changed: Arc::new(AtomicBool::new(true)),
         };
         let info = session.info();
         let pty = Arc::clone(&session.pty);
         let shadow = Arc::clone(&session.shadow);
         let attached = Arc::clone(&session.attached);
+        let changed = Arc::clone(&session.changed);
         let store = Arc::clone(&self.sessions);
         sessions.insert(spec.id, session);
         // Drop the store lock before the reader starts, or its first `ended` removal deadlocks
@@ -334,7 +343,7 @@ impl SessionStore {
             // An `Err` is the sender dropped without a send, which only a panicking `register` can
             // do; draining anyway is what that case needs too.
             let _ = start.recv();
-            read_session(spec.id, pty, shadow, attached, store)
+            read_session(spec.id, pty, shadow, attached, changed, store)
         });
         if spawned.is_err() {
             self.kill(spec.id);
@@ -752,10 +761,12 @@ impl SessionStore {
             pty: Arc::new(pty),
             shadow: Arc::new(Mutex::new(shadow)),
             attached: Arc::new(Mutex::new(Attached::default())),
+            changed: Arc::new(AtomicBool::new(true)),
         };
         let pty = Arc::clone(&session.pty);
         let shadow = Arc::clone(&session.shadow);
         let attached = Arc::clone(&session.attached);
+        let changed = Arc::clone(&session.changed);
         let store = Arc::clone(&self.sessions);
         {
             let mut sessions = self.sessions.lock().expect("session store poisoned");
@@ -765,7 +776,7 @@ impl SessionStore {
             sessions.insert(id, session);
         }
         let spawned = std::thread::Builder::new()
-            .spawn(move || read_session(id, pty, shadow, attached, store));
+            .spawn(move || read_session(id, pty, shadow, attached, changed, store));
         if spawned.is_err() {
             self.kill(id);
             return Err(SessionError::ReaderFailed(id.to_hyphenated()));
@@ -779,6 +790,11 @@ impl SessionStore {
     /// termination now scans the process table and waits out a shell's exit traps, and holding the
     /// store lock across that would stall every `list` and `attach` for the duration.
     pub fn kill(&self, id: SessionId) -> bool {
+        // Killing is how the app says its user closed the pane, and that ends a record too: of a
+        // session that ended with its host, or of this one.
+        if let Some(screens) = self.screens.get() {
+            screens.remove(id);
+        }
         let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
         let session = self
             .sessions
@@ -798,6 +814,9 @@ impl SessionStore {
     /// happens once and every shell gets its hangup at the same moment instead of each waiting out
     /// the one before it. That matters on quit, where this runs with the user watching.
     pub fn kill_all(&self) -> usize {
+        if let Some(screens) = self.screens.get() {
+            screens.remove_all();
+        }
         let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
         let ending: Vec<Session> = {
             let mut sessions = self.sessions.lock().expect("session store poisoned");
@@ -810,6 +829,77 @@ impl SessionStore {
 
     pub fn is_empty(&self) -> bool {
         self.sessions.lock().map(|s| s.is_empty()).unwrap_or(true)
+    }
+
+    /// Keeps each session's screen in `screens` from now on (`crate::screens::spawn` does the
+    /// writing). Once per store.
+    pub fn keep_screens(&self, screens: Screens) {
+        let _ = self.screens.set(screens);
+    }
+
+    pub fn screens(&self) -> Option<&Screens> {
+        self.screens.get()
+    }
+
+    /// What a restored pane is shown for a session the agent does not hold but has a record of: a
+    /// session that ended with its host (`crate::screens`).
+    pub fn ended_screen(&self, id: SessionId, columns: u16, rows: u16) -> Option<Vec<u8>> {
+        self.screens.get()?.render(id, columns, rows)
+    }
+
+    /// `(id, columns, rows, record)` for each session whose screen changed since it was last
+    /// taken. Read under the session's attachment lock, as `frozen` reads a screen, so the size is
+    /// the one the screen was drawn at.
+    pub fn changed_screens(&self) -> Vec<(SessionId, u16, u16, Vec<u8>)> {
+        let parts: Vec<(SessionId, SessionParts)> = {
+            let sessions = self.sessions.lock().expect("session store poisoned");
+            sessions
+                .values()
+                .filter(|session| session.changed.swap(false, Ordering::Relaxed))
+                .map(|session| {
+                    (
+                        session.id,
+                        (
+                            Arc::clone(&session.pty),
+                            Arc::clone(&session.shadow),
+                            Arc::clone(&session.attached),
+                        ),
+                    )
+                })
+                .collect()
+        };
+        parts
+            .into_iter()
+            .map(|(id, (pty, shadow, attached))| {
+                let _held = attached.lock().unwrap_or_else(|e| e.into_inner());
+                let (columns, rows) = pty
+                    .size()
+                    .unwrap_or((crate::pty::DEFAULT_COLUMNS, crate::pty::DEFAULT_ROWS));
+                let record = shadow.lock().map(|s| s.record()).unwrap_or_default();
+                (id, columns, rows, record)
+            })
+            .collect()
+    }
+
+    /// Takes this session's screen again on the next `changed_screens`.
+    pub fn mark_changed(&self, id: SessionId) {
+        if let Some(session) = self
+            .sessions
+            .lock()
+            .expect("session store poisoned")
+            .get(&id)
+        {
+            session.changed.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub fn ids(&self) -> Vec<SessionId> {
+        self.sessions
+            .lock()
+            .expect("session store poisoned")
+            .keys()
+            .copied()
+            .collect()
     }
 }
 
@@ -943,7 +1033,7 @@ fn terminal_envelope(stream: u32, frame: Frame) -> Vec<u8> {
 /// The pty reader's buffer, and also the repaint's chunk size in `attach` — both must stay under
 /// the protocol's 1 MiB frame cap, which `Frame::encode` enforces with a panic rather than a
 /// truncation. Sharing one constant means the two paths cannot drift apart.
-const READ_CHUNK: usize = 8192;
+pub(crate) const READ_CHUNK: usize = 8192;
 
 /// The slowest a peer may take its repaint before the agent gives up on it, in bytes per second.
 ///
@@ -967,6 +1057,7 @@ fn read_session(
     pty: Arc<Pty>,
     shadow: Arc<Mutex<Shadow>>,
     attached: Arc<Mutex<Attached>>,
+    changed: Arc<AtomicBool>,
     store: Arc<Mutex<HashMap<SessionId, Session>>>,
 ) {
     let mut buffer = [0u8; READ_CHUNK];
@@ -996,6 +1087,7 @@ fn read_session(
                     if let Ok(mut shadow) = shadow.lock() {
                         shadow.write(&buffer[..n]);
                     }
+                    changed.store(true, Ordering::Relaxed);
                     held.clients.iter().map(Client::target).collect::<Vec<_>>()
                 }
                 _ => Vec::new(),
