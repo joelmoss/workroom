@@ -1710,7 +1710,11 @@ disagreement passes every test on either side alone while presenting as an empty
 
    Residual, and not closable from this side of the socket: the daemon can answer `.owned` and lose
    the session before the attach lands.
-5. **Rolling BACK to v2.0.0 strands agent-held sessions, and re-updating does not recover them.**
+5. **~~Rolling BACK to v2.0.0 strands agent-held sessions, and re-updating does not recover
+   them.~~ — MOOT, 2026-09-25.** v2.1.0 has shipped and rolling back to v2.0.0 is not a supported
+   option, so no release note is owed. The trace below is kept for what it records about how the
+   two helpers resolve ownership of one session id.
+
    This one is release notes, not code: nothing a newer build writes changes what an older one does
    on relaunch.
 
@@ -1730,8 +1734,9 @@ disagreement passes every test on either side alone while presenting as an empty
    direction, and it breaks the case this whole shim exists for, where the daemon legitimately holds
    the only copy of a user's work. The honest answer is the release note.
 
-   **What the notes must say:** rolling back to v2.0.0 replaces the contents of open terminals with
-   fresh shells, and updating again will not bring them back. Close what matters first.
+   **What the notes would have said:** rolling back to v2.0.0 replaces the contents of open
+   terminals with fresh shells, and updating again will not bring them back. Close what matters
+   first.
 
 ## Open Questions
 
@@ -1882,8 +1887,8 @@ disagreement passes every test on either side alone while presenting as an empty
     What shipped instead is forward compatibility: an attach-only client that can reach a daemon an
     older app left running. A bad agent now degrades to plain shells rather than falling back to the
     daemon — accepted deliberately, since that fallback was what let both helpers create a session
-    for the same id. Rolling back to v2.0.0 remains possible and is lossy in a way the release notes
-    have to state; see Outstanding item 5.
+    for the same id. Rolling back to v2.0.0 is not a supported option now that v2.1.0 has shipped;
+    Outstanding item 5 records what it would cost.
 15. **What is the `maxLifetime` floor?** It is one of three hard gates (see the Goal), so it needs
     a number. A working day
     is the obvious candidate, but a workroom is supposed to outlive a working day — which suggests
@@ -2767,10 +2772,11 @@ service milestones below so each layer can be reviewed and landed independently.
    Nightly-only until the success criteria pass; the container fixture alone does not establish
    parity across two real providers.
 
-**Release follow-up, independent of Phase 2:** Phase 1 Outstanding item 5 supplies the warning
+**Release follow-up, independent of Phase 2:** ~~Phase 1 Outstanding item 5 supplies the warning
 about rolling back to v2.0.0 and then updating again. Verify that the first release containing the
-migration carries that wording. Retain the attach-only compatibility shim according to its written
-retirement criteria, not an elapsed release cycle.
+migration carries that wording.~~ Moot: v2.1.0 has shipped and rolling back to v2.0.0 is not a
+supported option (Outstanding item 5). Retain the attach-only compatibility shim according to its
+written retirement criteria, not an elapsed release cycle.
 
 ## Reviewer Concerns
 
