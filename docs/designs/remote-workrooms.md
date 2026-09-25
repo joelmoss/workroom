@@ -1039,11 +1039,22 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     ended. Locally the app asks first (`confirmBeforeAttach`); remotely one request answers and
     attaches, so the answer cannot go stale in between.
   - *A dropped link reconnects.* ssh's own failure (exit 255, as after sleep or a network change)
-    reattaches the pane as a restored one, backing off to 30s while the host stays unreachable,
-    and stopping after five quick failures in a row so a permanent one (a mismatched host key)
-    leaves its message on screen. A session that itself exited 255 is reported as 254 by the
-    remote attach, so it never reads as a dropped link. The pane's ssh has `EscapeChar none`: what
-    the user types is theirs, and `~.` would otherwise disconnect it.
+    reattaches the pane as a restored one, backing off to 30s and trying for as long as it takes,
+    so a VM that is minutes into a reboot comes back to its last screen (#232) without the user
+    doing anything (#241). The exception is a host that answered and refused for good (a changed
+    host key, a refused key, no cipher in common): five of those within 30s of an attach stop the
+    pane with ssh's message on screen, and failures that heal in between do not restart the count.
+    Those are listed rather than the failures that heal because the healing ones are open-ended:
+    a host that is booting refuses or times out, and one that accepts and closes before its
+    banner (a socket-activated sshd, `MaxStartups`, `PerSourcePenalties`, or a gateway in front of
+    the VM) leaves ssh nothing to say at `LogLevel ERROR`. The price is that a pane whose host is
+    gone for good, or answers with an agent that keeps failing, retries every 30s until it is
+    closed. The app reads the failure from ssh's
+    messages, which the pane's ssh writes to a per-session log (`-E`) and a wrapper copies onto
+    the screen. While ssh connects the pane says it is waiting for the host, and `LocalCommand`
+    erases that once ssh is in (`RemoteReconnectBackoff`, `ContainerHostDriver.attachWrapper`). A
+    session that itself exited 255 is reported as 254 by the remote attach, so it never reads as
+    a dropped link.
   - *Closing a remote pane does not end its session yet.* Nothing on the service connection can
     ask the host's agent to, so the session is left running and reported as not killed. It stays
     registered as remote, so a second close is never handed to the local helpers. Ending it
