@@ -146,6 +146,15 @@ the app attaches to it. There are two, mid-migration (issue #154, Phase 1):
 - **`workroom-session`** (`macapp/WorkroomSession/`, Swift) — the shipped daemon. It keeps the
   sessions it already holds until the user closes them; it cannot hand a live pty over.
 
+**A restored remote pane can show its last screen instead of a fresh shell (#232).** When a host's
+supervisor opts in (`wr-agent serve --screens <dir>`), the agent keeps each session's last screen on
+disk and, after a reboot kills the shells, answers a reattach for a session it no longer holds with
+that screen plus a bottom-row notice rather than the usual fresh shell. The app needs no code for
+this: the notice arrives as ordinary VT bytes over the same reattach path `terminal-state` already
+repaints from. See the "As built (#232)" section of `docs/designs/remote-workrooms.md` for the
+write/prune/restore mechanics — no real host's supervisor passes `--screens` yet, only the ssh
+fixture's (Phase 4 provisioning).
+
 **The migration is a drain, not a switch.** `SessionBackend.preferred()` returns `.rustAgent` unless
 the agent fails its probe; `PersistentSessionService.backend(forSession:)` resolves each EXISTING
 session to whichever helper owns it. Two rules there are load-bearing and were both got wrong once:
