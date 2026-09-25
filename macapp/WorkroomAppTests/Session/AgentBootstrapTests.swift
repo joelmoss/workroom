@@ -460,6 +460,19 @@ final class AgentBootstrapTests: XCTestCase {
     XCTAssertEqual(output, "got 100000\noops\n")
   }
 
+  /// A host's shell startup can print anything ahead of the script; only the last 1 MiB is kept,
+  /// and the report, which comes after all of it, is in that.
+  func testAChattyStartupDoesNotDropTheReport() async throws {
+    let stream = try HostStream.spawn(
+      URL(fileURLWithPath: "/bin/sh"),
+      ["-c", "head -c 3000000 /dev/zero | tr '\\0' x; echo; echo 'WRB host Linux aarch64'"],
+      environment: [:], handshakeTimeout: 5)
+    let (status, output) = try await stream.communicate(nil, timeout: 5)
+    XCTAssertEqual(status, 0)
+    XCTAssertLessThanOrEqual(output.utf8.count, 1024 * 1024)
+    XCTAssertTrue(output.hasSuffix("WRB host Linux aarch64\n"), String(output.suffix(40)))
+  }
+
   // MARK: - The bundled scripts, run for real
 
   /// A driver whose host is this Mac's own `sh`, running the bundled far-side scripts as a host's

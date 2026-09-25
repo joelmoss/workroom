@@ -266,10 +266,13 @@ final class HostStream: @unchecked Sendable {
             let count = recv(fd, &chunk, chunk.count, 0)
             if count < 0, errno == EINTR { continue }
             guard count > 0 else { break }
-            // The scripts print a few lines; the first 1 MiB is kept (a host's shell startup
-            // could be chatty), the rest drained, so a host that never stops printing cannot
-            // grow the app.
-            if collected.count < 1024 * 1024 { collected.append(chunk, count: count) }
+            // The last 1 MiB is kept, so a host that never stops printing cannot grow the app,
+            // and the scripts' report, which comes after whatever a shell startup printed,
+            // survives even a startup that printed more than that.
+            collected.append(chunk, count: count)
+            if collected.count > 1024 * 1024 {
+              collected.removeFirst(collected.count - 1024 * 1024)
+            }
             watchdog.heard()
           }
           watchdog.stop()
