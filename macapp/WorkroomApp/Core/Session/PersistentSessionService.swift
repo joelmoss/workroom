@@ -79,28 +79,22 @@ final class PersistentSessionService {
   /// Monotonic seconds, for the probe cooldown. `systemUptime` rather than `Date()` so a clock
   /// adjustment cannot make the cooldown never expire.
   private let now: () -> Double
-  /// Hands an older running agent to the bundled binary (`AgentHandOff`). Injected so a test never
-  /// replaces a real agent.
-  private let handOff: (PersistentSessionService) -> Void
 
   private init() {
     self.probe = { SessionBackendProbe.probe($0) }
     self.ownershipOverride = nil
     self.now = { ProcessInfo.processInfo.systemUptime }
-    self.handOff = { $0.handOffRunningAgent() }
   }
 
   /// Test seam. `shared` never uses it; every other behaviour is identical.
   init(
     probe: @escaping (SessionBackend) -> SessionBackendAvailability,
     ownership: @escaping (UUID) -> SessionOwnership,
-    now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
-    handOff: @escaping () -> Void = {}
+    now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }
   ) {
     self.probe = probe
     self.ownershipOverride = ownership
     self.now = now
-    self.handOff = { _ in handOff() }
   }
 
   /// Where a NEW session would be created, or **nil when nowhere can take one**. Existing sessions
@@ -122,9 +116,6 @@ final class PersistentSessionService {
     guard let lastProbeAt else {
       self.lastProbeAt = currentTime
       cachedPreferred = SessionBackend.preferred(probe: probe)
-      // The launch's first pane is about to attach, and a pane attached to an agent that is then
-      // replaced loses its connection. So this is the one moment to hand off.
-      if cachedPreferred == .rustAgent { handOff(self) }
       return cachedPreferred
     }
     guard currentTime - lastProbeAt >= Self.probeRetryInterval else { return nil }
@@ -298,15 +289,6 @@ final class PersistentSessionService {
       try? PersistentSessionPaths.fallbackSocketPath(backend: backend),
     ]
     return candidates.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0) }
-  }
-
-  /// Hands the running local agent to the bundled binary, keeping its sessions (`AgentHandOff`).
-  private func handOffRunningAgent() {
-    guard AgentHandOff.isEnabled, let binary = PersistentSessionPaths.binaryURL(for: .rustAgent),
-      let socket = existingSocketPath(for: .rustAgent)
-    else { return }
-    logger.info(
-      "agent hand-off: \(AgentHandOff.run(binary: binary, socket: socket), privacy: .public)")
   }
 
   func binaryPath(for backend: SessionBackend) -> String? {

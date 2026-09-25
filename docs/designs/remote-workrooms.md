@@ -2104,12 +2104,21 @@ disagreement passes every test on either side alone while presenting as an empty
     **As built (#230, `wr-agent/src/handoff.rs`).** The request is a Control frame, `HandOff`,
     gated at protocol 6, so an older agent is never asked. `wr-agent hand-off --socket <s>
     --binary <b>` sends it, and the app runs that command with its bundled binary.
-    - *When the app asks:* once a launch, synchronously, just before its first pane attaches
-      (`PersistentSessionService.backend`, `AgentHandOff`). A pane attached to the old program
-      loses its connection at the exec, so none may be attached. After an app update none are:
-      the old app's panes went with it. The app stops waiting after 6 s, longer than the
-      agent's own worst case before it replaces itself (2 s for repository commands, 3 s for the
-      check).
+    - *When the app asks:* once a launch, in the background, from `applicationDidFinishLaunching`
+      (`AgentHandOff.start`). Panes do not wait for it, so launch never freezes on it (an earlier
+      version asked synchronously before the first pane, and could hold the main thread for 6 s).
+      The race with panes is narrowed three ways:
+      - the agent stops accepting while it hands off, so a pane that connects meanwhile waits in
+        the backlog and is attached by the new program;
+      - `wr-agent attach` sends its attach again when the agent closes without answering it, for
+        up to 10 s;
+      - after an app update no pane is attached: the old app's panes went with it.
+      A pane that finished attaching just before the exec still loses its connection. Its session
+      carries on, detached, and reattaching it is #231's work.
+      The app stops waiting after 6 s, longer than the agent's own worst case before it replaces
+      itself (2 s for repository commands, 3 s for the check). A compile-time assertion in
+      `handoff.rs` keeps the agent's two under the app's. The outcome is logged at `notice`, which
+      the log store keeps.
     - *Which binary is newer is not asked.* The agent hashes its own binary when it starts, and
       answers `current` when the offered binary hashes the same. Otherwise it hands off. The
       version string cannot decide this, since it is `0.1.0` for every build. The hash is taken at
@@ -2129,24 +2138,50 @@ disagreement passes every test on either side alone while presenting as an empty
       app connection closes at the exec, and the next request reconnects.
     - *The pre-check is the restore without the descriptors.* It runs
       `<binary> handoff-check <table>` on the real table, painting every screen. A binary that
-      predates hand-off has no such command.
+      predates hand-off has no such command. A build without `terminal-state` refuses a table with
+      screens, which it could only drop. The check's stderr is drained while it runs and at most
+      4 KiB of it is repeated, because a refusal travels in one frame and a frame over the
+      protocol's cap is a panic. The offered binary must be a regular file.
     - *A requester that stopped waiting calls the hand-off off.* The agent sends "handing off" just
       before the exec. If it cannot, the requester has gone (the app gave up and is attaching
       panes), so it does not exec. The descriptors are duplicated close-on-exec, so the check does
       not inherit them, and the flag is cleared only just before the exec. The call is `execv`,
       not std's `Command::exec`, which resets SIGPIPE before the call and would leave a failed exec
       killable by the next write to a closed socket.
+    - *Other state the freeze has to cover.* A pty and its shadow are resized together under the
+      attachment lock, so the table never pairs one size with a screen drawn at another. A session
+      being killed (its termination runs outside the store lock, with a SIGKILL sweep after a grace
+      period) finishes before the exec, through the `TERMINATING` lock in `session.rs`. The carried
+      duplicates are numbered 3 or above, so none lands on the new program's stdio.
     - *What does not cross:* the size owner, which is a connection's token (the first client to
       attach with a size takes it, as on a new session), and one row of scrollback per hand-off
       (the re-synthesis offset above). The environment does cross: it is the first agent's, as
       it was before.
     - *Gated to Nightly and Dev* (`AgentHandOff.isEnabled`). Stable waits until Nightly has run it.
+    - *Trust model: the socket is the boundary. DECIDED (2026-09-25, owner).* `HandOff` makes the
+      agent execute any regular file a socket client names. That crosses no user boundary, because
+      the socket (in a 0700 directory) already lets any client run commands and type into every
+      session (`Attach`). What it adds is persistence: a same-user process could make the agent
+      become its own binary, keep every live terminal, and answer `current` to later updates. The
+      path policy is decided with #231, which pushes binaries to a remote host's own directory.
+    - *Known limits.*
+      - The binary is read three times by path (hash, check, exec), so a file swapped in between
+        is not caught. Only a same-user process can do that, per the trust model above.
+      - A refused hand-off (a repository command still running, say) is not retried until the next
+        launch.
+      - An agent that could not read its own binary at startup hands off on every request, even to
+        the same binary.
     - *Tests* (`wr-agent/tests/hand_off.rs`):
       - the same agent pid, shell pid, exit code and repaint, and the socket's inode unchanged;
       - `current` for the running binary;
       - refusals for a missing binary and one that cannot check;
       - an agent that predates the request is never sent it;
       - a requester that leaves mid-check calls the hand-off off;
+      - two sessions carried together, then handed off again;
+      - a check that times out, one that floods stderr, a relative path and a non-regular file;
+      - a second request, which waits while a hand-off is under way;
+      - a client connecting mid-hand-off, attached by the new program;
+      - an attach the agent drops unanswered, sent again;
       - the deliberate crash. A binary that passes the check and then exits as the new program
         loses every session: every shell is hung up with its pty. The socket's path stays, with
         nothing listening, and the unread table stays too. The next agent starts clean on the same

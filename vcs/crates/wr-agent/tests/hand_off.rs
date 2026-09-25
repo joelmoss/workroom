@@ -4,165 +4,20 @@
 //! only exists across `execve`: the same pid still parenting the same shells, a socket that was
 //! never unbound, and what dies with a program that fails after the exec.
 
-use std::io::{BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, Output};
 use std::time::{Duration, Instant};
 
-fn agent_binary() -> PathBuf {
-    // See `attach_survives_detach.rs`: the runner names the binary when the test is carried to
-    // the machine it targets.
-    match std::env::var_os("WR_AGENT_BIN") {
-        Some(path) => PathBuf::from(path),
-        None => PathBuf::from(env!("CARGO_BIN_EXE_wr-agent")),
-    }
-}
-
-/// Killed when the test ends, panic or not: a leaked agent holds its shells forever.
-struct Spawned(Child);
-
-impl Drop for Spawned {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-impl std::ops::Deref for Spawned {
-    type Target = Child;
-    fn deref(&self) -> &Child {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for Spawned {
-    fn deref_mut(&mut self) -> &mut Child {
-        &mut self.0
-    }
-}
-
-struct Workspace {
-    dir: PathBuf,
-}
-
-impl Workspace {
-    fn new(name: &str) -> Workspace {
-        let dir = std::env::temp_dir().join(format!("wr-agent-ho-{}-{}", name, std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("workspace");
-        Workspace { dir }
-    }
-
-    fn socket(&self) -> PathBuf {
-        self.dir.join("agent.sock")
-    }
-}
-
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-fn start_agent(socket: &Path) -> Spawned {
-    let child = Command::new(agent_binary())
-        .args(["serve", "--socket"])
-        .arg(socket)
-        .args(["--idle-timeout", "60"])
-        .env("SHELL", "/bin/sh")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn agent");
-    let child = Spawned(child);
-    assert!(
-        wait_for(Duration::from_secs(5), || socket.exists()),
-        "agent never bound its socket"
-    );
-    child
-}
-
-fn wait_for(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if condition() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    false
-}
-
-fn attach(socket: &Path, session: &str) -> Spawned {
-    let child = Command::new(agent_binary())
-        .args(["attach", "--socket"])
-        .arg(socket)
-        .args(["--session", session])
-        .env("SHELL", "/bin/sh")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn attach");
-    Spawned(child)
-}
-
-/// A client's stdout, accumulated by a thread so it can be read more than once.
-struct ClientReader {
-    rx: std::sync::mpsc::Receiver<u8>,
-    seen: Vec<u8>,
-}
-
-impl ClientReader {
-    fn new(child: &mut Child) -> ClientReader {
-        let stdout = child.stdout.take().expect("stdout");
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            let mut byte = [0u8; 1];
-            while reader.read(&mut byte).unwrap_or(0) > 0 {
-                if tx.send(byte[0]).is_err() {
-                    return;
-                }
-            }
-        });
-        ClientReader {
-            rx,
-            seen: Vec::new(),
-        }
-    }
-
-    fn read_until(&mut self, needle: &str, timeout: Duration) -> String {
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline && !self.text().contains(needle) {
-            if let Ok(byte) = self.rx.recv_timeout(Duration::from_millis(100)) {
-                self.seen.push(byte);
-            }
-        }
-        self.text()
-    }
-
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.seen).into_owned()
-    }
-}
+mod common;
+use common::*;
 
 fn type_line(client: &mut Child, line: &str) {
     let stdin = client.stdin.as_mut().expect("stdin");
     stdin.write_all(line.as_bytes()).expect("write");
     stdin.write_all(b"\n").expect("write");
     stdin.flush().expect("flush");
-}
-
-fn list_sessions(socket: &Path) -> String {
-    let output = Command::new(agent_binary())
-        .args(["list", "--socket"])
-        .arg(socket)
-        .output()
-        .expect("list");
-    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 fn hand_off(socket: &Path, binary: &Path, force: bool) -> Output {
@@ -176,10 +31,6 @@ fn hand_off(socket: &Path, binary: &Path, force: bool) -> Output {
         command.arg("--force");
     }
     command.output().expect("hand-off")
-}
-
-fn has_terminal_state() -> bool {
-    std::env::var_os("WR_AGENT_HAS_TERMINAL_STATE").is_some_and(|value| !value.is_empty())
 }
 
 fn alive(pid: i32) -> bool {
@@ -212,6 +63,8 @@ fn detached_session(socket: &Path, session: &str, marker: &str) -> i32 {
         .and_then(|rest| rest.split('=').next())
         .and_then(|pid| pid.trim().parse::<i32>().ok())
         .unwrap_or_else(|| panic!("no pid in {seen:?}"));
+    // Let the shell finish echoing, so none of it reaches the next client as live output.
+    reader.drain(Duration::from_millis(200));
     client.kill().expect("kill client");
     client.wait().expect("reap client");
     assert!(
@@ -316,9 +169,18 @@ fn a_binary_that_cannot_restore_is_refused_and_the_agent_keeps_running() {
     let shell = detached_session(&socket, session, "STILL-HERE");
 
     let missing = workspace.dir.join("no-such-agent");
+    let not_executable = workspace.dir.join("not-executable");
+    std::fs::write(&not_executable, b"not a binary").expect("write");
     let refusals = [
         (missing.clone(), "cannot read"),
         (PathBuf::from("/usr/bin/false"), "cannot restore"),
+        // A relative `--binary` is refused before anything is read or spawned.
+        (PathBuf::from("wr-agent"), "is not an absolute path"),
+        // Readable (so `digest` succeeds) but not executable: the check's own spawn fails,
+        // distinct from a spawned check that exits non-zero.
+        (not_executable.clone(), "could not start"),
+        // Not a regular file: reading it to its end would never finish.
+        (PathBuf::from("/dev/zero"), "not a regular file"),
     ];
     for (binary, reason) in refusals {
         let output = hand_off(&socket, &binary, true);
@@ -335,6 +197,187 @@ fn a_binary_that_cannot_restore_is_refused_and_the_agent_keeps_running() {
     type_line(&mut client, "echo \"SAME=\"\"$$=\"");
     let seen = reader.read_until(&format!("SAME={shell}="), Duration::from_secs(10));
     assert!(seen.contains(&format!("SAME={shell}=")), "got {seen:?}");
+}
+
+/// A check that never answers is not waited out forever: `CHECK_TIMEOUT` (3s) kills it and
+/// refuses, distinct from `a_binary_that_cannot_restore_is_refused_and_the_agent_keeps_running`
+/// above, where the check exits quickly and non-zero. `exec sleep` so the check IS the timed-out
+/// process (no child of its own left holding the pty/pipe once killed).
+#[test]
+fn a_check_that_never_finishes_is_refused_after_its_timeout() {
+    let workspace = Workspace::new("checktimeout");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+    let session = "4a4a4a4a-0000-4000-8000-000000000008";
+    let shell = detached_session(&socket, session, "STILL-CHECKING");
+
+    let hangs = workspace.dir.join("hangs-forever");
+    std::fs::write(
+        &hangs,
+        "#!/bin/sh\nif [ \"$1\" = handoff-check ]; then exec sleep 30; fi\nexit 70\n",
+    )
+    .expect("script");
+    std::fs::set_permissions(&hangs, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let started = Instant::now();
+    let output = hand_off(&socket, &hangs, true);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("did not check the sessions within 3s"),
+        "{stderr}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the refusal should land soon after the 3s deadline, took {:?}",
+        started.elapsed()
+    );
+
+    assert!(agent.try_wait().expect("wait").is_none());
+    assert!(alive(shell));
+    assert!(list_sessions(&socket).contains(session));
+}
+
+/// A check that says far more than a pipe holds (a panic's backtrace, or a hostile binary) is
+/// refused on its exit status, promptly, with a bounded reason. Unbounded, it read as a timeout,
+/// and repeating it whole overflowed the reply frame, which panics the connection's thread.
+#[test]
+fn a_check_that_floods_stderr_is_refused_with_a_bounded_reason() {
+    let workspace = Workspace::new("loud");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+
+    let loud = workspace.dir.join("loud-agent");
+    std::fs::write(
+        &loud,
+        "#!/bin/sh
+head -c 2000000 /dev/zero | tr '\\0' x >&2
+exit 1
+",
+    )
+    .expect("script");
+    std::fs::set_permissions(&loud, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let output = hand_off(&socket, &loud, true);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        &stderr[..stderr.len().min(200)]
+    );
+    assert!(
+        stderr.contains("cannot restore"),
+        "{}",
+        &stderr[..stderr.len().min(200)]
+    );
+    assert!(
+        stderr.len() < 8192,
+        "the reason was not bounded: {} bytes",
+        stderr.len()
+    );
+    assert!(agent.try_wait().expect("wait").is_none());
+    // The same agent still answers, so the connection that carried the refusal did not panic.
+    let again = hand_off(&socket, &agent_binary(), false);
+    assert_eq!(String::from_utf8_lossy(&again.stdout).trim(), "current");
+}
+
+/// A second hand-off asked while one is still checking a candidate binary waits for it: the agent
+/// stops accepting during a hand-off (`crate::handoff::accepting`), so the second request is taken
+/// only once the first is over, here refused. `IN_PROGRESS` still guards one connection asking
+/// twice.
+#[test]
+fn a_second_hand_off_while_one_is_checking_waits_for_it() {
+    let workspace = Workspace::new("concurrent");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+    let session = "4a4a4a4a-0000-4000-8000-000000000007";
+    let shell = detached_session(&socket, session, "ONE-AT-A-TIME");
+
+    let slow = workspace.dir.join("slow-checker");
+    std::fs::write(
+        &slow,
+        "#!/bin/sh\nif [ \"$1\" = handoff-check ]; then sleep 2; exit 1; fi\nexit 70\n",
+    )
+    .expect("script");
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let socket_for_first = socket.clone();
+    let first = std::thread::spawn(move || hand_off(&socket_for_first, &slow, true));
+    // Inside the first request's 2s check.
+    std::thread::sleep(Duration::from_millis(300));
+
+    let started = Instant::now();
+    let second = hand_off(&socket, &agent_binary(), true);
+    assert!(
+        started.elapsed() > Duration::from_secs(1),
+        "the second request was answered while the first was still checking"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&second.stdout).trim(),
+        "handed off",
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    let first = first.join().expect("first hand-off");
+    assert_eq!(first.status.code(), Some(1), "{first:?}");
+    assert!(String::from_utf8_lossy(&first.stderr).contains("cannot restore"));
+
+    assert!(agent.try_wait().expect("wait").is_none());
+    assert!(alive(shell));
+    assert!(list_sessions(&socket).contains(session));
+}
+
+/// More than one session, and a hand-off right after a hand-off: both shells survive together,
+/// the adopted program recomputes its own digest (so an unforced ask says `current`), and it
+/// survives being handed off to itself again — exercising the `--handoff` argument-stripping
+/// branch of `exec()` and `Pty::adopt` on a pty this process already adopted once.
+#[test]
+fn a_hand_off_carries_every_session_and_survives_a_second_one() {
+    let workspace = Workspace::new("chained");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+    let session_a = "4a4a4a4a-0000-4000-8000-000000000005";
+    let session_b = "4a4a4a4a-0000-4000-8000-000000000006";
+    let shell_a = detached_session(&socket, session_a, "FIRST-SESSION");
+    let shell_b = detached_session(&socket, session_b, "SECOND-SESSION");
+
+    let output = hand_off(&socket, &agent_binary(), true);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "handed off");
+    assert!(agent.try_wait().expect("wait").is_none());
+
+    // The adopted program recomputed its own digest at startup, so asking it to become the
+    // binary it already is (unforced) says `current` rather than handing off again.
+    let output = hand_off(&socket, &agent_binary(), false);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "current");
+
+    let output = hand_off(&socket, &agent_binary(), true);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "handed off");
+    assert!(agent.try_wait().expect("wait").is_none());
+
+    for (session, shell) in [(session_a, shell_a), (session_b, shell_b)] {
+        assert!(alive(shell), "session {session} did not survive");
+        let mut client = attach(&socket, session);
+        let mut reader = ClientReader::new(&mut client);
+        std::thread::sleep(Duration::from_millis(200));
+        type_line(&mut client, "echo \"SAME=\"\"$$=\"");
+        let seen = reader.read_until(&format!("SAME={shell}="), Duration::from_secs(10));
+        assert!(
+            seen.contains(&format!("SAME={shell}=")),
+            "session {session}: a different shell answered after two hand-offs; got {seen:?}"
+        );
+    }
 }
 
 /// An agent that predates hand-off is never sent the request, so it keeps running. A fake agent
@@ -497,4 +540,117 @@ fn a_hand_off_nobody_is_waiting_for_is_called_off() {
     assert!(alive(shell));
     assert!(list_sessions(&socket).contains(session));
     assert!(!socket.with_extension("handoff").exists());
+}
+
+/// A pane that connects while a hand-off is under way is not accepted by the program about to be
+/// replaced: it waits in the listener's backlog and is attached by the new one.
+#[test]
+fn a_client_that_connects_during_a_hand_off_is_attached_by_the_new_program() {
+    let workspace = Workspace::new("during");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+
+    // Checks slowly, then becomes the real agent.
+    let slow = workspace.dir.join("slow-agent");
+    std::fs::write(
+        &slow,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = handoff-check ]; then sleep 1; fi\nexec '{}' \"$@\"\n",
+            agent_binary().display()
+        ),
+    )
+    .expect("script");
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let handing_off = {
+        let socket = socket.clone();
+        std::thread::spawn(move || hand_off(&socket, &slow, false))
+    };
+    // Inside the slow check: the old program has stopped accepting.
+    std::thread::sleep(Duration::from_millis(400));
+    let mut client = attach(&socket, "4a4a4a4a-0000-4000-8000-000000000010");
+    let output = handing_off.join().expect("hand-off thread");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "handed off",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut reader = ClientReader::new(&mut client);
+    std::thread::sleep(Duration::from_millis(300));
+    type_line(&mut client, "echo \"AFTER\"\"-HANDOFF\"");
+    let seen = reader.read_until("AFTER-HANDOFF", Duration::from_secs(10));
+    assert!(seen.contains("AFTER-HANDOFF"), "got {seen:?}");
+    assert!(agent.try_wait().expect("wait").is_none());
+}
+
+/// An agent that closes before answering an attach is most likely handing off, so the client sends
+/// the attach again rather than giving the pane a plain shell. A fake agent drops the first
+/// connection unanswered and answers the second.
+#[test]
+fn an_attach_the_agent_drops_unanswered_is_sent_again() {
+    use wr_agent::protocol::envelope::{Envelope, Hello, Service};
+    use wr_agent::protocol::frame::{Frame, FrameKind};
+
+    let workspace = Workspace::new("resend");
+    let socket = workspace.socket();
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+    let fake = std::thread::spawn(move || {
+        let greet = |stream: &mut std::os::unix::net::UnixStream| {
+            let hello = Hello {
+                protocol_version: 6,
+                build: "fake".into(),
+            };
+            stream.write_all(&hello.encode()).expect("greet");
+            // The client's greeting and its whole attach request. The request carries the
+            // environment and can be larger than the socket's buffer, so it is read until the
+            // client goes quiet: stop early and the client's write blocks until this side closes.
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+            let mut request = [0u8; 4096];
+            while matches!(stream.read(&mut request), Ok(n) if n > 0) {}
+        };
+        let (mut first, _) = listener.accept().expect("first");
+        greet(&mut first);
+        drop(first);
+        let (mut second, _) = listener.accept().expect("second");
+        greet(&mut second);
+        for frame in [
+            Frame::control(FrameKind::Attached),
+            Frame::new(FrameKind::Output, b"ANSWERED-SECOND\r\n".to_vec()),
+            Frame::new(FrameKind::Exited, 0i32.to_be_bytes().to_vec()),
+        ] {
+            let service = if frame.kind == FrameKind::Attached {
+                Service::Control
+            } else {
+                Service::Terminal
+            };
+            second
+                .write_all(&Envelope::new(service, 1, frame.encode()).encode())
+                .expect("answer");
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    });
+
+    let mut client = attach(&socket, "4a4a4a4a-0000-4000-8000-000000000011");
+    let mut reader = ClientReader::new(&mut client);
+    let seen = reader.read_until("ANSWERED-SECOND", Duration::from_secs(10));
+    if !seen.contains("ANSWERED-SECOND") {
+        let _ = client.kill();
+        let mut stderr = String::new();
+        let _ = client
+            .stderr
+            .take()
+            .expect("stderr")
+            .read_to_string(&mut stderr);
+        panic!("got {seen:?}; the client said {stderr:?}");
+    }
+    assert!(wait_for(Duration::from_secs(5), || matches!(
+        client.try_wait(),
+        Ok(Some(_))
+    )));
+    assert_eq!(
+        client.try_wait().expect("wait").expect("status").code(),
+        Some(0)
+    );
+    fake.join().expect("fake agent");
 }

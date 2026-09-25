@@ -99,6 +99,12 @@ impl Attached {
 /// Hands out attachment tokens. Process-wide and monotonic; the value means nothing but "later".
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 
+/// Held for reading while a session that has left the store is still being ended (`terminate`),
+/// and for writing by a hand-off (`SessionStore::frozen`). A termination runs outside the store
+/// lock, so without this an exec could land in its grace period: the SIGKILL sweep would never
+/// run, and a descendant that ignores SIGHUP would outlive its session.
+static TERMINATING: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
 /// The pty, the shadow and the attachments of one session — everything an operation needs, lifted
 /// out of the store so no store lock is held while any of them is touched.
 type SessionParts = (Arc<Pty>, Arc<Mutex<Shadow>>, Arc<Mutex<Attached>>);
@@ -500,7 +506,7 @@ impl SessionStore {
         if !painted {
             return Err(SessionError::RepaintFailed(id.to_hyphenated()));
         }
-        apply_size(&pty, &shadow, size);
+        apply_size(&pty, &shadow, &attached, size);
 
         let sessions = self.sessions.lock().expect("session store poisoned");
         let session = sessions
@@ -536,7 +542,7 @@ impl SessionStore {
                 _ => None,
             }
         };
-        apply_size(&pty, &shadow, size);
+        apply_size(&pty, &shadow, &attached, size);
     }
 
     /// A client's window changed size.
@@ -560,7 +566,7 @@ impl SessionStore {
                 None => attached.claim(token),
             }
         };
-        apply_size(&pty, &shadow, size);
+        apply_size(&pty, &shadow, &attached, size);
     }
 
     /// Input from a client: claims the size if it is the USER acting, then goes to the pty.
@@ -583,7 +589,7 @@ impl SessionStore {
             };
             (size, acted)
         };
-        apply_size(&pty, &shadow, size);
+        apply_size(&pty, &shadow, &attached, size);
         // The keystroke grace (OQ19's S5) needs the moment the user last ACTED, and this is the one
         // place input reaches a pty. Gated on the classifier above for the same reason the size
         // claim is: a TUI polling its terminal (cursor position, device attributes) writes to the
@@ -663,6 +669,7 @@ impl SessionStore {
     ///
     /// Store before attachment, the same order `Session::info` takes them in under `list`.
     pub fn frozen<T>(&self, f: impl FnOnce(&[FrozenSession]) -> T) -> T {
+        let _no_terminations = TERMINATING.write().unwrap_or_else(|e| e.into_inner());
         let store = self.sessions.lock().expect("session store poisoned");
         let parts: Vec<(SessionId, SessionParts)> = store
             .values()
@@ -751,6 +758,7 @@ impl SessionStore {
     /// termination now scans the process table and waits out a shell's exit traps, and holding the
     /// store lock across that would stall every `list` and `attach` for the duration.
     pub fn kill(&self, id: SessionId) -> bool {
+        let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
         let session = self
             .sessions
             .lock()
@@ -769,6 +777,7 @@ impl SessionStore {
     /// happens once and every shell gets its hangup at the same moment instead of each waiting out
     /// the one before it. That matters on quit, where this runs with the user watching.
     pub fn kill_all(&self) -> usize {
+        let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
         let ending: Vec<Session> = {
             let mut sessions = self.sessions.lock().expect("session store poisoned");
             sessions.drain().map(|(_, session)| session).collect()
@@ -861,11 +870,18 @@ fn deliver(attached: &Arc<Mutex<Attached>>, target: &Target, bytes: &[u8]) -> Op
 /// Resizes the pty and the shadow together, if there is a size to apply.
 ///
 /// The shadow has to follow the pty or a reattaching client is repainted at the wrong geometry and
-/// every wrapped line is wrong.
-fn apply_size(pty: &Pty, shadow: &Mutex<Shadow>, size: Option<(u16, u16)>) {
+/// every wrapped line is wrong. Both happen under the attachment lock, so a hand-off freezing the
+/// session (`SessionStore::frozen`) never records one size with a screen drawn at the other.
+fn apply_size(
+    pty: &Pty,
+    shadow: &Mutex<Shadow>,
+    attached: &Mutex<Attached>,
+    size: Option<(u16, u16)>,
+) {
     let Some((columns, rows)) = size else {
         return;
     };
+    let _held = attached.lock().unwrap_or_else(|e| e.into_inner());
     let _ = pty.resize(columns, rows);
     if let Ok(mut shadow) = shadow.lock() {
         shadow.resize(columns, rows);
@@ -1010,7 +1026,7 @@ fn read_session(
                         Frame::new(FrameKind::Output, buffer[..n].to_vec()),
                     );
                     let size = deliver(&attached, target, &bytes);
-                    apply_size(&pty, &shadow, size);
+                    apply_size(&pty, &shadow, &attached, size);
                 }
             }
             // `Interrupted` is not a failure — a signal arriving mid-read is ordinary, and the
@@ -1044,6 +1060,7 @@ fn read_session(
                     );
                     deliver(&attached, &target, &framed);
                 }
+                let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
                 terminate(&[&pty]);
                 if let Ok(mut store) = store.lock() {
                     store.remove(&id);
@@ -1303,6 +1320,24 @@ mod tests {
             store.create(spec(id(2), &args, &e)),
             Err(SessionError::AlreadyExists(_))
         ));
+        store.kill_all();
+    }
+
+    /// Adopting a hand-off's session under an id already in use is refused, as creating one is.
+    #[test]
+    fn adopt_refuses_a_duplicate_id() {
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 2")];
+        let e = env();
+        store.create(spec(id(9), &args, &e)).expect("create");
+        let pty = Pty::spawn(OsStr::new("/bin/sh"), None, &args, &e, None, 80, 24).expect("pty");
+        let pid = pty.child_pid();
+        assert!(matches!(
+            store.adopt(id(9), pty, 80, 24, b""),
+            Err(SessionError::AlreadyExists(_))
+        ));
+        // The refused pty was dropped, which hangs its shell up; reap it so no zombie is left.
+        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
         store.kill_all();
     }
 

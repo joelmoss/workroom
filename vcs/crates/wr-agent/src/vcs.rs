@@ -84,12 +84,7 @@ pub(crate) struct Permit;
 
 impl Permit {
     pub(crate) fn acquire() -> Option<Permit> {
-        ACTIVE
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count & QUIETING == 0 && count < MAX_ACTIVE).then_some(count + 1)
-            })
-            .ok()
-            .map(|_| Permit)
+        admit(&ACTIVE).then_some(Permit)
     }
 }
 
@@ -103,6 +98,32 @@ impl Drop for Permit {
 /// no request can start between the check and the wait.
 const QUIETING: usize = 1 << (usize::BITS - 1);
 
+/// Counts a request in, unless the limit is reached or a hand-off is waiting.
+fn admit(count: &AtomicUsize) -> bool {
+    count
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count & QUIETING == 0 && count < MAX_ACTIVE).then_some(count + 1)
+        })
+        .is_ok()
+}
+
+/// Stops new requests at once, then waits up to `timeout` for the running ones to finish. On
+/// timeout it lets requests in again and returns false. Stopping first is what makes the wait end:
+/// the count can only fall, where waiting for a moment with nothing running could wait forever
+/// under steady traffic.
+fn quiesce(count: &AtomicUsize, timeout: std::time::Duration) -> bool {
+    count.fetch_or(QUIETING, Ordering::AcqRel);
+    let deadline = std::time::Instant::now() + timeout;
+    while count.load(Ordering::Acquire) != QUIETING {
+        if std::time::Instant::now() >= deadline {
+            count.fetch_and(!QUIETING, Ordering::AcqRel);
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    true
+}
+
 /// No request running and none able to start, for a hand-off (`crate::handoff`): proof that no
 /// repository command is cut off by the exec. A request that arrives meanwhile is answered
 /// `LockContention` rather than queued. Released on drop, which is only reached when the hand-off
@@ -110,20 +131,8 @@ const QUIETING: usize = 1 << (usize::BITS - 1);
 pub(crate) struct Quiet;
 
 impl Quiet {
-    /// Stops new requests at once, then waits up to `timeout` for the running ones to finish.
-    /// Stopping first is what makes the wait end: the count can only fall, where waiting for a
-    /// moment with nothing running could wait forever under steady traffic.
     pub(crate) fn acquire(timeout: std::time::Duration) -> Option<Quiet> {
-        ACTIVE.fetch_or(QUIETING, Ordering::AcqRel);
-        let quiet = Quiet;
-        let deadline = std::time::Instant::now() + timeout;
-        while ACTIVE.load(Ordering::Acquire) != QUIETING {
-            if std::time::Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        Some(quiet)
+        quiesce(&ACTIVE, timeout).then_some(Quiet)
     }
 }
 
@@ -1299,6 +1308,7 @@ pub fn dispatch(partial: &mut PartialRequests, envelope: &Envelope, writer: &Sha
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::protocol::envelope::{EnvelopeDecoder, Hello};
     use crate::protocol::frame::{Frame, FrameKind};
@@ -2387,5 +2397,44 @@ mod tests {
         let mut partial = PartialRequests::default();
         let envelope = Envelope::new(Service::Vcs, 5, vec![REQUEST_CHUNK_MARKER]);
         assert!(reassemble(&mut partial, &envelope).is_err());
+    }
+
+    // `admit` and `quiesce` are tested on a counter of their own: `ACTIVE` is shared with every
+    // other test in this crate, and quiescing it would refuse their requests.
+
+    #[test]
+    fn a_hand_off_stops_new_requests_and_waits_for_running_ones() {
+        let count = Arc::new(AtomicUsize::new(0));
+        assert!(admit(&count), "a request runs");
+        let waiting = {
+            let count = Arc::clone(&count);
+            std::thread::spawn(move || quiesce(&count, std::time::Duration::from_secs(5)))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            !admit(&count),
+            "a new request is refused while a hand-off waits"
+        );
+        count.fetch_sub(1, Ordering::AcqRel);
+        assert!(
+            waiting.join().expect("join"),
+            "the wait ends once the running one finishes"
+        );
+        assert!(
+            !admit(&count),
+            "and nothing starts until the hand-off lets go"
+        );
+    }
+
+    #[test]
+    fn a_hand_off_that_times_out_lets_requests_in_again() {
+        let count = AtomicUsize::new(0);
+        assert!(admit(&count));
+        assert!(!quiesce(&count, std::time::Duration::from_millis(50)));
+        assert!(
+            admit(&count),
+            "the timed-out wait must not leave requests refused"
+        );
+        assert_eq!(count.load(Ordering::Acquire), 2);
     }
 }
