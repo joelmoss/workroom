@@ -925,21 +925,45 @@ fn a_remote_attach_whose_agent_goes_away_exits_255() {
         command.stderr(Stdio::null());
         let mut child = command.spawn().expect("spawn attach");
         let mut stdout = child.stdout.take().expect("stdout");
-        let mut seen = Vec::new();
-        let mut byte = [0u8; 1];
-        while !String::from_utf8_lossy(&seen).contains("READY") {
-            match stdout.read(&mut byte) {
-                Ok(1) => seen.push(byte[0]),
-                _ => panic!(
-                    "the attach ended before its command ran: {}",
-                    String::from_utf8_lossy(&seen)
-                ),
+        // Read on a thread, so both waits below have a deadline: a regression that keeps the
+        // attach running must fail this test, not hang the lane.
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 256];
+            while let Ok(n) = stdout.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                sink.lock().unwrap().extend_from_slice(&buf[..n]);
             }
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !String::from_utf8_lossy(&seen.lock().unwrap()).contains("READY") {
+            assert!(
+                child.try_wait().expect("wait").is_none(),
+                "the attach ended before its command ran: {}",
+                String::from_utf8_lossy(&seen.lock().unwrap())
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the attach's command never ran"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
         // SIGKILL: the connection ends with nothing said, as it does at a hand-off's exec.
         drop(agent);
-        let _ = std::io::copy(&mut stdout, &mut std::io::sink());
-        child.wait().expect("wait").code()
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.try_wait().expect("wait") {
+                break status.code();
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                panic!("the attach outlived its agent by 10s");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     };
     let local = run("local", "6B9B968D-0BD7-4172-850A-A373DA73BC77", &[]);
     let remote = run(

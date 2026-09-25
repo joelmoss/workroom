@@ -266,7 +266,10 @@ final class HostStream: @unchecked Sendable {
             let count = recv(fd, &chunk, chunk.count, 0)
             if count < 0, errno == EINTR { continue }
             guard count > 0 else { break }
-            collected.append(chunk, count: count)
+            // The scripts print a few lines; the first 1 MiB is kept (a host's shell startup
+            // could be chatty), the rest drained, so a host that never stops printing cannot
+            // grow the app.
+            if collected.count < 1024 * 1024 { collected.append(chunk, count: count) }
             watchdog.heard()
           }
           watchdog.stop()
@@ -308,7 +311,7 @@ final class HostStream: @unchecked Sendable {
   /// process to be reaped: the two are separate events, and the reason ("Host key verification
   /// failed.") is in the first.
   func failure() async -> String {
-    for _ in 0..<40 where lock.withLock({ !errorsClosed || exit == nil }) {
+    for _ in 0..<40 where lock.withLock({ !errorsClosed || self.exit == nil }) {
       try? await Task.sleep(for: .milliseconds(50))
     }
     let (said, endedByUs, exit) = lock.withLock {

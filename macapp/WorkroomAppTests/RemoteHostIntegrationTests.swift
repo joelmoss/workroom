@@ -368,6 +368,11 @@ final class RemoteHostIntegrationTests: XCTestCase {
         """.utf8))
     let id = UUID()
     let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
+    // Whatever build an earlier test left there, the fixture's ELF first: the file check below
+    // must not depend on test order.
+    _ = try await AgentBootstrap.ensure(
+      host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
+      agent: { _ in fixture.agent }, handOff: true)
     let agentBefore = try onHost(fixture, Self.supervisedAgent)
     let outcome = try await AgentBootstrap.ensure(
       host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
