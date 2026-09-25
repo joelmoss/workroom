@@ -2116,8 +2116,8 @@ disagreement passes every test on either side alone while presenting as an empty
       A pane that finished attaching just before the exec still loses its connection. Its session
       carries on, detached, and reattaching it is #231's work.
       The app stops waiting after 6 s, longer than the agent's own worst case before it replaces
-      itself (2 s for repository commands, 3 s for the check). A compile-time assertion in
-      `handoff.rs` keeps the agent's two under the app's. The outcome is logged at `notice`, which
+      itself (2 s for repository commands, 0.5 s to freeze the sessions, 3 s for the check). A
+      compile-time assertion in `handoff.rs` keeps the agent's three under the app's. The outcome is logged at `notice`, which
       the log store keeps.
     - *Which binary is newer is not asked.* The agent hashes its own binary when it starts, and
       answers `current` when the offered binary hashes the same. Otherwise it hands off. The
@@ -2131,7 +2131,10 @@ disagreement passes every test on either side alone while presenting as an empty
       lock and writes the bytes to the shadow before releasing it. Holding every session's lock
       therefore stops all output, and every byte already read is in the screen captured. Bytes not
       yet read wait in the pty for the new program. A failed hand-off releases the locks, and
-      output resumes with nothing lost.
+      output resumes with nothing lost. The locks are waited on for at most 0.5 s. A kill holds
+      one through its SIGHUP grace, and an attach holds its session's through a repaint, as long
+      as a slow client takes. Every list and attach waits behind the freeze, so a busy moment
+      refuses the hand-off rather than stalling the agent.
     - *No repository command is running.* The hand-off stops new VCS and File requests at once
       (they are answered `LockContention`), then waits up to 2 s for running ones to finish, and
       refuses if they do not. Stopping first is what lets the wait end under steady traffic. Every
@@ -2151,7 +2154,9 @@ disagreement passes every test on either side alone while presenting as an empty
     - *Other state the freeze has to cover.* A pty and its shadow are resized together under the
       attachment lock, so the table never pairs one size with a screen drawn at another. A session
       being killed (its termination runs outside the store lock, with a SIGKILL sweep after a grace
-      period) finishes before the exec, through the `TERMINATING` lock in `session.rs`. The carried
+      period) finishes before the exec, through the `TERMINATING` lock in `session.rs`. A shell
+      that exits on its own is reaped and removed under the same lock, so the table never carries
+      a session whose shell is already gone. The carried
       duplicates are numbered 3 or above, so none lands on the new program's stdio.
     - *What does not cross:* the size owner, which is a connection's token (the first client to
       attach with a size takes it, as on a new session), and one row of scrollback per hand-off

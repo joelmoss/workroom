@@ -56,14 +56,23 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long a hand-off waits for running repository commands to finish before refusing. New ones
 /// are refused meanwhile, so it is short too.
 ///
-/// Together with `CHECK_TIMEOUT`, inside the app's own wait (`AgentHandOff.timeout`, 6 s): a
-/// requester that gives up first calls the hand-off off, so a longer agent-side wait would only
-/// hold every repository request off for a hand-off that can no longer happen.
+/// With `FREEZE_TIMEOUT` and `CHECK_TIMEOUT`, inside the app's own wait (`AgentHandOff.timeout`,
+/// 6 s): a requester that gives up first calls the hand-off off, so a longer agent-side wait would
+/// only hold every repository request off for a hand-off that can no longer happen.
 const QUIET_TIMEOUT: Duration = Duration::from_secs(2);
-/// `AgentHandOff.timeout` in the app, which these two must stay under. Checked at compile time, so
-/// raising either one past it fails the build rather than quietly defeating every busy hand-off.
+/// How long a hand-off waits to stop every session (`SessionStore::frozen`) before refusing. Every
+/// list and attach waits behind it meanwhile.
+const FREEZE_TIMEOUT: Duration = Duration::from_millis(500);
+/// `AgentHandOff.timeout` in the app, which these waits must stay under. Checked at compile time,
+/// so raising one past it fails the build rather than quietly defeating every busy hand-off.
+///
+/// The "handing off" write after them is one small frame to a requester that is reading its
+/// answer, or has gone and fails the write at once, so it is not counted.
 const APP_TIMEOUT: Duration = Duration::from_secs(6);
-const _: () = assert!(QUIET_TIMEOUT.as_secs() + CHECK_TIMEOUT.as_secs() < APP_TIMEOUT.as_secs());
+const _: () = assert!(
+    QUIET_TIMEOUT.as_millis() + FREEZE_TIMEOUT.as_millis() + CHECK_TIMEOUT.as_millis()
+        < APP_TIMEOUT.as_millis()
+);
 /// How much of a refusal reaches the requester (`serve.rs` truncates to it). The reason can quote
 /// the requester's path and the check's stderr, and a frame over the protocol's cap is a panic in
 /// `encode`, not a truncation.
@@ -277,7 +286,13 @@ pub fn hand_off(
     // be running, and none may start: every slot is taken until the exec, or until this returns.
     let _quiet = crate::vcs::Quiet::acquire(QUIET_TIMEOUT)
         .ok_or("a repository command is still running; try again when it finishes")?;
-    sessions.frozen(|frozen| replace(context, binary, frozen, before_exec))
+    sessions
+        .frozen(FREEZE_TIMEOUT, |frozen| {
+            replace(context, binary, frozen, before_exec)
+        })
+        .unwrap_or_else(|| {
+            Err("a session is being ended or repainted; try again when it finishes".into())
+        })
 }
 
 /// Duplicates made for the exec, closed again if it does not happen.

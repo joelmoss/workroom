@@ -668,8 +668,19 @@ impl SessionStore {
     /// nothing lost.
     ///
     /// Store before attachment, the same order `Session::info` takes them in under `list`.
-    pub fn frozen<T>(&self, f: impl FnOnce(&[FrozenSession]) -> T) -> T {
-        let _no_terminations = TERMINATING.write().unwrap_or_else(|e| e.into_inner());
+    ///
+    /// `None` when the locks are not all taken `within`. A session being killed holds
+    /// `TERMINATING` through its SIGHUP grace, and an attach holds its attachment lock for as long
+    /// as a slow client takes its repaint, while every other session waits behind the store lock
+    /// held here. So the wait is bounded, and a busy moment refuses the hand-off.
+    pub fn frozen<T>(&self, within: Duration, f: impl FnOnce(&[FrozenSession]) -> T) -> Option<T> {
+        use std::sync::TryLockError;
+        let deadline = Instant::now() + within;
+        let _no_terminations = until(deadline, || match TERMINATING.try_write() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        })?;
         let store = self.sessions.lock().expect("session store poisoned");
         let parts: Vec<(SessionId, SessionParts)> = store
             .values()
@@ -684,10 +695,14 @@ impl SessionStore {
                 )
             })
             .collect();
-        let held: Vec<_> = parts
-            .iter()
-            .map(|(_, (_, _, attached))| attached.lock().expect("attachment lock poisoned"))
-            .collect();
+        let mut held = Vec::with_capacity(parts.len());
+        for (_, (_, _, attached)) in &parts {
+            held.push(until(deadline, || match attached.try_lock() {
+                Ok(guard) => Some(guard),
+                Err(TryLockError::Poisoned(_)) => panic!("attachment lock poisoned"),
+                Err(TryLockError::WouldBlock) => None,
+            })?);
+        }
         let sessions: Vec<FrozenSession> = parts
             .iter()
             .map(|(id, (pty, shadow, _))| {
@@ -708,7 +723,7 @@ impl SessionStore {
         let result = f(&sessions);
         drop(held);
         drop(store);
-        result
+        Some(result)
     }
 
     /// Takes over a session an earlier program in this process was running (`crate::handoff`):
@@ -803,6 +818,19 @@ fn child_gone(pid: i32, status: &mut i32) -> bool {
     }
     let rc = unsafe { libc::waitpid(pid, status, libc::WNOHANG) };
     rc != 0
+}
+
+/// Tries `attempt` until it gives a value or `deadline` passes.
+fn until<T>(deadline: Instant, mut attempt: impl FnMut() -> Option<T>) -> Option<T> {
+    loop {
+        if let Some(value) = attempt() {
+            return Some(value);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// Where the reader is sending output, captured so the write can happen outside the lock.
@@ -986,13 +1014,23 @@ fn read_session(
         // after creating it. The old pump never saw this because it only existed once a client had
         // attached, by which time the window had passed; a reader owned by the session starts
         // inside it.
+        //
+        // Reaped and removed as one step under `TERMINATING`: a hand-off freezing between the two
+        // would carry a session whose shell is already reaped. The `Exited` frames go out after,
+        // with the lock released, so a slow client does not hold a hand-off off.
         let mut status = 0;
-        if ended && !child_gone(pty.child_pid(), &mut status) {
-            std::thread::sleep(Duration::from_millis(5));
-            continue;
-        }
-
         if ended {
+            let terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
+            if !child_gone(pty.child_pid(), &mut status) {
+                drop(terminating);
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            // The shell IS the session; with it gone there is nothing left to reattach to.
+            if let Ok(mut store) = store.lock() {
+                store.remove(&id);
+            }
+            drop(terminating);
             for target in targets(&attached) {
                 let bytes = terminal_envelope(
                     target.stream,
@@ -1004,10 +1042,6 @@ fn read_session(
                     ),
                 );
                 deliver(&attached, &target, &bytes);
-            }
-            // The shell IS the session; with it gone there is nothing left to reattach to.
-            if let Ok(mut store) = store.lock() {
-                store.remove(&id);
             }
             return;
         }
@@ -1338,6 +1372,30 @@ mod tests {
         ));
         // The refused pty was dropped, which hangs its shell up; reap it so no zombie is left.
         unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+        store.kill_all();
+    }
+
+    /// A session whose attachment lock stays held (a slow client's repaint) refuses a freeze
+    /// within its deadline rather than holding the whole store until the lock comes free.
+    #[test]
+    fn a_freeze_that_cannot_take_every_lock_gives_up() {
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 2")];
+        let e = env();
+        store.create(spec(id(10), &args, &e)).expect("create");
+        let (_, _, attached) = store.parts(id(10)).expect("parts");
+
+        let repainting = attached.lock().expect("lock");
+        let started = Instant::now();
+        assert!(store.frozen(Duration::from_millis(50), |_| ()).is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!store.is_empty(), "the store lock was released");
+
+        drop(repainting);
+        // Generous: `TERMINATING` is shared with every other test in the crate, and a kill
+        // holds it for half a second.
+        let frozen = store.frozen(Duration::from_secs(5), |sessions| sessions.len());
+        assert_eq!(frozen, Some(1));
         store.kill_all();
     }
 

@@ -31,8 +31,9 @@ enum AgentHandOff {
 
   /// How long the app waits before killing the request. Safe to give up: the agent tells its
   /// requester just before it replaces itself, and calls the hand-off off when the requester is
-  /// gone. Longer than the agent's own worst case before that point (`QUIET_TIMEOUT` plus
-  /// `CHECK_TIMEOUT` in `handoff.rs`, 5 s, checked there against this value), so a busy launch is
+  /// gone. Longer than the agent's own worst case before that point (`QUIET_TIMEOUT`,
+  /// `FREEZE_TIMEOUT` and `CHECK_TIMEOUT` in `handoff.rs`, 5.5 s, checked there against this
+  /// value), so a busy launch is
   /// not given up on only for being busy. Giving up after the exec, while the command checks that
   /// the new program answers, costs only the log line.
   static let timeout: TimeInterval = 6
