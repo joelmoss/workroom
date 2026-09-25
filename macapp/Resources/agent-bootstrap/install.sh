@@ -40,11 +40,12 @@ socket=$2
 handoff=$3
 expected=$4
 staged="$binary.new.$$"
-# Whatever ends this, nothing staged is left where the next install, or a curious eye, finds it.
-# After the rename there is nothing at that name, so this is a no-op on the way out of a success.
-# A signal (SIGPIPE from a link that dropped mid-push, say) would end the shell without the EXIT
-# trap; turned into an exit, it runs.
-trap 'rm -f "$staged"' EXIT
+ticker=
+# Whatever ends this, nothing staged is left where the next install, or a curious eye, finds it,
+# and the ticker below does not outlive it. After the rename there is nothing at that name, so
+# the removal is a no-op on the way out of a success. A signal (SIGPIPE from a link that dropped
+# mid-push, say) would end the shell without the EXIT trap; turned into an exit, it runs.
+trap '[ -n "$ticker" ] && kill "$ticker" 2> /dev/null; rm -f "$staged"' EXIT
 trap 'exit 1' HUP PIPE TERM
 
 # The app's silence bound ticks on bytes moving either way, and while the tail of the push drains
