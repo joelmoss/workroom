@@ -130,6 +130,20 @@ impl SessionId {
     }
 }
 
+/// One session as a hand-off carries it to the next program: what that program needs to adopt it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenSession {
+    pub id: SessionId,
+    pub pid: i32,
+    /// The pty master's descriptor number in this process.
+    pub master: i32,
+    pub columns: u16,
+    pub rows: u16,
+    /// The screen as VT bytes (`Shadow::replay`), never a snapshot: two agent revisions share no
+    /// snapshot format, and they do share VT.
+    pub screen: Vec<u8>,
+}
+
 /// What a client needs to know about a session it is not attached to, for the session list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInfo {
@@ -639,6 +653,98 @@ impl SessionStore {
         }
     }
 
+    /// Runs `f` with every session's output stopped and its screen captured, for a hand-off.
+    ///
+    /// Holds the store lock, so no session is created or ended meanwhile, and then every session's
+    /// attachment lock, which its reader takes around each read (`read_session`). So no byte leaves
+    /// any pty while `f` runs, and every byte already read is in the screen `f` is given. `f` may
+    /// replace the program. If it returns instead, the locks drop and every reader carries on with
+    /// nothing lost.
+    ///
+    /// Store before attachment, the same order `Session::info` takes them in under `list`.
+    pub fn frozen<T>(&self, f: impl FnOnce(&[FrozenSession]) -> T) -> T {
+        let store = self.sessions.lock().expect("session store poisoned");
+        let parts: Vec<(SessionId, SessionParts)> = store
+            .values()
+            .map(|session| {
+                (
+                    session.id,
+                    (
+                        Arc::clone(&session.pty),
+                        Arc::clone(&session.shadow),
+                        Arc::clone(&session.attached),
+                    ),
+                )
+            })
+            .collect();
+        let held: Vec<_> = parts
+            .iter()
+            .map(|(_, (_, _, attached))| attached.lock().expect("attachment lock poisoned"))
+            .collect();
+        let sessions: Vec<FrozenSession> = parts
+            .iter()
+            .map(|(id, (pty, shadow, _))| {
+                // The kernel's size, which is what the shell was last told.
+                let (columns, rows) = pty
+                    .size()
+                    .unwrap_or((crate::pty::DEFAULT_COLUMNS, crate::pty::DEFAULT_ROWS));
+                FrozenSession {
+                    id: *id,
+                    pid: pty.child_pid(),
+                    master: pty.master_fd(),
+                    columns,
+                    rows,
+                    screen: shadow.lock().map(|s| s.replay()).unwrap_or_default(),
+                }
+            })
+            .collect();
+        let result = f(&sessions);
+        drop(held);
+        drop(store);
+        result
+    }
+
+    /// Takes over a session an earlier program in this process was running (`crate::handoff`):
+    /// its pty, and a fresh shadow painted with the screen that program captured.
+    ///
+    /// No client comes with it, so nobody owns the size: the first client to attach with one takes
+    /// it, as on a new session.
+    pub fn adopt(
+        &self,
+        id: SessionId,
+        pty: Pty,
+        columns: u16,
+        rows: u16,
+        screen: &[u8],
+    ) -> Result<(), SessionError> {
+        let mut shadow = Shadow::new(columns, rows);
+        shadow.write(screen);
+        let session = Session {
+            id,
+            pty: Arc::new(pty),
+            shadow: Arc::new(Mutex::new(shadow)),
+            attached: Arc::new(Mutex::new(Attached::default())),
+        };
+        let pty = Arc::clone(&session.pty);
+        let shadow = Arc::clone(&session.shadow);
+        let attached = Arc::clone(&session.attached);
+        let store = Arc::clone(&self.sessions);
+        {
+            let mut sessions = self.sessions.lock().expect("session store poisoned");
+            if sessions.contains_key(&id) {
+                return Err(SessionError::AlreadyExists(id.to_hyphenated()));
+            }
+            sessions.insert(id, session);
+        }
+        let spawned = std::thread::Builder::new()
+            .spawn(move || read_session(id, pty, shadow, attached, store));
+        if spawned.is_err() {
+            self.kill(id);
+            return Err(SessionError::ReaderFailed(id.to_hyphenated()));
+        }
+        Ok(())
+    }
+
     /// Ends a session and its pty. Returns whether there was one to end.
     ///
     /// The session leaves the map first and the killing happens with the lock released: a
@@ -815,7 +921,37 @@ fn read_session(
 ) {
     let mut buffer = [0u8; READ_CHUNK];
     loop {
-        let read = pty.read(&mut buffer);
+        // Read UNDER the attachment lock, and write to the shadow before releasing it. A byte
+        // then leaves the pty only while this lock is held and is in the shadow by the time it is
+        // released, so whoever holds every session's lock (`SessionStore::frozen`) holds a shadow
+        // with every byte ever read and a pty with every byte not. A hand-off depends on exactly
+        // that: a byte read and not yet shadowed when the program is replaced is a byte no client
+        // ever sees. The read is non-blocking, so holding the lock across it costs nothing.
+        //
+        // The shadow absorbs the bytes and the destination is chosen under the same lock, as one
+        // step — otherwise an attach landing between the two either misses output or replays it
+        // twice. The transport write itself then happens with the lock RELEASED, and that
+        // matters: holding it across a write would let one client that has stopped reading stall
+        // the pty drain for every byte, which is the very problem this reader exists to prevent.
+        //
+        // Releasing early is still correct because the destination was captured first. A client
+        // that attaches after the capture is painted from the shadow, which already holds these
+        // bytes; it cannot receive them twice, and the superseded client's writer is the one this
+        // write goes to.
+        let (read, clients) = {
+            let held = attached.lock().expect("attachment lock poisoned");
+            let read = pty.read(&mut buffer);
+            let clients = match read {
+                Ok(n) if n > 0 => {
+                    if let Ok(mut shadow) = shadow.lock() {
+                        shadow.write(&buffer[..n]);
+                    }
+                    held.clients.iter().map(Client::target).collect::<Vec<_>>()
+                }
+                _ => Vec::new(),
+            };
+            (read, clients)
+        };
 
         // "The child is gone" looks different on each platform: reading a pty master whose child
         // has exited yields EOF on Darwin and **EIO** on Linux. Deciding it once, here, is what
@@ -866,24 +1002,6 @@ fn read_session(
                 // exactly the case the wakefulness signal exists for: a busy box with nobody
                 // watching.
                 crate::wakefulness::count_pty_out(n);
-                // The shadow absorbs the bytes and the destination is chosen UNDER the slot lock,
-                // as one step — otherwise an attach landing between the two either misses output
-                // or replays it twice. The transport write itself then happens with the lock
-                // RELEASED, and that matters: holding it across a write would let one client that
-                // has stopped reading stall the pty drain for every byte, which is the very
-                // problem this reader exists to prevent.
-                //
-                // Releasing early is still correct because the destination was captured first. A
-                // client that attaches after the capture is painted from the shadow, which already
-                // holds these bytes; it cannot receive them twice, and the superseded client's
-                // writer is the one this write goes to.
-                let clients = {
-                    let held = attached.lock().expect("attachment lock poisoned");
-                    if let Ok(mut shadow) = shadow.lock() {
-                        shadow.write(&buffer[..n]);
-                    }
-                    held.clients.iter().map(Client::target).collect::<Vec<_>>()
-                };
                 // Every attached client sees the same bytes — that is what makes two windows on
                 // one session show the same terminal rather than half of it each.
                 for target in &clients {

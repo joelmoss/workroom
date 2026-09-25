@@ -36,6 +36,9 @@ pub enum FrameKind {
     Info = 0x22,
     Kill = 0x23,
     KillAll = 0x24,
+    /// Replace this agent's program with another binary, keeping every session (#230). Payload:
+    /// `force:u8`, then the binary's absolute path. See `crate::handoff`.
+    HandOff = 0x25,
 
     Sessions = 0x31,
     Acknowledged = 0x32,
@@ -55,6 +58,7 @@ impl FrameKind {
             0x22 => Self::Info,
             0x23 => Self::Kill,
             0x24 => Self::KillAll,
+            0x25 => Self::HandOff,
             0x31 => Self::Sessions,
             0x32 => Self::Acknowledged,
             _ => return None,

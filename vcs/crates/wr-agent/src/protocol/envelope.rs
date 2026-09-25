@@ -26,13 +26,13 @@ use std::collections::VecDeque;
 /// added that an older agent would silently drop rather than answer (`Service::Vcs`, added at 2 —
 /// an older agent has no `vcs::dispatch` at all, so an unversioned capability probe would just
 /// hang until its own timeout; `Service::File` at 3, `Service::Status` at 4 and `Service::Forward`
-/// at 5, all for the same reason — `serve.rs`'s
+/// at 5, all for the same reason, as is the Control frame `HandOff` at 6 — `serve.rs`'s
 /// dispatch returns silently for a service byte it does not handle). `MIN_SUPPORTED` stays untouched by such bumps: negotiation still
 /// takes the lower of the two sides' versions for the services both already understand (Terminal,
 /// Control), so a newer app still drives an older agent left running rather than replacing it —
 /// only a version-gated service (checked against the peer's raw `Hello.protocol_version`, not the
 /// negotiated minimum) refuses to talk to a peer that predates it.
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 pub const MIN_SUPPORTED_VERSION: u16 = 1;
 /// The minimum peer version that understands `Service::Vcs`. Checked directly against a peer's
 /// `Hello.protocol_version` by VCS clients — never folded into `negotiate`'s minimum, which would
@@ -51,6 +51,10 @@ pub const MIN_STATUS_VERSION: u16 = 4;
 /// `Hello.protocol_version` against this BEFORE sending an `open` — otherwise the forwarded
 /// connection hangs until the client's own timeout. Never folded into `negotiate`.
 pub const MIN_FORWARD_VERSION: u16 = 5;
+/// The minimum peer version that answers a `HandOff` frame (#230). Same rule again, and here it is
+/// also the policy: an agent that predates hand-off is never asked, so it keeps running and is
+/// talked to over the versioned envelope.
+pub const MIN_HANDOFF_VERSION: u16 = 6;
 
 /// Sent first by both sides. The magic is here so a peer that is not an agent at all — a login
 /// banner, an MOTD, an ssh warning printed onto the stream — fails immediately and legibly

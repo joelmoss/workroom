@@ -64,12 +64,22 @@ enum SessionBackendProbe {
   }
 
   private static func runProtocolCommand(_ url: URL) throws -> (status: Int32, output: String) {
+    try run(url, arguments: ["protocol"], timeout: timeout)
+  }
+
+  /// Runs `url` with `arguments` and returns its status and output (stdout and stderr, in one pipe),
+  /// or throws `timedOut` once `timeout` has passed and it has been killed.
+  static func run(_ url: URL, arguments: [String], timeout: TimeInterval) throws -> (
+    status: Int32, output: String
+  ) {
     let process = Process()
     process.executableURL = url
-    process.arguments = ["protocol"]
+    process.arguments = arguments
+    // One pipe for both, read to EOF below. A second pipe read only after exit would block a
+    // process that filled it (a panic's backtrace) the same way the note below describes.
     let pipe = Pipe()
     process.standardOutput = pipe
-    process.standardError = Pipe()
+    process.standardError = pipe
     try process.run()
 
     // The deadline has to be armed BEFORE the read, not after it. `readDataToEndOfFile` returns
@@ -97,15 +107,15 @@ enum SessionBackendProbe {
     process.waitUntilExit()
     watchdog.cancel()
 
-    if timedOut.value { throw ProbeError.timedOut }
+    if timedOut.value { throw ProbeError.timedOut(timeout) }
     return (process.terminationStatus, String(decoding: data, as: UTF8.self))
   }
 
   enum ProbeError: LocalizedError, Equatable {
-    case timedOut
+    case timedOut(TimeInterval)
     var errorDescription: String? {
       switch self {
-      case .timedOut: return "no reply within \(Int(SessionBackendProbe.timeout))s"
+      case .timedOut(let timeout): return "no reply within \(Int(timeout))s"
       }
     }
   }

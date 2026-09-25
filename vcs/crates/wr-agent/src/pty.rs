@@ -222,6 +222,18 @@ impl Pty {
         Ok(Pty { master, pid })
     }
 
+    /// A pty an earlier program in this process started, handed over across `execve` (see
+    /// `crate::handoff`). The child is still this process's, so `waitpid` still reaps it.
+    ///
+    /// Close-on-exec goes back on at once: the descriptor crossed the exec only because the
+    /// outgoing agent cleared it, and left clear, every shell this agent forks later would inherit
+    /// this session's master.
+    pub fn adopt(master: libc::c_int, pid: libc::pid_t) -> Pty {
+        set_cloexec(master);
+        set_nonblocking(master);
+        Pty { master, pid }
+    }
+
     pub fn master_fd(&self) -> libc::c_int {
         self.master
     }
