@@ -13,7 +13,8 @@ Mode: Builder
 merged; its first Nightly DMG is still to be checked), the supervised far-side agent with its stdio
 relay and container fixture (#228, merged), the
 app-side transport with `HostDriver` and the container driver, services and terminal panes (#229,
-merged 2026-09-24 in #237), `execve` hand-off (#230, built and in review; on for Nightly and Dev),
+merged 2026-09-24 in #237), `execve` hand-off (#230,
+merged 2026-09-25 in #238; on for Nightly and Dev),
 push-on-first-connect bootstrap (#231) and stop-and-reboot screen restoration (#232). The rest of
 this section is the 2026-09-17 status, kept for the Phase 2 detail it records and corrected where
 it had gone stale.
