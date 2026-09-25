@@ -126,6 +126,26 @@ expect_failure() {
 HOST_ARCH="$(uname -m)"
 expect_archs host "$HOST_ARCH" "$HOST_ARCH"
 
+# A rebuild renames a new binary into place and never writes into the old one. A running agent
+# executes that file, and macOS SIGKILLs a process whose signed binary changes under it, so writing
+# in place ended every Dev session on each rebuild, and any hand-off with them (#230).
+#
+# A hard link keeps hold of the file a running agent would be executing. Its inode, not the path, is
+# what must stay untouched: `codesign --force` leaves a new inode at the path either way.
+ln "$OUT" "$WORK/running-agent"
+before="$(stat -f %m "$WORK/running-agent")"
+sleep 1
+run_agent host "$HOST_ARCH"
+after="$(stat -f %m "$WORK/running-agent")"
+if [ "$RC" -ne 0 ] || [ "$before" != "$after" ]; then
+  echo "FAIL: a rebuild wrote into the binary a running agent executes (mtime $before -> $after, exit $RC)"
+  fails=$((fails + 1))
+fi
+if [ -e "$(dirname "$OUT")/.wr-agent-staged" ]; then
+  echo "FAIL: a rebuild left .wr-agent-staged inside MacOS"
+  fails=$((fails + 1))
+fi
+
 if [ "$CROSS" -eq 1 ]; then
   # The case that shipped broken: a space-separated list must produce BOTH slices.
   expect_archs universal "arm64 x86_64" "arm64 x86_64"
