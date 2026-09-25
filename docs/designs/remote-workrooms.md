@@ -15,7 +15,8 @@ relay and container fixture (#228, merged), the
 app-side transport with `HostDriver` and the container driver, services and terminal panes (#229,
 merged 2026-09-24 in #237), `execve` hand-off (#230,
 merged 2026-09-25 in #238; on for Nightly and Dev),
-push-on-first-connect bootstrap (#231) and stop-and-reboot screen restoration (#232). The rest of
+push-on-first-connect bootstrap (#231, built 2026-09-25; "As built (#231)" in the Distribution
+Plan) and stop-and-reboot screen restoration (#232). The rest of
 this section is the 2026-09-17 status, kept for the Phase 2 detail it records and corrected where
 it had gone stale.
 
@@ -1048,11 +1049,12 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     belongs with the host's lifecycle (Phase 4).
   - *`CREATE=0` is only as good as the agent that reads it.* An agent older than the flag ignores
     it and creates the session. The version hand-off (#230) and the bootstrap (#231) keep the
-    host's agent current; until they land, a host running an older agent can still hand a
-    restored pane a fresh shell.
-  - *Degraded until the agent bootstrap (#231):* `TERM` is `xterm-256color`, since a host rarely
-    has `xterm-ghostty` terminfo, and there is no shell integration there (its resources are in the
-    Mac's app bundle), so the title and footer do not follow the shell.
+    host's agent current; a host whose agent predates hand-off, which the bootstrap leaves
+    running, can still hand a restored pane a fresh shell.
+  - *Degraded, a follow-up to the bootstrap (#231 pushes only the agent):* `TERM` is
+    `xterm-256color`, since a host rarely has `xterm-ghostty` terminfo, and there is no shell
+    integration there (its resources are in the Mac's app bundle), so the title and footer do not
+    follow the shell.
   - *Not persisted:* a session is marked remote in memory (`registerRemoteSession`). Phase 4's
     remote workrooms re-register their panes on relaunch.
   - *An SDK-exec driver has no command to hand libghostty.* It needs a local bridge process, which
@@ -2115,7 +2117,8 @@ disagreement passes every test on either side alone while presenting as an empty
         up to 10 s;
       - after an app update no pane is attached: the old app's panes went with it.
       A pane that finished attaching just before the exec still loses its connection. Its session
-      carries on, detached, and reattaching it is #231's work.
+      carries on, detached. A remote pane's attach now exits 255 for that and the app attaches it
+      again (#231, below); locally it stays this launch-only race.
       The app stops waiting after 6 s, longer than the agent's own worst case before it replaces
       itself (2 s for repository commands, 0.5 s to freeze the sessions, 3 s for the check). A
       compile-time assertion in `handoff.rs` keeps the agent's three under the app's. The outcome is logged at `notice`, which
@@ -2200,9 +2203,135 @@ disagreement passes every test on either side alone while presenting as an empty
         loses every session: every shell is hung up with its pty. The socket's path stays, with
         nothing listening, and the unread table stays too. The next agent starts clean on the same
         path and removes the table. Nothing else is lost.
-    - *For #231:* a remote host's panes stay attached, so a remote hand-off needs the attach client
-      to reattach when its connection ends without an `Exited` frame. Today it exits 0, as if the
-      shell had ended. The session itself survives, detached.
+    - *For #231, done there:* a remote host's panes stay attached, so a remote hand-off needs the
+      pane back when its attach's connection ends without an `Exited` frame. It used to exit 0,
+      as if the shell had ended; it exits 255 now (below).
+
+    **As built (#231, `Core/Session/AgentBootstrap.swift` and
+    `Resources/agent-bootstrap/{probe,install}.sh`).** `AgentBootstrap.connect` is the way to a
+    remote host's services: the bootstrap, then `openStream` and the negotiation. Nothing else
+    should open a service stream to a host; no production path does yet (Phase 4's), and the
+    fixture tests go through it.
+    - *Where the binary lives: beside the socket.* `<directory of agentSocket>/wr-agent`, the one
+      directory a host is configured with. It is already required to be 0700 and the ssh user's
+      (#228), and the socket is the trust boundary (above), so the file has the socket's
+      protection and needs no new one. The supervisor starts the agent from there, and the relay
+      and the attach run it from there by path: a host has no `wr-agent` on its PATH. In the
+      fixture that is `/run/workroom/wr-agent`, on tmpfs, so a reboot means one 11 MB push on the
+      next connect.
+    - *`HostDriver.exec` is the primitive.* A command on the host with the stream as its stdin and
+      stdout (`HostStream.communicate`); `openStream` is that with the relay as the command. ssh
+      runs it as the remote command, and an SDK driver would run it through the provider's exec.
+      The far side is two POSIX-sh scripts sent as `sh -c '<script>' <args>`, needing only
+      coreutils there (`sha256sum`; a host without it is reported and never pushed to), since the
+      host may hold nothing of Workroom's yet. A script arrives as one quoted word for the host's
+      login shell, so that shell must be a POSIX one (csh rejects the newlines). Every line they
+      print is prefixed `WRB ` and the app reads nothing else, because a shell startup file on the
+      host prints ahead of them. They are files, not Swift strings, so the Rust fixture test in CI
+      runs the same ones. The exchange's timeout bounds silence, reset by every byte either way,
+      never the whole transfer: a bound on the transfer is a throughput floor for an 11 MB push
+      (the `WRITE_TIMEOUT` lesson). The tail of the push is the exception the review found: once
+      the Mac has queued its last byte, up to ssh's 2 MB channel window is still in flight and
+      nothing moves either way until `cat` has it, so a link under ~35 KB/s would be ended right
+      at the end. The install prints `WRB receiving <bytes>` from a subshell every 10 s that the
+      staged file grew while `cat` runs, which keeps the bound a silence bound; a tick that only
+      said the shell was alive would keep a push wedged on a stalled disk from ever being ended.
+    - *Two hashes, two questions.* The app hashes its bundled ELF (SHA-256) and the probe hashes
+      the installed file (`sha256sum`): that decides whether to push, and the same build pushes
+      nothing. The agent hashes its own program at startup (`handoff.rs`, a process-local hash)
+      and answers `current` when offered that file: that decides whether to hand off. They are
+      never unified, and the app cannot predict `current`.
+    - *Stage, check, then rename: the rename is the dangerous step, not the push.* Relay, attach
+      and the supervisor execute the on-disk file, so a bad binary renamed into place breaks them
+      even while the old agent lives, and the supervisor would restart a crasher forever. The
+      install writes `wr-agent.new.<pid>` beside the socket (umask 077), checks it against the
+      digest the app sent (a link that dies mid-push ends stdin, and a static ELF cut short can
+      still run far enough to pass every other check), runs it once (`protocol`: does it run on
+      this box at all), offers it to the running agent (`hand-off --binary <staged>`, run by the
+      staged file itself, so the restore check and the exec are #230's), and renames it into
+      place only when nothing refused it: hand-off exit 0 (`current`, or handed off), 3 (the
+      agent predates hand-off and keeps running; the file is for the supervisor's next start), 92
+      (nothing listening; the supervisor starts it, and the install waits up to 10 s for it to
+      serve), or no hand-off asked for (the gate below). Any other exit, a refusal (the check
+      failed, the agent was busy, or the new program died restoring), removes the staged file and
+      leaves the old one. A refusal is therefore retried by the next connect, which pushes again: the price
+      of never leaving an unchecked file where the supervisor starts from.
+    - *The probe only ever hands off to a binary the app recognises.* It is given both bundled
+      digests, picks by `uname -m`, and asks for a hand-off only when the installed file matches.
+      That is the retry for a file left by an install whose agent predated hand-off, or whose
+      hand-off was off, or whose agent did not greet (below), and it cannot hand off DOWN to an
+      unrecognised file, which an unconditional probe hand-off would after an install interrupted
+      between the agent's exec of the staged file and the rename. That last state (the running
+      program is the new one, the file is the old one) is healed by the next install instead: the
+      agent answers `current` to the pushed copy, and the rename lands.
+    - *No version ordering, on either host.* The agent's version string is `0.1.0` for every
+      build, so nothing can say which of two builds is newer; the app's binary wins, as it does
+      locally (#230). Two Macs on different builds connecting to one host therefore trade a push
+      and a hand-off on each connect, and each hand-off drops their attached panes for a second.
+      A build number in the agent would end that; it is not in this milestone.
+    - *After exit 3 the new binary is the relay and the attach against the old agent.* That works
+      because `Hello` negotiates `min(local, remote)` down to `MIN_SUPPORTED_VERSION`, and an
+      older agent ignores `CREATE=0`.
+    - *A remote pane's attach exits 255 when its agent connection ends without `Exited`.* A
+      hand-off closes every connection, and an attached pane's is one of them: panes attach at
+      window restoration and the bootstrap runs at connect, and nothing orders the two. 255
+      already means "the link dropped, attach again as restored" (`reconnectIfTheLinkDropped`;
+      the `Exited` arm maps a shell's own 255 to 254 for exactly this), so the pane comes back
+      through the path a network drop already takes: a fresh ssh, `--no-create`, repainted by the
+      new program, about a second later. Locally nothing changes: a pane attached in the seconds
+      before the launch's hand-off still ends as if its shell had, a launch-only race. In-process
+      reattach in `wr-agent attach` (the same ssh and pty, ~100 ms, local too) is the upgrade,
+      and needs the stdin and resize relays re-plumbed onto a swappable stream.
+    - *Gated as the local hand-off is* (`AgentHandOff.isEnabled`, Nightly and Dev): one
+      older-agent policy on both hosts. Off, the scripts skip the hand-off and the install still
+      renames, so the next probe sees a match, nothing is pushed again, and the supervisor picks
+      the file up on its next start.
+    - *The crashed restore, remotely: measured.* A binary that passes `protocol` and the restore
+      check (both handed to the real agent) and then exits as the new program loses every
+      session, as locally, but the host recovers by itself: the hand-off reports "did not
+      answer", the install refuses after the fact and leaves the on-disk file alone, and the
+      supervisor restarts that. On the fixture a clean agent served 1.4–1.6 s after the refusal
+      (two runs, 2026-09-25: the supervisor's 1 s loop plus the agent's start), with the staged file
+      and the table gone and the shells hung up
+      (`over_ssh_the_bootstrap_installs_hands_off_and_survives_a_crashed_restore`). What is
+      unrecoverable is the same as locally; it now costs one connect's sessions rather than a
+      host, and until the app is fixed every connect pushes that binary again.
+    - *This build has no agent for the host* (a Debug build without `WR_AGENT_LINUX=1`): a host
+      already holding one is connected to as it is, and a host with none is an error naming the
+      architecture. A host that is not a Linux this app builds for is refused before anything is
+      pushed.
+    - *Tests.* `AgentBootstrapTests` (a driver whose host is a local `sh`): every outcome the
+      scripts can report, the architecture and no-bundled-agent branches, the `WRB` parsing
+      against a chatty host, the exchange's timeout, and that the scripts ship and parse. The
+      fixture, from Rust in CI (`over_ssh_the_bootstrap_…`) and from Swift by hand
+      (`RemoteHostIntegrationTests`): a host with no agent installs and serves; the same build
+      pushes nothing; a newer build hands off with an attached pane's shell, pid and exit code
+      intact and the pane back on 255; a binary that fails its check is refused and the app
+      connects to the old agent; and the crash above. The fixture's supervisor now runs the
+      installed file and idles without one; the image's copy seeds it at boot.
+    - *Not here.* `xterm-ghostty` terminfo and the shell integration on the host (#239). An agent
+      that predates hand-off has no fixture (no older build to run there); the
+      exit-3 branch is unit-tested, and #230's test proves the CLI never asks such an agent.
+    - *Known limits.* The on-disk file and the running program can differ after exit 3, after a
+      92 the CLI reports for an agent that accepted but did not greet within 5 s (paused mid
+      hand-off for another client), or after the interrupted install above; each heals on a
+      later connect. A refused install is an 11 MB push per connect until the agent is quiet. A
+      probe that finds this build installed with nothing listening (the supervisor's 1 s restart
+      gap, or a host just rebooted) does not wait as the install does; the connect that follows
+      fails with the relay's "no agent listening" and the caller retries. Two bootstraps at once (two Macs, or two connects) race on the installed path: the probe
+      offers the live file, and an install's rename between the agent's check of it and its exec
+      would have the agent exec a file it never checked; a lock on the directory, or a private
+      hard link to offer, is the fix if it is ever seen. The scripts run whatever file sits beside
+      the socket and check nothing about the directory: #228's requirement that it be 0700 and
+      the ssh user's is what makes that safe, and a host configured with its socket in a shared
+      directory (`/tmp`) would let another account plant the binary the relay runs; nothing
+      produces such a configuration yet, and refusing one belongs with the host's setup (Phase 4).
+      The exchange reads the host's output only after the push, so a login banner larger than
+      the socket buffers plus ssh's window (over 2 MB) would stall the push and be ended as
+      silence; draining while sending is the fix if a host like that is ever seen. A restored pane on a host with no
+      binary yet exits 255 (`test -x` ahead of the attach), and the app's reconnect backoff gives
+      up after five quick failures, so a pane restored well before the bootstrap lands needs
+      reopening.
 - **New CI burden:** a Rust Linux cross-compile for `wr-agent` (note `prost` in the lock means
   `protoc` is a build-time requirement) plus the container-driver integration job. **Add a pinned
   Zig toolchain and a Ghostty checkout** for `libghostty-vt` — checksum-pinned, cache keyed by
