@@ -139,7 +139,9 @@ the app attaches to it. There are two, mid-migration (issue #154, Phase 1):
   `serve | attach`, multiplexing services over one stream with a versioned envelope
   (`service:u8 | stream:u32 | length:u32 | payload`). It keeps a **shadow terminal** (libghostty-vt,
   behind the `terminal-state` cargo feature) so a reattaching pane is repainted from emulator state
-  rather than a byte replay.
+  rather than a byte replay. A newer bundled binary hands a running agent its sessions rather than
+  killing it (`AgentHandOff.start()`, protocol 6, `wr-agent hand-off`) — gated to Nightly and Dev
+  (#230); see the "As built (#230)" section of `docs/designs/remote-workrooms.md` for the mechanics.
 - **`workroom-session`** (`macapp/WorkroomSession/`, Swift) — the shipped daemon. It keeps the
   sessions it already holds until the user closes them; it cannot hand a live pty over.
 
@@ -157,12 +159,17 @@ nothing is listening, which is a definitive "not owned" (the daemon leaves a sta
 behind on any `pkill`, so this case is common, not exotic).
 
 **Building it.** `macapp/Scripts/build-agent.sh` is a build phase, mirroring `build-helper.sh` (the
-Go CLI): it iterates `ARCHS`, so a universal Release build produces both slices and `lipo`s them.
-`build-agent_test.sh` guards that loop — the same regression once shipped an arm64-only CLI inside 23
-universal betas — and its cross cases need `rustup target add x86_64-apple-darwin aarch64-apple-darwin`,
-which CI installs. `terminal-state` is **not optional for the app**: without it a reattaching pane
-repaints blank, which only shows up after a quit-and-relaunch. `wr-agent protocol` reports
-`terminal-state yes|no`, and the build test asserts it against the shipped binary.
+Go CLI): it iterates `ARCHS`, so a universal Release build produces both slices and `lipo`s them. The
+built binary is staged beside `$DEST` and **renamed into place, never written over it** — a running
+agent executes that file, and macOS SIGKILLs a process whose signed binary changes under it ("Code
+Signature Invalid"); writing in place used to kill every Dev session, and any hand-off (#230), on
+each rebuild. `build-agent_test.sh` guards both that loop — the same regression once shipped an
+arm64-only CLI inside 23 universal betas — and the rename (a hard link stands in for the running
+binary and must keep its inode across a rebuild); the cross cases need `rustup target add
+x86_64-apple-darwin aarch64-apple-darwin`, which CI installs. `terminal-state` is **not optional for
+the app**: without it a reattaching pane repaints blank, which only shows up after a
+quit-and-relaunch. `wr-agent protocol` reports `terminal-state yes|no`, and the build test asserts it
+against the shipped binary.
 
 **Linux agents (issue #227).** Release and Nightly builds also put a static musl `wr-agent` per
 Linux arch in `Contents/Resources/wr-agent-linux-{aarch64,x86_64}`, for pushing to remote hosts.
