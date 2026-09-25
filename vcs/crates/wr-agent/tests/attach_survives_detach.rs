@@ -513,6 +513,38 @@ fn a_restored_pane_is_shown_its_last_screen_after_a_reboot() {
     );
 }
 
+/// `Screens::open` fails when `--screens` names a path it cannot turn into a directory — here, one
+/// that already exists as a plain file. That must cost only the records, never the agent: a
+/// supervisor with a bad path must still get terminals (`run_serve`'s comment on the flag).
+#[test]
+fn a_bad_screens_directory_does_not_stop_the_agent_serving() {
+    let workspace = Workspace::new("badscreens");
+    let socket = workspace.socket();
+    let bad = workspace.dir.join("not-a-directory");
+    std::fs::write(&bad, b"nope").expect("seed a file where a directory is expected");
+    let flags = [std::ffi::OsStr::new("--screens"), bad.as_os_str()];
+
+    let mut agent = start_agent_with(&socket, &flags);
+    let mut client = attach(&socket, "4a4a4a4a-5b5b-6c6c-7d7d-8e8e8e8e8e8e");
+    {
+        let stdin = client.stdin.as_mut().expect("stdin");
+        std::thread::sleep(Duration::from_millis(400));
+        stdin.write_all(b"echo STILL-SERVING\n").expect("write");
+        stdin.flush().expect("flush");
+    }
+    let mut reader = ClientReader::new(&mut client);
+    let seen = reader.read_until("STILL-SERVING", Duration::from_secs(10));
+    assert!(
+        seen.contains("STILL-SERVING"),
+        "a bad --screens path stopped the agent from serving terminals; got {seen:?}"
+    );
+
+    let _ = client.kill();
+    let _ = client.wait();
+    let _ = agent.kill();
+    let _ = agent.wait();
+}
+
 /// `PersistentSessionService.attachCommand()` builds the command line as `<binary> attach` with no
 /// arguments — everything else is environment. So the agent has to be drivable that way, or the
 /// Swift side needs a special case for which backend it picked.

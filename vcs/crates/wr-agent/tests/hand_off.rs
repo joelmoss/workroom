@@ -693,6 +693,53 @@ fn an_attach_the_agent_never_answers_falls_back_to_a_shell() {
     );
 }
 
+/// The same, for a restored pane on a remote host (`--no-spawn --no-create`): no shell after the
+/// retry deadline, but 255, so the app attaches it again (#232). A shell would be a live one in a
+/// pane whose session is gone, hiding its last screen.
+#[test]
+fn a_restored_remote_attach_the_agent_never_answers_exits_255() {
+    let workspace = Workspace::new("unanswered-restored");
+    let socket = workspace.socket();
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            greet_an_attach(&mut stream);
+        }
+    });
+
+    let started = Instant::now();
+    let mut client = attach_with(
+        &socket,
+        "4a4a4a4a-0000-4000-8000-000000000013",
+        &["--no-spawn", "--no-create"],
+    );
+    let mut reader = ClientReader::new(&mut client);
+    type_line(&mut client, "echo \"FALLBACK\"-$WORKROOM_SESSION_FALLBACK");
+    assert!(
+        wait_for(Duration::from_secs(20), || matches!(
+            client.try_wait(),
+            Ok(Some(_))
+        )),
+        "the attach never gave up"
+    );
+    assert_eq!(
+        client.try_wait().expect("wait").expect("status").code(),
+        Some(255)
+    );
+    assert!(
+        started.elapsed() >= Duration::from_secs(9),
+        "gave up after {:?}, before the retry deadline",
+        started.elapsed()
+    );
+    reader.drain(Duration::from_millis(200));
+    let seen = reader.read_until("FALLBACK-1", Duration::from_millis(100));
+    assert!(
+        !seen.contains("FALLBACK-1"),
+        "a shell was started: {seen:?}"
+    );
+}
+
 /// A hand-off asked for while another is still checking is refused, not queued. The listener's
 /// pause keeps new connections out; this is a connection the agent had already accepted.
 #[test]

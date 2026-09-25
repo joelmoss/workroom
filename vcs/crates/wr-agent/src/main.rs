@@ -627,9 +627,10 @@ fn run_attach(args: &[String]) -> ExitCode {
     //
     // Every failure from here to the attach reply becomes a plain shell rather than a dead pane —
     // see `fall_back_to_shell`. These are precisely the states an agent that PASSED the app's
-    // `wr-agent protocol` probe can still reach.
-    // None of these is retried: an agent greets the moment it accepts, and stops accepting while it
-    // hands off, so a failed greeting is a peer that is not a working agent.
+    // `wr-agent protocol` probe can still reach. The exception is a restored pane on a remote host,
+    // which exits 255 for the app to attach again instead (`unreachable`, below).
+    // None of these is retried here: an agent greets the moment it accepts, and stops accepting
+    // while it hands off, so a failed greeting is a peer that is not a working agent.
     let open = || -> Result<std::os::unix::net::UnixStream, &str> {
         let mut stream = match serve::connect(&socket) {
             Some(stream) => stream,

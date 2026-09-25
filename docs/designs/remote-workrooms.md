@@ -2037,7 +2037,8 @@ disagreement passes every test on either side alone while presenting as an empty
   it; `snapshot.h` persisted across the reboot is what makes it testable. **Met (#232)**, with
   `replay()`'s VT bytes persisted rather than a snapshot (Distribution Plan). The container test
   `over_ssh_a_restored_pane_is_shown_its_last_screen_after_a_reboot` stops and starts the box
-  with a full-screen program running.
+  with a full-screen program running. Only the fixture's supervisor passes `--screens` so far: a
+  real host's supervisor has to pass it too, which belongs with Phase 4's provisioning.
 
 ## Distribution Plan
 
@@ -2780,7 +2781,12 @@ service milestones below so each layer can be reviewed and landed independently.
        while its host was down stays until the 64-record bound drops it. An agent that crashes
        without a reboot leaves orphaned shells running (the `KillMode` caveat in "Two requirements
        on #229's real supervisor"), and their records then read as ended while their shells live.
-       The notice says "host restarted" in that case too.
+       The notice says "host restarted" in that case too. A record is removed on the tick after
+       its session ends, so a hand-off inside those 2 s leaves it behind. A detached pane of that
+       session would then be shown it as ended with its host. Deleting a record the moment its
+       session ends was rejected: in a shutdown, a command killed just before the agent would
+       lose the screen the record exists to keep. The app gives a remote pane five reconnects
+       (about 30 s) after a dropped link, which a slow VM reboot can outlast (#241).
      - *Tests.* `a_restored_pane_is_shown_its_last_screen_after_a_reboot` SIGKILLs a local agent
        and its shells and starts a new agent over the records.
        `a_restored_pane_is_shown_the_record_of_a_session_that_ended_with_its_host` covers the
