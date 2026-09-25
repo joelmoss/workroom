@@ -103,7 +103,15 @@ mkdir -p "$DEST_DIR"
 SLICE_DIR="${DERIVED_FILE_DIR:-$DEST_DIR}"
 mkdir -p "$SLICE_DIR"
 rm -f "$SLICE_DIR/${HELPER_NAME}-slice-"*
-trap 'rm -f "$SLICE_DIR/${HELPER_NAME}-slice-"*' EXIT
+# The new binary is built here, beside `$DEST`, and renamed over it: never written into it. A
+# running agent (every persisted session's, and the one a hand-off replaces) executes `$DEST`, and
+# macOS SIGKILLs a process whose signed binary changes under it ("Code Signature Invalid"). Writing
+# in place ended every Dev session on each rebuild, before the app could hand the agent off. A
+# rename gives the new binary its own inode and leaves the running agent its old one. Beside
+# `$DEST`, not in `$SLICE_DIR`, because a rename cannot cross file systems.
+STAGED="$DEST_DIR/.${HELPER_NAME}-staged"
+rm -f "$STAGED"
+trap 'rm -f "$SLICE_DIR/${HELPER_NAME}-slice-"* "$STAGED"' EXIT
 
 # Where cargo actually puts the binary. NOT unconditionally `$CARGO_DIR/target`: an outer
 # CARGO_TARGET_DIR redirects the build, and copying from the default path would then embed a
@@ -133,10 +141,11 @@ for target in "${TARGETS[@]}"; do
 done
 
 if [ "${#SLICES[@]}" -eq 1 ]; then
-  cp -f "${SLICES[0]}" "$DEST"
+  cp -f "${SLICES[0]}" "$STAGED"
 else
-  lipo -create "${SLICES[@]}" -output "$DEST"
+  lipo -create "${SLICES[@]}" -output "$STAGED"
 fi
+mv -f "$STAGED" "$DEST"
 rm -f "${SLICES[@]}"
 trap - EXIT
 

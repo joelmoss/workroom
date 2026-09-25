@@ -2123,6 +2123,12 @@ disagreement passes every test on either side alone while presenting as an empty
       answers `current` when the offered binary hashes the same. Otherwise it hands off. The
       version string cannot decide this, since it is `0.1.0` for every build. The hash is taken at
       startup because an update replaces the file at the same path.
+    - *Replaced, never rewritten.* macOS SIGKILLs a process whose signed binary is written in
+      place ("Code Signature Invalid"), so the running agent must keep its own file. Sparkle swaps
+      the whole bundle by rename. `build-agent.sh` used to `cp` the new agent over the old one, so
+      every Dev rebuild killed the agent and every session before the relaunch could hand off; it
+      now renames the new binary into place, and `build-agent_test.sh` checks the old file is left
+      untouched.
     - *The table is a file, not a pipe or memfd.* It is written beside the socket
       (`<socket>.handoff`, mode 0600), and the new program reads and removes it. This process is
       a pipe's only reader, so a table larger than the pipe's buffer (16 KiB on macOS, a few
