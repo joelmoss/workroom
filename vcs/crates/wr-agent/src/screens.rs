@@ -171,8 +171,11 @@ impl Screens {
                 }
             }
         }
+        // A record whose time cannot be read counts as oldest, so it goes first.
         let mut records = self.records();
-        records.sort_by_key(|record| std::cmp::Reverse(record.0));
+        records.sort_by_key(|record| {
+            std::cmp::Reverse(record.0.unwrap_or(std::time::SystemTime::UNIX_EPOCH))
+        });
         for (_, path) in records.into_iter().skip(MAX_RECORDS) {
             let _ = fs::remove_file(path);
         }

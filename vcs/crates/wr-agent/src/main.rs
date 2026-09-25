@@ -834,8 +834,9 @@ fn run_attach(args: &[String]) -> ExitCode {
     // (#230; the exec closes every connection and the session carries on) or it died. On a remote
     // host this status is ssh's, and 255 is what the app reads as a dropped link, which it answers
     // by attaching the pane again as a restored one (`--no-create`, #231): the new program repaints
-    // it, or the notice-and-shell says the session has ended. The `Exited` arm above keeps 255
-    // meaning only this, by reporting a shell that itself exited 255 as 254.
+    // it, the agent shows the record it kept of a session that ended with its host (#232), or the
+    // notice-and-shell says the session has ended. The `Exited` arm above keeps 255 meaning only
+    // this, by reporting a shell that itself exited 255 as 254.
     //
     // Locally the app has no such path, and a pane is attached only after the launch's hand-off
     // has been asked for, so this is left as it was: the pane ends as if the shell had.

@@ -1489,8 +1489,8 @@ mod tests {
         store.kill_all();
     }
 
-    /// A session whose attachment lock stays held (a slow client's repaint) refuses a freeze
-    /// within its deadline rather than holding the whole store until the lock comes free.
+    /// A session whose attachment lock stays held (a slow client's repaint) is left for the next
+    /// record rather than waited on, and the other sessions' records are taken meanwhile.
     #[test]
     fn a_session_taking_a_repaint_is_left_for_the_next_record() {
         let store = SessionStore::new();
@@ -1524,6 +1524,8 @@ mod tests {
         store.kill_all();
     }
 
+    /// A session whose attachment lock stays held (a slow client's repaint) refuses a freeze
+    /// within its deadline rather than holding the whole store until the lock comes free.
     #[test]
     fn a_freeze_that_cannot_take_every_lock_gives_up() {
         let store = SessionStore::new();
