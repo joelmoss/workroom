@@ -26,7 +26,7 @@
 
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -108,9 +108,15 @@ impl Screens {
         File::open(&self.dir)?.sync_all()
     }
 
-    /// A session's record as `(columns, rows, screen)`, or none if there is no valid one.
+    /// A session's record as `(columns, rows, screen)`, or none if there is no valid one. Reads at
+    /// most one byte past the largest valid record, so a file that is not one costs no more.
     pub fn load(&self, id: SessionId) -> Option<(u16, u16, Vec<u8>)> {
-        let bytes = fs::read(self.path(id)).ok()?;
+        let mut bytes = Vec::new();
+        File::open(self.path(id))
+            .ok()?
+            .take((HEADER + MAX_RECORD + 1) as u64)
+            .read_to_end(&mut bytes)
+            .ok()?;
         let (columns, rows, screen) = decode(&bytes)?;
         Some((columns, rows, screen.to_vec()))
     }
@@ -220,7 +226,8 @@ fn decode(bytes: &[u8]) -> Option<(u16, u16, &[u8])> {
     let columns = u16::from_be_bytes([header[9], header[10]]);
     let rows = u16::from_be_bytes([header[11], header[12]]);
     let length = u32::from_be_bytes([header[13], header[14], header[15], header[16]]) as usize;
-    (length == screen.len() && columns > 0 && rows > 0).then_some((columns, rows, screen))
+    (length == screen.len() && length <= MAX_RECORD && columns > 0 && rows > 0)
+        .then_some((columns, rows, screen))
 }
 
 /// Keeps every session's record current for the life of the agent. Does nothing unless the store
@@ -258,7 +265,7 @@ fn flush(
     let Some(screens) = sessions.screens() else {
         return;
     };
-    let mut saved = false;
+    let mut saved = Vec::new();
     for (id, columns, rows, screen) in sessions.changed_screens() {
         if screen.is_empty() {
             continue;
@@ -267,7 +274,7 @@ fn flush(
             Ok(()) => {
                 written.insert(id);
                 failing.remove(&id);
-                saved = true;
+                saved.push(id);
             }
             Err(e) => {
                 // Tried again next tick, not only after more output: a program waiting for input
@@ -282,8 +289,13 @@ fn flush(
             }
         }
     }
-    if saved {
+    if !saved.is_empty() {
         if let Err(e) = screens.sync() {
+            // Their renames are not durable yet, and taking their screens cleared their changed
+            // flags: an idle session would never be written, or synced, again.
+            for id in saved {
+                sessions.mark_changed(id);
+            }
             eprintln!("wr-agent: could not sync the screens directory: {e}");
         }
     }
@@ -347,6 +359,56 @@ mod tests {
         other[0] = b'X';
         assert!(decode(&other).is_none(), "not a record");
         assert!(decode(&encode(0, 24, b"screen")).is_none(), "no width");
+    }
+
+    /// A file too big to be a record is not read whole to find that out.
+    #[test]
+    fn a_record_over_the_bound_is_not_loaded() {
+        let dir = scratch("oversized");
+        let screens = Screens::open(&dir).expect("open");
+        fs::write(
+            screens.path(ID),
+            encode(80, 24, &vec![b'x'; MAX_RECORD + 1]),
+        )
+        .expect("write");
+        assert!(screens.load(ID).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A new session under an id with a record replaces it at once, so a shell that exits before
+    /// its first write leaves nothing of the old one to show.
+    #[test]
+    fn a_new_session_supersedes_its_ids_record() {
+        let dir = scratch("supersede");
+        let sessions = SessionStore::new();
+        sessions.keep_screens(Screens::open(&dir).expect("open"));
+        let screens = sessions.screens().expect("screens");
+        screens
+            .save(ID, 80, 24, b"an earlier session")
+            .expect("save");
+
+        let args = [
+            std::ffi::OsString::from("-c"),
+            std::ffi::OsString::from("exit 0"),
+        ];
+        sessions
+            .create(crate::session::SessionSpec {
+                id: ID,
+                program: std::ffi::OsStr::new("/bin/sh"),
+                argv0: None,
+                args: &args,
+                env: &[],
+                cwd: None,
+                columns: 80,
+                rows: 24,
+            })
+            .expect("create");
+        assert!(
+            screens.load(ID).is_none(),
+            "the old record outlived its id's reuse"
+        );
+        sessions.kill_all();
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

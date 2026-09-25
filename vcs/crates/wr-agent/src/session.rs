@@ -286,6 +286,11 @@ impl SessionStore {
         spec: SessionSpec<'_>,
         register: impl FnOnce(SessionInfo) -> Result<T, SessionError>,
     ) -> Result<T, SessionError> {
+        // A new session under an id supersedes whatever record that id had: otherwise a shell that
+        // exits before its first record would leave the old one to be shown as its last screen.
+        if let Some(screens) = self.screens.get() {
+            screens.remove(spec.id);
+        }
         let mut sessions = self.sessions.lock().expect("session store poisoned");
         if sessions.contains_key(&spec.id) {
             return Err(SessionError::AlreadyExists(spec.id.to_hyphenated()));
