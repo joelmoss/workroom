@@ -2782,8 +2782,8 @@ service milestones below so each layer can be reviewed and landed independently.
        without a reboot leaves orphaned shells running (the `KillMode` caveat in "Two requirements
        on #229's real supervisor"), and their records then read as ended while their shells live.
        The notice says "host restarted" in that case too. A record is removed on the tick after
-       its session ends, so a hand-off inside those 2 s leaves it behind. A detached pane of that
-       session would then be shown it as ended with its host. Deleting a record the moment its
+       its session ends. A restored attach inside those 2 s is shown it as ended with its host,
+       and a hand-off inside them leaves it behind for a later one. Deleting a record the moment its
        session ends was rejected: in a shutdown, a command killed just before the agent would
        lose the screen the record exists to keep. The app gives a remote pane five reconnects
        (about 30 s) after a dropped link, which a slow VM reboot can outlast (#241).
