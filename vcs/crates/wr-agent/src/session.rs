@@ -353,6 +353,7 @@ impl SessionStore {
             number: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
         };
         let info = session.info();
+        let number = session.number;
         let pty = Arc::clone(&session.pty);
         let shadow = Arc::clone(&session.shadow);
         let attached = Arc::clone(&session.attached);
@@ -383,7 +384,7 @@ impl SessionStore {
             // An `Err` is the sender dropped without a send, which only a panicking `register` can
             // do; draining anyway is what that case needs too.
             let _ = start.recv();
-            read_session(spec.id, pty, shadow, attached, store)
+            read_session(spec.id, number, pty, shadow, attached, store)
         });
         if spawned.is_err() {
             self.kill(spec.id);
@@ -803,6 +804,7 @@ impl SessionStore {
             attached: Arc::new(Mutex::new(Attached::unrecorded())),
             number: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
         };
+        let number = session.number;
         let pty = Arc::clone(&session.pty);
         let shadow = Arc::clone(&session.shadow);
         let attached = Arc::clone(&session.attached);
@@ -815,7 +817,7 @@ impl SessionStore {
             sessions.insert(id, session);
         }
         let spawned = std::thread::Builder::new()
-            .spawn(move || read_session(id, pty, shadow, attached, store));
+            .spawn(move || read_session(id, number, pty, shadow, attached, store));
         if spawned.is_err() {
             self.kill(id);
             return Err(SessionError::ReaderFailed(id.to_hyphenated()));
@@ -1119,8 +1121,21 @@ fn repaint_budget(bytes: usize) -> Duration {
     WRITE_TIMEOUT + Duration::from_secs((bytes / REPAINT_MIN_THROUGHPUT) as u64)
 }
 
+/// Removes `id` from the store if it is still the session numbered `number`. A reader ending after
+/// `kill` has already removed its session must not remove the next session created under the same
+/// id: that session would be left running with nothing in the store to reach or end it.
+fn remove_if_held(store: &mut HashMap<SessionId, Session>, id: SessionId, number: u64) {
+    if store
+        .get(&id)
+        .is_some_and(|session| session.number == number)
+    {
+        store.remove(&id);
+    }
+}
+
 fn read_session(
     id: SessionId,
+    number: u64,
     pty: Arc<Pty>,
     shadow: Arc<Mutex<Shadow>>,
     attached: Arc<Mutex<Attached>>,
@@ -1192,7 +1207,7 @@ fn read_session(
             }
             // The shell IS the session; with it gone there is nothing left to reattach to.
             if let Ok(mut store) = store.lock() {
-                store.remove(&id);
+                remove_if_held(&mut store, id, number);
             }
             drop(terminating);
             for target in targets(&attached) {
@@ -1261,7 +1276,7 @@ fn read_session(
                 let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
                 terminate(&[&pty]);
                 if let Ok(mut store) = store.lock() {
-                    store.remove(&id);
+                    remove_if_held(&mut store, id, number);
                 }
                 return;
             }
@@ -1595,6 +1610,29 @@ mod tests {
         assert!(
             !store.still_holds(id(14), taken.session),
             "a later session held it"
+        );
+        store.kill_all();
+    }
+
+    /// A session killed and then created again under the same id: the old session's reader, which
+    /// ends after the new session exists, must not remove it from the store. Holding the old
+    /// session's attachment lock keeps its reader from noticing the end until the new session is
+    /// in the store, which is the order the race needs.
+    #[test]
+    fn an_old_reader_does_not_end_the_next_session_under_its_id() {
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 30")];
+        let e = env();
+        store.create(spec(id(15), &args, &e)).expect("create");
+        let (_, _, attached) = store.parts(id(15)).expect("parts");
+        let reader_held = attached.lock().expect("lock");
+        store.kill(id(15));
+        store.create(spec(id(15), &args, &e)).expect("create again");
+        drop(reader_held);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            store.contains(id(15)),
+            "the old reader removed the new session"
         );
         store.kill_all();
     }
