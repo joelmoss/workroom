@@ -249,3 +249,57 @@ final class GhosttyUnshiftedCodepointTests: XCTestCase {
       GhosttySurfaceView.unshiftedCodepoint(for: event), UInt32(Character("a").asciiValue!))
   }
 }
+
+/// When a remote pane reattaches after its ssh exits 255 (#241).
+final class RemoteReconnectBackoffTests: XCTestCase {
+  /// A host rebooting for two minutes, whatever it answers meanwhile (refused, timed out, closed
+  /// before its banner, or sshd up before the agent): the pane backs off to the ceiling and never
+  /// gives up on it.
+  func testAHostThatIsGoneForMinutesIsWaitedFor() throws {
+    var backoff = RemoteReconnectBackoff()
+    // The link drops out of an attach that had been up a while.
+    XCTAssertEqual(backoff.next(attachedFor: 3600, refused: false), 1)
+    var waited: TimeInterval = 1
+    var delays: [TimeInterval] = []
+    while waited < 600 {
+      let delay = try XCTUnwrap(backoff.next(attachedFor: 10, refused: false))
+      delays.append(delay)
+      waited += delay
+    }
+    XCTAssertEqual(Array(delays.prefix(6)), [2, 4, 8, 16, 30, 30])
+    XCTAssertEqual(delays.last, 30)
+  }
+
+  /// A host that refuses for good (a changed host key) stops the pane after the same budget as
+  /// before: five quick refusals, which leaves ssh's message on screen.
+  func testARefusalStopsAfterFive() {
+    var backoff = RemoteReconnectBackoff()
+    XCTAssertEqual(backoff.next(attachedFor: .infinity, refused: false), 1)
+    XCTAssertEqual(backoff.next(attachedFor: 1, refused: true), 2)
+    XCTAssertEqual(backoff.next(attachedFor: 1, refused: true), 4)
+    XCTAssertEqual(backoff.next(attachedFor: 1, refused: true), 8)
+    XCTAssertEqual(backoff.next(attachedFor: 1, refused: true), 16)
+    XCTAssertNil(backoff.next(attachedFor: 1, refused: true))
+  }
+
+  /// Failures that heal, in between, do not restart the count: a refusal alternating with a host
+  /// that is briefly unreachable still stops.
+  func testARefusalBetweenFailuresThatHealStillStops() {
+    var backoff = RemoteReconnectBackoff()
+    for _ in 1..<RemoteReconnectBackoff.maxRefusals {
+      XCTAssertNotNil(backoff.next(attachedFor: 1, refused: true))
+      XCTAssertNotNil(backoff.next(attachedFor: 1, refused: false))
+    }
+    XCTAssertNil(backoff.next(attachedFor: 1, refused: true))
+  }
+
+  /// An attach that stayed up past the ceiling was a working link: its drop starts over.
+  func testALinkThatWasUpStartsTheBackoffAgain() {
+    var backoff = RemoteReconnectBackoff()
+    for _ in 1..<RemoteReconnectBackoff.maxRefusals {
+      _ = backoff.next(attachedFor: 1, refused: true)
+    }
+    XCTAssertEqual(backoff.next(attachedFor: 60, refused: false), 1)
+    XCTAssertEqual(backoff.refusals, 0)
+  }
+}

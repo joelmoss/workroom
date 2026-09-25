@@ -78,18 +78,65 @@ struct ContainerHostDriver: HostTerminalDriver {
     guard case .remote(let id) = host, let target = hosts[id] else {
       throw HostDriverError.unknownHost(host)
     }
-    let config = try Self.writeConfiguration(
-      for: target, in: directory.appendingPathComponent(id.uuidString))
+    let hostDirectory = directory.appendingPathComponent(id.uuidString)
+    let config = try Self.writeConfiguration(for: target, in: hostDirectory)
     // `-t`: the attach client on the far side wants a terminal, for raw mode and the pane's size,
     // and ssh forwards the pane's resizes to it. It outranks the config's `RequestTTY no`, which
     // is right for the service stream.
-    return ["/usr/bin/ssh", "-F", config.path, "-t", Self.alias]
+    let log = Self.attachLog(session, in: hostDirectory).path
+    let ssh = [
+      "/usr/bin/ssh", "-F", config.path, "-E", log, "-o", "PermitLocalCommand=yes", "-o",
+      "LocalCommand=printf '\\0338\\033[J'", "-t", Self.alias,
+      Self.remoteAttachCommand(
+        binary: target.agentBinary, session: session, socket: target.agentSocket,
+        workingDirectory: workingDirectory, restored: restored),
+    ]
+    return (["/bin/sh", "-c", Self.attachWrapper, "workroom-attach", log] + ssh)
       .map(Self.shellQuoted).joined(separator: " ")
-      + " "
-      + Self.shellQuoted(
-        Self.remoteAttachCommand(
-          binary: target.agentBinary, session: session, socket: target.agentSocket,
-          workingDirectory: workingDirectory, restored: restored))
+  }
+
+  /// What a pane runs around its ssh (#241), as `sh -c <this> workroom-attach <log> <ssh argv>`.
+  ///
+  /// ssh's own messages go to the session's log (`-E`), so the app can read why the last attach
+  /// failed (`hostRefusedLastAttach`) rather than guess from the status, which is 255 for all of
+  /// them. A failure's message is then copied onto the screen, where ssh would have printed it.
+  /// Until ssh is in, the pane says what it is waiting for; `LocalCommand`, which ssh runs once it
+  /// has authenticated and before the session starts, restores the cursor saved ahead of that line
+  /// and erases from there (DECSC, DECRC, ED), so an attach that goes through shows only the
+  /// session, however many rows the line wrapped onto. `SHELL` is what ssh runs `LocalCommand`
+  /// with, so it is a POSIX one.
+  static let attachWrapper = """
+    log=$1; shift; printf '\\0337%s' "workroom: waiting for this terminal's host..."; \
+    : > "$log"; \
+    SHELL=/bin/sh "$@"; status=$?; \
+    if [ -s "$log" ]; then printf '\\r\\n'; cat "$log" >&2; fi; exit "$status"
+    """
+
+  /// Where a pane's ssh writes its messages (`-E`): one file per session, emptied by each attach.
+  static func attachLog(_ session: UUID, in hostDirectory: URL) -> URL {
+    hostDirectory.appendingPathComponent("attach-\(session.uuidString).log")
+  }
+
+  /// Whether the last attach of `session` was refused by `host` in a way that does not heal: a
+  /// changed host key, a key it will not take, nothing to agree a cipher on (#241). Everything
+  /// else is worth trying again: a host that is booting refuses, times out, or accepts and closes
+  /// before its banner, and some of those leave ssh nothing to say at `LogLevel ERROR`.
+  func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
+    guard case .remote(let id) = host else { return false }
+    let log = Self.attachLog(session, in: directory.appendingPathComponent(id.uuidString))
+    return Self.isRefusal((try? String(contentsOf: log, encoding: .utf8)) ?? "")
+  }
+
+  /// ssh's messages for a host that answered and will keep saying no. Listed rather than the
+  /// failures that heal, because those are open-ended: a gateway in front of a rebooting VM, or a
+  /// socket-activated sshd, can fail in words no list has seen.
+  static func isRefusal(_ log: String) -> Bool {
+    let log = log.lowercased()
+    return [
+      "host key verification failed", "remote host identification has changed",
+      "permission denied", "too many authentication failures", "unable to negotiate",
+      "load key", "bad owner or permissions",
+    ].contains { log.contains($0) }
   }
 
   /// What runs on the host, in the pty ssh allocates there.

@@ -66,6 +66,10 @@ protocol HostTerminalDriver: HostDriver {
   /// rather than a fresh one that looks like it (`wr-agent attach --no-create`).
   func attachCommand(to host: HostID, session: UUID, workingDirectory: String, restored: Bool)
     throws -> String
+  /// Whether the last attach of `session` was refused by `host` in a way that does not heal, for
+  /// a pane deciding whether to keep trying: a host that is rebooting comes back, one that
+  /// answers with another host key does not (#241).
+  func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool
 }
 
 enum HostDriverError: Error, Equatable, Sendable, LocalizedError {

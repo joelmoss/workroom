@@ -368,6 +368,8 @@ final class GhosttySurfaceView: NSView {
   /// callback resolving this view via `userdata` can't invoke a dangling closure, then frees.
   func tearDown() {
     isTornDown = true  // dead view: block any later re-spawn (issue #7 phantom respawn)
+    pendingReconnect?.cancel()
+    pendingReconnect = nil
     setHandCursor(false)
     onActivity = nil
     onOpenURL = nil
@@ -522,20 +524,14 @@ final class GhosttySurfaceView: NSView {
   /// A pane on a remote host whose ssh lost the link reattaches, rather than sitting on a dead
   /// process while its session runs on: 255 is ssh's own failure, as after laptop sleep, a network
   /// change or the host rebooting. It reattaches as a restored pane, so a session that ended
-  /// meanwhile becomes a shell that says so. Backs off to 30s while the host stays unreachable.
+  /// meanwhile becomes a shell that says so. See `RemoteReconnectBackoff` for when it gives up.
   private func reconnectIfTheLinkDropped(exitCode: UInt32) {
     guard exitCode == 255, let session = persistentSessionID, !isTornDown,
-      PersistentSessionService.shared.isRemote(session)
+      PersistentSessionService.shared.isRemote(session),
+      let delay = remoteReconnects.next(
+        attachedFor: Date().timeIntervalSince(lastAttachAt),
+        refused: PersistentSessionService.shared.remoteHostRefusedLastAttach(session))
     else { return }
-    if Date().timeIntervalSince(lastAttachAt) > 30 {
-      remoteReconnectDelay = 1
-      failedReconnects = 0
-    } else {
-      failedReconnects += 1
-      guard failedReconnects < Self.maxFailedReconnects else { return }
-    }
-    let delay = remoteReconnectDelay
-    remoteReconnectDelay = min(delay * 2, 30)
     let reconnect = DispatchWorkItem { [weak self] in
       guard let self, !self.isTornDown, self.persistentSessionID == session else { return }
       self.persistentSessionIsRestored = true
@@ -912,16 +908,11 @@ final class GhosttySurfaceView: NSView {
 
   /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_SHOW_CHILD_EXITED` — the surface's child
   /// process exited. Forwards to the host; only run tabs act on it (issue #7).
-  /// How long the next reconnect of a remote pane waits, doubling while the host stays unreachable.
-  private var remoteReconnectDelay: TimeInterval = 1
+  /// When a remote pane reattaches after its ssh exits 255, and when it stops trying.
+  private var remoteReconnects = RemoteReconnectBackoff()
   /// When this pane last attached, to tell a link that dropped after a while (start the backoff
   /// again) from one that never came up (keep backing off).
   private var lastAttachAt = Date.distantPast
-  /// Reconnects in a row that failed within 30s. Past `maxFailedReconnects` the pane stops and
-  /// leaves ssh's last error on screen: a mismatched host key or a destroyed host does not heal,
-  /// and each retry would wipe the message that says so.
-  private var failedReconnects = 0
-  private static let maxFailedReconnects = 5
   /// The reconnect waiting out its delay, cancelled by any other reattach so the pane does not
   /// attach twice.
   private var pendingReconnect: DispatchWorkItem?
@@ -2034,5 +2025,35 @@ private final class GoToBottomButton: NSView {
   override func mouseDown(with event: NSEvent) {}
   override func mouseUp(with event: NSEvent) {
     if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+  }
+}
+
+/// When a remote pane whose ssh exited 255 attaches again, and when it stops (#241).
+///
+/// Backs off from 1s, doubling to 30s, and keeps trying for as long as it takes: a rebooting cloud
+/// VM can be gone for minutes, and its pane should come back to its last screen (#232) on its own.
+/// The exception is a host that answered and refused for good (a changed host key, a refused key:
+/// `HostTerminalDriver.hostRefusedLastAttach`). The fifth of those within 30s of an attach stops
+/// the pane with ssh's message on screen, since retrying would only repeat it. Other failures in
+/// between do not restart that count, so a refusal that alternates with a host that is briefly
+/// unreachable still stops. A pane whose host is gone for good retries until it is closed.
+struct RemoteReconnectBackoff {
+  static let ceiling: TimeInterval = 30
+  static let maxRefusals = 5
+  private(set) var delay: TimeInterval = 1
+  private(set) var refusals = 0
+
+  /// The wait before the next attach, or nil to stop. `attachedFor` is how long ago the attach
+  /// that just failed began; longer than the ceiling is a link that dropped after it was up.
+  mutating func next(attachedFor: TimeInterval, refused: Bool) -> TimeInterval? {
+    if attachedFor > Self.ceiling {
+      delay = 1
+      refusals = 0
+    } else if refused {
+      refusals += 1
+      guard refusals < Self.maxRefusals else { return nil }
+    }
+    defer { delay = min(delay * 2, Self.ceiling) }
+    return delay
   }
 }

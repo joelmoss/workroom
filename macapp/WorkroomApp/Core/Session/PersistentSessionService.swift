@@ -377,6 +377,12 @@ final class PersistentSessionService {
 
   func isRemote(_ sessionID: UUID) -> Bool { remoteSessions[sessionID] != nil }
 
+  /// Whether a remote session's last attach was refused by its host for good (#241).
+  func remoteHostRefusedLastAttach(_ sessionID: UUID) -> Bool {
+    guard let remote = remoteSessions[sessionID] else { return false }
+    return remote.driver.hostRefusedLastAttach(of: sessionID, on: remote.host)
+  }
+
   func attachCommand(forSession sessionID: UUID, restored: Bool = false) -> String? {
     if let remote = remoteSessions[sessionID] {
       do {

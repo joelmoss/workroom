@@ -160,8 +160,82 @@ final class HostStreamTests: XCTestCase {
       ], directory: directory)
     let command = try driver.attachCommand(
       to: .remote(id), session: session, workingDirectory: "/w", restored: true)
-    XCTAssertTrue(command.hasPrefix("'/usr/bin/ssh' '-F' "), command)
+    let log = ContainerHostDriver.attachLog(
+      session, in: directory.appendingPathComponent(id.uuidString)
+    ).path
+    XCTAssertTrue(
+      command.hasPrefix("'/bin/sh' '-c' ")
+        && command.contains(" 'workroom-attach' '\(log)' '/usr/bin/ssh' '-F' "), command)
+    XCTAssertTrue(command.contains(" '-E' '\(log)' "), command)
     XCTAssertTrue(command.contains(" '-t' 'workroom-host' "), command)
+  }
+
+  /// A pane's attach to a host that is not there (#241): it says what it is waiting for, then
+  /// ssh's own reason, and exits 255; and the driver does not read that reason as a refusal, so
+  /// its pane keeps retrying.
+  func testAnUnreachableHostsAttachSaysSoAndIsNotReadAsARefusal() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let id = UUID()
+    // Port 1 on loopback: nothing listens, so the connect is refused at once.
+    let driver = ContainerHostDriver(
+      hosts: [
+        id: .init(
+          address: "127.0.0.1", port: 1, user: "workroom", identityFile: "/keys/id",
+          hostKey: "ssh-ed25519 AAAA", agentSocket: "/s")
+      ], directory: directory)
+    let session = UUID()
+    let attach = try SessionBackendProbe.run(
+      URL(fileURLWithPath: "/bin/sh"),
+      arguments: [
+        "-c",
+        try driver.attachCommand(
+          to: .remote(id), session: session, workingDirectory: "/w", restored: true),
+      ], timeout: 15)
+    XCTAssertEqual(attach.status, 255, attach.output)
+    XCTAssertTrue(
+      attach.output.hasPrefix("\u{1b}7workroom: waiting for this terminal's host...\r\n"),
+      attach.output)
+    XCTAssertTrue(attach.output.contains("Connection refused"), attach.output)
+    let log = try String(
+      contentsOf: ContainerHostDriver.attachLog(
+        session, in: directory.appendingPathComponent(id.uuidString)),
+      encoding: .utf8)
+    XCTAssertTrue(log.contains("Connection refused"), log)
+    XCTAssertFalse(driver.hostRefusedLastAttach(of: session, on: .remote(id)))
+  }
+
+  /// ssh's wording for a host that answered and will keep refusing, which stops a pane's retries,
+  /// against the failures that heal and must not (#241), on the Mac and on Linux. An empty log is
+  /// one of those: a host that accepts and closes before its banner leaves ssh nothing to say at
+  /// `LogLevel ERROR`, and so does a far side that itself exited 255.
+  func testOnlyAHostThatRefusesForGoodReadsAsARefusal() {
+    for refusal in [
+      "Host key verification failed.",
+      "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @",
+      "workroom@127.0.0.1: Permission denied (publickey).",
+      "Received disconnect from 10.0.0.9 port 22:2: Too many authentication failures",
+      "Unable to negotiate with 10.0.0.9 port 22: no matching host key type found.",
+      "Load key \"/keys/id\": invalid format",
+      "Bad owner or permissions on /keys/config",
+    ] {
+      XCTAssertTrue(ContainerHostDriver.isRefusal(refusal), refusal)
+    }
+    for heals in [
+      "",
+      "ssh: connect to host 10.0.0.9 port 22: Operation timed out",
+      "ssh: connect to host 10.0.0.9 port 22: Connection timed out",
+      "ssh: connect to host 127.0.0.1 port 2222: Connection refused",
+      "ssh: connect to host 10.0.0.9 port 22: No route to host",
+      "ssh: connect to host 10.0.0.9 port 22: Network is unreachable",
+      "ssh: Could not resolve hostname box.example: nodename nor servname provided, or not known",
+      "kex_exchange_identification: read: Connection reset by peer",
+      "Connection timed out during banner exchange",
+      "client_loop: send disconnect: Broken pipe",
+    ] {
+      XCTAssertFalse(ContainerHostDriver.isRefusal(heals), heals)
+    }
   }
 
   /// A remote session is routed to its driver, not to a local helper: its command is the driver's,

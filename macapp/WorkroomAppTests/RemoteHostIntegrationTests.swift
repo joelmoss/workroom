@@ -412,6 +412,10 @@ final class RemoteHostIntegrationTests: XCTestCase {
     // Quotes split each marker, so the terminal echoing the typed line cannot satisfy the wait.
     first.type("MARK=kept; echo PID=$$; echo READ\"\"Y\n")
     let before = first.read(until: "READY")
+    // The line the pane shows while ssh connects is erased once it is in (#241).
+    XCTAssertTrue(
+      before.hasPrefix(
+        "\u{1b}7workroom: waiting for this terminal's host...\u{1b}8\u{1b}[J"), before)
     let pid = try XCTUnwrap(
       before.range(of: #"PID=\d+"#, options: .regularExpression).map { String(before[$0]) },
       before)
@@ -426,6 +430,33 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let after = second.read(until: "DONE")
     XCTAssertTrue(after.contains("VALUE=kept \(pid) DONE"), after)
     XCTAssertFalse(after.contains("has ended"), after)
+  }
+
+  /// A host that answers with a key other than the pinned one (#241): the pane's ssh refuses it,
+  /// its reason is on screen, and the driver reads it as a refusal, so the pane stops retrying
+  /// after its budget rather than repeating that reason for good.
+  func testAChangedHostKeyIsOnScreenAndReadAsARefusal() throws {
+    let fixture = try fixture()
+    let id = UUID()
+    let host = fixture.host
+    let driver = ContainerHostDriver(
+      hosts: [
+        id: .init(
+          address: host.address, port: host.port, user: host.user,
+          identityFile: host.identityFile,
+          hostKey:
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC0nRhoYeGd6b8Mfv4tSxS3ZcKMCaskZ+1vDLvIn1RPM",
+          agentSocket: host.agentSocket)
+      ], directory: directory)
+    let session = UUID()
+    let pane = try Pane(
+      command: driver.attachCommand(
+        to: .remote(id), session: session, workingDirectory: "/home/workroom", restored: true))
+    defer { pane.dropLink() }
+    XCTAssertEqual(pane.exitCode(within: 20), 255)
+    let seen = pane.read(until: "verification failed")
+    XCTAssertTrue(seen.contains("Host key verification failed"), seen)
+    XCTAssertTrue(driver.hostRefusedLastAttach(of: session, on: .remote(id)))
   }
 
   /// A restored pane whose session ended on the host gets a shell that says so, never a fresh
