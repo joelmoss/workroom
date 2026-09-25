@@ -6,9 +6,12 @@
 
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
 use std::time::{Duration, Instant};
+use wr_agent::protocol::envelope::{Envelope, Hello, Service};
+use wr_agent::protocol::frame::{Frame, FrameKind};
 
 mod common;
 use common::*;
@@ -35,6 +38,45 @@ fn hand_off(socket: &Path, binary: &Path, force: bool) -> Output {
 
 fn alive(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// A raw client connection, greeted: the agent has accepted it and is waiting for requests.
+fn greeted(socket: &Path) -> UnixStream {
+    let mut stream = UnixStream::connect(socket).expect("connect");
+    let hello = Hello {
+        protocol_version: 6,
+        build: "test".into(),
+    };
+    stream.write_all(&hello.encode()).expect("greet");
+    // The agent's greeting, read so the connection is still open when it reaches a request.
+    let mut greeting = [0u8; 64];
+    let _ = stream.read(&mut greeting).expect("greeting");
+    stream
+}
+
+/// Asks, unforced, for a hand-off to `binary` on an already greeted connection.
+fn ask_to_hand_off(stream: &mut UnixStream, binary: &Path) {
+    let mut payload = vec![0u8];
+    payload.extend_from_slice(std::os::unix::ffi::OsStrExt::as_bytes(binary.as_os_str()));
+    let request = Frame::new(FrameKind::HandOff, payload);
+    stream
+        .write_all(&Envelope::new(Service::Control, 0, request.encode()).encode())
+        .expect("request");
+}
+
+/// A fake agent's side of an attach up to the answer: greets, then reads the client's greeting
+/// and its whole attach request. The request carries the environment and can be larger than the
+/// socket's buffer, so it is read until the client goes quiet: stop early and the client's write
+/// blocks until this side closes.
+fn greet_an_attach(stream: &mut UnixStream) {
+    let hello = Hello {
+        protocol_version: 6,
+        build: "fake".into(),
+    };
+    stream.write_all(&hello.encode()).expect("greet");
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+    let mut request = [0u8; 4096];
+    while matches!(stream.read(&mut request), Ok(n) if n > 0) {}
 }
 
 /// Starts a session, prints a marker in it, and returns the shell's pid with the client detached.
@@ -493,9 +535,6 @@ fn a_binary_that_dies_while_restoring_loses_every_session() {
 /// agent would exit.
 #[test]
 fn a_hand_off_nobody_is_waiting_for_is_called_off() {
-    use wr_agent::protocol::envelope::{Envelope, Hello, Service};
-    use wr_agent::protocol::frame::{Frame, FrameKind};
-
     let workspace = Workspace::new("abandoned");
     let socket = workspace.socket();
     let mut agent = start_agent(&socket);
@@ -513,21 +552,8 @@ fn a_hand_off_nobody_is_waiting_for_is_called_off() {
     .expect("script");
     std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 
-    let mut stream = std::os::unix::net::UnixStream::connect(&socket).expect("connect");
-    let hello = Hello {
-        protocol_version: 6,
-        build: "test".into(),
-    };
-    stream.write_all(&hello.encode()).expect("greet");
-    // The agent's greeting, read so the connection is still open when it reaches the request.
-    let mut greeting = [0u8; 64];
-    let _ = stream.read(&mut greeting).expect("greeting");
-    let mut payload = vec![0u8];
-    payload.extend_from_slice(std::os::unix::ffi::OsStrExt::as_bytes(slow.as_os_str()));
-    let request = Frame::new(FrameKind::HandOff, payload);
-    stream
-        .write_all(&Envelope::new(Service::Control, 0, request.encode()).encode())
-        .expect("request");
+    let mut stream = greeted(&socket);
+    ask_to_hand_off(&mut stream, &slow);
     // Gone while the binary is still checking.
     std::thread::sleep(Duration::from_millis(300));
     drop(stream);
@@ -589,31 +615,15 @@ fn a_client_that_connects_during_a_hand_off_is_attached_by_the_new_program() {
 /// connection unanswered and answers the second.
 #[test]
 fn an_attach_the_agent_drops_unanswered_is_sent_again() {
-    use wr_agent::protocol::envelope::{Envelope, Hello, Service};
-    use wr_agent::protocol::frame::{Frame, FrameKind};
-
     let workspace = Workspace::new("resend");
     let socket = workspace.socket();
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
     let fake = std::thread::spawn(move || {
-        let greet = |stream: &mut std::os::unix::net::UnixStream| {
-            let hello = Hello {
-                protocol_version: 6,
-                build: "fake".into(),
-            };
-            stream.write_all(&hello.encode()).expect("greet");
-            // The client's greeting and its whole attach request. The request carries the
-            // environment and can be larger than the socket's buffer, so it is read until the
-            // client goes quiet: stop early and the client's write blocks until this side closes.
-            let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
-            let mut request = [0u8; 4096];
-            while matches!(stream.read(&mut request), Ok(n) if n > 0) {}
-        };
         let (mut first, _) = listener.accept().expect("first");
-        greet(&mut first);
+        greet_an_attach(&mut first);
         drop(first);
         let (mut second, _) = listener.accept().expect("second");
-        greet(&mut second);
+        greet_an_attach(&mut second);
         for frame in [
             Frame::control(FrameKind::Attached),
             Frame::new(FrameKind::Output, b"ANSWERED-SECOND\r\n".to_vec()),
@@ -653,4 +663,72 @@ fn an_attach_the_agent_drops_unanswered_is_sent_again() {
         Some(0)
     );
     fake.join().expect("fake agent");
+}
+
+/// An agent that keeps closing attaches unanswered is not retried forever: after 10s the pane gets
+/// the plain shell every other failed attach gets.
+#[test]
+fn an_attach_the_agent_never_answers_falls_back_to_a_shell() {
+    let workspace = Workspace::new("unanswered");
+    let socket = workspace.socket();
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            greet_an_attach(&mut stream);
+        }
+    });
+
+    let started = Instant::now();
+    let mut client = attach(&socket, "4a4a4a4a-0000-4000-8000-000000000012");
+    let mut reader = ClientReader::new(&mut client);
+    // Buffered until the fallback shell reads it; nothing reads stdin before an attach is answered.
+    type_line(&mut client, "echo \"FALLBACK\"-$WORKROOM_SESSION_FALLBACK");
+    let seen = reader.read_until("FALLBACK-1", Duration::from_secs(20));
+    assert!(seen.contains("FALLBACK-1"), "got {seen:?}");
+    assert!(
+        started.elapsed() >= Duration::from_secs(9),
+        "gave up after {:?}, before the retry deadline",
+        started.elapsed()
+    );
+}
+
+/// A hand-off asked for while another is still checking is refused, not queued. The listener's
+/// pause keeps new connections out; this is a connection the agent had already accepted.
+#[test]
+fn a_hand_off_asked_for_during_another_is_refused() {
+    let workspace = Workspace::new("in-progress");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+
+    let slow = workspace.dir.join("slow-checker");
+    std::fs::write(
+        &slow,
+        "#!/bin/sh\nif [ \"$1\" = handoff-check ]; then sleep 2; exit 1; fi\nexit 70\n",
+    )
+    .expect("script");
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    // Both greeted before either asks: once one asks, the agent accepts nobody new.
+    let mut first = greeted(&socket);
+    let mut second = greeted(&socket);
+    ask_to_hand_off(&mut first, &slow);
+    // Inside the first request's 2s check.
+    std::thread::sleep(Duration::from_millis(300));
+    ask_to_hand_off(&mut second, &slow);
+
+    let _ = second.set_read_timeout(Some(Duration::from_secs(1)));
+    let mut reply = Vec::new();
+    let mut buffer = [0u8; 4096];
+    while let Ok(n @ 1..) = second.read(&mut buffer) {
+        reply.extend_from_slice(&buffer[..n]);
+    }
+    let reply = String::from_utf8_lossy(&reply);
+    assert!(
+        reply.contains("another hand-off is in progress"),
+        "got {reply:?}"
+    );
+
+    drop(first);
+    assert!(agent.try_wait().expect("wait").is_none());
 }

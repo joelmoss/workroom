@@ -609,47 +609,41 @@ fn run_attach(args: &[String]) -> ExitCode {
     // Every failure from here to the attach reply becomes a plain shell rather than a dead pane —
     // see `fall_back_to_shell`. These are precisely the states an agent that PASSED the app's
     // `wr-agent protocol` probe can still reach.
-    // `Err` carries the reason and whether it is worth trying again. Only a peer that closed on the
-    // request may be handing off: an agent greets the moment it accepts, and stops accepting while
-    // it hands off, so a failed greeting is a peer that is not a working agent.
-    let open =
-        |request: &serve::AttachRequest| -> Result<std::os::unix::net::UnixStream, (&str, bool)> {
-            let mut stream = match serve::connect(&socket) {
-                Some(stream) => stream,
-                None if no_spawn => {
-                    return Err((
+    // None of these is retried: an agent greets the moment it accepts, and stops accepting while it
+    // hands off, so a failed greeting is a peer that is not a working agent.
+    let open = || -> Result<std::os::unix::net::UnixStream, &str> {
+        let mut stream = match serve::connect(&socket) {
+            Some(stream) => stream,
+            None if no_spawn => {
+                return Err(
                     "no session agent is listening, and on a remote host only its supervisor starts one",
-                    false,
-                ));
-                }
-                None => {
-                    let binary =
-                        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wr-agent"));
-                    if serve::spawn_agent(&binary, &socket).is_err() {
-                        return Err(("could not start the session agent", false));
-                    }
-                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-                    loop {
-                        if let Some(stream) = serve::connect(&socket) {
-                            break stream;
-                        }
-                        if std::time::Instant::now() >= deadline {
-                            return Err(("the session agent did not start within 5s", false));
-                        }
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                }
-            };
-            if handshake(&mut stream).is_err() {
-                return Err(("could not agree a protocol with the session agent", false));
+                );
             }
-            let attach = Frame::new(FrameKind::Attach, request.encode());
-            stream
-                .write_all(&Envelope::new(Service::Terminal, 1, attach.encode()).encode())
-                .map_err(|_| ("the session agent closed before accepting the attach", true))?;
-            Ok(stream)
+            None => {
+                let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wr-agent"));
+                if serve::spawn_agent(&binary, &socket).is_err() {
+                    return Err("could not start the session agent");
+                }
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                loop {
+                    if let Some(stream) = serve::connect(&socket) {
+                        break stream;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err("the session agent did not start within 5s");
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
         };
+        if handshake(&mut stream).is_err() {
+            return Err("could not agree a protocol with the session agent");
+        }
+        Ok(stream)
+    };
     let _ = session;
+    let attach = Frame::new(FrameKind::Attach, request.encode());
+    let attach = Envelope::new(Service::Terminal, 1, attach.encode()).encode();
 
     let mut buffer = [0u8; 8192];
 
@@ -660,20 +654,20 @@ fn run_attach(args: &[String]) -> ExitCode {
     // An agent that closes before answering at all is most likely handing off to a new program
     // (`wr_agent::handoff`). Its listener stays open across the exec, so the attach is sent again,
     // and the program that answers next attaches it, or creates it if it never existed. Only a
-    // close with no answer is retried, for up to 10s. Whatever follows `Attached` stays in
-    // `decoder`.
+    // close with no answer is retried, for up to 10s; a peer that stays open and silent is waited
+    // on, as an attach always has been. Whatever follows `Attached` stays in `decoder`.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let (mut stream, mut decoder) = loop {
-        let mut stream = match open(&request) {
+        let mut stream = match open() {
             Ok(stream) => stream,
-            Err((_, true)) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(100));
-                continue;
-            }
-            Err((reason, _)) => return fall_back_to_shell(&request, reason),
+            Err(reason) => return fall_back_to_shell(&request, reason),
         };
         let mut decoder = EnvelopeDecoder::new();
-        match await_attached(&mut stream, &mut decoder, &mut buffer) {
+        let answer = match stream.write_all(&attach) {
+            Ok(()) => await_attached(&mut stream, &mut decoder, &mut buffer),
+            Err(_) => Answer::Closed,
+        };
+        match answer {
             Answer::Attached => break (stream, decoder),
             Answer::Refused(_) if request.existing_only => {
                 return fall_back_to_shell(

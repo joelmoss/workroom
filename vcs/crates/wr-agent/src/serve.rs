@@ -536,11 +536,9 @@ fn dispatch(
             };
             match crate::handoff::hand_off(sessions, &binary, force != 0, handing_off) {
                 Ok(()) => reply(Frame::new(FrameKind::Acknowledged, b"current".to_vec())),
-                // Capped: the reason can quote the client's path and the check's stderr, and a
-                // frame over the protocol's limit panics in `encode`.
                 Err(reason) => {
                     let mut reason = reason.into_bytes();
-                    reason.truncate(4096);
+                    reason.truncate(crate::handoff::MAX_REASON);
                     reply(Frame::new(FrameKind::Failure, reason))
                 }
             }
