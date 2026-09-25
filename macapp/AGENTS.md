@@ -139,9 +139,10 @@ the app attaches to it. There are two, mid-migration (issue #154, Phase 1):
   `serve | attach`, multiplexing services over one stream with a versioned envelope
   (`service:u8 | stream:u32 | length:u32 | payload`). It keeps a **shadow terminal** (libghostty-vt,
   behind the `terminal-state` cargo feature) so a reattaching pane is repainted from emulator state
-  rather than a byte replay. A newer bundled binary hands a running agent its sessions rather than
-  killing it (`AgentHandOff.start()`, protocol 6, `wr-agent hand-off`) — gated to Nightly and Dev
-  (#230); see the "As built (#230)" section of `docs/designs/remote-workrooms.md` for the mechanics.
+  rather than a byte replay. A newer app does not kill a running agent: it asks it to replace its
+  own program with the bundled binary in place, keeping its pid and every session
+  (`AgentHandOff.start()`, protocol 6, `wr-agent hand-off`), gated to Nightly and Dev (#230); see
+  the "As built (#230)" section of `docs/designs/remote-workrooms.md` for the mechanics.
 - **`workroom-session`** (`macapp/WorkroomSession/`, Swift) — the shipped daemon. It keeps the
   sessions it already holds until the user closes them; it cannot hand a live pty over.
 
@@ -165,7 +166,7 @@ agent executes that file, and macOS SIGKILLs a process whose signed binary chang
 Signature Invalid"); writing in place used to kill every Dev session, and any hand-off (#230), on
 each rebuild. `build-agent_test.sh` guards both that loop — the same regression once shipped an
 arm64-only CLI inside 23 universal betas — and the rename (a hard link stands in for the running
-binary and must keep its inode across a rebuild); the cross cases need `rustup target add
+binary, and a rebuild must leave it unwritten); the cross cases need `rustup target add
 x86_64-apple-darwin aarch64-apple-darwin`, which CI installs. `terminal-state` is **not optional for
 the app**: without it a reattaching pane repaints blank, which only shows up after a
 quit-and-relaunch. `wr-agent protocol` reports `terminal-state yes|no`, and the build test asserts it
