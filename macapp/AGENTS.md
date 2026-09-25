@@ -180,6 +180,10 @@ the Mac's. They are not codesigned; the app's signature seals them as resources.
 cargo-zigbuild --locked` and `rustup target add aarch64-unknown-linux-musl
 x86_64-unknown-linux-musl`, which the release workflows install. `release.sh` asserts both ELFs are
 present and static, and the `agent-linux` CI job runs `protocol` on each under Linux.
+`AgentBootstrap.connect` (#231) pushes the matching one to a remote host on first connect, beside
+the agent's socket, and hands the running agent off to it; the far side is
+`Resources/agent-bootstrap/{probe,install}.sh`, run through `HostDriver.exec`. See the "As built
+(#231)" section of the design doc, and `vcs/scripts/ssh-fixture/run.sh` for running its tests.
 
 The Zig toolchain and the pinned Ghostty engine come from `vcs/scripts/build-ghostty-vt.sh`
 (cached per `(engine sha, target)` outside the repo). That pin must stay in step with the

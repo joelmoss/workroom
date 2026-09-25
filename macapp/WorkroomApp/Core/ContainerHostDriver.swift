@@ -20,6 +20,12 @@ struct ContainerHostDriver: HostTerminalDriver {
     let hostKey: String
     /// The supervised agent's socket on the host.
     let agentSocket: String
+
+    /// The agent's binary, beside its socket: what the app installs there (`AgentBootstrap`,
+    /// #231), the supervisor starts, and the relay and the attach run. One directory per host,
+    /// the socket's 0700 one, so the file has the socket's protection (design doc, the hand-off
+    /// trust model: the socket is the boundary).
+    var agentBinary: String { AgentBootstrap.binary(besideSocket: agentSocket) }
   }
 
   let traits = HostDriverTraits(
@@ -44,11 +50,19 @@ struct ContainerHostDriver: HostTerminalDriver {
     guard case .remote(let id) = host, let target = hosts[id] else {
       throw HostDriverError.unknownHost(host)
     }
+    return try await exec(
+      Self.relayCommand(binary: target.agentBinary, socket: target.agentSocket), on: host)
+  }
+
+  func exec(_ command: String, on host: HostID) async throws -> HostStream {
+    guard case .remote(let id) = host, let target = hosts[id] else {
+      throw HostDriverError.unknownHost(host)
+    }
     let config = try Self.writeConfiguration(
       for: target, in: directory.appendingPathComponent(id.uuidString))
     return try HostStream.spawn(
       URL(fileURLWithPath: "/usr/bin/ssh"),
-      ["-F", config.path, Self.alias, Self.relayCommand(socket: target.agentSocket)],
+      ["-F", config.path, Self.alias, command],
       // Nothing from the app's own environment: ssh needs none of it with this configuration, and
       // `SSH_AUTH_SOCK` in particular is a Mac credential. `-F` also keeps `/etc/ssh/ssh_config`
       // out, whose `SendEnv LANG LC_*` would send the Mac's locale across.
@@ -74,8 +88,8 @@ struct ContainerHostDriver: HostTerminalDriver {
       + " "
       + Self.shellQuoted(
         Self.remoteAttachCommand(
-          session: session, socket: target.agentSocket, workingDirectory: workingDirectory,
-          restored: restored))
+          binary: target.agentBinary, session: session, socket: target.agentSocket,
+          workingDirectory: workingDirectory, restored: restored))
   }
 
   /// What runs on the host, in the pty ssh allocates there.
@@ -85,9 +99,15 @@ struct ContainerHostDriver: HostTerminalDriver {
   /// applies), Ghostty's resources directory (a path in this Mac's app bundle), and the wakefulness
   /// settings (they configure an agent the attach starts, and `--no-spawn` never starts one).
   /// `TERM` is `xterm-256color`, not the pane's `xterm-ghostty`, which a host rarely has terminfo
-  /// for; shipping that terminfo belongs to the agent bootstrap (#231).
+  /// for; pushing that terminfo, and the shell integration, is a follow-up to the bootstrap
+  /// (#231, which pushes only the agent; #239).
+  ///
+  /// A host with no agent installed yet (rebooted from tmpfs, or never bootstrapped) has no
+  /// binary to run, and the shell's 127 for that would read as the session's own exit. It exits
+  /// 255 instead, ssh's own status for a lost link, which the app answers by attaching again with
+  /// backoff: by then the bootstrap, which nothing orders panes after, has installed it.
   static func remoteAttachCommand(
-    session: UUID, socket: String, workingDirectory: String, restored: Bool
+    binary: String, session: UUID, socket: String, workingDirectory: String, restored: Bool
   ) -> String {
     let variables = [
       "TERM=xterm-256color",
@@ -95,17 +115,19 @@ struct ContainerHostDriver: HostTerminalDriver {
       "WORKROOM_SESSION_SOCKET=\(socket)",
       "WORKROOM_SESSION_CWD=\(workingDirectory)",
     ]
-    return
-      (["env"] + variables + ["wr-agent", "attach", "--no-spawn"]
+    return "test -x \(shellQuoted(binary)) || { echo "
+      + shellQuoted("workroom: no agent is installed at \(binary) yet") + " >&2; exit 255; }; "
+      + (["env"] + variables + [binary, "attach", "--no-spawn"]
       + (restored ? ["--no-create"] : []))
       .map(shellQuoted).joined(separator: " ")
   }
 
   static let alias = "workroom-host"
 
-  /// The command ssh runs on the host, quoted for the remote shell.
-  static func relayCommand(socket: String) -> String {
-    "wr-agent relay --socket " + shellQuoted(socket)
+  /// The command ssh runs on the host, quoted for the remote shell. The installed binary by its
+  /// path: a host has no `wr-agent` on its PATH, only what the bootstrap put beside the socket.
+  static func relayCommand(binary: String, socket: String) -> String {
+    shellQuoted(binary) + " relay --socket " + shellQuoted(socket)
   }
 
   /// Writes the host's `ssh_config` and `known_hosts`, and returns the config's path.
@@ -136,6 +158,10 @@ struct ContainerHostDriver: HostTerminalDriver {
     }
     guard (1...65535).contains(host.port) else {
       throw HostDriverError.invalidConfiguration("port \(host.port) is out of range")
+    }
+    // The agent's binary is derived from it (`agentBinary`), and run by path from any cwd.
+    guard host.agentSocket.hasPrefix("/") else {
+      throw HostDriverError.invalidConfiguration("agent socket must be an absolute path")
     }
     let key = host.hostKey.split(separator: " ")
     guard key.count >= 2 else {
@@ -176,7 +202,5 @@ struct ContainerHostDriver: HostTerminalDriver {
   }
 
   /// One POSIX shell word, whatever `text` holds.
-  static func shellQuoted(_ text: String) -> String {
-    "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
-  }
+  static func shellQuoted(_ text: String) -> String { PosixShell.quoted(text) }
 }

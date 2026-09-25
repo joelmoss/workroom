@@ -34,8 +34,22 @@ protocol HostDriver: Sendable {
   /// Takes down a base or an instance.
   func destroy(_ host: HostID) async throws
   /// A byte stream to the agent on `host`, base or instance, for
-  /// `AgentVCSConnection.connect(host:stream:)`.
+  /// `AgentVCSConnection.connect(host:stream:)`. Not the first thing to open on a host:
+  /// `AgentBootstrap.connect` runs the bootstrap first (#231), which is what puts an agent there.
   func openStream(to host: HostID) async throws -> HostStream
+  /// Runs `command`, a line for the host's shell, with the returned stream as its stdin and stdout:
+  /// a one-off exchange (`HostStream.communicate`) rather than a connection, for what the agent
+  /// bootstrap runs before there is an agent to talk to (#231). For ssh it is the remote command;
+  /// an SDK driver runs it through the provider's exec call. `openStream` is this with the relay
+  /// as the command.
+  func exec(_ command: String, on host: HostID) async throws -> HostStream
+}
+
+enum PosixShell {
+  /// One POSIX shell word, whatever `text` holds.
+  static func quoted(_ text: String) -> String {
+    "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+  }
 }
 
 /// A driver whose hosts a terminal pane can attach to.
@@ -90,6 +104,9 @@ final class HostStream: @unchecked Sendable {
   private var endedByUs = false
   /// A connection took the descriptor and the process (`handOff`), so `deinit` leaves them alone.
   private var handedOff = false
+  /// How the carrier exited, from its `terminationHandler`, which `exited` signals once.
+  private var exit: (status: Int32, reason: Process.TerminationReason)?
+  private let exited = DispatchSemaphore(value: 0)
 
   var processIdentifier: Int32 { process.processIdentifier }
 
@@ -157,6 +174,18 @@ final class HostStream: @unchecked Sendable {
       }
       stream?.collect(data)
     }
+    // The exit is taken from this handler, never from `waitUntilExit` or `isRunning` alone: with
+    // the process launched from an async context (`HostDriver.exec`'s caller) and the wait on a
+    // GCD thread, `waitUntilExit` hung `communicate` for good after the child had exited
+    // (observed; `SessionBackendProbe` and `ShellEnvironment`, which launch and wait on one
+    // thread, do not hit it). The handler is delivered on a dispatch queue whatever the launching
+    // thread, which is what `StatusCommandRunner` relies on too.
+    process.terminationHandler = { [weak stream] finished in
+      stream?.lock.withLock {
+        stream?.exit = (finished.terminationStatus, finished.terminationReason)
+      }
+      stream?.exited.signal()
+    }
     do {
       try process.run()
     } catch {
@@ -173,9 +202,105 @@ final class HostStream: @unchecked Sendable {
 
   /// Ends the carrier. Idempotent, and safe after it has exited by itself.
   func end() {
-    guard process.isRunning else { return }
+    guard process.isRunning, lock.withLock({ exit == nil }) else { return }
     lock.withLock { endedByUs = true }
     process.terminate()
+  }
+
+  /// The carrier as a plain command (`HostDriver.exec`): sends `input` as its stdin and closes
+  /// it, reads its stdout to EOF, and waits for it to exit. `output` is what it printed, with
+  /// its stderr after. Nothing connects over the stream afterwards.
+  ///
+  /// `timeout` bounds SILENCE, not the exchange: it is reset by every byte sent or received, and
+  /// only a link that moves nothing for that long is ended, with this throwing. A bound on the
+  /// whole exchange would be a throughput floor for an 11 MB push over a slow link, the
+  /// `WRITE_TIMEOUT` mistake macapp/CLAUDE.md records.
+  ///
+  /// The writes and reads block, on GCD (`runBlocking`), not the cooperative pool: an 11 MB
+  /// binary over a slow link is exactly the kind of wait that starves other blocking work there.
+  func communicate(_ input: Data?, timeout: TimeInterval) async throws -> (
+    status: Int32, output: String
+  ) {
+    let fd = descriptor
+    let process = self.process
+    let name = process.executableURL?.lastPathComponent ?? "carrier"
+    // On silence: end the carrier, and shut the socket down too, which wakes a `send` or `recv`
+    // below whatever the carrier does about SIGTERM (a child of its own holding the far end, say).
+    let watchdog = SilenceWatchdog(timeout) { [weak self] in
+      self?.end()
+      // Two calls: on macOS `SHUT_RDWR` does nothing once the peer has shut its side.
+      shutdown(fd, SHUT_RD)
+      shutdown(fd, SHUT_WR)
+    }
+    defer { watchdog.stop() }
+    // A cancelled caller (a pane closed, a host removed mid-push) ends the exchange the same way,
+    // rather than leaving `runBlocking`, which cannot be cancelled, pushing 11 MB to no one.
+    let (printed, exit): (Data, (status: Int32, reason: Process.TerminationReason)?) =
+      try await withTaskCancellationHandler {
+        try await runBlocking {
+          if let input {
+            input.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+              var sent = 0
+              while sent < bytes.count {
+                // In pieces, so `heard()` ticks as the link drains: one `send` of the whole 11 MB
+                // would return only once the last byte was queued, and the silence bound would be
+                // a transfer bound after all.
+                let count = Darwin.send(
+                  fd, bytes.baseAddress! + sent, min(bytes.count - sent, 64 * 1024), 0)
+                if count < 0, errno == EINTR { continue }
+                // `EPIPE` (`SO_NOSIGPIPE` is set), not a signal: the far side stopped reading.
+                // What it printed before it did (`cat` failing to open its file, say) is still the
+                // answer, so this goes on to read it rather than throwing.
+                guard count > 0 else { break }
+                sent += count
+                watchdog.heard()
+              }
+            }
+          }
+          // EOF on the command's stdin, which is what ends a `cat >` there. Half-closed: its stdout
+          // still flows back.
+          shutdown(fd, SHUT_WR)
+          var collected = Data()
+          var chunk = [UInt8](repeating: 0, count: 64 * 1024)
+          while true {
+            let count = recv(fd, &chunk, chunk.count, 0)
+            if count < 0, errno == EINTR { continue }
+            guard count > 0 else { break }
+            collected.append(chunk, count: count)
+            watchdog.heard()
+          }
+          watchdog.stop()
+          // EOF on its output means the command closed it, not that it has exited; a bounded wait
+          // for the handler (see `spawn`) covers a child of its own holding the descriptor open.
+          guard self.exited.wait(timeout: .now() + 5) == .success else { return (collected, nil) }
+          return (collected, self.lock.withLock { self.exit })
+        }
+      } onCancel: {
+        self.end()
+        shutdown(fd, SHUT_RD)
+        shutdown(fd, SHUT_WR)
+      }
+    try Task.checkCancellation()
+    guard let exit else {
+      end()
+      throw HostConnectionError.serviceUnavailable("\(name) closed its output but did not exit")
+    }
+    // The watchdog's own kill, whatever the carrier made of the SIGTERM (ssh catches it and exits
+    // 255 by itself, so its reason is `.exit`). A carrier that exited 0 by itself in the same
+    // instant is not exempt: its `SHUT_RD` may have discarded the last line queued, and a report
+    // short of one line reads as an answer (a probe whose hand-off was refused reads as current).
+    guard !watchdog.fired else {
+      throw HostConnectionError.serviceUnavailable(
+        "\(name) moved nothing for \(Int(timeout.rounded(.up)))s")
+    }
+    // Its stderr may still be draining through the readability handler after the exit.
+    for _ in 0..<40 where !lock.withLock({ errorsClosed }) {
+      try? await Task.sleep(for: .milliseconds(50))
+    }
+    let said = lock.withLock { String(decoding: errors, as: UTF8.self) }
+    var output = String(decoding: printed, as: UTF8.self)
+    if !said.isEmpty { output += (output.hasSuffix("\n") || output.isEmpty ? "" : "\n") + said }
+    return (exit.status, output)
   }
 
   /// What the carrier said about why the stream ended, for a handshake it never answered: its
@@ -183,26 +308,65 @@ final class HostStream: @unchecked Sendable {
   /// process to be reaped: the two are separate events, and the reason ("Host key verification
   /// failed.") is in the first.
   func failure() async -> String {
-    for _ in 0..<40 where !lock.withLock({ errorsClosed }) || process.isRunning {
+    for _ in 0..<40 where lock.withLock({ !errorsClosed || exit == nil }) {
       try? await Task.sleep(for: .milliseconds(50))
     }
-    let (said, endedByUs) = lock.withLock {
-      (String(decoding: errors, as: UTF8.self), self.endedByUs)
+    let (said, endedByUs, exit) = lock.withLock {
+      (String(decoding: errors, as: UTF8.self), self.endedByUs, self.exit)
     }
     let reason = said.trimmingCharacters(in: .whitespacesAndNewlines)
     if !reason.isEmpty { return reason }
     let name = process.executableURL?.lastPathComponent ?? "carrier"
-    // `isRunning` first: `terminationReason` and `terminationStatus` raise an Objective-C
-    // exception for a process that has not been reaped yet, which Swift cannot catch. A carrier
-    // stopped a moment ago can still be running once the wait above gives up.
-    if process.isRunning { return "\(name) did not answer in time" }
+    // From the handler, never `terminationStatus` on the process: that raises an Objective-C
+    // exception for a process not yet reaped, which Swift cannot catch, and a carrier stopped a
+    // moment ago can still be unreaped once the wait above gives up.
+    guard let exit else { return "\(name) did not answer in time" }
     // Our own SIGTERM, from `end()`: the carrier was still running when the handshake gave up.
-    if endedByUs, process.terminationReason == .uncaughtSignal,
-      process.terminationStatus == SIGTERM
-    {
+    if endedByUs, exit.reason == .uncaughtSignal, exit.status == SIGTERM {
       return "\(name) did not answer in time"
     }
-    return "\(name) exited with status \(process.terminationStatus)"
+    return "\(name) exited with status \(exit.status)"
+  }
+
+  /// Fires `onSilence` once nothing has been `heard()` for `limit`, then never again. Each check
+  /// is scheduled for `limit` after the last thing heard, so it fires at most `limit` late.
+  /// Uptime, not the wall clock, which sleep and NTP move. `onSilence` runs under the lock, so a
+  /// `stop()` cannot return while it runs: the descriptor it shuts down is still the exchange's,
+  /// never one closed and reused by the next `exec` in between.
+  private final class SilenceWatchdog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = DispatchTime.now()
+    private var stopped = false
+    private var hasFired = false
+    private let limit: TimeInterval
+    private let onSilence: @Sendable () -> Void
+
+    init(_ limit: TimeInterval, onSilence: @escaping @Sendable () -> Void) {
+      self.limit = limit
+      self.onSilence = onSilence
+      schedule(after: limit)
+    }
+
+    var fired: Bool { lock.withLock { hasFired } }
+    func heard() { lock.withLock { last = DispatchTime.now() } }
+    func stop() { lock.withLock { stopped = true } }
+
+    private func schedule(after delay: TimeInterval) {
+      DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) {
+        [weak self] in
+        guard let self else { return }
+        let remaining: TimeInterval? = self.lock.withLock {
+          guard !self.stopped else { return nil }
+          let quiet =
+            Double(DispatchTime.now().uptimeNanoseconds - self.last.uptimeNanoseconds) / 1e9
+          guard quiet >= self.limit else { return self.limit - quiet }
+          self.hasFired = true
+          self.onSilence()
+          return nil
+        }
+        if let remaining { self.schedule(after: remaining) }
+      }
+    }
   }
 
   /// Keeps the first 16 KiB of stderr: enough for any diagnosis, and bounded against a chatty one.

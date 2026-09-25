@@ -131,15 +131,18 @@ final class HostStreamTests: XCTestCase {
   func testARemotePanesCommandCarriesTheSessionAndNothingOfTheMacs() throws {
     let session = UUID()
     let fresh = ContainerHostDriver.remoteAttachCommand(
-      session: session, socket: "/run/workroom/agent.sock",
+      binary: "/run/workroom/wr-agent", session: session, socket: "/run/workroom/agent.sock",
       workingDirectory: "/home/w/it's here", restored: false)
     XCTAssertEqual(
       fresh,
-      "'env' 'TERM=xterm-256color' 'WORKROOM_SESSION_ID=\(session.uuidString)' "
+      "test -x '/run/workroom/wr-agent' || { echo "
+        + "'workroom: no agent is installed at /run/workroom/wr-agent yet' >&2; exit 255; }; "
+        + "'env' 'TERM=xterm-256color' 'WORKROOM_SESSION_ID=\(session.uuidString)' "
         + "'WORKROOM_SESSION_SOCKET=/run/workroom/agent.sock' "
-        + "'WORKROOM_SESSION_CWD=/home/w/it'\\''s here' 'wr-agent' 'attach' '--no-spawn'")
+        + "'WORKROOM_SESSION_CWD=/home/w/it'\\''s here' '/run/workroom/wr-agent' 'attach' "
+        + "'--no-spawn'")
     let restored = ContainerHostDriver.remoteAttachCommand(
-      session: session, socket: "/s", workingDirectory: "/w", restored: true)
+      binary: "/b", session: session, socket: "/s", workingDirectory: "/w", restored: true)
     XCTAssertTrue(restored.hasSuffix("'--no-spawn' '--no-create'"), restored)
     for absent in ["WORKROOM_SESSION_SHELL", "WORKROOM_SESSION_RESOURCES", "AWAKE"] {
       XCTAssertFalse(fresh.contains(absent), absent)
@@ -212,9 +215,98 @@ final class HostStreamTests: XCTestCase {
       service.attachCommand(forSession: session, restored: true)?.contains("/usr/bin/ssh") == true)
   }
 
-  func testTheRelayCommandQuotesItsSocketForTheRemoteShell() {
+  /// Why a carrier ended, read from its termination handler (#231 moved it off `isRunning` and
+  /// `terminationStatus`): its own exit status, our SIGTERM, or still running when the wait gave up.
+  func testAFailedCarrierSaysHowItEnded() async throws {
+    let exited = try HostStream.spawn(
+      URL(fileURLWithPath: "/bin/sh"), ["-c", "exit 7"], environment: [:], handshakeTimeout: 5)
+    let said = await exited.failure()
+    XCTAssertEqual(said, "sh exited with status 7")
+    // `exec`, so the process ended is the one holding the stderr pipe.
+    let ended = try HostStream.spawn(
+      URL(fileURLWithPath: "/bin/sh"), ["-c", "exec sleep 30"], environment: [:],
+      handshakeTimeout: 5)
+    ended.end()
+    let asked = ContinuousClock.now
+    let stopped = await ended.failure()
+    XCTAssertEqual(stopped, "sh did not answer in time")
+    // Promptly, from the recorded exit: `failure()` says the same of a carrier still running,
+    // after its 2 s wait, which is what an `end()` that did nothing would look like.
+    XCTAssertLessThan(ContinuousClock.now - asked, .seconds(1))
+    let running = try HostStream.spawn(
+      URL(fileURLWithPath: "/bin/sh"), ["-c", "exec sleep 30"], environment: [:],
+      handshakeTimeout: 5)
+    defer { running.end() }
+    let waited = await running.failure()
+    XCTAssertEqual(waited, "sh did not answer in time")
+  }
+
+  /// The binary is derived from the socket and run by path from any cwd, so a relative socket is
+  /// refused before anything is written.
+  func testARelativeAgentSocketIsRefused() {
+    let host = ContainerHostDriver.Host(
+      address: "127.0.0.1", port: 22, user: "workroom", identityFile: "/keys/id",
+      hostKey: "ssh-ed25519 AAAA", agentSocket: "run/agent.sock")
+    XCTAssertThrowsError(
+      try ContainerHostDriver.writeConfiguration(
+        for: host, in: FileManager.default.temporaryDirectory)
+    ) {
+      XCTAssertEqual(
+        $0 as? HostDriverError,
+        .invalidConfiguration("agent socket must be an absolute path"))
+    }
+  }
+
+  /// A remote pane's command, run by a shell: with no agent installed it exits 255, ssh's status
+  /// for a lost link, which the app reattaches on, and says why; with one it runs the attach.
+  func testARemotePanesCommandExits255UntilAnAgentIsInstalled() throws {
+    let missing = "/nonexistent-\(UUID().uuidString.prefix(8))/wr-agent"
+    let absent = try SessionBackendProbe.run(
+      URL(fileURLWithPath: "/bin/sh"),
+      arguments: [
+        "-c",
+        ContainerHostDriver.remoteAttachCommand(
+          binary: missing, session: UUID(), socket: "/s", workingDirectory: "/w", restored: true),
+      ], timeout: 5)
+    XCTAssertEqual(absent.status, 255)
+    XCTAssertTrue(absent.output.contains("no agent is installed at \(missing)"), absent.output)
+    let present = try SessionBackendProbe.run(
+      URL(fileURLWithPath: "/bin/sh"),
+      arguments: [
+        "-c",
+        ContainerHostDriver.remoteAttachCommand(
+          binary: "/usr/bin/true", session: UUID(), socket: "/s", workingDirectory: "/w",
+          restored: false),
+      ], timeout: 5)
+    XCTAssertEqual(present.status, 0, present.output)
+  }
+
+  func testAnUnknownHostIsRefusedByExecAndOpenStream() async {
+    let driver = ContainerHostDriver(hosts: [:], directory: FileManager.default.temporaryDirectory)
+    let host = HostID.remote(UUID())
+    do {
+      _ = try await driver.exec("true", on: host)
+      XCTFail("exec reached an unknown host")
+    } catch {
+      XCTAssertEqual(error as? HostDriverError, .unknownHost(host))
+    }
+    do {
+      _ = try await driver.openStream(to: host)
+      XCTFail("openStream reached an unknown host")
+    } catch {
+      XCTAssertEqual(error as? HostDriverError, .unknownHost(host))
+    }
+  }
+
+  /// The installed binary by its path, beside the socket (#231): a host has no `wr-agent` on its
+  /// PATH.
+  func testTheRelayCommandRunsTheInstalledBinaryAndQuotesForTheRemoteShell() {
+    let host = ContainerHostDriver.Host(
+      address: "h", port: 22, user: "u", identityFile: "/k", hostKey: "ssh-ed25519 AAAA",
+      agentSocket: "/run/it's here/a.sock")
+    XCTAssertEqual(host.agentBinary, "/run/it's here/wr-agent")
     XCTAssertEqual(
-      ContainerHostDriver.relayCommand(socket: "/run/it's here/a.sock"),
-      "wr-agent relay --socket '/run/it'\\''s here/a.sock'")
+      ContainerHostDriver.relayCommand(binary: host.agentBinary, socket: host.agentSocket),
+      "'/run/it'\\''s here/wr-agent' relay --socket '/run/it'\\''s here/a.sock'")
   }
 }
