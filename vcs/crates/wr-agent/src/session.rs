@@ -846,9 +846,9 @@ impl SessionStore {
     /// taken. Read under the session's attachment lock, as `frozen` reads a screen, so the size is
     /// the one the screen was drawn at.
     ///
-    /// A session whose lock is not free within `RECORD_WAIT` is left for the next call. An attach
-    /// holds that lock for as long as a slow client takes its repaint, and one such session must
-    /// not hold up every other session's record.
+    /// A session whose lock is not free by `RECORD_WAIT` from the start of the call is left for the
+    /// next call. An attach holds that lock for as long as a slow client takes its repaint, and
+    /// such sessions must not hold up every other session's record, however many there are.
     pub fn changed_screens(&self) -> Vec<(SessionId, u16, u16, Vec<u8>)> {
         use std::sync::TryLockError;
         let parts: Vec<(SessionId, SessionParts, Arc<AtomicBool>)> = {
@@ -869,10 +869,11 @@ impl SessionStore {
                 })
                 .collect()
         };
+        let deadline = Instant::now() + RECORD_WAIT;
         parts
             .into_iter()
             .filter_map(|(id, (pty, shadow, attached), changed)| {
-                let held = until(Instant::now() + RECORD_WAIT, || match attached.try_lock() {
+                let held = until(deadline, || match attached.try_lock() {
                     Ok(guard) => Some(guard),
                     Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
                     Err(TryLockError::WouldBlock) => None,
@@ -1043,7 +1044,7 @@ fn terminal_envelope(stream: u32, frame: Frame) -> Vec<u8> {
 /// `serve::dispatch` sends a restored pane from a record. All of them must stay under the
 /// protocol's 1 MiB frame cap, which `Frame::encode` enforces with a panic rather than a
 /// truncation. Sharing one constant means those paths cannot drift apart.
-pub(crate) const READ_CHUNK: usize = 8192;
+pub const READ_CHUNK: usize = 8192;
 
 /// How long `changed_screens` waits for a session's attachment lock. The reader holds it only
 /// around each read, so a busy session frees it within milliseconds; a repaint to a slow client
@@ -1490,6 +1491,39 @@ mod tests {
 
     /// A session whose attachment lock stays held (a slow client's repaint) refuses a freeze
     /// within its deadline rather than holding the whole store until the lock comes free.
+    #[test]
+    fn a_session_taking_a_repaint_is_left_for_the_next_record() {
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 30")];
+        let e = env();
+        store.create(spec(id(11), &args, &e)).expect("create");
+        store.create(spec(id(12), &args, &e)).expect("create");
+        let (_, _, attached) = store.parts(id(11)).expect("parts");
+
+        let repainting = attached.lock().expect("lock");
+        let started = Instant::now();
+        let taken: Vec<SessionId> = store.changed_screens().into_iter().map(|r| r.0).collect();
+        assert!(
+            started.elapsed() < RECORD_WAIT * 3,
+            "waited {:?} on the busy session",
+            started.elapsed()
+        );
+        assert_eq!(
+            taken,
+            vec![id(12)],
+            "the free session's record was not taken"
+        );
+
+        drop(repainting);
+        let taken: Vec<SessionId> = store.changed_screens().into_iter().map(|r| r.0).collect();
+        assert_eq!(
+            taken,
+            vec![id(11)],
+            "the busy session was not taken next time"
+        );
+        store.kill_all();
+    }
+
     #[test]
     fn a_freeze_that_cannot_take_every_lock_gives_up() {
         let store = SessionStore::new();

@@ -34,6 +34,7 @@ RUNTIME="${WR_FIXTURE_RUNTIME:-docker}"
 NAME="wr-ssh-fixture-$$"
 # Fixed by entrypoint.sh.
 SOCKET="/run/workroom/agent.sock"
+SCREENS="/home/workroom/.local/state/workroom/screens"
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/wr-ssh-fixture.XXXXXX")"
 # The image goes too: built by ID, one would pile up per run. Its layers stay in the build cache.
@@ -99,11 +100,11 @@ for attempt in $(seq 1 100); do
 done
 
 # AGENT: the ELF itself, for the tests of the bootstrap that pushes it (#231). The app's tests
-# take it as their bundled agent, since a Debug build carries no Linux agent of its own. CONTAINER
-# and RUNTIME: for the test that reboots the box (#232).
+# take it as their bundled agent, since a Debug build carries no Linux agent of its own. CONTAINER,
+# RUNTIME and SCREENS: for the test that reboots the box (#232).
 for pair in "CONFIG=$STAGE/ssh_config" "SOCKET=$SOCKET" "ADDRESS=127.0.0.1" "PORT=$PORT" \
   "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY" "AGENT=$STAGE/wr-agent" \
-  "CONTAINER=$NAME" "RUNTIME=$RUNTIME"; do
+  "CONTAINER=$NAME" "RUNTIME=$RUNTIME" "SCREENS=$SCREENS"; do
   export "WR_SSH_FIXTURE_$pair" "TEST_RUNNER_WR_SSH_FIXTURE_$pair"
 done
 

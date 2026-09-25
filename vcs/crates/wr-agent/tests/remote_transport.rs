@@ -407,7 +407,7 @@ fn a_restored_pane_with_a_screen_over_one_frame_still_gets_it_whole() {
     );
     let seen = client.read_until("Close it to start again", Duration::from_secs(10));
     assert!(
-        seen.len() > 8192,
+        seen.len() > wr_agent::session::READ_CHUNK,
         "the record fit in one frame; this test proves nothing about chunking. got {} bytes",
         seen.len()
     );
@@ -1646,7 +1646,10 @@ fn over_ssh_a_restored_pane_is_shown_its_last_screen_after_a_reboot() {
     );
 
     let id = SessionId([0x84; 16]);
-    let record = format!("~/.local/state/workroom/screens/{}.vt", id.to_hyphenated());
+    let screens = std::env::var("WR_SSH_FIXTURE_SCREENS").expect(
+        "WR_SSH_FIXTURE_SCREENS is unset; run these through vcs/scripts/ssh-fixture/run.sh",
+    );
+    let record = format!("{screens}/{}.vt", id.to_hyphenated());
     let mut relay = fixture.relay();
     relay.client.handshake();
     relay.client.send(Service::Terminal, 1, attach_frame(id.0));
