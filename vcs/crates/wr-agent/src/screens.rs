@@ -103,7 +103,7 @@ impl Screens {
         fs::rename(&temporary, &path)
     }
 
-    /// Makes the renames of earlier `save`s durable.
+    /// Makes the renames of earlier `save`s, and removals, durable.
     pub fn sync(&self) -> io::Result<()> {
         File::open(&self.dir)?.sync_all()
     }
@@ -115,14 +115,19 @@ impl Screens {
         Some((columns, rows, screen.to_vec()))
     }
 
+    /// Removes a session's record, durably: a record that came back after a power cut would show
+    /// a pane its user closed as one that ended with its host.
     pub fn remove(&self, id: SessionId) {
-        let _ = fs::remove_file(self.path(id));
+        if fs::remove_file(self.path(id)).is_ok() {
+            let _ = self.sync();
+        }
     }
 
     pub fn remove_all(&self) {
         for (_, path) in self.records() {
             let _ = fs::remove_file(path);
         }
+        let _ = self.sync();
     }
 
     /// What a restored pane is shown for a session that ended with its host: the record, repainted
@@ -227,7 +232,9 @@ pub fn spawn(sessions: SessionStore) {
     let spawned = std::thread::Builder::new()
         .name("screens".into())
         .spawn(move || {
-            let mut written = HashSet::new();
+            // The sessions a hand-off carried in, whose records the program before wrote: one
+            // that ends before this program's first write for it still loses its record.
+            let mut written: HashSet<SessionId> = sessions.ids().into_iter().collect();
             let mut failing = HashSet::new();
             loop {
                 flush(&sessions, &mut written, &mut failing);

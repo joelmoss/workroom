@@ -805,6 +805,41 @@ fn a_restored_remote_pane_with_no_agent_yet_exits_255_to_be_retried() {
     );
 }
 
+/// But a peer that answers and cannot negotiate is not an agent still starting: asking again cannot
+/// help, so a restored remote pane gets the shell here, as it did before 255 was ever retried.
+#[test]
+fn a_restored_remote_pane_whose_peer_cannot_negotiate_gets_a_shell() {
+    let dir = scratch("no-agent-negotiate");
+    let socket = dir.join("a.sock");
+    let listener = UnixListener::bind(&socket).expect("bind fake agent");
+    let accepter = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            drop(stream);
+        }
+    });
+    let (output, status) = attach_with_args(
+        &["--no-spawn", "--no-create"],
+        &[
+            (
+                "WORKROOM_SESSION_ID",
+                "6B9B968D-0BD7-4172-850A-A373DA73BC78",
+            ),
+            ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+            ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+            ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+            (
+                "WORKROOM_SESSION_COMMAND",
+                "echo FELL-BACK fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
+            ),
+        ],
+        None,
+    );
+    let _ = accepter.join();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(output.contains("FELL-BACK fb=[1]"), "got: {output:?}");
+    assert_ne!(status, Some(255), "a broken peer was retried: {output:?}");
+}
+
 /// `--no-create` (a restored pane): a session the agent does not hold is refused, not created,
 /// and the pane becomes a shell that says so. Created instead, it would be a fresh shell passed off
 /// as the one that was running there.

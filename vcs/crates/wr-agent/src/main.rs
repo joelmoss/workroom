@@ -631,18 +631,22 @@ fn run_attach(args: &[String]) -> ExitCode {
     // which exits 255 for the app to attach again instead (`unreachable`, below).
     // None of these is retried here: an agent greets the moment it accepts, and stops accepting
     // while it hands off, so a failed greeting is a peer that is not a working agent.
-    let open = || -> Result<std::os::unix::net::UnixStream, &str> {
+    // `Err`'s flag: nothing is listening yet, the one failure a supervisor starting the agent heals
+    // (see `unreachable`). A peer that answers and fails the handshake is not an agent that will
+    // work if asked again.
+    let open = || -> Result<std::os::unix::net::UnixStream, (&str, bool)> {
         let mut stream = match serve::connect(&socket) {
             Some(stream) => stream,
             None if no_spawn => {
-                return Err(
+                return Err((
                     "no session agent is listening, and on a remote host only its supervisor starts one",
-                );
+                    true,
+                ));
             }
             None => {
                 let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wr-agent"));
                 if serve::spawn_agent(&binary, &socket).is_err() {
-                    return Err("could not start the session agent");
+                    return Err(("could not start the session agent", false));
                 }
                 let deadline = std::time::Instant::now() + Duration::from_secs(5);
                 loop {
@@ -650,14 +654,14 @@ fn run_attach(args: &[String]) -> ExitCode {
                         break stream;
                     }
                     if std::time::Instant::now() >= deadline {
-                        return Err("the session agent did not start within 5s");
+                        return Err(("the session agent did not start within 5s", false));
                     }
                     std::thread::sleep(Duration::from_millis(20));
                 }
             }
         };
         if handshake(&mut stream).is_err() {
-            return Err("could not agree a protocol with the session agent");
+            return Err(("could not agree a protocol with the session agent", false));
         }
         Ok(stream)
     };
@@ -694,7 +698,8 @@ fn run_attach(args: &[String]) -> ExitCode {
     let (mut stream, mut decoder) = loop {
         let mut stream = match open() {
             Ok(stream) => stream,
-            Err(reason) => return unreachable(reason),
+            Err((reason, true)) => return unreachable(reason),
+            Err((reason, false)) => return fall_back_to_shell(&request, reason),
         };
         let mut decoder = EnvelopeDecoder::new();
         let answer = match stream.write_all(&attach) {
