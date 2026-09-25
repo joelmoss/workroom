@@ -6,14 +6,17 @@
 //! frame codec in one language instead of duplicating it forever.
 
 use std::io::{Read, Write};
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use wr_agent::handoff;
 use wr_agent::protocol::envelope::{
     negotiate, Envelope, EnvelopeDecoder, Hello, Service, MIN_FILE_VERSION, MIN_FORWARD_VERSION,
-    MIN_STATUS_VERSION, MIN_SUPPORTED_VERSION, MIN_VCS_VERSION, PROTOCOL_VERSION,
+    MIN_HANDOFF_VERSION, MIN_STATUS_VERSION, MIN_SUPPORTED_VERSION, MIN_VCS_VERSION,
+    PROTOCOL_VERSION,
 };
 use wr_agent::protocol::frame::{Frame, FrameDecoder, FrameKind};
 use wr_agent::serve::{self, Agent, BUILD, DEFAULT_IDLE_TIMEOUT};
@@ -43,6 +46,14 @@ fn usage() -> &'static str {
         what a driver runs on the far side (`ssh host wr-agent relay --socket <path>`)
   wr-agent list --socket <path>
         print the agent's live sessions
+  wr-agent hand-off --socket <path> --binary <path> [--force]
+        replace the running agent's program with <binary>, keeping every session and its pid.
+        Prints `current` when the agent is running that binary already, `handed off` when it was
+        replaced. Refused, with the agent left running, when <binary> cannot restore its sessions
+        (exit 1) or the agent predates hand-off (exit 3). --force hands off to the same binary.
+  wr-agent handoff-check <table>
+        whether this build can restore the sessions a hand-off table describes; run by the agent
+        handing off, before it replaces itself
   wr-agent protocol
         print the protocol version this build speaks
 "
@@ -60,12 +71,14 @@ fn main() -> ExitCode {
             // The per-service minimums appended at the end, in the order they were introduced —
             // `SessionBackendProbe.parseProtocolVersion` (Swift) is explicitly "tolerant of trailing
             // detail by design", reading only the leading `protocol <n>` token, so this is safe to
-            // grow without a matching app release. `AgentVCSProtocolTests` checks these five numbers
-            // against the shipped binary; keep this line's tokens in this order if it grows again.
+            // grow without a matching app release. `AgentVCSProtocolTests` checks every number but
+            // `min-handoff` (which only `hand-off` reads) against the shipped binary; keep this
+            // line's tokens in this order if it grows again.
             println!(
                 "protocol {PROTOCOL_VERSION} (minimum supported {MIN_SUPPORTED_VERSION}) \
                  min-vcs {MIN_VCS_VERSION} min-file {MIN_FILE_VERSION} \
-                 min-status {MIN_STATUS_VERSION} min-forward {MIN_FORWARD_VERSION}"
+                 min-status {MIN_STATUS_VERSION} min-forward {MIN_FORWARD_VERSION} \
+                 min-handoff {MIN_HANDOFF_VERSION}"
             );
             println!("build {BUILD}");
             // Whether this build can repaint a reattaching client. A build without it serves
@@ -88,6 +101,7 @@ fn main() -> ExitCode {
                 PathBuf::from(socket),
                 flag(&args, "--idle-timeout"),
                 wakefulness_settings(&args),
+                flag(&args, "--handoff").map(PathBuf::from),
             ),
             None => {
                 eprintln!("error: serve needs --socket <path> or --stdio");
@@ -97,6 +111,23 @@ fn main() -> ExitCode {
         Some("attach") => run_attach(&args),
         Some("relay") => run_relay(&args),
         Some("list") => run_list(&args),
+        Some("hand-off") => run_hand_off(&args),
+        Some("handoff-check") => match args.get(1) {
+            Some(table) => match wr_agent::handoff::check_table(std::path::Path::new(table)) {
+                Ok(count) => {
+                    println!("ok {count}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            },
+            None => {
+                eprintln!("error: handoff-check needs <table>");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             eprint!("{}", usage());
             ExitCode::FAILURE
@@ -165,7 +196,12 @@ fn wakefulness_settings_from(args: &[String], env: impl Fn(&str) -> Option<Strin
     }
 }
 
-fn run_serve(socket: PathBuf, idle: Option<String>, wakefulness: Settings) -> ExitCode {
+fn run_serve(
+    socket: PathBuf,
+    idle: Option<String>,
+    wakefulness: Settings,
+    handoff: Option<PathBuf>,
+) -> ExitCode {
     let timeout = match idle_timeout(idle.as_deref()) {
         Ok(timeout) => timeout,
         Err(e) => {
@@ -173,25 +209,85 @@ fn run_serve(socket: PathBuf, idle: Option<String>, wakefulness: Settings) -> Ex
             return ExitCode::FAILURE;
         }
     };
-    // The lock, not the bind, is what guarantees a single agent — see serve.rs. Losing the race is
-    // a normal outcome (two clients spawning at once), not an error worth a non-zero exit: the
-    // other agent is serving, which is all the caller wanted.
-    let _lock = match serve::acquire_instance_lock(&socket) {
-        Ok(lock) => lock,
-        Err(serve::ServeError::AlreadyRunning(_)) => return ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
+    // First, before an update can replace the file at this path: see `handoff::Context::digest`.
+    let digest = handoff::own_binary()
+        .and_then(|path| handoff::digest(&path))
+        .ok();
+    let agent = Agent::new();
+    let (lock, listener) = match handoff {
+        Some(table) => match adopt(&agent, &table) {
+            Ok(carried) => carried,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => {
+            // The lock, not the bind, is what guarantees a single agent — see serve.rs. Losing the
+            // race is a normal outcome (two clients spawning at once), not an error worth a
+            // non-zero exit: the other agent is serving, which is all the caller wanted.
+            let lock = match serve::acquire_instance_lock(&socket) {
+                Ok(lock) => lock,
+                Err(serve::ServeError::AlreadyRunning(_)) => return ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            // A table left by a program that died before it could read one (see `handoff`)
+            // holds the screens of sessions that are gone.
+            let _ = std::fs::remove_file(handoff::table_path(&socket));
+            match serve::bind(&socket) {
+                Ok(listener) => (lock, listener),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::FAILURE;
+                }
+            }
         }
     };
-    let agent = Agent::new();
-    match agent.serve(&socket, timeout, wakefulness) {
+    handoff::install(handoff::Context {
+        socket: socket.clone(),
+        listener: listener.as_raw_fd(),
+        lock: lock.fd(),
+        digest,
+        arguments: std::env::args_os().skip(1).collect(),
+    });
+    match agent.run(listener, &socket, timeout, wakefulness) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Takes over what the program a hand-off replaced was holding: its lock, its listening socket
+/// and its sessions (`wr_agent::handoff`). A session that cannot be adopted is reported and
+/// dropped, which closes its pty and hangs up its shell; the rest carry on.
+fn adopt(
+    agent: &Agent,
+    table: &std::path::Path,
+) -> Result<(serve::InstanceLock, UnixListener), String> {
+    let table = handoff::take_table(table)?;
+    // SAFETY: the table names descriptors the outgoing program carried across the exec for this
+    // and nothing else, and nothing in this process has touched them.
+    let lock = unsafe { serve::InstanceLock::adopt(table.lock) };
+    let listener = unsafe { UnixListener::from_raw_fd(table.listener) };
+    handoff::set_cloexec(table.listener, true);
+    for session in table.sessions {
+        let pty = wr_agent::pty::Pty::adopt(session.master, session.pid);
+        if let Err(e) = agent.sessions.adopt(
+            session.id,
+            pty,
+            session.columns,
+            session.rows,
+            &session.screen,
+        ) {
+            eprintln!("error: session {}: {e}", session.id.to_hyphenated());
+        }
+    }
+    Ok((lock, listener))
 }
 
 /// `--idle-timeout`: seconds, or `never` for a supervised remote agent (issue #228).
@@ -892,8 +988,90 @@ fn run_list(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Exchange greetings and agree a version before anything else crosses the stream.
-fn handshake<S: Read + Write>(stream: &mut S) -> Result<(), ()> {
+/// `hand-off`'s exit status when the agent was never asked, because it predates the request. It
+/// keeps running, and a client talks to it over the versioned envelope.
+const PREDATES_HAND_OFF: u8 = 3;
+
+fn run_hand_off(args: &[String]) -> ExitCode {
+    let (Some(socket), Some(binary)) = (
+        flag(args, "--socket").map(PathBuf::from),
+        flag(args, "--binary").map(PathBuf::from),
+    ) else {
+        eprintln!("error: hand-off needs --socket <path> and --binary <path>");
+        return ExitCode::FAILURE;
+    };
+    let Some(mut stream) = serve::connect(&socket) else {
+        eprintln!("error: no agent listening on {}", socket.display());
+        return ExitCode::from(DAEMON_UNAVAILABLE);
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let Ok(version) = handshake(&mut stream) else {
+        return ExitCode::from(DAEMON_UNAVAILABLE);
+    };
+    if version < MIN_HANDOFF_VERSION {
+        eprintln!("the agent predates hand-off (protocol {version}), so it keeps running");
+        return ExitCode::from(PREDATES_HAND_OFF);
+    }
+    let mut payload = vec![u8::from(args.iter().any(|a| a == "--force"))];
+    payload.extend_from_slice(std::os::unix::ffi::OsStrExt::as_bytes(binary.as_os_str()));
+    let request = Frame::new(FrameKind::HandOff, payload);
+    if stream
+        .write_all(&Envelope::new(Service::Control, 0, request.encode()).encode())
+        .is_err()
+    {
+        return ExitCode::FAILURE;
+    }
+    // Longer than `list`: the agent answers once the new binary has checked every session, and it
+    // may first wait out a running repository command (`handoff::QUIET_TIMEOUT`).
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let mut decoder = EnvelopeDecoder::new();
+    let mut buffer = [0u8; 8192];
+    let mut handing_off = false;
+    loop {
+        while let Ok(Some(envelope)) = decoder.next_envelope() {
+            let mut frames = FrameDecoder::new();
+            frames.push(&envelope.payload);
+            while let Ok(Some(frame)) = frames.next_frame() {
+                match frame.kind {
+                    FrameKind::Acknowledged if frame.payload == b"current" => {
+                        println!("current");
+                        return ExitCode::SUCCESS;
+                    }
+                    FrameKind::Acknowledged => handing_off = true,
+                    FrameKind::Failure => {
+                        eprintln!("error: {}", String::from_utf8_lossy(&frame.payload));
+                        return ExitCode::FAILURE;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => decoder.push(&buffer[..n]),
+        }
+    }
+    if !handing_off {
+        eprintln!("error: the agent closed without answering");
+        return ExitCode::FAILURE;
+    }
+    // The exec closed that connection. The socket was never unbound, so this connects at once and
+    // the new program greets it as soon as it has adopted every session.
+    let answered = serve::connect(&socket).is_some_and(|mut stream| {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+        handshake(&mut stream).is_ok()
+    });
+    if !answered {
+        eprintln!("error: the new agent did not answer, so its sessions may be lost");
+        return ExitCode::FAILURE;
+    }
+    println!("handed off");
+    ExitCode::SUCCESS
+}
+
+/// Exchange greetings and agree a version before anything else crosses the stream. Returns the
+/// peer's own version, which a version-gated request is checked against (never the negotiated one).
+fn handshake<S: Read + Write>(stream: &mut S) -> Result<u16, ()> {
     let local = Hello::current(BUILD);
     stream.write_all(&local.encode()).map_err(|_| ())?;
     let _ = stream.flush();
@@ -923,7 +1101,7 @@ fn handshake<S: Read + Write>(stream: &mut S) -> Result<(), ()> {
         }
     };
     negotiate(&local, &remote).map_err(|_| ())?;
-    Ok(())
+    Ok(remote.protocol_version)
 }
 
 #[cfg(test)]

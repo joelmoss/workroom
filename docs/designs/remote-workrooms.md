@@ -13,7 +13,7 @@ Mode: Builder
 merged; its first Nightly DMG is still to be checked), the supervised far-side agent with its stdio
 relay and container fixture (#228, merged), the
 app-side transport with `HostDriver` and the container driver, services and terminal panes (#229,
-merged 2026-09-24 in #237), `execve` hand-off (#230),
+merged 2026-09-24 in #237), `execve` hand-off (#230, built and in review; on for Nightly and Dev),
 push-on-first-connect bootstrap (#231) and stop-and-reboot screen restoration (#232). The rest of
 this section is the 2026-09-17 status, kept for the Phase 2 detail it records and corrected where
 it had gone stale.
@@ -2063,7 +2063,8 @@ disagreement passes every test on either side alone while presenting as an empty
     whether the versioning is real or ceremonial.
     **DECIDED (2026-09-22, owner): hand off.** A newer agent never kills an older one's sessions,
     and never leaves the old one running indefinitely either: the outgoing agent hands its sessions
-    to its replacement. Four consequences, none built yet:
+    to its replacement. Four consequences, **built in #230** (below them: how, where it
+    departs from this plan, and what it leaves):
     - *Replace the program in place: `execve`, not a second process.* The pty masters are only
       descriptors, and passing them to a separate new process (`SCM_RIGHTS`) would keep the shells
       alive but orphan them. `Pty::wait` is a `waitpid` on the child, which only works for the
@@ -2099,6 +2100,60 @@ disagreement passes every test on either side alone while presenting as an empty
       channel. The pre-check must also confirm that the new binary can *restore* sessions. That
       way a downgrade to an app that predates hand-off keeps the newer agent running, rather than
       executing a binary that cannot read the session table.
+
+    **As built (#230, `wr-agent/src/handoff.rs`).** The request is a Control frame, `HandOff`,
+    gated at protocol 6, so an older agent is never asked. `wr-agent hand-off --socket <s>
+    --binary <b>` sends it, and the app runs that command with its bundled binary.
+    - *When the app asks:* once a launch, synchronously, just before its first pane attaches
+      (`PersistentSessionService.backend`, `AgentHandOff`). A pane attached to the old program
+      loses its connection at the exec, so none may be attached. After an app update none are:
+      the old app's panes went with it. The app stops waiting after 6 s, longer than the
+      agent's own worst case before it replaces itself (2 s for repository commands, 3 s for the
+      check).
+    - *Which binary is newer is not asked.* The agent hashes its own binary when it starts, and
+      answers `current` when the offered binary hashes the same. Otherwise it hands off. The
+      version string cannot decide this, since it is `0.1.0` for every build. The hash is taken at
+      startup because an update replaces the file at the same path.
+    - *The table is a file, not a pipe or memfd.* It is written beside the socket
+      (`<socket>.handoff`, mode 0600), and the new program reads and removes it. This process is
+      a pipe's only reader, so a table larger than the pipe's buffer (16 KiB on macOS, a few
+      screens) would block forever. macOS has no memfd. A fresh agent removes a stale table.
+    - *Freezing the sessions.* A session's reader now reads its pty under the session's attachment
+      lock and writes the bytes to the shadow before releasing it. Holding every session's lock
+      therefore stops all output, and every byte already read is in the screen captured. Bytes not
+      yet read wait in the pty for the new program. A failed hand-off releases the locks, and
+      output resumes with nothing lost.
+    - *No repository command is running.* The hand-off stops new VCS and File requests at once
+      (they are answered `LockContention`), then waits up to 2 s for running ones to finish, and
+      refuses if they do not. Stopping first is what lets the wait end under steady traffic. Every
+      app connection closes at the exec, and the next request reconnects.
+    - *The pre-check is the restore without the descriptors.* It runs
+      `<binary> handoff-check <table>` on the real table, painting every screen. A binary that
+      predates hand-off has no such command.
+    - *A requester that stopped waiting calls the hand-off off.* The agent sends "handing off" just
+      before the exec. If it cannot, the requester has gone (the app gave up and is attaching
+      panes), so it does not exec. The descriptors are duplicated close-on-exec, so the check does
+      not inherit them, and the flag is cleared only just before the exec. The call is `execv`,
+      not std's `Command::exec`, which resets SIGPIPE before the call and would leave a failed exec
+      killable by the next write to a closed socket.
+    - *What does not cross:* the size owner, which is a connection's token (the first client to
+      attach with a size takes it, as on a new session), and one row of scrollback per hand-off
+      (the re-synthesis offset above). The environment does cross: it is the first agent's, as
+      it was before.
+    - *Gated to Nightly and Dev* (`AgentHandOff.isEnabled`). Stable waits until Nightly has run it.
+    - *Tests* (`wr-agent/tests/hand_off.rs`):
+      - the same agent pid, shell pid, exit code and repaint, and the socket's inode unchanged;
+      - `current` for the running binary;
+      - refusals for a missing binary and one that cannot check;
+      - an agent that predates the request is never sent it;
+      - a requester that leaves mid-check calls the hand-off off;
+      - the deliberate crash. A binary that passes the check and then exits as the new program
+        loses every session: every shell is hung up with its pty. The socket's path stays, with
+        nothing listening, and the unread table stays too. The next agent starts clean on the same
+        path and removes the table. Nothing else is lost.
+    - *For #231:* a remote host's panes stay attached, so a remote hand-off needs the attach client
+      to reattach when its connection ends without an `Exited` frame. Today it exits 0, as if the
+      shell had ended. The session itself survives, detached.
 - **New CI burden:** a Rust Linux cross-compile for `wr-agent` (note `prost` in the lock means
   `protoc` is a build-time requirement) plus the container-driver integration job. **Add a pinned
   Zig toolchain and a Ghostty checkout** for `libghostty-vt` — checksum-pinned, cache keyed by
@@ -2257,7 +2312,8 @@ service milestones below so each layer can be reviewed and landed independently.
    fallback discipline exactly. The child's environment is the app's OWN environment, sent
    wholesale and applied over `env_clear()` agent-side (`StatusCommandRunner.childEnvironment`
    builds the one map both paths use), not a key allowlist: wr-agent is "negotiated with, never
-   replaced", so its inherited environment is a snapshot of whichever app launch first spawned it,
+   replaced" (a hand-off, #230, replaces its program and keeps that environment), so its inherited
+   environment is a snapshot of whichever app launch first spawned it,
    and forwarding only `PATH` silently authored commits under that snapshot's stale
    `GIT_AUTHOR_*`/`GIT_CONFIG_GLOBAL`/`HOME`. No allowlist could close that — what git and jj read
    for identity, config, signing and hooks is open-ended. **That mechanism is local-only**: every

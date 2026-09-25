@@ -48,7 +48,27 @@ pub enum ServeError {
 
 /// Holds the single-instance lock for the process's lifetime.
 pub struct InstanceLock {
-    _file: std::fs::File,
+    file: std::fs::File,
+}
+
+impl InstanceLock {
+    pub fn fd(&self) -> std::os::unix::io::RawFd {
+        self.file.as_raw_fd()
+    }
+
+    /// The lock an earlier program in this process held, handed over across `execve`
+    /// (`crate::handoff`). A `flock` belongs to the open file description, not the program, so it
+    /// was never released. Close-on-exec goes back on, as on everything a hand-off carries.
+    ///
+    /// # Safety
+    /// `fd` must be the open lock file the hand-off table names, owned by nothing else.
+    pub unsafe fn adopt(fd: std::os::unix::io::RawFd) -> InstanceLock {
+        use std::os::unix::io::FromRawFd;
+        crate::handoff::set_cloexec(fd, true);
+        InstanceLock {
+            file: std::fs::File::from_raw_fd(fd),
+        }
+    }
 }
 
 /// `flock(LOCK_EX | LOCK_NB)` beside the socket. A lock *file* rather than the socket itself,
@@ -65,7 +85,7 @@ pub fn acquire_instance_lock(socket: &Path) -> Result<InstanceLock, ServeError> 
     if rc != 0 {
         return Err(ServeError::AlreadyRunning(path));
     }
-    Ok(InstanceLock { _file: file })
+    Ok(InstanceLock { file })
 }
 
 pub struct Agent {
@@ -99,16 +119,19 @@ impl Agent {
         idle_timeout: Duration,
         wakefulness: crate::wakefulness::Settings,
     ) -> Result<(), ServeError> {
-        // A socket file left by a previous run would make bind fail with EADDRINUSE even though
-        // nobody is listening. The flock above is what actually guarantees exclusivity, so
-        // removing a stale path here is safe rather than a race.
-        if socket.exists() {
-            let _ = std::fs::remove_file(socket);
-        }
-        if let Some(parent) = socket.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let listener = UnixListener::bind(socket)?;
+        let listener = bind(socket)?;
+        self.run(listener, socket, idle_timeout, wakefulness)
+    }
+
+    /// `serve` on a listener that is already bound: the one `bind` returns, or the one a hand-off
+    /// carried across `execve` (`crate::handoff`), which must never be unbound and bound again.
+    pub fn run(
+        &self,
+        listener: UnixListener,
+        socket: &Path,
+        idle_timeout: Duration,
+        wakefulness: crate::wakefulness::Settings,
+    ) -> Result<(), ServeError> {
         listener.set_nonblocking(true)?;
         #[cfg(target_os = "linux")]
         crate::wakefulness::spawn(self.sessions.clone(), socket, wakefulness);
@@ -182,6 +205,21 @@ impl Agent {
         crate::wakefulness::retire_verdict(socket);
         result
     }
+}
+
+/// Binds the agent's socket.
+///
+/// A socket file left by a previous run would make bind fail with EADDRINUSE even though nobody is
+/// listening. The flock (`acquire_instance_lock`) is what actually guarantees exclusivity, so
+/// removing a stale path here is safe rather than a race.
+pub fn bind(socket: &Path) -> std::io::Result<UnixListener> {
+    if socket.exists() {
+        let _ = std::fs::remove_file(socket);
+    }
+    if let Some(parent) = socket.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    UnixListener::bind(socket)
 }
 
 /// The state the request/reply services keep for ONE connection, dropped with it.
@@ -489,6 +527,21 @@ fn dispatch(
         FrameKind::KillAll => {
             sessions.kill_all();
             reply(Frame::control(FrameKind::Acknowledged))
+        }
+        // `Acknowledged` with "current" when the binary is this program already, "handing off"
+        // just before the exec (which then ends this connection), and `Failure` with the reason
+        // when it refused or the exec failed. See `crate::handoff`.
+        FrameKind::HandOff => {
+            let (&force, path) = frame.payload.split_first()?;
+            let binary = PathBuf::from(OsStr::from_bytes(path));
+            let handing_off = || {
+                let frame = Frame::new(FrameKind::Acknowledged, b"handing off".to_vec());
+                send(&Envelope::new(envelope.service, envelope.stream, frame.encode()).encode())
+            };
+            match crate::handoff::hand_off(sessions, &binary, force != 0, handing_off) {
+                Ok(()) => reply(Frame::new(FrameKind::Acknowledged, b"current".to_vec())),
+                Err(reason) => reply(Frame::new(FrameKind::Failure, reason.into_bytes())),
+            }
         }
         _ => None,
     }

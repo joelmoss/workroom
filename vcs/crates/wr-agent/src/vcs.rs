@@ -86,7 +86,7 @@ impl Permit {
     pub(crate) fn acquire() -> Option<Permit> {
         ACTIVE
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < MAX_ACTIVE).then_some(count + 1)
+                (count & QUIETING == 0 && count < MAX_ACTIVE).then_some(count + 1)
             })
             .ok()
             .map(|_| Permit)
@@ -96,6 +96,40 @@ impl Permit {
 impl Drop for Permit {
     fn drop(&mut self) {
         ACTIVE.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Set in `ACTIVE` while a hand-off waits for requests to drain. In the same word as the count, so
+/// no request can start between the check and the wait.
+const QUIETING: usize = 1 << (usize::BITS - 1);
+
+/// No request running and none able to start, for a hand-off (`crate::handoff`): proof that no
+/// repository command is cut off by the exec. A request that arrives meanwhile is answered
+/// `LockContention` rather than queued. Released on drop, which is only reached when the hand-off
+/// did not happen.
+pub(crate) struct Quiet;
+
+impl Quiet {
+    /// Stops new requests at once, then waits up to `timeout` for the running ones to finish.
+    /// Stopping first is what makes the wait end: the count can only fall, where waiting for a
+    /// moment with nothing running could wait forever under steady traffic.
+    pub(crate) fn acquire(timeout: std::time::Duration) -> Option<Quiet> {
+        ACTIVE.fetch_or(QUIETING, Ordering::AcqRel);
+        let quiet = Quiet;
+        let deadline = std::time::Instant::now() + timeout;
+        while ACTIVE.load(Ordering::Acquire) != QUIETING {
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        Some(quiet)
+    }
+}
+
+impl Drop for Quiet {
+    fn drop(&mut self) {
+        ACTIVE.fetch_and(!QUIETING, Ordering::AcqRel);
     }
 }
 
