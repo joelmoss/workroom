@@ -18,7 +18,10 @@
 #
 # The set is staged beside <dir>, checked against its own `CHECKSUMS`, and renamed into place, so a
 # pane never finds half of one. Shells already running keep their `TERMINFO` and integration paths
-# into <dir>, which is why it is one fixed directory updated in place rather than one per set. Two
+# into <dir>, which is why it is one fixed directory updated in place rather than one per set, and
+# why the set it replaces is only ever removed once the new one is there: moved aside, it is put
+# back if the rename that follows fails or is interrupted. A pane that starts in the instant
+# between the two renames gets the `xterm-256color` fallback. Two
 # pushes racing can rename one set into the other rather than over it (`mv` onto a directory moves
 # into it); <dir> is still a whole set, with a stray staging directory in it until the next push.
 # POSIX sh and coreutils only, as the other scripts: `dd bs=1` reads exactly the bytes a file has,
@@ -28,7 +31,7 @@ dir=$1
 shift
 staged="$dir.new.$$"
 old="$dir.old.$$"
-trap 'rm -rf "$staged" "$old"' EXIT
+trap 'rm -rf "$staged"; if [ -e "$dir" ]; then rm -rf "$old"; elif [ -e "$old" ]; then mv "$old" "$dir"; fi' EXIT
 trap 'exit 1' HUP PIPE TERM
 
 umask 077
@@ -88,7 +91,6 @@ if [ -e "$dir" ] && ! mv "$dir" "$old"; then
   exit 1
 fi
 if ! mv "$staged" "$dir"; then
-  [ -e "$old" ] && mv "$old" "$dir"
   echo "WRB outcome write-failed"
   exit 1
 fi

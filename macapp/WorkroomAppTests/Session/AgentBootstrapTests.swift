@@ -799,4 +799,30 @@ final class AgentBootstrapTests: XCTestCase {
       try FileManager.default.contentsOfDirectory(atPath: host.directory.path)
         .contains { $0.hasPrefix("ghostty.") })
   }
+
+  /// A push whose rename into place fails leaves the set it was replacing where it was (#239):
+  /// running shells still read their terminfo and integration from it.
+  func testTheRealPushKeepsTheLiveSetWhenItCannotReplaceIt() async throws {
+    let host = try localHost()
+    let build = try standIn()
+    let bundle = try XCTUnwrap(GhosttyResources.bundledURL)
+    let first = try await ensure(host, bundling: build, resources: bundle)
+    XCTAssertEqual(first.resources, .pushed)
+    // The host holds an older set, and cannot rename a staged one into place.
+    let manifest = host.directory.appendingPathComponent("ghostty/CHECKSUMS")
+    let older = try String(contentsOf: manifest, encoding: .utf8) + "# older\n"
+    try older.write(to: manifest, atomically: true, encoding: .utf8)
+    let mv = host.directory.deletingLastPathComponent().appendingPathComponent("shim/mv")
+    try Data(
+      "#!/bin/sh\ncase $1 in *.new.*) exit 1 ;; esac\nexec /bin/mv \"$@\"\n".utf8
+    ).write(to: mv)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: mv.path)
+
+    let failed = try await ensure(host, bundling: build, resources: bundle)
+    XCTAssertEqual(failed.resources, .notPushed("write-failed"))
+    XCTAssertEqual(try String(contentsOf: manifest, encoding: .utf8), older)
+    XCTAssertEqual(
+      try FileManager.default.contentsOfDirectory(atPath: host.directory.path)
+        .filter { $0.hasPrefix("ghostty") }, ["ghostty"])
+  }
 }
