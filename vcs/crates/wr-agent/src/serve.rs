@@ -26,9 +26,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::protocol::envelope::{
-    negotiate, Envelope, EnvelopeDecoder, Hello, ProtocolError, Service,
+    negotiate, Envelope, EnvelopeDecoder, Hello, ProtocolError, Service, MAX_ENVELOPE_PAYLOAD,
 };
-use crate::protocol::frame::{Frame, FrameDecoder, FrameKind, MAX_PAYLOAD_SIZE};
+use crate::protocol::frame::{Frame, FrameDecoder, FrameKind, HEADER_SIZE, MAX_PAYLOAD_SIZE};
 use crate::session::{SessionId, SessionSpec, SessionStore, SharedWriter};
 use crate::shell;
 use crate::transport::Transport;
@@ -585,12 +585,17 @@ fn dispatch(
 /// it did not, a client that sees a declared length over the cap fails its decoder permanently, so
 /// an over-long list would not merely fail, it would poison every later frame on that connection.
 /// Answer with the failure the app already knows how to show instead.
+///
+/// The frame then goes out inside an envelope, whose own cap `Envelope::encode` asserts, and the
+/// frame's header counts against it. So the limit is the smaller of the frame cap and what an
+/// envelope leaves room for (#246).
 fn list_reply(payload: Vec<u8>) -> Frame {
-    if payload.len() > MAX_PAYLOAD_SIZE {
+    let cap = MAX_PAYLOAD_SIZE.min(MAX_ENVELOPE_PAYLOAD - HEADER_SIZE);
+    if payload.len() > cap {
         return Frame::new(
             FrameKind::Failure,
             format!(
-                "session list of {} bytes exceeds the {MAX_PAYLOAD_SIZE}-byte frame cap",
+                "session list of {} bytes exceeds the {cap}-byte reply cap",
                 payload.len()
             )
             .into_bytes(),
@@ -1013,13 +1018,27 @@ mod tests {
     /// connection thread and leaving the client waiting for a frame that will never come.
     #[test]
     fn an_oversized_session_list_is_refused_rather_than_panicking() {
-        let ordinary = list_reply(encode_descriptor_list(&[]));
-        assert_eq!(ordinary.kind, FrameKind::Sessions);
+        // What `dispatch` sends: the reply frame inside an envelope. Encoding the frame alone
+        // passed at exactly `MAX_PAYLOAD_SIZE`, which then panicked `Envelope::encode` (#246).
+        let sent = |payload: Vec<u8>| {
+            let frame = list_reply(payload);
+            let _ = Envelope::new(Service::Control, 0, frame.encode()).encode();
+            frame.kind
+        };
 
-        let over = list_reply(vec![0u8; MAX_PAYLOAD_SIZE + 1]);
-        assert_eq!(over.kind, FrameKind::Failure);
+        assert_eq!(sent(encode_descriptor_list(&[])), FrameKind::Sessions);
+        // The biggest list that fits: the frame's header takes five of the envelope's bytes.
+        assert_eq!(
+            sent(vec![0u8; MAX_ENVELOPE_PAYLOAD - HEADER_SIZE]),
+            FrameKind::Sessions
+        );
         // And the refusal must itself be sendable, which is the whole point.
-        let _ = over.encode();
+        assert_eq!(
+            sent(vec![0u8; MAX_ENVELOPE_PAYLOAD - HEADER_SIZE + 1]),
+            FrameKind::Failure
+        );
+        assert_eq!(sent(vec![0u8; MAX_PAYLOAD_SIZE]), FrameKind::Failure);
+        assert_eq!(sent(vec![0u8; MAX_PAYLOAD_SIZE + 1]), FrameKind::Failure);
     }
 
     #[test]
