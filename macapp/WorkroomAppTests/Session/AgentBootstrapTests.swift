@@ -840,4 +840,34 @@ final class AgentBootstrapTests: XCTestCase {
       try FileManager.default.contentsOfDirectory(atPath: host.directory.path)
         .filter { $0.hasPrefix("ghostty") }, ["ghostty"])
   }
+
+  /// Two pushes racing (#239): one whose rename finds the set back in place moves into it rather
+  /// than over it. It takes its set back out and says so, rather than reporting an install that
+  /// did not happen.
+  func testTheRealPushThatLosesARaceSaysSoAndLeavesOneSet() async throws {
+    let host = try localHost()
+    let build = try standIn()
+    let bundle = try XCTUnwrap(GhosttyResources.bundledURL)
+    let first = try await ensure(host, bundling: build, resources: bundle)
+    XCTAssertEqual(first.resources, .pushed)
+    let manifest = host.directory.appendingPathComponent("ghostty/CHECKSUMS")
+    let older = try String(contentsOf: manifest, encoding: .utf8) + "# older\n"
+    try older.write(to: manifest, atomically: true, encoding: .utf8)
+    // Another push puts a set back in place just before this one renames its own.
+    let mv = host.directory.deletingLastPathComponent().appendingPathComponent("shim/mv")
+    try Data(
+      ("#!/bin/sh\ncase $1 in *.new.*) mkdir -p \"$2\" ;; esac\nexec /bin/mv \"$@\"\n").utf8
+    ).write(to: mv)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: mv.path)
+
+    let raced = try await ensure(host, bundling: build, resources: bundle)
+    XCTAssertEqual(raced.resources, .notPushed("raced"))
+    let set = host.directory.appendingPathComponent("ghostty")
+    XCTAssertFalse(
+      try FileManager.default.contentsOfDirectory(atPath: set.path)
+        .contains { $0.hasPrefix("ghostty.") })
+    XCTAssertEqual(
+      try FileManager.default.contentsOfDirectory(atPath: host.directory.path)
+        .filter { $0.hasPrefix("ghostty") }, ["ghostty"])
+  }
 }
