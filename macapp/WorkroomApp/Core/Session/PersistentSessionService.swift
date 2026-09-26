@@ -377,6 +377,9 @@ final class PersistentSessionService {
 
   func isRemote(_ sessionID: UUID) -> Bool { remoteSessions[sessionID] != nil }
 
+  /// The host a remote session's pane attaches to, or nil for a local session.
+  func remoteHost(of sessionID: UUID) -> HostID? { remoteSessions[sessionID]?.host }
+
   /// Whether a remote session's last attach was refused by its host for good (#241).
   func remoteHostRefusedLastAttach(_ sessionID: UUID) -> Bool {
     guard let remote = remoteSessions[sessionID] else { return false }

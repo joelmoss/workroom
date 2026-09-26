@@ -198,6 +198,45 @@ final class AgentVCSIntegrationTests: XCTestCase {
     await connection.close()
   }
 
+  /// The session list rides the service connection too (#239): a remote pane's footer has no other
+  /// way to learn where its shell is. The agent reads the directory off the session's foreground
+  /// process, a session it does not hold is nil rather than an error, and the connection's other
+  /// services keep working after a Control reply.
+  func testTheServiceConnectionAnswersASessionsWorkingDirectory() async throws {
+    let agent = try AgentHarness.start(environment: environment)
+    agents.append(agent)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: agent.socketPath)
+    let session = UUID()
+    try agent.startSession(identifier: session)
+    var directory: String?
+    for _ in 0..<100 {
+      directory = try await connection.workingDirectory(of: session)
+      if directory != nil { break }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    let resolved = { (path: String) in URL(fileURLWithPath: path).resolvingSymlinksInPath().path }
+    XCTAssertEqual(directory.map(resolved), resolved(NSTemporaryDirectory()))
+    let missing = try await connection.workingDirectory(of: UUID())
+    XCTAssertNil(missing)
+    _ = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
+    await connection.close()
+  }
+
+  /// A Control envelope nobody asked for (a late reply, or something a newer agent sends) is
+  /// dropped. Failing the connection over it would take every VCS, File and Status request on it
+  /// down with a session list nobody is waiting for.
+  func testAnUnaskedControlEnvelopeDoesNotFailTheConnection() async throws {
+    let fake = try FakeAgent(version: 5)
+    defer { fake.stop() }
+    let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
+    for stream: UInt32 in [7, 0] {
+      fake.push(service: 0, stream: stream, payload: Data([0x31, 0, 0, 0, 4, 0, 0, 0, 0]))
+    }
+    _ = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
+    await connection.close()
+  }
+
   func testConnectionLossIsUnavailableAndCannotReturnCleanStatus() async throws {
     let root = try gitRepo()
     let connection = try await connect()

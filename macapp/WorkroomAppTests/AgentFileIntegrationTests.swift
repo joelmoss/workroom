@@ -733,14 +733,17 @@ final class FakeAgent: @unchecked Sendable {
   /// Pushes an event on the Status service, stream 0 — the agent's own stream. The ceiling prompt by
   /// default; any body, so a malformed or unknown event can be proven dropped.
   func pushCeilingPrompt(body json: String = FakeAgent.ceilingPromptJSON) {
-    let body = Data(json.utf8)
-    var envelope = Data([4])
-    for value in [UInt32(0), UInt32(body.count + 1)] {
+    push(service: 4, stream: 0, payload: Data([1]) + Data(json.utf8))
+  }
+
+  /// Pushes one envelope nobody asked for, to every client.
+  func push(service: UInt8, stream: UInt32, payload: Data) {
+    var envelope = Data([service])
+    for value in [stream, UInt32(payload.count)] {
       var value = value.bigEndian
       withUnsafeBytes(of: &value) { envelope.append(contentsOf: $0) }
     }
-    envelope.append(1)
-    envelope.append(body)
+    envelope.append(payload)
     lock.withLock {
       for client in clients {
         _ = envelope.withUnsafeBytes { send(client, $0.baseAddress, $0.count, 0) }

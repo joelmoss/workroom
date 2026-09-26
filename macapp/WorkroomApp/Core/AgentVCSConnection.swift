@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import WorkroomSessionProtocol
 
 /// A persistent, negotiated service channel — VCS and File share one connection per host. Terminal
 /// relays keep their existing connections.
@@ -81,6 +82,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   private static let fileService: UInt8 = 3
   private static let statusService: UInt8 = 4
   private static let forwardService: UInt8 = 5
+  /// `Service::Control`: the session list a terminal helper answers (#239). Its payloads are
+  /// `SessionFrame`s, not a chunk flag and JSON.
+  private static let controlService: UInt8 = 0
   /// Live forwarded streams, keyed by the multiplex stream id the agent echoes on every envelope.
   /// Every access holds `lock`: the insert in `reserveForward`, the remove in `releaseForward`, the
   /// read in `receive()` and the clear in `fail()`.
@@ -390,6 +394,43 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     return AgentWakefulnessService(connection: self)
   }
 
+  /// The working directory of terminal `session` on this connection's host, or nil when the agent
+  /// holds no such session or could not read it (#239).
+  ///
+  /// The agent reads it from the session's foreground process each time it is asked, never from a
+  /// cache, and a remote pane has no other source: libghostty drops an OSC 7 report whose host is
+  /// not this Mac. It is the session list the agent has answered since protocol 1, so there is no
+  /// version to check.
+  ///
+  /// The default timeout, not a short one: half a request's timeout is how long ANY send in flight
+  /// on the connection may take before `request` declares the transport wedged and fails it, so a
+  /// 5s query behind a large commit or file save on a slow link would take VCS, File and every
+  /// forward down with it.
+  ///
+  /// ponytail: the agent builds this List under its session-store lock, which a client's reattach
+  /// repaint also holds, and on this connection's read thread, so a List that lands mid-repaint holds
+  /// up the connection's other requests for up to that repaint. A per-session cwd request would not;
+  /// add one if footer queries are ever seen to stall VCS.
+  func workingDirectory(of session: UUID) async throws -> String? {
+    let reply = try await request(
+      bytes: Data(SessionFrame(kind: .list).encoded()), timeout: 30,
+      service: Self.controlService)
+    var frames = SessionFrameDecoder()
+    frames.push(Array(reply))
+    guard let frame = try frames.next() else {
+      throw HostConnectionError.serviceUnavailable("Incomplete session list.")
+    }
+    guard frame.kind == .sessions else {
+      // `.failure` carries the agent's reason: a list over the frame cap, for one.
+      let reason = String(decoding: frame.payload, as: UTF8.self)
+      throw HostConnectionError.serviceUnavailable("No session list: \(reason)")
+    }
+    let identifier = SessionIdentifier(uuidString: session.uuidString)
+    let directory = try SessionDescriptor.decodeList(frame.payload)
+      .first { $0.identifier == identifier }?.workingDirectory
+    return directory?.isEmpty == false ? directory : nil
+  }
+
   /// The port-forwarding service on this connection, or `VCSError.backendVersion` when the peer
   /// predates it (issue #208).
   ///
@@ -563,10 +604,16 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   func request<Request: Encodable>(
     _ request: Request, timeout: TimeInterval = 30, service: UInt8 = 2
   ) async throws -> Data {
-    try Task.checkCancellation()
     let encoder = JSONEncoder()
     encoder.keyEncodingStrategy = .convertToSnakeCase
-    let bytes = try encoder.encode(request)
+    return try await self.request(
+      bytes: encoder.encode(request), timeout: timeout, service: service)
+  }
+
+  /// `request`'s transport, for a payload that is already encoded: JSON for the four services that
+  /// speak it, a `SessionFrame` for Control.
+  private func request(bytes: Data, timeout: TimeInterval, service: UInt8) async throws -> Data {
+    try Task.checkCancellation()
     // A request larger than the protocol's per-envelope ceiling (`MAX_ENVELOPE_PAYLOAD`) is split
     // across envelopes on one stream — the mirror of how replies have always been chunked. What
     // makes this reachable at all is `CLIVCSWriter`'s NUL-separated pathspec, sent as an
@@ -724,12 +771,16 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           // `forward.rs` carries nothing there today and documents a stream-0 envelope as DROPPED,
           // so it is admitted here and dropped by `deliver(forward:)`: a future agent that adds a
           // stream-0 Forward notification must not fail every shipped client's whole connection.
+          // Control on stream 0 is admitted and dropped by `deliver(control:)` for the reason
+          // Forward's is: no reply is ever sent there, and a newer agent that sends something must
+          // not fail a shipped client's connection.
           let streamIsValid =
             stream > 0 || service == Self.fileService || service == Self.statusService
-            || service == Self.forwardService
+            || service == Self.forwardService || service == Self.controlService
           guard
             service == Self.vcsService || service == Self.fileService
-              || service == Self.statusService || service == Self.forwardService, streamIsValid,
+              || service == Self.statusService || service == Self.forwardService
+              || service == Self.controlService, streamIsValid,
             length > 0, length <= 1 << 20
           else {
             throw HostConnectionError.serviceUnavailable("Invalid agent envelope.")
@@ -743,6 +794,12 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           // the guard would tear the connection down on the first half-close.
           if service == Self.forwardService {
             deliver(forward: payload, stream: stream)
+            continue
+          }
+          // A Control reply is one whole `SessionFrame` with no chunk flag, so it is routed before
+          // the chunk guard too.
+          if service == Self.controlService {
+            deliver(control: payload, stream: stream)
             continue
           }
           guard payload.first == 0 || payload.first == 1 else {
@@ -794,6 +851,20 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
         buffer.append(contentsOf: chunk.prefix(count))
       }
     } catch { fail(error) }
+  }
+
+  /// Hand one Control reply to the request waiting on its stream.
+  ///
+  /// The agent answers a `list` in ONE envelope, so the first one completes the request. A reply for
+  /// a stream nobody is waiting on (it timed out, or a newer agent sent something unasked) is
+  /// dropped rather than failing the connection: nothing else on it has anything to do with a
+  /// session list.
+  private func deliver(control payload: Data, stream: UInt32) {
+    let completed: Pending? = lock.withLock {
+      if abandoned.remove(stream) != nil { return nil }
+      return pending.removeValue(forKey: stream)
+    }
+    completed?.continuation.resume(returning: payload)
   }
 
   /// Hand one Forward envelope to the stream it names.
