@@ -129,12 +129,14 @@ struct ContainerHostDriver: HostTerminalDriver {
 
   /// ssh's messages for a host that answered and will keep saying no. Listed rather than the
   /// failures that heal, because those are open-ended: a gateway in front of a rebooting VM, or a
-  /// socket-activated sshd, can fail in words no list has seen.
+  /// socket-activated sshd, can fail in words no list has seen. An authentication denial is
+  /// `Permission denied (<methods>)`; a bare `Permission denied` is a connect a firewall refused,
+  /// which can heal.
   static func isRefusal(_ log: String) -> Bool {
     let log = log.lowercased()
     return [
       "host key verification failed", "remote host identification has changed",
-      "permission denied", "too many authentication failures", "unable to negotiate",
+      "permission denied (", "too many authentication failures", "unable to negotiate",
       "load key", "bad owner or permissions",
     ].contains { log.contains($0) }
   }
