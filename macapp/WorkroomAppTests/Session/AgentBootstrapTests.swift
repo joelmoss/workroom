@@ -349,7 +349,22 @@ final class AgentBootstrapTests: XCTestCase {
   /// finds holding it is pushed nothing, one without it gets every file the manifest lists and the
   /// manifest itself, and a push that fails is reported without failing the connect.
   func testTheResourceSetIsPushedOnlyToAHostWithoutIt() async throws {
-    let bundle = try XCTUnwrap(GhosttyResources.bundledURL)
+    // A set of two small files: the stub only answers, and the bundle's own 70 KB go through the
+    // real scripts below and on the fixture.
+    let bundle = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-set-\(UUID().uuidString.prefix(8))")
+    addTeardownBlock { try? FileManager.default.removeItem(at: bundle) }
+    var manifest = ""
+    for (path, content) in [
+      ("terminfo/78/xterm-ghostty", "entry"), ("shell-integration/zsh/.zshenv", "zsh"),
+    ] {
+      let file = bundle.appendingPathComponent(path)
+      try FileManager.default.createDirectory(
+        at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try Data(content.utf8).write(to: file)
+      manifest += "\(try AgentBootstrap.digest(of: file))  \(path)\n"
+    }
+    try Data(manifest.utf8).write(to: bundle.appendingPathComponent("CHECKSUMS"))
     let set = try AgentBootstrap.digest(of: bundle.appendingPathComponent("CHECKSUMS"))
     let resources = "WRB resources \(set)\n"
     let current = StubDriver([
