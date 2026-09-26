@@ -853,15 +853,17 @@ final class AgentBootstrapTests: XCTestCase {
     let manifest = host.directory.appendingPathComponent("ghostty/CHECKSUMS")
     let older = try String(contentsOf: manifest, encoding: .utf8) + "# older\n"
     try older.write(to: manifest, atomically: true, encoding: .utf8)
-    // Another push puts a set back in place just before this one renames its own.
+    // Another push puts its own whole set in place just before this one renames: a copy of this
+    // build's, as a Mac on the same build would push.
     let mv = host.directory.deletingLastPathComponent().appendingPathComponent("shim/mv")
     try Data(
-      ("#!/bin/sh\ncase $1 in *.new.*) mkdir -p \"$2\" ;; esac\nexec /bin/mv \"$@\"\n").utf8
+      ("#!/bin/sh\ncase $1 in *.new.*) cp -R \"$1\" \"$2\" ;; esac\nexec /bin/mv \"$@\"\n").utf8
     ).write(to: mv)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: mv.path)
 
     let raced = try await ensure(host, bundling: build, resources: bundle)
     XCTAssertEqual(raced.resources, .notPushed("raced"))
+    // One whole set, the other push's, with nothing of this one's left in it.
     let set = host.directory.appendingPathComponent("ghostty")
     XCTAssertFalse(
       try FileManager.default.contentsOfDirectory(atPath: set.path)
@@ -869,5 +871,19 @@ final class AgentBootstrapTests: XCTestCase {
     XCTAssertEqual(
       try FileManager.default.contentsOfDirectory(atPath: host.directory.path)
         .filter { $0.hasPrefix("ghostty") }, ["ghostty"])
+    for (installed, bundled) in [
+      ("CHECKSUMS", "CHECKSUMS"), ("terminfo/x/xterm-ghostty", "terminfo/78/xterm-ghostty"),
+      ("shell-integration/zsh/.zshenv", "shell-integration/zsh/.zshenv"),
+    ] {
+      XCTAssertEqual(
+        FileManager.default.contents(atPath: set.appendingPathComponent(installed).path),
+        FileManager.default.contents(atPath: bundle.appendingPathComponent(bundled).path),
+        installed)
+    }
+    let verified = try SessionBackendProbe.run(
+      URL(fileURLWithPath: "/bin/sh"),
+      arguments: ["-c", "cd \(PosixShell.quoted(set.path)) && /sbin/sha256sum -c CHECKSUMS"],
+      timeout: 10)
+    XCTAssertEqual(verified.status, 0, verified.output)
   }
 }
