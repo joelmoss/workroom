@@ -16,8 +16,11 @@ app-side transport with `HostDriver` and the container driver, services and term
 merged 2026-09-24 in #237), `execve` hand-off (#230,
 merged 2026-09-25 in #238; on for Nightly and Dev),
 push-on-first-connect bootstrap (#231, built 2026-09-25; "As built (#231)" in the Distribution
-Plan) and stop-and-reboot screen restoration (#232, built 2026-09-25; "As built (#232)" under
-Next Steps item 3). The rest of
+Plan), stop-and-reboot screen restoration (#232, built 2026-09-25; "As built (#232)" under
+Next Steps item 3), a remote pane that keeps reconnecting until its host is back (#241, merged
+2026-09-26 in #243), and Ghostty's terminfo and shell integration pushed with the agent (#239,
+built 2026-09-26; the pane's footer does not follow a remote shell yet). Both are under Phase 3's
+"Terminal panes". The rest of
 this section is the 2026-09-17 status, kept for the Phase 2 detail it records and corrected where
 it had gone stale.
 
@@ -2358,8 +2361,7 @@ disagreement passes every test on either side alone while presenting as an empty
       intact and the pane back on 255; a binary that fails its check is refused and the app
       connects to the old agent; and the crash above. The fixture's supervisor now runs the
       installed file and idles without one; the image's copy seeds it at boot.
-    - *Not here.* `xterm-ghostty` terminfo and the shell integration on the host (#239). An agent
-      that predates hand-off has no fixture (no older build to run there); the
+    - *Not here.* An agent that predates hand-off has no fixture (no older build to run there); the
       exit-3 branch is unit-tested, and #230's test proves the CLI never asks such an agent.
     - *Known limits.* The on-disk file and the running program can differ after exit 3, after a
       92 the CLI reports for an agent that accepted but did not greet within 5 s (paused mid
@@ -2378,9 +2380,8 @@ disagreement passes every test on either side alone while presenting as an empty
       The exchange reads the host's output only after the push, so a login banner larger than
       the socket buffers plus ssh's window (over 2 MB) would stall the push and be ended as
       silence; draining while sending is the fix if a host like that is ever seen. A restored pane on a host with no
-      binary yet exits 255 (`test -x` ahead of the attach), and the app's reconnect backoff gives
-      up after five quick failures, so a pane restored well before the bootstrap lands needs
-      reopening.
+      binary yet exits 255 (`test -x` ahead of the attach), which the app does not read as a
+      refusal, so the pane keeps reattaching until the bootstrap lands (#241).
 - **New CI burden:** a Rust Linux cross-compile for `wr-agent` (note `prost` in the lock means
   `protoc` is a build-time requirement) plus the container-driver integration job. **Add a pinned
   Zig toolchain and a Ghostty checkout** for `libghostty-vt` — checksum-pinned, cache keyed by
@@ -2826,8 +2827,9 @@ service milestones below so each layer can be reviewed and landed independently.
        its session ends. A restored attach inside those 2 s is shown it as ended with its host,
        and a hand-off inside them leaves it behind for a later one. Deleting a record the moment its
        session ends was rejected: in a shutdown, a command killed just before the agent would
-       lose the screen the record exists to keep. The app gives a remote pane five reconnects
-       (about 30 s) after a dropped link, which a slow VM reboot can outlast (#241).
+       lose the screen the record exists to keep. The app keeps reattaching a remote pane,
+       every 30 s at most, for as long as its host is away (#241), so a slow VM reboot still ends
+       on the record.
      - *Tests.* `a_restored_pane_is_shown_its_last_screen_after_a_reboot` SIGKILLs a local agent
        and its shells and starts a new agent over the records.
        `a_restored_pane_is_shown_the_record_of_a_session_that_ended_with_its_host` covers the
