@@ -53,14 +53,18 @@ echo "WRB installed $installed"
 # without sha256sum whether or not a set is there: resources.sh would refuse the push for that.
 #
 # The set is checked against its manifest again here, so one that has lost or changed a file since
-# reads as `invalid` and is pushed again, rather than kept as current for good. So is one without
-# the Linux terminfo entry: the manifest does not list it (resources.sh derives it from the macOS
-# one), and it is the file the attach looks for before it uses the set at all.
+# reads as `invalid` and is pushed again, rather than kept as current for good. So is one whose
+# Linux terminfo entry is missing or differs from the macOS one it was copied from: the manifest
+# does not list it (resources.sh derives it), and it is the file the attach looks for before it
+# uses the set at all.
 set_digest=none
+linux_entry="$resources/terminfo/x/xterm-ghostty"
 if ! command -v sha256sum > /dev/null 2>&1; then
   set_digest=unknown
 elif [ -r "$resources/CHECKSUMS" ]; then
-  if [ -r "$resources/terminfo/x/xterm-ghostty" ] \
+  if [ -r "$linux_entry" ] \
+    && [ "$(sha256sum < "$linux_entry" 2> /dev/null)" \
+      = "$(sha256sum < "$resources/terminfo/78/xterm-ghostty" 2> /dev/null)" ] \
     && (cd "$resources" && sha256sum -c CHECKSUMS) > /dev/null 2>&1; then
     set_digest=$(sha256sum < "$resources/CHECKSUMS" 2> /dev/null | cut -c1-64)
     set_digest=${set_digest:-unknown}

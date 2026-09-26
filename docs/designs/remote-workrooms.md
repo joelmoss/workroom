@@ -1072,8 +1072,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     (`resources.sh`). The probe reports the hash of the host's `CHECKSUMS` (`WRB resources`), and
     the set is keyed by that hash, so the same build pushes nothing and a Ghostty pin bump that
     changes the files pushes them again. The probe first re-checks the set against its manifest and
-    looks for the Linux terminfo entry the manifest does not list, so a set that has lost or
-    changed a file since reports `invalid` and is pushed again. The push stages the files (`dd bs=1`, which reads exactly
+    checks the Linux terminfo entry the manifest does not list against the macOS one it was copied
+    from, so a set that has lost or changed a file since reports `invalid` and is pushed again. The push stages the files (`dd bs=1`, which reads exactly
     a file's bytes from the stream, where `head -c` may read ahead), checks them with
     `sha256sum -c CHECKSUMS`, copies each terminfo entry from macOS's hex directory
     (`terminfo/78/xterm-ghostty`) to the letter directory Linux's ncurses reads
