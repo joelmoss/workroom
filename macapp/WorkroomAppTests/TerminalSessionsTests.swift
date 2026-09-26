@@ -1788,6 +1788,9 @@ final class RemotePaneFooterTests: XCTestCase {
     let s = try await makeSessions(connection, on: .remote(hostID))
     s.addTab(for: target, sessionID: session)
     let view = try XCTUnwrap(s.tabs(for: target).first?.surface)
+    // `addTab` keeps a session id only where persistent sessions are available, which a CI runner's
+    // are not; a remote pane always has one.
+    view.persistentSessionID = session
 
     view.onTitleChange?("~")
     try await waitFor { state(in: s)?.hostCwd == "/home/w" }
@@ -1830,6 +1833,9 @@ final class RemotePaneFooterTests: XCTestCase {
     s.hostConnections = manager
     s.addTab(for: target, sessionID: session)
     let view = try XCTUnwrap(s.tabs(for: target).first?.surface)
+    // `addTab` keeps a session id only where persistent sessions are available, which a CI runner's
+    // are not; a remote pane always has one.
+    view.persistentSessionID = session
 
     view.onTitleChange?("~")
     try await Task.sleep(for: .milliseconds(100))
@@ -1852,7 +1858,11 @@ final class RemotePaneFooterTests: XCTestCase {
     let session = UUID()
     registerRemote(session, on: unconnected)
     s.addTab(for: target, sessionID: session)
-    for tab in s.tabs(for: target) {
+    // Set by hand for the reason given in the test above.
+    let tabs = s.tabs(for: target)
+    try XCTUnwrap(tabs.first?.surface).persistentSessionID = UUID()
+    try XCTUnwrap(tabs.last?.surface).persistentSessionID = session
+    for tab in tabs {
       let view = try XCTUnwrap(tab.surface)
       view.onTitleChange?("~")
       view.handleCommandFinished(rawExitCode: 0)
