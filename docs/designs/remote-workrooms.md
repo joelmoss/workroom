@@ -6,21 +6,24 @@ Repo: joelmoss/workroom
 Status: APPROVED
 Mode: Builder
 
-## Current Status — 2026-09-24
+## Current Status — 2026-09-26
 
 **Phase 2 is merged to master** (2026-09-23, #201 through #218; review follow-ups #220–#226), and
-**Phase 3 has started.** Its milestones are sub-issues of #154: the Linux agent artifact (#227,
+**every Phase 3 milestone is merged** (#154's checklist). None of it is reachable in the shipped app
+yet: nothing outside the tests creates a remote pane or connects a remote host
+(`registerRemoteSession`, `AgentBootstrap.ensure`) until Phase 4 wires remote workrooms in. The
+milestones, all sub-issues of #154: the Linux agent artifact (#227,
 merged; its first Nightly DMG is still to be checked), the supervised far-side agent with its stdio
 relay and container fixture (#228, merged), the
 app-side transport with `HostDriver` and the container driver, services and terminal panes (#229,
 merged 2026-09-24 in #237), `execve` hand-off (#230,
 merged 2026-09-25 in #238; on for Nightly and Dev),
-push-on-first-connect bootstrap (#231, built 2026-09-25; "As built (#231)" in the Distribution
-Plan), stop-and-reboot screen restoration (#232, built 2026-09-25; "As built (#232)" under
-Next Steps item 3), a remote pane that keeps reconnecting until its host is back (#241, merged
-2026-09-26 in #243), and Ghostty's terminfo and shell integration pushed with the agent (#239,
-built 2026-09-26, with the pane's footer following the shell through the host's agent). Both are
-under Phase 3's "Terminal panes". The rest of
+push-on-first-connect bootstrap (#231, merged 2026-09-25 in #240; "As built (#231)" in the
+Distribution Plan), stop-and-reboot screen restoration (#232, merged 2026-09-25 in #242; "As built
+(#232)" under Next Steps item 3), a remote pane that keeps reconnecting until its host is back (#241, merged
+2026-09-26 in #243), and Ghostty's terminfo and shell integration pushed with the agent, with the
+pane's footer following the shell through the host's agent (#239, merged 2026-09-26 in #244 and
+#245). Both are under Phase 3's "Terminal panes". The rest of
 this section is the 2026-09-17 status, kept for the Phase 2 detail it records and corrected where
 it had gone stale.
 
@@ -1106,8 +1109,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     arrives too. It does not ask on every title, because a TUI animating its title would send a
     request per frame. The answer goes in `TerminalState.hostCwd`, which only the status bar
     reads: it shows and copies the path, and offers no "Reveal in Finder". ⌘-click, a new split
-    and the saved snapshot still read `cwd`, which stays empty for a remote pane. A host with no
-    service connection is never connected to for this; its footer stays empty.
+    and the saved snapshot still read `cwd`, which stays empty for a remote pane. Nothing connects
+    a host to answer this: a query that finds no service connection waits in its own task for one
+    (`HostConnectionManager.updates(for:)`) and asks then, so a restored pane whose first prompt
+    beats its connection still fills in, and a newer query or closing the pane ends the wait.
   - *Not persisted:* a session is marked remote in memory (`registerRemoteSession`). Phase 4's
     remote workrooms re-register their panes on relaunch.
   - *An SDK-exec driver has no command to hand libghostty.* It needs a local bridge process, which
