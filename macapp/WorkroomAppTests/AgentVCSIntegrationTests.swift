@@ -237,6 +237,32 @@ final class AgentVCSIntegrationTests: XCTestCase {
     await connection.close()
   }
 
+  /// A Control envelope on a stream a VCS request is waiting on does not answer that request (the
+  /// stream counter is shared by every service): only a Control request takes a Control reply. It
+  /// used to complete the VCS request with a session-list frame for bytes.
+  func testAControlEnvelopeDoesNotAnswerAnotherServicesRequest() async throws {
+    let fake = try FakeAgent(version: 2, stallAfterCapabilities: true)
+    defer { fake.stop() }
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: fake.socketPath)
+    // The fake stopped reading after the handshake, so this one is never answered.
+    let waiting = Task {
+      try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
+    }
+    try await Task.sleep(for: .milliseconds(200))
+    for stream: UInt32 in 1...16 {
+      fake.push(service: 0, stream: stream, payload: Data([0x31, 0, 0, 0, 4, 0, 0, 0, 0]))
+    }
+    try await Task.sleep(for: .milliseconds(200))
+    await connection.close()
+    do {
+      _ = try await waiting.value
+      XCTFail("a Control frame answered a VCS request")
+    } catch {
+      XCTAssertEqual(error as? HostConnectionError, .connectionLost)
+    }
+  }
+
   func testConnectionLossIsUnavailableAndCannotReturnCleanStatus() async throws {
     let root = try gitRepo()
     let connection = try await connect()

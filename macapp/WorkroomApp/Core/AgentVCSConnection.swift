@@ -19,6 +19,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   private var nextStream: UInt32 = 1
   private struct Pending {
     let continuation: CheckedContinuation<Data, Error>
+    /// The service the request went out on. A Control reply completes only a Control request: the
+    /// stream counter is shared by every service, so a stream id alone does not say whose reply it is.
+    let service: UInt8
     var bytes = Data()
   }
   private var pending: [UInt32: Pending] = [:]
@@ -51,7 +54,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// Streams this connection gave up waiting on (request timeout) but whose reply may still
   /// arrive. Tracked so a late reply drains harmlessly instead of `receive()` treating an unknown
   /// stream id as a protocol violation and tearing down every OTHER in-flight request too.
-  private var abandoned: Set<UInt32> = []
+  private var abandoned: [UInt32: UInt8] = [:]
   /// Negotiated once in `connect()`, before this connection is shared with any other caller.
   /// `exec` is absent on a still-running pre-upgrade agent that answers `reads` but has no VCS
   /// write service at all — `writer(context:reader:)` treats that as `VCSError.backendVersion`,
@@ -658,7 +661,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           guard nextStream < UInt32.max, pending.count < 32 else { return (nil, .notDispatched) }
           let stream = nextStream
           nextStream += 1
-          pending[stream] = Pending(continuation: continuation)
+          pending[stream] = Pending(continuation: continuation, service: service)
           return (stream, .notDispatched)
         }
         guard let stream = refusal.stream else {
@@ -673,7 +676,18 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           self?.timeoutStream(stream, error: CancellationError())
         }
         writes.async { [self] in
-          guard lock.withLock({ !closed }) else { return }
+          // Not sent once its caller has been answered: a request cancelled or timed out while it
+          // queued behind another send would have the agent do the work for nobody, ahead of every
+          // request queued after it. A caller told "cancelled" already assumes it may have run
+          // (`AgentCommandRunner`), so not running it is never the worse outcome. Its abandoned
+          // entry goes too, since no reply can come.
+          let send = lock.withLock { () -> Bool in
+            guard !closed else { return false }
+            if pending[stream] != nil { return true }
+            abandoned.removeValue(forKey: stream)
+            return false
+          }
+          guard send else { return }
           do {
             for payload in Self.payloads(for: bytes, chunked: chunked) {
               try sendOnWrites(
@@ -819,11 +833,11 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           }
           var completed: Pending?
           let valid = lock.withLock {
-            if abandoned.contains(stream) {
+            if abandoned[stream] != nil {
               // Nobody is waiting on this any more (it timed out) — drain it and never surface it
               // as unexpected, so a slow-but-eventually-answered request never disturbs the
               // connection every OTHER in-flight request is sharing.
-              if payload.first == 1 { abandoned.remove(stream) }
+              if payload.first == 1 { abandoned.removeValue(forKey: stream) }
               return true
             }
             guard var operation = pending[stream],
@@ -856,12 +870,16 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// Hand one Control reply to the request waiting on its stream.
   ///
   /// The agent answers a `list` in ONE envelope, so the first one completes the request. A reply for
-  /// a stream nobody is waiting on (it timed out, or a newer agent sent something unasked) is
-  /// dropped rather than failing the connection: nothing else on it has anything to do with a
-  /// session list.
+  /// a stream no Control request is waiting on (it timed out, a VCS or File request holds that
+  /// stream, or a newer agent sent something unasked) is dropped rather than failing the connection,
+  /// and never completes another service's request.
   private func deliver(control payload: Data, stream: UInt32) {
     let completed: Pending? = lock.withLock {
-      if abandoned.remove(stream) != nil { return nil }
+      if abandoned[stream] == Self.controlService {
+        abandoned.removeValue(forKey: stream)
+        return nil
+      }
+      guard pending[stream]?.service == Self.controlService else { return nil }
       return pending.removeValue(forKey: stream)
     }
     completed?.continuation.resume(returning: payload)
@@ -914,7 +932,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   private func timeoutStream(_ stream: UInt32, error: Error) {
     let continuation: CheckedContinuation<Data, Error>? = lock.withLock {
       guard let entry = pending.removeValue(forKey: stream) else { return nil }
-      abandoned.insert(stream)
+      abandoned[stream] = entry.service
       return entry.continuation
     }
     continuation?.resume(throwing: error)

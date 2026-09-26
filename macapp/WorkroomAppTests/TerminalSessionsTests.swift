@@ -1816,6 +1816,32 @@ final class RemotePaneFooterTests: XCTestCase {
     XCTAssertNil(state(in: s)?.hostCwd)
   }
 
+  /// A restored pane's first prompt can come before its host's service connection is up. The
+  /// query waits for the connection rather than giving up until the next command.
+  func testTheFirstPromptIsAnsweredOnceTheHostConnects() async throws {
+    let hostID = UUID()
+    let session = UUID()
+    registerRemote(session, on: hostID)
+    let s = TerminalSessions()
+    s.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    s.recordUnrecognizedTool = { _ in }
+    s.recency = SwitcherRecency()
+    let manager = HostConnectionManager()
+    s.hostConnections = manager
+    s.addTab(for: target, sessionID: session)
+    let view = try XCTUnwrap(s.tabs(for: target).first?.surface)
+
+    view.onTitleChange?("~")
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertNil(state(in: s)?.hostCwd, "nothing to ask before the host connects")
+
+    let connection = HostCwdConnection(directory: "/home/w")
+    _ = try await manager.connect(host: .remote(hostID)) { connection }
+    try await waitFor { state(in: s)?.hostCwd == "/home/w" }
+    XCTAssertEqual(state(in: s)?.hostCwd, "/home/w")
+    XCTAssertEqual(connection.asked, [session], "asked once, when the host connected")
+  }
+
   func testALocalPaneAndAHostWithNoConnectionAskNothing() async throws {
     let connection = HostCwdConnection(directory: "/home/w")
     let s = try await makeSessions(connection, on: .remote(UUID()))
