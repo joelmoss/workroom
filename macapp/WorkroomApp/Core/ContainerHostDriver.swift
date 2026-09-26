@@ -158,9 +158,12 @@ struct ContainerHostDriver: HostTerminalDriver {
   /// `TERMINFO`, which is the user's. Decided on the host as
   /// the attach starts, since the set may be gone (a reboot empties a tmpfs `/run`) or not there
   /// yet. The integration's features are Ghostty's defaults less `path`, which needs the `ghostty`
-  /// binary on the host, and the `ssh-*` ones, which are off by default and need it too. The title
-  /// then follows the shell; the pane's working directory does not, because libghostty takes an
-  /// OSC 7 report only from its own host.
+  /// binary on the host, plus `sudo`: `sudo` keeps `TERM` and drops `TERMINFO`, so without the
+  /// integration's wrapper (`sudo --preserve-env=TERMINFO`) a `sudo vim` on the host could not
+  /// look up `xterm-ghostty`. It covers `sudo` to root; `sudo -u` another user cannot read the
+  /// set in the ssh user's 0700 directory, and `su -` is not wrapped. The title then follows the
+  /// shell; the pane's working directory does not, because libghostty takes an OSC 7 report only
+  /// from its own host.
   ///
   /// A host with no agent installed yet (rebooted from tmpfs, or never bootstrapped) has no
   /// binary to run, and the shell's 127 for that would read as the session's own exit. It exits
@@ -172,7 +175,7 @@ struct ContainerHostDriver: HostTerminalDriver {
   ) -> String {
     let integrated = [
       "TERM=xterm-ghostty", "TERMINFO=\(resources)/terminfo",
-      "WORKROOM_SESSION_RESOURCES=\(resources)", "GHOSTTY_SHELL_FEATURES=cursor,title",
+      "WORKROOM_SESSION_RESOURCES=\(resources)", "GHOSTTY_SHELL_FEATURES=cursor,sudo,title",
     ]
     let variables = [
       "WORKROOM_SESSION_ID=\(session.uuidString)",

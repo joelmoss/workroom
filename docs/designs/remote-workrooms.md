@@ -1078,16 +1078,18 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     `TERMINFO` and `ZDOTDIR` paths into it. A failed push is reported in the outcome and never
     fails the connect. The attach decides on the host as it starts: with the set there, `TERM` is
     `xterm-ghostty` with `TERMINFO` and `WORKROOM_SESSION_RESOURCES` pointing at it and
-    `GHOSTTY_SHELL_FEATURES=cursor,title` (Ghostty's defaults less `path`, which needs the `ghostty`
-    binary on the host); without it, `xterm-256color` and no integration, as before. So the title
+    `GHOSTTY_SHELL_FEATURES=cursor,sudo,title` (Ghostty's defaults less `path`, which needs the
+    `ghostty` binary on the host, plus `sudo`, below); without it, `xterm-256color` and no integration, as before. So the title
     follows the shell (OSC 133 and OSC 2).
-  - *`sudo` on the host loses the terminfo.* `sudo` keeps `TERM` and drops `TERMINFO`, so under
-    it `xterm-ghostty` is an unknown terminal (`sudo vim`, `sudo -i` then `clear`; measured on the
-    fixture's Debian), where `xterm-256color` worked. A local pane has the same gap, since macOS
-    has no system `xterm-ghostty` either and the app leaves Ghostty's `sudo` feature off. That
-    feature (`sudo --preserve-env=TERMINFO`) would cover `sudo` to root, not `sudo -u` another
-    user (the set is in the ssh user's 0700 directory) or `su -`, and a `sudoers` that refuses
-    to preserve the variable would fail the command outright. Undecided; off for now.
+  - *`sudo` on the host keeps the terminfo, as far as Ghostty's wrapper reaches.* `sudo` keeps
+    `TERM` and drops `TERMINFO`, so under it a bare `xterm-ghostty` is an unknown terminal (`sudo
+    vim`, `sudo -i` then `clear`; measured on the fixture's Debian), where `xterm-256color` worked.
+    So remote panes turn on the integration's `sudo` feature, which wraps `sudo` as `sudo
+    --preserve-env=TERMINFO`. That covers `sudo` to root. It does not cover `sudo -u` another user
+    (the set is in the ssh user's 0700 directory) or `su -`, which is not wrapped. Debian's
+    default `sudoers` preserves the variable; a rule tagged `NOSETENV` refuses it, and the wrapped
+    command fails outright (`sudo: sorry, you are not allowed to set the following environment
+    variables: TERMINFO`; both measured in a container). Local panes leave the feature off.
   - *The footer's working directory does not follow a remote shell yet.* The integration reports
     it (OSC 7, `kitty-shell-cwd://$HOST$PWD`), but libghostty drops a report whose host is not
     this Mac's ("OSC 7 host must be local"), and faking the host would put a remote path where

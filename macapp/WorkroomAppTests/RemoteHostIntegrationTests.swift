@@ -327,10 +327,13 @@ final class RemoteHostIntegrationTests: XCTestCase {
         to: .remote(id), session: UUID(), workingDirectory: "/home/workroom", restored: false))
     defer { pane.dropLink() }
     Thread.sleep(forTimeInterval: 1)
-    pane.type("echo \"T=$TERM\"; infocmp -x \"$TERM\" >/dev/null && echo FOU\"\"ND\n")
+    // `sudo` is the integration's wrapper, which keeps `TERMINFO` across it.
+    pane.type(
+      "echo \"T=$TERM\"; type sudo; infocmp -x \"$TERM\" >/dev/null && echo FOU\"\"ND\n")
     let seen = pane.read(until: "FOUND")
     XCTAssertTrue(seen.contains("T=xterm-ghostty"), seen)
     XCTAssertTrue(seen.contains("FOUND"), seen)
+    XCTAssertTrue(seen.contains("sudo is a function"), seen)
     XCTAssertTrue(seen.contains("\u{1b}]133;"), "no prompt marks: \(seen)")
     XCTAssertTrue(seen.contains("\u{1b}]2;"), "no title: \(seen)")
 

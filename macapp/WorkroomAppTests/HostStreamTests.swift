@@ -141,7 +141,7 @@ final class HostStreamTests: XCTestCase {
         + "if test -r '/run/workroom/ghostty/terminfo/x/xterm-ghostty'; then set -- "
         + "'TERM=xterm-ghostty' 'TERMINFO=/run/workroom/ghostty/terminfo' "
         + "'WORKROOM_SESSION_RESOURCES=/run/workroom/ghostty' "
-        + "'GHOSTTY_SHELL_FEATURES=cursor,title'; else unset WORKROOM_SESSION_RESOURCES "
+        + "'GHOSTTY_SHELL_FEATURES=cursor,sudo,title'; else unset WORKROOM_SESSION_RESOURCES "
         + "GHOSTTY_SHELL_FEATURES; set -- 'TERM=xterm-256color'; fi; "
         + "'env' \"$@\" 'WORKROOM_SESSION_ID=\(session.uuidString)' "
         + "'WORKROOM_SESSION_SOCKET=/run/workroom/agent.sock' "
@@ -401,7 +401,7 @@ final class HostStreamTests: XCTestCase {
     XCTAssertEqual(
       try attach(),
       "TERM=xterm-ghostty TERMINFO=\(resources.path)/terminfo RESOURCES=\(resources.path) "
-        + "FEATURES=cursor,title")
+        + "FEATURES=cursor,sudo,title")
   }
 
   func testAnUnknownHostIsRefusedByExecAndOpenStream() async {
