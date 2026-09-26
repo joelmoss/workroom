@@ -14,16 +14,17 @@
 #   WRB receiving <path>     as each file lands, so the app's silence bound ticks during the push
 #   WRB received
 #   WRB outcome installed | write-failed | truncated <path> | bad-path <path> | no-sha256sum
-#               | corrupt
+#               | corrupt | raced
 #
 # The set is staged beside <dir>, checked against its own `CHECKSUMS`, and renamed into place, so a
 # pane never finds half of one. Shells already running keep their `TERMINFO` and integration paths
 # into <dir>, which is why it is one fixed directory updated in place rather than one per set, and
 # why the set it replaces is only ever removed once the new one is there: moved aside, it is put
 # back if the rename that follows fails or is interrupted. A pane that starts in the instant
-# between the two renames gets the `xterm-256color` fallback. Two
-# pushes racing can rename one set into the other rather than over it (`mv` onto a directory moves
-# into it); <dir> is still a whole set, with a stray staging directory in it until the next push.
+# between the two renames gets the `xterm-256color` fallback. Two pushes racing can find <dir>
+# back in place by the time the second renames (`mv` onto a directory moves into it): that push
+# takes its set back out and reports `raced`, so <dir> stays one whole set and the next connect
+# pushes again if it is not this build's.
 # POSIX sh and coreutils only, as the other scripts: `dd bs=1` reads exactly the bytes a file has,
 # where `head -c` may read ahead into the next one.
 set -u
@@ -92,6 +93,11 @@ if [ -e "$dir" ] && ! mv "$dir" "$old"; then
 fi
 if ! mv "$staged" "$dir"; then
   echo "WRB outcome write-failed"
+  exit 1
+fi
+if [ -d "$dir/${staged##*/}" ]; then
+  rm -rf "${dir:?}/${staged##*/}"
+  echo "WRB outcome raced"
   exit 1
 fi
 echo "WRB outcome installed"
