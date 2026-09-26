@@ -1808,8 +1808,8 @@ final class TerminalSessions: ObservableObject {
   /// `command_finished`), which is when a local pane's OSC 7 arrives too. Not on every title: a TUI
   /// that animates its title, such as an agent's spinner, would send a request per frame. A newer
   /// query replaces an older one, so a slow answer never lands on top of a fresh one. A no-op for a
-  /// local pane, and for a remote one whose host has no connection: nothing connects to a host to
-  /// answer this.
+  /// local pane. For a remote one whose host has no connection yet, it waits for one: nothing
+  /// connects to a host to answer this.
   private func refreshHostCwd(forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
     guard let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content,
       let session = s.sessionID ?? s.view.persistentSessionID,
@@ -1818,14 +1818,23 @@ final class TerminalSessions: ObservableObject {
     hostCwdQueries[tabID]?.cancel()
     let connections = hostConnections
     hostCwdQueries[tabID] = Task { [weak self] in
-      // A failed query keeps what the footer shows; an answer of "no such session" or "could not
-      // read it" clears it, rather than leaving a directory the shell may have left.
-      let cwd: String?
-      do {
-        cwd = try await connections.workingDirectory(of: session, on: host)
-      } catch { return }
-      guard !Task.isCancelled else { return }
-      self?.mutateTerminalState(tabID, target: target) { $0.hostCwd = cwd }
+      // Asked once the host has a service connection, which a restored pane's first prompt can
+      // come before. Waited for here, in the query's own task, so a newer query still replaces
+      // this one and closing the pane still ends the wait; nothing here connects the host.
+      for await snapshot in await connections.updates(for: host)
+      where snapshot.status == .connected {
+        // A failed query keeps what the footer shows; an answer of "no such session" or "could not
+        // read it" clears it, rather than leaving a directory the shell may have left.
+        let cwd: String?
+        do {
+          cwd = try await connections.workingDirectory(of: session, on: host)
+        } catch RepositoryRoutingError.unavailable {
+          continue  // Lost again between the snapshot and the ask: wait for the next one.
+        } catch { return }
+        guard !Task.isCancelled else { return }
+        self?.mutateTerminalState(tabID, target: target) { $0.hostCwd = cwd }
+        return
+      }
     }
   }
 
