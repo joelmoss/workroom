@@ -345,6 +345,11 @@ struct TerminalState {
   /// observable state so the detail-panel status bar shows the live directory (issue #49). Nil until
   /// the shell first reports; the status bar falls back to the surface's `lastKnownCwd` / target path.
   var cwd: String?
+  /// A remote pane's working directory ON ITS HOST (#239), from the host agent's session list:
+  /// libghostty drops an OSC 7 report whose host is not this Mac, so `cwd` never hears from a remote
+  /// shell. Kept apart from `cwd` because this path names nothing on this Mac. The status bar shows
+  /// and copies it, and nothing else reads it: not ⌘-click, not a new split, not the snapshot.
+  var hostCwd: String?
   /// OSC 9;4 progress — the *only* signal that drives `isRunning`, matching how Ghostty and Muxy work
   /// (neither ties "busy" to the title). `true` while the running program reports it's working,
   /// `false`/`nil` when it's idle, done, or never reported any. Reset at `command_finished`; the
@@ -549,6 +554,12 @@ final class TerminalSessions: ObservableObject {
   /// an unawaited kill racing an immediate app quit would leave that tab's daemon session running
   /// despite the user having explicitly closed it moments before.
   private var pendingCloseKills: [Task<Void, Never>] = []
+
+  /// Where a remote pane's host-side working directory is asked for (#239). Settable for tests.
+  var hostConnections: HostConnectionManager = .shared
+  /// Each remote tab's latest host cwd query. An entry also marks a tab whose first prompt has
+  /// already asked, so after that only `command_finished` asks again.
+  private var hostCwdQueries: [TerminalTab.ID: Task<Void, Never>] = [:]
 
   /// Wait for every `closeTab`-initiated kill still in flight. Called at quit, across every
   /// window's `TerminalSessions`, alongside (not instead of) the persistence-off `endAllSessions`
@@ -1623,6 +1634,7 @@ final class TerminalSessions: ObservableObject {
     tabsByTarget[target.id]?[tabID] = nil
     orderByTarget[target.id]?.removeAll { $0 == tabID }
     activityPulses[tabID] = nil
+    hostCwdQueries.removeValue(forKey: tabID)?.cancel()
 
     // A lone remaining member is not a group any more; two or more get evened, since their dividers
     // still budget space for the pane that just closed (issue #126).
@@ -1646,6 +1658,7 @@ final class TerminalSessions: ObservableObject {
       await endPersistentSession(for: tab)
       teardown(tab)
       activityPulses[tab.id] = nil
+      hostCwdQueries.removeValue(forKey: tab.id)?.cancel()
     }
     await PersistentSessionService.shared.endSessions(matchingWorkroom: id)
     tabsByTarget[id] = nil
@@ -1785,6 +1798,34 @@ final class TerminalSessions: ObservableObject {
       $0.activeAgentBackend = nil
       $0.activeTool = nil
       $0.progressActive = nil
+    }
+    refreshHostCwd(forTab: tabID, target: target)
+  }
+
+  /// Ask a remote pane's host where its shell is now (#239), and show it in the status bar.
+  ///
+  /// Asked when the shell is back at its prompt (a `cd` is a command, so it ends in
+  /// `command_finished`), which is when a local pane's OSC 7 arrives too. Not on every title: a TUI
+  /// that animates its title, such as an agent's spinner, would send a request per frame. A newer
+  /// query replaces an older one, so a slow answer never lands on top of a fresh one. A no-op for a
+  /// local pane, and for a remote one whose host has no connection: nothing connects to a host to
+  /// answer this.
+  private func refreshHostCwd(forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
+    guard let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content,
+      let session = s.sessionID ?? s.view.persistentSessionID,
+      let host = PersistentSessionService.shared.remoteHost(of: session)
+    else { return }
+    hostCwdQueries[tabID]?.cancel()
+    let connections = hostConnections
+    hostCwdQueries[tabID] = Task { [weak self] in
+      // A failed query keeps what the footer shows; an answer of "no such session" or "could not
+      // read it" clears it, rather than leaving a directory the shell may have left.
+      let cwd: String?
+      do {
+        cwd = try await connections.workingDirectory(of: session, on: host)
+      } catch { return }
+      guard !Task.isCancelled else { return }
+      self?.mutateTerminalState(tabID, target: target) { $0.hostCwd = cwd }
     }
   }
 
@@ -2056,6 +2097,10 @@ final class TerminalSessions: ObservableObject {
     }
     view.onTitleChange = { [weak self] title in
       self?.updateTitle(title, forTab: tabID, target: targetID)
+      // The first title is the first prompt, which `command_finished` never marks.
+      if self?.hostCwdQueries[tabID] == nil {
+        self?.refreshHostCwd(forTab: tabID, target: targetID)
+      }
     }
     view.onCwdChange = { [weak self] cwd in
       self?.updateCwd(cwd, forTab: tabID, target: targetID)

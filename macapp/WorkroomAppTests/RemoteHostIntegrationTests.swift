@@ -349,6 +349,31 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertFalse(fallback.contains("\u{1b}]133;"), fallback)
   }
 
+  /// A remote pane's footer follows its shell through the host's agent (#239): libghostty drops the
+  /// shell's own OSC 7 because its host is not this Mac, so the service connection asks the agent
+  /// for the session list, and the directory it names is where the shell is on the host.
+  func testTheHostsAgentReportsWhereARemotePanesShellIs() async throws {
+    let fixture = try fixture()
+    let (connection, id) = try await connect(fixture.host)
+    let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
+    let session = UUID()
+    let pane = try Pane(
+      command: driver.attachCommand(
+        to: .remote(id), session: session, workingDirectory: "/home/workroom", restored: false))
+    defer { pane.dropLink() }
+    pane.type("echo RE\"\"ADY\n")
+    _ = pane.read(until: "READY")
+    let started = try await connection.workingDirectory(of: session)
+    XCTAssertEqual(started, "/home/workroom")
+
+    pane.type("cd /tmp && echo MO\"\"VED\n")
+    _ = pane.read(until: "MOVED")
+    let moved = try await connection.workingDirectory(of: session)
+    XCTAssertEqual(moved, "/tmp")
+    let unknown = try await connection.workingDirectory(of: UUID())
+    XCTAssertNil(unknown)
+  }
+
   /// A newer app reconnecting (#231): the host's agent is handed off to the pushed binary (#230)
   /// with an attached pane's shell, its pid and its exit code intact. The pane's link ends with
   /// the exec and it exits 255, which is what the app reattaches on; the pane that comes back is

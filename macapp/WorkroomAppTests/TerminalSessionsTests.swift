@@ -1736,3 +1736,134 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
       "applyThemeToAll rebuilt the app-global config — that now happens once in applyActiveTheme")
   }
 }
+
+/// A remote pane's footer follows its shell (#239). libghostty drops an OSC 7 whose host is not this
+/// Mac, so the host's agent is asked where the shell is instead: at the first prompt, and each time
+/// a command finishes. What it answers is the footer's alone (`hostCwd`), never `cwd`, which
+/// ⌘-click, a new split and the saved snapshot all resolve against this Mac's disk.
+@MainActor
+final class RemotePaneFooterTests: XCTestCase {
+  private let target = TerminalTarget(
+    id: "wr|/p|remote", title: "r", path: "/tmp", isMissing: false)
+
+  private func makeSessions(_ connection: HostCwdConnection, on host: HostID) async throws
+    -> TerminalSessions
+  {
+    let sessions = TerminalSessions()
+    sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    sessions.recordUnrecognizedTool = { _ in }
+    sessions.recency = SwitcherRecency()
+    let manager = HostConnectionManager()
+    _ = try await manager.connect(host: host) { connection }
+    sessions.hostConnections = manager
+    return sessions
+  }
+
+  /// Registers `session` as a pane on `host`, through a driver that is never asked to attach.
+  private func registerRemote(_ session: UUID, on host: UUID) {
+    let driver = ContainerHostDriver(
+      hosts: [
+        host: .init(
+          address: "127.0.0.1", port: 1, user: "workroom", identityFile: "/keys/id",
+          hostKey: "ssh-ed25519 AAAA", agentSocket: "/s")
+      ], directory: FileManager.default.temporaryDirectory)
+    PersistentSessionService.shared.registerRemoteSession(
+      session, on: .remote(host), via: driver, workingDirectory: "/home/w")
+  }
+
+  private func state(in sessions: TerminalSessions) -> TerminalState? {
+    guard case .terminal(let state)? = sessions.tabs(for: target).first?.content else { return nil }
+    return state
+  }
+
+  private func waitFor(_ condition: () -> Bool) async throws {
+    for _ in 0..<300 where !condition() { try await Task.sleep(for: .milliseconds(10)) }
+  }
+
+  func testTheFooterFollowsTheHostAtTheFirstPromptAndAfterEachCommand() async throws {
+    let hostID = UUID()
+    let session = UUID()
+    registerRemote(session, on: hostID)
+    let connection = HostCwdConnection(directory: "/home/w")
+    let s = try await makeSessions(connection, on: .remote(hostID))
+    s.addTab(for: target, sessionID: session)
+    let view = try XCTUnwrap(s.tabs(for: target).first?.surface)
+
+    view.onTitleChange?("~")
+    try await waitFor { state(in: s)?.hostCwd == "/home/w" }
+    XCTAssertEqual(state(in: s)?.hostCwd, "/home/w", "the first prompt asks")
+    XCTAssertEqual(connection.asked, [session])
+
+    connection.directory = "/tmp/it's here"
+    view.handleCommandFinished(rawExitCode: 0)
+    try await waitFor { state(in: s)?.hostCwd == "/tmp/it's here" }
+    XCTAssertEqual(state(in: s)?.hostCwd, "/tmp/it's here", "a finished command asks again")
+    XCTAssertNil(state(in: s)?.cwd, "a host path never becomes the pane's local cwd")
+    XCTAssertNil(view.lastKnownCwd, "nor ⌘-click's")
+
+    // A TUI repainting its title, such as an agent's spinner, does not ask per frame.
+    let asked = connection.asked.count
+    view.onTitleChange?("✻ Working")
+    view.onTitleChange?("✳ Working")
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertEqual(connection.asked.count, asked)
+
+    // The host no longer names a directory (the session is gone, or its cwd is unreadable): the
+    // footer drops the one it had rather than keep a place the shell may have left.
+    connection.directory = nil
+    view.handleCommandFinished(rawExitCode: 0)
+    try await waitFor { state(in: s)?.hostCwd == nil }
+    XCTAssertNil(state(in: s)?.hostCwd)
+  }
+
+  func testALocalPaneAndAHostWithNoConnectionAskNothing() async throws {
+    let connection = HostCwdConnection(directory: "/home/w")
+    let s = try await makeSessions(connection, on: .remote(UUID()))
+    // A local pane.
+    s.addTab(for: target, sessionID: UUID())
+    // A remote pane on a host nothing has connected to.
+    let unconnected = UUID()
+    let session = UUID()
+    registerRemote(session, on: unconnected)
+    s.addTab(for: target, sessionID: session)
+    for tab in s.tabs(for: target) {
+      let view = try XCTUnwrap(tab.surface)
+      view.onTitleChange?("~")
+      view.handleCommandFinished(rawExitCode: 0)
+    }
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertEqual(connection.asked, [])
+    for tab in s.tabs(for: target) {
+      guard case .terminal(let state) = tab.content else { return XCTFail("not a terminal") }
+      XCTAssertNil(state.hostCwd)
+    }
+  }
+}
+
+/// A host connection that answers only the session list, with `directory` for every session.
+private final class HostCwdConnection: HostServiceConnection, @unchecked Sendable {
+  let disconnection = AsyncStream<Void> { _ in }
+  private let lock = NSLock()
+  private var _directory: String?
+  private var _asked: [UUID] = []
+
+  init(directory: String?) { _directory = directory }
+
+  var directory: String? {
+    get { lock.withLock { _directory } }
+    set { lock.withLock { _directory = newValue } }
+  }
+  var asked: [UUID] { lock.withLock { _asked } }
+
+  func reader(context: RepositoryContext) throws -> VCSProviding { throw VCSError.io("unused") }
+  func writer(context: RepositoryContext, reader: VCSProviding) throws -> VCSWriting {
+    throw VCSError.io("unused")
+  }
+  func workingDirectory(of session: UUID) async throws -> String? {
+    lock.withLock {
+      _asked.append(session)
+      return _directory
+    }
+  }
+  func close() async {}
+}

@@ -30,8 +30,12 @@ struct TerminalStatusBar: View {
 
   private let theme = ThemeService.shared
 
-  /// This pane's live cwd (observed state first, then the surface's last-known); nil for a diff pane.
-  private var cwd: String? { state.flatMap { $0.cwd ?? $0.view.lastKnownCwd } }
+  /// This pane's live cwd (a remote pane's host path, then observed state, then the surface's
+  /// last-known); nil for a diff pane.
+  private var cwd: String? { state.flatMap { $0.hostCwd ?? $0.cwd ?? $0.view.lastKnownCwd } }
+
+  /// Whether `cwd` is a path on a remote pane's host (#239), which names nothing on this Mac.
+  private var cwdIsOnHost: Bool { state?.hostCwd != nil }
 
   private var isRunTab: Bool { state != nil && store.runTabID(for: target.id) == tabID }
 
@@ -119,10 +123,11 @@ struct TerminalStatusBar: View {
   @ViewBuilder private var cwdSegment: some View {
     if let cwd {
       Button {
-        popCwdMenu(cwd)
+        popCwdMenu(cwd, onHost: cwdIsOnHost)
       } label: {
         Label {
-          Text(Self.abbreviate(cwd)).truncationMode(.middle)
+          // Not `~`-abbreviated on a host: this Mac's home says nothing about the host's.
+          Text(cwdIsOnHost ? cwd : Self.abbreviate(cwd)).truncationMode(.middle)
         } icon: {
           Image(systemName: "folder")
         }
@@ -139,7 +144,9 @@ struct TerminalStatusBar: View {
     }
   }
 
-  private func popCwdMenu(_ cwd: String) {
+  /// `onHost`: `cwd` is on a remote pane's host, so there is nothing for Finder to reveal. Revealing
+  /// it would select whatever this Mac happens to have at that path.
+  private func popCwdMenu(_ cwd: String, onHost: Bool) {
     let menu = NSMenu()
     menu.addItem(
       ClosureMenuItem(title: "Copy to Clipboard") {
@@ -150,10 +157,12 @@ struct TerminalStatusBar: View {
     // (which reveals the selected target's directory the same way): the directory comes up selected in
     // its parent. `NSWorkspace.open` would open the folder's own window instead — a different verb
     // than the one this item promises.
-    menu.addItem(
-      ClosureMenuItem(title: "Reveal in Finder") {
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: cwd)])
-      })
+    if !onHost {
+      menu.addItem(
+        ClosureMenuItem(title: "Reveal in Finder") {
+          NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: cwd)])
+        })
+    }
     // At the cursor, like a context menu — but popped out of a real view rather than the tempting
     // `at: NSEvent.mouseLocation, in: nil` (screen coordinates, no anchor needed). That form does
     // nothing at all when the click is synthesized: `StatusBarCwdUITests` clicked the segment and no

@@ -19,8 +19,8 @@ push-on-first-connect bootstrap (#231, built 2026-09-25; "As built (#231)" in th
 Plan), stop-and-reboot screen restoration (#232, built 2026-09-25; "As built (#232)" under
 Next Steps item 3), a remote pane that keeps reconnecting until its host is back (#241, merged
 2026-09-26 in #243), and Ghostty's terminfo and shell integration pushed with the agent (#239,
-built 2026-09-26; the pane's footer does not follow a remote shell yet). Both are under Phase 3's
-"Terminal panes". The rest of
+built 2026-09-26, with the pane's footer following the shell through the host's agent). Both are
+under Phase 3's "Terminal panes". The rest of
 this section is the 2026-09-17 status, kept for the Phase 2 detail it records and corrected where
 it had gone stale.
 
@@ -1095,11 +1095,19 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     default `sudoers` preserves the variable; a rule tagged `NOSETENV` refuses it, and the wrapped
     command fails outright (`sudo: sorry, you are not allowed to set the following environment
     variables: TERMINFO`; both measured in a container). Local panes leave the feature off.
-  - *The footer's working directory does not follow a remote shell yet.* The integration reports
-    it (OSC 7, `kitty-shell-cwd://$HOST$PWD`), but libghostty drops a report whose host is not
-    this Mac's ("OSC 7 host must be local"), and faking the host would put a remote path where
-    ⌘-click resolves files against the Mac's disk. The host's agent already knows each session's
-    working directory (`SessionInfo.cwd`); carrying that to the pane is the follow-up.
+  - *The footer's working directory comes from the host's agent, not OSC 7.* The integration
+    reports it (OSC 7, `kitty-shell-cwd://$HOST$PWD`), but libghostty drops a report whose host is
+    not this Mac's ("OSC 7 host must be local"), and faking the host would put a remote path where
+    ⌘-click resolves files against the Mac's disk. So the app asks the host's agent instead: the
+    service connection sends the Control `List` the agent has answered since protocol 1
+    (`AgentVCSConnection.workingDirectory(of:)`), and the agent reads the directory off the
+    session's foreground process (`SessionInfo.cwd`). It asks at the pane's first prompt (its
+    first title) and each time a command finishes (OSC 133), which is when a local pane's OSC 7
+    arrives too. It does not ask on every title, because a TUI animating its title would send a
+    request per frame. The answer goes in `TerminalState.hostCwd`, which only the status bar
+    reads: it shows and copies the path, and offers no "Reveal in Finder". ⌘-click, a new split
+    and the saved snapshot still read `cwd`, which stays empty for a remote pane. A host with no
+    service connection is never connected to for this; its footer stays empty.
   - *Not persisted:* a session is marked remote in memory (`registerRemoteSession`). Phase 4's
     remote workrooms re-register their panes on relaunch.
   - *An SDK-exec driver has no command to hand libghostty.* It needs a local bridge process, which

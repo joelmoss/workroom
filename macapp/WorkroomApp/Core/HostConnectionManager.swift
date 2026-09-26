@@ -18,6 +18,9 @@ protocol HostServiceConnection: Sendable {
   /// The port-forwarding service on this connection (issue #208). Concrete for the same reason
   /// `wakefulness()` is. Throws `VCSError.backendVersion` when the peer predates the service.
   func forwarding() throws -> AgentForwardService
+  /// The working directory of terminal `session` on this host, or nil when the host holds no such
+  /// session (#239). Concrete for the same reason `wakefulness()` is.
+  func workingDirectory(of session: UUID) async throws -> String?
   func close() async
 }
 
@@ -34,6 +37,10 @@ extension HostServiceConnection {
 
   func forwarding() throws -> AgentForwardService {
     throw HostConnectionError.serviceUnavailable("Host has no port-forwarding service.")
+  }
+
+  func workingDirectory(of session: UUID) async throws -> String? {
+    throw HostConnectionError.serviceUnavailable("Host has no terminal sessions.")
   }
 }
 
@@ -260,6 +267,13 @@ actor HostConnectionManager {
   func forwarding(host: HostID) throws -> (Lease, AgentForwardService) {
     let (lease, connection) = try connected(host)
     return (lease, try connection.forwarding())
+  }
+
+  /// Not lease-tracked either: the answer is one path, read once, with no context to go stale.
+  /// Throws `RepositoryRoutingError.unavailable` while `host` has no connection, and never connects
+  /// one: a remote pane's footer is not a reason to reach its host.
+  func workingDirectory(of session: UUID, on host: HostID) async throws -> String? {
+    try await connected(host).1.workingDirectory(of: session)
   }
 
   private func connected(_ host: HostID) throws -> (Lease, any HostServiceConnection) {
