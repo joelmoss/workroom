@@ -817,7 +817,8 @@ final class AgentBootstrapTests: XCTestCase {
 
   /// A set that has lost or changed a file since it was pushed is pushed again rather than kept as
   /// current for good (#239). That includes the Linux terminfo entry, which the manifest does not
-  /// list but the attach looks for before it uses the set.
+  /// list but the attach looks for before it uses the set: missing, or no longer the macOS entry it
+  /// was copied from.
   func testTheRealProbePushesASetThatLostOrChangedAFileAgain() async throws {
     let host = try localHost()
     let build = try standIn()
@@ -827,6 +828,7 @@ final class AgentBootstrapTests: XCTestCase {
     XCTAssertEqual(first.resources, .pushed)
     let damage: [(String, (URL) throws -> Void)] = [
       ("terminfo/x/xterm-ghostty", { try FileManager.default.removeItem(at: $0) }),
+      ("terminfo/x/xterm-ghostty", { try Data("truncated".utf8).write(to: $0) }),
       ("shell-integration/zsh/.zshenv", { try FileManager.default.removeItem(at: $0) }),
       ("shell-integration/bash/ghostty.bash", { try Data("changed\n".utf8).write(to: $0) }),
     ]
