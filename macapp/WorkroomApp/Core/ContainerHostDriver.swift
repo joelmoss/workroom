@@ -153,7 +153,9 @@ struct ContainerHostDriver: HostTerminalDriver {
   /// The terminal is the pane's own `xterm-ghostty`, with Ghostty's shell integration, when the
   /// bootstrap has put its terminfo and integration at `resources` (#239), and `xterm-256color`
   /// without the integration when it has not: a host rarely has `xterm-ghostty` terminfo of its
-  /// own, and a `TERM` the host cannot look up is worse than a plainer one. Decided on the host as
+  /// own, and a `TERM` the host cannot look up is worse than a plainer one. The fallback also
+  /// drops any integration variables the host's own login environment set, and keeps its
+  /// `TERMINFO`, which is the user's. Decided on the host as
   /// the attach starts, since the set may be gone (a reboot empties a tmpfs `/run`) or not there
   /// yet. The integration's features are Ghostty's defaults less `path`, which needs the `ghostty`
   /// binary on the host, and the `ssh-*` ones, which are off by default and need it too. The title
@@ -181,7 +183,8 @@ struct ContainerHostDriver: HostTerminalDriver {
       + shellQuoted("workroom: no agent is installed at \(binary) yet") + " >&2; exit 255; }; "
       + "if test -r \(shellQuoted(resources + "/terminfo/x/xterm-ghostty")); then set -- "
       + integrated.map(shellQuoted).joined(separator: " ")
-      + "; else set -- 'TERM=xterm-256color'; fi; 'env' \"$@\" "
+      + "; else unset WORKROOM_SESSION_RESOURCES GHOSTTY_SHELL_FEATURES; "
+      + "set -- 'TERM=xterm-256color'; fi; 'env' \"$@\" "
       + (variables + [binary, "attach", "--no-spawn"] + (restored ? ["--no-create"] : []))
       .map(shellQuoted).joined(separator: " ")
   }

@@ -141,7 +141,8 @@ final class HostStreamTests: XCTestCase {
         + "if test -r '/run/workroom/ghostty/terminfo/x/xterm-ghostty'; then set -- "
         + "'TERM=xterm-ghostty' 'TERMINFO=/run/workroom/ghostty/terminfo' "
         + "'WORKROOM_SESSION_RESOURCES=/run/workroom/ghostty' "
-        + "'GHOSTTY_SHELL_FEATURES=cursor,title'; else set -- 'TERM=xterm-256color'; fi; "
+        + "'GHOSTTY_SHELL_FEATURES=cursor,title'; else unset WORKROOM_SESSION_RESOURCES "
+        + "GHOSTTY_SHELL_FEATURES; set -- 'TERM=xterm-256color'; fi; "
         + "'env' \"$@\" 'WORKROOM_SESSION_ID=\(session.uuidString)' "
         + "'WORKROOM_SESSION_SOCKET=/run/workroom/agent.sock' "
         + "'WORKROOM_SESSION_CWD=/home/w/it'\\''s here' '/run/workroom/wr-agent' 'attach' "
@@ -384,7 +385,8 @@ final class HostStreamTests: XCTestCase {
       let result = try SessionBackendProbe.run(
         URL(fileURLWithPath: "/usr/bin/env"),
         arguments: [
-          "-i", "PATH=/usr/bin:/bin", "/bin/sh", "-c",
+          "-i", "PATH=/usr/bin:/bin", "WORKROOM_SESSION_RESOURCES=/stale",
+          "GHOSTTY_SHELL_FEATURES=stale", "/bin/sh", "-c",
           ContainerHostDriver.remoteAttachCommand(
             binary: binary.path, session: UUID(), socket: "/s", resources: resources.path,
             workingDirectory: "/w", restored: false),
