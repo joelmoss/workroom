@@ -815,6 +815,33 @@ final class AgentBootstrapTests: XCTestCase {
         .contains { $0.hasPrefix("ghostty.") })
   }
 
+  /// A set that has lost or changed a file since it was pushed is pushed again rather than kept as
+  /// current for good (#239). That includes the Linux terminfo entry, which the manifest does not
+  /// list but the attach looks for before it uses the set.
+  func testTheRealProbePushesASetThatLostOrChangedAFileAgain() async throws {
+    let host = try localHost()
+    let build = try standIn()
+    let bundle = try XCTUnwrap(GhosttyResources.bundledURL)
+    let set = host.directory.appendingPathComponent("ghostty")
+    let first = try await ensure(host, bundling: build, resources: bundle)
+    XCTAssertEqual(first.resources, .pushed)
+    let damage: [(String, (URL) throws -> Void)] = [
+      ("terminfo/x/xterm-ghostty", { try FileManager.default.removeItem(at: $0) }),
+      ("shell-integration/zsh/.zshenv", { try FileManager.default.removeItem(at: $0) }),
+      ("shell-integration/bash/ghostty.bash", { try Data("changed\n".utf8).write(to: $0) }),
+    ]
+    for (path, damageIt) in damage {
+      let file = set.appendingPathComponent(path)
+      let original = try XCTUnwrap(FileManager.default.contents(atPath: file.path), path)
+      try damageIt(file)
+      let repaired = try await ensure(host, bundling: build, resources: bundle)
+      XCTAssertEqual(repaired.resources, .pushed, path)
+      XCTAssertEqual(FileManager.default.contents(atPath: file.path), original, path)
+    }
+    let again = try await ensure(host, bundling: build, resources: bundle)
+    XCTAssertEqual(again.resources, .current)
+  }
+
   /// A push whose rename into place fails leaves the set it was replacing where it was (#239):
   /// running shells still read their terminfo and integration from it.
   func testTheRealPushKeepsTheLiveSetWhenItCannotReplaceIt() async throws {
