@@ -914,8 +914,8 @@ final class GhosttySurfaceView: NSView {
   /// again) from one that never came up (keep backing off).
   private var lastAttachAt = Date.distantPast
   /// The reconnect waiting out its delay, cancelled by any other reattach so the pane does not
-  /// attach twice.
-  private var pendingReconnect: DispatchWorkItem?
+  /// attach twice, and by closing the pane.
+  private(set) var pendingReconnect: DispatchWorkItem?
 
   func handleChildExited(exitCode: UInt32) {
     reconnectIfTheLinkDropped(exitCode: exitCode)

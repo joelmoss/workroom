@@ -229,6 +229,7 @@ final class HostStreamTests: XCTestCase {
       "ssh: connect to host 127.0.0.1 port 2222: Connection refused",
       "ssh: connect to host 10.0.0.9 port 22: No route to host",
       "ssh: connect to host 10.0.0.9 port 22: Network is unreachable",
+      "ssh: connect to host 10.0.0.9 port 22: Permission denied",
       "ssh: Could not resolve hostname box.example: nodename nor servname provided, or not known",
       "kex_exchange_identification: read: Connection reset by peer",
       "Connection timed out during banner exchange",
