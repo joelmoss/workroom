@@ -561,7 +561,7 @@ moot by the decision, or still needs a spike.
   lifetime and re-checks when it can, so the design works whichever way GitHub behaves. Enforcing SAML needs
   GitHub Enterprise Cloud ("To use SAML single sign-on, your organization must use GitHub Enterprise Cloud",
   [enabling SAML](https://docs.github.com/en/enterprise-cloud@latest/organizations/managing-saml-single-sign-on-for-your-organization/enabling-and-testing-saml-single-sign-on-for-your-organization))
-  plus an identity provider, so run this when a SAML user needs it. What it would do: needs an org that enforces SAML SSO. Authorize the App, let the SSO session lapse (24 h by
+  plus an identity provider, so run this when a SAML user needs it. What it would do: authorize the App, let the SSO session lapse (24 h by
   default), then use and refresh the user token against an org repo, and mint and use an installation token
   there too. This one matters: the user token backs the per-mint authorization check, so if it stops working
   when the session lapses, pushes stop after a day on such orgs (OQ20 records the fallback).
