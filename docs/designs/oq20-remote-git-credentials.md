@@ -542,7 +542,8 @@ moot by the decision, or still needs a spike.
    10KiB)" (checked 2026-09-27 against a live account). So a VM created without one gets no git config from
    the platform beyond the image. Confirmed on a live VM created without one (2026-09-27, run by the owner):
    `git config --list --system` failed with `fatal: unable to read config file '/etc/gitconfig': No such
-   file or directory`, so there is no system git config at all.
+   file or directory`, so there is no system git config at all. Across every level, `git config
+   --show-origin --list` showed one line: `file:/home/exedev/.gitconfig init.defaultbranch=main`.
    Whether a `vm:` attachment follows `cp` is moot, because provider integrations go unused under D.
 8. **Phase 0 carry-over.** *Moot.* The deploy key is dropped, so isolating its 403 to the Administration
    permission no longer matters.
