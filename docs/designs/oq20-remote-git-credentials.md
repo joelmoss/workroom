@@ -553,7 +553,7 @@ moot by the decision, or still needs a spike.
 
 **Spikes still needed.** Each needs something outside this repo, so each waits for the owner's go-ahead.
 
-- **S1. Does the token cap apply to GitHub App user tokens?** Low priority: the design no longer depends on
+- **S1. Does the token cap apply to GitHub App user tokens? Skipped (owner, 2026-09-27).** Low priority: the design no longer depends on
   it, and it only decides whether scoped user tokens could come back. Needs a registered Workroom GitHub App
   (created in the GitHub UI; free). Mint 12 scoped tokens for one user within an hour and check whether the oldest
   stops working and whether a re-authorization prompt appears. Teardown: delete the App.
