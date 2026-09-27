@@ -563,8 +563,8 @@ moot by the decision, or still needs a spike.
   [enabling SAML](https://docs.github.com/en/enterprise-cloud@latest/organizations/managing-saml-single-sign-on-for-your-organization/enabling-and-testing-saml-single-sign-on-for-your-organization))
   plus an identity provider, so run this when a SAML user needs it. What it would do: authorize the App, let the SSO session lapse (24 h by
   default), then use and refresh the user token against an org repo, and mint and use an installation token
-  there too. This one matters: the user token backs the per-mint authorization check, so if it stops working
-  when the session lapses, pushes stop after a day on such orgs (OQ20 records the fallback).
+  there too. With the cached answer, a lapse no longer stops pushes. The test would show whether re-checks
+  can succeed on such orgs without a live session, which is how fast a removed collaborator loses access.
 - ~~**S3. exe.dev first-boot script.**~~ Done (open point 7): the script is the user's own
   `--setup-script`, and a live VM has no `/etc/gitconfig`.
 
