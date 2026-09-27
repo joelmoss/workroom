@@ -2126,9 +2126,10 @@ disagreement passes every test on either side alone while presenting as an empty
       outage stalls new mints, not work in progress: the helper keeps a token until it expires, so a
       push fails only after up to an hour without the broker. The broker is a high-value target,
       and the design keeps that to one place.
-    - **One optional spike** (research note, S1): whether GitHub's token cap applies to GitHub App
-      user tokens. Low priority: it only decides whether scoped user tokens could replace
-      installation tokens. The SAML spike (S2) is deferred: the cached authorization answer above
+    - **One optional spike, skipped by the owner (2026-09-27)** (research note, S1): whether
+      GitHub's token cap applies to GitHub App user tokens. It only decides whether scoped user
+      tokens could replace installation tokens, which would make pushes show as the user rather
+      than the App's bot. The SAML spike (S2) is deferred: the cached authorization answer above
       makes the design work either way.
 
     Original question: Premise 6 caveat (b) states the failure and this document had no answer for
@@ -3032,7 +3033,11 @@ service milestones below so each layer can be reviewed and landed independently.
    and credentials after partial failure. Apply the measured wakefulness policy through the
    far-side shim. Add boxd's fast derivation only after the portable path passes. Remote UI remains
    Nightly-only until the success criteria pass; the container fixture alone does not establish
-   parity across two real providers.
+   parity across two real providers. **Filed 2026-09-27** as #249 (host descriptors), #250 (broker
+   service) → #251 (broker clients) → #252 (portable derivation on the container driver) → #253
+   (remote workrooms in the app) → #254 (pane parity) and #255 (cross-machine reattach, OQ8); #256
+   (boxd driver) → #257 (lifecycle shim) and #258 (boxd live fork); #259 (second real provider);
+   and #260, the gate that runs the success criteria on two real providers.
 
 **Release follow-up, independent of Phase 2:** ~~Phase 1 Outstanding item 5 supplies the warning
 about rolling back to v2.0.0 and then updating again. Verify that the first release containing the
