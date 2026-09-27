@@ -525,8 +525,8 @@ moot by the decision, or still needs a spike.
    a VM keeps pushing across at least two user-token refreshes (over 16 h) with the laptop closed.
 4. **Org behaviour.** *Resolved from the docs, except SAML.* A repo admin can install an App that asks for
    repository permissions only, and a member who cannot install can request it, which emails the owner.
-   SAML: an active SSO session is required to authorize; later use and refresh are not documented. **Spike
-   S2.**
+   SAML: an active SSO session is required to authorize; later use and refresh are not documented. Designed
+   around rather than tested (spike S2, deferred).
 5. **Narrowing and revocation without a secret.** *Moot under D.* The broker holds the client secret.
 6. **boxd helper precedence.** *Resolved, measured locally on git 2.55.0.* With boxd's two lines as the
    system config and stub helpers: adding Workroom's helper at `--global` alone, boxd's still answers. An
@@ -557,7 +557,11 @@ moot by the decision, or still needs a spike.
   it, and it only decides whether scoped user tokens could come back. Needs a registered Workroom GitHub App
   (created in the GitHub UI; free). Mint 12 scoped tokens for one user within an hour and check whether the oldest
   stops working and whether a re-authorization prompt appears. Teardown: delete the App.
-- **S2. SAML.** Needs an org that enforces SAML SSO. Authorize the App, let the SSO session lapse (24 h by
+- **S2. SAML. Deferred (owner, 2026-09-27).** OQ20 keeps the authorization answer for the workroom's
+  lifetime and re-checks when it can, so the design works whichever way GitHub behaves. Enforcing SAML needs
+  GitHub Enterprise Cloud ("To use SAML single sign-on, your organization must use GitHub Enterprise Cloud",
+  [enabling SAML](https://docs.github.com/en/enterprise-cloud@latest/organizations/managing-saml-single-sign-on-for-your-organization/enabling-and-testing-saml-single-sign-on-for-your-organization))
+  plus an identity provider, so run this when a SAML user needs it. What it would do: needs an org that enforces SAML SSO. Authorize the App, let the SSO session lapse (24 h by
   default), then use and refresh the user token against an org repo, and mint and use an installation token
   there too. This one matters: the user token backs the per-mint authorization check, so if it stops working
   when the session lapses, pushes stop after a day on such orgs (OQ20 records the fallback).

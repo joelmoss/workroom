@@ -2043,6 +2043,17 @@ disagreement passes every test on either side alone while presenting as an empty
       a token's scopes. That made it the wrong check for predicting deploy-key registration, and it
       is exactly the right check here. Leaving this out would let any Workroom user push to any repo
       that has the App installed.
+      **The answer is kept for the workroom's lifetime (decided 2026-09-27, owner).** The broker
+      records "this user may push to this repository" when the workroom enrols, re-checks whenever
+      the user's token works, and withdraws the grant as soon as a re-check says no. A failed
+      re-check (an expired SSO session, GitHub unreachable) keeps the last answer instead of stopping
+      mints. The reason is SAML: GitHub requires an active SSO session to authorize an App, and says
+      nothing about using or refreshing the token after the session lapses (24 h by default). If use
+      needs a live session, checking before every mint would stop pushes about a day after the
+      laptop closed on such orgs. Testing it needs a GitHub Enterprise Cloud org with an identity
+      provider, so it is deferred until a SAML user needs it. The cost: a collaborator removed from
+      the repository keeps push access through an existing workroom until the next successful
+      re-check or until the workroom is destroyed.
     - **Attribution.** Pushes show as the App's bot account (named after the App's slug, for example
       `workroom[bot]`). Commits are still authored by the
       user, from git config on the instance, and pull requests are opened by the user, because `gh`
@@ -2115,18 +2126,10 @@ disagreement passes every test on either side alone while presenting as an empty
       outage stalls new mints, not work in progress: the helper keeps a token until it expires, so a
       push fails only after up to an hour without the broker. The broker is a high-value target,
       and the design keeps that to one place.
-    - **Spikes that need a registered Workroom GitHub App** (listed in the research note): whether
-      the token cap applies to GitHub App user tokens, which decides whether scoped user tokens are
-      back on the table (low priority: the design does not depend on it); and on a SAML-enforced
-      org, whether the user token the authorization check uses keeps working after the SSO session
-      ends (GitHub requires an active session to authorize, and says nothing about later use or
-      refresh). That one matters: under installation tokens the user token's only job is the
-      per-mint check, so if it stops working when the SSO session lapses (24 h by default), mints
-      stop and the laptop-closed guarantee breaks after a day on such orgs. The lever if it does:
-      cache the "this user may push to this repository" answer for the workroom's lifetime and
-      re-check when the user token works, trading how fast a removed collaborator loses access for
-      robustness. The same spike should check whether installation tokens themselves are affected
-      by SAML, which the docs do not state.
+    - **One optional spike** (research note, S1): whether GitHub's token cap applies to GitHub App
+      user tokens. Low priority: it only decides whether scoped user tokens could replace
+      installation tokens. The SAML spike (S2) is deferred: the cached authorization answer above
+      makes the design work either way.
 
     Original question: Premise 6 caveat (b) states the failure and this document had no answer for
     it. It is the *common* case on org repos. Candidates, none evaluated: a fine-grained PAT scoped
