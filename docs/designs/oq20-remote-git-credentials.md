@@ -540,7 +540,9 @@ moot by the decision, or still needs a spike.
    `insteadOf`. It does run a per-VM first-boot script, `/exe.dev/setup` (`exe-setup.service`). That script
    is the user's own: `ssh exe.dev help new` lists `--setup-script`, "setup script to run on first boot (max
    10KiB)" (checked 2026-09-27 against a live account). So a VM created without one gets no git config from
-   the platform beyond the image. A live check on a real VM (spike S3) would confirm it, and was not run.
+   the platform beyond the image. Confirmed on a live VM created without one (2026-09-27, run by the owner):
+   `git config --list --system` failed with `fatal: unable to read config file '/etc/gitconfig': No such
+   file or directory`, so there is no system git config at all.
    Whether a `vm:` attachment follows `cp` is moot, because provider integrations go unused under D.
 8. **Phase 0 carry-over.** *Moot.* The deploy key is dropped, so isolating its 403 to the Administration
    permission no longer matters.
@@ -558,11 +560,8 @@ moot by the decision, or still needs a spike.
   default), then use and refresh the user token against an org repo, and mint and use an installation token
   there too. This one matters: the user token backs the per-mint authorization check, so if it stops working
   when the session lapses, pushes stop after a day on such orgs (OQ20 records the fallback).
-- **S3. exe.dev first-boot script.** Mostly answered: the script is the user's own `--setup-script` (open
-  point 7). A live confirmation needs one VM, which the account's free Basic plan allows: `ssh exe.dev new
-  --name wr-oq20-spike --no-email`, then `ssh wr-oq20-spike.exe.xyz git config --show-origin --list
-  --system`, then `ssh exe.dev rm wr-oq20-spike`. Not run: creating the VM from this session was refused
-  by its permission check.
+- ~~**S3. exe.dev first-boot script.**~~ Done (open point 7): the script is the user's own
+  `--setup-script`, and a live VM has no `/etc/gitconfig`.
 
 **Unverified claims in this note:**
 
@@ -577,6 +576,5 @@ moot by the decision, or still needs a spike.
 - boxd's `/run/boxd` path and "metadata endpoint" come from a vendor skill file. The public docs confirm
   that agent logins and integrations reach the machine unless it is `--isolated`.
 - Claude cloud sessions refreshing tokens server-side (inferred from the 72-hour routine window).
-- exe.dev: a live check that a VM created without `--setup-script` has no system git config (spike S3),
-  and whether Identity Federation
+- exe.dev: whether Identity Federation
   integrations can be created from the CLI (the docs show the web UI only).
