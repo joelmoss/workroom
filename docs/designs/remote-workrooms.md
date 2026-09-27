@@ -3042,7 +3042,8 @@ service milestones below so each layer can be reviewed and landed independently.
    parity across two real providers. **Filed 2026-09-27** as #249 (host descriptors), #250 (broker
    service) → #251 (broker clients) → #252 (portable derivation on the container driver) → #253
    (remote workrooms in the app) → #254 (pane parity) and #255 (cross-machine reattach, OQ8); #256
-   (boxd driver) → #257 (lifecycle shim) and #258 (boxd live fork); #259 (second real provider);
+   (boxd driver) → #257 (lifecycle shim) and #258 (boxd live fork); #259 (the second real provider,
+   exe.dev, decided 2026-09-27);
    and #260, the gate that runs the success criteria on two real providers.
 
 **Release follow-up, independent of Phase 2:** ~~Phase 1 Outstanding item 5 supplies the warning
