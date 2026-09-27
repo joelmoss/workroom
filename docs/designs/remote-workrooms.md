@@ -2120,17 +2120,18 @@ disagreement passes every test on either side alone while presenting as an empty
     GitHub refresh tokens and the App's private key, so "Workroom stores a secret" is accepted:
     moved into one service, not avoided.
 
-    *Still open.*
+    *Settled after the decision (nothing is left open).*
     - **Where the broker is hosted: Codaset (decided 2026-09-27, owner).** It is built into
       `joelmoss/codaset` (Rails 8.1, Postgres, Redis, Sidekiq), with refresh tokens under Active
       Record Encryption and the App's secrets in Rails credentials. Codaset is deployed at
       `codaset.dev`, where only `/workroom`, `/up` and a placeholder home page are live; the rest of
       the app sits behind a `WIP` route gate. The broker's routes join the live ones outside that
       gate, and outside Codaset's session-cookie authentication, since the Mac and the VMs sign
-      their requests. Still
-      open: whether a Workroom user needs a Codaset account, or the broker keeps its own tables
-      keyed by GitHub user. An outage stalls new mints, not work in progress: the helper keeps a
-      token until it expires, so a push fails only after up to an hour without the broker.
+      their requests. **Workroom users become Codaset users (decided 2026-09-27, owner):**
+      signing in with GitHub creates a Codaset user, or links to an existing one by the GitHub
+      account's verified primary email, never an unverified one. Built under joelmoss/codaset#40.
+      An outage stalls new mints, not work in progress: the helper keeps a token until it expires,
+      so a push fails only after up to an hour without the broker.
     - **One optional spike, skipped by the owner (2026-09-27)** (research note, S1): whether
       GitHub's token cap applies to GitHub App user tokens. It only decides whether scoped user
       tokens could replace installation tokens, which would make pushes show as the user rather
