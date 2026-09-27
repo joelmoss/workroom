@@ -269,7 +269,9 @@ datagrams; the portable path has no such constraint. Two reasons the distinction
   whose fast path lands first ends up permanently shaped like its first provider.
 - **Per-workroom deploy keys for git auth** — keypair generated on the VM, public half registered
   against the repo, revoked when the workroom is destroyed. Rejected ssh agent forwarding
-  (premise 6). Rejected a credential broker as correct-but-premature.
+  (premise 6). Rejected a credential broker as correct-but-premature. **Reversed by OQ20
+  (2026-09-27):** a credential broker that Workroom runs replaces the deploy keys, because a deploy
+  key needs repo admin for every workroom.
 - **Sequencing: local-first unify, preceded by a throwaway spike.** Scoped at one day when chosen;
   the provider decision added two more measurements, so treat the day as a budget and let the
   lower-priority items come back unanswered rather than letting it sprawl.
@@ -495,6 +497,8 @@ driver seam is what makes boxd replaceable rather than load-bearing.
    not the GitHub API, so it cannot serve the `gh`-backed PR/CI status if that moves to the agent —
    see Phase 2, where the resolution is to keep `gh` on the Mac. Premise 6 holds only with (c)
    resolved that way; running `gh` remotely would void it.
+   **Superseded for repository credentials by OQ20 (2026-09-27):** a credential broker that Workroom
+   runs replaces the deploy key, for admins and writers alike.
 7. **Config absorbs a host descriptor with no migration.** `config.json` is read and written as an
    untyped `map[string]any` under a flock, and unknown keys round-trip untouched
    (`internal/config/config.go:91-148`). The typed read-side view is only `Workroom{Path}` and
@@ -1164,6 +1168,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   and a supervised agent has no terminal. ssh itself runs with an empty environment,
   `ForwardAgent no` and `ClearAllForwardings yes`. git on the host authenticates with what the host
   has, which in production is a per-workroom deploy key minted on the box (Decisions Made; Phase 4).
+  Now a broker-minted token instead of a deploy key (OQ20, 2026-09-27).
   Agent forwarding stays rejected (premise 6). The container driver also logs in with a key file
   and `IdentityAgent none`; whether a real driver may use the Mac's ssh agent to LOG IN, which is
   not forwarding it, is that driver's decision.
@@ -1188,7 +1193,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   `gh api` from the Mac → fetch and check out → serve requests.** Every step before the last must
   roll the instance back on failure, and an instance must not serve a request until identity and
   credentials are its own (open questions 9 and 10) — inherited state is the failure mode wherever
-  derivation copies a running machine.
+  derivation copies a running machine. **Amended by OQ20 (2026-09-27):** the keypair minted on the
+  instance now enrols with Workroom's credential broker, not with `gh api` as a deploy key.
 - **Build order within this phase is fixed by the agnosticism decision:** the slowest correct
   derivation first (snapshot or clone, whichever the fixture supports), then boxd's live fork as an
   optimisation behind the same interface. Not the other way round.
@@ -1202,6 +1208,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   on stderr), so `WorkroomCLI.run`'s parsing stays reusable — but note that derivation itself
   is a driver operation with its own result; it is not a Go CLI command. The first driver wraps
   `boxd --json` output behind that result rather than reusing the Go CLI's envelope implicitly.
+- **The credential broker is a new component (OQ20, 2026-09-27).** A hosted service that must exist
+  before the first remote push, with its own sign-in, token store and GitHub App. It was not in the
+  original plan.
 - **The base machine is a fourth kind of thing** the config and UI have to model: not a project, not
   a workroom, but a per-project template with its own lifecycle (build, refresh when deps change,
   destroy). Nothing in the current schema anticipates it, though premise 7's untyped map absorbs it.
@@ -1230,7 +1239,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   `TerminalLinkOpener.absolutePath(for:cwd:)` (`TerminalLinkOpener.swift:27-31,202`) will then
   resolve a cmd-clicked file against it **on the Mac**. Week-one bug; needs a host-tagged cwd and a
   link opener that routes through the file service.
-- Per-workroom deploy key: mint on create, revoke on destroy, and revoke on the failure paths too.
+- Per-workroom credential: enrol on create, revoke on destroy, and revoke on the failure paths too.
+  It is a broker grant, not a deploy key (OQ20).
 - Idle state per remote workroom in the sidebar. **Cost display is deliberately deferred** —
   it needs per-provider billing APIs and there is no spending policy yet (open question 7).
 
@@ -1988,12 +1998,141 @@ disagreement passes every test on either side alone while presenting as an empty
     loadavg delta, with hysteresis and an awake ceiling) is specified in Phase 2 but unbuilt and
     unmeasured. False-busy is a remote workroom's default state under the naive version, and
     false-busy costs money continuously with no ceiling (OQ7).
-20. **What is the credential path when the user is not a repo admin?** Premise 6 caveat (b) states
-    the failure and this document has no answer for it, despite the summary above once claiming it
-    was fixed. It is the *common* case on org repos. Candidates, none evaluated: a fine-grained PAT
-    scoped to the repo, a GitHub App installation token, or a dedicated machine user. Each reopens
-    "Workroom stores a secret", which premise 6 exists to avoid — so this is a real decision, not a
-    detail, and it is separate from OQ6 (non-GitHub remotes).
+20. **What is the credential path when the user is not a repo admin?** **DECIDED — 2026-09-27,
+    owner: a credential broker that Workroom runs.** The research is in
+    [`oq20-remote-git-credentials.md`](oq20-remote-git-credentials.md). It replaces the per-workroom
+    deploy key for admins and writers alike, so there is one path, not a fallback chain.
+
+    *Why.* Every product surveyed that keeps pushing with no client connected (Claude Code cloud
+    sessions, Amp, Codespaces, Copilot, Coder, boxd, exe.dev) keeps the long-lived credential on its
+    own server. A deploy key needs repo admin for every workroom. A GitHub App needs an org owner, or
+    a repo admin, once per org (and again for each new repository, if the install covers selected
+    repositories rather than all), and a writer can only request the install. That once-per-org step is
+    the admin dependency that remains, and no option removes it. Without a server, the best option
+    (each VM running the device flow and holding its own refresh chain) costs one browser approval
+    per workroom and leaves a 6-month refresh token on every VM that Workroom cannot revoke. The
+    broker removes both costs.
+
+    *Shape.*
+    - **One Workroom GitHub App.** The user signs in to the broker once, through the App's browser
+      flow. The broker keeps that user's App user token and its refresh token, with "Expire user
+      authorization tokens" left on, as GitHub recommends (8 h tokens, 6-month refresh tokens,
+      refreshed server-side). It also holds the App's client secret and private key.
+    - **Enrolment, after the derive (OQ10).** The Mac asks the broker for a one-time code bound to one
+      workroom and one repository, and hands it to the agent over the stream it already has. The
+      agent generates a keypair on the instance and registers the public half with the broker using
+      that code. The private half never leaves the instance. This replaces "mint keypair → register
+      via `gh api`" in the Phase 4 sequence.
+    - **Use: installation tokens, not user tokens.** A git credential helper on the instance asks the
+      broker for a token, signing the request with its key. The broker finds the App's installation
+      for that repository (`GET /repos/{owner}/{repo}/installation`, authenticated as the App) and
+      mints an **installation token** narrowed at mint time to that one repository and
+      `contents: write` (1 hour, documented, and it can revoke itself). Why not the user's own token, narrowed with
+      `POST /applications/{client_id}/token/scoped`: GitHub caps OAuth app tokens at "ten tokens …
+      per user/application/scope combination, and a rate limit of ten tokens created per hour",
+      and exceeding the rate limit "will trigger a re-authorization prompt within the browser". The
+      docs state that for OAuth apps and say nothing either way for GitHub App user tokens. One
+      token per workroom per refresh would break for anyone with more than ten workrooms if it does
+      apply, and only a registered App could find out. Installation tokens have no per-user cap.
+      (Changed after the decision, 2026-09-27; revert to scoped user tokens if a spike shows the cap
+      does not apply to GitHub Apps.)
+    - **The authorization check on every mint.** An installation token reaches every repository the
+      App is installed on, not just the user's. So before each mint the broker asks GitHub, with the
+      user's own token, whether this user may push to this repository: `GET /repos/{owner}/{repo}`
+      and its `permissions.push`. Phase 0 warned that `permissions` describes the user's role, not
+      a token's scopes. That made it the wrong check for predicting deploy-key registration, and it
+      is exactly the right check here. Leaving this out would let any Workroom user push to any repo
+      that has the App installed.
+    - **Attribution.** Pushes show as the App's bot account (named after the App's slug, for example
+      `workroom[bot]`). Commits are still authored by the
+      user, from git config on the instance, and pull requests are opened by the user, because `gh`
+      stays on the Mac (Phase 2). A branch protection that restricts who can push must list the App.
+      GitHub allows that ("users, teams, or installed GitHub Apps with write access"), so it is an
+      org onboarding step, not a blocker.
+    - **The base clone (OQ10's second half).** The base never enrols. When it is built or refreshed,
+      which happens while the Mac is awake, the Mac asks the broker (signed with its own key) for a
+      read-only installation token for the repository and passes it to the clone through the agent's
+      exec service as a one-shot value. It is never written to disk or into the remote URL, so the
+      base holds no enrolment and no token when the first derive copies it.
+    - **Revocation.** Destroying a workroom cancels its grant, so the broker stops minting for it at
+      once, and each installation token dies within the hour or on `DELETE /installation/token`.
+    - **Laptop closed.** After enrolment the instance talks to the broker directly, and the Mac is
+      not involved.
+    - **How the Mac authenticates to the broker: a Secure Enclave signing key.** At sign-in the Mac
+      generates a P-256 key in the Secure Enclave (CryptoKit `SecureEnclave.P256.Signing`) and
+      registers its public half. Every Mac-to-broker request is signed with it. The key cannot be
+      exported, the blob that names it is useless on another Mac, and the broker revokes it per
+      device. Measured 2026-09-27 on this Mac: create, store as a 284-byte blob in a plain file,
+      reload and sign, in a binary with no Keychain use and no entitlements, ad hoc signed and again
+      with the hardened runtime. The Developer ID build has the same shape; confirm it in the first
+      Nightly. The deployment target (macOS 15, universal) includes Intel Macs without a Secure
+      Enclave, so check `SecureEnclave.isAvailable` and fall back to a software P-256 key in the
+      Keychain. Both are signing keys, never bearer tokens. Teleport's `tsh` authenticates devices
+      the same way. Rejected: sending the user's `gh` token on each request, which hands a token
+      covering every repository the user can reach to Workroom's server — the exposure the broker
+      exists to avoid.
+    - **Branch restriction: deferred, and its shape is known.** It needs git traffic to pass through
+      the broker as a smart-HTTP proxy that reads the ref updates in `git-receive-pack` and refuses
+      any ref other than the workroom's branch. Anthropic's proxy states the rule ("`git push` works
+      only against the session's current working branch"), and the open-source `afq984/gitproxy`
+      gates on exactly that request. Token minting does not preclude adding it later.
+
+    *Providers.* The broker talks to the agent, not to the provider, so a driver needs only two
+    things: outbound HTTPS from the instance, and git config that lets the agent's helper win over
+    the provider's. boxd sets a system credential helper and rewrites `git@github.com:` to HTTPS
+    (Phase 0 item 4). The rewrite is harmless, because broker tokens use HTTPS remotes anyway. The
+    helper is beaten by the agent writing, in its own global config, an empty
+    `credential.https://github.com.helper` (which resets the list inherited from system config) and
+    then its own helper. Measured on git 2.55.0 against boxd's two lines as a system file: without
+    the reset boxd's helper answers first; with it, Workroom's does. A provider's own GitHub
+    integration (boxd's, exe.dev's per-repository proxy) goes unused, which keeps one path across
+    providers. Of the fourteen providers checked (research note, "Other providers"), only boxd is
+    known to rewrite git config.
+    Three things are driver traits:
+    - **Egress to the broker.** Open by default almost everywhere. Freestyle is closed until a
+      firewall rule opens it at creation, and Daytona's lower tiers are restricted, so a driver must
+      open the broker's hostname or declare that it cannot host a workroom.
+    - **Machine identity (optional).** E2B, Modal and Fly issue OIDC tokens with a per-instance
+      subject, so on those the broker could accept the provider's token in place of the enrolment
+      code. exe.dev's is per integration and Namespace's per tenant; Daytona and Hetzner have none.
+      The enrolment code works everywhere, so it stays the default, and this is not pursued until a
+      driver needs it.
+    - **What a fork copies.** Every fork copies what the base holds, in memory or on disk, and
+      Vercel's forks also inherit environment variables. So the base never enrols, and the agent
+      generates its key after the derive, bound to the workroom's ID, and refuses a key made for
+      another workroom.
+
+    *What premise 6 becomes.* The instance holds its enrolment key for its whole life, but nothing on
+    it outlives the instance or works without the broker's grant. That is the same instance-scoped
+    claim premise 6 makes for the deploy key and the defer token. The Mac holds a Secure Enclave key
+    that cannot be exported and that only the broker honours. Workroom the service now holds users'
+    GitHub refresh tokens and the App's private key, so "Workroom stores a secret" is accepted:
+    moved into one service, not avoided.
+
+    *Still open.*
+    - **Where the broker is hosted.** Owner's choice. What it needs: an always-on HTTPS service, an
+      encrypted store for users' refresh tokens, and the App's client secret and private key. An
+      outage stalls new mints, not work in progress: the helper keeps a token until it expires, so a
+      push fails only after up to an hour without the broker. The broker is a high-value target,
+      and the design keeps that to one place.
+    - **Spikes that need a registered Workroom GitHub App** (listed in the research note): whether
+      the token cap applies to GitHub App user tokens, which decides whether scoped user tokens are
+      back on the table (low priority: the design does not depend on it); and on a SAML-enforced
+      org, whether the user token the authorization check uses keeps working after the SSO session
+      ends (GitHub requires an active session to authorize, and says nothing about later use or
+      refresh). That one matters: under installation tokens the user token's only job is the
+      per-mint check, so if it stops working when the SSO session lapses (24 h by default), mints
+      stop and the laptop-closed guarantee breaks after a day on such orgs. The lever if it does:
+      cache the "this user may push to this repository" answer for the workroom's lifetime and
+      re-check when the user token works, trading how fast a removed collaborator loses access for
+      robustness. The same spike should check whether installation tokens themselves are affected
+      by SAML, which the docs do not state.
+
+    Original question: Premise 6 caveat (b) states the failure and this document had no answer for
+    it. It is the *common* case on org repos. Candidates, none evaluated: a fine-grained PAT scoped
+    to the repo, a GitHub App installation token, or a dedicated machine user. Each reopens
+    "Workroom stores a secret", which premise 6 exists to avoid. It is separate from OQ6 (non-GitHub
+    remotes).
 21. **Is the client-side `HostDriver` Rust or Swift?** **ANSWERED — Swift, and the reason is
     stronger than the one this question anticipated.** The draft argued "it talks HTTP to provider
     APIs, which Swift does natively". Phase 0 showed the first driver mostly does **not** talk HTTP:
@@ -2047,7 +2186,8 @@ disagreement passes every test on either side alone while presenting as an empty
 - **The same workroom behaves identically on two different providers**, differing only in creation
   latency. This is the criterion the agnosticism decision exists to satisfy, and it cannot be
   claimed until a second real driver exists.
-- Two workrooms derived from one base share neither a deploy key nor an ssh host key.
+- Two workrooms derived from one base share neither a broker enrolment key (a deploy key, before
+  OQ20) nor an ssh host key.
 - On a live-fork provider, derivation from a warm base completes in well under a second (a
   hibernated base is wake-then-derive) — as a measured *speed-up* over the portable path,
   not as the only path that works.
@@ -2884,6 +3024,7 @@ service milestones below so each layer can be reviewed and landed independently.
 
 5. **Phase 4: credentials, provisioning, lifecycle and the Nightly UI.** Resolve the non-admin
    repository credential path (OQ20) before claiming ordinary organization-repository support.
+   OQ20 is decided (2026-09-27): a credential broker that Workroom runs.
    Implement portable derivation first, including identity/key isolation and cleanup of instances
    and credentials after partial failure. Apply the measured wakefulness policy through the
    far-side shim. Add boxd's fast derivation only after the portable path passes. Remote UI remains
