@@ -168,6 +168,23 @@ final class BrokerSignInTests: XCTestCase {
     XCTAssertEqual(flow.credentials.load()?.account, account)
   }
 
+  /// Cancel pressed while "complete" is in flight: not signed in, whatever the broker recorded.
+  func testCancellingDuringCompleteLeavesTheMacSignedOut() async throws {
+    BrokerStub.reset([.init(status: 201, body: #"{"device_id":"d","login":"l","email":"e"}"#)])
+    BrokerStub.hangWhenEmpty = true
+    let browser = Browser()
+    let flow = signIn(browser)
+    let task = Task { try await flow.run(deviceName: "Mac") }
+    while BrokerStub.requests.count < 2 { try await Task.sleep(for: .milliseconds(20)) }
+
+    task.cancel()
+    let result = await task.result
+    await fulfillment(of: [browser.done], timeout: 10)
+
+    XCTAssertThrowsError(try result.get()) { XCTAssertTrue($0 is CancellationError, "\($0)") }
+    XCTAssertNil(flow.credentials.load())
+  }
+
   func testCancellingTheSignInStopsWaitingForTheBrowser() async throws {
     let flow = BrokerSignIn(
       baseURL: base, credentials: credentials(), openBrowser: { _ in },
@@ -193,12 +210,15 @@ final class AgentEnrolmentTests: XCTestCase {
     let stdinFile: URL
     let output: String
     let status: Int32
+    /// Seconds the command runs before answering.
+    let delay: Int
     private(set) var commands: [String] = []
 
-    init(stdinFile: URL, output: String, status: Int32) {
+    init(stdinFile: URL, output: String, status: Int32, delay: Int = 0) {
       self.stdinFile = stdinFile
       self.output = output
       self.status = status
+      self.delay = delay
     }
 
     func create() async throws -> HostID { throw HostDriverError.notImplemented("create") }
@@ -215,8 +235,8 @@ final class AgentEnrolmentTests: XCTestCase {
       return try HostStream.spawn(
         URL(fileURLWithPath: "/bin/sh"),
         [
-          "-c", "cat > \"$1\"; printf '%s' \"$2\" >&2; exit \"$3\"", "stub", stdinFile.path, output,
-          String(status),
+          "-c", "cat > \"$1\"; sleep \"$4\"; printf '%s' \"$2\" >&2; exit \"$3\"", "stub",
+          stdinFile.path, output, String(status), String(delay),
         ],
         environment: [:], handshakeTimeout: 5)
     }
@@ -271,11 +291,53 @@ final class AgentEnrolmentTests: XCTestCase {
         client: client(), driver: driver, host: .remote(UUID()), agentBinary: "wr-agent",
         workroomID: UUID(), repository: "o/r")
       XCTFail("expected a refusal")
-    } catch BrokerError.refused(let refusal) {
+    } catch let error as BrokerError {
+      guard case .agentRefused(let refusal) = error else { return XCTFail("\(error)") }
       XCTAssertEqual(refusal.code, "invalid_code")
+      XCTAssertEqual(
+        error.errorDescription, "The enrolment code has expired (invalid_code)",
+        "the broker's own reason, not the sign-in wording")
     }
     let last = try XCTUnwrap(BrokerStub.requests.last)
     XCTAssertEqual(last.request.httpMethod, "DELETE")
     XCTAssertEqual(last.request.url?.path, "/broker/grants/g1")
+  }
+
+  func testAnAgentErrorWithoutARefusalIsTheAgentsAndStillCancelsTheGrant() async throws {
+    BrokerStub.reset([grant, .init(body: #"{"grant_id":"g1","state":"cancelled"}"#)])
+    let file = stdinFile()
+    defer { try? FileManager.default.removeItem(at: file) }
+    let driver = StubDriver(stdinFile: file, output: "error: git config failed\n", status: 1)
+
+    do {
+      _ = try await AgentEnrolment.enrol(
+        client: client(), driver: driver, host: .remote(UUID()), agentBinary: "wr-agent",
+        workroomID: UUID(), repository: "o/r")
+      XCTFail("expected a failure")
+    } catch BrokerError.agent(let detail) {
+      XCTAssertTrue(detail.contains("git config failed"), detail)
+    }
+    XCTAssertEqual(BrokerStub.requests.last?.request.httpMethod, "DELETE")
+  }
+
+  /// A cancelled enrolment still cancels its grant: the agent may have enrolled already.
+  func testACancelledEnrolmentStillCancelsItsGrant() async throws {
+    BrokerStub.reset([grant, .init(body: #"{"grant_id":"g1","state":"cancelled"}"#)])
+    let file = stdinFile()
+    defer { try? FileManager.default.removeItem(at: file) }
+    let driver = StubDriver(stdinFile: file, output: "", status: 0, delay: 30)
+    let client = client()
+    let task = Task {
+      try await AgentEnrolment.enrol(
+        client: client, driver: driver, host: .remote(UUID()), agentBinary: "wr-agent",
+        workroomID: UUID(), repository: "o/r")
+    }
+    try await Task.sleep(for: .milliseconds(500))
+
+    task.cancel()
+    _ = await task.result
+
+    XCTAssertEqual(BrokerStub.requests.last?.request.httpMethod, "DELETE")
+    XCTAssertEqual(BrokerStub.requests.last?.request.url?.path, "/broker/grants/g1")
   }
 }

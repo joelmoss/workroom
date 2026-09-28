@@ -40,6 +40,8 @@ notify = "8"
 # provider image may have none. Adding these changes Cargo.lock, which `build-apple.sh` hashes, so
 # the first build after this lands rebuilds the VCS xcframework once.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+# Parses the broker's expiry and `Date` header. Already in the build through jj-lib.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 ring = "0.17"
 base64 = "0.22"
 wr-vcs-core = { path = "../wr-vcs-core" }

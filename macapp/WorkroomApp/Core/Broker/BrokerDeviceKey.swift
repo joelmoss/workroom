@@ -6,9 +6,10 @@ import Security
 ///
 /// Every Mac-to-broker request is signed with it (`BrokerProof`); it is never a bearer token. On a
 /// Mac with a Secure Enclave the key lives there and cannot be exported: what is stored is a blob
-/// that names it, useless on any other Mac, in a plain file. Measured 2026-09-27: this needs no
-/// Keychain and no entitlements, ad hoc signed and with the hardened runtime. The deployment target
-/// includes Intel Macs without one, and those get a software P-256 key in the Keychain.
+/// that names it, useless on any other Mac. The deployment target includes Intel Macs without one,
+/// and those get a software P-256 key. Either is kept in the Keychain (`BrokerCredentials`), not a
+/// file: a blob in a file lets any process running as this user load it and sign as this Mac,
+/// while a Keychain item is tied to Workroom's code signature (the #251 review, D1).
 enum BrokerDeviceKey: @unchecked Sendable {
   case secureEnclave(SecureEnclave.P256.Signing.PrivateKey)
   case software(P256.Signing.PrivateKey)
@@ -47,7 +48,7 @@ struct BrokerAccount: Codable, Equatable, Sendable {
 /// Where the device key and the account are kept: `Application Support/Workroom/<bundle id>/broker`,
 /// scoped by bundle id like `SessionStore`, so Workroom Dev and Nightly each sign in separately.
 struct BrokerCredentials: Sendable {
-  /// The software key's home. A seam, so tests never touch the login Keychain (locked on CI).
+  /// The key's home (the Keychain). A seam, so tests never touch the login Keychain (locked on CI).
   struct SecretStore: Sendable {
     var read: @Sendable () -> Data?
     var write: @Sendable (Data) throws -> Void
@@ -58,7 +59,9 @@ struct BrokerCredentials: Sendable {
   let secrets: SecretStore
 
   private static let accountFile = "account.json"
-  private static let enclaveKeyFile = "device-key.enclave"
+  /// The first byte of the stored secret says which kind of key the rest is.
+  private static let enclaveTag: UInt8 = 1
+  private static let softwareTag: UInt8 = 2
 
   static func standard(bundleID: String? = Bundle.main.bundleIdentifier) -> BrokerCredentials {
     let bundle = bundleID ?? "com.developwithstyle.workroom"
@@ -78,26 +81,30 @@ struct BrokerCredentials: Sendable {
     guard let data = try? Data(contentsOf: directory.appendingPathComponent(Self.accountFile)),
       let account = try? JSONDecoder().decode(BrokerAccount.self, from: data)
     else { return nil }
-    if let blob = try? Data(contentsOf: directory.appendingPathComponent(Self.enclaveKeyFile)),
-      let key = try? SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: blob)
-    {
-      return (account, .secureEnclave(key))
+    guard let secret = secrets.read(), let tag = secret.first else { return nil }
+    let body = Data(secret.dropFirst())
+    switch tag {
+    case Self.enclaveTag:
+      return (try? SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: body))
+        .map { (account, .secureEnclave($0)) }
+    case Self.softwareTag:
+      return (try? P256.Signing.PrivateKey(rawRepresentation: body)).map {
+        (account, .software($0))
+      }
+    default:
+      return nil
     }
-    if let raw = secrets.read(), let key = try? P256.Signing.PrivateKey(rawRepresentation: raw) {
-      return (account, .software(key))
-    }
-    return nil
   }
 
+  /// Replaces the key, then the account. A key that cannot be stored throws before the account
+  /// changes, so a failed save leaves nothing half-written.
   func save(account: BrokerAccount, key: BrokerDeviceKey) throws {
-    clear()
     try FileManager.default.createDirectory(
       at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     switch key {
     case .secureEnclave(let key):
-      try write(key.dataRepresentation, to: Self.enclaveKeyFile)
-    case .software(let key):
-      try secrets.write(key.rawRepresentation)
+      try secrets.write(Data([Self.enclaveTag]) + key.dataRepresentation)
+    case .software(let key): try secrets.write(Data([Self.softwareTag]) + key.rawRepresentation)
     }
     try write(try JSONEncoder().encode(account), to: Self.accountFile)
   }
@@ -105,7 +112,8 @@ struct BrokerCredentials: Sendable {
   /// Forgets the account and the key. The broker still knows the device until it is removed at
   /// codaset.dev; without the key nothing can use it.
   func clear() {
-    for name in [Self.accountFile, Self.enclaveKeyFile] {
+    // `device-key.enclave`: where builds before the #251 review kept the enclave blob.
+    for name in [Self.accountFile, "device-key.enclave"] {
       try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
     }
     secrets.delete()
@@ -119,7 +127,11 @@ struct BrokerCredentials: Sendable {
 }
 
 extension BrokerCredentials.SecretStore {
-  /// A generic password, this device only, readable after first unlock.
+  /// A generic password in the login keychain, readable after first unlock, whose access list is
+  /// Workroom's code signature: another app asks before it can read it. The login keychain does
+  /// not enforce "this device only" (only the data-protection keychain does, and that needs a
+  /// keychain-access-groups entitlement ad hoc Dev builds lack), so a keychain migrated to another
+  /// Mac carries a software key with it; an enclave blob is useless there.
   static func keychain(service: String) -> Self {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
@@ -137,11 +149,16 @@ extension BrokerCredentials.SecretStore {
         return result as? Data
       },
       write: { data in
-        SecItemDelete(query as CFDictionary)
-        var item = query
-        item[kSecValueData as String] = data
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(item as CFDictionary, nil)
+        // Update in place when the item exists, so a failed write never deletes the key it was
+        // replacing.
+        var status = SecItemUpdate(
+          query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+          var item = query
+          item[kSecValueData as String] = data
+          item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+          status = SecItemAdd(item as CFDictionary, nil)
+        }
         guard status == errSecSuccess else {
           throw BrokerError.keyStorage("Keychain error \(status)")
         }

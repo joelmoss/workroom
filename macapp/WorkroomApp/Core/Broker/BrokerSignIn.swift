@@ -59,6 +59,10 @@ struct BrokerSignIn: Sendable {
       // signing in; so does this Mac.
       credentials.clear()
       throw BrokerError.refused(refusal)
+    } catch is CancellationError {
+      // The person pressed Cancel: they are not signed in, whatever the broker recorded.
+      credentials.clear()
+      throw CancellationError()
     } catch {
       // No answer: the broker may have completed it and the page may say "signed in". The key is
       // registered and works either way, so keeping it is the true state; at worst the page asks
@@ -94,27 +98,11 @@ final class LoopbackListener: @unchecked Sendable {
   private var cancelled = false
 
   init() throws {
-    let socket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
-    guard socket >= 0 else { throw BrokerError.signIn("Couldn't open a local port (\(errno)).") }
-    _ = fcntl(socket, F_SETFD, FD_CLOEXEC)
-    var address = sockaddr_in()
-    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-    address.sin_family = sa_family_t(AF_INET)
-    address.sin_addr.s_addr = inet_addr("127.0.0.1")
-    address.sin_port = 0
-    var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-    let bound = withUnsafeMutablePointer(to: &address) { pointer in
-      pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { address in
-        Darwin.bind(socket, address, length) == 0 && listen(socket, 4) == 0
-          && getsockname(socket, address, &length) == 0
-      }
-    }
-    guard bound else {
-      Darwin.close(socket)
+    guard let (socket, port) = LoopbackSocket.listen(backlog: 4) else {
       throw BrokerError.signIn("Couldn't listen on a local port (\(errno)).")
     }
     self.socket = socket
-    port = UInt16(bigEndian: address.sin_port)
+    self.port = port
   }
 
   deinit { close() }
@@ -150,7 +138,13 @@ final class LoopbackListener: @unchecked Sendable {
           guard ready > 0 else { continue }
           let connection = accept(socket, nil, nil)
           guard connection >= 0 else { continue }
-          if let callback = Self.read(connection) { return callback }
+          guard let callback = Self.read(connection) else { continue }
+          // A request that arrived as Cancel was pressed is not accepted.
+          if self.lock.withLock({ self.cancelled }) {
+            callback.redirect(to: URL(string: "about:blank")!)
+            throw CancellationError()
+          }
+          return callback
         }
       }
     } onCancel: {
@@ -180,7 +174,11 @@ final class LoopbackListener: @unchecked Sendable {
       guard count > 0 else { break }
       head.append(buffer, count: count)
     }
-    let line = String(decoding: head, as: UTF8.self).components(separatedBy: "\r\n").first ?? ""
+    // Only a complete request head: one cut off by the deadline is not a request.
+    let complete = head.range(of: Data("\r\n\r\n".utf8)) != nil
+    let line =
+      complete
+      ? String(decoding: head, as: UTF8.self).components(separatedBy: "\r\n").first ?? "" : ""
     let parts = line.split(separator: " ")
     if parts.count >= 2, parts[0] == "GET",
       let url = URLComponents(string: "http://127.0.0.1" + parts[1]), url.path == "/callback"

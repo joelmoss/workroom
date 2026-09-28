@@ -141,6 +141,11 @@ impl Broker {
     }
 }
 
+/// The broker's answer to an enrolment.
+fn enrolled_answer() -> Response {
+    (201, vec![], r#"{"grant_id":"g","repository_id":1}"#.into())
+}
+
 fn ok(body: &str) -> Response {
     (200, vec![], body.to_string())
 }
@@ -178,7 +183,7 @@ fn enrolled(workspace: &Workspace, broker: &Broker, workroom: &str) {
 #[test]
 fn enrolment_registers_a_new_key_with_the_code() {
     let workspace = Workspace::new("broker-enrol");
-    let broker = Broker::start(vec![(201, vec![], r#"{"grant_id":"g"}"#.into())]);
+    let broker = Broker::start(vec![enrolled_answer()]);
 
     enrolled(&workspace, &broker, "wr-1");
 
@@ -211,7 +216,7 @@ fn a_retried_enrolment_uses_a_new_key_whatever_happened_to_the_last() {
     let workspace = Workspace::new("broker-retry");
     let broker = Broker::start(vec![
         (503, vec![], r#"{"error":"broker_unavailable"}"#.into()),
-        (201, vec![], "{}".into()),
+        enrolled_answer(),
     ]);
 
     assert!(broker::enrol(&workspace.dir, "wr-1", &broker.url, "first").is_err());
@@ -230,11 +235,11 @@ fn enrolling_again_replaces_the_key_and_its_token() {
     let workspace = Workspace::new("broker-re-enrol");
     let expires = iso8601(now() + 3600);
     let broker = Broker::start(vec![
-        (201, vec![], "{}".into()),
+        enrolled_answer(),
         ok(&format!(
             r#"{{"token":"old-token","expires_at":"{expires}"}}"#
         )),
-        (201, vec![], "{}".into()),
+        enrolled_answer(),
     ]);
 
     enrolled(&workspace, &broker, "the-base");
@@ -280,7 +285,7 @@ fn a_token_is_minted_once_and_then_served_from_the_cache() {
     let workspace = Workspace::new("broker-token");
     let expires_at = now() + 3600;
     let broker = Broker::start(vec![
-        (201, vec![], "{}".into()),
+        enrolled_answer(),
         ok(&format!(
             r#"{{"token":"ghs_one","expires_at":"{}"}}"#,
             iso8601(expires_at)
@@ -312,7 +317,7 @@ fn a_stale_proof_is_retried_once_and_its_skew_kept_with_the_token() {
     let workspace = Workspace::new("broker-skew");
     let server_now = now() - 3700;
     let broker = Broker::start(vec![
-        (201, vec![], "{}".into()),
+        enrolled_answer(),
         (
             401,
             vec![("Date", date(server_now, "+%a, %d %b %Y %H:%M:%S GMT"))],
@@ -374,7 +379,7 @@ fn a_cached_token_outlives_a_broker_outage_but_not_a_refusal() {
     // Inside the refresh margin, so the next call asks the broker first.
     let expires_at = now() + 120;
     let broker = Broker::start(vec![
-        (201, vec![], "{}".into()),
+        enrolled_answer(),
         ok(&format!(
             r#"{{"token":"ghs_cached","expires_at":"{}"}}"#,
             iso8601(expires_at)
@@ -419,7 +424,7 @@ fn a_cached_token_outlives_a_broker_outage_but_not_a_refusal() {
 fn the_credential_helper_answers_github_over_https_and_nothing_else() {
     let workspace = Workspace::new("broker-credential");
     let broker = Broker::start(vec![
-        (201, vec![], "{}".into()),
+        enrolled_answer(),
         ok(&format!(
             r#"{{"token":"ghs_helper","expires_at":"{}"}}"#,
             iso8601(now() + 3600)
@@ -554,4 +559,175 @@ fn the_agents_helper_beats_a_providers_system_helper() {
     );
     let answer = fill(&workspace.dir, true);
     assert!(answer.contains("password=workroom"), "{answer}");
+}
+
+#[test]
+fn enrolment_refuses_a_broker_that_is_not_https_or_loopback_and_empty_inputs() {
+    let workspace = Workspace::new("broker-bad-input");
+    for broker_url in [
+        "http://codaset.dev",
+        "http://127.0.0.1:@evil.example",
+        "http://127.0.0.1.evil.example",
+        "https://user@codaset.dev",
+        "https://codaset.dev/elsewhere",
+        "ftp://codaset.dev",
+        "codaset.dev",
+    ] {
+        assert!(
+            matches!(
+                broker::enrol(&workspace.dir, "wr-1", broker_url, "code"),
+                Err(BrokerError::Invalid(_))
+            ),
+            "{broker_url}"
+        );
+    }
+    for (workroom, code) in [("", "code"), ("wr-1", " \n")] {
+        assert!(matches!(
+            broker::enrol(&workspace.dir, workroom, "https://codaset.dev", code),
+            Err(BrokerError::Invalid(_))
+        ));
+    }
+    assert!(
+        !workspace.dir.join("broker.json").exists(),
+        "nothing written"
+    );
+}
+
+#[test]
+fn a_success_status_that_is_not_the_brokers_answer_is_not_an_enrolment() {
+    let workspace = Workspace::new("broker-maintenance");
+    let broker = Broker::start(vec![(200, vec![], "<html>Maintenance</html>".into())]);
+
+    assert!(matches!(
+        broker::enrol(&workspace.dir, "wr-1", &broker.url, "code"),
+        Err(BrokerError::Invalid(_))
+    ));
+    assert!(matches!(
+        broker::token(&workspace.dir),
+        Err(BrokerError::NotEnrolled)
+    ));
+}
+
+#[test]
+fn a_malformed_or_expired_token_answer_is_refused() {
+    let workspace = Workspace::new("broker-bad-token");
+    let broker = Broker::start(vec![
+        enrolled_answer(),
+        ok(r#"{"token":"","expires_at":"2099-01-01T00:00:00Z"}"#),
+        ok(r#"{"token":"ghs_x","expires_at":"soon"}"#),
+        ok(r#"{"token":"ghs_x","expires_at":"2001-01-01T00:00:00Z"}"#),
+    ]);
+    enrolled(&workspace, &broker, "wr-1");
+
+    for _ in 0..3 {
+        assert!(matches!(
+            broker::token(&workspace.dir),
+            Err(BrokerError::Invalid(_))
+        ));
+    }
+}
+
+/// A final refusal removes the cached token, so a later outage cannot bring it back.
+#[test]
+fn a_final_refusal_forgets_the_cached_token() {
+    let workspace = Workspace::new("broker-refusal-forgets");
+    let broker = Broker::start(vec![
+        enrolled_answer(),
+        ok(&format!(
+            r#"{{"token":"ghs_denied","expires_at":"{}"}}"#,
+            iso8601(now() + 120)
+        )),
+        (410, vec![], r#"{"error":"grant_ended"}"#.into()),
+        (503, vec![], r#"{"error":"github_unavailable"}"#.into()),
+    ]);
+    enrolled(&workspace, &broker, "wr-1");
+    broker::token(&workspace.dir).unwrap();
+
+    assert!(broker::token(&workspace.dir).is_err());
+    match broker::token(&workspace.dir) {
+        Err(BrokerError::Refused { code, .. }) => assert_eq!(code, "github_unavailable"),
+        other => panic!("the refused token came back: {other:?}"),
+    }
+}
+
+/// A proxy's 403 or a rejected proof is not the broker's decision: the token that still works
+/// is served.
+#[test]
+fn a_4xx_without_a_final_code_is_an_outage() {
+    let workspace = Workspace::new("broker-proxy-403");
+    let broker = Broker::start(vec![
+        enrolled_answer(),
+        ok(&format!(
+            r#"{{"token":"ghs_ok","expires_at":"{}"}}"#,
+            iso8601(now() + 120)
+        )),
+        (403, vec![], "<html>Forbidden</html>".into()),
+    ]);
+    enrolled(&workspace, &broker, "wr-1");
+    broker::token(&workspace.dir).unwrap();
+
+    assert_eq!(broker::token(&workspace.dir).unwrap().token, "ghs_ok");
+}
+
+#[test]
+fn erase_drops_the_rejected_token_and_only_that_one() {
+    let workspace = Workspace::new("broker-erase");
+    let broker = Broker::start(vec![
+        enrolled_answer(),
+        ok(&format!(
+            r#"{{"token":"ghs_revoked","expires_at":"{}"}}"#,
+            iso8601(now() + 3600)
+        )),
+    ]);
+    enrolled(&workspace, &broker, "wr-1");
+    broker::token(&workspace.dir).unwrap();
+    let erase = |password: &str| {
+        let input = format!("protocol=https\nhost=github.com\npassword={password}\n\n");
+        broker::credential(&workspace.dir, "erase", input.as_bytes(), Vec::new()).unwrap();
+    };
+
+    erase("some-older-token");
+    assert!(
+        workspace.dir.join("broker-token.json").exists(),
+        "not the cached one"
+    );
+    erase("ghs_revoked");
+    assert!(!workspace.dir.join("broker-token.json").exists());
+}
+
+/// A mint still in flight when the workroom enrolled again writes the old key's token; the new
+/// key never serves it.
+#[test]
+fn a_token_cached_for_another_key_is_never_served() {
+    let workspace = Workspace::new("broker-other-key");
+    let broker = Broker::start(vec![
+        enrolled_answer(),
+        ok(&format!(
+            r#"{{"token":"ghs_old","expires_at":"{}"}}"#,
+            iso8601(now() + 3600)
+        )),
+        enrolled_answer(),
+        ok(&format!(
+            r#"{{"token":"ghs_new","expires_at":"{}"}}"#,
+            iso8601(now() + 3600)
+        )),
+    ]);
+    enrolled(&workspace, &broker, "wr-a");
+    broker::token(&workspace.dir).unwrap();
+    let stale = std::fs::read(workspace.dir.join("broker-token.json")).unwrap();
+    enrolled(&workspace, &broker, "wr-b");
+    std::fs::write(workspace.dir.join("broker-token.json"), stale).unwrap();
+
+    assert_eq!(broker::token(&workspace.dir).unwrap().token, "ghs_new");
+}
+
+#[test]
+fn an_unreadable_state_file_is_not_an_enrolment() {
+    let workspace = Workspace::new("broker-corrupt");
+    std::fs::write(workspace.dir.join("broker.json"), "{not json").unwrap();
+
+    assert!(matches!(
+        broker::token(&workspace.dir),
+        Err(BrokerError::NotEnrolled)
+    ));
 }

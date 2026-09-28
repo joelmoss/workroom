@@ -34,6 +34,10 @@ struct BrokerRefusal: Error, Equatable, Sendable {
 
 enum BrokerError: Error, Equatable, Sendable, LocalizedError {
   case refused(BrokerRefusal)
+  /// A remote workroom's agent was refused while enrolling (`AgentEnrolment`).
+  case agentRefused(BrokerRefusal)
+  /// A remote workroom's agent failed for its own reasons.
+  case agent(String)
   case transport(String)
   case malformed(String)
   case keyStorage(String)
@@ -42,6 +46,11 @@ enum BrokerError: Error, Equatable, Sendable, LocalizedError {
   var errorDescription: String? {
     switch self {
     case .refused(let refusal): return refusal.userMessage
+    // The broker's own message for a bad enrolment code says which (unknown, expired, another
+    // workroom's); the sign-in wording does not apply.
+    case .agentRefused(let refusal):
+      return refusal.code == "invalid_code" ? refusal.message : refusal.userMessage
+    case .agent(let detail): return detail
     case .transport(let detail): return "Couldn't reach Codaset: \(detail)"
     case .malformed(let detail): return "Codaset sent an unexpected answer: \(detail)"
     case .keyStorage(let detail): return "Couldn't store this Mac's key: \(detail)"
@@ -97,6 +106,9 @@ extension Data {
 
 /// The Mac's calls to the Workroom broker, each signed with this Mac's key.
 struct BrokerClient: Sendable {
+  /// Per request; the agent's side uses 15 s (`broker.rs`), the Mac is not on a shared exec budget.
+  static let requestTimeout: TimeInterval = 30
+
   /// codaset.dev, or a development Codaset via `Defaults[.brokerURL]`.
   let baseURL: URL
   let key: BrokerDeviceKey
@@ -113,17 +125,6 @@ struct BrokerClient: Sendable {
     let grantId: String
     let enrolmentCode: String
     let repositoryId: Int
-    let expiresAt: String
-  }
-
-  struct InstallStatus: Decodable, Equatable, Sendable {
-    let status: String
-    let repository: String?
-    let requestedAt: String?
-  }
-
-  struct Token: Decodable, Equatable, Sendable {
-    let token: String
     let expiresAt: String
   }
 
@@ -150,28 +151,15 @@ struct BrokerClient: Sendable {
     let _: State = try await send("DELETE", "broker/grants/\(grantID)", body: nil)
   }
 
-  func installStatus(repository: String) async throws -> InstallStatus {
-    try await send("GET", "broker/install-status", query: ["repository": repository], body: nil)
-  }
-
-  func baseCloneToken(repository: String) async throws -> Token {
-    try await send("POST", "broker/base-clone-tokens", body: ["repository": repository])
-  }
-
   /// One signed request. A `stale_proof` refusal carries the broker's `Date`; the request is
   /// signed again on that clock and sent once more.
   private func send<Response: Decodable>(
-    _ method: String, _ path: String, query: [String: String] = [:], body: [String: String]?
+    _ method: String, _ path: String, body: [String: String]?
   ) async throws -> Response {
-    var components = URLComponents(
-      url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
-    if !query.isEmpty {
-      components?.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
-    }
-    guard let url = components?.url else { throw BrokerError.malformed("bad path \(path)") }
+    let url = baseURL.appendingPathComponent(path)
     var skew: TimeInterval = 0
     for attempt in 0..<2 {
-      var request = URLRequest(url: url, timeoutInterval: 30)
+      var request = URLRequest(url: url, timeoutInterval: Self.requestTimeout)
       request.httpMethod = method
       request.setValue("application/json", forHTTPHeaderField: "Accept")
       request.setValue(
@@ -183,7 +171,13 @@ struct BrokerClient: Sendable {
       }
       let (data, response): (Data, URLResponse)
       do {
-        (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        (data, response) = try await session.data(for: request, delegate: NoRedirects.shared)
+      } catch let error as URLError where error.code == .cancelled {
+        // A cancelled task, not an outage: callers treat the two differently.
+        throw CancellationError()
+      } catch is CancellationError {
+        throw CancellationError()
       } catch {
         throw BrokerError.transport(error.localizedDescription)
       }
@@ -209,6 +203,17 @@ struct BrokerClient: Sendable {
       throw BrokerError.refused(refusal)
     }
     throw BrokerError.malformed("unreachable")
+  }
+
+  /// Refuses redirects: one would carry the proof to wherever it points. The broker never
+  /// redirects, so a 3xx arrives as a refusal.
+  private final class NoRedirects: NSObject, URLSessionTaskDelegate {
+    static let shared = NoRedirects()
+
+    func urlSession(
+      _ session: URLSession, task: URLSessionTask,
+      willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest
+    ) async -> URLRequest? { nil }
   }
 
   private static func refusal(status: Int, data: Data) -> BrokerRefusal {

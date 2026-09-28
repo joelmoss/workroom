@@ -169,42 +169,17 @@ final class PortForward: @unchecked Sendable {
     self.connection = connection
     self.timeouts = timeouts
     self.onEvent = onEvent
-    let listener = socket(AF_INET, SOCK_STREAM, 0)
-    guard listener >= 0 else {
-      throw HostConnectionError.serviceUnavailable("Could not create a listening socket.")
+    // Loopback, so nothing off this Mac can reach a forward: the agent's own allowlist is
+    // loopback-only and this is its mirror.
+    guard let (listener, port) = LoopbackSocket.listen(backlog: 16) else {
+      throw HostConnectionError.serviceUnavailable(
+        "Could not listen on a loopback port: \(String(cString: strerror(errno)))")
     }
-    do {
-      var address = sockaddr_in()
-      address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-      address.sin_family = sa_family_t(AF_INET)
-      // Port 0 is the ephemeral request, and the address is loopback so nothing off this Mac can
-      // reach a forward: the agent's own allowlist is loopback-only and this is its mirror.
-      address.sin_port = 0
-      address.sin_addr.s_addr = INADDR_LOOPBACK.bigEndian
-      let bound = withUnsafePointer(to: &address) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-          Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-        }
-      }
-      guard bound == 0, Darwin.listen(listener, 16) == 0,
-        fcntl(listener, F_SETFL, fcntl(listener, F_GETFL) | O_NONBLOCK) == 0
-      else {
-        throw HostConnectionError.serviceUnavailable(
-          "Could not listen on a loopback port: \(String(cString: strerror(errno)))")
-      }
-      var actual = sockaddr_in()
-      var size = socklen_t(MemoryLayout<sockaddr_in>.size)
-      let named = withUnsafeMutablePointer(to: &actual) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(listener, $0, &size) }
-      }
-      guard named == 0 else {
-        throw HostConnectionError.serviceUnavailable("Could not read the bound port.")
-      }
-      self.localPort = UInt16(bigEndian: actual.sin_port)
-    } catch {
+    guard fcntl(listener, F_SETFL, fcntl(listener, F_GETFL) | O_NONBLOCK) == 0 else {
       Darwin.close(listener)
-      throw error
+      throw HostConnectionError.serviceUnavailable("Could not make the loopback port non-blocking.")
     }
+    self.localPort = port
     self.listener = listener
     source = DispatchSource.makeReadSource(fileDescriptor: listener, queue: accepts)
     source.setEventHandler { [weak self] in self?.acceptPending() }

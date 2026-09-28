@@ -77,8 +77,21 @@ impl BrokerError {
     /// The broker's decision about this workroom (a cancelled or withdrawn grant, an unknown key,
     /// no access): a 4xx other than 429. Everything else, GitHub or the broker being unavailable
     /// included, is an outage the cached token outlasts.
+    ///
+    /// Decided by the broker's refusal code, not the HTTP status: a proxy's 403, an edge 404 during
+    /// a deploy or a rejected proof is not the broker's decision, and must not take away a token
+    /// that still works.
     fn is_final(&self) -> bool {
-        matches!(self, BrokerError::Refused { status, .. } if (400..500).contains(status) && *status != 429)
+        const FINAL: [&str; 7] = [
+            "grant_ended",
+            "unknown_key",
+            "no_push_access",
+            "no_read_access",
+            "sign_in_required",
+            "app_not_installed",
+            "ip_allow_list",
+        ];
+        matches!(self, BrokerError::Refused { code, .. } if FINAL.contains(&code.as_str()))
     }
 }
 
@@ -104,6 +117,10 @@ pub struct Token {
     /// Broker clock: until then a failed mint's fallback is reused without asking again.
     #[serde(default)]
     pub retry_after: i64,
+    /// The enrolment key it was minted for (its JWK `x`). A token cached for another key, written
+    /// by a mint that was still in flight when the workroom enrolled again, is never served.
+    #[serde(default)]
+    pub key: String,
 }
 
 impl Token {
@@ -122,8 +139,7 @@ pub fn enrol(dir: &Path, workroom_id: &str, broker: &str, code: &str) -> Result<
         ));
     }
     let broker = broker.trim_end_matches('/');
-    let loopback = broker == "http://127.0.0.1" || broker.starts_with("http://127.0.0.1:");
-    if !broker.starts_with("https://") && !loopback {
+    if !acceptable_broker(broker) {
         return Err(BrokerError::Invalid(format!(
             "the broker must be an https URL, not {broker:?}"
         )));
@@ -139,13 +155,18 @@ pub fn enrol(dir: &Path, workroom_id: &str, broker: &str, code: &str) -> Result<
     // Written before the request: if the broker registers the key and the answer is lost, the
     // key is still here, and not enrolled, so the helper refuses rather than guessing.
     save(dir, STATE_FILE, &state)?;
-    call(
+    let (answer, _) = call(
         &state,
-        "POST",
         "/broker/enrolments",
         Some(json!({ "code": code.trim(), "workroom_id": workroom_id })),
         0,
     )?;
+    // A 2xx that is not the broker's answer (a maintenance page) is not an enrolment.
+    if answer["grant_id"].as_str().is_none_or(str::is_empty) {
+        return Err(BrokerError::Invalid(
+            "the broker's enrolment response is malformed".into(),
+        ));
+    }
     state.enrolled = true;
     save(dir, STATE_FILE, &state)
 }
@@ -157,7 +178,8 @@ pub fn token(dir: &Path) -> Result<Token, BrokerError> {
         Some(state) if state.enrolled => state,
         _ => return Err(BrokerError::NotEnrolled),
     };
-    let cached: Option<Token> = load(dir, TOKEN_FILE)?;
+    let key = key_id(&state)?;
+    let cached: Option<Token> = load::<Token>(dir, TOKEN_FILE)?.filter(|t| t.key == key);
     let skew = cached.as_ref().map_or(0, |t| t.skew);
     let now = unix_now() + skew;
     let fresh = |t: &&Token| {
@@ -171,37 +193,69 @@ pub fn token(dir: &Path) -> Result<Token, BrokerError> {
             save(dir, TOKEN_FILE, &token)?;
             Ok(token)
         }
-        Err(error) => match cached.filter(|t| t.expires_at > now) {
-            Some(mut cached) if !error.is_final() => {
-                cached.retry_after = now + RETRY_BACKOFF;
-                save(dir, TOKEN_FILE, &cached)?;
-                Ok(cached)
+        Err(error) if error.is_final() => {
+            // The broker said no: a later outage must not bring this token back.
+            let _ = std::fs::remove_file(dir.join(TOKEN_FILE));
+            Err(error)
+        }
+        Err(error) => {
+            // The clock again: the requests may have outlived what was left of the token.
+            let now = unix_now() + skew;
+            match cached.filter(|t| t.expires_at > now) {
+                Some(mut cached) => {
+                    cached.retry_after = now + RETRY_BACKOFF;
+                    save(dir, TOKEN_FILE, &cached)?;
+                    Ok(cached)
+                }
+                None => Err(error),
             }
-            _ => Err(error),
-        },
+        }
     }
 }
 
 fn mint(state: &State, skew: i64) -> Result<Token, BrokerError> {
-    let (body, skew) = call(state, "POST", "/broker/tokens", None, skew)?;
+    let (body, skew) = call(state, "/broker/tokens", None, skew)?;
     let token = body["token"].as_str().unwrap_or_default().to_string();
     let expires_at = body["expires_at"].as_str().and_then(parse_iso8601);
     match (token.is_empty(), expires_at) {
-        (false, Some(expires_at)) => Ok(Token {
+        (false, Some(expires_at)) if expires_at > unix_now() + skew => Ok(Token {
             token,
             expires_at,
             skew,
             retry_after: 0,
+            key: key_id(state)?,
         }),
         _ => Err(BrokerError::Invalid(
-            "the broker's token response is malformed".into(),
+            "the broker's token response is malformed or already expired".into(),
         )),
     }
 }
 
-/// `wr-agent credential <get|store|erase>`: git's credential helper protocol. Only `get` for
-/// `https://github.com` answers; `store` and `erase` have nothing to do, because the token is the
-/// broker's to issue and expires by itself.
+/// Which enrolment key a token belongs to: the public key's `x`, which is not secret.
+fn key_id(state: &State) -> Result<String, BrokerError> {
+    let jwk = public_jwk(&key_pair(&state.key)?);
+    Ok(jwk["x"].as_str().unwrap_or_default().to_string())
+}
+
+/// An https broker, or plain http to 127.0.0.1 for tests and a local Codaset. Parsed, so
+/// `http://127.0.0.1:@elsewhere` (whose host is `elsewhere`) is refused.
+fn acceptable_broker(broker: &str) -> bool {
+    let Ok(uri) = broker.parse::<ureq::http::Uri>() else {
+        return false;
+    };
+    let plain_path = uri.path_and_query().is_none_or(|p| p.as_str() == "/");
+    let host = uri.host().unwrap_or_default();
+    let has_userinfo = uri.authority().is_some_and(|a| a.as_str().contains('@'));
+    match uri.scheme_str() {
+        Some("https") => !host.is_empty() && !has_userinfo && plain_path,
+        Some("http") => host == "127.0.0.1" && !has_userinfo && plain_path,
+        _ => false,
+    }
+}
+
+/// `wr-agent credential <get|store|erase>`: git's credential helper protocol, for
+/// `https://github.com` only. `get` answers with a token; `erase` (git's "this was rejected")
+/// drops the cached one; `store` has nothing to do, because the token is the broker's to issue.
 pub fn credential(
     dir: &Path,
     action: &str,
@@ -210,6 +264,7 @@ pub fn credential(
 ) -> Result<(), BrokerError> {
     let mut protocol = String::new();
     let mut host = String::new();
+    let mut password = String::new();
     for line in input.lines() {
         let line = line?;
         if line.is_empty() {
@@ -219,11 +274,25 @@ pub fn credential(
             match key {
                 "protocol" => protocol = value.to_string(),
                 "host" => host = value.to_string(),
+                "password" => password = value.to_string(),
                 _ => {}
             }
         }
     }
-    if action != "get" || protocol != "https" || host != "github.com" {
+    if protocol != "https" || host != "github.com" {
+        return Ok(());
+    }
+    if action == "erase" {
+        // GitHub rejected it (revoked, or expired on GitHub's clock): drop it, so the next
+        // request mints rather than serving it again. Only if it is still the cached one, so a
+        // late rejection cannot remove a newer token.
+        let cached: Option<Token> = load(dir, TOKEN_FILE)?;
+        if cached.is_some_and(|t| !password.is_empty() && t.token == password) {
+            let _ = std::fs::remove_file(dir.join(TOKEN_FILE));
+        }
+        return Ok(());
+    }
+    if action != "get" {
         return Ok(());
     }
     let token = token(dir)?;
@@ -276,11 +345,11 @@ pub fn directory() -> io::Result<PathBuf> {
 
 // MARK: - Requests
 
-/// One signed JSON request, its proof dated `skew` seconds from this machine's clock and retried
-/// once with a corrected clock on `stale_proof`. Returns the answer and the skew that worked.
+/// One signed JSON POST (every agent request is one), its proof dated `skew` seconds from this
+/// machine's clock and retried once with a corrected clock on `stale_proof`. Returns the answer
+/// and the skew that worked.
 fn call(
     state: &State,
-    method: &str,
     path: &str,
     body: Option<Value>,
     mut skew: i64,
@@ -289,21 +358,23 @@ fn call(
     let url = format!("{}{}", state.broker, path);
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
+        // A redirect would carry the proof to wherever it points, and `/broker/tokens` has no
+        // body to tie it to one host. The broker never redirects; a 3xx is an outage.
+        .max_redirects(0)
         .timeout_global(Some(TIMEOUT))
         .build()
         .into();
     for attempt in 0..2 {
-        let proof = proof(&key, method, &url, unix_now() + skew)?;
+        let proof = proof(&key, "POST", &url, unix_now() + skew)?;
         let request = agent
             .post(&url)
             .header("DPoP", &proof)
             .header("Accept", "application/json");
-        let result = match (method, &body) {
-            ("POST", Some(body)) => request
+        let result = match &body {
+            Some(body) => request
                 .header("Content-Type", "application/json")
                 .send(body.to_string()),
-            ("POST", None) => request.send_empty(),
-            _ => return Err(BrokerError::Invalid(format!("unsupported method {method}"))),
+            None => request.send_empty(),
         };
         let mut response = result.map_err(|e| BrokerError::Transport(e.to_string()))?;
         let status = response.status().as_u16();
@@ -430,75 +501,18 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's `days_from_civil`).
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year.div_euclid(400);
-    let yoe = year - era * 400;
-    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-fn unix(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> Option<i64> {
-    let valid = (1..=12).contains(&month)
-        && (1..=31).contains(&day)
-        && (0..24).contains(&hour)
-        && (0..60).contains(&minute)
-        && (0..=60).contains(&second);
-    valid.then(|| days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second)
-}
-
-/// `2026-09-28T13:00:00Z` or with a `±HH:MM` offset, as Rails' `iso8601` writes it.
+/// `2026-09-28T13:00:00Z`, or with an offset, as Rails' `iso8601` writes it.
 fn parse_iso8601(text: &str) -> Option<i64> {
-    let number = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
-    let base = unix(
-        number(0..4)?,
-        number(5..7)?,
-        number(8..10)?,
-        number(11..13)?,
-        number(14..16)?,
-        number(17..19)?,
-    )?;
-    let zone = text
-        .get(19..)?
-        .trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
-    match zone {
-        "Z" => Some(base),
-        offset if offset.len() == 6 => {
-            let sign = match &offset[..1] {
-                "+" => 1,
-                "-" => -1,
-                _ => return None,
-            };
-            let hours = offset.get(1..3)?.parse::<i64>().ok()?;
-            let minutes = offset.get(4..6)?.parse::<i64>().ok()?;
-            Some(base - sign * (hours * 3600 + minutes * 60))
-        }
-        _ => None,
-    }
+    chrono::DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|t| t.timestamp())
 }
 
-/// An HTTP `Date` (IMF-fixdate): `Sun, 28 Sep 2026 13:00:00 GMT`.
+/// An HTTP `Date` (IMF-fixdate): `Mon, 28 Sep 2026 13:00:00 GMT`.
 fn parse_http_date(text: &str) -> Option<i64> {
-    let parts: Vec<&str> = text.split_whitespace().collect();
-    let [_, day, month, year, time, "GMT"] = parts.as_slice() else {
-        return None;
-    };
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let month = MONTHS.iter().position(|m| m == month)? as i64 + 1;
-    let mut clock = time.split(':').map(|p| p.parse::<i64>().ok());
-    let (hour, minute, second) = (clock.next()??, clock.next()??, clock.next()??);
-    unix(
-        year.parse().ok()?,
-        month,
-        day.parse().ok()?,
-        hour,
-        minute,
-        second,
-    )
+    chrono::NaiveDateTime::parse_from_str(text, "%a, %d %b %Y %H:%M:%S GMT")
+        .ok()
+        .map(|t| t.and_utc().timestamp())
 }
 
 #[cfg(test)]
