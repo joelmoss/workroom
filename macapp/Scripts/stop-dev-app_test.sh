@@ -131,6 +131,33 @@ if [ $status -ne 0 ] || [ -n "$out" ]; then
 fi
 expect_alive "$other_app" "another workroom's app, on the second run"
 
+# Which id a session helper belongs to: the one its socket names, whichever bundle its binary lives
+# in, since an agent runs the copy that spawned it or last handed it off. Checked against a synthetic
+# process table: a copy of `sleep` cannot carry `serve --socket …` arguments and stay alive.
+PLAIN_ID="com.developwithstyle.workroom.dev"
+OTHER_ID="com.developwithstyle.workroom.dev.wr-quiet-fern-0a1b2c"
+OTHER="$TMP/other/Workroom Dev.app/Contents/MacOS"
+SUPPORT="/Users/someone/Library/Application Support"
+cat >"$TMP/table" <<EOF
+101 $THIS/Workroom Dev
+102 $THIS/wr-agent serve --socket $SUPPORT/$DEV_ID/sessions/agent.sock
+103 $THIS/wr-agent serve --socket /tmp/workroom-501-$PLAIN_ID/agent.sock --handoff /tmp/table
+104 $OTHER/wr-agent serve --socket /tmp/workroom-501-$DEV_ID/agent.sock --idle-timeout never
+105 $THIS/wr-agent attach --session 6f1c2d
+106 $OTHER/Workroom Dev
+107 $THIS/wr-agent serve --socket /somewhere/else/agent.sock
+108 $OTHER/wr-agent serve --socket $SUPPORT/$OTHER_ID/sessions/agent.sock
+EOF
+got="$(STOP_DEV_APP_PS="cat $TMP/table" STOP_DEV_APP_DRY_RUN=1 \
+  sh "$SCRIPT" "$TMP/this/Workroom Dev.app" | sed -n 's/^stop //p' | sort -n | tr '\n' ' ')"
+# 101 this app; 102 serves this id; 104 serves this id from another bundle; 105 has no socket, so
+# goes by its bundle; 107 names no socket shape we know, so goes by its bundle. Not 103: it lives in
+# this bundle but serves the plain id — stopping it would end the project checkout's sessions.
+if [ "$got" != "101 102 104 105 107 " ]; then
+  echo "FAIL: stopped '$got', want '101 102 104 105 107 '"
+  fails=$((fails + 1))
+fi
+
 # An unreadable bundle is an error, not "nothing to stop".
 if sh "$SCRIPT" "$TMP/missing/Workroom Dev.app" >/dev/null 2>&1; then
   echo "FAIL: a bundle with no Info.plist should be an error"

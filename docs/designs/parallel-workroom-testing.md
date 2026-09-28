@@ -103,7 +103,11 @@ UUID-named agent sockets (`AgentHarness`). Builds are per checkout. None of that
    never makes them wait.
 4. **`make app-run` stops by identity.** `macapp/Scripts/stop-dev-app.sh` stops every running copy
    whose bundle id matches the one being launched (an Xcode-built copy of the same id included) and
-   its session helpers, and nothing else; the launch then waits out a UI-test run in progress.
+   the session helpers serving that id, and nothing else. A helper's id is the one its socket names
+   (`wr-agent serve --socket …`), not the bundle its binary lives in: an agent runs whichever copy
+   spawned it or last handed it off, so one still serving the plain id can live in a workroom's
+   bundle. Stop and relaunch happen inside one hold of the shared lock, so waiting out a UI-test run
+   never leaves the app down.
 5. **A test launch never ends sessions at quit.**
    `TerminalPersistentSessionPolicy.endsSessionsOnQuit` now backs both quit paths and is false for
    a hosted unit run or an XCUITest launch, which cannot own a persistent session.
@@ -121,7 +125,7 @@ to fail against the behaviour it replaces.
 | --- | --- | --- | --- |
 | building anything | runs | runs | runs |
 | running unit tests | runs alongside | builds, then waits for the GUI | runs |
-| running UI tests | builds, then waits | builds, then queues | builds, then waits to launch |
+| running UI tests | builds, then waits | builds, then queues | builds, then waits to relaunch |
 | running its dev app | runs | runs — but see below | runs (separate app) |
 
 Two runs **in the same workroom** still share one DerivedData, so run one `make app-*` at a time
@@ -136,7 +140,10 @@ per workroom; Xcode's build-database lock rejects a second concurrent build ther
   workroom opened in Xcode collides with the project checkout's dev app as before.
 - **TCC asks again per workroom.** macOS keys permissions to the signing identity, so a workroom's
   dev app prompts afresh for notifications, Automation or other apps' data the first time it needs
-  them. Fixture-mode tests don't reach those prompts.
+  them. Fixture-mode tests mostly don't, but a fixture terminal runs your real login shell, and its
+  children are attributed to the app: a shell startup that touches a protected folder (Documents,
+  Desktop, iCloud Drive) raises a prompt during a new workroom's first UI-test run. That run holds
+  the GUI session until it finishes, and the prompt waits for a person to answer it.
 - **A workroom's session socket lives under `/tmp`.** Its longer bundle id pushes
   `Application Support/<id>/sessions/agent.sock` past `sun_path`'s 104 bytes, so
   `PersistentSessionPaths` uses its existing fallback, `/tmp/workroom-<uid>-<id>/`. The suffix is
@@ -205,8 +212,13 @@ Done on Linux, where this was written: the three script tests and `test-invarian
 and each was confirmed to fail against a deliberately broken copy (inheritable lock descriptors
 without `close_fds`, no turnstile, `SIG_IGN` instead of a handler, the old `pkill` logic, jj
 detection removed, a path-free checksum, a 40-character name cap, the suffix dropped from a build
-or the bundle id). The Makefile was dry-run (`make -n`) from this checkout and from a real linked
-git worktree, and `project.yml` parsed. Not run here: xcodebuild, swift-format, and the Swift tests.
+or the bundle id, and helpers judged by their bundle instead of the socket they serve). The
+Makefile was dry-run (`make -n`) under GNU Make 3.81 and 4.3, from this checkout and from a real
+linked git worktree; `make app-test`, `app-uitest` and `app-run` were run end to end with stub
+`xcodebuild`/`open`, and `project.yml` parsed. An independent adversarial review found nothing
+blocking; its three findings (helpers stopped by bundle, `app-run` stopping before it waited,
+an overstated claim about permission prompts) are fixed above. Not run here: xcodebuild,
+swift-format, and the Swift tests.
 
 To check on a Mac:
 

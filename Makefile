@@ -112,12 +112,13 @@ app-vcs: ## Build the Rust VCS core (xcframework + Swift bindings) the app links
 # Stops every running copy of THIS build's identity first (Scripts/stop-dev-app.sh), and its
 # persisted session helpers, whose panes come back empty. By bundle id, never by process name: every
 # workroom's dev app, unit-test host and XCUITest app is called "Workroom Dev", and the
-# `pkill -x "Workroom Dev"` this used to be killed all of them. The launch waits out a UI-test run
-# in progress anywhere on this Mac, which a new window taking focus would otherwise break.
+# `pkill -x "Workroom Dev"` this used to be killed all of them. Stop and relaunch both wait out a
+# UI-test run in progress anywhere on this Mac, which a new window taking focus would otherwise
+# break — together, so the wait never leaves the app down, and giving up on it leaves it running.
 app-run: app-build ## Build (Debug) and launch this checkout's dev app, replacing any running copy of it
-	cd macapp && sh Scripts/stop-dev-app.sh "$(APP_BUNDLE)" && \
-	  echo "Launching $(APP_BUNDLE)" && \
-	  $(call gui_lock,shared,app-run) open "$(APP_BUNDLE)"
+	cd macapp && $(call gui_lock,shared,app-run) \
+	  sh -c 'sh Scripts/stop-dev-app.sh "$$1" && echo "Launching $$1" && open "$$1"' app-run \
+	  "$(APP_BUNDLE)"
 
 app-build: app-vcs ## Build the app (Debug)
 	cd macapp && xcodegen generate && $(APP_XCODEBUILD) build $(APP_SIGN_FLAGS) $(APP_ID_FLAGS)

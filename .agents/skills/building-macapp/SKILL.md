@@ -22,7 +22,8 @@ Other workrooms of this repo may be building and testing at the same time as you
   session to itself, so it — and a unit run or `make app-run` that arrives meanwhile — waits,
   printing who holds it. That wait is expected; don't kill it, and don't set `WR_GUI_LOCK=off` to
   get past it (it is for runs inside a VM). `python3 macapp/Scripts/gui-lock.py status` shows who
-  holds the session.
+  holds the session. A UI-test run that stalls may be sitting on a macOS permission prompt — a
+  workroom's app asks afresh — which only a person can answer: say so rather than waiting silently.
 - In your own workroom run one `make app-*` target at a time; they share its DerivedData.
 - Never stop the app with `pkill`/`killall` by name: every workroom's app is called "Workroom Dev".
 
