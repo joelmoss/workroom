@@ -86,6 +86,34 @@ final class TerminalPersistentSessionPolicyTests: XCTestCase {
         hasExistingSession: true,
         isFixture: false))
   }
+
+  /// The quit paths' promise: with persistence off, nothing outlives the app.
+  func testQuittingWithPersistenceOffEndsSessions() {
+    XCTAssertTrue(
+      TerminalPersistentSessionPolicy.endsSessionsOnQuit(
+        preferenceEnabled: false, isTestLaunch: false))
+  }
+
+  func testQuittingWithPersistenceOnKeepsSessions() {
+    XCTAssertFalse(
+      TerminalPersistentSessionPolicy.endsSessionsOnQuit(
+        preferenceEnabled: true, isTestLaunch: false))
+  }
+
+  /// REGRESSION. Fixture mode pins persistence off, and "every session" is every session on this
+  /// bundle id's sockets — none of them the test launch's own. Every XCUITest `terminate()` ended
+  /// the developer's own Workroom Dev terminals.
+  func testATestLaunchNeverEndsSessionsOnQuit() {
+    XCTAssertFalse(
+      TerminalPersistentSessionPolicy.endsSessionsOnQuit(
+        preferenceEnabled: false, isTestLaunch: true),
+      "a test launch's quit reached sessions that belong to another app")
+  }
+
+  /// This test host is itself a test launch, so the real default must say so.
+  func testAHostedUnitRunIsATestLaunch() {
+    XCTAssertTrue(TerminalPersistentSessionPolicy.isTestLaunch)
+  }
 }
 
 final class TerminalPayloadSessionIDTests: XCTestCase {

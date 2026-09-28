@@ -26,4 +26,30 @@ enum TerminalPersistentSessionPolicy {
   ) -> Bool {
     preferenceEnabled && (isAvailable || hasExistingSession) && !isRunCommand && !isFixture
   }
+
+  /// Whether quitting ends every session the helpers hold — the quit paths' promise that with
+  /// persistence off nothing outlives the app (`AppDelegate.installSigtermHandler` and
+  /// `stopRunCommandsThenTerminate`, which must agree).
+  ///
+  /// **Never from a test launch.** "Every session" means every session on the sockets under
+  /// `Application Support/<bundle id>/`, whoever made them, and a test launch has made none: with
+  /// persistence off nothing new is persisted, and a fixture never persists anything anyway. So
+  /// all it could reach are the sessions of the developer's own Workroom Dev with the same bundle
+  /// id — and fixture mode pins `backgroundSessions` off in its throwaway suite, whatever the
+  /// developer chose. XCUITest ends the app with SIGTERM (`terminate()`), which runs this path,
+  /// so every `make app-uitest` used to end the terminals of the Dev app it shared an id with.
+  static func endsSessionsOnQuit(
+    preferenceEnabled: Bool = Defaults[.backgroundSessions],
+    isTestLaunch: Bool = TerminalPersistentSessionPolicy.isTestLaunch
+  ) -> Bool {
+    !preferenceEnabled && !isTestLaunch
+  }
+
+  /// A hosted unit run (`XCTestConfigurationFilePath`), or an app XCUITest launched, which has no
+  /// such variable and is known by its fixture flags — the same three signals
+  /// `applicationDidFinishLaunching` uses to keep a test launch off the developer's real agent.
+  static var isTestLaunch: Bool {
+    ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+      || UITestFixture.isActive || UITestFixture.isolatesPreferences
+  }
 }
