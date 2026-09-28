@@ -90,6 +90,14 @@ extension Defaults.Keys {
   /// OQ22 semantics: report only, and never let a box sleep on its own.
   static let askAtAwakeCeiling = Key<Bool>("askAtAwakeCeiling", default: false, suite: .app)
 
+  /// Shows the Remote workrooms section in Settings (the broker sign-in, #251) before remote
+  /// workrooms ship. Hidden: `defaults write <bundle id> remoteWorkroomsPreview -bool YES`.
+  static let remoteWorkroomsPreview = Key<Bool>(
+    "remoteWorkroomsPreview", default: false, suite: .app)
+  /// The Workroom credential broker (Codaset). Hidden; point it at a development Codaset with
+  /// `defaults write <bundle id> brokerURL http://127.0.0.1:3000`.
+  static let brokerURL = Key<String>("brokerURL", default: "https://codaset.dev", suite: .app)
+
   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
   static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true, suite: .app)
 
