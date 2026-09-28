@@ -2081,7 +2081,8 @@ disagreement passes every test on either side alone while presenting as an empty
       Keychain. Both are signing keys, never bearer tokens. Teleport's `tsh` authenticates devices
       the same way. Rejected: sending the user's `gh` token on each request, which hands a token
       covering every repository the user can reach to Workroom's server — the exposure the broker
-      exists to avoid.
+      exists to avoid. (As built, the blob is kept in the Keychain rather than a plain file: see "As
+      built (#251)" below.)
     - **Branch restriction: deferred, and its shape is known.** It needs git traffic to pass through
       the broker as a smart-HTTP proxy that reads the ref updates in `git-receive-pack` and refuses
       any ref other than the workroom's branch. Anthropic's proxy states the rule ("`git push` works
@@ -2163,6 +2164,33 @@ disagreement passes every test on either side alone while presenting as an empty
       - *Pages on codaset.dev.* "Workroom access" (`/workroom/account`: signed-in Macs, removing a
         Mac with or without cutting off its workrooms' GitHub access, and a repository check), and
         a public `/install/{owner}` page for org admins. Designs are in #250's design review.
+    - **As built (#251, PR #263; server in joelmoss/codaset#43).** Where the clients differ from, or
+      add to, the shape above:
+      - *Every enrolment makes a new key.* The broker refuses any key it has seen, on any grant,
+        cancelled ones included, so a key left by an enrolment that failed halfway (registered or
+        not) could never enrol again. `wr-agent enrol` reads the code on stdin, writes the new key
+        (0600, beside the agent) before the request, and configures git only after the broker
+        accepts it, so a failed enrolment leaves a provider's working helper alone.
+      - *The helper's cache.* `wr-agent credential get` keeps the token (0600) with the enrolment
+        key it belongs to and the clock skew learned from a `stale_proof`, so expiry is judged on
+        the broker's clock and git is told a local one (`password_expiry_utc`). A broker or GitHub
+        outage (5xx, 429, a proxy's own error) serves the cached token until it expires and then
+        waits 60 s before asking again; only the broker's refusal codes (`grant_ended`,
+        `unknown_key`, `no_push_access`, `no_read_access`, `sign_in_required`,
+        `app_not_installed`, `ip_allow_list`) are final, and they delete the cached token. `erase`
+        drops a token GitHub rejected. Requests never follow a redirect.
+      - *The Mac's key is in the Keychain, enclave blob included.* The #251 review found that a
+        blob in a plain file lets any process running as the user load it and sign as this Mac, so
+        both kinds live in one login-keychain item tied to Workroom's code signature. The login
+        keychain does not enforce "this device only"; the data-protection keychain would, but needs
+        an entitlement ad hoc Dev builds lack.
+      - *Sign-in.* Cancel really cancels (the Mac is left signed out); a lost "complete" answer
+        keeps the working key; an `unknown_key` refusal (the Mac was removed at codaset.dev) signs
+        the Mac out. The Settings row is hidden behind `remoteWorkroomsPreview` until remote
+        workrooms ship; `brokerURL` points at a development Codaset on `http://127.0.0.1`.
+      - *Deferred to #252:* detecting a copy of an already-enrolled workroom (a disk copy copies any
+        machine identity too, and only bases, which never enrol, are derived), and keeping the old
+        key until a re-enrolment succeeds.
     - **One optional spike, skipped by the owner (2026-09-27)** (research note, S1): whether
       GitHub's token cap applies to GitHub App user tokens. It only decides whether scoped user
       tokens could replace installation tokens, which would make pushes show as the user rather
