@@ -352,10 +352,12 @@ final class ShellEnvironmentTests: XCTestCase {
     XCTAssertEqual(reason, .timedOut)
     XCTAssertLessThan(Date().timeIntervalSince(started), 10, "the deadline did not fire")
 
-    // Nothing of ours may outlive the probe.
+    // Nothing of ours may outlive the probe. Matched on the stub's own path, whose directory is
+    // UUID-scoped: `pgrep` searches the whole machine, and a bare "wedged-shell" also found this
+    // same test's stub in another checkout's `make app-test` running at the same moment.
     let pgrep = Process()
     pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-    pgrep.arguments = ["-f", "wedged-shell"]
+    pgrep.arguments = ["-f", stub]
     pgrep.standardOutput = Pipe()
     pgrep.standardError = Pipe()
     try pgrep.run()
