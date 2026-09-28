@@ -229,7 +229,7 @@ final class GhosttyApp {
   /// The scoping is not tidiness. `writeThemeConfig` and `loadConfig` are two steps, and each build
   /// identity (Workroom, Workroom Nightly, Workroom Dev) keeps its own theme preference; while they
   /// all shared one `Workroom/ghostty.conf`, an identity that wrote between another's two steps
-  /// handed it the wrong theme. That old file is left alone: nothing reads it any more, and an
+  /// handed it the wrong theme. That old file is left alone: nothing in this build reads it, and an
   /// older build still running beside this one writes it before each of its own loads, so deleting
   /// it could only race that build.
   ///
@@ -250,11 +250,13 @@ final class GhosttyApp {
   ///
   /// - A fixture launch that names a file (`-WorkroomUITestGhosttyConfigFile`) uses that file, so
   ///   the sandboxed XCUITest runner reads exactly what this launch wrote (`ThemePickerUITests`).
-  /// - Any other test process — a hosted unit run, or a fixture launch that named no file — gets a
-  ///   file of its own, named for its pid. The bundle id cannot separate these: the unit suite's
-  ///   host IS `Workroom Dev`, so every parallel `make app-test` worker (one host process each) and
-  ///   the developer's own running Dev app would otherwise be back on one file. A reused pid
-  ///   inherits nothing, because every load follows this process's own write.
+  /// - Any other test process gets a file of its own, named for its pid. That is every process
+  ///   `UserDefaults.app` isolates, by the same three signals: a hosted unit run, a fixture launch
+  ///   that named no file, and a launch that only isolates its preferences
+  ///   (`WorkroomWorkflowUITests`' real-bootstrap smoke test). The bundle id cannot separate these:
+  ///   the unit suite's host IS `Workroom Dev`, so every parallel `make app-test` worker (one host
+  ///   process each) and the developer's own running Dev app would otherwise be back on one file.
+  ///   A reused pid inherits nothing, because every load follows this process's own write.
   ///
   /// Both redirects are `#if DEBUG`, like `UserDefaults.app`'s: a shipped build always uses the
   /// bundle-scoped file. The parameters default to the real signals so tests can pin each branch
@@ -262,7 +264,7 @@ final class GhosttyApp {
   nonisolated static func themeConfigURLForCurrentEnvironment(
     fixturePath: String? = UITestFixture.ghosttyConfigFilePath,
     underTest: Bool = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-      || UITestFixture.isActive
+      || UITestFixture.isActive || UITestFixture.isolatesPreferences
   ) -> URL {
     #if DEBUG
       if let fixturePath { return URL(fileURLWithPath: fixturePath) }
