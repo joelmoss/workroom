@@ -1076,16 +1076,20 @@ fn run_enrol(args: &[String]) -> ExitCode {
         eprintln!("error: could not read the enrolment code from stdin");
         return ExitCode::FAILURE;
     }
-    // git first: a git that cannot be configured fails the enrolment before the broker registers
-    // a key, so nothing is left enrolled that the Mac then cancels.
-    let result = std::env::current_exe()
-        .and_then(|binary| {
-            let helper = wr_agent::broker::helper_command(&binary);
-            wr_agent::broker::configure_git(|| std::process::Command::new("git"), &helper)
-        })
-        .and_then(|()| wr_agent::broker::directory())
+    // git only after the broker enrolled the key: a failed enrolment must leave whatever helper
+    // already worked (a provider's own) in place. If git then fails, the command fails, the Mac
+    // cancels the grant, and a retry enrols a fresh key.
+    let result = wr_agent::broker::directory()
         .map_err(wr_agent::broker::BrokerError::from)
-        .and_then(|dir| wr_agent::broker::enrol(&dir, &workroom, &broker, &code));
+        .and_then(|dir| wr_agent::broker::enrol(&dir, &workroom, &broker, &code))
+        .and_then(|()| {
+            let binary = std::env::current_exe()?;
+            let helper = wr_agent::broker::helper_command(&binary);
+            Ok(wr_agent::broker::configure_git(
+                || std::process::Command::new("git"),
+                &helper,
+            )?)
+        });
     match result {
         Ok(()) => ExitCode::SUCCESS,
         // The refusal's code on its own line, for the app to switch on.

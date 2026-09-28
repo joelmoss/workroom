@@ -8,6 +8,14 @@ import Foundation
 ///
 /// Runs after the derive (OQ10): the base never enrols, so a fork never inherits an enrolment.
 enum AgentEnrolment {
+  /// Silence allowed on the exec. `wr-agent enrol` is one broker request and at most one
+  /// stale-proof retry, each bounded by the agent's own 15 s `TIMEOUT` (`broker.rs`), so this keeps
+  /// headroom over both; change them together.
+  static let execTimeout: TimeInterval = 60
+  /// The lines `wr-agent enrol` writes on failure (`run_enrol` in `wr-agent/src/main.rs`).
+  static let errorPrefix = "error: "
+  static let refusalPrefix = "refusal: "
+
   /// Returns the grant's ID, which destroying the workroom cancels (`BrokerClient.cancelGrant`).
   /// A failed enrolment cancels the grant it created, so nothing is left minting for it.
   static func enrol(
@@ -23,26 +31,30 @@ enum AgentEnrolment {
       ].joined(separator: " ")
       let stream = try await driver.exec(command, on: host)
       let (status, output) = try await stream.communicate(
-        Data((grant.enrolmentCode + "\n").utf8), timeout: 60)
+        Data((grant.enrolmentCode + "\n").utf8), timeout: execTimeout)
       guard status == 0 else { throw failure(output) }
       return grant.grantId
     } catch {
-      try? await client.cancelGrant(grant.grantId)
+      // In its own task: a cancelled enrolment's task would cancel this request too, and leave a
+      // grant live that the agent may already have enrolled against.
+      await Task { try? await client.cancelGrant(grant.grantId) }.value
       throw error
     }
   }
 
   /// `wr-agent enrol` prints a broker refusal's code on a `refusal:` line; anything else is the
-  /// agent's own error.
+  /// agent's own error. Either way it is the agent's failure, never this Mac's: a remote
+  /// `unknown_key` must not sign the Mac out.
   static func failure(_ output: String) -> BrokerError {
     let lines = output.split(whereSeparator: \.isNewline).map(String.init)
-    let message =
-      lines.first { $0.hasPrefix("error: ") }.map { String($0.dropFirst(7)) }
-      ?? output.trimmingCharacters(in: .whitespacesAndNewlines)
-    if let code = lines.first(where: { $0.hasPrefix("refusal: ") })?.dropFirst(9) {
-      return .refused(
-        BrokerRefusal(status: 0, code: String(code), message: message, installURL: nil))
+    let value = { (prefix: String) in
+      lines.first { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) }
     }
-    return .signIn("The remote workroom couldn't enrol: \(message)")
+    let message = value(errorPrefix) ?? output.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let code = value(refusalPrefix) {
+      return .agentRefused(
+        BrokerRefusal(status: 0, code: code, message: message, installURL: nil))
+    }
+    return .agent("The remote workroom couldn't enrol: \(message)")
   }
 }

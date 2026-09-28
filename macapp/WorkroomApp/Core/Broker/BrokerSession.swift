@@ -16,19 +16,29 @@ final class BrokerSession: ObservableObject {
   @Published var error: String?
 
   private let credentials: BrokerCredentials
+  private let session: URLSession
   private var signIn: Task<Void, Never>?
 
   /// One per app, so a sign-in in progress survives the Settings window changing panes (a
   /// per-view session would orphan it, and a second flow's save would clear the first's key).
   static let shared = BrokerSession()
 
-  init(credentials: BrokerCredentials = .standard()) {
+  init(credentials: BrokerCredentials = .standard(), session: URLSession = .shared) {
     self.credentials = credentials
+    self.session = session
     if let (account, _) = credentials.load() { state = .signedIn(account) }
   }
 
+  /// `Defaults[.brokerURL]` when it is https, or plain http to 127.0.0.1 (a development Codaset;
+  /// the agent accepts exactly these too, `acceptable_broker`); anything else falls back to the
+  /// default rather than sending a key's proofs in the clear.
   var baseURL: URL {
-    URL(string: Defaults[.brokerURL]) ?? URL(string: "https://codaset.dev")!
+    let fallback = URL(string: Defaults.Keys.brokerURL.defaultValue)!
+    guard let url = URL(string: Defaults[.brokerURL]), let host = url.host() else {
+      return fallback
+    }
+    let local = url.scheme == "http" && host == "127.0.0.1"
+    return url.scheme == "https" || local ? url : fallback
   }
 
   /// Where the person manages their Macs and repository access.
@@ -40,7 +50,8 @@ final class BrokerSession: ObservableObject {
     state = .signingIn
     let flow = BrokerSignIn(
       baseURL: baseURL, credentials: credentials,
-      openBrowser: { url in Task { @MainActor in NSWorkspace.shared.open(url) } })
+      openBrowser: { url in Task { @MainActor in NSWorkspace.shared.open(url) } },
+      session: session)
     let name = Host.current().localizedName ?? "Mac"
     signIn = Task {
       do {
@@ -67,7 +78,7 @@ final class BrokerSession: ObservableObject {
 
   /// A client signed with this Mac's key, or nil when signed out.
   func client() -> BrokerClient? {
-    credentials.load().map { BrokerClient(baseURL: baseURL, key: $0.key) }
+    credentials.load().map { BrokerClient(baseURL: baseURL, key: $0.key, session: session) }
   }
 
   /// Runs `call` with this Mac's client. A key the broker no longer knows (the Mac was removed at

@@ -1,4 +1,5 @@
 import CryptoKit
+import Defaults
 import XCTest
 
 @testable import Workroom
@@ -26,6 +27,12 @@ final class BrokerStub: URLProtocol, @unchecked Sendable {
   nonisolated(unsafe) private static var answers: [Answer] = []
   nonisolated(unsafe) private static var seen: [Seen] = []
   nonisolated(unsafe) private static var failing = false
+  nonisolated(unsafe) private static var hanging = false
+  /// Once the scripted answers run out, requests are never answered, as a hung server's are.
+  static var hangWhenEmpty: Bool {
+    get { lock.withLock { hanging } }
+    set { lock.withLock { hanging = newValue } }
+  }
   /// The request after the next answered one fails at the transport, as a lost answer does.
   static var failNext: Bool {
     get { lock.withLock { failing } }
@@ -37,6 +44,7 @@ final class BrokerStub: URLProtocol, @unchecked Sendable {
       self.answers = answers
       seen = []
       failing = false
+      hanging = false
     }
   }
 
@@ -63,11 +71,13 @@ final class BrokerStub: URLProtocol, @unchecked Sendable {
       }
       stream.close()
     }
-    let answer: Answer? = Self.lock.withLock {
+    let (answer, hang): (Answer?, Bool) = Self.lock.withLock {
       Self.seen.append(Seen(request: request, body: body))
-      if Self.answers.isEmpty, Self.failing { return nil }
-      return Self.answers.isEmpty ? Answer(status: 500) : Self.answers.removeFirst()
+      if Self.answers.isEmpty, Self.hanging { return (nil, true) }
+      if Self.answers.isEmpty, Self.failing { return (nil, false) }
+      return (Self.answers.isEmpty ? Answer(status: 500) : Self.answers.removeFirst(), false)
     }
+    if hang { return }
     guard let answer else {
       client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
       return
@@ -120,23 +130,33 @@ final class BrokerClientTests: XCTestCase {
       now: { now })
   }
 
-  func testRequestsCarryAProofBoundToTheMethodAndTheURLWithoutItsQuery() async throws {
-    BrokerStub.reset([.init(body: #"{"status":"ready","repository":"o/r"}"#)])
+  func testRequestsCarryAProofBoundToTheMethodAndTheURL() async throws {
+    BrokerStub.reset([.init(body: #"{"grant_id":"g1","state":"cancelled"}"#)])
 
-    let status = try await client().installStatus(repository: "o/r")
+    try await client().cancelGrant("g1")
 
-    XCTAssertEqual(status.status, "ready")
     let seen = try XCTUnwrap(BrokerStub.requests.first)
-    XCTAssertEqual(seen.request.url?.query, "repository=o/r")
+    XCTAssertEqual(seen.request.httpMethod, "DELETE")
     let header = jwtPart(seen.proof, 0)
     let claims = jwtPart(seen.proof, 1)
     XCTAssertEqual(header["typ"] as? String, "dpop+jwt")
     XCTAssertEqual(header["alg"] as? String, "ES256")
     XCTAssertNil((header["jwk"] as? [String: String])?["d"], "never the private half")
-    XCTAssertEqual(claims["htm"] as? String, "GET")
-    XCTAssertEqual(claims["htu"] as? String, "https://codaset.test/broker/install-status")
+    XCTAssertEqual(claims["htm"] as? String, "DELETE")
+    XCTAssertEqual(claims["htu"] as? String, "https://codaset.test/broker/grants/g1")
     XCTAssertGreaterThanOrEqual((claims["jti"] as? String)?.count ?? 0, 16)
     XCTAssertTrue(proofVerifies(seen.proof))
+  }
+
+  /// `Broker::Proof` compares `htu` with the URL without its query.
+  func testAProofsURLLeavesOutTheQuery() throws {
+    let proof = try BrokerProof.make(
+      key: .software(P256.Signing.PrivateKey()), method: "GET",
+      url: URL(string: "https://codaset.test/broker/install-status?repository=o/r")!,
+      issuedAt: Date())
+
+    XCTAssertEqual(
+      jwtPart(proof, 1)["htu"] as? String, "https://codaset.test/broker/install-status")
   }
 
   func testAStaleProofIsSignedAgainOnTheBrokersClock() async throws {
@@ -166,7 +186,7 @@ final class BrokerClientTests: XCTestCase {
     BrokerStub.reset([stale, stale, stale])
 
     do {
-      _ = try await client().installStatus(repository: "o/r")
+      _ = try await client().createGrant(repository: "o/r", workroomID: UUID())
       XCTFail("a second stale proof is a refusal")
     } catch BrokerError.refused(let refusal) {
       XCTAssertEqual(refusal.code, "stale_proof")
@@ -193,6 +213,20 @@ final class BrokerClientTests: XCTestCase {
       XCTAssertEqual(refusal.code, "app_not_installed")
       XCTAssertEqual(refusal.installURL?.absoluteString, "https://codaset.test/install/o")
       XCTAssertTrue(refusal.userMessage.contains("GitHub App"))
+    } catch {
+      XCTFail("unexpected \(error)")
+    }
+  }
+
+  func testANonJSONErrorBecomesAnHTTPStatusRefusal() async {
+    BrokerStub.reset([.init(status: 502, body: "<html>Bad Gateway</html>")])
+
+    do {
+      _ = try await client().createGrant(repository: "o/r", workroomID: UUID())
+      XCTFail("expected a refusal")
+    } catch BrokerError.refused(let refusal) {
+      XCTAssertEqual(refusal.code, "http_502")
+      XCTAssertEqual(refusal.userMessage, "http_502")
     } catch {
       XCTFail("unexpected \(error)")
     }
@@ -275,5 +309,84 @@ final class BrokerCredentialsTests: XCTestCase {
     XCTAssertTrue(
       key.publicKey.isValidSignature(
         try P256.Signing.ECDSASignature(rawRepresentation: signature), for: Data("x".utf8)))
+  }
+}
+
+/// The Mac's session: a key the broker no longer knows signs the Mac out (#251: removing a Mac at
+/// codaset.dev cuts it off and asks for a fresh sign-in).
+@MainActor
+final class BrokerSessionTests: XCTestCase {
+  private var directory: URL!
+
+  override func setUp() async throws {
+    try await super.setUp()
+    directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "broker-session-\(UUID().uuidString.prefix(8))")
+  }
+
+  override func tearDown() async throws {
+    try? FileManager.default.removeItem(at: directory)
+    try await super.tearDown()
+  }
+
+  private func signedInSession() throws -> (BrokerSession, BrokerCredentials) {
+    final class Box: @unchecked Sendable { var data: Data? }
+    let box = Box()
+    let credentials = BrokerCredentials(
+      directory: directory,
+      secrets: .init(read: { box.data }, write: { box.data = $0 }, delete: { box.data = nil }))
+    try credentials.save(
+      account: BrokerAccount(deviceID: "d", login: "octo", email: "o@example.com"),
+      key: .software(P256.Signing.PrivateKey()))
+    return (BrokerSession(credentials: credentials, session: BrokerStub.session), credentials)
+  }
+
+  func testAnUnknownKeySignsTheMacOut() async throws {
+    BrokerStub.reset([.init(status: 401, body: #"{"error":"unknown_key"}"#)])
+    let (session, credentials) = try signedInSession()
+    XCTAssertEqual(
+      session.state,
+      .signedIn(BrokerAccount(deviceID: "d", login: "octo", email: "o@example.com")))
+
+    do {
+      _ = try await session.perform {
+        try await $0.createGrant(repository: "o/r", workroomID: UUID())
+      }
+      XCTFail("expected a refusal")
+    } catch BrokerError.refused(let refusal) {
+      XCTAssertEqual(refusal.code, "unknown_key")
+    }
+
+    XCTAssertEqual(session.state, .signedOut)
+    XCTAssertNil(credentials.load())
+    XCTAssertEqual(session.error, "This Mac was removed from Codaset. Sign in again.")
+  }
+
+  func testTheBrokerURLIsHTTPSOrLocalOnly() throws {
+    let (session, _) = try signedInSession()
+    let original = Defaults[.brokerURL]
+    defer { Defaults[.brokerURL] = original }
+    for (setting, expected) in [
+      ("https://staging.codaset.test", "https://staging.codaset.test"),
+      ("http://127.0.0.1:3000", "http://127.0.0.1:3000"),
+      ("http://codaset.dev", "https://codaset.dev"),
+      ("http://localhost:3000", "https://codaset.dev"),
+      ("not a url", "https://codaset.dev"),
+    ] {
+      Defaults[.brokerURL] = setting
+      XCTAssertEqual(session.baseURL.absoluteString, expected, setting)
+    }
+  }
+
+  func testOtherRefusalsLeaveTheMacSignedIn() async throws {
+    BrokerStub.reset([.init(status: 403, body: #"{"error":"no_push_access"}"#)])
+    let (session, credentials) = try signedInSession()
+
+    _ = try? await session.perform {
+      try await $0.createGrant(repository: "o/r", workroomID: UUID())
+    }
+
+    XCTAssertNotNil(credentials.load())
+    guard case .signedIn = session.state else { return XCTFail("signed out") }
   }
 }
