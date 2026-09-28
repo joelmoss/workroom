@@ -69,7 +69,8 @@ final class GhosttyConfigLocationTests: XCTestCase {
   func testThisTestHostUsesAConfigOfItsOwn() throws {
     let live = GhosttyApp.shared.themeConfigURL
     // A guard, not an assertion, and one that doesn't ask the function under test: if the redirect
-    // broke, the write below would otherwise go on to rewrite the developer's own Dev config.
+    // broke, this test stops here instead of adding a write of its own to the developer's Dev
+    // config (the engine's launch-time write would already have landed there).
     guard live.lastPathComponent.hasSuffix("-\(ProcessInfo.processInfo.processIdentifier).conf")
     else {
       return XCTFail(
@@ -83,8 +84,9 @@ final class GhosttyConfigLocationTests: XCTestCase {
     XCTAssertEqual(try theme(in: live), ThemeService.activeThemeName(isDark: false))
   }
 
-  /// A file the XCUITest runner names wins, because the runner reads it back; with no test signal at
-  /// all — a shipped launch — the bundle-scoped file is the only answer.
+  /// A file the XCUITest runner names wins, because the runner reads it back; a launch with neither
+  /// that nor a test signal — any ordinary launch of Workroom Dev — gets the bundle-scoped file.
+  /// (Release compiles both redirects out, which no Debug-built test can see.)
   func testARunnerNamedFileWinsAndAShippedLaunchIsBundleScoped() {
     XCTAssertEqual(
       GhosttyApp.themeConfigURLForCurrentEnvironment(
@@ -113,7 +115,7 @@ final class GhosttyConfigLocationTests: XCTestCase {
 
 /// A `FileManager` whose Application Support is a directory the test owns. `defaultThemeConfigURL`
 /// takes a `fileManager` for exactly this, as `SessionStore.defaultURL` does.
-private final class ApplicationSupportRedirect: FileManager {
+private final class ApplicationSupportRedirect: FileManager, @unchecked Sendable {
   private let root: URL
 
   init(root: URL) {
