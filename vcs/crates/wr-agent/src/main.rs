@@ -56,6 +56,11 @@ fn usage() -> &'static str {
   wr-agent handoff-check <table>
         whether this build can restore the sessions a hand-off table describes; run by the agent
         handing off, before it replaces itself
+  wr-agent enrol --workroom <id> --broker <url>
+        enrol this remote workroom with the Workroom credential broker, reading the one-time code
+        from stdin, and make `wr-agent credential` git's helper for https://github.com
+  wr-agent credential <get|store|erase>
+        git's credential helper: answers github.com with an installation token from the broker
   wr-agent protocol
         print the protocol version this build speaks
 "
@@ -115,6 +120,8 @@ fn main() -> ExitCode {
         Some("relay") => run_relay(&args),
         Some("list") => run_list(&args),
         Some("hand-off") => run_hand_off(&args),
+        Some("enrol") => run_enrol(&args),
+        Some("credential") => run_credential(&args),
         Some("handoff-check") => match args.get(1) {
             Some(table) => match wr_agent::handoff::check_table(std::path::Path::new(table)) {
                 Ok(count) => {
@@ -1055,6 +1062,62 @@ fn run_list(args: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// Enrols with the credential broker (#251), then points git at `wr-agent credential`. The code
+/// arrives on stdin, never in argv, where `ps` would show it.
+fn run_enrol(args: &[String]) -> ExitCode {
+    let (Some(workroom), Some(broker)) = (flag(args, "--workroom"), flag(args, "--broker")) else {
+        eprintln!("error: enrol needs --workroom <id> and --broker <url>, and the code on stdin");
+        return ExitCode::FAILURE;
+    };
+    let mut code = String::new();
+    if std::io::stdin().read_line(&mut code).is_err() {
+        eprintln!("error: could not read the enrolment code from stdin");
+        return ExitCode::FAILURE;
+    }
+    let result = wr_agent::broker::directory()
+        .map_err(wr_agent::broker::BrokerError::from)
+        .and_then(|dir| wr_agent::broker::enrol(&dir, &workroom, &broker, &code))
+        .and_then(|()| {
+            let binary = std::env::current_exe()?;
+            let helper = wr_agent::broker::helper_command(&binary);
+            Ok(wr_agent::broker::configure_git(
+                || std::process::Command::new("git"),
+                &helper,
+            )?)
+        });
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        // The refusal's code on its own line, for the app to switch on.
+        Err(wr_agent::broker::BrokerError::Refused { code, message, .. }) => {
+            eprintln!("error: {message}");
+            eprintln!("refusal: {code}");
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// git's credential helper. A failure is reported on stderr, which git shows beside its own
+/// "Authentication failed", and answers nothing, so git falls through as it would for no helper.
+fn run_credential(args: &[String]) -> ExitCode {
+    let action = args.get(1).map(String::as_str).unwrap_or("");
+    let result = wr_agent::broker::directory()
+        .map_err(wr_agent::broker::BrokerError::from)
+        .and_then(|dir| {
+            wr_agent::broker::credential(&dir, action, std::io::stdin().lock(), std::io::stdout())
+        });
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Workroom: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// `hand-off`'s exit status when the agent was never asked, because it predates the request. It
