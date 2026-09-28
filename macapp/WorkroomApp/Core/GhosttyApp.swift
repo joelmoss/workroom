@@ -42,6 +42,13 @@ final class GhosttyApp {
   /// The dark/light the generated config was last built for, so `reloadConfig` can no-op when the
   /// appearance hasn't actually changed (it's called per OS-appearance notification).
   private var lastConfiguredDark: Bool?
+  /// Whether the current run of config-write failures has already been reported, so a persistent
+  /// fault is one event and not one per attempt. Unlike every other `reportStartupFailure` caller
+  /// this one sits on a RECURRING trigger: `reloadConfig` runs on each appearance change and on each
+  /// theme apply, and `applyActiveTheme` defaults to `force: true` — so arrow-keying the theme
+  /// picker with an unwritable config directory would capture one Sentry event per keypress. Reset
+  /// on the next success, so a fault that comes back is reported again.
+  private var reportedConfigWriteFailure = false
   /// NSApplication active/inactive observers that drive app-level focus (see `observeAppFocus`).
   private var appFocusObservers: [NSObjectProtocol] = []
 
@@ -175,8 +182,10 @@ final class GhosttyApp {
 
   private func makeConfig() -> ghostty_config_t? {
     let dark = Self.isCurrentAppearanceDark()
-    lastConfiguredDark = dark
-    writeThemeConfig(dark: dark)
+    // The marker records what the engine actually LOADED, so only a successful write advances it —
+    // see `reloadConfig`. Init stays fail-soft either way: a failed write leaves it nil, and the
+    // first `reloadConfig` then rebuilds whatever `force` it was given.
+    if writeThemeConfig(dark: dark) { lastConfiguredDark = dark }
     return loadConfig()
   }
 
@@ -205,8 +214,16 @@ final class GhosttyApp {
     guard let app else { return }
     // Unchanged appearance and not forced → nothing to rebuild.
     guard force || dark != lastConfiguredDark else { return }
+    // Both steps below only make sense on a file that was actually written. `ghostty_config_load_file`
+    // returns `void` — the C API reports nothing for a file it could not read — so a failed write is
+    // invisible from here down: the engine would finalize on libghostty's own defaults (no theme, no
+    // contrast floor, no padding) and look like a successful reload. Bail instead and keep the config
+    // already loaded, which is at worst one appearance stale rather than unthemed.
+    //
+    // The marker moves only on success, and only after it: setting it first recorded an INTENT, so a
+    // silently-failed write was never retried by a later non-forced call for the same appearance.
+    guard writeThemeConfig(dark: dark) else { return }
     lastConfiguredDark = dark
-    writeThemeConfig(dark: dark)
     guard let newConfig = loadConfig() else { return }
     ghostty_app_update_config(app, newConfig)
     let old = config
@@ -214,9 +231,10 @@ final class GhosttyApp {
     if let old { ghostty_config_free(old) }
   }
 
-  // libghostty has no config setter API (only load-from-file), so Workroom's "blend into the native
-  // window" look is expressed as a tiny generated config file whose `background`/`foreground` are the
-  // macOS system colors resolved for the current appearance. New surfaces inherit the app config.
+  // libghostty has no config setter API (only load-from-file), so everything Workroom has to say to
+  // the engine is said in a tiny generated config file: the active theme family's variant for the
+  // current appearance, a contrast floor, and the padding that blends the terminal into the native
+  // window (see `writeThemeConfig` for what each one is for). New surfaces inherit the app config.
   //
   // Resolved once, at init: nothing it depends on (the bundle id, the test signals, the fixture's
   // launch arguments) changes while the process runs. `internal` so a test can see which file the
@@ -263,28 +281,77 @@ final class GhosttyApp {
   /// without writing a fixture key into the defaults domain that parallel workers share.
   nonisolated static func themeConfigURLForCurrentEnvironment(
     fixturePath: String? = UITestFixture.ghosttyConfigFilePath,
-    underTest: Bool = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-      || UITestFixture.isActive || UITestFixture.isolatesPreferences
+    underTest: Bool = UITestFixture.isTestProcess
   ) -> URL {
     #if DEBUG
       if let fixturePath { return URL(fileURLWithPath: fixturePath) }
       if underTest {
-        return FileManager.default.temporaryDirectory.appendingPathComponent(
-          "workroom-tests-ghostty-\(ProcessInfo.processInfo.processIdentifier).conf")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+          "\(testConfigPrefix)\(ProcessInfo.processInfo.processIdentifier).conf")
+        pruneDeadTestConfigs(keeping: url)
+        return url
       }
     #endif
     return defaultThemeConfigURL()
   }
 
+  #if DEBUG
+    /// Names the per-process files above so `pruneDeadTestConfigs` can find its own and nothing else.
+    nonisolated private static let testConfigPrefix = "workroom-tests-ghostty-"
+
+    /// Delete the per-process configs left by test runs whose process is gone, so per-pid naming does
+    /// not accumulate a file per run — the same sweep, and the same live-pid guard, as
+    /// `UserDefaults.app`'s `pruneDeadSuites`. A pid that is still alive is skipped: that file belongs
+    /// to a worker running right now, and deleting it would be the very race the naming avoids.
+    ///
+    /// Called from the resolver that mints the name, where `DefaultsSuite` prunes too. `removeItem`
+    /// directly, unlike the suites: no `cfprefsd` owns these, they are plain files we wrote.
+    nonisolated private static func pruneDeadTestConfigs(keeping current: URL) {
+      let directory = current.deletingLastPathComponent()
+      guard
+        let files = try? FileManager.default.contentsOfDirectory(
+          at: directory, includingPropertiesForKeys: nil)
+      else { return }
+      for file in files where file.pathExtension == "conf" {
+        let name = file.deletingPathExtension().lastPathComponent
+        guard file != current, name.hasPrefix(testConfigPrefix),
+          let pid = Int32(name.dropFirst(testConfigPrefix.count)),
+          kill(pid, 0) != 0, errno == ESRCH
+        else { continue }
+        try? FileManager.default.removeItem(at: file)
+      }
+    }
+  #endif
+
   // `internal` (not `private`) so `GhosttyConfigMinimumContrastTests` can call it directly via
   // `@testable import` and assert on the real generated config, rather than re-duplicating its format.
-  func writeThemeConfig(dark: Bool) {
-    Self.writeThemeConfig(theme: ThemeService.activeThemeName(isDark: dark), to: themeConfigURL)
+  /// Returns whether the file is now on disk. Callers that go on to `loadConfig` must check it: the
+  /// engine cannot (`ghostty_config_load_file` returns `void`), so this is the only place a failed
+  /// write is still observable.
+  @discardableResult
+  func writeThemeConfig(dark: Bool) -> Bool {
+    let written = Self.writeThemeConfig(
+      theme: ThemeService.activeThemeName(isDark: dark), to: themeConfigURL)
+    if written {
+      reportedConfigWriteFailure = false
+    } else if !reportedConfigWriteFailure {
+      // Fail-soft like the rest of init (plan A2), but no longer silent. Before this the terminal
+      // simply came up unthemed, with no contrast floor and no padding, and nothing anywhere said so.
+      // Latched — see `reportedConfigWriteFailure` for why this caller, alone, needs that.
+      reportedConfigWriteFailure = true
+      reportStartupFailure(
+        "could not write the generated terminal config at \(themeConfigURL.path) — "
+          + "terminals fall back to libghostty's defaults (no theme, no contrast floor, no padding)",
+        level: .warning)
+    }
+    return written
   }
 
   /// The write itself, apart from the `Defaults` lookup, so `GhosttyConfigLocationTests` can write
-  /// two identities' files side by side through the production path.
-  nonisolated static func writeThemeConfig(theme: String, to url: URL) {
+  /// two identities' files side by side through the production path. Returns false if the directory
+  /// could not be created or the file could not be written; the instance overload above is what logs.
+  @discardableResult
+  nonisolated static func writeThemeConfig(theme: String, to url: URL) -> Bool {
     // The terminal's colours come from the active theme family's variant for this appearance
     // (issue #36). libghostty resolves `theme = "<name>"` from $GHOSTTY_RESOURCES_DIR/themes (and
     // ~/.config/ghostty/themes, which wins) — verified on the pinned GhosttyKit for new and live
@@ -308,10 +375,17 @@ final class GhosttyApp {
       """
     // `write(atomically:)` does not create intermediate directories, and the bundle-id directory
     // doesn't exist on a first run — `SessionStore.persist` takes the same step for the same
-    // reason.
-    try? FileManager.default.createDirectory(
-      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try? contents.write(to: url, atomically: true, encoding: .utf8)
+    // reason. Either step can fail for real (a full disk, an unwritable Application Support, a
+    // stray plain file where the `<bundle id>/` directory belongs), and this diff's extra directory
+    // level adds one more way, so the outcome is reported rather than dropped.
+    do {
+      try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try contents.write(to: url, atomically: true, encoding: .utf8)
+      return true
+    } catch {
+      return false
+    }
   }
 
   // MARK: Tick pump (A1 — coalesced, main-thread)

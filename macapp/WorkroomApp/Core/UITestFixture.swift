@@ -672,6 +672,33 @@ enum UITestFixture {
   /// app and lose every setting they changed afterwards.
   static var isolatesPreferences: Bool { flag("WorkroomUITestIsolatePreferences") }
 
+  /// Whether this process is running tests **at all**, by any of the three signals that tell them
+  /// apart — the one question `UserDefaults.app`, `GhosttyApp.themeConfigURLForCurrentEnvironment`
+  /// and `WorkroomApp`'s prompt-watch guard each have to answer the same way.
+  ///
+  /// It is one property rather than three copies of the expression because the copies have already
+  /// drifted once: `isolatesPreferences` was added to `UserDefaults.app` and to the prompt watch
+  /// when the real-bootstrap smoke test was found writing the developer's own preferences, and the
+  /// generated ghostty config had to be fixed separately, later, for the same launch shape. A
+  /// fourth site would have to remember all three signals; this one cannot forget any of them.
+  ///
+  /// The three, and why none is sufficient alone:
+  /// - `XCTestConfigurationFilePath` — set in a **hosted unit** process, never in an app launched
+  ///   by XCUITest (the runner is the test process there, not the app).
+  /// - `isActive` — a fixture launch, which has no such variable.
+  /// - `isolatesPreferences` — a UI test that deliberately launches with `fixture: false` to
+  ///   exercise the real bootstrap (`WorkroomWorkflowUITests`), which has neither of the above.
+  ///
+  /// `enabled`-gated like every other read in this file, so a shipped build always answers false:
+  /// the env-var probe alone would otherwise hand a factory-reset app to a user whose shell still
+  /// exports `XCTestConfigurationFilePath` (a wrapper script, `launchctl setenv`, a terminal left
+  /// over from a test run) — the release trap `UserDefaults.app` documents at length.
+  static var isTestProcess: Bool {
+    enabled
+      && (ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        || isActive || isolatesPreferences)
+  }
+
   /// The theme family every fixture launch starts on
   /// (`-WorkroomUITestThemeFamily "<family name>"`). Unset (or unknown) = the `Workroom` default.
   ///

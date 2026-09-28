@@ -33,13 +33,16 @@ extension UserDefaults {
   /// `.standard` before this existed.
   static let app: UserDefaults = {
     #if DEBUG
-      let underTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-      // `isolatesPreferences` is separate from `isActive` on purpose: a UI test that launches
+      // `isTestProcess` is the shared three-signal answer (`UITestFixture`), not this file's own:
+      // `isolatesPreferences` is separate from `isActive` on purpose — a UI test that launches
       // WITHOUT fixture mode (to exercise the real bootstrap) has neither the fixture flag nor
-      // `XCTestConfigurationFilePath`, and used to land straight in the developer's real domain.
-      guard underTest || UITestFixture.isActive || UITestFixture.isolatesPreferences else {
-        return .standard
-      }
+      // `XCTestConfigurationFilePath`, and used to land straight in the developer's real domain —
+      // and three files answering that separately is how the generated ghostty config came to miss
+      // the same signal this guard had already been taught.
+      guard UITestFixture.isTestProcess else { return .standard }
+      // Still local, and still only the env var: it distinguishes a HOSTED UNIT run from an XCUITest
+      // launch below, which is a narrower question than "is this a test process" and must not widen.
+      let underTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
       let base = "com.developwithstyle.workroom.tests"
       let name = underTest ? "\(base).\(ProcessInfo.processInfo.processIdentifier)" : base
       guard let suite = UserDefaults(suiteName: name) else { return .standard }

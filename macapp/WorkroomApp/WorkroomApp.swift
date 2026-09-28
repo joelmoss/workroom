@@ -327,13 +327,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // Not under test, for the same reason as the shell probe above: the watch reconnects to the
     // developer's REAL agent socket, and a test host talking to that agent every ten seconds is
     // both a leak out of the test sandbox and a source of hangs in tests that own their own agents.
-    // Both test paths, as `DefaultsSuite` gates them: a hosted unit run sets
+    // Every test path, as `DefaultsSuite` gates them: a hosted unit run sets
     // `XCTestConfigurationFilePath`; an app launched by XCUITest does not, and is known by its
-    // fixture flags.
-    let underTest =
-      ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-      || UITestFixture.isActive || UITestFixture.isolatesPreferences
-    if !underTest {
+    // fixture flags. One shared answer (`UITestFixture.isTestProcess`) rather than a third copy of
+    // the expression — the copies drifted once already.
+    if !UITestFixture.isTestProcess {
       MainActor.assumeIsolated { WakefulnessModel.shared.startWatchingPrompts() }
       // Hand an older running agent to the bundled one (#230), before panes are likely to attach.
       // Not under test for the same reason: it would replace the developer's real agent.

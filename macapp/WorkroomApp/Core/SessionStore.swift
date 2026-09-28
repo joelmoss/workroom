@@ -18,13 +18,20 @@ final class SessionStore {
   /// fixture temp-dir workrooms be restored into the release build. UserDefaults gets that separation
   /// free from the bundle id; a file has to buy it back — `GhosttyApp.defaultThemeConfigURL` is the
   /// same fix for the generated terminal config, which used to be one file for all three.
+  ///
+  /// A missing bundle id falls back to an obviously-scoped name rather than the release id, the same
+  /// way `UnrecognizedToolUsage.defaultURL` and `GhosttyApp.defaultThemeConfigURL` do. It used to
+  /// fall back to `com.developwithstyle.workroom` itself, which is the one outcome the scoping above
+  /// exists to prevent: an oddly-configured process with no bundle id would restore and then
+  /// overwrite the SHIPPED app's session — its windows, its panes, its selection — instead of
+  /// landing somewhere obviously not the user's.
   static func defaultURL(
     bundleID: String? = Bundle.main.bundleIdentifier,
     fileManager: FileManager = .default
   ) -> URL {
     let root = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
       .appendingPathComponent("Workroom", isDirectory: true)
-      .appendingPathComponent(bundleID ?? "com.developwithstyle.workroom", isDirectory: true)
+      .appendingPathComponent(bundleID ?? "unknown-bundle", isDirectory: true)
     return root.appendingPathComponent("session.json")
   }
 

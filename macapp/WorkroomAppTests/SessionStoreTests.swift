@@ -196,4 +196,14 @@ final class SessionStoreTests: XCTestCase {
       dev.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent, "Workroom")
     XCTAssertTrue(release.path.contains("Application Support"))
   }
+
+  /// Same rule as `UnrecognizedToolUsage.defaultURL` and `GhosttyApp.defaultThemeConfigURL`: a
+  /// process with no bundle id must NOT fall back to the real production identifier, which would
+  /// point it at the shipped app's own session file — the exact cross-identity restore the scoping
+  /// above exists to prevent, and worse, since this path is written as well as read.
+  func testMissingBundleIDDoesNotFallBackToTheReleaseIdentifier() {
+    let fallback = SessionStore.defaultURL(bundleID: nil)
+    XCTAssertFalse(fallback.path.contains("com.developwithstyle.workroom"))
+    XCTAssertNotEqual(fallback, SessionStore.defaultURL(bundleID: "com.developwithstyle.workroom"))
+  }
 }

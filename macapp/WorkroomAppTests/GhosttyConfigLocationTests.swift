@@ -46,6 +46,51 @@ final class GhosttyConfigLocationTests: XCTestCase {
       "a write still lands in the old file every identity shared")
   }
 
+  /// `writeThemeConfig(theme:to:)` re-sanitises rather than trusting its caller, because as a static
+  /// entry point it no longer only has `activeThemeName` (already sanitised) upstream of it. That
+  /// defence is what stops a name closing the quote and appending directives of its own, so it is
+  /// exercised with a name that tries to — not only with the clean literals the other cases use.
+  func testWriteSanitisesAThemeNameEvenWhenTheCallerDidNot() throws {
+    let url = GhosttyApp.defaultThemeConfigURL(
+      bundleID: "com.example.dev", fileManager: fileManager)
+    XCTAssertTrue(
+      GhosttyApp.writeThemeConfig(theme: "Evil\"\nminimum-contrast = 0\n\"Name", to: url))
+
+    // The sanitiser FLATTENS rather than escaping — it strips `"`, newlines and path separators —
+    // so the payload survives as text inside the quoted value. That is not the injection: what
+    // would be is a second LINE, which is the only way libghostty reads a second directive. So the
+    // assertion is on line structure, not on the substring (which is still there, harmlessly).
+    let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
+    // The TOTAL count, not the count of `theme = ` lines: unsanitised, this payload still leaves
+    // exactly one line starting `theme = ` (the fragment `theme = "Evil"`), so that assertion would
+    // pass against a reverted sanitiser. The file's length does not — the two stripped newlines are
+    // two extra lines.
+    XCTAssertEqual(
+      lines.count, 6, "the name broke out of its own directive and started another line")
+    XCTAssertEqual(
+      lines.first { $0.hasPrefix("minimum-contrast") }, "minimum-contrast = 3.0",
+      "the injected `minimum-contrast = 0` became a directive and displaced the real contrast floor"
+    )
+    XCTAssertEqual(try theme(in: url), "Evilminimum-contrast = 0Name")
+  }
+
+  /// The write reports failure rather than swallowing it. `loadConfig` cannot tell —
+  /// `ghostty_config_load_file` returns `void` — so this return value is the engine's only signal
+  /// that it is about to finalize on libghostty's defaults instead of Workroom's config.
+  func testWriteReportsFailureWhenTheDirectoryCannotBeCreated() throws {
+    let blocked = GhosttyApp.defaultThemeConfigURL(bundleID: "blocked", fileManager: fileManager)
+    let directory = blocked.deletingLastPathComponent()
+    try FileManager.default.createDirectory(
+      at: directory.deletingLastPathComponent(), withIntermediateDirectories: true)
+    // A plain file where the `<bundle id>/` directory has to go, so `createDirectory` must fail.
+    try Data().write(to: directory)
+
+    XCTAssertFalse(GhosttyApp.writeThemeConfig(theme: "Nord", to: blocked))
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: blocked.path),
+      "the conf cannot exist if its directory could not be created")
+  }
+
   func testDefaultURLIsScopedByBundleID() {
     let id = "com.developwithstyle.workroom.nightly"
     let nightly = GhosttyApp.defaultThemeConfigURL(bundleID: id, fileManager: fileManager)
