@@ -9,6 +9,30 @@
 
 ## P2 — perf, correctness, and the next VCS phase
 
+### Credential broker clients: the review's deferred items (macapp, wr-agent) — #251 review follow-up
+
+**What:** Three things the #251 review left open (PR #263):
+
+1. A copy of an already-enrolled workroom mints under the original's grant: `wr-agent credential`
+   never checks that it is on the machine that enrolled. A machine-identity check does not help,
+   because a disk copy copies `/etc/machine-id` too.
+2. Re-enrolling replaces the key and token before the new code is proven, so a refused re-enrolment
+   leaves the instance with no credentials while the old grant stays live.
+3. The real Keychain calls in `BrokerCredentials.SecretStore.keychain` are untested (tests use the
+   stand-in), and `kSecAttrAccessibleAfterFirstUnlock` on a login-keychain item was never measured.
+
+**Why:** 1 and 2 cannot happen in the designed flow (only bases, which never enrol, are derived;
+re-enrolment only follows a failed first enrolment, so there is no working key to lose), but
+provisioning is where either could start happening.
+
+**How to start:** revisit 1 and 2 when #252 (derivation) lands; stage a pending key beside the
+current one and swap on success for 2. For 3, sign in on a Dev build and on a Developer ID Nightly
+once codaset.dev serves the broker, and check the item's access list in Keychain Access.
+
+**Depends on / blocked by:** #252 for 1 and 2; codaset#43 deployed for 3.
+
+**Priority:** P2, effort S.
+
 ### Record a real Claude Code trace on Linux for the OQ19 harness (vcs) — #208 measurement follow-up
 
 **What:** Run real Claude Code (not `scenarios/tools/agent.py`) in the OQ19 measurement image through
