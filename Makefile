@@ -10,7 +10,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .DEFAULT_GOAL := help
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
-        app-vcs app-run app-build app-test app-uitest app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-tool-logos app-clean
+        app-vcs app-run app-build app-test app-uitest app-identity app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-tool-logos app-clean
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -47,6 +47,33 @@ APP_NAME    := Workroom Dev
 APP_BUNDLE  := DerivedData/Build/Products/Debug/$(APP_NAME).app
 APP_XCODEBUILD := xcodebuild -project $(APP_PROJECT) -scheme WorkroomApp -configuration Debug \
   -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages
+APP_UITEST_XCODEBUILD := xcodebuild -project $(APP_PROJECT) -scheme WorkroomAppUITests \
+  -configuration Debug -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages
+
+# Each workroom of this repo builds its own Debug identity, so several can build, test and run the
+# dev app at once. Everything a running "Workroom Dev" owns is keyed by its bundle id — preferences,
+# its session helper's socket (and so which wr-agent it hands off to), its saved session, and what
+# LaunchServices and XCUITest treat as "that app is already running" — so two workrooms building one
+# id shared all of it. A workroom (a linked git worktree or secondary jj workspace) gets
+# `com.developwithstyle.workroom.dev.wr-<name>-<hash>`; the project's own checkout keeps the plain
+# id, so its preferences, TCC grants and sessions are unchanged. Computed once, from
+# macapp/Scripts/dev-identity.sh; `make … APP_DEV_ID_SUFFIX=` forces the plain id. Xcode-driven
+# builds (⌘R/⌘U) don't go through here and always build the plain id. `make app-identity` prints it.
+# See docs/designs/parallel-workroom-testing.md.
+ifeq ($(origin APP_DEV_ID_SUFFIX),undefined)
+APP_DEV_ID_SUFFIX := $(shell sh macapp/Scripts/dev-identity.sh 2>/dev/null)
+endif
+# Appended to every xcodebuild that BUILDS the app; project.yml appends it to the Debug bundle id.
+APP_ID_FLAGS := WORKROOM_DEV_ID_SUFFIX=$(APP_DEV_ID_SUFFIX)
+
+# $(call gui_lock,shared|exclusive,<what>) prefixes a command so it runs holding this Mac's GUI
+# session (macapp/Scripts/gui-lock.py). Workrooms no longer share an app identity, but they still
+# share the screen: XCUITest drives the real pointer and keyboard, and a hosted unit run boots the
+# app, window and all. So XCUITest takes it exclusively and unit runs share it — any number of
+# workrooms' unit runs at once, UI-test runs one at a time with nothing else on screen, and a run
+# that has to wait says who it is waiting for. Only test EXECUTION is locked; builds never wait.
+# `WR_GUI_LOCK=off` skips it (a run inside a VM, or when you know the screen is free).
+gui_lock = $(if $(filter off 0 no false,$(WR_GUI_LOCK)),,python3 "$(CURDIR)/macapp/Scripts/gui-lock.py" $(1) --label "$(2) $(CURDIR)" --)
 
 # Extra xcodebuild build-setting overrides, appended to app-build/app-test. Empty locally so
 # ⌘R-style automatic signing is used; CI sets this to ad-hoc / no-team signing because hosted
@@ -60,6 +87,9 @@ APP_SIGN_FLAGS ?=
 # but they share one UserDefaults domain, so a test mutating a `Defaults` key another class reads
 # would race — override with `make app-test APP_TEST_FLAGS=` to bisect a suspected parallel-only
 # failure. Test dirs are already UUID-scoped under NSTemporaryDirectory, so those don't collide.
+# This and APP_UITEST_FLAGS reach only the TEST step (`test-without-building`); an option that
+# changes what gets built, such as `-enableCodeCoverage YES`, has to reach the build step too, and
+# APP_SIGN_FLAGS is what reaches it.
 APP_TEST_FLAGS ?= -parallel-testing-enabled YES
 
 # Extra xcodebuild options for app-uitest. Skips the 3 most expensive/flaky cases by default (each
@@ -79,40 +109,48 @@ VCS_APPLE_FLAGS ?=
 app-vcs: ## Build the Rust VCS core (xcframework + Swift bindings) the app links
 	vcs/scripts/build-apple.sh $(VCS_APPLE_FLAGS)
 
-app-run: app-build ## Build (Debug) and launch the dev app, replacing any running dev instance
-	cd macapp || exit 1; \
-	pkill -x "$(APP_NAME)" 2>/dev/null || true; \
-	for helper in workroom-session wr-agent; do \
-	  if pgrep -f "$(APP_NAME).app/Contents/MacOS/$$helper" >/dev/null 2>&1; then \
-	    echo "Stopping persisted $(APP_NAME) $$helper (its panes will come back empty)"; \
-	    pkill -f "$(APP_NAME).app/Contents/MacOS/$$helper" 2>/dev/null || true; \
-	  fi; \
-	done; \
-	i=0; \
-	while pgrep -x "$(APP_NAME)" >/dev/null 2>&1 && [ $$i -lt 40 ]; do \
-	  sleep 0.2; i=$$((i + 1)); \
-	done; \
-	echo "Launching $(APP_BUNDLE)"; \
-	open "$(APP_BUNDLE)"
+# Stops every running copy of THIS build's identity first (Scripts/stop-dev-app.sh), and its
+# persisted session helpers, whose panes come back empty. By bundle id, never by process name: every
+# workroom's dev app, unit-test host and XCUITest app is called "Workroom Dev", and the
+# `pkill -x "Workroom Dev"` this used to be killed all of them. The launch waits out a UI-test run
+# in progress anywhere on this Mac, which a new window taking focus would otherwise break.
+app-run: app-build ## Build (Debug) and launch this checkout's dev app, replacing any running copy of it
+	cd macapp && sh Scripts/stop-dev-app.sh "$(APP_BUNDLE)" && \
+	  echo "Launching $(APP_BUNDLE)" && \
+	  $(call gui_lock,shared,app-run) open "$(APP_BUNDLE)"
 
 app-build: app-vcs ## Build the app (Debug)
-	cd macapp && xcodegen generate && $(APP_XCODEBUILD) build $(APP_SIGN_FLAGS)
+	cd macapp && xcodegen generate && $(APP_XCODEBUILD) build $(APP_SIGN_FLAGS) $(APP_ID_FLAGS)
 
-app-test: app-vcs ## Run the app's unit tests
-	cd macapp && xcodegen generate && $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) test $(APP_SIGN_FLAGS)
+# Built, then run in two steps, so only the run holds the GUI session: a build never waits on
+# another workroom's tests, and never makes another workroom's tests wait on it.
+app-test: app-vcs ## Run the app's unit tests (other workrooms' unit runs can overlap)
+	cd macapp && xcodegen generate && \
+	  $(APP_XCODEBUILD) -destination 'platform=macOS' build-for-testing $(APP_SIGN_FLAGS) $(APP_ID_FLAGS) && \
+	  $(call gui_lock,shared,app-test) \
+	  $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) test-without-building
 
-app-uitest: app-vcs ## Run the app's UI tests (XCUITest — needs a real GUI login session, not headless)
-	cd macapp && xcodegen generate && xcodebuild -project $(APP_PROJECT) -scheme WorkroomAppUITests -configuration Debug -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages -destination 'platform=macOS' $(APP_UITEST_FLAGS) test $(APP_SIGN_FLAGS)
+app-uitest: app-vcs ## Run the app's UI tests (XCUITest — needs the GUI session; queues behind other runs)
+	cd macapp && xcodegen generate && \
+	  $(APP_UITEST_XCODEBUILD) -destination 'platform=macOS' build-for-testing $(APP_SIGN_FLAGS) $(APP_ID_FLAGS) && \
+	  $(call gui_lock,exclusive,app-uitest) \
+	  $(APP_UITEST_XCODEBUILD) -destination 'platform=macOS' $(APP_UITEST_FLAGS) test-without-building
+
+app-identity: ## Print the bundle id this checkout's Debug build gets (one per workroom)
+	@echo "com.developwithstyle.workroom.dev$(APP_DEV_ID_SUFFIX)"
 
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
 
-app-test-scripts: ## Run the dependency-free shell-script tests (build-helper/build-agent archs, channel classify)
+app-test-scripts: ## Run the script tests (build-helper/build-agent archs, channel classify, dev identity, GUI lock)
 	sh macapp/Scripts/build-helper_test.sh
 	sh macapp/Scripts/build-agent_test.sh
 	sh macapp/Scripts/channel-helper_test.sh
 	sh macapp/Scripts/appcast-feed_test.sh
 	sh macapp/Scripts/test-invariants_test.sh
+	sh macapp/Scripts/dev-identity_test.sh
+	sh macapp/Scripts/stop-dev-app_test.sh
+	python3 macapp/Scripts/gui-lock_test.py
 
 app-generate: app-vcs ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 	cd macapp && xcodegen generate
