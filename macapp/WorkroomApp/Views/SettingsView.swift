@@ -179,6 +179,7 @@ private struct GeneralSettingsPane: View {
   @Default(.confirmOnQuit) private var confirmOnQuit
   @Default(.globalHotkey) private var globalHotkey
   @Default(.showMenuBarItem) private var showMenuBarItem
+  @Default(.remoteWorkroomsPreview) private var remoteWorkroomsPreview
 
   var body: some View {
     Form {
@@ -193,9 +194,48 @@ private struct GeneralSettingsPane: View {
 
       Toggle("Show notifications in the menu bar", isOn: $showMenuBarItem)
         .help("Show the Workroom notifications item in the menu bar.")
+
+      if remoteWorkroomsPreview { RemoteWorkroomsSection() }
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
+  }
+}
+
+/// Signing this Mac in to Codaset, which gives remote workrooms their GitHub access (#251). Behind
+/// `Defaults[.remoteWorkroomsPreview]` until remote workrooms ship.
+private struct RemoteWorkroomsSection: View {
+  @StateObject private var broker = BrokerSession()
+
+  var body: some View {
+    Section("Remote workrooms") {
+      VStack(alignment: .leading, spacing: 4) {
+        LabeledContent("GitHub access") {
+          HStack(spacing: 8) {
+            switch broker.state {
+            case .signedOut:
+              Button("Sign in to Codaset…") { broker.startSignIn() }
+            case .signingIn:
+              ProgressView().controlSize(.small)
+              Text("Waiting for the browser…").foregroundStyle(.secondary)
+              Button("Cancel") { broker.cancelSignIn() }
+            case .signedIn(let account):
+              Text("@\(account.login)").foregroundStyle(.secondary)
+              Button("Sign out") { broker.signOut() }
+            }
+          }
+        }
+        if let error = broker.error {
+          Text(error).font(.caption).foregroundStyle(.red)
+        }
+        HStack(spacing: 4) {
+          Text("Remote workrooms push to GitHub through Codaset, even with this Mac closed.")
+          Link("Manage", destination: broker.accountPageURL)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
+    }
   }
 }
 
