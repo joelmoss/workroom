@@ -224,6 +224,26 @@ The Zig toolchain and the pinned Ghostty engine come from `vcs/scripts/build-gho
 (cached per `(engine sha, target)` outside the repo). That pin must stay in step with the
 GhosttyKit the app links — see the comment in `project.yml`.
 
+## Credential broker client (#251)
+
+Remote workrooms push to GitHub through Workroom's credential broker, which runs in Codaset
+(`codaset.dev`; design doc OQ20, runbook in Codaset's `docs/workroom-broker-runbook.md`). The Mac's
+side is `Core/Broker/`:
+
+- `BrokerDeviceKey.swift`: this Mac's P-256 signing key, in the Secure Enclave when there is one,
+  and `BrokerCredentials`, which keeps it (either kind) in one Keychain item and the account in
+  `Application Support/Workroom/<bundle id>/broker`. Tests use the `SecretStore` stand-in: CI's
+  login keychain is locked, so the real Keychain calls are only exercised by hand.
+- `BrokerClient.swift`: every request carries a DPoP-shaped ES256 proof (`BrokerProof`), is retried
+  once on `stale_proof`, and never follows a redirect. Refusal codes are a contract with Codaset.
+- `BrokerSignIn.swift`: loopback + PKCE on 127.0.0.1 (`LoopbackSocket`); the signed "complete"
+  goes before the browser is redirected to the result page.
+- `AgentEnrolment.swift`: creates a grant and runs `wr-agent enrol` over `HostDriver.exec`, code on
+  stdin. The agent side is `wr-agent enrol` / `wr-agent credential` (`vcs/crates/wr-agent/src/
+  broker.rs`), git's credential helper on the remote host.
+- `BrokerSession.swift` backs a Settings ▸ General row hidden behind `remoteWorkroomsPreview`;
+  `brokerURL` accepts https or `http://127.0.0.1` (a development Codaset), as the agent does.
+
 ## Working rules for the session/VCS layers
 
 Three rules, each written after the failure that produced it. They are narrow on purpose: they
