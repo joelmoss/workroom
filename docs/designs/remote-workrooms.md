@@ -2132,6 +2132,37 @@ disagreement passes every test on either side alone while presenting as an empty
       account's verified primary email, never an unverified one. Built under joelmoss/codaset#40.
       An outage stalls new mints, not work in progress: the helper keeps a token until it expires,
       so a push fails only after up to an hour without the broker.
+    - **Amended by the #250 reviews (eng, CEO and design, 2026-09-27/28).** The full decision
+      record is on joelmoss/workroom#250; these change the shape above:
+      - *Repository identity.* Grants, mints and every check use the repository ID, never
+        `owner/name`, so a rename cannot point a grant at a new repository with the old name. The
+        push check is `GET /repositories/{id}` with the user's token (the response must carry that
+        ID); whether the App still covers the repository is decided by requesting a metadata-read
+        installation token with `repository_ids: [id]`, revoked at once. Only GitHub's "not
+        accessible to the parent installation" 422 means not covered; any other 422 is transient.
+      - *Grant creation checks the App first.* The App-authenticated installation lookup runs before
+        any user-token call, because a user token cannot see a private repository outside the App's
+        installation; a missing install answers `app_not_installed` with a link to
+        `codaset.dev/install/{owner}`.
+      - *Tokens carry `contents: write` and `workflows: write`* (pushes that touch workflow files
+        need the second).
+      - *Re-check outcomes replace "keep the last answer".* A dead user token (401 on the current
+        token, or `bad_refresh_token`) suspends all of that user's grants until they sign in again;
+        `push: false` withdraws the grant; a 404 checks coverage (App gone or deselected suspends
+        with `app_not_installed` and recovers after reinstall; still covered withdraws); SAML 403,
+        5xx, 429 and timeouts keep the last answer. Orgs with IP allow lists get a typed
+        `ip_allow_list` error and are unsupported for now.
+      - *Revocation is stored, not just waited out.* Every issued token is stored encrypted; cancel,
+        withdrawal and suspension mark tokens for revocation in the same transaction, a job revokes
+        them, and each broker request re-queues any lost revocations. Rollback reverts the deploy,
+        then runs a task from the pre-revert commit that revokes every live token.
+      - *Mac authentication.* Every signed request is a DPoP-shaped ES256 proof (60 s window, replay
+        store fails closed). Sign-in is a loopback redirect with PKCE, not the device flow; the
+        browser ends on a codaset.dev result page that says "signed in" only after the Mac confirms
+        it stored its key.
+      - *Pages on codaset.dev.* "Workroom access" (`/workroom/account`: signed-in Macs, removing a
+        Mac with or without cutting off its workrooms' GitHub access, and a repository check), and
+        a public `/install/{owner}` page for org admins. Designs are in #250's design review.
     - **One optional spike, skipped by the owner (2026-09-27)** (research note, S1): whether
       GitHub's token cap applies to GitHub App user tokens. It only decides whether scoped user
       tokens could replace installation tokens, which would make pushes show as the user rather

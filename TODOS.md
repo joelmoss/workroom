@@ -1074,8 +1074,10 @@ not *how* they run. The split:
 | branch + bookmark management, jj undo/op-log/split/absorb/evolog | **native** (libgit2/SwiftGitX, jj-lib) — provisional | Local, typed APIs, no output to parse, no tool-version floor, no locale exposure. Still the default answer, but **not "don't re-litigate"**: commit was re-litigated on measurement and moved. Check each op for hooks, signing, and revset aliases before assuming native. |
 | fetch, push, pull | **CLI** — permanently, not a stopgap | Three independent blockers, all verified from checked-out sources: SwiftGitX passes NULL options (`git_remote_fetch(remotePointer, nil, nil, nil)`, and `pull` is a `// TODO`), so it has no credential callback at all; **libgit2 implements no `credential.helper` protocol** — nothing in its `src` reads that config key, so native auth means reimplementing helper invocation ourselves; and jj-lib shells to `git` for remote ops anyway (that's where its `MINIMUM_GIT_VERSION` comes from), so a "native jj push" is a git subprocess wearing a Rust coat. |
 
-**Non-goal: Workroom does not store credentials.** No OAuth client, no keychain writes, no auth
-prompt, no account concept. The user's own helpers (`osxkeychain`, GCM, `!gh auth git-credential`,
+**Non-goal: Workroom does not store credentials for local workrooms.** No OAuth client, no keychain
+writes, no auth prompt, no account concept for git in a local workroom. (Remote workrooms are the
+exception: they get short-lived repository tokens from the credential broker, and the Mac signs in to
+it with a Secure Enclave key; see `docs/designs/remote-workrooms.md` OQ20.) The user's own helpers (`osxkeychain`, GCM, `!gh auth git-credential`,
 anything corporate) are the correct answer, and shelling out gets every host — including ones we've
 never heard of — for free, with the same credentials their terminal uses. GitHub Desktop is the
 instructive counterexample: it also shells out (via `dugite`, which bundles its own git), but blanks
