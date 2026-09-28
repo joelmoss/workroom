@@ -595,7 +595,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // would leak the previous instance's daemon-held shells exactly like a real quit would.
         SessionCoordinator.shared.flushAndFreeze()
         let group = DispatchGroup()
-        if !Defaults[.backgroundSessions] {
+        // Never from a test launch, which could only reach another app's sessions — see
+        // `TerminalPersistentSessionPolicy.endsSessionsOnQuit`.
+        if TerminalPersistentSessionPolicy.endsSessionsOnQuit() {
           group.enter()
           Task {
             await PersistentSessionService.shared.endAllSessions()
@@ -744,8 +746,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // `applicationWillTerminate`): a daemon-held shell is a separate, independent process that
     // outlives Workroom on purpose. Nothing else ever kills it once the setting is off, so without
     // this every ordinary terminal's session would leak forever — silently contradicting the quit
-    // alert's own promise ("stops any running processes") the moment the preference is off.
-    let shouldStopPersistentSessions = !Defaults[.backgroundSessions]
+    // alert's own promise ("stops any running processes") the moment the preference is off. Shared
+    // with the SIGTERM handler, and never true for a test launch (see `endsSessionsOnQuit`).
+    let shouldStopPersistentSessions = TerminalPersistentSessionPolicy.endsSessionsOnQuit()
     let group = DispatchGroup()
     if shouldStopPersistentSessions {
       group.enter()
