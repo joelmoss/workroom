@@ -25,11 +25,18 @@ final class BrokerStub: URLProtocol, @unchecked Sendable {
   private static let lock = NSLock()
   nonisolated(unsafe) private static var answers: [Answer] = []
   nonisolated(unsafe) private static var seen: [Seen] = []
+  nonisolated(unsafe) private static var failing = false
+  /// The request after the next answered one fails at the transport, as a lost answer does.
+  static var failNext: Bool {
+    get { lock.withLock { failing } }
+    set { lock.withLock { failing = newValue } }
+  }
 
   static func reset(_ answers: [Answer]) {
     lock.withLock {
       self.answers = answers
       seen = []
+      failing = false
     }
   }
 
@@ -56,9 +63,14 @@ final class BrokerStub: URLProtocol, @unchecked Sendable {
       }
       stream.close()
     }
-    let answer = Self.lock.withLock {
+    let answer: Answer? = Self.lock.withLock {
       Self.seen.append(Seen(request: request, body: body))
+      if Self.answers.isEmpty, Self.failing { return nil }
       return Self.answers.isEmpty ? Answer(status: 500) : Self.answers.removeFirst()
+    }
+    guard let answer else {
+      client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost))
+      return
     }
     let response = HTTPURLResponse(
       url: request.url!, statusCode: answer.status, httpVersion: "HTTP/1.1",

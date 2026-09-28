@@ -54,10 +54,15 @@ struct BrokerSignIn: Sendable {
     try credentials.save(account: account, key: key)
     do {
       try await client.complete(attempt: callback.attempt)
-    } catch {
-      // The browser will say Workroom didn't finish signing in; so does this Mac.
+    } catch BrokerError.refused(let refusal) {
+      // The broker did not complete the attempt, so the browser will say Workroom didn't finish
+      // signing in; so does this Mac.
       credentials.clear()
-      throw error
+      throw BrokerError.refused(refusal)
+    } catch {
+      // No answer: the broker may have completed it and the page may say "signed in". The key is
+      // registered and works either way, so keeping it is the true state; at worst the page asks
+      // to start again and a second sign-in replaces this one.
     }
     return account
   }
@@ -165,7 +170,12 @@ final class LoopbackListener: @unchecked Sendable {
       connection, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
     var head = Data()
     var buffer = [UInt8](repeating: 0, count: 4096)
-    while head.count < 16 * 1024, head.range(of: Data("\r\n\r\n".utf8)) == nil {
+    // 5 s for the whole head, not per read: a client trickling a byte at a time must not hold the
+    // one-at-a-time accept loop while the real redirect waits in the backlog.
+    let deadline = Date().addingTimeInterval(5)
+    while head.count < 16 * 1024, head.range(of: Data("\r\n\r\n".utf8)) == nil,
+      deadline.timeIntervalSinceNow > 0
+    {
       let count = recv(connection, &buffer, buffer.count, 0)
       guard count > 0 else { break }
       head.append(buffer, count: count)
