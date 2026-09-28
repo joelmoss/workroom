@@ -72,6 +72,18 @@ enum UITestFixture {
     return text("WorkroomUITestSessionFile")
   }
 
+  /// Where a theme UI test wants the generated libghostty config written
+  /// (`-WorkroomUITestGhosttyConfigFile <path>`), so the runner reads the file this launch wrote.
+  ///
+  /// The runner cannot work the path out for itself: it is sandboxed, so its own Application
+  /// Support is a container the app never writes to, and a fixture launch without this argument
+  /// keeps its config in a per-process temp file (see
+  /// `GhosttyApp.themeConfigURLForCurrentEnvironment`).
+  static var ghosttyConfigFilePath: String? {
+    guard isActive else { return nil }
+    return text("WorkroomUITestGhosttyConfigFile")
+  }
+
   /// An explicit fixture window frame, in `NSStringFromRect` format, for geometry-sensitive tests:
   /// `-WorkroomUITestWindowFrame "{{80, 80}, {1650, 780}}"`.
   /// Fixture sizing bypasses saved sessions and `window.mainFrame`; absent or invalid input keeps

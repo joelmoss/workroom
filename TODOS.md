@@ -3025,7 +3025,7 @@ per-appearance theme selection.
 
 **Why we thought this:** libghostty accepts `theme = dark:<X>,light:<Y>` and picks the variant
 itself. We instead write a single `theme = "<name>"` and, on every appearance change, rewrite
-`~/Library/Application Support/Workroom/ghostty.conf`, then `ghostty_config_load_file`,
+`~/Library/Application Support/Workroom/<bundle id>/ghostty.conf`, then `ghostty_config_load_file`,
 `ghostty_app_update_config`, then `updateConfig` on every surface
 (`GhosttyApp.swift` `writeThemeConfig`, `ThemeService.applyActiveTheme`). Muxy already uses the
 native form (`muxy/Muxy/Services/ThemeService.swift` `parseThemeSelection`).

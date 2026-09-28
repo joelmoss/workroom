@@ -23,11 +23,13 @@ import XCTest
 @MainActor
 final class GhosttyConfigMinimumContrastTests: XCTestCase {
   func testMinimumContrastIsAcceptedWithNoDiagnostics() throws {
-    // Regenerates the SAME `ghostty.conf` the running app already maintains (a fully-regenerable,
-    // "Do not edit" file — see `writeThemeConfig`'s doc comment). Rewriting it here has no effect on
-    // any live surface: nothing calls `ghostty_app_update_config` in this test, so it's inert until
-    // something else reloads config, exactly like `GhosttyAppTests.testEngineInitializes` already
-    // exercises the same live `GhosttyApp.shared` singleton without disturbing it.
+    // Regenerates the SAME generated config this test host's engine loads (a fully-regenerable,
+    // "Do not edit" file — see `writeThemeConfig`). Under test that is a file of this process's own
+    // (`GhosttyApp.themeConfigURLForCurrentEnvironment`), never the developer's Workroom Dev config
+    // or another parallel worker's. Rewriting it here has no effect on any live surface: nothing
+    // calls `ghostty_app_update_config` in this test, so it's inert until something else reloads
+    // config, exactly like `GhosttyAppTests.testEngineInitializes` already exercises the same live
+    // `GhosttyApp.shared` singleton without disturbing it.
     GhosttyApp.shared.writeThemeConfig(dark: false)
     guard let cfg = GhosttyApp.shared.loadConfig() else {
       return XCTFail("loadConfig() failed to build a ghostty_config_t from the generated conf")

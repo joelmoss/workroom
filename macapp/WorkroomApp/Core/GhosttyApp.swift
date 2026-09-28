@@ -217,21 +217,78 @@ final class GhosttyApp {
   // libghostty has no config setter API (only load-from-file), so Workroom's "blend into the native
   // window" look is expressed as a tiny generated config file whose `background`/`foreground` are the
   // macOS system colors resolved for the current appearance. New surfaces inherit the app config.
-  private lazy var themeConfigURL: URL = {
-    let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+  //
+  // Resolved once, at init: nothing it depends on (the bundle id, the test signals, the fixture's
+  // launch arguments) changes while the process runs. `internal` so a test can see which file the
+  // live engine reads.
+  let themeConfigURL = GhosttyApp.themeConfigURLForCurrentEnvironment()
+
+  /// Where the generated config lives, **scoped by bundle id** — the convention
+  /// `SessionStore.defaultURL` and `UnrecognizedToolUsage.defaultURL` already use.
+  ///
+  /// The scoping is not tidiness. `writeThemeConfig` and `loadConfig` are two steps, and each build
+  /// identity (Workroom, Workroom Nightly, Workroom Dev) keeps its own theme preference; while they
+  /// all shared one `Workroom/ghostty.conf`, an identity that wrote between another's two steps
+  /// handed it the wrong theme. That old file is left alone: nothing reads it any more, and an
+  /// older build still running beside this one writes it before each of its own loads, so deleting
+  /// it could only race that build.
+  ///
+  /// A missing bundle id falls back to an obviously-scoped name rather than the release id, for
+  /// `UnrecognizedToolUsage.defaultURL`'s reason: a stray process must not land on the shipped
+  /// app's file.
+  nonisolated static func defaultThemeConfigURL(
+    bundleID: String? = Bundle.main.bundleIdentifier,
+    fileManager: FileManager = .default
+  ) -> URL {
+    fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
       .appendingPathComponent("Workroom", isDirectory: true)
-    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    return dir.appendingPathComponent("ghostty.conf")
-  }()
+      .appendingPathComponent(bundleID ?? "unknown-bundle", isDirectory: true)
+      .appendingPathComponent("ghostty.conf")
+  }
+
+  /// The generated config THIS process uses: `defaultThemeConfigURL()`, except under test.
+  ///
+  /// - A fixture launch that names a file (`-WorkroomUITestGhosttyConfigFile`) uses that file, so
+  ///   the sandboxed XCUITest runner reads exactly what this launch wrote (`ThemePickerUITests`).
+  /// - Any other test process — a hosted unit run, or a fixture launch that named no file — gets a
+  ///   file of its own, named for its pid. The bundle id cannot separate these: the unit suite's
+  ///   host IS `Workroom Dev`, so every parallel `make app-test` worker (one host process each) and
+  ///   the developer's own running Dev app would otherwise be back on one file. A reused pid
+  ///   inherits nothing, because every load follows this process's own write.
+  ///
+  /// Both redirects are `#if DEBUG`, like `UserDefaults.app`'s: a shipped build always uses the
+  /// bundle-scoped file. The parameters default to the real signals so tests can pin each branch
+  /// without writing a fixture key into the defaults domain that parallel workers share.
+  nonisolated static func themeConfigURLForCurrentEnvironment(
+    fixturePath: String? = UITestFixture.ghosttyConfigFilePath,
+    underTest: Bool = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+      || UITestFixture.isActive
+  ) -> URL {
+    #if DEBUG
+      if let fixturePath { return URL(fileURLWithPath: fixturePath) }
+      if underTest {
+        return FileManager.default.temporaryDirectory.appendingPathComponent(
+          "workroom-tests-ghostty-\(ProcessInfo.processInfo.processIdentifier).conf")
+      }
+    #endif
+    return defaultThemeConfigURL()
+  }
 
   // `internal` (not `private`) so `GhosttyConfigMinimumContrastTests` can call it directly via
   // `@testable import` and assert on the real generated config, rather than re-duplicating its format.
   func writeThemeConfig(dark: Bool) {
+    Self.writeThemeConfig(theme: ThemeService.activeThemeName(isDark: dark), to: themeConfigURL)
+  }
+
+  /// The write itself, apart from the `Defaults` lookup, so `GhosttyConfigLocationTests` can write
+  /// two identities' files side by side through the production path.
+  nonisolated static func writeThemeConfig(theme: String, to url: URL) {
     // The terminal's colours come from the active theme family's variant for this appearance
     // (issue #36). libghostty resolves `theme = "<name>"` from $GHOSTTY_RESOURCES_DIR/themes (and
     // ~/.config/ghostty/themes, which wins) — verified on the pinned GhosttyKit for new and live
-    // surfaces. The name is already sanitised by ThemeService (safe to quote into the conf). The
-    // padded region inherits the theme background, so the terminal still blends into the panel.
+    // surfaces. The name is sanitised here (safe to quote into the conf) even though
+    // `activeThemeName` already did it, so no caller of this entry point can quote a newline in.
+    // The padded region inherits the theme background, so the terminal still blends into the panel.
     //
     // `minimum-contrast` enforces a render-time WCAG contrast floor on terminal CONTENT (not just
     // chrome-matching padding): many bundled light themes, vendored as-is from iTerm2-Color-Schemes,
@@ -239,16 +296,20 @@ final class GhosttyApp {
     // text. `3.0` matches `ThemeTokens.legible`'s app-chrome floor (`ThemeTokens.swift:308`) by
     // convention/comment only, not a shared constant — terminal content and app chrome are different
     // subsystems that may need different floors later.
-    let theme = ThemeService.activeThemeName(isDark: dark)
     let contents = """
       # Generated by Workroom — active theme for the current appearance. Do not edit.
-      theme = "\(theme)"
+      theme = "\(ThemeService.sanitizedThemeName(theme))"
       minimum-contrast = 3.0
       window-padding-x = 8
       window-padding-y = 8
       window-padding-balance = true
       """
-    try? contents.write(to: themeConfigURL, atomically: true, encoding: .utf8)
+    // `write(atomically:)` does not create intermediate directories, and the bundle-id directory
+    // doesn't exist on a first run — `SessionStore.persist` takes the same step for the same
+    // reason.
+    try? FileManager.default.createDirectory(
+      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try? contents.write(to: url, atomically: true, encoding: .utf8)
   }
 
   // MARK: Tick pump (A1 — coalesced, main-thread)

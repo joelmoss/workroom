@@ -8,10 +8,10 @@ import XCTest
 /// runs through SwiftUI and then through a generated ghostty config, so only a UI test sees it.
 ///
 /// **What "applied" means here.** Asserting a checkmark would only prove a `Defaults` write. Applying
-/// a theme also rewrites `~/Library/Application Support/Workroom/ghostty.conf` with
-/// `theme = "<variant file name>"` (`GhosttyApp.writeThemeConfig`), and the test process can read that
-/// file — so the assertion is that the conf names the expected *file*, which proves registry lookup →
-/// appearance-appropriate variant → the name handed to libghostty.
+/// a theme also rewrites the generated libghostty config with `theme = "<variant file name>"`
+/// (`GhosttyApp.writeThemeConfig`), and this runner names that file for the launch so it can read
+/// it back — the assertion is that the conf names the expected *file*, which proves registry lookup
+/// → appearance-appropriate variant → the name handed to libghostty.
 ///
 /// **Residual gap, deliberately not claimed:** nothing here proves ghostty *accepted* the file. The
 /// engine exposes no error surface for an unresolvable `theme =`, so a bad file is indistinguishable
@@ -29,7 +29,27 @@ import XCTest
 /// scheme, excluded from `make app-test`. Scope it when iterating; the full UI suite is slow:
 /// `xcodebuild … -only-testing:WorkroomAppUITests/ThemePickerUITests`
 final class ThemePickerUITests: XCTestCase {
-  override func setUpWithError() throws { continueAfterFailure = false }
+  /// The app's generated conf, at a path this runner picks and hands over with
+  /// `-WorkroomUITestGhosttyConfigFile` rather than one it works out.
+  ///
+  /// Working it out is wrong here, and silently so. Asked for `.applicationSupportDirectory`,
+  /// `FileManager` answers the runner's own container
+  /// (`~/Library/Containers/com.developwithstyle.workroom.uitests.xctrunner/Data/Library/…`), a
+  /// path the app never writes to: every read returned nil and the assertion failed while the
+  /// feature worked. And the app's real file is scoped by bundle id — by process, in a fixture
+  /// launch that names no file — so there is no fixed location left to compute.
+  ///
+  /// `/tmp` rather than this runner's `NSTemporaryDirectory()`, which is inside that same
+  /// container; `GhosttyOrphanShellUITests.stampPath` measured `/tmp` as the scratch directory both
+  /// sides reach.
+  private var generatedConfURL: URL!
+
+  override func setUpWithError() throws {
+    continueAfterFailure = false
+    let conf = URL(fileURLWithPath: "/tmp/workroom-uitest-ghostty-\(UUID().uuidString).conf")
+    generatedConfURL = conf
+    addTeardownBlock { try? FileManager.default.removeItem(at: conf) }
+  }
 
   /// A newly-bundled family — deliberately one of the 31 added, so this fails if the new files didn't
   /// make it into the built bundle. `Night Owl` also exercises the awkward shape: its variants are
@@ -45,23 +65,11 @@ final class ThemePickerUITests: XCTestCase {
     // Start somewhere that is NOT the family under test, so a passing assertion can't be the
     // fixture's starting state.
     app.launchArguments += ["-WorkroomUITestThemeFamily", "Workroom"]
+    app.launchArguments += ["-WorkroomUITestGhosttyConfigFile", generatedConfURL.path]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
     app.activate()
     return app
-  }
-
-  /// The app's generated conf, resolved against the **real** home.
-  ///
-  /// `FileManager.urls(for: .applicationSupportDirectory, …)` is wrong here and silently so: the
-  /// XCUITest runner has its own container, so it answers
-  /// `~/Library/Containers/com.developwithstyle.workroom.uitests.xctrunner/Data/Library/…` — a path
-  /// the app never writes to. Every read returned nil and the assertion failed while the feature
-  /// worked. `getpwuid` reports the real home because the sandbox doesn't rewrite passwd.
-  private var generatedConfURL: URL {
-    let realHome = String(cString: getpwuid(getuid())!.pointee.pw_dir)
-    return URL(fileURLWithPath: realHome)
-      .appendingPathComponent("Library/Application Support/Workroom/ghostty.conf")
   }
 
   /// The `theme = "…"` line of the generated conf, or nil while it hasn't been written yet.

@@ -13,11 +13,11 @@ import OSLog
 final class SessionStore {
   /// Where the file lives, **scoped by bundle id**.
   ///
-  /// The scoping is mandatory, not tidiness: `GhosttyApp` already writes into
-  /// `Application Support/Workroom/` from all three identities (Workroom, Workroom Dev, Workroom
-  /// Nightly), so an unscoped path would let a Dev run's fixture temp-dir workrooms be restored into
-  /// the release build. UserDefaults gets that separation free from the bundle id; a file has to buy
-  /// it back.
+  /// The scoping is mandatory, not tidiness: all three identities (Workroom, Workroom Dev, Workroom
+  /// Nightly) share `Application Support/Workroom/`, so an unscoped path would let a Dev run's
+  /// fixture temp-dir workrooms be restored into the release build. UserDefaults gets that separation
+  /// free from the bundle id; a file has to buy it back — `GhosttyApp.defaultThemeConfigURL` is the
+  /// same fix for the generated terminal config, which used to be one file for all three.
   static func defaultURL(
     bundleID: String? = Bundle.main.bundleIdentifier,
     fileManager: FileManager = .default
