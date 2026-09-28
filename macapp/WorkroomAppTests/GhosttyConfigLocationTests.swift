@@ -91,6 +91,45 @@ final class GhosttyConfigLocationTests: XCTestCase {
       "the conf cannot exist if its directory could not be created")
   }
 
+  /// `reloadConfig`'s half of that contract, which the static-writer case above cannot see: a
+  /// reload whose write fails keeps the config the engine already has rather than loading a file
+  /// that was never written, and the appearance it was asked for stays owed — once the write
+  /// recovers, the next reload for that appearance rebuilds even unforced.
+  ///
+  /// The write is failed by putting a DIRECTORY where this host's own per-process config goes: the
+  /// atomic write ends in a rename onto that path, and a file cannot replace a directory. Nothing
+  /// but this process's own file is touched, and it and the engine's config are put back after.
+  func testAReloadWhoseWriteFailsKeepsTheLoadedConfigAndIsRetried() throws {
+    let engine = GhosttyApp.shared
+    try XCTSkipUnless(engine.isReady, "requires the libghostty runtime")
+    let live = engine.themeConfigURL
+    // The same guard as `testThisTestHostUsesAConfigOfItsOwn`: never block a file this process does
+    // not own.
+    guard live.lastPathComponent.hasSuffix("-\(ProcessInfo.processInfo.processIdentifier).conf")
+    else {
+      return XCTFail("\(live.path) is not this process's own config, so it is not blocked here")
+    }
+    defer {
+      try? FileManager.default.removeItem(at: live)
+      engine.reloadConfig(force: true, dark: ThemeService.isCurrentAppearanceDark())
+    }
+
+    engine.reloadConfig(force: true, dark: false)
+    let light = try XCTUnwrap(engine.config)
+
+    try FileManager.default.removeItem(at: live)
+    try FileManager.default.createDirectory(at: live, withIntermediateDirectories: false)
+    engine.reloadConfig(force: true, dark: true)
+    XCTAssertEqual(engine.config, light, "a reload whose write failed replaced the loaded config")
+
+    // Unforced on purpose: it rebuilds only if the failed attempt left the marker on light.
+    try FileManager.default.removeItem(at: live)
+    engine.reloadConfig(force: false, dark: true)
+    XCTAssertNotEqual(
+      engine.config, light, "the dark config was never loaded once the write recovered")
+    XCTAssertEqual(try theme(in: live), ThemeService.activeThemeName(isDark: true))
+  }
+
   func testDefaultURLIsScopedByBundleID() {
     let id = "com.developwithstyle.workroom.nightly"
     let nightly = GhosttyApp.defaultThemeConfigURL(bundleID: id, fileManager: fileManager)

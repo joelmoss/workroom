@@ -339,9 +339,19 @@ final class GhosttyApp {
       // simply came up unthemed, with no contrast floor and no padding, and nothing anywhere said so.
       // Latched — see `reportedConfigWriteFailure` for why this caller, alone, needs that.
       reportedConfigWriteFailure = true
+      // What the failure costs depends on whether the engine has a config yet. At launch
+      // (`makeConfig`, before `config` is set) the load goes ahead and reads whatever the file last
+      // held — libghostty's defaults only if it never existed. A reload (`reloadConfig`) bails and
+      // keeps the config already loaded, so the terminals stay on their previous theme. Saying
+      // "defaults" for both sent a stale theme looking for a missing one.
+      let consequence =
+        config == nil
+        ? "terminals start on whatever that file last held, or on libghostty's defaults (no "
+          + "theme, no contrast floor, no padding) if it never existed"
+        : "terminals keep the config already loaded, so this theme or appearance change does not "
+          + "reach them"
       reportStartupFailure(
-        "could not write the generated terminal config at \(themeConfigURL.path) — "
-          + "terminals fall back to libghostty's defaults (no theme, no contrast floor, no padding)",
+        "could not write the generated terminal config at \(themeConfigURL.path) — \(consequence)",
         level: .warning)
     }
     return written
