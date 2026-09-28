@@ -24,8 +24,8 @@ repository.workspace = true
 [dependencies]
 thiserror = { workspace = true }
 # Only for the pty and process layers: forkpty, tcgetpgrp, sysctl, proc_pidinfo. No async runtime
-# and no C libraries beyond libc itself, so the tree stays as free of native deps as the VCS
-# crates are.
+# and no C libraries beyond libc itself, except ring for the broker client (below), so the tree
+# stays as free of native deps as the VCS crates are.
 libc = "0.2"
 serde = { workspace = true }
 serde_json = "1"
@@ -33,6 +33,15 @@ serde_json = "1"
 # changes Cargo.lock, which `build-apple.sh` hashes, so the first build after this lands rebuilds the
 # VCS xcframework once even though nothing wr-vcs-uniffi links changed.
 notify = "8"
+# The credential broker client (`broker.rs`): HTTPS to Codaset and ES256 proofs. rustls on ring,
+# never native-tls, so the Linux build stays a static musl binary with no OpenSSL; ring compiles
+# its own C and assembly, which cargo-zigbuild handles for the musl targets. ring also signs the
+# proofs, so no separate ECDSA crate. webpki-roots bundles the CA roots, because a minimal
+# provider image may have none. Adding these changes Cargo.lock, which `build-apple.sh` hashes, so
+# the first build after this lands rebuilds the VCS xcframework once.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+ring = "0.17"
+base64 = "0.22"
 wr-vcs-core = { path = "../wr-vcs-core" }
 wr-vcs-git = { path = "../wr-vcs-git" }
 wr-vcs-model = { path = "../wr-vcs-model" }
