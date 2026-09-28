@@ -30,7 +30,9 @@ extension UserDefaults {
   ///
   /// The XCUITest path keeps ONE stable name and no wipe: only one app process runs at a time, and
   /// a quit-and-relaunch test should see the preferences it left behind, exactly as it did on
-  /// `.standard` before this existed.
+  /// `.standard` before this existed. "One at a time" is per Mac, not per checkout, and is enforced
+  /// rather than assumed: `make app-uitest` holds the GUI session exclusively
+  /// (`Scripts/gui-lock.py`), so another workroom's UI-test run cannot interleave with this suite.
   static let app: UserDefaults = {
     #if DEBUG
       // `isTestProcess` is the shared three-signal answer (`UITestFixture`), not this file's own:

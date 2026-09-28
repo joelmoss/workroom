@@ -13,7 +13,9 @@ root, not `macapp/`):
 make app-run        # canonical local loop: xcodegen → xcodebuild (Debug) → relaunch
 make app-build      # xcodegen → xcodebuild (Debug)
 make app-test       # xcodebuild test (WorkroomAppTests) — parallel; APP_TEST_FLAGS= to serialize
-make app-test-scripts # shell-script tests (build-helper archs, channel classify) — no toolchain
+make app-uitest     # XCUITest — needs the GUI session to itself; queues behind other workrooms
+make app-identity   # the bundle id this checkout's Debug build gets (one per workroom)
+make app-test-scripts # script tests (build-helper archs, channel classify, dev identity, GUI lock)
 make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.yml
 make app-vcs        # build the Rust VCS core → WrVcs SwiftPM package (auto-run before app builds)
 make app-format     # swift-format, rewrite sources in place
@@ -29,6 +31,28 @@ make app-clean      # remove DerivedData + .xcodeproj
 Builds reuse `macapp/DerivedData/` so the Swift packages (incl. the GhosttyKit xcframework)
 aren't re-resolved/re-downloaded every build. (`cli-*` targets cover the Go CLI — see the root
 AGENTS.md.)
+
+### Several workrooms at once
+
+Workrooms of this repo can build, unit-test and run their dev apps at the same time
+(`docs/designs/parallel-workroom-testing.md`). Two mechanisms make that safe, and both matter when
+you touch the Makefile or the test launch paths:
+
+- **One Debug identity per workroom.** In a workroom (a linked git worktree or secondary jj
+  workspace) `make` builds `com.developwithstyle.workroom.dev.wr-<name>-<hash>`
+  (`Scripts/dev-identity.sh` → `WORKROOM_DEV_ID_SUFFIX` → the Debug bundle id in `project.yml`); the
+  project's own checkout keeps the plain id. Everything keyed by bundle id — preferences, the
+  session helpers' sockets (so its own `wr-agent`), the saved session, "already running" — is then
+  the workroom's own. Every xcodebuild that builds the app must pass `$(APP_ID_FLAGS)`; Xcode-driven
+  builds don't, and build the plain id.
+- **One GUI session per Mac.** `make app-test` runs its tests holding `Scripts/gui-lock.py` shared,
+  `make app-uitest` exclusively, and only the test step is locked (`build-for-testing`, then
+  `test-without-building`). A waiting run says who it is waiting for;
+  `python3 Scripts/gui-lock.py status` shows the holders. `WR_GUI_LOCK=off` is for runs inside a VM.
+
+Within one workroom it is still one `make app-*` at a time: they share its DerivedData. And
+`make app-run` stops only copies of its own identity (`Scripts/stop-dev-app.sh`) — never kill the
+app by name, since every workroom's app, test host and XCUITest app is called "Workroom Dev".
 
 ## VCS core (Rust jj + SwiftGitX git)
 
@@ -284,9 +308,11 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   and **doesn't run Sparkle scheduled checks** (`#if DEBUG` in `WorkroomApp.swift` / `Updater.swift`)
   so it can't grab the global hotkey or try to "update" itself to the release DMG. Both builds
   still share the CLI config at `~/.config/workroom/config.json` (the bundled CLI has no
-  config-path override), so they show the same projects/workrooms. `make app-run` only kills the
-  `Workroom Dev` instance, never your release build. The three app icons (`make app-icon` renders
-  all of them) share the yellow blocked mark; Dev and Nightly overlay their channel labels.
+  config-path override), so they show the same projects/workrooms. `make app-run` only stops copies
+  of the identity it is launching — never your release build, and never another workroom's dev app,
+  which `make` builds under its own id (see "Several workrooms at once"). The three app icons
+  (`make app-icon` renders all of them) share the yellow blocked mark; Dev and Nightly overlay their
+  channel labels.
 - **Every `Defaults.Key` must declare `suite: .app`.** `Defaults.Key` captures its suite at
   DECLARATION and falls back to `UserDefaults.standard`, and `WorkroomAppTests` is *app-hosted*
   (`TEST_HOST` is `Workroom Dev.app`) — so one key declared without the suite makes `make app-test`

@@ -101,6 +101,45 @@ if ! grep -q 'appcast-nightly.xml' "$APPCAST_SH"; then
   fails=$((fails + 1))
 fi
 
+# --- Several workrooms at once: one identity per workroom, one GUI session per Mac ------------
+# docs/designs/parallel-workroom-testing.md. Each half hangs on a single Makefile or project.yml
+# token that a refactor could drop with every build still green and every test still passing —
+# just no longer safely alongside another workroom's run, which no test here can see.
+recipe() { sed -n "/^$1:/,/^\$/p" "$MAKEFILE"; }
+for target in app-build app-test app-uitest; do
+  if ! recipe "$target" | grep -Eq 'build(-for-testing)? .*\$\(APP_ID_FLAGS\)'; then
+    echo "FAIL: $target no longer passes \$(APP_ID_FLAGS) where it builds — every workroom's Debug"
+    echo "      build would share one identity again (prefs, session helpers, 'already running')."
+    fails=$((fails + 1))
+  fi
+done
+if ! recipe app-test | grep -q '\$(call gui_lock,shared,app-test)'; then
+  echo "FAIL: app-test no longer runs its tests under the shared GUI lock — a unit run's host windows"
+  echo "      would land on top of another workroom's XCUITest run."
+  fails=$((fails + 1))
+fi
+if ! recipe app-uitest | grep -q '\$(call gui_lock,exclusive,app-uitest)'; then
+  echo "FAIL: app-uitest no longer holds the GUI session exclusively — two workrooms' UI-test runs"
+  echo "      would drive the one pointer and keyboard at once."
+  fails=$((fails + 1))
+fi
+if recipe app-run | grep -q 'pkill'; then
+  echo "FAIL: app-run kills by process name again — every workroom's app is 'Workroom Dev', so that"
+  echo "      stops other workrooms' dev apps and test runs. Stop by identity (stop-dev-app.sh)."
+  fails=$((fails + 1))
+fi
+if ! grep -qF 'PRODUCT_BUNDLE_IDENTIFIER: "com.developwithstyle.workroom.dev$(WORKROOM_DEV_ID_SUFFIX)"' \
+  "$PROJECT_YML"; then
+  echo "FAIL: project.yml's Debug bundle id no longer carries \$(WORKROOM_DEV_ID_SUFFIX), so the"
+  echo "      Makefile's per-workroom identity reaches nothing."
+  fails=$((fails + 1))
+fi
+if [ "$(grep -cF '$(WORKROOM_DEV_ID_SUFFIX)' "$PROJECT_YML")" -ne 1 ]; then
+  echo "FAIL: \$(WORKROOM_DEV_ID_SUFFIX) must reach the Debug bundle id and nothing else — above all"
+  echo "      never the Release or Nightly bundle id, which Sparkle updates and TCC grants key on."
+  fails=$((fails + 1))
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "test-invariants_test: $fails failure(s)" >&2
   exit 1

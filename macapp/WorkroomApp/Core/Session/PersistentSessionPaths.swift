@@ -3,7 +3,8 @@ import Foundation
 
 /// Secure locations for the session helper's unix socket and the bundled helper itself.
 ///
-/// Primary: Application Support (per bundle id, so Dev/Nightly/Release never share sessions).
+/// Primary: Application Support (per bundle id, so Dev/Nightly/Release never share sessions — nor
+/// do two workrooms' Dev builds, which `make` gives distinct ids, `Scripts/dev-identity.sh`).
 /// Fallback: `/tmp/workroom-<uid>` only when the preferred path exceeds `sun_path`.
 ///
 /// Everything here takes a `SessionBackend` explicitly, with no default, because there is no such
