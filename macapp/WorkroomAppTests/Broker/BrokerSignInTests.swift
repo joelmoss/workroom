@@ -134,10 +134,10 @@ final class BrokerSignInTests: XCTestCase {
     XCTAssertNil(flow.credentials.load())
   }
 
-  func testAFailedCompleteForgetsTheKeySoTheMacAgreesWithThePage() async throws {
+  func testARefusedCompleteForgetsTheKeySoTheMacAgreesWithThePage() async throws {
     BrokerStub.reset([
       .init(status: 201, body: #"{"device_id":"d","login":"l","email":"e"}"#),
-      .init(status: 503, body: #"{"error":"replay_store_unavailable"}"#),
+      .init(status: 404, body: #"{"error":"not_found","message":"Unknown sign-in attempt"}"#),
     ])
     let browser = Browser()
     let flow = signIn(browser)
@@ -146,12 +146,26 @@ final class BrokerSignInTests: XCTestCase {
       _ = try await flow.run(deviceName: "Mac")
       XCTFail("expected a failure")
     } catch BrokerError.refused(let refusal) {
-      XCTAssertEqual(refusal.status, 503)
+      XCTAssertEqual(refusal.code, "not_found")
     }
     await fulfillment(of: [browser.done], timeout: 10)
 
     XCTAssertEqual(browser.redirectedTo, "https://codaset.test/workroom/sign-in/att-1")
     XCTAssertNil(flow.credentials.load())
+  }
+
+  /// A "complete" whose answer is lost may still have completed the attempt, and the key works
+  /// either way, so the Mac stays signed in rather than contradicting a page that says so.
+  func testALostCompleteAnswerKeepsTheKey() async throws {
+    BrokerStub.reset([.init(status: 201, body: #"{"device_id":"d","login":"l","email":"e"}"#)])
+    BrokerStub.failNext = true
+    let browser = Browser()
+    let flow = signIn(browser)
+
+    let account = try await flow.run(deviceName: "Mac")
+    await fulfillment(of: [browser.done], timeout: 10)
+
+    XCTAssertEqual(flow.credentials.load()?.account, account)
   }
 
   func testCancellingTheSignInStopsWaitingForTheBrowser() async throws {

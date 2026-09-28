@@ -18,6 +18,10 @@ final class BrokerSession: ObservableObject {
   private let credentials: BrokerCredentials
   private var signIn: Task<Void, Never>?
 
+  /// One per app, so a sign-in in progress survives the Settings window changing panes (a
+  /// per-view session would orphan it, and a second flow's save would clear the first's key).
+  static let shared = BrokerSession()
+
   init(credentials: BrokerCredentials = .standard()) {
     self.credentials = credentials
     if let (account, _) = credentials.load() { state = .signedIn(account) }

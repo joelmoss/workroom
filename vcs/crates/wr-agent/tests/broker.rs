@@ -176,15 +176,14 @@ fn enrolled(workspace: &Workspace, broker: &Broker, workroom: &str) {
 }
 
 #[test]
-fn enrolment_registers_a_new_key_with_the_code_and_is_idempotent() {
+fn enrolment_registers_a_new_key_with_the_code() {
     let workspace = Workspace::new("broker-enrol");
     let broker = Broker::start(vec![(201, vec![], r#"{"grant_id":"g"}"#.into())]);
 
     enrolled(&workspace, &broker, "wr-1");
-    enrolled(&workspace, &broker, "wr-1");
 
     let received = broker.received();
-    assert_eq!(received.len(), 1, "enrolling again is a no-op");
+    assert_eq!(received.len(), 1);
     let request = &received[0];
     assert_eq!(request.path, "/broker/enrolments");
     assert!(request.proof_verifies());
@@ -204,14 +203,36 @@ fn enrolment_registers_a_new_key_with_the_code_and_is_idempotent() {
     );
 }
 
+/// The broker refuses any key it has seen (`AgentsController#enrol`: "This key is already
+/// enrolled", cancelled grants included). An enrolment whose answer was lost after the broker
+/// registered its key must still recover when the Mac retries with a new code.
 #[test]
-fn a_key_made_for_another_workroom_is_replaced_along_with_its_token() {
-    let workspace = Workspace::new("broker-other-workroom");
+fn a_retried_enrolment_uses_a_new_key_whatever_happened_to_the_last() {
+    let workspace = Workspace::new("broker-retry");
+    let broker = Broker::start(vec![
+        (503, vec![], r#"{"error":"broker_unavailable"}"#.into()),
+        (201, vec![], "{}".into()),
+    ]);
+
+    assert!(broker::enrol(&workspace.dir, "wr-1", &broker.url, "first").is_err());
+    assert!(
+        matches!(broker::token(&workspace.dir), Err(BrokerError::NotEnrolled)),
+        "a half-finished enrolment is not an enrolment"
+    );
+    broker::enrol(&workspace.dir, "wr-1", &broker.url, "second").unwrap();
+
+    let received = broker.received();
+    assert_ne!(received[0].jwk(), received[1].jwk());
+}
+
+#[test]
+fn enrolling_again_replaces_the_key_and_its_token() {
+    let workspace = Workspace::new("broker-re-enrol");
     let expires = iso8601(now() + 3600);
     let broker = Broker::start(vec![
         (201, vec![], "{}".into()),
         ok(&format!(
-            r#"{{"token":"base-token","expires_at":"{expires}"}}"#
+            r#"{{"token":"old-token","expires_at":"{expires}"}}"#
         )),
         (201, vec![], "{}".into()),
     ]);
@@ -223,11 +244,11 @@ fn a_key_made_for_another_workroom_is_replaced_along_with_its_token() {
     enrolled(&workspace, &broker, "the-fork");
 
     let received = broker.received();
-    assert_eq!(received.len(), 3, "the fork enrols afresh");
+    assert_eq!(received.len(), 3, "the second enrolment asked the broker");
     assert_ne!(received[0].jwk(), received[2].jwk(), "with a new key");
     assert!(
         !workspace.dir.join("broker-token.json").exists(),
-        "the other workroom's token is gone"
+        "the old key's token is gone"
     );
 }
 
@@ -284,16 +305,17 @@ fn a_token_is_minted_once_and_then_served_from_the_cache() {
     assert!(received[1].proof_verifies());
 }
 
+/// A clock an hour fast: the retry is dated on the broker's clock, and the skew is kept with the
+/// token, so it is not judged expired the moment it arrives and git is told a local expiry.
 #[test]
-fn a_stale_proof_is_retried_once_with_the_brokers_clock() {
+fn a_stale_proof_is_retried_once_and_its_skew_kept_with_the_token() {
     let workspace = Workspace::new("broker-skew");
-    let server_now = now() + 600;
-    let date = date(server_now, "+%a, %d %b %Y %H:%M:%S GMT");
+    let server_now = now() - 3700;
     let broker = Broker::start(vec![
         (201, vec![], "{}".into()),
         (
             401,
-            vec![("Date", date)],
+            vec![("Date", date(server_now, "+%a, %d %b %Y %H:%M:%S GMT"))],
             r#"{"error":"stale_proof","message":"proof iat is outside the 60 s window"}"#.into(),
         ),
         ok(&format!(
@@ -304,7 +326,6 @@ fn a_stale_proof_is_retried_once_with_the_brokers_clock() {
     enrolled(&workspace, &broker, "wr-1");
 
     assert_eq!(broker::token(&workspace.dir).unwrap().token, "ghs_skewed");
-
     let received = broker.received();
     let retried = received[2].claims()["iat"].as_i64().unwrap();
     assert!(
@@ -312,6 +333,39 @@ fn a_stale_proof_is_retried_once_with_the_brokers_clock() {
         "the retry's iat ({retried}) follows the broker's clock ({server_now})"
     );
     assert_ne!(received[1].claims()["jti"], received[2].claims()["jti"]);
+
+    let mut output = Vec::new();
+    broker::credential(
+        &workspace.dir,
+        "get",
+        &b"protocol=https\nhost=github.com\n\n"[..],
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(
+        broker.received().len(),
+        3,
+        "served from the cache, not re-minted"
+    );
+    let text = String::from_utf8(output).unwrap();
+    let expiry: i64 = text
+        .lines()
+        .find_map(|l| l.strip_prefix("password_expiry_utc="))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        (expiry - (now() + 3600)).abs() <= 3,
+        "git is told the expiry on this machine's clock"
+    );
+}
+
+/// Lets the next `token()` ask the broker again, as it would once the backoff has passed.
+fn end_backoff(workspace: &Workspace) {
+    let path = workspace.dir.join("broker-token.json");
+    let mut token: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    token["retry_after"] = 0.into();
+    std::fs::write(&path, token.to_string()).unwrap();
 }
 
 #[test]
@@ -344,8 +398,17 @@ fn a_cached_token_outlives_a_broker_outage_but_not_a_refusal() {
     assert_eq!(
         broker::token(&workspace.dir).unwrap().token,
         "ghs_cached",
+        "and backs off"
+    );
+    assert_eq!(broker.received().len(), 3, "the backoff asked nobody");
+
+    end_backoff(&workspace);
+    assert_eq!(
+        broker::token(&workspace.dir).unwrap().token,
+        "ghs_cached",
         "so does a rate limit"
     );
+    end_backoff(&workspace);
     match broker::token(&workspace.dir) {
         Err(BrokerError::Refused { code, .. }) => assert_eq!(code, "grant_ended"),
         other => panic!("a refusal is final, got {other:?}"),

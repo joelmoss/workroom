@@ -1076,17 +1076,16 @@ fn run_enrol(args: &[String]) -> ExitCode {
         eprintln!("error: could not read the enrolment code from stdin");
         return ExitCode::FAILURE;
     }
-    let result = wr_agent::broker::directory()
-        .map_err(wr_agent::broker::BrokerError::from)
-        .and_then(|dir| wr_agent::broker::enrol(&dir, &workroom, &broker, &code))
-        .and_then(|()| {
-            let binary = std::env::current_exe()?;
+    // git first: a git that cannot be configured fails the enrolment before the broker registers
+    // a key, so nothing is left enrolled that the Mac then cancels.
+    let result = std::env::current_exe()
+        .and_then(|binary| {
             let helper = wr_agent::broker::helper_command(&binary);
-            Ok(wr_agent::broker::configure_git(
-                || std::process::Command::new("git"),
-                &helper,
-            )?)
-        });
+            wr_agent::broker::configure_git(|| std::process::Command::new("git"), &helper)
+        })
+        .and_then(|()| wr_agent::broker::directory())
+        .map_err(wr_agent::broker::BrokerError::from)
+        .and_then(|dir| wr_agent::broker::enrol(&dir, &workroom, &broker, &code));
     match result {
         Ok(()) => ExitCode::SUCCESS,
         // The refusal's code on its own line, for the app to switch on.

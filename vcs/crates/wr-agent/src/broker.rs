@@ -18,9 +18,14 @@
 //! outage stops new mints, not work in progress. It adds nothing to what the key already exposes:
 //! the key mints tokens.
 //!
-//! **Why the key is bound to the workroom's ID.** Every fork copies whatever the base holds, in
-//! memory or on disk. The base never enrols, but a key found under another workroom's ID is not
-//! this workroom's, so enrolment discards it and makes a new one.
+//! **Every enrolment makes a new key.** Every fork copies whatever the base holds, in memory or on
+//! disk, so a key found on the instance may be another workroom's. And the broker refuses a key it
+//! has seen before (any grant, cancelled ones included), so a key from an enrolment that failed
+//! halfway, registered or not, can never enrol again. A fresh key per code covers both.
+//!
+//! **Clock skew is remembered with the token.** The skew learned from a `stale_proof` is stored
+//! beside the token, so its expiry is judged on the broker's clock and the expiry git is told is on
+//! this machine's.
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -39,7 +44,12 @@ const TOKEN_FILE: &str = "broker-token.json";
 /// A cached token with less than this left is replaced, so git never starts a long push with a
 /// token about to die. If the broker cannot be reached it is still used until it expires.
 const REFRESH_MARGIN: i64 = 300;
-const TIMEOUT: Duration = Duration::from_secs(30);
+/// Short enough that `wr-agent enrol`, a request and its one stale-proof retry, stays inside the
+/// Mac's 60 s silence bound on the exec (`AgentEnrolment`).
+const TIMEOUT: Duration = Duration::from_secs(15);
+/// After a failed mint that fell back to the cached token, how long git uses that token without
+/// asking the broker again: a hung broker stalls one git operation, not every one.
+const RETRY_BACKOFF: i64 = 60;
 /// The credential git config entry the agent owns. Scoped to github.com over HTTPS: broker tokens
 /// are GitHub installation tokens, and remotes use HTTPS.
 const HELPER_KEY: &str = "credential.https://github.com.helper";
@@ -86,12 +96,25 @@ struct State {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Token {
     pub token: String,
-    /// Unix seconds.
+    /// Unix seconds, on the broker's clock.
     pub expires_at: i64,
+    /// The broker's clock minus this machine's, as learned from a `stale_proof`.
+    #[serde(default)]
+    pub skew: i64,
+    /// Broker clock: until then a failed mint's fallback is reused without asking again.
+    #[serde(default)]
+    pub retry_after: i64,
 }
 
-/// Enrols this workroom: generates (or reuses) its key, registers it with `code`, and records the
-/// result. Enrolling again for the same workroom once it has succeeded is a no-op.
+impl Token {
+    /// When it expires on this machine's clock, which is what git compares.
+    pub fn local_expiry(&self) -> i64 {
+        self.expires_at - self.skew
+    }
+}
+
+/// Enrols this workroom with a new key and `code`. Replaces any key and token already here, so
+/// running it again with a fresh code recovers from an enrolment that failed at any point.
 pub fn enrol(dir: &Path, workroom_id: &str, broker: &str, code: &str) -> Result<(), BrokerError> {
     if workroom_id.trim().is_empty() || code.trim().is_empty() {
         return Err(BrokerError::Invalid(
@@ -99,37 +122,29 @@ pub fn enrol(dir: &Path, workroom_id: &str, broker: &str, code: &str) -> Result<
         ));
     }
     let broker = broker.trim_end_matches('/');
-    if !broker.starts_with("https://") && !broker.starts_with("http://127.0.0.1") {
+    let loopback = broker == "http://127.0.0.1" || broker.starts_with("http://127.0.0.1:");
+    if !broker.starts_with("https://") && !loopback {
         return Err(BrokerError::Invalid(format!(
             "the broker must be an https URL, not {broker:?}"
         )));
     }
 
-    let mut state = match load_state(dir)? {
-        Some(state) if state.workroom_id == workroom_id => state,
-        // Another workroom's key, or none: a fresh one, and the other's token goes with it.
-        _ => {
-            let _ = std::fs::remove_file(dir.join(TOKEN_FILE));
-            State {
-                workroom_id: workroom_id.to_string(),
-                broker: broker.to_string(),
-                key: URL_SAFE_NO_PAD.encode(generate_key()?),
-                enrolled: false,
-            }
-        }
+    let _ = std::fs::remove_file(dir.join(TOKEN_FILE));
+    let mut state = State {
+        workroom_id: workroom_id.to_string(),
+        broker: broker.to_string(),
+        key: URL_SAFE_NO_PAD.encode(generate_key()?),
+        enrolled: false,
     };
-    if state.enrolled {
-        return Ok(());
-    }
-    state.broker = broker.to_string();
-    // Written before the request, so a key the broker registered is never one this side lost.
+    // Written before the request: if the broker registers the key and the answer is lost, the
+    // key is still here, and not enrolled, so the helper refuses rather than guessing.
     save(dir, STATE_FILE, &state)?;
-
     call(
         &state,
         "POST",
         "/broker/enrolments",
         Some(json!({ "code": code.trim(), "workroom_id": workroom_id })),
+        0,
     )?;
     state.enrolled = true;
     save(dir, STATE_FILE, &state)
@@ -142,32 +157,42 @@ pub fn token(dir: &Path) -> Result<Token, BrokerError> {
         Some(state) if state.enrolled => state,
         _ => return Err(BrokerError::NotEnrolled),
     };
-    let now = unix_now();
     let cached: Option<Token> = load(dir, TOKEN_FILE)?;
-    if let Some(cached) = cached
-        .as_ref()
-        .filter(|t| t.expires_at - now > REFRESH_MARGIN)
-    {
+    let skew = cached.as_ref().map_or(0, |t| t.skew);
+    let now = unix_now() + skew;
+    let fresh = |t: &&Token| {
+        t.expires_at - now > REFRESH_MARGIN || (t.retry_after > now && t.expires_at > now)
+    };
+    if let Some(cached) = cached.as_ref().filter(fresh) {
         return Ok(cached.clone());
     }
-    match mint(&state) {
+    match mint(&state, skew) {
         Ok(token) => {
             save(dir, TOKEN_FILE, &token)?;
             Ok(token)
         }
         Err(error) => match cached.filter(|t| t.expires_at > now) {
-            Some(cached) if !error.is_final() => Ok(cached),
+            Some(mut cached) if !error.is_final() => {
+                cached.retry_after = now + RETRY_BACKOFF;
+                save(dir, TOKEN_FILE, &cached)?;
+                Ok(cached)
+            }
             _ => Err(error),
         },
     }
 }
 
-fn mint(state: &State) -> Result<Token, BrokerError> {
-    let body = call(state, "POST", "/broker/tokens", None)?;
+fn mint(state: &State, skew: i64) -> Result<Token, BrokerError> {
+    let (body, skew) = call(state, "POST", "/broker/tokens", None, skew)?;
     let token = body["token"].as_str().unwrap_or_default().to_string();
     let expires_at = body["expires_at"].as_str().and_then(parse_iso8601);
     match (token.is_empty(), expires_at) {
-        (false, Some(expires_at)) => Ok(Token { token, expires_at }),
+        (false, Some(expires_at)) => Ok(Token {
+            token,
+            expires_at,
+            skew,
+            retry_after: 0,
+        }),
         _ => Err(BrokerError::Invalid(
             "the broker's token response is malformed".into(),
         )),
@@ -207,7 +232,8 @@ pub fn credential(
     write!(
         output,
         "username=x-access-token\npassword={}\npassword_expiry_utc={}\n",
-        token.token, token.expires_at
+        token.token,
+        token.local_expiry()
     )?;
     Ok(())
 }
@@ -250,13 +276,15 @@ pub fn directory() -> io::Result<PathBuf> {
 
 // MARK: - Requests
 
-/// One signed JSON request, retried once with a corrected clock on `stale_proof`.
+/// One signed JSON request, its proof dated `skew` seconds from this machine's clock and retried
+/// once with a corrected clock on `stale_proof`. Returns the answer and the skew that worked.
 fn call(
     state: &State,
     method: &str,
     path: &str,
     body: Option<Value>,
-) -> Result<Value, BrokerError> {
+    mut skew: i64,
+) -> Result<(Value, i64), BrokerError> {
     let key = key_pair(&state.key)?;
     let url = format!("{}{}", state.broker, path);
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -264,7 +292,6 @@ fn call(
         .timeout_global(Some(TIMEOUT))
         .build()
         .into();
-    let mut skew = 0;
     for attempt in 0..2 {
         let proof = proof(&key, method, &url, unix_now() + skew)?;
         let request = agent
@@ -291,7 +318,7 @@ fn call(
             .map_err(|e| BrokerError::Transport(e.to_string()))?;
         let json: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if (200..300).contains(&status) {
-            return Ok(json);
+            return Ok((json, skew));
         }
         let code = json["error"].as_str().unwrap_or("unknown").to_string();
         if attempt == 0 && status == 401 && code == "stale_proof" {

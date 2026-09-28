@@ -205,7 +205,7 @@ private struct GeneralSettingsPane: View {
 /// Signing this Mac in to Codaset, which gives remote workrooms their GitHub access (#251). Behind
 /// `Defaults[.remoteWorkroomsPreview]` until remote workrooms ship.
 private struct RemoteWorkroomsSection: View {
-  @StateObject private var broker = BrokerSession()
+  @ObservedObject private var broker = BrokerSession.shared
 
   var body: some View {
     Section("Remote workrooms") {
