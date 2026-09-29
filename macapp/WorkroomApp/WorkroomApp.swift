@@ -36,6 +36,18 @@ struct WorkroomApp: App {
     // needs the enriched value reads `ShellEnvironment.path()` / `.environment()`.
     setenv("PATH", ShellEnvironment.path(), 1)
 
+    // UI-test launches only: a shell with Ghostty's integration but none of the developer's rc
+    // files, so a test never depends on (or runs) someone's dotfiles. It is a `setenv`, so it
+    // belongs here with the one above: `init` is single-threaded, and it must land before the probe
+    // below starts reading the environment. `applyFixtureDefaults()` at the end of `init` runs
+    // after that probe, so it is the wrong home. A failure crashes the launch: carrying on would
+    // run the real rc files, which is what this prevents. Inert in production (DEBUG-only).
+    do {
+      try UITestFixture.applyHermeticShell()
+    } catch {
+      preconditionFailure("could not prepare the hermetic UI-test shell: \(error)")
+    }
+
     // Enrich it in the background: one `$SHELL -ilc` for what only an interactive
     // login shell knows (`.zshrc`-exported PATH entries, version-manager shims).
     // Detached so launch never waits on someone's dotfiles; the floor above holds
@@ -45,7 +57,14 @@ struct WorkroomApp: App {
     // a real login shell that lands at an arbitrary point and overwrites the cache
     // mid-test — `ShellEnvironmentTests` drives the probe against stub shells and
     // needs the cache to hold only what it put there.
-    if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+    //
+    // Not in a UI-test launch either: the probe runs `$SHELL -ilc`, one of the two ways a test
+    // would execute the developer's rc files (the other is a terminal — see
+    // `applyHermeticShell` above). Skipping it removes that path outright instead of relying on
+    // the `setenv` above landing first, and UI-test launches keep the PATH floor.
+    if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+      && !UITestFixture.isUILaunch
+    {
       Task.detached(priority: .utility) { await ShellEnvironment.refresh() }
     }
 
