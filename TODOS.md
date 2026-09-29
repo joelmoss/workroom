@@ -2140,11 +2140,16 @@ fixture's `over_ssh_the_bootstrap_*` test; 2–5 are mechanical; 6 with Phase 4'
 
 ### Twelve UI tests fail on a developer Mac, and CI never runs them (macapp) — found cutting v2.1.0
 
-**What:** `make app-uitest` fails deterministically on the maintainer's machine (macOS 27). Twelve
-tests are named below — four found cutting v2.1.0, eight more on 2026-09-29. Ten of the twelve were
-seen failing directly in the 2026-09-29 run; `DiffPaneFocusUITests` and `SplitPaneUITests` were NOT
-observed either way in it, because that run's output was truncated before their suites, so they are
-carried here on the earlier v2.0.0 evidence alone. Confirm those two before trusting the total.
+**What:** `make app-uitest` fails twelve tests on the maintainer's machine (macOS 27) — four found
+cutting v2.1.0, eight more on 2026-09-29. All twelve were observed failing on 2026-09-29: ten in the
+full run, and the remaining two (`DiffPaneFocusUITests.testClickingTerminalPaneFocusesItWhenDiffPaneIsFocused`,
+`SplitPaneUITests.testDraggingCurrentTabCreatesSplitWithoutAddingTab`) in a scoped run of just those
+two classes, 15 passed / 2 failed.
+
+Eleven are deterministic; `SplitPaneUITests` is the exception and should not be read as a standing
+failure. It is new in 2.1 (`275b45f6`), so it has no v2.0.0 baseline the way the other three
+original tests do, and this entry's own note below records it flaking once and passing on re-run.
+One measured failure does not make it deterministic — re-run it before concluding anything from it.
 
 The four found cutting v2.1.0:
 `DiffPaneFocusUITests.testClickingTerminalPaneFocusesItWhenDiffPaneIsFocused`,
