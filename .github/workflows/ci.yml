@@ -195,7 +195,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -254,7 +254,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ env.TARGET }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+          key: ghostty-vt-${{ runner.os }}-${{ env.TARGET }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -430,7 +430,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
 
       # Xcode builds the bundled wr-agent (Scripts/build-agent.sh). v2 avoids old entries saved
       # without the agent build.
