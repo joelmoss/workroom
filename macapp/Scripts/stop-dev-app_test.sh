@@ -53,6 +53,16 @@ make_bundle() {
 EOF
   for exe in "Workroom Dev" wr-agent workroom-session; do
     cp "$SLEEP" "$app/Contents/MacOS/$exe"
+    # Re-sign the copy ad-hoc. `/bin/sleep` is a PLATFORM binary: its signature is validated against
+    # the Signed System Volume's trust cache, which covers the file at its own path and not a copy of
+    # it. From macOS 26 AMFI SIGKILLs such a copy the instant it is exec'd (exit 137), so every
+    # process this test spawns died at birth — `expect_dead` then passed VACUOUSLY while
+    # `expect_alive` and the output assertions failed, five at a time. macos-15 (what CI runs) still
+    # allows it, so this only bit on a developer's own machine until the runners move up.
+    # Not an arch quirk: the x86_64 slice is killed the same way.
+    if command -v codesign >/dev/null 2>&1; then
+      codesign -f -s - "$app/Contents/MacOS/$exe" >/dev/null 2>&1 || true
+    fi
   done
 }
 
