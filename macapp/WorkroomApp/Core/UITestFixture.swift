@@ -699,6 +699,77 @@ enum UITestFixture {
         || isActive || isolatesPreferences)
   }
 
+  /// Whether this is an app launched **by a UI test** (a fixture launch, or a `fixture: false`
+  /// launch that still isolates preferences). Narrower than `isTestProcess`, which also answers
+  /// true for a hosted unit run — `WorkroomApp` skips the shell probe there for its own reason, and
+  /// `ShellEnvironmentTests` needs the process environment left alone.
+  static var isUILaunch: Bool { isActive || isolatesPreferences }
+
+  // MARK: Hermetic shell
+
+  /// The shell a UI-test launch gives its terminals. zsh, not `/bin/sh`: Ghostty ships shell
+  /// integration for bash, elvish, fish, nushell and zsh only, and several UI tests need it (OSC
+  /// 0/2, foreground-process resolution, cwd — `ToolFaviconUITests`, `StatusBarCwdUITests`).
+  static let hermeticShell = "/bin/zsh"
+
+  /// The whole content of the hermetic `ZDOTDIR`. `/etc/zshrc` sets `HISTFILE` under `ZDOTDIR`, so
+  /// without this zsh writes `.zsh_history` into the folder — and the folder is shared by every
+  /// launch of one bundle id and never pruned, so it must stay write-free.
+  static let hermeticShellRC = "unset HISTFILE\n"
+
+  /// `<root>/workroom-tests-zdotdir-<bundle id>`: one folder per build identity, so parallel
+  /// workrooms (each has its own bundle id) never share one. Not per process on purpose — a shell
+  /// held by a persistent session can outlive the app that started it, and a per-pid folder would
+  /// be pruned from under it.
+  static func hermeticZDOTDIR(bundleID: String, in root: URL) -> URL {
+    root.appendingPathComponent("workroom-tests-zdotdir-\(bundleID)", isDirectory: true)
+  }
+
+  /// Make `directory` hold exactly one file, `.zshrc`. Everything else is removed first: Ghostty
+  /// sources the redirected `.zshenv` (and zsh `.zprofile`/`.zlogin`), so a stray one left by an
+  /// earlier run would execute on every later launch while every assertion still passed.
+  static func prepareHermeticZDOTDIR(at directory: URL) throws {
+    let files = FileManager.default
+    try files.createDirectory(at: directory, withIntermediateDirectories: true)
+    for entry in try files.contentsOfDirectory(atPath: directory.path) where entry != ".zshrc" {
+      try files.removeItem(at: directory.appendingPathComponent(entry))
+    }
+    try Data(hermeticShellRC.utf8).write(
+      to: directory.appendingPathComponent(".zshrc"), options: .atomic)
+  }
+
+  /// Point the process at a shell that has Ghostty's integration and none of the developer's rc
+  /// files, for a UI-test launch only. Returns whether it applied anything.
+  ///
+  /// Ghostty's bundled zsh `.zshenv` restores a user `ZDOTDIR` from `GHOSTTY_ZSH_ZDOTDIR`, sources
+  /// `$ZDOTDIR/.zshenv`, then loads the integration — so this keeps the integration and drops
+  /// `~/.zshenv`, `~/.zprofile`, `~/.zshrc` and `~/.zlogin`. The terminals inherit the process
+  /// environment, the same way they inherit `GHOSTTY_RESOURCES_DIR`.
+  ///
+  /// **Startup files only.** `PATH` stays developer-influenced (`ShellEnvironment.floorPath`
+  /// includes Homebrew, `~/.local/bin` and the inherited `PATH`).
+  ///
+  /// Throws rather than logging: a failure that left the environment alone would let the terminals
+  /// run the developer's real rc files, which is exactly what this exists to stop, and nothing
+  /// would say so. `WorkroomApp.init` turns the throw into a crash — DEBUG UI-test launches only.
+  ///
+  /// `setenv` is safe only from `WorkroomApp.init`, before the probe and the status sweep start
+  /// reading the environment from other threads (see the comment there).
+  @discardableResult
+  static func applyHermeticShell(
+    active: Bool = isUILaunch,
+    bundleID: String? = Bundle.main.bundleIdentifier,
+    root: URL = FileManager.default.temporaryDirectory,
+    set: (String, String) -> Void = { setenv($0, $1, 1) }
+  ) throws -> Bool {
+    guard enabled, active else { return false }
+    let directory = hermeticZDOTDIR(bundleID: bundleID ?? "unknown", in: root)
+    try prepareHermeticZDOTDIR(at: directory)
+    set("SHELL", hermeticShell)
+    set("ZDOTDIR", directory.path)
+    return true
+  }
+
   /// The theme family every fixture launch starts on
   /// (`-WorkroomUITestThemeFamily "<family name>"`). Unset (or unknown) = the `Workroom` default.
   ///
