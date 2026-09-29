@@ -2138,10 +2138,15 @@ fixture's `over_ssh_the_bootstrap_*` test; 2–5 are mechanical; 6 with Phase 4'
 
 **Priority:** P3, effort S each.
 
-### Ten UI tests fail on a developer Mac, and CI never runs them (macapp) — found cutting v2.1.0
+### Twelve UI tests fail on a developer Mac, and CI never runs them (macapp) — found cutting v2.1.0
 
-**What:** `make app-uitest` fails deterministically on the maintainer's machine (macOS 27). Four
-were found cutting v2.1.0:
+**What:** `make app-uitest` fails deterministically on the maintainer's machine (macOS 27). Twelve
+tests are named below — four found cutting v2.1.0, eight more on 2026-09-29. Ten of the twelve were
+seen failing directly in the 2026-09-29 run; `DiffPaneFocusUITests` and `SplitPaneUITests` were NOT
+observed either way in it, because that run's output was truncated before their suites, so they are
+carried here on the earlier v2.0.0 evidence alone. Confirm those two before trusting the total.
+
+The four found cutting v2.1.0:
 `DiffPaneFocusUITests.testClickingTerminalPaneFocusesItWhenDiffPaneIsFocused`,
 `SplitPaneUITests.testDraggingCurrentTabCreatesSplitWithoutAddingTab`,
 `WindowDragUITests.testDraggingEmptyTitlebarMovesWindow` and
@@ -2174,10 +2179,10 @@ installed.
 
 **Why it matters:** the drag-to-split fix shipped in 2.1 has no test coverage that actually runs.
 CI does not run `app-uitest` at all, since it needs a GUI login session, so these failures only show
-up when someone runs the suite by hand before a release. And the count is now ten, not four, so the
-pre-release run this suite exists for has to be read past ten known reds before a real regression is
-visible — which is the cost this entry warned about, now roughly tripled. Every fresh red has to be
-bisected against master by hand to tell it from the standing set, as #261's was.
+up when someone runs the suite by hand before a release. And the count is now twelve named, not
+four, so the pre-release run this suite exists for has to be read past a dozen known reds before a
+real regression is visible — which is the cost this entry warned about, now tripled. Every fresh red
+has to be bisected against master by hand to tell it from the standing set, as #261's was.
 
 **How to start:** check whether `press(forDuration:thenDragTo:)` registers at all on macOS 27. A
 one-line drag in a scratch UI test is enough. If it does not, drive the drag with explicit
