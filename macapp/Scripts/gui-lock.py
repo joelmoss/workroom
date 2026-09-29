@@ -214,7 +214,15 @@ def run_locked(mode, label, command):
         turnstile = open_lock_file(os.path.join(root, "gui.turnstile"))
         session = open_lock_file(os.path.join(root, "gui.lock"))
     except OSError as error:
-        log("cannot use the lock (%s); running without it" % error)
+        # Still runs — a coordination aid must not turn an unwritable HOME into a failed test run
+        # (`test_an_unusable_lock_directory_runs_the_command_unlocked`). But say what is lost, not
+        # just that something was: unlocked, an exclusive run no longer has the session to itself,
+        # and two workrooms' UI tests driving one GUI read as unattributable test flake rather than
+        # as the broken lock directory they are.
+        log(
+            "cannot use the lock (%s); running without it — nothing is coordinating the GUI "
+            "session now, so another workroom's run can overlap this %s" % (error, label)
+        )
         return run_unlocked(command)
     timeout = os.environ.get("WR_GUI_LOCK_TIMEOUT", "").strip()
     deadline = None
