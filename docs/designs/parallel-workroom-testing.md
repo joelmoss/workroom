@@ -155,8 +155,9 @@ per workroom; Xcode's build-database lock rejects a second concurrent build ther
   dev app prompts afresh for notifications, Automation or other apps' data the first time it needs
   them. Fixture-mode tests mostly don't, but a fixture terminal runs your real login shell, and its
   children are attributed to the app: a shell startup that touches a protected folder (Documents,
-  Desktop, iCloud Drive) raises a prompt during a new workroom's first UI-test run. That run holds
-  the GUI session until it finishes, and the prompt waits for a person to answer it.
+  Desktop, iCloud Drive) can raise a prompt during a new workroom's first UI-test run. That is not
+  measured: it depends on what a developer's rc files do. If it happens, the run holds the GUI
+  session until it finishes, and the prompt waits for a person to answer it.
 - **A workroom's session socket lives under `/tmp`.** Its longer bundle id pushes
   `Application Support/<id>/sessions/agent.sock` past `sun_path`'s 104 bytes, so
   `PersistentSessionPaths` uses its existing fallback, `/tmp/workroom-<uid>-<id>/`. The suffix is
