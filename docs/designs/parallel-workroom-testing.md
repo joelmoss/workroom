@@ -75,9 +75,13 @@ recognising rather than chasing.
   (`UserDefaults.app`), never wiped. `runCommands`, `hasCompletedOnboarding`, `vcsLastFetch`,
   `showInspector`, `diffViewMode` and `themeFamily` are last-writer-wins between concurrent runs.
 - The fixture tree is `$TMPDIR/workroom-uitest` (`UITestFixture.projects`), per user, not per app.
-- `~/Library/Application Support/Workroom/ghostty.conf` (`GhosttyApp.themeConfigURL`) is shared by
-  every identity, release included. Several unit tests and `ThemePickerUITests` write it and read it
-  back.
+- `~/Library/Application Support/Workroom/ghostty.conf` (`GhosttyApp.themeConfigURL`) was shared by
+  every identity, release included, and several unit tests and `ThemePickerUITests` write it and
+  read it back. **Fixed separately in #262**, which landed first: the generated config is now
+  `Workroom/<bundle id>/ghostty.conf` (`GhosttyApp.defaultThemeConfigURL`), a test process gets a
+  per-pid file of its own, and `ThemePickerUITests` names the file it wants with
+  `-WorkroomUITestGhosttyConfigFile` instead of computing a path. Two processes sharing ONE bundle
+  id can still interleave their write and load; see issue #264.
 - `ShellEnvironmentTests.testProbeTimesOutAndKillsTheChild` ran `pgrep -f wedged-shell` against the
   whole machine, so it could find the same test's stub from another checkout's run.
 
@@ -157,9 +161,11 @@ per workroom; Xcode's build-database lock rejects a second concurrent build ther
   `Application Support/<id>/sessions/agent.sock` past `sun_path`'s 104 bytes, so
   `PersistentSessionPaths` uses its existing fallback, `/tmp/workroom-<uid>-<id>/`. The suffix is
   capped so that path always fits (`dev-identity.sh`).
-- **`ghostty.conf` is still one file for every identity.** Test runs no longer overlap in a way
-  that can race on it except unit runs with each other, where the write-then-read window is tiny.
-  Follow-up: key it by bundle id, and have `ThemePickerUITests` read the app's own path.
+- ~~**`ghostty.conf` is still one file for every identity.**~~ **Done in #262**, both halves of the
+  follow-up this listed: it is keyed by bundle id, and `ThemePickerUITests` is handed its path
+  rather than computing one. What remains is narrower and tracked as issue #264 — two processes
+  under the SAME bundle id (two copies of one workroom's dev app) can still interleave a write and
+  a load. Transient and self-healing on the next theme apply.
 - **`WorkroomWorkflowUITests.testAppLaunchesWithChrome`** launches without fixture mode and reads
   and writes the real session file of its identity (`SessionStore.forCurrentEnvironment` checks
   only `isActive`). Now contained to the identity of the checkout that runs it; still worth closing.
