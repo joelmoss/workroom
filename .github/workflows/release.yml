@@ -92,7 +92,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
 
       - name: Add Rust darwin targets (universal VCS core)
         run: rustup target add x86_64-apple-darwin aarch64-apple-darwin

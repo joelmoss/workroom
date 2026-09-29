@@ -246,7 +246,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -306,7 +306,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ env.TARGET }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+          key: ghostty-vt-${{ runner.os }}-${{ env.TARGET }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -427,7 +427,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
 
       # The Rust VCS core (jj-lib via UniFFI) the app links. `make app-vcs` runs
       # vcs/scripts/build-apple.sh to produce the WrVcs package's xcframework + Swift bindings, and

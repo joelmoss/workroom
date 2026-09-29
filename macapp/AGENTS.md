@@ -197,8 +197,12 @@ runs as `xterm-ghostty` with the integration. See the "As built
 (#231)" section of the design doc, and `vcs/scripts/ssh-fixture/run.sh` for running its tests.
 
 The Zig toolchain and the pinned Ghostty engine come from `vcs/scripts/build-ghostty-vt.sh`
-(cached per `(engine sha, target)` outside the repo). That pin must stay in step with the
-GhosttyKit the app links — see the comment in `project.yml`.
+(cached per `(engine sha, parity patches, target)` outside the repo). That pin must stay in step
+with the GhosttyKit the app links — see the comment in `project.yml`. So must its behavior: the
+package patches that change what the terminal itself does are vendored in
+`vcs/scripts/ghostty-patches/` and applied to the shadow build, so a remote pane's shadow and the
+local engine agree. A package bump means re-diffing the package's `Patches/ghostty/` against that
+directory (see its README).
 
 ## Working rules for the session/VCS layers
 
