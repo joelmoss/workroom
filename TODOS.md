@@ -2138,13 +2138,32 @@ fixture's `over_ssh_the_bootstrap_*` test; 2–5 are mechanical; 6 with Phase 4'
 
 **Priority:** P3, effort S each.
 
-### Four UI tests fail on a developer Mac, and CI never runs them (macapp) — found cutting v2.1.0
+### Ten UI tests fail on a developer Mac, and CI never runs them (macapp) — found cutting v2.1.0
 
-**What:** `make app-uitest` fails 4 tests deterministically on the maintainer's machine (macOS 27):
+**What:** `make app-uitest` fails deterministically on the maintainer's machine (macOS 27). Four
+were found cutting v2.1.0:
 `DiffPaneFocusUITests.testClickingTerminalPaneFocusesItWhenDiffPaneIsFocused`,
 `SplitPaneUITests.testDraggingCurrentTabCreatesSplitWithoutAddingTab`,
 `WindowDragUITests.testDraggingEmptyTitlebarMovesWindow` and
 `WorkroomPaneHeaderUITests.testSoloOpenInMenuOpens`.
+
+**A second, larger group joined them (2026-09-29, reviewing #261):** eight more, all one root cause
+— `TabActionsUITests.openDiffPreview` never gets its diff tab, failing at `TabActionsUITests.swift:91`
+with "diff tab should open". Seven are `TabActionsUITests` (`testContextMenuSplitRightCreatesTwoPanes`,
+`testDiffPanelHasSameContextMenuAsTab`, `testDiffTabContextMenuHasExpectedItems`,
+`testDiffTabToolbarHasOpenFileSplitCloseAll`, `testDiffToolbarSplitRightCreatesTwoPanes`,
+`testRemoveFromSplitAbsentOnSoloTab`, `testRemoveFromSplitViaPaneBodyCollapses`); the eighth is
+`TerminalAgentUITests.testDiffPaneHasStatusBar`, which opens a diff tab the same way.
+
+Bisected rather than assumed: `-only-testing:WorkroomAppUITests/TabActionsUITests` on `94dd65ea`
+(master, with #261 checked out and set aside) fails the SAME seven, 5 passed / 7 failed, same
+assertion and same line as on the branch — so they are not #261's doing, and not flake either, since
+both runs failed the identical set. `openDiffPreview` was hardened once before for exactly this shape
+(it clicked the Changes row before it was hit-testable; it now waits for hittability, retries once,
+and allows 10s) — so whatever is wrong now is past that fix, not a regression of it.
+
+Note the shape: the first group is drags and a machine-dependent menu, the second is one helper that
+cannot open a diff tab at all. They are unlikely to share a cause; treat them as two items.
 
 **Why it is not a 2.1 regression:** the first, third and fourth fail identically on `v2.0.0`
 (checked 2026-09-23). The split test is new in 2.1 (`275b45f6`) and cannot run there, but it uses the
@@ -2155,12 +2174,20 @@ installed.
 
 **Why it matters:** the drag-to-split fix shipped in 2.1 has no test coverage that actually runs.
 CI does not run `app-uitest` at all, since it needs a GUI login session, so these failures only show
-up when someone runs the suite by hand before a release.
+up when someone runs the suite by hand before a release. And the count is now ten, not four, so the
+pre-release run this suite exists for has to be read past ten known reds before a real regression is
+visible — which is the cost this entry warned about, now roughly tripled. Every fresh red has to be
+bisected against master by hand to tell it from the standing set, as #261's was.
 
 **How to start:** check whether `press(forDuration:thenDragTo:)` registers at all on macOS 27. A
 one-line drag in a scratch UI test is enough. If it does not, drive the drag with explicit
 `XCUICoordinate` moves. For the editor menu, stub the installed-editor lookup in `UITestFixture` so
 the test does not depend on the machine.
+
+For the diff-tab group, start at `openDiffPreview` and find out WHICH step fails — whether the
+Changes row is ever hittable, whether the click lands, or whether the tab is created and just not
+found — rather than widening the timeout again. It is deterministic on both branches, so a single
+instrumented run answers it; a wait that was already raised to 10s is unlikely to be the problem.
 
 **Priority:** P3. `SplitPaneUITests` and `VCSToolbarGitUITests` also flaked once each during the
 same run and passed on re-run.
