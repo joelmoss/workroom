@@ -15,8 +15,13 @@
 # SIGTERM throughout, as before: the app's SIGTERM handler is what flushes its session and stops its
 # run commands gracefully (WorkroomApp.swift, installSigtermHandler).
 #
-# For tests: STOP_DEV_APP_PS replaces the `ps` command that lists processes, and
-# STOP_DEV_APP_DRY_RUN=1 prints `stop <pid>` for each process instead of signalling it.
+# For tests: STOP_DEV_APP_PS names a FILE holding a process table to read instead of running `ps`,
+# and STOP_DEV_APP_DRY_RUN=1 prints `stop <pid>` for each process instead of signalling it.
+#
+# A file, not a command. It used to be expanded unquoted into a command substitution, so whatever
+# this variable held was EXECUTED — and `make app-run` runs this script with the developer's own
+# inherited environment. A value left exported from a debugging session (or arriving from anywhere
+# else) then both ran as a command and decided, from its own output, which processes get SIGTERM.
 set -eu
 
 bundle="${1:?usage: stop-dev-app.sh path/to/App.app}"
@@ -70,7 +75,11 @@ stopped_helpers=""
 # process only counts when argv[0] is itself the executable inside a bundle: the part before the
 # first `/Contents/MacOS/` must be an existing `<name>.app` directory. That keeps out a process
 # that merely mentions such a path in its arguments (`tail -f …/wr-agent.log`).
-processes="$(${STOP_DEV_APP_PS:-ps -ww -A -o pid= -o command=})"
+if [ -n "${STOP_DEV_APP_PS:-}" ]; then
+  processes="$(cat -- "$STOP_DEV_APP_PS")"
+else
+  processes="$(ps -ww -A -o pid= -o command=)"
+fi
 while read -r pid cmdline; do
   case "$cmdline" in
     /*/"$name.app/Contents/MacOS/"*) ;;

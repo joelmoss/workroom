@@ -158,7 +158,7 @@ cat >"$TMP/table" <<EOF
 107 $THIS/wr-agent serve --socket /somewhere/else/agent.sock
 108 $OTHER/wr-agent serve --socket $SUPPORT/$OTHER_ID/sessions/agent.sock
 EOF
-got="$(STOP_DEV_APP_PS="cat $TMP/table" STOP_DEV_APP_DRY_RUN=1 \
+got="$(STOP_DEV_APP_PS="$TMP/table" STOP_DEV_APP_DRY_RUN=1 \
   sh "$SCRIPT" "$TMP/this/Workroom Dev.app" | sed -n 's/^stop //p' | sort -n | tr '\n' ' ')"
 # 101 this app; 102 serves this id; 104 serves this id from another bundle; 105 has no socket, so
 # goes by its bundle; 107 names no socket shape we know, so goes by its bundle. Not 103: it lives in
