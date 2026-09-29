@@ -560,6 +560,44 @@ loudly if the packager ever re-cuts the `1.3.2` tag).
 user's shell. SHIPPED; watching the bake gate and the residual gaps filed below before promoting to
 a `pre` tag.
 
+### Bump the libghostty pin — package 1.6.20260928 / ghostty `3c47ca15`, with local/remote parity (macapp + vcs) — CODE LANDED 2026-09-29, UNVERIFIED ON macOS
+
+`macapp/project.yml` 1.5.20260903 → **1.6.20260928** (engine `c4e16970` → `3c47ca159`, 2026-09-21; 370
+upstream commits) and `vcs/scripts/build-ghostty-vt.sh` `GHOSTTY_SHA` to match. `Package.resolved` and
+`GhosttyPinIntegrityTests.expectedRevision` now name `5a025555…`.
+
+**Target choice.** The package's newest `main` pins ghostty `b40acce58` (2026-09-26) but ships no
+semver release — only an `upstream.b40acce58dcf` tag, which `exactVersion` cannot pin. 1.6.20260928's
+own `Ghostty.ref` is `3c47ca159`, not `b40acce58`. Deliberately NOT taken: render-state overscan/row
+ids, `GHOSTTY_ACTION_RESIZE_WINDOW` (CSI 8 t), mouse-shape exposure, OSC unknown-sequence callback.
+Nothing here uses them.
+
+**Parity (the reason for the shape of this change).** The app's engine is the package's Ghostty PLUS
+its patch stack; the remote shadow is stock `libghostty-vt`. `0014-preserve-sync-on-resize` changes
+terminal behavior (stock `Terminal.resize` ends DEC 2026; the package's keeps it), so the shadow
+would have diverged from the app on any resize during a sync hold. `vcs/scripts/ghostty-patches/`
+vendors it (+ its `anchored_edit.py`) unchanged and `build-ghostty-vt.sh` applies it to a scratch
+worktree; the cache key and the CI cache keys include the patch hash. Verified: 0014 applies cleanly
+to `3c47ca159` (three files patched) and the worktree is created and removed without touching the
+source checkout. `0015` (renderer-only prompt-redraw hold) is deliberately not carried — see the
+README there for why, and the criteria for revisiting.
+
+**Resources.** Bundled `shell-integration/bash/{ghostty.bash,bash-preexec.sh}` re-vendored and
+`CHECKSUMS` regenerated (a real fix: `$?` preserved across `PROMPT_COMMAND`). terminfo unchanged.
+Remote hosts get them through the `CHECKSUMS` push (#239).
+
+**NOT done — needs a macOS box / a scoped session:**
+- The Zig build of `libghostty-vt` with the patch applied: this session could not fetch a GitHub-hosted
+  Zig dependency (`jacobsandlund/uucode`), so only the patch step ran. CI's Linux/macOS builds are the
+  first real check.
+- `make app-build` / `app-test` / `app-uitest`; the Xcode stale-object trap (touch the C-API consumers
+  and rebuild) applies again.
+- Read the packager's CI log for the 1.6.20260928 build (`[+] applied patch:`, no `--3way` fallback,
+  0002 and 0011 especially — both were reworked).
+- Bake gate, and `QA-libghostty.md` §N, as before.
+- Follow-ups worth filing: use `ghostty_search_*` on the shadow for remote scrollback search; check
+  whether shadow/formatter output carries mode 2026 in a way the new render-hold semantics change.
+
 ### Bump the libghostty pin again — package 1.5.20260903 / ghostty `c4e16970` (macapp) — LANDED 2026-09-03
 
 **Landed 2026-09-03.** Everything below was the scope written before doing it; this note records

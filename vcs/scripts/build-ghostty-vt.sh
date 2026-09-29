@@ -15,10 +15,15 @@
 # "definitely going to change". macapp/project.yml is the single source of truth for which engine
 # the app ships; GHOSTTY_SHA below must match the sha recorded there, and the two are bumped
 # together. See docs/designs/remote-workrooms.md, Distribution Plan.
+#
+# PARITY IS THE OTHER HALF. The app's engine is the package's Ghostty PLUS its patch stack, and a few
+# of those patches change what the terminal itself does. ghostty-patches/ holds those, vendored
+# unchanged, and they are applied here to a scratch worktree so the shadow behaves as the app does.
+# See ghostty-patches/README.md for which are carried and why.
 set -euo pipefail
 
 # Must match `ghostty engine` in macapp/project.yml.
-GHOSTTY_SHA="c4e16970a"
+GHOSTTY_SHA="3c47ca159"
 GHOSTTY_REPO="https://github.com/ghostty-org/ghostty.git"
 # build.zig.zon's `minimum_zig_version` at the pinned sha.
 ZIG_VERSION="0.16.0"
@@ -50,7 +55,10 @@ CACHE_ROOT="${WR_GHOSTTY_VT_CACHE:-${HOME}/.cache/workroom/ghostty-vt}"
 # values yields a non-reproducible second binary — a trap exe-scroll's own build script documents.
 # And by the Zig version, since both pins above decide what gets built: keyed by sha alone, a
 # Zig-only bump found the old archive here and kept linking it.
-PREFIX="${CACHE_ROOT}/${GHOSTTY_SHA}-zig${ZIG_VERSION}/${target}"
+# And by the parity patches: a changed patch is a different engine at the same sha.
+PATCH_DIR="$(cd "$(dirname "$0")" && pwd)/ghostty-patches"
+PATCH_HASH="$(cd "$PATCH_DIR" && find . -type f ! -name README.md | LC_ALL=C sort | xargs cat | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-8)"
+PREFIX="${CACHE_ROOT}/${GHOSTTY_SHA}-p${PATCH_HASH}-zig${ZIG_VERSION}/${target}"
 
 if $print_prefix; then
   echo "$PREFIX"
@@ -139,12 +147,30 @@ if [ "$actual" != "$GHOSTTY_SHA" ]; then
   exit 1
 fi
 
-echo "libghostty-vt: building ($target, $GHOSTTY_SHA)" >&2
+echo "libghostty-vt: building ($target, $GHOSTTY_SHA + parity patches $PATCH_HASH)" >&2
 BUILD_TMP="${PREFIX}.building.$$"
-rm -rf "$BUILD_TMP"
-trap 'rm -rf "$BUILD_TMP"' EXIT
+PATCHED_SRC="${PREFIX}.src.$$"
+rm -rf "$BUILD_TMP" "$PATCHED_SRC"
+cleanup() {
+  rm -rf "$BUILD_TMP"
+  # `worktree remove` also drops the entry from $SRC's metadata, which `rm -rf` alone would leave.
+  git -C "$SRC" worktree remove --force "$PATCHED_SRC" >/dev/null 2>&1 || rm -rf "$PATCHED_SRC"
+  git -C "$SRC" worktree prune >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
 
-( cd "$SRC" && $ZIG build \
+# Patch a scratch worktree, never $SRC: it may be a checkout somebody else is working in.
+git -C "$SRC" worktree add --quiet --detach "$PATCHED_SRC" "$GHOSTTY_SHA" >&2
+for patch in "$PATCH_DIR"/*.sh; do
+  [ -e "$patch" ] || continue
+  bash "$patch" "$PATCHED_SRC" >&2 || {
+    echo "error: parity patch $(basename "$patch") does not apply to ghostty ${GHOSTTY_SHA}." >&2
+    echo "       Upstream moved the code it edits; see ghostty-patches/README.md." >&2
+    exit 1
+  }
+done
+
+( cd "$PATCHED_SRC" && $ZIG build \
     -Demit-lib-vt=true \
     -Doptimize=ReleaseFast \
     -Dtarget="$target" \
