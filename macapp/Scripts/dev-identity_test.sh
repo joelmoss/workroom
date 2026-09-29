@@ -32,6 +32,14 @@ checkout() {
 
 expect_none() {
   got="$(identity "$1")"
+  status=$?
+  # The status matters as much as the output: "prints nothing" and "fails" both leave stdout empty,
+  # and the Makefile takes this suffix from a command substitution, so a non-zero exit here is a
+  # broken build rather than a canonical identity. Asserting only emptiness passed either way.
+  if [ "$status" -ne 0 ]; then
+    echo "FAIL: $2 should exit 0 for the canonical identity, exited $status"
+    fails=$((fails + 1))
+  fi
   if [ -n "$got" ]; then
     echo "FAIL: $2 should keep the canonical identity (no suffix), got '$got'"
     fails=$((fails + 1))
@@ -120,9 +128,28 @@ if [ "$(identity "$TMP/link-to-otter")" != "$a" ]; then
   fails=$((fails + 1))
 fi
 
-# With no argument it describes the checkout it lives in, and never fails.
-if ! sh "$SCRIPT" >/dev/null; then
-  echo "FAIL: dev-identity.sh with no argument exited non-zero"
+# With no argument it describes the checkout it LIVES IN, and never fails. Compared against that
+# checkout named explicitly, not just checked for exit 0: the default root is computed by walking up
+# from the script (`$(dirname "$0")/../..`), and an off-by-one there still exits 0 and still prints
+# nothing whenever the wrong directory also happens to be a main checkout — which `macapp/` is. Only
+# the comparison can tell a resolved default root from a wrong one.
+default_out="$(sh "$SCRIPT")"
+default_status=$?
+if [ "$default_status" -ne 0 ]; then
+  echo "FAIL: dev-identity.sh with no argument exited $default_status"
+  fails=$((fails + 1))
+fi
+# Comparing the no-argument run against this repo root would prove nothing: both the right root and
+# a wrong one are main checkouts here, so both print nothing and the assertion holds either way.
+# Run a COPY from inside a fake worktree instead, where only the correct root has the `.git` file —
+# an off-by-one lands on `macapp/`, which has none, and the suffix disappears.
+checkout "$TMP/rooted" git-worktree
+mkdir -p "$TMP/rooted/macapp/Scripts"
+cp "$SCRIPT" "$TMP/rooted/macapp/Scripts/dev-identity.sh"
+rooted_out="$(sh "$TMP/rooted/macapp/Scripts/dev-identity.sh")"
+if [ "$rooted_out" != "$(identity "$TMP/rooted")" ]; then
+  echo "FAIL: run with no argument from inside a workroom gave '$rooted_out', want" \
+    "'$(identity "$TMP/rooted")' — its default root walks up the wrong number of levels"
   fails=$((fails + 1))
 fi
 

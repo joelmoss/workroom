@@ -47,9 +47,15 @@ enum TerminalPersistentSessionPolicy {
 
   /// A hosted unit run (`XCTestConfigurationFilePath`), or an app XCUITest launched, which has no
   /// such variable and is known by its fixture flags — the same three signals
-  /// `applicationDidFinishLaunching` uses to keep a test launch off the developer's real agent.
-  static var isTestLaunch: Bool {
-    ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-      || UITestFixture.isActive || UITestFixture.isolatesPreferences
-  }
+  /// `applicationDidFinishLaunching` and `UserDefaults.app` use to keep a test launch off the
+  /// developer's real agent.
+  ///
+  /// Delegated, not re-spelled. Written out here it was a fourth copy of that expression, and
+  /// crucially one WITHOUT `UITestFixture`'s `#if DEBUG` gate: `isActive` and `isolatesPreferences`
+  /// are both false in Release, but the bare env-var probe is not, so a shipped app launched from a
+  /// shell still exporting `XCTestConfigurationFilePath` (a wrapper script, `launchctl setenv`, a
+  /// terminal left over from a test run — the trap `UserDefaults.app` documents) answered "test
+  /// launch" and `endsSessionsOnQuit` went false. With background sessions OFF that leaks every
+  /// terminal's shell forever, silently breaking the quit alert's own promise to stop them.
+  static var isTestLaunch: Bool { UITestFixture.isTestProcess }
 }
