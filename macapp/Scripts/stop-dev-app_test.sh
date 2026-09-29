@@ -37,6 +37,38 @@ fi
 
 SLEEP="$(command -v sleep)"
 
+# A copy of `sleep` this OS will actually EXECUTE, made once and copied into every fake bundle.
+#
+# Neither form works everywhere, so the form is chosen by probing rather than assumed.
+# `/bin/sleep` is a platform binary whose signature is validated against the Signed System Volume's
+# trust cache — which covers the file at its own path, not a copy. macOS 15 runs a plain copy; macOS
+# 26+ SIGKILLs it on exec. Ad-hoc re-signing is the exact inverse: it makes the copy runnable on
+# macOS 26+ and, on macOS 15, replaces a signature AMFI accepted with one it does not.
+#
+# Getting this wrong is invisible in the worst way. If the copies cannot run, every process the test
+# spawns dies at birth, so `expect_dead` passes VACUOUSLY — everything it checks for really is gone —
+# while `expect_alive` and the output assertions fail, pointing at stop-dev-app.sh rather than at
+# these fixtures. Both mistakes have now been made in turn, one per OS.
+#
+# `"$candidate" 0` is the probe: sleeping zero seconds exits 0 at once, and a killed copy exits 137.
+# Probed in a subshell with a trailing `:` so a rejected copy stays quiet. The shell announces a
+# foreground child killed by a signal ("Killed: 9") on its OWN stderr, so the announcement has to
+# come from a shell whose stderr we control — and without the `:` the subshell would exec the binary
+# and BE that child, leaving the announcement to the script's own shell. Status still carries 137.
+runnable() { ( "$1" 0 >/dev/null 2>&1; status=$?; exit "$status" ) 2>/dev/null; }
+
+SLEEP_COPY="$TMP/runnable-sleep"
+cp "$SLEEP" "$SLEEP_COPY"
+if ! runnable "$SLEEP_COPY"; then
+  if command -v codesign >/dev/null 2>&1; then
+    codesign -f -s - "$SLEEP_COPY" >/dev/null 2>&1 || true
+  fi
+  if ! runnable "$SLEEP_COPY"; then
+    echo "FAIL: cannot make a runnable copy of $SLEEP, so this test cannot spawn anything" >&2
+    exit 1
+  fi
+fi
+
 # make_bundle <dir> <bundle id>: a "Workroom Dev.app" whose executables are copies of sleep.
 make_bundle() {
   app="$1/Workroom Dev.app"
@@ -51,18 +83,10 @@ make_bundle() {
 </dict>
 </plist>
 EOF
+  # From the probed copy, not from `$SLEEP` — see `runnable` above for why a plain copy is not
+  # guaranteed to execute. An embedded signature travels with the bytes, so copying it is enough.
   for exe in "Workroom Dev" wr-agent workroom-session; do
-    cp "$SLEEP" "$app/Contents/MacOS/$exe"
-    # Re-sign the copy ad-hoc. `/bin/sleep` is a PLATFORM binary: its signature is validated against
-    # the Signed System Volume's trust cache, which covers the file at its own path and not a copy of
-    # it. From macOS 26 AMFI SIGKILLs such a copy the instant it is exec'd (exit 137), so every
-    # process this test spawns died at birth — `expect_dead` then passed VACUOUSLY while
-    # `expect_alive` and the output assertions failed, five at a time. macos-15 (what CI runs) still
-    # allows it, so this only bit on a developer's own machine until the runners move up.
-    # Not an arch quirk: the x86_64 slice is killed the same way.
-    if command -v codesign >/dev/null 2>&1; then
-      codesign -f -s - "$app/Contents/MacOS/$exe" >/dev/null 2>&1 || true
-    fi
+    cp "$SLEEP_COPY" "$app/Contents/MacOS/$exe"
   done
 }
 
