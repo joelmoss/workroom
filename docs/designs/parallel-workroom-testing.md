@@ -60,6 +60,15 @@ LaunchServices and XCUITest consider "that app is already running". The conseque
 So two UI-test runs cannot overlap, and neither can a UI-test run and a hosted unit run. Unit runs
 can overlap each other freely.
 
+**Known window: `make app-run` drops its lock before the app is up.** The launch step holds the lock
+across `stop-dev-app.sh` and `open`, and `open` returns once LaunchServices has accepted the request
+— not once the app is frontmost. A UI-test run queued behind it can take the exclusive lock while
+the dev app is still activating, and the app then takes focus from the test. Deliberately left: the
+`-W` flag waits for the app to EXIT rather than to activate, and the only real "is it frontmost yet"
+signal is System Events, which costs an automation prompt and a dependency to close a window of a
+second or two. It shows up as one flaky UI test immediately after an `app-run`, so it is worth
+recognising rather than chasing.
+
 ### 3. Fixed names that are not keyed by identity
 
 - The XCUITest preferences suite is one stable name, `com.developwithstyle.workroom.tests`
