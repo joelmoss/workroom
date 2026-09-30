@@ -9,10 +9,11 @@ import Foundation
 /// never depend on what happens to be configured on the machine, and run the same everywhere.
 ///
 /// The fixture targets point at freshly-created temp directories so their terminals still spawn a
-/// real login shell (libghostty needs a valid working directory) — the surface mounts and appears
-/// in the accessibility tree exactly as it would for a real workroom, which is what the split-pane
-/// tests assert on. The app remains a normal app: a regular user never passes the flag, so this
-/// code is inert in production.
+/// login shell (libghostty needs a valid working directory) — a hermetic one, with Ghostty's
+/// integration and none of the developer's rc files (see `applyHermeticShell`). The surface mounts
+/// and appears in the accessibility tree exactly as it would for a real workroom, which is what the
+/// split-pane tests assert on. The app remains a normal app: a regular user never passes the flag,
+/// so this code is inert in production.
 enum UITestFixture {
   /// The launch-argument / `UserDefaults` key the tests set (highest-priority argument domain).
   static let defaultsKey = "WorkroomUITestFixture"
@@ -694,9 +695,15 @@ enum UITestFixture {
   /// exports `XCTestConfigurationFilePath` (a wrapper script, `launchctl setenv`, a terminal left
   /// over from a test run) — the release trap `UserDefaults.app` documents at length.
   static var isTestProcess: Bool {
-    enabled
-      && (ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-        || isActive || isolatesPreferences)
+    enabled && (isHostedUnitRun() || isUILaunch)
+  }
+
+  /// The `XCTestConfigurationFilePath` signal: set in a hosted unit process, never in an app
+  /// launched by XCUITest. The one place that key is spelled inside this file.
+  static func isHostedUnitRun(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> Bool {
+    environment["XCTestConfigurationFilePath"] != nil
   }
 
   /// Whether this is an app launched **by a UI test** (a fixture launch, or a `fixture: false`
@@ -704,6 +711,17 @@ enum UITestFixture {
   /// true for a hosted unit run — `WorkroomApp` skips the shell probe there for its own reason, and
   /// `ShellEnvironmentTests` needs the process environment left alone.
   static var isUILaunch: Bool { isActive || isolatesPreferences }
+
+  /// Whether `WorkroomApp.init` starts the background `$SHELL -ilc` probe. Not in a hosted unit run
+  /// (`ShellEnvironmentTests` needs the cache to hold only what it put there) and not in a UI-test
+  /// launch (which has no use for the enrichment, and would otherwise execute the shell's startup
+  /// files). Pure, so the decision is testable without launching the app.
+  static func runsLaunchShellProbe(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    isUILaunch: Bool = isUILaunch
+  ) -> Bool {
+    !isHostedUnitRun(environment: environment) && !isUILaunch
+  }
 
   // MARK: Hermetic shell
 
@@ -721,21 +739,73 @@ enum UITestFixture {
   /// workrooms (each has its own bundle id) never share one. Not per process on purpose — a shell
   /// held by a persistent session can outlive the app that started it, and a per-pid folder would
   /// be pruned from under it.
+  ///
+  /// The id becomes one path component: anything outside `[A-Za-z0-9._-]` (a `/`, a space) is
+  /// replaced, so it can neither nest nor leave `root`.
   static func hermeticZDOTDIR(bundleID: String, in root: URL) -> URL {
-    root.appendingPathComponent("workroom-tests-zdotdir-\(bundleID)", isDirectory: true)
+    let component = String(
+      bundleID.map { $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) ? $0 : "_" })
+    return root.appendingPathComponent("workroom-tests-zdotdir-\(component)", isDirectory: true)
+  }
+
+  enum HermeticShellError: Error {
+    /// The folder's path is a symlink. `prepareHermeticZDOTDIR` deletes what it lists, so following
+    /// one would empty whatever directory it points at.
+    case folderIsSymlink(URL)
+    /// The path exists but is not a directory owned by this user, so it is not ours to empty.
+    case folderNotOurs(URL)
+    /// No bundle id, so there is no per-identity folder to use.
+    case missingBundleID
   }
 
   /// Make `directory` hold exactly one file, `.zshrc`. Everything else is removed first: Ghostty
   /// sources the redirected `.zshenv` (and zsh `.zprofile`/`.zlogin`), so a stray one left by an
   /// earlier run would execute on every later launch while every assertion still passed.
+  ///
+  /// The folder is shared by every launch of one bundle id, and a second launch can start while the
+  /// first is still setting up, so this tolerates an entry that vanishes mid-sweep and leaves an
+  /// `.zshrc` that is already correct alone: an atomic write goes through a temporary sibling that
+  /// the other launch's sweep could otherwise delete, failing its rename and crashing it.
   static func prepareHermeticZDOTDIR(at directory: URL) throws {
     let files = FileManager.default
-    try files.createDirectory(at: directory, withIntermediateDirectories: true)
-    for entry in try files.contentsOfDirectory(atPath: directory.path) where entry != ".zshrc" {
-      try files.removeItem(at: directory.appendingPathComponent(entry))
+    var info = stat()
+    if lstat(directory.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFLNK {
+      throw HermeticShellError.folderIsSymlink(directory)
     }
-    try Data(hermeticShellRC.utf8).write(
-      to: directory.appendingPathComponent(".zshrc"), options: .atomic)
+    try files.createDirectory(
+      at: directory, withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700])
+    // Look again at what is there NOW rather than trusting the check above: the path is predictable
+    // and the sweep below deletes what it lists. A directory of ours with a looser mode (an earlier
+    // version created it 0755) is tightened; anything else is not ours to empty.
+    guard lstat(directory.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR,
+      info.st_uid == geteuid()
+    else { throw HermeticShellError.folderNotOurs(directory) }
+    if info.st_mode & 0o077 != 0 {
+      try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    }
+    // `.zshrc*`, not just `.zshrc`: an atomic write in another launch of this bundle id goes through
+    // a temporary sibling with that prefix, and deleting it mid-write fails that launch's rename.
+    for entry in try files.contentsOfDirectory(atPath: directory.path)
+    where !entry.hasPrefix(".zshrc") {
+      do {
+        try files.removeItem(at: directory.appendingPathComponent(entry))
+      } catch let error as CocoaError where error.code == .fileNoSuchFile {
+        continue
+      }
+    }
+    // `.zshrc` is exempt from the sweep, so one that is not a regular file (a directory, a symlink
+    // to somewhere else) would stay: a directory fails the write on every launch, and a symlink is
+    // sourced as whatever it points at.
+    let rc = directory.appendingPathComponent(".zshrc")
+    var rcInfo = stat()
+    if lstat(rc.path, &rcInfo) == 0, (rcInfo.st_mode & S_IFMT) != S_IFREG {
+      try files.removeItem(at: rc)
+    }
+    let content = Data(hermeticShellRC.utf8)
+    if (try? Data(contentsOf: rc)) != content {
+      try content.write(to: rc, options: .atomic)
+    }
   }
 
   /// Point the process at a shell that has Ghostty's integration and none of the developer's rc
@@ -763,7 +833,8 @@ enum UITestFixture {
     set: (String, String) -> Void = { setenv($0, $1, 1) }
   ) throws -> Bool {
     guard enabled, active else { return false }
-    let directory = hermeticZDOTDIR(bundleID: bundleID ?? "unknown", in: root)
+    guard let bundleID else { throw HermeticShellError.missingBundleID }
+    let directory = hermeticZDOTDIR(bundleID: bundleID, in: root)
     try prepareHermeticZDOTDIR(at: directory)
     set("SHELL", hermeticShell)
     set("ZDOTDIR", directory.path)

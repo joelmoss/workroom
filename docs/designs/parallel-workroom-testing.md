@@ -153,11 +153,14 @@ per workroom; Xcode's build-database lock rejects a second concurrent build ther
   workroom opened in Xcode collides with the project checkout's dev app as before.
 - **TCC asks again per workroom.** macOS keys permissions to the signing identity, so a workroom's
   dev app prompts afresh for notifications, Automation or other apps' data the first time it needs
-  them. Fixture-mode tests mostly don't, but a fixture terminal runs your real login shell, and its
-  children are attributed to the app: a shell startup that touches a protected folder (Documents,
-  Desktop, iCloud Drive) can raise a prompt during a new workroom's first UI-test run. That is not
-  measured: it depends on what a developer's rc files do. If it happens, the run holds the GUI
-  session until it finishes, and the prompt waits for a person to answer it.
+  them. Fixture-mode tests mostly don't. A UI-test launch's terminals do run a login shell, and its
+  children are attributed to the app, but since #268 that shell is a hermetic zsh
+  (`UITestFixture.applyHermeticShell`: `SHELL=/bin/zsh`, a `ZDOTDIR` holding only a generated
+  `.zshrc`), so a developer's `~/.zshenv`, `~/.zprofile`, `~/.zshrc` and `~/.zlogin` are never read.
+  Before that, a shell startup that touched a protected folder (Documents, Desktop, iCloud Drive)
+  could raise a prompt during a new workroom's first UI-test run, holding the GUI session until a
+  person answered it; that was never measured, and it no longer applies to UI-test launches.
+  `PATH` is still developer-influenced, so this isolates startup files only.
 - **A workroom's session socket lives under `/tmp`.** Its longer bundle id pushes
   `Application Support/<id>/sessions/agent.sock` past `sun_path`'s 104 bytes, so
   `PersistentSessionPaths` uses its existing fallback, `/tmp/workroom-<uid>-<id>/`. The suffix is
