@@ -132,8 +132,8 @@ final class WorkroomPaneHeaderUITests: XCTestCase {
       menu.waitForExistence(timeout: 4), "the editor chooser should render beside the icon")
     menu.click()
 
-    // Existence, not `isHittable`: on macOS 27 an open `Menu`'s items are in the tree but report not
-    // hittable, which read as "no editors installed" and was never about the machine (#269).
+    // Existence, not `isHittable`: on macOS 27 an open `Menu`'s items are in the tree but report
+    // not hittable, which read as "no editors installed" and was never about the machine (#269).
     XCTAssertTrue(
       menu.menuItems.firstMatch.waitForExistence(timeout: 4),
       "the editor menu should list at least the installed editor")

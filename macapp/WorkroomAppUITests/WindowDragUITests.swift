@@ -79,7 +79,8 @@ final class WindowDragUITests: XCTestCase {
     // draggable bar background, not a chip or control.
     let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0))
       .withOffset(CGVector(dx: 0, dy: 3))
-    // `click(forDuration:thenDragTo:)`: the `press` form posts no mouse events on macOS 27 (#269).
+    // `click(forDuration:thenDragTo:)`: the `press` form posts no mouse events on macOS 27
+    // (#269).
     start.click(forDuration: 0.25, thenDragTo: start.withOffset(CGVector(dx: 120, dy: 0)))
 
     let after = window.frame
