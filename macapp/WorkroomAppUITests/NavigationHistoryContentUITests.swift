@@ -80,7 +80,9 @@ final class NavigationHistoryContentUITests: XCTestCase {
       "the first click should open Gemfile's diff in the pane")
     let chipsAfterFirst = tabChipCount(app)
 
-    fileRow(app, "app/models/user.rb").click()
+    let second = fileRow(app, "app/models/user.rb")
+    second.scrollIntoView(in: app)
+    second.click()
     XCTAssertTrue(
       paneShowingFile(app, "user.rb").waitForExistence(timeout: 10),
       "the second click should retarget the pane to user.rb")
