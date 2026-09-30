@@ -375,6 +375,8 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   `ZDOTDIR` in `init` (a hermetic zsh with Ghostty's integration and none of the developer's rc
   files, #268), and the launch probe is skipped. The on-demand `refresh()` calls in `WorkroomCLI`
   and `NewWorkroomDialog` still run there, against that hermetic shell, so `PATH` stays the floor.
+  A `fixture: false` UI launch (`WorkroomWorkflowUITests`, real projects) is hermetic too: its run tabs
+  no longer see rc-only `PATH` entries.
 - **Menu enable/disable must flow through `focusedSceneValue` + `@FocusedValue`**
   (see `WorkroomApp.swift`); a `Commands` body does not re-evaluate when the shared
   `AppStore` mutates. ⌘1–9 are handled by an `NSEvent` local monitor in `AppDelegate`,

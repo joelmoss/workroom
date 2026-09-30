@@ -104,7 +104,11 @@ final class UITestFixtureHermeticShellTests: XCTestCase {
     let path = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.test", in: root)
     try Data("not a directory".utf8).write(to: path)
 
-    XCTAssertThrowsError(try apply())
+    XCTAssertThrowsError(try apply()) { error in
+      guard case .folderNotOurs = error as? UITestFixture.HermeticShellError else {
+        return XCTFail("expected folderNotOurs, got \(error)")
+      }
+    }
     XCTAssertEqual(try String(contentsOf: path, encoding: .utf8), "not a directory")
   }
 
@@ -186,6 +190,62 @@ final class UITestFixtureHermeticShellTests: XCTestCase {
     XCTAssertThrowsError(try apply(bundleID: nil))
   }
 
+  /// zsh sources `.zshrc.zwc` INSTEAD of `.zshrc` when it is newer, so a stray compiled file would
+  /// run on every launch while the generated `.zshrc` (and every assertion on it) looked right.
+  func testAStrayCompiledZshrcIsRemoved() throws {
+    let directory = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.test", in: root)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try Data("compiled".utf8).write(to: directory.appendingPathComponent(".zshrc.zwc"))
+
+    _ = try apply()
+
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: directory.appendingPathComponent(".zshrc.zwc").path))
+  }
+
+  /// The `.zshrc*` exemption exists so another launch's in-flight atomic-write temp file survives
+  /// the sweep. Pinned so narrowing it to `== ".zshrc"` cannot go unnoticed.
+  func testAnotherLaunchsTemporaryZshrcSiblingSurvivesTheSweep() throws {
+    let directory = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.test", in: root)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let sibling = directory.appendingPathComponent(".zshrc.tmp-in-flight")
+    try Data("x".utf8).write(to: sibling)
+
+    _ = try apply()
+
+    XCTAssertTrue(FileManager.default.fileExists(atPath: sibling.path))
+  }
+
+  /// A stray symlink entry (`.zshenv -> somewhere`) is removed, never followed.
+  func testAStrayStartupFileSymlinkIsRemovedWithoutFollowingIt() throws {
+    let files = FileManager.default
+    let directory = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.test", in: root)
+    try files.createDirectory(at: directory, withIntermediateDirectories: true)
+    let target = root.appendingPathComponent("outside.zsh")
+    try Data("keep".utf8).write(to: target)
+    try files.createSymbolicLink(
+      at: directory.appendingPathComponent(".zshenv"), withDestinationURL: target)
+
+    _ = try apply()
+
+    XCTAssertNil(try? files.destinationOfSymbolicLink(atPath: directory.path + "/.zshenv"))
+    XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), "keep")
+  }
+
+  /// Too strict is as unusable as too loose: the sweep or the write would fail on every launch.
+  func testAnOwnedFolderThatIsTooStrictIsRepaired() throws {
+    let files = FileManager.default
+    let directory = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.test", in: root)
+    try files.createDirectory(
+      at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o500])
+
+    _ = try apply()
+
+    let mode = try XCTUnwrap(
+      files.attributesOfItem(atPath: directory.path)[.posixPermissions] as? Int)
+    XCTAssertEqual(mode & 0o777, 0o700)
+  }
+
   func testEachBundleIDGetsItsOwnFolder() throws {
     let first = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.one", in: root)
     let second = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.two", in: root)
@@ -208,7 +268,8 @@ final class UITestFixtureHermeticShellTests: XCTestCase {
 
   /// Run an interactive `/bin/zsh` on `echo hi; exit` with `directory` as `ZDOTDIR`, and fail rather
   /// than hang if it does not come back.
-  private func runInteractiveZsh(zdotdir directory: URL) throws {
+  @discardableResult
+  private func runInteractiveZsh(zdotdir directory: URL) throws -> (status: Int32, output: String) {
     let timeout: TimeInterval = 20
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -218,7 +279,8 @@ final class UITestFixtureHermeticShellTests: XCTestCase {
     ]
     let stdin = Pipe()
     process.standardInput = stdin
-    process.standardOutput = FileHandle.nullDevice
+    let output = Pipe()
+    process.standardOutput = output
     process.standardError = FileHandle.nullDevice
     let exited = DispatchSemaphore(value: 0)
     process.terminationHandler = { _ in exited.signal() }
@@ -233,6 +295,10 @@ final class UITestFixtureHermeticShellTests: XCTestCase {
       _ = exited.wait(timeout: .now() + 5)
       XCTFail("zsh did not exit within \(Int(timeout))s")
     }
+    let text =
+      String(
+        data: (try? output.fileHandleForReading.readToEnd()) ?? Data(), encoding: .utf8) ?? ""
+    return (process.terminationStatus, text)
   }
 
   /// The rc's one job, against the real zsh: a session run with the prepared folder as `ZDOTDIR`
@@ -241,8 +307,12 @@ final class UITestFixtureHermeticShellTests: XCTestCase {
     let directory = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.test", in: root)
     try UITestFixture.prepareHermeticZDOTDIR(at: directory)
 
-    try runInteractiveZsh(zdotdir: directory)
+    let run = try runInteractiveZsh(zdotdir: directory)
 
+    // The session has to have RUN: a zsh that died at startup would leave the folder untouched and
+    // make the assertion below pass without proving anything.
+    XCTAssertEqual(run.status, 0)
+    XCTAssertTrue(run.output.contains("hi"), "the zsh session did not run its command")
     XCTAssertEqual(
       try FileManager.default.contentsOfDirectory(atPath: directory.path), [".zshrc"],
       "zsh wrote something into the hermetic ZDOTDIR")
@@ -271,5 +341,8 @@ final class UITestFixtureHermeticShellTests: XCTestCase {
     XCTAssertFalse(
       UITestFixture.runsLaunchShellProbe(
         environment: ["XCTestConfigurationFilePath": "/x.xctestconfiguration"], isUILaunch: false))
+    XCTAssertFalse(
+      UITestFixture.runsLaunchShellProbe(
+        environment: ["XCTestConfigurationFilePath": "/x.xctestconfiguration"], isUILaunch: true))
   }
 }
