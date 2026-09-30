@@ -53,18 +53,12 @@ struct WorkroomApp: App {
     // Detached so launch never waits on someone's dotfiles; the floor above holds
     // until it lands, and holds permanently if the probe fails.
     //
-    // Not under XCTest: the test bundle is hosted by this app, so this would spawn
-    // a real login shell that lands at an arbitrary point and overwrites the cache
-    // mid-test — `ShellEnvironmentTests` drives the probe against stub shells and
-    // needs the cache to hold only what it put there.
-    //
-    // Not in a UI-test launch either: the probe runs `$SHELL -ilc`, one of the two ways a test
-    // would execute the developer's rc files (the other is a terminal — see
-    // `applyHermeticShell` above). Skipping it removes that path outright instead of relying on
-    // the `setenv` above landing first, and UI-test launches keep the PATH floor.
-    if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
-      && !UITestFixture.isUILaunch
-    {
+    // Skipped in hosted unit runs and in UI-test launches: see `runsLaunchShellProbe`, which
+    // carries both reasons. Only the LAUNCH probe is skipped in a UI-test launch: `WorkroomCLI`
+    // (create/remove/scripts) and `NewWorkroomDialog` still call `refresh()` on demand, under the
+    // `SHELL`/`ZDOTDIR` set above, so they read no developer rc files either — which is why that
+    // `setenv` must land before anything can call `refresh()`.
+    if UITestFixture.runsLaunchShellProbe() {
       Task.detached(priority: .utility) { await ShellEnvironment.refresh() }
     }
 

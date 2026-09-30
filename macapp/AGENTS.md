@@ -370,7 +370,11 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   `runBlocking` call and would leak a shell per invocation. `setenv("PATH", …)` happens exactly once,
   in `WorkroomApp.init` — a later write would race the status sweep's `ProcessInfo.environment`
   reads. Everything else reads `ShellEnvironment.path()` (PATH only, for the automatic sweep) or
-  `.environment()` (the full environment, for setup/teardown scripts).
+  `.environment()` (the full environment, for setup/teardown scripts). **UI-test launches** are the
+  exception to "one `setenv`, PATH only": `UITestFixture.applyHermeticShell()` also sets `SHELL` and
+  `ZDOTDIR` in `init` (a hermetic zsh with Ghostty's integration and none of the developer's rc
+  files, #268), and the launch probe is skipped. The on-demand `refresh()` calls in `WorkroomCLI`
+  and `NewWorkroomDialog` still run there, against that hermetic shell, so `PATH` stays the floor.
 - **Menu enable/disable must flow through `focusedSceneValue` + `@FocusedValue`**
   (see `WorkroomApp.swift`); a `Commands` body does not re-evaluate when the shared
   `AppStore` mutates. ⌘1–9 are handled by an `NSEvent` local monitor in `AppDelegate`,

@@ -63,22 +63,30 @@ final class TerminalHermeticShellUITests: XCTestCase {
       .firstMatch
     XCTAssertTrue(surface.waitForExistence(timeout: 10))
 
-    // The typed text contains `$ZDOTDIR` and `$(whence …)`; only the OUTPUT has them expanded, so
-    // waiting for `WRPRE=[_ghostty` cannot match the echoed command line.
+    // Three short lines, none of which the echoed command line can satisfy: the output has `$?`,
+    // `$SHELL` and `whence` expanded (`WRZ=0` is the exit status of the ZDOTDIR match), and
+    // `_ghostty_precmd: ` (colon, space) is not in the typed text. Short
+    // lines because a long one soft-wraps in a narrow pane and splits a needle across rows, and no
+    // `:` in what is typed: XCUITest delivers it to the pane as a garbled escape sequence (`${X:t}`
+    // arrived as `${X8;5ut}`).
     app.typeText(
-      "echo \"WRZ=[$ZDOTDIR] WRS=[$SHELL] WRPRE=[$(whence -w _ghostty_precmd)]\"\r")
-    let result = waitForScreen(surface, containing: "WRPRE=[_ghostty")
+      "[[ $ZDOTDIR == */workroom-tests-zdotdir-* ]]; echo WRZ=$?; "
+        + "echo WRS=$SHELL; whence -w _ghostty_precmd\r")
+    let result = waitForScreen(surface, containing: "_ghostty_precmd: ")
     XCTAssertTrue(result.found, "the probe produced no output. Screen was:\n\(result.screen)")
 
     XCTAssertTrue(
-      result.screen.contains("workroom-tests-zdotdir-"),
+      result.screen.contains("WRZ=0"),
       """
       $ZDOTDIR was not the hermetic folder, so this pane read the developer's real rc files. \
       Screen was:
       \(result.screen)
       """)
+    // Not red-capable on a machine whose login shell already is /bin/zsh (most Macs): the app
+    // inherits that SHELL whether or not `applyHermeticShell` set it. `WRZ=0` and
+    // `_ghostty_precmd: function` are the assertions that go red without the seam.
     XCTAssertTrue(
-      result.screen.contains("WRS=[/bin/zsh]"),
+      result.screen.contains("WRS=/bin/zsh"),
       "the pane's shell was not the hermetic /bin/zsh. Screen was:\n\(result.screen)")
     XCTAssertTrue(
       result.screen.contains("_ghostty_precmd: function"),
