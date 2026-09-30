@@ -14,8 +14,9 @@ Copilot) keeps the long-lived part of the credential on its own server. The sand
 
 None of them asks for admin per sandbox, and none of them uses deploy keys as a primary path (Anthropic's
 self-hosted guide lists a read-only deploy key only as an image-level fallback). Where there is a GitHub
-App, admin shows up exactly once: an org owner installs it. After that every writer gets a token that acts as them,
-limited to what both the user and the App are allowed to do.
+App that issues user access tokens, admin shows up exactly once: an org owner installs it. After that every
+writer gets a token that acts as them, limited to what both the user and the App are allowed to do.
+Installation tokens instead act as the App's own bot identity.
 
 **That GitHub App does not remove the admin dependency. It amortises it.** A deploy key needs repo admin
 for every workroom, forever. A GitHub App needs an org owner, or a repo admin for that repo, once per org. A
@@ -489,8 +490,8 @@ App key, and `wr-agent`'s helper asks it for a short-lived token authenticated b
 It removes B's costs, namely per-workroom approval, the VM-held refresh token and the missing revocation.
 It can narrow tokens to one repo, either with installation tokens or, if that endpoint turns out to need
 the client secret, with `token/scoped`. It is a product change: Workroom would operate an always-on
-service holding users' GitHub credentials. Not recommended now; it is the upgrade path if B's friction
-proves unacceptable.
+service holding users' GitHub credentials. This analysis was written before the decision: the owner chose D
+on 2026-09-27 as the sole OQ20 path, and B is superseded (see OQ20 in `remote-workrooms.md`).
 
 **Rejected.**
 
