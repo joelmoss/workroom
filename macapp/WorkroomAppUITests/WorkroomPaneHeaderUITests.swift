@@ -132,8 +132,11 @@ final class WorkroomPaneHeaderUITests: XCTestCase {
       menu.waitForExistence(timeout: 4), "the editor chooser should render beside the icon")
     menu.click()
 
-    let items = app.menuItems.allElementsBoundByIndex.filter { $0.isHittable }
-    XCTAssertFalse(items.isEmpty, "the editor menu should list at least the installed editor")
+    // Existence, not `isHittable`: on macOS 27 an open `Menu`'s items are in the tree but report not
+    // hittable, which read as "no editors installed" and was never about the machine (#269).
+    XCTAssertTrue(
+      menu.menuItems.firstMatch.waitForExistence(timeout: 4),
+      "the editor menu should list at least the installed editor")
     app.typeKey(.escape, modifierFlags: [])
   }
 
@@ -163,7 +166,7 @@ final class WorkroomPaneHeaderUITests: XCTestCase {
     let bar = titlebars(app).firstMatch
     XCTAssertTrue(bar.waitForExistence(timeout: 8))
     let from = bar.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5))
-    from.press(forDuration: 0.2, thenDragTo: from.withOffset(CGVector(dx: 0, dy: 120)))
+    from.click(forDuration: 0.2, thenDragTo: from.withOffset(CGVector(dx: 0, dy: 120)))
 
     assertCount(titlebars(app), reaches: 1)
     XCTAssertFalse(

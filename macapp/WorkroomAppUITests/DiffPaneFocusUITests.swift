@@ -95,7 +95,9 @@ final class DiffPaneFocusUITests: XCTestCase {
     XCTAssertTrue(termChip.waitForExistence(timeout: 6), "the launch terminal's tab chip")
     let diff = diffPane(app, "user.rb")
     XCTAssertTrue(diff.waitForExistence(timeout: 6), "the diff pane should render solo first")
-    termChip.press(forDuration: 0.4, thenDragTo: diff)
+    // `click(forDuration:thenDragTo:)`, not `press(...)`: on macOS 27 `press` posts no mouse events at
+    // all from an element, so nothing drags and nothing says why (#269).
+    termChip.click(forDuration: 0.4, thenDragTo: diff)
     assertCount(panes(app), reaches: 2)
 
     let terminal = terminalPane(app)

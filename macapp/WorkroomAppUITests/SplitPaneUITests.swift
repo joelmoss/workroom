@@ -72,7 +72,7 @@ final class SplitPaneUITests: XCTestCase {
     let current = tabs(app).element(boundBy: initial - 1)
     let pane = panes(app).firstMatch
     current.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-      .press(
+      .click(
         forDuration: 0.1,
         thenDragTo: pane.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)))
     assertCount(panes(app), reaches: 2)
