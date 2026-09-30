@@ -828,9 +828,10 @@ final class AppStore: ObservableObject {
   /// overlay the surfaces under test.
   ///
   /// Also inert under XCTest — `apply` runs in dozens of unit tests, and each would otherwise spawn a
-  /// real `git --version` and mutate the process-wide cache. Same guard, and the same reason, as the
-  /// `ShellEnvironment.refresh()` skip in `WorkroomApp.init`. `VCSToolVersionsTests` drives the probe
-  /// directly with a stub runner.
+  /// real `git --version` and mutate the process-wide cache. The same reason as the hosted-unit-run
+  /// half of the `ShellEnvironment.refresh()` skip in `WorkroomApp.init` (`runsLaunchShellProbe`),
+  /// which also skips a `fixture: false` UI launch; this one does not. `VCSToolVersionsTests` drives
+  /// the probe directly with a stub runner.
   func refreshVCSToolReport() {
     guard !UITestFixture.isActive,
       ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil

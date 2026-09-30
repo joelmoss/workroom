@@ -699,7 +699,7 @@ enum UITestFixture {
   }
 
   /// The `XCTestConfigurationFilePath` signal: set in a hosted unit process, never in an app
-  /// launched by XCUITest. The one place that key is spelled inside this file.
+  /// launched by XCUITest. Not `enabled`-gated, unlike `isTestProcess`.
   static func isHostedUnitRun(
     environment: [String: String] = ProcessInfo.processInfo.environment
   ) -> Bool {
@@ -707,7 +707,9 @@ enum UITestFixture {
   }
 
   /// Whether this is an app launched **by a UI test** (a fixture launch, or a `fixture: false`
-  /// launch that still isolates preferences). Narrower than `isTestProcess`, which also answers
+  /// launch that still isolates preferences). The latter loads the developer's REAL projects (the
+  /// real-bootstrap smoke test) and is deliberately hermetic too: its run tabs no longer see rc-only
+  /// `PATH` entries. Narrower than `isTestProcess`, which also answers
   /// true for a hosted unit run — `WorkroomApp` skips the shell probe there for its own reason, and
   /// `ShellEnvironmentTests` needs the process environment left alone.
   static var isUILaunch: Bool { isActive || isolatesPreferences }
@@ -758,41 +760,47 @@ enum UITestFixture {
     case missingBundleID
   }
 
-  /// Make `directory` hold exactly one file, `.zshrc`. Everything else is removed first: Ghostty
-  /// sources the redirected `.zshenv` (and zsh `.zprofile`/`.zlogin`), so a stray one left by an
-  /// earlier run would execute on every later launch while every assertion still passed.
+  /// The mode of the hermetic folder: only this user, so nothing else can plant a startup file.
+  private static let hermeticFolderMode = 0o700
+
+  /// Make `directory` hold the generated `.zshrc` and nothing else zsh would source. Everything
+  /// except `.zshrc*` is removed first: Ghostty sources the redirected `.zshenv` (and zsh
+  /// `.zprofile`/`.zlogin`), so a stray one left by an earlier run would execute on every later
+  /// launch while every assertion still passed. `.zshrc.zwc` is removed too, though it starts with
+  /// `.zshrc`: zsh sources a newer compiled file INSTEAD of `.zshrc`.
   ///
   /// The folder is shared by every launch of one bundle id, and a second launch can start while the
-  /// first is still setting up, so this tolerates an entry that vanishes mid-sweep and leaves an
-  /// `.zshrc` that is already correct alone: an atomic write goes through a temporary sibling that
-  /// the other launch's sweep could otherwise delete, failing its rename and crashing it.
+  /// first is still setting up. So the sweep keeps any other `.zshrc*` name (an atomic write goes
+  /// through a temporary sibling, which the other launch's sweep would otherwise delete and fail
+  /// its rename), tolerates an entry that vanishes mid-sweep, and leaves an `.zshrc` that is already
+  /// correct alone.
   static func prepareHermeticZDOTDIR(at directory: URL) throws {
     let files = FileManager.default
     var info = stat()
-    if lstat(directory.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFLNK {
-      throw HermeticShellError.folderIsSymlink(directory)
+    if lstat(directory.path, &info) == 0 {
+      switch info.st_mode & S_IFMT {
+      case S_IFLNK: throw HermeticShellError.folderIsSymlink(directory)
+      case S_IFDIR: break
+      default: throw HermeticShellError.folderNotOurs(directory)  // a file, a FIFO...
+      }
     }
     try files.createDirectory(
       at: directory, withIntermediateDirectories: true,
-      attributes: [.posixPermissions: 0o700])
+      attributes: [.posixPermissions: hermeticFolderMode])
     // Look again at what is there NOW rather than trusting the check above: the path is predictable
-    // and the sweep below deletes what it lists. A directory of ours with a looser mode (an earlier
-    // version created it 0755) is tightened; anything else is not ours to empty.
+    // and the sweep below deletes what it lists. A directory of ours with another mode (an earlier
+    // version created it 0755; 0500 would fail the sweep on every launch) is reset; anything else
+    // is not ours to empty.
     guard lstat(directory.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR,
       info.st_uid == geteuid()
     else { throw HermeticShellError.folderNotOurs(directory) }
-    if info.st_mode & 0o077 != 0 {
-      try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    if Int(info.st_mode & 0o777) != hermeticFolderMode {
+      try files.setAttributes(
+        [.posixPermissions: hermeticFolderMode], ofItemAtPath: directory.path)
     }
-    // `.zshrc*`, not just `.zshrc`: an atomic write in another launch of this bundle id goes through
-    // a temporary sibling with that prefix, and deleting it mid-write fails that launch's rename.
     for entry in try files.contentsOfDirectory(atPath: directory.path)
-    where !entry.hasPrefix(".zshrc") {
-      do {
-        try files.removeItem(at: directory.appendingPathComponent(entry))
-      } catch let error as CocoaError where error.code == .fileNoSuchFile {
-        continue
-      }
+    where !entry.hasPrefix(".zshrc") || entry == ".zshrc.zwc" {
+      try removeTolerantOfVanishing(directory.appendingPathComponent(entry))
     }
     // `.zshrc` is exempt from the sweep, so one that is not a regular file (a directory, a symlink
     // to somewhere else) would stay: a directory fails the write on every launch, and a symlink is
@@ -800,11 +808,20 @@ enum UITestFixture {
     let rc = directory.appendingPathComponent(".zshrc")
     var rcInfo = stat()
     if lstat(rc.path, &rcInfo) == 0, (rcInfo.st_mode & S_IFMT) != S_IFREG {
-      try files.removeItem(at: rc)
+      try removeTolerantOfVanishing(rc)
     }
     let content = Data(hermeticShellRC.utf8)
     if (try? Data(contentsOf: rc)) != content {
       try content.write(to: rc, options: .atomic)
+    }
+  }
+
+  /// `removeItem`, except that an entry another launch removed first is not an error.
+  private static func removeTolerantOfVanishing(_ url: URL) throws {
+    do {
+      try FileManager.default.removeItem(at: url)
+    } catch let error as CocoaError where error.code == .fileNoSuchFile {
+      return
     }
   }
 

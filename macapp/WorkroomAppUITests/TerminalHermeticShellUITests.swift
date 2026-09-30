@@ -6,7 +6,7 @@ import XCTest
 /// `UITestFixtureHermeticShellTests` pins the seam's decisions in a unit test; this is the only
 /// place that can see what an actual pane received. It also carries the check that goes red when
 /// the seam stops working: with `WorkroomApp.init`'s `applyHermeticShell()` call removed, `$ZDOTDIR`
-/// is empty here and the first assertion fails.
+/// is empty here and the `WRZ=0` assertion fails.
 ///
 /// Metal-rendered surfaces are invisible to XCUITest, so assertions read `terminal.surface`'s
 /// fixture-only accessibility value (the visible viewport — see
@@ -65,10 +65,10 @@ final class TerminalHermeticShellUITests: XCTestCase {
 
     // Three short lines, none of which the echoed command line can satisfy: the output has `$?`,
     // `$SHELL` and `whence` expanded (`WRZ=0` is the exit status of the ZDOTDIR match), and
-    // `_ghostty_precmd: ` (colon, space) is not in the typed text. Short
-    // lines because a long one soft-wraps in a narrow pane and splits a needle across rows, and no
-    // `:` in what is typed: XCUITest delivers it to the pane as a garbled escape sequence (`${X:t}`
-    // arrived as `${X8;5ut}`).
+    // `_ghostty_precmd: ` (colon, space) is not in the typed text. Short lines, because a long one
+    // soft-wraps in a narrow pane and splits a needle across rows; and no `:` in what is typed,
+    // because XCUITest delivers it to the pane as a garbled escape sequence (`${X:t}` arrived as
+    // `${X8;5ut}`).
     app.typeText(
       "[[ $ZDOTDIR == */workroom-tests-zdotdir-* ]]; echo WRZ=$?; "
         + "echo WRS=$SHELL; whence -w _ghostty_precmd\r")
