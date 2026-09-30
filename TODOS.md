@@ -2189,6 +2189,15 @@ four, so the pre-release run this suite exists for has to be read past a dozen k
 real regression is visible — which is the cost this entry warned about, now tripled. Every fresh red
 has to be bisected against master by hand to tell it from the standing set, as #261's was.
 
+**Diff-tab group resolved (2026-09-30, #269):** the cause was the fixture window's height, not macOS 27
+and not the click. The Changes panel shares the window with History and Pull Request, so its scroll
+view is about 190pt tall and the fourth file row (`user.rb`) sits below the visible area. XCUITest
+reports the row as existing and hittable, and the click lands on whatever is at those coordinates:
+the row's `onTapGesture` and `onHover` never fired (logged), while the app itself opens the diff on a
+real click. `XCUIElement.scrollIntoView(in:)` (`XCUIElement+Reveal.swift`) now scrolls the row into the
+scroll view first; all eight tests pass. Other tests that click a row below the third are exposed to
+the same thing. The drag group is still open.
+
 **How to start:** check whether `press(forDuration:thenDragTo:)` registers at all on macOS 27. A
 one-line drag in a scratch UI test is enough. If it does not, drive the drag with explicit
 `XCUICoordinate` moves. For the editor menu, stub the installed-editor lookup in `UITestFixture` so

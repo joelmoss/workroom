@@ -171,6 +171,7 @@ final class TerminalAgentUITests: XCTestCase {
     let app = launchedApp(runCommand: "true")
     let row = app.descendants(matching: .any)["changes.file.app/models/user.rb"]
     XCTAssertTrue(row.waitForExistence(timeout: 15), "a changed-file row renders")
+    row.scrollIntoView(in: app)
     row.click()
     XCTAssertTrue(
       app.descendants(matching: .any).matching(identifier: "terminal.tab.user.rb").firstMatch

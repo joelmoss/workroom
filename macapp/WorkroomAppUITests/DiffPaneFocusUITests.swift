@@ -82,6 +82,7 @@ final class DiffPaneFocusUITests: XCTestCase {
     // Open a persisted diff tab (double-click skips preview so it survives).
     let row = element(app, id: "changes.file.app/models/user.rb")
     XCTAssertTrue(row.waitForExistence(timeout: 10), "a working-copy file row should render")
+    row.scrollIntoView(in: app)
     row.doubleClick()
     XCTAssertTrue(
       element(app, id: "terminal.tab.user.rb").waitForExistence(timeout: 6),
