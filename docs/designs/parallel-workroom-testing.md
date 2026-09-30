@@ -1,8 +1,8 @@
 # Design: testing the app from several workrooms at once
 
-Branch: claude/parallel-workroom-tests-31ovb0
 Repo: joelmoss/workroom
-Status: host-side isolation IMPLEMENTED (below); a VM per UI-test run PROPOSED, not built
+Status: host-side isolation IMPLEMENTED on master (13202838); a VM per UI-test run PROPOSED, not
+built
 
 ## The problem
 
@@ -81,7 +81,7 @@ recognising rather than chasing.
   `Workroom/<bundle id>/ghostty.conf` (`GhosttyApp.defaultThemeConfigURL`), a test process gets a
   per-pid file of its own, and `ThemePickerUITests` names the file it wants with
   `-WorkroomUITestGhosttyConfigFile` instead of computing a path. Two processes sharing ONE bundle
-  id can still interleave their write and load; see issue #264.
+  id can still interleave their write and load; accepted as-is (issue #264, closed wontfix).
 - `ShellEnvironmentTests.testProbeTimesOutAndKillsTheChild` ran `pgrep -f wedged-shell` against the
   whole machine, so it could find the same test's stub from another checkout's run.
 
@@ -167,9 +167,9 @@ per workroom; Xcode's build-database lock rejects a second concurrent build ther
   capped so that path always fits (`dev-identity.sh`).
 - ~~**`ghostty.conf` is still one file for every identity.**~~ **Done in #262**, both halves of the
   follow-up this listed: it is keyed by bundle id, and `ThemePickerUITests` is handed its path
-  rather than computing one. What remains is narrower and tracked as issue #264 — two processes
-  under the SAME bundle id (two copies of one workroom's dev app) can still interleave a write and
-  a load. Transient and self-healing on the next theme apply.
+  rather than computing one. What remains is narrower and accepted rather than fixed (issue #264,
+  closed wontfix): two processes under the SAME bundle id (two copies of one workroom's dev app)
+  can still interleave a write and a load. Transient and self-healing on the next theme apply.
 - **`WorkroomWorkflowUITests.testAppLaunchesWithChrome`** launches without fixture mode and reads
   and writes the real session file of its identity (`SessionStore.forCurrentEnvironment` checks
   only `isActive`). Now contained to the identity of the checkout that runs it; still worth closing.
