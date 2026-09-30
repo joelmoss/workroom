@@ -1026,18 +1026,19 @@ mod tests {
             frame.kind
         };
 
+        // The biggest list that fits is the smaller of the frame cap and what the envelope leaves
+        // after the frame's five-byte header, whichever way round the two caps are.
+        let fits = MAX_PAYLOAD_SIZE.min(MAX_ENVELOPE_PAYLOAD - HEADER_SIZE);
+
         assert_eq!(sent(encode_descriptor_list(&[])), FrameKind::Sessions);
-        // The biggest list that fits: the frame's header takes five of the envelope's bytes.
-        assert_eq!(
-            sent(vec![0u8; MAX_ENVELOPE_PAYLOAD - HEADER_SIZE]),
-            FrameKind::Sessions
-        );
+        assert_eq!(sent(vec![0u8; fits]), FrameKind::Sessions);
         // And the refusal must itself be sendable, which is the whole point.
+        assert_eq!(sent(vec![0u8; fits + 1]), FrameKind::Failure);
+        // Exactly `MAX_PAYLOAD_SIZE` is what panicked before the fix (#246).
         assert_eq!(
-            sent(vec![0u8; MAX_ENVELOPE_PAYLOAD - HEADER_SIZE + 1]),
-            FrameKind::Failure
+            sent(vec![0u8; MAX_PAYLOAD_SIZE]) == FrameKind::Failure,
+            MAX_PAYLOAD_SIZE > fits
         );
-        assert_eq!(sent(vec![0u8; MAX_PAYLOAD_SIZE]), FrameKind::Failure);
         assert_eq!(sent(vec![0u8; MAX_PAYLOAD_SIZE + 1]), FrameKind::Failure);
     }
 
