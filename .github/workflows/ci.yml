@@ -230,15 +230,11 @@ jobs:
       # Pinned by version AND checksum. An unpinned toolchain would silently change the emulator
       # this links, and the snapshot format it produces carries no compatibility guarantee.
       - name: Install Zig
-        env:
-          ZIG_VERSION: "0.16.0"
-          ZIG_SHA256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
-        run: |
-          url="https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          curl -fsSL "$url" -o zig.tar.xz
-          echo "${ZIG_SHA256}  zig.tar.xz" | sha256sum -c -
-          mkdir -p "$HOME/.zig" && tar -xJf zig.tar.xz -C "$HOME/.zig" --strip-components=1
-          echo "$HOME/.zig" >> "$GITHUB_PATH"
+        uses: ./.github/actions/install-zig
+        with:
+          version: "0.16.0"
+          archive: x86_64-linux
+          sha256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
 
       # Keyed on the pinned engine sha, so a bump refetches and rebuilds and nothing else does.
       # Without this every run clones Ghostty and spends ~75s building the emulator.
@@ -290,15 +286,11 @@ jobs:
       # Pinned by version AND checksum, as in `agent-terminal-state`. cargo-zigbuild links with it
       # and libghostty-vt is built with it.
       - name: Install Zig
-        env:
-          ZIG_VERSION: "0.16.0"
-          ZIG_SHA256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
-        run: |
-          url="https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-          curl -fsSL "$url" -o zig.tar.xz
-          echo "${ZIG_SHA256}  zig.tar.xz" | sha256sum -c -
-          mkdir -p "$HOME/.zig" && tar -xJf zig.tar.xz -C "$HOME/.zig" --strip-components=1
-          echo "$HOME/.zig" >> "$GITHUB_PATH"
+        uses: ./.github/actions/install-zig
+        with:
+          version: "0.16.0"
+          archive: x86_64-linux
+          sha256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
 
       # Its own key per arch. Sharing `agent-terminal-state`'s key would restore that job's glibc
       # prefix, count as a hit, never save the musl one, and rebuild it on every run.
@@ -313,12 +305,22 @@ jobs:
           workspaces: vcs
           key: ${{ env.TARGET }}
 
-      - name: Install cargo-zigbuild and qemu
-        run: |
-          cargo install cargo-zigbuild --locked --version 0.23.4
-          if [ "${{ matrix.arch }}" = aarch64 ]; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
-          fi
+      # `cargo install` compiles cargo-zigbuild from source on every run; the binary is all that is
+      # installed, so cache it on the pinned version.
+      - name: Cache cargo-zigbuild
+        id: zigbuild
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-zigbuild
+          key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-0.23.4
+
+      - name: Install cargo-zigbuild
+        if: steps.zigbuild.outputs.cache-hit != 'true'
+        run: cargo install cargo-zigbuild --locked --version 0.23.4
+
+      - name: Install qemu
+        if: matrix.arch == 'aarch64'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
 
       - name: Build
         run: |
@@ -411,15 +413,11 @@ jobs:
       # this runner too, pinned by version AND checksum for the same reason the Linux agent job
       # pins it: an unpinned toolchain silently changes the emulator the app ships against.
       - name: Install Zig
-        env:
-          ZIG_VERSION: "0.16.0"
-          ZIG_SHA256: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
-        run: |
-          url="https://ziglang.org/download/${ZIG_VERSION}/zig-aarch64-macos-${ZIG_VERSION}.tar.xz"
-          curl -fsSL "$url" -o zig.tar.xz
-          echo "${ZIG_SHA256}  zig.tar.xz" | shasum -a 256 -c -
-          mkdir -p "$HOME/.zig" && tar -xJf zig.tar.xz -C "$HOME/.zig" --strip-components=1
-          echo "$HOME/.zig" >> "$GITHUB_PATH"
+        uses: ./.github/actions/install-zig
+        with:
+          version: "0.16.0"
+          archive: aarch64-macos
+          sha256: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
 
       # Keyed on the pinned engine sha, as in `agent-terminal-state`: a bump refetches and
       # rebuilds, nothing else does.
@@ -562,6 +560,46 @@ jobs:
       - name: Test (run-command supervisor)
         run: make app-test-supervisor
 
+  # The script tests run beside `app` rather than at the end of it: they were 920-1060s of a ~2400s
+  # job and need none of its Xcode build, so on a separate runner the two chains overlap and the
+  # slower one sets the wall time. `app` still runs `make app-test-supervisor` and the unit tests.
+  app-scripts:
+    needs: changes
+    if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      # build-helper_test.sh cross-compiles the workroom CLI.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # protobuf provides protoc, a build-time dependency of jj-lib in the vcs workspace.
+      - name: Install protobuf
+        run: |
+          brew untap aws/tap
+          brew install protobuf
+
+      - name: Install Zig
+        uses: ./.github/actions/install-zig
+        with:
+          version: "0.16.0"
+          archive: aarch64-macos
+          sha256: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
+
+      - name: Cache libghostty-vt
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/workroom/ghostty-vt
+          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+
+      - name: Cache cargo (agent)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vcs
+          key: app-scripts
+
       # `build-agent_test.sh`'s universal cases need BOTH darwin targets installed and skip
       # themselves otherwise — and the step still prints OK, so the skip is invisible. Measured on
       # run 34783566140: "SKIP universal cases (rustup targets not installed)" followed by
@@ -580,11 +618,23 @@ jobs:
       # The musl targets and cargo-zigbuild are the same gap for the Linux agents (#227): without
       # them the Linux case skips, and build-agent.sh's Linux branch would first run on a nightly.
       # `agent-linux` does not cover it, because it calls `cargo zigbuild` directly.
-      - name: Install cross targets (for the universal-arch and Linux-agent script tests)
+      - name: Add rustup targets (for the universal-arch and Linux-agent script tests)
         run: |
           rustup target add --toolchain stable x86_64-apple-darwin aarch64-apple-darwin \
             aarch64-unknown-linux-musl x86_64-unknown-linux-musl
-          cargo install cargo-zigbuild --locked --version 0.23.4
+
+      # `cargo install` compiles cargo-zigbuild from source on every run (~1 minute). The binary is
+      # all that is installed, so cache it on the pinned version.
+      - name: Cache cargo-zigbuild
+        id: zigbuild
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-zigbuild
+          key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-0.23.4
+
+      - name: Install cargo-zigbuild
+        if: steps.zigbuild.outputs.cache-hit != 'true'
+        run: cargo install cargo-zigbuild --locked --version 0.23.4
 
       # Shell-script tests. `make app-test` builds Debug with a single native arch, so it can never
       # exercise build-helper.sh's / build-agent.sh's multi-arch path — the branch whose absence
