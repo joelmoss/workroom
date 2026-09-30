@@ -46,6 +46,7 @@ final class DiffHighlightUITests: XCTestCase {
     XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
     let row = fileRow(app, path)
     XCTAssertTrue(row.waitForExistence(timeout: 10), "row \(path) should render")
+    row.scrollIntoView(in: app)
     row.click()
     XCTAssertTrue(element(app, id: "terminal.tab.\(basename)").waitForExistence(timeout: 6))
   }
