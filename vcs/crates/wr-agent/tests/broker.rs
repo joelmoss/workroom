@@ -158,9 +158,16 @@ fn now() -> i64 {
 }
 
 /// `date -u` for a unix time: BSD's `-r <seconds>`, else GNU's `-d @<seconds>` (GNU's `-r` names a
-/// file, and fails rather than failing to start).
+/// file, and fails rather than failing to start). In the C locale, since an HTTP `Date` uses the
+/// English day and month names whatever the machine's `LC_TIME`.
 fn date(unix: i64, format: &str) -> String {
-    let run = |args: &[&str]| Command::new("date").args(args).output().ok();
+    let run = |args: &[&str]| {
+        Command::new("date")
+            .env("LC_ALL", "C")
+            .args(args)
+            .output()
+            .ok()
+    };
     let seconds = unix.to_string();
     let gnu = format!("@{unix}");
     let output = run(&["-u", "-r", &seconds, format])
