@@ -2198,6 +2198,15 @@ real click. `XCUIElement.scrollIntoView(in:)` (`XCUIElement+Reveal.swift`) now s
 scroll view first; all eight tests pass. Other tests that click a row below the third are exposed to
 the same thing. The drag group is still open.
 
+**Drag group resolved (2026-09-30, #269):** `XCUIElement.press(forDuration:thenDragTo:)` posts no mouse
+events at all on macOS 27 (an event monitor in the app saw nothing, not even a mouseDown), so nothing
+drags and nothing says why. `click(forDuration:thenDragTo:)` delivers the drag. `DiffPaneFocusUITests`,
+`SplitPaneUITests.testDraggingCurrentTabCreatesSplitWithoutAddingTab` and
+`WindowDragUITests.testDraggingEmptyTitlebarMovesWindow` now use it and pass. Three negative tests
+("a drag must not split / move the window") used the same call and passed without dragging, so they
+now use it too and still pass. The editor-menu test was not machine-dependent: the menu lists its
+editors, but they report `isHittable == false` while open, so it now asserts existence.
+
 **How to start:** check whether `press(forDuration:thenDragTo:)` registers at all on macOS 27. A
 one-line drag in a scratch UI test is enough. If it does not, drive the drag with explicit
 `XCUICoordinate` moves. For the editor menu, stub the installed-editor lookup in `UITestFixture` so

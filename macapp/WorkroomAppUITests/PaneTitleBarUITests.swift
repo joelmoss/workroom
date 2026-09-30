@@ -210,7 +210,7 @@ final class PaneTitleBarUITests: XCTestCase {
 
     let bar = titlebars(app).firstMatch
     XCTAssertTrue(bar.waitForExistence(timeout: 8))
-    bar.press(forDuration: 0.4, thenDragTo: app.windows.firstMatch)
+    bar.click(forDuration: 0.4, thenDragTo: app.windows.firstMatch)
 
     assertCount(panes(app), reaches: 1)
     XCTAssertEqual(titlebars(app).count, 1, "dragging a solo pane's bar must not split anything")
