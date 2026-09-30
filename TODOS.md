@@ -2207,7 +2207,8 @@ drags and nothing says why. `click(forDuration:thenDragTo:)` delivers the drag. 
 now use it too and still pass. The editor-menu test was not machine-dependent: the menu lists its
 editors, but they report `isHittable == false` while open, so it now asserts existence.
 
-**How to start:** check whether `press(forDuration:thenDragTo:)` registers at all on macOS 27. A
+**How to start (historical: both groups are resolved above):** check whether
+`press(forDuration:thenDragTo:)` registers at all on macOS 27. A
 one-line drag in a scratch UI test is enough. If it does not, drive the drag with explicit
 `XCUICoordinate` moves. For the editor menu, stub the installed-editor lookup in `UITestFixture` so
 the test does not depend on the machine.
