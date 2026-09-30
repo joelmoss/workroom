@@ -1,0 +1,66 @@
+name: Install Zig
+description: >-
+  Install a pinned Zig toolchain onto PATH. The release tarball is cached and its checksum is
+  verified on every run, cache hit or not, so the pin still means what it says.
+
+inputs:
+  version:
+    description: Zig release, e.g. 0.16.0
+    required: true
+  archive:
+    description: Platform part of the tarball name, e.g. x86_64-linux or aarch64-macos
+    required: true
+  sha256:
+    description: Expected SHA-256 of the tarball
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Downloading from ziglang.org took 290-710s per job on a hosted runner (measured on run
+    # 36744716901), which was the largest single step in three jobs. The key carries the checksum,
+    # so a re-cut tarball cannot be served from an old entry.
+    - name: Cache Zig tarball
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/zig-download
+        key: zig-tarball-${{ inputs.archive }}-${{ inputs.version }}-${{ inputs.sha256 }}
+
+    - name: Install Zig
+      shell: bash
+      env:
+        ZIG_VERSION: ${{ inputs.version }}
+        ZIG_ARCHIVE: ${{ inputs.archive }}
+        ZIG_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        dir="$HOME/.cache/zig-download"
+        file="$dir/zig-${ZIG_ARCHIVE}-${ZIG_VERSION}.tar.xz"
+        url="https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCHIVE}-${ZIG_VERSION}.tar.xz"
+        mkdir -p "$dir"
+
+        # `sha256sum` on Linux, `shasum` on macOS.
+        verify() {
+          if command -v sha256sum >/dev/null 2>&1; then
+            echo "${ZIG_SHA256}  $1" | sha256sum -c -
+          else
+            echo "${ZIG_SHA256}  $1" | shasum -a 256 -c -
+          fi
+        }
+
+        # A cached file that fails its checksum is discarded and fetched again once; a fresh
+        # download that fails it is an error.
+        if [ -f "$file" ] && ! verify "$file"; then
+          echo "::warning::cached Zig tarball failed its checksum; downloading it again"
+          rm -f "$file"
+        fi
+        if [ ! -f "$file" ]; then
+          curl -fsSL --retry 3 --retry-delay 5 "$url" -o "$file.part"
+          mv "$file.part" "$file"
+          verify "$file" || { rm -f "$file"; exit 1; }
+        fi
+
+        mkdir -p "$HOME/.zig"
+        tar -xJf "$file" -C "$HOME/.zig" --strip-components=1
+        echo "$HOME/.zig" >> "$GITHUB_PATH"
+        "$HOME/.zig/zig" version
