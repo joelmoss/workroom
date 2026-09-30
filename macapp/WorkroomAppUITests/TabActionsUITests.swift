@@ -76,6 +76,7 @@ final class TabActionsUITests: XCTestCase {
       "jj Working Copy header should render")
     let row = fileRow(app, "app/models/user.rb")
     XCTAssertTrue(row.waitForExistence(timeout: 10))
+    row.scrollIntoView(in: app)
     _ = waitForHittable(row)
     row.click()
     let tab = diffTab(app, "user.rb")
