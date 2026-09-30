@@ -246,6 +246,31 @@ final class UITestFixtureHermeticShellTests: XCTestCase {
     XCTAssertEqual(mode & 0o777, 0o700)
   }
 
+  /// Many launches of one bundle id preparing a folder that has no `.zshrc` yet, at once: each one's
+  /// sweep must leave the others' in-flight write alone, and none may throw (`WorkroomApp.init`
+  /// would crash the launch). A guard, not a proof: it can only fail when the timing overlaps.
+  func testConcurrentPreparationOfAMissingRCNeverThrows() throws {
+    let directory = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.test", in: root)
+    let lock = NSLock()
+    var failures: [String] = []
+    for _ in 0..<20 {
+      try? FileManager.default.removeItem(at: directory)
+      DispatchQueue.concurrentPerform(iterations: 8) { _ in
+        do {
+          try UITestFixture.prepareHermeticZDOTDIR(at: directory)
+        } catch {
+          lock.lock()
+          failures.append("\(error)")
+          lock.unlock()
+        }
+      }
+    }
+    XCTAssertEqual(failures, [])
+    XCTAssertEqual(
+      try String(contentsOf: directory.appendingPathComponent(".zshrc"), encoding: .utf8),
+      UITestFixture.hermeticShellRC)
+  }
+
   func testEachBundleIDGetsItsOwnFolder() throws {
     let first = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.one", in: root)
     let second = UITestFixture.hermeticZDOTDIR(bundleID: "com.example.two", in: root)

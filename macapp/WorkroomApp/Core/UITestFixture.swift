@@ -770,9 +770,9 @@ enum UITestFixture {
   /// `.zshrc`: zsh sources a newer compiled file INSTEAD of `.zshrc`.
   ///
   /// The folder is shared by every launch of one bundle id, and a second launch can start while the
-  /// first is still setting up. So the sweep keeps any other `.zshrc*` name (an atomic write goes
-  /// through a temporary sibling, which the other launch's sweep would otherwise delete and fail
-  /// its rename), tolerates an entry that vanishes mid-sweep, and leaves an `.zshrc` that is already
+  /// first is still setting up. So the sweep keeps any other `.zshrc*` name (the write goes through a
+  /// `.zshrc.tmp-<uuid>` sibling, which the other launch's sweep would otherwise delete and fail its
+  /// rename), tolerates an entry that vanishes mid-sweep, and leaves a `.zshrc` that is already
   /// correct alone.
   static func prepareHermeticZDOTDIR(at directory: URL) throws {
     let files = FileManager.default
@@ -812,7 +812,15 @@ enum UITestFixture {
     }
     let content = Data(hermeticShellRC.utf8)
     if (try? Data(contentsOf: rc)) != content {
-      try content.write(to: rc, options: .atomic)
+      // Our own temporary name, then `rename`: the sweep above keeps every `.zshrc*` name, and
+      // `Data.write(options: .atomic)` does not promise what its temporary sibling is called.
+      let temporary = directory.appendingPathComponent(".zshrc.tmp-\(UUID().uuidString)")
+      try content.write(to: temporary)
+      if rename(temporary.path, rc.path) != 0 {
+        let code = POSIXErrorCode(rawValue: errno) ?? .EIO
+        try? FileManager.default.removeItem(at: temporary)
+        throw POSIXError(code)
+      }
     }
   }
 
@@ -832,6 +840,11 @@ enum UITestFixture {
   /// `$ZDOTDIR/.zshenv`, then loads the integration — so this keeps the integration and drops
   /// `~/.zshenv`, `~/.zprofile`, `~/.zshrc` and `~/.zlogin`. The terminals inherit the process
   /// environment, the same way they inherit `GHOSTTY_RESOURCES_DIR`.
+  ///
+  /// **New shells only.** This sets the environment the app spawns shells with. A pane that
+  /// reattaches to a persistent session started by an earlier, non-hermetic launch keeps that
+  /// shell's environment, so a `fixture: false` launch can still show one (fixture launches skip
+  /// persistent sessions).
   ///
   /// **Startup files only.** `PATH` stays developer-influenced (`ShellEnvironment.floorPath`
   /// includes Homebrew, `~/.local/bin` and the inherited `PATH`).
