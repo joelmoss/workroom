@@ -372,6 +372,10 @@ final class BrokerSessionTests: XCTestCase {
       ("http://codaset.dev", "https://codaset.dev"),
       ("http://localhost:3000", "https://codaset.dev"),
       ("not a url", "https://codaset.dev"),
+      ("https://staging.codaset.test/", "https://staging.codaset.test/"),
+      ("https://staging.codaset.test/broker", "https://codaset.dev"),
+      ("https://me@staging.codaset.test", "https://codaset.dev"),
+      ("https://staging.codaset.test?x=1", "https://codaset.dev"),
     ] {
       Defaults[.brokerURL] = setting
       XCTAssertEqual(session.baseURL.absoluteString, expected, setting)

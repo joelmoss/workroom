@@ -29,12 +29,16 @@ final class BrokerSession: ObservableObject {
     if let (account, _) = credentials.load() { state = .signedIn(account) }
   }
 
-  /// `Defaults[.brokerURL]` when it is https, or plain http to 127.0.0.1 (a development Codaset;
-  /// the agent accepts exactly these too, `acceptable_broker`); anything else falls back to the
-  /// default rather than sending a key's proofs in the clear.
+  /// `Defaults[.brokerURL]` when it is https, or plain http to 127.0.0.1 (a development Codaset),
+  /// with no userinfo, path, query or fragment: the agent accepts exactly these
+  /// (`acceptable_broker`), and this URL is what enrolment hands it. Anything else falls back to
+  /// the default rather than sending a key's proofs in the clear.
   var baseURL: URL {
     let fallback = URL(string: Defaults.Keys.brokerURL.defaultValue)!
-    guard let url = URL(string: Defaults[.brokerURL]), let host = url.host() else {
+    guard let url = URL(string: Defaults[.brokerURL]), let host = url.host(),
+      url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
+      ["", "/"].contains(url.path())
+    else {
       return fallback
     }
     let local = url.scheme == "http" && host == "127.0.0.1"

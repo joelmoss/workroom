@@ -11,7 +11,7 @@
 
 ### Credential broker clients: the review's deferred items (macapp, wr-agent) — #251 review follow-up
 
-**What:** Three things the #251 review left open (PR #263):
+**What:** Five things the #251 review left open (PR #263):
 
 1. A copy of an already-enrolled workroom mints under the original's grant: `wr-agent credential`
    never checks that it is on the machine that enrolled. A machine-identity check does not help,
@@ -20,16 +20,27 @@
    leaves the instance with no credentials while the old grant stays live.
 3. The real Keychain calls in `BrokerCredentials.SecretStore.keychain` are untested (tests use the
    stand-in), and `kSecAttrAccessibleAfterFirstUnlock` on a login-keychain item was never measured.
+4. `AgentEnrolment.enrol` swallows a failed `cancelGrant` after a failed enrolment, so the grant ID
+   is lost and the grant can stay live, possibly with a key the agent already enrolled.
+5. `configure_git` makes the agent the only helper for all of `https://github.com` in *global*
+   config, so on a host holding more than one repository every other repository gets this
+   workroom's repository-scoped token instead of its own credentials.
 
 **Why:** 1 and 2 cannot happen in the designed flow (only bases, which never enrol, are derived;
 re-enrolment only follows a failed first enrolment, so there is no working key to lose), but
-provisioning is where either could start happening.
+provisioning is where either could start happening. 4 has no caller until provisioning, which owns
+the rollback, and destroying the instance destroys the enrolled key. 5 holds because each
+provisioned VM hosts one workroom; the helper is global on purpose, since it must outrank boxd's
+system helper and answer the first clone, before any repository exists.
 
-**How to start:** revisit 1 and 2 when #252 (derivation) lands; stage a pending key beside the
-current one and swap on success for 2. For 3, sign in on a Dev build and on a Developer ID Nightly
-once codaset.dev serves the broker, and check the item's access list in Keychain Access.
+**How to start:** revisit 1, 2 and 4 when #252 (derivation) lands; stage a pending key beside the
+current one and swap on success for 2, and have provisioning keep the grant ID when a cancel fails
+for 4. For 3, sign in on a Dev build and on a Developer ID Nightly once codaset.dev serves the
+broker, and check the item's access list in Keychain Access. Revisit 5 if enrolment ever runs on a
+bring-your-own host.
 
-**Depends on / blocked by:** #252 for 1 and 2; codaset#43 deployed for 3.
+**Depends on / blocked by:** #252 for 1, 2 and 4; codaset#43 deployed for 3; a BYO-host enrolment
+path for 5.
 
 **Priority:** P2, effort S.
 
