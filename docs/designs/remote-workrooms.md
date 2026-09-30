@@ -377,8 +377,10 @@ SDK-only — Python, TS, CLI, REST, no Rust SDK — which makes the SDK-language
 rather than theoretical: an E2B driver would talk REST from Rust. Anything more belongs in its own
 document.
 
-**Ruled out:** exe.dev (no live fork, and its $20/mo flat pool is 2 vCPU/8 GB *in total*, which one
-full-size workroom consumes); Daytona's OSS path (README says unmaintained since June 2026, core
+**Ruled out:** exe.dev as a primary driver (no live fork, and its $20/mo flat pool is 2 vCPU/8 GB *in
+total*, which one full-size workroom consumes). It was later chosen as the second real provider for the
+release gate (Phase 4, #259, decided 2026-09-27); that choice did not revisit the pool objection here.
+Also ruled out: Daytona's OSS path (README says unmaintained since June 2026, core
 moved to a private codebase); `kern` (Linux-only by design, and its own docs call its shared-kernel
 boundary unsafe for other people's code — fine locally, not shippable in a macOS app).
 
