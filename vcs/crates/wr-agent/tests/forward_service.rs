@@ -539,3 +539,206 @@ fn traffic_for_a_stream_that_is_not_forwarding_is_dropped() {
     client.send(1, DATA, b"unaffected");
     assert_eq!(client.read(1, 10), b"unaffected");
 }
+
+// MARK: Listening (the reverse direction)
+
+const ACCEPTED: u8 = 0x06;
+
+impl Client {
+    /// Send one OPEN and return its REPLY.
+    fn ask(&mut self, stream: u32, request: Value) -> Value {
+        self.send(stream, OPEN, &serde_json::to_vec(&request).unwrap());
+        let (opcode, body) = self.next(stream).expect("a reply");
+        assert_eq!(opcode, REPLY, "an OPEN is always answered with a reply");
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    /// Start a listener on an ephemeral port that is expected to bind; the port it bound.
+    fn listening(&mut self, stream: u32) -> u16 {
+        let reply = self.ask(stream, json!({"method": "listen", "port": 0}));
+        reply["result"]["listening"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{reply}")) as u16
+    }
+}
+
+/// A process on the agent's box connecting to a listener's port.
+fn connected_to(port: u16) -> TcpStream {
+    let socket = TcpStream::connect(("127.0.0.1", port)).expect("connect to the listener");
+    socket.set_read_timeout(Some(PATIENCE)).unwrap();
+    socket
+}
+
+/// Whether nothing holds `port` any more. A bind, not a connect: a connect would be accepted, and
+/// the agent's own failure to announce it to a departed client is a second way for the listener to
+/// end, which would let a test pass without the path it means to check.
+fn released(port: u16) -> bool {
+    TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+/// Whether the connection was closed on the far side: a clean EOF or a reset, never a timeout.
+fn ended(socket: &mut TcpStream) -> bool {
+    let mut byte = [0u8];
+    match socket.read(&mut byte) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(error) => !matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+    }
+}
+
+#[test]
+fn a_listener_carries_a_connection_both_ways() {
+    let mut client = Client::connect();
+    let port = client.listening(1);
+    let mut peer = connected_to(port);
+    assert_eq!(client.next(1), Some((ACCEPTED, vec![])));
+    let reply = client.ask(2, json!({"method": "accept", "listener": 1}));
+    assert_eq!(reply["result"]["opened"], true, "{reply}");
+
+    peer.write_all(b"GET /up").unwrap();
+    assert_eq!(client.read(2, 7), b"GET /up");
+    client.send(2, DATA, b"200 OK");
+    let mut answer = [0u8; 6];
+    peer.read_exact(&mut answer).unwrap();
+    assert_eq!(&answer, b"200 OK");
+
+    // The two halves end independently, as any forward's do.
+    peer.shutdown(std::net::Shutdown::Write).unwrap();
+    assert_eq!(client.next(2), Some((EOF, vec![])));
+    client.send(2, EOF, &[]);
+    assert_eq!(client.next(2), Some((CLOSE, vec![])));
+    assert!(ended(&mut peer));
+
+    // The listener carries on: the next connection is announced too.
+    let _second = connected_to(port);
+    assert_eq!(client.next(1), Some((ACCEPTED, vec![])));
+}
+
+#[test]
+fn an_accept_with_nothing_to_claim_is_refused_and_closed() {
+    let mut client = Client::connect();
+    let reply = client.ask(5, json!({"method": "accept", "listener": 1}));
+    assert_eq!(
+        reply["error"]["refused"], "stream 1 is not listening",
+        "{reply}"
+    );
+    assert_eq!(client.next(5), Some((CLOSE, vec![])));
+
+    client.listening(1);
+    let reply = client.ask(6, json!({"method": "accept", "listener": 1}));
+    assert_eq!(
+        reply["error"]["refused"], "no connection is waiting",
+        "{reply}"
+    );
+    assert_eq!(client.next(6), Some((CLOSE, vec![])));
+}
+
+#[test]
+fn a_taken_port_is_a_bind_error() {
+    let taken = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port();
+    let mut client = Client::connect();
+    let reply = client.ask(1, json!({"method": "listen", "port": port}));
+    assert!(reply["error"]["bind"].is_string(), "{reply}");
+    assert_eq!(client.next(1), Some((CLOSE, vec![])));
+}
+
+#[test]
+fn closing_a_listener_releases_its_port_and_ends_what_waited() {
+    let mut client = Client::connect();
+    let port = client.listening(1);
+    let mut waiting = connected_to(port);
+    assert_eq!(client.next(1), Some((ACCEPTED, vec![])));
+
+    client.send(1, CLOSE, &[]);
+    assert_eq!(client.next(1), Some((CLOSE, vec![])));
+    assert!(
+        client.next_within(1, Duration::from_millis(300)).is_none(),
+        "CLOSE is the agent's last word on the listener"
+    );
+    assert!(ended(&mut waiting), "the unclaimed connection was closed");
+    assert!(released(port), "the port was released");
+}
+
+#[test]
+fn an_unclaimed_connection_is_closed_after_the_pending_timeout() {
+    let mut client = Client::connect();
+    let port = client.listening(1);
+    let started = Instant::now();
+    let mut waiting = connected_to(port);
+    assert_eq!(client.next(1), Some((ACCEPTED, vec![])));
+
+    assert!(ended(&mut waiting), "never closed");
+    let waited = started.elapsed();
+    let timeout = wr_agent::forward::PENDING_TIMEOUT;
+    assert!(waited >= timeout, "closed early, after {waited:?}");
+    assert!(
+        waited < timeout + Duration::from_secs(2),
+        "closed late, after {waited:?}"
+    );
+    let reply = client.ask(2, json!({"method": "accept", "listener": 1}));
+    assert_eq!(
+        reply["error"]["refused"], "no connection is waiting",
+        "{reply}"
+    );
+}
+
+#[test]
+fn connections_past_the_pending_limit_are_closed_at_once() {
+    let mut client = Client::connect();
+    let port = client.listening(1);
+    let mut held = Vec::new();
+    for _ in 0..wr_agent::forward::MAX_PENDING {
+        held.push(connected_to(port));
+        assert_eq!(client.next(1), Some((ACCEPTED, vec![])));
+    }
+    let mut over = connected_to(port);
+    assert!(ended(&mut over), "the agent held one more than its limit");
+    assert!(
+        client.next_within(1, Duration::from_millis(300)).is_none(),
+        "and did not announce it"
+    );
+}
+
+#[test]
+fn the_connection_ending_ends_its_listeners() {
+    let mut client = Client::connect();
+    let port = client.listening(1);
+    drop(client);
+    let deadline = Instant::now() + PATIENCE;
+    while !released(port) {
+        assert!(
+            Instant::now() < deadline,
+            "the port outlived its connection"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn the_fifth_listener_on_a_connection_is_refused() {
+    let mut client = Client::connect();
+    for stream in 1..=wr_agent::forward::MAX_LISTENERS as u32 {
+        client.listening(stream);
+    }
+    let reply = client.ask(99, json!({"method": "listen", "port": 0}));
+    assert_eq!(reply["error"]["refused"], "too many listeners", "{reply}");
+    assert_eq!(client.next(99), Some((CLOSE, vec![])));
+}
+
+#[test]
+fn a_listeners_stream_cannot_be_reopened_while_it_listens() {
+    let echo = Echo::start();
+    let mut client = Client::connect();
+    let port = client.listening(1);
+    let reply = client.open(1, "127.0.0.1", echo.port);
+    assert_eq!(
+        reply["error"]["refused"], "stream 1 is already forwarding",
+        "{reply}"
+    );
+    let _peer = connected_to(port);
+    assert_eq!(client.next(1), Some((ACCEPTED, vec![])));
+}
