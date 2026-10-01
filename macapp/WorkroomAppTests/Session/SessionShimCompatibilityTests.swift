@@ -517,17 +517,23 @@ final class SessionShimCompatibilityTests: XCTestCase {
       arguments: ["daemon", "--socket", socketPath, "--idle-timeout", "30000"],
       environment: [:])
 
+    // Ready means accepting, not bound: the daemon's `bind()` creates the socket file before
+    // its `listen()`, and a connect in that window is refused (errno 61), which flaked these
+    // tests under a parallel `make app-test`. The probe sends no frame; the daemon sees EOF.
     let deadline = Date().addingTimeInterval(5)
     while Date() < deadline {
-      if FileManager.default.fileExists(atPath: socketPath) { return socketPath }
+      if let probe = try? SessionTestClient.connect(socketPath: socketPath) {
+        probe.closeConnection()
+        return socketPath
+      }
       if let daemon, !daemon.isRunning { break }
       Thread.sleep(forTimeInterval: 0.02)
     }
     let status = daemon.map { $0.isRunning ? "still running" : "exited \($0.terminationStatus)" }
     XCTFail(
       """
-      the pinned v2.0.0 daemon never bound \(socketPath) (\(status ?? "not started")). The fixture \
-      is present, so this is the compatibility subject failing, not a missing test dependency — \
+      the pinned v2.0.0 daemon never accepted on \(socketPath) (\(status ?? "not started")). \
+      The fixture is present, so this is the compatibility subject failing, not a missing test dependency — \
       do not downgrade it to a skip.
       """)
     throw CompatibilityFixtureError.unusable
