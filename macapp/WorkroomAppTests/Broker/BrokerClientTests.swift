@@ -122,7 +122,7 @@ func proofVerifies(_ jwt: String) -> Bool {
 }
 
 final class BrokerClientTests: XCTestCase {
-  private let base = URL(string: "https://codaset.test")!
+  private let base = URL(string: "https://codaset.localhost")!
 
   private func client(now: Date = Date()) -> BrokerClient {
     BrokerClient(
@@ -143,7 +143,7 @@ final class BrokerClientTests: XCTestCase {
     XCTAssertEqual(header["alg"] as? String, "ES256")
     XCTAssertNil((header["jwk"] as? [String: String])?["d"], "never the private half")
     XCTAssertEqual(claims["htm"] as? String, "DELETE")
-    XCTAssertEqual(claims["htu"] as? String, "https://codaset.test/broker/grants/g1")
+    XCTAssertEqual(claims["htu"] as? String, "https://codaset.localhost/broker/grants/g1")
     XCTAssertGreaterThanOrEqual((claims["jti"] as? String)?.count ?? 0, 16)
     XCTAssertTrue(proofVerifies(seen.proof))
   }
@@ -152,11 +152,11 @@ final class BrokerClientTests: XCTestCase {
   func testAProofsURLLeavesOutTheQuery() throws {
     let proof = try BrokerProof.make(
       key: .software(P256.Signing.PrivateKey()), method: "GET",
-      url: URL(string: "https://codaset.test/broker/install-status?repository=o/r")!,
+      url: URL(string: "https://codaset.localhost/broker/install-status?repository=o/r")!,
       issuedAt: Date())
 
     XCTAssertEqual(
-      jwtPart(proof, 1)["htu"] as? String, "https://codaset.test/broker/install-status")
+      jwtPart(proof, 1)["htu"] as? String, "https://codaset.localhost/broker/install-status")
   }
 
   func testAStaleProofIsSignedAgainOnTheBrokersClock() async throws {
@@ -201,7 +201,7 @@ final class BrokerClientTests: XCTestCase {
       .init(
         status: 409,
         body:
-          #"{"error":"app_not_installed","message":"x","install_url":"https://codaset.test/install/o"}"#
+          #"{"error":"app_not_installed","message":"x","install_url":"https://codaset.localhost/install/o"}"#
       )
     ])
 
@@ -211,7 +211,7 @@ final class BrokerClientTests: XCTestCase {
     } catch BrokerError.refused(let refusal) {
       XCTAssertEqual(refusal.status, 409)
       XCTAssertEqual(refusal.code, "app_not_installed")
-      XCTAssertEqual(refusal.installURL?.absoluteString, "https://codaset.test/install/o")
+      XCTAssertEqual(refusal.installURL?.absoluteString, "https://codaset.localhost/install/o")
       XCTAssertTrue(refusal.userMessage.contains("GitHub App"))
     } catch {
       XCTFail("unexpected \(error)")
@@ -362,13 +362,12 @@ final class BrokerSessionTests: XCTestCase {
     XCTAssertEqual(session.error, "This Mac was removed from Codaset. Sign in again.")
   }
 
-  func testTheBrokerURLIsHTTPSOrLocalOnly() throws {
-    let (session, _) = try signedInSession()
-    let original = Defaults[.brokerURL]
-    defer { Defaults[.brokerURL] = original }
+  func testAReleaseBuildTakesHTTPSOrLocalHTTPOnly() {
     for (setting, expected) in [
+      ("", "https://codaset.dev"),
       ("https://staging.codaset.test", "https://staging.codaset.test"),
       ("http://127.0.0.1:3000", "http://127.0.0.1:3000"),
+      ("https://codaset.localhost", "https://codaset.localhost"),
       ("http://codaset.dev", "https://codaset.dev"),
       ("http://localhost:3000", "https://codaset.dev"),
       ("not a url", "https://codaset.dev"),
@@ -377,9 +376,52 @@ final class BrokerSessionTests: XCTestCase {
       ("https://me@staging.codaset.test", "https://codaset.dev"),
       ("https://staging.codaset.test?x=1", "https://codaset.dev"),
     ] {
-      Defaults[.brokerURL] = setting
-      XCTAssertEqual(session.baseURL.absoluteString, expected, setting)
+      XCTAssertEqual(
+        BrokerEndpoint.resolve(setting, debug: false).absoluteString, expected, setting)
     }
+  }
+
+  func testADebugBuildNeverResolvesToAnotherMachine() {
+    for (setting, expected) in [
+      ("", "https://codaset.localhost"),
+      ("https://codaset.dev", "https://codaset.localhost"),
+      ("https://CODASET.DEV", "https://codaset.localhost"),
+      ("https://staging.codaset.test", "https://codaset.localhost"),
+      ("https://localhost.codaset.dev", "https://codaset.localhost"),
+      ("https://codaset.localhost.evil.example", "https://codaset.localhost"),
+      ("https://other.localhost", "https://other.localhost"),
+      ("https://localhost:3443", "https://localhost:3443"),
+      ("http://127.0.0.1:3000", "http://127.0.0.1:3000"),
+      ("http://codaset.localhost", "https://codaset.localhost"),
+    ] {
+      XCTAssertEqual(BrokerEndpoint.resolve(setting, debug: true).absoluteString, expected, setting)
+    }
+  }
+
+  /// This test host is a Debug build, so the session follows the Debug rule.
+  func testTheSessionInThisBuildIgnoresAProductionSetting() throws {
+    let (session, _) = try signedInSession()
+    let original = Defaults[.brokerURL]
+    defer { Defaults[.brokerURL] = original }
+    Defaults[.brokerURL] = "https://codaset.dev"
+
+    XCTAssertEqual(session.baseURL, BrokerEndpoint.development)
+  }
+
+  /// The check every request passes, whatever URL a caller built the client with.
+  func testADebugClientRefusesToSendToProduction() async throws {
+    BrokerStub.reset([.init(status: 200, body: "{}")])
+    let client = BrokerClient(
+      baseURL: BrokerEndpoint.production, key: .software(P256.Signing.PrivateKey()),
+      session: BrokerStub.session)
+
+    do {
+      try await client.cancelGrant("g1")
+      XCTFail("expected the request to be refused")
+    } catch BrokerError.transport(let detail) {
+      XCTAssertTrue(detail.contains("https://codaset.dev"), detail)
+    }
+    XCTAssertTrue(BrokerStub.requests.isEmpty, "nothing reached the network layer")
   }
 
   func testOtherRefusalsLeaveTheMacSignedIn() async throws {

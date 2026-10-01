@@ -2239,7 +2239,8 @@ disagreement passes every test on either side alone while presenting as an empty
       - *Sign-in.* Cancel really cancels (the Mac is left signed out); a lost "complete" answer
         keeps the working key; an `unknown_key` refusal (the Mac was removed at codaset.dev) signs
         the Mac out. The Settings row is hidden behind `remoteWorkroomsPreview` until remote
-        workrooms ship; `brokerURL` points at a development Codaset on `http://127.0.0.1`.
+        workrooms ship. A Debug build talks only to a Codaset on the Mac (`https://codaset.localhost`
+        by default) and never to codaset.dev (`BrokerEndpoint`).
       - *Deferred to #252:* detecting a copy of an already-enrolled workroom (a disk copy copies any
         machine identity too, and only bases, which never enrol, are derived), and keeping the old
         key until a re-enrolment succeeds.

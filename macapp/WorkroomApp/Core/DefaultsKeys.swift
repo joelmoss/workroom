@@ -94,9 +94,10 @@ extension Defaults.Keys {
   /// workrooms ship. Hidden: `defaults write <bundle id> remoteWorkroomsPreview -bool YES`.
   static let remoteWorkroomsPreview = Key<Bool>(
     "remoteWorkroomsPreview", default: false, suite: .app)
-  /// The Workroom credential broker (Codaset). Hidden; point it at a development Codaset with
-  /// `defaults write <bundle id> brokerURL http://127.0.0.1:3000`.
-  static let brokerURL = Key<String>("brokerURL", default: "https://codaset.dev", suite: .app)
+  /// The Workroom credential broker (Codaset). Empty means the build's own: codaset.dev, or
+  /// `https://codaset.localhost` in a Debug build, which only ever reaches this Mac
+  /// (`BrokerEndpoint`). Hidden; override with `defaults write <bundle id> brokerURL <url>`.
+  static let brokerURL = Key<String>("brokerURL", default: "", suite: .app)
 
   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
   static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true, suite: .app)
