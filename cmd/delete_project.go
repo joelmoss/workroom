@@ -81,17 +81,8 @@ func runDeleteProject(svc *workroom.Service, jsonMode bool, confirm string, with
 	// Refused in every mode, before anything is torn down. --from-disk's safety gate reasons
 	// about local paths and --with-workrooms tears down locally; the config-only mode would drop
 	// the only record of a remote machine. Remote deletion is its own path (#253).
-	projects, err := svc.Config.AllProjects()
-	if err != nil {
+	if err := refuseRemoteProject(svc.Config, canon); err != nil {
 		return err
-	}
-	if remote := projects[canon].RemoteWorkroomNames(); len(remote) > 0 {
-		return fmt.Errorf("%w: %s has remote workrooms: %s", errs.ErrRemoteWorkroom, canon, strings.Join(remote, ", "))
-	}
-	// The project's own descriptor records its base machine (#252): the same record, at the
-	// project's level.
-	if projects[canon].Host != nil {
-		return fmt.Errorf("%w: %s has a remote host (its base machine)", errs.ErrRemoteWorkroom, canon)
 	}
 
 	if fromDisk {
@@ -134,6 +125,10 @@ func runDeleteProject(svc *workroom.Service, jsonMode bool, confirm string, with
 		logWriter := newJSONLogWriter(logSink, "teardown")
 		svc.ScriptLogWriter = logWriter
 		for _, name := range names {
+			if err := refuseRemoteProject(svc.Config, canon); err != nil {
+				logWriter.Flush()
+				return err
+			}
 			if err := svc.RunTeardown(canon, name); err != nil {
 				logWriter.Flush()
 				return err
@@ -166,6 +161,14 @@ func runDeleteProject(svc *workroom.Service, jsonMode bool, confirm string, with
 		logWriter := newJSONLogWriter(logSink, "teardown")
 		svc.ScriptLogWriter = logWriter
 		for _, name := range names {
+			// Again before each workroom: a descriptor written during the cascade (a base
+			// recorded) stops it here rather than after every workroom has gone.
+			// RemoveProject checks once more under its own lock; only a descriptor written
+			// during one workroom's teardown gets past these.
+			if err := refuseRemoteProject(svc.Config, canon); err != nil {
+				logWriter.Flush()
+				return err
+			}
 			if err := svc.Delete(canon, name, name); err != nil {
 				logWriter.Flush()
 				return err
@@ -259,4 +262,20 @@ func init() {
 	deleteProjectCmd.Flags().BoolVar(&deleteProjectWithWR, "with-workrooms", false, "Also tear down every workroom (worktree dirs + files; branches kept)")
 	deleteProjectCmd.Flags().BoolVar(&deleteProjectFromDisk, "from-disk", false, "App-only: runs teardowns, drops config, returns trash_paths; the caller (macOS app) moves those dirs to the Trash")
 	rootCmd.AddCommand(deleteProjectCmd)
+}
+
+// refuseRemoteProject refuses a project with remote workrooms, or with its own descriptor, which
+// records its base machine (#252): either is the only record of a remote machine.
+func refuseRemoteProject(cfg *config.Config, canon string) error {
+	projects, err := cfg.AllProjects()
+	if err != nil {
+		return err
+	}
+	if remote := projects[canon].RemoteWorkroomNames(); len(remote) > 0 {
+		return fmt.Errorf("%w: %s has remote workrooms: %s", errs.ErrRemoteWorkroom, canon, strings.Join(remote, ", "))
+	}
+	if projects[canon].Host != nil {
+		return fmt.Errorf("%w: %s has a remote host (its base machine)", errs.ErrRemoteWorkroom, canon)
+	}
+	return nil
 }
