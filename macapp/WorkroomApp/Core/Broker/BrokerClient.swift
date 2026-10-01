@@ -109,7 +109,7 @@ struct BrokerClient: Sendable {
   /// Per request; the agent's side uses 15 s (`broker.rs`), the Mac is not on a shared exec budget.
   static let requestTimeout: TimeInterval = 30
 
-  /// codaset.dev, or a development Codaset via `Defaults[.brokerURL]`.
+  /// `BrokerSession.baseURL`; every request is checked against `BrokerEndpoint` first.
   let baseURL: URL
   let key: BrokerDeviceKey
   var session: URLSession = .shared
@@ -157,6 +157,7 @@ struct BrokerClient: Sendable {
     _ method: String, _ path: String, body: [String: String]?
   ) async throws -> Response {
     let url = baseURL.appendingPathComponent(path)
+    try BrokerEndpoint.check(url)
     var skew: TimeInterval = 0
     for attempt in 0..<2 {
       var request = URLRequest(url: url, timeoutInterval: Self.requestTimeout)

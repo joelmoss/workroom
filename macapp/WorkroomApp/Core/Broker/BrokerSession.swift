@@ -29,20 +29,9 @@ final class BrokerSession: ObservableObject {
     if let (account, _) = credentials.load() { state = .signedIn(account) }
   }
 
-  /// `Defaults[.brokerURL]` when it is https, or plain http to 127.0.0.1 (a development Codaset),
-  /// with no userinfo, path, query or fragment: the agent accepts exactly these
-  /// (`acceptable_broker`), and this URL is what enrolment hands it. Anything else falls back to
-  /// the default rather than sending a key's proofs in the clear.
+  /// The Codaset this build talks to (`BrokerEndpoint.resolve`).
   var baseURL: URL {
-    let fallback = URL(string: Defaults.Keys.brokerURL.defaultValue)!
-    guard let url = URL(string: Defaults[.brokerURL]), let host = url.host(),
-      url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-      ["", "/"].contains(url.path())
-    else {
-      return fallback
-    }
-    let local = url.scheme == "http" && host == "127.0.0.1"
-    return url.scheme == "https" || local ? url : fallback
+    BrokerEndpoint.resolve(Defaults[.brokerURL], debug: SentryConfig.isDebugBuild)
   }
 
   /// Where the person manages their Macs and repository access.
@@ -98,6 +87,48 @@ final class BrokerSession: ObservableObject {
       signOut()
       error = refusal.userMessage
       throw BrokerError.refused(refusal)
+    }
+  }
+}
+
+/// Which Codaset a build may talk to. Release and Nightly builds use codaset.dev, or an https
+/// override. Debug builds (the Dev app and every test host) use only a Codaset on this Mac and
+/// never reach production, whatever `Defaults[.brokerURL]` says: `BrokerClient` and `BrokerSignIn`
+/// check every URL here before sending a request or opening the browser.
+enum BrokerEndpoint {
+  static let production = URL(string: "https://codaset.dev")!
+  /// Where `bin/dev` serves a Codaset checkout named `codaset` (Caddy, HTTPS).
+  static let development = URL(string: "https://codaset.localhost")!
+
+  static func fallback(debug: Bool) -> URL { debug ? development : production }
+
+  /// `setting` when this build `allows` it and it has no userinfo, path, query or fragment: the
+  /// agent accepts exactly these (`acceptable_broker`), and this URL is what enrolment hands it.
+  /// Anything else falls back to the build's own Codaset, rather than sending a key's proofs in
+  /// the clear, or a Dev build's to production.
+  static func resolve(_ setting: String, debug: Bool) -> URL {
+    guard let url = URL(string: setting), url.user == nil, url.password == nil,
+      url.query == nil, url.fragment == nil, ["", "/"].contains(url.path()),
+      allows(url, debug: debug)
+    else {
+      return fallback(debug: debug)
+    }
+    return url
+  }
+
+  /// https, or plain http to 127.0.0.1; in a Debug build, only to this Mac (`localhost`,
+  /// `*.localhost` or 127.0.0.1).
+  static func allows(_ url: URL, debug: Bool = SentryConfig.isDebugBuild) -> Bool {
+    guard let host = url.host()?.lowercased() else { return false }
+    let loopback = host == "127.0.0.1"
+    guard url.scheme == "https" || (url.scheme == "http" && loopback) else { return false }
+    return !debug || loopback || host == "localhost" || host.hasSuffix(".localhost")
+  }
+
+  /// Throws unless this build `allows` `url`.
+  static func check(_ url: URL, debug: Bool = SentryConfig.isDebugBuild) throws {
+    guard allows(url, debug: debug) else {
+      throw BrokerError.transport("this build does not send requests to \(url.absoluteString)")
     }
   }
 }

@@ -6,7 +6,7 @@ import XCTest
 /// The loopback + PKCE sign-in end to end: a real listener on 127.0.0.1, the "browser" played by
 /// the test, the broker by `BrokerStub`.
 final class BrokerSignInTests: XCTestCase {
-  private let base = URL(string: "https://codaset.test")!
+  private let base = URL(string: "https://codaset.localhost")!
   private var directory: URL!
 
   override func setUpWithError() throws {
@@ -109,7 +109,7 @@ final class BrokerSignInTests: XCTestCase {
       jwtPart(requests[1].proof, 0)["jwk"] as? [String: String],
       "complete is signed with the key the redemption registered")
 
-    XCTAssertEqual(browser.redirectedTo, "https://codaset.test/workroom/sign-in/att-1")
+    XCTAssertEqual(browser.redirectedTo, "https://codaset.localhost/workroom/sign-in/att-1")
     XCTAssertEqual(flow.credentials.load()?.account, account)
   }
 
@@ -130,7 +130,7 @@ final class BrokerSignInTests: XCTestCase {
     }
     await fulfillment(of: [browser.done], timeout: 10)
 
-    XCTAssertEqual(browser.redirectedTo, "https://codaset.test/workroom/sign-in/att-1")
+    XCTAssertEqual(browser.redirectedTo, "https://codaset.localhost/workroom/sign-in/att-1")
     XCTAssertNil(flow.credentials.load())
   }
 
@@ -150,7 +150,7 @@ final class BrokerSignInTests: XCTestCase {
     }
     await fulfillment(of: [browser.done], timeout: 10)
 
-    XCTAssertEqual(browser.redirectedTo, "https://codaset.test/workroom/sign-in/att-1")
+    XCTAssertEqual(browser.redirectedTo, "https://codaset.localhost/workroom/sign-in/att-1")
     XCTAssertNil(flow.credentials.load())
   }
 
@@ -198,6 +198,23 @@ final class BrokerSignInTests: XCTestCase {
 
     XCTAssertLessThan(ContinuousClock.now - started, .seconds(5))
     XCTAssertThrowsError(try result.get())
+  }
+
+  /// This test host is a Debug build: a sign-in against production never opens the browser.
+  func testADebugSignInNeverOpensProduction() async throws {
+    final class Opened: @unchecked Sendable { var url: URL? }
+    let opened = Opened()
+    let flow = BrokerSignIn(
+      baseURL: BrokerEndpoint.production, credentials: credentials(),
+      openBrowser: { opened.url = $0 }, session: BrokerStub.session, timeout: 5)
+
+    do {
+      _ = try await flow.run(deviceName: "Mac")
+      XCTFail("expected the sign-in to be refused")
+    } catch BrokerError.transport(let detail) {
+      XCTAssertTrue(detail.contains("https://codaset.dev"), detail)
+    }
+    XCTAssertNil(opened.url)
   }
 }
 
@@ -248,7 +265,7 @@ final class AgentEnrolmentTests: XCTestCase {
 
   private func client() -> BrokerClient {
     BrokerClient(
-      baseURL: URL(string: "https://codaset.test")!, key: .software(P256.Signing.PrivateKey()),
+      baseURL: URL(string: "https://codaset.localhost")!, key: .software(P256.Signing.PrivateKey()),
       session: BrokerStub.session)
   }
 
@@ -273,7 +290,7 @@ final class AgentEnrolmentTests: XCTestCase {
     XCTAssertEqual(
       command,
       "'/run/workroom/wr-agent' enrol --workroom '\(workroom.uuidString.lowercased())' "
-        + "--broker 'https://codaset.test'")
+        + "--broker 'https://codaset.localhost'")
     XCTAssertFalse(command.contains("one-time"))
   }
 

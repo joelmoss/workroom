@@ -23,6 +23,7 @@ struct BrokerSignIn: Sendable {
   var timeout: TimeInterval = 600
 
   func run(deviceName: String) async throws -> BrokerAccount {
+    try BrokerEndpoint.check(baseURL)
     var random = [UInt8](repeating: 0, count: 32)
     guard SecRandomCopyBytes(kSecRandomDefault, random.count, &random) == errSecSuccess else {
       throw BrokerError.keyStorage("no randomness for PKCE")
