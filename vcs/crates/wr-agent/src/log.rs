@@ -61,19 +61,34 @@ fn one_line(message: &str) -> String {
 /// Once the file `fd` writes to passes `max`, renames `path` to `<path>.1` (replacing the last one)
 /// and points `fd` at a fresh `path`. A rename, never a truncation: nothing written is lost until
 /// the next rotation, and a second agent racing for the socket cannot erase a live agent's lines.
+///
+/// The fresh file is opened first, under a name of its own, and only then is anything renamed. A
+/// failed open therefore leaves everything where it was, to be tried again on the next line, where
+/// opening after the rename would leave `fd` writing to `<path>.1` for good with no `path` at all.
 fn rotate(path: &Path, fd: RawFd, max: u64) {
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstat(fd, &mut stat) } != 0 || (stat.st_size as u64) <= max {
         return;
     }
-    let mut previous = path.as_os_str().to_owned();
-    previous.push(".1");
+    let sibling = |suffix: &str| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let (fresh, previous) = (sibling(".new"), sibling(".1"));
+    let _ = std::fs::remove_file(&fresh);
+    let Ok(file) = open_log(&fresh) else { return };
     if std::fs::rename(path, &previous).is_err() {
+        let _ = std::fs::remove_file(&fresh);
         return;
     }
-    if let Ok(file) = open_log(path) {
-        unsafe { libc::dup2(file.as_raw_fd(), fd) };
+    if std::fs::rename(&fresh, path).is_err() {
+        // Put the log back, so `fd` is writing to `path` again.
+        let _ = std::fs::rename(&previous, path);
+        let _ = std::fs::remove_file(&fresh);
+        return;
     }
+    unsafe { libc::dup2(file.as_raw_fd(), fd) };
 }
 
 fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
@@ -206,6 +221,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(kept, "under\nnow over the limit\n");
         assert_eq!(fresh, "after\n");
+    }
+
+    /// The open that fails is the fresh file's, and a directory in its place makes it fail.
+    #[test]
+    fn a_rotation_that_cannot_open_a_fresh_log_leaves_the_log_in_place() {
+        let dir = std::env::temp_dir().join(format!("wr-agent-log-stuck-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("agent.log.new")).expect("blocker");
+        let path = dir.join("agent.log");
+        let file = open_log(&path).expect("log");
+        let fd = unsafe { libc::dup(file.as_raw_fd()) };
+        let write = |bytes: &[u8]| unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+
+        write(b"over the limit\n");
+        rotate(&path, fd, 5);
+        write(b"still here\n");
+        let log = std::fs::read_to_string(&path).unwrap_or_default();
+        let moved = dir.join("agent.log.1").exists();
+        unsafe { libc::close(fd) };
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!moved, "the log moved aside with nothing to replace it");
+        assert_eq!(log, "over the limit\nstill here\n");
     }
 
     #[test]
