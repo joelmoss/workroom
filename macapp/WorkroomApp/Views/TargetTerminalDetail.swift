@@ -58,11 +58,11 @@ struct TargetTerminalDetail: View {
       } else if store.isCreationBlocking(target.id) {
         CreationLoader()
       }
-      if target.isMissing {
+      if let reason = target.unavailability {
         ContentUnavailableView {
-          Label("Directory not found", systemImage: "questionmark.folder")
+          Label(reason.title, systemImage: reason.systemImage)
         } description: {
-          Text("\(target.title) points at a path that no longer exists.\n\(target.path)")
+          Text(reason.detail(for: target))
         }
       }
     }

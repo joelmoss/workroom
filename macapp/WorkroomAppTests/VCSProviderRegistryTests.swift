@@ -142,6 +142,20 @@ final class RepositoryRoutingTests: XCTestCase {
     ])
     XCTAssertTrue(unknown.isEmpty)
   }
+
+  /// A remote workroom's path is on its host: it must never be registered as a local repository.
+  func testPreparationSkipsRemoteWorkrooms() async throws {
+    let project = Project(
+      path: "/tmp/project", vcs: "git",
+      workrooms: [
+        Workroom(name: "local", path: "/tmp/workroom", vcsName: "workroom/local", warnings: []),
+        Workroom(
+          name: "remote", path: "/home/remote", vcsName: "workroom/remote", warnings: [],
+          host: HostDescriptor()),
+      ])
+    let entries = try await RepositoryRouter.prepare([project])
+    XCTAssertEqual(entries.map(\.localSourcePath), ["/tmp/project", "/tmp/workroom"])
+  }
 }
 
 private struct HostTestReader: VCSProviding {

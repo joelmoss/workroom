@@ -190,7 +190,9 @@ final class RepositoryRouter: @unchecked Sendable {
         try Registration(
           location: shared, backend: backend, sharedLocation: shared, localSourcePath: project.path)
       )
-      for workroom in project.workrooms {
+      // A remote workroom's path is a path on its host: registering it here would route it as a
+      // local repository. Remote registration comes with opening one (#253).
+      for workroom in project.workrooms where !workroom.isRemote {
         let location = try await RepositoryLocation.local(workroom.path)
         registrations.append(
           try Registration(

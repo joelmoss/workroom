@@ -1233,6 +1233,40 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
 - `delete-project --from-disk`'s safety gate (`cmd/delete_project.go:174-229`) is built on
   `filepath.Rel` ancestor semantics over local absolute paths and has no notion of a host. It must
   **refuse** remote paths rather than reason about them.
+- **As built (#249).** The descriptor is a `"host"` object on the workroom entry and on the project
+  entry, and **the app owns its schema** (the `HostDriver` is Swift, OQ21). The Go CLI reads exactly
+  two things from a workroom's descriptor: that it is present and non-null (the workroom is remote;
+  any non-null value counts, so a malformed one still fails safe), and `state == "destroyed"`. It
+  interprets the project's descriptor nowhere: a project with one is still a local repository.
+  - `list --json` reports both descriptors verbatim as `host`, absent for local. That is additive,
+    so `schema_version` stays 1.
+  - A remote workroom gets neither `DirectoryMissing` nor `VCSWorkroomMissing`. A destroyed one
+    gets a `HostDestroyed` warning instead, read from config at every warnings level.
+  - Until remote deletion exists (#253), the CLI refuses rather than acts on a remote workroom:
+    `delete` refuses one (the check is in `Service.Delete` and `RunTeardown`, so the interactive
+    delete and the `--with-workrooms` cascade are covered), and `delete-project` refuses a project
+    that has any, in all three modes. The config-only mode refuses too, since it would drop the
+    only record of a remote machine. For the same reason `RemoveWorkroom` keeps a project that
+    carries a descriptor after its last workroom goes, and `create` never reuses a configured
+    workroom name, because `AddWorkroom` replaces an entry whole.
+  - `add-project` refuses a remote PATH (`ssh://…`, `host:path`: git's own colon-before-slash
+    test) with `RemoteProjectUnsupported` before canonicalizing it. The app's New Project sheet
+    says the same as the path is typed.
+  - In the app, a remote workroom is unavailable on this Mac, not missing:
+    `TerminalTarget.unavailability` is `.directoryMissing`, `.remote` or `.hostDestroyed`, and
+    `isMissing` (which every local action guards on) is true for all three. Only the rendering
+    sites tell them apart. `RepositoryRouter.prepare`, the status sweep and
+    `selectedStatusWorkItem` (the select-to-probe-and-watch lane, and `targetExists` behind
+    commits and PR actions) skip remote workrooms, so a remote path is never registered, probed or
+    watched as a local repository. The app's delete actions refuse a remote workroom, and a project
+    with one, before their optimistic local cleanup kills shells and forgets labels.
+  - `Config.Read` decodes with `UseNumber`, so an integer above 2^53 in a descriptor survives
+    every config write instead of being rewritten through float64.
+  - Known gaps, left for #253: a workroom whose host was destroyed is refused by `delete` like any
+    remote one, so for now the only way to drop its entry is editing the config by hand.
+    `RemoveWorkroom`'s implicit cleanup keeps a project with a descriptor, but an explicit
+    `delete-project` of a project with no remote workrooms still drops it.
+  - Nothing writes a descriptor yet; provisioning (#252) and the app (#253) will.
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits

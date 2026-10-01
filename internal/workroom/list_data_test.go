@@ -1,6 +1,7 @@
 package workroom
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -219,5 +220,106 @@ func TestCreateNamedReturnsResult(t *testing.T) {
 	}
 	if want := filepath.Join(workroomsDir, "fixed-name"); res.Path != want {
 		t.Fatalf("path = %q, want %q", res.Path, want)
+	}
+}
+
+// remoteConfig writes a project with one local workroom whose directory and workspace are both
+// gone, one live remote workroom and one whose host was destroyed. The remote paths do not exist
+// here and neither is in the VCS listing, so each would warn if it were treated as local.
+func remoteConfig(t *testing.T, svc *Service, jj *vcs.JJ) {
+	t.Helper()
+	svc.VCSForTypeFunc = func(vcs.Type) (vcs.VCS, error) { return jj, nil }
+	if err := svc.Config.Write(map[string]any{
+		"/a": map[string]any{
+			"vcs":  "jj",
+			"host": map[string]any{"provider": "boxd"},
+			"workrooms": map[string]any{
+				"local":  map[string]any{"path": "/wr/local"},
+				"remote": map[string]any{"path": "/home/wr/remote", "host": map[string]any{"id": "h1"}},
+				"gone":   map[string]any{"path": "/home/wr/gone", "host": map[string]any{"id": "h2", "state": "destroyed"}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListDataGatesLocalWarningsOnRemoteWorkrooms(t *testing.T) {
+	jj := &vcs.JJ{Executor: &mockExecutor{output: "default: mk 0 (no description)\n"}}
+	svc, _, _ := newTestService(t, jj)
+	remoteConfig(t, svc, jj)
+
+	for _, level := range []WarningsLevel{WarningsNone, WarningsFast, WarningsFull} {
+		res, err := svc.ListData(level)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kinds := map[string][]string{}
+		for _, w := range res.Projects[0].Workrooms {
+			kinds[w.Name] = []string{}
+			for _, x := range w.Warnings {
+				kinds[w.Name] = append(kinds[w.Name], x.Kind)
+			}
+		}
+		if got := kinds["remote"]; len(got) != 0 {
+			t.Fatalf("%s: a live remote workroom must not warn, got %v", level, got)
+		}
+		if got := kinds["gone"]; len(got) != 1 || got[0] != "HostDestroyed" {
+			t.Fatalf("%s: a destroyed host must warn HostDestroyed alone, got %v", level, got)
+		}
+		// The negative control: the same checks still fire for the local workroom.
+		want := map[WarningsLevel]int{WarningsNone: 0, WarningsFast: 1, WarningsFull: 2}[level]
+		if got := kinds["local"]; len(got) != want {
+			t.Fatalf("%s: the local workroom should carry %d warnings, got %v", level, want, got)
+		}
+	}
+}
+
+func TestListDataReportsHostDescriptors(t *testing.T) {
+	jj := &vcs.JJ{Executor: &mockExecutor{}}
+	svc, _, _ := newTestService(t, jj)
+	remoteConfig(t, svc, jj)
+
+	res, err := svc.ListData(WarningsNone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(res.Projects[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Host      map[string]any `json:"host"`
+		Workrooms []map[string]any
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Host["provider"] != "boxd" {
+		t.Fatalf("project host = %v, want the stored descriptor", got.Host)
+	}
+	hosts := map[string]any{}
+	for _, w := range got.Workrooms {
+		host, present := w["host"]
+		if w["name"] == "local" && present {
+			t.Fatalf("a local workroom must carry no host key, got %v", host)
+		}
+		hosts[w["name"].(string)] = host
+	}
+	if h, _ := hosts["remote"].(map[string]any); h["id"] != "h1" {
+		t.Fatalf("remote host = %v, want the stored descriptor", hosts["remote"])
+	}
+}
+
+func TestListShowsHostDestroyed(t *testing.T) {
+	jj := &vcs.JJ{Executor: &mockExecutor{}}
+	svc, buf, _ := newTestService(t, jj)
+	remoteConfig(t, svc, jj)
+
+	if err := svc.List("/a"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "host destroyed by its provider") {
+		t.Fatalf("expected the destroyed state in human list output, got %q", buf.String())
 	}
 }

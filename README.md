@@ -391,6 +391,10 @@ exists (before setup runs), so a GUI can mount it and dock the streaming setup l
 (register an empty project) and `delete-project` (drop a project; `--with-workrooms` cascades the
 teardown). The schema is versioned (`schema_version: 1`); breaking changes bump it.
 
+In `list`, a workroom (or project) on another host carries a `host` object, absent for a local
+one. A remote workroom never gets the local `DirectoryMissing` / `VCSWorkroomMissing` warnings; one
+whose host its provider destroyed gets `HostDestroyed` instead.
+
 #### Error codes
 
 `internal/errs` maps each sentinel error to a stable `kind` string used in the JSON contract:
@@ -407,6 +411,8 @@ teardown). The schema is versioned (`schema_version: 1`); breaking changes bump 
 | `SetupScriptFailed` / `TeardownScriptFailed` | Hook returned non-zero |
 | `ConfigReadFailed` / `ConfigWriteFailed` | Config I/O / parse error |
 | `VCSCommandFailed` | Underlying `git`/`jj` command failed |
+| `RemoteProjectUnsupported` | `add-project` was given a remote path (`host:path`, `ssh://…`) |
+| `RemoteWorkroomUnsupported` | `delete` / `delete-project` on a remote workroom (not yet supported) |
 | `InternalError` | Anything else |
 
 #### Exit codes

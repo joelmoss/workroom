@@ -10,11 +10,31 @@ struct Warning: Codable, Hashable {
   let vcs: String?
 }
 
+/// A workroom's host descriptor from `list --json` (#249): present means the workroom lives on
+/// another host, and its `path` is a path there. The app owns the schema (the `HostDriver` is Swift,
+/// OQ21); the CLI reads only presence and `state`. Decoded as leniently as the CLI reads it: any
+/// non-null value counts as present, so a malformed descriptor still keeps a remote workroom away
+/// from every local action instead of failing the whole listing.
+struct HostDescriptor: Codable, Hashable {
+  var state: String? = nil
+
+  var isDestroyed: Bool { state == "destroyed" }
+
+  init(state: String? = nil) { self.state = state }
+
+  init(from decoder: Decoder) throws {
+    let container = try? decoder.container(keyedBy: CodingKeys.self)
+    state = try? container?.decodeIfPresent(String.self, forKey: .state)
+  }
+}
+
 struct Workroom: Codable, Identifiable, Hashable {
   let name: String
   let path: String
   let vcsName: String
   let warnings: [Warning]
+  /// nil for a workroom on this Mac.
+  var host: HostDescriptor? = nil
   /// GUI-only display alias (issue #41). NOT part of the `--json` contract — the CLI never sends
   /// it; it's injected post-decode in `AppStore.apply` from `Defaults[.workroomLabels]`. Absent
   /// from `CodingKeys` (with a default) so the synthesised decoder skips it. Intentionally a
@@ -26,6 +46,7 @@ struct Workroom: Codable, Identifiable, Hashable {
 
   var id: String { name }
   var hasBlockingWarning: Bool { warnings.contains { $0.kind == "DirectoryMissing" } }
+  var isRemote: Bool { host != nil }
 
   /// The name to show in the UI: the label when one is set, else the real workspace name. The
   /// single place the label-vs-name choice is made; every display site routes through this.
@@ -42,7 +63,7 @@ struct Workroom: Codable, Identifiable, Hashable {
   }
 
   enum CodingKeys: String, CodingKey {
-    case name, path, warnings
+    case name, path, warnings, host
     case vcsName = "vcs_name"
     // `label` is deliberately omitted — it's a GUI-only field, not part of the CLI JSON contract.
   }
@@ -90,13 +111,63 @@ struct TerminalTarget: Identifiable, Hashable {
   let id: String
   let title: String
   let path: String
-  let isMissing: Bool
+  /// Why this target cannot be opened on this Mac, or nil when it can. Every local action (terminal,
+  /// editor, run command, status) guards on `isMissing`; only the rendering sites tell the reasons
+  /// apart.
+  let unavailability: Unavailability?
+
+  var isMissing: Bool { unavailability != nil }
+
+  enum Unavailability: Hashable {
+    /// A local directory that no longer exists.
+    case directoryMissing
+    /// A workroom on another host. Its path is not a path on this Mac, and nothing opens a remote
+    /// workroom yet (#253).
+    case remote
+    /// A remote workroom whose host its provider destroyed. Not a missing directory.
+    case hostDestroyed
+
+    var title: String {
+      switch self {
+      case .directoryMissing: return "Directory not found"
+      case .remote: return "Remote workroom"
+      case .hostDestroyed: return "Host destroyed"
+      }
+    }
+
+    var systemImage: String {
+      switch self {
+      case .directoryMissing: return "questionmark.folder"
+      case .remote: return "network"
+      case .hostDestroyed: return "xmark.icloud"
+      }
+    }
+
+    func detail(for target: TerminalTarget) -> String {
+      switch self {
+      case .directoryMissing:
+        return "\(target.title) points at a path that no longer exists.\n\(target.path)"
+      case .remote:
+        return "\(target.title) is on another host, and this build cannot open it.\n\(target.path)"
+      case .hostDestroyed:
+        return "\(target.title)'s host was destroyed by its provider.\n\(target.path)"
+      }
+    }
+  }
 
   // The id format lives ONLY here (and in the two builders below). Anything that needs a
   // target id — terminal/log keying, reaping — goes through these, so the project-scoping
   // that fixes the same-name collision can't drift.
   static func workroomID(project: String, name: String) -> String { "wr|\(project)|\(name)" }
   static func rootID(project: String) -> String { "root|\(project)" }
+}
+
+extension TerminalTarget {
+  /// A local target: missing means its directory is gone.
+  init(id: String, title: String, path: String, isMissing: Bool) {
+    self.init(
+      id: id, title: title, path: path, unavailability: isMissing ? .directoryMissing : nil)
+  }
 }
 
 extension Workroom {
@@ -107,7 +178,12 @@ extension Workroom {
   func target(inProject projectPath: String) -> TerminalTarget {
     TerminalTarget(
       id: TerminalTarget.workroomID(project: projectPath, name: name),
-      title: displayName, path: path, isMissing: hasBlockingWarning)
+      title: displayName, path: path, unavailability: unavailability)
+  }
+
+  private var unavailability: TerminalTarget.Unavailability? {
+    if let host { return host.isDestroyed ? .hostDestroyed : .remote }
+    return hasBlockingWarning ? .directoryMissing : nil
   }
 }
 

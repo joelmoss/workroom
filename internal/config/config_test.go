@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -323,5 +325,112 @@ func TestCreatesConfigDirOnWrite(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dir, "subdir", "config.json")); err != nil {
 		t.Fatalf("expected config file to exist: %v", err)
+	}
+}
+
+// TestHostDescriptorsRoundTripThroughEveryWriter runs each config mutator a CLI command uses
+// (create, delete, add-project, delete-project, the vcs heal in list, workrooms_dir, channel)
+// and checks that both levels' host descriptors come out exactly as they went in.
+func TestHostDescriptorsRoundTripThroughEveryWriter(t *testing.T) {
+	c := newTestConfig(t)
+	projectHost := map[string]any{"provider": "boxd", "base": map[string]any{"id": "b1"}, "n": json.Number("1")}
+	// A provider id above 2^53 is where a float64 round trip changes the value.
+	workroomHost := map[string]any{
+		"id": "h1", "provider": "boxd", "state": "running", "extra": []any{"x"},
+		"instance": json.Number("9007199254740993"),
+	}
+	if err := c.Write(map[string]any{
+		"/p": map[string]any{
+			"vcs":  "jj",
+			"host": projectHost,
+			"workrooms": map[string]any{
+				"remote": map[string]any{"path": "/home/wr/remote", "host": workroomHost},
+			},
+		},
+		"/other": map[string]any{"vcs": "git", "workrooms": map[string]any{}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	writers := []struct {
+		name string
+		run  func() error
+	}{
+		{"AddWorkroom", func() error { return c.AddWorkroom("/p", "local", "/wr/local", "jj") }},
+		{"AddProject", func() error { return c.AddProject("/p", "jj") }},
+		{"SetProjectVCS", func() error { return c.SetProjectVCS("/p", "git") }},
+		{"RemoveWorkroomKeepProject", func() error { return c.RemoveWorkroomKeepProject("/p", "local") }},
+		{"AddWorkroom again", func() error { return c.AddWorkroom("/p", "local", "/wr/local", "git") }},
+		{"RemoveWorkroom", func() error { return c.RemoveWorkroom("/p", "local") }},
+		{"RemoveProject of another", func() error { return c.RemoveProject("/other") }},
+		{"SetWorkroomsDir", func() error { return c.SetWorkroomsDir("~/elsewhere") }},
+		{"SetChannel", func() error { return c.SetChannel("pre") }},
+	}
+	for _, w := range writers {
+		if err := w.run(); err != nil {
+			t.Fatalf("%s: %v", w.name, err)
+		}
+		projects, err := c.AllProjects()
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := projects["/p"]
+		if !reflect.DeepEqual(p.Host, projectHost) {
+			t.Fatalf("%s: project host = %v, want %v", w.name, p.Host, projectHost)
+		}
+		if got := p.Workrooms["remote"]; !reflect.DeepEqual(got.Host, workroomHost) || got.Path != "/home/wr/remote" {
+			t.Fatalf("%s: remote workroom = %+v, want host %v", w.name, got, workroomHost)
+		}
+	}
+}
+
+// A project that carries a host descriptor outlives its last workroom: the descriptor is the
+// record of a remote machine. One without keeps the old cleanup.
+func TestRemoveWorkroomKeepsProjectWithHost(t *testing.T) {
+	c := newTestConfig(t)
+	c.AddWorkroom("/p", "a", "/wr/a", "git")
+	c.AddWorkroom("/q", "b", "/wr/b", "git")
+	data, _ := c.Read()
+	data["/p"].(map[string]any)["host"] = map[string]any{"provider": "boxd"}
+	c.Write(data)
+
+	c.RemoveWorkroom("/p", "a")
+	c.RemoveWorkroom("/q", "b")
+
+	data, _ = c.Read()
+	if _, ok := data["/p"]; !ok {
+		t.Fatal("a project with a host descriptor was dropped with its last workroom")
+	}
+	if _, ok := data["/q"]; ok {
+		t.Fatal("a project without one should still be dropped with its last workroom")
+	}
+}
+
+func TestDecodeHostDescriptors(t *testing.T) {
+	c := newTestConfig(t)
+	c.Write(map[string]any{
+		"/p": map[string]any{"vcs": "git", "workrooms": map[string]any{
+			"local":     map[string]any{"path": "/wr/local"},
+			"remote":    map[string]any{"path": "/r", "host": map[string]any{"id": "h1"}},
+			"destroyed": map[string]any{"path": "/r", "host": map[string]any{"state": "destroyed"}},
+			"malformed": map[string]any{"path": "/r", "host": "boxd"},
+			"null":      map[string]any{"path": "/r", "host": nil},
+		}},
+	})
+	projects, err := c.AllProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string][2]bool{
+		"local": {false, false}, "remote": {true, false}, "destroyed": {true, true},
+		"malformed": {true, false}, "null": {false, false},
+	} {
+		w := projects["/p"].Workrooms[name]
+		if got := [2]bool{w.IsRemote(), w.HostDestroyed()}; got != want {
+			t.Fatalf("%s: (IsRemote, HostDestroyed) = %v, want %v", name, got, want)
+		}
+	}
+	if got := projects["/p"].RemoteWorkroomNames(); !reflect.DeepEqual(got, []string{"destroyed", "malformed", "remote"}) {
+		t.Fatalf("RemoteWorkroomNames = %v", got)
 	}
 }

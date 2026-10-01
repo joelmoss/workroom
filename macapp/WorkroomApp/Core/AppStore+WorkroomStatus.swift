@@ -65,7 +65,8 @@ extension AppStore {
     for p in projects {
       items.append(
         StatusWorkItem(sid: .root(project: p.id), path: p.path, vcs: p.vcs, projectRoot: p.path))
-      for w in p.workrooms {
+      // A remote workroom's path is not a path on this Mac, so there is nothing local to probe.
+      for w in p.workrooms where !w.isRemote {
         // A workroom's VCS *type* is its project's (`p.vcs`) — a git project's workrooms are git
         // worktrees, a jj project's are jj workspaces. NOT `w.vcsName`, which is the workroom's
         // branch/workspace *name* (`workroom/<name>`); passing that as the type made resolveLocal
@@ -568,8 +569,10 @@ extension AppStore {
       guard let p = projects.first(where: { $0.id == path }) else { return nil }
       return StatusWorkItem(sid: sid, path: p.path, vcs: p.vcs, projectRoot: p.path)
     case .workroom(let path, let name):
+      // A remote workroom has no local item: its path is not a path on this Mac. Nil also makes
+      // `targetExists` false, so commits, PR actions and late status merges skip it.
       guard let p = projects.first(where: { $0.id == path }),
-        let w = p.workrooms.first(where: { $0.id == name })
+        let w = p.workrooms.first(where: { $0.id == name }), !w.isRemote
       else { return nil }
       // `p.vcs` is the VCS type; `w.vcsName` is the branch name, not the type (see statusWorkItems).
       return StatusWorkItem(sid: sid, path: w.path, vcs: p.vcs, projectRoot: p.path)

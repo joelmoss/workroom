@@ -8,7 +8,9 @@ import (
 	"github.com/joelmoss/workroom/internal/errs"
 )
 
-// schemaVersion is the version of the --json contract. Bump only on breaking changes.
+// schemaVersion is the version of the --json contract. Bump only on breaking changes. A new field
+// or a new warning kind is additive (the app's decoders ignore unknown keys), so list's "host"
+// descriptors and the HostDestroyed warning (#249) left it at 1.
 const schemaVersion = 1
 
 var (

@@ -30,4 +30,52 @@ final class TerminalTargetTests: XCTestCase {
     let p = Project(path: "/definitely/not/a/real/path/zzz", vcs: "git", workrooms: [])
     XCTAssertTrue(p.rootTarget.isMissing)
   }
+
+  /// `list --json` (#249): `host` present means remote, whatever its shape, and a bad one must not
+  /// fail the whole listing.
+  func testHostDescriptorsDecodeFromList() throws {
+    let json = Data(
+      """
+      {"ok":true,"schema_version":1,"projects":[{"path":"/p","vcs":"jj",
+        "host":{"provider":"boxd"},
+        "workrooms":[
+          {"name":"local","path":"/wr/local","vcs_name":"workroom/local","warnings":[]},
+          {"name":"remote","path":"/home/r","vcs_name":"workroom/remote","warnings":[],
+           "host":{"id":"h1","provider":"boxd","state":"running","extra":[1]}},
+          {"name":"gone","path":"/home/g","vcs_name":"workroom/gone",
+           "warnings":[{"kind":"HostDestroyed","message":"host destroyed by its provider"}],
+           "host":{"state":"destroyed"}},
+          {"name":"odd","path":"/home/o","vcs_name":"workroom/odd","warnings":[],"host":"boxd"},
+          {"name":"null","path":"/wr/null","vcs_name":"workroom/null","warnings":[],"host":null}
+        ]}]}
+      """.utf8)
+    let workrooms = try JSONDecoder().decode(ListResponse.self, from: json).projects[0].workrooms
+    let byName = Dictionary(uniqueKeysWithValues: workrooms.map { ($0.name, $0) })
+    XCTAssertFalse(byName["local"]!.isRemote)
+    XCTAssertTrue(byName["remote"]!.isRemote)
+    XCTAssertEqual(byName["remote"]!.host?.isDestroyed, false)
+    XCTAssertEqual(byName["gone"]!.host?.isDestroyed, true)
+    XCTAssertTrue(byName["odd"]!.isRemote)
+    XCTAssertFalse(byName["null"]!.isRemote)
+  }
+
+  /// A remote workroom is unavailable on this Mac (every local action guards on `isMissing`) but
+  /// never shown as a missing directory; a destroyed host is its own state.
+  func testUnavailabilityReasons() {
+    func target(_ warnings: [Warning], _ host: HostDescriptor?) -> TerminalTarget {
+      Workroom(name: "x", path: "/p", vcsName: "workroom/x", warnings: warnings, host: host)
+        .target(inProject: "/proj")
+    }
+    let missing = Warning(kind: "DirectoryMissing", message: "gone", path: "/p", vcs: nil)
+    let destroyed = Warning(kind: "HostDestroyed", message: "destroyed", path: nil, vcs: nil)
+
+    XCTAssertNil(target([], nil).unavailability)
+    XCTAssertFalse(target([], nil).isMissing)
+    XCTAssertEqual(target([missing], nil).unavailability, .directoryMissing)
+    XCTAssertEqual(target([], HostDescriptor()).unavailability, .remote)
+    XCTAssertTrue(target([], HostDescriptor()).isMissing)
+    XCTAssertEqual(
+      target([destroyed], HostDescriptor(state: "destroyed")).unavailability, .hostDestroyed)
+    XCTAssertTrue(target([destroyed], HostDescriptor(state: "destroyed")).isMissing)
+  }
 }

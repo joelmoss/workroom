@@ -502,11 +502,11 @@ private struct WorkroomPaneTitleBar: View {
       Image(systemName: workroomName == nil ? "house" : "cube")
         .font(.system(size: 10))
         .foregroundStyle(focused ? theme.tokens.accent : theme.tokens.fgMuted)
-      if target.isMissing {
+      if let reason = target.unavailability {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 10))
           .foregroundStyle(.orange)
-          .help("Directory not found")
+          .help(reason.title)
       }
       // `project / workroom`, same format and size as `WorkroomTabChip`. Full-strength on the focused
       // member, muted otherwise — the brighter header is the in-content "this is the active pane" cue.

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -34,14 +35,47 @@ func isReserved(key string) bool { return reservedKeys[key] }
 // Workroom describes one workroom entry as stored under a project's "workrooms" map.
 type Workroom struct {
 	Path string
+	// Host is the entry's "host" descriptor, or nil for a workroom on this Mac. The app owns its
+	// schema (the HostDriver is Swift, OQ21), so the CLI reads only two things from it: that it is
+	// present, and its "state". Any non-null value counts as present, so a malformed descriptor
+	// still keeps a remote workroom away from every local-path operation.
+	Host any
+}
+
+// IsRemote reports whether the workroom lives on another host. Its Path is then a path on that
+// host, never one on this Mac.
+func (w Workroom) IsRemote() bool { return w.Host != nil }
+
+// HostDestroyed reports whether the provider has destroyed the workroom's host (a reclaimed spot
+// instance, an expired sandbox), as recorded in the descriptor's "state".
+func (w Workroom) HostDestroyed() bool {
+	host, _ := w.Host.(map[string]any)
+	state, _ := host["state"].(string)
+	return state == "destroyed"
 }
 
 // Project describes one top-level project entry in the config. It's a read-side view:
 // mutators (AddWorkroom, RemoveWorkroom, ...) keep working directly against the raw
 // map[string]any so Read/Write round-trip fidelity for unknown keys is unaffected.
 type Project struct {
-	VCS       string
+	VCS string
+	// Host is the project's "host" descriptor, reported verbatim and interpreted nowhere. A
+	// project is always a local repository (there are no remote projects); its descriptor is
+	// state its remote workrooms share.
+	Host      any
 	Workrooms map[string]Workroom
+}
+
+// RemoteWorkroomNames returns the names of the project's remote workrooms, sorted.
+func (p Project) RemoteWorkroomNames() []string {
+	names := []string{}
+	for name, w := range p.Workrooms {
+		if w.IsRemote() {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // decodeProject converts a project's raw stored entry into a typed Project. A missing or
@@ -49,7 +83,7 @@ type Project struct {
 // or legacy config entry degrades gracefully instead of panicking.
 func decodeProject(raw map[string]any) Project {
 	vcs, _ := raw["vcs"].(string)
-	project := Project{VCS: vcs, Workrooms: map[string]Workroom{}}
+	project := Project{VCS: vcs, Host: raw["host"], Workrooms: map[string]Workroom{}}
 	wrMap, ok := raw["workrooms"].(map[string]any)
 	if !ok {
 		return project
@@ -60,7 +94,7 @@ func decodeProject(raw map[string]any) Project {
 			continue
 		}
 		path, _ := entry["path"].(string)
-		project.Workrooms[name] = Workroom{Path: path}
+		project.Workrooms[name] = Workroom{Path: path, Host: entry["host"]}
 	}
 	return project
 }
@@ -96,9 +130,16 @@ func (c *Config) Read() (map[string]any, error) {
 		}
 		return nil, fmt.Errorf("%w %s: %v", errs.ErrConfigRead, c.path, err)
 	}
+	// UseNumber keeps numbers as written: the app's host descriptors are opaque here, and a float64
+	// round trip would rewrite an integer above 2^53 on every config write.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	var result map[string]any
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := dec.Decode(&result); err != nil {
 		return nil, fmt.Errorf("%w %s: %v", errs.ErrConfigRead, c.path, err)
+	}
+	if dec.More() {
+		return nil, fmt.Errorf("%w %s: unexpected data after the config object", errs.ErrConfigRead, c.path)
 	}
 	return result, nil
 }
@@ -296,7 +337,9 @@ func (c *Config) SetProjectVCS(parentPath, vcs string) error {
 	})
 }
 
-// RemoveWorkroom removes a workroom entry. If the parent has no remaining workrooms, it is removed.
+// RemoveWorkroom removes a workroom entry. If the parent has no remaining workrooms, it is
+// removed, unless it carries a host descriptor: that describes a remote machine, and dropping it
+// with the entry would lose the only record of it.
 func (c *Config) RemoveWorkroom(parentPath, name string) error {
 	return c.withLock(func() error {
 		data, err := c.Read()
@@ -316,7 +359,7 @@ func (c *Config) RemoveWorkroom(parentPath, name string) error {
 
 		delete(workrooms, name)
 
-		if len(workrooms) == 0 {
+		if len(workrooms) == 0 && project["host"] == nil {
 			delete(data, parentPath)
 		}
 

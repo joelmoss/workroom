@@ -209,6 +209,54 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertEqual(rootItem?.vcs, "jj")
   }
 
+  /// A remote workroom's path is on its host (#249): the local sweep must not probe it.
+  @MainActor
+  func testStatusWorkItemsSkipRemoteWorkrooms() {
+    let store = AppStore()
+    store.projects = [
+      Project(
+        path: "/p", vcs: "git",
+        workrooms: [
+          Workroom(name: "local", path: "/p/local", vcsName: "workroom/local", warnings: []),
+          Workroom(
+            name: "remote", path: "/home/remote", vcsName: "workroom/remote", warnings: [],
+            host: HostDescriptor()),
+        ])
+    ]
+    XCTAssertEqual(
+      store.statusWorkItems().map(\.sid),
+      [.root(project: "/p"), .workroom(project: "/p", name: "local")])
+    // The selection lane (watch + probe on select) and `targetExists` go through this one.
+    XCTAssertNil(store.selectedStatusWorkItem(for: .workroom(project: "/p", name: "remote")))
+    XCTAssertNotNil(store.selectedStatusWorkItem(for: .workroom(project: "/p", name: "local")))
+  }
+
+  /// The CLI refuses to delete remote workrooms (#249). The app must refuse before its optimistic
+  /// local cleanup, which would otherwise drop the row and forget labels for a delete that fails.
+  @MainActor
+  func testDeletingRemoteWorkroomsIsRefusedBeforeLocalCleanup() {
+    let store = AppStore()
+    let remote = Workroom(
+      name: "remote", path: "/home/remote", vcsName: "workroom/remote", warnings: [],
+      host: HostDescriptor())
+    let project = Project(
+      path: "/p", vcs: "git",
+      workrooms: [
+        Workroom(name: "local", path: "/p/local", vcsName: "workroom/local", warnings: []), remote,
+      ])
+    store.projects = [project]
+
+    store.deleteWorkroom(remote, in: project)
+    XCTAssertEqual(store.projects, [project])
+    XCTAssertEqual(store.errorTitle, "Can't delete remote")
+
+    store.errorTitle = nil
+    store.errorMessage = nil
+    store.deleteProject(project, scope: .configOnly)
+    XCTAssertEqual(store.projects, [project])
+    XCTAssertTrue(store.errorMessage?.contains("remote workrooms (remote)") == true)
+  }
+
   // MARK: - mergeLocalStatus carries the full local probe forward
 
   /// Regression: `mergeLocalStatus` once copied only a subset of the fresh fields and dropped the

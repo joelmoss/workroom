@@ -41,7 +41,23 @@ enum AddProjectSheetModel {
     return true
   }
 
-  static func footer(mode: AddProjectMode) -> String {
+  /// Whether the typed path names a location on another machine (`ssh://…`, `host:repo`): git's
+  /// own test, a colon before the first slash, and the one the CLI refuses with
+  /// RemoteProjectUnsupported.
+  static func isRemote(_ path: String) -> Bool {
+    let p = normalize(path)
+    if p.contains("://") { return true }
+    guard let colon = p.firstIndex(of: ":"), colon != p.startIndex else { return false }
+    guard let slash = p.firstIndex(of: "/") else { return true }
+    return colon < slash
+  }
+
+  static func footer(mode: AddProjectMode, path: String = "") -> String {
+    if isRemote(path) {
+      return
+        "Remote projects aren't supported. Add the project from a local repository: a remote "
+        + "workroom belongs to a local project."
+    }
     switch mode {
     case .existing:
       return "Choose or type the full path to an existing Git or Jujutsu repository."
@@ -86,7 +102,7 @@ struct AddProjectFields: View {
           Button("Choose…") { showChooser = true }
             .accessibilityIdentifier("addProject.chooseButton")
         }
-        Text(AddProjectSheetModel.footer(mode: mode))
+        Text(AddProjectSheetModel.footer(mode: mode, path: path))
           .font(.callout)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
