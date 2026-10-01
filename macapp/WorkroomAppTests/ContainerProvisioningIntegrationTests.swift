@@ -266,6 +266,89 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     for host in [instance, base] { try await driver.destroy(host) }
   }
 
+  /// A later launch's driver takes back what an earlier one made (#253): from their records
+  /// alone, it reaches both hosts on their pinned keys, derives from the base, and destroys them
+  /// with their image.
+  func testADriverInALaterLaunchAdoptsRecordedHosts() async throws {
+    let provisioning = try provisioning()
+    let earlier = ContainerHostDriver(
+      hosts: [:], directory: directory.appendingPathComponent("earlier"),
+      provisioning: provisioning)
+    let base = try await earlier.create()
+    let instance = try await earlier.deriveFromBase(base)
+    let baseRecord = try XCTUnwrap(earlier.record(of: base))
+    let instanceRecord = try XCTUnwrap(earlier.record(of: instance))
+    XCTAssertNil(baseRecord.image)
+    XCTAssertNotNil(instanceRecord.image)
+    // Through the descriptor, as config holds it between launches.
+    let stored = try JSONDecoder().decode(
+      HostDescriptor.self,
+      from: try JSONEncoder().encode(HostDescriptor(driver: "container", container: instanceRecord))
+    )
+    XCTAssertEqual(stored.container, instanceRecord)
+
+    let later = ContainerHostDriver(
+      hosts: [:], directory: directory.appendingPathComponent("later"), provisioning: provisioning)
+    guard case .remote(let baseID) = base, case .remote(let instanceID) = instance else {
+      return XCTFail("not remote hosts")
+    }
+    try later.adopt(baseID, baseRecord)
+    try later.adopt(instanceID, try XCTUnwrap(stored.container))
+    let adopted = try await identity(later, instance)
+    let original = try await identity(earlier, instance)
+    XCTAssertEqual(adopted, original, "the adopted host is another machine")
+    let second = try await later.deriveFromBase(base)
+
+    for host in [second, instance, base] { try await later.destroy(host) }
+    XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label), [])
+    XCTAssertEqual(try leftovers("images", runtime: runtime, label: label), [])
+  }
+
+  /// A record naming an image that is not a commit's is refused: `destroy` removes it by force.
+  func testAdoptRefusesARecordWhoseImageIsNotAnImageID() throws {
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: try provisioning())
+    let record = ContainerHostDriver.Record(
+      address: "127.0.0.1", port: 2222, user: "workroom", hostKey: "ssh-ed25519 AAAA",
+      image: "debian:bookworm")
+    XCTAssertThrowsError(try driver.adopt(UUID(), record))
+  }
+
+  /// The sweep removes what carries the driver's labels and no record names, and leaves the
+  /// recorded hosts, their images, and whatever is younger than its grace (#253).
+  func testSweepRemovesOnlyUnrecordedResourcesPastTheirGrace() async throws {
+    let provisioning = try provisioning()
+    let driver = ContainerHostDriver(hosts: [:], directory: directory, provisioning: provisioning)
+    let kept = try await driver.create()
+    let instance = try await driver.deriveFromBase(kept)
+    let orphan = try await driver.create()
+    let orphanInstance = try await driver.deriveFromBase(orphan)
+    guard case .remote(let keptID) = kept, case .remote(let instanceID) = instance,
+      case .remote(let orphanID) = orphan
+    else { return XCTFail("not remote hosts") }
+    XCTAssertEqual(try leftovers("images", runtime: runtime, label: label).count, 2)
+
+    let young = await driver.sweep(keeping: [keptID, instanceID], grace: 3600)
+    XCTAssertEqual(young, [])
+    XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label).count, 4, "young ones went")
+
+    let old = await driver.sweep(keeping: [keptID, instanceID], grace: 0)
+    XCTAssertEqual(old, [])
+    let names = try docker(
+      runtime, ["ps", "-a", "--filter", "label=\(label!)", "--format", "{{.Names}}"])
+    XCTAssertEqual(
+      Set(names.split(separator: "\n").map(String.init)),
+      [ContainerHostDriver.containerName(keptID), ContainerHostDriver.containerName(instanceID)])
+    XCTAssertFalse(names.contains(ContainerHostDriver.containerName(orphanID)))
+    XCTAssertEqual(
+      try leftovers("images", runtime: runtime, label: label).count, 1,
+      "the orphaned instance's image stayed, or the recorded one's went")
+    _ = orphanInstance
+    try await onHost(driver, instance, "true")
+
+    for host in [instance, kept] { try await driver.destroy(host) }
+  }
+
   /// Derives from one base at once: each gets a host, port and identity of its own, and the
   /// driver's registry keeps them apart.
   func testConcurrentDerivesFromOneBaseEachGetTheirOwnHost() async throws {

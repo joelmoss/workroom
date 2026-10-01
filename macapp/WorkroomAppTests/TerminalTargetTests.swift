@@ -57,6 +57,38 @@ final class TerminalTargetTests: XCTestCase {
     XCTAssertEqual(byName["gone"]!.host?.isDestroyed, true)
     XCTAssertTrue(byName["odd"]!.isRemote)
     XCTAssertFalse(byName["null"]!.isRemote)
+    XCTAssertNotNil(try JSONDecoder().decode(ListResponse.self, from: json).projects[0].host)
+  }
+
+  /// The app's own descriptor (#253) survives a write and a `list --json` read, and its record is
+  /// enough to find a container host again; a field of the wrong type is dropped on its own.
+  func testHostDescriptorRoundTripsTheAppsSchema() throws {
+    let id = UUID()
+    let descriptor = HostDescriptor(
+      driver: "container", id: id, grantID: "g1", repository: "o/r",
+      cloneURL: "https://github.com/o/r.git", path: "/home/workroom/r",
+      container: ContainerHostDriver.Record(
+        address: "127.0.0.1", port: 2222, user: "workroom", hostKey: "ssh-ed25519 AAAA",
+        image: nil))
+    let json = try JSONEncoder().encode(descriptor)
+    let object = try XCTUnwrap(JSONSerialization.jsonObject(with: json) as? [String: Any])
+    XCTAssertEqual(object["grant_id"] as? String, "g1")
+    XCTAssertEqual(
+      (object["container"] as? [String: Any])?["host_key"] as? String, "ssh-ed25519 AAAA")
+    XCTAssertNil(object["state"], "an unset field is written as absent, not null")
+    XCTAssertEqual(try JSONDecoder().decode(HostDescriptor.self, from: json), descriptor)
+    XCTAssertEqual(
+      descriptor.base,
+      RemoteProvisioning.Base(
+        host: id, repository: "o/r", cloneURL: "https://github.com/o/r.git",
+        path: "/home/workroom/r"))
+
+    let odd = try JSONDecoder().decode(
+      HostDescriptor.self,
+      from: Data(#"{"id":"not-a-uuid","state":"destroyed","container":{"port":"x"}}"#.utf8))
+    XCTAssertNil(odd.id)
+    XCTAssertNil(odd.container)
+    XCTAssertTrue(odd.isDestroyed)
   }
 
   /// A remote workroom is unavailable on this Mac (every local action guards on `isMissing`) but

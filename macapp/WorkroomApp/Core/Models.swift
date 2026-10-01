@@ -10,21 +10,67 @@ struct Warning: Codable, Hashable {
   let vcs: String?
 }
 
-/// A workroom's host descriptor from `list --json` (#249): present means the workroom lives on
-/// another host, and its `path` is a path there. The app owns the schema (the `HostDriver` is Swift,
-/// OQ21); the CLI reads only presence and `state`. Decoded as leniently as the CLI reads it: any
-/// non-null value counts as present, so a malformed descriptor still keeps a remote workroom away
-/// from every local action instead of failing the whole listing.
+/// A host descriptor from `list --json` (#249), which the app writes with `workroom host set`.
+/// On a workroom, present means the workroom lives on another host, and its `path` is a path
+/// there. On a project, it records the project's base machine (#252), and the project itself is
+/// still on this Mac. The app owns the schema (the `HostDriver` is Swift, OQ21); the CLI reads
+/// only presence and `state`. Decoded as leniently as the CLI reads it: any non-null value counts
+/// as present, and each field that does not decode is nil, so a malformed descriptor still keeps a
+/// remote workroom away from every local action instead of failing the whole listing.
 struct HostDescriptor: Codable, Hashable {
   var state: String? = nil
+  /// Which `HostDriver` made the host: `container` (`ContainerHostDriver`).
+  var driver: String? = nil
+  /// The host's `HostID.remote` ID.
+  var id: UUID? = nil
+  /// A workroom's broker grant, which destroying it cancels.
+  var grantID: String? = nil
+  /// A base's repository, as `RemoteProvisioning.Base` records it.
+  var repository: String? = nil
+  var cloneURL: String? = nil
+  var path: String? = nil
+  /// How `ContainerHostDriver` finds the host again.
+  var container: ContainerHostDriver.Record? = nil
 
   var isDestroyed: Bool { state == "destroyed" }
 
-  init(state: String? = nil) { self.state = state }
+  enum CodingKeys: String, CodingKey {
+    case state, driver, id, repository, path, container
+    case grantID = "grant_id"
+    case cloneURL = "clone_url"
+  }
+
+  init(
+    state: String? = nil, driver: String? = nil, id: UUID? = nil, grantID: String? = nil,
+    repository: String? = nil, cloneURL: String? = nil, path: String? = nil,
+    container: ContainerHostDriver.Record? = nil
+  ) {
+    self.state = state
+    self.driver = driver
+    self.id = id
+    self.grantID = grantID
+    self.repository = repository
+    self.cloneURL = cloneURL
+    self.path = path
+    self.container = container
+  }
 
   init(from decoder: Decoder) throws {
-    let container = try? decoder.container(keyedBy: CodingKeys.self)
-    state = try? container?.decodeIfPresent(String.self, forKey: .state)
+    let fields = try? decoder.container(keyedBy: CodingKeys.self)
+    state = try? fields?.decodeIfPresent(String.self, forKey: .state)
+    driver = try? fields?.decodeIfPresent(String.self, forKey: .driver)
+    id = try? fields?.decodeIfPresent(UUID.self, forKey: .id)
+    grantID = try? fields?.decodeIfPresent(String.self, forKey: .grantID)
+    repository = try? fields?.decodeIfPresent(String.self, forKey: .repository)
+    cloneURL = try? fields?.decodeIfPresent(String.self, forKey: .cloneURL)
+    path = try? fields?.decodeIfPresent(String.self, forKey: .path)
+    container = try? fields?.decodeIfPresent(ContainerHostDriver.Record.self, forKey: .container)
+  }
+
+  /// A project's base, when the descriptor records a whole one.
+  var base: RemoteProvisioning.Base? {
+    guard let id, let repository, let cloneURL, let path else { return nil }
+    return RemoteProvisioning.Base(host: id, repository: repository, cloneURL: cloneURL, path: path)
   }
 }
 
@@ -73,6 +119,8 @@ struct Project: Codable, Identifiable, Hashable {
   let path: String
   let vcs: String
   let workrooms: [Workroom]
+  /// The project's base machine (#252), or nil when it has none. The project is still on this Mac.
+  var host: HostDescriptor? = nil
 
   var id: String { path }
   var displayName: String { (path as NSString).lastPathComponent }

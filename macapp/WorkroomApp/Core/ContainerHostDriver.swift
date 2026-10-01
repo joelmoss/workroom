@@ -54,6 +54,28 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     let image: String?
   }
 
+  /// What a host this driver made needs to be reached and destroyed again by a driver in a later
+  /// launch (#253): the `container` part of its host descriptor. The client key and the agent's
+  /// socket are the driver's own (`Provisioning`), and the container's name follows from the
+  /// host's ID.
+  struct Record: Codable, Hashable, Sendable {
+    let address: String
+    let port: Int
+    let user: String
+    let hostKey: String
+    /// The image a derived instance was run from, which only it uses; nil for a base.
+    let image: String?
+
+    enum CodingKeys: String, CodingKey {
+      case address, port, user, image
+      case hostKey = "host_key"
+    }
+  }
+
+  /// The label every container and image this driver makes carries, with when it was made in
+  /// seconds since 1970, so `sweep` can leave one that may still be part of a create or derive.
+  static let createdLabel = "workroom.created"
+
   /// A derive is a snapshot of the disk only: a commit keeps no process, and the container run
   /// from it boots afresh.
   var traits: HostDriverTraits {
@@ -112,7 +134,10 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     let commit = "workroom.commit=\(UUID().uuidString.lowercased())"
     do {
       let image = try await runtime(
-        ["commit"] + (provisioning.labels + [commit]).flatMap { ["--change", "LABEL \($0)"] }
+        ["commit"]
+          + (provisioning.labels + [commit, Self.created()]).flatMap {
+            ["--change", "LABEL \($0)"]
+          }
           + [source.container],
         // `commit` prints nothing until it is done, and copying a base's disk takes a while.
         timeout: 900)
@@ -161,6 +186,111 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
   }
 
+  /// What a later launch's driver needs to `adopt` `host`, or nil for a host this driver did not
+  /// make.
+  func record(of host: HostID) -> Record? {
+    guard case .remote(let id) = host else { return nil }
+    return lock.withLock {
+      guard let target = hosts[id], let made = provisioned[id] else { return nil }
+      return Record(
+        address: target.address, port: target.port, user: target.user, hostKey: target.hostKey,
+        image: made.image)
+    }
+  }
+
+  /// Takes a host an earlier launch made back on (#253), as its `record` describes it, so it can
+  /// be reached, derived from and destroyed as if this driver had made it. Whether its container
+  /// is still there is found out by using it.
+  func adopt(_ id: UUID, _ record: Record) throws {
+    guard let provisioning else { throw HostDriverError.notImplemented("Adopting a host") }
+    // `destroy` removes it by this, with `--force`: a config edited by hand must not name an image
+    // that is not a commit's.
+    if let image = record.image, !Self.isImageID(image) {
+      throw HostDriverError.invalidConfiguration("image \(image) is not an image ID")
+    }
+    lock.withLock {
+      hosts[id] = Host(
+        address: record.address, port: record.port, user: record.user,
+        identityFile: provisioning.identityFile, hostKey: record.hostKey,
+        agentSocket: provisioning.agentSocket)
+      provisioned[id] = Provisioned(container: Self.containerName(id), image: record.image)
+      destroyed.remove(id)
+    }
+  }
+
+  /// Removes the containers and images carrying this driver's labels that are not `known` hosts'
+  /// (#252, #253): what a crash left, a `commit` or `run` that finished in the daemon after its
+  /// killed CLI's cleanup, a host whose record was lost. Anything made within `grace` is left,
+  /// since it may belong to a create or derive still under way, in this app or another sharing
+  /// the daemon. Returns what it could not remove.
+  /// ponytail: a resource made before `createdLabel` existed has no age and counts as old.
+  func sweep(keeping known: Set<UUID>, grace: TimeInterval = 20 * 60) async -> [String] {
+    guard let provisioning, !provisioning.labels.isEmpty else { return [] }
+    let filters = provisioning.labels.flatMap { ["--filter", "label=\($0)"] }
+    let cutoff = Date().timeIntervalSince1970 - grace
+    func old(_ created: Substring) -> Bool { (TimeInterval(created) ?? 0) <= cutoff }
+    var failed: [String] = []
+
+    let keptContainers = Set(known.map(Self.containerName))
+    let keptImages = Set(
+      lock.withLock { known.compactMap { provisioned[$0]?.image } }.map(Self.shortImageID))
+    do {
+      for line in try await runtime(
+        ["ps", "-a"] + filters + ["--format", "{{.Names}}\t{{.Label \"\(Self.createdLabel)\"}}"],
+        allLines: true
+      ).split(separator: "\n") {
+        let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+        let name = String(fields[0])
+        guard !keptContainers.contains(name), old(fields.count > 1 ? fields[1] : "") else {
+          continue
+        }
+        do { _ = try await runtime(["rm", "--force", "--volumes", name]) } catch {
+          failed.append("container \(name): \(error.localizedDescription)")
+        }
+      }
+    } catch { failed.append("listing containers: \(error.localizedDescription)") }
+
+    do {
+      let images = try await runtime(["images", "-aq"] + filters, allLines: true)
+        .split(separator: "\n").map(String.init)
+      for image in Set(images) where !keptImages.contains(Self.shortImageID(image)) {
+        // One that cannot be inspected is left for the next sweep.
+        guard
+          let created = try? await runtime(
+            [
+              "image", "inspect", "--format", "{{index .Config.Labels \"\(Self.createdLabel)\"}}",
+              image,
+            ]),
+          old(Substring(created))
+        else { continue }
+        // Without `--force`: an image any container was run from is in use, and stays, so a
+        // `known` host this driver has not adopted keeps its image too.
+        do { _ = try await runtime(["rmi", image]) } catch {
+          failed.append("image \(image): \(error.localizedDescription)")
+        }
+      }
+    } catch { failed.append("listing images: \(error.localizedDescription)") }
+    return failed
+  }
+
+  static func containerName(_ id: UUID) -> String { "workroom-\(id.uuidString.lowercased())" }
+
+  private static func created() -> String {
+    "\(createdLabel)=\(Int(Date().timeIntervalSince1970))"
+  }
+
+  /// `sha256:<64 hex>`, as `commit` prints it.
+  static func isImageID(_ text: String) -> Bool {
+    let hex = text.dropFirst("sha256:".count)
+    return text.hasPrefix("sha256:") && hex.count == 64
+      && hex.allSatisfy { $0.isHexDigit && !$0.isUppercase }
+  }
+
+  /// `images -q` prints the first 12 hex digits; `commit` the whole `sha256:` ID.
+  private static func shortImageID(_ image: String) -> String {
+    String(image.replacingOccurrences(of: "sha256:", with: "").prefix(12))
+  }
+
   /// Runs a container from `source` and waits until it can be reached: its identity minted, its
   /// host key pinned, and an ssh login through this driver's own configuration answering. A
   /// container that gets no further is removed.
@@ -177,11 +307,11 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     let id = UUID()
     // Named here, not by the runtime's own ID, which is known only from its output: a run that
     // outlives its CLI still leaves a container this name removes.
-    let container = "workroom-\(id.uuidString.lowercased())"
+    let container = Self.containerName(id)
     do {
       _ = try await runtime(
         ["run", "--detach", "--init", "--name", container, "--publish", "127.0.0.1:\(port):22"]
-          + provisioning.labels.flatMap { ["--label", $0] }
+          + (provisioning.labels + [Self.created()]).flatMap { ["--label", $0] }
           + ["--env", "AUTHORIZED_KEY=\(provisioning.publicKey)", source])
       let hostKey = try await identity(of: container)
       lock.withLock {
