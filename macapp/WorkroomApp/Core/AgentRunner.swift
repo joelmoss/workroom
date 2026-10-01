@@ -113,7 +113,7 @@ enum AgentRunOutcome: Sendable, Equatable {
 protocol AgentRunning: Sendable {
   /// Run an inline, no-tools diagnosis (claude only, X1). `systemPrompt` replaces claude's default
   /// to shape output + cut cost; `model` pins a cheap/fast model (task #15). `cwd` is where claude
-  /// runs — callers should pass a NEUTRAL dir (not the project) so `CLAUDE.md` doesn't auto-load:
+  /// runs — callers should pass a NEUTRAL dir (not the project) so `AGENTS.md` doesn't auto-load:
   /// the inline path has no tools and gets all context from `prompt`, so the real failure cwd
   /// belongs in the prompt text, not here.
   func diagnoseInline(

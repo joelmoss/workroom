@@ -3,7 +3,7 @@
 #
 # App recipes run inside macapp/ and need its toolchain on PATH (xcodegen via Homebrew). The
 # Xcode build also runs project.yml phases — a non-fatal swift-format lint and embedding the Go
-# helper (macapp/Scripts/build-helper.sh). `cli-lint` needs golangci-lint installed (see CLAUDE.md).
+# helper (macapp/Scripts/build-helper.sh). `cli-lint` needs golangci-lint installed (see AGENTS.md).
 export PATH := /opt/homebrew/bin:/usr/local/bin:$(PATH)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 

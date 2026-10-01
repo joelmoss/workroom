@@ -82,7 +82,7 @@ final class TerminalAgentManager: ObservableObject {
   private let persistAutoOptIn: (_ enable: Bool) -> Void
   private let now: () -> Date
   private let cooldown: TimeInterval
-  /// Where the inline (no-tools) claude call runs. A NEUTRAL dir, not the project, so `CLAUDE.md`
+  /// Where the inline (no-tools) claude call runs. A NEUTRAL dir, not the project, so `AGENTS.md`
   /// doesn't auto-load and inflate cost (token opt, task #15); the real cwd is in the prompt text.
   private let inlineCwd: String
   private let timeout: TimeInterval

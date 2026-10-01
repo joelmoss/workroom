@@ -442,7 +442,7 @@ final class PersistentSessionRoutingTests: XCTestCase {
 /// are separate calls, and nothing in either signature says they must agree — but if they disagree
 /// the pane runs one helper pointed at the other's socket. The Swift client would bind the agent's
 /// socket, which takes the path a live agent's sessions are reached through and serves none of
-/// them. `macapp/CLAUDE.md` calls this load-bearing; until now nothing tested it.
+/// them. `macapp/AGENTS.md` calls this load-bearing; until now nothing tested it.
 final class PersistentSessionPairTests: XCTestCase {
   /// A session the daemon holds: the attach-only client, on the daemon's socket.
   @MainActor

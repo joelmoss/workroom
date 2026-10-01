@@ -6,7 +6,7 @@
 # Why this exists, and why it is a copy of build-helper_test.sh rather than a shared helper: the
 # bug it guards against already shipped once. `ARCHS` is a SPACE-SEPARATED LIST, build-helper.sh
 # matched it as a single token, and 23 betas went out with an arm64-only CLI inside a fat .app —
-# announced by nothing louder than a `warn:` in the build log. macapp/CLAUDE.md records the rule
+# announced by nothing louder than a `warn:` in the build log. macapp/AGENTS.md records the rule
 # that any new universal Mac binary must reuse that iteration; this is what proves wr-agent does.
 #
 # CI never catches it: `make app-test` builds Debug with a single native arch, so the multi-arch

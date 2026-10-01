@@ -540,7 +540,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
   }
 
   /// `LocalAgentVCS` had zero coverage — its whole reason to exist is coalescing concurrent callers
-  /// racing to connect onto ONE attempt, exactly the class of concurrency bug `macapp/CLAUDE.md`
+  /// racing to connect onto ONE attempt, exactly the class of concurrency bug `macapp/AGENTS.md`
   /// mandates review for. Injecting `resolveSocketPath`/`binaryURL` (rather than `LocalAgentVCS`'s
   /// hardcoded `PersistentSessionPaths` statics) is what makes this testable in isolation, without
   /// touching the real per-bundle Application Support socket a live Workroom Dev instance might

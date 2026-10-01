@@ -90,7 +90,7 @@ enum AgentBootstrap {
 
   /// How long an exchange may go with nothing sent or received before it is given up on: a bound
   /// on silence, never on the whole transfer, which would make it a throughput floor for the 11 MB
-  /// push (the `WRITE_TIMEOUT` lesson in macapp/CLAUDE.md). The longest silence is the hand-off
+  /// push (the `WRITE_TIMEOUT` lesson in macapp/AGENTS.md). The longest silence is the hand-off
   /// CLI's own waits: ssh connecting (10 s), the agent's bounds (5.5 s), its read of the answer
   /// (30 s) and its greeting from the new program (10 s).
   static let timeout: TimeInterval = 60

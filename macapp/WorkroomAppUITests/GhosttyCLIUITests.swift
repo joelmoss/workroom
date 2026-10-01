@@ -112,7 +112,7 @@ final class GhosttyCLIUITests: XCTestCase {
       """
       `ghostty` did not resolve on the pane's PATH. Not fatal — shell integration calls it by \
       absolute path — but it means the PATH-shadowing note in Resources/ghostty/SOURCE.md and \
-      macapp/CLAUDE.md is wrong and should be removed. Screen was:
+      macapp/AGENTS.md is wrong and should be removed. Screen was:
       \(which.screen)
       """)
 

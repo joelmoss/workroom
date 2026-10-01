@@ -231,7 +231,7 @@ final class HostStream: @unchecked Sendable {
   /// `timeout` bounds SILENCE, not the exchange: it is reset by every byte sent or received, and
   /// only a link that moves nothing for that long is ended, with this throwing. A bound on the
   /// whole exchange would be a throughput floor for an 11 MB push over a slow link, the
-  /// `WRITE_TIMEOUT` mistake macapp/CLAUDE.md records.
+  /// `WRITE_TIMEOUT` mistake macapp/AGENTS.md records.
   ///
   /// The writes and reads block, on GCD (`runBlocking`), not the cooperative pool: an 11 MB
   /// binary over a slow link is exactly the kind of wait that starves other blocking work there.

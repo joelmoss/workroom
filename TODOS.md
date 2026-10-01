@@ -491,7 +491,7 @@ file). Workroom switch/delete and the scrollbar overlay were NOT re-verified —
 - ~~**Retest the GhosttyKit modulemap-collision workaround.**~~ **DONE — still holds.** The Debug
   build (T4) compiled clean against the 1.3.2 xcframework with no "Multiple commands produce
   include/module.modulemap" error, so the library-only-xcframework + separate-C-target workaround
-  (`macapp/CLAUDE.md:120-124`) needed no changes.
+  (`macapp/AGENTS.md:120-124`) needed no changes.
 
 **Rollback is not one line:** revert the commit(s), `rm -rf macapp/DerivedData/SourcePackages`,
 rebuild. CI's `spm-`/`xcbuild-` caches key on `project.yml` and their `restore-keys` fallback can
@@ -638,7 +638,7 @@ which is a better tripwire than a date — worth wiring into the resource-contra
 - The bake gate: N clean nightlies before it enters a `pre` tag. N is still undecided.
 - `QA-libghostty.md` §N — run it against the CURRENT engine first for a baseline; a baseline taken
   after the bump is worthless.
-- Re-verify the GhosttyKit modulemap-collision workaround (`macapp/CLAUDE.md`). New reason to
+- Re-verify the GhosttyKit modulemap-collision workaround (`macapp/AGENTS.md`). New reason to
   re-check this time: the xcframework now ships visionOS + visionOS-simulator slices it didn't
   before.
 - Rollback is not one line: revert, `rm -rf macapp/DerivedData/SourcePackages`, rebuild. CI's

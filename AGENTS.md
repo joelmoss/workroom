@@ -57,6 +57,6 @@ Single-context layout (root `CONTEXT.md` + `docs/adr/`, created lazily). See `do
 
 ## Shared Agent Instructions
 
-Maintain instructions in `AGENTS.md` files; `CLAUDE.md` files are symlinks to them. These rules apply to every coding agent. Use relevant skills when available through your agent's supported mechanism; do not assume a particular tool or slash command exists.
+Maintain instructions in `AGENTS.md` files; do not add `CLAUDE.md` files — Claude Code reads `AGENTS.md` natively, and a `CLAUDE.md` would stop it doing so. These rules apply to every coding agent. Use relevant skills when available through your agent's supported mechanism; do not assume a particular tool or slash command exists.
 
 Repository skills live in `.agents/skills/`; `.claude/skills` links to that directory. Edit skills only in the shared location.

@@ -20,7 +20,7 @@ private enum GateTestError: Error {
 /// putting the guard back and re-running `PersistentSessionRoutingTests` produced 3 passes. A test
 /// that cannot fail for the reason it was written is worse than no test, and this repo has paid for
 /// that twice already (see the commit "cover the wiring, not just the writer" and the "verify the
-/// premise" rule in `macapp/CLAUDE.md`).
+/// premise" rule in `macapp/AGENTS.md`).
 ///
 /// `applyPersistentSession` is private, builds a `ghostty_surface_config_s`, and lives on an
 /// `NSView` subclass that XCUITest cannot query, so the call site itself is the only observable.

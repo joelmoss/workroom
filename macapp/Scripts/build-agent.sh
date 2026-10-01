@@ -37,7 +37,7 @@ fi
 #
 # This is not defensiveness for its own sake: build-helper.sh once `case`d the whole string and
 # fell through to an arm64 default, so 23 shipped betas contained an arm64-only Go CLI inside a fat
-# app. macapp/CLAUDE.md records that any new universal Mac binary must reuse this iteration rather
+# app. macapp/AGENTS.md records that any new universal Mac binary must reuse this iteration rather
 # than growing its own arch handling, which is what this is.
 ARCH_LIST="${ARCHS:-$(uname -m)}"
 TARGETS=()
