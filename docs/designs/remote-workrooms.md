@@ -1233,7 +1233,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
 - `delete-project --from-disk`'s safety gate (`cmd/delete_project.go:174-229`) is built on
   `filepath.Rel` ancestor semantics over local absolute paths and has no notion of a host. It must
   **refuse** remote paths rather than reason about them.
-- **As built (#249).** The descriptor is a `"host"` object on the workroom entry and on the project
+- **As built (#249, PR #275, merged 2026-10-01).** The descriptor is a `"host"` object on the workroom entry and on the project
   entry, and **the app owns its schema** (the `HostDriver` is Swift, OQ21). The Go CLI reads exactly
   two things from a workroom's descriptor: that it is present and non-null (the workroom is remote;
   any non-null value counts, so a malformed one still fails safe), and `state == "destroyed"`. It
@@ -1258,14 +1258,28 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     sites tell them apart. `RepositoryRouter.prepare`, the status sweep and
     `selectedStatusWorkItem` (the select-to-probe-and-watch lane, and `targetExists` behind
     commits and PR actions) skip remote workrooms, so a remote path is never registered, probed or
-    watched as a local repository. The app's delete actions refuse a remote workroom, and a project
-    with one, before their optimistic local cleanup kills shells and forgets labels.
+    watched as a local repository. A reload prunes `workroomStatuses` to what the sweep probes,
+    not to the sidebar, so a workroom that turns remote drops its last local status instead of
+    tinting its row and its project's badge forever. The app's delete actions refuse a remote
+    workroom, and a project with one, before their optimistic local cleanup kills shells and
+    forgets labels.
   - `Config.Read` decodes with `UseNumber`, so an integer above 2^53 in a descriptor survives
-    every config write instead of being rewritten through float64.
-  - Known gaps, left for #253: a workroom whose host was destroyed is refused by `delete` like any
-    remote one, so for now the only way to drop its entry is editing the config by hand.
-    `RemoveWorkroom`'s implicit cleanup keeps a project with a descriptor, but an explicit
-    `delete-project` of a project with no remote workrooms still drops it.
+    every config write instead of being rewritten through float64. Moving off `json.Unmarshal`
+    needed its own trailing-data check: a second `Decode` must return `io.EOF`. `dec.More()` is
+    not enough, because it reports false before a stray `}` or `]`, so `{}}` would read cleanly
+    and the next write would drop the tail.
+  - Known gaps, left for #253 (listed on the issue): a workroom whose host was destroyed is
+    refused by `delete` like any remote one, so for now the only way to drop its entry is editing
+    the config by hand. The app's delete confirmation for a remote row still describes a local
+    delete; the refusal only comes after it. `RemoveWorkroom`'s implicit cleanup keeps a project
+    with a descriptor, but an explicit `delete-project` of a project with no remote workrooms
+    still drops it. Session restore is not gated on availability:
+    `TerminalSessions.materializeLivePersistentSessions` (via `PersistentSessionRecovery`) calls
+    `ensureSurfaceCreated` for every restored pane whose local session is still live, without
+    checking `unavailability`, so a saved pane of a workroom that has since turned remote
+    reattaches its old local shell in a hidden surface. The same gap
+    applies to a `.directoryMissing` target and predates #249; #253's reconnect work exercises
+    this path, and the fix touches `Core/Session/` (AGENTS.md rule 3).
   - Nothing writes a descriptor yet; provisioning (#252) and the app (#253) will.
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
@@ -3134,7 +3148,8 @@ service milestones below so each layer can be reviewed and landed independently.
    and credentials after partial failure. Apply the measured wakefulness policy through the
    far-side shim. Add boxd's fast derivation only after the portable path passes. Remote UI remains
    Nightly-only until the success criteria pass; the container fixture alone does not establish
-   parity across two real providers. **Filed 2026-09-27** as #249 (host descriptors), #250 (broker
+   parity across two real providers. **Filed 2026-09-27** as #249 (host descriptors; built
+   2026-10-01, PR #275), #250 (broker
    service) → #251 (broker clients) → #252 (portable derivation on the container driver) → #253
    (remote workrooms in the app) → #254 (pane parity) and #255 (cross-machine reattach, OQ8); #256
    (boxd driver) → #257 (lifecycle shim) and #258 (boxd live fork); #259 (the second real provider,
