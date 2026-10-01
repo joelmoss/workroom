@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 use wr_agent::protocol::envelope::{Envelope, Hello, Service};
 use wr_agent::protocol::frame::{Frame, FrameKind};
@@ -778,4 +778,93 @@ fn a_hand_off_asked_for_during_another_is_refused() {
 
     drop(first);
     assert!(agent.try_wait().expect("wait").is_none());
+}
+
+/// What a lost session raises first is why it ended, and an agent spawned the way the app spawns one
+/// (stderr to /dev/null) used to leave no trace of it. Such an agent now keeps `agent.log` beside its
+/// socket: each session's start, a shell's own exit with its status, and who asked for a hand-off,
+/// written on by the program it is handed to.
+#[test]
+fn an_agent_without_a_stderr_logs_its_sessions_beside_its_socket() {
+    let workspace = Workspace::new("agent-log");
+    let socket = workspace.socket();
+    let log = socket.with_extension("log");
+    let _agent = Spawned(
+        Command::new(agent_binary())
+            .args(["serve", "--socket"])
+            .arg(&socket)
+            .args(["--idle-timeout", "60"])
+            .env("SHELL", "/bin/sh")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn agent"),
+    );
+    assert!(wait_for(Duration::from_secs(5), || socket.exists()));
+    let read = || std::fs::read_to_string(&log).unwrap_or_default();
+
+    let kept = "6a1f0c2e-1b2c-4d3e-8f40-5a6b7c8d9e01";
+    let pid = detached_session(&socket, kept, "logged-one");
+
+    let ending = "7b2e1d3f-2c3d-4e4f-9a51-6b7c8d9e0f12";
+    let mut client = attach(&socket, ending);
+    std::thread::sleep(Duration::from_millis(400));
+    type_line(&mut client, "exit 3");
+    assert!(
+        wait_for(Duration::from_secs(5), || read()
+            .contains(&format!("session {ending} ended: "))),
+        "no end logged for the session whose shell exited: {}",
+        read()
+    );
+    assert!(read().contains("exited 3"), "{}", read());
+
+    let requester = Command::new(agent_binary())
+        .args(["hand-off", "--socket"])
+        .arg(&socket)
+        .arg("--binary")
+        .arg(agent_binary())
+        .arg("--force")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("hand-off");
+    let requester_pid = requester.id();
+    let output = requester.wait_with_output().expect("hand-off");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Written by the program handed to, so it proves the log outlives the exec.
+    assert!(
+        wait_for(Duration::from_secs(5), || read()
+            .contains(&format!("session {kept} adopted: shell pid {pid}"))),
+        "{}",
+        read()
+    );
+    let text = read();
+    for expected in [
+        format!("session {kept} started: shell pid {pid}"),
+        format!("requested by pid {requester_pid} (forced)"),
+        format!("carrying {kept}"),
+        "as the program handed to".to_string(),
+    ] {
+        assert!(text.contains(&expected), "no {expected:?} in:\n{text}");
+    }
+}
+
+/// A stderr someone is reading, such as this harness's pipe or a supervisor's log, stays where it
+/// is: the log file is only for an agent that would otherwise say nothing.
+#[test]
+fn an_agent_whose_stderr_is_read_writes_no_log_file() {
+    let workspace = Workspace::new("agent-no-log");
+    let socket = workspace.socket();
+    let _agent = start_agent(&socket);
+    let _ = detached_session(
+        &socket,
+        "8c3f2e4a-3d4e-4f5a-8b62-7c8d9e0f1a23",
+        "unlogged-1",
+    );
+    assert!(!socket.with_extension("log").exists());
 }

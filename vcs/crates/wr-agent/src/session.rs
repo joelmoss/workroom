@@ -362,6 +362,11 @@ impl SessionStore {
         // Drop the store lock before the reader starts, or its first `ended` removal deadlocks
         // against this very lock.
         drop(sessions);
+        crate::note!(
+            "session {} started: shell pid {}",
+            spec.id.to_hyphenated(),
+            pty.child_pid()
+        );
         if superseded {
             if let Some(screens) = self.screens.get() {
                 let _ = screens.sync();
@@ -816,12 +821,14 @@ impl SessionStore {
             }
             sessions.insert(id, session);
         }
+        let pid = pty.child_pid();
         let spawned = std::thread::Builder::new()
             .spawn(move || read_session(id, number, pty, shadow, attached, store));
         if spawned.is_err() {
             self.kill(id);
             return Err(SessionError::ReaderFailed(id.to_hyphenated()));
         }
+        crate::note!("session {} adopted: shell pid {pid}", id.to_hyphenated());
         Ok(())
     }
 
@@ -845,6 +852,11 @@ impl SessionStore {
         }
         match session {
             Some(session) => {
+                crate::note!(
+                    "session {} killed: hanging up shell pid {}",
+                    id.to_hyphenated(),
+                    session.pty.child_pid()
+                );
                 terminate(&[&session.pty]);
                 true
             }
@@ -863,6 +875,10 @@ impl SessionStore {
         };
         if let Some(screens) = self.screens.get() {
             screens.remove_all();
+        }
+        if !ending.is_empty() {
+            let ids: Vec<String> = ending.iter().map(|s| s.id.to_hyphenated()).collect();
+            crate::note!("killing all {} sessions: {}", ids.len(), ids.join(", "));
         }
         let ptys: Vec<&Arc<Pty>> = ending.iter().map(|session| &session.pty).collect();
         terminate(&ptys);
@@ -1124,13 +1140,15 @@ fn repaint_budget(bytes: usize) -> Duration {
 /// Removes `id` from the store if it is still the session numbered `number`. A reader ending after
 /// `kill` has already removed its session must not remove the next session created under the same
 /// id: that session would be left running with nothing in the store to reach or end it.
-fn remove_if_held(store: &mut HashMap<SessionId, Session>, id: SessionId, number: u64) {
-    if store
+/// Returns whether it removed one, which is whether nothing else had ended the session first.
+fn remove_if_held(store: &mut HashMap<SessionId, Session>, id: SessionId, number: u64) -> bool {
+    let held = store
         .get(&id)
-        .is_some_and(|session| session.number == number)
-    {
+        .is_some_and(|session| session.number == number);
+    if held {
         store.remove(&id);
     }
+    held
 }
 
 fn read_session(
@@ -1206,8 +1224,18 @@ fn read_session(
                 continue;
             }
             // The shell IS the session; with it gone there is nothing left to reattach to.
-            if let Ok(mut store) = store.lock() {
-                remove_if_held(&mut store, id, number);
+            let held = store
+                .lock()
+                .is_ok_and(|mut store| remove_if_held(&mut store, id, number));
+            // Not held: `kill` ended it, reaped the shell, and already said so. The status read
+            // here would then be a zero that `waitpid` never wrote.
+            if held {
+                crate::note!(
+                    "session {} ended: shell pid {} {}",
+                    id.to_hyphenated(),
+                    pty.child_pid(),
+                    crate::log::describe_status(status)
+                );
             }
             drop(terminating);
             for target in targets(&attached) {
@@ -1262,7 +1290,12 @@ fn read_session(
             // input then vanishes into a `parts(id)` that returns `None`. The child is terminated
             // too: closing the master alone hangs up the pty's foreground group and leaves exactly
             // the `setsid()` descendants `terminate`'s snapshot exists to reach.
-            Err(_) => {
+            Err(e) => {
+                crate::note!(
+                    "session {} ended: its pty could not be read ({e}); hanging up shell pid {}",
+                    id.to_hyphenated(),
+                    pty.child_pid()
+                );
                 for target in targets(&attached) {
                     let framed = terminal_envelope(
                         target.stream,
@@ -1276,7 +1309,7 @@ fn read_session(
                 let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
                 terminate(&[&pty]);
                 if let Ok(mut store) = store.lock() {
-                    remove_if_held(&mut store, id, number);
+                    let _ = remove_if_held(&mut store, id, number);
                 }
                 return;
             }
@@ -1340,7 +1373,11 @@ fn terminate(ptys: &[&Arc<Pty>]) {
         .iter()
         .filter(|d| d.is_running())
         .map(|d| &d.pid);
-    for pid in unreaped.iter().chain(survivors) {
+    let killing: Vec<i32> = unreaped.iter().chain(survivors).copied().collect();
+    if !killing.is_empty() {
+        crate::note!("SIGHUP declined for half a second; SIGKILL to pids {killing:?}");
+    }
+    for pid in &killing {
         unsafe { libc::kill(*pid, libc::SIGKILL) };
     }
     for pid in &unreaped {

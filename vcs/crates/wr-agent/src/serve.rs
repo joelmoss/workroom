@@ -228,6 +228,8 @@ pub fn bind(socket: &Path) -> std::io::Result<UnixListener> {
 /// `forwards` is there for the same reason, and it is what makes the design's "a forwarded port only
 /// carries while a client is attached" true rather than aspirational.
 struct ConnectionServices {
+    /// `Transport::peer`, for the log lines a kill or a hand-off writes.
+    peer: String,
     partial: crate::vcs::PartialRequests,
     subscriptions: crate::watch::Subscriptions,
     forwards: crate::forward::Forwards,
@@ -246,6 +248,7 @@ pub fn handle_connection<T: Transport>(
     // Before `split`, which consumes the transport: the watch service needs a way to end THIS
     // connection from a thread that only writes.
     let closer = transport.closer();
+    let peer = transport.peer();
     let (mut reader, writer) = transport.split().map_err(|_| ProtocolError::NotAnAgent)?;
     // One writer, shared, and type-erased. A socket could be cloned instead, but a pipe or an exec
     // channel cannot, and the agent must not require a transport that can. Boxed because the
@@ -289,6 +292,7 @@ pub fn handle_connection<T: Transport>(
     let mut buffer = [0u8; 8192];
     let mut attached: Option<SessionId> = None;
     let mut services = ConnectionServices {
+        peer,
         partial: crate::vcs::PartialRequests::default(),
         subscriptions: crate::watch::Subscriptions::new(Arc::clone(&writer), closer),
         forwards: crate::forward::Forwards::new(),
@@ -538,10 +542,16 @@ fn dispatch(
         FrameKind::List => reply(list_reply(encode_descriptor_list(&sessions.list()))),
         FrameKind::Kill => {
             let id = SessionId::from_slice(frame.payload.get(..16)?)?;
+            crate::note!(
+                "kill of session {} requested by {}",
+                id.to_hyphenated(),
+                services.peer
+            );
             sessions.kill(id);
             reply(Frame::control(FrameKind::Acknowledged))
         }
         FrameKind::KillAll => {
+            crate::note!("kill of every session requested by {}", services.peer);
             sessions.kill_all();
             reply(Frame::control(FrameKind::Acknowledged))
         }
@@ -555,9 +565,19 @@ fn dispatch(
                 let frame = Frame::new(FrameKind::Acknowledged, b"handing off".to_vec());
                 send(&Envelope::new(envelope.service, envelope.stream, frame.encode()).encode())
             };
+            crate::note!(
+                "hand-off to {} requested by {}{}",
+                binary.display(),
+                services.peer,
+                if force != 0 { " (forced)" } else { "" }
+            );
             match crate::handoff::hand_off(sessions, &binary, force != 0, handing_off) {
-                Ok(()) => reply(Frame::new(FrameKind::Acknowledged, b"current".to_vec())),
+                Ok(()) => {
+                    crate::note!("hand-off not needed: {} is this program", binary.display());
+                    reply(Frame::new(FrameKind::Acknowledged, b"current".to_vec()))
+                }
                 Err(reason) => {
+                    crate::note!("hand-off refused: {reason}");
                     let mut reason = reason.into_bytes();
                     reason.truncate(crate::handoff::MAX_REASON);
                     reply(Frame::new(FrameKind::Failure, reason))
