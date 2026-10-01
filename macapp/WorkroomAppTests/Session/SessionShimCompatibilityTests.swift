@@ -414,6 +414,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
     let collected = NSMutableData()
     let lock = NSLock()
     let sawNotice = XCTestExpectation(description: "the client reports giving up")
+    let sawFallback = XCTestExpectation(description: "the client becomes a shell")
     output.fileHandleForReading.readabilityHandler = { handle in
       let data = handle.availableData
       guard !data.isEmpty else { return }
@@ -422,6 +423,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
       let seen = String(decoding: collected as Data, as: UTF8.self)
       lock.unlock()
       if seen.contains("did not answer the attach request") { sawNotice.fulfill() }
+      if seen.contains("will not survive quitting") { sawFallback.fulfill() }
     }
 
     let started = Date()
@@ -431,6 +433,9 @@ final class SessionShimCompatibilityTests: XCTestCase {
     DispatchQueue.global().asyncAfter(deadline: .now() + 25, execute: watchdog)
     let outcome = XCTWaiter().wait(for: [sawNotice], timeout: 20)
     let elapsed = Date().timeIntervalSince(started)
+    // The fallback notice is a separate, later write. Terminating on the first notice raced it,
+    // and a loaded CI runner lost that race.
+    if outcome == .completed { _ = XCTWaiter().wait(for: [sawFallback], timeout: 5) }
 
     input.fileHandleForWriting.closeFile()
     process.terminate()
