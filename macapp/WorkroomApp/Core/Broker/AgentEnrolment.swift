@@ -16,18 +16,49 @@ enum AgentEnrolment {
   static let errorPrefix = "error: "
   static let refusalPrefix = "refusal: "
 
+  /// The broker URL the agent is given, and how to let go of whatever made it reachable.
+  struct AgentBroker: Sendable {
+    var url:
+      @Sendable (_ client: BrokerClient, _ workroom: UUID, _ host: HostID) async throws -> URL
+    var release: @Sendable (_ workroom: UUID) async -> Void
+
+    /// Release and Nightly: the Mac's own broker, codaset.dev, which the agent reaches itself. Debug:
+    /// a listener on the agent's box carried back to this Mac's development Codaset
+    /// (`BrokerReverseForwards`), because there the Mac's own URL names the remote host itself.
+    static let standard: AgentBroker = {
+      #if DEBUG
+        return AgentBroker(
+          url: { _, workroom, host in
+            try await BrokerReverseForwards.shared.open(workroom: workroom, host: host)
+          },
+          release: { workroom in await BrokerReverseForwards.shared.close(workroom: workroom) })
+      #else
+        return AgentBroker(url: { client, _, _ in client.baseURL }, release: { _ in })
+      #endif
+    }()
+  }
+
   /// Returns the grant's ID, which destroying the workroom cancels (`BrokerClient.cancelGrant`).
-  /// A failed enrolment cancels the grant it created, so nothing is left minting for it.
+  /// A failed enrolment cancels the grant it created, so nothing is left minting for it, and lets go
+  /// of the agent's route to the broker.
   static func enrol(
     client: BrokerClient, driver: any HostDriver, host: HostID, agentBinary: String,
-    workroomID: UUID, repository: String
+    workroomID: UUID, repository: String, agentBroker: AgentBroker = .standard
   ) async throws -> String {
-    let grant = try await client.createGrant(repository: repository, workroomID: workroomID)
+    // Before the grant: an agent that could never reach the broker must not cost one.
+    let broker = try await agentBroker.url(client, workroomID, host)
+    let grant: BrokerClient.Grant
+    do {
+      grant = try await client.createGrant(repository: repository, workroomID: workroomID)
+    } catch {
+      await agentBroker.release(workroomID)
+      throw error
+    }
     do {
       let command = [
         PosixShell.quoted(agentBinary), "enrol",
         "--workroom", PosixShell.quoted(workroomID.uuidString.lowercased()),
-        "--broker", PosixShell.quoted(client.baseURL.absoluteString),
+        "--broker", PosixShell.quoted(broker.absoluteString),
       ].joined(separator: " ")
       let stream = try await driver.exec(command, on: host)
       let (status, output) = try await stream.communicate(
@@ -38,6 +69,7 @@ enum AgentEnrolment {
       // In its own task: a cancelled enrolment's task would cancel this request too, and leave a
       // grant live that the agent may already have enrolled against.
       await Task { try? await client.cancelGrant(grant.grantId) }.value
+      await agentBroker.release(workroomID)
       throw error
     }
   }

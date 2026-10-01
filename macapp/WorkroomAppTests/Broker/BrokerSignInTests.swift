@@ -259,6 +259,29 @@ final class AgentEnrolmentTests: XCTestCase {
     }
   }
 
+  /// The agent's broker route, recorded: what URL it was given and whether it was let go.
+  private final class RecordingBroker: @unchecked Sendable {
+    let url: URL
+    let fails: Bool
+    private let lock = NSLock()
+    private var releasedFor: [UUID] = []
+    init(url: URL = URL(string: "http://127.0.0.1:47001")!, fails: Bool = false) {
+      self.url = url
+      self.fails = fails
+    }
+    var released: [UUID] { lock.withLock { releasedFor } }
+    var seam: AgentEnrolment.AgentBroker {
+      AgentEnrolment.AgentBroker(
+        url: { [self] _, _, _ in
+          if fails { throw BrokerError.agent("no route to the broker") }
+          return url
+        },
+        release: { [self] workroom in lock.withLock { releasedFor.append(workroom) } })
+    }
+  }
+
+  private var broker = RecordingBroker()
+
   private let grant = BrokerStub.Answer(
     status: 201,
     body: #"{"grant_id":"g1","enrolment_code":"one-time","repository_id":1,"expires_at":"x"}"#)
@@ -282,7 +305,8 @@ final class AgentEnrolmentTests: XCTestCase {
 
     let grantID = try await AgentEnrolment.enrol(
       client: client(), driver: driver, host: .remote(UUID()),
-      agentBinary: "/run/workroom/wr-agent", workroomID: workroom, repository: "o/r")
+      agentBinary: "/run/workroom/wr-agent", workroomID: workroom, repository: "o/r",
+      agentBroker: broker.seam)
 
     XCTAssertEqual(grantID, "g1")
     XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "one-time\n")
@@ -290,7 +314,7 @@ final class AgentEnrolmentTests: XCTestCase {
     XCTAssertEqual(
       command,
       "'/run/workroom/wr-agent' enrol --workroom '\(workroom.uuidString.lowercased())' "
-        + "--broker 'https://codaset.localhost'")
+        + "--broker 'http://127.0.0.1:47001'")
     XCTAssertFalse(command.contains("one-time"))
   }
 
@@ -306,7 +330,7 @@ final class AgentEnrolmentTests: XCTestCase {
     do {
       _ = try await AgentEnrolment.enrol(
         client: client(), driver: driver, host: .remote(UUID()), agentBinary: "wr-agent",
-        workroomID: UUID(), repository: "o/r")
+        workroomID: UUID(), repository: "o/r", agentBroker: broker.seam)
       XCTFail("expected a refusal")
     } catch let error as BrokerError {
       guard case .agentRefused(let refusal) = error else { return XCTFail("\(error)") }
@@ -329,7 +353,7 @@ final class AgentEnrolmentTests: XCTestCase {
     do {
       _ = try await AgentEnrolment.enrol(
         client: client(), driver: driver, host: .remote(UUID()), agentBinary: "wr-agent",
-        workroomID: UUID(), repository: "o/r")
+        workroomID: UUID(), repository: "o/r", agentBroker: broker.seam)
       XCTFail("expected a failure")
     } catch BrokerError.agent(let detail) {
       XCTAssertTrue(detail.contains("git config failed"), detail)
@@ -347,7 +371,7 @@ final class AgentEnrolmentTests: XCTestCase {
     let task = Task {
       try await AgentEnrolment.enrol(
         client: client, driver: driver, host: .remote(UUID()), agentBinary: "wr-agent",
-        workroomID: UUID(), repository: "o/r")
+        workroomID: UUID(), repository: "o/r", agentBroker: broker.seam)
     }
     try await Task.sleep(for: .milliseconds(500))
 
@@ -356,5 +380,52 @@ final class AgentEnrolmentTests: XCTestCase {
 
     XCTAssertEqual(BrokerStub.requests.last?.request.httpMethod, "DELETE")
     XCTAssertEqual(BrokerStub.requests.last?.request.url?.path, "/broker/grants/g1")
+  }
+
+  /// The agent's route to the broker (a reverse forward in a Debug build) goes with the grant.
+  func testAFailedEnrolmentLetsGoOfTheAgentsBrokerRoute() async throws {
+    BrokerStub.reset([grant, .init(body: #"{"grant_id":"g1","state":"cancelled"}"#)])
+    let file = stdinFile()
+    defer { try? FileManager.default.removeItem(at: file) }
+    let driver = StubDriver(stdinFile: file, output: "error: no\n", status: 1)
+    let workroom = UUID()
+
+    _ = try? await AgentEnrolment.enrol(
+      client: client(), driver: driver, host: .remote(UUID()), agentBinary: "wr-agent",
+      workroomID: workroom, repository: "o/r", agentBroker: broker.seam)
+
+    XCTAssertEqual(broker.released, [workroom])
+  }
+
+  func testARefusedGrantLetsGoOfTheRouteAndRunsNothing() async throws {
+    BrokerStub.reset([.init(status: 403, body: #"{"error":"no_push_access"}"#)])
+    let file = stdinFile()
+    let driver = StubDriver(stdinFile: file, output: "", status: 0)
+    let workroom = UUID()
+
+    _ = try? await AgentEnrolment.enrol(
+      client: client(), driver: driver, host: .remote(UUID()), agentBinary: "wr-agent",
+      workroomID: workroom, repository: "o/r", agentBroker: broker.seam)
+
+    XCTAssertEqual(broker.released, [workroom])
+    XCTAssertTrue(driver.commands.isEmpty)
+  }
+
+  /// An agent that could never reach the broker must not cost a grant.
+  func testNoRouteToTheBrokerAsksForNoGrant() async throws {
+    BrokerStub.reset([grant])
+    broker = RecordingBroker(fails: true)
+    let driver = StubDriver(stdinFile: stdinFile(), output: "", status: 0)
+
+    do {
+      _ = try await AgentEnrolment.enrol(
+        client: client(), driver: driver, host: .remote(UUID()), agentBinary: "wr-agent",
+        workroomID: UUID(), repository: "o/r", agentBroker: broker.seam)
+      XCTFail("expected the route to fail the enrolment")
+    } catch BrokerError.agent(let detail) {
+      XCTAssertEqual(detail, "no route to the broker")
+    }
+    XCTAssertTrue(BrokerStub.requests.isEmpty, "no grant was asked for")
+    XCTAssertTrue(driver.commands.isEmpty)
   }
 }

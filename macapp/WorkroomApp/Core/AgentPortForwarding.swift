@@ -24,6 +24,8 @@ enum ForwardOpcode {
   static let data: UInt8 = 0x03
   static let eof: UInt8 = 0x04
   static let close: UInt8 = 0x05
+  /// On a listener's stream only (`ReverseForward`): one connection is waiting to be claimed.
+  static let accepted: UInt8 = 0x06
 }
 
 /// The port-forwarding service on one host's connection. Concrete rather than behind a protocol, for
@@ -46,6 +48,21 @@ struct AgentForwardService: Sendable {
       remotePort: remotePort, connection: connection,
       timeouts: .init(open: openTimeout, send: sendTimeout, drain: drainTimeout), onEvent: onEvent)
   }
+
+  /// The other direction: listen on `remotePort` on the agent's box (0 for any free port) and carry
+  /// every connection to it to `127.0.0.1:<target>` on this Mac. `start()` it once the owner holds
+  /// it, so an event cannot arrive for a listener nobody kept.
+  func reverse(
+    remotePort: UInt16, target: UInt16,
+    onEvent: @escaping @Sendable (ReverseForward.Event) -> Void
+  ) -> ReverseForward {
+    ReverseForward(
+      remotePort: remotePort, target: target, connection: connection,
+      timeouts: .init(
+        open: PortForward.openTimeout, send: PortForward.sendTimeout,
+        drain: PortForward.drainTimeout),
+      onEvent: onEvent)
+  }
 }
 
 /// The `open` request, which the agent parses with `deny_unknown_fields` — so these three keys
@@ -57,6 +74,37 @@ private struct ForwardOpenRequest: Encodable {
   let method = "open"
   let host = "localhost"
   let port: UInt16
+}
+
+/// `listen`: bind `127.0.0.1:<port>` on the agent's box. Exactly these two keys.
+private struct ForwardListenRequest: Encodable {
+  let method = "listen"
+  let port: UInt16
+}
+
+/// `accept`: claim the oldest connection waiting on the listener on stream `listener`.
+private struct ForwardAcceptRequest: Encodable {
+  let method = "accept"
+  let listener: UInt32
+}
+
+/// `listen`'s REPLY: `{"version":1,"result":{"listening":<port>}}`, or a refusal in the shape
+/// `ForwardReply` reads.
+private struct ForwardListenReply: Decodable {
+  struct Listening: Decodable { let listening: UInt16 }
+  let version: Int
+  var result: Listening?
+
+  /// The port the agent bound, or the reason it did not.
+  static func port(in body: Data) -> Result<UInt16, ReverseForward.Refusal> {
+    if body.count <= ForwardReply.maxBody,
+      let reply = try? JSONDecoder().decode(Self.self, from: body), reply.version == 1,
+      let port = reply.result?.listening
+    {
+      return .success(port)
+    }
+    return .failure(.init(ForwardReply.failure(in: body) ?? "The agent did not listen."))
+  }
 }
 
 /// `{"version":1,"result":{"opened":true}}` or `{"version":1,"error":{"<kind>":"<detail>"}}`.
@@ -249,27 +297,16 @@ final class PortForward: @unchecked Sendable {
         .failed("Too many connections through the forwards on this agent; one was refused."))
       return
     }
-    // BSD semantics: an accepted socket inherits the listener's `O_NONBLOCK`, and the pump's
-    // blocking `read` is the whole design.
-    _ = fcntl(client, F_SETFL, fcntl(client, F_GETFL) & ~O_NONBLOCK)
-    var enabled: Int32 = 1
-    // Checked, because it can only be set here, after `accept`: a client that has already reset
-    // leaves the socket shut down, `setsockopt` fails with EINVAL, and the pump's first write would
-    // then raise SIGPIPE and kill the app. Such a client is gone, so there is nothing to forward.
     // The slot is released as it goes out of scope.
-    guard
-      setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size))
-        == 0
+    guard Self.prepare(client),
+      let request = try? JSONEncoder().encode(ForwardOpenRequest(port: remotePort))
     else {
       Darwin.close(client)
       return
     }
-    // What a forward carries is small writes in both directions (chunked HTTP, HMR frames, a wire
-    // protocol); Nagle plus delayed ACK on a loopback hop is latency for nothing.
-    setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &enabled, socklen_t(MemoryLayout<Int32>.size))
     let id = UUID()
     let forwarded = ForwardedConnection(
-      socket: client, remotePort: remotePort, connection: connection, timeouts: timeouts,
+      socket: client, request: request, connection: connection, timeouts: timeouts,
       onEvent: onEvent, onFinished: { [weak self] in self?.forget(id) })
     let accepted = lock.withLock { () -> Bool in
       guard !stopped else { return false }
@@ -283,6 +320,220 @@ final class PortForward: @unchecked Sendable {
   }
 
   /// The removed entry, and so its slot, is dropped after the lock (see `stop`).
+  private func forget(_ id: UUID) { _ = lock.withLock { live.removeValue(forKey: id) } }
+
+  /// Ready a local socket for `ForwardedConnection`: blocking, no SIGPIPE, no Nagle. False when it
+  /// cannot be made safe, and the caller closes it.
+  static func prepare(_ socket: Int32) -> Bool {
+    // BSD semantics: an accepted socket inherits the listener's `O_NONBLOCK`, and the pump's
+    // blocking `read` is the whole design.
+    _ = fcntl(socket, F_SETFL, fcntl(socket, F_GETFL) & ~O_NONBLOCK)
+    var enabled: Int32 = 1
+    // Checked, because it can only be set once the socket is connected: a peer that has already
+    // reset leaves it shut down, `setsockopt` fails with EINVAL, and the pump's first write would
+    // then raise SIGPIPE and kill the app. Such a peer is gone, so there is nothing to forward.
+    guard
+      setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size))
+        == 0
+    else { return false }
+    // What a forward carries is small writes in both directions (chunked HTTP, HMR frames, a wire
+    // protocol); Nagle plus delayed ACK on a loopback hop is latency for nothing.
+    setsockopt(socket, IPPROTO_TCP, TCP_NODELAY, &enabled, socklen_t(MemoryLayout<Int32>.size))
+    return true
+  }
+}
+
+/// A listener on the AGENT's box, each connection to it carried back over the multiplex to
+/// `127.0.0.1:<target>` on this Mac (`forward.rs`, "Listening"). A Debug build's remote agent
+/// reaches the Mac's own development Codaset through one (`BrokerReverseForwards`); every other
+/// forward runs the other way, from the Mac outward (`PortForward`).
+///
+/// **It only carries while this connection lives**, like every forward: the agent drops the
+/// listener with the connection, so whoever needs it open opens a new one on each new connection.
+///
+/// Each connection the agent announces is claimed on a new stream with `accept` once its target
+/// connection is up, and from there it is a `ForwardedConnection` like any other. A target that
+/// cannot be reached still has its claim made, and closed at once, so the process that connected on
+/// the agent's box learns now rather than at the agent's expiry.
+final class ReverseForward: @unchecked Sendable {
+  enum Event: Sendable, Equatable {
+    /// The agent bound this port: connections to it on the agent's box now reach the target.
+    case listening(UInt16)
+    /// One connection could not be carried. The listener carries on.
+    case failed(String)
+    /// The listener is gone: refused, or ended by the agent or the connection.
+    case stopped(String)
+  }
+
+  struct Refusal: Error, Equatable {
+    let detail: String
+    init(_ detail: String) { self.detail = detail }
+  }
+
+  /// How long one claimed connection waits for the target. A loopback connect is refused at once
+  /// when nothing listens; this bounds only a target whose backlog is full. Under the agent's 5 s
+  /// `PENDING_TIMEOUT`, so a slow target does not lose the claim to the agent's expiry.
+  static let dialTimeout: TimeInterval = 3
+
+  let remotePort: UInt16
+  let target: UInt16
+  private let connection: AgentVCSConnection
+  private let timeouts: PortForward.Timeouts
+  private let onEvent: @Sendable (Event) -> Void
+  private let lock = NSLock()
+  /// The listener's control stream, set before the `listen` is sent.
+  private var stream: UInt32?
+  private var listening = false
+  private var stopped = false
+  private var live: [UUID: (connection: ForwardedConnection, slot: ForwardSlot)] = [:]
+  /// Claims dial the target here, never on the connection's reader thread.
+  private let claims = DispatchQueue(label: "workroom.agent.forward.reverse")
+
+  init(
+    remotePort: UInt16, target: UInt16, connection: AgentVCSConnection,
+    timeouts: PortForward.Timeouts, onEvent: @escaping @Sendable (Event) -> Void
+  ) {
+    self.remotePort = remotePort
+    self.target = target
+    self.connection = connection
+    self.timeouts = timeouts
+    self.onEvent = onEvent
+  }
+
+  deinit { stop() }
+
+  /// Ask the agent to listen. The answer arrives as `.listening` or `.stopped`.
+  func start() {
+    guard let request = try? JSONEncoder().encode(ForwardListenRequest(port: remotePort)) else {
+      end("Could not encode the listen request.")
+      return
+    }
+    let id: UInt32
+    do {
+      id = try connection.reserveForward { [weak self] opcode, body in self?.handle(opcode, body) }
+    } catch {
+      end("\(error)")
+      return
+    }
+    // Published and sent under one lock hold, so a `stop()` cannot land between the two and leave
+    // a listener the agent opened for nobody.
+    let abandoned: Bool = lock.withLock {
+      if stopped { return true }
+      stream = id
+      connection.sendForward(stream: id, opcode: ForwardOpcode.open, body: request)
+      return false
+    }
+    if abandoned { connection.releaseForward(id) }
+  }
+
+  /// Close the listener and every connection it is carrying. The agent releases the port when it
+  /// sees the CLOSE.
+  func stop() {
+    let taken:
+      (stream: UInt32?, entries: [UUID: (connection: ForwardedConnection, slot: ForwardSlot)])? =
+        lock.withLock {
+          guard !stopped else { return nil }
+          stopped = true
+          defer { live = [:] }
+          return (stream, live)
+        }
+    guard let taken else { return }
+    if let stream = taken.stream {
+      connection.sendForward(stream: stream, opcode: ForwardOpcode.close, body: Data())
+      // Stream ids are never handed out twice, so the agent's answering CLOSE has nothing to land
+      // on once the handler is gone.
+      connection.releaseForward(stream)
+    }
+    for entry in taken.entries.values { entry.connection.finish(tellAgent: true) }
+  }
+
+  /// One envelope on the listener's stream, on the connection's reader thread. Nothing blocks.
+  private func handle(_ opcode: UInt8, _ body: Data) {
+    switch opcode {
+    case ForwardOpcode.reply:
+      guard lock.withLock({ !listening && !stopped }) else { return }
+      switch ForwardListenReply.port(in: body) {
+      case .success(let port):
+        lock.withLock { listening = true }
+        onEvent(.listening(port))
+      case .failure(let refusal):
+        // The agent's CLOSE follows a refusal; the stream is released here, so it is dropped.
+        end(refusal.detail)
+      }
+    case ForwardOpcode.accepted:
+      guard lock.withLock({ listening && !stopped }) else { return }
+      claims.async { [weak self] in self?.claim() }
+    case ForwardOpcode.close:
+      // The agent ended the listener. Claimed connections carry on until they end themselves.
+      end("The agent stopped listening.")
+    default:
+      break
+    }
+  }
+
+  /// Over from this side without telling the agent: it refused, or it already said CLOSE.
+  private func end(_ reason: String) {
+    let stream: UInt32?? = lock.withLock {
+      guard !stopped else { return nil }
+      stopped = true
+      return .some(self.stream)
+    }
+    guard let stream else { return }
+    if let stream { connection.releaseForward(stream) }
+    onEvent(.stopped(reason))
+  }
+
+  /// Claim the connection the agent just announced, once its target connection is up.
+  private func claim() {
+    guard let listener = lock.withLock({ stopped ? nil : stream }),
+      let request = try? JSONEncoder().encode(ForwardAcceptRequest(listener: listener))
+    else { return }
+    guard let slot = connection.reserveForwardSlot() else {
+      discard(request)
+      onEvent(.failed("Too many connections through the forwards on this agent; one was refused."))
+      return
+    }
+    guard let socket = LoopbackSocket.connect(port: target, timeout: Self.dialTimeout) else {
+      let reason = String(cString: strerror(errno))
+      discard(request)
+      onEvent(.failed("Could not reach 127.0.0.1:\(target): \(reason)"))
+      return
+    }
+    guard PortForward.prepare(socket) else {
+      Darwin.close(socket)
+      discard(request)
+      return
+    }
+    let id = UUID()
+    let forwarded = ForwardedConnection(
+      socket: socket, request: request, connection: connection, timeouts: timeouts,
+      onEvent: { [weak self] event in
+        if case .failed(let detail) = event { self?.onEvent(.failed(detail)) }
+      },
+      onFinished: { [weak self] in self?.forget(id) })
+    let kept = lock.withLock { () -> Bool in
+      guard !stopped else { return false }
+      live[id] = (forwarded, slot)
+      return true
+    }
+    // Stopped meanwhile: `forwarded` sent nothing and closes the socket as it goes, and the
+    // connection it would have claimed goes with the listener.
+    guard kept else { return }
+    _ = slot
+    forwarded.start()
+  }
+
+  /// Claim one waiting connection only to close it, so the process that made it sees it end now.
+  /// Released at once rather than after the agent's CLOSE: ids are never reused, and the agent's
+  /// answers are dropped for a stream nobody holds.
+  private func discard(_ request: Data) {
+    guard let id = try? connection.reserveForward(onOpcode: { _, _ in }) else { return }
+    connection.sendForward(stream: id, opcode: ForwardOpcode.open, body: request)
+    connection.sendForward(stream: id, opcode: ForwardOpcode.close, body: Data())
+    connection.releaseForward(id)
+  }
+
+  /// The removed entry, and so its slot, is dropped after the lock.
   private func forget(_ id: UUID) { _ = lock.withLock { live.removeValue(forKey: id) } }
 }
 
@@ -309,7 +560,8 @@ final class ForwardSlot: @unchecked Sendable {
 /// lock is never held across I/O.
 private final class ForwardedConnection: @unchecked Sendable {
   private let socket: Int32
-  private let remotePort: UInt16
+  /// The OPEN body: `open` for a forward from this Mac, `accept` for one a listener took.
+  private let request: Data
   private let connection: AgentVCSConnection
   private let timeouts: PortForward.Timeouts
   private let onEvent: @Sendable (PortForward.Event) -> Void
@@ -356,13 +608,13 @@ private final class ForwardedConnection: @unchecked Sendable {
   static let messageOverhead = 64
 
   init(
-    socket: Int32, remotePort: UInt16, connection: AgentVCSConnection,
+    socket: Int32, request: Data, connection: AgentVCSConnection,
     timeouts: PortForward.Timeouts,
     onEvent: @escaping @Sendable (PortForward.Event) -> Void,
     onFinished: @escaping @Sendable () -> Void
   ) {
     self.socket = socket
-    self.remotePort = remotePort
+    self.request = request
     self.connection = connection
     self.timeouts = timeouts
     self.onEvent = onEvent
@@ -382,12 +634,6 @@ private final class ForwardedConnection: @unchecked Sendable {
   deinit { Darwin.close(socket) }
 
   func start() {
-    // Encoded before anything is reserved: a refusal here has nothing to release.
-    guard let request = try? JSONEncoder().encode(ForwardOpenRequest(port: remotePort)) else {
-      onEvent(.failed("Could not encode the forward request."))
-      finish(tellAgent: false)
-      return
-    }
     let id: UInt32
     do {
       id = try connection.reserveForward { [weak self] opcode, body in

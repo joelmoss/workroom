@@ -98,6 +98,9 @@ extension Defaults.Keys {
   /// `https://codaset.localhost` in a Debug build, which only ever reaches this Mac
   /// (`BrokerEndpoint`). Hidden; override with `defaults write <bundle id> brokerURL <url>`.
   static let brokerURL = Key<String>("brokerURL", default: "", suite: .app)
+  /// Debug builds only: the port of the development Codaset's Puma on this Mac, which a remote
+  /// agent's broker requests are carried to (`BrokerReverseForwards`). `bin/dev` pins it to 3000.
+  static let brokerAgentTarget = Key<Int>("brokerAgentTarget", default: 3000, suite: .app)
 
   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
   static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true, suite: .app)
