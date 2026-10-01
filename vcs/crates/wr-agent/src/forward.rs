@@ -18,10 +18,13 @@
 //! 0x03 DATA   both directions  body: raw connection bytes, 0..=1 MiB - 1. May be empty.
 //! 0x04 EOF    both directions  body: empty. The sender will send no more DATA.
 //! 0x05 CLOSE  both directions  body: empty. The stream is finished; the socket is gone.
+//! 0x06 ACCEPTED agent → client body: empty. On a listener's stream only: one connection is
+//!                              waiting to be claimed (see "Listening", below).
 //! ```
 //!
 //! **Stream 0 carries nothing on this service.** There is no agent-initiated stream here (unlike
-//! File's watch events), so an envelope on stream 0 is dropped.
+//! File's watch events): even a listener's connections arrive on streams the client opens, so an
+//! envelope on stream 0 is dropped.
 //!
 //! **EOF and CLOSE are both needed, and mean different things.** EOF is a half-close: the sender is
 //! done writing but still reading, which is how `curl --data-binary @-` style traffic and any
@@ -78,7 +81,40 @@
 //! agent maps to those two addresses itself. Nothing is resolved: a DNS lookup on the dispatch path
 //! is an unbounded blocking call, and `localhost` resolving through a hosts file is the classic way
 //! an allowlist checked before resolution gets bypassed. So `127.0.0.2` is refused too, along with
-//! every other address. Reverse (remote → Mac) forwarding is not part of this service.
+//! every other address.
+//!
+//! ## Listening (the reverse direction)
+//!
+//! A Debug build of the app has its agent reach the Mac's own development Codaset through this
+//! (codaset.dev is off limits to it), so a process on the agent's box connects to a port HERE and
+//! the client carries the connection to something on its side. Two more methods, and still only
+//! client-chosen stream ids:
+//!
+//! ```json
+//! {"method": "listen", "port": 47123}
+//! {"method": "accept", "listener": 7}
+//! ```
+//!
+//! - `listen` binds `127.0.0.1:<port>` (0 for an ephemeral port; never another address) and answers
+//!   `{"version":1,"result":{"listening":<bound port>}}`. Its stream is the listener's control
+//!   stream from then on: each connection accepted on the port is announced there with one
+//!   ACCEPTED, and nothing else arrives on it until the agent's CLOSE.
+//! - `accept`, on a new stream, claims the oldest waiting connection of the listener on stream
+//!   `listener` and answers `{"opened": true}` exactly as `open` does. From there the stream is an
+//!   ordinary forward: DATA, EOF and CLOSE, the same budget, the same cap, the same CLOSE rule.
+//! - A connection nobody claims within [`PENDING_TIMEOUT`] is closed, and at most [`MAX_PENDING`]
+//!   wait per listener: the process that connected sees its connection end rather than hang.
+//! - The client's CLOSE on the control stream stops the listener; the agent answers with CLOSE once
+//!   the port is released and every unclaimed connection closed. Claimed ones carry on. The
+//!   connection dropping ends every listener with it, as it ends every forward.
+//!
+//! | kind | when |
+//! |---|---|
+//! | `unsupported` | `"listen takes only a port"` / `"accept takes only a listener"` / `"open takes a host and a port"` — a field that belongs to another method |
+//! | `unsupported` | `"missing listener"` — `accept` without one |
+//! | `refused` | `"too many listeners"` — this connection already holds [`MAX_LISTENERS`] |
+//! | `bind` | the OS error text — the port is taken, or not this user's to bind |
+//! | `refused` | `"stream <n> is not listening"` / `"no connection is waiting"` — an `accept` with nothing to claim |
 //!
 //! ## Closing
 //!
@@ -133,9 +169,10 @@ use crate::protocol::envelope::{Envelope, Service, MAX_ENVELOPE_PAYLOAD};
 use crate::session::SharedWriter;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -151,6 +188,25 @@ const REPLY: u8 = 0x02;
 const DATA: u8 = 0x03;
 const EOF: u8 = 0x04;
 const CLOSE: u8 = 0x05;
+const ACCEPTED: u8 = 0x06;
+
+/// Listeners one multiplex connection may hold. A Debug app opens one per remote workroom on the
+/// host, and a host serves one workroom; four is headroom, not a use.
+pub const MAX_LISTENERS: usize = 4;
+
+/// Accepted connections that may wait, per listener, for the client to claim them. Beyond this a
+/// new one is closed at once: a client that has stopped claiming must not make the agent hold
+/// sockets without limit.
+pub const MAX_PENDING: usize = 8;
+
+/// How long an accepted connection waits to be claimed before it is closed. Well under the broker
+/// client's own 15 s request timeout (`broker.rs`), so a git helper whose Mac cannot reach Codaset
+/// fails in seconds rather than at its own deadline.
+pub const PENDING_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often a listener's thread wakes with nothing to accept, to notice a kill and expire what
+/// waited too long. A connection arriving wakes it at once.
+const ACCEPT_POLL: Duration = Duration::from_millis(200);
 
 /// Bounded so a refused or blackholed port answers rather than holding the stream open forever. A
 /// loopback connect either completes in microseconds or is never going to. One budget for the whole
@@ -191,6 +247,19 @@ struct Request {
     host: Option<String>,
     #[serde(default)]
     port: Option<u16>,
+    #[serde(default)]
+    listener: Option<u32>,
+}
+
+/// What an OPEN asks for, once its body has been validated.
+#[derive(Debug, PartialEq)]
+enum Opening {
+    /// `open`: connect to a loopback port on this box.
+    Connect(Vec<IpAddr>, u16),
+    /// `listen`: bind `127.0.0.1:<port>` and announce its connections.
+    Listen(u16),
+    /// `accept`: claim a connection waiting on the listener on this stream.
+    Accept(u32),
 }
 
 /// A refusal, as `{"<kind>": "<detail>"}`. One shape for the Swift decoder, like `FileError`'s.
@@ -228,8 +297,9 @@ fn loopback_addresses(host: &str) -> Option<Vec<IpAddr>> {
     })
 }
 
-/// Parse an OPEN body into the addresses to try and the port.
-fn target(body: &[u8]) -> Result<(Vec<IpAddr>, u16), Refusal> {
+/// Parse an OPEN body into what it asks for. Each method takes exactly its own fields: a field
+/// that belongs to another one is refused rather than ignored, so a confused client learns which.
+fn request(body: &[u8]) -> Result<Opening, Refusal> {
     // A request is always one JSON object. Answering here beats parsing a stray DATA payload that
     // arrived before its OPEN as JSON and reporting a serde error for it.
     if body.first() != Some(&b'{') {
@@ -242,10 +312,34 @@ fn target(body: &[u8]) -> Result<(Vec<IpAddr>, u16), Refusal> {
         // a maximum-sized OPEN could otherwise produce a reply larger than an envelope.
         Refusal::unsupported(abbreviated(&error.to_string(), ECHOED_MESSAGE))
     })?;
-    if request.method != "open" {
-        return Err(Refusal::unsupported(
-            r#"forward requests are {"method": "open", "host": …, "port": …}"#,
-        ));
+    match request.method.as_str() {
+        "open" => {}
+        "listen" => {
+            if request.host.is_some() || request.listener.is_some() {
+                return Err(Refusal::unsupported("listen takes only a port"));
+            }
+            let port = request
+                .port
+                .ok_or_else(|| Refusal::unsupported("missing port"))?;
+            return Ok(Opening::Listen(port));
+        }
+        "accept" => {
+            if request.host.is_some() || request.port.is_some() {
+                return Err(Refusal::unsupported("accept takes only a listener"));
+            }
+            let listener = request
+                .listener
+                .ok_or_else(|| Refusal::unsupported("missing listener"))?;
+            return Ok(Opening::Accept(listener));
+        }
+        _ => {
+            return Err(Refusal::unsupported(
+                r#"forward requests are {"method": "open", "host": …, "port": …}"#,
+            ))
+        }
+    }
+    if request.listener.is_some() {
+        return Err(Refusal::unsupported("open takes a host and a port"));
     }
     let host = request
         .host
@@ -259,7 +353,7 @@ fn target(body: &[u8]) -> Result<(Vec<IpAddr>, u16), Refusal> {
             abbreviated(&host, ECHOED_HOST)
         ))
     })?;
-    Ok((addresses, port))
+    Ok(Opening::Connect(addresses, port))
 }
 
 /// Text as a refusal echoes it: whole if short, abbreviated if not. A host, or a serde message
@@ -367,6 +461,28 @@ impl Drop for Slot {
     }
 }
 
+/// A connection accepted on a listener and not yet claimed by an `accept`.
+struct Waiting {
+    socket: TcpStream,
+    since: Instant,
+}
+
+/// One listener, as the dispatching thread sees it.
+struct Listening {
+    /// Set by the client's CLOSE or the connection's departure. The accept thread notices within
+    /// `ACCEPT_POLL`, then releases the port, closes what is still waiting and sends the one CLOSE.
+    killed: Arc<AtomicBool>,
+    waiting: Arc<Mutex<VecDeque<Waiting>>>,
+    /// As `Conn::token`: a finishing accept thread forgets only its own entry.
+    token: u64,
+}
+
+/// Where a forward's socket comes from: a connect it makes, or a connection a listener accepted.
+enum Source {
+    Connect(Vec<IpAddr>, u16),
+    Accepted(TcpStream),
+}
+
 /// Every forwarded connection ONE multiplex connection owns.
 ///
 /// Per connection, never process-wide, and that is the whole "only carries while a client is
@@ -378,6 +494,8 @@ pub struct Forwards {
     next_token: AtomicUsize,
     /// Forward threads alive on this connection: what `MAX_FORWARDS` bounds.
     live: Arc<AtomicUsize>,
+    /// Listeners, by their control stream. Behind an `Arc` for the reason `open` is.
+    listeners: Arc<Mutex<HashMap<u32, Listening>>>,
 }
 
 impl Default for Forwards {
@@ -392,6 +510,7 @@ impl Forwards {
             open: Arc::new(Mutex::new(HashMap::new())),
             next_token: AtomicUsize::new(0),
             live: Arc::new(AtomicUsize::new(0)),
+            listeners: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -409,7 +528,12 @@ impl Forwards {
             .open
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&stream);
+            .contains_key(&stream)
+            || self
+                .listeners
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&stream);
         if taken {
             send_reply(
                 writer,
@@ -418,13 +542,18 @@ impl Forwards {
             );
             return;
         }
-        let (addresses, port) = match target(body) {
-            Ok(target) => target,
-            Err(refusal) => {
-                send_reply(writer, stream, &refusal.value());
-                send(writer, stream, CLOSE, &[]);
-                return;
-            }
+        let refuse = |refusal: Refusal| {
+            send_reply(writer, stream, &refusal.value());
+            send(writer, stream, CLOSE, &[]);
+        };
+        let source = match request(body) {
+            Ok(Opening::Connect(addresses, port)) => Source::Connect(addresses, port),
+            Ok(Opening::Listen(port)) => return self.listen(stream, port, writer),
+            Ok(Opening::Accept(listener)) => match self.claim(listener) {
+                Ok(socket) => Source::Accepted(socket),
+                Err(refusal) => return refuse(refusal),
+            },
+            Err(refusal) => return refuse(refusal),
         };
 
         let (tx, rx) = channel();
@@ -464,20 +593,23 @@ impl Forwards {
         // seconds, and the caller is the connection's envelope reader.
         let open_map = Arc::clone(&self.open);
         let thread_writer = Arc::clone(writer);
+        // An accepted socket refused by the cap above was dropped with `source`, which closes it: the
+        // process that connected sees its connection end, as a refused connect would make it.
         let spawned = std::thread::Builder::new().spawn(move || {
-            connect_and_run(ForwardTask {
-                stream,
-                token,
-                addresses,
-                port,
-                rx,
-                queued,
-                socket,
-                killed,
-                slot,
-                open: open_map,
-                writer: thread_writer,
-            });
+            connect_and_run(
+                ForwardTask {
+                    stream,
+                    token,
+                    rx,
+                    queued,
+                    socket,
+                    killed,
+                    slot,
+                    open: open_map,
+                    writer: thread_writer,
+                },
+                source,
+            );
         });
         // `std::thread::spawn` PANICS when the OS cannot create a thread (`RLIMIT_NPROC`, memory
         // pressure) — reachable here on the connection's own dispatch thread, so the panic would
@@ -489,6 +621,97 @@ impl Forwards {
         if spawned.is_err() {
             retire_after_spawn_failure(&self.open, writer, stream, token);
         }
+    }
+
+    /// `listen`: bind the port, answer with it, and start the thread that accepts on it. Every
+    /// refusal is a REPLY then CLOSE; once the REPLY has gone out, the accept thread owns the stream
+    /// and is the only thing that writes on it again.
+    fn listen(&self, stream: u32, port: u16, writer: &SharedWriter) {
+        let refuse = |refusal: Refusal| {
+            send_reply(writer, stream, &refusal.value());
+            send(writer, stream, CLOSE, &[]);
+        };
+        // Checked once and inserted below without a gap: every OPEN arrives on this one dispatch
+        // thread, and nothing else adds a listener.
+        if self
+            .listeners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+            >= MAX_LISTENERS
+        {
+            return refuse(Refusal::refused("too many listeners"));
+        }
+        // Loopback only: a listener is a door into whatever the client connects it to, and only
+        // this box's own processes may knock.
+        let bound = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).and_then(|listener| {
+            listener.set_nonblocking(true)?;
+            let port = listener.local_addr()?.port();
+            Ok((listener, port))
+        });
+        let (listener, bound_port) = match bound {
+            Ok(bound) => bound,
+            Err(error) => return refuse(Refusal("bind", error.to_string())),
+        };
+        let killed = Arc::new(AtomicBool::new(false));
+        let waiting = Arc::new(Mutex::new(VecDeque::new()));
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed) as u64;
+        self.listeners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                stream,
+                Listening {
+                    killed: Arc::clone(&killed),
+                    waiting: Arc::clone(&waiting),
+                    token,
+                },
+            );
+        // Answered BEFORE the thread starts, so no ACCEPTED can reach the client ahead of it.
+        let reply =
+            json!({"version": FORWARD_SERVICE_VERSION, "result": {"listening": bound_port}});
+        if !send_reply(writer, stream, &reply) {
+            // The client is gone. Dropping `listener` releases the port.
+            forget_listener(&self.listeners, stream, token);
+            return;
+        }
+        let task = ListenTask {
+            stream,
+            token,
+            listener,
+            killed,
+            waiting,
+            listeners: Arc::clone(&self.listeners),
+            writer: Arc::clone(writer),
+        };
+        // As for a forward's connect thread: `Builder::spawn` so a thread the OS will not make is an
+        // `Err` rather than a panic on the dispatch thread. The closure, and the port with it, is
+        // dropped unrun; the REPLY already went out, so the CLOSE alone ends the stream.
+        if std::thread::Builder::new()
+            .spawn(move || accept_connections(task))
+            .is_err()
+            && forget_listener(&self.listeners, stream, token).is_some()
+        {
+            send(writer, stream, CLOSE, &[]);
+        }
+    }
+
+    /// `accept`: take the oldest connection still waiting on the listener on `listener`. One that
+    /// waited past `PENDING_TIMEOUT` is closed on the way, as the accept thread would have.
+    fn claim(&self, listener: u32) -> Result<TcpStream, Refusal> {
+        let listeners = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
+        let listening = listeners
+            .get(&listener)
+            .filter(|listening| !listening.killed.load(Ordering::Acquire))
+            .ok_or_else(|| Refusal::refused(format!("stream {listener} is not listening")))?;
+        let mut waiting = listening.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        while let Some(next) = waiting.pop_front() {
+            if next.since.elapsed() < PENDING_TIMEOUT {
+                return Ok(next.socket);
+            }
+            let _ = next.socket.shutdown(Shutdown::Both);
+        }
+        Err(Refusal::refused("no connection is waiting"))
     }
 
     /// Client bytes for a forwarded socket. Dropped if the stream is not forwarding (or the client
@@ -532,6 +755,14 @@ impl Forwards {
         let open = self.open.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(conn) = open.get(&stream) {
             conn.kill();
+            return;
+        }
+        drop(open);
+        // A listener: its thread notices, releases the port and answers CLOSE. The entry stays
+        // until it has, so the id cannot be re-opened first.
+        let listeners = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(listening) = listeners.get(&stream) {
+            listening.killed.store(true, Ordering::Release);
         }
     }
 }
@@ -545,6 +776,13 @@ impl Drop for Forwards {
         for (_, conn) in open.drain() {
             conn.kill();
         }
+        drop(open);
+        // Taken out of the map, so each accept thread finds its entry gone and ends without a word:
+        // nobody is left to hear a CLOSE. It still releases its port and closes what was waiting.
+        let mut listeners = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
+        for (_, listening) in listeners.drain() {
+            listening.killed.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -553,8 +791,6 @@ impl Drop for Forwards {
 struct ForwardTask {
     stream: u32,
     token: u64,
-    addresses: Vec<IpAddr>,
-    port: u16,
     rx: Receiver<Msg>,
     queued: Arc<AtomicUsize>,
     socket: Arc<Mutex<Option<TcpStream>>>,
@@ -633,30 +869,17 @@ fn retire_after_reader_spawn_failure(task: &ForwardTask, socket: &TcpStream) {
 ///
 /// This thread is the socket's WRITER; it spawns the reader. A connect failure is an error reply
 /// and a CLOSE, never a dropped stream.
-fn connect_and_run(task: ForwardTask) {
-    let mut last = None;
-    let mut connected = None;
-    // One deadline across every address the host names: `localhost` is two, and "bounded at 3 s"
-    // is the promise the client's own timeout is budgeted against.
-    let deadline = Instant::now() + CONNECT_TIMEOUT;
-    for address in &task.addresses {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            last.get_or_insert_with(|| std::io::ErrorKind::TimedOut.into());
-            break;
-        }
-        match TcpStream::connect_timeout(&SocketAddr::new(*address, task.port), remaining) {
-            Ok(socket) => {
-                connected = Some(socket);
-                break;
+fn connect_and_run(task: ForwardTask, source: Source) {
+    let mut socket = match source {
+        // Already connected: a listener accepted it. Everything from here is the same forward.
+        Source::Accepted(socket) => socket,
+        Source::Connect(addresses, port) => match connect(&addresses, port) {
+            Ok(socket) => socket,
+            Err(refusal) => {
+                retire(&task, Some(refusal));
+                return;
             }
-            Err(error) => last = Some(error),
-        }
-    }
-    let Some(mut socket) = connected else {
-        let detail = last.map_or_else(|| "no address to connect to".into(), |e| e.to_string());
-        retire(&task, Some(Refusal("connect", detail)));
-        return;
+        },
     };
     // What a forward carries is small writes both ways (chunked HTTP, HMR frames, a wire protocol),
     // and the app already sets this on its accepted socket: without it here, the other hop still
@@ -777,6 +1000,149 @@ fn connect_and_run(task: ForwardTask) {
     // Deliberately not joined: the reader is still legitimately blocked on a peer that has not
     // finished sending, and joining would park this thread for exactly as long for nothing.
     drop(reader);
+}
+
+/// The first address in `addresses` that takes a connection to `port`.
+fn connect(addresses: &[IpAddr], port: u16) -> Result<TcpStream, Refusal> {
+    let mut last = None;
+    // One deadline across every address the host names: `localhost` is two, and "bounded at 3 s"
+    // is the promise the client's own timeout is budgeted against.
+    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    for address in addresses {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            last.get_or_insert_with(|| std::io::ErrorKind::TimedOut.into());
+            break;
+        }
+        match TcpStream::connect_timeout(&SocketAddr::new(*address, port), remaining) {
+            Ok(socket) => return Ok(socket),
+            Err(error) => last = Some(error),
+        }
+    }
+    let detail = last.map_or_else(|| "no address to connect to".into(), |e| e.to_string());
+    Err(Refusal("connect", detail))
+}
+
+/// Everything one listener's accept thread needs.
+struct ListenTask {
+    stream: u32,
+    token: u64,
+    listener: TcpListener,
+    killed: Arc<AtomicBool>,
+    waiting: Arc<Mutex<VecDeque<Waiting>>>,
+    listeners: Arc<Mutex<HashMap<u32, Listening>>>,
+    writer: SharedWriter,
+}
+
+/// Forget this listener, if it is still the one registered. `None` means the connection is gone.
+fn forget_listener(
+    listeners: &Mutex<HashMap<u32, Listening>>,
+    stream: u32,
+    token: u64,
+) -> Option<Listening> {
+    let mut listeners = listeners.lock().unwrap_or_else(|e| e.into_inner());
+    match listeners.get(&stream) {
+        Some(listening) if listening.token == token => listeners.remove(&stream),
+        _ => None,
+    }
+}
+
+/// Accept on a listener until it is killed or breaks, announcing each connection with ACCEPTED.
+///
+/// This thread is the only writer on the listener's stream once its REPLY is out, so the CLOSE it
+/// sends last really is last: nothing can announce a connection behind it.
+fn accept_connections(task: ListenTask) {
+    let ListenTask {
+        stream,
+        token,
+        listener,
+        killed,
+        waiting,
+        listeners,
+        writer,
+    } = task;
+    while !killed.load(Ordering::Acquire) {
+        let mut ready = libc::pollfd {
+            fd: listener.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one pollfd for a descriptor `listener` owns for the whole call. Whatever it
+        // returns, the non-blocking `accept` below is what decides.
+        unsafe { libc::poll(&mut ready, 1, ACCEPT_POLL.as_millis() as libc::c_int) };
+        if killed.load(Ordering::Acquire) {
+            break;
+        }
+        expire(&waiting);
+        match listener.accept() {
+            Ok((socket, _)) => {
+                // BSD hands an accepted socket the listener's `O_NONBLOCK`; Linux does not. A
+                // forward's threads block on it either way, so say so.
+                if socket.set_nonblocking(false).is_err() {
+                    continue;
+                }
+                let admitted = {
+                    let mut waiting = waiting.lock().unwrap_or_else(|e| e.into_inner());
+                    if waiting.len() < MAX_PENDING {
+                        waiting.push_back(Waiting {
+                            socket,
+                            since: Instant::now(),
+                        });
+                        true
+                    } else {
+                        // Closed at once, which the process that connected sees as a reset: the
+                        // client has stopped claiming, and the agent will not hold more.
+                        let _ = socket.shutdown(Shutdown::Both);
+                        false
+                    }
+                };
+                if admitted && !send(&writer, stream, ACCEPTED, &[]) {
+                    // Nobody is reading this connection's envelopes any more.
+                    break;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) => {}
+            // Out of descriptors (`EMFILE`, `ENFILE`) or memory: the kernel keeps the connection in
+            // the backlog, so it is tried again after a pause rather than lost.
+            Err(error)
+                if matches!(
+                    error.raw_os_error(),
+                    Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+                ) =>
+            {
+                std::thread::sleep(ACCEPT_POLL);
+            }
+            // The listener itself is broken. Ending is better than spinning on it.
+            Err(_) => break,
+        }
+    }
+    let ours = forget_listener(&listeners, stream, token).is_some();
+    // The port first, so nothing new can connect while the rest are being closed.
+    drop(listener);
+    for left in waiting.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
+        let _ = left.socket.shutdown(Shutdown::Both);
+    }
+    if ours {
+        send(&writer, stream, CLOSE, &[]);
+    }
+}
+
+/// Close what has waited past `PENDING_TIMEOUT`. Oldest first, so the scan stops at the first one
+/// still in time.
+fn expire(waiting: &Mutex<VecDeque<Waiting>>) {
+    let mut waiting = waiting.lock().unwrap_or_else(|e| e.into_inner());
+    while waiting
+        .front()
+        .is_some_and(|next| next.since.elapsed() >= PENDING_TIMEOUT)
+    {
+        if let Some(stale) = waiting.pop_front() {
+            let _ = stale.socket.shutdown(Shutdown::Both);
+        }
+    }
 }
 
 /// Socket → client, until the peer closes, the connection fails, or the forward is killed.
@@ -922,7 +1288,7 @@ mod tests {
     }
 
     /// A task as `open` would have built it, for the connect-window tests.
-    fn task_for(forwards: &Forwards, port: u16, writer: SharedWriter) -> (ForwardTask, Rx<Msg>) {
+    fn task_for(forwards: &Forwards, writer: SharedWriter) -> (ForwardTask, Rx<Msg>) {
         let (tx, rx) = channel();
         let (_, probe) = channel();
         let killed = Arc::new(AtomicBool::new(false));
@@ -940,8 +1306,6 @@ mod tests {
         let task = ForwardTask {
             stream: 1,
             token: 0,
-            addresses: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
-            port,
             rx,
             queued: Arc::new(AtomicUsize::new(0)),
             socket,
@@ -953,8 +1317,13 @@ mod tests {
         (task, probe)
     }
 
+    /// The connect `open` would make to `port` on this box.
+    fn local(port: u16) -> Source {
+        Source::Connect(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)], port)
+    }
+
     fn refusal(body: &[u8]) -> Value {
-        match target(body) {
+        match request(body) {
             Err(refusal) => refusal.value(),
             Ok(_) => panic!("expected a refusal"),
         }
@@ -997,11 +1366,13 @@ mod tests {
 
     #[test]
     fn an_open_request_parses_to_an_address_and_a_port() {
-        let (addresses, port) = target(br#"{"method":"open","host":"127.0.0.1","port":5173}"#)
+        let opening = request(br#"{"method":"open","host":"127.0.0.1","port":5173}"#)
             .ok()
             .expect("parsed");
-        assert_eq!(addresses, vec![IpAddr::V4(Ipv4Addr::LOCALHOST)]);
-        assert_eq!(port, 5173);
+        assert_eq!(
+            opening,
+            Opening::Connect(vec![IpAddr::V4(Ipv4Addr::LOCALHOST)], 5173)
+        );
     }
 
     #[test]
@@ -1208,9 +1579,9 @@ mod tests {
         let forwards = Forwards::new();
         let capture = Capture::default();
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
-        let (task, _probe) = task_for(&forwards, port, writer);
+        let (task, _probe) = task_for(&forwards, writer);
         forwards.open.lock().unwrap().clear();
-        connect_and_run(task);
+        connect_and_run(task, local(port));
 
         let (mut accepted, _) = listener.accept().unwrap();
         accepted
@@ -1231,9 +1602,9 @@ mod tests {
         let forwards = Forwards::new();
         let capture = Capture::default();
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
-        let (task, _probe) = task_for(&forwards, port, writer);
+        let (task, _probe) = task_for(&forwards, writer);
         forwards.close(1);
-        connect_and_run(task);
+        connect_and_run(task, local(port));
 
         let (mut accepted, _) = listener.accept().unwrap();
         accepted
@@ -1255,8 +1626,8 @@ mod tests {
         let forwards = Forwards::new();
         let capture = Capture::default();
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
-        let (task, _probe) = task_for(&forwards, port, writer.clone());
-        connect_and_run(task);
+        let (task, _probe) = task_for(&forwards, writer.clone());
+        connect_and_run(task, local(port));
         assert_eq!(
             sent(&capture),
             vec![(1, REPLY), (1, CLOSE)],
@@ -1265,16 +1636,16 @@ mod tests {
 
         let capture = Capture::default();
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
-        let (task, _probe) = task_for(&forwards, port, writer.clone());
+        let (task, _probe) = task_for(&forwards, writer.clone());
         forwards.close(1);
-        connect_and_run(task);
+        connect_and_run(task, local(port));
         assert_eq!(sent(&capture), vec![(1, CLOSE)], "killed: CLOSE alone");
 
         let capture = Capture::default();
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
-        let (task, _probe) = task_for(&forwards, port, writer);
+        let (task, _probe) = task_for(&forwards, writer);
         forwards.open.lock().unwrap().clear();
-        connect_and_run(task);
+        connect_and_run(task, local(port));
         assert!(sent(&capture).is_empty(), "gone: nothing");
     }
 
@@ -1306,7 +1677,7 @@ mod tests {
         let forwards = Forwards::new();
         let capture = Capture::default();
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
-        let (task, _probe) = task_for(&forwards, port, writer);
+        let (task, _probe) = task_for(&forwards, writer);
         let socket = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let (mut accepted, _) = listener.accept().unwrap();
         accepted
@@ -1405,6 +1776,58 @@ mod tests {
         drop(writer);
     }
 
+    #[test]
+    fn listen_and_accept_parse_to_their_own_openings() {
+        assert_eq!(
+            request(br#"{"method":"listen","port":47123}"#).ok(),
+            Some(Opening::Listen(47123))
+        );
+        assert_eq!(
+            request(br#"{"method":"listen","port":0}"#).ok(),
+            Some(Opening::Listen(0))
+        );
+        assert_eq!(
+            request(br#"{"method":"accept","listener":7}"#).ok(),
+            Some(Opening::Accept(7))
+        );
+    }
+
+    /// Each method takes its own fields only, so a client mixing them up is told which.
+    #[test]
+    fn a_field_from_another_method_is_refused_by_name() {
+        for (body, detail) in [
+            (
+                &br#"{"method":"listen","host":"127.0.0.1","port":1}"#[..],
+                "listen takes only a port",
+            ),
+            (
+                br#"{"method":"listen","port":1,"listener":2}"#,
+                "listen takes only a port",
+            ),
+            (br#"{"method":"listen"}"#, "missing port"),
+            (
+                br#"{"method":"accept","listener":2,"port":1}"#,
+                "accept takes only a listener",
+            ),
+            (
+                br#"{"method":"accept","listener":2,"host":"::1"}"#,
+                "accept takes only a listener",
+            ),
+            (br#"{"method":"accept"}"#, "missing listener"),
+            (
+                br#"{"method":"open","host":"127.0.0.1","port":1,"listener":2}"#,
+                "open takes a host and a port",
+            ),
+        ] {
+            assert_eq!(
+                refusal(body)["error"]["unsupported"],
+                detail,
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
+
     /// The whole request object, and nothing else: the Swift client is written from this shape.
     #[test]
     fn the_request_is_exactly_method_host_and_port() {
@@ -1416,6 +1839,7 @@ mod tests {
                 method: "open".into(),
                 host: Some("localhost".into()),
                 port: Some(0),
+                listener: None,
             }
         );
     }
