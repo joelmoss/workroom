@@ -109,6 +109,24 @@ struct BrokerClient: Sendable {
   /// Per request; the agent's side uses 15 s (`broker.rs`), the Mac is not on a shared exec budget.
   static let requestTimeout: TimeInterval = 30
 
+  /// Sent with every request, so Codaset can show which build and version created its records:
+  /// `Workroom/2.1.0 (nightly; build 4321)`.
+  static let userAgent = makeUserAgent(
+    version: AppVersion.current,
+    build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+    kind: buildKind())
+
+  static func makeUserAgent(version: String?, build: String?, kind: String) -> String {
+    "Workroom/\(version ?? "unknown") (\(kind); build \(build ?? "unknown"))"
+  }
+
+  /// `dev` for a Debug build, `nightly` for Workroom Nightly, `release` for the main app.
+  static func buildKind(
+    nightly: Bool = ReleaseChannel.isNightlyBuild, debug: Bool = SentryConfig.isDebugBuild
+  ) -> String {
+    debug ? "dev" : nightly ? "nightly" : "release"
+  }
+
   /// `BrokerSession.baseURL`; every request is checked against `BrokerEndpoint` first.
   let baseURL: URL
   let key: BrokerDeviceKey
@@ -163,6 +181,7 @@ struct BrokerClient: Sendable {
       var request = URLRequest(url: url, timeoutInterval: Self.requestTimeout)
       request.httpMethod = method
       request.setValue("application/json", forHTTPHeaderField: "Accept")
+      request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
       request.setValue(
         try BrokerProof.make(key: key, method: method, url: url, issuedAt: now() + skew),
         forHTTPHeaderField: "DPoP")
