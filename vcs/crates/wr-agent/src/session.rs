@@ -926,14 +926,16 @@ impl SessionStore {
                 })
                 .collect()
         };
+        let shared = Instant::now() + RECORD_WAIT;
         parts
             .into_iter()
             .filter_map(|(id, number, (pty, shadow, attached))| {
-                // Each session's own wait, as `RECORD_WAIT` says. One deadline shared by every
-                // session let a session in a long repaint, visited first in the map's arbitrary
-                // order, use it all up, so every session after it got a single attempt and lost its
-                // record whenever that attempt met its reader mid-read.
-                let deadline = Instant::now() + RECORD_WAIT;
+                // `RECORD_WAIT` is the whole pass's budget, so busy sessions cannot add up to a pass
+                // longer than the screens thread's interval. Every session still gets at least
+                // `RECORD_GRACE`: a session in a long repaint, visited first in the map's arbitrary
+                // order, used to spend the whole budget and leave each session after it a single
+                // attempt, which lost its record whenever it met that session's reader mid-read.
+                let deadline = shared.max(Instant::now() + RECORD_GRACE);
                 let mut held = until(deadline, || match attached.try_lock() {
                     Ok(guard) => Some(guard),
                     Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
@@ -1119,10 +1121,14 @@ fn terminal_envelope(stream: u32, frame: Frame) -> Vec<u8> {
 /// truncation. Sharing one constant means those paths cannot drift apart.
 pub const READ_CHUNK: usize = 8192;
 
-/// How long `changed_screens` waits for a session's attachment lock. The reader holds it only
-/// around each read, so a busy session frees it within milliseconds; a repaint to a slow client
-/// can hold it for seconds.
+/// How long one `changed_screens` pass waits, in all, for sessions' attachment locks. The reader
+/// holds one only around each read, so a busy session frees it within milliseconds; a repaint to a
+/// slow client can hold it for seconds.
 const RECORD_WAIT: Duration = Duration::from_millis(100);
+
+/// The least wait any one session gets in a pass, once `RECORD_WAIT` is spent: a few of `until`'s
+/// attempts, which is plenty to get past a reader's single read.
+const RECORD_GRACE: Duration = Duration::from_millis(10);
 
 /// The slowest a peer may take its repaint before the agent gives up on it, in bytes per second.
 ///
@@ -1638,6 +1644,37 @@ mod tests {
             "the busy session was not taken next time"
         );
         store.kill_all();
+    }
+
+    /// Busy sessions share one pass's `RECORD_WAIT` rather than each waiting it out, so however many
+    /// are repainting at once, a pass stays well inside the screens thread's interval.
+    #[test]
+    fn several_busy_sessions_share_one_wait() {
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 30")];
+        let e = env();
+        let ids = [id(21), id(22), id(23), id(24)];
+        for session in ids {
+            store.create(spec(session, &args, &e)).expect("create");
+        }
+        let locks: Vec<_> = ids
+            .iter()
+            .map(|session| store.parts(*session).expect("parts").2)
+            .collect();
+        let repainting: Vec<_> = locks
+            .iter()
+            .map(|lock| lock.lock().expect("lock"))
+            .collect();
+        let started = Instant::now();
+        let taken = store.changed_screens();
+        let elapsed = started.elapsed();
+        drop(repainting);
+        store.kill_all();
+        assert!(taken.is_empty());
+        assert!(
+            elapsed < RECORD_WAIT + RECORD_GRACE * ids.len() as u32 + RECORD_WAIT / 2,
+            "four busy sessions took {elapsed:?}"
+        );
     }
 
     /// A screen taken of one session is not taken for a later session under the same id, so the
