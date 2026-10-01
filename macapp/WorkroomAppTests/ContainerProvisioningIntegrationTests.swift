@@ -175,9 +175,9 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     let base = try await driver.create()
     let baseContainers = try leftovers("ps", runtime: runtime, label: label)
 
-    // `commit` makes the image and `run` the container; `port` and `exec` come once it is running.
-    // A failed `exec` reads as an identity never minted, so it carries no runtime message.
-    for step in ["commit", "run", "port", "exec"] {
+    // `commit` makes the image and `run` the container; `exec` comes once it is running. A failed
+    // `exec` reads as an identity never minted, so it carries no runtime message.
+    for step in ["commit", "run", "exec"] {
       try step.write(to: failing, atomically: true, encoding: .utf8)
       do {
         _ = try await driver.deriveFromBase(base)
@@ -197,5 +197,51 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     try FileManager.default.removeItem(at: failing)
     try await driver.destroy(base)
     XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label), [])
+  }
+
+  /// A derived workroom's supervisor keeps screens on a disk that outlives a reboot (#232, #252):
+  /// a pane that reattaches after the box is stopped and started is shown its last screen, ended,
+  /// rather than a fresh shell. The restart keeps the host's address and its identity, so the
+  /// pane's ssh gets in with the key pinned at the derive.
+  func testAPaneOnADerivedWorkroomIsShownItsLastScreenAfterAReboot() async throws {
+    let provisioning = try provisioning()
+    let driver = ContainerHostDriver(hosts: [:], directory: directory, provisioning: provisioning)
+    let base = try await driver.create()
+    let instance = try await driver.deriveFromBase(base)
+    let session = UUID()
+
+    let first = try RemoteHostIntegrationTests.Pane(
+      command: driver.attachCommand(
+        to: instance, session: session, workingDirectory: "/home/workroom", restored: false))
+    defer { first.dropLink() }
+    try await Task.sleep(for: .seconds(1))
+    first.type("echo LAST-SC\"\"REEN\n")
+    XCTAssertTrue(first.read(until: "LAST-SCREEN").contains("LAST-SCREEN"))
+    // The reboot kills the agent outright, so only what it has already written survives.
+    let record = "~/.local/state/workroom/screens/\(session.uuidString.lowercased()).vt"
+    var written = false
+    for _ in 0..<100 where !written {
+      // Not `onHost`, which fails the test on the misses this loop waits through.
+      let (status, _) = try await driver.exec("grep -q LAST-SCREEN \(record)", on: instance)
+        .communicate(nil, timeout: 20)
+      written = status == 0
+      if !written { try await Task.sleep(for: .milliseconds(200)) }
+    }
+    XCTAssertTrue(written, "the screen was never written to \(record)")
+    first.dropLink()
+
+    // The newest container with this test's label is the instance.
+    let container = try docker(runtime, ["ps", "-l", "-q", "--filter", "label=\(label!)"])
+    try docker(runtime, ["restart", "-t", "0", container])
+
+    let second = try RemoteHostIntegrationTests.Pane(
+      command: driver.attachCommand(
+        to: instance, session: session, workingDirectory: "/home/workroom", restored: true))
+    defer { second.dropLink() }
+    let seen = second.read(until: "host restarted", within: 40)
+    XCTAssertTrue(seen.contains("LAST-SCREEN"), seen)
+    XCTAssertTrue(seen.contains("ended when its host restarted"), seen)
+
+    for host in [instance, base] { try await driver.destroy(host) }
   }
 }

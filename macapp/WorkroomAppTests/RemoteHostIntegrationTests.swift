@@ -186,7 +186,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
   /// Run through `/bin/sh -c`, as libghostty runs a pane's command. No local terminal, so ssh
   /// allocates none on the host either, and the attach there relays over pipes, as the Rust
   /// harnesses' do.
-  private final class Pane: @unchecked Sendable {
+  final class Pane: @unchecked Sendable {
     let process = Process()
     private let input = Pipe()
     private let lock = NSLock()
