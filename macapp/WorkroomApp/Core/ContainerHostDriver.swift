@@ -267,8 +267,33 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   func exec(_ command: String, on host: HostID) async throws -> HostStream {
     let (id, target) = try target(host)
-    let config = try Self.writeConfiguration(
-      for: target, in: directory.appendingPathComponent(id.uuidString))
+    return try Self.exec(command, on: target, in: directory.appendingPathComponent(id.uuidString))
+  }
+
+  func attachCommand(
+    to host: HostID, session: UUID, workingDirectory: String, restored: Bool
+  ) throws -> String {
+    let (id, target) = try target(host)
+    return try Self.attachCommand(
+      to: target, in: directory.appendingPathComponent(id.uuidString), session: session,
+      workingDirectory: workingDirectory, restored: restored)
+  }
+
+  /// Whether the last attach of `session` was refused by `host` in a way that does not heal: a
+  /// changed host key, a key it will not take, nothing to agree a cipher on (#241). Everything
+  /// else is worth trying again: a host that is booting refuses, times out, or accepts and closes
+  /// before its banner, and some of those leave ssh nothing to say at `LogLevel ERROR`.
+  func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
+    guard case .remote(let id) = host else { return false }
+    return Self.refusedLastAttach(of: session, in: directory.appendingPathComponent(id.uuidString))
+  }
+
+  // MARK: The ssh transport, which any ssh-reachable driver shares (boxd's, #256)
+
+  /// Runs `command` on `host` over ssh, with the host's `ssh_config` and `known_hosts` written to
+  /// `hostDirectory` first.
+  static func exec(_ command: String, on host: Host, in hostDirectory: URL) throws -> HostStream {
+    let config = try writeConfiguration(for: host, in: hostDirectory)
     return try HostStream.spawn(
       URL(fileURLWithPath: "/usr/bin/ssh"),
       ["-F", config.path, Self.alias, command],
@@ -281,25 +306,25 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       handshakeTimeout: 20)
   }
 
-  func attachCommand(
-    to host: HostID, session: UUID, workingDirectory: String, restored: Bool
+  /// The command a pane runs to attach to `session` on `host` over ssh, with the host's
+  /// configuration written to `hostDirectory`.
+  static func attachCommand(
+    to host: Host, in hostDirectory: URL, session: UUID, workingDirectory: String, restored: Bool
   ) throws -> String {
-    let (id, target) = try target(host)
-    let hostDirectory = directory.appendingPathComponent(id.uuidString)
-    let config = try Self.writeConfiguration(for: target, in: hostDirectory)
+    let config = try writeConfiguration(for: host, in: hostDirectory)
     // `-t`: the attach client on the far side wants a terminal, for raw mode and the pane's size,
     // and ssh forwards the pane's resizes to it. It outranks the config's `RequestTTY no`, which
     // is right for the service stream.
-    let log = Self.attachLog(session, in: hostDirectory).path
+    let log = attachLog(session, in: hostDirectory).path
     let ssh = [
       "/usr/bin/ssh", "-F", config.path, "-E", log, "-o", "PermitLocalCommand=yes", "-o",
-      "LocalCommand=printf '\\0338\\033[J'", "-t", Self.alias,
-      Self.remoteAttachCommand(
-        binary: target.agentBinary, session: session, socket: target.agentSocket,
-        resources: target.resources, workingDirectory: workingDirectory, restored: restored),
+      "LocalCommand=printf '\\0338\\033[J'", "-t", alias,
+      remoteAttachCommand(
+        binary: host.agentBinary, session: session, socket: host.agentSocket,
+        resources: host.resources, workingDirectory: workingDirectory, restored: restored),
     ]
-    return (["/bin/sh", "-c", Self.attachWrapper, "workroom-attach", log] + ssh)
-      .map(Self.shellQuoted).joined(separator: " ")
+    return (["/bin/sh", "-c", attachWrapper, "workroom-attach", log] + ssh)
+      .map(shellQuoted).joined(separator: " ")
   }
 
   /// What a pane runs around its ssh (#241), as `sh -c <this> workroom-attach <log> <ssh argv>`.
@@ -324,14 +349,10 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     hostDirectory.appendingPathComponent("attach-\(session.uuidString).log")
   }
 
-  /// Whether the last attach of `session` was refused by `host` in a way that does not heal: a
-  /// changed host key, a key it will not take, nothing to agree a cipher on (#241). Everything
-  /// else is worth trying again: a host that is booting refuses, times out, or accepts and closes
-  /// before its banner, and some of those leave ssh nothing to say at `LogLevel ERROR`.
-  func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
-    guard case .remote(let id) = host else { return false }
-    let log = Self.attachLog(session, in: directory.appendingPathComponent(id.uuidString))
-    return Self.isRefusal((try? String(contentsOf: log, encoding: .utf8)) ?? "")
+  /// Whether the last attach of `session`, whose log is in `hostDirectory`, was refused.
+  static func refusedLastAttach(of session: UUID, in hostDirectory: URL) -> Bool {
+    isRefusal(
+      (try? String(contentsOf: attachLog(session, in: hostDirectory), encoding: .utf8)) ?? "")
   }
 
   /// ssh's messages for a host that answered and will keep saying no. Listed rather than the

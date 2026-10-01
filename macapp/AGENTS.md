@@ -250,6 +250,19 @@ side is `Core/Broker/`:
   URL before a request or the browser goes out. Tests need no Codaset at all: they send through
   the in-process `BrokerStub`.
 
+## boxd driver (#256)
+
+`Core/BoxdHostDriver.swift` is the first real provider: boxd machines driven through the `boxd`
+CLI (`--json`) and reached over the container driver's ssh transport (its `exec`,
+`attachCommand` and `writeConfiguration` statics). Its ssh details come only from the blocks the
+CLI manages in `~/.ssh/config` and `~/.ssh/known_hosts` (`SSHDetails`). A base is set up by
+`Resources/host-setup/boxd.sh` (an identity unit and the agent's supervisor, both systemd). A
+derive is snapshot, restore, then reboot, and the reboot is not optional: a restored snapshot
+runs the base's processes until it happens. Machines and snapshots are named
+`<prefix>-<host id>`, so cleanup and a relaunched app find them by ID. `BoxdIntegrationTests`
+make real machines: they run only with `TEST_RUNNER_WR_BOXD_TESTS=1`, a `WR_AGENT_LINUX=1` build,
+and the sandbox off. See "As built (#256)" in `docs/designs/remote-workrooms.md`.
+
 ## Remote workrooms in config (#249)
 
 A workroom or project entry in `config.json` can carry a `"host"` object, which `list --json`
