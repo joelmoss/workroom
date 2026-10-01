@@ -19,7 +19,10 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   private var broker: StubBroker!
   private var cleanups: [() async -> Void] = []
 
-  private static let token = "ghs_fixture_clone_token_0123456789"
+  /// The base clone token the fixture's GitHub accepts (run.sh reads it out of the image).
+  private static var token: String {
+    ProcessInfo.processInfo.environment["WR_SSH_FIXTURE_CLONE_TOKEN"] ?? ""
+  }
   private static let path = "/home/workroom/project"
 
   override func setUp() async throws {
@@ -61,6 +64,10 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       return value
     }
     runtime = URL(fileURLWithPath: try need("WR_SSH_FIXTURE_RUNTIME_PATH"))
+    // Read where they are used (`token`, the disconnected test's broker); needed here so an
+    // older run.sh skips these tests rather than failing them.
+    _ = try need("WR_SSH_FIXTURE_CLONE_TOKEN")
+    _ = try need("WR_SSH_FIXTURE_BROKER_URL")
     return Fixture(
       provisioning: ContainerHostDriver.Provisioning(
         runtime: override ?? runtime, image: try need("WR_SSH_FIXTURE_IMAGE"),
@@ -124,8 +131,10 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       revoke: { revoked.add($0.token) })
   }
 
-  private static let cloneToken = BrokerStub.Answer(
-    body: #"{"token":"\#(token)","expires_at":"2026-10-01T18:00:00Z"}"#)
+  private static var cloneToken: BrokerStub.Answer {
+    BrokerStub.Answer(
+      body: #"{"token":"\#(token)","expires_at":"2026-10-01T18:00:00Z"}"#)
+  }
   private static let grant = BrokerStub.Answer(
     status: 201,
     body: #"{"grant_id":"g1","enrolment_code":"one-time","repository_id":1,"expires_at":"x"}"#)
@@ -172,6 +181,24 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     BrokerStub.requests.filter {
       $0.request.httpMethod == "DELETE" && $0.request.url?.path == "/broker/grants/g1"
     }.count
+  }
+
+  /// The fixture with a runtime that runs the real one, except for the subcommand named in the
+  /// returned file while it exists: a provider failing one step on purpose.
+  private func failingFixture() throws -> (Fixture, failing: URL) {
+    let script = directory.appendingPathComponent("runtime")
+    let failing = directory.appendingPathComponent("failing")
+    let fixture = try fixture(runtime: script)
+    try """
+    #!/bin/sh
+    if [ "$1" = "$(cat \(PosixShell.quoted(failing.path)) 2>/dev/null)" ]; then
+      echo "injected failure" >&2; exit 1
+    fi
+    exec \(PosixShell.quoted(runtime.path)) "$@"
+
+    """.write(to: script, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+    return (fixture, failing)
   }
 
   // MARK: The base
@@ -306,18 +333,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
   @MainActor
   func testAWorkroomThatFailsAtEachStepLeavesNoInstanceAndNoGrant() async throws {
     // The runtime fails `commit` only when told to, so the base is built with it as it is.
-    let script = directory.appendingPathComponent("runtime")
-    let failing = directory.appendingPathComponent("failing")
-    let fixture = try fixture(runtime: script)
-    try """
-    #!/bin/sh
-    if [ -f \(PosixShell.quoted(failing.path)) ] && [ "$1" = commit ]; then
-      echo "injected failure" >&2; exit 1
-    fi
-    exec \(PosixShell.quoted(runtime.path)) "$@"
-
-    """.write(to: script, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+    let (fixture, failing) = try failingFixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
     let base = try await build(environment(fixture, driver: driver, revoked: Revoked()))
@@ -346,7 +362,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     ]
     for (step, environment, branch, granted) in steps {
       if step == "derive" {
-        try Data().write(to: failing)
+        try "commit".write(to: failing, atomically: true, encoding: .utf8)
       } else {
         try? FileManager.default.removeItem(at: failing)
       }
@@ -356,7 +372,15 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
         _ = try await RemoteProvisioning.derive(
           from: base, workroom: UUID(), branch: branch, in: environment)
         XCTFail("a workroom that failed at \(step) was made")
-      } catch {}
+      } catch {
+        // The failure is the step's own, so the assertions below are about that step.
+        switch (step, error) {
+        case ("derive", HostDriverError.provisioning), ("connect", is Injected),
+          ("enrol", BrokerError.agent), ("checkout", RemoteProvisioning.Failure.git("switch", _)):
+          break
+        default: XCTFail("\(step) failed for another reason: \(error)")
+        }
+      }
 
       XCTAssertEqual(
         try leftovers("ps", label: label), containers, "a failure at \(step) left an instance")
@@ -379,7 +403,8 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
     let environment = environment(
       fixture, driver: driver, revoked: Revoked(),
-      brokerURL: URL(string: "http://127.0.0.1:8081"))
+      brokerURL: URL(string: ProcessInfo.processInfo.environment["WR_SSH_FIXTURE_BROKER_URL"] ?? "")
+    )
     BrokerStub.reset([Self.cloneToken])
     let base = try await RemoteProvisioning.buildBase(
       repository: "o/r", cloneURL: "https://github.com/origin.git", path: Self.path,
@@ -391,8 +416,9 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     cleanups.append { try? await driver.destroy(instance.host) }
     await instance.connection.close()
 
-    // The newest container with this test's label is the instance.
-    let container = try docker(runtime, ["ps", "-l", "-q", "--filter", "label=\(label!)"])
+    // The driver names each container after its host.
+    guard case .remote(let id) = instance.host else { return XCTFail("not a remote host") }
+    let container = "workroom-\(id.uuidString.lowercased())"
     func onBox(_ script: String) throws -> String {
       try docker(
         runtime,
@@ -424,5 +450,127 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertTrue(push.hasSuffix("exit=0"), push)
     XCTAssertEqual(
       try onBox("git -C /srv/origin.git rev-parse refs/heads/wr-pushed"), "\(pushed)\nexit=0")
+  }
+
+  /// A workroom branches from the remote's default branch as it is now, not as it was when the
+  /// base was cloned: `fetch` never moves `origin/HEAD`, and once `--prune` drops the old default
+  /// it names nothing.
+  @MainActor
+  func testAWorkroomBranchesFromTheDefaultBranchAfterTheRemoteRenamedIt() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let environment = environment(fixture, driver: driver, revoked: Revoked())
+    let base = try await build(environment)
+    cleanups.append { try? await driver.destroy(.remote(base.host)) }
+    let renamed = try await onHost(
+      driver, .remote(base.host),
+      "git -C /srv/origin.git branch -m main trunk"
+        + " && git -C /srv/origin.git symbolic-ref HEAD refs/heads/trunk")
+    XCTAssertEqual(renamed.status, 0, renamed.output)
+
+    BrokerStub.reset([Self.grant])
+    let instance = try await RemoteProvisioning.derive(
+      from: base, workroom: UUID(), branch: "wr-renamed", in: environment)
+    cleanups.append { try? await driver.destroy(instance.host) }
+
+    let head = try await RemoteProvisioning.git(
+      ["symbolic-ref", "refs/remotes/origin/HEAD"], in: instance.path, on: instance.connection)
+    XCTAssertEqual(
+      head.trimmingCharacters(in: .whitespacesAndNewlines), "refs/remotes/origin/trunk")
+  }
+
+  @MainActor
+  func testABaseWhoseCloneTokenIsRefusedIsRemovedWithNothingToRevoke() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let revoked = Revoked()
+    BrokerStub.reset([.init(status: 403, body: #"{"error":"no_read_access"}"#)])
+
+    do {
+      _ = try await RemoteProvisioning.buildBase(
+        repository: "o/r", cloneURL: "/srv/origin.git", path: Self.path,
+        in: environment(fixture, driver: driver, revoked: revoked), record: { _ in })
+      XCTFail("a base was built without a clone token")
+    } catch BrokerError.refused(let refusal) {
+      XCTAssertEqual(refusal.code, "no_read_access")
+    }
+    XCTAssertEqual(revoked.all, [], "a token that was never minted was revoked")
+    XCTAssertEqual(try leftovers("ps", label: label), [], "the base outlived its refused token")
+  }
+
+  @MainActor
+  func testDestroyingABaseRemovesItAndForgetsItsRecordOnlyOnceItIsGone() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let environment = environment(fixture, driver: driver, revoked: Revoked())
+    let base = try await build(environment)
+    let forgotten = Revoked()
+
+    try await RemoteProvisioning.destroyBase(
+      base, in: environment, forget: { forgotten.add("forgot") })
+    XCTAssertEqual(forgotten.all, ["forgot"])
+    XCTAssertEqual(try leftovers("ps", label: label), [])
+
+    // A base the driver no longer knows keeps its record: nothing has shown it is gone.
+    do {
+      try await RemoteProvisioning.destroyBase(
+        base, in: environment, forget: { forgotten.add("forgot again") })
+      XCTFail("an unknown base was destroyed")
+    } catch HostDriverError.unknownHost {}
+    XCTAssertEqual(forgotten.all, ["forgot"])
+  }
+
+  @MainActor
+  func testDestroyingAWorkroomWhoseGrantCannotBeCancelledStillRemovesItsBox() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let environment = environment(fixture, driver: driver, revoked: Revoked())
+    let base = try await build(environment)
+    cleanups.append { try? await driver.destroy(.remote(base.host)) }
+    BrokerStub.reset([Self.grant])
+    let workroom = UUID()
+    let instance = try await RemoteProvisioning.derive(
+      from: base, workroom: workroom, branch: "wr-cancel", in: environment)
+
+    BrokerStub.reset([.init(status: 503, body: #"{"error":"github_unavailable"}"#)])
+    do {
+      try await RemoteProvisioning.destroy(instance, workroom: workroom, in: environment)
+      XCTFail("a failed grant cancel was swallowed")
+    } catch BrokerError.refused {}
+    XCTAssertEqual(try leftovers("ps", label: label).count, 1, "the instance's box was kept")
+  }
+
+  /// A failure whose undoing fails too names what is still live (#252 review), rather than
+  /// leaving a box holding an enrolled key and a live grant that nothing records.
+  @MainActor
+  func testAWorkroomWhoseRollbackFailsSaysWhatIsStillLive() async throws {
+    let (fixture, failing) = try failingFixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let environment = environment(fixture, driver: driver, revoked: Revoked())
+    let base = try await build(environment)
+    cleanups.append { try? await driver.destroy(.remote(base.host)) }
+    // The checkout fails on its branch name, then the grant cancel and the box's removal fail.
+    BrokerStub.reset([Self.grant, .init(status: 503, body: #"{"error":"github_unavailable"}"#)])
+    try "rm".write(to: failing, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: failing) }
+
+    do {
+      _ = try await RemoteProvisioning.derive(
+        from: base, workroom: UUID(), branch: "bad..name", in: environment)
+      XCTFail("a workroom with an unusable branch was made")
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(
+      let cause, let host, let grant, let cleanup)
+    {
+      XCTAssertTrue(cause.contains("switch"), cause)
+      XCTAssertNotNil(host, "the box still up was not named")
+      XCTAssertEqual(grant, "g1", "the grant still live was not named")
+      XCTAssertEqual(cleanup.count, 2, "\(cleanup)")
+    }
+    XCTAssertEqual(try leftovers("ps", label: label).count, 2, "the instance should still be up")
   }
 }

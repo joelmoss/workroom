@@ -1273,8 +1273,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     refused by `delete` like any remote one, so for now the only way to drop its entry is editing
     the config by hand. The app's delete confirmation for a remote row still describes a local
     delete; the refusal only comes after it. `RemoveWorkroom`'s implicit cleanup keeps a project
-    with a descriptor, but an explicit `delete-project` of a project with no remote workrooms
-    still drops it. Session restore is not gated on availability:
+    with a descriptor, and an explicit `delete-project` now refuses one too (closed by #252).
+    Session restore is not gated on availability:
     `TerminalSessions.materializeLivePersistentSessions` (via `PersistentSessionRecovery`) calls
     `ensureSurfaceCreated` for every restored pane whose local session is still live, without
     checking `unavailability`, so a saved pane of a workroom that has since turned remote
@@ -1311,9 +1311,18 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **A workroom** runs derive, then enrol (`AgentEnrolment`, OQ10, so each key is the
     instance's own), then fetch and `git switch --create <branch> origin/HEAD`, and is returned
     serving over its agent connection. A failure at any step cancels its grant and destroys the
-    instance. A failed grant cancel does not keep the box: the key that would mint against the
-    grant goes with it. An instance is never derived from, because its disk holds its key and
-    credential helper.
+    instance. If undoing a step fails too, `Failure.rollbackIncomplete` names the host and grant
+    still live, for the caller to record and finish. A failed grant cancel does not keep the box:
+    the key that would mint against the grant goes with it. An instance is never derived from,
+    because its disk holds its key and credential helper. The workroom branches from
+    `refs/remotes/origin/HEAD` after `git remote set-head origin --auto`, since `fetch` never
+    moves `origin/HEAD` when the remote's default branch is renamed.
+  - **One operation at a time on a base.** `BaseLocks` serialises a derive's snapshot, a refresh
+    and a destroy per base: `docker commit` freezes git wherever it is, so a snapshot taken
+    during a refresh's fetch would hand its `.lock` files to every workroom derived from it.
+    In-process only.
+  - **`delete-project` refuses a project with a base**, as it refuses one with remote
+    workrooms: the project's own descriptor is the base's only record.
   - **The driver names what it makes.** The runtime's own IDs are known only from its output, so a
     `run` or `commit` that outlives its CLI (killed by the silence bound, or a cancelled derive)
     would leave a resource nothing could find. A container is named `workroom-<host id>` and a

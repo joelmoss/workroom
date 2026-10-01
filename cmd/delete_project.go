@@ -88,6 +88,11 @@ func runDeleteProject(svc *workroom.Service, jsonMode bool, confirm string, with
 	if remote := projects[canon].RemoteWorkroomNames(); len(remote) > 0 {
 		return fmt.Errorf("%w: %s has remote workrooms: %s", errs.ErrRemoteWorkroom, canon, strings.Join(remote, ", "))
 	}
+	// The project's own descriptor records its base machine (#252): the same record, at the
+	// project's level.
+	if projects[canon].Host != nil {
+		return fmt.Errorf("%w: %s has a remote host (its base machine)", errs.ErrRemoteWorkroom, canon)
+	}
 
 	if fromDisk {
 		// Guard: refuse obviously dangerous paths.
