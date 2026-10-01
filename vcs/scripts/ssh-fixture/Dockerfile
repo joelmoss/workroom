@@ -10,7 +10,6 @@ RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       openssh-server git procps \
  && rm -rf /var/lib/apt/lists/* \
- && ssh-keygen -A \
  && useradd --create-home --shell /bin/bash --password '*' workroom \
  && printf '%s\n' \
       'PasswordAuthentication no' \
@@ -19,5 +18,5 @@ RUN apt-get update \
       'AllowUsers workroom' \
       > /etc/ssh/sshd_config.d/fixture.conf
 
-COPY --chmod=755 wr-agent entrypoint.sh /usr/local/bin/
+COPY --chmod=755 wr-agent entrypoint.sh identity.sh /usr/local/bin/
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
