@@ -35,15 +35,14 @@ system helper and answer the first clone, before any repository exists.
 
 **How to start:** #252 (derivation) settles part of 1 and 4. For 1, `ContainerHostDriver` refuses
 to derive from an instance; every later driver needs the same refusal, and nothing stops a copy
-made outside Workroom. For 4, provisioning now throws `RemoteProvisioning.Failure.rollbackIncomplete`
-naming the grant when its own cancel fails, but a cancel that fails inside `AgentEnrolment.enrol`
-is still swallowed there, so that grant ID is still lost. For 2, stage a pending key beside the
-current one and swap on success. For 3, sign in on a Dev build and on a Developer ID Nightly once codaset.dev serves the
+made outside Workroom. 4 is fixed: `AgentEnrolment.enrol` throws `GrantStillLive` with the grant ID when its own cancel
+fails, and provisioning passes it on in `RemoteProvisioning.Failure.rollbackIncomplete`. For 2,
+stage a pending key beside the current one and swap on success. For 3, sign in on a Dev build and on a Developer ID Nightly once codaset.dev serves the
 broker, and check the item's access list in Keychain Access. Revisit 5 if enrolment ever runs on a
 bring-your-own host.
 
-**Depends on / blocked by:** nothing for 2 and 4's remainder (#252 has landed); codaset#43
-deployed for 3; a BYO-host enrolment path for 5.
+**Depends on / blocked by:** nothing for 2 (#252 has landed); codaset#43 deployed for 3; a BYO-host
+enrolment path for 5.
 
 **Priority:** P2, effort S.
 

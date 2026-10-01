@@ -159,11 +159,11 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     let script = directory.appendingPathComponent("runtime")
     try """
     #!/bin/sh
-    step="$(cat \(PosixShell.quoted(failing.path)) 2>/dev/null)"
-    if [ "$1" = "$step" ]; then echo "injected failure" >&2; exit 1; fi
-    if [ "$1+" = "$step" ]; then
-      \(PosixShell.quoted(runtime.path)) "$@" >/dev/null; echo "injected failure" >&2; exit 1
-    fi
+    steps=" $(cat \(PosixShell.quoted(failing.path)) 2>/dev/null) "
+    case "$steps" in *" $1 "*) echo "injected failure" >&2; exit 1 ;; esac
+    case "$steps" in *" $1+ "*)
+      \(PosixShell.quoted(runtime.path)) "$@" >/dev/null; echo "injected failure" >&2; exit 1 ;;
+    esac
     exec \(PosixShell.quoted(runtime.path)) "$@"
 
     """.write(to: script, atomically: true, encoding: .utf8)
@@ -288,5 +288,26 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     for host in instances + [base] { try await driver.destroy(host) }
     XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label), [])
     XCTAssertEqual(try leftovers("images", runtime: runtime, label: label), [])
+  }
+
+  /// A derive that fails and cannot remove what it made says what is still there (#280 review),
+  /// rather than dropping the host from its registry with its container still running.
+  func testADeriveThatCannotRemoveItsContainerSaysWhatIsLeft() async throws {
+    let (script, failing) = try failingRuntime()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: try provisioning(runtime: script))
+    let base = try await driver.create()
+    // The identity read fails, then removing the container fails too.
+    try "exec rm".write(to: failing, atomically: true, encoding: .utf8)
+
+    do {
+      _ = try await driver.deriveFromBase(base)
+      XCTFail("a derive that failed succeeded")
+    } catch HostDriverError.leftBehind(let cause, let leftover) {
+      XCTAssertTrue(cause.contains("never minted"), cause)
+      XCTAssertTrue(leftover.contains { $0.hasPrefix("container workroom-") }, "\(leftover)")
+    }
+    try FileManager.default.removeItem(at: failing)
+    // tearDown removes what was left, by label.
   }
 }

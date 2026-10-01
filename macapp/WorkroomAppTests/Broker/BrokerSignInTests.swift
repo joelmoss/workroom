@@ -361,6 +361,26 @@ final class AgentEnrolmentTests: XCTestCase {
     XCTAssertEqual(BrokerStub.requests.last?.request.httpMethod, "DELETE")
   }
 
+  /// A failed enrolment whose grant cannot be cancelled either names that grant, so the caller
+  /// can record it rather than lose it.
+  func testAFailedEnrolmentWhoseCancelFailsNamesTheLiveGrant() async throws {
+    BrokerStub.reset([grant, .init(status: 503, body: #"{"error":"github_unavailable"}"#)])
+    let file = stdinFile()
+    defer { try? FileManager.default.removeItem(at: file) }
+    let driver = StubDriver(stdinFile: file, output: "error: git config failed\n", status: 1)
+
+    do {
+      _ = try await AgentEnrolment.enrol(
+        client: client(), driver: driver, host: .remote(UUID()), agentBinary: "wr-agent",
+        workroomID: UUID(), repository: "o/r", agentBroker: broker.seam)
+      XCTFail("expected a failure")
+    } catch let live as AgentEnrolment.GrantStillLive {
+      XCTAssertEqual(live.grantID, "g1")
+      guard case BrokerError.agent(let detail) = live.cause else { return XCTFail("\(live.cause)") }
+      XCTAssertTrue(detail.contains("git config failed"), detail)
+    }
+  }
+
   /// A cancelled enrolment still cancels its grant: the agent may have enrolled already.
   func testACancelledEnrolmentStillCancelsItsGrant() async throws {
     BrokerStub.reset([grant, .init(body: #"{"grant_id":"g1","state":"cancelled"}"#)])

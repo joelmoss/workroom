@@ -514,3 +514,23 @@ func TestSetHostNeverCreatesAnEntry(t *testing.T) {
 		t.Fatalf("config gained entries: %#v", data)
 	}
 }
+
+// RemoveProject re-checks under its own lock what delete-project checked before tearing down: a
+// descriptor written in between (a base recorded, a workroom turned remote) keeps the entry.
+func TestRemoveProjectKeepsAProjectThatGainedAHost(t *testing.T) {
+	for _, workroom := range []string{"", "foo"} {
+		c := newTestConfig(t)
+		if err := c.AddWorkroom("/project", "foo", "/foo", "git"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.SetHost("/project", workroom, map[string]any{"state": "running"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.RemoveProject("/project"); !errors.Is(err, errs.ErrRemoteWorkroom) {
+			t.Fatalf("workroom %q: err = %v, want ErrRemoteWorkroom", workroom, err)
+		}
+		if projects, _ := c.AllProjects(); projects["/project"].Workrooms["foo"].Path != "/foo" {
+			t.Fatalf("workroom %q: the project was removed", workroom)
+		}
+	}
+}

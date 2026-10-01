@@ -1312,7 +1312,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     instance's own), then fetch and `git switch --create <branch> origin/HEAD`, and is returned
     serving over its agent connection. A failure at any step cancels its grant and destroys the
     instance. If undoing a step fails too, `Failure.rollbackIncomplete` names the host and grant
-    still live, for the caller to record and finish. A failed grant cancel does not keep the box:
+    still live, for the caller to record and finish, including a grant the enrolment itself
+    could not cancel (`AgentEnrolment.GrantStillLive`); `destroy` reports the same way. The
+    driver's own failed cleanup is `HostDriverError.leftBehind`, naming what is still there, and
+    destroying a host twice succeeds, so a caller can retry what came after it. A failed grant cancel does not keep the box:
     the key that would mint against the grant goes with it. An instance is never derived from,
     because its disk holds its key and credential helper. The workroom branches from
     `refs/remotes/origin/HEAD` after `git remote set-head origin --auto`, since `fetch` never
@@ -1344,7 +1347,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       (`exec_timeout`, capped at 610 s), not a silence bound, so a large repository over a slow
       link fails its clone and its base is removed. Upgrade path: start the clone detached on
       the host and poll for it.
-    - `refreshBase` has no test.
+    - A `docker commit` or `run` whose CLI was killed can finish in the daemon after the
+      driver's one cleanup sweep, leaving an image or container nothing records. Deferred to
+      #253, whose re-adoption needs a reconciler that sweeps labelled resources the driver
+      does not know, which covers this too (owner's decision, 2026-10-01).
     - `deriveSpeed` is declared as 5 s; measured derives on the fixture take 2–3 s.
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.

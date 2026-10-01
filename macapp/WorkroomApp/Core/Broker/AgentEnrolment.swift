@@ -76,9 +76,29 @@ enum AgentEnrolment {
     } catch {
       // In its own task: a cancelled enrolment's task would cancel this request too, and leave a
       // grant live that the agent may already have enrolled against.
-      await Task { try? await client.cancelGrant(grant.grantId) }.value
+      let cancelFailure = await Task { () -> String? in
+        do {
+          try await client.cancelGrant(grant.grantId)
+          return nil
+        } catch { return error.localizedDescription }
+      }.value
       await agentBroker.release(workroomID)
+      if let cancelFailure {
+        throw GrantStillLive(grantID: grant.grantId, cause: error, cancelFailure: cancelFailure)
+      }
       throw error
+    }
+  }
+
+  /// An enrolment failed with `cause`, and its grant could not be cancelled either: `grantID` is
+  /// still live, and the caller is the only one left who knows it.
+  struct GrantStillLive: Error, LocalizedError {
+    let grantID: String
+    let cause: any Error
+    let cancelFailure: String
+
+    var errorDescription: String? {
+      "\(cause.localizedDescription) Its grant could not be cancelled: \(cancelFailure)"
     }
   }
 

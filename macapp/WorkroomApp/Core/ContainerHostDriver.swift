@@ -68,6 +68,9 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   private let lock = NSLock()
   private var hosts: [UUID: Host]
   private var provisioned: [UUID: Provisioned] = [:]
+  /// Hosts this driver has destroyed, so destroying one again succeeds: a caller retrying after a
+  /// later step of its own failed (forgetting its record) gets past the destroy it already did.
+  private var destroyed: Set<UUID> = []
 
   init(hosts: [UUID: Host], directory: URL, provisioning: Provisioning? = nil) {
     self.hosts = hosts
@@ -115,20 +118,33 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
         timeout: 900)
       return try await run(image, image: image)
     } catch {
-      await Self.cleanUp {
-        for image in try await self.runtime(
-          ["images", "-aq", "--filter", "label=\(commit)"], allLines: true
-        ).split(separator: "\n") {
-          _ = try? await self.runtime(["rmi", "--force", String(image)])
-        }
+      let removals = await Task { () -> [String] in
+        do {
+          var failed: [String] = []
+          for image in try await self.runtime(
+            ["images", "-aq", "--filter", "label=\(commit)"], allLines: true
+          ).split(separator: "\n") {
+            do { _ = try await self.runtime(["rmi", "--force", String(image)]) } catch {
+              failed.append("image \(image): \(error.localizedDescription)")
+            }
+          }
+          return failed
+        } catch { return ["images labelled \(commit): \(error.localizedDescription)"] }
+      }.value
+      // A run that could not remove its container says so; its image goes on that list too.
+      var (cause, leftover) = (error.localizedDescription, removals)
+      if case HostDriverError.leftBehind(let inner, let left) = error {
+        (cause, leftover) = (inner, left + removals)
       }
-      throw error
+      guard !leftover.isEmpty else { throw error }
+      throw HostDriverError.leftBehind(cause: cause, leftover: leftover)
     }
   }
 
   /// Removes the container and the image it alone was run from. A host handed in rather than
   /// made here is not this driver's to remove.
   func destroy(_ host: HostID) async throws {
+    if case .remote(let id) = host, lock.withLock({ destroyed.contains(id) }) { return }
     guard case .remote(let id) = host, let made = lock.withLock({ provisioned[id] }) else {
       if case .remote(let id) = host, lock.withLock({ hosts[id] }) != nil {
         throw HostDriverError.notImplemented("Destroying a host this driver did not make")
@@ -140,6 +156,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     lock.withLock {
       hosts[id] = nil
       provisioned[id] = nil
+      destroyed.insert(id)
     }
     try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
   }
@@ -181,10 +198,16 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
         hosts[id] = nil
         provisioned[id] = nil
       }
-      await Self.cleanUp { _ = try await self.runtime(["rm", "--force", "--volumes", container]) }
+      let removal = await Task { () -> String? in
+        do {
+          _ = try await self.runtime(["rm", "--force", "--volumes", container])
+          return nil
+        } catch { return "container \(container): \(error.localizedDescription)" }
+      }.value
       // The login wait wrote the host's ssh_config and pinned key here.
       try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
-      throw error
+      guard let removal else { throw error }
+      throw HostDriverError.leftBehind(cause: error.localizedDescription, leftover: [removal])
     }
   }
 
@@ -234,12 +257,6 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
         "\(provisioning.runtime.lastPathComponent) \(arguments[0]) exited \(status): \(said)")
     }
     return allLines ? said : said.split(separator: "\n").first.map(String.init) ?? ""
-  }
-
-  /// Undoes a step whatever the caller's state: in a task of its own, because a cancelled caller
-  /// would otherwise cancel the cleanup too and leave the container running.
-  private static func cleanUp(_ body: @escaping @Sendable () async throws -> Void) async {
-    await Task { try? await body() }.value
   }
 
   func openStream(to host: HostID) async throws -> HostStream {
