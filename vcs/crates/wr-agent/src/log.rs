@@ -92,10 +92,13 @@ fn rotate(path: &Path, fd: RawFd, max: u64) {
 }
 
 fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
+    // `O_NOFOLLOW`: a symlink planted at either name gets the agent no log, rather than having it
+    // append wherever the link points.
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(path)
 }
 
@@ -243,6 +246,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!moved, "the log moved aside with nothing to replace it");
         assert_eq!(log, "over the limit\nstill here\n");
+    }
+
+    #[test]
+    fn a_symlink_in_the_log_s_place_is_not_followed() {
+        let dir = std::env::temp_dir().join(format!("wr-agent-log-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let target = dir.join("elsewhere");
+        std::os::unix::fs::symlink(&target, dir.join("agent.log")).expect("link");
+        let opened = open_log(&dir.join("agent.log")).is_ok();
+        let followed = target.exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!opened && !followed, "opened {opened}, followed {followed}");
     }
 
     #[test]

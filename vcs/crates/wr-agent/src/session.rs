@@ -1227,11 +1227,12 @@ fn read_session(
             let held = store
                 .lock()
                 .is_ok_and(|mut store| remove_if_held(&mut store, id, number));
-            drop(terminating);
-            // With no lock held, so a stderr that has stopped draining (a supervisor's pipe) can
-            // stall only this reader, never `list`, `attach`, `kill` or a hand-off's freeze; and
-            // before the `Exited` frames, whose delivery to a client that has stopped reading can
-            // take a `WRITE_TIMEOUT`, long enough for a hand-off to replace this program first.
+            // Under `TERMINATING`, so a hand-off cannot replace this program between the removal and
+            // the line, which would carry neither the session nor any record of its end. Outside
+            // the store lock, so a stderr that has stopped draining (a supervisor's pipe) stalls
+            // nothing that `list`, `attach` or `kill` waits on, and a hand-off's freeze gives up on
+            // it after `handoff::FREEZE_TIMEOUT` rather than hanging. Before the `Exited` frames, whose
+            // delivery to a client that has stopped reading can take a `WRITE_TIMEOUT`.
             //
             // Not held: `kill` ended it, reaped the shell, and already said so. The status read here
             // would then be a zero that `waitpid` never wrote.
@@ -1243,6 +1244,7 @@ fn read_session(
                     crate::log::describe_status(status)
                 );
             }
+            drop(terminating);
             for target in targets(&attached) {
                 let bytes = terminal_envelope(
                     target.stream,
