@@ -203,6 +203,64 @@ final class ReverseForwardTests: XCTestCase {
     registry.close(workroom: workroom)
   }
 
+  /// A link lost without a goodbye: the old connection's listener still holds the port when the new
+  /// connection asks, for longer than a bind is retried. The registry keeps trying on the new
+  /// connection, and gets the port once the old one lets it go.
+  @MainActor
+  func testAReconnectWhileTheOldListenerHoldsThePortReopensOnceItLetsGo() async throws {
+    let target = try echo()
+    let agent = try agent()
+    let host = HostID.remote(UUID())
+    let current = Current(
+      lease: .init(host: host, generation: UUID()), connection: try await connection(to: agent))
+    let (updates, announce) = AsyncStream.makeStream(of: HostConnectionManager.Snapshot.self)
+    let registry = BrokerReverseForwards(
+      transport: .init(
+        forwarding: { _ in
+          let (lease, connection) = current.get()
+          return (lease, try connection.forwarding())
+        },
+        updates: { _ in updates }),
+      target: { target.port }, reopenRetry: .milliseconds(300))
+    let workroom = UUID()
+    _ = try await registry.open(workroom: workroom, host: host)
+
+    // A listener the registry does not own holds the port, as the old connection's does when the
+    // link died without a goodbye: no CLOSE from this side can reach it.
+    let port = BrokerReverseForwards.port(for: workroom)
+    let stale = current.get().connection
+    await stale.close()
+    let holder = try await connection(to: agent)
+    var held: ReverseForward?
+    let deadlineToHold = ContinuousClock.now + .seconds(5)
+    while held == nil {
+      // The agent releases the closed connection's listener within its accept poll.
+      guard ContinuousClock.now < deadlineToHold else { return XCTFail("could not hold the port") }
+      let attempt = ReverseEvents()
+      let forward = try holder.forwarding().reverse(remotePort: port, target: target.port) {
+        attempt.add($0)
+      }
+      forward.start()
+      reverses.append(forward)
+      if (try? await attempt.listening()) != nil { held = forward } else { forward.stop() }
+    }
+    let second = HostConnectionManager.Lease(host: host, generation: UUID())
+    current.set(second, try await connection(to: agent))
+    announce.yield(.init(lease: second, status: .connected))
+    // Longer than the bind retries (10 × 200 ms), so only the registry's own retry can recover.
+    try await Task.sleep(for: .seconds(3))
+    XCTAssertFalse(registry.isOpen(workroom, on: second), "the port was never contended")
+
+    held?.stop()
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !registry.isOpen(workroom, on: second) {
+      guard ContinuousClock.now < deadline else { return XCTFail("never reopened") }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    try roundTrip(port)
+    registry.close(workroom: workroom)
+  }
+
   private func roundTrip(_ port: UInt16) throws {
     let client = try TCPClient(port: port)
     clients.append(client)

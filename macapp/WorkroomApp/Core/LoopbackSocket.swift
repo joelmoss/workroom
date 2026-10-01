@@ -60,8 +60,14 @@ enum LoopbackSocket {
     if started != 0 {
       guard errno == EINPROGRESS else { return fail() }
       var ready = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
-      guard poll(&ready, 1, Int32(timeout * 1000)) == 1 else {
-        errno = ETIMEDOUT
+      // A signal interrupts `poll`; that is not the deadline, so it waits out what is left.
+      let deadline = Date().addingTimeInterval(timeout)
+      var answered: Int32
+      repeat {
+        answered = poll(&ready, 1, Int32(max(0, deadline.timeIntervalSinceNow) * 1000))
+      } while answered < 0 && errno == EINTR
+      guard answered == 1 else {
+        errno = answered == 0 ? ETIMEDOUT : errno
         return fail()
       }
       var error: Int32 = 0

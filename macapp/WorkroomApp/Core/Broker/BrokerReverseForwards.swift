@@ -15,6 +15,14 @@
   /// reopens it on each new connection, on the same port: the URL the agent saved at enrolment
   /// (`broker.json`) must keep working after a reattach. And a Dev remote workroom can mint only
   /// while this Mac is attached; the token the agent already holds covers up to an hour.
+  ///
+  /// **Accepted exposure (owner's decision, 2026-10-01).** Every process on the remote host can
+  /// connect to the listener, and what it reaches is the development Codaset's Puma, which sees the
+  /// connection as coming from 127.0.0.1. Development Rails trusts loopback: full error pages, and
+  /// web-console's REPL (it permits `127.0.0.0/8`), so a process on the remote host can run Ruby on
+  /// this Mac while the host is attached. Debug builds only; Release and Nightly contain none of
+  /// this. If remote hosts ever run untrusted code, filter the relay to `POST /broker/…` and give
+  /// Rails a non-loopback `X-Forwarded-For` before using it there.
   @MainActor
   final class BrokerReverseForwards {
     static let shared = BrokerReverseForwards()
@@ -37,10 +45,14 @@
     /// many times: the agent notices a departed connection within its 200 ms accept poll.
     static let bindRetries = 10
     static let bindRetryDelay: Duration = .milliseconds(200)
+    /// How many times a connection's listener is tried, `reopenRetry` apart, before the registry
+    /// waits for the next connection: five minutes at the default.
+    static let reopenAttempts = 60
 
     private let transport: Transport
     /// The Puma port on this Mac each connection is carried to.
     private let target: @Sendable () -> UInt16
+    private let reopenRetry: Duration
     private let log = Logger(subsystem: "com.developwithstyle.workroom", category: "broker")
 
     private struct Entry {
@@ -50,16 +62,19 @@
       var forward: ReverseForward?
       var watch: Task<Void, Never>?
       /// An open in flight, which a second caller waits on rather than opening a second listener.
-      var opening: Task<Void, Error>?
+      /// The id is how the task, finishing, clears only itself.
+      var opening: (id: UUID, task: Task<Void, Error>)?
     }
     private var entries: [UUID: Entry] = [:]
 
     init(
       transport: Transport = .live,
-      target: @escaping @Sendable () -> UInt16 = { UInt16(clamping: Defaults[.brokerAgentTarget]) }
+      target: @escaping @Sendable () -> UInt16 = { UInt16(clamping: Defaults[.brokerAgentTarget]) },
+      reopenRetry: Duration = .seconds(5)
     ) {
       self.transport = transport
       self.target = target
+      self.reopenRetry = reopenRetry
     }
 
     /// The agent's port for `workroom`: the same on every connection and every launch, so the URL in
@@ -93,7 +108,7 @@
     func close(workroom: UUID) {
       guard let entry = entries.removeValue(forKey: workroom) else { return }
       entry.watch?.cancel()
-      entry.opening?.cancel()
+      entry.opening?.task.cancel()
       entry.forward?.stop()
     }
 
@@ -103,14 +118,23 @@
     }
 
     private func listen(_ workroom: UUID) async throws {
-      if let opening = entries[workroom]?.opening {
-        try await opening.value
-        return
+      // An open in flight is waited out, then this caller runs its own: the one in flight may be
+      // for an earlier connection than the caller's, and `reopen` does nothing when the current
+      // connection already has a listener.
+      while let opening = entries[workroom]?.opening { _ = try? await opening.task.value }
+      guard entries[workroom] != nil else { throw CancellationError() }
+      let id = UUID()
+      // The task clears its own entry as its last step, on this actor, BEFORE it completes: a
+      // waiter above resumes only after that, so it never sees a finished open still recorded
+      // (awaiting a finished task does not suspend, and it would spin on this actor forever).
+      let task = Task {
+        defer {
+          if self.entries[workroom]?.opening?.id == id { self.entries[workroom]?.opening = nil }
+        }
+        try await self.reopen(workroom)
       }
-      let opening = Task { try await self.reopen(workroom) }
-      entries[workroom]?.opening = opening
-      defer { entries[workroom]?.opening = nil }
-      try await opening.value
+      entries[workroom]?.opening = (id, task)
+      try await task.value
     }
 
     /// A listener on the host's current connection, unless one is already open there.
@@ -184,6 +208,27 @@
       entries[workroom]?.forward = nil
     }
 
+    /// Listen until it works, the workroom is closed, or the attempts run out. A link lost without
+    /// a goodbye leaves the old connection's listener holding the port until the agent notices it
+    /// has gone, which can take as long as ssh's keepalives, so a bind that keeps failing is tried
+    /// again every `reopenRetry` rather than given up on until the next connection.
+    private func keepTrying(_ workroom: UUID) async {
+      for attempt in 1...Self.reopenAttempts {
+        guard entries[workroom] != nil, !Task.isCancelled else { return }
+        do {
+          try await listen(workroom)
+          return
+        } catch {
+          if attempt == 1 || attempt == Self.reopenAttempts {
+            log.error(
+              "broker reverse forward did not reopen (attempt \(attempt)): \(error.localizedDescription, privacy: .public)"
+            )
+          }
+        }
+        try? await Task.sleep(for: reopenRetry)
+      }
+    }
+
     /// Reopen on every new connection to the host.
     private func watch(_ workroom: UUID) {
       guard let host = entries[workroom]?.host else { return }
@@ -193,13 +238,7 @@
           guard snapshot.status == .connected, let lease = snapshot.lease,
             self.entries[workroom]?.lease != lease
           else { continue }
-          do {
-            try await self.listen(workroom)
-          } catch {
-            self.log.error(
-              "broker reverse forward did not reopen: \(error.localizedDescription, privacy: .public)"
-            )
-          }
+          await self.keepTrying(workroom)
         }
       }
     }
