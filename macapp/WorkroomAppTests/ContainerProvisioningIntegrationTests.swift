@@ -149,7 +149,9 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
   }
 
   /// A runtime that runs the real one, except for the subcommand named in `failing` when that
-  /// file exists: a provider that fails partway through a derive, once the base is made.
+  /// file exists: a provider that fails partway through a derive, once the base is made. Named
+  /// with a `+`, the subcommand runs and THEN fails, as a CLI killed after the daemon took the
+  /// request does: the resource exists and its ID was never printed.
   private func failingRuntime() throws -> (runtime: URL, failing: URL) {
     _ = try provisioning()
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -157,9 +159,10 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     let script = directory.appendingPathComponent("runtime")
     try """
     #!/bin/sh
-    if [ -f \(PosixShell.quoted(failing.path)) ] && \\
-      [ "$1" = "$(cat \(PosixShell.quoted(failing.path)))" ]; then
-      echo "injected failure" >&2; exit 1
+    step="$(cat \(PosixShell.quoted(failing.path)) 2>/dev/null)"
+    if [ "$1" = "$step" ]; then echo "injected failure" >&2; exit 1; fi
+    if [ "$1+" = "$step" ]; then
+      \(PosixShell.quoted(runtime.path)) "$@" >/dev/null; echo "injected failure" >&2; exit 1
     fi
     exec \(PosixShell.quoted(runtime.path)) "$@"
 
@@ -177,7 +180,7 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
 
     // `commit` makes the image and `run` the container; `exec` comes once it is running. A failed
     // `exec` reads as an identity never minted, so it carries no runtime message.
-    for step in ["commit", "run", "exec"] {
+    for step in ["commit", "commit+", "run", "run+", "exec"] {
       try step.write(to: failing, atomically: true, encoding: .utf8)
       do {
         _ = try await driver.deriveFromBase(base)
@@ -241,6 +244,23 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     let seen = second.read(until: "host restarted", within: 40)
     XCTAssertTrue(seen.contains("LAST-SCREEN"), seen)
     XCTAssertTrue(seen.contains("ended when its host restarted"), seen)
+
+    for host in [instance, base] { try await driver.destroy(host) }
+  }
+
+  /// An instance has enrolled, so its disk holds its key and credential helper: a derive from it
+  /// would hand both on.
+  func testAWorkroomInstanceCannotBeDerivedFrom() async throws {
+    let provisioning = try provisioning()
+    let driver = ContainerHostDriver(hosts: [:], directory: directory, provisioning: provisioning)
+    let base = try await driver.create()
+    let instance = try await driver.deriveFromBase(base)
+
+    do {
+      _ = try await driver.deriveFromBase(instance)
+      XCTFail("an instance was derived from")
+    } catch HostDriverError.invalidConfiguration {}
+    XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label).count, 2)
 
     for host in [instance, base] { try await driver.destroy(host) }
   }

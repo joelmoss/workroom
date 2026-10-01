@@ -1282,7 +1282,61 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     one if that session is gone by then). The same gap
     applies to a `.directoryMissing` target and predates #249; #253's reconnect work exercises
     this path, and the fix touches `Core/Session/` (AGENTS.md rule 3).
-  - Nothing writes a descriptor yet; provisioning (#252) and the app (#253) will.
+  - `workroom host set|clear` writes a descriptor (#252, below); the app (#253) is its caller.
+- **As built (#252, portable derivation on the container driver).** The sequence is
+  `RemoteProvisioning` in the Mac app, over any `HostDriver`; the container fixture is the first
+  driver to implement it.
+  - **The container driver provisions.** Given a container runtime and the fixture's image,
+    `ContainerHostDriver.create` runs a base, `deriveFromBase` commits the base's disk and runs a
+    container from that image (a snapshot of the disk, no live processes), and `destroy` removes
+    a container and the image it alone was run from. Each step undoes what it made when a later
+    one fails. Every container publishes ssh on a loopback port chosen for it, so a restart keeps
+    the host's address, as a provider's box keeps its own.
+  - **Identity (OQ9) is minted at first boot, before sshd or the agent starts.** The entrypoint
+    keys a marker on the container's hostname. A new container (a derive) gets fresh ssh host
+    keys and `/etc/machine-id`, and loses the base's broker files and screens; a restart keeps
+    them all, so the pinned host key still matches after a reboot. The driver reads the new host
+    key out of band (`identity.sh`, through the runtime's exec) and pins it. Not re-mintable in a
+    container: `/proc/sys/kernel/random/boot_id` is the kernel's, shared by every container on a
+    machine. A VM provider's derived instance boots a kernel of its own.
+  - **The base** is provisioned, cloned through the agent's exec service, and recorded by the
+    caller (`workroom host set`, a hidden CLI command that stores a descriptor verbatim on an
+    existing project or workroom and refuses JSON null). The clone token comes from
+    `POST /broker/base-clone-tokens`. It reaches git only as an `Authorization` header for
+    github.com, set through `GIT_CONFIG_COUNT` in the exec request's environment, so it appears
+    in no argument, remote URL or file, and the Mac revokes it at GitHub once the clone is over.
+    The base never enrols. A base holds the repository cloned and the agent present, and nothing
+    else: dependencies are not installed (owner's decision, 2026-10-01). `refreshBase` fetches
+    with a fresh token.
+  - **A workroom** runs derive, then enrol (`AgentEnrolment`, OQ10, so each key is the
+    instance's own), then fetch and `git switch --create <branch> origin/HEAD`, and is returned
+    serving over its agent connection. A failure at any step cancels its grant and destroys the
+    instance. A failed grant cancel does not keep the box: the key that would mint against the
+    grant goes with it. An instance is never derived from, because its disk holds its key and
+    credential helper.
+  - **The driver names what it makes.** The runtime's own IDs are known only from its output, so a
+    `run` or `commit` that outlives its CLI (killed by the silence bound, or a cancelled derive)
+    would leave a resource nothing could find. A container is named `workroom-<host id>` and a
+    commit carries a `workroom.commit=<id>` label chosen first, and a failure removes by those.
+  - **Tests.** `ContainerProvisioningIntegrationTests` and `RemoteProvisioningIntegrationTests`
+    run through `run.sh`. Each of the six acceptance criteria has a test, and each test has a
+    negative control that turns it red. The fixture gained a GitHub and a broker of its own
+    (`fake-github.py`): https for github.com on the container's loopback, trusted for that host
+    only, behind a token check, so a derived workroom is shown fetching and pushing with the Mac's
+    connection closed. These Swift suites skip in CI, which has no Docker on its macOS runner,
+    and were run locally. Only the Rust `over_ssh` set runs against the fixture in CI.
+  - **Gaps, for the issues that own them.**
+    - Provisioned hosts live only in the driver's memory, so nothing re-adopts a recorded base
+      after the app relaunches (#253).
+    - `broker.json` and the token cache sit beside the agent's socket under `/run/workroom`. The
+      fixture keeps that across a restart, but a real host's tmpfs `/run` does not, so a rebooted
+      boxd workroom would lose its enrolment (#256, #257).
+    - A base's clone must finish within 10 minutes. The agent's exec deadline is a wall clock
+      (`exec_timeout`, capped at 610 s), not a silence bound, so a large repository over a slow
+      link fails its clone and its base is removed. Upgrade path: start the clone detached on
+      the host and poll for it.
+    - `refreshBase` has no test.
+    - `deriveSpeed` is declared as 5 s; measured derives on the fixture take 2–3 s.
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits

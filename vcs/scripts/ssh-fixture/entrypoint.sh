@@ -24,7 +24,8 @@ if [ "$(cat "$IDENTITY" 2>/dev/null)" != "$(hostname)" ]; then
   rm -f /etc/ssh/ssh_host_*
   ssh-keygen -A
   tr -d '-' < /proc/sys/kernel/random/uuid > /etc/machine-id
-  rm -f /run/workroom/broker.json /run/workroom/broker-token.json
+  # With the agent's interrupted saves (`.broker.json.<pid>`), which can hold a key.
+  rm -f /run/workroom/broker.json /run/workroom/broker-token.json /run/workroom/.broker*
   rm -rf /home/workroom/.local/state/workroom/screens
   hostname > "$IDENTITY"
 fi

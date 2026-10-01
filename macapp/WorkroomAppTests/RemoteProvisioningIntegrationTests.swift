@@ -185,8 +185,9 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let recorded = Revoked()
     BrokerStub.reset([Self.cloneToken])
 
+    // Over https, so git really sends the token: a clone by path never would.
     let base = try await RemoteProvisioning.buildBase(
-      repository: "o/r", cloneURL: "/srv/origin.git", path: Self.path,
+      repository: "o/r", cloneURL: "https://github.com/origin.git", path: Self.path,
       in: environment(fixture, driver: driver, revoked: revoked),
       record: { recorded.add(String(decoding: try JSONEncoder().encode($0), as: UTF8.self)) })
     cleanups.append { try? await driver.destroy(.remote(base.host)) }
@@ -196,7 +197,8 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(readme.output, "origin")
     let remote = try await onHost(driver, host, "git -C \(Self.path) remote get-url origin")
     XCTAssertEqual(
-      remote.output, "/srv/origin.git", "the remote URL carries something besides the repository")
+      remote.output, "https://github.com/origin.git",
+      "the remote URL carries something besides the repository")
     XCTAssertEqual(revoked.all, [Self.token], "the clone token outlived the clone")
     XCTAssertEqual(recorded.all.count, 1)
     let seen = try XCTUnwrap(BrokerStub.requests.first)
