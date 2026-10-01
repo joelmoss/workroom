@@ -1342,7 +1342,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       after the app relaunches (#253).
     - `broker.json` and the token cache sit beside the agent's socket under `/run/workroom`. The
       fixture keeps that across a restart, but a real host's tmpfs `/run` does not, so a rebooted
-      boxd workroom would lose its enrolment (#256, #257).
+      boxd workroom would lose its enrolment (#256, #257). Closed for boxd by #256, which keeps
+      the agent's directory on the home disk.
     - A base's clone must finish within 10 minutes. The agent's exec deadline is a wall clock
       (`exec_timeout`, capped at 610 s), not a silence bound, so a large repository over a slow
       link fails its clone and its base is removed. Upgrade path: start the clone detached on
@@ -1352,6 +1353,74 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       #253, whose re-adoption needs a reconciler that sweeps labelled resources the driver
       does not know, which covers this too (owner's decision, 2026-10-01).
     - `deriveSpeed` is declared as 5 s; measured derives on the fixture take 2–3 s.
+- **As built (#256, the boxd driver with portable derivation).** `BoxdHostDriver` in the Mac app,
+  under the same `RemoteProvisioning` sequence as the container driver. Nothing above the driver
+  changed.
+  - **The CLI and ssh.** Every provider call is `boxd … --json`, run through
+    `StatusCommandRunner` so stdout and stderr stay apart (the CLI prints an update notice on
+    stderr). The CLI writes each machine's ssh stanza and host key into `~/.ssh/config` and
+    `~/.ssh/known_hosts` inside blocks it manages. The driver reads the host name, port, user, key
+    file and host key from those blocks only (`SSHDetails`), then writes the same locked-down
+    `ssh_config` the container driver does. `ssh -G` was not used: the user's own `Host *` adds an
+    `IdentityFile` ahead of boxd's. The pinned key is boxd's gateway's, the same for every machine
+    (Phase 0, item 6), and the VM's sshd is not what answers: `ssh.socket` is masked on a boxd
+    machine, and the gateway reaches the VM another way (measured 2026-10-01).
+  - **A base** is `machine new`, then `Resources/host-setup/boxd.sh` run as root over ssh. It
+    installs two systemd units. `workroom-identity` is a oneshot that mints the machine's identity
+    once per hostname (the fixture's marker rule): new ssh host keys, and a new machine-id, with
+    `/var/lib/dbus/machine-id` removed too, since `systemd-machine-id-setup` otherwise restores
+    the old ID from D-Bus's copy (measured). It also removes the agent's broker files and the
+    screens. `workroom-agent` is the supervisor (`Restart=always`, `StartLimitIntervalSec=0`): it
+    waits for an agent at the bootstrap's path and runs it with `--idle-timeout never` and
+    `--screens`.
+  - **Everything the agent keeps is on the home disk**, under `~/.local/state/workroom/`: the
+    binary, the socket, `broker.json`, the token cache and the screens. That closes the #252 gap
+    for boxd: a machine that is stopped and started keeps its enrolment, and its panes come back
+    with their last screens.
+  - **A derive** runs `sync` on the base over ssh, then `snapshots save`, `machine new
+    --from-snapshot`, `snapshots remove`, a check that the hostname is the new machine's, and
+    `machine reboot`. It then waits until the identity marker names the new machine. Measured on
+    boxd: a snapshot restores memory as well as disk, so a restored machine runs the base's
+    processes with its machine-id and boot_id, and only its hostname is new. The reboot ends the
+    processes and gives the machine its own kernel, and the identity unit mints the rest at boot.
+    The `sync` is load-bearing twice over. The reboot is a power cut to the restored memory, so
+    without it the base's unflushed page cache would never reach the instance's disk. And a
+    hibernated base refuses a snapshot (`vm is 'suspended' — must be running to snapshot`), while
+    an ssh login wakes it in about a second. A machine outlives the snapshot it was made from, so
+    the snapshot goes as soon as the machine exists.
+  - **Names, not records.** A host is the machine `<prefix>-<host id>`, and a derive's snapshot
+    has the same name. A failed step removes by name; the CLI's own `error: VM '<name>' not
+    found` and `error: snapshot not found` count as already removed, and nothing else does. So
+    `destroy` is idempotent, and a driver made after a relaunch can reach and remove a recorded
+    host by its ID. The in-memory re-adoption gap #252 left for #253 does not apply to this driver.
+  - **Traits.** `.sshStdio`, `durableDisk: true`, `deriveCarriesLiveProcesses: false` (the reboot
+    ends them), `maxLifetime: nil`, and `deriveSpeed` 20 s, estimated from the measured parts (a 9-11 s
+    snapshot, a 0.5 s restore, then the reboot), not timed end to end.
+  - **Tests.** `BoxdHostDriverTests` (CI) pin the ssh-block parsing, the not-found matching and
+    the rollback with the CLI stubbed. `BoxdIntegrationTests` run on real boxd machines, only with
+    `TEST_RUNNER_WR_BOXD_TESTS=1`, the sandbox off and a build with `WR_AGENT_LINUX=1`. They
+    cover distinct ssh host keys, machine-ids and boot_ids across two instances. Every fresh boxd
+    machine shares one boot_id (measured), so a boot_id that differs from the base's shows the
+    reboot ran, and with it that no process the snapshot carried survived. Without the reboot,
+    the test goes red on all three. They cover a failure at each CLI step, and after each one ran, leaving no
+    machine or snapshot behind. The fixture's `fake-github.py` runs as a unit on the test base,
+    and git reaches it through `http.curloptResolve` in the user's global config, because boxd
+    rewrites both `/etc/hosts` and `/etc/gitconfig` at every boot (measured). The agent's own
+    helper is in global config too (`broker.rs`), so the rewrite does not touch it. With it, a derived workroom's `git credential fill` returns the broker's token although
+    boxd's helper is still in system config, and the workroom fetches and pushes with the Mac's
+    link closed. Its commands go through `boxd machine exec`, the control plane. After a `machine
+    stop` and `start`, a pane shows its last screen, the identity is unchanged, and git still mints.
+    A workroom whose enrolment or checkout fails leaves no machine and no live grant.
+  - **Gaps, for the issues that own them.**
+    - The app does not create remote workrooms yet; that is #253, which picks the driver. The
+      acceptance criterion's "from the app" is met through `RemoteProvisioning` only.
+    - A derived workroom keeps boxd's default timers, so it hibernates after 4 h with no network
+      traffic, busy or not. That is the lifecycle shim's job (#257).
+    - Renaming a machine (`boxd machine rename`) changes its hostname, so its identity unit would
+      mint a new identity and drop the enrolment. Nothing renames one.
+    - The pinned host key comes from the CLI's `known_hosts` block, which the CLI writes from the
+      API before any ssh connection is made. That it never comes from a first ssh contact is
+      inferred from that order, not read in the CLI's source.
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits
