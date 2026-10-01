@@ -72,11 +72,32 @@ func setHost(host map[string]any) error {
 	if err != nil {
 		return err
 	}
-	if err := cfg.SetHost(dir, hostWorkroom, host); err != nil {
+	// --pretend checks the descriptor and that its entry exists, and writes nothing.
+	if pretend {
+		if err := hostEntryExists(cfg, dir, hostWorkroom); err != nil {
+			return err
+		}
+	} else if err := cfg.SetHost(dir, hostWorkroom, host); err != nil {
 		return err
 	}
 	if jsonOutput {
 		return writeJSONSuccess(os.Stdout, "host", map[string]any{"project": dir, "workroom": hostWorkroom})
+	}
+	return nil
+}
+
+// hostEntryExists refuses an entry SetHost would refuse, for --pretend.
+func hostEntryExists(cfg *config.Config, dir, workroom string) error {
+	projects, err := cfg.AllProjects()
+	if err != nil {
+		return err
+	}
+	project, ok := projects[dir]
+	if !ok {
+		return fmt.Errorf("%w: %s", errs.ErrProjectNotFound, dir)
+	}
+	if _, ok := project.Workrooms[workroom]; workroom != "" && !ok {
+		return fmt.Errorf("%w: '%s' in %s", errs.ErrWorkroomNotFound, workroom, dir)
 	}
 	return nil
 }

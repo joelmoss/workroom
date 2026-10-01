@@ -74,7 +74,9 @@ protocol HostTerminalDriver: HostDriver {
 
 enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
   case unknownHost(HostID)
-  /// Provisioning lands in Phase 4, which is what says how a base and an instance come to exist.
+  /// From a driver that cannot provision, such as a `ContainerHostDriver` given no
+  /// `Provisioning`, for `create`, `deriveFromBase` and `destroy`; and from `destroy` for a host
+  /// the driver was handed rather than made.
   case notImplemented(String)
   case invalidConfiguration(String)
   /// Making, deriving or removing a host failed. Whatever the step had made is gone.

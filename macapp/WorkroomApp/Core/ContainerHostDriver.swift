@@ -116,9 +116,9 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       return try await run(image, image: image)
     } catch {
       await Self.cleanUp {
-        for image in try await self.runtime(["images", "-aq", "--filter", "label=\(commit)"])
-          .split(separator: "\n")
-        {
+        for image in try await self.runtime(
+          ["images", "-aq", "--filter", "label=\(commit)"], allLines: true
+        ).split(separator: "\n") {
           _ = try? await self.runtime(["rmi", "--force", String(image)])
         }
       }
@@ -182,6 +182,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
         provisioned[id] = nil
       }
       await Self.cleanUp { _ = try await self.runtime(["rm", "--force", "--volumes", container]) }
+      // The login wait wrote the host's ssh_config and pinned key here.
+      try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
       throw error
     }
   }
@@ -213,10 +215,12 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     throw HostDriverError.provisioning("ssh never let us in: \(last)")
   }
 
-  /// One runtime command; its first line of output, which is all any of these print on success.
-  /// Its environment is the few variables that say which daemon to talk to, never the app's whole
-  /// one.
-  private func runtime(_ arguments: [String], timeout: TimeInterval = 120) async throws -> String {
+  /// One runtime command; its first line of output, which is all most of these print on success,
+  /// or with `allLines` all of it. Its environment is the few variables that say which daemon to
+  /// talk to, never the app's whole one.
+  private func runtime(
+    _ arguments: [String], timeout: TimeInterval = 120, allLines: Bool = false
+  ) async throws -> String {
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
     let environment = ProcessInfo.processInfo.environment.filter {
       ["HOME", "PATH", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"].contains($0.key)
@@ -229,7 +233,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       throw HostDriverError.provisioning(
         "\(provisioning.runtime.lastPathComponent) \(arguments[0]) exited \(status): \(said)")
     }
-    return said.split(separator: "\n").first.map(String.init) ?? ""
+    return allLines ? said : said.split(separator: "\n").first.map(String.init) ?? ""
   }
 
   /// Undoes a step whatever the caller's state: in a task of its own, because a cancelled caller

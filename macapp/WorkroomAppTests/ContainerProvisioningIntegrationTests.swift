@@ -233,8 +233,9 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     XCTAssertTrue(written, "the screen was never written to \(record)")
     first.dropLink()
 
-    // The newest container with this test's label is the instance.
-    let container = try docker(runtime, ["ps", "-l", "-q", "--filter", "label=\(label!)"])
+    // The driver names each container after its host.
+    guard case .remote(let id) = instance else { return XCTFail("not a remote host") }
+    let container = "workroom-\(id.uuidString.lowercased())"
     try docker(runtime, ["restart", "-t", "0", container])
 
     let second = try RemoteHostIntegrationTests.Pane(
@@ -263,5 +264,29 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label).count, 2)
 
     for host in [instance, base] { try await driver.destroy(host) }
+  }
+
+  /// Derives from one base at once: each gets a host, port and identity of its own, and the
+  /// driver's registry keeps them apart.
+  func testConcurrentDerivesFromOneBaseEachGetTheirOwnHost() async throws {
+    let provisioning = try provisioning()
+    let driver = ContainerHostDriver(hosts: [:], directory: directory, provisioning: provisioning)
+    let base = try await driver.create()
+
+    let instances = try await withThrowingTaskGroup(of: HostID.self) { group in
+      for _ in 0..<3 { group.addTask { try await driver.deriveFromBase(base) } }
+      return try await group.reduce(into: [HostID]()) { $0.append($1) }
+    }
+
+    XCTAssertEqual(Set(instances).count, 3)
+    var keys: Set<String> = []
+    for instance in instances {
+      keys.insert(
+        try await onHost(driver, instance, "cut -d' ' -f2 /etc/ssh/ssh_host_ed25519_key.pub"))
+    }
+    XCTAssertEqual(keys.count, 3, "concurrent derives share a host key")
+    for host in instances + [base] { try await driver.destroy(host) }
+    XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label), [])
+    XCTAssertEqual(try leftovers("images", runtime: runtime, label: label), [])
   }
 }

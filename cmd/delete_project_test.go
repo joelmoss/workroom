@@ -432,6 +432,39 @@ func TestUnsafeProjectDeletePath(t *testing.T) {
 	}
 }
 
+// TestDeleteProjectRefusesAProjectWithABase: a project's own host descriptor records its base
+// machine (#252), so every mode refuses a project carrying one even with no remote workroom,
+// rather than dropping the only record of a running box.
+func TestDeleteProjectRefusesAProjectWithABase(t *testing.T) {
+	for _, mode := range []struct {
+		name             string
+		withWR, fromDisk bool
+	}{{"config-only", false, false}, {"with-workrooms", true, false}, {"from-disk", false, true}} {
+		t.Run(mode.name, func(t *testing.T) {
+			fake := &fakeVCS{list: []string{"alpha"}}
+			svc, cfg := newTestSvc(t, fake)
+			proj := t.TempDir()
+			canon, _ := config.CanonicalPath(proj)
+			cfg.AddWorkroom(canon, "alpha", "/wr/alpha", "git")
+			if err := cfg.SetHost(canon, "", map[string]any{"base": map[string]any{"host": "h1"}}); err != nil {
+				t.Fatal(err)
+			}
+			before, _ := os.ReadFile(cfg.Path())
+
+			err := runDeleteProject(svc, true, canon, mode.withWR, mode.fromDisk, []string{proj}, &bytes.Buffer{}, &bytes.Buffer{})
+			if !errors.Is(err, errs.ErrRemoteWorkroom) {
+				t.Fatalf("expected ErrRemoteWorkroom, got %v", err)
+			}
+			if len(fake.deleteCalls) != 0 {
+				t.Fatalf("workrooms were torn down: %v", fake.deleteCalls)
+			}
+			if after, _ := os.ReadFile(cfg.Path()); !bytes.Equal(before, after) {
+				t.Fatalf("config changed:\n%s", after)
+			}
+		})
+	}
+}
+
 // TestDeleteProjectRefusesRemoteWorkrooms: every mode refuses a project with remote workrooms,
 // naming them, before tearing anything down or touching config.
 func TestDeleteProjectRefusesRemoteWorkrooms(t *testing.T) {

@@ -66,10 +66,16 @@ enum RemoteProvisioning {
 
   enum Failure: Error, Equatable, LocalizedError {
     case git(command: String, detail: String)
+    /// A step failed with `cause`, and undoing what the sequence had made failed too: `host` is
+    /// still up (nil once it is gone) and `grantID` still live (nil once cancelled). The caller
+    /// has to record them and finish the job, since nothing else knows about them.
+    case rollbackIncomplete(cause: String, host: HostID?, grantID: String?, cleanup: [String])
 
     var errorDescription: String? {
       switch self {
       case .git(let command, let detail): return "git \(command) failed on the host: \(detail)"
+      case .rollbackIncomplete(let cause, _, _, let cleanup):
+        return "\(cause) Undoing it failed too: \(cleanup.joined(separator: "; "))"
       }
     }
   }
@@ -104,8 +110,15 @@ enum RemoteProvisioning {
       try await record(base)
       return base
     } catch {
-      await cleanUp { try await environment.driver.destroy(host) }
-      throw error
+      let failed = await Task { () -> String? in
+        do {
+          try await environment.driver.destroy(host)
+          return nil
+        } catch { return error.localizedDescription }
+      }.value
+      guard let failed else { throw error }
+      throw Failure.rollbackIncomplete(
+        cause: error.localizedDescription, host: host, grantID: nil, cleanup: [failed])
     }
   }
 
@@ -113,20 +126,34 @@ enum RemoteProvisioning {
   /// derived workroom fetches what it lacks itself, so this only shortens that fetch. The base
   /// never enrols, so it fetches with a clone token too.
   static func refreshBase(_ base: Base, in environment: Environment) async throws {
-    let connection = try await environment.connect(.remote(base.host))
-    defer { Task { await connection.close() } }
-    try await withCloneToken(base.repository, in: environment) { header in
-      _ = try await git(
-        ["fetch", "--quiet", "--prune", "origin"], in: base.path, environment: header,
-        on: connection)
+    try await BaseLocks.shared.exclusively(on: base.host) {
+      let connection = try await environment.connect(.remote(base.host))
+      defer { Task { await connection.close() } }
+      try await withCloneToken(base.repository, in: environment) { header in
+        try await fetch(base.path, environment: header, on: connection)
+      }
     }
+  }
+
+  /// Fetches, then asks the remote which branch is its default. `fetch` never moves
+  /// `origin/HEAD`, which the clone fixed: after a rename of the default branch it would name the
+  /// old one, and once `--prune` drops that, nothing at all (git 2.39 has no `followRemoteHEAD`).
+  private static func fetch(
+    _ path: String, environment extra: [String: String] = [:], on connection: AgentVCSConnection
+  ) async throws {
+    _ = try await git(
+      ["fetch", "--quiet", "--prune", "origin"], in: path, environment: extra, on: connection)
+    _ = try await git(
+      ["remote", "set-head", "origin", "--auto"], in: path, environment: extra, on: connection)
   }
 
   /// Removes the base and its record. Workrooms derived from it are not affected: each is a copy.
   static func destroyBase(
     _ base: Base, in environment: Environment, forget: @Sendable () async throws -> Void
   ) async throws {
-    try await environment.driver.destroy(.remote(base.host))
+    try await BaseLocks.shared.exclusively(on: base.host) {
+      try await environment.driver.destroy(.remote(base.host))
+    }
     try await forget()
   }
 
@@ -162,11 +189,16 @@ enum RemoteProvisioning {
 
   /// Derives a workroom from `base`, enrols it, and checks its own `branch` out from the remote's
   /// default branch. Returns it serving. On a failure at any step, the grant is cancelled (by the
-  /// enrolment itself when it was the step that failed) and the instance destroyed.
+  /// enrolment itself when it was the step that failed) and the instance destroyed; if either of
+  /// those fails too, `Failure.rollbackIncomplete` says what is still live.
   static func derive(
     from base: Base, workroom: UUID, branch: String, in environment: Environment
   ) async throws -> Instance {
-    let host = try await environment.driver.deriveFromBase(.remote(base.host))
+    // The snapshot only: a commit taken while a refresh's fetch holds its ref locks would hand
+    // every workroom derived from it those stale `.lock` files.
+    let host = try await BaseLocks.shared.exclusively(on: base.host) {
+      try await environment.driver.deriveFromBase(.remote(base.host))
+    }
     var connection: AgentVCSConnection?
     var grant: String?
     do {
@@ -178,22 +210,38 @@ enum RemoteProvisioning {
         repository: base.repository, agentBroker: environment.agentBroker)
       grant = grantID
       // With the instance's own credentials: `wr-agent enrol` made its helper git's.
+      try await fetch(base.path, on: connected)
+      // Fully qualified: a tag or branch named `origin/HEAD` would make the short form ambiguous.
       _ = try await git(
-        ["fetch", "--quiet", "--prune", "origin"], in: base.path, on: connected)
-      _ = try await git(
-        ["switch", "--quiet", "--no-track", "--create", branch, "origin/HEAD"], in: base.path,
-        on: connected)
+        ["switch", "--quiet", "--no-track", "--create", branch, "refs/remotes/origin/HEAD"],
+        in: base.path, on: connected)
       return Instance(
         host: host, grantID: grantID, path: base.path, branch: branch, connection: connected)
     } catch {
-      let (made, client) = (grant, environment.client)
-      await cleanUp {
-        await connection?.close()
-        if let made { try? await client.cancelGrant(made) }
+      let (made, client, opened) = (grant, environment.client, connection)
+      // In a task of its own, so a cancelled derive still undoes itself.
+      let (grantLive, hostLive, failures) = await Task {
+        () -> (String?, HostID?, [String]) in
+        await opened?.close()
+        var grantLive: String?
+        var hostLive: HostID?
+        var failures: [String] = []
+        if let made {
+          do { try await client.cancelGrant(made) } catch {
+            grantLive = made
+            failures.append("cancelling grant \(made): \(error.localizedDescription)")
+          }
+        }
         await environment.agentBroker.release(workroom)
-        try await environment.driver.destroy(host)
-      }
-      throw error
+        do { try await environment.driver.destroy(host) } catch {
+          hostLive = host
+          failures.append("destroying the instance: \(error.localizedDescription)")
+        }
+        return (grantLive, hostLive, failures)
+      }.value
+      guard !failures.isEmpty else { throw error }
+      throw Failure.rollbackIncomplete(
+        cause: error.localizedDescription, host: hostLive, grantID: grantLive, cleanup: failures)
     }
   }
 
@@ -237,6 +285,57 @@ enum RemoteProvisioning {
   /// still cleans up after itself.
   private static func cleanUp(_ body: @escaping @Sendable () async throws -> Void) async {
     await Task { try? await body() }.value
+  }
+}
+
+/// One operation at a time on each base (#252): a derive's snapshot, a refresh, a destroy. A
+/// `docker commit` freezes the base wherever its git happens to be, so a snapshot taken during a
+/// refresh's fetch would keep that fetch's `.lock` files. Different bases go on at once.
+/// ponytail: in this process only; a second app instance could still overlap. Upgrade path: a
+/// lock on the host, taken through the agent.
+actor BaseLocks {
+  static let shared = BaseLocks()
+  private var busy: Set<UUID> = []
+  private var waiting: [UUID: [CheckedContinuation<Void, Never>]] = [:]
+
+  func exclusively<T: Sendable>(on base: UUID, _ body: @Sendable () async throws -> T)
+    async throws -> T
+  {
+    await acquire(base)
+    // A caller cancelled while it waited gives the base up rather than start a 15-minute commit
+    // nobody wants. ponytail: it still waits its turn first; a waiter is not dequeued on
+    // cancellation.
+    if Task.isCancelled {
+      release(base)
+      throw CancellationError()
+    }
+    do {
+      let value = try await body()
+      release(base)
+      return value
+    } catch {
+      release(base)
+      throw error
+    }
+  }
+
+  private func acquire(_ base: UUID) async {
+    guard busy.contains(base) else {
+      busy.insert(base)
+      return
+    }
+    await withCheckedContinuation { waiting[base, default: []].append($0) }
+  }
+
+  /// Hands the base straight to the next waiter, so nobody can slip in between.
+  private func release(_ base: UUID) {
+    if var queue = waiting[base], !queue.isEmpty {
+      let next = queue.removeFirst()
+      waiting[base] = queue.isEmpty ? nil : queue
+      next.resume()
+    } else {
+      busy.remove(base)
+    }
   }
 }
 
