@@ -456,3 +456,61 @@ func TestDecodeHostDescriptors(t *testing.T) {
 		t.Fatalf("RemoteWorkroomNames = %v", got)
 	}
 }
+
+func TestSetHostStoresAndClearsDescriptorsVerbatim(t *testing.T) {
+	c := newTestConfig(t)
+	if err := c.AddWorkroom("/project", "foo", "/home/workroom/foo", "git"); err != nil {
+		t.Fatal(err)
+	}
+	base := map[string]any{"base": map[string]any{"container": "abc", "port": json.Number("2222")}}
+	if err := c.SetHost("/project", "", base); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetHost("/project", "foo", map[string]any{"state": "running"}); err != nil {
+		t.Fatal(err)
+	}
+
+	projects, err := c.AllProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := projects["/project"]
+	if !reflect.DeepEqual(project.Host, base) {
+		t.Fatalf("project host = %#v, want %#v", project.Host, base)
+	}
+	if !project.Workrooms["foo"].IsRemote() || project.Workrooms["foo"].Path != "/home/workroom/foo" {
+		t.Fatalf("workroom = %#v, want remote and its path kept", project.Workrooms["foo"])
+	}
+
+	if err := c.SetHost("/project", "foo", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetHost("/project", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	projects, _ = c.AllProjects()
+	if projects["/project"].Host != nil || projects["/project"].Workrooms["foo"].IsRemote() {
+		t.Fatalf("a cleared descriptor survived: %#v", projects["/project"])
+	}
+}
+
+func TestSetHostNeverCreatesAnEntry(t *testing.T) {
+	c := newTestConfig(t)
+	if err := c.AddProject("/project", "git"); err != nil {
+		t.Fatal(err)
+	}
+	host := map[string]any{"state": "running"}
+	if err := c.SetHost("/elsewhere", "", host); !errors.Is(err, errs.ErrProjectNotFound) {
+		t.Fatalf("unknown project: err = %v, want ErrProjectNotFound", err)
+	}
+	if err := c.SetHost("/project", "missing", host); !errors.Is(err, errs.ErrWorkroomNotFound) {
+		t.Fatalf("unknown workroom: err = %v, want ErrWorkroomNotFound", err)
+	}
+	if err := c.SetHost("workrooms_dir", "", host); !errors.Is(err, errs.ErrProjectNotFound) {
+		t.Fatalf("reserved key: err = %v, want ErrProjectNotFound", err)
+	}
+	data, _ := c.Read()
+	if len(data) != 1 {
+		t.Fatalf("config gained entries: %#v", data)
+	}
+}
