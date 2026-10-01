@@ -244,6 +244,24 @@ side is `Core/Broker/`:
 - `BrokerSession.swift` backs a Settings ▸ General row hidden behind `remoteWorkroomsPreview`;
   `brokerURL` accepts https or `http://127.0.0.1` (a development Codaset), as the agent does.
 
+## Remote workrooms in config (#249)
+
+A workroom or project entry in `config.json` can carry a `"host"` object, which `list --json`
+passes through as `host`. The app owns its schema (`HostDescriptor` in `Core/Models.swift`); the
+CLI reads only whether a workroom has one (remote) and `state == "destroyed"`. Nothing writes one
+yet: provisioning (#252) and the app (#253) will. What the app relies on until then:
+
+- `TerminalTarget.unavailability` is `.directoryMissing`, `.remote` or `.hostDestroyed`, and
+  `isMissing` is derived from it. A new local action should guard on `isMissing`, as the existing
+  ones do. Only rendering sites should tell the three cases apart.
+- A remote workroom's `path` is not a path on this Mac. Code that probes, watches or registers
+  paths must skip `Workroom.isRemote`, as `RepositoryRouter.prepare`, `statusWorkItems` and
+  `selectedStatusWorkItem` do.
+- Deleting is refused until #253 builds remote deletion, in both the CLI
+  (`RemoteWorkroomUnsupported`) and the app's delete actions, before any local cleanup.
+- Session restore is not gated yet (see the "As built (#249)" known gaps in
+  `docs/designs/remote-workrooms.md`).
+
 ## Working rules for the session/VCS layers
 
 Three rules, each written after the failure that produced it. They are narrow on purpose: they
