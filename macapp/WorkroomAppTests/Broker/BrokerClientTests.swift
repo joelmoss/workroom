@@ -148,6 +148,31 @@ final class BrokerClientTests: XCTestCase {
     XCTAssertTrue(proofVerifies(seen.proof))
   }
 
+  /// Codaset reads the build and version from this header (`Device#build`).
+  func testRequestsNameTheBuildAndVersion() async throws {
+    BrokerStub.reset([.init(body: #"{"grant_id":"g1","state":"cancelled"}"#)])
+
+    try await client().cancelGrant("g1")
+
+    let agent = try XCTUnwrap(
+      BrokerStub.requests.first?.request.value(forHTTPHeaderField: "User-Agent"))
+    XCTAssertEqual(agent, BrokerClient.userAgent)
+    XCTAssertTrue(agent.hasPrefix("Workroom/"), agent)
+    XCTAssertTrue(agent.contains("(dev; build "), "this test host is a Debug build: \(agent)")
+  }
+
+  func testTheUserAgentFormat() {
+    XCTAssertEqual(
+      BrokerClient.makeUserAgent(version: "2.1.0", build: "4321", kind: "nightly"),
+      "Workroom/2.1.0 (nightly; build 4321)")
+    XCTAssertEqual(
+      BrokerClient.makeUserAgent(version: nil, build: nil, kind: "dev"),
+      "Workroom/unknown (dev; build unknown)")
+    XCTAssertEqual(BrokerClient.buildKind(nightly: false, debug: true), "dev")
+    XCTAssertEqual(BrokerClient.buildKind(nightly: true, debug: false), "nightly")
+    XCTAssertEqual(BrokerClient.buildKind(nightly: false, debug: false), "release")
+  }
+
   /// `Broker::Proof` compares `htu` with the URL without its query.
   func testAProofsURLLeavesOutTheQuery() throws {
     let proof = try BrokerProof.make(
