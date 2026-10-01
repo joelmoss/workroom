@@ -1224,9 +1224,24 @@ fn read_session(
                 continue;
             }
             // The shell IS the session; with it gone there is nothing left to reattach to.
-            let held = store
-                .lock()
-                .is_ok_and(|mut store| remove_if_held(&mut store, id, number));
+            // Logged inside the store lock that removes it. No client can see the session gone
+            // until the lock drops, so the `Exited` frames below still follow the removal as
+            // closely as they did before the log existed, and the line is written before a client
+            // that has stopped reading can stall their delivery (up to `WRITE_TIMEOUT`), during
+            // which a hand-off could replace this program and lose it.
+            //
+            // Not held: `kill` ended it, reaped the shell, and already said so. The status read here
+            // would then be a zero that `waitpid` never wrote.
+            let _ = store.lock().map(|mut store| {
+                if remove_if_held(&mut store, id, number) {
+                    crate::note!(
+                        "session {} ended: shell pid {} {}",
+                        id.to_hyphenated(),
+                        pty.child_pid(),
+                        crate::log::describe_status(status)
+                    );
+                }
+            });
             drop(terminating);
             for target in targets(&attached) {
                 let bytes = terminal_envelope(
@@ -1239,20 +1254,6 @@ fn read_session(
                     ),
                 );
                 deliver(&attached, &target, &bytes);
-            }
-            // After the `Exited` frames, not between them and the removal above: a client that sees
-            // the session gone from the store expects its exit to be on the way already, and a write
-            // to stderr there widened that window enough to lose the race under load.
-            //
-            // Not held: `kill` ended it, reaped the shell, and already said so. The status read here
-            // would then be a zero that `waitpid` never wrote.
-            if held {
-                crate::note!(
-                    "session {} ended: shell pid {} {}",
-                    id.to_hyphenated(),
-                    pty.child_pid(),
-                    crate::log::describe_status(status)
-                );
             }
             return;
         }
