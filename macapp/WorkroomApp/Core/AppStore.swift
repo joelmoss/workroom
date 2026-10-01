@@ -3091,7 +3091,7 @@ final class AppStore: ObservableObject {
         !tombstoned.contains(TerminalTarget.workroomID(project: project.path, name: $0.name))
       }
       guard kept.count != project.workrooms.count else { return project }
-      return Project(path: project.path, vcs: project.vcs, workrooms: kept)
+      return Project(path: project.path, vcs: project.vcs, workrooms: kept, host: project.host)
     }
   }
 
@@ -3790,7 +3790,7 @@ final class AppStore: ObservableObject {
     wr.label = label
     workrooms[wIdx] = wr
     let p = projects[pIdx]
-    projects[pIdx] = Project(path: p.path, vcs: p.vcs, workrooms: workrooms)
+    projects[pIdx] = Project(path: p.path, vcs: p.vcs, workrooms: workrooms, host: p.host)
   }
 
   /// Teardown failed (it ran in the background): pop an alert carrying the captured

@@ -1451,6 +1451,34 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     - The pinned host key comes from the CLI's `known_hosts` block, which the CLI writes from the
       API before any ssh connection is made. That it never comes from a first ssh contact is
       inferred from that order, not read in the CLI's source.
+- **#253 decisions (owner, 2026-10-01).**
+  - **Deleting from the CLI.** The box and the grant can only be taken down from the app: the
+    driver is Swift and the broker key is the Mac's. So the app's Delete Project tears each remote
+    workroom down (destroy the box, cancel the grant) and then has the CLI drop the entries. A
+    standalone `delete-project --with-workrooms` keeps refusing a project with remote workrooms
+    (`RemoteWorkroomUnsupported`). The exception is a workroom whose host is already
+    `destroyed`: there is nothing left to take down, so the CLI may drop its entry.
+  - **The provider in a Nightly build** is the container driver on the Mac's own Docker, from the
+    ssh fixture's image, until boxd (#256) goes behind the same `HostDriver`.
+  - **Implicit and explicit removal stay different.** `RemoveWorkroom` keeps a project that has a
+    base when its last workroom goes. An explicit `delete-project` destroys the base too, from the
+    app, before the project is dropped.
+- **As built (#253, part 1: finding hosts again).** A host descriptor now carries the app's
+  schema (`HostDescriptor`): `driver`, `id` (the `HostID.remote` UUID), a workroom's `grant_id`,
+  a base's `repository`, `clone_url` and `path`, and `container`, the `ContainerHostDriver.Record`
+  a later launch needs: address, port, user, pinned host key, and a derived instance's image.
+  The client key and the agent's socket are the driver's own, and the container's name follows
+  from the ID (`workroom-<id>`). Each field decodes on its own, so one of the wrong type is nil
+  rather than failing the listing.
+  - `ContainerHostDriver.adopt(_:_:)` takes a recorded host back on, so it can be reached on its
+    pinned key, derived from and destroyed as if this launch had made it. It refuses a record
+    whose image is not a `sha256:` ID, because `destroy` removes that image with `--force`.
+  - `ContainerHostDriver.sweep(keeping:grace:)` is the reconciler #252 deferred here. It removes
+    containers and images that carry the driver's labels and that no recorded host names. Each
+    container and commit is now labelled `workroom.created=<epoch seconds>`, and anything younger
+    than the grace (20 minutes by default, longer than a commit's 15-minute bound) is left, since
+    it may be a create or derive still running, in this app or another one on the same daemon.
+    Images are removed without `--force`, so one a container still uses stays.
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits
