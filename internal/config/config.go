@@ -340,6 +340,35 @@ func (c *Config) SetProjectVCS(parentPath, vcs string) error {
 	})
 }
 
+// SetHost stores host verbatim as the "host" descriptor of a project (workroom "") or of one of
+// its workrooms (#252). The app owns the schema (#249); this only stores it. A nil host removes the
+// descriptor, which turns a workroom local again. The project, and the workroom, must already be
+// registered: a descriptor alone is never a new entry.
+func (c *Config) SetHost(parentPath, workroom string, host map[string]any) error {
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
+		entry, ok := data[parentPath].(map[string]any)
+		if !ok || isReserved(parentPath) {
+			return fmt.Errorf("%w: %s", errs.ErrProjectNotFound, parentPath)
+		}
+		if workroom != "" {
+			workrooms, _ := entry["workrooms"].(map[string]any)
+			if entry, ok = workrooms[workroom].(map[string]any); !ok {
+				return fmt.Errorf("%w: '%s' in %s", errs.ErrWorkroomNotFound, workroom, parentPath)
+			}
+		}
+		if host == nil {
+			delete(entry, "host")
+		} else {
+			entry["host"] = host
+		}
+		return c.Write(data)
+	})
+}
+
 // RemoveWorkroom removes a workroom entry. If the parent has no remaining workrooms, it is
 // removed, unless it carries a host descriptor: that describes a remote machine, and dropping it
 // with the entry would lose the only record of it.

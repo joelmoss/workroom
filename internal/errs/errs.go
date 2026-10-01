@@ -22,6 +22,9 @@ var (
 	ErrVCSCommand          = errors.New("version control command failed")
 	ErrRemoteProject       = errors.New("remote projects are not supported: add the project from a local Git or JJ repository. A remote workroom belongs to a local project")
 	ErrRemoteWorkroom      = errors.New("not supported for a remote workroom yet")
+	ErrProjectNotFound     = errors.New("project is not registered")
+	ErrWorkroomNotFound    = errors.New("workroom is not registered")
+	ErrInvalidHost         = errors.New("a host descriptor must be a JSON object")
 )
 
 // classification is one sentinel error's entry in the registry: its stable --json code and
@@ -56,6 +59,9 @@ var registry = []classification{
 	{ErrVCSCommand, "VCSCommandFailed", 1},
 	{ErrRemoteProject, "RemoteProjectUnsupported", 3},
 	{ErrRemoteWorkroom, "RemoteWorkroomUnsupported", 3},
+	{ErrProjectNotFound, "ProjectNotFound", 3},
+	{ErrWorkroomNotFound, "WorkroomNotFound", 3},
+	{ErrInvalidHost, "InvalidHostDescriptor", 2},
 }
 
 func classify(err error) (classification, bool) {
