@@ -301,6 +301,10 @@ config type string for listing, without requiring the project directory to exist
 
 - Top-level keys are **canonical, symlink-resolved absolute project paths** (so the same project via
   a symlink or trailing slash maps to one entry). `workrooms_dir` is a reserved key.
+- A project or workroom entry can also carry a **`host`** object, which marks a workroom as living
+  on another machine. The app owns its schema. The CLI only checks whether a workroom has one and
+  whether its `state` is `"destroyed"`, and every config write must keep it. See "As built (#249,
+  PR #275, merged 2026-10-01)" in the [remote workrooms design](docs/designs/remote-workrooms.md).
 - Writes are **atomic** (write to a temp file, `fsync`, then `rename`) so a concurrent reader never
   sees a partial file.
 - Read-modify-write cycles are guarded by a **best-effort cross-process advisory lock**
