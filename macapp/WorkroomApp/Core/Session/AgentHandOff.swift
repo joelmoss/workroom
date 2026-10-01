@@ -49,6 +49,9 @@ enum AgentHandOff {
     guard isEnabled, let binary = PersistentSessionPaths.binaryURL(for: .rustAgent),
       let socket = PersistentSessionService.shared.existingSocketPath(for: .rustAgent)
     else { return }
+    // Logged at the start too, so the hand-off's window can be placed beside what the agent's own
+    // log (`agent.log`) says happened to each session meanwhile.
+    logger.notice("agent hand-off: asking the agent to become \(binary.path, privacy: .public)")
     Task.detached(priority: .userInitiated) {
       let result = run(binary: binary, socket: socket)
       logger.notice("agent hand-off: \(result, privacy: .public)")

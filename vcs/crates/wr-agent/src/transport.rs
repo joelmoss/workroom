@@ -45,11 +45,24 @@ pub trait Transport {
     fn closer(&self) -> Closer {
         std::sync::Arc::new(|| {})
     }
+
+    /// Who is on the other end, for the agent's log (`crate::log`): which process asked for a
+    /// session to be killed is the first thing a lost session raises.
+    fn peer(&self) -> String {
+        "the stream's peer".into()
+    }
 }
 
 impl Transport for UnixStream {
     type Reader = UnixStream;
     type Writer = UnixStream;
+
+    fn peer(&self) -> String {
+        match peer_pid(self) {
+            Some(pid) => format!("pid {pid}"),
+            None => "an unknown local process".into(),
+        }
+    }
 
     fn split(self) -> io::Result<(UnixStream, UnixStream)> {
         let writer = self.try_clone()?;
@@ -300,6 +313,46 @@ pub fn close(stream: &FdStream) {
 impl AsRawFd for FdStream {
     fn as_raw_fd(&self) -> RawFd {
         self.fd
+    }
+}
+
+/// The pid of the process at the other end of a local socket, as the kernel recorded it at connect.
+fn peer_pid(stream: &UnixStream) -> Option<i32> {
+    use std::os::unix::io::AsRawFd;
+    #[cfg(target_os = "macos")]
+    {
+        let mut pid: libc::pid_t = 0;
+        let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_LOCAL,
+                libc::LOCAL_PEERPID,
+                (&mut pid as *mut libc::pid_t).cast(),
+                &mut len,
+            )
+        };
+        (rc == 0).then_some(pid)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut cred as *mut libc::ucred).cast(),
+                &mut len,
+            )
+        };
+        (rc == 0).then_some(cred.pid)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = stream;
+        None
     }
 }
 

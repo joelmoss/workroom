@@ -352,8 +352,16 @@ fn replace(
         .open(&path)
         .and_then(|mut file| std::io::Write::write_all(&mut file, &table.encode()))
         .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    let result =
-        check(binary, &path).and_then(|()| exec(context, binary, &path, &carried, before_exec));
+    let result = check(binary, &path).and_then(|()| {
+        let ids: Vec<String> = frozen.iter().map(|s| s.id.to_hyphenated()).collect();
+        crate::note!(
+            "{} checked {} sessions; replacing this program with it, carrying {}",
+            binary.display(),
+            ids.len(),
+            ids.join(", ")
+        );
+        exec(context, binary, &path, &carried, before_exec)
+    });
     let _ = std::fs::remove_file(&path);
     result
 }

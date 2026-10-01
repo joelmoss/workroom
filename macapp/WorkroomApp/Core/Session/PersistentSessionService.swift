@@ -564,6 +564,9 @@ final class PersistentSessionService {
       return true
     }
     let client = controlPlane(socketPath: socketPath, backend: owner)
+    // `notice`, which the log store keeps: a session that vanished has to be told apart from one
+    // this app ended. The agent logs the same kill with this process's pid (`agent.log`).
+    logger.notice("ending persistent session \(sessionID.uuidString, privacy: .public)")
     // Resolved above, via `backend(forSession:)`, then forgotten: this session is over, and
     // holding its owner would outlive the thing it describes.
     defer { owners.removeValue(forKey: sessionID) }
@@ -594,6 +597,7 @@ final class PersistentSessionService {
       // persisted id (`TerminalSessions.assignedSessionID`) — a surviving entry would pin it to
       // the helper that held the session just killed.
       owners.removeAll()
+      logger.notice("ending every persistent session")
       // Every helper, and NOT gated on the preferred backend's socket: during the migration the
       // daemon may still hold sessions the agent knows nothing about, and "stop everything" has to
       // mean everything. `liveControlPlanes()` is already the enumeration of what is running.

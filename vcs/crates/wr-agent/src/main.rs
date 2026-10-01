@@ -220,6 +220,8 @@ fn run_serve(
             return ExitCode::FAILURE;
         }
     };
+    // Before anything can fail, so every line below and every session's end has somewhere to go.
+    wr_agent::log::redirect_stderr(&socket);
     // First, before an update can replace the file at this path: see `handoff::Context::digest`.
     let digest = handoff::own_binary()
         .and_then(|path| handoff::digest(&path))
@@ -227,9 +229,15 @@ fn run_serve(
     let agent = Agent::new();
     let (lock, listener) = match handoff {
         Some(table) => match adopt(&agent, &table) {
-            Ok(carried) => carried,
+            Ok(carried) => {
+                wr_agent::note!(
+                    "serving {} as the program handed to ({BUILD})",
+                    socket.display()
+                );
+                carried
+            }
             Err(e) => {
-                eprintln!("error: {e}");
+                wr_agent::note!("error: could not take over from the program handed off: {e}");
                 return ExitCode::FAILURE;
             }
         },
@@ -249,9 +257,12 @@ fn run_serve(
             // holds the screens of sessions that are gone.
             let _ = std::fs::remove_file(handoff::table_path(&socket));
             match serve::bind(&socket) {
-                Ok(listener) => (lock, listener),
+                Ok(listener) => {
+                    wr_agent::note!("serving {} ({BUILD})", socket.display());
+                    (lock, listener)
+                }
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    wr_agent::note!("error: could not serve {}: {e}", socket.display());
                     return ExitCode::FAILURE;
                 }
             }
@@ -309,7 +320,10 @@ fn adopt(
             session.rows,
             &session.screen,
         ) {
-            eprintln!("error: session {}: {e}", session.id.to_hyphenated());
+            wr_agent::note!(
+                "error: session {} could not be adopted, so its shell is hung up: {e}",
+                session.id.to_hyphenated()
+            );
         }
     }
     Ok((lock, listener))
