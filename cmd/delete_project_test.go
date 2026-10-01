@@ -24,6 +24,7 @@ type fakeVCS struct {
 	deleteCalls []string
 	failOn      string   // vcsName to fail on (e.g. "workroom/bravo"); "" never fails
 	list        []string // names ListWorkrooms returns (Service.Delete's existence check)
+	onDelete    func()   // runs after each Delete, to change config mid-cascade
 }
 
 func (f *fakeVCS) Type() vcs.Type                           { return vcs.TypeGit }
@@ -32,6 +33,9 @@ func (f *fakeVCS) Create(_, _, _ string) (string, error)    { return "", nil }
 func (f *fakeVCS) ListWorkrooms(_ string) ([]string, error) { return f.list, nil }
 func (f *fakeVCS) Delete(_, vcsName, _ string) (string, error) {
 	f.deleteCalls = append(f.deleteCalls, vcsName)
+	if f.onDelete != nil {
+		f.onDelete()
+	}
 	if f.failOn != "" && vcsName == f.failOn {
 		return "", errors.New("boom")
 	}
@@ -462,6 +466,33 @@ func TestDeleteProjectRefusesAProjectWithABase(t *testing.T) {
 				t.Fatalf("config changed:\n%s", after)
 			}
 		})
+	}
+}
+
+// TestDeleteProjectStopsWhenABaseIsRecordedMidCascade: a host descriptor written while
+// --with-workrooms tears down (a base recorded) stops the cascade before the next workroom, not
+// only at the final config write, so no more local workrooms go than had already gone.
+func TestDeleteProjectStopsWhenABaseIsRecordedMidCascade(t *testing.T) {
+	fake := &fakeVCS{list: []string{"alpha", "bravo", "charlie"}}
+	svc, cfg := newTestSvc(t, fake)
+	proj := t.TempDir()
+	canon, _ := config.CanonicalPath(proj)
+	for _, name := range []string{"alpha", "bravo", "charlie"} {
+		cfg.AddWorkroom(canon, name, filepath.Join(t.TempDir(), name), "git")
+	}
+	fake.onDelete = func() {
+		fake.onDelete = nil
+		if err := cfg.SetHost(canon, "", map[string]any{"base": map[string]any{"host": "h1"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := runDeleteProject(svc, true, canon, true, false, []string{proj}, &bytes.Buffer{}, &bytes.Buffer{})
+	if !errors.Is(err, errs.ErrRemoteWorkroom) {
+		t.Fatalf("expected ErrRemoteWorkroom, got %v", err)
+	}
+	if len(fake.deleteCalls) != 1 {
+		t.Fatalf("the cascade went on after the base was recorded: %v", fake.deleteCalls)
 	}
 }
 
