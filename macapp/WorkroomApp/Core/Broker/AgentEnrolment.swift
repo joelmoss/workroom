@@ -45,8 +45,16 @@ enum AgentEnrolment {
     client: BrokerClient, driver: any HostDriver, host: HostID, agentBinary: String,
     workroomID: UUID, repository: String, agentBroker: AgentBroker = .standard
   ) async throws -> String {
-    // Before the grant: an agent that could never reach the broker must not cost one.
-    let broker = try await agentBroker.url(client, workroomID, host)
+    // Before the grant: an agent that could never reach the broker must not cost one. A route
+    // half made (a Debug listener registered, then refused) is let go too, or every later
+    // connection to the host would reopen it for a workroom that never enrolled.
+    let broker: URL
+    do {
+      broker = try await agentBroker.url(client, workroomID, host)
+    } catch {
+      await agentBroker.release(workroomID)
+      throw error
+    }
     let grant: BrokerClient.Grant
     do {
       grant = try await client.createGrant(repository: repository, workroomID: workroomID)
