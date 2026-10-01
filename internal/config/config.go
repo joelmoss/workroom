@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -138,7 +139,9 @@ func (c *Config) Read() (map[string]any, error) {
 	if err := dec.Decode(&result); err != nil {
 		return nil, fmt.Errorf("%w %s: %v", errs.ErrConfigRead, c.path, err)
 	}
-	if dec.More() {
+	// A second decode must hit EOF, as json.Unmarshal required. dec.More() is false before a stray
+	// `}` or `]`, so it would accept `{}}` and let the next write silently drop the tail.
+	if err := dec.Decode(&json.RawMessage{}); err != io.EOF {
 		return nil, fmt.Errorf("%w %s: unexpected data after the config object", errs.ErrConfigRead, c.path)
 	}
 	return result, nil

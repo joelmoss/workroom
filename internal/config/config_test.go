@@ -2,10 +2,13 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/joelmoss/workroom/internal/errs"
 )
 
 func newTestConfig(t *testing.T) *Config {
@@ -38,6 +41,25 @@ func TestReadEmpty(t *testing.T) {
 	}
 	if len(data) != 0 {
 		t.Fatalf("expected empty map, got %v", data)
+	}
+}
+
+func TestReadRejectsTrailingData(t *testing.T) {
+	for _, body := range []string{"{}}", "{}]", "{} {}", "{} x"} {
+		c := newTestConfig(t)
+		if err := os.WriteFile(c.Path(), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Read(); !errors.Is(err, errs.ErrConfigRead) {
+			t.Errorf("Read(%q) = %v, want ErrConfigRead", body, err)
+		}
+	}
+	c := newTestConfig(t)
+	if err := os.WriteFile(c.Path(), []byte("{}\n\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Read(); err != nil {
+		t.Errorf("trailing whitespace rejected: %v", err)
 	}
 }
 

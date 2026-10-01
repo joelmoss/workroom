@@ -3051,8 +3051,10 @@ final class AppStore: ObservableObject {
     // Prune shared caches only when publishing an accepted snapshot.
     let liveIDs = Set(fresh.map(\.id))
     rootRefs = rootRefs.filter { liveIDs.contains($0.key) }
-    let liveSidebarIDs = Self.liveSidebarIDs(in: fresh)
-    workroomStatuses = workroomStatuses.filter { liveSidebarIDs.contains($0.key) }
+    // Keyed on what the sweep probes, not on the sidebar: a workroom that turned remote is no longer
+    // refreshed, so its last local status would otherwise tint it and its project's badge forever.
+    let probed = Set(statusWorkItems().map(\.sid))
+    workroomStatuses = workroomStatuses.filter { probed.contains($0.key) }
     reconcileWindow(with: fresh)
   }
 
