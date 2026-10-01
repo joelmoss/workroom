@@ -248,8 +248,10 @@ side is `Core/Broker/`:
 
 A workroom or project entry in `config.json` can carry a `"host"` object, which `list --json`
 passes through as `host`. The app owns its schema (`HostDescriptor` in `Core/Models.swift`); the
-CLI reads only whether a workroom has one (remote) and `state == "destroyed"`. Nothing writes one
-yet: provisioning (#252) and the app (#253) will. What the app relies on until then:
+CLI reads only whether a workroom has one (remote) and `state == "destroyed"`. Nothing creates one
+yet: provisioning (#252) and the app (#253) will. Every CLI config write preserves an existing one,
+so a change to a config writer must keep `host`, or a remote workroom silently turns local. What
+the app relies on until then:
 
 - `TerminalTarget.unavailability` is `.directoryMissing`, `.remote` or `.hostDestroyed`, and
   `isMissing` is derived from it. A new local action should guard on `isMissing`, as the existing
@@ -259,8 +261,8 @@ yet: provisioning (#252) and the app (#253) will. What the app relies on until t
   `selectedStatusWorkItem` do.
 - Deleting is refused until #253 builds remote deletion, in both the CLI
   (`RemoteWorkroomUnsupported`) and the app's delete actions, before any local cleanup.
-- Session restore is not gated yet (see the "As built (#249)" known gaps in
-  `docs/designs/remote-workrooms.md`).
+- Session restore is not gated yet: see "Known gaps" under "As built (#249, PR #275, merged
+  2026-10-01)" in `docs/designs/remote-workrooms.md`.
 
 ## Working rules for the session/VCS layers
 

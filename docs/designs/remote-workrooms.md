@@ -1258,7 +1258,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     sites tell them apart. `RepositoryRouter.prepare`, the status sweep and
     `selectedStatusWorkItem` (the select-to-probe-and-watch lane, and `targetExists` behind
     commits and PR actions) skip remote workrooms, so a remote path is never registered, probed or
-    watched as a local repository. A reload prunes `workroomStatuses` to what the sweep probes,
+    watched as a local repository. A reload prunes `workroomStatuses` to `statusWorkItems()`, the
+    local targets eligible for status tracking (the sweep probes a TTL-filtered subset of them),
     not to the sidebar, so a workroom that turns remote drops its last local status instead of
     tinting its row and its project's badge forever. The app's delete actions refuse a remote
     workroom, and a project with one, before their optimistic local cleanup kills shells and
@@ -1277,7 +1278,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     `TerminalSessions.materializeLivePersistentSessions` (via `PersistentSessionRecovery`) calls
     `ensureSurfaceCreated` for every restored pane whose local session is still live, without
     checking `unavailability`, so a saved pane of a workroom that has since turned remote
-    reattaches its old local shell in a hidden surface. The same gap
+    gets a hidden local surface that tries to reattach its old shell (and can fall back to a new
+    one if that session is gone by then). The same gap
     applies to a `.directoryMissing` target and predates #249; #253's reconnect work exercises
     this path, and the fix touches `Core/Session/` (AGENTS.md rule 3).
   - Nothing writes a descriptor yet; provisioning (#252) and the app (#253) will.
