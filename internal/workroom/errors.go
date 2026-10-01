@@ -17,4 +17,5 @@ var (
 	ErrConfirmMismatch     = errs.ErrConfirmMismatch
 	ErrCancelled           = errs.ErrCancelled
 	ErrVCSCommand          = errs.ErrVCSCommand
+	ErrRemoteWorkroom      = errs.ErrRemoteWorkroom
 )

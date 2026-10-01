@@ -20,6 +20,8 @@ var (
 	ErrConfigRead          = errors.New("failed to read config")
 	ErrConfigWrite         = errors.New("failed to write config")
 	ErrVCSCommand          = errors.New("version control command failed")
+	ErrRemoteProject       = errors.New("remote projects are not supported: add the project from a local Git or JJ repository. A remote workroom belongs to a local project")
+	ErrRemoteWorkroom      = errors.New("not supported for a remote workroom yet")
 )
 
 // classification is one sentinel error's entry in the registry: its stable --json code and
@@ -52,6 +54,8 @@ var registry = []classification{
 	{ErrConfigRead, "ConfigReadFailed", 6},
 	{ErrConfigWrite, "ConfigWriteFailed", 6},
 	{ErrVCSCommand, "VCSCommandFailed", 1},
+	{ErrRemoteProject, "RemoteProjectUnsupported", 3},
+	{ErrRemoteWorkroom, "RemoteWorkroomUnsupported", 3},
 }
 
 func classify(err error) (classification, bool) {

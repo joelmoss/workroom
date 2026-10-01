@@ -537,11 +537,11 @@ private struct WorkroomTabChip: View {
       Image(systemName: isRoot ? "house" : "cube")
         .font(.system(size: 10))
         .foregroundStyle(VCSStatusPresentation.iconTint(store.workroomStatuses[sid] ?? .unresolved))
-      if target.isMissing {
+      if let reason = target.unavailability {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 10))
           .foregroundStyle(.orange)
-          .help("Directory not found")
+          .help(reason.title)
       }
       // The project name and (for a workroom) its own name, separated by a slash — one shared, smaller
       // size for all the chip text (`.subheadline`). On the focused tab the workroom name is full
@@ -667,7 +667,7 @@ private struct WorkroomTabChip: View {
     if let branchLabel { parts.append("on \(branchLabel)") }
     let vcs = VCSStatusPresentation.accessibilityLabel(store.workroomStatuses[sid] ?? .unresolved)
     if !vcs.isEmpty { parts.append(vcs) }
-    if target.isMissing { parts.append("directory not found") }
+    if let reason = target.unavailability { parts.append(reason.title.lowercased()) }
     if running { parts.append("running") }
     if hasActivity { parts.append("unread activity") }
     return parts.joined(separator: ", ")

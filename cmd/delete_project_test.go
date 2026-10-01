@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/config"
@@ -426,6 +427,49 @@ func TestUnsafeProjectDeletePath(t *testing.T) {
 			}
 			if got != tt.refuse {
 				t.Fatalf("unsafeProjectDeletePath(%q) = %v, want %v", tt.canon, got, tt.refuse)
+			}
+		})
+	}
+}
+
+// TestDeleteProjectRefusesRemoteWorkrooms: every mode refuses a project with remote workrooms,
+// naming them, before tearing anything down or touching config.
+func TestDeleteProjectRefusesRemoteWorkrooms(t *testing.T) {
+	for _, mode := range []struct {
+		name             string
+		withWR, fromDisk bool
+	}{{"config-only", false, false}, {"with-workrooms", true, false}, {"from-disk", false, true}} {
+		t.Run(mode.name, func(t *testing.T) {
+			fake := &fakeVCS{list: []string{"alpha"}}
+			svc, cfg := newTestSvc(t, fake)
+			proj := t.TempDir()
+			canon, _ := config.CanonicalPath(proj)
+			cfg.AddWorkroom(canon, "alpha", "/wr/alpha", "git") // local, sorts first
+			cfg.AddWorkroom(canon, "zulu", "/home/wr/zulu", "git")
+			cfg.AddWorkroom(canon, "bravo", "/home/wr/bravo", "git")
+			data, _ := cfg.Read()
+			wrs := data[canon].(map[string]any)["workrooms"].(map[string]any)
+			wrs["zulu"].(map[string]any)["host"] = map[string]any{"id": "h1"}
+			wrs["bravo"].(map[string]any)["host"] = map[string]any{"id": "h2", "state": "destroyed"}
+			cfg.Write(data)
+			before, _ := os.ReadFile(cfg.Path())
+
+			var stdout bytes.Buffer
+			err := runDeleteProject(svc, true, canon, mode.withWR, mode.fromDisk, []string{proj}, &stdout, &bytes.Buffer{})
+			if !errors.Is(err, errs.ErrRemoteWorkroom) {
+				t.Fatalf("expected ErrRemoteWorkroom, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "bravo, zulu") {
+				t.Fatalf("the error must name the remote workrooms, sorted: %q", err)
+			}
+			if len(fake.deleteCalls) != 0 {
+				t.Fatalf("workrooms were torn down: %v", fake.deleteCalls)
+			}
+			if after, _ := os.ReadFile(cfg.Path()); !bytes.Equal(before, after) {
+				t.Fatalf("config changed:\n%s", after)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("a success envelope was written: %s", stdout.String())
 			}
 		})
 	}

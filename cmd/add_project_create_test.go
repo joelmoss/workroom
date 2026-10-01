@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/config"
@@ -438,5 +439,53 @@ func TestAddProjectExisting_PretendNonRepoStillErrors(t *testing.T) {
 	data, _ := cfg.Read()
 	if _, ok := data[nonRepo]; ok {
 		t.Fatal("pretend must not register the project")
+	}
+}
+
+func TestIsRemotePath(t *testing.T) {
+	for path, want := range map[string]bool{
+		"ssh://host/repo":        true,
+		"https://github.com/a/b": true,
+		"git@github.com:a/b.git": true,
+		"host:repo":              true,
+		"host:":                  true,
+		"/abs/path":              false,
+		"/abs/with:colon":        false,
+		"~/code/repo":            false,
+		"./rel:colon":            false,
+		"rel/dir":                false,
+		"repo":                   false,
+		":leading":               false,
+		"":                       false,
+	} {
+		if got := isRemotePath(path); got != want {
+			t.Errorf("isRemotePath(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+// A remote PATH is refused with its own error, not the UnsupportedVCS a canonicalized
+// "<cwd>/host:repo" would give, and nothing is created or registered, --create included.
+func TestAddProjectRefusesRemotePath(t *testing.T) {
+	for _, create := range []bool{false, true} {
+		svc, cfg := newCreateSvc(t)
+		cwd, _ := os.Getwd()
+		var out bytes.Buffer
+		err := runAddProject(svc, "git@example.com:org/repo.git", create, &out)
+		if !errors.Is(err, errs.ErrRemoteProject) || errs.Code(err) != "RemoteProjectUnsupported" {
+			t.Fatalf("create=%v: expected ErrRemoteProject, got %v", create, err)
+		}
+		if !strings.Contains(err.Error(), "remote projects are not supported") {
+			t.Fatalf("create=%v: the error must say remote projects are not supported, got %q", create, err)
+		}
+		if _, statErr := os.Stat(filepath.Join(cwd, "git@example.com:org")); statErr == nil {
+			t.Fatalf("create=%v: a local directory was created for a remote path", create)
+		}
+		if data, _ := cfg.Read(); len(data) != 0 {
+			t.Fatalf("create=%v: config was written: %v", create, data)
+		}
+		if out.Len() != 0 {
+			t.Fatalf("create=%v: a success envelope was written: %s", create, out.String())
+		}
 	}
 }

@@ -924,8 +924,8 @@ struct ChangesPanel: View {
   private func content(for sid: SidebarID) -> some View {
     let target = store.target(for: sid)
     let status = store.workroomStatuses[sid]
-    if let target, target.isMissing {
-      inspectorMessage("Directory not found.")
+    if let reason = target?.unavailability {
+      inspectorMessage("\(reason.title).")
     } else if status == nil || status?.lastChecked == nil {
       inspectorMessage("Checking\u{2026}")
     } else if let status {

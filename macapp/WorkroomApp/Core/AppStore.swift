@@ -3601,6 +3601,12 @@ final class AppStore: ObservableObject {
     // running against the worktree, so tearing it down now would race the script. The delete
     // affordances are disabled while creating; this is the chokepoint that guarantees it.
     guard !creatingWorkrooms.contains(targetID) else { return }
+    // The CLI refuses a remote workroom (#249); refuse before the optimistic removal forgets its label.
+    guard !workroom.isRemote else {
+      errorTitle = "Can't delete \(workroom.displayName)"
+      errorMessage = "It is a remote workroom, and deleting remote workrooms isn't supported yet."
+      return
+    }
     // Was the deleted workroom the one selected in *this* window? Captured before `detachTarget`
     // mutates selection, so the issue #80 fallback below can re-point only when the delete left us
     // with nothing selected (a solo selected workroom — a split member yields to its survivor).
@@ -3863,6 +3869,16 @@ final class AppStore: ObservableObject {
       errorTitle = "Can't delete \(project.displayName)"
       errorMessage =
         "A workroom is still being created in this project. Wait for it to finish, then try again."
+      return
+    }
+    // The CLI refuses a project with remote workrooms in every mode (#249), so refuse here, before
+    // the local cleanup below kills this project's shells and forgets its labels.
+    let remote = project.workrooms.filter(\.isRemote).map(\.name)
+    guard remote.isEmpty else {
+      errorTitle = "Can't delete \(project.displayName)"
+      errorMessage =
+        "It has remote workrooms (\(remote.joined(separator: ", "))), and deleting remote "
+        + "workrooms isn't supported yet."
       return
     }
     let targetIDs = removeProjectLocally(project)

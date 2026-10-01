@@ -354,6 +354,13 @@ func (s *Service) generateUniqueName(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// A remote workroom is in config but never in the local VCS list, and AddWorkroom replaces an
+	// entry of the same name whole, host descriptor included.
+	configured, err := s.Config.WorkroomNames(dir)
+	if err != nil {
+		return "", err
+	}
+	existing = append(existing, configured...)
 
 	var lastName string
 
@@ -474,6 +481,10 @@ func (s *Service) Delete(dir, name, confirmValue string) error {
 		return fmt.Errorf("%w: %q", ErrInvalidName, name)
 	}
 
+	if err := s.refuseRemote(dir, name); err != nil {
+		return err
+	}
+
 	if err := s.detectVCS(dir); err != nil {
 		return err
 	}
@@ -573,7 +584,11 @@ func (s *Service) InteractiveDelete(dir string) error {
 // directory via the config WorkroomsDir, streams output to the NDJSON log sink (in
 // --json mode) or a live log panel (in human mode), and respects Pretend mode.
 // Returns the script error if the script fails; returns nil when the script is absent.
+// deleteByName runs it first, so its remote refusal covers every delete.
 func (s *Service) RunTeardown(dir, name string) error {
+	if err := s.refuseRemote(dir, name); err != nil {
+		return err
+	}
 	wrPath, err := s.workroomPath(name)
 	if err != nil {
 		return err
@@ -602,6 +617,21 @@ func (s *Service) RunTeardown(dir, name string) error {
 				s.say("")
 			}
 		}
+	}
+	return nil
+}
+
+// refuseRemote returns ErrRemoteWorkroom when name is a remote workroom of project dir. Each
+// local delete step (the teardown script, the VCS removal, the jj directory cleanup) works on
+// <workrooms_dir>/<name> on this Mac, which is not where a remote workroom lives. Remote deletion
+// is its own path (#253).
+func (s *Service) refuseRemote(dir, name string) error {
+	projects, err := s.Config.AllProjects()
+	if err != nil {
+		return err
+	}
+	if projects[dir].Workrooms[name].IsRemote() {
+		return fmt.Errorf("%w: workroom '%s' is remote", ErrRemoteWorkroom, name)
 	}
 	return nil
 }

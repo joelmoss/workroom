@@ -363,6 +363,12 @@ struct ProjectSidebar: View {
           .foregroundStyle(.yellow)
           .help(warning.message)
       }
+      // A destroyed host already shows its HostDestroyed warning above.
+      if target.unavailability == .remote {
+        Image(systemName: "network")
+          .foregroundStyle(.secondary)
+          .help("Remote workroom")
+      }
       // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
       // command runs (issue #28), swapped for the delete button on hover — so a workroom stays
       // deletable even mid-run. The delete button is always laid out (it reveals via opacity), so it

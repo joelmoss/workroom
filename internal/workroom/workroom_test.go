@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1254,5 +1255,89 @@ func TestInteractiveDeleteErrorsIfInWorkroom(t *testing.T) {
 	err := svc.InteractiveDelete(dir)
 	if !errors.Is(err, ErrInWorkroom) {
 		t.Fatalf("expected ErrInWorkroom, got %v", err)
+	}
+}
+
+// A remote workroom named like a local directory and a local workspace, so every local delete
+// step (teardown script, jj forget, directory removal) would have something to act on.
+func remoteDeleteFixture(t *testing.T) (svc *Service, dir, wrPath, marker string, mock *mockExecutor) {
+	t.Helper()
+	dir = t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	workroomsDir := filepath.Join(dir, "workrooms")
+	wrPath = filepath.Join(workroomsDir, "foo")
+	os.MkdirAll(wrPath, 0o755)
+
+	marker = filepath.Join(dir, "teardown-ran")
+	os.MkdirAll(filepath.Join(dir, "scripts"), 0o755)
+	os.WriteFile(filepath.Join(dir, "scripts", "workroom_teardown"),
+		[]byte("#!/usr/bin/env bash\ntouch "+marker+"\n"), 0o755)
+
+	mock = &mockExecutor{output: "default: mk 0 (no description set)\nworkroom/foo: mk 1 (no description set)\n"}
+	svc, _, _ = newTestService(t, &vcs.JJ{Executor: mock})
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	svc.Config.SetWorkroomsDir(workroomsDir)
+	svc.Config.AddWorkroom(dir, "foo", "/home/wr/foo", "jj")
+	data, _ := svc.Config.Read()
+	data[dir].(map[string]any)["workrooms"].(map[string]any)["foo"].(map[string]any)["host"] = map[string]any{"id": "h1"}
+	if err := svc.Config.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	return svc, dir, wrPath, marker, mock
+}
+
+func TestDeleteRefusesRemoteWorkroom(t *testing.T) {
+	for name, del := range map[string]func(*Service, string) error{
+		"Delete":            func(s *Service, dir string) error { return s.Delete(dir, "foo", "foo") },
+		"InteractiveDelete": func(s *Service, dir string) error { return s.InteractiveDelete(dir) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, dir, wrPath, marker, mock := remoteDeleteFixture(t)
+			svc.PromptFn = func(string, []string) ([]string, error) { return []string{"foo"}, nil }
+
+			if err := del(svc, dir); !errors.Is(err, ErrRemoteWorkroom) {
+				t.Fatalf("expected ErrRemoteWorkroom, got %v", err)
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatal("the teardown script ran for a remote workroom")
+			}
+			if _, err := os.Stat(wrPath); err != nil {
+				t.Fatalf("the local directory of the same name was removed: %v", err)
+			}
+			for _, call := range mock.calls {
+				if slices.Contains(call, "forget") {
+					t.Fatalf("a local workspace was forgotten: %v", call)
+				}
+			}
+			if names, _ := svc.Config.WorkroomNames(dir); !slices.Contains(names, "foo") {
+				t.Fatal("the remote workroom's config entry was removed")
+			}
+		})
+	}
+}
+
+func TestCreateAvoidsRemoteWorkroomNames(t *testing.T) {
+	svc, dir, _, _, _ := remoteDeleteFixture(t)
+	svc.VCS = &vcs.JJ{Executor: &mockExecutor{output: "default: mk 0 (no description set)\n"}}
+	calls := 0
+	svc.NameGenFunc = func() string {
+		calls++
+		if calls == 1 {
+			return "foo"
+		}
+		return "fresh"
+	}
+	os.RemoveAll(filepath.Join(dir, "workrooms", "foo")) // only the config entry names "foo"
+
+	res, err := svc.CreateNamed(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Name != "fresh" {
+		t.Fatalf("created %q, reusing a remote workroom's name", res.Name)
+	}
+	projects, _ := svc.Config.AllProjects()
+	if !projects[dir].Workrooms["foo"].IsRemote() {
+		t.Fatal("the remote workroom's host descriptor was overwritten")
 	}
 }

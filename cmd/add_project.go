@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"syscall"
 
 	"github.com/joelmoss/workroom/internal/config"
@@ -46,17 +47,36 @@ var addProjectCmd = &cobra.Command{
 		if len(args) != 1 {
 			return fmt.Errorf("a path argument is required")
 		}
-
-		canon, err := config.CanonicalPath(args[0])
-		if err != nil {
-			return err
-		}
-
-		if addProjectCreate {
-			return runAddProjectCreate(svc, canon, os.Stdout)
-		}
-		return runAddProjectExisting(svc, canon, os.Stdout)
+		return runAddProject(svc, args[0], addProjectCreate, os.Stdout)
 	},
+}
+
+// runAddProject refuses a remote PATH, then registers the local one.
+func runAddProject(svc *workroom.Service, path string, create bool, out io.Writer) error {
+	// Before canonicalizing, which would turn "host:repo" into "<cwd>/host:repo".
+	if isRemotePath(path) {
+		return fmt.Errorf("%w: %s", errs.ErrRemoteProject, path)
+	}
+	canon, err := config.CanonicalPath(path)
+	if err != nil {
+		return err
+	}
+	if create {
+		return runAddProjectCreate(svc, canon, out)
+	}
+	return runAddProjectExisting(svc, canon, out)
+}
+
+// isRemotePath reports whether p names a location on another machine: a URL (ssh://host/repo) or
+// scp-style host:path. It is git's own test: a colon before the first slash, which an absolute,
+// "~/" or "./" path never has.
+func isRemotePath(p string) bool {
+	if strings.Contains(p, "://") {
+		return true
+	}
+	colon := strings.IndexByte(p, ':')
+	slash := strings.IndexByte(p, '/')
+	return colon > 0 && (slash == -1 || colon < slash)
 }
 
 // runAddProjectExisting is the default (repo-only) path: PATH must already be a

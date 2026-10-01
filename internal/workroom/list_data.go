@@ -32,18 +32,22 @@ type Warning struct {
 	VCS     string `json:"vcs,omitempty"`
 }
 
-// WorkroomInfo describes a single workroom in the JSON contract.
+// WorkroomInfo describes a single workroom in the JSON contract. Host is the config entry's host
+// descriptor, verbatim, and absent for a workroom on this Mac (see config.Workroom.Host).
 type WorkroomInfo struct {
 	Name     string    `json:"name"`
 	Path     string    `json:"path"`
 	VCSName  string    `json:"vcs_name"`
+	Host     any       `json:"host,omitempty"`
 	Warnings []Warning `json:"warnings"`
 }
 
-// ProjectInfo describes a project and its workrooms in the JSON contract.
+// ProjectInfo describes a project and its workrooms in the JSON contract. Host is the project's
+// host descriptor, verbatim; a project with one is still a local repository.
 type ProjectInfo struct {
 	Path      string         `json:"path"`
 	VCS       string         `json:"vcs"`
+	Host      any            `json:"host,omitempty"`
 	Workrooms []WorkroomInfo `json:"workrooms"`
 }
 
@@ -109,18 +113,27 @@ func (s *Service) projectInfo(path string, project config.Project, level Warning
 		vcsSet = s.vcsWorkspaceSet(path, vcsType)
 	}
 
-	pinfo := ProjectInfo{Path: path, VCS: vcsType, Workrooms: []WorkroomInfo{}}
+	pinfo := ProjectInfo{Path: path, VCS: vcsType, Host: project.Host, Workrooms: []WorkroomInfo{}}
 	for _, name := range names {
-		wrPath := project.Workrooms[name].Path
-		wi := WorkroomInfo{Name: name, Path: wrPath, VCSName: "workroom/" + name, Warnings: []Warning{}}
+		wr := project.Workrooms[name]
+		wi := WorkroomInfo{Name: name, Path: wr.Path, VCSName: "workroom/" + name, Host: wr.Host, Warnings: []Warning{}}
 
-		if checksDir {
-			if _, err := os.Stat(wrPath); os.IsNotExist(err) {
-				wi.Warnings = append(wi.Warnings, Warning{Kind: "DirectoryMissing", Message: "directory not found", Path: wrPath})
+		switch {
+		case wr.HostDestroyed():
+			// Read from config alone, so it is reported at every level, WarningsNone included.
+			wi.Warnings = append(wi.Warnings, Warning{Kind: "HostDestroyed", Message: "host destroyed by its provider"})
+		case wr.IsRemote():
+			// Both checks below are local by construction: the path is on another host, and a
+			// remote clone is never one of the local project repo's workspaces.
+		default:
+			if checksDir {
+				if _, err := os.Stat(wr.Path); os.IsNotExist(err) {
+					wi.Warnings = append(wi.Warnings, Warning{Kind: "DirectoryMissing", Message: "directory not found", Path: wr.Path})
+				}
 			}
-		}
-		if checksVCS && vcsSet != nil && !vcsSet[name] {
-			wi.Warnings = append(wi.Warnings, Warning{Kind: "VCSWorkroomMissing", Message: vcsType + " workspace not found", VCS: vcsType})
+			if checksVCS && vcsSet != nil && !vcsSet[name] {
+				wi.Warnings = append(wi.Warnings, Warning{Kind: "VCSWorkroomMissing", Message: vcsType + " workspace not found", VCS: vcsType})
+			}
 		}
 		pinfo.Workrooms = append(pinfo.Workrooms, wi)
 	}

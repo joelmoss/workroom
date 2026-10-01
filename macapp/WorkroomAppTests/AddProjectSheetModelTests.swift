@@ -56,6 +56,18 @@ final class AddProjectSheetModelTests: XCTestCase {
     XCTAssertTrue(AddProjectSheetModel.isValid(mode: .createNew, path: dir))
   }
 
+  func testRemotePathFooterSaysRemoteProjectsAreUnsupported() {
+    for path in ["git@github.com:a/b.git", "ssh://host/repo", "host:repo"] {
+      XCTAssertTrue(AddProjectSheetModel.isRemote(path), path)
+      XCTAssertTrue(
+        AddProjectSheetModel.footer(mode: .existing, path: path)
+          .contains("Remote projects aren't supported"), path)
+    }
+    for path in ["/abs/with:colon", "~/code/repo", "", ":x"] {
+      XCTAssertFalse(AddProjectSheetModel.isRemote(path), path)
+    }
+  }
+
   func testFooterDiffersByMode() {
     XCTAssertNotEqual(
       AddProjectSheetModel.footer(mode: .existing),

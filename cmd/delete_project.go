@@ -78,6 +78,17 @@ func runDeleteProject(svc *workroom.Service, jsonMode bool, confirm string, with
 		return fmt.Errorf("%w: --confirm <path> is required and must match the project path", errs.ErrConfirmMismatch)
 	}
 
+	// Refused in every mode, before anything is torn down. --from-disk's safety gate reasons
+	// about local paths and --with-workrooms tears down locally; the config-only mode would drop
+	// the only record of a remote machine. Remote deletion is its own path (#253).
+	projects, err := svc.Config.AllProjects()
+	if err != nil {
+		return err
+	}
+	if remote := projects[canon].RemoteWorkroomNames(); len(remote) > 0 {
+		return fmt.Errorf("%w: %s has remote workrooms: %s", errs.ErrRemoteWorkroom, canon, strings.Join(remote, ", "))
+	}
+
 	if fromDisk {
 		// Guard: refuse obviously dangerous paths.
 		unsafe, err := unsafeProjectDeletePath(canon, svc.Config)
