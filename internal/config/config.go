@@ -429,7 +429,8 @@ func (c *Config) RemoveWorkroomKeepProject(parentPath, name string) error {
 // config. It does NOT touch the filesystem or VCS — any worktree/workspace teardown
 // is the caller's job (via Service.Delete). Idempotent: an absent project is a no-op
 // returning nil. Reserved scalar keys (e.g. "workrooms_dir", "channel") are never
-// deletable through here.
+// deletable through here, and neither is a project carrying a host descriptor, its own or
+// a workroom's (ErrRemoteWorkroom).
 func (c *Config) RemoveProject(parentPath string) error {
 	return c.withLock(func() error {
 		data, err := c.Read()
@@ -438,6 +439,14 @@ func (c *Config) RemoveProject(parentPath string) error {
 		}
 		if isReserved(parentPath) {
 			return nil // reserved key, not a project
+		}
+		// Re-checked here, under the lock, rather than trusted from the caller's earlier read: a
+		// descriptor is the only record of a remote machine, and one written since (a base
+		// recorded, a workroom turned remote) must not go with the entry.
+		if raw, ok := data[parentPath].(map[string]any); ok {
+			if project := decodeProject(raw); project.Host != nil || len(project.RemoteWorkroomNames()) > 0 {
+				return fmt.Errorf("%w: %s has a remote host", errs.ErrRemoteWorkroom, parentPath)
+			}
 		}
 		delete(data, parentPath)
 		return c.Write(data)

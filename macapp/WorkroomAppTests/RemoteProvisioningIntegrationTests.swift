@@ -509,15 +509,26 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let base = try await build(environment)
     let forgotten = Revoked()
 
+    // Forgetting fails the first time: the box is gone, and a retry gets past the destroy it
+    // already did to forget the record.
+    do {
+      try await RemoteProvisioning.destroyBase(
+        base, in: environment, forget: { throw WorkroomCLIError.timedOut })
+      XCTFail("a failed forget was swallowed")
+    } catch WorkroomCLIError.timedOut {}
+    XCTAssertEqual(try leftovers("ps", label: label), [])
     try await RemoteProvisioning.destroyBase(
       base, in: environment, forget: { forgotten.add("forgot") })
     XCTAssertEqual(forgotten.all, ["forgot"])
-    XCTAssertEqual(try leftovers("ps", label: label), [])
 
-    // A base the driver no longer knows keeps its record: nothing has shown it is gone.
+    // A base this driver never knew (an app relaunched since) keeps its record: nothing has shown
+    // it is gone.
+    let relaunched = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
     do {
       try await RemoteProvisioning.destroyBase(
-        base, in: environment, forget: { forgotten.add("forgot again") })
+        base, in: self.environment(fixture, driver: relaunched, revoked: Revoked()),
+        forget: { forgotten.add("forgot again") })
       XCTFail("an unknown base was destroyed")
     } catch HostDriverError.unknownHost {}
     XCTAssertEqual(forgotten.all, ["forgot"])
@@ -540,8 +551,39 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     do {
       try await RemoteProvisioning.destroy(instance, workroom: workroom, in: environment)
       XCTFail("a failed grant cancel was swallowed")
-    } catch BrokerError.refused {}
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, let grant, let cleanup) {
+      XCTAssertNil(host, "the box is gone, but was reported live")
+      XCTAssertEqual(grant, "g1", "the grant still live was not named")
+      XCTAssertEqual(cleanup.count, 1, "\(cleanup)")
+    }
     XCTAssertEqual(try leftovers("ps", label: label).count, 1, "the instance's box was kept")
+  }
+
+  /// Both halves of a workroom's teardown failing are both reported.
+  @MainActor
+  func testDestroyingAWorkroomReportsBothAFailedCancelAndAFailedRemoval() async throws {
+    let (fixture, failing) = try failingFixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let environment = environment(fixture, driver: driver, revoked: Revoked())
+    let base = try await build(environment)
+    cleanups.append { try? await driver.destroy(.remote(base.host)) }
+    BrokerStub.reset([Self.grant])
+    let workroom = UUID()
+    let instance = try await RemoteProvisioning.derive(
+      from: base, workroom: workroom, branch: "wr-both", in: environment)
+    BrokerStub.reset([.init(status: 503, body: #"{"error":"github_unavailable"}"#)])
+    try "rm".write(to: failing, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: failing) }
+
+    do {
+      try await RemoteProvisioning.destroy(instance, workroom: workroom, in: environment)
+      XCTFail("a failed teardown was swallowed")
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, let grant, let cleanup) {
+      XCTAssertEqual(host, instance.host, "the box still up was not named")
+      XCTAssertEqual(grant, "g1", "the grant still live was not named")
+      XCTAssertEqual(cleanup.count, 2, "\(cleanup)")
+    }
   }
 
   /// A failure whose undoing fails too names what is still live (#252 review), rather than
@@ -572,5 +614,69 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       XCTAssertEqual(cleanup.count, 2, "\(cleanup)")
     }
     XCTAssertEqual(try leftovers("ps", label: label).count, 2, "the instance should still be up")
+  }
+
+  /// An enrolment whose own grant cancel fails hands that grant to the rollback's report rather
+  /// than losing it (#280 review).
+  @MainActor
+  func testAWorkroomWhoseEnrolmentAndGrantCancelFailNamesTheLiveGrant() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let base = try await build(environment(fixture, driver: driver, revoked: Revoked()))
+    cleanups.append { try? await driver.destroy(.remote(base.host)) }
+    let containers = try leftovers("ps", label: label)
+    // Nothing listens there, so the agent's enrolment fails after the grant is made.
+    let failing = environment(
+      fixture, driver: driver, revoked: Revoked(), brokerURL: URL(string: "http://127.0.0.1:9"))
+    BrokerStub.reset([Self.grant, .init(status: 503, body: #"{"error":"github_unavailable"}"#)])
+
+    do {
+      _ = try await RemoteProvisioning.derive(
+        from: base, workroom: UUID(), branch: "wr-enrol", in: failing)
+      XCTFail("a workroom that could not enrol was made")
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, let grant, let cleanup) {
+      XCTAssertNil(host, "the box is gone, but was reported live")
+      XCTAssertEqual(grant, "g1", "the enrolment's live grant was lost")
+      XCTAssertEqual(cleanup.count, 1, "\(cleanup)")
+    }
+    XCTAssertEqual(try leftovers("ps", label: label), containers, "the instance was kept")
+  }
+
+  /// A refresh brings the base's clone up to date with a fresh clone token, revoked after, and a
+  /// workroom derived after it starts from what the refresh fetched.
+  @MainActor
+  func testARefreshedBaseHandsItsWorkroomsWhatItFetched() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let revoked = Revoked()
+    let environment = environment(fixture, driver: driver, revoked: revoked)
+    let base = try await build(environment)
+    cleanups.append { try? await driver.destroy(.remote(base.host)) }
+    let host = HostID.remote(base.host)
+    let pushed = try await onHost(
+      driver, host,
+      "seed=$(mktemp -d) && git clone -q /srv/origin.git $seed"
+        + " && git -C $seed -c user.name=a -c user.email=a@b commit -q --allow-empty -m later"
+        + " && git -C $seed push -q origin HEAD && git -C $seed rev-parse HEAD")
+    XCTAssertEqual(pushed.status, 0, pushed.output)
+
+    BrokerStub.reset([Self.cloneToken])
+    try await RemoteProvisioning.refreshBase(base, in: environment)
+
+    XCTAssertEqual(revoked.all, [Self.token, Self.token], "the refresh's token outlived it")
+    let fetched = try await onHost(
+      driver, host, "git -C \(Self.path) rev-parse refs/remotes/origin/main")
+    XCTAssertEqual(fetched.output, pushed.output, "the refresh did not fetch")
+
+    // A refused token leaves the base as it was, with nothing to revoke.
+    BrokerStub.reset([.init(status: 403, body: #"{"error":"no_read_access"}"#)])
+    do {
+      try await RemoteProvisioning.refreshBase(base, in: environment)
+      XCTFail("a refresh ran without a token")
+    } catch BrokerError.refused {}
+    XCTAssertEqual(revoked.all.count, 2)
+    XCTAssertEqual(try leftovers("ps", label: label).count, 1, "a refused refresh took the base")
   }
 }

@@ -204,10 +204,16 @@ enum RemoteProvisioning {
     do {
       let connected = try await environment.connect(host)
       connection = connected
-      let grantID = try await AgentEnrolment.enrol(
-        client: environment.client, driver: environment.driver, host: host,
-        agentBinary: environment.agentBinary, workroomID: workroom,
-        repository: base.repository, agentBroker: environment.agentBroker)
+      let grantID: String
+      do {
+        grantID = try await AgentEnrolment.enrol(
+          client: environment.client, driver: environment.driver, host: host,
+          agentBinary: environment.agentBinary, workroomID: workroom,
+          repository: base.repository, agentBroker: environment.agentBroker)
+      } catch let live as AgentEnrolment.GrantStillLive {
+        // The enrolment's own cancel failed; the grant is still live, and only this knows it.
+        throw RollbackStart.grantLive(live.grantID, cause: live.cause, failure: live.cancelFailure)
+      }
       grant = grantID
       // With the instance's own credentials: `wr-agent enrol` made its helper git's.
       try await fetch(base.path, on: connected)
@@ -218,6 +224,11 @@ enum RemoteProvisioning {
       return Instance(
         host: host, grantID: grantID, path: base.path, branch: branch, connection: connected)
     } catch {
+      var error = error
+      var alreadyFailed: (grant: String, failure: String)?
+      if case RollbackStart.grantLive(let live, let cause, let failure) = error {
+        (error, alreadyFailed) = (cause, (live, "cancelling grant \(live): \(failure)"))
+      }
       let (made, client, opened) = (grant, environment.client, connection)
       // In a task of its own, so a cancelled derive still undoes itself.
       let (grantLive, hostLive, failures) = await Task {
@@ -239,24 +250,42 @@ enum RemoteProvisioning {
         }
         return (grantLive, hostLive, failures)
       }.value
-      guard !failures.isEmpty else { throw error }
+      let all = (alreadyFailed.map { [$0.failure] } ?? []) + failures
+      guard !all.isEmpty else { throw error }
       throw Failure.rollbackIncomplete(
-        cause: error.localizedDescription, host: hostLive, grantID: grantLive, cleanup: failures)
+        cause: error.localizedDescription, host: hostLive,
+        grantID: grantLive ?? alreadyFailed?.grant, cleanup: all)
     }
+  }
+
+  /// Carries a live grant from the enrolment step into `derive`'s rollback.
+  private enum RollbackStart: Error {
+    case grantLive(String, cause: any Error, failure: String)
   }
 
   /// Takes a workroom down: its grant first, so nothing mints for it once its box is gone, then
   /// the box. A grant the broker could not cancel does not keep the box: the key that would mint
-  /// against it goes with the box. The first failure is thrown once both have been tried.
+  /// against it goes with the box. If either fails, `Failure.rollbackIncomplete` names what is
+  /// still live once both have been tried.
   static func destroy(_ instance: Instance, workroom: UUID, in environment: Environment)
     async throws
   {
     await instance.connection.close()
-    var failure: Error?
-    do { try await environment.client.cancelGrant(instance.grantID) } catch { failure = error }
+    var failures: [String] = []
+    var (grantLive, hostLive): (String?, HostID?) = (nil, nil)
+    do { try await environment.client.cancelGrant(instance.grantID) } catch {
+      grantLive = instance.grantID
+      failures.append("cancelling grant \(instance.grantID): \(error.localizedDescription)")
+    }
     await environment.agentBroker.release(workroom)
-    do { try await environment.driver.destroy(instance.host) } catch { failure = failure ?? error }
-    if let failure { throw failure }
+    do { try await environment.driver.destroy(instance.host) } catch {
+      hostLive = instance.host
+      failures.append("destroying the instance: \(error.localizedDescription)")
+    }
+    guard !failures.isEmpty else { return }
+    throw Failure.rollbackIncomplete(
+      cause: "Destroying the workroom failed.", host: hostLive, grantID: grantLive,
+      cleanup: failures)
   }
 
   // MARK: Plumbing
