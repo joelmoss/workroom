@@ -146,6 +146,13 @@ struct BrokerClient: Sendable {
     let expiresAt: String
   }
 
+  /// A read-only installation token for cloning a base machine (#252). The broker does not keep
+  /// it, so only GitHub can revoke it (`CloneToken.revoke`); otherwise it lives out its hour.
+  struct CloneToken: Decodable, Sendable {
+    let token: String
+    let expiresAt: String
+  }
+
   private struct State: Decodable { let state: String }
 
   /// Redeems the loopback code, registering this client's key as a new device.
@@ -167,6 +174,10 @@ struct BrokerClient: Sendable {
 
   func cancelGrant(_ grantID: String) async throws {
     let _: State = try await send("DELETE", "broker/grants/\(grantID)", body: nil)
+  }
+
+  func baseCloneToken(repository: String) async throws -> CloneToken {
+    try await send("POST", "broker/base-clone-tokens", body: ["repository": repository])
   }
 
   /// One signed request. A `stale_proof` refusal carries the broker's `Date`; the request is

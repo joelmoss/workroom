@@ -18,5 +18,16 @@ RUN apt-get update \
       'AllowUsers workroom' \
       > /etc/ssh/sshd_config.d/fixture.conf
 
+# A repository a base machine clones (#252): the fixture has no GitHub, so the app's provisioning
+# tests clone this one, by path, and a derived workroom fetches from its own copy of it.
+RUN seed="$(mktemp -d)" \
+ && git init -q -b main "$seed" \
+ && echo origin > "$seed/README" \
+ && git -C "$seed" add README \
+ && git -C "$seed" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial \
+ && git clone -q --bare "$seed" /srv/origin.git \
+ && rm -rf "$seed" \
+ && chown -R workroom:workroom /srv/origin.git
+
 COPY --chmod=755 wr-agent entrypoint.sh identity.sh /usr/local/bin/
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
