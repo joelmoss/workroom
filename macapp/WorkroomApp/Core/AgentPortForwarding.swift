@@ -386,8 +386,11 @@ final class ReverseForward: @unchecked Sendable {
   private var listening = false
   private var stopped = false
   private var live: [UUID: (connection: ForwardedConnection, slot: ForwardSlot)] = [:]
-  /// Claims dial the target here, never on the connection's reader thread.
-  private let claims = DispatchQueue(label: "workroom.agent.forward.reverse")
+  /// Claims dial the target here, never on the connection's reader thread. Concurrent: a dial can
+  /// take `dialTimeout`, and the claims behind it would otherwise outlive the agent's
+  /// `PENDING_TIMEOUT`. Bounded by the agent, which announces at most `MAX_PENDING` at a time.
+  private let claims = DispatchQueue(
+    label: "workroom.agent.forward.reverse", attributes: .concurrent)
 
   init(
     remotePort: UInt16, target: UInt16, connection: AgentVCSConnection,
@@ -400,7 +403,18 @@ final class ReverseForward: @unchecked Sendable {
     self.onEvent = onEvent
   }
 
-  deinit { stop() }
+  /// The listener goes with its owner. So do connections still being carried: the agent ended the
+  /// listener (`end`) without ending them, and each one is held only here, so without this it
+  /// would be freed with no CLOSE sent and the agent would keep its socket and slot.
+  deinit {
+    stop()
+    let entries = lock.withLock {
+      () -> [UUID: (connection: ForwardedConnection, slot: ForwardSlot)] in
+      defer { live = [:] }
+      return live
+    }
+    for entry in entries.values { entry.connection.finish(tellAgent: true) }
+  }
 
   /// Ask the agent to listen. The answer arrives as `.listening` or `.stopped`.
   func start() {

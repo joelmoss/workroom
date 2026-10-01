@@ -642,8 +642,10 @@ impl Forwards {
         {
             return refuse(Refusal::refused("too many listeners"));
         }
-        // Loopback only: a listener is a door into whatever the client connects it to, and only
-        // this box's own processes may knock.
+        // Loopback only, so nothing off this box can reach it. Everything ON the box can: a
+        // listener is a door into whatever the client connects it to, for every process and user
+        // here. The app opens one only in a Debug build, to the Mac's development Codaset
+        // (`BrokerReverseForwards`, which records what that exposes).
         let bound = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).and_then(|listener| {
             listener.set_nonblocking(true)?;
             let port = listener.local_addr()?.port();
