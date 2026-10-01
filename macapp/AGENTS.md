@@ -254,10 +254,10 @@ side is `Core/Broker/`:
 
 A workroom or project entry in `config.json` can carry a `"host"` object, which `list --json`
 passes through as `host`. The app owns its schema (`HostDescriptor` in `Core/Models.swift`); the
-CLI reads only whether a workroom has one (remote) and `state == "destroyed"`. Nothing creates one
-yet: provisioning (#252) and the app (#253) will. Every CLI config write preserves an existing one,
-so a change to a config writer must keep `host`, or a remote workroom silently turns local. What
-the app relies on until then:
+CLI reads only whether a workroom has one (remote) and `state == "destroyed"`. `workroom host
+set|clear` (#252) writes one verbatim on an existing entry; the app (#253) will be its caller.
+Every CLI config write preserves an existing one, so a change to a config writer must keep `host`,
+or a remote workroom silently turns local. What the app relies on until then:
 
 - `TerminalTarget.unavailability` is `.directoryMissing`, `.remote` or `.hostDestroyed`, and
   `isMissing` is derived from it. A new local action should guard on `isMissing`, as the existing

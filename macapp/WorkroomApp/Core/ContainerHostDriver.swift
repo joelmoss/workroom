@@ -98,13 +98,30 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     guard case .remote(let id) = base, let source = lock.withLock({ provisioned[id] }) else {
       throw HostDriverError.unknownHost(base)
     }
-    let image = try await runtime(
-      ["commit"] + provisioning.labels.flatMap { ["--change", "LABEL \($0)"] }
-        + [source.container])
+    // An instance has enrolled, and its key and credential helper are on its disk: a copy of it
+    // would start with them.
+    guard source.image == nil else {
+      throw HostDriverError.invalidConfiguration("a workroom instance cannot be derived from")
+    }
+    // Labelled with an ID chosen here, because the runtime's own is known only from its output:
+    // a commit that outlives its CLI (killed by the silence bound, or a cancelled derive) leaves
+    // an image nothing would otherwise find.
+    let commit = "workroom.commit=\(UUID().uuidString.lowercased())"
     do {
+      let image = try await runtime(
+        ["commit"] + (provisioning.labels + [commit]).flatMap { ["--change", "LABEL \($0)"] }
+          + [source.container],
+        // `commit` prints nothing until it is done, and copying a base's disk takes a while.
+        timeout: 900)
       return try await run(image, image: image)
     } catch {
-      await Self.cleanUp { _ = try await self.runtime(["rmi", "--force", image]) }
+      await Self.cleanUp {
+        for image in try await self.runtime(["images", "-aq", "--filter", "label=\(commit)"])
+          .split(separator: "\n")
+        {
+          _ = try? await self.runtime(["rmi", "--force", String(image)])
+        }
+      }
       throw error
     }
   }
@@ -140,12 +157,15 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       throw HostDriverError.provisioning("no free loopback port: errno \(errno)")
     }
     Darwin.close(probe)
-    let container = try await runtime(
-      ["run", "--detach", "--init", "--publish", "127.0.0.1:\(port):22"]
-        + provisioning.labels.flatMap { ["--label", $0] }
-        + ["--env", "AUTHORIZED_KEY=\(provisioning.publicKey)", source])
     let id = UUID()
+    // Named here, not by the runtime's own ID, which is known only from its output: a run that
+    // outlives its CLI still leaves a container this name removes.
+    let container = "workroom-\(id.uuidString.lowercased())"
     do {
+      _ = try await runtime(
+        ["run", "--detach", "--init", "--name", container, "--publish", "127.0.0.1:\(port):22"]
+          + provisioning.labels.flatMap { ["--label", $0] }
+          + ["--env", "AUTHORIZED_KEY=\(provisioning.publicKey)", source])
       let hostKey = try await identity(of: container)
       lock.withLock {
         hosts[id] = Host(
@@ -196,14 +216,14 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// One runtime command; its first line of output, which is all any of these print on success.
   /// Its environment is the few variables that say which daemon to talk to, never the app's whole
   /// one.
-  private func runtime(_ arguments: [String]) async throws -> String {
+  private func runtime(_ arguments: [String], timeout: TimeInterval = 120) async throws -> String {
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
     let environment = ProcessInfo.processInfo.environment.filter {
       ["HOME", "PATH", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"].contains($0.key)
     }
     let (status, output) = try await HostStream.spawn(
       provisioning.runtime, arguments, environment: environment, handshakeTimeout: 20
-    ).communicate(nil, timeout: 120)
+    ).communicate(nil, timeout: timeout)
     let said = output.trimmingCharacters(in: .whitespacesAndNewlines)
     guard status == 0 else {
       throw HostDriverError.provisioning(

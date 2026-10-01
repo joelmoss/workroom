@@ -74,8 +74,10 @@ enum RemoteProvisioning {
     }
   }
 
-  /// Silence allowed on one git command. A clone of a large repository over a slow link is long,
-  /// but it is not quiet for this long.
+  /// How long one git command may run, start to end: the agent's exec deadline is a wall clock
+  /// (`exec_timeout` in `vcs.rs`, capped at 610 s), and so is the connection's request deadline.
+  /// ponytail: a clone that takes longer fails, and its base is removed. Upgrade path: start the
+  /// clone detached on the host and poll for it, so only silence ends it.
   static let gitTimeout: TimeInterval = 600
 
   // MARK: The base
@@ -196,14 +198,17 @@ enum RemoteProvisioning {
   }
 
   /// Takes a workroom down: its grant first, so nothing mints for it once its box is gone, then
-  /// the box.
+  /// the box. A grant the broker could not cancel does not keep the box: the key that would mint
+  /// against it goes with the box. The first failure is thrown once both have been tried.
   static func destroy(_ instance: Instance, workroom: UUID, in environment: Environment)
     async throws
   {
     await instance.connection.close()
-    try await environment.client.cancelGrant(instance.grantID)
+    var failure: Error?
+    do { try await environment.client.cancelGrant(instance.grantID) } catch { failure = error }
     await environment.agentBroker.release(workroom)
-    try await environment.driver.destroy(instance.host)
+    do { try await environment.driver.destroy(instance.host) } catch { failure = failure ?? error }
+    if let failure { throw failure }
   }
 
   // MARK: Plumbing

@@ -3,7 +3,9 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/joelmoss/workroom/internal/config"
 	"github.com/joelmoss/workroom/internal/errs"
@@ -30,11 +32,9 @@ var hostSetCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		currentCommand = "host"
-		var host map[string]any
-		// A JSON null decodes to a nil map, which would clear the descriptor, so it is refused
-		// with every other non-object.
-		if err := json.Unmarshal([]byte(args[0]), &host); err != nil || host == nil {
-			return fmt.Errorf("%w: %s", errs.ErrInvalidHost, args[0])
+		host, err := decodeHost(args[0])
+		if err != nil {
+			return err
 		}
 		return setHost(host)
 	},
@@ -48,6 +48,19 @@ var hostClearCmd = &cobra.Command{
 		currentCommand = "host"
 		return setHost(nil)
 	},
+}
+
+// decodeHost reads a descriptor as written: UseNumber, as Config.Read does, so an integer above
+// 2^53 is not rewritten through float64. A JSON null decodes to a nil map, which would clear the
+// descriptor, so it is refused with every other non-object, and so is trailing data.
+func decodeHost(text string) (map[string]any, error) {
+	var host map[string]any
+	dec := json.NewDecoder(strings.NewReader(text))
+	dec.UseNumber()
+	if err := dec.Decode(&host); err != nil || host == nil || dec.Decode(new(any)) != io.EOF {
+		return nil, fmt.Errorf("%w: %s", errs.ErrInvalidHost, text)
+	}
+	return host, nil
 }
 
 func setHost(host map[string]any) error {
