@@ -271,6 +271,18 @@ final class BrokerClientTests: XCTestCase {
     XCTAssertEqual(body["workroom_id"] as? String, id.uuidString.lowercased())
     XCTAssertEqual(body["repository"] as? String, "o/r")
   }
+
+  func testABaseCloneTokenIsAskedForByRepository() async throws {
+    BrokerStub.reset([.init(body: #"{"token":"ghs_x","expires_at":"2026-10-01T18:00:00Z"}"#)])
+
+    let token = try await client().baseCloneToken(repository: "o/r")
+
+    XCTAssertEqual(token.token, "ghs_x")
+    let seen = try XCTUnwrap(BrokerStub.requests.first)
+    XCTAssertEqual(seen.request.httpMethod, "POST")
+    XCTAssertEqual(seen.request.url?.path, "/broker/base-clone-tokens")
+    XCTAssertEqual(seen.json["repository"] as? String, "o/r")
+  }
 }
 
 final class BrokerCredentialsTests: XCTestCase {

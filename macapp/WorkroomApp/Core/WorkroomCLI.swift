@@ -156,6 +156,21 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     return try decode(ListResponse.self, from: result)
   }
 
+  /// Stores `descriptor` as the host descriptor of `project`, or of its `workroom` (#252), or
+  /// clears it when `descriptor` is nil. The app owns the descriptor's schema; the CLI stores it
+  /// verbatim and never creates an entry for it.
+  func setHost(project: String, workroom: String? = nil, descriptor: Data?) async throws {
+    var args = ["host"]
+    if let descriptor {
+      args += ["set", String(decoding: descriptor, as: UTF8.self)]
+    } else {
+      args.append("clear")
+    }
+    args += ["--json", "--project", project]
+    if let workroom { args += ["--workroom", workroom] }
+    try throwIfError(try await run(args, timeout: 5))
+  }
+
   /// Registers a project. With `create`, the CLI creates and git-initializes the
   /// directory if it does not already exist (issue #103); otherwise the path must
   /// already be a Git/JJ repo. Returns the canonical path the CLI registered (used
