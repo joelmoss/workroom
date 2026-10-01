@@ -77,12 +77,15 @@ enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
   /// Provisioning lands in Phase 4, which is what says how a base and an instance come to exist.
   case notImplemented(String)
   case invalidConfiguration(String)
+  /// Making, deriving or removing a host failed. Whatever the step had made is gone.
+  case provisioning(String)
 
   var errorDescription: String? {
     switch self {
     case .unknownHost: return "This driver has no such host."
     case .notImplemented(let what): return "\(what) is not implemented yet."
     case .invalidConfiguration(let detail): return "Invalid host configuration: \(detail)"
+    case .provisioning(let detail): return "Couldn't provision the host: \(detail)"
     }
   }
 }

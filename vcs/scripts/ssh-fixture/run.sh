@@ -38,8 +38,18 @@ SCREENS="/home/workroom/.local/state/workroom/screens"
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/wr-ssh-fixture.XXXXXX")"
 # The image goes too: built by ID, one would pile up per run. Its layers stay in the build cache.
+# So does whatever the app's tests provisioned from it (#252), which carries this run's label:
+# containers first, then the images committed from them, which the fixture's image is a parent of.
+LABEL="workroom.fixture=$NAME"
 cleanup() {
   "$RUNTIME" rm -f "$NAME" >/dev/null 2>&1 || true
+  for container in $("$RUNTIME" ps -aq --filter "label=$LABEL" 2>/dev/null); do
+    "$RUNTIME" rm -f "$container" >/dev/null 2>&1 || true
+  done
+  # `-a`: a commit is untagged, and `images` lists an untagged image only with it.
+  for image in $("$RUNTIME" images -aq --filter "label=$LABEL" 2>/dev/null); do
+    "$RUNTIME" rmi -f "$image" >/dev/null 2>&1 || true
+  done
   if [ -n "${IMAGE:-}" ]; then
     "$RUNTIME" rmi -f "$IMAGE" >/dev/null 2>&1 || true
   fi
@@ -48,7 +58,7 @@ cleanup() {
 trap cleanup EXIT
 
 cp "$AGENT" "$STAGE/wr-agent"
-cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$STAGE/"
+cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/identity.sh" "$STAGE/"
 # By image ID, not a tag: a tag is shared, and another run building it between here and `run` below
 # would swap in a different agent. WR_FIXTURE_BUILD_FLAGS is word-split into extra build flags; CI
 # passes a GitHub Actions layer cache there so the apt layer is not rebuilt on every run.
@@ -67,8 +77,20 @@ PORT="$("$RUNTIME" port "$NAME" 22/tcp | head -1 | sed 's/.*://')"
 # BatchMode cannot prompt to accept a host key, so the expected key is delivered out of band (here,
 # read straight out of the container) and pinned. That is the same policy a real driver needs.
 # Pinned under an alias rather than the port: a restart publishes a new port (the reboot test,
-# #232), and the key must still match.
-HOST_KEY="$("$RUNTIME" exec "$NAME" cat /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f1,2)"
+# #232), and the key must still match. Read once the entrypoint has minted it (#252): until the
+# marker names this container, the keys on disk are the image's or about to be replaced
+# (identity.sh, which `ContainerHostDriver` reads the key through too).
+HOST_KEY=""
+for attempt in $(seq 1 100); do
+  HOST_KEY="$("$RUNTIME" exec "$NAME" identity.sh 2>/dev/null || true)"
+  [ -n "$HOST_KEY" ] && break
+  sleep 0.2
+done
+if [ -z "$HOST_KEY" ]; then
+  echo "error: the fixture never minted its identity; its log:" >&2
+  "$RUNTIME" logs "$NAME" >&2
+  exit 1
+fi
 printf 'wr-ssh-fixture %s\n' "$HOST_KEY" > "$STAGE/known_hosts"
 cat > "$STAGE/ssh_config" <<EOF
 Host fixture
@@ -101,10 +123,13 @@ done
 
 # AGENT: the ELF itself, for the tests of the bootstrap that pushes it (#231). The app's tests
 # take it as their bundled agent, since a Debug build carries no Linux agent of its own. CONTAINER,
-# RUNTIME and SCREENS: for the test that reboots the box (#232).
+# RUNTIME and SCREENS: for the test that reboots the box (#232). IMAGE, RUNTIME_PATH, PUBLIC_KEY
+# and LABEL: for the app's tests that provision containers of their own from the image (#252).
 for pair in "CONFIG=$STAGE/ssh_config" "SOCKET=$SOCKET" "ADDRESS=127.0.0.1" "PORT=$PORT" \
   "USER=workroom" "IDENTITY=$STAGE/id_ed25519" "HOST_KEY=$HOST_KEY" "AGENT=$STAGE/wr-agent" \
-  "CONTAINER=$NAME" "RUNTIME=$RUNTIME" "SCREENS=$SCREENS"; do
+  "CONTAINER=$NAME" "RUNTIME=$RUNTIME" "SCREENS=$SCREENS" "IMAGE=$IMAGE" \
+  "RUNTIME_PATH=$(command -v "$RUNTIME")" "PUBLIC_KEY=$(cat "$STAGE/id_ed25519.pub")" \
+  "LABEL=$LABEL"; do
   export "WR_SSH_FIXTURE_$pair" "TEST_RUNNER_WR_SSH_FIXTURE_$pair"
 done
 

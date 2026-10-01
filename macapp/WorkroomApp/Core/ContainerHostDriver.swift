@@ -5,9 +5,10 @@ import Foundation
 /// the remote path, and its `openStream` is the ssh transport a real ssh-reachable driver (boxd)
 /// will share.
 ///
-/// Provisioning is Phase 4, so `create`, `deriveFromBase` and `destroy` say so rather than pretend.
-/// Which hosts exist is whatever the caller hands in; nothing here persists.
-struct ContainerHostDriver: HostTerminalDriver {
+/// Its hosts are the ones the caller hands in, plus, given `Provisioning`, the containers it makes
+/// itself (#252): `create` runs a base from the fixture's image, `deriveFromBase` snapshots a base
+/// (`commit`) and runs a container from that, and `destroy` removes either. Nothing here persists.
+final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   struct Host: Sendable {
     let address: String
     let port: Int
@@ -30,36 +31,197 @@ struct ContainerHostDriver: HostTerminalDriver {
     var resources: String { AgentBootstrap.resources(besideSocket: agentSocket) }
   }
 
-  let traits = HostDriverTraits(
-    transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
-    durableDisk: false, maxLifetime: nil)
-
-  let hosts: [UUID: Host]
-  /// Where each host's `ssh_config` and `known_hosts` are written.
-  let directory: URL
-
-  func create() async throws -> HostID { throw HostDriverError.notImplemented("Creating a base") }
-
-  func deriveFromBase(_ base: HostID) async throws -> HostID {
-    throw HostDriverError.notImplemented("Deriving a workroom instance")
+  /// How the driver makes containers of its own: a container runtime's CLI (`docker`), the
+  /// fixture's image, and the client key every container authorises. Containers are reached on a
+  /// loopback port the runtime publishes, as `vcs/scripts/ssh-fixture/run.sh` reaches its own.
+  struct Provisioning: Sendable {
+    let runtime: URL
+    let image: String
+    let user: String
+    let identityFile: String
+    /// The public half of `identityFile`, which the entrypoint writes to `authorized_keys`.
+    let publicKey: String
+    let agentSocket: String
+    /// `key=value` labels on every container and image made, so whoever started the fixture can
+    /// sweep up what a crashed test left (run.sh does).
+    let labels: [String]
   }
 
+  /// A host this driver made: its container, and for a derived one the image it was run from,
+  /// which only it uses.
+  private struct Provisioned {
+    let container: String
+    let image: String?
+  }
+
+  /// A derive is a snapshot of the disk only: a commit keeps no process, and the container run
+  /// from it boots afresh.
+  var traits: HostDriverTraits {
+    HostDriverTraits(
+      transport: .sshStdio, deriveSpeed: provisioning == nil ? nil : .seconds(5),
+      deriveCarriesLiveProcesses: false, durableDisk: false, maxLifetime: nil)
+  }
+
+  /// Where each host's `ssh_config` and `known_hosts` are written.
+  let directory: URL
+  let provisioning: Provisioning?
+  private let lock = NSLock()
+  private var hosts: [UUID: Host]
+  private var provisioned: [UUID: Provisioned] = [:]
+
+  init(hosts: [UUID: Host], directory: URL, provisioning: Provisioning? = nil) {
+    self.hosts = hosts
+    self.directory = directory
+    self.provisioning = provisioning
+  }
+
+  private func target(_ host: HostID) throws -> (UUID, Host) {
+    guard case .remote(let id) = host, let target = lock.withLock({ hosts[id] }) else {
+      throw HostDriverError.unknownHost(host)
+    }
+    return (id, target)
+  }
+
+  func create() async throws -> HostID {
+    guard let provisioning else { throw HostDriverError.notImplemented("Creating a base") }
+    return try await run(provisioning.image, image: nil)
+  }
+
+  /// A snapshot of `base`'s disk, run as a container of its own. The base keeps running: `commit`
+  /// pauses it only while it copies. The new container mints its own identity at its first boot
+  /// (`entrypoint.sh`), before sshd or the agent starts, so it serves nothing as its base; its
+  /// host key is read once that is done and pinned here.
+  func deriveFromBase(_ base: HostID) async throws -> HostID {
+    guard let provisioning else {
+      throw HostDriverError.notImplemented("Deriving a workroom instance")
+    }
+    guard case .remote(let id) = base, let source = lock.withLock({ provisioned[id] }) else {
+      throw HostDriverError.unknownHost(base)
+    }
+    let image = try await runtime(
+      ["commit"] + provisioning.labels.flatMap { ["--change", "LABEL \($0)"] }
+        + [source.container])
+    do {
+      return try await run(image, image: image)
+    } catch {
+      await Self.cleanUp { _ = try await self.runtime(["rmi", "--force", image]) }
+      throw error
+    }
+  }
+
+  /// Removes the container and the image it alone was run from. A host handed in rather than
+  /// made here is not this driver's to remove.
   func destroy(_ host: HostID) async throws {
-    throw HostDriverError.notImplemented("Destroying a host")
+    guard case .remote(let id) = host, let made = lock.withLock({ provisioned[id] }) else {
+      if case .remote(let id) = host, lock.withLock({ hosts[id] }) != nil {
+        throw HostDriverError.notImplemented("Destroying a host this driver did not make")
+      }
+      throw HostDriverError.unknownHost(host)
+    }
+    _ = try await runtime(["rm", "--force", "--volumes", made.container])
+    if let image = made.image { _ = try await runtime(["rmi", "--force", image]) }
+    lock.withLock {
+      hosts[id] = nil
+      provisioned[id] = nil
+    }
+    try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
+  }
+
+  /// Runs a container from `source` and waits until it can be reached: its identity minted, its
+  /// host key pinned, and an ssh login through this driver's own configuration answering. A
+  /// container that gets no further is removed.
+  private func run(_ source: String, image: String?) async throws -> HostID {
+    guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
+    let container = try await runtime(
+      ["run", "--detach", "--init", "--publish", "127.0.0.1::22"]
+        + provisioning.labels.flatMap { ["--label", $0] }
+        + ["--env", "AUTHORIZED_KEY=\(provisioning.publicKey)", source])
+    let id = UUID()
+    do {
+      let published = try await runtime(["port", container, "22/tcp"])
+      guard let port = published.split(separator: ":").last.flatMap({ Int($0) }) else {
+        throw HostDriverError.provisioning("no published ssh port in \(published)")
+      }
+      let hostKey = try await identity(of: container)
+      lock.withLock {
+        hosts[id] = Host(
+          address: "127.0.0.1", port: port, user: provisioning.user,
+          identityFile: provisioning.identityFile, hostKey: hostKey,
+          agentSocket: provisioning.agentSocket)
+        provisioned[id] = Provisioned(container: container, image: image)
+      }
+      try await awaitLogin(.remote(id))
+      return .remote(id)
+    } catch {
+      lock.withLock {
+        hosts[id] = nil
+        provisioned[id] = nil
+      }
+      await Self.cleanUp { _ = try await self.runtime(["rm", "--force", "--volumes", container]) }
+      throw error
+    }
+  }
+
+  /// The container's ssh host key, read through the runtime once its entrypoint has minted it
+  /// (the image's `identity.sh`, which run.sh reads it through too): delivered out of band, as
+  /// every driver's must be (design doc, host-key policy).
+  private func identity(of container: String) async throws -> String {
+    for _ in 0..<100 {
+      if let key = try? await runtime(["exec", container, "identity.sh"]),
+        key.split(separator: " ").count == 2
+      {
+        return key
+      }
+      try await Task.sleep(for: .milliseconds(200))
+    }
+    throw HostDriverError.provisioning("\(container) never minted its identity")
+  }
+
+  /// sshd starts a moment after the identity is minted, so the first login can be refused.
+  private func awaitLogin(_ host: HostID) async throws {
+    var last = ""
+    for _ in 0..<50 {
+      let (status, output) = try await exec("true", on: host).communicate(nil, timeout: 20)
+      if status == 0 { return }
+      last = output
+      try await Task.sleep(for: .milliseconds(200))
+    }
+    throw HostDriverError.provisioning("ssh never let us in: \(last)")
+  }
+
+  /// One runtime command; its first line of output, which is all any of these print on success.
+  /// Its environment is the few variables that say which daemon to talk to, never the app's whole
+  /// one.
+  private func runtime(_ arguments: [String]) async throws -> String {
+    guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
+    let environment = ProcessInfo.processInfo.environment.filter {
+      ["HOME", "PATH", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"].contains($0.key)
+    }
+    let (status, output) = try await HostStream.spawn(
+      provisioning.runtime, arguments, environment: environment, handshakeTimeout: 20
+    ).communicate(nil, timeout: 120)
+    let said = output.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard status == 0 else {
+      throw HostDriverError.provisioning(
+        "\(provisioning.runtime.lastPathComponent) \(arguments[0]) exited \(status): \(said)")
+    }
+    return said.split(separator: "\n").first.map(String.init) ?? ""
+  }
+
+  /// Undoes a step whatever the caller's state: in a task of its own, because a cancelled caller
+  /// would otherwise cancel the cleanup too and leave the container running.
+  private static func cleanUp(_ body: @escaping @Sendable () async throws -> Void) async {
+    await Task { try? await body() }.value
   }
 
   func openStream(to host: HostID) async throws -> HostStream {
-    guard case .remote(let id) = host, let target = hosts[id] else {
-      throw HostDriverError.unknownHost(host)
-    }
+    let (_, target) = try target(host)
     return try await exec(
       Self.relayCommand(binary: target.agentBinary, socket: target.agentSocket), on: host)
   }
 
   func exec(_ command: String, on host: HostID) async throws -> HostStream {
-    guard case .remote(let id) = host, let target = hosts[id] else {
-      throw HostDriverError.unknownHost(host)
-    }
+    let (id, target) = try target(host)
     let config = try Self.writeConfiguration(
       for: target, in: directory.appendingPathComponent(id.uuidString))
     return try HostStream.spawn(
@@ -77,9 +239,7 @@ struct ContainerHostDriver: HostTerminalDriver {
   func attachCommand(
     to host: HostID, session: UUID, workingDirectory: String, restored: Bool
   ) throws -> String {
-    guard case .remote(let id) = host, let target = hosts[id] else {
-      throw HostDriverError.unknownHost(host)
-    }
+    let (id, target) = try target(host)
     let hostDirectory = directory.appendingPathComponent(id.uuidString)
     let config = try Self.writeConfiguration(for: target, in: hostDirectory)
     // `-t`: the attach client on the far side wants a terminal, for raw mode and the pane's size,

@@ -9,6 +9,26 @@
 # PID 1 has to reap them.
 set -eu
 
+# The machine's identity is minted on its first boot, never inherited (#252, open question 9). A
+# container committed from another and run again (`ContainerHostDriver.deriveFromBase`) starts with
+# its source's disk: the ssh host keys (which openssh-server's install also bakes into the image),
+# `/etc/machine-id`, and the agent's broker files beside its socket. The marker holds the hostname
+# the identity was minted for. A restart keeps the container's hostname, so a reboot keeps its
+# identity and its pinned host key; a new container has a new hostname, so it mints its own. The
+# marker is written last: a boot that dies halfway mints again on the next one.
+#
+# Not re-mintable here: `/proc/sys/kernel/random/boot_id` is the kernel's, which every container
+# on one machine shares. A VM provider's derived instance boots a kernel of its own.
+IDENTITY=/etc/workroom-identity
+if [ "$(cat "$IDENTITY" 2>/dev/null)" != "$(hostname)" ]; then
+  rm -f /etc/ssh/ssh_host_*
+  ssh-keygen -A
+  tr -d '-' < /proc/sys/kernel/random/uuid > /etc/machine-id
+  rm -f /run/workroom/broker.json /run/workroom/broker-token.json
+  rm -rf /home/workroom/.local/state/workroom/screens
+  hostname > "$IDENTITY"
+fi
+
 mkdir -p /run/sshd
 install -d -o workroom -g workroom -m 700 /run/workroom /home/workroom/.ssh
 printf '%s\n' "$AUTHORIZED_KEY" > /home/workroom/.ssh/authorized_keys
