@@ -34,7 +34,8 @@ fn timestamp() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    let seconds = now.as_secs() as libc::time_t;
+    // Typed by `localtime_r`'s parameter rather than named: musl deprecates the `time_t` alias.
+    let seconds = now.as_secs().try_into().unwrap_or_default();
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     unsafe { libc::localtime_r(&seconds, &mut tm) };
     format!(
@@ -77,17 +78,18 @@ pub fn redirect_stderr(socket: &Path) {
 }
 
 fn stderr_is_dev_null() -> bool {
-    let (Ok(null), Some(stderr)) = (std::fs::metadata("/dev/null"), fstat(libc::STDERR_FILENO))
-    else {
-        return false;
-    };
-    use std::os::unix::fs::MetadataExt;
-    (stderr.st_mode & libc::S_IFMT) == libc::S_IFCHR && stderr.st_rdev as u64 == null.rdev()
-}
-
-fn fstat(fd: libc::c_int) -> Option<libc::stat> {
-    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-    (unsafe { libc::fstat(fd, &mut stat) } == 0).then_some(stat)
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    // `/dev/fd/2` is stderr itself on both macOS and Linux, and std's metadata spares a
+    // platform-dependent `st_rdev` cast.
+    match (
+        std::fs::metadata("/dev/null"),
+        std::fs::metadata("/dev/fd/2"),
+    ) {
+        (Ok(null), Ok(stderr)) => {
+            stderr.file_type().is_char_device() && stderr.rdev() == null.rdev()
+        }
+        _ => false,
+    }
 }
 
 /// A `waitpid` status as a person reads it: "exited 0", "killed by signal 1 (SIGHUP)".
