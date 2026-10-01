@@ -257,6 +257,24 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertTrue(store.errorMessage?.contains("remote workrooms (remote)") == true)
   }
 
+  /// A workroom that turns remote is no longer swept, so a reload must drop its last local status
+  /// rather than leave it tinting the row and the project's badge.
+  @MainActor
+  func testReloadDropsTheStatusOfAWorkroomThatTurnedRemote() async {
+    let remote = Workroom(
+      name: "a", path: "/p/a", vcsName: "workroom/a", warnings: [], host: HostDescriptor())
+    let fake = FakeWorkroomCLI(
+      canonical: "/p", projects: [Project(path: "/p", vcs: "git", workrooms: [remote])])
+    let store = AppStore(cli: fake)
+    store.workroomStatuses[.root(project: "/p")] = WorkroomStatus(dirty: false)
+    store.workroomStatuses[.workroom(project: "/p", name: "a")] = WorkroomStatus(dirty: true)
+
+    await store.reload()
+
+    XCTAssertNil(store.workroomStatuses[.workroom(project: "/p", name: "a")])
+    XCTAssertNotNil(store.workroomStatuses[.root(project: "/p")])
+  }
+
   // MARK: - mergeLocalStatus carries the full local probe forward
 
   /// Regression: `mergeLocalStatus` once copied only a subset of the fresh fields and dropped the
