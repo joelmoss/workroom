@@ -58,7 +58,7 @@ cleanup() {
 trap cleanup EXIT
 
 cp "$AGENT" "$STAGE/wr-agent"
-cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/identity.sh" "$STAGE/"
+cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/identity.sh" "$HERE/fake-github.py" "$STAGE/"
 # By image ID, not a tag: a tag is shared, and another run building it between here and `run` below
 # would swap in a different agent. WR_FIXTURE_BUILD_FLAGS is word-split into extra build flags; CI
 # passes a GitHub Actions layer cache there so the apt layer is not rebuilt on every run.

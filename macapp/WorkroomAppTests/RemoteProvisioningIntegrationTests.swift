@@ -364,4 +364,63 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
         grantsCancelled, granted ? 1 : 0, "a failure at \(step) left its grant live")
     }
   }
+
+  /// The box authenticates on its own (#252): with the Mac's connection gone, a derived workroom
+  /// fetches and pushes over https to the fixture's GitHub, its credential helper minting from the
+  /// fixture's broker on the box (`fake-github.py`). The base clones over https too, with the
+  /// broker's clone token as git's header. Commands run through the runtime's exec, the provider's
+  /// control plane, not over the Mac's link.
+  @MainActor
+  func testADerivedWorkroomFetchesAndPushesWithTheMacDisconnected() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let environment = environment(
+      fixture, driver: driver, revoked: Revoked(),
+      brokerURL: URL(string: "http://127.0.0.1:8081"))
+    BrokerStub.reset([Self.cloneToken])
+    let base = try await RemoteProvisioning.buildBase(
+      repository: "o/r", cloneURL: "https://github.com/origin.git", path: Self.path,
+      in: environment, record: { _ in })
+    cleanups.append { try? await driver.destroy(.remote(base.host)) }
+    BrokerStub.reset([Self.grant])
+    let instance = try await RemoteProvisioning.derive(
+      from: base, workroom: UUID(), branch: "wr-pushed", in: environment)
+    cleanups.append { try? await driver.destroy(instance.host) }
+    await instance.connection.close()
+
+    // The newest container with this test's label is the instance.
+    let container = try docker(runtime, ["ps", "-l", "-q", "--filter", "label=\(label!)"])
+    func onBox(_ script: String) throws -> String {
+      try docker(
+        runtime,
+        [
+          "exec", "--user", "workroom", "--env", "HOME=/home/workroom", "--workdir", Self.path,
+          container, "sh", "-c", script + "; echo exit=$?",
+        ])
+    }
+    // Disconnected: no relay to the Mac's agent connection is left on the box, once the closed
+    // link's ssh has gone. `[w]`, so the pattern does not match the shell running it.
+    var relays = ""
+    for _ in 0..<50 {
+      relays = try onBox("pgrep -f '[w]r-agent relay'")
+      if relays == "exit=1" { break }
+      try await Task.sleep(for: .milliseconds(200))
+    }
+    XCTAssertEqual(relays, "exit=1", "a relay to the Mac is still running")
+
+    let commit = try onBox(
+      "git -c user.name=W -c user.email=w@example.com commit -q --allow-empty -m pushed"
+        + " && git rev-parse HEAD")
+    let pushed = try XCTUnwrap(commit.split(separator: "\n").first.map(String.init), commit)
+    // The fixture's GitHub refuses a push with no token, so the one below is the helper's doing.
+    let refused = try onBox("git -c credential.https://github.com.helper= push -q origin HEAD 2>&1")
+    XCTAssertFalse(refused.hasSuffix("exit=0"), "the fixture's GitHub took a push with no token")
+
+    XCTAssertTrue(try onBox("git fetch -q origin").hasSuffix("exit=0"), "the fetch failed")
+    let push = try onBox("git push -q origin HEAD 2>&1")
+    XCTAssertTrue(push.hasSuffix("exit=0"), push)
+    XCTAssertEqual(
+      try onBox("git -C /srv/origin.git rev-parse refs/heads/wr-pushed"), "\(pushed)\nexit=0")
+  }
 }

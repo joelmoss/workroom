@@ -64,4 +64,12 @@ install -o workroom -g workroom -m 700 /usr/local/bin/wr-agent "$AGENT"
   done
 ) &
 
+# The fixture's GitHub and broker (fake-github.py, #252), as the ssh user, with only the capability
+# it needs for 443. `/etc/hosts` is the runtime's, written afresh at every start and never
+# committed, so the name is mapped here each boot.
+grep -q ' github.com$' /etc/hosts || echo '127.0.0.1 github.com' >> /etc/hosts
+setpriv --reuid=workroom --regid=workroom --init-groups \
+  --inh-caps=+net_bind_service --ambient-caps=+net_bind_service \
+  env -i PATH=/usr/bin:/bin python3 /usr/local/bin/fake-github.py &
+
 exec /usr/sbin/sshd -D -e
