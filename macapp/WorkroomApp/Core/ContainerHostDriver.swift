@@ -132,20 +132,24 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// container that gets no further is removed.
   private func run(_ source: String, image: String?) async throws -> HostID {
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
+    // A port of its own rather than an ephemeral one (`127.0.0.1::22`): a restart keeps it, so the
+    // host's address outlives a reboot, as a provider's box keeps its address.
+    // ponytail: the port is free when chosen, not when the runtime binds it; a run that loses
+    // that race fails and is rolled back like any other.
+    guard let (probe, port) = LoopbackSocket.listen(backlog: 1) else {
+      throw HostDriverError.provisioning("no free loopback port: errno \(errno)")
+    }
+    Darwin.close(probe)
     let container = try await runtime(
-      ["run", "--detach", "--init", "--publish", "127.0.0.1::22"]
+      ["run", "--detach", "--init", "--publish", "127.0.0.1:\(port):22"]
         + provisioning.labels.flatMap { ["--label", $0] }
         + ["--env", "AUTHORIZED_KEY=\(provisioning.publicKey)", source])
     let id = UUID()
     do {
-      let published = try await runtime(["port", container, "22/tcp"])
-      guard let port = published.split(separator: ":").last.flatMap({ Int($0) }) else {
-        throw HostDriverError.provisioning("no published ssh port in \(published)")
-      }
       let hostKey = try await identity(of: container)
       lock.withLock {
         hosts[id] = Host(
-          address: "127.0.0.1", port: port, user: provisioning.user,
+          address: "127.0.0.1", port: Int(port), user: provisioning.user,
           identityFile: provisioning.identityFile, hostKey: hostKey,
           agentSocket: provisioning.agentSocket)
         provisioned[id] = Provisioned(container: container, image: image)
