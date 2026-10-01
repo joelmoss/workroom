@@ -427,5 +427,6 @@ final class AgentEnrolmentTests: XCTestCase {
     }
     XCTAssertTrue(BrokerStub.requests.isEmpty, "no grant was asked for")
     XCTAssertTrue(driver.commands.isEmpty)
+    XCTAssertEqual(broker.released.count, 1, "the half-made route is let go")
   }
 }

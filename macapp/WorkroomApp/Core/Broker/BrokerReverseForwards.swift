@@ -201,11 +201,14 @@
       return .success(forward)
     }
 
-    /// The listener ended with its connection. The next connection opens a new one.
+    /// The listener ended. With its connection, the next connection opens a new one; on its own
+    /// (the agent's listener broke while the connection lives), no new connection is coming, so it
+    /// is reopened here.
     private func lost(_ workroom: UUID, on lease: HostConnectionManager.Lease) {
       guard entries[workroom]?.lease == lease else { return }
       entries[workroom]?.lease = nil
       entries[workroom]?.forward = nil
+      Task { await keepTrying(workroom) }
     }
 
     /// Listen until it works, the workroom is closed, or the attempts run out. A link lost without
