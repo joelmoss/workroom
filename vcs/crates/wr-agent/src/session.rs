@@ -1224,25 +1224,25 @@ fn read_session(
                 continue;
             }
             // The shell IS the session; with it gone there is nothing left to reattach to.
-            // Logged inside the store lock that removes it. No client can see the session gone
-            // until the lock drops, so the `Exited` frames below still follow the removal as
-            // closely as they did before the log existed, and the line is written before a client
-            // that has stopped reading can stall their delivery (up to `WRITE_TIMEOUT`), during
-            // which a hand-off could replace this program and lose it.
+            let held = store
+                .lock()
+                .is_ok_and(|mut store| remove_if_held(&mut store, id, number));
+            drop(terminating);
+            // With no lock held, so a stderr that has stopped draining (a supervisor's pipe) can
+            // stall only this reader, never `list`, `attach`, `kill` or a hand-off's freeze; and
+            // before the `Exited` frames, whose delivery to a client that has stopped reading can
+            // take a `WRITE_TIMEOUT`, long enough for a hand-off to replace this program first.
             //
             // Not held: `kill` ended it, reaped the shell, and already said so. The status read here
             // would then be a zero that `waitpid` never wrote.
-            let _ = store.lock().map(|mut store| {
-                if remove_if_held(&mut store, id, number) {
-                    crate::note!(
-                        "session {} ended: shell pid {} {}",
-                        id.to_hyphenated(),
-                        pty.child_pid(),
-                        crate::log::describe_status(status)
-                    );
-                }
-            });
-            drop(terminating);
+            if held {
+                crate::note!(
+                    "session {} ended: shell pid {} {}",
+                    id.to_hyphenated(),
+                    pty.child_pid(),
+                    crate::log::describe_status(status)
+                );
+            }
             for target in targets(&attached) {
                 let bytes = terminal_envelope(
                     target.stream,
@@ -1517,10 +1517,13 @@ mod tests {
             1,
             Frame::new(FrameKind::Exited, 7i32.to_be_bytes().to_vec()),
         );
-        assert!(
-            capture.0.lock().unwrap().ends_with(&exit),
-            "missing final exit frame"
-        );
+        // Waited for, not asserted at once: the reader removes the session before it sends the
+        // exit, so a test that sees it gone can still be a moment ahead of the frame.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !capture.0.lock().unwrap().ends_with(&exit) {
+            assert!(Instant::now() < deadline, "missing final exit frame");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]
