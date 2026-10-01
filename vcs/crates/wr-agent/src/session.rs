@@ -926,10 +926,14 @@ impl SessionStore {
                 })
                 .collect()
         };
-        let deadline = Instant::now() + RECORD_WAIT;
         parts
             .into_iter()
             .filter_map(|(id, number, (pty, shadow, attached))| {
+                // Each session's own wait, as `RECORD_WAIT` says. One deadline shared by every
+                // session let a session in a long repaint, visited first in the map's arbitrary
+                // order, use it all up, so every session after it got a single attempt and lost its
+                // record whenever that attempt met its reader mid-read.
+                let deadline = Instant::now() + RECORD_WAIT;
                 let mut held = until(deadline, || match attached.try_lock() {
                     Ok(guard) => Some(guard),
                     Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
