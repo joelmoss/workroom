@@ -1,4 +1,5 @@
 import CryptoKit
+import Defaults
 import XCTest
 
 @testable import Workroom
@@ -469,6 +470,90 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     }
     XCTAssertNotEqual(keys[0], keys[1], "two workrooms share an enrolment key")
     XCTAssertEqual(try leftovers("ps", label: label).count, 1, "only the base should be left")
+  }
+
+  /// A remote workroom registered as the project listing registers it reads through the router,
+  /// which connects its host itself, as git reports it on the box: its status, log, file listing,
+  /// file contents and a working diff (#253).
+  @MainActor
+  func testARegisteredRemoteWorkroomReadsThroughTheRouterAsGitReportsItOnTheBox() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let environment = environment(fixture, driver: driver, revoked: Revoked())
+    let base = try await build(environment)
+    cleanups.append { try? await driver.destroy(.remote(base.host)) }
+    BrokerStub.reset([Self.grant])
+    let instance = try await RemoteProvisioning.derive(
+      from: base, workroom: UUID(), branch: "wr-read", in: environment)
+    await instance.connection.close()
+    cleanups.append { try? await driver.destroy(instance.host) }
+    guard case .remote(let id) = instance.host else { return XCTFail("\(instance.host)") }
+
+    // A change on the box: a tracked file edited and a new file.
+    let path = instance.path
+    let tracked = try await onHost(driver, instance.host, "git -C \(path) ls-files | head -n 1")
+      .output
+    XCTAssertFalse(tracked.isEmpty)
+    let edit = try await onHost(
+      driver, instance.host, "cd \(path) && echo edited >> '\(tracked)' && echo new > fresh.txt")
+    XCTAssertEqual(edit.status, 0, edit.output)
+
+    let saved = Defaults[.remoteWorkroomsPreview]
+    Defaults[.remoteWorkroomsPreview] = true
+    defer { Defaults[.remoteWorkroomsPreview] = saved }
+    let mine = RemoteWorkrooms.provisioner
+    let project = Project(
+      path: "/proj", vcs: "git",
+      workrooms: [
+        Workroom(
+          name: "w", path: path, vcsName: "workroom/w", warnings: [],
+          host: HostDescriptor(provisioner: mine, id: id))
+      ],
+      host: HostDescriptor(provisioner: mine, id: base.host, repository: "o/r"))
+    let manager = HostConnectionManager()
+    let router = RepositoryRouter(
+      connections: manager,
+      connectRemote: { host in
+        _ = try await manager.connectIfDisconnected(host: host) {
+          try await AgentBootstrap.connect(
+            host: host, driver: driver, socket: RemoteWorkrooms.agentSocket)
+        }
+      })
+    router.replaceRemote(RemoteWorkrooms.registrations([project]))
+    let location = try XCTUnwrap(
+      project.workrooms[0].target(inProject: project.path).remoteLocation)
+
+    let reader = try await router.reader(for: location)
+    let status = try await reader.workingStatus()
+    // Cut on the host: `onHost` trims, which would take a first line's leading status space.
+    let changed = try await onHost(
+      driver, instance.host, "git -C \(path) status --porcelain | cut -c4-")
+    XCTAssertEqual(status.dirty, true)
+    XCTAssertEqual(
+      Set(status.changedFiles?.map(\.path) ?? []),
+      Set(changed.output.split(separator: "\n").map(String.init)))
+
+    let log = try await reader.log(limit: 5)
+    let gitLog = try await onHost(driver, instance.host, "git -C \(path) log -n 5 --format=%H")
+    XCTAssertEqual(
+      log.commits.map(\.commitID), gitLog.output.split(separator: "\n").map(String.init))
+
+    let files = try await router.files(for: location)
+    let listing = try await files.list()
+    XCTAssertTrue(listing.ok, listing.stderr)
+    XCTAssertTrue(listing.stdout.contains(tracked), listing.stdout)
+    XCTAssertTrue(listing.stdout.contains("fresh.txt"), listing.stdout)
+    let data = try await files.read(path: tracked, symlinks: .followWithinRoot, maxBytes: 1 << 20)
+    let cat = try await onHost(driver, instance.host, "cat '\(path)/\(tracked)'")
+    XCTAssertEqual(
+      String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
+      cat.output)
+
+    let diff = try await reader.workingFileDiff(path: tracked)
+    let gitDiff = try await onHost(driver, instance.host, "git -C \(path) diff -- '\(tracked)'")
+    XCTAssertTrue(diff.contains("+edited"), diff)
+    XCTAssertTrue(gitDiff.output.contains("+edited"), gitDiff.output)
   }
 
   /// A failure at each step after the derive starts leaves no instance and no live grant behind.

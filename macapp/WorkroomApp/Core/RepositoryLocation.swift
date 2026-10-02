@@ -121,7 +121,8 @@ final class RepositoryRouter: @unchecked Sendable {
     return RepositoryRouter(
       localReader: { try await LocalAgentVCS.shared.reader(context: $0) },
       localWriter: { try await LocalAgentVCS.shared.writer(context: $0) },
-      localFiles: { try await LocalAgentVCS.shared.files(context: $0) })
+      localFiles: { try await LocalAgentVCS.shared.files(context: $0) },
+      connectRemote: { try await RemoteHosts.shared.ensureConnected($0) })
   }()
   private let lock = NSLock()
   private var entries: [RepositoryLocation: Entry] = [:]
@@ -138,6 +139,9 @@ final class RepositoryRouter: @unchecked Sendable {
   /// nil in every test router that doesn't opt in: `files(for:)` then serves natively, as it did
   /// before the File service existed.
   private let localFiles: (@Sendable (FileContext) async throws -> FileProviding)?
+  /// Brings a remote host's service connection up before a read, write or listing on it: nothing
+  /// else connects it for the inspector (#253). nil in tests, whose connections are injected.
+  private let connectRemote: (@Sendable (HostID) async throws -> Void)?
 
   /// Production routers share app-wide host connections. Tests can retain native local providers
   /// or inject an isolated agent without starting a service against the user's session socket.
@@ -145,12 +149,14 @@ final class RepositoryRouter: @unchecked Sendable {
     connections: HostConnectionManager = .shared,
     localReader: (@Sendable (RepositoryContext) async throws -> VCSProviding)? = nil,
     localWriter: (@Sendable (RepositoryContext) async throws -> VCSWriting)? = nil,
-    localFiles: (@Sendable (FileContext) async throws -> FileProviding)? = nil
+    localFiles: (@Sendable (FileContext) async throws -> FileProviding)? = nil,
+    connectRemote: (@Sendable (HostID) async throws -> Void)? = nil
   ) {
     self.connections = connections
     self.localReader = localReader
     self.localWriter = localWriter
     self.localFiles = localFiles
+    self.connectRemote = connectRemote
     self.remoteReader = { throw RepositoryRoutingError.unavailable($0.location.host) }
     self.remoteWriter = { context, _ in
       throw RepositoryRoutingError.unavailable(context.location.host)
@@ -167,6 +173,7 @@ final class RepositoryRouter: @unchecked Sendable {
     self.localReader = nil
     self.localWriter = nil
     self.localFiles = nil
+    self.connectRemote = nil
     self.remoteReader = remoteReader
     self.remoteWriter = remoteWriter
   }
@@ -185,7 +192,7 @@ final class RepositoryRouter: @unchecked Sendable {
         try Registration(location: shared, sharedLocation: shared, localSourcePath: project.path)
       )
       // A remote workroom's path is a path on its host: registering it here would route it as a
-      // local repository. Remote registration comes with opening one (#253).
+      // local repository. It is registered on its host instead (`RemoteWorkrooms.registrations`).
       for workroom in project.workrooms where !workroom.isRemote {
         let location = try await RepositoryLocation.local(workroom.path)
         // A workroom left from jj has a `.jj` and no `.git`, and git run there would discover an
@@ -212,6 +219,18 @@ final class RepositoryRouter: @unchecked Sendable {
         if let source = registration.localSourcePath {
           localLocations[source] = registration.location
         }
+      }
+    }
+  }
+
+  /// Replaces every remote registration with `registrations`, the reachable remote workrooms of an
+  /// accepted listing (`RemoteWorkrooms.registrations`). `replaceLocal` leaves them be, so neither
+  /// replacement clobbers the other's half.
+  func replaceRemote(_ registrations: [Registration]) {
+    lock.withLock {
+      entries = entries.filter { $0.key.host == .local }
+      for registration in registrations where registration.location.host != .local {
+        entries[registration.location] = registration.entry
       }
     }
   }
@@ -251,6 +270,7 @@ final class RepositoryRouter: @unchecked Sendable {
   func reader(for location: RepositoryLocation) async throws -> VCSProviding {
     let context = try await context(for: location)
     if location.host != .local, let connections {
+      try await connectRemote?(location.host)
       return try await connections.reader(context: context)
     }
     if location.host == .local, let localReader {
@@ -291,6 +311,7 @@ final class RepositoryRouter: @unchecked Sendable {
       location: location, sharedLocation: entry(for: location)?.sharedLocation)
     guard location.host == .local else {
       guard let connections else { throw RepositoryRoutingError.unavailable(location.host) }
+      try await connectRemote?(location.host)
       return try await connections.files(context: context)
     }
     let native = NativeFileProvider(context: context, runner: runner)
@@ -354,6 +375,7 @@ final class RepositoryRouter: @unchecked Sendable {
     let context = try registeredContext(for: location)
     _ = try context.requireOwnership()
     if location.host != .local, let connections {
+      try await connectRemote?(location.host)
       return try await connections.writer(context: context)
     }
     let reader: VCSProviding

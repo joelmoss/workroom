@@ -62,6 +62,29 @@ enum RemoteWorkrooms {
     }
   }
 
+  /// The router registrations of `projects`' reachable remote workrooms (#253). Each is its own
+  /// shared root on its host, as an independent clone is. Its GitHub identity is the base's, so its
+  /// PR and CI status read through `gh` here.
+  static func registrations(_ projects: [Project]) -> [RepositoryRouter.Registration] {
+    projects.flatMap { project in
+      let github = project.host?.repository.flatMap(gitHubRepository)
+      return project.workrooms.compactMap { workroom -> RepositoryRouter.Registration? in
+        guard let host = workroom.reachableHost,
+          let location = try? RepositoryLocation.remote(host: host, path: workroom.path)
+        else { return nil }
+        return try? RepositoryRouter.Registration(
+          location: location, sharedLocation: location, github: github)
+      }
+    }
+  }
+
+  /// A base's `owner/name` (`buildBase`), on github.com, the only host the broker mints for.
+  static func gitHubRepository(_ repository: String) -> GitHubRepository? {
+    let parts = repository.split(separator: "/", omittingEmptySubsequences: false)
+    guard parts.count == 2 else { return nil }
+    return GitHubRepository(host: "github.com", owner: String(parts[0]), name: String(parts[1]))
+  }
+
   /// What the create sequence writes to config, through the CLI.
   struct Recorder: Sendable {
     /// Registers a remote workroom under a new name with `descriptor`, at `path` on its host, and
@@ -170,6 +193,16 @@ final class RemoteHosts: @unchecked Sendable {
   private let lock = NSLock()
   private var made: ContainerHostDriver?
   private var swept = false
+  /// The connection attempt running for each host, which `ensureConnected` callers share.
+  private var connecting: [HostID: Task<Void, Error>] = [:]
+  /// When each host's last attempt failed, which answers for it for `retryAfter`.
+  private var failedAt: [HostID: ContinuousClock.Instant] = [:]
+
+  /// How long a failed connect answers for its host before another is tried. The status sweep and
+  /// every panel ask again, and each attempt at a host that is down waits out ssh's connect
+  /// timeout. ponytail: a fixed window, so a Reload inside it fails fast too; upgrade path: let a
+  /// read the user asked for bypass it.
+  static let retryAfter: Duration = .seconds(30)
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "RemoteWorkrooms")
 
@@ -253,6 +286,41 @@ final class RemoteHosts: @unchecked Sendable {
     _ = try await HostConnectionManager.shared.connectIfDisconnected(host: host) {
       try await AgentBootstrap.connect(
         host: host, driver: driver, socket: RemoteWorkrooms.agentSocket)
+    }
+  }
+
+  /// Connects `host`'s service connection unless it is up, for a read, write or listing that needs
+  /// it (`RepositoryRouter`). One attempt per host at a time: the inspector's panels ask together
+  /// when a remote workroom is selected, and every caller after the first waits for that attempt
+  /// rather than fail, as `connectIfDisconnected` would have it while one is running.
+  ///
+  /// Any failure is `RepositoryRoutingError.unavailable`, which every panel shows as the host being
+  /// out of reach. Untyped, a stopped host's ssh failure read as "Not a repository". The cause is
+  /// logged.
+  func ensureConnected(_ host: HostID) async throws {
+    guard case .remote = host else { return }
+    if await HostConnectionManager.shared.snapshot(for: host).status == .connected { return }
+    if let failed = lock.withLock({ failedAt[host] }), .now - failed < Self.retryAfter {
+      throw RepositoryRoutingError.unavailable(host)
+    }
+    do {
+      let driver = try driver()
+      let task = lock.withLock { () -> Task<Void, Error> in
+        if let running = connecting[host] { return running }
+        let task = Task { try await self.connect(host, driver: driver) }
+        connecting[host] = task
+        return task
+      }
+      defer { lock.withLock { if connecting[host] == task { connecting[host] = nil } } }
+      try await task.value
+      lock.withLock { failedAt[host] = nil }
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch {
+      lock.withLock { failedAt[host] = .now }
+      Self.logger.error(
+        "connecting \(String(describing: host), privacy: .public): \(error, privacy: .public)")
+      throw RepositoryRoutingError.unavailable(host)
     }
   }
 

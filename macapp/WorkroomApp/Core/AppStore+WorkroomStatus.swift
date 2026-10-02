@@ -62,7 +62,11 @@ extension AppStore {
     for p in projects {
       items.append(
         StatusWorkItem(sid: .root(project: p.id), path: p.path, vcs: p.vcs, projectRoot: p.path))
-      // A remote workroom's path is not a path on this Mac, so there is nothing local to probe.
+      // A remote workroom's path is not a path on this Mac: a reachable one is probed on its host,
+      // and any other has nothing to probe.
+      for w in p.workrooms where w.isRemote {
+        if let item = remoteStatusWorkItem(w, in: p) { items.append(item) }
+      }
       for w in p.workrooms where !w.isRemote {
         // A workroom's VCS *type* is its project's (`p.vcs`) — a git project's workrooms are git
         // worktrees. NOT `w.vcsName`, which is the workroom's
@@ -563,16 +567,28 @@ extension AppStore {
       guard let p = projects.first(where: { $0.id == path }) else { return nil }
       return StatusWorkItem(sid: sid, path: p.path, vcs: p.vcs, projectRoot: p.path)
     case .workroom(let path, let name):
-      // A remote workroom has no local item: its path is not a path on this Mac. Nil also makes
-      // `targetExists` false, so commits, PR actions and late status merges skip it.
       guard let p = projects.first(where: { $0.id == path }),
-        let w = p.workrooms.first(where: { $0.id == name }), !w.isRemote
+        let w = p.workrooms.first(where: { $0.id == name })
       else { return nil }
+      // A remote workroom's item is on its host. One this app can't reach has none, which also
+      // makes `targetExists` false, so commits, PR actions and late status merges skip it.
+      if w.isRemote { return remoteStatusWorkItem(w, in: p) }
       // `p.vcs` is the VCS type; `w.vcsName` is the branch name, not the type (see statusWorkItems).
       return StatusWorkItem(sid: sid, path: w.path, vcs: p.vcs, projectRoot: p.path)
     case .project:
       return nil
     }
+  }
+
+  /// A reachable remote workroom's item (#253): read through its agent at its location on its host,
+  /// and its own shared root there (`RemoteWorkrooms.registrations`).
+  private func remoteStatusWorkItem(_ w: Workroom, in p: Project) -> StatusWorkItem? {
+    guard let host = w.reachableHost,
+      let location = try? RepositoryLocation.remote(host: host, path: w.path)
+    else { return nil }
+    return StatusWorkItem(
+      sid: .workroom(project: p.id, name: w.name), path: w.path, vcs: "git", projectRoot: w.path,
+      location: location)
   }
 
   /// Bounded fan-out: at most `cap` local probes in flight; refill as each completes.

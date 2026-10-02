@@ -358,7 +358,12 @@ extension RepositoryRoutingTests {
     XCTAssertEqual(listing, .failed(.unavailable(location.host)))
     let files = FileTreeModel(runner: runner)
     files.activate(location: location)
-    files.reload()
+    // A remote tree is listed through its host (#253). With no connection to it, the listing
+    // fails, and nothing ran on this Mac.
+    let deadline = ContinuousClock.now + .seconds(5)
+    while files.state == .loading, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
     XCTAssertEqual(
       files.state, .failed(RepositoryRoutingError.unavailable(location.host).localizedDescription))
     do {

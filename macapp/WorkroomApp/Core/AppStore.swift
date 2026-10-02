@@ -446,7 +446,7 @@ final class AppStore: ObservableObject {
   /// `HistoryModel.activate` — the same load, at the moment it's first worth doing.
   private func focusHistoryIfShown() {
     guard inspectorIsVisible, historySectionShown else { return }
-    commitHistory.focus(inspectorTarget.map { URL(fileURLWithPath: $0.path) })
+    commitHistory.focus(target: inspectorTarget)
   }
 
   /// Whether the VCS toolbar is on screen. It sits above the section stack rather than inside a
@@ -485,6 +485,13 @@ final class AppStore: ObservableObject {
       guard let project = projects.first(where: { $0.path == p }),
         let workroom = project.workrooms.first(where: { $0.name == name })
       else { return nil }
+      if workroom.isRemote {
+        // On its host, and its own root there (#253). One this app can't reach has no toolbar
+        // target.
+        guard let location = workroom.target(inProject: p).remoteLocation else { return nil }
+        return RemoteStateModel.Target(
+          sid: sid, path: workroom.path, projectRoot: workroom.path, location: location)
+      }
       projectPath = p
       path = workroom.path
     }
@@ -3036,6 +3043,7 @@ final class AppStore: ObservableObject {
       registrations.filter {
         acceptedPaths.contains($0.localSourcePath ?? $0.location.path)
       })
+    RepositoryRouter.shared.replaceRemote(RemoteWorkrooms.registrations(fresh))
     projects = fresh
     // Prune shared caches only when publishing an accepted snapshot.
     let liveIDs = Set(fresh.map(\.id))
@@ -4394,6 +4402,8 @@ final class AppStore: ObservableObject {
   /// fallback just opens the file (no folder/window targeting). Fire-and-forget; a missing file
   /// no-ops in `openFilePath`.
   private func openWorkroomFile(relativePath: String, for target: TerminalTarget) {
+    // A remote workroom's path is a path on its host: on this Mac it is nothing, or another file.
+    guard !target.isMissing else { return }
     let absPath = (target.path as NSString).appendingPathComponent(relativePath)
     TerminalLinkOpener.openFilePath(absPath, cwd: nil, project: target.path)
   }

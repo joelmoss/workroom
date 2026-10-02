@@ -83,7 +83,7 @@ struct HistoryPanel: View {
       // prior failure), so switching away and back after a terminal commit shows the new log — where
       // `focus` would no-op on the unchanged root. The store's eager `focus` on selection still fires
       // first; `activate`'s settled-state guard means this won't double that fresh load.
-      model.activate(store.inspectorTarget.map { URL(fileURLWithPath: $0.path) })
+      model.activate(target: store.inspectorTarget)
     }
   }
 

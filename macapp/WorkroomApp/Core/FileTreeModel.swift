@@ -64,6 +64,15 @@ final class FileTreeModel: ObservableObject {
     watcher?.stop()
   }
 
+  /// Point the model at `target`'s tree: a remote workroom's by its location on its host, which its
+  /// path alone can't name (#253), and any other's by its path.
+  func activate(target: TerminalTarget?) {
+    guard let target, target.remoteHost != nil else { return activate(path: target?.path) }
+    // Forgotten, so a later `activate(path:)` back to that path is not taken for a no-op.
+    currentPath = nil
+    activate(location: target.remoteLocation)
+  }
+
   /// Point the model at a target directory (a workroom/project root), or `nil` to clear. Starts
   /// watching it and lists it. No-op if already on this path (so re-renders don't re-list).
   /// Raw paths are the local persisted-record boundary; normalization finishes before watching.
@@ -109,11 +118,10 @@ final class FileTreeModel: ObservableObject {
       state = .idle
       return
     }
-    guard location.host == .local else {
-      state = .failed(RepositoryRoutingError.unavailable(location.host).localizedDescription)
-      return
-    }
     state = .loading
+    // A remote tree is listed by its agent, and not watched: `HostFileWatcher` watches local paths
+    // only, so it refreshes on reactivation and Reload.
+    guard location.host == .local else { return reload() }
     loadTask = Task { [weak self] in
       let exists =
         (try? await runBlocking {
@@ -140,10 +148,6 @@ final class FileTreeModel: ObservableObject {
   /// stack that many listings on the host.
   func reload() {
     guard let location = currentLocation else { return }
-    guard location.host == .local else {
-      state = .failed(RepositoryRoutingError.unavailable(location.host).localizedDescription)
-      return
-    }
     if let listing, listing.location == location {
       followUp = true
       return
@@ -260,20 +264,26 @@ final class FileTreeModel: ObservableObject {
   /// working directory and an I/O hiccup as the same `Io` failure, so the disk decides, for every
   /// error: a folder that is confirmed gone (or no longer a directory) is `.unavailable` and blanks
   /// the tree; anything else, including a check that itself failed, keeps it.
-  nonisolated static func listFailure(_ error: Error, path: String) async -> ListResult {
-    let gone =
-      (try? await runBlocking { () -> Bool in
-        // Not `fileExists`, which is also false when existence cannot be determined (a parent
-        // directory that became unreadable), and would blank a tree that is still there.
-        do {
-          let values = try URL(fileURLWithPath: path).resourceValues(forKeys: [.isDirectoryKey])
-          return values.isDirectory == false
-        } catch CocoaError.fileReadNoSuchFile {
-          return true
-        } catch {
-          return false
-        }
-      }) ?? false
+  /// `onThisMac` false for a path on a remote host, which says nothing about this Mac's disk.
+  nonisolated static func listFailure(_ error: Error, path: String, onThisMac: Bool = true) async
+    -> ListResult
+  {
+    var gone = false
+    if onThisMac {
+      gone =
+        (try? await runBlocking { () -> Bool in
+          // Not `fileExists`, which is also false when existence cannot be determined (a parent
+          // directory that became unreadable), and would blank a tree that is still there.
+          do {
+            let values = try URL(fileURLWithPath: path).resourceValues(forKeys: [.isDirectoryKey])
+            return values.isDirectory == false
+          } catch CocoaError.fileReadNoSuchFile {
+            return true
+          } catch {
+            return false
+          }
+        }) ?? false
+    }
     if gone { return .unavailable }
     if case VCSError.lockContention = error {
       return .transient("The repository is busy. Reload to try again.")
@@ -287,11 +297,13 @@ final class FileTreeModel: ObservableObject {
     location: RepositoryLocation, runner: StatusCommandRunning,
     router: RepositoryRouter = .shared
   ) async -> ListResult {
-    guard location.host == .local else { return .failed(.unavailable(location.host)) }
-    // A folder without its own `.git` (e.g. a workspace Jujutsu made before #266) is no repository:
-    // git run there would discover an ANCESTOR repository and list that tree instead.
-    let root = URL(fileURLWithPath: location.path)
-    guard (try? await runBlocking({ isGitRepo(at: root) })) == true else { return .unavailable }
+    let onThisMac = location.host == .local
+    if onThisMac {
+      // A folder without its own `.git` (e.g. a workspace Jujutsu made before #266) is no
+      // repository: git run there would discover an ANCESTOR repository and list that tree instead.
+      let root = URL(fileURLWithPath: location.path)
+      guard (try? await runBlocking({ isGitRepo(at: root) })) == true else { return .unavailable }
+    }
     let files: FileProviding
     do {
       files = try await router.files(for: location, runner: runner)
@@ -306,7 +318,7 @@ final class FileTreeModel: ObservableObject {
     } catch let error as RepositoryRoutingError {
       return .failed(error)
     } catch {
-      return await listFailure(error, path: location.path)
+      return await listFailure(error, path: location.path, onThisMac: onThisMac)
     }
     if result.ok { return .listing(FileListing.parse(result.stdout)) }
     // A killed probe is not evidence `path` isn't a repo. `timedOut` implies `signaled` (the

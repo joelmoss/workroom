@@ -46,7 +46,7 @@ struct FilesPanel: View {
     .task(id: activationKey) {
       guard store.activeInspectorSection == .files else { return }
       let target = store.inspectorTarget
-      model.activate(path: target?.path)
+      model.activate(target: target)
     }
   }
 
@@ -70,7 +70,8 @@ struct FilesPanel: View {
           onToggle: { model.toggle(row.node) },
           onOpenPreview: { store.openFilePreview(path: row.node.path) },
           onOpenPersistent: { store.openFilePersistent(path: row.node.path) },
-          onOpenInEditor: { store.openFileInEditor(path: row.node.path) }
+          onOpenInEditor: { store.openFileInEditor(path: row.node.path) },
+          canOpenInEditor: store.inspectorTarget?.isMissing == false
         )
         .equatable()
       }
@@ -109,6 +110,8 @@ struct FileTreeRowView: View, Equatable {
   let onOpenPreview: () -> Void
   let onOpenPersistent: () -> Void
   let onOpenInEditor: () -> Void
+  /// False for a target whose files aren't on this Mac, such as a remote workroom's.
+  let canOpenInEditor: Bool
   @State private var hovering = false
   /// Tracks the previous click time so a quick second click promotes the preview to a persisted tab
   /// (same manual double-click handling the Changes panel uses).
@@ -121,6 +124,7 @@ struct FileTreeRowView: View, Equatable {
   /// `[store, row.node]`, so two rows differing only in closure identity are behaviourally identical.
   static func == (lhs: FileTreeRowView, rhs: FileTreeRowView) -> Bool {
     lhs.row == rhs.row && lhs.isExpanded == rhs.isExpanded
+      && lhs.canOpenInEditor == rhs.canOpenInEditor
   }
 
   #if DEBUG
@@ -163,7 +167,7 @@ struct FileTreeRowView: View, Equatable {
     .onTapGesture { handleTap() }
     .help(node.isDirectory ? node.path : "Open \(node.path)")
     .contextMenu {
-      if !node.isDirectory {
+      if !node.isDirectory, canOpenInEditor {
         Button {
           onOpenInEditor()
         } label: {
