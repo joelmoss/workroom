@@ -1282,14 +1282,14 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertFalse(s.tabs(for: target).first { $0.id == persisted }!.isPreview)  // stays persisted
   }
 
-  /// The same path from different revisions are distinct tabs (jj working copy vs parent).
+  /// The same path from different revisions are distinct tabs (worktree vs a commit).
   func testSameFileDifferentSourceAreDistinctTabs() {
     let s = makeSessions()
     let wc = s.openDiffPersistent(
-      DiffDescriptor(path: "a.swift", change: .modified, source: .jjWorkingCopy, isPreview: false),
+      DiffDescriptor(path: "a.swift", change: .modified, source: .gitWorktree, isPreview: false),
       for: target)
     let parent = s.openDiffPersistent(
-      DiffDescriptor(path: "a.swift", change: .modified, source: .jjParent, isPreview: false),
+      DiffDescriptor(path: "a.swift", change: .modified, source: .commit("c1"), isPreview: false),
       for: target)
     XCTAssertNotEqual(wc, parent)
     XCTAssertEqual(s.tabs(for: target).count, 2)

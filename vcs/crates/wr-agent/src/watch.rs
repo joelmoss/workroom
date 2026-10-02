@@ -18,7 +18,7 @@
 //! as relevant to every filter it has.
 //!
 //! **Coalescing lives here, not in the client.** An uncoalesced watch flushes ~70 callbacks/sec
-//! under an `npm install`-shaped burst, and a consumer that re-probes per callback forks git/jj at
+//! under an `npm install`-shaped burst, and a consumer that re-probes per callback forks git at
 //! that rate. The [`Coalescer`] is leading + trailing: the first change after a quiet period is
 //! delivered after a 50ms settle (the panel reacts promptly, and one save's several raw events are
 //! one delivery), everything after is folded into one set, and that set is delivered once after a
@@ -92,12 +92,11 @@ const MAX_PENDING_PATHS: usize = 4096;
 /// tens of MiB per subscription during a sustained burst.
 const MAX_PENDING_BYTES: usize = 512 * 1024;
 
-/// A path is VCS-internal when any component is `.git` or `.jj`. Delivered after everything else
-/// when the cap forces a choice, because an internal change is usually the tool's own churn (a jj
-/// snapshot writing under `.jj/`) and the consumer filters it out anyway.
+/// A path is VCS-internal when any component is `.git`. Delivered after everything else when the
+/// cap forces a choice, because an internal change is usually the tool's own churn (git writing
+/// under `.git/`) and the consumer filters it out anyway.
 fn is_internal(path: &Path) -> bool {
-    path.components()
-        .any(|c| c.as_os_str() == ".git" || c.as_os_str() == ".jj")
+    path.components().any(|c| c.as_os_str() == ".git")
 }
 
 /// One delivery: paths in priority order (working-tree paths before VCS-internal ones), capped.
@@ -581,13 +580,23 @@ mod tests {
     #[test]
     fn worktree_paths_come_before_vcs_internal_ones() {
         let mut pending = Pending::default();
-        for path in ["/r/.git/index", "/r/a.txt", "/r/.jj/repo/op", "/r/b.txt"] {
+        for path in [
+            "/r/.git/index",
+            "/r/a.txt",
+            "/r/.git/refs/heads/main",
+            "/r/b.txt",
+        ] {
             pending.add(PathBuf::from(path));
         }
         let batch = pending.take().unwrap();
         assert_eq!(
             names(&batch),
-            ["/r/a.txt", "/r/b.txt", "/r/.git/index", "/r/.jj/repo/op"]
+            [
+                "/r/a.txt",
+                "/r/b.txt",
+                "/r/.git/index",
+                "/r/.git/refs/heads/main"
+            ]
         );
     }
 

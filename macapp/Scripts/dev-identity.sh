@@ -16,18 +16,17 @@
 # A distinct id per workroom separates all of that at once; see
 # docs/designs/parallel-workroom-testing.md.
 #
-# A WORKROOM is a linked git worktree (its `.git` is a FILE naming the main repository's git dir)
-# or a secondary jj workspace (its `.jj/repo` is a FILE naming the main workspace's store), which is
-# how `workroom create` makes them. It gets `.wr-<name>-<hash>`: the sanitized directory name so a
-# preferences plist or process list says which workroom it belongs to, and six hex digits of a
-# checksum of the full path so two checkouts sharing a name still differ. The project's own
-# checkout (`.git` and `.jj/repo` are directories, or absent) prints nothing and keeps the canonical
+# A WORKROOM is a linked git worktree (its `.git` is a FILE naming the main repository's git dir),
+# which is how `workroom create` makes them. It gets `.wr-<name>-<hash>`: the sanitized directory
+# name so a preferences plist or process list says which workroom it belongs to, and six hex digits
+# of a checksum of the full path so two checkouts sharing a name still differ. The project's own
+# checkout (`.git` is a directory, or absent) prints nothing and keeps the canonical
 # `com.developwithstyle.workroom.dev`, so its preferences, TCC grants and sessions are untouched.
 set -eu
 
 root="$(cd "${1:-$(dirname "$0")/../..}" && pwd -P)"
 
-if [ ! -f "$root/.git" ] && [ ! -f "$root/.jj/repo" ]; then
+if [ ! -f "$root/.git" ]; then
   exit 0
 fi
 

@@ -25,7 +25,7 @@ struct WorkroomApp: App {
     SentryConfig.start()
 
     // Ensure the in-process environment (inherited by the bundled `workroom`
-    // binary and the terminals) can find git/jj, which a Finder-launched .app's
+    // binary and the terminals) can find git, which a Finder-launched .app's
     // minimal PATH excludes. This is the PATH floor — `/etc/paths` + `/etc/paths.d`
     // + well-known tool dirs — so it is already correct, just not yet enriched.
     //

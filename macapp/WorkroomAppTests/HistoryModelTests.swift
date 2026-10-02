@@ -8,9 +8,8 @@ final class HistoryModelTests: XCTestCase {
 
   private func commit(_ id: String) -> VCSCommit {
     VCSCommit(
-      commitID: id, shortID: String(id.prefix(8)), changeID: nil, summary: "c \(id)",
-      body: "", authors: [], timestamp: Date(timeIntervalSince1970: 0), refs: [], parentIDs: [],
-      isWorkingCopy: false)
+      commitID: id, shortID: String(id.prefix(8)), summary: "c \(id)",
+      body: "", authors: [], timestamp: Date(timeIntervalSince1970: 0), refs: [], parentIDs: [])
   }
 
   /// A provider returning `prefix(limit)` of a fixed list, so a growing limit yields more commits —

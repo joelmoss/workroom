@@ -3,7 +3,7 @@ import XCTest
 @testable import Workroom
 
 /// A `StatusCommandRunning` returning canned `CommandResult`s per (executable, args), so the
-/// resolver is tested without spawning real git/jj/gh (mirrors `MockRunner` in BranchResolverTests).
+/// resolver is tested without spawning real git/gh (mirrors `MockRunner` in BranchResolverTests).
 private struct MockStatusRunner: StatusCommandRunning {
   let handler: @Sendable (_ executable: String, _ args: [String]) -> CommandResult
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
@@ -53,14 +53,6 @@ final class WorkroomStatusResolverTests: XCTestCase {
 
   // git status is now read structurally via GitProvider (SwiftGitX); the porcelain-v2 parser is
   // gone. See WorkroomStatusIntegrationTests.testGitProviderWorkingStatus* for real-repo coverage.
-
-  // The jj working-copy read (summary/head/parent) is now native (jj-lib) via RustJJProvider; its
-  // CLI parsers are gone. Real-repo coverage: WorkroomStatusIntegrationTests.testJJ*.
-
-  // The `--stat` summary parser is gone too: the jj ± line counts come from the same native read as
-  // the file list (per-file, in `jj_backend::changed_files`), so there is no `jj diff --stat` process
-  // and no summary line to parse. Real-repo coverage: the cargo suite `line_stats.rs` for the counting
-  // itself, and WorkroomStatusIntegrationTests.testJJ* end-to-end.
 
   // MARK: - classifyCheckRollup (#76: sidebar CI from GitHub's status-check rollup)
 
@@ -145,7 +137,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testResolveLocalMissingPath() async {
     let r = WorkroomStatusResolver(runner: MockStatusRunner { _, _ in ok("") })
     let missing = "/definitely/not/here-\(UUID().uuidString)"
-    let s = await r.resolveLocal(path: missing, vcs: "git", projectRoot: missing)
+    let s = await r.resolveLocal(path: missing, vcs: "git")
     XCTAssertNil(s.dirty)  // unknown, NOT clean
     XCTAssertEqual(s.failure, .missingPath)
   }
@@ -157,22 +149,16 @@ final class WorkroomStatusResolverTests: XCTestCase {
     // `existing` is a real directory but NOT a git repo, so the SwiftGitX read fails → notRepository.
     // The regression-critical property: a failed probe is UNKNOWN, never clean.
     let r = WorkroomStatusResolver()
-    let s = await r.resolveLocal(path: existing, vcs: "git", projectRoot: existing)
+    let s = await r.resolveLocal(path: existing, vcs: "git")
     XCTAssertNil(s.dirty)
     XCTAssertFalse(s.isClean)
     XCTAssertTrue(s.isUnknown)
     XCTAssertEqual(s.failure, .notRepository)
   }
 
-  // The jj working-copy read (dirty/conflict, working-copy + parent `@-` change sets, and the CI
-  // branch from the nearest bookmark) is now native (jj-lib) via `RustJJProvider.workingStatus`;
-  // the CLI-parser + mock-runner path (parseJJSummary/parseJJHead/parseJJBranch, resolveJJParent,
-  // the head/parent-count templates) is gone. Real-repo coverage lives in
-  // WorkroomStatusIntegrationTests.testJJ* (against a throwaway jj repo).
-
   func testResolveLocalUnknownVCS() async {
     let r = WorkroomStatusResolver(runner: MockStatusRunner { _, _ in ok("anything") })
-    let s = await r.resolveLocal(path: existing, vcs: "hg", projectRoot: existing)
+    let s = await r.resolveLocal(path: existing, vcs: "hg")
     XCTAssertNil(s.dirty)
     XCTAssertEqual(s.failure, .notRepository)
   }
@@ -180,14 +166,14 @@ final class WorkroomStatusResolverTests: XCTestCase {
   // MARK: - typed backend error → status failure
 
   /// Every `VCSError` the backends can raise must land on a badge deliberately, since a probe failure
-  /// is the one status the user can't verify by looking at the row. The two retryable jj states get
+  /// is the one status the user can't verify by looking at the row. The two retryable states get
   /// their own badge; the rest keep `.notRepository`, which is what the git side needs — `GitProvider`
   /// can't bind SwiftGitX's typed error, so a missing/broken repo arrives as `.io`.
   func testFailureMappingPerVCSError() {
     XCTAssertEqual(WorkroomStatusResolver.failure(for: .lockContention), .busy)
     XCTAssertEqual(WorkroomStatusResolver.failure(for: .staleSnapshot), .staleWorkingCopy)
     XCTAssertEqual(
-      WorkroomStatusResolver.failure(for: .unsupportedRepo("no jj repo")), .notRepository)
+      WorkroomStatusResolver.failure(for: .unsupportedRepo("no .git")), .notRepository)
     XCTAssertEqual(WorkroomStatusResolver.failure(for: .notFound("f.txt")), .notRepository)
     XCTAssertEqual(
       WorkroomStatusResolver.failure(for: .partialData("diff read failed")), .notRepository)
@@ -642,9 +628,8 @@ final class WorkroomStatusResolverTests: XCTestCase {
     await r.enrichPR(await r.resolvePRRaw(repo: repo, branch: branch), repo: repo)
   }
 
-  /// `gh pr list` names the repository and the branch, and runs in the neutral directory — for git
-  /// and jj alike. There is no longer a git/jj difference in where a probe runs: jj used to need the
-  /// colocated project root because a secondary workspace has no `.git`.
+  /// `gh pr list` names the repository and the branch, and runs in the neutral directory, never the
+  /// workroom's own.
   func testResolvePRRawNamesRepositoryAndBranchInNeutralDirectory() async {
     let json =
       #"[{"number":9,"title":"F","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null}]"#
@@ -670,12 +655,11 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(runner.calls.first?.dir, NSTemporaryDirectory())
   }
 
-  func testResolveLocalJJFailureIsNotRepository() async {
-    // `existing` is a real directory but NOT a jj repo, so the native jj-lib read (RustJJProvider)
-    // throws → notRepository. The regression-critical property: a failed probe is UNKNOWN, never
-    // clean.
+  func testResolveLocalStaleJJVCSIsNotRepository() async {
+    // A stale "jj" from an old config, on a directory with no `.git`: unsupported → notRepository.
+    // The regression-critical property: a failed probe is UNKNOWN, never clean.
     let r = WorkroomStatusResolver()
-    let s = await r.resolveLocal(path: existing, vcs: "jj", projectRoot: existing)
+    let s = await r.resolveLocal(path: existing, vcs: "jj")
     XCTAssertNil(s.dirty)  // unknown, NOT clean
     XCTAssertFalse(s.isClean)
     XCTAssertTrue(s.isUnknown)

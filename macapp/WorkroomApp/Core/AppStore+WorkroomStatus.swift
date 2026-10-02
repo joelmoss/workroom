@@ -6,15 +6,12 @@ import Foundation
 /// a file watcher in Phase 1. The fan-out across all workrooms is bounded (so 50 workrooms
 /// don't fork 50 git + 50 gh processes at once); CI is a second, slower stage that never blocks
 /// the dirty dot, and is gated by a much longer TTL than the local git probe. Three separate lanes
-/// here (this sweep, `scheduleSelectedStatusRefresh`, `handleWorkroomFileChange`) — plus a fourth
-/// outside this file, the Changes panel's working-copy diff (`DiffResolver`) — can all reach a jj
-/// snapshot for the same project concurrently; `JJSnapshotGate` (via `WorkroomStatusResolver`)
-/// serializes same-project jj snapshots across ALL of them, not just within one lane. It does NOT
-/// order their RESULTS, though — a slow probe still lands after a faster one that read the tree
-/// later — so `resolveLocal` stamps each read's completion and `mergeLocalStatus` drops a result
-/// stamped earlier than the one already recorded.
+/// here (this sweep, `scheduleSelectedStatusRefresh`, `handleWorkroomFileChange`) can all read the
+/// same project concurrently, and nothing orders their RESULTS — a slow probe still lands after a
+/// faster one that read the tree later — so `resolveLocal` stamps each read's completion and
+/// `mergeLocalStatus` drops a result stamped earlier than the one already recorded.
 extension AppStore {
-  fileprivate static let localStatusTTL: TimeInterval = 15  // git/jj dirty/changed-files
+  fileprivate static let localStatusTTL: TimeInterval = 15  // git dirty/changed-files
   fileprivate static let ciStatusTTL: TimeInterval = 300  // gh CI (network)
   // The `gh auth status` TTL lives in `GitHubAuthCache`, which owns that probe's freshness outright.
   static let localConcurrency = 5
@@ -25,8 +22,8 @@ extension AppStore {
     let sid: SidebarID
     let path: String
     let vcs: String
-    /// The colocated project root. Equals `path` for the root row; for a workroom it's the parent
-    /// project's path — where stage-2 `gh` probes run for a jj workspace (which has no `.git`).
+    /// The project root. Equals `path` for the root row; for a workroom it's the parent project's
+    /// path — the shared repository its writes are keyed by.
     let projectRoot: String
     let location: RepositoryLocation?
 
@@ -68,7 +65,7 @@ extension AppStore {
       // A remote workroom's path is not a path on this Mac, so there is nothing local to probe.
       for w in p.workrooms where !w.isRemote {
         // A workroom's VCS *type* is its project's (`p.vcs`) — a git project's workrooms are git
-        // worktrees, a jj project's are jj workspaces. NOT `w.vcsName`, which is the workroom's
+        // worktrees. NOT `w.vcsName`, which is the workroom's
         // branch/workspace *name* (`workroom/<name>`); passing that as the type made resolveLocal
         // fall through to `.notRepository` for every workroom.
         items.append(
@@ -82,9 +79,9 @@ extension AppStore {
 
   /// Sweep every workroom's status. Cancels any in-flight sweep so a slow one can't write stale
   /// values over a newer one. `force` ignores the TTLs (e.g. a manual refresh). Two stages:
-  /// fast local git/jj first, then the slow `gh` CI pass — so the dirty dots land immediately.
+  /// fast local git first, then the slow `gh` CI pass — so the dirty dots land immediately.
   func refreshWorkroomStatuses(force: Bool = false) {
-    // Fixture mode never shells out to git/jj/gh — keep the deterministic seeded status (and let the
+    // Fixture mode never shells out to git/gh — keep the deterministic seeded status (and let the
     // manual Refresh button re-apply it rather than wipe it to "unknown").
     if UITestFixture.isActive {
       seedFixtureStatuses()
@@ -357,7 +354,7 @@ extension AppStore {
     guard let item = selectedStatusWorkItem(for: sid) else {
       return completion(.failed(.other("That workroom is no longer available.")))
     }
-    // Fixture mode swaps the WRITER — `FixtureVCSWriter` rather than spawning git or jj, since the
+    // Fixture mode swaps the WRITER — `FixtureVCSWriter` rather than spawning git, since the
     // fixture paths aren't real repos and a live write would only ever fail. Only the writer: taking
     // an early return here instead skipped the whole store-side lane (the in-flight marks, the
     // captured-sid refresh), so the one tier that drives this code end to end exercised none of it.
@@ -379,7 +376,7 @@ extension AppStore {
       } catch { return completion(.failed(.other(error.localizedDescription))) }
       // Refuse outright rather than queue behind another write (commit/fetch/push/pull, this window
       // or another) on the same project root — see `isWritingProject`'s doc for why queuing into
-      // `JJSnapshotGate` here would risk racing it past the gate's own wedge-detection ceiling.
+      // `RepositoryWriteGate` here would risk racing it past the gate's own wedge-detection ceiling.
       guard !isWritingProject(root) else {
         return completion(.failed(.locked(nil)))
       }
@@ -417,9 +414,8 @@ extension AppStore {
       self.committingTargets.remove(sid)
       switch result {
       case .ok, .committedThenFailed:
-        // Refresh by the CAPTURED sid. The Changes list is the load-bearing one for jj:
-        // `handleWorkroomFileChange` deliberately drops bursts that touched only `.jj/`, so a jj
-        // commit never self-refreshes from the watcher.
+        // Refresh by the CAPTURED sid: the watcher lane is suppressed while the commit runs
+        // (`isCommittingProject`), so the commit's own churn never refreshes the Changes list.
         self.refreshStatus(for: sid)
         // History gained a commit, and the ahead count and Push button both moved. Only refresh the
         // models that are still pointed at the row we committed — otherwise switching workrooms
@@ -455,16 +451,15 @@ extension AppStore {
     }
   }
 
-  /// Ask what the commit dialog should show before it writes — the amend target, `@`'s description,
-  /// and any parked git operation.
+  /// Ask what the commit dialog should show before it writes — the amend target and any parked git
+  /// operation.
   ///
   /// Read-only and ungated, for `stagedContentAtRisk`'s reasons. Routed through `RepositoryRouter` rather
-  /// than spawning `git`/`jj` from the dialog, which is what made these reads work only for a repo
+  /// than spawning `git` from the dialog, which is what made these reads work only for a repo
   /// on this Mac (issue #154, Phase 2).
   ///
   /// Failures remain explicit and block the write until preflight succeeds.
-  /// The fixture is NOT short-circuited here — `CommitSheet` seeds its own values, because the jj
-  /// half comes from the seeded status rather than from anything a writer could know.
+  /// The fixture is NOT short-circuited here — `CommitSheet` seeds its own values.
   func commitPreflight(
     on sid: SidebarID, completion: @escaping (Result<VCSCommitPreflight, Error>) -> Void
   ) {
@@ -561,8 +556,7 @@ extension AppStore {
     selectedStatusWorkItem(for: sid) != nil
   }
 
-  /// `internal` rather than `private`: the commit sheet needs a row's path and vcs to open against it
-  /// and to read `@`'s description for the prefill.
+  /// `internal` rather than `private`: the commit sheet needs a row's path and vcs to open against it.
   func selectedStatusWorkItem(for sid: SidebarID) -> StatusWorkItem? {
     switch sid {
     case .root(let path):
@@ -581,12 +575,7 @@ extension AppStore {
     }
   }
 
-  /// Bounded fan-out: at most `cap` local probes in flight; refill as each completes. `cap` bounds
-  /// cross-project parallelism and all git probes; it does NOT bound jj snapshots within one
-  /// project — those additionally serialize behind each other through `WorkroomStatusResolver`'s
-  /// `JJSnapshotGate` (keyed on `item.projectRoot`), since a project's workrooms share a backing
-  /// repo a concurrent snapshot can contend on. Workrooms of *different* projects still run fully
-  /// concurrently, up to `cap`.
+  /// Bounded fan-out: at most `cap` local probes in flight; refill as each completes.
   private func runLocalSweep(_ items: [StatusWorkItem], resolver: WorkroomStatusResolver, cap: Int)
     async
   {
@@ -669,13 +658,11 @@ extension AppStore {
   }
 
   /// Merge a fresh local result into the stored snapshot, preserving the (separately-resolved)
-  /// CI fields so a local refresh never wipes the CI badge. Carries the jj working-copy change set
-  /// through too — it comes from the same local probe as `dirty`, so dropping it here would leave
-  /// the Changes panel on the git fallback even for a jj repo.
+  /// CI fields so a local refresh never wipes the CI badge.
   /// Ordering comes from `fresh.localReadAt`, which `WorkroomStatusResolver.resolveLocal` stamps when
-  /// the read FINISHED. Deliberately not a caller-supplied invocation time: a jj read can sit in
-  /// `JJSnapshotGate` for seconds before it observes anything, so invocation time would call a probe
-  /// older when it actually saw a later tree. A result with no stamp (a hand-built status in a test)
+  /// the read FINISHED. Deliberately not a caller-supplied invocation time: a read can queue for a
+  /// while before it observes anything, so invocation time would call a probe older when it
+  /// actually saw a later tree. A result with no stamp (a hand-built status in a test)
   /// cannot be ordered, so it merges.
   ///
   /// The five local lanes (this file's sweep, selection refresh, post-commit refresh, file-watcher
@@ -700,7 +687,6 @@ extension AppStore {
     s.insertions = fresh.insertions
     s.deletions = fresh.deletions
     s.branchForCI = fresh.branchForCI
-    s.jjWorkingCopy = fresh.jjWorkingCopy
     s.failure = fresh.failure
     s.localReadAt = fresh.localReadAt
     s.lastChecked = Date()
@@ -721,8 +707,8 @@ extension AppStore {
   /// better sat behind it. A disagreement means the cache is no longer the freshest answer, so it
   /// yields rather than wins — and the next toolbar read republishes it.
   ///
-  /// Only a non-empty swept branch counts: git reports none for a detached HEAD, and jj none for an
-  /// unbookmarked `@` — neither is evidence the cached name is wrong.
+  /// Only a non-empty swept branch counts: git reports none for a detached HEAD, which is no
+  /// evidence the cached name is wrong.
   private func pruneResolvedBranchNameIfDrifted(_ sid: SidebarID, sweptBranch: String?) {
     guard let cached = resolvedBranchNames[sid], let swept = sweptBranch, !swept.isEmpty,
       cached != swept
@@ -818,11 +804,9 @@ extension AppStore {
   /// Whether a commit is running for this row. Suppresses the same three lanes `isCreating` does, for
   /// a closely-related reason.
   ///
-  /// Necessary because `JJSnapshotGate` is not sufficient on its own here: its `maxChainWait` is 30s
-  /// and a commit's timeout is far longer (a `pre-commit` hook that runs a test suite is ordinary), so
-  /// a queued status probe would hit the gate's documented self-heal and run **concurrently with the
-  /// commit** — snapshotting `@` mid-write for jj, contending on `index.lock` for git. Suppressing the
-  /// lanes is the fix; raising the ceiling would only make every other lane wait longer.
+  /// Status probes are reads and never queue behind the write gate, so without this a probe would
+  /// run **concurrently with the commit** — contending on `index.lock`. Suppressing the lanes is the
+  /// fix.
   ///
   /// It also stops the panel rendering a half-staged tree: `git commit` moves the index and refs as it
   /// goes, and `GitProvider.workingStatus` collapses index and worktree deltas into one row, so a
@@ -831,10 +815,9 @@ extension AppStore {
 
   /// Whether ANY workroom of this project has a commit in flight.
   ///
-  /// The question every read lane has to ask, rather than `isCommitting(sid)`. `JJSnapshotGate`
-  /// serializes on the project root, and its `maxChainWait` self-heal (30s) is far shorter than
-  /// `commitTimeout` (600s) — so a probe queued behind a slow hook stops waiting and runs anyway.
-  /// Suppression is what actually keeps these lanes off a repo mid-write; the gate alone does not.
+  /// The question every read lane has to ask, rather than `isCommitting(sid)`: a project's workrooms
+  /// share one repository, so a sibling's commit churns the files this workroom's probe reads.
+  /// Suppression is what keeps these lanes off a repo mid-write; reads are not gated.
   func isCommittingProject(_ repository: RepositoryLocation?) -> Bool {
     guard let repository else { return false }
     return committingProjectRoots[repository, default: 0] > 0
@@ -851,7 +834,7 @@ extension AppStore {
   /// this window or another. Checked by the write actions themselves BEFORE they start — the
   /// umbrella `isCommittingProject` above never was, and neither was any fetch/push/pull call
   /// site, which is what let two windows each queue a write on the same project and run them
-  /// concurrently once `JJSnapshotGate`'s self-heal ceiling passed. A write that finds this true
+  /// concurrently once `RepositoryWriteGate`'s self-heal ceiling passed. A write that finds this true
   /// refuses outright (surfaced as `.locked(nil)` — "The repository was busy. Try again.") rather
   /// than queuing into the gate and racing the one already running.
   func isWritingProject(_ projectRoot: String) -> Bool {
@@ -926,14 +909,10 @@ extension AppStore {
   }
 
   /// React to a filesystem change under the selected workroom: re-probe its *local* status only
-  /// (dirty/ahead-behind/changed-files/jj head) and merge. CI/PR stay on their TTLs — a file save
+  /// (dirty/ahead-behind/changed-files) and merge. CI/PR stay on their TTLs — a file save
   /// shouldn't fire a `gh` call. Cancel-and-replace so the latest change wins and at most one probe
-  /// from THIS lane runs at a time — it does NOT by itself prevent this probe's jj snapshot from
-  /// overlapping the sweep's or the selection-refresh's for the same project; that cross-lane
-  /// ordering is `JJSnapshotGate`'s job (via `WorkroomStatusResolver.resolveLocal`).
-  /// `overflow` means some changes are unlisted (or the watch was interrupted and resumed), so `paths`
-  /// cannot be trusted to be complete and the jj-internal filter below must not apply.
-  func handleWorkroomFileChange(_ paths: [String], overflow: Bool = false) {
+  /// from THIS lane runs at a time; results across lanes are ordered by `mergeLocalStatus`.
+  func handleWorkroomFileChange() {
     guard !UITestFixture.isActive, let sid = selectedTargetID,
       let item = selectedStatusWorkItem(for: sid), item.permitsLocalAccess
     else { return }
@@ -943,16 +922,10 @@ extension AppStore {
     if isCreating(sid) { return }
     // Same for a commit in flight, keyed by project root — a git worktree's index lives in the main
     // repo, so a sibling workroom's commit churns the very files this probe reads. This lane is the
-    // one that would fire MOST during a git commit: the `.jj/` filter below saves jj from
-    // self-triggering, but git's own index and ref churn is deliberately let through as real signal,
-    // so `git add`/`git commit` would each fork a probe against a tree mid-write.
+    // one that would fire MOST during a git commit: git's own index and ref churn is deliberately
+    // let through as real signal, so `git add`/`git commit` would each fork a probe against a tree
+    // mid-write.
     if isCommittingProject(item.sharedLocation) { return }
-    // A jj *local* probe snapshots `@` (writes under `.jj/`), which would itself trip the watcher —
-    // an endless refresh loop. So ignore a burst that touched ONLY jj-internal paths. (git probes are
-    // read-only, and `.git/index` changes from `git add` are real signal, so git events pass through.)
-    if item.vcs == "jj", !overflow, !paths.isEmpty, paths.allSatisfy(Self.isJJInternalPath) {
-      return
-    }
     let resolver = statusResolver
     watchRefreshTask?.cancel()
     watchRefreshTask = Task { [weak self] in
@@ -963,10 +936,4 @@ extension AppStore {
     }
   }
 
-  /// Whether an FSEvents path is inside a jj internal dir (a `.jj` path component) — used to skip the
-  /// snapshot self-trigger. Component-based so it doesn't match a working file merely named `.jj…`.
-  /// `nonisolated` (pure) so it's callable off the main actor.
-  nonisolated static func isJJInternalPath(_ path: String) -> Bool {
-    path.split(separator: "/").contains(".jj")
-  }
 }

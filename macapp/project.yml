@@ -24,11 +24,8 @@ configs:
   Nightly: release
 
 packages:
-  # Local Rust VCS core (jj-lib via UniFFI, jj-only); artifacts built by vcs/scripts/build-apple.sh.
-  WrVcs:
-    path: ../vcs/swift/WrVcs
-  # git backend: SwiftGitX (libgit2, pure-Swift). git has a native Swift path; jj does not — so the
-  # Rust core is jj-only and git is read here. Both feed one VCSProviding model layer.
+  # git backend: SwiftGitX (libgit2, pure-Swift). Local repositories are read here; the bundled
+  # wr-agent serves the same reads over its VCS service. Both feed one VCSProviding model layer.
   SwiftGitX:
     url: https://github.com/ibrahimcetin/SwiftGitX
     exactVersion: "0.4.0"
@@ -208,10 +205,6 @@ targets:
         buildPhase: resources
     dependencies:
       - package: Sparkle
-      # Workroom VCS core: the Rust engine (jj-lib + gix) exposed via UniFFI, wrapped as a local SPM
-      # package (vcs/swift/WrVcs) whose binaryTarget carries the static xcframework. `import WrVcs`.
-      # Built by vcs/scripts/build-apple.sh (xcframework + generated Swift are gitignored).
-      - package: WrVcs
       - package: SwiftGitX
         product: SwiftGitX
       # The C API behind SwiftGitX, for the reachability reads it doesn't expose (Core/GitGraph.swift).
@@ -318,7 +311,7 @@ targets:
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         ENABLE_HARDENED_RUNTIME: YES
-        # Non-sandboxed (Developer ID): the app spawns git/jj and the bundled
+        # Non-sandboxed (Developer ID): the app spawns git and the bundled
         # workroom binary, and opens terminals in arbitrary project directories.
         ENABLE_APP_SANDBOX: NO
         # TerminalLinkOpener shells out to `/usr/bin/open` (⌘-click a file path in the terminal),
@@ -390,18 +383,6 @@ targets:
           OTHER_CODE_SIGN_FLAGS: "--timestamp"
           CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
     preBuildScripts:
-      # Fail fast when the linked Rust VCS core is older than vcs/. `make app-build`/`app-test`
-      # rebuild it via their app-vcs prerequisite, but ⌘R/⌘U in Xcode (and a raw `xcodebuild`) don't
-      # — so without this gate they link the last-built core and silently exercise a stale engine.
-      # Only a check, never a build: SPM extracts the binaryTarget's xcframework before target build
-      # phases run, so a rebuild here couldn't reach this build's link (see build-apple.sh --check).
-      - name: Rust VCS core up to date
-        basedOnDependencyAnalysis: false
-        script: |
-          if ! out=$("${SRCROOT}/../vcs/scripts/build-apple.sh" --check 2>&1); then
-            echo "error: ${out}"
-            exit 1
-          fi
       - name: swift-format lint
         # Surfaces swift-format violations as build warnings (non-fatal — won't block local
         # builds). `make app-lint` (repo root) runs `--strict` for a hard gate.

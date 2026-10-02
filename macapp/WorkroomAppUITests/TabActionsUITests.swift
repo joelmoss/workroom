@@ -62,7 +62,7 @@ final class TabActionsUITests: XCTestCase {
     return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
   }
 
-  /// Open the jj working-copy diff for `app/models/user.rb` as a preview tab; returns once its diff
+  /// Open the working-copy diff for `app/models/user.rb` as a preview tab; returns once its diff
   /// tab chip ("user.rb") exists.
   ///
   /// Deliberately patient, because this helper gates most of the class: it waits for the row to be
@@ -72,8 +72,8 @@ final class TabActionsUITests: XCTestCase {
   /// preview, so the retry is free. That combination is what this flaked on when run in a batch.
   private func openDiffPreview(_ app: XCUIApplication) {
     XCTAssertTrue(
-      element(app, id: "changes.workingCopy").waitForExistence(timeout: 10),
-      "jj Working Copy header should render")
+      element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10),
+      "the Changes panel should render its file rows")
     let row = fileRow(app, "app/models/user.rb")
     XCTAssertTrue(row.waitForExistence(timeout: 10))
     row.scrollIntoView(in: app)

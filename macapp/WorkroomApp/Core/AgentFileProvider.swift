@@ -8,17 +8,8 @@ struct AgentFileProvider: FileProviding {
   let connection: AgentVCSConnection
 
   func list(_ vcs: FileListVCS) async throws -> CommandResult {
-    // The lock the jj listing takes lives in the SHARED repository, so an unregistered jj listing is
-    // refused here, before a byte is sent — the same answer the native path gives.
-    let backend: String
-    switch vcs {
-    case .git: backend = "git"
-    case .jj:
-      guard context.sharedLocation != nil else { throw RepositoryRoutingError.registrationRequired }
-      backend = "jj"
-    }
     let request = AgentFileRequest(
-      method: "list", backend: backend, root: context.location.path,
+      method: "list", backend: "git", root: context.location.path,
       sharedRoot: context.sharedLocation?.path)
     let listing = try AgentFileReply<AgentFileListing>.decode(
       await connection.fileRequest(request))
@@ -46,6 +37,8 @@ struct AgentFileProvider: FileProviding {
 struct AgentFileRequest: Encodable, Sendable {
   var version = 1
   let method: String
+  // ponytail: `backend` (always "git") and `shared_root` are jj-era wire fields (#266), still sent
+  // for agents built before it. Prune once no supported agent predates #266.
   var backend: String?
   var root: String?
   var sharedRoot: String?
@@ -118,7 +111,6 @@ struct AgentFileReply<T: Decodable>: Decodable {
       case "NotFound": throw FileServiceError.notFound(message)
       case "ListingTruncated": throw FileServiceError.listingTruncated
       case "LockContention": throw VCSError.lockContention
-      case "Registration": throw RepositoryRoutingError.registrationRequired
       case "Unsupported", "Io", "Busy": throw FileServiceError.failed(message)
       default: throw HostConnectionError.serviceUnavailable("Unknown agent failure: \(kind)")
       }

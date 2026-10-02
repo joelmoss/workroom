@@ -3,7 +3,7 @@ import Foundation
 /// Store-owned state for the History pane (issue #59): a paged, newest-first commit log for the
 /// selected workroom, read through `LocalVCSProviding`. Re-pointed on selection (like `FileTreeModel`);
 /// refreshes on demand. Pagination re-fetches a growing prefix and replaces the list (DAG-safe —
-/// decision A1: a jj merge graph makes cursor pagination lossy), so there are no dupes/gaps.
+/// decision A1: a merge graph makes cursor pagination lossy), so there are no dupes/gaps.
 @MainActor
 final class HistoryModel: ObservableObject {
   enum State: Equatable {
@@ -164,7 +164,7 @@ final class HistoryModel: ObservableObject {
         if Task.isCancelled { return }
       }
       do {
-        // The provider's log read blocks its thread (jj-lib over UniFFI / libgit2). Run it on GCD via
+        // The provider's log read blocks its thread (libgit2). Run it on GCD via
         // `runBlocking`, NOT `Task.detached` — the cooperative pool is fixed-width and the
         // per-workroom status snapshots fanned out on selection saturate it, which starved this read
         // (the pane "loaded forever" until the pool drained; a tab switch just bought it time).

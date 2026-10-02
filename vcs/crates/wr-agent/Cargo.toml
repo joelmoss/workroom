@@ -7,13 +7,8 @@
 # already debugged, and one binary means the frame codec exists once rather than being duplicated
 # in Swift and Rust indefinitely. See docs/designs/remote-workrooms.md, Phase 1.
 #
-# Excluded from `input_hash()` in vcs/scripts/build-apple.sh (which keys the app's xcframework
-# cache and the Xcode `--check` gate) because nothing wr-vcs-uniffi links depends on it. If that
-# ever changes, drop the exclusion — edits here would otherwise be invisible to the hash and CI
-# would link a stale engine and pass.
-#
-# VCS reads are a service over wr-vcs-core (JJ) and wr-vcs-git. Backend libraries remain behind
-# those crates; the agent owns request framing, capability negotiation and snapshot coordination.
+# VCS reads are a service over wr-vcs-git. The backend library stays behind that crate; the agent
+# owns request framing and capability negotiation.
 [package]
 name = "wr-agent"
 version.workspace = true
@@ -29,22 +24,18 @@ thiserror = { workspace = true }
 libc = "0.2"
 serde = { workspace = true }
 serde_json = "1"
-# Filesystem change notification for the File service (FSEvents on macOS, inotify on Linux). Adding it
-# changes Cargo.lock, which `build-apple.sh` hashes, so the first build after this lands rebuilds the
-# VCS xcframework once even though nothing wr-vcs-uniffi links changed.
+# Filesystem change notification for the File service (FSEvents on macOS, inotify on Linux).
 notify = "8"
 # The credential broker client (`broker.rs`): HTTPS to Codaset and ES256 proofs. rustls on ring,
 # never native-tls, so the Linux build stays a static musl binary with no OpenSSL; ring compiles
 # its own C and assembly, which cargo-zigbuild handles for the musl targets. ring also signs the
 # proofs, so no separate ECDSA crate. webpki-roots bundles the CA roots, because a minimal
-# provider image may have none. Adding these changes Cargo.lock, which `build-apple.sh` hashes, so
-# the first build after this lands rebuilds the VCS xcframework once.
+# provider image may have none.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
-# Parses the broker's expiry and `Date` header. Already in the build through jj-lib.
+# Parses the broker's expiry and `Date` header.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 ring = "0.17"
 base64 = "0.22"
-wr-vcs-core = { path = "../wr-vcs-core" }
 wr-vcs-git = { path = "../wr-vcs-git" }
 wr-vcs-model = { path = "../wr-vcs-model" }
 

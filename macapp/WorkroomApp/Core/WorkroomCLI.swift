@@ -142,7 +142,7 @@ protocol WorkroomCLIProtocol {
 
 /// Drives the bundled `workroom` binary over its `--json` contract. All work runs
 /// off the main thread. Mutations are rare and one-shot; the binary itself forks to
-/// git/jj, so the subprocess spawn is negligible.
+/// git, so the subprocess spawn is negligible.
 final class WorkroomCLI: WorkroomCLIProtocol {
   static let shared = WorkroomCLI()
   private init() {}
@@ -173,7 +173,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
 
   /// Registers a project. With `create`, the CLI creates and git-initializes the
   /// directory if it does not already exist (issue #103); otherwise the path must
-  /// already be a Git/JJ repo. Returns the canonical path the CLI registered (used
+  /// already be a Git repo. Returns the canonical path the CLI registered (used
   /// to select the project after a reload). The git init + initial commit can take
   /// a moment, so the timeout is generous.
   func addProject(_ path: String, create: Bool) async throws -> String {
@@ -371,7 +371,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
         guard !state.isFinished, proc.isRunning else { return }
         state.markTimedOut()
         proc.terminate()
-        // NOTE: full process-group kill (also reaping git/jj grandchildren)
+        // NOTE: full process-group kill (also reaping git grandchildren)
         // would require launching via posix_spawn with setpgid; terminate() +
         // GIT_TERMINAL_PROMPT=0 is sufficient for the MVP.
         DispatchQueue.global().asyncAfter(deadline: .now() + 2) {

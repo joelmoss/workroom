@@ -98,8 +98,8 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertEqual(help, "12 insertions, 4 deletions")
   }
 
-  /// A conflicted working copy's counts INCLUDE its materialized conflict markers (jj, git and our own
-  /// changeset header all count them), so a one-line conflict can read as many. The number is left
+  /// A conflicted working copy's counts INCLUDE its materialized conflict markers (git and our own
+  /// changeset header both count them), so a one-line conflict can read as many. The number is left
   /// alone and explained — this string is the whole reason the count is allowed to stay inclusive, so
   /// it has to name the markers, not just say "conflicted".
   func testLineCountsHelpNamesTheConflictMarkers() {
@@ -186,27 +186,26 @@ final class WorkroomStatusTests: XCTestCase {
 
   /// Regression: a workroom's status work item must carry the project's VCS *type* (`p.vcs`), not
   /// the workroom's `vcsName` — which is the branch/workspace name (`workroom/<name>`), not a type.
-  /// Passing the branch name made `resolveLocal` fall through to `.notRepository`, so every (jj or
-  /// git) workroom's Changes panel showed "not a repository" with a "detached" header.
+  /// Passing the branch name made `resolveLocal` fall through to `.notRepository`, so every
+  /// workroom's Changes panel showed "not a repository" with a "detached" header.
   @MainActor
   func testStatusWorkItemsUseProjectVCSTypeForWorkrooms() {
     let store = AppStore()
     store.projects = [
       Project(
-        path: "/p", vcs: "jj",
+        path: "/p", vcs: "git",
         workrooms: [
           Workroom(name: "feat", path: "/p/feat", vcsName: "workroom/feat", warnings: [])
         ])
     ]
     let items = store.statusWorkItems()
     let workroomItem = items.first { $0.sid == .workroom(project: "/p", name: "feat") }
-    XCTAssertEqual(workroomItem?.vcs, "jj")  // the project's type, NOT "workroom/feat"
-    // Must be the PROJECT's path ("/p"), not the workroom's own path ("/p/feat") — this is the
-    // JJSnapshotGate key, so a copy-paste regression here would silently defeat cross-workroom
-    // jj snapshot serialization.
+    XCTAssertEqual(workroomItem?.vcs, "git")  // the project's type, NOT "workroom/feat"
+    // Must be the PROJECT's path ("/p"), not the workroom's own path ("/p/feat") — the shared
+    // repository the workroom's writes are keyed by.
     XCTAssertEqual(workroomItem?.projectRoot, "/p")
     let rootItem = items.first { $0.sid == .root(project: "/p") }
-    XCTAssertEqual(rootItem?.vcs, "jj")
+    XCTAssertEqual(rootItem?.vcs, "git")
   }
 
   /// A remote workroom's path is on its host (#249): the local sweep must not probe it.
@@ -277,48 +276,41 @@ final class WorkroomStatusTests: XCTestCase {
 
   // MARK: - mergeLocalStatus carries the full local probe forward
 
-  /// Regression: `mergeLocalStatus` once copied only a subset of the fresh fields and dropped the
-  /// jj head (refs/description/change-id/commit-id), so a jj repo's Changes header fell back to
-  /// the git branch label ("main"). The merge must carry every local-probe field.
+  /// Regression: `mergeLocalStatus` once copied only a subset of the fresh fields. The merge must
+  /// carry every local-probe field.
   @MainActor
-  func testMergeLocalStatusCarriesJJHeadFields() {
+  func testMergeLocalStatusCarriesTheLocalProbeFields() {
     let store = AppStore()
-    store.projects = [Project(path: "/p", vcs: "jj", workrooms: [])]
+    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
     let fresh = WorkroomStatus(
       dirty: true,
       changedFiles: [ChangedFile(path: "a.rb", change: .added)],
-      branchForCI: nil,
-      jjWorkingCopy: JJCommitChanges(
-        changeID: "pw", commitID: "7d74470b", refs: ["mybook"], description: "feat: x",
-        files: [ChangedFile(path: "a.rb", change: .added)]))
+      insertions: 3, deletions: 1, branchForCI: "feature")
     store.mergeLocalStatus(fresh, into: sid)
     let stored = store.workroomStatuses[sid]
     XCTAssertEqual(stored?.dirty, true)
-    XCTAssertEqual(stored?.jjWorkingCopy?.refs, ["mybook"])
-    XCTAssertEqual(stored?.jjWorkingCopy?.description, "feat: x")
-    XCTAssertEqual(stored?.jjWorkingCopy?.changeID, "pw")
-    XCTAssertEqual(stored?.jjWorkingCopy?.commitID, "7d74470b")
+    XCTAssertEqual(stored?.changedFiles, [ChangedFile(path: "a.rb", change: .added)])
+    XCTAssertEqual(stored?.insertions, 3)
+    XCTAssertEqual(stored?.deletions, 1)
+    XCTAssertEqual(stored?.branchForCI, "feature")
   }
 
   /// The merge preserves the separately-resolved CI fields (a fast local refresh must never wipe
-  /// the slower CI badge), while a jj→git switch clears the now-stale jj head.
+  /// the slower CI badge).
   @MainActor
-  func testMergeLocalStatusPreservesCIAndClearsStaleJJOnGitResult() {
+  func testMergeLocalStatusPreservesCI() {
     let store = AppStore()
-    store.projects = [Project(path: "/p", vcs: "jj", workrooms: [])]
+    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
-    // Seed: a prior jj snapshot with CI already resolved.
-    store.workroomStatuses[sid] = WorkroomStatus(
-      dirty: true, ci: .passing,
-      jjWorkingCopy: JJCommitChanges(changeID: "aaaa", refs: ["old"]))
-    // A fresh GIT probe (no jj head) lands.
+    // Seed: a prior snapshot with CI already resolved.
+    store.workroomStatuses[sid] = WorkroomStatus(dirty: true, ci: .passing)
     let gitFresh = WorkroomStatus(dirty: false, branchForCI: "main")
     store.mergeLocalStatus(gitFresh, into: sid)
     let stored = store.workroomStatuses[sid]
     XCTAssertEqual(stored?.ci, .passing)  // CI preserved across the local refresh
     XCTAssertEqual(stored?.branchForCI, "main")
-    XCTAssertNil(stored?.jjWorkingCopy)  // stale jj working copy cleared
+    XCTAssertEqual(stored?.dirty, false)
   }
 
   // MARK: - Inspector layout (global, persisted to Defaults)

@@ -219,7 +219,7 @@ private struct AwakeCeilingToastView: View {
   }
 }
 
-/// A standing warning that `git`/`jj` on PATH is missing or too old for the VCS remote actions
+/// A standing warning that `git` on PATH is missing or too old for the VCS remote actions
 /// (`VCSToolVersions`). Deliberately NOT routed through `NotificationCenterStore`: every entry there
 /// is identified by `(targetID, tabID)` and a click routes back to a live terminal, which a
 /// machine-wide tool problem has none of.

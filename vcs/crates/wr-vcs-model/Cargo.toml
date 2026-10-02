@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# jj-lib-free by construction — pure domain types shared across the workspace and mapped into the
-# app's own Swift models at the provider boundary. Adding jj-lib or gix here is a layering violation.
+# VCS-library-free by construction — pure domain types shared across the workspace and mapped into
+# the app's own Swift models at the provider boundary. Adding gix here is a layering violation.
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }

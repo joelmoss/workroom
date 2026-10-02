@@ -85,14 +85,14 @@ enum VCSStatusFailure: Equatable, Sendable {
   case missingPath  // workroom directory gone
   case notRepository  // path exists but isn't the expected VCS repo (git exit 128)
   case timeout  // probe exceeded its deadline (slow disk, index.lock contention)
-  case busy  // another process holds the working-copy lock (a `jj` command in a terminal)
-  case staleWorkingCopy  // `@` was rewritten/abandoned elsewhere; needs `jj workspace update-stale`
+  case busy  // the repository refused the read as busy (lock contention)
+  case staleWorkingCopy  // the working tree changed while it was being read; a retry settles it
 }
 
 /// One changed path in the working tree, with its change kind (for the detail panel grouping).
 ///
-/// `oldPath` is the pre-move path, set only for `.renamed` (both backends detect renames: git via
-/// libgit2's status rename options, jj via the backend copy records `changed_files` reads). It stays
+/// `oldPath` is the pre-move path, set only for `.renamed` (renames are detected via libgit2's status
+/// rename options, or git's own rename detection on the agent path). It stays
 /// out of `id` on purpose — a row's identity is where the file is NOW, so a rename doesn't reshuffle
 /// selection when the old path changes.
 struct ChangedFile: Equatable, Hashable, Identifiable, Sendable {
@@ -109,18 +109,6 @@ struct ChangedFile: Equatable, Hashable, Identifiable, Sendable {
     self.change = change
     self.oldPath = oldPath
   }
-}
-
-/// One jj revision's changes + identity, as shown by a Changes-panel disclosure group (the working
-/// copy `@` or its parent `@-`). The metadata is all-optional so a degraded probe (e.g. the summary
-/// succeeded but the `jj log` template failed) still renders the file list under a header missing
-/// only the id chips. The same shape feeds the future diff viewer.
-struct JJCommitChanges: Equatable, Sendable {
-  var changeID: String?  // change-id's shortest unique prefix (no padding)
-  var commitID: String?  // shortest-8 commit-id
-  var refs: [String] = []  // bookmarks + tags
-  var description: String?  // first line; nil ⇒ "(no description set)"
-  var files: [ChangedFile] = []
 }
 
 /// One reviewer on a pull request (issue #52): either someone who has *submitted* a review
@@ -231,9 +219,7 @@ struct WorkroomStatus: Equatable, Sendable {
   var dirty: Bool?
   var conflicted: Bool = false
   var changedFiles: [ChangedFile]?
-  /// Working-tree line counts vs the last commit (git: summed per-file patch stats; jj: summed from
-  /// the same native per-file counts that produced `changedFiles`, so the totals and the rows always
-  /// describe one diff — see `RustJJProvider.workingStatus`).
+  /// Working-tree line counts vs the last commit, summed per-file patch stats.
   /// `nil` ⇒ not resolved; both 0 ⇒ no line delta (e.g. only untracked files, which git omits).
   ///
   /// While `conflicted`, the totals INCLUDE the materialized conflict markers, because those lines
@@ -244,10 +230,6 @@ struct WorkroomStatus: Equatable, Sendable {
   var ci: CIState?
   var failure: VCSStatusFailure?
   var branchForCI: String?
-  /// jj only: the working copy's (`@`) change set — id/commit/refs/description + changed files —
-  /// driving the Changes-panel header, and the panel's jj/git discriminator (`nil` ⇒ git).
-  /// `changedFiles` mirrors `jjWorkingCopy?.files` for jj (both set from the one summary probe).
-  var jjWorkingCopy: JJCommitChanges?
   /// The branch's pull request (Phase 2), resolved by a separate slow `gh` probe like `ci`. `nil` ⇒
   /// none resolved (no PR, no remote, gh missing, or not yet probed).
   var pr: PullRequestInfo?
@@ -366,11 +348,9 @@ enum VCSStatusPresentation {
   /// VoiceOver label must say the same thing — they were two copies of the same string before.
   ///
   /// A conflicted working copy has its conflict markers materialized ON DISK, so those lines really are
-  /// in the file, and every tool that measures the same state counts them: `jj diff --stat`, `git diff`
-  /// on a conflicted worktree, and our own changeset header (pinned by
-  /// `VCSProviderConformanceTests.testMergeCommitFileDiffIsNotEmpty`). So the count stays inclusive and
-  /// SAYS so — suppressing it on the jj working copy alone would make the two backends, and the two
-  /// halves of our own UI, disagree about the same file.
+  /// in the file, and every tool that measures the same state counts them: `git diff` on a conflicted
+  /// worktree, and our own changeset header. So the count stays inclusive and SAYS so — suppressing it
+  /// would make the two halves of our own UI disagree about the same file.
   static func lineCountsHelp(_ s: WorkroomStatus) -> String? {
     let ins = s.insertions ?? 0
     let del = s.deletions ?? 0

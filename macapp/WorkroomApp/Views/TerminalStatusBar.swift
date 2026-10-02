@@ -2,7 +2,7 @@ import SwiftUI
 
 /// A status bar pinned to the bottom of a single pane (issue #49). Part of the pane itself, so every
 /// pane in a split carries its own — it reflects THAT pane's live working state: the cwd (a
-/// terminal), the branch/bookmark, the run command's state (only on the run tab), and the inline
+/// terminal), the branch, the run command's state (only on the run tab), and the inline
 /// agent's diagnosis. Themed to match the terminal (same background + foreground palette) so it reads
 /// as the pane's own chrome.
 ///
@@ -90,7 +90,7 @@ struct TerminalStatusBar: View {
 
   // MARK: Branch / cwd
 
-  /// The workroom's current branch or bookmark. Middle-truncates: a long branch name's ends are the
+  /// The workroom's current branch. Middle-truncates: a long branch name's ends are the
   /// informative part. The file path that used to lead this row moved to the pane's own title bar in
   /// issue #150 (`PaneTitlePresentation` kept its `.head` truncation for the same reason it had one
   /// here — a repo-relative path's discriminating part is its tail).
@@ -102,7 +102,7 @@ struct TerminalStatusBar: View {
         Image(systemName: "arrow.triangle.branch")
       }
       .labelStyle(.titleAndIcon)
-      .help("Current branch / bookmark")
+      .help("Current branch")
       .accessibilityLabel("Branch \(branch)")
     }
   }

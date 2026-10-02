@@ -9,7 +9,7 @@ import Foundation
 /// upper bound on coalescing: under a high-churn burst (e.g. `npm install` writing tens of thousands
 /// of files), the kernel flushes many small batches as its buffer fills — measured at ~70 callbacks
 /// per second, NOT one callback per `latency` window. A naive consumer that re-probes VCS per raw
-/// callback then forks ~70 `git`/`jj` processes per second and floods the main actor (the create-time
+/// callback then forks ~70 `git` processes per second and floods the main actor (the create-time
 /// CPU spike this class caused before the fix). So this watcher applies its OWN **leading + trailing**
 /// coalescing on top of the stream: it fires `onChange` immediately on the first callback after an
 /// idle period (leading — the panel reacts promptly), accumulates the *union* of changed paths from
@@ -18,7 +18,7 @@ import Foundation
 /// calls total (leading + trailing), not ~70/sec.
 ///
 /// `onChange` receives the coalesced changed paths (deduped), so the caller can still ignore
-/// VCS-internal churn (e.g. a jj snapshot writing under `.jj/`, which would otherwise self-trigger).
+/// VCS-internal churn (e.g. git writing under `.git/`, which would otherwise self-trigger).
 /// One watch at a time — `start(path:)` replaces any prior watch and resets coalescing state;
 /// `stop()` tears down the stream and cancels any pending trailing emit.
 final class WorkroomFileWatcher {

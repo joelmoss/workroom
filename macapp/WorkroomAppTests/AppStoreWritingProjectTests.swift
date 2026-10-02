@@ -6,7 +6,7 @@ import XCTest
 /// (VCS-foundation eng-review). `committingProjectRoots`/`isCommittingProject` exist to suppress READ
 /// lanes during a commit; this is the separate, umbrella mechanism that all four write kinds
 /// (commit/fetch/push/pull) check BEFORE starting, so a second write on the same project root is
-/// refused outright instead of queuing into `JJSnapshotGate` and possibly racing a live one past the
+/// refused outright instead of queuing into `RepositoryWriteGate` and possibly racing a live one past the
 /// gate's own wedge-detection ceiling.
 @MainActor
 final class AppStoreWritingProjectTests: XCTestCase {

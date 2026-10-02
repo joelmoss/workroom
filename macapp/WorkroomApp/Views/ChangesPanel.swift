@@ -88,18 +88,10 @@ struct RightInspector: View {
   }
 
   /// Whether the inspector's target has anything a commit could record.
-  ///
-  /// **jj is always available.** Its working copy is itself a commit, so there is no state in which
-  /// both its verbs are meaningless: Describe edits `@`'s message, which is worth doing with no file
-  /// changes at all. The condition this replaces tried to say that and inverted it — it required an
-  /// EMPTY description, so a change the user had already described was the one state that could not
-  /// be opened, which is precisely "I want to fix a typo in my message". `jjPushRevision` already
-  /// treats a described empty change as real.
   private var canCommitSelectedTarget: Bool {
     guard let sid = store.inspectorTargetID, sid.isStatusable,
       let status = store.workroomStatuses[sid], !store.isCommitting(sid)
     else { return false }
-    if status.jjWorkingCopy != nil { return true }
     return !(status.isClean || status.isUnknown)
   }
 
@@ -311,8 +303,7 @@ struct RightInspector: View {
     guard let s = selectedStatus else { return AnyView(EmptyView()) }
     let ins = s.insertions ?? 0
     let del = s.deletions ?? 0
-    // `changedFiles` mirrors `jjWorkingCopy?.files` for jj (both come from the one summary probe), so
-    // this is the same number for both backends and matches the rows rendered below.
+    // Matches the rows rendered below.
     let files = s.changedFiles?.count ?? 0
     let countsHelp = VCSStatusPresentation.lineCountsHelp(s)
     // `!s.conflicted` because `dot` checks conflict FIRST and would hand back the triangle this row
@@ -596,8 +587,8 @@ private struct PRNumberBadge: View {
 /// One changed-file row: a colored change-kind letter (M/A/D/…), the filename, then its parent
 /// directory dimmed (issue #24 feedback). Clicking opens the file's diff in the workroom's tab strip
 /// (issue #66): a single click opens it in preview mode (eagerly — the diff appears at once), a quick
-/// double-click persists it. `source` is the row's group (git worktree / jj `@` / jj `@-`), so the
-/// diff resolves against the right revision. The directory yields first when space is tight
+/// double-click persists it. `source` is the row's group, so the diff resolves
+/// against the right revision. The directory yields first when space is tight
 /// (truncates from the head). The change kind is spelled out in the accessibility label.
 ///
 /// Deliberately `internal`, not `private` (mirrors `HistoryRow`): `ChangedFileRowInvalidationTests`
@@ -769,7 +760,8 @@ struct ChangedFileRow: View, Equatable {
   /// file (opened by the in-app "Open File", issue #117) — so the row that's showing in the pane reads
   /// as selected. The matching rule itself lives in `FocusedTabSelection.selectsChangedFile` now, next
   /// to the History pane's equivalent: the file match ignores `source` since a file tab has no
-  /// revision; the diff match keeps it so the same path under `@` vs `@-` selects the right row.
+  /// revision; the diff match keeps it so the same path from the worktree vs a commit selects the right
+  /// row.
   fileprivate var isSelected: Bool {
     selection?.selectsChangedFile(path: file.path, source: source) ?? false
   }
@@ -799,20 +791,6 @@ struct ChangedFileRow: View, Equatable {
     let place = dir.isEmpty ? "" : ", in \(dir)"
     let from = file.oldPath.map { ", from \($0)" } ?? ""
     return "\(name), \(changeWord)\(place)\(from), open diff"
-  }
-}
-
-/// Applies `accessibilityElement(children: .combine)` + an identifier only when `identifier` is
-/// non-nil, so the jj Changes header becomes one queryable a11y element (the panel's render sentinel,
-/// `changes.workingCopy`) while the git header — which no UI test waits on — stays untouched.
-private struct CombinedA11y: ViewModifier {
-  let identifier: String?
-  func body(content: Content) -> some View {
-    if let identifier {
-      content.accessibilityElement(children: .combine).accessibilityIdentifier(identifier)
-    } else {
-      content
-    }
   }
 }
 
@@ -929,21 +907,15 @@ struct ChangesPanel: View {
     } else if status == nil || status?.lastChecked == nil {
       inspectorMessage("Checking\u{2026}")
     } else if let status {
-      // The branch/bookmark name is NOT repeated here — the VCS toolbar above this section shows it,
-      // through the same `AppStore.branchName(for:)` accessor this panel used to read, so the pill was
-      // saying the same thing twice about 40pt apart. What's left is backend-shaped: git's working tree
-      // carries no metadata of its own, so it renders as a bare change list, while jj's `@` IS a commit
-      // and keeps its change-id/commit-id/refs + description header. `jjWorkingCopy != nil` is the
-      // discriminator — a failed probe leaves it nil, so failures fall to the git path.
-      if let workingCopy = status.jjWorkingCopy {
-        jjContent(workingCopy: workingCopy, sid: sid)
-      } else {
-        gitContent(status: status)
-      }
+      // The branch name is NOT repeated here — the VCS toolbar above this section shows it, through
+      // the same `AppStore.branchName(for:)` accessor this panel used to read, so the pill was saying
+      // the same thing twice about 40pt apart. git's working tree carries no metadata of its own, so
+      // it renders as a bare change list.
+      gitContent(status: status)
     }
   }
 
-  /// Git repos: just the working-tree change list (or clean/failure). No header — git's working tree
+  /// Just the working-tree change list (or clean/failure). No header — git's working tree
   /// isn't a commit, so with the branch name moved to the toolbar there is nothing left to head it with,
   /// and the divider went with it rather than ruling off an empty row. CI is GitHub-derived, so it lives
   /// in the Pull Request section — not here.
@@ -959,83 +931,6 @@ struct ChangesPanel: View {
       }
     }
     .padding(12)
-  }
-
-  /// jj repos: the working copy (`@`) — because `@` is itself a commit, its change-id/commit-id/refs
-  /// and description — over the flat change list. The working copy's parent (`@-`) is no longer shown
-  /// here; the History panel now surfaces it.
-  @ViewBuilder
-  private func jjContent(workingCopy: JJCommitChanges, sid: SidebarID) -> some View {
-    VStack(alignment: .leading, spacing: 10) {
-      changesHeader(meta: workingCopy, identifier: "changes.workingCopy", sid: sid)
-      Divider()
-      if workingCopy.files.isEmpty {
-        cleanState
-      } else {
-        fileList(workingCopy.files, source: .jjWorkingCopy)
-      }
-    }
-    .padding(12)
-  }
-
-  /// The jj working copy's header: `@`'s change-id (purple) / commit-id (blue) / its bookmarks, and the
-  /// description line. **jj only** — git's working tree isn't a commit, so it carries no refs and no
-  /// message and now renders headerless. `identifier` combines this into one a11y element; it is also
-  /// the panel's render sentinel, which a dozen UI tests wait on before asserting anything else.
-  /// The refs worth chipping: every bookmark on `@` EXCEPT the one the toolbar's bookmark segment is
-  /// already showing, which is the only one most workrooms have.
-  ///
-  /// Filtered against `branchName(for:)` — the same accessor the toolbar reads — rather than against
-  /// `meta.refs.first`, so the two can't disagree about which chip is the redundant one. A commit can
-  /// carry several bookmarks and the toolbar names exactly one, so the rest still chip here; this
-  /// removes a duplicate, not the information.
-  private func extraRefs(_ meta: JJCommitChanges, sid: SidebarID) -> [String] {
-    guard let shown = store.branchName(for: sid) else { return meta.refs }
-    return meta.refs.filter { $0 != shown }
-  }
-
-  @ViewBuilder
-  private func changesHeader(meta: JJCommitChanges, identifier: String?, sid: SidebarID)
-    -> some View
-  {
-    VStack(alignment: .leading, spacing: 2) {
-      HStack(alignment: .firstTextBaseline, spacing: 6) {
-        if let changeID = meta.changeID {
-          Text(changeID).font(.system(.callout, design: .monospaced))
-            .foregroundStyle(.purple).help("Change ID")
-        }
-        if let commitID = meta.commitID {
-          Text(commitID).font(.system(.callout, design: .monospaced))
-            .foregroundStyle(.blue).help("Commit ID")
-        }
-        // The bookmark the toolbar shows does NOT chip here — see `extraRefs`. jj reports a bookmarked
-        // `@`'s name twice (as the status' `branchForCI` and again in `refs`), so this row has always
-        // needed a filter to avoid one bookmark reading as two capsules; what changed is the reference
-        // point. It used to be the branch-name pill that stood to the left of these chips. That pill is
-        // gone, and for one commit in between so was the filter — which put the bookmark back on screen
-        // twice, ~40pt below the toolbar segment that names it. Now it's the toolbar's own answer.
-        //
-        // The same gray capsules the History list rows and changeset header use, one step down from
-        // the ids beside them (`.caption` under `.callout`, as the list's `.caption2` sits under its
-        // `.caption`) so a pill doesn't outweigh this header's larger type.
-        ForEach(extraRefs(meta, sid: sid), id: \.self) { ref in
-          Text(ref).font(.caption)
-            .lineLimit(1).truncationMode(.tail)
-            .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(.quaternary, in: Capsule())
-            .help("Bookmark / branch")
-        }
-        Spacer(minLength: 0)
-      }
-      if let desc = meta.description {
-        Text(desc).font(.callout).foregroundStyle(.primary)
-          .lineLimit(1).truncationMode(.tail)
-      } else {
-        Text("(no description set)").font(.footnote).foregroundStyle(.tertiary).lineLimit(1)
-      }
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .modifier(CombinedA11y(identifier: identifier))
   }
 
   /// The clean (no working-tree changes) state, styled like the Notifications empty state (issue
@@ -1087,7 +982,7 @@ struct ChangesPanel: View {
     case .notRepository: return "Not a repository."
     case .timeout: return "Status unavailable (timed out)."
     case .busy: return "Repository is busy — another VCS command is running."
-    case .staleWorkingCopy: return "Working copy is out of date. Run `jj workspace update-stale`."
+    case .staleWorkingCopy: return "The working tree changed while it was read. Try again."
     }
   }
 }

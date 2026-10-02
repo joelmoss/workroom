@@ -2,7 +2,7 @@ import XCTest
 
 @testable import Workroom
 
-/// `CLIVCSWriter` against REAL git and jj repos through the REAL `StatusCommandRunner`.
+/// `CLIVCSWriter` against REAL git repos through the REAL `StatusCommandRunner`.
 ///
 /// **No network.** Every "remote" is a bare repo on disk reached over `file://`, so fetch, push and
 /// pull are genuine end-to-end operations with no credentials, no rate limits and no flakiness. Every
@@ -18,50 +18,14 @@ import XCTest
 ///   forever.
 final class VCSRemoteIntegrationTests: XCTestCase {
   private var dirs: [String] = []
-  /// The test host's seeded `JJ_CONFIG`, put back in `tearDown` while a fixture's is exported.
-  private var seededJJConfig: String?
 
   override func tearDown() {
     for d in dirs { try? FileManager.default.removeItem(atPath: d) }
     dirs = []
-    if let seeded = seededJJConfig {
-      setenv("JJ_CONFIG", seeded, 1)
-      seededJJConfig = nil
-    }
     super.tearDown()
   }
 
   // MARK: helpers
-
-  /// Point **this process** at a fixture's jj config, so the jj the app spawns reads it too.
-  ///
-  /// `sh` prefixes `JJ_CONFIG=` onto its own command line, which covers fixture setup and nothing else:
-  /// `StatusCommandRunner` seeds a child's environment from `ProcessInfo.processInfo.environment`, and
-  /// jj-lib's config chain (`jj_config.rs`) reads `$JJ_CONFIG` at call time — so without this every
-  /// app-driven jj read and write in this file runs against the DEVELOPER's `~/.config/jj/config.toml`.
-  ///
-  /// That is what made `testAnonymousJJPushCreatesATrackedPushBookmark` pass locally and fail on CI. A
-  /// runner has no jj identity, so the snapshot jj takes as part of `jj git push` rewrote `@` with an
-  /// EMPTY committer and jj then refused its own bookmark: "Won't push commit … since it has no author
-  /// and/or committer set". Pinning the config fixes the identity, and also makes a developer's own
-  /// `templates.git_push_bookmark` (or any other jj customisation) unable to reach these assertions.
-  ///
-  /// Process-wide mutation is safe for the tests: XCTest runs a test process's tests serially —
-  /// parallel testing distributes test *classes* across processes — and `tearDown` restores it.
-  ///
-  /// It is only safe for libghostty because it OVERWRITES the value `main.swift` seeds before
-  /// `ghostty_init`, and restores rather than `unsetenv`s: the engine keeps a fixed-length copy of
-  /// `environ`, and adding or removing a variable after init crashed a later surface in the same
-  /// test host.
-  private func exportJJConfig(_ path: String) {
-    guard let seeded = getenv("JJ_CONFIG").map({ String(cString: $0) }) else {
-      // Fail, not skip or add it: adding a variable after `ghostty_init` is the crash.
-      XCTFail("JJ_CONFIG is not seeded by the test host (see main.swift)")
-      return
-    }
-    if seededJJConfig == nil { seededJJConfig = seeded }
-    setenv("JJ_CONFIG", path, 1)
-  }
 
   private func tool(_ name: String) -> Bool {
     sh("command -v \(name)", in: NSTemporaryDirectory()).exit == 0
@@ -110,11 +74,8 @@ final class VCSRemoteIntegrationTests: XCTestCase {
 
   private func writer(_ vcs: String) -> CLIVCSWriter {
     CLIVCSWriter(
-      vcs: vcs, runner: StatusCommandRunner(),
-      makeProvider: { _ in
-        vcs == "jj" ? RustJJProvider() as LocalVCSProviding : GitProvider() as LocalVCSProviding
-      },
-      gate: JJSnapshotGate(maxChainWait: 5))
+      vcs: vcs, runner: StatusCommandRunner(), makeProvider: { _ in GitProvider() },
+      gate: RepositoryWriteGate(maxChainWait: 5))
   }
 
   /// A git project with a `file://` origin and `commitsAhead` unpushed commits.
@@ -149,7 +110,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
   /// **Fails, never skips.** This helper is the funnel every assertion in the file goes through, and it
   /// used to `throw XCTSkip` when the resolution wasn't `.state`. A regression that made every repo
   /// resolve `.failed`/`.keepPrior`/`.absent` — a broken arg builder, an over-eager `classify` rule, an
-  /// unparseable jj template — would then have reported ~20 tests as SKIPPED and left the gate green.
+  /// unparseable template — would then have reported ~20 tests as SKIPPED and left the gate green.
   /// `requireTool` already `XCTFail`s, so skipping here also disagreed with the file's own policy.
   private func state(_ w: CLIVCSWriter, path: String, projectRoot: String) async throws
     -> VCSRemoteState
@@ -307,7 +268,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
 
     let result = await w.push(
       path: f.project, projectRoot: f.project, current: before.current, remote: "origin",
-      setUpstream: false, anonymousRevision: "@")
+      setUpstream: false)
     guard case .ok = result else { return XCTFail("push failed: \(result)") }
 
     let after = try await state(w, path: f.project, projectRoot: f.project)
@@ -327,7 +288,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
 
     let result = await w.push(
       path: workroom, projectRoot: f.project, current: before.current, remote: "origin",
-      setUpstream: true, anonymousRevision: "@")
+      setUpstream: true)
     guard case .ok = result else { return XCTFail("publish failed: \(result)") }
 
     sh("git fetch -q origin", in: f.project)
@@ -433,7 +394,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     let s = try await state(w, path: f.project, projectRoot: f.project)
     let result = await w.push(
       path: f.project, projectRoot: f.project, current: s.current, remote: "origin",
-      setUpstream: false, anonymousRevision: "@")
+      setUpstream: false)
     guard case .failed(let failure) = result else {
       return XCTFail("a non-fast-forward push must be rejected, got \(result)")
     }
@@ -446,286 +407,5 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     XCTAssertTrue(
       message.split(whereSeparator: \.isNewline).contains { $0.hasPrefix("!\t") },
       "the porcelain flag column must be present in the output we classified: \(message)")
-  }
-
-  // MARK: - jj
-
-  private func jjFixture() -> (root: String, project: String, config: String)? {
-    let root = tempDir()
-    let config = root + "/jjconfig.toml"
-    try? "[user]\nname=\"T\"\nemail=\"t@e.com\"\n".write(
-      toFile: config, atomically: true, encoding: .utf8)
-    exportJJConfig(config)
-    sh("git init -q --bare origin.git", in: root)
-    let env = "JJ_CONFIG=\(config)"
-    guard sh("\(env) jj git init --colocate app", in: root).exit == 0 else { return nil }
-    let project = root + "/app"
-    sh("echo hi > a.txt && \(env) jj describe -m first", in: project)
-    sh("\(env) jj bookmark create main -r @", in: project)
-    sh("\(env) jj git remote add origin ../origin.git", in: project)
-    // No `--allow-new`: jj 0.43 removed it and now tracks a new bookmark automatically. Passing it
-    // makes the push fail with "unexpected argument", which left the fixture with no remote at all.
-    sh("\(env) jj git push --bookmark main", in: project)
-    return (root, project, config)
-  }
-
-  /// **Cross-backend parity.** jj states its tracking counts from the REMOTE ref's point of view, so
-  /// they are swapped on ingest. This asserts a jj repo and a git repo in the SAME state report the
-  /// same app-level `VCSTracking` — the only test that would catch the swap being dropped or doubled.
-  func testJJAndGitAgreeOnAheadBehindForTheSameState() async throws {
-    try requireTool("git")
-    try requireTool("jj")
-    guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
-    let env = "JJ_CONFIG=\(j.config)"
-    // `jj new main`, not a bare `describe` — whether the fixture's own push already left `@` on a
-    // fresh, unbookmarked commit depends on the jj version (0.44+ auto-advances off an immutable
-    // tip; 0.43 does not, leaving `@` ON the just-pushed, now-immutable `first`, where a `describe`
-    // silently no-ops). `jj new main` is correct either way: on a version that already advanced, the
-    // stale auto-created empty commit it abandons in favor of a fresh child of `main`; on one that
-    // didn't, it creates that same fresh child directly. Verified identical resulting shape (one
-    // unpushed, described commit on `main`) against both 0.43.0 and 0.44.0 by hand.
-    sh("\(env) jj new main -m second && echo b > b.txt", in: j.project)
-    sh("\(env) jj bookmark set main -r @", in: j.project)
-
-    let jjState = try await state(writer("jj"), path: j.project, projectRoot: j.project)
-    let g = gitFixture(commitsAhead: 1)
-    let gitFixtureState = try await state(writer("git"), path: g.project, projectRoot: g.project)
-
-    XCTAssertEqual(
-      jjState.tracking?.ahead, 1,
-      "jj must report AHEAD (local has work the remote lacks), not behind — the counts are inverted "
-        + "at the source and swapped on ingest")
-    XCTAssertEqual(jjState.tracking?.behind, 0)
-    XCTAssertEqual(
-      jjState.tracking?.ahead, gitFixtureState.tracking?.ahead,
-      "both backends must describe the same situation identically")
-  }
-
-  /// **The bug this suite existed to catch and didn't.** An unbookmarked `@` counted behind as
-  /// `@..remote_bookmarks(remote=…)`, which is every commit on every remote branch that isn't ours — so a
-  /// repo with unmerged feature branches reported their work as "to pull" while sitting exactly on the
-  /// tip of the main line. On a real project that read "97 to pull" from a clean checkout.
-  ///
-  /// The fixture is the minimum that shows it: `side@origin` holds one commit that `main` doesn't, and
-  /// `@` is a fresh child of `main`. Behind must be 0. The old revset counted 1.
-  func testBehindIgnoresOtherRemoteBookmarks() async throws {
-    try requireTool("git")
-    try requireTool("jj")
-    guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
-    let env = "JJ_CONFIG=\(j.config)"
-    // A side branch with a commit of its own, pushed — unmerged into main, and nothing to do with us.
-    sh("\(env) jj new main -m side-work && echo s > s.txt", in: j.project)
-    sh("\(env) jj bookmark create side -r @", in: j.project)
-    sh("\(env) jj git push --bookmark side", in: j.project)
-    // Back onto main, unbookmarked: the normal workroom shape, and NOT behind by anything.
-    sh("\(env) jj new main -m mine", in: j.project)
-
-    let s = try await state(writer("jj"), path: j.project, projectRoot: j.project)
-    XCTAssertEqual(
-      s.current.kind, .ancestor, "`@` must be unbookmarked for this to be the right path")
-    XCTAssertEqual(
-      s.tracking?.behind, 0,
-      "another bookmark's unmerged commits are not ours to pull — behind must be measured against "
-        + "trunk() alone")
-  }
-
-  /// A clean workroom must not claim work to push. `jj new` leaves `@` empty and undescribed, which jj
-  /// refuses to push at all, yet it was counted — so every untouched workroom showed "1 ↑".
-  func testAnEmptyWorkingCopyIsNotCountedAsAhead() async throws {
-    try requireTool("git")
-    try requireTool("jj")
-    guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
-    sh("JJ_CONFIG=\(j.config) jj new main", in: j.project)  // no -m, no edits
-
-    let s = try await state(writer("jj"), path: j.project, projectRoot: j.project)
-    XCTAssertEqual(s.tracking?.ahead, 0, "an empty, undescribed `@` is not pushable and not ahead")
-  }
-
-  /// **A colocated jj root's `abortRebase` must run the REAL git abort, not fake success.** Before
-  /// the fix, the jj branch returned `.ok(summary: "Nothing to abort")` unconditionally for ANY jj
-  /// repo, without ever checking whether a real `git rebase` — run in this workroom's terminal, as
-  /// `classify`'s own `rebaseInProgress` check anticipates — had actually left `rebase-merge`
-  /// behind. Set up that exact state with plain git inside the colocated root, then abort through
-  /// the writer and assert the real `.git/rebase-merge` is gone afterward, not just papered over.
-  func testAbortRebaseOnAColocatedRootRunsTheRealGitAbort() async throws {
-    try requireTool("git")
-    try requireTool("jj")
-    guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
-    // A conflicting rebase, created with plain git — exactly what a `git rebase` run by hand in this
-    // workroom's terminal would leave behind. jj's bookmark auto-export gives the colocated repo a
-    // real `refs/heads/main` to branch from. `-f` on every checkout: right after `jj describe`, git's
-    // own index isn't yet in sync with jj's working-copy commit, so a plain checkout refuses with
-    // "local changes would be overwritten" — an artifact of this fixture's ordering, not something
-    // `abortRebase` itself needs to care about.
-    sh("git checkout -q -f -b other main", in: j.project)
-    sh("echo other >> a.txt && git commit -qam other", in: j.project)
-    sh("git checkout -q -f main", in: j.project)
-    sh("echo mainedit >> a.txt && git commit -qam mainedit", in: j.project)
-    sh("git checkout -q -f other", in: j.project)
-    sh("git rebase main", in: j.project)
-    let rebaseMerge = j.project + "/.git/rebase-merge"
-    XCTAssertTrue(
-      FileManager.default.fileExists(atPath: rebaseMerge),
-      "setup must actually leave a rebase-merge behind, or this test proves nothing")
-
-    let result = await writer("jj").abortRebase(path: j.project, projectRoot: j.project)
-
-    guard case .ok(let summary) = result else {
-      return XCTFail("expected .ok, got \(result)")
-    }
-    XCTAssertEqual(
-      summary, "Rebase aborted",
-      "must run the real git abort — \"Nothing to abort\" is the old, unconditional-fake-success bug"
-    )
-    XCTAssertFalse(
-      FileManager.default.fileExists(atPath: rebaseMerge),
-      "the real `git rebase --abort` must have cleared it")
-  }
-
-  /// **Pull must actually rebase an unbookmarked `@`.** It used to fetch and return `.ok` — jj moves the
-  /// remote bookmarks on fetch but does NOT move `@`, so the workroom stayed exactly as far behind as it
-  /// started while the toolbar went on offering Pull. git's Pull has always been pull-and-rebase.
-  ///
-  /// Asserts behind BEFORE as well as after: without the before-assertion this would pass on a fixture
-  /// that was never behind in the first place.
-  func testPullRebasesAnUnbookmarkedWorkingCopyOntoTrunk() async throws {
-    try requireTool("git")
-    try requireTool("jj")
-    guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
-    let env = "JJ_CONFIG=\(j.config)"
-    // Our own unbookmarked work, off the current main.
-    sh("\(env) jj new main -m mine && echo w > w.txt", in: j.project)
-    // The remote main moves on, from a plain git clone of the same bare origin.
-    //
-    // `-b main` is required, unlike the git fixtures' bare `git clone`: jj pushed `main`, but the bare
-    // repo's HEAD is whatever `git init --bare` chose (`master` here), so a plain clone warns "remote
-    // HEAD refers to nonexistent ref", checks nothing out, and commits onto an unborn branch. The push
-    // then fails as a non-fast-forward and the remote never moves — which made this test's own
-    // precondition fail rather than the code under test.
-    sh("git clone -q -b main origin.git other", in: j.root)
-    sh(
-      "git commit -q --allow-empty -m remote-side && git push -q origin HEAD:main",
-      in: j.root + "/other")
-    // Fetch first, exactly as the git tests do: `remoteState` reads local refs and never fetches, so
-    // without this `main@origin` is still the old tip and the repo is legitimately not behind yet.
-    sh("\(env) jj git fetch --remote origin", in: j.project)
-
-    let w = writer("jj")
-    let before = try await state(w, path: j.project, projectRoot: j.project)
-    // `.none`, not `.ancestor`: the fetch fast-forwarded the local `main` past `@`, so `@`'s ancestry
-    // holds no bookmark at all. Asserted rather than assumed, because this kind used to route to
-    // `tracking = nil` — the counts and Pull disappeared at exactly this moment.
-    XCTAssertEqual(before.current.kind, VCSRefKind.none)
-    XCTAssertEqual(
-      before.tracking?.behind, 1,
-      "an unbookmarked `@` whose base moved must still report behind — got "
-        + "\(String(describing: before.tracking))")
-
-    let result = await w.pullRebase(
-      path: j.project, projectRoot: j.project, current: before.current, remote: "origin",
-      tracking: before.tracking)
-    guard case .ok = result else { return XCTFail("jj pull failed: \(result)") }
-
-    let after = try await state(w, path: j.project, projectRoot: j.project)
-    XCTAssertEqual(
-      after.tracking?.behind, 0, "pull must land `@` on top of trunk, not merely fetch")
-    XCTAssertEqual(after.tracking?.ahead, 1, "and must keep our own commit")
-  }
-
-  /// jj's fetch passes `--no-write-fetch-head`, so `FETCH_HEAD` is never written. This encodes the
-  /// finding so nobody "simplifies" the op-log scan away by reading `FETCH_HEAD` for jj too.
-  func testJJFetchDoesNotWriteFetchHead() async throws {
-    try requireTool("git")
-    try requireTool("jj")
-    guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
-    let fetchHead = j.project + "/.git/FETCH_HEAD"
-    try? FileManager.default.removeItem(atPath: fetchHead)
-
-    let result = await writer("jj").fetch(
-      path: j.project, projectRoot: j.project, remote: "origin")
-    guard case .ok = result else { return XCTFail("jj fetch failed: \(result)") }
-
-    XCTAssertFalse(
-      FileManager.default.fileExists(atPath: fetchHead),
-      "jj fetches with --no-write-fetch-head; reading FETCH_HEAD for jj would report a stale or "
-        + "absent time forever")
-  }
-
-  /// **The reported bug.** `jj git remote add origin …` configures a remote and creates NO remote
-  /// bookmark, so a remotes list derived from `bookmark list --all-remotes` was empty and the toolbar
-  /// said "No remote configured" while `jj git remote list` showed origin — on a repo that could push.
-  func testJJRemoteAddedButNeverFetchedIsStillARemote() async throws {
-    try requireTool("git")
-    try requireTool("jj")
-    let root = tempDir()
-    let config = root + "/jjconfig.toml"
-    try "[user]\nname=\"T\"\nemail=\"t@e.com\"\n".write(
-      toFile: config, atomically: true, encoding: .utf8)
-    exportJJConfig(config)
-    let env = "JJ_CONFIG=\(config)"
-    sh("git init -q --bare origin.git", in: root)
-    guard sh("\(env) jj git init --colocate app", in: root).exit == 0 else {
-      throw XCTSkip("jj repo could not be created")
-    }
-    let project = root + "/app"
-    sh("echo hi > a.txt && \(env) jj describe -m first", in: project)
-    sh("\(env) jj bookmark create main -r @", in: project)
-    // Configured, never pushed and never fetched — so no `main@origin` row exists anywhere.
-    sh("\(env) jj git remote add origin ../origin.git", in: project)
-    XCTAssertFalse(
-      sh("\(env) jj bookmark list --all-remotes --ignore-working-copy", in: project).out
-        .contains("@origin"),
-      "precondition: no remote bookmark exists, which is what made this invisible")
-
-    let s = try await state(writer("jj"), path: project, projectRoot: project)
-    XCTAssertEqual(
-      s.remotes, ["origin"], "the configured remote must be seen without any ref for it")
-    XCTAssertEqual(s.primaryRemote, "origin")
-    XCTAssertEqual(s.current.kind, .branch, "precondition: `@` carries the `main` bookmark")
-    XCTAssertEqual(
-      s.tracking?.gone, true,
-      "a bookmark with no `@origin` row has never been pushed — that's Publish, not a Fetch that "
-        + "could never create the counterpart")
-  }
-
-  /// The `git` pseudo-remote a colocated repo exposes is not a remote, and must never appear.
-  func testJJColocatedGitPseudoRemoteIsNotListed() async throws {
-    try requireTool("git")
-    try requireTool("jj")
-    guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
-    let s = try await state(writer("jj"), path: j.project, projectRoot: j.project)
-    XCTAssertFalse(s.remotes.contains("git"), "`git` is jj's local pseudo-remote, not a real one")
-    XCTAssertEqual(s.primaryRemote, "origin")
-  }
-
-  /// A jj workspace has no bookmark on `@`, so push goes through jj's `--change` path, which mints and
-  /// tracks a `push-<change-id>` bookmark.
-  func testAnonymousJJPushCreatesATrackedPushBookmark() async throws {
-    try requireTool("git")
-    try requireTool("jj")
-    guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
-    let env = "JJ_CONFIG=\(j.config)"
-    // `jj new main`, not a bare `describe` — see `testJJAndGitAgreeOnAheadBehindForTheSameState`'s
-    // comment: whether the fixture's own push already left `@` on a fresh, unbookmarked commit
-    // depends on the jj version, and `jj new main` produces that same fresh, unbookmarked commit
-    // either way. A bare `describe` on 0.43 (no auto-advance) rewrites the already-pushed, immutable
-    // `first` in place instead — silently a no-op, leaving `@` still bookmarked `main`, which is
-    // exactly why the push below landed on `main` instead of minting a `push-` bookmark.
-    sh("\(env) jj new main -m 'anonymous work' && echo c > c.txt", in: j.project)
-
-    let w = writer("jj")
-    let s = try await state(w, path: j.project, projectRoot: j.project)
-    let result = await w.push(
-      path: j.project, projectRoot: j.project, current: s.current, remote: "origin",
-      setUpstream: false,
-      anonymousRevision: CLIVCSWriter.jjPushRevision(hasChanges: true, hasDescription: true))
-    guard case .ok = result else { return XCTFail("anonymous push failed: \(result)") }
-
-    let remoteRefs = sh(
-      "git for-each-ref --format='%(refname:short)' refs/heads", in: j.root + "/origin.git"
-    ).out
-    XCTAssertTrue(
-      remoteRefs.contains("push-"),
-      "jj should have minted a push-<change-id> bookmark on the remote, got: \(remoteRefs)")
   }
 }

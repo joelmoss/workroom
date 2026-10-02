@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// The two ways "New Project" can resolve a path (issue #103):
-/// - `existing`: the path must already be a Git/JJ repo (the historical behaviour).
+/// - `existing`: the path must already be a Git repo (the historical behaviour).
 /// - `createNew`: a missing path is created and git-initialized by the CLI.
 enum AddProjectMode: CaseIterable, Identifiable {
   case existing
@@ -60,7 +60,7 @@ enum AddProjectSheetModel {
     }
     switch mode {
     case .existing:
-      return "Choose or type the full path to an existing Git or Jujutsu repository."
+      return "Choose or type the full path to an existing Git repository."
     case .createNew:
       return
         "Type the full path for the new project. If the folder doesn't exist it's created and "

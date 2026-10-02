@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Set/edit a workroom's display label (issue #41). Opened from the sidebar row's or the tab chip's
 /// "Set Label…"/"Edit Label…" context-menu item via `AppStore.pendingWorkroomLabel`. A label is a
-/// display-only alias — the real workroom name and its Git/JJ workspace are unchanged, so this sheet
+/// display-only alias — the real workroom name and its git worktree are unchanged, so this sheet
 /// is intentionally light (a single field), unlike the type-to-confirm `DeleteProjectSheet`.
 ///
 /// Submit is disabled until the trimmed input is a real change to a non-empty, non-colliding label

@@ -132,23 +132,6 @@ enum UITestFixture {
     flag("WorkroomUITestNoProjects")
   }
 
-  /// When set (`-WorkroomUITestJJProject 1`), the fixture's project reports itself as **jj** instead of
-  /// git.
-  ///
-  /// The fixture has always fed jj-SHAPED status — `jjWorkingCopy`, with `@`'s change-id, commit-id,
-  /// bookmarks and description — while declaring the project `vcs: "git"`, because git is what makes the
-  /// sidebar's root row render plainly and no real VCS call is ever made either way. That was invisible
-  /// until the VCS toolbar started wording itself per backend: it read "Current Branch" over jj data, and
-  /// nothing in the suite could catch it.
-  ///
-  /// A flag rather than flipping the default, because roughly seventeen tests wait on this one project's
-  /// shape and a jj project also changes what the app probes at launch (`jj --version`, the `.jj`
-  /// metadata watcher) — none of which those tests are about. Everything else about the project is
-  /// identical, so the fixture's usual selection and auto-open path works unchanged.
-  static var jjProject: Bool {
-    flag("WorkroomUITestJJProject")
-  }
-
   /// The VCS toolbar's remote state (`-WorkroomUITestSyncState <name>`), one of:
   /// `clean`, `ahead`, `behind`, `diverged`, `noCounterpart`, `noRemote`, `neverFetched`.
   ///
@@ -395,10 +378,9 @@ enum UITestFixture {
 
   /// When set (`-WorkroomUITestConflict 1`), the fixture workroom is **conflicted**: its changed-file
   /// list gains a `.conflicted` entry (`conflictedFilePath`) and the status carries the top-level
-  /// `conflicted` flag. Covers the jj per-file conflict status end-to-end in the UI — the Changes row
+  /// `conflicted` flag. Covers the per-file conflict status end-to-end in the UI — the Changes row
   /// for a conflicted file must read as conflicted (its own badge, not deletion's or modification's)
-  /// and the project status badge must report the conflict. Applies to both the jj and git variants,
-  /// since both backends produce per-file conflicts.
+  /// and the project status badge must report the conflict.
   static var conflicted: Bool {
     flag("WorkroomUITestConflict")
   }
@@ -406,14 +388,6 @@ enum UITestFixture {
   /// The path seeded as conflicted under `-WorkroomUITestConflict 1`. Distinct from every other
   /// fixture path so a test can address its row by id without matching a neighbour.
   static let conflictedFilePath = "app/models/merge_me.rb"
-
-  /// When set (`-WorkroomUITestGitWorkroom 1`), the fixture workroom reports a **git** working tree
-  /// (a flat changed-file list, no jj groups) instead of the default jj change — so the diff-viewer
-  /// UI tests can exercise the `.gitWorktree` diff source. Default (unset) keeps the jj scenario the
-  /// other tests rely on.
-  static var gitWorkroomMode: Bool {
-    flag("WorkroomUITestGitWorkroom")
-  }
 
   /// When set (`-WorkroomUITestAgentStub 1`), the inline terminal agent (issue #49) is enabled with
   /// a STUB backend that returns a canned diagnosis — so the XCUITest exercises the REAL capture +
@@ -941,12 +915,7 @@ enum UITestFixture {
     Defaults[.inspectorLayout] = InspectorPaneState(
       collapsed: InspectorPaneState.default.collapsed,
       weights: inspectorWeights ?? InspectorPaneState.default.weights)
-    // Workroom's own last-fetch stamps, for the same reason as the collapse state: they PERSIST, and a
-    // fetch performed by an earlier test writes one. `RemoteStateModel` takes the later of the backend's
-    // evidence and this stamp, so a leftover value silently overrode a seeded `.never` and the
-    // never-fetched state reported "just now" instead.
-    Defaults[.vcsLastFetch] = [:]
-    // The theme family, for the same reason as the collapse state and the fetch stamps: it PERSISTS.
+    // The theme family, for the same reason as the collapse state: it PERSISTS.
     // Without this a theme test inherits whatever the developer last picked, and a test that applies
     // a theme leaves it applied for the next run.
     Defaults[.themeFamily] = themeFamily
@@ -974,16 +943,13 @@ enum UITestFixture {
   }
 
   /// The fake project list. Idempotent within a launch: the backing temp directories are created if
-  /// missing so each target's terminal can start a shell. The project is reported as `git` — or as `jj`
-  /// under `jjProject`, which is what the jj-wording tests need — so the sidebar's root row renders
-  /// normally; no real VCS call is ever made either way (loading is short-circuited in `AppStore`, which
+  /// missing so each target's terminal can start a shell. The project is reported as `git` so the
+  /// sidebar's root row renders normally; no real VCS call is ever made (loading is short-circuited in `AppStore`, which
   /// also skips branch resolution for these paths).
   static func projects() -> [Project] {
     // Empty list for the no-projects scenario (issue #81 D3) — nothing to create or select.
     if noProjects { return [] }
-    // One value for the project AND every workroom in it — a project with a mixed backend isn't a thing,
-    // and a workroom disagreeing with its project would exercise a state the product can't reach.
-    let vcs = jjProject ? "jj" : "git"
+    let vcs = "git"
     let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
       .appendingPathComponent("workroom-uitest", isDirectory: true)
     let projectDir = base.appendingPathComponent(projectName, isDirectory: true)
@@ -1031,40 +997,18 @@ enum UITestFixture {
 
   // MARK: - Changes-inspector status
 
-  /// Deterministic VCS status for the fixture **workroom** (`uitest-room`): a dirty jj change with a
-  /// description, bookmark, and a mix of root-level and nested changed files. Lets the Changes
-  /// inspector render its jj-log header and the filename / dimmed-directory file list with no real
-  /// repo — visual QA never has to touch (or expose) the developer's actual projects.
+  /// Deterministic VCS status for the fixture **workroom** (`uitest-room`): a dirty git working tree
+  /// on `feature/login` with a mix of root-level and nested changed files, so the Changes panel
+  /// renders its flat file list (rows open `.gitWorktree` diffs) with no real repo — visual QA never
+  /// has to touch (or expose) the developer's actual projects.
   static var workroomStatus: WorkroomStatus {
-    gitWorkroomMode ? gitWorkroomStatus : jjWorkroomStatus
-  }
-
-  /// The git variant of the fixture workroom (`-WorkroomUITestGitWorkroom 1`): a dirty git working
-  /// tree with a flat changed-file list and no jj groups, so the Changes panel renders the git path
-  /// and its rows open `.gitWorktree` diffs.
-  static var gitWorkroomStatus: WorkroomStatus {
-    WorkroomStatus(
-      dirty: true, conflicted: conflicted, changedFiles: changedFiles, insertions: 411,
-      deletions: 222, ci: .passing,
-      branchForCI: "feature/login",
-      lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
-  }
-
-  private static var jjWorkroomStatus: WorkroomStatus {
     WorkroomStatus(
       dirty: true,
       conflicted: conflicted,
       changedFiles: changedFiles,
       insertions: 411, deletions: 222,
       ci: .passing,
-      // A real jj workroom whose `@` carries the bookmark reports it BOTH ways — as `branchForCI`
-      // (the first bookmark in `::@` log order) and in the working copy's `refs` — so the fixture
-      // sets both. It used to set only `refs`, which is why the fixture never showed the Changes
-      // header rendering one bookmark twice.
       branchForCI: "feature/login",
-      jjWorkingCopy: JJCommitChanges(
-        changeID: "pw", commitID: "7d74470b", refs: ["feature/login"],
-        description: "feat: add session login (#42)", files: changedFiles),
       // The many-changes repro scenario pairs a tall Changes list with an empty Pull Request.
       pr: manyChanges
         ? nil
@@ -1178,8 +1122,8 @@ enum UITestFixture {
   // MARK: - Diff content (issue #66)
 
   /// A deterministic canned diff for the diff viewer in fixture mode — so the UI tests render a real
-  /// `DiffViewer` without shelling out to git/jj against the fake temp directory. The content encodes
-  /// the file path and the `DiffSource` (git worktree / jj `@` / jj `@-`) so a test can assert it
+  /// `DiffViewer` without shelling out to git against the fake temp directory. The content encodes
+  /// the file path and the `DiffSource` (git worktree / commit) so a test can assert it
   /// opened the *right* file's diff from the *right* revision. Two paths get special states for
   /// coverage: `binary.bin` → binary, `clean.txt` → empty.
   ///
@@ -1244,8 +1188,6 @@ enum UITestFixture {
   private static func sourceTag(_ source: DiffSource) -> String {
     switch source {
     case .gitWorktree: return "git-worktree"
-    case .jjWorkingCopy: return "jj-working-copy"
-    case .jjParent: return "jj-parent"
     case .commit(let id): return "commit-\(id)"
     }
   }
@@ -1299,85 +1241,46 @@ struct FixtureVCSProvider: LocalVCSProviding {
     UITestFixture.workroomStatus
   }
 
-  /// Four newest-first commits plus jj's `root()` (see `rootCommit`); the first is the working copy
-  /// (`@`) and carries the `main` ref, so the History rows exercise the ref chip + `@` marker.
-  /// The two divergent copies of commit 2's change (`wqp`) — off the `::@` line, so they only appear
-  /// when the History row's "diverges" disclosure is expanded. Each carries its own `/N` offset.
-  static let divergentSiblings: [VCSCommit] = {
-    let author = VCSAuthor(name: "Ada Fixture", email: "ada@example.com")
-    return [
-      VCSCommit(
-        commitID: "fixturediv1", shortID: "fixdiv01", changeID: "wqp",
-        summary: "Divergent copy A", body: "", authors: [author],
-        timestamp: Date(timeIntervalSince1970: 1_699_990_000), refs: [], parentIDs: [],
-        isWorkingCopy: false, changeOffset: 1, pushState: .unpushed),
-      VCSCommit(
-        commitID: "fixturediv2", shortID: "fixdiv02", changeID: "wqp",
-        summary: "Divergent copy B", body: "", authors: [author],
-        timestamp: Date(timeIntervalSince1970: 1_699_980_000), refs: [], parentIDs: [],
-        isWorkingCopy: false, changeOffset: 5),
-    ]
-  }()
-
-  /// jj's virtual root commit, as `RustJJProvider` really reports it: the all-zero id, a BLANK author
-  /// signature (present, not absent — hence the `?` avatar the old row drew), no description, and the
-  /// epoch timestamp. The oldest row of every jj page, and the one `HistoryRootRow` must render as
-  /// `◆ root() 00000000`.
-  static let rootCommit = VCSCommit(
-    commitID: String(repeating: "0", count: 40), shortID: "00000000", changeID: "zzzzzzzz",
-    summary: "", body: "", authors: [VCSAuthor(name: "", email: "")],
-    timestamp: Date(timeIntervalSince1970: 0), refs: [], parentIDs: [], isWorkingCopy: false,
-    isRoot: true)
-
+  /// Four newest-first commits; the first carries the `main` ref, so the History rows exercise the
+  /// ref chip.
   static let commits: [VCSCommit] = {
     let author = VCSAuthor(name: "Ada Fixture", email: "ada@example.com")
-    let real = (1...4).map { (n: Int) -> VCSCommit in
+    return (1...4).map { (n: Int) -> VCSCommit in
       let base: TimeInterval = 1_700_000_000
       let ts = Date(timeIntervalSince1970: base - TimeInterval(n * 3600))
       let refs: [String] = n == 1 ? ["main"] : []
-      // The oldest real commit descends from `root()`, like every jj history.
-      let parents: [String] = n < 4 ? ["fixturecommit\(n + 1)"] : [rootCommit.commitID]
-      // Commit 2's change-id (`wqp`) is divergent: it resolves to more than one visible commit, so
-      // its row exercises the "diverges (2)" disclosure and its expanded sibling list.
-      let changeID: String? = n == 1 ? "zqxyparent" : (n == 2 ? "wqp" : nil)
-      // Push state covers all three cases plus both suppression rules, so the History pane shows
-      // EXACTLY ONE badge: commit 1 is `.unpushed` but is the working copy `@` (suppressed), commit 2
-      // is the only badged row (and proves the badge coexists with the "diverges" toggle), commit 3 is
-      // pushed, commit 4 is unknown. The divergent siblings are `.unpushed` too and must still never
-      // badge once the expander is open.
-      let push: VCSPushState = n <= 2 ? .unpushed : (n == 3 ? .pushed : .unknown)
+      let parents: [String] = n < 4 ? ["fixturecommit\(n + 1)"] : []
+      // Push state covers all three cases, so the History pane shows EXACTLY ONE badge: commit 2 is
+      // the only `.unpushed` row, commit 3 is pushed, commits 1 and 4 are unknown.
+      let push: VCSPushState = n == 2 ? .unpushed : (n == 3 ? .pushed : .unknown)
       return VCSCommit(
         commitID: "fixturecommit\(n)", shortID: "fixc000\(n)",
-        changeID: changeID, summary: "Fixture commit \(n)",
+        summary: "Fixture commit \(n)",
         body: n == 1 ? "Extended fixture description.\nA second line of detail." : "",
-        authors: [author], timestamp: ts, refs: refs, parentIDs: parents, isWorkingCopy: n == 1,
-        divergentSiblings: n == 2 ? divergentSiblings : [], pushState: push)
+        authors: [author], timestamp: ts, refs: refs, parentIDs: parents, pushState: push)
     }
-    // `root()` terminates the page, exactly where a real jj log puts it.
-    return real + [rootCommit]
   }()
 
   /// One origin branch, so the badge tooltips name it rather than counting.
   static let pushScope = VCSPushScope(refName: "origin/main", count: 1)
 
-  /// A large synthetic page for `-WorkroomUITestManyCommits <n>` — newest-first, `root()` last, spread
+  /// A large synthetic page for `-WorkroomUITestManyCommits <n>` — newest-first, spread
   /// over seven author emails so several distinct avatars (and their MD5/Gravatar work) are in play.
   ///
   /// Deliberately built only when the flag is set, and deliberately NOT mixed with `commits`: the
-  /// default five-row page is depended on EXACTLY by `HistoryPushStateUITests` (one badge, one
-  /// divergence expander), so it must stay byte-identical when the flag is absent.
+  /// default four-row page is depended on EXACTLY by `HistoryPushStateUITests` (one badge), so it
+  /// must stay byte-identical when the flag is absent.
   static func manyCommits(_ count: Int) -> [VCSCommit] {
     let base: TimeInterval = 1_700_000_000
-    let real = (0..<count).map { (n: Int) -> VCSCommit in
+    return (0..<count).map { (n: Int) -> VCSCommit in
       let author = VCSAuthor(name: "Author \(n % 7)", email: "author\(n % 7)@example.com")
       return VCSCommit(
         commitID: String(format: "stress%034x", n), shortID: String(format: "s%07x", n),
-        changeID: nil, summary: "Stress commit \(n)", body: "", authors: [author],
+        summary: "Stress commit \(n)", body: "", authors: [author],
         timestamp: Date(timeIntervalSince1970: base - TimeInterval(n * 60)), refs: [],
-        parentIDs: n + 1 < count ? [String(format: "stress%034x", n + 1)] : [rootCommit.commitID],
-        isWorkingCopy: n == 0, pushState: .unknown)
+        parentIDs: n + 1 < count ? [String(format: "stress%034x", n + 1)] : [],
+        pushState: .unknown)
     }
-    return real + [rootCommit]
   }
 
   func log(root: URL, limit: Int) throws -> VCSHistoryPage {
@@ -1390,9 +1293,7 @@ struct FixtureVCSProvider: LocalVCSProviding {
   }
 
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
-    // Divergent siblings live off the main list; resolve them too so clicking one opens its detail.
-    let all = Self.commits + Self.divergentSiblings
-    let commit = all.first { $0.commitID == commitID } ?? Self.commits[0]
+    let commit = Self.commits.first { $0.commitID == commitID } ?? Self.commits[0]
     let files = [
       VCSChangedFile(path: "src/session.rb", oldPath: nil, kind: .modified),
       VCSChangedFile(path: "docs/notes.txt", oldPath: nil, kind: .added),
@@ -1439,7 +1340,7 @@ struct StubAgentRunner: AgentRunning {
 }
 
 /// The `LocalVCSWriting` used under `-WorkroomUITestFixture`: serves the seeded `UITestFixture.remoteState`
-/// and answers every action without running git or jj.
+/// and answers every action without running git.
 ///
 /// What no other tier can see is the button→engine seam: whether clicking "Push origin" actually asks
 /// for a push, whether the confirmation dialog swallows the click, and whether a second click while one
@@ -1474,8 +1375,7 @@ actor FixtureVCSWriter: LocalVCSWriting {
   }
 
   func push(
-    path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool,
-    anonymousRevision: String
+    path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool
   ) async -> VCSRemoteActionResult {
     await record(.push)
   }
@@ -1490,7 +1390,7 @@ actor FixtureVCSWriter: LocalVCSWriting {
     await record(.abortRebase)
   }
 
-  /// Answers the commit without running git or jj, so the sheet's own seam — selection → button
+  /// Answers the commit without running git, so the sheet's own seam — selection → button
   /// count → request, and the in-flight and failure states — is exercisable hermetically. The write's
   /// real semantics are covered against throwaway repos in `VCSCommitIntegrationTests`, which is the
   /// only tier that can see them.

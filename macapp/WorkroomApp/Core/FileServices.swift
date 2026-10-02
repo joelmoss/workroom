@@ -2,10 +2,9 @@ import Darwin
 import Foundation
 
 /// Which host holds the files, and — when the repository is registered — where its shared
-/// repository lives (the jj working-copy lock is keyed by it). Deliberately NOT a
-/// `RepositoryContext`: that type carries a backend, and file listing must not depend on one. A
-/// colocated jj repository lists through immutable git first, exactly as it always has, so the
-/// backend is chosen per call by the caller's git-then-jj loop rather than fixed by registration.
+/// repository lives (sent to wr-agent as `shared_root`, which its File service still accepts).
+/// Deliberately NOT a `RepositoryContext`: listing an unregistered directory must work too, and a
+/// context only comes from a registration or a repository probe.
 struct FileContext: Hashable, Sendable {
   let location: RepositoryLocation
   let sharedLocation: RepositoryLocation?
@@ -83,27 +82,11 @@ protocol FileProviding: Sendable {
 struct NativeFileProvider: FileProviding {
   let context: FileContext
   var runner: StatusCommandRunning = StatusCommandRunner()
-  var gate: JJSnapshotGate = .shared
 
   func list(_ vcs: FileListVCS) async throws -> CommandResult {
     let command = FileListing.command(vcs)
-    let path = context.location.path
-    let result: CommandResult
-    if vcs == .jj {
-      // The client holds the working-copy lock here, as it always has: jj's listing snapshots `@`,
-      // and this is the native path, where nothing on the other side holds it for us.
-      guard let shared = context.sharedLocation else {
-        throw RepositoryRoutingError.registrationRequired
-      }
-      result =
-        (try? await gate.run(repository: shared) {
-          await runner.run(
-            command.executable, command.args, in: path, timeout: FileListing.timeout)
-        }) ?? CommandResult(stdout: "", stderr: "", exitCode: 1, timedOut: false)
-    } else {
-      result = await runner.run(
-        command.executable, command.args, in: path, timeout: FileListing.timeout)
-    }
+    let result = await runner.run(
+      command.executable, command.args, in: context.location.path, timeout: FileListing.timeout)
     if result.stdoutTruncated { throw FileServiceError.listingTruncated }
     return result
   }

@@ -28,25 +28,26 @@ final class RepositoryRoutingTests: XCTestCase {
     XCTAssertThrowsError(
       try RepositoryRouter.Registration(location: remote, backend: .git, sharedLocation: local))
     let router = RepositoryRouter()
-    try router.register(.init(location: remote, backend: .jj, sharedLocation: remote))
+    try router.register(.init(location: remote, backend: .git, sharedLocation: remote))
     router.replaceLocal([try .init(location: local, backend: .git, sharedLocation: local)])
     router.replaceLocal([])
     XCTAssertNil(router.entry(for: local))
-    XCTAssertEqual(router.entry(for: remote)?.backend, .jj)
+    XCTAssertEqual(router.entry(for: remote)?.sharedLocation, remote)
   }
 
-  func testWriterAndSupportingReaderKeepCapturedBackend() async throws {
+  func testWriterAndSupportingReaderKeepCapturedRegistration() async throws {
     let location = try await RepositoryLocation.local("/tmp/registered-no-repository")
+    let otherShared = try await RepositoryLocation.local("/tmp")
     let router = RepositoryRouter()
-    try router.register(.init(location: location, backend: .jj, sharedLocation: location))
+    try router.register(.init(location: location, backend: .git, sharedLocation: location))
     let writer = try await router.writer(for: location)
     let reader = try await router.reader(for: location)
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
-    XCTAssertEqual(writer.context.backend, .jj)
+    try router.register(.init(location: location, backend: .git, sharedLocation: otherShared))
+    XCTAssertEqual(writer.context.sharedLocation, location)
     XCTAssertEqual(writer.reader.context, writer.context)
-    XCTAssertEqual(reader.context.backend, .jj)
+    XCTAssertEqual(reader.context.sharedLocation, location)
     let replacement = try await router.reader(for: location)
-    XCTAssertEqual(replacement.context.backend, .git)
+    XCTAssertEqual(replacement.context.sharedLocation, otherShared)
   }
 
   func testMissingRemoteServicesNeverReadSamePathLocalRepository() async throws {
@@ -88,57 +89,49 @@ final class RepositoryRoutingTests: XCTestCase {
     }
   }
 
-  func testUnregisteredJJSiblingRequiresOwnershipBeforeSnapshotOrWrite() async throws {
+  func testUnregisteredSiblingReadsButRequiresOwnershipToWrite() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let siblingPath = directory.appendingPathComponent("sibling").path
+    try FileManager.default.createDirectory(atPath: siblingPath, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let runner = StatusCommandRunner()
-    let initialized = await runner.run(
-      "jj", ["git", "init", "--colocate", "."], in: directory.path, timeout: 10)
-    XCTAssertTrue(initialized.ok, initialized.stderr)
-    let siblingPath = directory.appendingPathComponent("sibling").path
-    let added = await runner.run(
-      "jj", ["workspace", "add", siblingPath], in: directory.path, timeout: 10)
-    XCTAssertTrue(added.ok, added.stderr)
+    for path in [directory.path, siblingPath] {
+      let initialized = await runner.run("git", ["init", "-q"], in: path, timeout: 10)
+      XCTAssertTrue(initialized.ok, initialized.stderr)
+    }
     let shared = try await RepositoryLocation.local(directory.path)
     let sibling = try await RepositoryLocation.local(siblingPath)
     let router = RepositoryRouter()
-    try router.register(.init(location: shared, backend: .jj, sharedLocation: shared))
+    try router.register(.init(location: shared, backend: .git, sharedLocation: shared))
     let reader = try await router.reader(for: sibling)
     XCTAssertNil(reader.context.sharedLocation)
-    _ = try await reader.log(limit: 1)
-    do {
-      _ = try await reader.workingStatus()
-      XCTFail("unregistered snapshot")
-    } catch { XCTAssertEqual(error as? RepositoryRoutingError, .registrationRequired) }
-    do {
-      _ = try await reader.workingFileDiff(path: "file", base: .workingCopy)
-      XCTFail("unregistered diff snapshot")
-    } catch { XCTAssertEqual(error as? RepositoryRoutingError, .registrationRequired) }
+    _ = try await reader.workingStatus()
     do {
       _ = try await router.writer(for: sibling)
       XCTFail("unregistered writer")
     } catch { XCTAssertEqual(error as? RepositoryRoutingError, .registrationRequired) }
-    try router.register(.init(location: sibling, backend: .jj, sharedLocation: shared))
+    try router.register(.init(location: sibling, backend: .git, sharedLocation: shared))
     let registered = try await router.reader(for: sibling)
     XCTAssertEqual(registered.context.sharedLocation, shared)
     _ = try await registered.workingStatus()
-    // The old reader remains an unowned snapshot after registration.
+    // The old reader remains unowned after registration.
     XCTAssertNil(reader.context.sharedLocation)
   }
 
   func testPreparationUsesProjectBackendAndSharedRoot() async throws {
     let project = Project(
-      path: "/tmp/project", vcs: "jj",
+      path: "/tmp/project", vcs: "git",
       workrooms: [
         Workroom(name: "one", path: "/tmp/workroom", vcsName: "workroom/one", warnings: [])
       ])
     let entries = try await RepositoryRouter.prepare([project])
     XCTAssertEqual(entries.count, 2)
-    XCTAssertTrue(entries.allSatisfy { $0.entry.backend == .jj })
+    XCTAssertTrue(entries.allSatisfy { $0.entry.backend == .git })
     XCTAssertEqual(entries[0].entry.sharedLocation, entries[1].entry.sharedLocation)
+    // An unsupported vcs — including a stale "jj" from an old config — registers nothing.
     let unknown = try await RepositoryRouter.prepare([
-      Project(path: "/unknown", vcs: "hg", workrooms: [])
+      Project(path: "/unknown", vcs: "hg", workrooms: []),
+      Project(path: "/stale", vcs: "jj", workrooms: []),
     ])
     XCTAssertTrue(unknown.isEmpty)
   }
@@ -169,9 +162,9 @@ private struct HostTestReader: VCSProviding {
     }
     let commits = (0..<3).prefix(limit).map { index in
       VCSCommit(
-        commitID: "\(marker)-\(index)", shortID: "\(index)", changeID: nil,
+        commitID: "\(marker)-\(index)", shortID: "\(index)",
         summary: marker, body: "", authors: [], timestamp: Date(timeIntervalSince1970: 0),
-        refs: [], parentIDs: [], isWorkingCopy: false)
+        refs: [], parentIDs: [])
     }
     return VCSHistoryPage(commits: commits, reachedEnd: limit >= 3)
   }
@@ -245,16 +238,13 @@ extension RepositoryRoutingTests {
     XCTAssertNotEqual(first, second)
     let repeated = await resolver.resolve(descriptor, in: one)
     XCTAssertEqual(first, repeated)
-    let gitKey = DiffCache.Key(location: one, backend: .git, revision: "same", path: "file")
-    let jjKey = DiffCache.Key(location: one, backend: .jj, revision: "same", path: "file")
-    XCTAssertNotEqual(gitKey, jjKey)
   }
 
   @MainActor
   func testRemoteFilesAndGitHubCannotInvokeLocalCommands() async throws {
     let location = try RepositoryLocation.remote(host: UUID(), path: "/private/tmp")
     let router = RepositoryRouter()
-    try router.register(.init(location: location, backend: .jj, sharedLocation: location))
+    try router.register(.init(location: location, backend: .git, sharedLocation: location))
     let runner = HostCountingRunner()
     let listing = await FileTreeModel.list(location: location, runner: runner, router: router)
     XCTAssertEqual(listing, .failed(.unavailable(location.host)))
@@ -341,7 +331,7 @@ extension RepositoryRoutingTests {
   func testFailedPreflightCannotBecomeEmptySuccess() async throws {
     let writer = CLIVCSWriter(
       vcs: "git", runner: FailingPreflightRunner(),
-      makeProvider: { _ in GitProvider() }, gate: JJSnapshotGate())
+      makeProvider: { _ in GitProvider() }, gate: RepositoryWriteGate())
     do {
       _ = try await writer.commitPreflight(path: "/nonexistent")
       XCTFail("failed ref probe permitted commit")
@@ -373,14 +363,17 @@ extension RepositoryRoutingTests {
     XCTAssertNotNil(status.localReadAt)
   }
 
-  func testUnregisteredFileListDoesNotInvokeJJSnapshot() async throws {
+  /// An unregistered location lists through git alone — one command, no registration needed.
+  func testUnregisteredFileListRunsOnlyTheGitListing() async throws {
     let location = try await RepositoryLocation.local(
       "/private/tmp/unregistered-\(UUID().uuidString)")
     let runner = HostCountingRunner()
     let result = await FileTreeModel.list(
       location: location, runner: runner, router: RepositoryRouter())
-    XCTAssertEqual(result, .failed(.registrationRequired))
+    // The counting runner fails every command, so the listing is unavailable — not a registration
+    // refusal, which only the jj listing ever raised.
+    XCTAssertEqual(result, .unavailable)
     let calls = await runner.calls
-    XCTAssertEqual(calls, 1, "only immutable git listing may run before ownership is known")
+    XCTAssertEqual(calls, 1, "only the git listing runs")
   }
 }

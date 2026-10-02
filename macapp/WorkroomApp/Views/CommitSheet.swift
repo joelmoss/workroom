@@ -5,7 +5,7 @@ import SwiftUI
 /// **Why a dialog rather than a box in the Changes pane.** Measured against the pane it would have
 /// lived in: the composer is ~152pt and `InspectorPanePolicy.expandedMinHeight` leaves 86pt of body,
 /// so at the pane's own drag floor the Commit button was below the fold. At a default third of a
-/// 900pt window it left two file rows for git and one for jj — for a list whose entire job is letting
+/// 900pt window it left two file rows — for a list whose entire job is letting
 /// you decide whether committing is safe. Pinning it would also have meant switching Changes to fill
 /// hosting, which disables the documented compress-and-scroll valve (`InspectorSplitView`), so a
 /// short window would clip the button rather than scroll to it.
@@ -40,8 +40,6 @@ struct CommitSheet: View {
   /// The commit `Amend last commit` would rewrite, so the message being replaced is visible BEFORE
   /// the click rather than recoverable only from the reflog afterwards.
   @State private var amendTarget: String?
-  /// jj's stored description exactly as read, so an unedited Describe rewrites nothing.
-  @State private var originalMessage: String?
   @FocusState private var summaryFocused: Bool
 
   private enum Phase: Equatable {
@@ -77,19 +75,13 @@ struct CommitSheet: View {
   /// Hard cap on rendered rows, matching `ChangesPanel`'s. See `fileSection`.
   private static let renderCap = 200
 
-  private var isJJ: Bool { pending.vcs == .jj }
   private var status: WorkroomStatus? { store.workroomStatuses[pending.sid] }
 
-  /// Every changed file, from whichever shape this backend reports.
-  private var files: [ChangedFile] {
-    guard let status else { return [] }
-    if let workingCopy = status.jjWorkingCopy { return workingCopy.files }
-    return status.changedFiles ?? []
-  }
+  /// Every changed file.
+  private var files: [ChangedFile] { status?.changedFiles ?? [] }
 
   private var selectedFiles: [ChangedFile] {
-    // jj commits the whole change, so the exclusion set is never applied to it.
-    isJJ ? files : CommitDraft.selected(from: files, excluding: excluded)
+    CommitDraft.selected(from: files, excluding: excluded)
   }
 
   /// How many files the commit would record, WITHOUT building the filtered array.
@@ -98,7 +90,7 @@ struct CommitSheet: View {
   /// reason, the select-all glyph — and re-evaluates on every keystroke, so `selectedFiles.count`
   /// meant several full copies of the change set per typed character.
   private var selectedCount: Int {
-    isJJ ? files.count : files.reduce(into: 0) { if !excluded.contains($1.path) { $0 += 1 } }
+    files.reduce(into: 0) { if !excluded.contains($1.path) { $0 += 1 } }
   }
 
   private var blockedReason: String? {
@@ -139,7 +131,7 @@ struct CommitSheet: View {
 
   private var header: some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
-      Text(isJJ ? "Describe this change" : "Commit changes")
+      Text("Commit changes")
         .font(.headline)
         .accessibilityIdentifier("commit.title")
       Spacer(minLength: 0)
@@ -160,23 +152,16 @@ struct CommitSheet: View {
   }
 
   private var countCaption: String {
-    isJJ
-      ? "\(files.count) file\(files.count == 1 ? "" : "s") in this change"
-      : "\(selectedCount) of \(files.count) file\(files.count == 1 ? "" : "s")"
+    "\(selectedCount) of \(files.count) file\(files.count == 1 ? "" : "s")"
   }
 
   // MARK: Files
 
   @ViewBuilder private var fileSection: some View {
     if files.isEmpty {
-      // jj can legitimately describe an empty change, so this is a note rather than a blocker there.
-      Text(
-        isJJ
-          ? "This change has no file changes yet. You can still give it a message."
-          : "Nothing has changed in this workroom yet."
-      )
-      .font(.callout).foregroundStyle(.secondary)
-      .frame(maxWidth: .infinity, alignment: .leading)
+      Text("Nothing has changed in this workroom yet.")
+        .font(.callout).foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
     } else {
       // Capped and lazy, for the reason `ChangesPanel.fileList` is: an accidental `node_modules` or
       // vendor drop is thousands of rows, and every one of `summary`, `messageBody` and `excluded` is
@@ -185,12 +170,12 @@ struct CommitSheet: View {
       // is DRAWN, never what is committed.
       let shown = Array(files.prefix(Self.renderCap))
       VStack(alignment: .leading, spacing: 6) {
-        if !isJJ { selectAllRow }
+        selectAllRow
         ScrollView {
           LazyVStack(alignment: .leading, spacing: 2) {
             ForEach(shown) { file in
               CommitFileRow(
-                file: file, showsCheckbox: !isJJ,
+                file: file,
                 isIncluded: !excluded.contains(file.path),
                 toggle: { toggle(file) },
                 only: { excluded = Set(files.map(\.path)).subtracting([file.path]) })
@@ -210,10 +195,6 @@ struct CommitSheet: View {
           .font(.caption).foregroundStyle(.tertiary)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("commit.renderCapNotice")
-        }
-        if isJJ {
-          Text("jj commits the whole change. Splitting isn’t supported yet.")
-            .font(.caption).foregroundStyle(.tertiary)
         }
       }
     }
@@ -368,49 +349,44 @@ struct CommitSheet: View {
       .disabled(
         blockedReason != nil || phase == .committing || isSpent || preflightState.isLoading
       )
-      .help(isJJ ? "Describe this change and start a new one on top" : "Commit the selected files")
+      .help("Commit the selected files")
       .accessibilityIdentifier("commit.commit")
     }
   }
 
-  /// The backend's second verb, as its own button rather than behind a menu.
+  /// The second verb, as its own button rather than behind a menu.
   ///
-  /// There is exactly ONE alternative per backend, and a menu holding a single item is a click that
-  /// buys nothing — it hides the choice behind a disclosure and gives the control no name until you
-  /// open it. Naming it outright also stops the "same shape, opposite contract" problem an ellipsis
-  /// split button would have had beside `MergeButton`, whose menu CHANGES what its primary does
-  /// rather than performing a second action.
-  ///
-  /// The label is the command for jj — "Describe" is the verb jj users already have — with what it
-  /// actually does in the help text, since the two verbs differ in a way the word alone can't carry.
+  /// There is exactly ONE alternative, and a menu holding a single item is a click that buys nothing
+  /// — it hides the choice behind a disclosure and gives the control no name until you open it.
+  /// Naming it outright also stops the "same shape, opposite contract" problem an ellipsis split
+  /// button would have had beside `MergeButton`, whose menu CHANGES what its primary does rather than
+  /// performing a second action.
   @ViewBuilder private var secondaryButton: some View {
-    Button(isJJ ? "Describe" : "Amend last commit") {
-      commit(mode: isJJ ? .describe : .amendMessage)
+    Button("Amend last commit") {
+      commit(mode: .amendMessage)
     }
     .disabled(
       secondaryBlockedReason != nil || phase == .committing || isSpent
         || preflightState.isLoading
     )
     .help(
-      isJJ
-        ? "Set this change’s message and stay on it, instead of starting a new change (jj describe)"
-        : amendTarget.map {
-          "Replace the message of \($0). Nothing else about that commit changes."
-        }
-          ?? "Replace the last commit’s message. Nothing else about that commit changes."
+      amendTarget.map {
+        "Replace the message of \($0). Nothing else about that commit changes."
+      }
+        ?? "Replace the last commit’s message. Nothing else about that commit changes."
     )
-    .accessibilityIdentifier(isJJ ? "commit.describe" : "commit.amend")
+    .accessibilityIdentifier("commit.amend")
   }
 
   /// Which commit Amend would rewrite, named on screen rather than only in a tooltip.
   ///
   /// Amend replaces `HEAD`'s message with whatever is in the summary field — and that field starts
-  /// EMPTY for git and is normally filled with a message written for a NEW commit. So the button one
+  /// EMPTY and is normally filled with a message written for a NEW commit. So the button one
   /// position left of the default action silently destroys a message the user cannot see, recoverable
   /// only through the reflog. Showing the target is the cheapest thing that makes the trade visible
   /// before the click instead of after it.
   @ViewBuilder private var amendTargetNotice: some View {
-    if !isJJ, let amendTarget, phase == .editing {
+    if let amendTarget, phase == .editing {
       Text("“Amend last commit” would replace the message of \(amendTarget)")
         .font(.caption)
         .foregroundStyle(.tertiary)
@@ -423,12 +399,8 @@ struct CommitSheet: View {
 
   // MARK: Actions
 
-  /// Everything the dialog has to read from the repo before it can be honest: jj's existing
-  /// description, git's amend target, and any parked sequencer operation. Once, on appear.
-  ///
-  /// The jj description is read in FULL rather than from `JJCommitChanges.description`, which is only
-  /// its first line — prefilling the summary from that and then describing again would silently
-  /// discard the body the user wrote earlier.
+  /// Everything the dialog has to read from the repo before it can be honest: the amend target and
+  /// any parked sequencer operation. Once, on appear.
   private func prefill() {
     summaryFocused = true
     guard phase != .committing, !isSpent, preflightState.begin() else { return }
@@ -437,16 +409,10 @@ struct CommitSheet: View {
     // `FixtureVCSWriter`.
     if UITestFixture.isActive {
       _ = preflightState.finish(succeeded: true)
-      if isJJ {
-        let existing = CommitDraft.split(message: status?.jjWorkingCopy?.description ?? "")
-        summary = existing.summary
-        messageBody = existing.body
-      } else {
-        amendTarget = UITestFixture.amendTargetLabel
-      }
+      amendTarget = UITestFixture.amendTargetLabel
       return
     }
-    // One ask, through the writer. This used to spawn `git`/`jj` and stat a `.git` directory from
+    // One ask, through the writer. This used to spawn `git` and stat a `.git` directory from
     // here, which works only for a repo on this Mac — see `VCSWriting.commitPreflight`.
     store.commitPreflight(on: pending.sid) { result in
       guard phase != .committing, !isSpent else { return }
@@ -460,21 +426,12 @@ struct CommitSheet: View {
       guard preflightState.finish(succeeded: true) else { return }
       sequencer = preflight.sequencer
       amendTarget = preflight.amendTarget
-      guard let message = preflight.currentMessage else { return }
-      // Never clobber something typed while the read was in flight.
-      guard summary.isEmpty, messageBody.isEmpty else { return }
-      let existing = CommitDraft.split(message: message)
-      summary = existing.summary
-      messageBody = existing.body
-      // Kept verbatim so an untouched Describe re-records the message byte for byte — see
-      // `CommitDraft.message(summary:body:preserving:)`.
-      originalMessage = message
     }
   }
 
   /// Commit, but check first whether doing so would throw away staged work.
   ///
-  /// Only for the plain git commit path: amend takes no pathspec, and jj has no index. The check is
+  /// Only for the plain commit path: amend takes no pathspec. The check is
   /// skipped once confirmed so pressing "Commit anyway" cannot re-raise the same warning (that path
   /// calls `commit` directly, never this).
   ///
@@ -487,7 +444,7 @@ struct CommitSheet: View {
       prefill()
       return
     }
-    guard mode == .commit, !isJJ else { return commit(mode: mode) }
+    guard mode == .commit else { return commit(mode: mode) }
     let files = selectedFiles
     store.stagedContentAtRisk(on: pending.sid, files: files) { result in
       guard phase != .committing, !isSpent else { return }
@@ -516,12 +473,7 @@ struct CommitSheet: View {
       return
     }
     guard phase != .committing else { return }
-    let message = CommitDraft.message(
-      summary: summary, body: messageBody, preserving: originalMessage)
-    // Describing a change with the message it already has is a no-op jj reports as "Nothing changed."
-    // — a failure notice for having changed nothing, which is not what the user asked about. Closing
-    // is the honest answer: the message is already exactly what they wanted.
-    if mode == .describe, let originalMessage, message == originalMessage { return onDismiss() }
+    let message = CommitDraft.message(summary: summary, body: messageBody)
     phase = .committing
     let request = VCSCommitRequest(
       message: message,
@@ -562,7 +514,6 @@ struct CommitSheet: View {
 /// glyph size and same slot width as that letter, so both share a baseline by construction.
 private struct CommitFileRow: View {
   let file: ChangedFile
-  let showsCheckbox: Bool
   let isIncluded: Bool
   let toggle: () -> Void
   let only: () -> Void
@@ -570,18 +521,16 @@ private struct CommitFileRow: View {
 
   var body: some View {
     HStack(alignment: .firstTextBaseline, spacing: 6) {
-      if showsCheckbox {
-        Button(action: toggle) {
-          Image(systemName: isIncluded ? "checkmark.square.fill" : "square")
-            .font(.callout)
-            .foregroundStyle(isIncluded ? Color.accentColor : .secondary)
-            .frame(width: 14)
-        }
-        .buttonStyle(.plain)
-        .help(isIncluded ? "Exclude this file from the commit" : "Include this file in the commit")
-        .accessibilityLabel("\(file.path), \(isIncluded ? "included" : "excluded")")
-        .accessibilityIdentifier("commit.file.check.\(file.path)")
+      Button(action: toggle) {
+        Image(systemName: isIncluded ? "checkmark.square.fill" : "square")
+          .font(.callout)
+          .foregroundStyle(isIncluded ? Color.accentColor : .secondary)
+          .frame(width: 14)
       }
+      .buttonStyle(.plain)
+      .help(isIncluded ? "Exclude this file from the commit" : "Include this file in the commit")
+      .accessibilityLabel("\(file.path), \(isIncluded ? "included" : "excluded")")
+      .accessibilityIdentifier("commit.file.check.\(file.path)")
       // Combined SEPARATELY from the checkbox, not across the whole row. An
       // `.accessibilityElement(children: .combine)` on the row collapses everything inside it into one
       // element, which takes the checkbox with it — the control then isn't individually clickable and
@@ -609,17 +558,15 @@ private struct CommitFileRow: View {
     // Excluded rows dim their CONTENT rather than taking a background: the accent background already
     // means "this row's diff is the focused tab" in the Changes panel, and two selection meanings
     // sharing one visual is how a user learns to distrust both.
-    .opacity(showsCheckbox && !isIncluded ? 0.45 : 1)
+    .opacity(isIncluded ? 1 : 0.45)
     .contentShape(Rectangle())
     // `.contain`, never `.combine`: the row holds two things a user acts on separately — the
     // checkbox and the file — and combining them would merge the checkbox into the row, leaving no
     // individually clickable control. The label halves live on the two children instead.
     .accessibilityElement(children: .contain)
     .contextMenu {
-      if showsCheckbox {
-        Button("Commit Only This File", action: only)
-        Button(isIncluded ? "Exclude This File" : "Include This File", action: toggle)
-      }
+      Button("Commit Only This File", action: only)
+      Button(isIncluded ? "Exclude This File" : "Include This File", action: toggle)
     }
   }
 }

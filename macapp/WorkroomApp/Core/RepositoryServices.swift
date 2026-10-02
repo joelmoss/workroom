@@ -19,8 +19,7 @@ protocol VCSWriting: Sendable {
   var reader: VCSProviding { get }
   func remoteState() async -> VCSRemoteResolution
   func fetch(remote: String) async -> VCSRemoteActionResult
-  func push(current: VCSRef, remote: String, setUpstream: Bool, anonymousRevision: String) async
-    -> VCSRemoteActionResult
+  func push(current: VCSRef, remote: String, setUpstream: Bool) async -> VCSRemoteActionResult
   func pullRebase(current: VCSRef, remote: String, tracking: VCSTracking?) async
     -> VCSRemoteActionResult
   func abortRebase() async -> VCSRemoteActionResult
@@ -34,7 +33,6 @@ protocol VCSWriting: Sendable {
 struct BoundLocalReader: VCSProviding {
   let context: RepositoryContext
   let provider: LocalVCSProviding
-  var gate: JJSnapshotGate = .shared
 
   private var root: URL { get throws { try context.location.requireLocalURL() } }
 
@@ -49,14 +47,7 @@ struct BoundLocalReader: VCSProviding {
     try await provider.fileDiff(root: root, commitID: commitID, path: path)
   }
   func workingFileDiff(path: String, base: VCSWorkingDiffBase) async throws -> String {
-    let root = try root
-    if context.backend == .jj, base == .workingCopy {
-      let shared = try context.requireOwnership()
-      return try await gate.run(repository: shared) {
-        try await provider.workingFileDiff(root: root, path: path, base: base)
-      }
-    }
-    return try await provider.workingFileDiff(root: root, path: path, base: base)
+    try await provider.workingFileDiff(root: root, path: path, base: base)
   }
   func fileContent(rev: String, path: String) async throws -> String? {
     try await provider.fileContent(root: root, rev: rev, path: path)
@@ -69,12 +60,6 @@ struct BoundLocalReader: VCSProviding {
   }
   func workingStatus() async throws -> WorkroomStatus {
     let root = try root
-    if context.backend == .jj {
-      let shared = try context.requireOwnership()
-      return try await gate.run(repository: shared) {
-        try await runBlocking { try provider.workingStatus(root: root) }
-      }
-    }
     return try await runBlocking { try provider.workingStatus(root: root) }
   }
   func currentRef() async throws -> VCSRef {
@@ -90,8 +75,8 @@ struct BoundLocalWriter: VCSWriting {
   private var path: String { context.location.path }
   private let projectRoot: String
 
-  /// For a local repository, or a remote one whose writer reads that host's disk and holds its
-  /// barrier through the agent (`AgentVCSConnection.writer`). The paths here are only ever handed to
+  /// For a local repository, or a remote one whose writer reads that host's disk through the agent
+  /// (`AgentVCSConnection.writer`). The paths here are only ever handed to
   /// the writer as strings, never resolved against this disk.
   init(context: RepositoryContext, reader: VCSProviding, writer: LocalVCSWriting) throws {
     // A remote repository only with a writer that knows it is one; anything else would run git on
@@ -113,12 +98,10 @@ struct BoundLocalWriter: VCSWriting {
   func fetch(remote: String) async -> VCSRemoteActionResult {
     await writer.fetch(path: path, projectRoot: projectRoot, remote: remote)
   }
-  func push(current: VCSRef, remote: String, setUpstream: Bool, anonymousRevision: String) async
-    -> VCSRemoteActionResult
-  {
+  func push(current: VCSRef, remote: String, setUpstream: Bool) async -> VCSRemoteActionResult {
     await writer.push(
       path: path, projectRoot: projectRoot, current: current, remote: remote,
-      setUpstream: setUpstream, anonymousRevision: anonymousRevision)
+      setUpstream: setUpstream)
   }
   func pullRebase(current: VCSRef, remote: String, tracking: VCSTracking?) async
     -> VCSRemoteActionResult

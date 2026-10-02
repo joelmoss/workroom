@@ -165,7 +165,7 @@ impl Agent {
                     // `connections` drops as soon as `handle_connection` returns, but `vcs::dispatch`
                     // answers on a DETACHED thread that outlives it — a client that disconnects (or
                     // whose request already tripped the app-side timeout) while its VCS request is
-                    // still running, e.g. a JJ snapshot mid in-process working-copy rewrite, would
+                    // still running, e.g. a git commit mid-way through updating the index, would
                     // otherwise let `connections` and `sessions` both read empty while that thread is
                     // still mutating the repository. `crate::vcs::is_busy()` is the only thing that
                     // actually knows.

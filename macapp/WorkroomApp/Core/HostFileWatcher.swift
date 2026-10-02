@@ -2,7 +2,7 @@ import Foundation
 
 /// A watch on one directory tree that prefers the host agent and falls back to local FSEvents.
 /// The drop-in for `WorkroomFileWatcher` at all three watch sites (the Files tree, the selected
-/// workroom, the per-project `.git`/`.jj` dir): same `start(path:)` / `stop()`, same "deliver on the
+/// workroom, the per-project `.git` dir): same `start(path:)` / `stop()`, same "deliver on the
 /// main actor" contract, plus an `overflow` flag on every delivery.
 ///
 /// **Routing.** A local host's running agent serves the watch when it has the File service. When it

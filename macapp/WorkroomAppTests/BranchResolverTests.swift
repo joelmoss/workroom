@@ -23,8 +23,8 @@ private struct StubProvider: LocalVCSProviding {
 }
 
 /// `BranchResolver` now just maps the backend's `VCSRef` → the sidebar's `RootRef`, guards the
-/// vcs kind, and bounds the read with a timeout — the git/jj specifics (symbolic-ref, bookmark
-/// walk, name cleaning) moved into `GitProvider`/`RustJJProvider` (+ the Rust `current_ref`).
+/// vcs kind, and bounds the read with a timeout — the git specifics (symbolic-ref, name cleaning)
+/// live in `GitProvider` (and the agent's `current_ref`).
 final class BranchResolverTests: XCTestCase {
   private func resolver(
     timeout: TimeInterval = 3, _ ref: @escaping @Sendable () async throws -> VCSRef
@@ -32,19 +32,12 @@ final class BranchResolverTests: XCTestCase {
     BranchResolver(timeout: timeout, makeProvider: { _ in StubProvider(ref: ref) })
   }
 
-  // MARK: VCSRef → RootRef mapping (git branch/detached + jj bookmark/ancestor all funnel here)
+  // MARK: VCSRef → RootRef mapping (branch/detached funnel here)
 
   func testBranchMapsToBranch() async {
     let ref = await resolver { VCSRef(name: "main", kind: .branch) }.resolve(path: "/x", vcs: "git")
     XCTAssertEqual(ref.kind, .branch)
     XCTAssertEqual(ref.branch, "main")
-  }
-
-  func testAncestorMapsToAncestor() async {
-    let ref = await resolver { VCSRef(name: "master", kind: .ancestor) }
-      .resolve(path: "/x", vcs: "jj")
-    XCTAssertEqual(ref.kind, .ancestor)
-    XCTAssertEqual(ref.branch, "master")
   }
 
   func testDetachedMapsToDetached() async {
@@ -55,7 +48,7 @@ final class BranchResolverTests: XCTestCase {
   }
 
   func testNoneMapsToUnresolved() async {
-    let ref = await resolver { VCSRef.none }.resolve(path: "/x", vcs: "jj")
+    let ref = await resolver { VCSRef.none }.resolve(path: "/x", vcs: "git")
     XCTAssertEqual(ref, .unresolved)
   }
 
@@ -68,15 +61,18 @@ final class BranchResolverTests: XCTestCase {
   // MARK: routing + failure modes
 
   func testUnknownVCSSkipsProvider() async {
-    // A non-git/jj vcs resolves to .unresolved WITHOUT ever calling the provider.
+    // A non-git vcs resolves to .unresolved WITHOUT ever calling the provider — including a stale
+    // "jj" from an old config.
     let r = BranchResolver(makeProvider: { _ in
       StubProvider {
         XCTFail("the provider must not be called for an unsupported vcs")
         return .none
       }
     })
-    let ref = await r.resolve(path: "/x", vcs: "hg")
-    XCTAssertEqual(ref, .unresolved)
+    for vcs in ["hg", "jj"] {
+      let ref = await r.resolve(path: "/x", vcs: vcs)
+      XCTAssertEqual(ref, .unresolved)
+    }
   }
 
   func testProviderErrorYieldsUnresolved() async {

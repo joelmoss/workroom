@@ -67,7 +67,7 @@ struct WindowBackgroundThemer: NSViewRepresentable {
     // the title bar, and (b) it keeps SwiftUI's `AppKitToolbarItem.updateMenuFormRepresentation` alive
     // — recomputed on every layout pass, it bridges an NSAttributedString attributes dict into
     // `swift_dynamicCast` → `_dyld_find_foreign_type_protocol_conformance` (a linear scan of every
-    // loaded Mach-O image; this app links many: GhosttyKit, the Rust VCS xcframework, SwiftGitX/
+    // loaded Mach-O image; this app links many: GhosttyKit, SwiftGitX/
     // libgit2, Sparkle), stacking up to the ≥2s macOS-26 AppHangs. SwiftUI OWNS this toolbar and
     // re-injects the toggle, so `.toolbar(removing: .sidebarToggle)` is a no-op — we strip it in AppKit
     // instead, on every apply, and hide the bar so the `»` never shows. Our own sidebar toggle lives in

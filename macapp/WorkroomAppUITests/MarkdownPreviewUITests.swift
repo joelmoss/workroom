@@ -62,7 +62,7 @@ final class MarkdownPreviewUITests: XCTestCase {
     }
 
     XCTAssertTrue(
-      element(app, id: "changes.workingCopy").waitForExistence(timeout: 10),
+      element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10),
       "the Changes panel should render. App tree:\n\(app.debugDescription)")
 
     let row = element(app, id: "changes.file.\(markdownFile)")

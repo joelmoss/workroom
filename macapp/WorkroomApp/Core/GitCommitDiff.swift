@@ -11,8 +11,8 @@ import libgit2
 /// built here instead.
 ///
 /// Without this a committed rename reads as delete-old + add-new, while `git show` on that same
-/// commit shows ONE rename row (git's CLI defaults to `diff.renames=true`) — and jj, which pairs
-/// renames natively, disagreed with our git read. Working-copy state was never affected:
+/// commit shows ONE rename row (git's CLI defaults to `diff.renames=true`), which disagreed with our
+/// git read. Working-copy state was never affected:
 /// `GitProvider.workingStatus` gets pairing from libgit2's `.renamesIndex`/`.renamesWorkingTree`
 /// status options.
 ///
@@ -217,7 +217,7 @@ enum GitCommitDiff {
       case GIT_DELTA_RENAMED: .renamed
       case GIT_DELTA_COPIED: .copied
       case GIT_DELTA_CONFLICTED: .conflicted
-      // `VCSChangeKind` has no type-change case (jj doesn't surface one either), and `.other` renders
+      // `VCSChangeKind` has no type-change case, and `.other` renders
       // as a featureless "•" — a file that became a symlink would look like something the app failed
       // to classify. `.modified` is the honest approximation (one path, changed content) and it's
       // already what the working-copy side does: `GitProvider.change` folds SwiftGitX's `.typeChange`

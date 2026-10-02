@@ -322,7 +322,7 @@ final class HostConnectionManagerTests: XCTestCase {
     let manager = HostConnectionManager()
     let router = RepositoryRouter(connections: manager)
     let location = try RepositoryLocation.remote(host: UUID(), path: "/repo")
-    try router.register(.init(location: location, backend: .jj, sharedLocation: location))
+    try router.register(.init(location: location, backend: .git, sharedLocation: location))
     let connection = ConnectionFixture()
     let lease = try await manager.connect(host: location.host) { connection }
     let writer = try await router.writer(for: location)
@@ -429,9 +429,9 @@ private struct ConnectionWriter: VCSWriting {
   let connection: ConnectionFixture
   func remoteState() async -> VCSRemoteResolution { .absent }
   func fetch(remote: String) async -> VCSRemoteActionResult { .ok(summary: "fetched") }
-  func push(current: VCSRef, remote: String, setUpstream: Bool, anonymousRevision: String) async
-    -> VCSRemoteActionResult
-  { .ok(summary: "pushed") }
+  func push(current: VCSRef, remote: String, setUpstream: Bool) async -> VCSRemoteActionResult {
+    .ok(summary: "pushed")
+  }
   func pullRebase(current: VCSRef, remote: String, tracking: VCSTracking?) async
     -> VCSRemoteActionResult
   { .ok(summary: "pulled") }

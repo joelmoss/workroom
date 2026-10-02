@@ -36,7 +36,7 @@ final class TerminalTargetTests: XCTestCase {
   func testHostDescriptorsDecodeFromList() throws {
     let json = Data(
       """
-      {"ok":true,"schema_version":1,"projects":[{"path":"/p","vcs":"jj",
+      {"ok":true,"schema_version":1,"projects":[{"path":"/p","vcs":"git",
         "host":{"provider":"boxd"},
         "workrooms":[
           {"name":"local","path":"/wr/local","vcs_name":"workroom/local","warnings":[]},

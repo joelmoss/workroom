@@ -188,19 +188,13 @@ struct ChangesetDetailView: View {
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: 10) {
-        // Identity, styled like the Changes panel header: change-id (purple, jj only) + commit-id
-        // (blue), monospaced — rather than a `#`-prefixed short id — so it reads the same in both.
-        if let changeID = commit.changeID {
-          Text(changeID)
-            .font(.system(.caption, design: .monospaced))
-            .foregroundStyle(.purple)
-            .help("Change ID")
-        }
+        // Identity: the commit-id (blue), monospaced — rather than a `#`-prefixed short id — as the
+        // History hover card shows it.
         Text(commit.shortID)
           .font(.system(.caption, design: .monospaced))
           .foregroundStyle(.blue)
           .help("Commit ID")
-        // Bookmarks/branches, as the same gray capsules the History list rows use, and in the same
+        // Branches/tags, as the same gray capsules the History list rows use, and in the same
         // reading order as the identity that precedes them — left of the author rather than pushed to
         // the far right, so a commit's refs sit beside the ids they belong to in both surfaces.
         ForEach(commit.refs, id: \.self) { ref in
@@ -210,7 +204,7 @@ struct ChangesetDetailView: View {
             .truncationMode(.tail)
             .padding(.horizontal, 5).padding(.vertical, 1)
             .background(.quaternary, in: Capsule())
-            .help("Bookmark / branch")
+            .help("Branch / tag")
         }
         if !commit.authorNamesDisplay.isEmpty {
           Label {
@@ -431,9 +425,6 @@ struct ChangesetDetailView: View {
           path: file.path, change: Self.change(file.kind),
           source: .commit(descriptor.commitID), isPreview: false),
         directory: directory, repositoryLocation: repositoryLocation,
-        // Always `.commit(...)` here, never `.jjWorkingCopy` — this pane never snapshots, so no
-        // project root is needed to key `JJSnapshotGate`.
-        projectRoot: nil,
         showsFileHeader: true,
         headerModeBinding: $diffMode,
         isFocused: isFocused, find: find)

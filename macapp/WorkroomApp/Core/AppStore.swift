@@ -333,7 +333,7 @@ final class AppStore: ObservableObject {
   @Published var expandedTerminalTargets: Set<TerminalTarget.ID> = [] {
     didSet { markSessionDirty() }
   }
-  /// Per-project resolved root branch/bookmark labels, hydrated asynchronously after each
+  /// Per-project resolved root branch labels, hydrated asynchronously after each
   /// load (see `resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
   var rootRefs: [Project.ID: RootRef] {
     get { projectStore.rootRefs }
@@ -456,7 +456,7 @@ final class AppStore: ObservableObject {
   /// Point the toolbar's model at the inspector's active target, but only when it's genuinely visible.
   ///
   /// Same gate, and the same reason, as `focusHistoryIfShown`: a `focus` here is not a cheap pointer
-  /// move but two or three `git`/`jj` processes, so without this every selection change would read a
+  /// move but two or three `git` processes, so without this every selection change would read a
   /// repo for a toolbar nobody can see.
   private func focusRemoteStateIfShown() {
     guard inspectorIsVisible, remoteToolbarShown else {
@@ -500,8 +500,8 @@ final class AppStore: ObservableObject {
     guard inspectorIsVisible, remoteToolbarShown else { return }
     // NOT forced — `force` is what skips the model's 15s TTL, and app activation is the one caller that
     // has no reason to. `RootView` promises this is "throttled, so rapid alt-tabbing doesn't fork a
-    // git/jj process per project" and it wasn't: every activation paid a full read (4 jj processes for an
-    // unbookmarked `@`), held back only by `load()`'s 300ms debounce. `refreshHistoryIfActive`, the twin
+    // git process per project" and it wasn't: every activation paid a full read, held back only by
+    // `load()`'s 300ms debounce. `refreshHistoryIfActive`, the twin
     // this was modelled on, already calls its model unforced. The metadata watcher is the path that
     // genuinely needs to override the TTL, and it still does.
     remoteState.refresh()
@@ -729,7 +729,7 @@ final class AppStore: ObservableObject {
   /// `UNUserNotificationCenter`.
   let systemNotifier: SystemNotifying = SystemNotifier()
 
-  /// Branch/bookmark names from the VCS toolbar's remote-state read, keyed by `SidebarID`.
+  /// Branch names from the VCS toolbar's remote-state read, keyed by `SidebarID`.
   ///
   /// Published by `RemoteStateModel` (the only source of *names*) and read by `branchName(for:)`, which
   /// every branch-showing surface goes through. This is the "one shared cache" half of unifying those
@@ -752,7 +752,7 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Whether the `git`/`jj` on PATH are new enough for the VCS remote actions (see
+  /// Whether the `git` on PATH is new enough for the VCS remote actions (see
   /// `VCSToolVersions`). `nil` until the background probe lands — treated as usable, so a slow probe
   /// never disables a working feature.
   @Published private(set) var vcsToolReport: VCSToolVersions.Report?
@@ -760,18 +760,14 @@ final class AppStore: ObservableObject {
   /// old binary doesn't fix itself), so the warning would otherwise reappear on every reload.
   @Published private(set) var dismissedToolWarnings: Set<String> = []
 
-  /// Whether remote actions are permitted for a project of this VCS. Optimistic before the probe
-  /// lands and for `.unknown` — never cry wolf.
-  func vcsAllowsRemoteActions(vcs: String) -> Bool {
-    vcsToolReport?.allowsRemoteActions(vcs: vcs) ?? true
-  }
+  /// Whether remote actions are permitted. Optimistic before the probe lands and for `.unknown` —
+  /// never cry wolf.
+  var vcsAllowsRemoteActions: Bool { vcsToolReport?.allowsRemoteActions ?? true }
 
-  /// Undismissed tool warnings, rendered as toasts by `ToastStack`. jj is only ever mentioned when a
-  /// jj project is actually registered.
+  /// Undismissed tool warnings, rendered as toasts by `ToastStack`.
   var vcsToolWarnings: [VCSToolVersions.ToolWarning] {
     guard let report = vcsToolReport else { return [] }
-    return report.warnings(hasJJProject: projects.contains { $0.vcs == "jj" })
-      .filter { !dismissedToolWarnings.contains($0.tool) }
+    return report.warnings.filter { !dismissedToolWarnings.contains($0.tool) }
   }
 
   func dismissToolWarning(tool: String) { dismissedToolWarnings.insert(tool) }
@@ -782,11 +778,6 @@ final class AppStore: ObservableObject {
   /// `setUpstream` for git: a workroom is `git worktree add -b`, so it has no counterpart on the remote
   /// until its first push — that first push is the one that should establish tracking, and later ones
   /// must not keep rewriting `branch.<name>.remote`.
-  ///
-  /// `anonymousRevision` for jj: `jj workspace add --name` creates no bookmark, so `@` is unbookmarked
-  /// and the push goes through jj's `--change` path. Pushing a bare `@` fails when the working copy is
-  /// empty AND undescribed — exactly the state a fresh workroom sits in — so the revision falls back to
-  /// its parent. The working-copy facts come from the status sweep, at no extra cost.
   /// Request a remote action, confirming first when one is needed.
   ///
   /// **The confirmation gate lives HERE, not in the toolbar.** It used to sit in `VCSToolbar.perform`,
@@ -811,20 +802,13 @@ final class AppStore: ObservableObject {
   /// the pull against a different workroom than the one the dirty-tree warning described.
   func runRemoteAction(_ action: VCSRemoteAction, on sid: SidebarID) {
     guard let target = remoteState.target, target.sid == sid else { return }
-    guard vcsAllowsRemoteActions(vcs: target.vcs.rawValue) else { return }
-    let workingCopy = workroomStatuses[target.sid]?.jjWorkingCopy
-    let revision = CLIVCSWriter.jjPushRevision(
-      hasChanges: !(workingCopy?.files.isEmpty ?? true),
-      hasDescription: !((workingCopy?.description ?? "").isEmpty))
-    remoteState.perform(
-      action, setUpstream: remoteState.snapshot?.tracking?.gone == true,
-      anonymousRevision: revision)
+    guard vcsAllowsRemoteActions else { return }
+    remoteState.perform(action, setUpstream: remoteState.snapshot?.tracking?.gone == true)
   }
 
   /// Probe the tool versions, sharing one process-wide probe across windows.
   ///
-  /// Called when projects land (so "is any project jj?" is answerable) rather than from `init`. Inert
-  /// in fixture mode: a UI test's PATH is whatever the runner inherited, and a version toast would
+  /// Called when projects land rather than from `init`. Inert in fixture mode: a UI test's PATH is whatever the runner inherited, and a version toast would
   /// overlay the surfaces under test.
   ///
   /// Also inert under XCTest — `apply` runs in dozens of unit tests, and each would otherwise spawn a
@@ -836,10 +820,9 @@ final class AppStore: ObservableObject {
     guard !UITestFixture.isActive,
       ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
     else { return }
-    let probeJJ = projects.contains { $0.vcs == "jj" }
     let cache = vcsToolVersionCache
     Task { [weak self] in
-      let report = await cache.report(probeJJ: probeJJ)
+      let report = await cache.report()
       self?.vcsToolReport = report
     }
   }
@@ -868,21 +851,17 @@ final class AppStore: ObservableObject {
   /// Keeps the selected workroom's local VCS status live (without polling) by watching its directory
   /// for filesystem changes (issue #24 follow-up). Retargeted on selection; see
   /// `updateSelectedWorkroomWatch` / `handleWorkroomFileChange`.
-  lazy var workroomFileWatcher = HostFileWatcher { [weak self] paths, overflow in
-    self?.handleWorkroomFileChange(paths, overflow: overflow)
+  lazy var workroomFileWatcher = HostFileWatcher { [weak self] _, _ in
+    self?.handleWorkroomFileChange()
   }
   /// The watcher's local-refresh task — cancel-and-replace so the latest filesystem change wins and
-  /// at most one probe from THIS lane is in flight. That alone does NOT serialize jj snapshots
-  /// overall: the sweep and the selection-refresh lanes (`AppStore+WorkroomStatus.swift`) can still
-  /// reach `resolveLocal` concurrently with this one for the same project. Cross-lane (and
-  /// cross-window) jj snapshot ordering is `JJSnapshotGate`'s job, threaded through
-  /// `WorkroomStatusResolver.resolveLocal`'s `projectRoot` parameter.
+  /// at most one probe from THIS lane is in flight.
   var watchRefreshTask: Task<Void, Never>?
-  /// Live root branch/bookmark labels: one filesystem watcher per project, pointed at its VCS
-  /// metadata dir (`.git` / `.jj`). A branch switch or bookmark move in the root terminal updates
+  /// Live root branch labels: one filesystem watcher per project, pointed at its VCS
+  /// metadata dir (`.git`). A branch switch in the root terminal updates
   /// the sidebar label immediately, instead of waiting for the throttled on-focus reload. Keyed per
   /// project (unlike the single `workroomFileWatcher`) because root labels are global, not
-  /// selection-scoped. The watch is naturally quiet — working-tree edits don't touch `.git`/`.jj`,
+  /// selection-scoped. The watch is naturally quiet — working-tree edits don't touch `.git`,
   /// only VCS operations do — and resolution is read-only + deduped, so it can't loop or churn.
   ///
   /// LOCAL projects only, by design. For a remote clone a worktree's refs live in the same clone as
@@ -936,7 +915,7 @@ final class AppStore: ObservableObject {
         ? HistoryModel(resolve: { _ in UITestFixture.vcsProvider })
         : HistoryModel())
     // Same seam as `commitHistory` above: fixture mode serves seeded state and records actions instead
-    // of running git/jj, since the fixture's paths aren't real repos. Auto-fetch is disabled outright —
+    // of running git, since the fixture's paths aren't real repos. Auto-fetch is disabled outright —
     // an automatic action would race whatever the test is asserting.
     self.remoteState =
       remoteState
@@ -1929,16 +1908,7 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// The owning project's root path for `target` — the same per-project key
-  /// `AppStore+WorkroomStatus.swift`'s `StatusWorkItem.projectRoot` uses, for callers outside that
-  /// extension that also reach a jj-snapshotting call (currently just the Changes panel's
-  /// working-copy diff, which needs it to key `JJSnapshotGate`). `nil` only if `target` no longer
-  /// matches a live project (e.g. deleted mid-render).
-  func projectRoot(forTarget target: TerminalTarget) -> String? {
-    project(forTarget: target)?.path
-  }
-
-  /// The current branch/bookmark label for a terminal target, for the detail-panel status bar (issue
+  /// The current branch label for a terminal target, for the detail-panel status bar (issue
   /// #49). Reuses the already-resolved sidebar caches — the per-workroom local status (`branchForCI`)
   /// and the project root's `RootRef` — so it adds no new VCS calls. Nil until those resolve, or when
   /// no branch is resolvable (the status bar then just omits the segment).
@@ -1961,7 +1931,7 @@ final class AppStore: ObservableObject {
     return nil
   }
 
-  /// **The** answer to "what branch/bookmark is this?", for every surface that shows one: the status
+  /// **The** answer to "what branch is this?", for every surface that shows one: the status
   /// bar (`branchLabel(for:)`), the Changes panel header, the sidebar's project root row, and the VCS
   /// toolbar. Four surfaces previously each derived it, which meant they could disagree on screen.
   ///
@@ -1975,15 +1945,11 @@ final class AppStore: ObservableObject {
   /// 1. `resolvedBranchNames` — the VCS toolbar's remote-state read, which is force-refreshed the
   ///    moment anything changes it, so it leads whenever it has an answer.
   /// 2. `branchForCI` from the per-workroom status sweep (15s TTL).
-  /// 3. A jj workroom's `@` bookmark, when no CI branch resolved.
-  /// 4. The project root's `RootRef`, resolved by `BranchResolver`.
+  /// 3. The project root's `RootRef`, resolved by `BranchResolver`.
   func branchName(for sid: SidebarID) -> String? {
     if let resolved = resolvedBranchNames[sid], !resolved.isEmpty { return resolved }
     let status = workroomStatuses[sid]
     if let branch = status?.branchForCI, !branch.isEmpty { return branch }
-    // jj: the working copy's own bookmark (`@`) is the label when no CI branch is resolved — matches
-    // what the Changes panel shows for a jj workroom.
-    if let ref = status?.jjWorkingCopy?.refs.first, !ref.isEmpty { return ref }
     if case .root(let project) = sid {
       let label = RootPresentation.make(rootRefs[project] ?? .unresolved).label
       return label.isEmpty ? nil : label
@@ -2812,7 +2778,7 @@ final class AppStore: ObservableObject {
   }
 
   /// Reload only if it's been a while since the last load. Driven by the app regaining
-  /// focus, so alt-tabbing back doesn't fork a git/jj process per project every time.
+  /// focus, so alt-tabbing back doesn't fork a git process per project every time.
   func reloadIfStale(minInterval: TimeInterval = 4) async {
     guard Date().timeIntervalSince(lastLoadAt) >= minInterval else { return }
     // Background poll (fires on every app activation, incl. waking from sleep). A transient
@@ -2881,7 +2847,7 @@ final class AppStore: ObservableObject {
   /// Load the deterministic UI-test fixture (see `UITestFixture`): inject the fake projects and, on
   /// the first load, auto-select the fixture workroom so a terminal renders immediately — the tests
   /// then drive splits/closes without any fragile sidebar navigation. Branch resolution is skipped
-  /// (the temp-dir paths aren't real repos), so no git/jj process is ever spawned. Idempotent: a
+  /// (the temp-dir paths aren't real repos), so no git process is ever spawned. Idempotent: a
   /// later reload re-injects the same projects but preserves whatever the test has since selected.
   ///
   /// Tombstone-filtered like `apply`'s real-CLI path: `deleteWorkroom`'s teardown script touches the
@@ -3061,9 +3027,8 @@ final class AppStore: ObservableObject {
   /// Shared publication does not update a window's selection, splits, sheets or saved session.
   /// Every successful reload must reconcile its own window, even if another waiter published.
   private func reconcileWindow(with fresh: [Project]) {
-    // Tool-version floor (see `VCSToolVersions`). Here rather than in `init` because whether to probe
-    // `jj` at all depends on the project list, which only exists now. Single-flighted process-wide, so
-    // repeat calls on later reloads are free once it has landed.
+    // Tool-version floor (see `VCSToolVersions`). Single-flighted process-wide, so repeat calls on
+    // later reloads are free once it has landed.
     refreshVCSToolReport()
     // First load after launch: restore last session's selection (issue #14) before it's
     // validated below. Resolved against the live projects, so a since-deleted target — or a
@@ -3162,7 +3127,7 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Hydrate each project's root branch/bookmark label off the main path. Per project,
+  /// Hydrate each project's root branch label off the main path. Per project,
   /// concurrent, cancellable: a slow/wedged repo only delays its own label, and a newer
   /// reload cancels this sweep so it can't write stale values. A resolution that comes
   /// back `.none` does not clobber a previously-resolved label (no flash to "root" on
@@ -3186,7 +3151,7 @@ final class AppStore: ObservableObject {
   }
 
   /// Reconcile the per-project root-branch watchers with the current project list: ensure a watcher
-  /// for each project (pointed at its `.git`/`.jj` metadata dir) and tear down watchers for projects
+  /// for each project (pointed at its `.git` metadata dir) and tear down watchers for projects
   /// that went away. Called from `apply` so the watch set tracks the live projects. No-op in fixture
   /// mode (the temp-dir paths aren't real repos — match `resolveBranches`, which skips them too).
   func updateRootBranchWatches() {
@@ -3215,34 +3180,28 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// The VCS metadata directory whose changes signal a root branch/bookmark move: `.git` for git,
-  /// `.jj` for jj. Watching this — not the project root — keeps the watch quiet (working-tree edits
-  /// don't touch it; only VCS operations do). nil for an unknown vcs. `nonisolated` (pure) so it's
-  /// directly unit-testable.
+  /// The VCS metadata directory whose changes signal a root branch move: `.git` for git. Watching
+  /// this — not the project root — keeps the watch quiet (working-tree edits don't touch it; only VCS
+  /// operations do). nil for an unknown vcs. `nonisolated` (pure) so it's directly unit-testable.
   nonisolated static func vcsMetadataDir(path: String, vcs: String) -> String? {
-    switch vcs {
-    case "git": return (path as NSString).appendingPathComponent(".git")
-    case "jj": return (path as NSString).appendingPathComponent(".jj")
-    default: return nil
-    }
+    vcs == "git" ? (path as NSString).appendingPathComponent(".git") : nil
   }
 
-  /// Re-resolve one project's root branch/bookmark after a change under its VCS metadata dir, writing
+  /// Re-resolve one project's root branch after a change under its VCS metadata dir, writing
   /// the label only if it actually changed (so VCS-internal churn that leaves the branch unchanged
   /// doesn't invalidate the sidebar). Cancel-and-replace per project so a write burst resolves once;
   /// `.none` never clobbers a prior label (matches `resolveBranches`).
   func handleRootBranchChange(projectID: Project.ID) {
     guard !UITestFixture.isActive, let p = projects.first(where: { $0.id == projectID })
     else { return }
-    // Live History (issue #59 follow-up): this project's VCS metadata dir moved — a commit / bookmark
-    // / ref update in the project or one of its workrooms (git worktree refs land in the shared
-    // `.git`; jj ops land in the shared `.jj/repo/`, so both surface here even though nothing lands
-    // under the workroom dir). If the inspector is *visible* (not merely the active section — that
+    // Live History (issue #59 follow-up): this project's VCS metadata dir moved — a commit / ref
+    // update in the project or one of its workrooms (git worktree refs land in the shared `.git`, so
+    // they surface here even though nothing lands under the workroom dir). If the inspector is *visible* (not merely the active section — that
     // persists while hidden), showing History, and its target belongs to THIS project, repaint the
     // log. Deliberately BEFORE the label-resolve task below and independent of it: a normal commit
-    // usually leaves the branch/bookmark label unchanged, so gating this on the label actually
-    // changing (the `unchanged → return` at the end) would skip the main case. The read is a
-    // read-only `load_at_head` (no working-copy lock, no write), so it can't re-fire this watcher.
+    // usually leaves the branch label unchanged, so gating this on the label actually
+    // changing (the `unchanged → return` at the end) would skip the main case. The read is
+    // read-only, so it can't re-fire this watcher.
     if inspectorIsVisible, historySectionShown,
       inspectorTargetID?.belongsToProject(p.path) == true
     {
@@ -3272,7 +3231,7 @@ final class AppStore: ObservableObject {
 
   /// Registers a project at `path`. With `create`, a non-existent directory is
   /// created and git-initialized by the CLI (issue #103, "Create new directory…");
-  /// otherwise `path` must already be a Git/JJ repo ("From existing path…").
+  /// otherwise `path` must already be a Git repo ("From existing path…").
   ///
   /// Returns the outcome so a caller with its own inline error UI (the onboarding wizard, issue
   /// #151) can react locally, in addition to (not instead of) the alert this always presents on
@@ -3463,7 +3422,7 @@ final class AppStore: ObservableObject {
     // Mark the workroom "creating" BEFORE the first reload (create-time FSEvents storm fix). The
     // reload's status sweep — and any watch/selection work it triggers — must all observe
     // `isCreating`, or they'd probe/watch the worktree the setup script is actively writing (~70
-    // FSEvents callbacks/sec → a git/jj probe storm). Also blocks deletion while setup runs against
+    // FSEvents callbacks/sec → a git probe storm). Also blocks deletion while setup runs against
     // the worktree (issue #116); `createWorkroom`'s defer clears it when THIS create ends.
     creatingWorkrooms.insert(id)
     // Withhold the terminal in EVERY window for as long as the script runs, and do it BEFORE the
@@ -3977,14 +3936,6 @@ final class AppStore: ObservableObject {
     // backstop, but clearing here keeps it immediate and prevents a same-named recreate from
     // inheriting a stale label.
     forgetLabels(forProject: project.path, workroomNames: project.workrooms.map(\.name))
-    // Drop this project's recorded fetch stamp for the same reason the labels go: it is keyed by
-    // project ROOT PATH in a persisted dictionary with no other pruning, so without this it survives
-    // for the life of the install and a re-add of the same path inherits a stale "last fetched".
-    if Defaults[.vcsLastFetch][project.path] != nil {
-      var stamps = Defaults[.vcsLastFetch]
-      stamps[project.path] = nil
-      Defaults[.vcsLastFetch] = stamps
-    }
     // Drop any pending sheet targeting this project — otherwise its Save path (e.g.
     // setRunConfig(forProject:)) still fires for the now-deleted path, and a later re-add of the
     // same path would silently inherit the stale config (#127 follow-up).
@@ -4264,8 +4215,8 @@ final class AppStore: ObservableObject {
   // MARK: Diff content tabs (issue #66)
 
   /// Open a changed file as a diff in the selected workroom's tab strip, in preview mode
-  /// (single-click in the Changes panel). `source` is the row's group — git worktree, jj `@`, or jj
-  /// `@-` — so the diff resolves against the right revision. No-op if nothing's selected.
+  /// (single-click in the Changes panel). `source` is the row's group, so the diff
+  /// resolves against the right revision. No-op if nothing's selected.
   func openDiffPreview(_ file: ChangedFile, source: DiffSource) {
     guard let target = selectedTarget else { return }
     terminals.openDiffPreview(
@@ -4363,8 +4314,8 @@ final class AppStore: ObservableObject {
 
   /// Open a diff tab's underlying file in the configured editor (the tab toolbar / context-menu
   /// "Open file in…", issue #72). Caller disables this for a deleted-source diff (the working file
-  /// is gone — `DiffDescriptor.change == .deleted`); for a jj `@-` diff it opens the working copy,
-  /// which may differ from the displayed parent revision (editing the live file is the useful action).
+  /// is gone — `DiffDescriptor.change == .deleted`); for a commit diff it opens the working copy,
+  /// which may differ from the displayed revision (editing the live file is the useful action).
   func openDiffTabFile(_ descriptor: DiffDescriptor, for target: TerminalTarget) {
     openWorkroomFile(relativePath: descriptor.path, for: target)
   }
@@ -4627,14 +4578,13 @@ final class AppStore: ObservableObject {
     for descriptor: DiffDescriptor, in status: WorkroomStatus?
   ) -> ChangedFile.Change? {
     switch descriptor.source {
-    case .gitWorktree, .jjWorkingCopy:
+    case .gitWorktree:
       break  // the working copy drifts under us — refresh it
-    case .jjParent, .commit:
+    case .commit:
       return nil  // a commit's own diff is immutable; there is nothing fresher to read
     }
-    // `changedFiles` mirrors the jj working copy's own file list (both come from the one summary
-    // probe), so this single lookup serves git worktrees and jj `@` alike. No entry ⇒ status has not
-    // loaded, or the file is no longer changed: keep what we have and let the pane report.
+    // No entry ⇒ status has not loaded, or the file is no longer changed: keep what we have and let
+    // the pane report.
     return status?.changedFiles?.first { $0.path == descriptor.path }?.change
   }
 
@@ -4913,10 +4863,9 @@ final class AppStore: ObservableObject {
   /// The metadata watcher would get here on its own, but its coalesce window is ~1s and these surfaces
   /// should move the moment the action lands.
   ///
-  /// The status refresh is also how a conflicted jj pull is detected: jj records conflicts inside
-  /// commits and its rebase exits 0, so the exit code can't tell — and the writer cannot re-read the
-  /// working copy itself, because that would re-enter `JJSnapshotGate` for the same project root, which
-  /// that type documents as a deadlock. So the read happens HERE, after the gate has released.
+  /// The status refresh is also how a pull that exited 0 but left conflicts is detected — the writer
+  /// cannot re-read the working copy itself inside the write gate (re-entering it for the same project
+  /// root is a documented deadlock). So the read happens HERE, after the gate has released.
   /// `sid` is the workroom the action RAN in, handed over by the model rather than read back off it.
   ///
   /// It used to read `remoteState.target?.sid` here, which is whatever is selected by the time the action

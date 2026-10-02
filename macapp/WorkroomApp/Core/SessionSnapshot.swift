@@ -311,23 +311,20 @@ struct TerminalPayload: Codable, Hashable, Sendable {
 }
 
 /// `DiffSource` on disk. Split into a kind plus an optional commit id so a new case is an additive
-/// change (unknown kind ⇒ that one tab drops) rather than a reshape.
+/// change (unknown kind ⇒ that one tab drops) rather than a reshape. That is also how a tab saved
+/// by a build that still had jj (`"jjWorkingCopy"`, `"jjParent"`) restores: it drops.
 struct DiffSourcePayload: Codable, Hashable, Sendable {
   var kind: String
   var commit: String?
 
   static let gitWorktree = "gitWorktree"
-  static let jjWorkingCopy = "jjWorkingCopy"
-  static let jjParent = "jjParent"
   static let commitKind = "commit"
 
-  /// Exhaustive on purpose — a fifth `DiffSource` case must be a compile error here, not a tab that
+  /// Exhaustive on purpose — a new `DiffSource` case must be a compile error here, not a tab that
   /// silently stops persisting.
   init(_ source: DiffSource) {
     switch source {
     case .gitWorktree: self.init(kind: Self.gitWorktree, commit: nil)
-    case .jjWorkingCopy: self.init(kind: Self.jjWorkingCopy, commit: nil)
-    case .jjParent: self.init(kind: Self.jjParent, commit: nil)
     case .commit(let id): self.init(kind: Self.commitKind, commit: id)
     }
   }
@@ -340,8 +337,6 @@ struct DiffSourcePayload: Codable, Hashable, Sendable {
   var source: DiffSource? {
     switch kind {
     case Self.gitWorktree: return .gitWorktree
-    case Self.jjWorkingCopy: return .jjWorkingCopy
-    case Self.jjParent: return .jjParent
     case Self.commitKind: return commit.map { .commit($0) }
     default: return nil
     }

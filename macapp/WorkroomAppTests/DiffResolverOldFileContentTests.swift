@@ -5,10 +5,9 @@ import XCTest
 /// Tests for `DiffResolver.oldFileContent` — the PRE-IMAGE (old-side) content fetch that feeds
 /// syntax-highlighting of a diff's DELETED lines. The crucial invariant is which backend method each
 /// `DiffSource` routes to, and the base it resolves:
-///   - `.commit(id)`               → `commitParentFileContent(commitID: id)` (the commit's first parent)
-///   - `.gitWorktree` / `.jjWorkingCopy` → `workingBaseFileContent(base: .workingCopy)`
-///   - `.jjParent`                 → `workingBaseFileContent(base: .parent)`
-/// Real-backend behaviour (git parent walk / jj `@-`/`@--`) is covered by `VCSProviderConformanceTests`.
+///   - `.commit(id)`   → `commitParentFileContent(commitID: id)` (the commit's first parent)
+///   - `.gitWorktree`  → `workingBaseFileContent(base: .workingCopy)`
+/// Real-backend behaviour (git parent walk) is covered by `VCSProviderConformanceTests`.
 final class DiffResolverOldFileContentTests: XCTestCase {
 
   /// Records which pre-image method was called (and with what commit id / base), returning a
@@ -106,24 +105,6 @@ final class DiffResolverOldFileContentTests: XCTestCase {
     XCTAssertTrue(p.parentCalls.isEmpty)
   }
 
-  func testJJWorkingCopyRoutesToWorkingCopyBase() async throws {
-    let dir = try makeWorkroom()
-    let p = StubOldContentProvider()
-    p.result = .success("before\n")
-    _ = await resolver(p).oldFileContent(for: desc("a.rb", .jjWorkingCopy), in: dir.path)
-    XCTAssertEqual(p.baseCalls.first?.base, .workingCopy)
-  }
-
-  func testJJParentRoutesToParentBase() async throws {
-    let dir = try makeWorkroom()
-    let p = StubOldContentProvider()
-    p.result = .success("before\n")
-    _ = await resolver(p).oldFileContent(for: desc("a.rb", .jjParent), in: dir.path)
-    // The jj parent's pre-image is `@--` (base `.parent`), never `@-` (the working-copy base).
-    XCTAssertEqual(p.baseCalls.first?.base, .parent)
-    XCTAssertTrue(p.parentCalls.isEmpty)
-  }
-
   // MARK: - Best-effort: absence / error degrades to nil (deletions render plain)
 
   func testProviderNilContentIsNil() async throws {
@@ -139,7 +120,7 @@ final class DiffResolverOldFileContentTests: XCTestCase {
     let dir = try makeWorkroom()
     let p = StubOldContentProvider()
     p.result = .failure(VCSError.notFound("no parent"))
-    let content = await resolver(p).oldFileContent(for: desc("x.rb", .jjParent), in: dir.path)
+    let content = await resolver(p).oldFileContent(for: desc("x.rb", .gitWorktree), in: dir.path)
     XCTAssertNil(content, "a backend error degrades to plain, never propagates")
   }
 }

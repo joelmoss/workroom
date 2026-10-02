@@ -56,13 +56,13 @@ if [ "${#TARGETS[@]}" -eq 0 ]; then
   exit 1
 fi
 
-# Homebrew's rust ships only the host arch's std, so cross-compiling needs rustup — the same
-# constraint vcs/scripts/build-apple.sh documents for the VCS core, and the same cryptic
-# "can't find crate for `core`" if it is missing.
+# Homebrew's rust ships only the host arch's std, so cross-compiling needs rustup, or the build
+# fails with a cryptic "can't find crate for `core`".
 CARGO="cargo"
 AGENT_TOOLCHAIN="${WR_AGENT_RUST_TOOLCHAIN:-stable}"
-# The VCS service links jj-lib (MSRV 1.93). Xcode can expose an older default rustup
-# toolchain than the terminal's Homebrew rust, so select stable when necessary.
+# ponytail: the 1.93 floor came from jj-lib, which the agent no longer links (#266). It stays until
+# the remaining crates' MSRV is checked. Xcode can expose an older default rustup toolchain than the
+# terminal's Homebrew rust, so select stable when necessary.
 if ! rustc --version | awk '{split($2,v,"."); exit !(v[1] > 1 || v[1] == 1 && v[2] >= 93)}'; then
   if ! rustup run "$AGENT_TOOLCHAIN" rustc --version 2>/dev/null | awk '{split($2,v,"."); exit !(v[1] > 1 || v[1] == 1 && v[2] >= 93)}'; then
     echo "error: wr-agent VCS needs Rust >= 1.93. Run 'rustup update $AGENT_TOOLCHAIN'." >&2
@@ -85,6 +85,15 @@ if [ "${#TARGETS[@]}" -gt 1 ] || [ "${TARGETS[0]}" != "$(rustc -vV | awk '/^host
     echo "error: wr-agent VCS needs Rust >= 1.93. Update stable or set WR_AGENT_RUST_TOOLCHAIN to a compatible installed toolchain." >&2
     exit 1
   fi
+  CARGO="rustup run $AGENT_TOOLCHAIN cargo"
+fi
+
+# Prefer rustup's toolchain whenever it is installed and new enough, even for a host-only build.
+# The PATH above puts /opt/homebrew/bin first, and Homebrew's rustc (1.98.1) builds proc-macro
+# dylibs that fail to load under the MACOSX_DEPLOYMENT_TARGET Xcode exports ("can't find crate for
+# `thiserror_impl`"). vcs/scripts/build-apple.sh carried this pin (#234) until it was deleted (#266).
+if [ "$CARGO" = "cargo" ] && command -v rustup >/dev/null 2>&1 \
+  && rustup run "$AGENT_TOOLCHAIN" rustc --version 2>/dev/null | awk '{split($2,v,"."); exit !(v[1] > 1 || v[1] == 1 && v[2] >= 93)}'; then
   CARGO="rustup run $AGENT_TOOLCHAIN cargo"
 fi
 

@@ -9,7 +9,7 @@ import XCTest
 /// **Why this is a source scan and not a unit test.** The rule is about which code a View is allowed
 /// to call, and nothing at runtime can observe that: a View that spawns `git` behaves identically to
 /// one that asks the store, right up until the repo is not on this Mac. `CommitSheet.prefill` did
-/// exactly that — `StatusCommandRunner().run("jj", …)` plus a `.git` directory listing — and the
+/// exactly that — `StatusCommandRunner().run(…)` plus a `.git` directory listing — and the
 /// only symptom would have been a remote workroom's commit dialog opening blank (issue #154,
 /// Phase 2). Same technique, and the same reasoning, as
 /// `DefaultsIsolationTests.testEveryShippedKeyDeclaresTheAppSuite`.
@@ -30,12 +30,10 @@ final class ViewVCSSeamTests: XCTestCase {
     // check was a `MERGE_HEAD` stat, which no amount of banning `CLIVCSWriter.` would catch if
     // someone rewrote it as a plain `FileManager` call.
     //
-    // A path component rather than the bare extension, so `status.jjWorkingCopy`,
-    // `DiffSource.gitWorktree` and `githubAvatar` — every current `.git`/`.jj` spelling in Views —
-    // are untouched. Banning `FileManager.default` outright would be wrong: `AddProjectSheet`
+    // A path component rather than the bare extension, so `DiffSource.gitWorktree` and
+    // `githubAvatar` — every current `.git` spelling in Views — are untouched. Banning `FileManager.default` outright would be wrong: `AddProjectSheet`
     // legitimately stats a directory the user picked, which is not a repo read.
     ".git/": "reads a repo's private directory from a View — ask the store instead",
-    ".jj/": "reads a repo's private directory from a View — ask the store instead",
   ]
 
   /// Enumerated RECURSIVELY, not with `contentsOfDirectory`.
@@ -75,7 +73,7 @@ final class ViewVCSSeamTests: XCTestCase {
   /// test permanently, silently green.
   func testTheForbiddenPatternsMatchTheCallsTheyDescribe() {
     let realBypasses = [
-      #"await StatusCommandRunner().run("jj", CLIVCSWriter.jjDescriptionArgs(), in: path)"#,
+      #"await StatusCommandRunner().run("git", CLIVCSWriter.gitHeadSubjectArgs(), in: path)"#,
       #"CLIVCSWriter.sequencerState(gitDir: CLIVCSWriter.worktreeGitDir(at: item.path))"#,
       // The same parked-merge check written WITHOUT the writer — the shape the first two needles
       // miss entirely, and the reason the `.git/` needle exists.

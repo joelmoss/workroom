@@ -53,7 +53,7 @@ struct VCSSyncPresentation: Equatable, Sendable {
 /// Everything the failure dialog renders, resolved from one failure.
 ///
 /// The toolbar segment is **one truncating line** — it has to be, it's a 114pt cell — so it can only ever
-/// be a notice that something failed. Anything longer than "Describe the change bef…" was unreadable, and
+/// be a notice that something failed. Anything longer than "Lost contact — this ma…" was unreadable, and
 /// the tooltip that held the rest is a hover away and can't be copied, clicked or kept open while you fix
 /// the problem. This is where the whole message lives instead.
 struct VCSFailureDialog: Equatable, Sendable {
@@ -117,7 +117,7 @@ enum VCSSyncPresenter {
   ///   - state: `nil` ⇒ no readable repo for the current target.
   ///   - hasTarget: whether a workroom is selected at all (distinguishes "nothing selected" from
   ///     "selected, but not a repo" — different copy, both disabled).
-  ///   - toolsUsable: `false` ⇒ the `git`/`jj` on PATH can't run these commands
+  ///   - toolsUsable: `false` ⇒ the `git` on PATH can't run these commands
   ///     (`VCSToolVersions`). Outranks everything except an in-flight action and a failure, because no
   ///     action can succeed.
   ///   - pullRebase: whether the repo pulls with rebase — wording only.
@@ -257,9 +257,9 @@ enum VCSSyncPresenter {
     // count tiers would render "Push origin" and say nothing at all about the tree being conflicted,
     // which is both the more urgent fact and a prerequisite for that push making sense.
     //
-    // Reached only by jj in practice: git's rebase stops on a conflict and exits non-zero, so a
-    // conflicted git pull is already a `.rebaseInProgress` failure offering Abort. jj's rebase commits
-    // the conflict and exits 0, which is why the outcome had to be read from working status at all.
+    // A rebase that stops on a conflict exits non-zero, so that pull is already a `.rebaseInProgress`
+    // failure offering Abort. This tier is for a pull that exited 0 and still left the working copy
+    // conflicted, which only the following status refresh can see.
     //
     // No action offered, for `.locked`'s reason: resolving conflicts is work in an editor, and a button
     // that can't do it is a promise broken on click.
@@ -284,9 +284,9 @@ enum VCSSyncPresenter {
     // [0] The tools can't run these commands. Nothing below this line could succeed.
     guard toolsUsable else {
       return disabled(
-        "Update git or jj to use this", symbol: "exclamationmark.triangle", tone: .warning,
+        "Update git to use this", symbol: "exclamationmark.triangle", tone: .warning,
         help:
-          "Fetch, push and pull need a newer git or jj. See the warning for the required version.")
+          "Fetch, push and pull need a newer git. See the warning for the required version.")
     }
     // [3] No remote at all.
     guard let remote = state.primaryRemote else {
@@ -386,9 +386,6 @@ enum VCSSyncPresenter {
     case .rebaseInProgress: return .abortRebase
     case .rejected: return .pull  // the fix for a rejection is to pull, never to force
     case .toolMissing, .noRemote: return nil
-    // Permanent until the user does something outside Workroom: describe the commit, or move off a base
-    // whose history is protected. Retrying either runs the identical command and fails identically.
-    case .needsDescription, .immutableHistory: return nil
     // The workroom's folder is gone. Retrying spawns the identical command against the identical
     // missing path — there is no "later" where this changes, unlike ordinary contention.
     case .launchFailed: return nil
@@ -436,9 +433,8 @@ enum VCSSyncPresenter {
     // A LOCATED lock is sitting on disk — nothing changes until the user removes it. An unlocatable one
     // had already cleared, which is ordinary contention.
     case .locked(let file): return file == nil
-    // Permanent until the user acts outside Workroom: install the tool, add a remote, describe the
-    // commit, move off protected history.
-    case .toolMissing, .noRemote, .needsDescription, .immutableHistory: return false
+    // Permanent until the user acts outside Workroom: install the tool, add a remote.
+    case .toolMissing, .noRemote: return false
     // The workroom's folder is gone — re-reading the same missing path can't succeed.
     case .launchFailed: return false
     // Both carry an ACTION recovery, so this is only reached if that path is ever changed — and
@@ -504,12 +500,6 @@ enum VCSSyncPresenter {
       // is still there sends the user round a loop that cannot terminate.
       guard let file else { return "The repository was busy. Try again." }
       return "A leftover \(file.filename) is blocking git."
-    case .needsDescription:
-      // The most reachable failure on the push path: this is every workroom between the first edit and
-      // the first commit message. The remedy is one command, so name it.
-      return "Describe the change before pushing it (jj describe)."
-    case .immutableHistory:
-      return "Pull would rewrite shared history here, so it can’t run."
     case .outcomeUnknown:
       // Never "failed": the single most expensive mistake here is a user who reads this as "it
       // didn't happen" and repeats the action. The line has to carry the doubt, not the verdict.
@@ -569,8 +559,8 @@ enum VCSSyncPresenter {
         For an SSH remote, load your key into the agent: ssh-add ~/.ssh/id_ed25519
         For an HTTPS remote, configure a credential helper.
 
-        Workroom runs git and jj non-interactively, so they can never prompt you for a passphrase — \
-        they fail immediately instead of hanging.
+        Workroom runs git non-interactively, so it can never prompt you for a passphrase — it fails \
+        immediately instead of hanging.
         """
     case .hostKeyUnverified:
       return """
@@ -582,7 +572,6 @@ enum VCSSyncPresenter {
         Add one from a terminal, then fetch:
 
         git remote add origin <url>
-        jj git remote add origin <url>
         """
     case .rejected:
       return """
@@ -593,17 +582,6 @@ enum VCSSyncPresenter {
       return "Commit or stash the files named below, then try again."
     case .rebaseInProgress:
       return "Abort the rebase to put the repository back in a clean state, then pull again."
-    case .immutableHistory:
-      return """
-        Pull rebases the whole branch containing @ onto trunk(), and a commit in it is protected by \
-        immutable_heads(). Rebase onto this workroom's own base from a terminal instead.
-        """
-    case .needsDescription:
-      return """
-        Give the change a message first, then push again:
-
-        jj describe -m "…"
-        """
     case .launchFailed:
       return """
         The workroom may have been deleted, or its folder moved or removed outside Workroom. \
@@ -633,8 +611,7 @@ enum VCSSyncPresenter {
     let raw: String?
     switch failure {
     case .timedOut(_, let m), .authRequired(let m), .hostKeyUnverified(let m), .rejected(let m),
-      .dirtyWorkingTree(let m),
-      .immutableHistory(let m), .needsDescription(let m), .outcomeUnknown(let m), .other(let m):
+      .dirtyWorkingTree(let m), .outcomeUnknown(let m), .other(let m):
       raw = m
     case .toolMissing, .noRemote, .rebaseInProgress, .locked, .launchFailed:
       raw = nil
@@ -708,7 +685,6 @@ enum VCSSyncPresenter {
     switch mode {
     case .commit: return "Commit"
     case .amendMessage: return "Amend"
-    case .describe: return "Set message"
     }
   }
 
@@ -728,7 +704,6 @@ enum VCSSyncPresenter {
     case .locked(let file):
       guard let file else { return "The repository was busy. Try again." }
       return "A leftover \(file.filename) is blocking git."
-    case .unsupportedMode: return "That action isn’t available for this repository."
     case .outcomeUnknown:
       return "Lost contact — this commit may have been written."
     case .other(let message):
@@ -800,7 +775,7 @@ enum VCSSyncPresenter {
         Check the history before committing again. Committing a second time over one that did land \
         leaves you with two.
         """
-    case .unsupportedMode, .other:
+    case .other:
       return nil
     }
   }
@@ -812,32 +787,12 @@ enum VCSSyncPresenter {
     case .identityMissing(let m), .signingFailed(let m), .hookRejected(let m),
       .unmergedFiles(let m), .outcomeUnknown(let m), .other(let m):
       raw = m
-    case .toolMissing, .launchFailed, .timedOut, .nothingToCommit, .sequencerInProgress, .locked,
-      .unsupportedMode:
+    case .toolMissing, .launchFailed, .timedOut, .nothingToCommit, .sequencerInProgress, .locked:
       raw = nil
     }
     let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed?.isEmpty == false ? trimmed : nil
   }
-
-  // MARK: Vocabulary
-
-  /// What this backend calls the thing the working copy is on: jj says **bookmark**, git says **branch**.
-  ///
-  /// Not cosmetic. A jj bookmark does NOT advance as you commit, which is the defining behaviour of a git
-  /// branch — so calling it a branch in a jj repo teaches the wrong model of the tool the user is running.
-  ///
-  /// A pure function rather than a ternary inside the view because that's the only way it can be tested:
-  /// the toolbar's caption is not reachable from a unit test, and driving a real jj project through the
-  /// GUI needs both a selected row and an open terminal.
-  ///
-  /// Anything that isn't `"jj"` — including an empty or unrecognised value — reads as "branch". `vcs` comes
-  /// from the CLI config, so git is the safe default for an unknown, and it matches every non-jj repo the
-  /// app can currently open.
-  static func refNoun(vcs: String?) -> String { vcs == "jj" ? "bookmark" : "branch" }
-
-  /// The branch segment's caption: "Current Branch" / "Current Bookmark".
-  static func refCaption(vcs: String?) -> String { "Current \(refNoun(vcs: vcs).capitalized)" }
 
   // MARK: Relative time
 

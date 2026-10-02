@@ -23,8 +23,7 @@ final class RemoteStateModel: ObservableObject {
     }
   }
 
-  /// What the model is pointed at. Carries `projectRoot` because fetch always runs there, and `vcs`
-  /// because the tool floor is scoped per backend.
+  /// What the model is pointed at. Carries `projectRoot` because fetch always runs there.
   struct Target: Equatable, Sendable {
     let sid: SidebarID
     let path: String
@@ -58,10 +57,9 @@ final class RemoteStateModel: ObservableObject {
   /// `VCSFailureReport` — and cleared by `dismissFailureReport`. Separate from `lastFailure`, which is the
   /// toolbar's persistent notice: dismissing the dialog must not erase the bar's report of what happened.
   @Published private(set) var failureReport: VCSFailureReport?
-  /// Set when a pull succeeded but left conflicts. jj records conflicts INSIDE commits and its rebase
-  /// exits 0, so the exit code can't tell — this is raised by `noteConflictState` from the status
-  /// refresh that follows a mutation, i.e. after the gate has released (re-reading inside it would
-  /// deadlock the project's queue).
+  /// Set when a pull reported success but the working copy is conflicted. The exit code can't tell,
+  /// so this is raised by `noteConflictState` from the status refresh that follows a mutation, i.e.
+  /// after the gate has released (re-reading inside it would deadlock the project's queue).
   @Published private(set) var lastPullConflicted = false
 
   private(set) var target: Target?
@@ -78,8 +76,8 @@ final class RemoteStateModel: ObservableObject {
   private var actionTask: Task<Void, Never>?
   /// Which workroom the in-flight action belongs to.
   ///
-  /// `inFlight` is a model-WIDE lock — one action at a time, because the writer and `JJSnapshotGate` are
-  /// shared — but the toolbar renders per selection, so "an action is running" and "an action is running
+  /// `inFlight` is a model-WIDE lock — one action at a time, because the writer and
+  /// `RepositoryWriteGate` are shared — but the toolbar renders per selection, so "an action is running" and "an action is running
   /// *here*" are different questions. Without this, switching workrooms mid-push left the newly selected
   /// one showing "Pushing…" with every segment disabled until the other workroom's action finished (up to
   /// 300s for a pull).
@@ -104,7 +102,7 @@ final class RemoteStateModel: ObservableObject {
   /// only this one model's own single-action lock, which does nothing against a second window's
   /// `RemoteStateModel` (each has its own `inFlight`, as it must to render its own spinner). Checked
   /// before starting an action; a `true` result refuses with `.locked(nil)` rather than queuing into
-  /// `JJSnapshotGate` and possibly racing a live write past its wedge-detection ceiling. Wired post-init
+  /// `RepositoryWriteGate` and possibly racing a live write past its wedge-detection ceiling. Wired post-init
   /// to `AppStore.isWritingProject`, same `AppStore`-free reasoning as the callbacks above. Defaults to
   /// "never busy" so a model built without this wired (e.g. in isolation for a unit test) behaves as
   /// today rather than silently refusing everything.
@@ -144,13 +142,11 @@ final class RemoteStateModel: ObservableObject {
       let isolated = RepositoryRouter()
       try isolated.register(
         .init(
-          location: location,
-          backend: target.vcs == .jj ? .jj : .git, sharedLocation: shared))
+          location: location, backend: .git, sharedLocation: shared))
       let context = try await isolated.context(for: location)
       return try BoundLocalWriter(
         context: context,
-        reader: BoundLocalReader(
-          context: context, provider: target.vcs == .jj ? RustJJProvider() : GitProvider()),
+        reader: BoundLocalReader(context: context, provider: GitProvider()),
         writer: try makeWriter(root))
     }
     return try await router.writer(for: location)
@@ -254,15 +250,7 @@ final class RemoteStateModel: ObservableObject {
     guard self.target == target else { return }
     switch resolution {
     case .state(let state):
-      // Merge in Workroom's own fetch record. Needed because jj's fetch is invisible: it passes
-      // `--no-write-fetch-head`, and a fetch that brings nothing records NO operation at all — so the
-      // op-log scan alone would mean "last fetch that changed something", and clicking Fetch with
-      // nothing new would leave a stale timestamp on screen. The backend still wins when it is newer,
-      // which keeps a fetch run in the user's own terminal visible.
-      snapshot = Self.merging(
-        state,
-        ownFetch: target.location?.host != nil && target.location?.host != .local
-          ? nil : Defaults[.vcsLastFetch][target.projectRoot])
+      snapshot = state
       self.state = .loaded
       readFailure = nil
       onBranchResolved?(target, state.current.name)
@@ -283,19 +271,6 @@ final class RemoteStateModel: ObservableObject {
       readFailure = failure
       onBranchResolved?(target, nil)
     }
-  }
-
-  /// Take the later of the backend's own evidence and Workroom's recorded fetch.
-  static func merging(_ state: VCSRemoteState, ownFetch: Date?) -> VCSRemoteState {
-    guard let ownFetch else { return state }
-    let merged: VCSLastFetch
-    switch state.lastFetch {
-    case .at(let backend): merged = .at(max(backend, ownFetch))
-    case .never, .unknown: merged = .at(ownFetch)
-    }
-    return VCSRemoteState(
-      current: state.current, tracking: state.tracking, remotes: state.remotes,
-      primaryRemote: state.primaryRemote, lastFetch: merged, resolvedAt: state.resolvedAt)
   }
 
   // MARK: Derived
@@ -330,14 +305,9 @@ final class RemoteStateModel: ObservableObject {
   /// Perform an action. Dropped if one is already in flight — the model is deliberately single-action
   /// so a double-click can't fire twice and Push can't race Pull.
   ///
-  /// `anonymousRevision` matters only for a jj workroom whose `@` carries no bookmark: pushing a bare
-  /// `@` fails when the working copy is empty and undescribed, which is exactly the state a fresh
-  /// workroom sits in. Callers pass `CLIVCSWriter.jjPushRevision(hasChanges:hasDescription:)`.
-  ///
   /// `userInitiated` decides whether a failure gets a dialog. Only `autoFetchIfDue` passes `false`.
   func perform(
-    _ action: VCSRemoteAction, setUpstream: Bool = false, anonymousRevision: String = "@",
-    userInitiated: Bool = true
+    _ action: VCSRemoteAction, setUpstream: Bool = false, userInitiated: Bool = true
   ) {
     guard inFlight == nil, let target, let snapshot else { return }
     // Aborting a rebase is purely local — requiring a remote would leave a workroom wedged in a rebase
@@ -388,7 +358,7 @@ final class RemoteStateModel: ObservableObject {
         case .push:
           result = await writer.push(
             current: current, remote: remote,
-            setUpstream: setUpstream, anonymousRevision: anonymousRevision)
+            setUpstream: setUpstream)
         case .pull:
           result = await writer.pullRebase(
             current: current, remote: remote,
@@ -411,14 +381,9 @@ final class RemoteStateModel: ObservableObject {
     // NOT unconditional is the RESULT, below.
     inFlight = nil
     inFlightTarget = nil
-    // The work happened in `target`'s repo whatever is selected now, so the fetch stamp and the
-    // downstream refresh belong to it and fire regardless.
+    // The work happened in `target`'s repo whatever is selected now, so the downstream refresh
+    // belongs to it and fires regardless.
     if case .ok = result {
-      if action == .fetch || action == .pull,
-        target.location == nil || target.location?.host == .local
-      {
-        recordOwnFetch(projectRoot: target.projectRoot)
-      }
       onDidMutate?(action, target)
     }
     // The DIALOG is deliberately raised ahead of the identity guard below. Something the user asked for
@@ -481,15 +446,8 @@ final class RemoteStateModel: ObservableObject {
     failureReport = nil
   }
 
-  /// Stamp Workroom's own fetch time for this project. See `merging` for why this exists.
-  private func recordOwnFetch(projectRoot: String) {
-    var stamps = Defaults[.vcsLastFetch]
-    stamps[projectRoot] = now()
-    Defaults[.vcsLastFetch] = stamps
-  }
-
   /// Called by the store after the post-mutation status refresh lands: a pull that reported success may
-  /// still have produced conflicts (jj writes them into commits and exits 0).
+  /// still have left the working copy conflicted.
   /// `sid` is the workroom the pull ran in — checked, not trusted, for the same reason `finish` checks it:
   /// the sweep this waits on is async, so the selection can move before it lands.
   func noteConflictState(

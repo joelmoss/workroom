@@ -1,17 +1,11 @@
 import Foundation
 
-/// Resolves a project root's current branch/bookmark for the sidebar root-row label — the `@`
-/// bookmark / nearest ancestor bookmark (jj) or current branch / short SHA (git) — read structurally
-/// through `LocalVCSProviding` (jj via jj-lib, git via SwiftGitX). GUI-only: the `workroom` CLI never
+/// Resolves a project root's current branch for the sidebar root-row label — the current branch, or
+/// a short SHA when detached — read structurally through `LocalVCSProviding` (SwiftGitX, or wr-agent
+/// on the agent path). GUI-only: the `workroom` CLI never
 /// shows it, and resolving per project (not inside `list --json`) keeps the list instant and
 /// isolates a slow/wedged repo to its own row. Best-effort — any failure or timeout yields
 /// `.unresolved` for that project and never affects others.
-///
-/// (Previously shelled `git symbolic-ref` / `jj log -T bookmarks` and parsed the output; the jj
-/// bookmark cleaning + nearest-ancestor walk now live in the Rust core's `current_ref`, and jj-lib's
-/// `local_bookmarks()` yields clean names — no `*`/`?`/`@` decoration to strip. The read stays
-/// lock-safe: `current_ref` never snapshots the working copy, so it can't self-trigger the
-/// `.jj` file watcher.)
 struct BranchResolver: Sendable {
   /// Per-call ceiling so one hung repo abandons only its own label. `LocalVCSProviding` has no built-in
   /// timeout, so this wraps the read in `withTimeout`.
@@ -29,9 +23,8 @@ struct BranchResolver: Sendable {
   }
 
   func resolve(path: String, vcs: String) async -> RootRef {
-    // Only git/jj projects have a resolvable root ref; anything else has no label. (The provider
-    // itself routes jj vs git by repo kind — this guard just skips the unsupported case.)
-    guard vcs == "git" || vcs == "jj" else { return .unresolved }
+    // Only git projects have a resolvable root ref; anything else has no label.
+    guard vcs == "git" else { return .unresolved }
     let root = URL(fileURLWithPath: path, isDirectory: true)
     do {
       let ref = try await withTimeout(seconds: timeout) {
@@ -62,7 +55,6 @@ struct BranchResolver: Sendable {
     switch ref.kind {
     case .none: return .unresolved
     case .branch: return name.map { RootRef(branch: $0, kind: .branch) } ?? .unresolved
-    case .ancestor: return name.map { RootRef(branch: $0, kind: .ancestor) } ?? .unresolved
     case .detached: return name.map { RootRef(branch: $0, kind: .detached) } ?? .unresolved
     }
   }

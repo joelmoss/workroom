@@ -589,11 +589,15 @@ final class SessionSnapshotCodecTests: XCTestCase {
   // MARK: DiffSource mapping
 
   func testDiffSourceRoundTripsEveryCase() {
-    let sources: [DiffSource] = [.gitWorktree, .jjWorkingCopy, .jjParent, .commit("abc123")]
+    let sources: [DiffSource] = [.gitWorktree, .commit("abc123")]
     for source in sources {
       XCTAssertEqual(DiffSourcePayload(source).source, source)
     }
     XCTAssertNil(DiffSourcePayload(kind: "telepathy", commit: nil).source)
+    // The two kinds a build with jj persisted (#266). A restored session must drop those tabs, and a
+    // later reuse of either name must not silently remap them.
+    XCTAssertNil(DiffSourcePayload(kind: "jjWorkingCopy", commit: nil).source)
+    XCTAssertNil(DiffSourcePayload(kind: "jjParent", commit: nil).source)
     XCTAssertNil(
       DiffSourcePayload(kind: DiffSourcePayload.commitKind, commit: nil).source,
       "a commit source with no commit id addresses nothing")

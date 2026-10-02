@@ -3,8 +3,7 @@ import XCTest
 @testable import Workroom
 
 /// `FocusedTabSelection` is the single place that answers "what is the focused content tab showing?",
-/// extracted from three copies of the same guard chain in `HistoryRow`, `DivergentSiblingRow` and
-/// `ChangedFileRow` (each of which held two observed objects to run it — the WORKROOM-2B invalidation
+/// extracted from the copies of the same guard chain in `HistoryRow` and `ChangedFileRow` (each of which held two observed objects to run it — the WORKROOM-2B invalidation
 /// storm). One place means one place to teach when a `TabContent` case is added; these tests pin the
 /// mapping for every case, including the ones that must resolve to "nothing selected".
 @MainActor
@@ -75,8 +74,9 @@ final class FocusedTabSelectionTests: XCTestCase {
     XCTAssertEqual(selection, .diff(path: "src/a.swift", source: .gitWorktree))
     XCTAssertTrue(selection!.selectsChangedFile(path: "src/a.swift", source: .gitWorktree))
     XCTAssertFalse(
-      selection!.selectsChangedFile(path: "src/a.swift", source: .jjWorkingCopy),
-      "a diff keeps its source so the same path under `@` vs `@-` selects the right row")
+      selection!.selectsChangedFile(path: "src/a.swift", source: .commit("abc123")),
+      "a diff keeps its source so the same path from the worktree vs a commit selects the right row"
+    )
     XCTAssertFalse(selection!.selectsChangedFile(path: "src/b.swift", source: .gitWorktree))
     XCTAssertNil(selection?.changesetCommitID)
   }
@@ -90,7 +90,7 @@ final class FocusedTabSelectionTests: XCTestCase {
     XCTAssertEqual(selection, .file(path: "src/a.swift"))
     // A file tab has no revision, so it matches on path alone — in BOTH groups.
     XCTAssertTrue(selection!.selectsChangedFile(path: "src/a.swift", source: .gitWorktree))
-    XCTAssertTrue(selection!.selectsChangedFile(path: "src/a.swift", source: .jjWorkingCopy))
+    XCTAssertTrue(selection!.selectsChangedFile(path: "src/a.swift", source: .commit("abc123")))
     XCTAssertFalse(selection!.selectsChangedFile(path: "src/other.swift", source: .gitWorktree))
   }
 }

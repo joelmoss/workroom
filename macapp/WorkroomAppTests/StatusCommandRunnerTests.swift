@@ -2,7 +2,7 @@ import XCTest
 
 @testable import Workroom
 
-/// Direct tests of the real `StatusCommandRunner` against real shell tools (no git/jj repo): the
+/// Direct tests of the real `StatusCommandRunner` against real shell tools (no git repo): the
 /// concurrent drain, the byte cap, the timeout→terminate path, and the launch-failure path — the
 /// deadlock-/crash-free guarantees the whole status layer rests on.
 final class StatusCommandRunnerTests: XCTestCase {
@@ -94,7 +94,7 @@ final class StatusCommandRunnerTests: XCTestCase {
 
   /// A missing cwd must classify as `launchFailed`, NOT `commandNotFound` — the two are different
   /// facts (nothing ran at all vs. `env` ran and searched PATH), and every consumer that reads 127
-  /// as "tool not installed" would otherwise misdiagnose a deleted workroom as a missing git/jj/gh.
+  /// as "tool not installed" would otherwise misdiagnose a deleted workroom as a missing git/gh.
   func testLaunchFailureInMissingDirIsLaunchFailedNotCommandNotFound() async {
     let r = await runner.run(
       "git", ["status"], in: "/no/such/dir-\(UUID().uuidString)", timeout: 5)

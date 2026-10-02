@@ -2,10 +2,10 @@ import XCTest
 
 @testable import Workroom
 
-/// `CLIVCSWriter.commit` against REAL git and jj repos through the REAL `StatusCommandRunner`.
+/// `CLIVCSWriter.commit` against REAL git repos through the REAL `StatusCommandRunner`.
 ///
 /// **This tier exists because the unit tests cannot see any of it.** Argument builders can only prove
-/// what we *send*; every bug below was about what git and jj then *did*, and each one shipped in the
+/// what we *send*; every bug below was about what git then *did*, and each one shipped in the
 /// plan before being measured:
 ///
 /// - a renamed row recorded an add plus an orphaned deletion (`testRenameCommitsBothSides`)
@@ -72,10 +72,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
   private func writer(_ vcs: String) -> CLIVCSWriter {
     CLIVCSWriter(
       vcs: vcs, runner: StatusCommandRunner(),
-      makeProvider: { _ in
-        vcs == "jj" ? RustJJProvider() as LocalVCSProviding : GitProvider() as LocalVCSProviding
-      },
-      gate: JJSnapshotGate(maxChainWait: 5))
+      makeProvider: { _ in GitProvider() }, gate: RepositoryWriteGate(maxChainWait: 5))
   }
 
   /// A git repo with one commit and the named files tracked.
@@ -290,7 +287,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     let staging = CLIVCSWriter(
       vcs: "git", runner: StagingLosesContact(),
       makeProvider: { _ in GitProvider() as LocalVCSProviding },
-      gate: JJSnapshotGate(maxChainWait: 5))
+      gate: RepositoryWriteGate(maxChainWait: 5))
 
     let result = await staging.commit(
       path: dir, projectRoot: dir,
@@ -336,7 +333,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     var landing = CLIVCSWriter(
       vcs: "git", runner: HeadReadsFailOnceItExists(failure: failure),
       makeProvider: { _ in GitProvider() as LocalVCSProviding },
-      gate: JJSnapshotGate(maxChainWait: 5))
+      gate: RepositoryWriteGate(maxChainWait: 5))
     landing.commitTimeout = 1
 
     let result = await landing.commit(
@@ -623,149 +620,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     XCTAssertEqual(status(dir), " M base.txt", "nothing was spawned, nothing changed")
   }
 
-  // MARK: - jj
-
-  private func jjRepo() -> String {
-    let dir = tempDir()
-    sh("jj git init . >/dev/null 2>&1", in: dir)
-    sh("jj config set --repo user.name T >/dev/null 2>&1", in: dir)
-    sh("jj config set --repo user.email t@e.com >/dev/null 2>&1", in: dir)
-    return dir
-  }
-
-  /// `jj commit` describes `@` and starts a new empty change on top, so afterwards the working copy
-  /// is clean and the message is on the parent.
-  func testJJCommitDescribesAndStartsANewChange() async throws {
-    try requireTool("jj")
-    let dir = jjRepo()
-    write("hello\n", to: "a.txt", in: dir)
-
-    let result = await writer("jj").commit(
-      path: dir, projectRoot: dir,
-      request: VCSCommitRequest(message: "jj summary", files: [], mode: .commit))
-
-    guard case .ok = result else { return XCTFail("jj commit failed: \(result)") }
-    let parent = sh(
-      "jj log --ignore-working-copy --no-graph -r @- -T 'description.first_line()'", in: dir
-    ).out
-    XCTAssertTrue(parent.contains("jj summary"), "the message landed on the parent, got: \(parent)")
-  }
-
-  /// Describe sets the message and STAYS on the change — the distinction the menu item's help text
-  /// has to teach, so it had better be true.
-  func testJJDescribeStaysOnTheSameChange() async throws {
-    try requireTool("jj")
-    let dir = jjRepo()
-    write("hello\n", to: "a.txt", in: dir)
-    let before = sh("jj log --ignore-working-copy --no-graph -r @ -T 'change_id'", in: dir).out
-
-    let result = await writer("jj").commit(
-      path: dir, projectRoot: dir,
-      request: VCSCommitRequest(message: "described", files: [], mode: .describe))
-
-    guard case .ok = result else { return XCTFail("jj describe failed: \(result)") }
-    let after = sh("jj log --ignore-working-copy --no-graph -r @ -T 'change_id'", in: dir).out
-    XCTAssertEqual(before, after, "@ is the same change")
-    let message = sh(
-      "jj log --ignore-working-copy --no-graph -r @ -T 'description.first_line()'", in: dir
-    ).out
-    XCTAssertTrue(message.contains("described"))
-  }
-
-  /// A multi-line jj description round-trips whole, which is what the prefill read depends on —
-  /// `JJCommitChanges.description` is only the first line, so prefilling from that and describing
-  /// again would silently discard the body.
-  func testJJDescriptionReadReturnsTheWholeBody() async throws {
-    try requireTool("jj")
-    let dir = jjRepo()
-    write("hello\n", to: "a.txt", in: dir)
-    _ = await writer("jj").commit(
-      path: dir, projectRoot: dir,
-      request: VCSCommitRequest(message: "Summary\n\nBody line one.", files: [], mode: .describe))
-
-    let full = sh(
-      "jj log --ignore-working-copy --no-graph -r @ -T description", in: dir
-    ).out
-    XCTAssertTrue(full.contains("Summary"))
-    XCTAssertTrue(full.contains("Body line one."), "the body survived, got: \(full)")
-  }
-
-  /// The verbs are backend-scoped and a mismatch is reported, never silently run as the nearest
-  /// available command.
-  func testUnsupportedModeIsRejectedPerBackend() async throws {
-    try requireTool("git")
-    let dir = gitRepo()
-    let describeOnGit = await writer("git").commit(
-      path: dir, projectRoot: dir,
-      request: VCSCommitRequest(message: "m", files: [], mode: .describe))
-    XCTAssertEqual(describeOnGit, .failed(.unsupportedMode))
-
-    let amendOnJJ = await writer("jj").commit(
-      path: dir, projectRoot: dir,
-      request: VCSCommitRequest(message: "m", files: [], mode: .amendMessage))
-    XCTAssertEqual(amendOnJJ, .failed(.unsupportedMode))
-  }
-
   // MARK: - Commit pre-flight
-
-  /// jj's description must come back **byte for byte**, which is the whole reason this is its own
-  /// method rather than `LocalVCSProviding.log(limit: 1)`.
-  ///
-  /// Compared against what jj itself holds, read independently — **not** against a round-trip
-  /// through `CommitDraft`, which would prove nothing. `message(summary:body:preserving:)` returns
-  /// the original whenever it re-splits to the same fields, so a `currentMessage` that had been
-  /// trimmed would satisfy that check just as happily as the real one.
-  ///
-  /// A description with no blank separator is the discriminating shape: `CommitDraft.split` +
-  /// `.message` rewrite it to `one\n\ntwo`, which is exactly what routing this through
-  /// `LocalVCSProviding.log(limit: 1)` — whose `VCSCommit` is already split and trimmed — would produce.
-  /// The consequence is not cosmetic: `originalMessage` is what `commit(.describe)` compares against
-  /// to decide the user changed nothing, so a normalised copy makes an untouched dialog rewrite the
-  /// message underneath them.
-  func testJJPreflightReturnsTheDescriptionByteForByte() async throws {
-    try requireTool("jj")
-    let dir = jjRepo()
-    write("hello\n", to: "a.txt", in: dir)
-    // No blank line between the two — legal in jj, and the exact shape that gets rewritten.
-    sh("jj describe -m 'one\ntwo' >/dev/null 2>&1", in: dir)
-
-    let preflight = try await writer("jj").commitPreflight(path: dir)
-    let stored = try XCTUnwrap(preflight.currentMessage, "no description came back")
-
-    let asJJHasIt = sh(
-      "jj log --ignore-working-copy --color never --no-pager --no-graph -r @ -T description",
-      in: dir
-    ).out
-    XCTAssertEqual(
-      stored, asJJHasIt,
-      "any post-processing here — a trim, a split-and-rejoin — shows up as a difference")
-    XCTAssertTrue(
-      stored.contains("one\ntwo"),
-      "the un-normalised shape is what makes this discriminating, got: \(stored.debugDescription)")
-    XCTAssertFalse(stored.contains("one\n\ntwo"), "a blank separator was inserted")
-  }
-
-  /// Each backend answers only its own fields. Pins the contract the dialog reads against.
-  func testPreflightFieldsAreBackendScoped() async throws {
-    try requireTool("jj")
-    let dir = jjRepo()
-    // The fixture has to be hostile or this proves nothing. `jj git init` is COLOCATED, so a plain
-    // `jjRepo()` has a real `.git` holding no `MERGE_HEAD` and no commits — under which
-    // `sequencerState` and `gitHeadSubjectArgs` return nil ANYWAY, and these assertions would pass
-    // just as well against a writer that had lost the backend split and ran every read for both.
-    // Planting a commit and a marker gives the git reads confident non-nil answers, so jj reporting
-    // nil can only mean it did not ask them.
-    sh("git commit -q --allow-empty -m 'a git commit in the colocated repo'", in: dir)
-    FileManager.default.createFile(atPath: dir + "/.git/MERGE_HEAD", contents: Data())
-
-    let jj = try await writer("jj").commitPreflight(path: dir)
-    XCTAssertNil(
-      jj.sequencer, "a jj commit is not path-limited, so jj must not even read the git marker")
-    XCTAssertNil(jj.amendTarget, "jj has no amend, even where a git HEAD exists to name")
-
-    let git = try await writer("git").commitPreflight(path: gitRepo())
-    XCTAssertNil(git.currentMessage, "git has no @ description")
-  }
 
   func testGitPreflightNamesTheCommitAnAmendWouldRewrite() async throws {
     let dir = gitRepo()

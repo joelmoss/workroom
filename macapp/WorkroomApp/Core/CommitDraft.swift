@@ -1,12 +1,11 @@
 import Foundation
 
-/// The two VCS backends this subsystem discriminates on. Owned here (beside `PendingCommit`,
-/// its first consumer) rather than retyping the upstream `String` fields (`Project.vcs`,
-/// `StatusWorkItem.vcs`) that live outside this subsystem — those stay `String`; a construction
-/// boundary converts via `VCSBackend(rawValue:) ?? .git` exactly once.
+/// The VCS backend this subsystem works with — git is the only one. Owned here (beside
+/// `PendingCommit`, its first consumer) rather than retyping the upstream `String` fields
+/// (`Project.vcs`, `StatusWorkItem.vcs`) that live outside this subsystem — those stay `String`; a
+/// construction boundary converts via `VCSBackend(rawValue:) ?? .git` exactly once.
 enum VCSBackend: String, Equatable, Sendable {
   case git
-  case jj
 }
 
 /// The commit sheet's target, carried the way `PendingVCSAction` carries a confirmation's.
@@ -15,7 +14,6 @@ enum VCSBackend: String, Equatable, Sendable {
 /// per target and can never leak from one workroom into another.
 struct PendingCommit: Identifiable, Equatable, Sendable {
   let sid: SidebarID
-  /// Decides whether per-file selection is offered at all and which second verb the menu carries.
   let vcs: VCSBackend
   var id: String { "\(vcs.rawValue)-\(sid.hashValue)" }
 }
@@ -27,7 +25,7 @@ struct PendingCommit: Identifiable, Equatable, Sendable {
 /// SwiftUI. The view holds state and renders; every rule below is decided here.
 enum CommitDraft {
 
-  /// Compose the message git or jj will record.
+  /// Compose the message git will record.
   ///
   /// Summary and body are joined by a BLANK line, which is the convention every tool downstream
   /// relies on to split a subject from its body. Both halves are trimmed, and an empty body yields a
@@ -36,39 +34,6 @@ enum CommitDraft {
     let subject = summary.trimmingCharacters(in: .whitespacesAndNewlines)
     let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
     return detail.isEmpty ? subject : "\(subject)\n\n\(detail)"
-  }
-
-  /// The message to record, preserving `original` byte for byte when neither field was edited.
-  ///
-  /// `split` and `message` are deliberately not inverses: `split` takes line 0 as the summary and the
-  /// rest as the body, while `message` always rejoins them with a BLANK line. So a stored jj
-  /// description of `"one\ntwo"` — no blank separator, which jj permits — came back as
-  /// `"one\n\ntwo"`. The user pressed Describe without touching the text and their message changed
-  /// underneath them.
-  ///
-  /// Normalising is right for a message the user actually wrote here (the blank line is what every
-  /// tool downstream splits on). Rewriting one they didn't touch is not. This tells the two apart.
-  static func message(summary: String, body: String, preserving original: String?) -> String {
-    guard let original else { return message(summary: summary, body: body) }
-    let stored = split(message: original)
-    guard stored.summary == summary, stored.body == body else {
-      return message(summary: summary, body: body)
-    }
-    return original
-  }
-
-  /// Split a stored message back into the two fields, for prefilling from jj's `@` description.
-  ///
-  /// The first line is the summary and everything after the first blank line is the body. Used
-  /// against the FULL description — `JJCommitChanges.description` carries only the first line, so
-  /// prefilling from that and describing again would silently discard the body.
-  static func split(message: String) -> (summary: String, body: String) {
-    let normalized = message.replacingOccurrences(of: "\r\n", with: "\n")
-    var lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-    guard !lines.isEmpty else { return ("", "") }
-    let summary = lines.removeFirst().trimmingCharacters(in: .whitespaces)
-    let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-    return (summary, body)
   }
 
   /// The files a commit would record, given what the user has EXCLUDED.
@@ -91,9 +56,6 @@ enum CommitDraft {
   /// The primary button's label. Names the count so what is about to be recorded is never implicit —
   /// once the list scrolls, "Commit" alone is an unverifiable claim.
   static func commitLabel(selectedCount: Int, vcs: VCSBackend) -> String {
-    // jj commits the whole change and offers no per-file selection, so a count would imply a choice
-    // that isn't on offer.
-    guard vcs != .jj else { return "Commit" }
     switch selectedCount {
     case 1: return "Commit 1 file"
     default: return "Commit \(selectedCount) files"
@@ -112,19 +74,19 @@ enum CommitDraft {
     if let reason = repoStateBlockedReason(conflicted: conflicted, sequencer: sequencer) {
       return reason
     }
-    if totalCount == 0 && vcs != .jj {
+    if totalCount == 0 {
       return "Nothing has changed in this workroom yet."
     }
-    if vcs != .jj && selectedCount == 0 {
+    if selectedCount == 0 {
       return "Select at least one file to commit."
     }
     return summaryBlockedReason(summary)
   }
 
-  /// Why the message-only verb — git's Amend, jj's Describe — is unavailable.
+  /// Why the message-only verb, Amend, is unavailable.
   ///
   /// The repo-state and summary rules, and deliberately NOT the file-count ones: both verbs rewrite a
-  /// message and take no pathspec, so "select at least one file" is not a precondition for either.
+  /// message and takes no pathspec, so "select at least one file" is not a precondition for it.
   /// Sharing the rest is the point. The button used to enforce only its own summary check, which left
   /// it live over unresolved conflicts that the primary refused and the engine then rejected anyway —
   /// and it trimmed a different character set, so a summary of one newline blocked Commit while Amend
@@ -141,9 +103,7 @@ enum CommitDraft {
     if let sequencer {
       return "A \(sequencer) is in progress. Finish it in the terminal before committing."
     }
-    // git refuses to commit unmerged paths outright. jj records conflicts inside commits and would
-    // happily accept this, but "Commit" reading as "done" over unresolved conflicts is a UX decision,
-    // not a capability one — so both backends say the same thing.
+    // git refuses to commit unmerged paths outright.
     if conflicted {
       return "Some files still have unresolved conflicts. Resolve them first."
     }

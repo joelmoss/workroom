@@ -43,7 +43,7 @@ final class DiffHighlightUITests: XCTestCase {
   /// Open a working-copy file's diff and wait for its tab.
   private func openDiff(_ app: XCUIApplication, _ path: String, tab basename: String) {
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
     let row = fileRow(app, path)
     XCTAssertTrue(row.waitForExistence(timeout: 10), "row \(path) should render")
     row.scrollIntoView(in: app)

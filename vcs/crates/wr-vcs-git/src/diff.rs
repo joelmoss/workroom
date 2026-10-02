@@ -2,7 +2,7 @@
 //! NUL-delimited metadata preserves tabs/newlines in paths. No shell interprets request values.
 use std::collections::HashMap;
 use std::io::Read;
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -15,7 +15,7 @@ use wr_vcs_model::{self as model, ChangeKind, ChangedFile, Commit, LineStats, Vc
 
 const MAX_OUTPUT: usize = 8 * 1024 * 1024;
 
-/// Bounded subprocess read, also used by JJ's existing CLI fallback operations on the agent host.
+/// Bounded subprocess read.
 /// Keep draining both pipes, kill the process group on timeout/overflow, then reap before returning.
 pub fn run(root: &Path, program: &str, args: &[&str]) -> model::Result<Vec<u8>> {
     run_with_status(root, program, args, false)
@@ -31,34 +31,7 @@ pub fn run_with_env(
     args: &[&str],
     env: &[(&str, &str)],
 ) -> model::Result<Vec<u8>> {
-    run_bounded(
-        root,
-        program,
-        args,
-        false,
-        Duration::from_secs(30),
-        None,
-        env,
-    )
-}
-
-/// Retain the operation barrier across exec. If the agent dies, a snapshotting JJ child still
-/// owns this descriptor until it really exits. Only the child clears CLOEXEC, never the parent.
-pub fn run_with_barrier(
-    root: &Path,
-    program: &str,
-    args: &[&str],
-    barrier: RawFd,
-) -> model::Result<Vec<u8>> {
-    run_bounded(
-        root,
-        program,
-        args,
-        false,
-        Duration::from_secs(30),
-        Some(barrier),
-        &[],
-    )
+    run_bounded(root, program, args, false, Duration::from_secs(30), env)
 }
 
 fn run_with_status(
@@ -73,7 +46,6 @@ fn run_with_status(
         args,
         difference_is_success,
         Duration::from_secs(30),
-        None,
         &[],
     )
 }
@@ -84,7 +56,6 @@ fn run_bounded(
     args: &[&str],
     difference_is_success: bool,
     timeout: Duration,
-    barrier: Option<RawFd>,
     extra_env: &[(&str, &str)],
 ) -> model::Result<Vec<u8>> {
     let mut command = Command::new(program);
@@ -95,16 +66,6 @@ fn run_bounded(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    if let Some(fd) = barrier {
-        unsafe {
-            command.pre_exec(move || {
-                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
     // An inherited repository override must never redirect a request to another checkout.
     for key in [
         "GIT_DIR",
@@ -654,7 +615,6 @@ mod tests {
             &["-c", "sleep 60 & exit 0"],
             false,
             Duration::from_millis(100),
-            None,
             &[],
         );
         assert!(result.is_err());
@@ -669,7 +629,6 @@ mod tests {
             &[],
             false,
             Duration::from_secs(5),
-            None,
             &[],
         );
         assert!(matches!(result, Err(VcsError::PartialData(_))));

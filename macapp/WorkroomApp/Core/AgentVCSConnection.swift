@@ -70,7 +70,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// `AgentExecRequest` and is fully usable, it just cannot be sent one in pieces.
   private static let chunkedRequestVersion = 2
   /// The first exec service version a remote host's writes can use: it takes `host_environment`
-  /// and `barrier_root`, and answers `stat`.
+  /// and answers `stat`.
   private static let remoteWriteVersion = 3
   /// `MAX_ENVELOPE_PAYLOAD` in `protocol/envelope.rs`.
   private static let maxEnvelopePayload = 1 << 20
@@ -280,8 +280,8 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   func writer(context: RepositoryContext, reader: VCSProviding) throws -> VCSWriting {
     guard context.location.host == host else { throw HostConnectionError.mismatchedContext }
     guard lock.withLock({ !closed }) else { throw HostConnectionError.connectionLost }
-    // A remote host's writes need what exec version 3 added (#229): the host's own environment,
-    // the jj barrier taken for each command, and `stat` for the classifier's disk facts. An older
+    // A remote host's writes need what exec version 3 added (#229): the host's own environment and
+    // `stat` for the classifier's disk facts. An older
     // agent there fails closed rather than writing on Mac-side assumptions.
     let remote = host != .local
     if remote {
@@ -305,12 +305,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     guard let exec = capabilities?.exec, exec >= Self.execVersion else {
       throw VCSError.backendVersion("Agent does not support VCS writes.")
     }
-    // A Mac cannot flock the jj barrier on another host, so there the agent takes it for each
-    // command, under the shared root the local gate would have locked.
-    let barrierRoot = remote && context.backend == .jj ? try context.requireOwnership().path : nil
     var engine = CLIVCSWriter(
       vcs: context.backend.rawValue,
-      runner: AgentCommandRunner(connection: self, barrierRoot: barrierRoot),
+      runner: AgentCommandRunner(connection: self),
       makeProvider: { _ in AgentCurrentRefProvider(reader: reader) }, gate: .shared)
     if remote {
       engine.host = host
@@ -517,9 +514,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
 
   /// A File request: one envelope, never chunked (the agent does not reassemble them).
   ///
-  /// 45s, not the VCS default of 30: a jj listing can legitimately spend 30s waiting for the
-  /// working-copy lock and then up to 10s running, and a client that gives up first leaves the agent
-  /// thread (and its shared request slot) queued on the lock while the caller starts another.
+  /// 45s, not the VCS default of 30: a generous margin over the listing's own 10s
+  /// (`FileListing.timeout`), so the client never gives up on a listing the agent is still running
+  /// and leaves its shared request slot busy while the caller starts another.
   func fileRequest(_ request: AgentFileRequest, timeout: TimeInterval = 45) async throws -> Data {
     try await self.request(request, timeout: timeout, service: Self.fileService)
   }
@@ -1008,6 +1005,9 @@ struct AgentStatReply: Decodable {
 struct AgentVCSRequest: Encodable, Sendable {
   var version = 1
   var root: String?
+  // ponytail: `shared_root` and `backend` are jj-era wire fields (#266). The agent ignores the first
+  // and still requires the second ("git") on every read. Prune both with a protocol bump once no
+  // supported agent predates #266.
   var sharedRoot: String?
   var backend: String?
   let method: String

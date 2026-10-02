@@ -8,15 +8,10 @@ struct AgentVCSReader: VCSProviding {
     _ method: String, limit: Int? = nil, revision: String? = nil, path: String? = nil,
     base: VCSWorkingDiffBase? = nil
   ) async throws -> T {
-    if context.backend == .jj,
-      method == "working_status" || (method == "working_file_diff" && base == .workingCopy)
-    {
-      _ = try context.requireOwnership()
-    }
     let request = AgentVCSRequest(
       root: context.location.path, sharedRoot: context.sharedLocation?.path,
       backend: context.backend.rawValue, method: method, limit: limit, revision: revision,
-      path: path, base: base.map { $0 == .workingCopy ? "working_copy" : "parent" })
+      path: path, base: base.map { _ in "working_copy" })
     return try AgentVCSReply<T>.decode(await connection.request(request))
   }
 
@@ -56,7 +51,7 @@ struct AgentVCSReader: VCSProviding {
   }
   func workingStatus() async throws -> WorkroomStatus {
     let status: AgentStatus = try await read("working_status")
-    let files = status.files ?? status.workingCopy?.files ?? []
+    let files = status.files
     let untracked = status.untracked.map(Set.init)
     let changed = files.map {
       ChangedFile(
@@ -64,18 +59,12 @@ struct AgentVCSReader: VCSProviding {
         change: untracked?.contains($0.path) == true ? .untracked : $0.kind.status,
         oldPath: $0.oldPath)
     }
-    // Required fields are validated by the DTO: an invalid reply cannot mean a clean checkout.
     return WorkroomStatus(
       dirty: !changed.isEmpty || status.conflicted, conflicted: status.conflicted,
       changedFiles: changed,
       insertions: files.reduce(0) { $0 + ($1.lineStats?.insertions ?? 0) },
       deletions: files.reduce(0) { $0 + ($1.lineStats?.deletions ?? 0) },
-      branchForCI: status.branchForCi,
-      jjWorkingCopy: status.workingCopy.map {
-        JJCommitChanges(
-          changeID: $0.changeId, commitID: $0.commitId, refs: $0.refs,
-          description: $0.description, files: changed)
-      })
+      branchForCI: status.branchForCi)
   }
 }
 
@@ -162,6 +151,9 @@ private enum AgentPushState: String, Decodable, Sendable {
     }
   }
 }
+// ponytail: `Ancestor` (and AgentCommit's change-id/working-copy/root/divergence fields) are
+// jj-era wire shape, still decoded so an older agent's replies keep parsing. A git reader never
+// sends `Ancestor`; read it as a branch. Prune once app/agent skew no longer spans #266.
 private enum AgentRefKind: String, Decodable, Sendable {
   case branch = "Branch"
   case ancestor = "Ancestor"
@@ -169,8 +161,7 @@ private enum AgentRefKind: String, Decodable, Sendable {
   case none = "None"
   var model: VCSRefKind {
     switch self {
-    case .branch: .branch
-    case .ancestor: .ancestor
+    case .branch, .ancestor: .branch
     case .detached: .detached
     case .none: .none
     }
@@ -202,12 +193,10 @@ private struct AgentCommit: Decodable, Sendable {
   let pushState: AgentPushState
   var model: VCSCommit {
     VCSCommit(
-      commitID: commitId, shortID: shortId, changeID: changeId, summary: summary, body: body,
+      commitID: commitId, shortID: shortId, summary: summary, body: body,
       authors: authors.map { VCSAuthor(name: $0.name, email: $0.email) },
       timestamp: Date(timeIntervalSince1970: Double(timestampMs) / 1000),
-      refs: refs, parentIDs: parentIds, isWorkingCopy: isWorkingCopy,
-      changeOffset: changeOffset, divergentSiblings: divergentSiblings.map(\.model),
-      pushState: pushState.model, isRoot: isRoot)
+      refs: refs, parentIDs: parentIds, pushState: pushState.model)
   }
 }
 private struct AgentHistory: Decodable, Sendable {
@@ -237,30 +226,10 @@ private struct AgentRef: Decodable, Sendable {
   let name: String?
   let kind: AgentRefKind
 }
-private struct AgentWorkingCopy: Decodable, Sendable {
-  let changeId: String?
-  let commitId: String?
-  let refs: [String]
-  let description: String?
-  let files: [AgentFile]
-}
+/// Required fields are validated here: an invalid reply cannot mean a clean checkout.
 private struct AgentStatus: Decodable, Sendable {
   let conflicted: Bool
-  let files: [AgentFile]?
+  let files: [AgentFile]
   let untracked: [String]?
   let branchForCi: String?
-  let workingCopy: AgentWorkingCopy?
-  enum CodingKeys: CodingKey { case conflicted, files, untracked, branchForCi, workingCopy }
-  init(from decoder: Decoder) throws {
-    let values = try decoder.container(keyedBy: CodingKeys.self)
-    conflicted = try values.decode(Bool.self, forKey: .conflicted)
-    files = try values.decodeIfPresent([AgentFile].self, forKey: .files)
-    untracked = try values.decodeIfPresent([String].self, forKey: .untracked)
-    branchForCi = try values.decodeIfPresent(String.self, forKey: .branchForCi)
-    workingCopy = try values.decodeIfPresent(AgentWorkingCopy.self, forKey: .workingCopy)
-    guard (files != nil) != (workingCopy != nil) else {
-      throw HostConnectionError.serviceUnavailable(
-        "Agent status must contain exactly one backend's changed files.")
-    }
-  }
 }

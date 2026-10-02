@@ -2,13 +2,10 @@ import XCTest
 
 @testable import Workroom
 
-/// `VCSToolVersions` — the declared tool floors (git 2.41 required, jj 0.43 optional) and the
-/// per-project-VCS scoping of what a below-floor tool disables.
+/// `VCSToolVersions` — the declared git floor (2.41) and what a below-floor or missing git disables.
 ///
 /// The parsing tests exist because the remote commands fail *atomically* on an old tool, so a
-/// mis-parsed version silently either blocks a working install or admits a broken one. The scoping
-/// tests are the ones most likely to catch a regression: it is easy to write a global "tools ok?"
-/// boolean that wrongly lets an old `jj` disable a git project's toolbar.
+/// mis-parsed version silently either blocks a working install or admits a broken one.
 final class VCSToolVersionsTests: XCTestCase {
 
   private func result(_ stdout: String, exit: Int32 = 0, timedOut: Bool = false) -> CommandResult {
@@ -26,10 +23,6 @@ final class VCSToolVersionsTests: XCTestCase {
   func testParsesAppleGitVersion() {
     let found = VCSToolVersions.firstVersion(in: "git version 2.39.5 (Apple Git-154)")
     XCTAssertEqual(found?.raw, "2.39.5")
-  }
-
-  func testParsesJJVersion() {
-    XCTAssertEqual(VCSToolVersions.firstVersion(in: "jj 0.43.0")?.raw, "0.43.0")
   }
 
   func testParsesTwoComponentVersion() {
@@ -66,14 +59,6 @@ final class VCSToolVersionsTests: XCTestCase {
     XCTAssertEqual(
       VCSToolVersions.status(result("git version 2.55.0"), floor: VCSToolVersions.gitFloor),
       .ok("2.55.0"))
-    XCTAssertEqual(
-      VCSToolVersions.status(result("jj 0.43.0"), floor: VCSToolVersions.jjFloor), .ok("0.43.0"))
-  }
-
-  func testBelowTheJJFloor() {
-    XCTAssertEqual(
-      VCSToolVersions.status(result("jj 0.17.0"), floor: VCSToolVersions.jjFloor),
-      .belowFloor("0.17.0"))
   }
 
   // MARK: Statuses
@@ -97,107 +82,57 @@ final class VCSToolVersionsTests: XCTestCase {
   }
 
   func testVersionOnStderrIsStillRead() {
-    let r = CommandResult(stdout: "", stderr: "jj 0.43.0", exitCode: 0, timedOut: false)
-    XCTAssertEqual(VCSToolVersions.status(r, floor: VCSToolVersions.jjFloor), .ok("0.43.0"))
+    let r = CommandResult(stdout: "", stderr: "git version 2.55.0", exitCode: 0, timedOut: false)
+    XCTAssertEqual(VCSToolVersions.status(r, floor: VCSToolVersions.gitFloor), .ok("2.55.0"))
   }
 
   /// Never cry wolf: an unreadable probe must not disable a feature that may well work.
   func testUnknownIsTreatedAsUsable() {
-    let report = VCSToolVersions.Report(git: .unknown, jj: .unknown)
-    XCTAssertTrue(report.allowsRemoteActions(vcs: "git"))
-    XCTAssertTrue(report.allowsRemoteActions(vcs: "jj"))
-    XCTAssertTrue(report.warnings(hasJJProject: true).isEmpty)
+    let report = VCSToolVersions.Report(git: .unknown)
+    XCTAssertTrue(report.allowsRemoteActions)
+    XCTAssertTrue(report.warnings.isEmpty)
   }
 
-  // MARK: Required vs optional, and per-VCS scoping
+  // MARK: What a broken git disables
 
-  func testEverythingOkAllowsBoth() {
-    let report = VCSToolVersions.Report(git: .ok("2.55.0"), jj: .ok("0.43.0"))
-    XCTAssertTrue(report.allowsRemoteActions(vcs: "git"))
-    XCTAssertTrue(report.allowsRemoteActions(vcs: "jj"))
-    XCTAssertTrue(report.warnings(hasJJProject: true).isEmpty)
+  func testOkGitAllowsRemoteActionsSilently() {
+    let report = VCSToolVersions.Report(git: .ok("2.55.0"))
+    XCTAssertTrue(report.allowsRemoteActions)
+    XCTAssertTrue(report.warnings.isEmpty)
   }
 
-  /// jj is OPTIONAL: a git-only user must never be warned about a tool they don't use.
-  func testMissingJJIsSilentWithoutAJJProject() {
-    let report = VCSToolVersions.Report(git: .ok("2.55.0"), jj: .notInstalled)
-    XCTAssertTrue(report.warnings(hasJJProject: false).isEmpty)
-    XCTAssertTrue(report.allowsRemoteActions(vcs: "git"))
+  /// git is REQUIRED, so an old git disables remote actions and says so.
+  func testOldGitDisablesRemoteActions() {
+    let report = VCSToolVersions.Report(git: .belowFloor("2.30.0"))
+    XCTAssertFalse(report.allowsRemoteActions)
+    XCTAssertEqual(report.warnings.map(\.tool), ["git"])
   }
 
-  /// …but with a jj project registered it is worth saying, and it disables jj projects ONLY.
-  func testMissingJJWarnsAndDisablesOnlyJJProjects() {
-    let report = VCSToolVersions.Report(git: .ok("2.55.0"), jj: .notInstalled)
-    let warnings = report.warnings(hasJJProject: true)
-    XCTAssertEqual(warnings.count, 1)
-    XCTAssertEqual(warnings.first?.tool, "jj")
-    XCTAssertTrue(
-      report.allowsRemoteActions(vcs: "git"), "an absent jj must NOT disable a git project")
-    XCTAssertFalse(report.allowsRemoteActions(vcs: "jj"))
-  }
-
-  func testOldJJDisablesOnlyJJProjects() {
-    let report = VCSToolVersions.Report(git: .ok("2.55.0"), jj: .belowFloor("0.17.0"))
-    XCTAssertTrue(
-      report.allowsRemoteActions(vcs: "git"), "an old jj must NOT disable a git project")
-    XCTAssertFalse(report.allowsRemoteActions(vcs: "jj"))
-    XCTAssertEqual(report.warnings(hasJJProject: true).map(\.tool), ["jj"])
-  }
-
-  /// git is REQUIRED, and a colocated jj repo drives git underneath — so an old git disables both.
-  func testOldGitDisablesBothVCSKinds() {
-    let report = VCSToolVersions.Report(git: .belowFloor("2.30.0"), jj: .ok("0.43.0"))
-    XCTAssertFalse(report.allowsRemoteActions(vcs: "git"))
-    XCTAssertFalse(report.allowsRemoteActions(vcs: "jj"), "jj drives git for its network ops")
-    XCTAssertEqual(report.warnings(hasJJProject: false).map(\.tool), ["git"])
-  }
-
-  func testAbsentGitDisablesBothAndUsesBrokenInstallCopy() {
-    let report = VCSToolVersions.Report(git: .notInstalled, jj: .ok("0.43.0"))
-    XCTAssertFalse(report.allowsRemoteActions(vcs: "git"))
-    XCTAssertFalse(report.allowsRemoteActions(vcs: "jj"))
-    let warning = report.warnings(hasJJProject: false).first
+  func testAbsentGitDisablesRemoteActionsAndUsesBrokenInstallCopy() {
+    let report = VCSToolVersions.Report(git: .notInstalled)
+    XCTAssertFalse(report.allowsRemoteActions)
+    let warning = report.warnings.first
     XCTAssertEqual(warning?.tool, "git")
     XCTAssertTrue(
       warning?.title.contains("isn’t installed") == true,
       "absent git needs broken-install copy, not too-old copy: \(warning?.title ?? "nil")")
   }
 
-  func testBothBrokenWarnsAboutBoth() {
-    let report = VCSToolVersions.Report(git: .belowFloor("2.30.0"), jj: .belowFloor("0.17.0"))
-    XCTAssertEqual(report.warnings(hasJJProject: true).map(\.tool), ["git", "jj"])
-  }
-
   // MARK: Probe
 
-  /// `probeJJ: false` must not spawn `jj --version` at all — a git-only user shouldn't pay for a
-  /// process, and `env` would report 127 for a tool they legitimately don't have.
-  func testProbeSkipsJJEntirelyWhenNotNeeded() async {
+  /// The probe spawns `git --version` and nothing else.
+  func testProbeRunsOnlyGit() async {
     let runner = RecordingVersionRunner(
       responses: [
         "git": CommandResult(
           stdout: "git version 2.55.0", stderr: "", exitCode: 0,
           timedOut: false)
       ])
-    let report = await VCSToolVersions.probe(runner: runner, probeJJ: false)
+    let report = await VCSToolVersions.probe(runner: runner)
     let executables = await runner.executables()
     XCTAssertEqual(report.git, .ok("2.55.0"))
-    XCTAssertEqual(executables, ["git"], "jj must not be spawned")
-    XCTAssertTrue(report.warnings(hasJJProject: false).isEmpty)
-  }
-
-  func testProbeReadsBothWhenJJIsNeeded() async {
-    let runner = RecordingVersionRunner(
-      responses: [
-        "git": CommandResult(
-          stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false),
-        "jj": CommandResult(stdout: "jj 0.43.0", stderr: "", exitCode: 0, timedOut: false),
-      ])
-    let report = await VCSToolVersions.probe(runner: runner, probeJJ: true)
-    let executables = await runner.executables()
-    XCTAssertEqual(report.git, .ok("2.55.0"))
-    XCTAssertEqual(report.jj, .ok("0.43.0"))
-    XCTAssertEqual(executables, ["git", "jj"])
+    XCTAssertEqual(executables, ["git"])
+    XCTAssertTrue(report.warnings.isEmpty)
   }
 
   func testProbeAsksForVersionFlag() async {
@@ -207,7 +142,7 @@ final class VCSToolVersionsTests: XCTestCase {
           stdout: "git version 2.55.0", stderr: "", exitCode: 0,
           timedOut: false)
       ])
-    _ = await VCSToolVersions.probe(runner: runner, probeJJ: false)
+    _ = await VCSToolVersions.probe(runner: runner)
     let calls = await runner.calls()
     XCTAssertEqual(calls.first?.args, ["--version"])
   }
@@ -216,13 +151,12 @@ final class VCSToolVersionsTests: XCTestCase {
 
   func testRequiredVersionReadsAsTwoComponentsWhenPatchIsZero() {
     XCTAssertEqual(VCSToolVersions.gitFloor.shortDescription, "2.41")
-    XCTAssertEqual(VCSToolVersions.jjFloor.shortDescription, "0.43")
     XCTAssertEqual(SemanticVersion("1.2.3")!.shortDescription, "1.2.3")
   }
 
   func testBelowFloorCopyNamesBothFoundAndRequired() {
-    let report = VCSToolVersions.Report(git: .belowFloor("2.30.0"), jj: .ok("0.43.0"))
-    let warning = report.warnings(hasJJProject: false).first
+    let report = VCSToolVersions.Report(git: .belowFloor("2.30.0"))
+    let warning = report.warnings.first
     XCTAssertTrue(warning?.title.contains("2.41") == true, "must name the requirement")
     XCTAssertTrue(warning?.detail.contains("2.30.0") == true, "must name what was found")
   }
@@ -232,55 +166,36 @@ final class VCSToolVersionsTests: XCTestCase {
   /// A `.notInstalled` verdict must NOT be cached. It comes from exit 127 — the tool wasn't on PATH —
   /// and at launch the PATH may still be the deterministic floor, because `ShellEnvironment.path()`
   /// returns the floor until the detached interactive-shell probe lands and nothing joins that probe.
-  /// The floor covers Homebrew but not a shim dir, Nix or MacPorts, so a jj living in one read as
-  /// missing and the cache pinned "jj isn't installed" for the whole process (`cached` is cleared only
-  /// by the tests-only `reset()`). Re-probing costs one `--version`.
+  /// The floor covers Homebrew but not a shim dir, Nix or MacPorts, so a git living in one read as
+  /// missing and the cache pinned "Git isn't installed" for the whole process (`cached` is cleared
+  /// only by the tests-only `reset()`). Re-probing costs one `--version`.
   func testAbsentToolIsNotCachedSoALaterProbeCanSeeAnEnrichedPath() async {
-    let runner = RecordingVersionRunner(responses: [
-      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false)
-      // no "jj" response ⇒ the runner returns 127, i.e. not on PATH
-    ])
+    // No "git" response ⇒ the runner returns 127, i.e. not on PATH.
+    let runner = RecordingVersionRunner(responses: [:])
     let cache = VCSToolVersionCache()
 
-    _ = await cache.report(probeJJ: true, runner: runner)
-    _ = await cache.report(probeJJ: true, runner: runner)
+    _ = await cache.report(runner: runner)
+    _ = await cache.report(runner: runner)
 
-    let jjProbes = await runner.executables().filter { $0 == "jj" }.count
-    XCTAssertEqual(jjProbes, 2, "an absent tool was cached, pinning it for the whole session")
+    let gitProbes = await runner.executables().filter { $0 == "git" }.count
+    XCTAssertEqual(gitProbes, 2, "an absent tool was cached, pinning it for the whole session")
   }
 
   /// The other direction: a settled verdict IS cached, so this doesn't turn into a probe per call.
-  func testPresentToolsAreStillCached() async {
-    let runner = RecordingVersionRunner(responses: [
-      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false),
-      "jj": CommandResult(stdout: "jj 0.43.0", stderr: "", exitCode: 0, timedOut: false),
-    ])
-    let cache = VCSToolVersionCache()
-
-    _ = await cache.report(probeJJ: true, runner: runner)
-    _ = await cache.report(probeJJ: true, runner: runner)
-
-    let probes = await runner.executables().count
-    XCTAssertEqual(probes, 2, "a good report should be cached, not re-probed")
-  }
-
-  /// `probeJJ: false` reports jj `.notInstalled` WITHOUT running it. That is not an absence we
-  /// discovered, so it must not block caching — otherwise every launch with no jj project registered
-  /// re-probes `git --version` on every call.
-  func testSkippedJJDoesNotBlockCaching() async {
+  func testPresentToolIsStillCached() async {
     let runner = RecordingVersionRunner(responses: [
       "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false)
     ])
     let cache = VCSToolVersionCache()
 
-    _ = await cache.report(probeJJ: false, runner: runner)
-    _ = await cache.report(probeJJ: false, runner: runner)
+    _ = await cache.report(runner: runner)
+    _ = await cache.report(runner: runner)
 
-    let gitProbes = await runner.executables().filter { $0 == "git" }.count
-    XCTAssertEqual(gitProbes, 1, "a skipped jj was mistaken for a discovered absence")
+    let probes = await runner.executables().count
+    XCTAssertEqual(probes, 1, "a good report should be cached, not re-probed")
   }
 
-  // MARK: - VCSToolVersionCache: two independent slots
+  // MARK: - VCSToolVersionCache: TTLs
 
   /// A `.belowFloor` verdict must clear after its (short) TTL, so a user who upgrades and is told to
   /// relaunch actually sees it clear without relaunching — the bug the single, pinned-forever cache
@@ -291,12 +206,12 @@ final class VCSToolVersionsTests: XCTestCase {
     ])
     let cache = VCSToolVersionCache(ttl: .seconds(60), belowFloorTTL: .milliseconds(20))
 
-    let first = await cache.report(probeJJ: false, runner: runner)
+    let first = await cache.report(runner: runner)
     XCTAssertEqual(first.git, .belowFloor("2.30.0"))
 
     try? await Task.sleep(for: .milliseconds(60))
 
-    _ = await cache.report(probeJJ: false, runner: runner)
+    _ = await cache.report(runner: runner)
     let gitProbes = await runner.executables().filter { $0 == "git" }.count
     XCTAssertEqual(gitProbes, 2, "a stale belowFloor verdict must re-probe, not stay pinned")
   }
@@ -311,43 +226,16 @@ final class VCSToolVersionsTests: XCTestCase {
     ])
     let cache = VCSToolVersionCache()
 
-    _ = await cache.report(probeJJ: false, runner: runner)
-    _ = await cache.report(probeJJ: false, runner: runner)
+    _ = await cache.report(runner: runner)
+    _ = await cache.report(runner: runner)
 
     let gitProbes = await runner.executables().filter { $0 == "git" }.count
     XCTAssertEqual(gitProbes, 1)
   }
 
-  /// **The reentrancy bug the split-slot design exists to close, structurally.** In the old
-  /// single-slot design, a `probeJJ: false` call finishing after a `probeJJ: true` call could
-  /// overwrite the jj-aware verdict with a jj-blind one. Here, a `probeJJ: false` call must not
-  /// touch the jj slot AT ALL — proven by never giving its runner a "jj" response, so any attempt to
-  /// probe jj would surface as a spawned (and unanswered) call, not silently as `.notInstalled`.
-  func testProbeJJFalseNeverTouchesTheJJSlotOnceCached() async {
-    let runner = RecordingVersionRunner(responses: [
-      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false),
-      "jj": CommandResult(stdout: "jj 0.43.0", stderr: "", exitCode: 0, timedOut: false),
-    ])
-    let cache = VCSToolVersionCache()
-
-    // Cache a REAL jj-aware verdict first.
-    let aware = await cache.report(probeJJ: true, runner: runner)
-    XCTAssertEqual(aware.jj, .ok("0.43.0"))
-
-    // Any number of jj-blind callers must not disturb it.
-    for _ in 0..<3 { _ = await cache.report(probeJJ: false, runner: runner) }
-
-    // Re-asking with probeJJ:true must return the STILL-CACHED verdict — one jj probe total, not
-    // clobbered and not re-run.
-    let stillAware = await cache.report(probeJJ: true, runner: runner)
-    XCTAssertEqual(stillAware.jj, .ok("0.43.0"), "a jj-blind caller must never clobber the jj slot")
-    let jjProbes = await runner.executables().filter { $0 == "jj" }.count
-    XCTAssertEqual(jjProbes, 1, "the cached jj verdict must not be re-probed either")
-  }
-
 }
 
-/// Records which executables were asked for, so a test can assert `jj` was never spawned.
+/// Records which executables were asked for, so a test can assert what was spawned.
 private actor RecordingVersionRunner: StatusCommandRunning {
   struct Call: Sendable {
     let executable: String

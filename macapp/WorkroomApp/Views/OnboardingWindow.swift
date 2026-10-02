@@ -65,7 +65,7 @@ struct OnboardingFeature: Identifiable {
       id: "workrooms",
       icon: "square.stack.3d.up",
       title: "Parallel development across projects",
-      subtitle: "Git and JJ worktrees for every project, each in its own workroom."),
+      subtitle: "Git worktrees for every project, each in its own workroom."),
     OnboardingFeature(
       id: "terminal",
       icon: "terminal",

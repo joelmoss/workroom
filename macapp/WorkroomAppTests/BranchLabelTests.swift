@@ -2,7 +2,7 @@ import XCTest
 
 @testable import Workroom
 
-/// `AppStore.branchLabel(for:)` — the source for the detail-panel status bar's branch/bookmark
+/// `AppStore.branchLabel(for:)` — the source for the detail-panel status bar's branch
 /// segment (issue #49). It reuses the already-resolved sidebar caches (per-workroom `branchForCI`,
 /// the project root's `RootRef`), so these assert the target → SidebarID mapping lands on the right
 /// cache entry.
@@ -24,16 +24,6 @@ final class BranchLabelTests: XCTestCase {
     let store = makeStore()
     store.workroomStatuses[.workroom(project: "/p", name: "feat")] = WorkroomStatus(
       branchForCI: "feature/login")
-    let target = store.target(for: .workroom(project: "/p", name: "feat"))!
-    XCTAssertEqual(store.branchLabel(for: target), "feature/login")
-  }
-
-  func testJJBookmarkFromWorkingCopyWhenNoBranchForCI() {
-    let store = makeStore()
-    // A jj workroom: no `branchForCI`, the bookmark lives on the working copy (`@`).
-    store.workroomStatuses[.workroom(project: "/p", name: "feat")] = WorkroomStatus(
-      jjWorkingCopy: JJCommitChanges(
-        changeID: "pw", commitID: "abc", refs: ["feature/login"], description: "d", files: []))
     let target = store.target(for: .workroom(project: "/p", name: "feat"))!
     XCTAssertEqual(store.branchLabel(for: target), "feature/login")
   }
@@ -101,8 +91,8 @@ final class BranchLabelTests: XCTestCase {
     XCTAssertEqual(store.branchName(for: sid), "switched-to")
   }
 
-  /// A sweep that AGREES leaves it alone, and one with nothing to say (a detached HEAD, an unbookmarked
-  /// jj `@`) is not evidence the cached name is wrong.
+  /// A sweep that AGREES leaves it alone, and one with nothing to say (a detached HEAD) is not
+  /// evidence the cached name is wrong.
   func testASweepThatAgreesOrSaysNothingKeepsTheResolvedName() {
     let store = makeStore()
     let sid = SidebarID.workroom(project: "/p", name: "feat")

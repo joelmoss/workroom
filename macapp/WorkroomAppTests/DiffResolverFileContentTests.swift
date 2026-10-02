@@ -4,7 +4,7 @@ import XCTest
 
 /// Tests for `DiffResolver.fileContent` — the new-side content fetch that feeds syntax highlighting.
 /// Working-copy sources read disk directly (guarded; exercised against a real temp workroom, never a
-/// real repo); commit / jj-parent sources read through `LocalVCSProviding.fileContent` (a stub here — the
+/// real repo); commit sources read through `LocalVCSProviding.fileContent` (a stub here — the
 /// crucial invariant is the revision each source resolves to, and that working-copy reads never touch
 /// the backend). Real-backend behaviour is covered by `VCSProviderConformanceTests`.
 final class DiffResolverFileContentTests: XCTestCase {
@@ -75,17 +75,6 @@ final class DiffResolverFileContentTests: XCTestCase {
     XCTAssertEqual(p.calls.first?.path, "user.rb")
   }
 
-  func testJJParentRoutesToProviderAtParentRev() async throws {
-    let dir = try makeWorkroom()
-    let p = StubContentProvider()
-    p.result = .success("puts 1\n")
-    let content = await resolver(p).fileContent(for: desc("a.rb", .jjParent), in: dir.path)
-    XCTAssertEqual(content, "puts 1\n")
-    // The jj parent's content must come from `@-`, never `@` (which would take the working-copy lock).
-    XCTAssertEqual(p.calls.first?.rev, "@-")
-    XCTAssertFalse(p.calls.contains { $0.rev == "@" }, "must never read -r @")
-  }
-
   func testProviderNilContentIsNil() async throws {
     let dir = try makeWorkroom()
     let p = StubContentProvider()
@@ -98,7 +87,7 @@ final class DiffResolverFileContentTests: XCTestCase {
     let dir = try makeWorkroom()
     let p = StubContentProvider()
     p.result = .failure(VCSError.notFound("no such path"))
-    let content = await resolver(p).fileContent(for: desc("x.rb", .jjParent), in: dir.path)
+    let content = await resolver(p).fileContent(for: desc("x.rb", .commit("c1")), in: dir.path)
     XCTAssertNil(content, "a backend error degrades to plain, never propagates")
   }
 
@@ -112,16 +101,6 @@ final class DiffResolverFileContentTests: XCTestCase {
     let content = await resolver(p).fileContent(for: desc("main.go", .gitWorktree), in: dir.path)
     XCTAssertEqual(content, body)
     XCTAssertTrue(p.calls.isEmpty, "working-copy reads come from disk, never the backend")
-  }
-
-  func testJJWorkingCopyReadsDisk() async throws {
-    let dir = try makeWorkroom()
-    let body = "puts 'hi'\n"
-    try body.write(to: dir.appendingPathComponent("a.rb"), atomically: true, encoding: .utf8)
-    let p = StubContentProvider()
-    let content = await resolver(p).fileContent(for: desc("a.rb", .jjWorkingCopy), in: dir.path)
-    XCTAssertEqual(content, body)
-    XCTAssertTrue(p.calls.isEmpty)
   }
 
   func testNestedPathReadsDisk() async throws {
