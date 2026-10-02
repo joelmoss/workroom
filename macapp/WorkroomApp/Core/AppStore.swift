@@ -911,6 +911,10 @@ final class AppStore: ObservableObject {
   var pendingRestoreSelection: TerminalTarget.ID?
   /// This window's claimed saved session (issue #46), consumed at the end of `apply`.
   var pendingSessionRestore: WindowSession?
+  /// Saved targets held back from the restore (#253): remote workrooms this app couldn't reach
+  /// then. Each is written back with every save, and restored whole once its workroom is
+  /// reachable and opens its first pane (`restoreDeferredSession`).
+  var deferredTargetSessions: [TerminalTarget.ID: TargetSession] = [:]
   /// One-shot guard: `WindowAccessor` can resolve the same window more than once, and a claim must
   /// never be taken twice.
   var didClaimSession = false
@@ -2746,6 +2750,7 @@ final class AppStore: ObservableObject {
   /// Falls back to a plain shell if the armed command can't start (e.g. config cleared between arming
   /// and mount) — the shell below opens regardless.
   func ensureInitialTerminal(for target: TerminalTarget) {
+    restoreDeferredSession(for: target)
     // Consume the armed intent up front so a later re-mount can't re-fire it, then let startRunCommand
     // (re-)derive the state: it becomes `.running` as a backgrounded tab #1, or a no-op if the config
     // was cleared between arming and mount.

@@ -1,3 +1,4 @@
+import Defaults
 import WorkroomSessionProtocol
 import XCTest
 
@@ -11,6 +12,9 @@ import XCTest
 final class SessionRestoreTests: XCTestCase {
   private let target = TerminalTarget(
     id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
+
+  /// Recovery's gate when every target may reattach.
+  private static let every: (TerminalTarget.ID) -> Bool = { _ in true }
 
   private func makeSessions() -> TerminalSessions {
     let sessions = TerminalSessions()
@@ -54,9 +58,9 @@ final class SessionRestoreTests: XCTestCase {
         workingDirectory: "/tmp", isAttached: false,
         metadata: [SessionEnvironmentEntry(key: "command", value: command)])
 
-      await sessions.materializeLivePersistentSessions { [] }
+      await sessions.materializeLivePersistentSessions(reattaches: Self.every) { [] }
       XCTAssertTrue(sessions.activeAgentBackends.isEmpty, "lost sessions must not restore usage")
-      await sessions.materializeLivePersistentSessions { [descriptor] }
+      await sessions.materializeLivePersistentSessions(reattaches: Self.every) { [descriptor] }
       let expected: Set<AgentBackend> =
         command == "claude" ? [.claude] : command == "codex" ? [.codex] : []
       XCTAssertEqual(sessions.activeAgentBackends, expected, command)
@@ -65,7 +69,7 @@ final class SessionRestoreTests: XCTestCase {
       XCTAssertTrue(sessions.activeAgentBackends.isEmpty, "agent exit must clear recovered usage")
 
       // A provider title may arrive before discovery completes; keep it and recover recognition.
-      await sessions.materializeLivePersistentSessions {
+      await sessions.materializeLivePersistentSessions(reattaches: Self.every) {
         tab.surface?.onTitleChange?("✻ Planning…")
         return [descriptor]
       }
@@ -74,7 +78,7 @@ final class SessionRestoreTests: XCTestCase {
       tab.surface?.handleCommandFinished(rawExitCode: 0)
 
       // A finish during discovery invalidates the captured command, even without a live title.
-      await sessions.materializeLivePersistentSessions {
+      await sessions.materializeLivePersistentSessions(reattaches: Self.every) {
         tab.surface?.handleCommandFinished(rawExitCode: 0)
         return [descriptor]
       }
@@ -86,7 +90,7 @@ final class SessionRestoreTests: XCTestCase {
       reassignedState.sessionID = UUID()
       reassigned.content = .terminal(reassignedState)
       sessions.replace(reassigned, for: target)
-      await sessions.materializeLivePersistentSessions {
+      await sessions.materializeLivePersistentSessions(reattaches: Self.every) {
         reassignedState.sessionID = sessionID
         reassigned.content = .terminal(reassignedState)
         sessions.replace(reassigned, for: target)
@@ -460,5 +464,125 @@ final class SessionRestoreTests: XCTestCase {
       splits: captured.splits.compactMap { LayoutNode<String>.capture($0) { keys[$0] } },
       focusedKey: captured.focused.flatMap { keys[$0] },
       terminalCounter: captured.counter)
+  }
+
+  // MARK: Gating (#253)
+
+  /// A remote workroom this app can't reach waits (#253): nothing of its saved session is built,
+  /// since its terminals would be shells on this Mac, but the session is written back with every
+  /// save. Once the workroom is reachable, its first pane restores the whole session rather than
+  /// opening a fresh shell.
+  func testAnUnreachableRemoteWorkroomsSessionWaitsUntilItIsReachable() throws {
+    let saved = Defaults[.remoteWorkroomsPreview]
+    Defaults[.remoteWorkroomsPreview] = false
+    defer { Defaults[.remoteWorkroomsPreview] = saved }
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    store.projects = [
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "r", path: "/home/workroom/r", vcsName: "workroom/r", warnings: [],
+            host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID()))
+        ])
+    ]
+    let id = TerminalTarget.workroomID(project: "/proj", name: "r")
+    let session = TargetSession(
+      targetID: id,
+      tabs: [
+        terminal("a", title: "Terminal 1"),
+        TabSession(
+          key: "f", kind: TabSession.fileKind,
+          file: FilePayload(path: "README.md", isPreview: false, markdownPreview: false)),
+      ])
+    store.pendingSessionRestore = WindowSession(
+      windowKey: UUID().uuidString, targets: [session], expandedTargets: [id])
+
+    store.restorePersistedSessionIfPending(in: store.projects)
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 0, "an unreachable pane was built")
+    XCTAssertEqual(store.captureWindowSession().targets, [session], "its session was not kept")
+    XCTAssertEqual(store.captureWindowSession().expandedTargets, [id], "its expansion was lost")
+    store.selectedTargetID = .workroom(project: "/proj", name: "r")
+
+    Defaults[.remoteWorkroomsPreview] = true
+    let target = try XCTUnwrap(store.terminalTarget(forID: id))
+    store.ensureInitialTerminal(for: target)
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 2, "the session was not restored")
+    XCTAssertEqual(
+      store.terminals.tabs(for: target).first?.surface?.workingDirectory, NSHomeDirectory(),
+      "its terminal is not a pane on the host")
+    XCTAssertTrue(store.deferredTargetSessions.isEmpty)
+    XCTAssertTrue(store.selectionHasTabs, "the inspector was not told the workroom has tabs")
+  }
+
+  /// Recovery reattaches only the targets it is told may: a pane of any other is left alone, its
+  /// agent not recovered and no surface made for it.
+  func testRecoveryLeavesATargetThatMayNotReattach() async {
+    let sessions = makeSessions()
+    sessions.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    let sessionID = UUID()
+    sessions.restore(
+      TargetSession(targetID: target.id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+    var tab = sessions.tabs(for: target).first!
+    guard case .terminal(var state) = tab.content else { return XCTFail("expected terminal") }
+    state.sessionID = sessionID
+    tab.content = .terminal(state)
+    sessions.replace(tab, for: target)
+    let descriptor = SessionDescriptor(
+      identifier: SessionIdentifier(sessionID), shellProcessID: 123, ttyDevice: 0,
+      workingDirectory: "/tmp", isAttached: false,
+      metadata: [SessionEnvironmentEntry(key: "command", value: "claude")])
+
+    let none: (TerminalTarget.ID) -> Bool = { _ in false }
+    let this: (TerminalTarget.ID) -> Bool = { [target] in $0 == target.id }
+    await sessions.materializeLivePersistentSessions(reattaches: none) { [descriptor] }
+    XCTAssertTrue(sessions.activeAgentBackends.isEmpty, "a gated pane was reattached")
+
+    await sessions.materializeLivePersistentSessions(reattaches: this) {
+      [descriptor]
+    }
+    XCTAssertEqual(sessions.activeAgentBackends, [.claude])
+  }
+
+  /// The app lets a target's panes reattach only while it is local and opens here: not a missing
+  /// directory, not a remote workroom (reachable or not), not one that no longer exists.
+  func testOnlyALocalTargetThatOpensReattaches() {
+    // On, so the remote workroom is one whose panes do open, on its host.
+    let saved = Defaults[.remoteWorkroomsPreview]
+    Defaults[.remoteWorkroomsPreview] = true
+    defer { Defaults[.remoteWorkroomsPreview] = saved }
+    let store = AppStore()
+    let here = FileManager.default.temporaryDirectory.path
+    store.projects = [
+      Project(
+        path: here, vcs: "git",
+        workrooms: [
+          Workroom(name: "local", path: here, vcsName: "workroom/local", warnings: []),
+          Workroom(
+            name: "remote", path: "/home/workroom/r", vcsName: "workroom/remote", warnings: [],
+            host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID())),
+        ])
+    ]
+    XCTAssertTrue(store.reattachesLocally(TerminalTarget.rootID(project: here)))
+    XCTAssertTrue(
+      store.reattachesLocally(TerminalTarget.workroomID(project: here, name: "local")))
+    XCTAssertFalse(
+      store.reattachesLocally(TerminalTarget.workroomID(project: here, name: "remote")))
+    XCTAssertFalse(
+      store.reattachesLocally(TerminalTarget.workroomID(project: here, name: "gone")))
+    XCTAssertFalse(store.reattachesLocally(TerminalTarget.rootID(project: "/no/such/project")))
+    // The first load reads config only, so a missing directory carries no warning yet.
+    store.projects[0] = Project(
+      path: here, vcs: "git",
+      workrooms: [
+        Workroom(name: "moved", path: "/no/such/workroom", vcsName: "workroom/moved", warnings: [])
+      ])
+    XCTAssertFalse(
+      store.reattachesLocally(TerminalTarget.workroomID(project: here, name: "moved")))
   }
 }

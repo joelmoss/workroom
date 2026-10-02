@@ -2193,7 +2193,12 @@ final class TerminalSessions: ObservableObject {
       })
   }
 
+  /// `reattaches` says whether a target's panes may reattach to this Mac's live sessions now, asked
+  /// once the sessions are listed: only a local target that opens here. A missing directory's pane
+  /// would reattach out of sight, and a remote workroom's pane is not a session on this Mac — one
+  /// that was local last launch would reattach its old shell hidden under a remote row (#253).
   func materializeLivePersistentSessions(
+    reattaches: (TerminalTarget.ID) -> Bool,
     load: () async -> [SessionDescriptor]
   ) async {
     var generations: [TerminalTab.ID: (sessionID: UUID?, generation: Int)] = [:]
@@ -2205,7 +2210,7 @@ final class TerminalSessions: ObservableObject {
       }
     }
     let live = await load()
-    for (target, tabs) in tabsByTarget {
+    for (target, tabs) in tabsByTarget where reattaches(target) {
       for tab in tabs.values {
         guard case .terminal(let state) = tab.content,
           let sessionID = state.sessionID,
