@@ -84,8 +84,8 @@ zombie), every other thread was idle in `__workq_kernreturn`, and `isRunning` st
 
 **Ruled out:** a stuck agent; waiting inside a main-queue block; launching on another thread;
 a child that exits slowly after SIGTERM (all return in < 0.4 s in a standalone repro); a reaper
-in our code (no `waitpid`/`posix_spawn` in the app's Swift, and the only Rust the app links,
-`wr-vcs-core`, spawns nothing; `ProcessTree.killTree` only signals).
+in our code (no `waitpid`/`posix_spawn` in the app's Swift, and the app links no Rust;
+`ProcessTree.killTree` only signals).
 
 **Worked around, not fixed:** `AgentHarness.waitForExit` polls `waitpid(pid, WNOHANG)` for up to 5 s and
 SIGKILLs past it, so the host can no longer hang on it. The cause is still unknown and depends on
@@ -474,11 +474,10 @@ file). Workroom switch/delete and the scrollbar overlay were NOT re-verified —
 **Also required:**
 - **A universal Release build before landing.** ~~CI only ever builds Debug/arm64, so the first
   universal link happens at release time.~~ **That was wrong** — `nightly.yml` has run
-  `make app-release` (universal Rust core + `ARCHS_STANDARD` Release) daily since it landed. What
+  `make app-release` (universal Rust agent + `ARCHS_STANDARD` Release) daily since it landed. What
   was actually missing was an *assertion*, which now exists: `release.sh` refuses to notarize a
   bundle containing any thin Mach-O. So the bump inherits a daily universal build plus a gate; run
   one locally only if you want the signal before pushing:
-  `VCS_APPLE_FLAGS=--universal make app-vcs`, then
   `xcodebuild -configuration Release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO build`.
 - **A bake gate.** `nightly.yml` builds daily from master, so this reaches nightly users ~24h after
   landing. Require N clean nightlies before it enters a `pre` tag. **Still open** — landing this
@@ -1077,9 +1076,8 @@ own `themes/SOURCE.md` + `themes/CHECKSUMS`, deliberately disjoint from the new 
 
 **What:** The next VCS phase: turn the read-only foundation into a full in-app VCS UI. **Fetch, push
 and pull-with-rebase have SHIPPED** (the VCS toolbar), and so have **commit + message-only amend/describe**
-(the Changes inspector's commit dialog). What remains: selection-aware amend (needs a temp index),
-bookmark (jj) / branch (git) management, and the deep jj ops (undo/op-log, split, absorb, evolog,
-interdiff).
+(the Changes inspector's commit dialog). What remains: selection-aware amend (needs a temp index)
+and branch management.
 
 **Where the write seam actually is — this changed.** The original plan put write methods on
 `VCSProviding` with a `CLIVCSProvider` fallback. That is **not** what shipped, and new work should not
@@ -1088,18 +1086,15 @@ follow it. Writes live behind a **separate**, context-bound `VCSWriting` protoco
 delegates to `CLIVCSWriter`, which implements `LocalVCSWriting`. Three properties hold it there:
 
 - **Context binding.** `RepositoryRouter.reader(for:)` and `writer(for:)` each capture one
-  `RepositoryContext` (host, path, backend, shared ownership), and the returned `BoundLocalReader` /
-  `BoundLocalWriter` take no path or backend from the caller, so a service cannot be pointed at a
+  `RepositoryContext` (host, path, shared ownership), and the returned `BoundLocalReader` /
+  `BoundLocalWriter` take no path from the caller, so a service cannot be pointed at a
   different repository after it is built.
-- **Snapshot-gate coordination.** `BoundLocalReader` runs the jj working-copy snapshots (status and
-  working-copy diffs) through `JJSnapshotGate`, and `CLIVCSWriter` is built with the same gate, so
-  reads and writes to one repository are serialized per shared root.
 - **Write authorization.** `writer(for:)` requires a registered context with shared ownership
   (`registeredContext(for:)` + `requireOwnership()`) and throws `registrationRequired` otherwise. An
   unknown local repository can still be read, but it cannot be written to or snapshotted.
   `VCSProviding` stays read-only: it has no `fetch` or other network mutation.
 
-So: add commit/amend and the rest as `VCSWriting` members, and they inherit the gate, the network
+So: add commit/amend and the rest as `VCSWriting` members, and they inherit the write gate, the network
 environment hardening and the failure taxonomy for free.
 
 **Which backend each op uses — decided, don't re-litigate.** `VCSWriting` says *where* writes live,
@@ -1107,9 +1102,9 @@ not *how* they run. The split:
 
 | Ops | Backend | Why |
 |---|---|---|
-| commit/amend — **CLI, decided against this table's original answer** | **CLI** (`CLIVCSWriter.commit`, shipped) | This row used to say "native", and that was wrong on three counts it never weighed. **libgit2 runs no hooks** ([#964](https://github.com/libgit2/libgit2/issues/964)) — a `pre-commit`/`commit-msg` that the user's terminal honours would be silently skipped, which is worse than not offering commit at all. **libgit2 cannot sign**, so `commit.gpgsign = true` would produce unsigned commits. And native jj commit is blocked on `immutable_heads()` being a jj-*cli* revset alias that jj-lib cannot resolve — so it would happily rewrite commits the user's own `jj` refuses to touch. (The empty-committer and dropped-signature halves of that third blocker are now fixed by `jj_config.rs`; the revset one is not.) |
-| branch + bookmark management, jj undo/op-log/split/absorb/evolog | **native** (libgit2/SwiftGitX, jj-lib) — provisional | Local, typed APIs, no output to parse, no tool-version floor, no locale exposure. Still the default answer, but **not "don't re-litigate"**: commit was re-litigated on measurement and moved. Check each op for hooks, signing, and revset aliases before assuming native. |
-| fetch, push, pull | **CLI** — permanently, not a stopgap | Three independent blockers, all verified from checked-out sources: SwiftGitX passes NULL options (`git_remote_fetch(remotePointer, nil, nil, nil)`, and `pull` is a `// TODO`), so it has no credential callback at all; **libgit2 implements no `credential.helper` protocol** — nothing in its `src` reads that config key, so native auth means reimplementing helper invocation ourselves; and jj-lib shells to `git` for remote ops anyway (that's where its `MINIMUM_GIT_VERSION` comes from), so a "native jj push" is a git subprocess wearing a Rust coat. |
+| commit/amend — **CLI, decided against this table's original answer** | **CLI** (`CLIVCSWriter.commit`, shipped) | This row used to say "native", and that was wrong on two counts it never weighed. **libgit2 runs no hooks** ([#964](https://github.com/libgit2/libgit2/issues/964)) — a `pre-commit`/`commit-msg` that the user's terminal honours would be silently skipped, which is worse than not offering commit at all. **libgit2 cannot sign**, so `commit.gpgsign = true` would produce unsigned commits. |
+| branch management | **native** (libgit2/SwiftGitX) — provisional | Local, typed APIs, no output to parse, no tool-version floor, no locale exposure. Still the default answer, but **not "don't re-litigate"**: commit was re-litigated on measurement and moved. Check each op for hooks and signing before assuming native. |
+| fetch, push, pull | **CLI** — permanently, not a stopgap | Two independent blockers, both verified from checked-out sources: SwiftGitX passes NULL options (`git_remote_fetch(remotePointer, nil, nil, nil)`, and `pull` is a `// TODO`), so it has no credential callback at all; **libgit2 implements no `credential.helper` protocol** — nothing in its `src` reads that config key, so native auth means reimplementing helper invocation ourselves. |
 
 **Non-goal: Workroom does not store credentials for local workrooms.** No OAuth client, no keychain
 writes, no auth prompt, no account concept for git in a local workroom. (Remote workrooms are the
@@ -1137,14 +1132,11 @@ version floor actually bites a user.
 in the issue #59 plan; this entry is the pointer that makes it discoverable.
 
 **How to start:** Read `Core/VCSWriting.swift` — its doc comment carries the routing diagram, the
-per-backend command table and the placement rules (fetch always runs at the project root, for both
-backends; jj push too, because bookmarks are repo-global). The read layer blocks nothing. What's left
-of the error taxonomy is one-sided (git still flattens to `.io`), and the stale-working-copy **repair**
-is itself a write, so it belongs to this phase.
+per-backend command table and the placement rules (fetch always runs at the project root). The read
+layer blocks nothing. What's left of the error taxonomy is that git still flattens to `.io`.
 
 **Depends on:** the VCS read foundation (shipped, Phase 1) and the write seam (shipped with the
-toolbar). Spans `Core/VCSWriting.swift`, possibly `vcs/` (Rust) + `WrVcs` UniFFI for native jj ops, and
-new write-flow UI.
+toolbar). Spans `Core/VCSWriting.swift`, possibly `vcs/` (Rust), and new write-flow UI.
 
 **Priority:** P2 (the product direction; large — see the plan for the real breakdown).
 
@@ -1462,48 +1454,6 @@ already fixed. What's left is real but none of it is a security hole or silent d
 correction found the triggering scenario doesn't reproduce (three revsets tried and falsified), and
 it was parked rather than fixed pending a fresh repro that never showed up.
 
-### jj `push-<id>` bookmarks accumulate on the remote (macapp) — VCS-toolbar eng-review follow-up
-
-**What:** Decide what happens to the `push-<change-id>` bookmarks that pushing an unbookmarked jj `@`
-leaves on the remote.
-
-**Why:** A jj workroom is `jj workspace add`, whose `@` carries no bookmark, so the toolbar's Push runs
-`jj git push --change @`. jj creates a bookmark named by `templates.git_push_bookmark` (default
-`"push-" ++ change_id.short()`), and **nothing ever removes it**. Verified on jj 0.43 against a bare
-origin — two pushes of two different changes left two bookmarks behind permanently:
-
-```
-push-rrxukuporqwy
-push-slxllnxlmxwz
-```
-
-On a shared remote that accrues indefinitely, one entry per change anyone ever pushed from a workroom.
-
-**Not a problem, though it was filed as one:** the review paired this with a suspected
-non-fast-forward asymmetry — that re-pushing an amended change would be rejected. It isn't. A change id
-is stable across amends, so jj moves its own bookmark with no force flag and no error:
-
-```
-bookmark: push-slxllnxlmxwz [move sideways from b7e44fc98f79 to 8f82f551ad69]
-```
-
-Don't re-investigate that half.
-
-**Pros:** a shared remote stays legible.
-
-**Cons:** this is jj's OWN behaviour for an anonymous push, not something Workroom invented — bare
-`jj git push --change` does exactly this. Diverging from it means inventing a naming or cleanup policy
-that jj users won't expect from other jj tools. Doing nothing is defensible.
-
-**Context / how to start:** `CLIVCSWriter.jjPushRevision` and the `--change` push path; the options are
-(a) leave it and document it, (b) offer cleanup of merged `push-*` bookmarks, or (c) require a bookmark
-before pushing, which costs the one-click Publish a fresh workroom currently gets.
-
-**Depends on:** the VCS toolbar (shipped).
-
-**Priority:** P3 (jj projects only; cosmetic on a personal remote, untidy on a shared one — and the
-status quo matches jj's own).
-
 ### "New workroom from branch…" (macapp) — the successor to branch switching
 
 **What:** Pick a local or remote branch and create a workroom for it, from the VCS toolbar's branch
@@ -1512,9 +1462,7 @@ segment or the ⌘O picker.
 **Why:** Branch *switching* was deliberately cut from the VCS toolbar. A workroom's identity IS its
 branch — `internal/vcs/git.go` creates it with `git worktree add -b`, and there is no `branch` field
 anywhere in `internal/config` — so switching a workroom's branch makes its directory name permanently
-wrong, with nothing to reconcile the two. The jj equivalent is worse: `jj new <bookmark>` on the
-bookmark the toolbar already displays was reproduced **removing a file from the working copy** and
-leaving the workroom's commit as a nameless dangling head, with no visible change in the UI.
+wrong, with nothing to reconcile the two.
 
 But the underlying need — "I want to work on that other branch" — is real, and creating a workroom is
 the answer the product model actually supports. The toolbar's branch segment is **display only** — it
@@ -1537,6 +1485,31 @@ enumerate remote refs cheaply, and its doc explains why the symref row must be d
 **Priority:** P3 (a real gap, but ⌘O plus a terminal covers it today).
 
 ## P3 — VCS engine, diffs, and status
+
+### Remove the jj-era wire fields (macapp, wr-agent, wr-vcs-model) — #266 follow-up
+
+**What:** Remove the jj-era wire fields once no supported app or agent still sends or expects them:
+`shared_root`, `barrier_root` and `backend` on wr-agent VCS/File/exec requests; `Commit.change_id`,
+`is_working_copy`, `is_root`, `change_offset`, `divergent_siblings` and `RefKind::Ancestor` in
+wr-vcs-model and the app's `AgentCommit`/ref decoding.
+
+**Why:** They carry nothing after #266; they exist only so an older app and a newer agent (or the
+reverse) keep decoding each other.
+
+**Pros:** A smaller protocol and model, and no jj-shaped fields to confuse readers.
+
+**Cons:** A wire change — it needs an agent protocol bump/gate, or proof that the launch-time hand-off
+to the bundled agent (on for Nightly and Dev only, commit 26b9d881) is on for stable.
+
+**Context / how to start:** #266 kept them deliberately (`Request`/`ExecRequest` are
+`deny_unknown_fields`; older apps decode the Commit fields non-optionally); each is marked with a
+`ponytail:` comment. Start at `vcs/crates/wr-agent/src/vcs.rs` `Request`/`ExecRequest`,
+`vcs/crates/wr-agent/src/file.rs` `Request`, `macapp/WorkroomApp/Core/AgentVCSReader.swift`
+`AgentCommit`, and `vcs/crates/wr-vcs-model/src/lib.rs` `Commit`.
+
+**Depends on / blocked by:** #266 landing; stable hand-off or a protocol version gate.
+
+**Priority:** P3 — cleanup, no user-visible effect.
 
 ### Rename `AgentVCSConnection` once it carries files and events (macapp) — #211 follow-up
 
@@ -1582,7 +1555,7 @@ and the existing suite, immediately after #211 merges so the review does not re-
 into per-subscription coalescers.
 
 **Why:** #211 creates one `notify` watcher per subscription. `AppStore` is per window, so N windows on
-the same workroom, plus one `.git`/`.jj` watch per project per window, duplicate identical recursive
+the same workroom, plus one `.git` watch per project per window, duplicate identical recursive
 watches. Cheap on macOS FSEvents; on Linux inotify needs one watch per directory per watcher and
 duplicates multiply toward `fs.inotify.max_user_watches`.
 
@@ -1626,31 +1599,12 @@ subscriptions (the cap is per connection); reclaiming an agent-side subscription
 thread ends on its own; hard-link containment (a same-user peer only, parity with the native read);
 sharing the git-scrub env list and `pre_exec` barrier setup with `wr-vcs-git`; a shared test fixture base
 for the two agent integration suites; and a batch of lower-value tests (a swap-race stress test for
-`read_file`, `receive()` stream-0 protocol-violation cases, scripted `HostFileWatcher` cases, a registered
-jj listing end to end, `PlainFileViewer.loadOutcome`, `Permit` exhaustion, a timeout on the FIFO tests).
+`read_file`, `receive()` stream-0 protocol-violation cases, scripted `HostFileWatcher` cases,
+`PlainFileViewer.loadOutcome`, `Permit` exhaustion, a timeout on the FIFO tests).
 
 **Why:** none is a defect a user can hit today; each trades a real change for a small gain.
 
 **Priority:** P3.
-
-### A daemonizing descendant of a jj listing can hold the working-copy lock forever (wr-agent) — #211 review
-
-**What:** `jj file list` runs with the `SnapshotLock` fd inherited (CLOEXEC cleared in the child) so the
-lock outlives an agent that dies mid-listing. Clearing CLOEXEC makes the descriptor inheritable by the
-child's whole descendant tree, so anything jj leaves running in the background (the watchman daemon, when
-`core.fsmonitor = "watchman"` is configured) keeps the open file description, and with it the flock on
-`<shared>/.jj/workroom-vcs.lock`, after jj itself has exited. Every gated jj snapshot in the app and every
-agent-side `SnapshotLock::acquire` then fails as `LockContention` after 30s until that process is killed.
-
-**Why:** the same shape already exists in `wr_vcs_git::diff::run_with_barrier`; #211 puts it on a path that
-now runs on every Files-panel reload, which raises the exposure. Confirmed with a C harness reproducing the
-exact fork / clear-CLOEXEC / exec sequence: the lock stays held by a reaped child's background grandchild.
-
-**How to start:** pin `core.fsmonitor=none` for the listing child (a `--config` flag, once the oldest
-supported jj is confirmed to accept it; `JJ_CONFIG` would drop the user's own config), and/or have
-`run_exec_with` verify the flock is free after the child is reaped and report it when it is not.
-
-**Priority:** P3 — needs an opt-in fsmonitor; also present on the native barrier today.
 
 ### Listings above the 4 MiB capture ceiling fail instead of paginating (macapp + wr-agent) — #211 follow-up
 
@@ -1761,24 +1715,17 @@ completed" from it, then audit `path()` callers for who should wait versus who s
 
 ### `VCSToolVersionCache` pins a tool verdict for the whole process (macapp) — gh-flap follow-up — SHIPPED (2026-08-10)
 
-**Shipped, with one revision from this entry's original proposal.** The `GitHubAuthCache` shape
-(freshness lease, generation-stamped in-flight, per-`ProjectStore` instance ownership) is lifted, as
-proposed — but NOT as one combined `Report`/`probedJJ` slot. Tracing the actual reentrancy bug during
-implementation showed a single combined slot doesn't structurally stop a `probeJJ: false` (jj-blind)
-completion from overwriting a `probeJJ: true` (jj-aware) cached verdict — `GitHubAuthCache` has no
-analogous coverage axis to protect, so a literal transplant only imports the temporal generation
-stamp, not the fix. Revised to two fully independent cache slots (git, jj), each its own
-`GitHubAuthCache`-shaped instance — a jj-blind caller now never touches the jj slot at all, closing
-the clobber class structurally rather than by ordering. TTLs match `GitHubAuthCache`'s exact numbers
-(60s `.ok` / 10s `.belowFloor`) as this entry proposed. `.notInstalled` is still never cached, per the
-existing (already-shipped) reasoning quoted below.
+**Shipped.** The `GitHubAuthCache` shape (freshness lease, generation-stamped in-flight, per-`ProjectStore`
+instance ownership) is lifted, as proposed. TTLs match `GitHubAuthCache`'s exact numbers (60s `.ok` /
+10s `.belowFloor`) as this entry proposed. `.notInstalled` is still never cached, per the existing
+(already-shipped) reasoning quoted below.
 
-**What:** give the `git`/`jj` version cache the three contracts the `gh` cache got in the same area and
+**What:** give the `git` version cache the three contracts the `gh` cache got in the same area and
 this one never did: a freshness lease, a generation-stamped in-flight slot, and per-`ProjectStore`
 ownership instead of `static let shared`. `Core/VCSToolVersions.swift` (the cache is the actor at the
 bottom); the shape to copy is `Core/GitHubAuthCache.swift`.
 
-**Why (the user-visible half first):** `report(probeJJ:)` caches every verdict except `.notInstalled`
+**Why (the user-visible half first):** `report()` caches every verdict except `.notInstalled`
 **forever** — the only thing that clears `cached` is the tests-only `reset()`. So `.belowFloor` is
 permanent for the process: the user reads "Git 2.41 or newer is required", runs `brew upgrade git`, and
 fetch/push/pull stay disabled with the toast still standing until they relaunch the app.
@@ -1787,15 +1734,8 @@ dismissing the toast (`dismissedToolWarnings`) only hides it — nothing re-prob
 60s/10s TTL *and* a manual Refresh; the tool whose warning names an action the user is expected to go
 perform got neither.
 
-Two structural gaps behind it, both fixed in `GitHubAuthCache` and both still live here:
+One structural gap behind it, fixed in `GitHubAuthCache` and still live here:
 
-- **Reentrancy loses the single-flight and can downgrade the cache.** `await task.value` suspends the
-  actor with `inFlight` set, and the `inFlight = nil` after it is unconditional and unstamped. A
-  `probeJJ: false` caller finishing clears a concurrent `probeJJ: true` caller's slot, so the next jj
-  caller forks a third `--version` pair; and if the jj-blind lane resumes *last* it overwrites the
-  jj-aware report, because `probe(probeJJ: false)` returns `jj: .notInstalled` outright and
-  `hasMissingTool(probedJJ: false)` doesn't count it. Narrow (both windows normally compute the same
-  `probeJJ` from the same config) but exactly the class the `gh` generation stamp exists to kill.
 - **`static let shared` plus an injected `runner:` is the hazard `GitHubAuthCache` documents rejecting**
   — `make app-test` runs classes in parallel, so one test's fake runner can answer another's probe, and
   `reset()` cannot stop an in-flight task repopulating afterwards. Cheap to close here:
@@ -1907,10 +1847,9 @@ current git-format unified-diff **text**, and rewrite `DiffViewer` to consume it
 ignore-whitespace, word/intra-line diff, per-hunk/line staging, and diff-edit (the jayjay feature set).
 
 **Why:** The diff viewer today parses git-format text (`UnifiedDiff.parse`) fed by `GitProvider`
-(SwiftGitX `Patch` → text) and `RustJJProvider` (`jj diff --git` CLI text). That's the deliberate
+(SwiftGitX `Patch` → text). That's the deliberate
 Option-1 first cut — it works and keeps one renderer — but text is a lossy intermediate for the
-features above. Both backends already expose structured diffs natively (libgit2 hunk callbacks;
-jj-lib diff regions / a `computeNativeDiff` over old+new content, as jayjay does), so a structured
+features above. libgit2 already exposes structured diffs natively (hunk callbacks), so a structured
 model would be lib-native end-to-end. Deferred because no shipped feature needs it yet, and the
 rewrite touches the whole diff UI (regression surface).
 
@@ -1919,13 +1858,12 @@ rewrite touches the whole diff UI (regression surface).
 > longer *which* git library, but *text vs structured hunks* at the `VCSProviding` seam.
 
 **How to start:** Add a structured `FileDiff`/`Hunk`/`Line` model + a `VCSProviding.structuredDiff`
-(or evolve `fileDiff`/`workingFileDiff` to return it); git via `git_diff`/`git_patch` hunk callbacks,
-jj via jj-lib regions or `compute(old,new)` fed by `fileContent`. Reuse the existing `DiffCache` +
+(or evolve `fileDiff`/`workingFileDiff` to return it); via `git_diff`/`git_patch` hunk callbacks. Reuse the existing `DiffCache` +
 `maxDiffBytes` gate. Rewrite `DiffViewer` (and `IntraLineDiff`/side-by-side pairing) to consume hunks.
 
 **Depends on:** the shipped Option-1 diff pipeline (`VCSProviding.fileDiff`/`workingFileDiff` +
-`DiffResolver` + `DiffViewer`). Touches `Core/VCSProviding.swift`, `GitProvider`, `RustJJProvider`,
-`jj_backend.rs` (+ UniFFI), `Core/DiffResolver.swift`, `Views/DiffViewer.swift`.
+`DiffResolver` + `DiffViewer`). Touches `Core/VCSProviding.swift`, `GitProvider`,
+`Core/DiffResolver.swift`, `Views/DiffViewer.swift`.
 
 **Priority:** P3 (build when a feature — ignore-whitespace / word-diff / staging / diff-edit — needs it).
 
@@ -1969,16 +1907,15 @@ the unified type; drop the `GitWorkingStatus` bridge in `WorkroomStatusResolver`
 ### Git-side errors still flatten to `.io` (macapp) — error-taxonomy follow-up
 
 **What:** `GitProvider` throws `VCSError.io("\(error)")` from every catch, so nothing on the git path
-can reach `.lockContention` / `.notFound` / `.unsupportedRepo`. The jj path is now classified at the
-source; git isn't.
+can reach `.lockContention` / `.notFound` / `.unsupportedRepo`.
 
-**Why it wasn't done with the jj half:** the blocker is deliberate and documented in `GitProvider`'s
+**Why it hasn't been done:** the blocker is deliberate and documented in `GitProvider`'s
 own header — binding SwiftGitX's typed error (`catch let e as SwiftGitXError`) trips a **Swift 6 SIL
 ownership error** across the async boundary, so the provider catches untyped on purpose. Classifying
 would mean sniffing error *strings* (fragile, locale-adjacent) or getting the typed catch to compile.
 Note the status path depends on today's behaviour: `.io` → `.notRepository` is the honest answer for
-git's most common failure (a path that isn't a repo), so this is not a silent lie the way the jj cases
-were — it's a missing distinction (`index.lock` contention in particular, which would map to `.busy`).
+git's most common failure (a path that isn't a repo), so this is not a silent lie — it's a missing
+distinction (`index.lock` contention in particular, which would map to `.busy`).
 
 **How to start:** re-test the typed catch on the current toolchain (the SIL bug may be fixed); if it
 still crashes, isolate the typed binding in a small synchronous helper the async path calls. Then map
@@ -2003,103 +1940,7 @@ since HEAD) to its current on-disk content (`GitProvider.combinedWorkingDiff`) �
 
 **Priority:** done.
 
-### The jj snapshot ignores the user's real jj/git config (macapp) — VCS-foundation eng-review
-
-**Status: the config stack itself has LANDED.** `wr-vcs-core/src/jj_config.rs` now layers the user's
-real configuration (`$JJ_CONFIG`, else `~/.jjconfig.toml` + `$XDG_CONFIG_HOME`/`~/.config/jj/config.toml`
-+ `conf.d/*.toml`) over jj's defaults, and all three call sites (`open`, `snapshot_working_copy`,
-`materialize_options`) read it. That fixes the two consequences this entry never named, both of which
-were live for **every** jj user rather than only non-default configs:
-
-- **Every snapshot stamped an EMPTY committer.** `for_rewrite_from` sets
-  `commit.committer = settings.signature()` unconditionally, and defaults-only settings carry
-  `user.name = ""` / `user.email = ""`. Mostly invisible (`jj log` shows the author) and self-healing
-  on the next real `jj` command, but NOT if `@` is pushed as-is — which the app's Push button does via
-  `jj git push --change @`. Pinned by `tests/committer_identity.rs`, which fails with `<>` against the
-  old code.
-- **Signatures were dropped.** `Signer::from_settings` read `signing.backend = "none"`, so
-  `can_sign()` was false and a rewrite of an already-signed `@` discarded its signature under the
-  default `behavior = "keep"`. Now works for free, since the signer is built from these settings.
-
-**What remains** (the original scope of this entry — the settings now reach jj-lib, so these follow,
-but none is verified): `core.fsmonitor`, `working-copy.eol-conversion`, `working-copy.exec-bit-change`
-and `ui.conflict-marker-style` are all derived from `TreeStateSettings::try_from_user_settings`, so
-they should now be honoured — but no test covers them. The custom `core.excludesFile` chaining in
-`base_ignores` is genuinely still missing. **Repo-level config is also still unread**: jj 0.43 keeps it
-under `~/.config/jj/repos/<hash>` rather than `.jj/repo/config.toml`, which the current chain does not
-resolve.
-
-Original description follows.
-
-**What:** `snapshot_working_copy` built its settings from jj's **built-in defaults only** —
-`UserSettings::from_config(StackedConfig::with_defaults())` — and jj-lib derives
-the whole of `TreeStateSettings` from those settings (`local_working_copy.rs`
-`try_from_user_settings`): `ui.conflict-marker-style`, `EolConversionMode`
-(`working-copy.eol-conversion`), `working-copy.exec-bit-change`, and `FsmonitorSettings`. So on the
-one code path that *mutates* the repo, our snapshot can behave differently from the user's own `jj`:
-
-- **fsmonitor is always off.** A user with Watchman configured (`core.fsmonitor`) still gets a full
-  filesystem crawl — on every 15s status sweep, fanned out per workroom. The perf cost scales with
-  repo size and is invisible to us.
-- **EOL conversion / exec-bit policy are the defaults**, so a repo configured otherwise gets an `@`
-  rewritten on different rules than `jj` itself would use.
-- Originally filed narrower (custom `core.excludesFile`): the base_ignores fix (b7dd9b7d) chains
-  git's default XDG global excludes (`~/.config/git/ignore`) + repo `.git/info/exclude` but never
-  reads a custom `core.excludesFile`, so those patterns are skipped by the auto-status snapshot.
-
-**Not affected (checked):** per-file conflict detection. `ui.conflict-marker-style` is only consumed
-when *materializing* conflicts to disk (the checkout path), which this core never does; snapshot's
-marker parse-back goes through `conflicts::update_from_content`, which keys on the stored
-`materialized_conflict_data` marker length, not the style.
-
-**Second site, added later:** the native ± line counts (`changed_files` → `materialize_options()`)
-materialize a conflicted file to count its marker lines, so `ui.conflict-marker-style` and
-`merge.hunk-level`/`merge.same-change` DO change that number. It reads jj's defaults today, on purpose
-and for the same reason as the snapshot; when this entry lands, both call sites want the real settings,
-not just the snapshot.
-
-**How to start:** the config stack is loaded (`jj_config.rs`). What is left is chaining a custom
-`core.excludesFile` in `base_ignores`, resolving jj 0.43's repo-level config under
-`~/.config/jj/repos/<hash>`, and testing that the fsmonitor / EOL / exec-bit settings actually take
-effect now that they reach jj-lib. Test on throwaway repos only — this is the lock-taking,
-`@`-rewriting path.
-
-**Depends on:** the base_ignores fix (shipped) and the config stack (shipped). Touches `jj_config.rs`
-and `jj_backend.rs` (`base_ignores`).
-
-**Priority:** P3 for what remains (only bites non-default configs); the identity + signing half that
-bit everyone has shipped. The fsmonitor half is still a real perf item on large repos.
-
-### Offer to repair a stale jj working copy from the app (macapp) — error-taxonomy follow-up
-
-**What:** When a workroom reports `.staleWorkingCopy`, offer the repair inline (a button that runs
-`jj workspace update-stale`) instead of only naming it in the Changes panel's text.
-
-**Why:** the taxonomy work made the state *visible* and *honest* — the row no longer claims "not a
-repository", and the panel says what to run — but the fix is still a manual trip to a terminal. The
-state is reachable in ordinary use: workrooms of one project are jj **workspaces** of one repo, so a
-`jj rebase`/`jj abandon` in workroom A can rewrite workroom B's `@` and leave B stale until B is
-updated — often surfacing as a confusing error in a *different* workroom from the one the user
-actually acted in, with nothing on screen connecting cause to effect. Deliberately not done with the
-read work: recovering a working copy is a **write**, and every VCS write belongs to the Phase-2
-write-actions chunk (its own confirmation + undo story), not to a status probe. jj-lib exposes
-`Workspace::recover`/`RecoverWorkspaceError` for it.
-
-**Detection needs no new plumbing — checked 2026-08-14, folded in from a since-deleted duplicate
-entry that assumed otherwise.** `AppStore.statusWorkItems()` already builds one status-read item per
-workroom per project, unconditionally — not just the focused one — and the sweep it feeds
-(`refreshWorkroomStatuses`, triggered on load/app-focus/selection) already runs `resolveJJ` for every
-open workroom, which already maps jj's stale-snapshot error onto `VCSStatusFailure.staleWorkingCopy`.
-So a sibling left stale by a rebase is already caught on its own next routine sweep, with no proactive
-cross-workspace scan and no per-op cost added. The only gap this entry needs to close is presentation
-(the button) plus the write op itself — not detection.
-
-**Depends on:** the shipped `StaleSnapshot` classification (`jj_backend.rs` `snapshot_working_copy`)
-and `VCSStatusFailure.staleWorkingCopy`. Relates to "VCS write actions — Phase 2".
-
-**Priority:** P3 (the state is now self-explaining; this saves the trip to a terminal).
-
-### Three independent change-badge palettes (macapp) — jj conflict-status follow-up
+### Three independent change-badge palettes (macapp) — conflict-status follow-up
 
 **What:** the same change-kind badge is coloured by three separate mappings: `ChangeBadge`
 (`Core/ChangeBadge.swift`, theme tokens — extracted from `ChangesPanel` when the conflict badge was
@@ -2131,7 +1972,7 @@ review pass flagged this explicitly ("integration risk remains untested... short
 correct source → highlighted row → scrolling... left to manual QA").
 
 **How to start:** `DiffPaneFocusUITests.swift` already proves the fixture-mode click/focus pattern
-works for diff panes in this app (canned jj diffs via `-WorkroomUITestFixture 1`, `terminal.pane`
+works for diff panes in this app (canned diffs via `-WorkroomUITestFixture 1`, `terminal.pane`
 accessibility elements). XCUITest can't see `NSAttributedString` colours directly, so this needs a new
 test-observable `accessibilityValue` signal for "this row has a find match" / "is the current match" —
 mirroring `lineRow`'s existing `highlighted`/`plain` `accessibilityValue` convention (already used to
@@ -3021,9 +2862,8 @@ its intrinsic (content) height and its width is unchanged, so SwiftUI should NOT
 frame. This TODO is to confirm that under profiling, not a known regression.
 
 **Why:** `ChangesPanel` can render up to ~200 non-lazy file rows. (An earlier version of this entry
-put the worst case at ~400 across **two** lists — the jj Parent Commit group, its disclosure state and
-its `Defaults` collapse flags are all gone; the panel is now one unified working-copy list for both
-backends, so the ceiling is back to one list's worth.) The original eng-review of the migration plan
+put the worst case at ~400 across **two** lists; the panel is now one working-copy list, so the
+ceiling is back to one list's worth.) The original eng-review of the migration plan
 flagged per-frame re-layout as a risk; the scroll-view pane design should avoid it (drag = viewport
 change, not document re-layout), but it hasn't been profiled.
 
@@ -3961,16 +3801,16 @@ exist otherwise).
 
 ### Harden `vcs.Detect` to validate a real repo (CLI) — #103 follow-up — RE-PRICED, not a fit for this batch
 
-**What:** `vcs.Detect` (`internal/vcs/vcs.go`) currently treats a directory as a repo if `.jj` is a
-dir OR `.git` merely *exists* (file or dir). A bogus/empty `.git` therefore registers as a project
+**What:** `vcs.Detect` (`internal/vcs/vcs.go`) currently treats a directory as a repo if `.git` merely
+*exists* (file or dir). A bogus/empty `.git` therefore registers as a project
 via `add-project` and only fails later, at workroom creation.
 
 **Why we thought this:** Surfaced by the Codex outside-voice pass during `/plan-eng-review` of issue
 #103 (the create-project work). It's a pre-existing robustness gap — the existing-path `add-project`
 already has it; #103's create flow inits a real repo so its happy path is unaffected — but a
 stricter check would fail fast with a clear error instead of a confusing late failure. Re-confirmed
-by the Codex pass during the jj→git stale-vcs fix: the new reconcile-on-list (`Service.effectiveVCS`)
-also uses marker-file truth, so a *present-but-broken* `.jj` dir would still reconcile as jj —
+by the Codex pass during the stale-vcs fix: the reconcile-on-list (`Service.effectiveVCS`) also uses
+marker-file truth, so a *present-but-broken* `.git` would still reconcile as git —
 hardening `Detect` fixes both the late-failure gap and the reconcile accuracy in one place.
 
 **What checking the actual call sites found:** `vcs.Detect` has exactly two callers
@@ -3985,7 +3825,7 @@ NFS/sync stall) silently reconciles away from "git" for that one list, a failure
 exist against today's bare `os.Stat(.git)` check.
 
 Separately, ~58 existing test-fixture sites across `vcs_test.go`, `reconcile_test.go`,
-`workroom_test.go`, `list_data_test.go` fake a repo with `os.Mkdir(dir/.git, 0o755)` / `.jj` and
+`workroom_test.go`, `list_data_test.go` fake a repo with `os.Mkdir(dir/.git, 0o755)` and
 nothing inside — exactly the bare-marker shape a hardened check would reject. There's no way to catch
 the bug without invalidating all of them; that's the change's actual semantics reaching every test
 that ever faked a repo, not incidental churn. And `.git`-as-file (git worktrees) needs its own
@@ -3999,8 +3839,7 @@ check, updating the fixture set deliberately (not as a mechanical find-replace),
 `.git`-as-file path — real work, not a drive-by.
 
 **How to start (unchanged from the original framing, for whenever this is picked up):** In `Detect`,
-validate beyond existence — e.g. `git rev-parse --git-dir` (or read `.git`/`HEAD`) for git, and
-confirm `.jj/repo` for jj.
+validate beyond existence — e.g. `git rev-parse --git-dir` (or read `.git`/`HEAD`).
 
 **Depends on:** nothing; touches all VCS consumers (`create`, `list`, `delete`, `add-project`).
 

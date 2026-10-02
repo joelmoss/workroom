@@ -14,17 +14,17 @@ The native macOS app is the primary product. A standalone CLI is available as an
 
 ## Product Purpose
 
-Workroom gives each task an isolated, on-disk copy of its project, backed by a Git worktree or Jujutsu workspace, and brings those parallel contexts into a terminal-centered development environment. Success means a developer can create, run, inspect, review, and move between concurrent work safely while keeping the state and purpose of each workroom legible.
+Workroom gives each task an isolated, on-disk copy of its project, backed by a Git worktree, and brings those parallel contexts into a terminal-centered development environment. Success means a developer can create, run, inspect, review, and move between concurrent work safely while keeping the state and purpose of each workroom legible.
 
 Embedded terminals belong to each workroom and remain alive while Workroom is running, including when the developer navigates elsewhere in the app. Ordinary workroom shells also persist across app restarts by default (background sessions); they can be turned off in Settings.
 
 ## Positioning
 
-Workroom's durable distinction is parallel development context: each task gets an isolated worktree or workspace, its own branch or bookmark, embedded terminal access, and visible work state. Multiple workrooms and terminal or content panes can be arranged in split views so concurrent contexts remain visible together. The product combines that isolation with native VCS operations, project navigation, changes, history, diffs, pull-request status, file viewing, activity, and notifications rather than treating parallel branches as an external workflow users must manage themselves.
+Workroom's durable distinction is parallel development context: each task gets an isolated worktree, its own branch, embedded terminal access, and visible work state. Multiple workrooms and terminal or content panes can be arranged in split views so concurrent contexts remain visible together. The product combines that isolation with native VCS operations, project navigation, changes, history, diffs, pull-request status, file viewing, activity, and notifications rather than treating parallel branches as an external workflow users must manage themselves.
 
 ## Operating Context
 
-- Developers add existing Git or Jujutsu repositories as projects, then create multiple workrooms for concurrent tasks.
+- Developers add existing Git repositories as projects, then create multiple workrooms for concurrent tasks.
 - Workrooms are real directories, normally stored under `~/workrooms`, and share repository history while keeping working copies isolated.
 - Setup and teardown scripts can prepare and clean up a workroom using product-provided environment variables.
 - The macOS app centers embedded terminals and surrounds them with project/workroom navigation, file viewing, VCS operations, working-copy changes, commit history, diffs, pull-request and CI information, activity, and notifications.
@@ -34,10 +34,10 @@ Workroom's durable distinction is parallel development context: each task gets a
 ## Capabilities and Constraints
 
 - Primary app: native SwiftUI for macOS 15 Sequoia or later on Apple Silicon.
-- Workspace mechanisms: Git worktrees and Jujutsu workspaces.
-- A **workroom** is an isolated project working directory associated with its own Git branch or JJ bookmark.
+- Workspace mechanism: Git worktrees.
+- A **workroom** is an isolated project working directory associated with its own Git branch.
 - Split views support multiple workrooms and multiple terminal or content panes within a workroom.
-- Built-in VCS functionality covers Git and Jujutsu working-copy state, changes, history, commits, branches or bookmarks, and related workflows.
+- Built-in VCS functionality covers Git working-copy state, changes, history, commits, branches, and related workflows.
 - A native diff viewer supports reviewing changed files and changesets without leaving Workroom.
 - A built-in file viewer supports browsing and reading project files with language-aware syntax highlighting; editing remains in the terminal or an external editor.
 - The app bundles a Go CLI engine and uses its JSON contract for workspace management.
@@ -52,7 +52,7 @@ Workroom's durable distinction is parallel development context: each task gets a
 - Parent brand: **Codaset**.
 - Confirmed product framing: a terminal-driven development environment for parallel agentic work.
 - The square blocked mark is the shared Codaset and Workroom brand symbol; do not introduce a separate Codaset logo on the Workroom site.
-- Existing product terminology such as **project**, **workroom**, **worktree**, **workspace**, **branch**, and **bookmark** should remain precise and distinct.
+- Existing product terminology such as **project**, **workroom**, **worktree**, **workspace**, and **branch** should remain precise and distinct.
 
 ## Evidence on Hand
 
@@ -68,7 +68,7 @@ Workroom's durable distinction is parallel development context: each task gets a
 1. Keep parallel work genuinely isolated so developers can run concurrent tasks without branch-switching churn.
 2. Make every workroom's identity and current state immediately legible.
 3. Keep the terminal central while bringing navigation, review, and status into the same working context.
-4. Preserve developer control: use real repositories, directories, branches, bookmarks, scripts, and external editors rather than hiding them behind proprietary abstractions.
+4. Preserve developer control: use real repositories, directories, branches, scripts, and external editors rather than hiding them behind proprietary abstractions.
 5. Never imply that a planned or adjacent capability already exists. Background sessions persist ordinary workroom shells across restarts by default; run-command tabs and the quick terminal do not.
 
 ## Accessibility & Inclusion

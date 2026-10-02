@@ -11,7 +11,7 @@ Before opening a PR:
 - Keep the `--json` contract stable — it's the boundary between the CLI and the app. Breaking changes
   bump `schema_version` (`cmd/json.go`). See
   [the contract](README.md#the---json-machine-contract).
-- Note that this repo is a **colocated Git + JJ** repo, so either VCS works for contributing.
+- Workroom supports Git repos only, so contribute through Git.
 
 See [`AGENTS.md`](AGENTS.md) and [`macapp/AGENTS.md`](macapp/AGENTS.md) for the conventions the
 maintainer follows.
@@ -55,12 +55,11 @@ maintainer follows.
 - **Xcode 16+** with the macOS 15 SDK.
 - **[XcodeGen](https://github.com/yonaskolb/XcodeGen)** (`brew install xcodegen`) — the `.xcodeproj`
   is generated from `macapp/project.yml`, not checked in.
-- **`protoc`** (`brew install protobuf`) — a build-time dep of the Rust jj-lib VCS core (`make app-vcs`).
-  A universal release build also needs rustup `stable` ≥ 1.93 with the `x86_64`/`aarch64-apple-darwin` targets.
+- **Rust** (rustup `stable`) — the app build compiles the embedded `wr-agent` from the `vcs/` workspace
+  (`macapp/Scripts/build-agent.sh`). A universal release build also needs the
+  `x86_64`/`aarch64-apple-darwin` targets.
 - **Go 1.25+** (the module targets `go 1.25.7`; CI and the maintainer build with Go 1.26) — the app
   embeds the CLI engine at build time, so a Go toolchain must be on `PATH`.
-- **`jj`** (`brew install jj`) — needed for the app's VCS integration tests, and if you develop in this
-  repo itself (it is a colocated Git+JJ repo).
 
 **To develop the CLI engine only:** Go 1.25+, and **`golangci-lint` v2.x** for `make cli-lint`
 (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2` — note the `/v2` in the
@@ -81,12 +80,12 @@ The macOS app is the product; the Go CLI is the bundled engine (and an optional 
 | --- | --- |
 | **App language** | Swift 5 + SwiftUI (macOS 15 Sequoia+, Apple Silicon) |
 | **Terminal engine** | [libghostty](https://ghostty.org) (`libghostty-spm`, Metal-rendered) |
-| **VCS reading core** | jj via Rust [`jj-lib`](https://github.com/jj-vcs/jj) (UniFFI); git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2) |
+| **VCS reading core** | git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2); agent-routed reads and writes via the Rust `wr-agent` |
 | **Syntax highlighting** | [SwiftTreeSitter](https://github.com/ChimeHQ/SwiftTreeSitter) + tree-sitter grammars |
 | **App auto-update** | [Sparkle](https://sparkle-project.org) 2.6 (EdDSA-signed appcast) |
 | **App crash reporting** | [Sentry](https://sentry.io) (optional, dSYM upload at release) |
 | **App build tooling** | [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`project.yml` → `.xcodeproj`) |
-| **VCS backends** | Git worktrees, Jujutsu (JJ) workspaces |
+| **VCS backend** | Git worktrees |
 | **Config store** | JSON at `~/.config/workroom/config.json` |
 | **CLI engine language** | Go 1.25+ (built/tested on Go 1.26) |
 | **CLI framework** | [Cobra](https://github.com/spf13/cobra) for commands |
@@ -102,8 +101,7 @@ The product is the **macOS app** (`macapp/`). For workroom management (create/de
 SwiftUI client over **one shared engine** — the Go CLI, which it bundles and drives over a stable
 `--json` contract (no cgo, no duplicated lifecycle logic). The same engine is usable standalone as
 the CLI addon. VCS **reading** (history, diffs, working-copy status) is done natively in the app
-through a structured core — jj via Rust `jj-lib` (UniFFI), git via SwiftGitX (libgit2) — not by
-scraping CLI output.
+through a structured core — git via SwiftGitX (libgit2) — not by scraping CLI output.
 
 ```
 ┌──────────────────────────────┐        ┌──────────────────────────────┐
@@ -117,7 +115,7 @@ scraping CLI output.
         │                  The workroom Go engine                 │
         │  cmd/  (Cobra commands)                                 │
         │  internal/workroom/  (create / delete / list orchestr.) │
-        │  internal/vcs/  ──►  Git worktrees  |  JJ workspaces     │
+        │  internal/vcs/  ──►  Git worktrees                       │
         │  internal/config/  ──►  ~/.config/workroom/config.json   │
         │  internal/script/  ──►  setup / teardown hooks           │
         └────────────────────────────────────────────────────────┘
@@ -143,14 +141,14 @@ workroom/
 ├── internal/
 │   ├── config/              # JSON config CRUD (atomic writes + advisory lock)
 │   ├── namegen/             # Adjective-noun name generation (120 × 210)
-│   ├── vcs/                 # VCS interface + Git/JJ impls + CommandExecutor (testable)
+│   ├── vcs/                 # VCS interface + Git impl + CommandExecutor (testable)
 │   ├── workroom/            # Core orchestration: Service.{Create,Delete,List,ListData}
 │   ├── script/              # Setup/teardown script runner (env vars + live streaming)
 │   ├── ui/                  # Colored output, tables, log panels, interactive prompts (huh)
 │   ├── updater/             # `workroom update`: GitHub release check + binary swap
 │   └── errs/                # Shared error sentinels + machine codes + exit codes
 ├── macapp/                  # ★ The macOS app (SwiftUI) — the product; see macapp/AGENTS.md & macapp/README.md
-├── vcs/                     # Rust VCS-reading core for the app (jj-lib + UniFFI → the WrVcs SwiftPM package)
+├── vcs/                     # Rust workspace: the wr-agent daemon + git read crates
 ├── scripts/workroom_setup   # This repo's own example setup hook
 ├── testdata/fixtures/       # Setup/teardown scripts used by Go tests
 ├── .github/workflows/       # CI + release + appcast automation
@@ -172,10 +170,9 @@ SwiftUI app. The core loop:
 3. **Terminal I/O** surfaces libghostty/OSC callbacks app-wide — title (OSC 0/2), command-finished
    (OSC 133), busy/progress (OSC 9;4), and notifications (OSC) drive tab/sidebar animation, badges,
    the inspector, and desktop banners.
-4. **VCS reading** (History, changeset/diffs, working-copy status, the sidebar's branch/bookmark)
-   goes through a `VCSProviding` layer with two backends: a Rust core (`vcs/`, jj-lib over UniFFI →
-   the `WrVcs` SwiftPM package) for JJ, and SwiftGitX (libgit2) for Git — both mapped to app-native
-   models, no CLI text parsing.
+4. **VCS reading** (History, changeset/diffs, working-copy status, the sidebar's branch)
+   goes through a `VCSProviding` layer: SwiftGitX (libgit2) for local Git, and `wr-agent` for
+   agent-routed projects — both mapped to app-native models, no CLI text parsing.
 5. **Mutations** (create/delete workroom, add/remove project) call the bundled Go CLI via
    `WorkroomCLI` (a `Process` wrapper that locates `Workroom.app/Contents/Resources/workroom`,
    overlays `PATH`, drains stdout/stderr concurrently, streams NDJSON logs, and decodes the JSON
@@ -186,10 +183,10 @@ SwiftUI app. The core loop:
 7. **Preferences** live in `DefaultsKeys` (via the `Defaults` library); **auto-update** is Sparkle
    (`Updater`); **themes** load from bundled CSS theme families.
 
-Key dependencies: **libghostty-spm** (terminal), the **WrVcs** Rust/jj-lib core + **SwiftGitX**
+Key dependencies: **libghostty-spm** (terminal), **SwiftGitX**
 (VCS reading), **Sparkle** (update), **Sentry** (crash reporting), **Defaults** (preferences), and
 **SwiftTreeSitter** + grammars (syntax highlighting). The app is **non-sandboxed** with the
-**hardened runtime** enabled (it spawns `git`/`jj`/`workroom` and opens arbitrary directories), and
+**hardened runtime** enabled (it spawns `git`/`workroom` and opens arbitrary directories), and
 registers a global `⌘§` hotkey via Carbon. The embedded Go helper is built and signed during the
 Xcode build by `macapp/Scripts/build-helper.sh` and placed under `Contents/Resources/` (not
 `Contents/MacOS/`, to avoid a case-insensitive collision with `Workroom`).
@@ -231,12 +228,12 @@ the orchestration logic and delegate VCS work to the `vcs.VCS` interface, persis
 the editor prompt):
 
 1. **Guard:** reject if the cwd is already a workroom (presence of a `.Workroom` marker).
-2. **Detect VCS:** `vcs.Detect(dir)` looks for `.jj` then `.git` and returns a `JJ` or `Git` impl.
+2. **Detect VCS:** `vcs.Detect(dir)` looks for `.git` and returns the `Git` impl, or `ErrUnsupportedVCS`
+   (a `.jj`-only directory is unsupported; a colocated `.jj` + `.git` repo is plain Git).
 3. **Generate a unique name:** try `namegen.Generate()` up to 5 times; on persistent collision,
    append a random 2-digit suffix (up to 10 more tries).
 4. **Collision checks:** ensure the VCS workspace and the target directory don't already exist.
-5. **Create the workspace:** `mkdir -p ~/workrooms`, then `git worktree add -b workroom/<name> <path>`
-   or `jj workspace add <path> --name workroom/<name>`.
+5. **Create the workspace:** `mkdir -p ~/workrooms`, then `git worktree add -b workroom/<name> <path>`.
 6. **Persist:** `config.AddWorkroom(...)` records `{path}` under the project, keyed by project path,
    with the VCS type.
 7. **Signal readiness:** fire `OnReady` (the app mounts the workroom and starts streaming the setup
@@ -256,19 +253,18 @@ failed" and offer cleanup.
 1. **Guard + validate** the name against `^[a-zA-Z0-9]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$`.
 2. **Confirm** (interactively, or via a matching `--confirm <name>` value).
 3. **Run teardown:** if `scripts/workroom_teardown` exists, run it inside the workroom (streaming).
-4. **Remove the workspace:** `git worktree remove <path> --force` or `jj workspace forget workroom/<name>`.
-   For JJ, the directory is also `os.RemoveAll`'d (Git's `worktree remove` already does this).
-   **Branches/bookmarks are intentionally left intact** in both cases.
+4. **Remove the workspace:** `git worktree remove <path> --force` (this also removes the directory).
+   **The branch is intentionally left intact.**
 5. **Update config:** remove the workroom entry. If it was the project's last workroom, the project
    is dropped too — unless `KeepEmptyProject` is set (the app pins empty projects in its sidebar).
 
 ### VCS abstraction
 
-`internal/vcs` hides Git vs JJ behind one interface:
+`internal/vcs` hides the VCS behind one interface (Git is the only implementation):
 
 ```go
 type VCS interface {
-    Type() Type                                  // "git" | "jj"
+    Type() Type                                  // "git"
     Label() string                               // human label
     WorkroomExists(dir, name string) (bool, error)
     Create(dir, vcsName, path string) (string, error)
@@ -353,9 +349,8 @@ so it doesn't interfere with your real install.
 
 The Xcode build runs `macapp/Scripts/build-helper.sh` as a phase, which compiles the Go CLI and
 embeds it in the app bundle — so a Go toolchain must be on `PATH` when building the app. The app
-targets also run **`make app-vcs`** first (the Rust jj-lib core → the `WrVcs` SwiftPM package), which
-needs **`protoc`** on `PATH` (`brew install protobuf`); a universal release build additionally needs
-rustup `stable` ≥ 1.93. See [`macapp/README.md`](macapp/README.md) and
+targets also build the embedded `wr-agent` (`macapp/Scripts/build-agent.sh`), which needs a Rust
+toolchain on `PATH`; a universal release build additionally needs the two Apple targets. See [`macapp/README.md`](macapp/README.md) and
 [`macapp/AGENTS.md`](macapp/AGENTS.md) for the full architecture, the VCS core, the libghostty
 integration notes (`macapp/QA-libghostty.md`), and signing details.
 
@@ -386,7 +381,7 @@ when built without ldflags (which disables `workroom update`).
 
 - A new subcommand → add a file under `cmd/` and register it in its `init()`.
 - New orchestration logic → `internal/workroom/`.
-- A new VCS operation → extend the `vcs.VCS` interface and both `git.go` / `jj.go`.
+- A new VCS operation → extend the `vcs.VCS` interface and `git.go`.
 - A new config field → `internal/config/config.go`.
 - A new error class → add a sentinel in `internal/errs/errs.go` and map it in `Code`/`ExitCode`.
 
@@ -402,7 +397,6 @@ executor and a temp config — no real repo required.
 | `app-build` | Build the app (Debug) |
 | `app-test` | Run `WorkroomAppTests` (unit) |
 | `app-uitest` | Run `WorkroomAppUITests` (XCUITest; needs a GUI session) |
-| `app-vcs` | Build the Rust VCS core → the `WrVcs` package (auto-run before app builds) |
 | `app-generate` | Regenerate the `.xcodeproj` from `project.yml` |
 | `app-format` / `app-lint` | Format / lint Swift via swift-format |
 | `app-release` | Build → sign → notarize → staple → DMG (full release) |
@@ -418,7 +412,7 @@ executor and a temp config — no real repo required.
 
 ## Testing
 
-**Go CLI** — standard `go test`. Coverage spans config CRUD, name generation, the VCS Git/JJ parsers
+**Go CLI** — standard `go test`. Coverage spans config CRUD, name generation, the VCS Git parsers
 (with a mock `CommandExecutor`), the script runner (using `testdata/fixtures/{setup,teardown,failed_setup,failed_teardown}`),
 the updater's version comparison, and the full create/delete/list/`list_data` orchestration plus the
 `delete-project` command (unit + integration).
@@ -457,7 +451,9 @@ and every PR against either:
 
 - **`cli` job** (`ubuntu-latest`): sets up Go from `go.mod`, runs `golangci-lint` (subsumes `go vet`
   / `gofmt`), `go build`, and `go test ./...`.
-- **`app` job** (`macos-15`): sets up Xcode + Go, `brew install xcodegen jj`, runs `make app-lint`
+- **`rust` job** (`ubuntu-latest`): `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo test` for the
+  whole `vcs/` Rust workspace, on a pinned toolchain.
+- **`app` job** (`macos-15`): sets up Xcode + Go, `brew install xcodegen`, runs `make app-lint`
   (swift-format `--strict`) and `make app-test` with **ad-hoc signing** flags (hosted runners have
   no signing cert), e.g.:
 

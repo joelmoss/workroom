@@ -7,7 +7,7 @@ Workroom combines a native macOS app with a bundled, standalone Go CLI.
 - `cmd/` contains Cobra commands; `internal/` owns workspace lifecycle, VCS, configuration, and scripts. Go tests sit beside sources; shared fixtures live in `testdata/`.
 - `macapp/WorkroomApp/Core/` contains app services and models; `Views/` contains SwiftUI interfaces. Assets and bundled resources live under `macapp/WorkroomApp/`.
 - `macapp/WorkroomAppTests/` and `WorkroomAppUITests/` contain app tests.
-- `vcs/` is the Rust workspace for native JJ integration and session helpers, with Swift bindings under `vcs/swift/`.
+- `vcs/` is the Rust workspace for the `wr-agent` daemon (terminal sessions, VCS and File services) and its git read crates.
 - `website/` contains the website; `docs/` contains supporting documentation.
 
 ## Build, Test, and Development Commands
@@ -31,7 +31,7 @@ Use gofmt/goimports for Go. Swift uses two-space indentation and a 100-column li
 
 ## Testing Guidelines
 
-Go uses `testing` with `*_test.go` files and `Test…` functions. Swift uses XCTest/XCUITest with `*Tests.swift` files and `test…` methods. Run relevant tests and linters before submitting; cover changed behavior and regressions. Use temporary repositories for VCS tests, especially JJ snapshot operations. Declare app preference keys with `suite: .app` to preserve test isolation.
+Go uses `testing` with `*_test.go` files and `Test…` functions. Swift uses XCTest/XCUITest with `*Tests.swift` files and `test…` methods. Run relevant tests and linters before submitting; cover changed behavior and regressions. Use temporary repositories for VCS tests. Declare app preference keys with `suite: .app` to preserve test isolation.
 
 ## Commit & Pull Request Guidelines
 

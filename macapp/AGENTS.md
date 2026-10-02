@@ -17,7 +17,6 @@ make app-uitest     # XCUITest — needs the GUI session to itself; queues behin
 make app-identity   # the bundle id this checkout's Debug build gets (one per workroom)
 make app-test-scripts # script tests (build-helper archs, channel classify, dev identity, GUI lock)
 make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.yml
-make app-vcs        # build the Rust VCS core → WrVcs SwiftPM package (auto-run before app builds)
 make app-format     # swift-format, rewrite sources in place
 make app-lint       # swift-format --strict (non-zero on any violation — the hard gate)
 make app-release    # Release build → notarize → staple → DMG installer (Scripts/release.sh).
@@ -38,8 +37,7 @@ Workrooms of this repo can build, unit-test and run their dev apps at the same t
 (`docs/designs/parallel-workroom-testing.md`). Two mechanisms make that safe, and both matter when
 you touch the Makefile or the test launch paths:
 
-- **One Debug identity per workroom.** In a workroom (a linked git worktree or secondary jj
-  workspace) `make` builds `com.developwithstyle.workroom.dev.wr-<name>-<hash>`
+- **One Debug identity per workroom.** In a workroom (a linked git worktree) `make` builds `com.developwithstyle.workroom.dev.wr-<name>-<hash>`
   (`Scripts/dev-identity.sh` → `WORKROOM_DEV_ID_SUFFIX` → the Debug bundle id in `project.yml`); the
   project's own checkout keeps the plain id. Everything keyed by bundle id — preferences, the
   session helpers' sockets (so its own `wr-agent`), the saved session, "already running" — is then
@@ -54,16 +52,18 @@ Within one workroom it is still one `make app-*` at a time: they share its Deriv
 `make app-run` stops only copies of its own identity (`Scripts/stop-dev-app.sh`) — never kill the
 app by name, since every workroom's app, test host and XCUITest app is called "Workroom Dev".
 
-## VCS core (Rust jj + SwiftGitX git)
+## VCS core (SwiftGitX git + wr-agent)
 
-Workroom reads VCS data through **two backends behind one Swift layer** (the app is growing into a
-VCS-first IDE — issue #59 is the first brick):
+Workroom is git-only. VCS data reaches the app two ways, behind
+one Swift layer (the app is growing into a VCS-first IDE — issue #59 is the first brick):
 
-- **jj → Rust `jj-lib` via UniFFI.** The `vcs/` Rust workspace (jj-only) builds a static xcframework
-  + generated Swift into the local SwiftPM package `vcs/swift/WrVcs` — the app does `import WrVcs`.
-- **git → SwiftGitX (libgit2), pure Swift.** git has a mature native Swift path; jj has none — so
-  only jj needs the Rust/UniFFI bridge. (An all-Rust core with gix was tried and dropped: gix bought
-  no real unification and libgit2 is the more complete git engine.)
+- **Local reads → SwiftGitX (libgit2), pure Swift.** `GitProvider` wraps SwiftGitX and implements
+  `LocalVCSProviding`. No Rust bridge or xcframework. (An all-Rust core with gix was tried and
+  dropped: gix bought no real unification and libgit2 is the more complete git engine.)
+- **Agent-routed reads and writes → `wr-agent`.** The `vcs/` Rust workspace holds the `wr-agent`
+  daemon (terminal sessions, VCS and File services) and its git read crates (`wr-vcs-git`,
+  `wr-vcs-model`); see "Terminal sessions" below. The app talks to it through `AgentVCSReader` /
+  `AgentVCSConnection`.
 
 **Three reads reach past SwiftGitX**, all linking the `libgit2` C API **directly** (its own SPM package
 in `project.yml`, URL + version identical to SwiftGitX's own dependency so SwiftPM sees one package
@@ -74,8 +74,7 @@ files are the only ones in the app touching raw libgit2:
 - **Push state — `Core/GitGraph.swift`.** SwiftGitX cannot express a commit *range*: its
   `CommitSequence` only calls `git_revwalk_push`, never `git_revwalk_hide`, it exposes no
   merge-base/graph helper, and its repository pointer is `internal` — so "which commits aren't on
-  `origin` yet" (`HEAD --not refs/remotes/origin/*`) needs the C API. The jj side answers the same
-  question natively with one `ancestors(<tracked @origin tips>)` revset. Push state is
+  `origin` yet" (`HEAD --not refs/remotes/origin/*`) needs the C API. Push state is
   **origin-scoped** and any unreadable ref degrades the WHOLE page to "unknown" (no badge) rather than
   a partial answer.
 - **Commit diffs — `Core/GitCommitDiff.swift`.** Rename detection is `git_diff_find_similar` run over a
@@ -105,54 +104,17 @@ files are the only ones in the app touching raw libgit2:
   reported `0 insertions(+), 0 deletions(-)`.
 
 **Read surface & routing.** `Core/RepositoryServices.swift` defines the context-bound `VCSProviding`
-protocol. `RepositoryRouter` captures the backend and shared ownership for a validated host/path
-identity; native engines implement `LocalVCSProviding` behind its local adapter. `RustJJProvider`
-maps `WrVcs.*` → app-native models, and `GitProvider` wraps SwiftGitX. `WorkroomStatusResolver` and `BranchResolver` read through this layer — **the jj CLI
-parsers are gone** (log/changeset/currentRef/workingStatus are all native jj-lib).
+protocol. `RepositoryRouter` captures the shared ownership for a validated host/path identity;
+native engines implement `LocalVCSProviding` behind its local adapter, and `GitProvider` wraps
+SwiftGitX. `WorkroomStatusResolver` and `BranchResolver` read through this layer — no CLI text
+parsing. Reads never take a repository lock and are not gated.
 
-**The two mutating reads: jj working-copy status and working-copy diffs.** jj's working copy is
-itself a commit, so on-disk edits don't exist to jj-lib until snapshotted — a working-copy status
-read (`RustJJProvider.workingStatus`) therefore *must* snapshot `@` first: it takes the working-copy
-lock and rewrites `@` (modeled on jayjay's `refresh_working_copy`). A working-copy file diff
-(`workingFileDiff` with base `.workingCopy`) runs `jj diff` without `--ignore-working-copy`, so it
-snapshots too. `BoundLocalReader` routes both through `JJSnapshotGate` and requires the context's
-shared ownership (`requireOwnership()`), so an unregistered repository cannot snapshot. Immutable
-revision reads (log/changeset/currentRef) stay a read-only `load_at_head` with no lock and no gate.
-Because they mutate, **only test snapshot changes on throwaway repos** (corruption risk). Status
-line counts come from the SAME native status read — `changed_files` materializes each changed file's
-two sides and counts them, so `resolveJJ` fires no `jj diff --stat` process (it used to; see
-`40456bae`). Oversized and binary files report no count rather than being read whole. Cargo coverage:
-`vcs/crates/wr-vcs-core/tests/working_status.rs` + `line_stats.rs`; Swift coverage:
-`WorkroomStatusIntegrationTests.testJJ*`.
-
-`make app-vcs` (→ `vcs/scripts/build-apple.sh`) builds the Rust artifacts and **runs automatically
-before `app-build`/`app-test`/`app-generate`** (a Makefile prerequisite). Requirements:
-
-- **`protoc`** on PATH (`brew install protobuf`) — a build-time dep of jj-lib.
-- arm64 by default; **`make app-release` builds universal** (`VCS_APPLE_FLAGS=--universal`), which
-  needs **rustup `stable` ≥ 1.93** + `rustup target add x86_64-apple-darwin aarch64-apple-darwin`
-  (Homebrew's rust can't cross-compile; the script preflights this and errors clearly). It also
-  cross-builds the Linux agents, which need cargo-zigbuild and the two musl targets (see "Linux
-  agents" below).
-- **Unchanged inputs are a no-op.** The script hashes the Rust sources, manifests/lockfile, itself,
-  `rustc --version` and the arch flavour into `vcs/swift/WrVcs/Frameworks/.build-stamp`, and exits
-  early when that matches and the outputs exist. `WR_VCS_FORCE=1 make app-vcs` rebuilds regardless.
-  CI leans on this: it caches the *outputs* keyed on the same inputs, so a commit that doesn't touch
-  `vcs/` skips the ~4-minute crate-graph build (and `make app-test`'s own `app-vcs` prerequisite
-  stays free).
-- **Xcode-driven builds are gated, not auto-fixed.** ⌘R/⌘U (and a raw `xcodebuild`) skip the
-  Makefile, so they'd otherwise link the last-built core. A `Rust VCS core up to date` pre-build
-  phase runs `build-apple.sh --check` and **fails the build** with `run 'make app-vcs'` when the
-  stamp doesn't match `vcs/`. It can't rebuild for you: SPM extracts the binaryTarget's xcframework
-  before target build phases run, so a fresh `.a` wouldn't reach that build's link. Silently linking
-  a stale core cost a debugging session once — conflicted files read as `.modified` because the
-  linked core predated a merged per-file-conflict fix.
-
-The xcframework + generated Swift are **gitignored and regenerated**; only `Package.swift` + a
-`shim.c` are tracked. Packaging note: the xcframework is **library-only** (no headers) and the FFI
-Clang module (`wr_vcs_uniffiFFI`) is a separate SPM C target — a headers-bearing static xcframework
-copies its `module.modulemap` into the shared `Debug/include/` and collides with GhosttyKit's
-("Multiple commands produce include/module.modulemap").
+**Writes are serialized per project.** git worktrees of one project share the backing `.git`, so a
+commit in one workroom and a fetch or pull in another contend for the same `index.lock` /
+`packed-refs.lock`. `RepositoryWriteGate` (`Core/RepositoryWriteGate.swift`) is a per-project
+serializer that every commit, fetch, push and pull goes through (`CLIVCSWriter.gated`); callers pass
+the raw, untimed call as the operation and wrap the gate in `withTimeout`, never the reverse (see the
+type's doc comment). Swift coverage: `RepositoryWriteGateTests`.
 
 ## Terminal sessions: `wr-agent` (Rust) and the daemon it replaces
 
@@ -328,7 +290,7 @@ the bound itself became the throughput floor above. Each fix was correct about i
 The same shape again on #205's review fixes, three times in two rounds: replacing an env allowlist
 with `env_clear()` + the app's own environment fixed a stale-identity bug and silently dropped the
 `GIT_DIR`/`GIT_WORK_TREE` scrub, so a commit requested in one repository landed in another and
-reported success; putting a cancellation shield in the command runner protected the jj flock and
+reported success; putting a cancellation shield in the command runner protected the working-copy lock and
 stranded connection slots on every superseded read; gating the resulting SIGKILL on `timed_out`
 stopped it firing after normal exits and opened a path where it never fired at all. Each fix was
 correct about its target. Each was caught by a reviewer that had not written it.
@@ -461,7 +423,7 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
 
 ## Layout
 
-**VCS info that only the GUI needs** (e.g. the sidebar root row's current branch/bookmark)
+**VCS info that only the GUI needs** (e.g. the sidebar root row's current branch)
 is resolved app-side in `Core/BranchResolver.swift` (per project, async, with a per-call
 timeout) — deliberately NOT added to the `workroom --json` contract, which the human CLI
 never shows.
