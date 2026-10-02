@@ -900,7 +900,7 @@ struct PaneLeafView: View {
       // tab so "Keep Open" / split-guard reflect its current preview / split state. A diff leaf is
       // always a live tab while it renders, so the `else` is just a safety fallback.
       let diff = DiffViewer(
-        descriptor: descriptor, directory: target.path,
+        descriptor: descriptor, directory: target.path, repositoryLocation: target.remoteLocation,
         viewModeOverride: sessions.tab(tabID, for: target)?.diffViewModeOverride,
         isFocused: focused, find: store.contentFind
       )
@@ -914,7 +914,8 @@ struct PaneLeafView: View {
       // Read-only file viewer (Files inspector section). Same rounded clip + chip context menu as the
       // diff leaf, so "Keep Open"/Close behave identically on a previewed file.
       let file = PlainFileViewer(
-        descriptor: descriptor, directory: target.path, isFocused: focused,
+        descriptor: descriptor, directory: target.path, repositoryLocation: target.remoteLocation,
+        isFocused: focused,
         previewOverride: sessions.tab(tabID, for: target)?.markdownPreviewOverride,
         find: store.contentFind
       )
@@ -929,7 +930,8 @@ struct PaneLeafView: View {
       // reuses DiffViewer via a `.commit` source). Same rounded clip + chip context menu as the other
       // content leaves, so "Keep Open"/Close/split behave identically.
       let detail = ChangesetDetailView(
-        descriptor: descriptor, directory: target.path, tabID: tabID, target: target,
+        descriptor: descriptor, directory: target.path,
+        repositoryLocation: target.remoteLocation, tabID: tabID, target: target,
         isFocused: focused, find: store.contentFind)
       if let tab = sessions.tab(tabID, for: target) {
         contentPanel(

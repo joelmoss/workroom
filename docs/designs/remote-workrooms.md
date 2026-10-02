@@ -774,7 +774,8 @@ exists, but run both.
 - The router captures backend and shared ownership together. Its bound reader exposes nine async
   methods; its writer exposes eight methods without caller-supplied repository roots. Registered
   local siblings coordinate on their project root; independent remote clones register their own
-  working root as the shared root. Local listing replacement preserves remote registrations.
+  working root as the shared root. Local listing replacement preserves remote registrations; since
+  #253 the listing replaces those on its own, from its reachable remote workrooms.
 - Unregistered local repositories may serve immutable reads. Ownership stays unknown until an
   accepted listing registers it: writes, JJ working status, snapshotting diffs, and snapshotting
   file listings must fail rather than invent a coordination root. A failed preflight never permits

@@ -185,6 +185,13 @@ struct TerminalTarget: Identifiable, Hashable {
   var terminalUnavailability: Unavailability? { remoteHost == nil ? unavailability : nil }
   var opensTerminals: Bool { terminalUnavailability == nil }
 
+  /// The location on its host of a remote workroom this app reaches, else nil. Never resolved from
+  /// the path alone, which can't name a host: one project's remote workrooms share a path on
+  /// different hosts (#253). A local target resolves its path itself.
+  var remoteLocation: RepositoryLocation? {
+    remoteHost.flatMap { try? RepositoryLocation.remote(host: $0, path: path) }
+  }
+
   enum Unavailability: Hashable {
     /// A local directory that no longer exists.
     case directoryMissing
@@ -251,7 +258,7 @@ extension Workroom {
 
   /// A host with no `state` is serving: "creating", "failed" and "destroyed" are not. Only this
   /// build's: another build's host takes its key.
-  private var reachableHost: UUID? {
+  var reachableHost: UUID? {
     guard let host, host.state == nil, host.provisioner == RemoteWorkrooms.provisioner,
       RemoteWorkrooms.isEnabled
     else { return nil }

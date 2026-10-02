@@ -907,7 +907,8 @@ extension View {
         } label: {
           Label("Open File in…", systemImage: "arrow.up.forward.app")
         }
-        .disabled(descriptor.change == .deleted)
+        // A remote workroom's files aren't on this Mac.
+        .disabled(descriptor.change == .deleted || target.isMissing)
         if tab.isPreview {
           Button {
             sessions.persist(tab.id, for: target)
@@ -941,6 +942,7 @@ extension View {
         } label: {
           Label("Open File in…", systemImage: "doc.text")
         }
+        .disabled(target.isMissing)
         if tab.isPreview {
           Button {
             sessions.persist(tab.id, for: target)

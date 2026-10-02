@@ -9,6 +9,9 @@ struct PlainFileViewer: View {
   let descriptor: FileDescriptor
   /// The workroom directory the repo-relative `descriptor.path` resolves against.
   let directory: String
+  /// Where the file is read when it isn't a path on this Mac: a remote workroom's location on its
+  /// host (#253). nil resolves `directory` locally.
+  var repositoryLocation: RepositoryLocation? = nil
   /// Whether this pane holds focus — only the focused file viewer feeds the find model and shows the
   /// find bar / match highlights (the model is shared, since only one pane searches at a time).
   var isFocused: Bool = true
@@ -127,7 +130,8 @@ struct PlainFileViewer: View {
     content = ""
     truncated = false
     previewRendered = false  // a new file means a new render to wait for
-    let outcome = await Self.loadOutcome(directory: directory, relative: descriptor.path)
+    let outcome = await Self.loadOutcome(
+      directory: directory, location: repositoryLocation, relative: descriptor.path)
     // Stale-write guard (see `activePath`): a slow read of the file this pane USED to show must
     // never paint file A's text into file B's slot.
     guard !Task.isCancelled, activePath == path else { return }
@@ -186,9 +190,12 @@ struct PlainFileViewer: View {
   /// mid-read cannot hang or escape. In-repo links are followed. This used to be a client-side
   /// path check followed by a separate open, which a remote host would have lost entirely.
   static func loadOutcome(
-    directory: String, relative: String, router: RepositoryRouter = .shared
+    directory: String, location supplied: RepositoryLocation? = nil, relative: String,
+    router: RepositoryRouter = .shared
   ) async -> Outcome? {
-    guard let location = try? await RepositoryLocation.local(directory) else { return nil }
+    let resolved: RepositoryLocation? =
+      if let supplied { supplied } else { try? await RepositoryLocation.local(directory) }
+    guard let location = resolved else { return nil }
     do {
       let files = try await router.files(for: location)
       let data = try await files.read(

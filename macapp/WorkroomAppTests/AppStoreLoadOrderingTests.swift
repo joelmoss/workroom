@@ -364,7 +364,9 @@ extension AppStoreLoadOrderingTests {
     XCTAssertEqual(shared.projects.first?.workrooms.first?.name, "newer")
     XCTAssertNotNil(RepositoryRouter.shared.localLocation(for: path + "/newer"))
     XCTAssertNil(RepositoryRouter.shared.localLocation(for: path + "/older"))
-    XCTAssertNotNil(RepositoryRouter.shared.entry(for: remote))
+    // The accepted listing owns remote registrations too (#253), and this one has no remote
+    // workroom, so the one registered by hand is gone; the stale listing did not put it back.
+    XCTAssertNil(RepositoryRouter.shared.entry(for: remote))
     XCTAssertNil(store.errorMessage)
   }
 }

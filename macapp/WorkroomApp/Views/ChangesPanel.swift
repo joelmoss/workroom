@@ -718,7 +718,8 @@ struct ChangedFileRow: View, Equatable {
       } label: {
         Label("Open File in \(openFileEditorName)", systemImage: "arrow.up.forward.app")
       }
-      .disabled(file.change == .deleted)
+      // A remote workroom's files aren't on this Mac.
+      .disabled(file.change == .deleted || store.inspectorTarget?.isMissing != false)
     }
   }
 

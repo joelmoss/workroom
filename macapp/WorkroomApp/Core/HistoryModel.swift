@@ -126,6 +126,25 @@ final class HistoryModel: ObservableObject {
     }
   }
 
+  /// `focus` for a target: a remote workroom's log by its location on its host, which its path
+  /// can't name (#253), and any other's by its directory.
+  func focus(target: TerminalTarget?) {
+    if let location = target?.remoteLocation { return focus(location: location) }
+    focus(target.map { URL(fileURLWithPath: $0.path) })
+  }
+
+  /// `activate` for a target, as `focus(target:)` picks.
+  func activate(target: TerminalTarget?) {
+    guard let location = target?.remoteLocation else {
+      return activate(target.map { URL(fileURLWithPath: $0.path) })
+    }
+    if self.location == location, state.isSettled {
+      refresh()
+    } else {
+      focus(location: location)
+    }
+  }
+
   /// Grow the page by one `pageSize` (the "Load more" affordance), up to `maxWindow`.
   func loadMore() {
     guard root != nil || location != nil, !reachedEnd, state != .loading, !atWindowCap else {
