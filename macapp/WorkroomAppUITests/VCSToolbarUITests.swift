@@ -3,53 +3,18 @@ import XCTest
 /// UI tests for the VCS toolbar: its placement above the Changes header, the states its sync segment
 /// renders, and the button→engine seam.
 ///
-/// **Every test runs against BOTH backends.** This is an abstract base; `VCSToolbarGitUITests` and
-/// `VCSToolbarJJUITests` are the two concrete suites, and the only difference between them is the fixture
-/// project's declared VCS and therefore the vocabulary the branch segment uses. Parity is deliberate — the
-/// toolbar is one code path with two wordings, and the one defect this structure exists to catch (a jj
-/// project captioned "Current Branch") was invisible precisely because the suite only ever ran the git
-/// shape. Where a backend genuinely differs, the expectation comes from `expectedRefNoun` rather than a
-/// separate test, so neither backend can quietly lose coverage the other has.
-///
 /// Remote state is SEEDED via `-WorkroomUITestSyncState` (see `UITestFixture.remoteState`) because the
 /// fixture's paths aren't real repos — a live read resolves to "No repository", which is a correct but
 /// uninteresting state. The engine's own correctness against real repos is `VCSRemoteIntegrationTests`;
 /// what only this tier can see is whether the rendered control does what it says.
 ///
-/// **The jj suite needs a real `jj` ≥ 0.43 on PATH.** A jj project's remote actions are gated on BOTH tool
-/// floors (a colocated jj repo drives git underneath — see `VCSToolVersions`), so on a machine with jj
-/// missing or too old the sync segment correctly disables itself and the state tests fail. That's a true
-/// dependency of testing a jj project's toolbar, not a flaw in the tests; the git suite has no such
-/// requirement.
-///
 /// **Out of reach here, deliberately:** hover wells and `.help` tooltips (`.onHover` is not driven by
 /// XCUITest's synthetic hover — see `ChangesPanelUITests`), and the width-degradation ladder (dropped text
 /// simply isn't in the accessibility tree). Those are covered by `VCSToolbarMetricsTests` (the geometry)
-/// and `VCSSyncPresentationTests` (the variant ordering and the backend vocabulary).
+/// and `VCSSyncPresentationTests` (the variant ordering).
 ///
 /// Run with `make app-uitest` on a real GUI login session; excluded from the unit gate.
-class VCSToolbarUITestsBase: XCTestCase {
-
-  // MARK: Backend parameterisation
-
-  /// Launch arguments that select the backend. Empty for git — the fixture's default.
-  class var backendArguments: [String] { [] }
-
-  /// What this backend calls the ref the working copy is on, capitalised as the caption renders it.
-  class var expectedRefNoun: String { "Branch" }
-
-  /// The other backend's noun, which must NOT appear. Asserting only the positive would pass on a caption
-  /// that somehow said both.
-  class var wrongRefNoun: String { expectedRefNoun == "Branch" ? "Bookmark" : "Branch" }
-
-  /// The base contributes no tests of its own — without this, XCTest would run every test three times
-  /// (once per class) and the base's run would exercise whichever backend the defaults happen to name.
-  override class var defaultTestSuite: XCTestSuite {
-    if self == VCSToolbarUITestsBase.self {
-      return XCTestSuite(name: "VCSToolbarUITestsBase (abstract)")
-    }
-    return super.defaultTestSuite
-  }
+final class VCSToolbarUITests: XCTestCase {
 
   override func setUpWithError() throws { continueAfterFailure = false }
 
@@ -60,7 +25,6 @@ class VCSToolbarUITestsBase: XCTestCase {
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     if let syncState { app.launchArguments += ["-WorkroomUITestSyncState", syncState] }
-    app.launchArguments += Self.backendArguments
     app.launchArguments += extraArguments
     app.launch()
     app.activate()
@@ -200,7 +164,7 @@ class VCSToolbarUITestsBase: XCTestCase {
       sync(app).label.contains("Last"), "\"ago\" already places it in the past")
   }
 
-  /// A fresh workroom is `git worktree add -b` / `jj workspace add` with no counterpart on the remote —
+  /// A fresh workroom is `git worktree add -b` with no counterpart on the remote —
   /// the product's DEFAULT state. It must read as Publish, never as Push against a ref that doesn't exist.
   func testNoCounterpartOffersPublish() {
     let app = launchedApp(syncState: "noCounterpart")
@@ -223,28 +187,21 @@ class VCSToolbarUITestsBase: XCTestCase {
 
   // MARK: Branch segment
 
-  /// The name, and the backend's own word for it.
+  /// The name, and the caption naming it a branch.
   ///
-  /// The noun is the one thing that genuinely differs between the two suites, and getting it wrong is not
-  /// cosmetic: a jj bookmark does NOT advance as you commit, which is a git branch's defining behaviour,
-  /// so "branch" in a jj repo describes something the tool doesn't do. This shipped saying "Current Branch"
-  /// over jj data — the git-only fixture is why nothing caught it.
   /// The segment is one accessibility element whose LABEL carries both parts, as `"Current Branch:
   /// feature/login"`. Not label + value: `.accessibilityValue` stopped applying once the segment became a
   /// non-`Button` collapsed with `children: .ignore`, and read back empty.
-  func testBranchSegmentShowsTheCurrentRefAndItsBackendNoun() {
+  func testBranchSegmentShowsTheCurrentRefAndCaption() {
     let app = launchedApp(syncState: "ahead")
     XCTAssertTrue(waitExists(branch(app)))
     XCTAssertTrue(waitLabel(branch(app), contains: "feature/login"))
     let label = branch(app).label
-    // A PREFIX check, not `contains`: a ref legitimately named `bookmark-fix` or `branch-cleanup` would
-    // make a `contains` assertion on the wrong noun fail against perfectly correct code.
+    // A PREFIX check, not `contains`: a ref legitimately named `branch-cleanup` would make a
+    // `contains` assertion pass against a caption that is wrong.
     XCTAssertTrue(
-      label.hasPrefix("Current \(Self.expectedRefNoun)"),
-      "expected the caption to lead with Current \(Self.expectedRefNoun); got \(label)")
-    XCTAssertFalse(
-      label.hasPrefix("Current \(Self.wrongRefNoun)"),
-      "the caption must not say \(Self.wrongRefNoun); got \(label)")
+      label.hasPrefix("Current Branch"),
+      "expected the caption to lead with Current Branch; got \(label)")
     XCTAssertTrue(label.contains("feature/login"), "the name must be spoken too; got \(label)")
   }
 
@@ -306,7 +263,7 @@ class VCSToolbarUITestsBase: XCTestCase {
   }
 
   /// The end of the conflicted-pull path, and the only tier whose outcome is neither a success nor a
-  /// failure. jj's rebase exits 0 WITH conflicts, so nothing in the failure taxonomy fires — and behind
+  /// failure. A pull can exit 0 and still leave conflicts, so nothing in the failure taxonomy fires — and behind
   /// returns to 0, so before this the count tiers rendered "Push origin" over a conflicted tree and said
   /// nothing at all about it.
   ///
@@ -426,20 +383,4 @@ class VCSToolbarUITestsBase: XCTestCase {
       "a failed action tells you nothing new about the repo, so the snapshot must stand; got "
         + branch(app).label)
   }
-}
-
-/// The toolbar against a **git** project — the fixture's default.
-final class VCSToolbarGitUITests: VCSToolbarUITestsBase {
-  override class var backendArguments: [String] { [] }
-  override class var expectedRefNoun: String { "Branch" }
-}
-
-/// The toolbar against a **jj** project.
-///
-/// `-WorkroomUITestJJProject 1` is what makes the fixture's project report `vcs: "jj"`. The fixture already
-/// fed jj-SHAPED status (`@`'s change-id, commit-id, bookmarks and description) while declaring the project
-/// git, which is why a jj-specific wording bug could ship unseen.
-final class VCSToolbarJJUITests: VCSToolbarUITestsBase {
-  override class var backendArguments: [String] { ["-WorkroomUITestJJProject", "1"] }
-  override class var expectedRefNoun: String { "Bookmark" }
 }

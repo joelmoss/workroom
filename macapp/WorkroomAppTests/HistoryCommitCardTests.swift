@@ -18,12 +18,12 @@ import XCTest
 /// Also pins the shared tooltip copy (`VCSPushScope.unpushedHelp`), which all three surfaces use.
 @MainActor
 final class HistoryCommitCardTests: XCTestCase {
-  private func commit(pushState: VCSPushState, isWorkingCopy: Bool = false) -> VCSCommit {
+  private func commit(pushState: VCSPushState) -> VCSCommit {
     VCSCommit(
-      commitID: "c1", shortID: "c1abc123", changeID: nil, summary: "Add push state", body: "",
+      commitID: "c1", shortID: "c1abc123", summary: "Add push state", body: "",
       authors: [VCSAuthor(name: "Ada", email: "ada@example.com")],
       timestamp: Date(timeIntervalSince1970: 1_700_000_000), refs: [], parentIDs: [],
-      isWorkingCopy: isWorkingCopy, pushState: pushState)
+      pushState: pushState)
   }
 
   private func card(_ commit: VCSCommit) -> HistoryCommitCard {
@@ -61,19 +61,12 @@ final class HistoryCommitCardTests: XCTestCase {
       "unknown renders nothing — it is not a synonym for unpushed")
   }
 
-  /// The card follows the same `@`-suppression rule as the row: hovering the working copy shouldn't
-  /// announce it as unpushed work.
-  func testCardSuppressesTheMarkerOnTheWorkingCopy() {
-    XCTAssertFalse(card(commit(pushState: .unpushed, isWorkingCopy: true)).showsUnpushedMarker)
-  }
-
   /// Every state renders. Cheap, but it's what catches a crash in the branch that only fires for one of
   /// them.
   func testCardRendersInEveryPushState() {
     render(commit(pushState: .unpushed))
     render(commit(pushState: .pushed))
     render(commit(pushState: .unknown))
-    render(commit(pushState: .unpushed, isWorkingCopy: true))
   }
 
   // MARK: - shared tooltip copy

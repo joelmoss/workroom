@@ -10,7 +10,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .DEFAULT_GOAL := help
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
-        app-vcs app-run app-build app-test app-uitest app-identity app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-tool-logos app-clean
+        app-run app-build app-test app-uitest app-identity app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-tool-logos app-clean
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -54,7 +54,7 @@ APP_UITEST_XCODEBUILD := xcodebuild -project $(APP_PROJECT) -scheme WorkroomAppU
 # dev app at once. Everything a running "Workroom Dev" owns is keyed by its bundle id — preferences,
 # its session helper's socket (and so which wr-agent it hands off to), its saved session, and what
 # LaunchServices and XCUITest treat as "that app is already running" — so two workrooms building one
-# id shared all of it. A workroom (a linked git worktree or secondary jj workspace) gets
+# id shared all of it. A workroom (a linked git worktree) gets
 # `com.developwithstyle.workroom.dev.wr-<name>-<hash>`; the project's own checkout keeps the plain
 # id, so its preferences, TCC grants and sessions are unchanged. Computed once, from
 # macapp/Scripts/dev-identity.sh; `make … APP_DEV_ID_SUFFIX=` forces the plain id. Xcode-driven
@@ -82,7 +82,7 @@ gui_lock = $(if $(filter off 0 no false,$(WR_GUI_LOCK)),,python3 "$(CURDIR)/maca
 APP_SIGN_FLAGS ?=
 
 # Extra xcodebuild options for app-test. Parallel execution by default: the suite is dominated by a
-# few slow integration classes (Markdown WebView renders, real git/jj repos), so spreading classes
+# few slow integration classes (Markdown WebView renders, real git repos), so spreading classes
 # across worker processes cuts the run ~40% (48s -> ~29s). Each worker gets its own host-app process
 # but they share one UserDefaults domain, so a test mutating a `Defaults` key another class reads
 # would race — override with `make app-test APP_TEST_FLAGS=` to bisect a suspected parallel-only
@@ -101,14 +101,6 @@ APP_TEST_FLAGS ?= -parallel-testing-enabled YES
 # full suite (pre-release, or after touching any of these) with `make app-uitest APP_UITEST_FLAGS=`.
 APP_UITEST_FLAGS ?= -skip-testing:WorkroomAppUITests/AgentResumeUITests -skip-testing:WorkroomAppUITests/SessionRestoreUITests -skip-testing:WorkroomAppUITests/HistoryStressUITests/testLargeHistoryStaysInteractive -skip-testing:WorkroomAppUITests/WindowDragUITests/testDraggingWorkroomTabReordersTwoChips
 
-# The Rust VCS core (jj-lib via UniFFI) the app links, built into the local WrVcs SwiftPM package
-# (vcs/swift/WrVcs). Must run before xcodegen so the package's xcframework + generated Swift exist.
-# arm64 by default; release/distribution sets VCS_APPLE_FLAGS=--universal (needs rustup stable >=
-# 1.93 + both darwin targets, and `protoc` on PATH for jj-lib's build).
-VCS_APPLE_FLAGS ?=
-app-vcs: ## Build the Rust VCS core (xcframework + Swift bindings) the app links
-	vcs/scripts/build-apple.sh $(VCS_APPLE_FLAGS)
-
 # Stops every running copy of THIS build's identity first (Scripts/stop-dev-app.sh), and its
 # persisted session helpers, whose panes come back empty. By bundle id, never by process name: every
 # workroom's dev app, unit-test host and XCUITest app is called "Workroom Dev", and the
@@ -120,18 +112,18 @@ app-run: app-build ## Build (Debug) and launch this checkout's dev app, replacin
 	  sh -c 'sh Scripts/stop-dev-app.sh "$$1" && echo "Launching $$1" && open "$$1"' app-run \
 	  "$(APP_BUNDLE)"
 
-app-build: app-vcs ## Build the app (Debug)
+app-build: ## Build the app (Debug)
 	cd macapp && xcodegen generate && $(APP_XCODEBUILD) build $(APP_SIGN_FLAGS) $(APP_ID_FLAGS)
 
 # Built, then run in two steps, so only the run holds the GUI session: a build never waits on
 # another workroom's tests, and never makes another workroom's tests wait on it.
-app-test: app-vcs ## Run the app's unit tests (other workrooms' unit runs can overlap)
+app-test: ## Run the app's unit tests (other workrooms' unit runs can overlap)
 	cd macapp && xcodegen generate && \
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' build-for-testing $(APP_SIGN_FLAGS) $(APP_ID_FLAGS) && \
 	  $(call gui_lock,shared,app-test) \
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) test-without-building
 
-app-uitest: app-vcs ## Run the app's UI tests (XCUITest — needs the GUI session; queues behind other runs)
+app-uitest: ## Run the app's UI tests (XCUITest — needs the GUI session; queues behind other runs)
 	cd macapp && xcodegen generate && \
 	  $(APP_UITEST_XCODEBUILD) -destination 'platform=macOS' build-for-testing $(APP_SIGN_FLAGS) $(APP_ID_FLAGS) && \
 	  $(call gui_lock,exclusive,app-uitest) \
@@ -153,7 +145,7 @@ app-test-scripts: ## Run the script tests (build-helper/build-agent archs, chann
 	sh macapp/Scripts/stop-dev-app_test.sh
 	python3 macapp/Scripts/gui-lock_test.py
 
-app-generate: app-vcs ## Force-regenerate the (gitignored) .xcodeproj from project.yml
+app-generate: ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 	cd macapp && xcodegen generate
 
 app-format: ## Format Swift sources in place (swift-format)
@@ -162,7 +154,6 @@ app-format: ## Format Swift sources in place (swift-format)
 app-lint: ## Lint Swift with swift-format (--strict)
 	cd macapp && xcrun swift-format lint --strict --parallel --recursive WorkroomApp WorkroomAppTests WorkroomAppUITests WorkroomSessionProtocol WorkroomSession
 
-app-release: VCS_APPLE_FLAGS := --universal
 # `app-test-scripts` gates the release because it is the cheap half that catches an ARTIFACT bug
 # (the universal-arch cases) and needs no toolchain, no keychain and no Xcode.
 #
@@ -172,7 +163,7 @@ app-release: VCS_APPLE_FLAGS := --universal
 # so making it a prerequisite fails provisioning on a fresh runner before anything is archived.
 # The xcodebuild suite runs as an explicit gate step in release.yml / nightly.yml instead, with the
 # same ad-hoc overrides ci.yml uses.
-app-release: app-vcs app-test-scripts ## Build, notarize, staple + package a DMG installer (macapp/Scripts/release.sh)
+app-release: app-test-scripts ## Build, notarize, staple + package a DMG installer (macapp/Scripts/release.sh)
 	cd macapp && Scripts/release.sh
 
 app-icon: ## Regenerate release, dev + nightly AppIcon PNGs (macapp/Scripts/make-icon.swift)

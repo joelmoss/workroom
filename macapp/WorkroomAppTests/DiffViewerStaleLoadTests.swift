@@ -59,11 +59,11 @@ final class DiffViewerStaleLoadTests: XCTestCase {
   private struct HostWrapper: View {
     @ObservedObject var controller: DescriptorController
     let find = FileFindModel()
-    let resolve: (DiffDescriptor, String, String?) async -> DiffResult
+    let resolve: (DiffDescriptor, String) async -> DiffResult
     let onCommit: (@MainActor (DiffViewer.LoadState) -> Void)?
     var body: some View {
       var view = DiffViewer(
-        descriptor: controller.descriptor, directory: "/diff-stale-load", projectRoot: nil,
+        descriptor: controller.descriptor, directory: "/diff-stale-load",
         find: find)
       view.resolveDiff = resolve
       view.onCommit = onCommit
@@ -92,7 +92,7 @@ final class DiffViewerStaleLoadTests: XCTestCase {
 
   private func host(
     _ controller: DescriptorController,
-    resolve: @escaping (DiffDescriptor, String, String?) async -> DiffResult,
+    resolve: @escaping (DiffDescriptor, String) async -> DiffResult,
     onCommit: @escaping @MainActor (DiffViewer.LoadState) -> Void
   ) -> (NSWindow, NSView) {
     let hosting = NSHostingView(
@@ -116,7 +116,7 @@ final class DiffViewerStaleLoadTests: XCTestCase {
 
     let (window, view) = host(
       controller,
-      resolve: { [diffText] descriptor, _, _ in
+      resolve: { [diffText] descriptor, _ in
         requests.record(descriptor.path)
         // A is held open until this test releases it; B resolves immediately.
         if descriptor.path == Self.pathA { await gateA.wait() }

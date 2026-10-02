@@ -285,24 +285,14 @@ final class AgentVCSProtocolTests: XCTestCase {
       }
       XCTAssertTrue(wire.contains("\"host_environment\":true"), wire)
     }
-    // The jj barrier the agent takes for a remote command must never be asked of a local agent,
-    // whose caller already holds it for the whole operation: taken again, it would deadlock.
-    let local = AgentCommandRunner.request(
-      "jj", ["commit"], in: "/r", timeout: 1, stdin: nil, network: false, host: .local,
-      barrierRoot: "/r")
-    XCTAssertFalse(
-      String(decoding: try encoder.encode(local), as: UTF8.self).contains("barrier_root"))
-    let remote = AgentCommandRunner.request(
-      "jj", ["commit"], in: "/r", timeout: 1, stdin: nil, network: false, host: .remote(UUID()),
-      barrierRoot: "/r")
-    XCTAssertTrue(
-      String(decoding: try encoder.encode(remote), as: UTF8.self).contains(
-        "\"barrier_root\":\"\\/r\""))
-    // Nor for a network command, whose detached git helpers would inherit it.
-    let fetch = AgentCommandRunner.request(
-      "jj", ["git", "fetch"], in: "/r", timeout: 1, stdin: nil, network: true,
-      host: .remote(UUID()), barrierRoot: "/r")
-    XCTAssertNil(fetch.barrierRoot)
+    // `barrier_root` was the jj working-copy barrier; nothing takes it any more, so no request,
+    // local or remote, carries it (the agent still accepts it from an older app).
+    for host in [HostID.local, .remote(UUID())] {
+      let request = AgentCommandRunner.request(
+        "git", ["commit"], in: "/r", timeout: 1, stdin: nil, network: false, host: host)
+      XCTAssertFalse(
+        String(decoding: try encoder.encode(request), as: UTF8.self).contains("barrier_root"))
+    }
   }
 
   // MARK: File service (#211)
@@ -357,7 +347,6 @@ final class AgentVCSProtocolTests: XCTestCase {
       (#"{"Io":"disk"}"#, FileServiceError.failed("disk")),
       (#"{"Busy":"full"}"#, FileServiceError.failed("full")),
       (#"{"LockContention":"held"}"#, VCSError.lockContention),
-      (#"{"Registration":"needed"}"#, RepositoryRoutingError.registrationRequired),
     ]
     for (failure, expected) in cases {
       let text = #"{"version":1,"error":"# + failure + "}"

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Shared, app-wide project data: the project list plus everything derived from it that is
-/// identical across windows — root branch/bookmark labels, the VCS/CI status cache, GitHub-CLI
+/// identical across windows — root branch labels, the VCS/CI status cache, GitHub-CLI
 /// availability, and the in-flight project busy set. Extracted from `AppStore` (issue #70) so that
 /// multiple per-window `AppStore`s can share one project list while each keeps its own selection,
 /// terminals, splits, history, and run state.
@@ -53,7 +53,7 @@ final class ProjectStore: ObservableObject {
     return true
   }
 
-  /// Per-project resolved root branch/bookmark labels, hydrated asynchronously after each load.
+  /// Per-project resolved root branch labels, hydrated asynchronously after each load.
   @Published var rootRefs: [Project.ID: RootRef] = [:]
 
   /// Per-workroom (and per-root) VCS + CI status driving the ambient badges and the Changes panel
@@ -73,8 +73,8 @@ final class ProjectStore: ObservableObject {
   /// reassigns it.
   var ghAuthCache = GitHubAuthCache()
 
-  /// Owns the git/jj `--version` probe: its freshness clock AND its single-flight, per tool, so N
-  /// windows share one probe each rather than racing two. `vcsToolReport` on `AppStore` mirrors what
+  /// Owns the `git --version` probe: its freshness clock AND its single-flight, so N windows share
+  /// one probe rather than racing two. `vcsToolReport` on `AppStore` mirrors what
   /// this decided (per-window, since `apply(projects)` runs per-window even though the underlying
   /// facts are machine-wide).
   ///
@@ -107,7 +107,7 @@ final class ProjectStore: ObservableObject {
   /// Sidebar rows with a commit in flight, for the per-row button state.
   ///
   /// Shared across windows for the reason `creatingWorkrooms` is: `AppStore` is per WINDOW, but
-  /// `JJSnapshotGate` and the `index.lock` contention it exists to prevent are per PROCESS. Held on
+  /// `RepositoryWriteGate` and the `index.lock` contention it exists to prevent are per PROCESS. Held on
   /// the window's own store, a second window's 15s sweep, FSEvents lane and Refresh button all saw an
   /// empty set and kept probing a repo mid-write.
   @Published var committingTargets: Set<SidebarID> = []
@@ -125,7 +125,7 @@ final class ProjectStore: ObservableObject {
   /// How many writes (commit, fetch, push, or pull) are in flight against each project root,
   /// across every window. Checked by the write ACTIONS THEMSELVES before starting — not just
   /// by read lanes — so a second write on the same project root is refused outright rather than
-  /// queuing into `JJSnapshotGate` and possibly racing a live one past its wedge-detection
+  /// queuing into `RepositoryWriteGate` and possibly racing a live one past its wedge-detection
   /// ceiling (VCS-foundation eng-review: the gate's `maxChainWait` self-heal is far shorter than
   /// fetch/pull's own timeouts, so two windows could otherwise both queue a write and run them
   /// concurrently on the shared `.git`). Distinct from `committingProjectRoots`, which exists for

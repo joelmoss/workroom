@@ -121,8 +121,8 @@ final class AvatarSubjectTests: XCTestCase {
 
   private func commit(authors: [VCSAuthor]) -> VCSCommit {
     VCSCommit(
-      commitID: "c", shortID: "c", changeID: nil, summary: "s", body: "", authors: authors,
-      timestamp: Date(timeIntervalSince1970: 0), refs: [], parentIDs: [], isWorkingCopy: false)
+      commitID: "c", shortID: "c", summary: "s", body: "", authors: authors,
+      timestamp: Date(timeIntervalSince1970: 0), refs: [], parentIDs: [])
   }
 
   func testAuthorNamesDisplayJoinsAllAuthors() {

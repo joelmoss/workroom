@@ -1,12 +1,12 @@
 import XCTest
 
 /// The commit dialog's seam: the Changes header button opens it, the selection drives the button's
-/// count, jj is offered no per-file selection at all, and a rejected commit keeps the hook's output.
+/// count, and a rejected commit keeps the hook's output.
 ///
-/// **What only this tier can see.** `VCSCommitIntegrationTests` proves what git and jj actually do,
+/// **What only this tier can see.** `VCSCommitIntegrationTests` proves what git actually does,
 /// but it drives `CLIVCSWriter` directly and never renders anything. Everything below is about the
 /// path between a click and a `VCSCommitRequest` — which button is live, what the label claims, which
-/// controls exist per backend, and whether a failure survives to the screen. `FixtureVCSWriter`
+/// controls exist, and whether a failure survives to the screen. `FixtureVCSWriter`
 /// answers the write, so no real repo is touched.
 ///
 /// Run with `make app-uitest` on a real GUI login session — XCUITest can't drive a headless run, so
@@ -64,7 +64,7 @@ final class CommitSheetUITests: XCTestCase {
 
   /// The whole point of the dialog: it names what it is about to record, per file, before you commit.
   func testGitSheetListsFilesWithCheckboxes() throws {
-    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
+    let app = launchedApp()
     openSheet(app)
 
     XCTAssertTrue(
@@ -77,7 +77,7 @@ final class CommitSheetUITests: XCTestCase {
   /// A blocked state must be readable, not hidden in a tooltip nobody hovers on a dead-looking
   /// button — so the reason renders as its own element and Commit is genuinely disabled.
   func testCommitIsBlockedUntilThereIsASummary() throws {
-    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
+    let app = launchedApp()
     openSheet(app)
 
     let blocked = element(app, id: "commit.blocked")
@@ -101,7 +101,7 @@ final class CommitSheetUITests: XCTestCase {
   /// The count is the honest claim about what will be recorded, so it has to track the checkboxes —
   /// once the list scrolls, the label is the only thing the user can verify against.
   func testDeselectingAFileChangesTheCommitCount() throws {
-    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
+    let app = launchedApp()
     openSheet(app)
     typeSummary(app, "Add session login")
 
@@ -122,7 +122,7 @@ final class CommitSheetUITests: XCTestCase {
   /// Select-all is what makes "commit only this file" cheap; without it that intent costs one click
   /// per unwanted file.
   func testSelectAllTogglesEveryFile() throws {
-    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
+    let app = launchedApp()
     openSheet(app)
     typeSummary(app, "Add session login")
 
@@ -137,38 +137,15 @@ final class CommitSheetUITests: XCTestCase {
     XCTAssertFalse(commit.isEnabled, "and Commit should not be live with nothing selected")
   }
 
-  // MARK: - jj
-
-  /// jj has no index and commits the whole change, so rendering checkboxes whose only effect would be
-  /// to disable the button is a designed dead end.
-  func testJJSheetOffersNoPerFileSelection() throws {
-    // `-WorkroomUITestJJProject` is the flag that matters: the fixture's PROJECT declares `vcs: "git"`
-    // by default and only this makes it jj. `-WorkroomUITestGitWorkroom` changes the status SHAPE
-    // (whether `jjWorkingCopy` is populated), not the backend the sheet resolves — so without this the
-    // sheet correctly rendered git checkboxes and the test was asserting against the wrong backend.
-    let app = launchedApp(extraArguments: ["-WorkroomUITestJJProject", "1"])
-    openSheet(app)
-
-    XCTAssertTrue(
-      element(app, id: "commit.summary").waitForExistence(timeout: 5), "the sheet should render")
-    XCTAssertFalse(
-      button(app, id: "commit.file.check.Gemfile").exists,
-      "jj must not offer per-file checkboxes")
-    XCTAssertFalse(
-      button(app, id: "commit.selectAll").exists, "nor a select-all for a selection it can't make")
-  }
-
-  /// Each backend's second verb is its own named button, not a menu item. A menu holding exactly one
+  /// The second verb is its own named button, not a menu item. A menu holding exactly one
   /// entry costs a click and leaves the control unnamed until it's opened.
   func testGitOffersAmendAsItsOwnButton() throws {
-    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
+    let app = launchedApp()
     openSheet(app)
 
     let amend = button(app, id: "commit.amend")
     XCTAssertTrue(amend.waitForExistence(timeout: 5), "git should offer Amend directly")
     XCTAssertEqual(amend.label, "Amend last commit")
-    XCTAssertFalse(
-      button(app, id: "commit.describe").exists, "and never jj's verb")
 
     // Amend rewords the last commit, so it needs a message just as Commit does.
     XCTAssertFalse(amend.isEnabled, "no summary yet")
@@ -180,17 +157,6 @@ final class CommitSheetUITests: XCTestCase {
       .completed)
   }
 
-  func testJJOffersDescribeAsItsOwnButton() throws {
-    let app = launchedApp(extraArguments: ["-WorkroomUITestJJProject", "1"])
-    openSheet(app)
-
-    let describe = button(app, id: "commit.describe")
-    XCTAssertTrue(describe.waitForExistence(timeout: 5), "jj should offer Describe directly")
-    XCTAssertEqual(describe.label, "Describe")
-    XCTAssertFalse(
-      button(app, id: "commit.amend").exists, "jj has no amend — it must not be offered")
-  }
-
   // MARK: - Render cap
 
   /// A cap on drawn rows is only safe if it cannot lie about the commit. The dialog draws 200, but
@@ -200,9 +166,7 @@ final class CommitSheetUITests: XCTestCase {
   /// read 257 until a DELETED source was added to the base list (so `PaneTitleBarUITests` could
   /// assert "Open File" goes disabled), and nothing here moved with it. Keep the two in step.
   func testTheRenderCapLimitsWhatIsDrawnNotWhatIsCommitted() throws {
-    let app = launchedApp(extraArguments: [
-      "-WorkroomUITestGitWorkroom", "1", "-WorkroomUITestHugeChangeSet", "1",
-    ])
+    let app = launchedApp(extraArguments: ["-WorkroomUITestHugeChangeSet", "1"])
     openSheet(app)
 
     let notice = element(app, id: "commit.renderCapNotice")
@@ -223,7 +187,7 @@ final class CommitSheetUITests: XCTestCase {
   /// Amend replaces HEAD's message with whatever is typed for a NEW commit, so which message it
   /// destroys has to be on screen before the click — not recoverable only from the reflog after it.
   func testTheAmendTargetIsNamedOnScreen() throws {
-    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
+    let app = launchedApp()
     openSheet(app)
 
     let notice = element(app, id: "commit.amendTarget")
@@ -234,21 +198,13 @@ final class CommitSheetUITests: XCTestCase {
       "and the line must say what it is about to replace, got: \(notice.label)")
   }
 
-  /// jj has no amend, so it gets no such line.
-  func testJJShowsNoAmendTarget() throws {
-    let app = launchedApp(extraArguments: ["-WorkroomUITestJJProject", "1"])
-    openSheet(app)
-    XCTAssertTrue(element(app, id: "commit.summary").waitForExistence(timeout: 5))
-    XCTAssertFalse(element(app, id: "commit.amendTarget").exists)
-  }
-
   // MARK: - Failure
 
   /// The defining moment. A hook's output is the most useful text in the whole taxonomy, so a
   /// rejected commit must keep the dialog open, keep the draft, and still carry the output.
   func testARejectedCommitKeepsTheSheetAndTheHookOutput() throws {
     let app = launchedApp(
-      extraArguments: ["-WorkroomUITestGitWorkroom", "1", "-WorkroomUITestSyncFailure", "1"])
+      extraArguments: ["-WorkroomUITestSyncFailure", "1"])
     openSheet(app)
     typeSummary(app, "Add session login")
 
@@ -272,7 +228,7 @@ final class CommitSheetUITests: XCTestCase {
 
   /// A successful commit closes the dialog — the Changes list becoming clean is the confirmation.
   func testASuccessfulCommitClosesTheSheet() throws {
-    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
+    let app = launchedApp()
     openSheet(app)
     typeSummary(app, "Add session login")
 
@@ -287,7 +243,7 @@ final class CommitSheetUITests: XCTestCase {
   }
 
   func testCancelClosesTheSheetWithoutCommitting() throws {
-    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
+    let app = launchedApp()
     openSheet(app)
 
     button(app, id: "commit.cancel").click()

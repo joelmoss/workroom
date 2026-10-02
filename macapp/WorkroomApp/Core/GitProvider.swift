@@ -122,13 +122,8 @@ struct GitProvider: LocalVCSProviding {
   /// built structurally from libgit2 (no subprocess, no `git diff` shell-out). Per-file by
   /// construction: it fetches the single path's status delta, then builds just that file's `Patch`
   /// (`git_patch_from_blob*`) — never a whole-worktree diff.
-  ///
-  /// jj-only `.parent` isn't a git concept (git repos never request it) → unsupported.
   func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
-    guard base == .workingCopy else {
-      throw VCSError.unsupportedRepo("git has no working-copy parent diff")
-    }
-    return try await runBlocking {
+    try await runBlocking {
       do {
         let repo = try Repository.open(at: root)
         // Same status options as `workingStatus`: untracked + rename detection, so the delta type
@@ -201,13 +196,11 @@ struct GitProvider: LocalVCSProviding {
     }
   }
 
-  /// Old-side content of `path` for a working-copy diff — the file at `HEAD`. Git has no `.parent`
-  /// working surface, so that base yields `nil`. GCD-offloaded.
+  /// Old-side content of `path` for a working-copy diff — the file at `HEAD`. GCD-offloaded.
   func workingBaseFileContent(root: URL, base: VCSWorkingDiffBase, path: String) async throws
     -> String?
   {
-    guard base == .workingCopy else { return nil }
-    return try await runBlocking {
+    try await runBlocking {
       do {
         let repo = try Repository.open(at: root)
         return try Self.fileContentSync(repo, rev: repo.HEAD.target.id.hex, path: path)
@@ -366,9 +359,8 @@ struct GitProvider: LocalVCSProviding {
       let stats = GitDiffStats.workingTree(root: root)
       let (insertions, deletions) = (stats?.insertions, stats?.deletions)
       // `branchForCI` rather than a `branch` of its own: the only thing the app does with a
-      // git branch here is look up CI for it, and naming it after its use is what let this type
-      // merge with jj's. `ci`, `failure` and `localReadAt` stay unset — they are the resolver's to
-      // fill, exactly as they already are on the jj side.
+      // git branch here is look up CI for it. `ci`, `failure` and `localReadAt` stay unset — they
+      // are the resolver's to fill.
       return WorkroomStatus(
         dirty: !files.isEmpty, conflicted: conflicted, changedFiles: files,
         insertions: insertions, deletions: deletions, branchForCI: branch)
@@ -380,12 +372,10 @@ struct GitProvider: LocalVCSProviding {
   // MARK: - Mapping
 
   /// `commit sha -> decoration labels` for the history list: local branch names, then tag names,
-  /// each group sorted. This is git's answer to jj's bookmarks (`bookmark_map` in the Rust core), so
-  /// a git repo's history rows carry refs too.
+  /// each group sorted, so history rows carry refs.
   ///
-  /// Remote-tracking refs (`origin/main`) are deliberately excluded *as labels*: jj surfaces only
-  /// *local* bookmarks, and since every pushed branch has a same-named remote ref, showing them would
-  /// double every label for no new information. They ARE read elsewhere — `GitGraph` uses
+  /// Remote-tracking refs (`origin/main`) are deliberately excluded *as labels*: every pushed branch
+  /// has a same-named remote ref, so showing them would double every label for no new information. They ARE read elsewhere — `GitGraph` uses
   /// `refs/remotes/origin/*` to answer push state — so this exclusion is about decoration, not access.
   private static func decorations(in repo: Repository) -> [String: [String]] {
     var branches: [String: [String]] = [:]
@@ -427,7 +417,6 @@ struct GitProvider: LocalVCSProviding {
     return VCSCommit(
       commitID: c.id.hex,
       shortID: c.id.abbreviated,
-      changeID: nil,  // git has no change-id
       summary: c.summary,
       body: Self.messageBody(c.message),
       // Git's author field holds one person; additional authors live in `Co-authored-by:` message
@@ -436,7 +425,6 @@ struct GitProvider: LocalVCSProviding {
       timestamp: c.date,
       refs: refs,  // local branch + tag names (see `decorations`)
       parentIDs: (try? c.parents)?.map { $0.id.hex } ?? [],
-      isWorkingCopy: false,  // git has no jj-style working-copy commit
       pushState: pushState
     )
   }
@@ -471,8 +459,8 @@ struct GitProvider: LocalVCSProviding {
   }
 
   /// Reconstruct git-format unified-diff text from a SwiftGitX `Patch` so the existing `UnifiedDiff`
-  /// parser (and `DiffViewer`) can consume it — the git-format patch is the app's diff lingua franca
-  /// (jj produces the same shape).
+  /// parser (and `DiffViewer`) can consume it — the git-format patch is the app's diff lingua
+  /// franca.
   private static func gitFormat(
     _ patch: Patch, oldPath: String, newPath: String, type: Diff.DeltaType
   ) -> String {

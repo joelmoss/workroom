@@ -71,7 +71,6 @@ private let octo = GitHubRepository(host: "github.com", owner: "octo", name: "re
 private func healthy(_ exe: String, _ args: [String]) -> CommandResult {
   switch exe {
   case "git": return args.contains("symbolic-ref") ? ok("main\n") : ok(tip + "\n")
-  case "jj": return ok(tip + "\n")
   default:
     if args.prefix(2) == ["repo", "view"] { return ok(octoURL) }
     if args.contains("graphql") { return ok(passing) }
@@ -151,22 +150,6 @@ final class RepositoryGitHubTests: XCTestCase {
     XCTAssertEqual(Array(graphql?.args.suffix(2) ?? []), ["--hostname", "github.com"])
   }
 
-  /// jj: a secondary workspace has no `.git`. The bookmark tip is read in the workspace (jj resolves
-  /// `@` from cwd), the repository from the project root, and no git is ever spawned.
-  func testLocalJJCIReadsBookmarkTipInWorkspaceWithoutGit() async throws {
-    let runner = GHRunner(healthy)
-    let (service, path, shared) = try await local(.jj, runner: runner)
-    let res = await service.ci(branch: "feature/login")
-    XCTAssertEqual(res, .state(.passing))
-    let calls = runner.calls
-    XCTAssertEqual(calls.first { $0.exe == "jj" }?.dir, path)
-    XCTAssertEqual(runner.lookups.first?.dir, shared)
-    XCTAssertFalse(calls.contains { $0.exe == "git" })
-    XCTAssertTrue(
-      calls.first { $0.exe == "jj" }?.args.contains("feature/login") ?? false)
-    XCTAssertEqual(calls.last { $0.args.contains("graphql") }?.dir, NSTemporaryDirectory())
-  }
-
   /// REGRESSION (local behaviour unchanged): a nil branch falls back to `git symbolic-ref`.
   func testLocalGitNilBranchFallsBackToSymbolicRef() async throws {
     let runner = GHRunner(healthy)
@@ -188,17 +171,6 @@ final class RepositoryGitHubTests: XCTestCase {
     XCTAssertEqual(pr, .absent)
     XCTAssertEqual(ci, .absent)
     XCTAssertFalse(runner.calls.contains { $0.exe == "gh" })
-  }
-
-  /// A bookmark-less jj `@` has no branch: absent before ANY probe, as before.
-  func testLocalJJNoBookmarkIsAbsentBeforeAnyProbe() async throws {
-    let runner = GHRunner(healthy)
-    let (service, _, _) = try await local(.jj, runner: runner)
-    let pr = await service.pullRequest(branch: nil)
-    let ci = await service.ci(branch: nil)
-    XCTAssertEqual(pr, .absent)
-    XCTAssertEqual(ci, .absent)
-    XCTAssertTrue(runner.calls.isEmpty)
   }
 
   func testLocalCIWithNoResolvableCommitIsAbsent() async throws {
@@ -362,9 +334,9 @@ final class RepositoryGitHubTests: XCTestCase {
   // MARK: - REMOTE hosts: identity supplied, no local path
 
   /// The point of #207: a repository with no checkout on this Mac resolves PR, checks and writes from
-  /// its supplied identity. Its path exists nowhere here, and no `git`, `jj` or `gh repo view` runs.
-  func testRemoteWithIdentityResolvesByIdentityForGitAndJJ() async throws {
-    for backend in [RepositoryBackend.git, .jj] {
+  /// its supplied identity. Its path exists nowhere here, and no `git` or `gh repo view` runs.
+  func testRemoteWithIdentityResolvesByIdentity() async throws {
+    for backend in [RepositoryBackend.git] {
       let runner = GHRunner(healthy)
       let service = try remote(backend, runner: runner)
       XCTAssertFalse(FileManager.default.fileExists(atPath: service.context.location.path))

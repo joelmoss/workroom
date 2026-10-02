@@ -2,7 +2,7 @@ import XCTest
 
 @testable import Workroom
 
-/// Live History refresh (issue #59 follow-up): a commit / bookmark / ref move in a project's VCS
+/// Live History refresh (issue #59 follow-up): a commit / ref move in a project's VCS
 /// metadata dir trips the per-project watcher → `handleRootBranchChange`, which now repaints the
 /// History log **when the inspector is visible, showing History, and its target is in that project** —
 /// independent of whether the branch label changed (a plain commit usually leaves it unchanged). Also

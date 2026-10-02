@@ -2,7 +2,7 @@ import Combine
 import Foundation
 
 /// The live data source behind the inspector's **Files** section: lists the selected target's
-/// working tree (via git, falling back to jj), builds the tree, tracks which directories are
+/// working tree (via git), builds the tree, tracks which directories are
 /// expanded, and reloads when the filesystem changes. All the data-shaping is delegated to the pure
 /// helpers in `FileTree.swift`; this owns the I/O + observable state.
 ///
@@ -18,7 +18,7 @@ final class FileTreeModel: ObservableObject {
     case loading
     /// `roots` is current (may be empty — an empty repo).
     case loaded
-    /// Not a git/jj repo, or the tool is missing — nothing to list.
+    /// Not a git repo, or the tool is missing — nothing to list.
     case unavailable
     case failed(String)
   }
@@ -39,12 +39,10 @@ final class FileTreeModel: ObservableObject {
   private var currentPath: String?
   private var currentLocation: RepositoryLocation?
   private let runner: StatusCommandRunning
-  private let gate: JJSnapshotGate
   private var watcher: HostFileWatcher?
   private var loadTask: Task<Void, Never>?
   /// The listing in flight, if any. Cancelling it stops waiting but NOT the work: on the agent path
-  /// the request has already left, and the host keeps listing (and, for jj, holding the working-copy
-  /// lock) until it finishes. So a burst of reloads must not each start their own — that would queue
+  /// the request has already left, and the host keeps listing until it finishes. So a burst of reloads must not each start their own — that would queue
   /// N host-side listings behind each other for one screenful of tree. See `reload()`.
   private struct Listing {
     let id: UUID
@@ -56,9 +54,8 @@ final class FileTreeModel: ObservableObject {
   /// it finishes, so the tree still ends up reflecting the LAST change.
   private var followUp = false
 
-  init(runner: StatusCommandRunning = StatusCommandRunner(), gate: JJSnapshotGate = .shared) {
+  init(runner: StatusCommandRunning = StatusCommandRunner()) {
     self.runner = runner
-    self.gate = gate
   }
 
   deinit {
@@ -163,8 +160,8 @@ final class FileTreeModel: ObservableObject {
 
   private func startListing(_ location: RepositoryLocation) {
     let id = UUID()
-    let task = Task { [weak self, runner, gate] in
-      let result = await FileTreeModel.list(location: location, runner: runner, gate: gate)
+    let task = Task { [weak self, runner] in
+      let result = await FileTreeModel.list(location: location, runner: runner)
       self?.finishListing(id: id, location: location, result: result)
     }
     listing = Listing(id: id, location: location, task: task)
@@ -223,12 +220,12 @@ final class FileTreeModel: ObservableObject {
 
   private func startWatching(_ path: String) {
     let watcher = HostFileWatcher { [weak self] changed, overflow in
-      // Ignore pure VCS-internal churn (a jj snapshot under `.jj/`, git writing `.git/`) so the tree
+      // Ignore pure VCS-internal churn (git writing `.git/`) so the tree
       // doesn't self-trigger an endless reload; any real working-tree edit still refreshes it. The
       // paths are ABSOLUTE host paths, so the `/.git/` test needs the leading slash. An `overflow`
       // batch says some changes are unlisted, so it is relevant whatever the listed paths are.
       let relevant =
-        overflow || changed.contains { !$0.contains("/.git/") && !$0.contains("/.jj/") }
+        overflow || changed.contains { !$0.contains("/.git/") }
       if relevant { self?.reload() }
     }
     watcher.start(path: path)
@@ -239,12 +236,12 @@ final class FileTreeModel: ObservableObject {
   /// told apart from a genuine "not a repo" or "tool missing".
   enum ListResult: Equatable {
     case listing([String])
-    /// Neither tool yielded a listing for an ordinary reason (not a repo, tool missing).
+    /// git yielded no listing for an ordinary reason (not a repo, tool missing).
     case unavailable
     /// The listing exceeded the capture cap. Distinct from `.unavailable` because the repo is fine and
     /// the answer is "too many files to list", and never shown as a shortened tree.
     case tooLarge
-    /// A tool's probe was killed by a signal — our own cancellation is caught earlier by the caller
+    /// The probe was killed by a signal — our own cancellation is caught earlier by the caller
     /// checking `Task.isCancelled`, so reaching this means an EXTERNAL kill (OS memory pressure, a
     /// crash). Distinct from `.unavailable`: this says nothing about whether `path` is a repo, so
     /// the caller must not blank an existing tree over it — the sensible read is "try again", not
@@ -281,42 +278,34 @@ final class FileTreeModel: ObservableObject {
     return .transient(error.localizedDescription)
   }
 
-  /// Immutable git listing is allowed without registration. The JJ fallback snapshots and needs the
-  /// registered shared repository (its working-copy lock is keyed by it); unknown ownership is an
-  /// explicit failure. WHERE the listing runs — this process, or wr-agent — is `router.files`'s
-  /// decision; the git-then-jj order, and so the fact that a colocated jj repo lists through
-  /// immutable git, is this function's and does not depend on the backend.
+  /// git listing is allowed without registration. WHERE the listing runs — this process, or
+  /// wr-agent — is `router.files`'s decision.
   static func list(
     location: RepositoryLocation, runner: StatusCommandRunning,
-    gate: JJSnapshotGate = .shared, router: RepositoryRouter = .shared
+    router: RepositoryRouter = .shared
   ) async -> ListResult {
     guard location.host == .local else { return .failed(.unavailable(location.host)) }
     let files: FileProviding
     do {
-      files = try await router.files(for: location, runner: runner, gate: gate)
+      files = try await router.files(for: location, runner: runner)
     } catch {
       return .failed(error as? RepositoryRoutingError ?? .unavailable(location.host))
     }
-    var sawSignal = false
-    for vcs in [FileListVCS.git, .jj] {
-      let result: CommandResult
-      do {
-        result = try await files.list(vcs)
-      } catch FileServiceError.listingTruncated {
-        return .tooLarge
-      } catch let error as RepositoryRoutingError {
-        return .failed(error)
-      } catch {
-        return await listFailure(error, path: location.path)
-      }
-      if result.ok { return .listing(FileListing.parse(result.stdout, vcs: vcs)) }
-      // A killed probe is not evidence `path` isn't a repo — remember it, but still try the other
-      // tool before giving up, exactly as an ordinary failure does.
-      // `timedOut` implies `signaled` (the timeout SIGTERMs the child), and a timeout says nothing
-      // about an EXTERNAL kill — `CommandResult.signaled`'s own doc says to test it first. Left as
-      // `.interrupted` it would also leave a first load spinning forever.
-      if result.signaled && !result.timedOut { sawSignal = true }
+    let result: CommandResult
+    do {
+      result = try await files.list(.git)
+    } catch FileServiceError.listingTruncated {
+      return .tooLarge
+    } catch let error as RepositoryRoutingError {
+      return .failed(error)
+    } catch {
+      return await listFailure(error, path: location.path)
     }
-    return sawSignal ? .interrupted : .unavailable
+    if result.ok { return .listing(FileListing.parse(result.stdout, vcs: .git)) }
+    // A killed probe is not evidence `path` isn't a repo. `timedOut` implies `signaled` (the
+    // timeout SIGTERMs the child), and a timeout says nothing about an EXTERNAL kill —
+    // `CommandResult.signaled`'s own doc says to test it first. Left as `.interrupted` it would also
+    // leave a first load spinning forever.
+    return result.signaled && !result.timedOut ? .interrupted : .unavailable
   }
 }

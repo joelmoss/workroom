@@ -25,37 +25,6 @@ final class CommitDraftTests: XCTestCase {
       CommitDraft.message(summary: "\n Subject \n", body: "\n\n Body \n\n"), "Subject\n\nBody")
   }
 
-  // MARK: - Splitting a stored message back into the fields
-
-  /// The jj prefill round-trip. Reading only the first line — which is all
-  /// `JJCommitChanges.description` carries — and then describing again would silently discard the
-  /// body, which is why the sheet reads the FULL description and splits it here.
-  func testSplitRecoversSummaryAndBody() {
-    let parts = CommitDraft.split(message: "Subject line\n\nBody one.\nBody two.")
-    XCTAssertEqual(parts.summary, "Subject line")
-    XCTAssertEqual(parts.body, "Body one.\nBody two.")
-  }
-
-  func testSplitOfASingleLineHasNoBody() {
-    let parts = CommitDraft.split(message: "Just a subject\n")
-    XCTAssertEqual(parts.summary, "Just a subject")
-    XCTAssertEqual(parts.body, "")
-  }
-
-  func testSplitOfAnEmptyMessageIsEmpty() {
-    let parts = CommitDraft.split(message: "")
-    XCTAssertEqual(parts.summary, "")
-    XCTAssertEqual(parts.body, "")
-  }
-
-  /// Round-trips, so describing an existing change and re-opening the sheet cannot drift.
-  func testMessageAndSplitRoundTrip() {
-    let composed = CommitDraft.message(summary: "Subject", body: "Body one.\n\nBody two.")
-    let parts = CommitDraft.split(message: composed)
-    XCTAssertEqual(parts.summary, "Subject")
-    XCTAssertEqual(parts.body, "Body one.\n\nBody two.")
-  }
-
   // MARK: - Selection
 
   private func file(_ path: String) -> ChangedFile {
@@ -94,11 +63,6 @@ final class CommitDraftTests: XCTestCase {
     XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 12, vcs: .git), "Commit 12 files")
   }
 
-  /// jj offers no per-file selection, so a count would imply a choice that isn't on offer.
-  func testCommitLabelOmitsTheCountForJJ() {
-    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 12, vcs: .jj), "Commit")
-  }
-
   // MARK: - Blocked reasons
 
   private func reason(
@@ -120,12 +84,6 @@ final class CommitDraftTests: XCTestCase {
 
   func testZeroSelectedFilesBlocksForGit() {
     XCTAssertEqual(reason(selected: 0, total: 4), "Select at least one file to commit.")
-  }
-
-  /// jj commits the whole change, so a zero count is meaningless there — and an empty jj change is
-  /// still describable, which is why the box is offered at all.
-  func testZeroFilesDoesNotBlockJJ() {
-    XCTAssertNil(reason(vcs: .jj, selected: 0, total: 0))
   }
 
   /// The sequencer reason is reachable from the UI now: `CommitSheet` resolves it on appear via
@@ -150,61 +108,15 @@ final class CommitDraftTests: XCTestCase {
       "A merge is in progress. Finish it in the terminal before committing.")
   }
 
-  /// git refuses unmerged paths outright. jj would accept them, but "Commit" reading as "done" over
-  /// unresolved conflicts is a UX decision rather than a capability one, so both say the same thing.
-  func testConflictsBlockBothBackends() {
-    for vcs in [VCSBackend.git, .jj] {
-      XCTAssertEqual(
-        reason(vcs: vcs, conflicted: true),
-        "Some files still have unresolved conflicts. Resolve them first.")
-    }
-  }
-
-  // MARK: - Lossless round-trip
-
-  /// **An untouched Describe must not rewrite the message.** `split` takes line 0 as the summary and
-  /// the rest as the body; `message` rejoins with a BLANK line. So a stored jj description with no
-  /// blank separator — which jj permits — came back reformatted, and the user who pressed Describe
-  /// without typing anything found their message silently changed.
-  func testAnUneditedMessageIsRecordedByteForByte() {
-    for stored in [
-      "line one\nline two",
-      "subject\n\nbody",
-      "subject only",
-      "subject\n\nbody\nwith\nlines",
-      "subject\n\n\n\nbody after several blanks",
-    ] {
-      let fields = CommitDraft.split(message: stored)
-      XCTAssertEqual(
-        CommitDraft.message(summary: fields.summary, body: fields.body, preserving: stored),
-        stored,
-        "round-tripping \(stored.debugDescription) unedited must change nothing")
-    }
-  }
-
-  /// Editing either field means the user wrote this message here, so the blank-line convention every
-  /// downstream tool splits on is applied — normalising is right, it was only rewriting an UNTOUCHED
-  /// message that was wrong.
-  func testAnEditedMessageIsNormalised() {
-    let stored = "line one\nline two"
+  /// git refuses unmerged paths outright, so the sheet says so before the click.
+  func testConflictsBlock() {
     XCTAssertEqual(
-      CommitDraft.message(summary: "line one", body: "edited body", preserving: stored),
-      "line one\n\nedited body")
-    XCTAssertEqual(
-      CommitDraft.message(summary: "new subject", body: "line two", preserving: stored),
-      "new subject\n\nline two")
-  }
-
-  /// With nothing to preserve — git, which has no prefill — it composes as it always did.
-  func testWithNoOriginalItComposesNormally() {
-    XCTAssertEqual(
-      CommitDraft.message(summary: "Subject", body: "Body", preserving: nil),
-      "Subject\n\nBody")
+      reason(conflicted: true), "Some files still have unresolved conflicts. Resolve them first.")
   }
 
   // MARK: - Blocked reasons: the message-only verbs
 
-  /// Amend and Describe rewrite a message and take no pathspec, so the file-count rules are not their
+  /// Amend rewrites a message and takes no pathspec, so the file-count rules are not their
   /// preconditions — gating them on the primary's reason would block a legitimate reword.
   func testTheMessageOnlyVerbIgnoresTheFileCountRules() {
     XCTAssertNil(

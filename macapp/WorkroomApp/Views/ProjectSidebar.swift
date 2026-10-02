@@ -97,7 +97,7 @@ struct ProjectSidebar: View {
         ContentUnavailableView {
           Label("No projects yet", systemImage: "folder.badge.plus")
         } description: {
-          Text("Add a Git or Jujutsu project folder to start managing its workrooms.")
+          Text("Add a Git project folder to start managing its workrooms.")
         } actions: {
           Button("Add Project…") { store.requestAddProject = true }
             .buttonStyle(.borderedProminent)
@@ -277,7 +277,7 @@ struct ProjectSidebar: View {
   }
 
   /// The always-present project-root row: the first child under each project. Reads like a workroom
-  /// (a leading house glyph marking it as the root, then the current branch/bookmark) — so roots and
+  /// (a leading house glyph marking it as the root, then the current branch) — so roots and
   /// workrooms share one left edge. Selectable (opens a terminal at the project directory); never
   /// deletable.
   @ViewBuilder
@@ -298,11 +298,6 @@ struct ProjectSidebar: View {
         // out of that vibrancy dimming, which left roots bright on blur (issue #43). Only the
         // de-emphasized detached/none states take an explicit `.secondary`.
         .modifier(RootLabelTint(dim: style.dim))
-      if style.ahead {
-        Image(systemName: "arrow.up")
-          .font(.system(size: 9, weight: .semibold))
-          .foregroundStyle(.secondary)
-      }
       Spacer(minLength: 0)
       UnreadDot(count: notifications.count(target: target.id))
       if target.isMissing {

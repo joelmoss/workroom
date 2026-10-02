@@ -57,28 +57,6 @@ private final class StubDiffProvider: LocalVCSProviding, @unchecked Sendable {
   func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }
 }
 
-/// Tracks the peak number of concurrently-running sections between `enter()`/`exit()` pairs — used
-/// by the `JJSnapshotGate` test to prove two gated calls never overlap. A plain lock (not an
-/// `actor`) so it's callable from `StubDiffProvider`'s synchronous `workingText` closure.
-private final class ConcurrencyRecorder: @unchecked Sendable {
-  private let lock = NSLock()
-  private var running = 0
-  private(set) var maxConcurrent = 0
-
-  func enter() {
-    lock.lock()
-    running += 1
-    maxConcurrent = max(maxConcurrent, running)
-    lock.unlock()
-  }
-
-  func exit() {
-    lock.lock()
-    running -= 1
-    lock.unlock()
-  }
-}
-
 private let sampleDiff = """
   diff --git a/foo.txt b/foo.txt
   --- a/foo.txt
@@ -100,13 +78,12 @@ private func desc(_ path: String, _ change: ChangedFile.Change, _ source: DiffSo
 
 final class DiffResolverTests: XCTestCase {
 
-  /// A resolver wired to `provider` and (by default) a fresh cache + gate so tests are isolated
-  /// from each other, the shared commit cache, and the process-wide `JJSnapshotGate.shared`.
-  private func resolver(
-    _ provider: StubDiffProvider, cache: DiffCache = DiffCache(),
-    gate: JJSnapshotGate = JJSnapshotGate()
-  ) -> DiffResolver {
-    DiffResolver(makeProvider: { _ in provider }, cache: cache, gate: gate)
+  /// A resolver wired to `provider` and (by default) a fresh cache so tests are isolated from each
+  /// other and the shared commit cache.
+  private func resolver(_ provider: StubDiffProvider, cache: DiffCache = DiffCache())
+    -> DiffResolver
+  {
+    DiffResolver(makeProvider: { _ in provider }, cache: cache)
   }
 
   // MARK: - interpret (pure classification)
@@ -133,112 +110,16 @@ final class DiffResolverTests: XCTestCase {
     XCTAssertEqual(DiffResolver.interpret(big), .tooLarge)
   }
 
-  // MARK: - jj working-copy args (pure; the invariant the deleted command(for:) tests guarded)
-
-  func testJJWorkingCopyArgsSnapshot() {
-    // No first parent resolved → the `-r @` fallback (correct whenever `@` has a single parent).
-    let args = RustJJProvider.workingDiffArgs(path: "src/foo.swift", base: .workingCopy)
-    XCTAssertEqual(
-      args, ["diff", "--git", "-r", "@", "--color", "never", "--", "src/foo.swift"])
-    // Must NOT ignore the working copy — `.workingCopy` has to snapshot `@` to reflect disk.
-    XCTAssertFalse(args.contains("--ignore-working-copy"))
-  }
-
-  /// With a first parent supplied, the diff is anchored to it explicitly. That's what makes a MERGE
-  /// working copy diffable: `jj diff -r @` would diff against the auto-merged parents and report
-  /// nothing for a file that differs only from the first parent (every conflicted file, plus files
-  /// arriving from the other side of a clean merge), while the Changes panel lists exactly those.
-  func testJJWorkingCopyArgsAnchorToFirstParent() {
-    let args = RustJJProvider.workingDiffArgs(
-      path: "src/foo.swift", base: .workingCopy, from: "deadbeef")
-    XCTAssertEqual(
-      args,
-      [
-        "diff", "--git", "--from", "deadbeef", "--to", "@", "--color", "never", "--",
-        "src/foo.swift",
-      ])
-    // Still snapshots: the `--to @` side must reflect on-disk edits.
-    XCTAssertFalse(args.contains("--ignore-working-copy"))
-    // `@-` is never used here — on a merge it resolves to several revisions and jj errors out.
-    XCTAssertFalse(args.contains("@-"))
-  }
-
-  /// A per-file COMMIT diff anchors to the commit's first parent for the same reason as the
-  /// working-copy one (`-r <merge>` diffs the auto-merged parents → "No changes" in History), and must
-  /// ALWAYS pass `--ignore-working-copy`: reading committed history never takes the working-copy lock.
-  func testJJCommitDiffArgsAnchorToFirstParent() {
-    let anchored = RustJJProvider.commitDiffArgs(commitID: "cafe", path: "a.txt", from: "beef")
-    XCTAssertEqual(
-      anchored,
-      [
-        "diff", "--git", "--from", "beef", "--to", "cafe", "--ignore-working-copy", "--color",
-        "never", "--", "a.txt",
-      ])
-
-    // No parent resolved → the `-r <commitID>` fallback, still never locking the working copy.
-    let fallback = RustJJProvider.commitDiffArgs(commitID: "cafe", path: "a.txt")
-    XCTAssertEqual(
-      fallback,
-      [
-        "diff", "--git", "-r", "cafe", "--ignore-working-copy", "--color", "never", "--", "a.txt",
-      ])
-    XCTAssertTrue(fallback.contains("--ignore-working-copy"))
-  }
-
-  func testJJParentArgsIgnoreWorkingCopy() {
-    let args = RustJJProvider.workingDiffArgs(path: "lib/bar.swift", base: .parent)
-    XCTAssertTrue(args.contains("@-"))
-    // Must reuse the snapshot (never re-lock the working copy) when reading the parent.
-    XCTAssertTrue(args.contains("--ignore-working-copy"))
-  }
-
   // MARK: - resolve: working-copy sources route to workingFileDiff with the right base
 
   func testResolveGitWorktreeUsesWorkingCopyBase() async {
     let p = StubDiffProvider()
     p.workingText = { _, _ in sampleDiff }
     let result = await resolver(p).resolve(
-      desc("f.txt", .modified, .gitWorktree), in: "/repo", projectRoot: nil)
+      desc("f.txt", .modified, .gitWorktree), in: "/repo")
     guard case .diff = result else { return XCTFail("expected .diff, got \(result)") }
     XCTAssertEqual(p.workingCalls.map(\.base), [.workingCopy])
     XCTAssertEqual(p.workingCalls.first?.path, "f.txt")
-  }
-
-  func testResolveJJWorkingCopyUsesWorkingCopyBase() async {
-    let p = StubDiffProvider()
-    p.workingText = { _, _ in sampleDiff }
-    _ = await resolver(p).resolve(
-      desc("a.txt", .modified, .jjWorkingCopy), in: "/repo", projectRoot: nil)
-    XCTAssertEqual(p.workingCalls.map(\.base), [.workingCopy])
-  }
-
-  /// The one case that snapshots `@` — `.jjWorkingCopy` — must serialize per `projectRoot` through
-  /// `JJSnapshotGate`, since a project's workrooms share a backing repo a concurrent snapshot could
-  /// contend on (VCS-foundation eng-review).
-  func testJJWorkingCopyDiffsSameProjectDoNotOverlap() async {
-    let p = StubDiffProvider()
-    let recorder = ConcurrencyRecorder()
-    p.workingText = { _, _ in
-      recorder.enter()
-      Thread.sleep(forTimeInterval: 0.05)
-      recorder.exit()
-      return sampleDiff
-    }
-    let r = resolver(p, gate: JJSnapshotGate())
-    async let first = r.resolve(
-      desc("a.txt", .modified, .jjWorkingCopy), in: "/repo", projectRoot: "/proj")
-    async let second = r.resolve(
-      desc("b.txt", .modified, .jjWorkingCopy), in: "/repo", projectRoot: "/proj")
-    _ = await (first, second)
-    XCTAssertEqual(recorder.maxConcurrent, 1, "same-project jj working-copy diffs must be gated")
-  }
-
-  func testResolveJJParentUsesParentBase() async {
-    let p = StubDiffProvider()
-    p.workingText = { _, _ in sampleDiff }
-    _ = await resolver(p).resolve(
-      desc("b.txt", .modified, .jjParent), in: "/repo", projectRoot: nil)
-    XCTAssertEqual(p.workingCalls.map(\.base), [.parent])
   }
 
   func testResolveWorkingMapsBinaryEmptyTooLarge() async {
@@ -252,13 +133,13 @@ final class DiffResolverTests: XCTestCase {
     }
     let r = resolver(p)
     let binary = await r.resolve(
-      desc("img.png", .modified, .gitWorktree), in: "/repo", projectRoot: nil)
+      desc("img.png", .modified, .gitWorktree), in: "/repo")
     XCTAssertEqual(binary, .binary)
     let empty = await r.resolve(
-      desc("clean.txt", .modified, .gitWorktree), in: "/repo", projectRoot: nil)
+      desc("clean.txt", .modified, .gitWorktree), in: "/repo")
     XCTAssertEqual(empty, .empty)
     let big = await r.resolve(
-      desc("huge.txt", .modified, .gitWorktree), in: "/repo", projectRoot: nil)
+      desc("huge.txt", .modified, .gitWorktree), in: "/repo")
     XCTAssertEqual(big, .tooLarge)
   }
 
@@ -266,29 +147,8 @@ final class DiffResolverTests: XCTestCase {
     let p = StubDiffProvider()
     p.workingText = { _, _ in throw VCSError.lockContention }
     let result = await resolver(p).resolve(
-      desc("f.txt", .modified, .gitWorktree), in: "/repo", projectRoot: nil)
+      desc("f.txt", .modified, .gitWorktree), in: "/repo")
     XCTAssertEqual(result, .failed("Repository is busy"))
-  }
-
-  /// The above covers the ungated `.gitWorktree` path; `.jjWorkingCopy` additionally routes through
-  /// `JJSnapshotGate` — prove a thrown backend error still surfaces as `.failed` through the gate,
-  /// AND that the gate's tail isn't left poisoned (a queued next call for the same project must
-  /// still run normally).
-  func testJJWorkingCopyErrorWhileGatedStillFailsAndUnblocksQueue() async {
-    let p = StubDiffProvider()
-    p.workingText = { _, _ in throw VCSError.lockContention }
-    let gate = JJSnapshotGate()
-    let r = resolver(p, gate: gate)
-    let result = await r.resolve(
-      desc("a.txt", .modified, .jjWorkingCopy), in: "/repo", projectRoot: "/proj")
-    XCTAssertEqual(result, .failed("Repository is busy"))
-
-    p.workingText = { _, _ in sampleDiff }
-    let next = await r.resolve(
-      desc("b.txt", .modified, .jjWorkingCopy), in: "/repo", projectRoot: "/proj")
-    guard case .diff = next else {
-      return XCTFail("queue should not be wedged after a prior error")
-    }
   }
 
   // MARK: - resolve: .commit routes through the backend (never shells) and is cached
@@ -297,7 +157,7 @@ final class DiffResolverTests: XCTestCase {
     let p = StubDiffProvider()
     p.commitText = { _, _ in sampleDiff }
     let result = await resolver(p).resolve(
-      desc("b.txt", .modified, .commit("abc123")), in: "/repo", projectRoot: nil)
+      desc("b.txt", .modified, .commit("abc123")), in: "/repo")
     guard case .diff = result else { return XCTFail("expected .diff, got \(result)") }
     XCTAssertTrue(p.workingCalls.isEmpty, "a commit diff never uses the working-copy path")
     XCTAssertEqual(p.lastCommit?.commitID, "abc123")
@@ -308,13 +168,13 @@ final class DiffResolverTests: XCTestCase {
     let bin = StubDiffProvider()
     bin.commitText = { _, _ in binaryDiff }
     let binResult = await resolver(bin).resolve(
-      desc("img.png", .modified, .commit("x")), in: "/repo", projectRoot: nil)
+      desc("img.png", .modified, .commit("x")), in: "/repo")
     XCTAssertEqual(binResult, .binary)
 
     let mt = StubDiffProvider()
     mt.commitText = { _, _ in "   \n" }
     let emptyResult = await resolver(mt).resolve(
-      desc("a.txt", .modified, .commit("x")), in: "/repo", projectRoot: nil)
+      desc("a.txt", .modified, .commit("x")), in: "/repo")
     XCTAssertEqual(emptyResult, .empty)
   }
 
@@ -322,7 +182,7 @@ final class DiffResolverTests: XCTestCase {
     let p = StubDiffProvider()
     p.commitText = { _, _ in throw VCSError.notFound("no such commit") }
     let result = await resolver(p).resolve(
-      desc("a.txt", .modified, .commit("bad")), in: "/repo", projectRoot: nil)
+      desc("a.txt", .modified, .commit("bad")), in: "/repo")
     guard case .failed(let message) = result else {
       return XCTFail("expected .failed, got \(result)")
     }
@@ -333,8 +193,8 @@ final class DiffResolverTests: XCTestCase {
     let p = StubDiffProvider()
     p.commitText = { _, _ in sampleDiff }
     let r = resolver(p)  // fresh cache
-    _ = await r.resolve(desc("f.txt", .modified, .commit("c1")), in: "/repo", projectRoot: nil)
-    _ = await r.resolve(desc("f.txt", .modified, .commit("c1")), in: "/repo", projectRoot: nil)
+    _ = await r.resolve(desc("f.txt", .modified, .commit("c1")), in: "/repo")
+    _ = await r.resolve(desc("f.txt", .modified, .commit("c1")), in: "/repo")
     XCTAssertEqual(p.commitCalls, 1, "the second resolve is served from cache")
   }
 
@@ -342,8 +202,8 @@ final class DiffResolverTests: XCTestCase {
     let p = StubDiffProvider()
     p.commitText = { _, _ in sampleDiff }
     let r = resolver(p)
-    _ = await r.resolve(desc("f.txt", .modified, .commit("c1")), in: "/repo", projectRoot: nil)
-    _ = await r.resolve(desc("f.txt", .modified, .commit("c2")), in: "/repo", projectRoot: nil)
+    _ = await r.resolve(desc("f.txt", .modified, .commit("c1")), in: "/repo")
+    _ = await r.resolve(desc("f.txt", .modified, .commit("c2")), in: "/repo")
     XCTAssertEqual(p.commitCalls, 2, "a different commit id is a distinct cache entry")
   }
 
@@ -351,8 +211,8 @@ final class DiffResolverTests: XCTestCase {
     let p = StubDiffProvider()
     p.workingText = { _, _ in sampleDiff }
     let r = resolver(p)
-    _ = await r.resolve(desc("f.txt", .modified, .gitWorktree), in: "/repo", projectRoot: nil)
-    _ = await r.resolve(desc("f.txt", .modified, .gitWorktree), in: "/repo", projectRoot: nil)
+    _ = await r.resolve(desc("f.txt", .modified, .gitWorktree), in: "/repo")
+    _ = await r.resolve(desc("f.txt", .modified, .gitWorktree), in: "/repo")
     XCTAssertEqual(
       p.workingCalls.count, 2, "working-copy diffs must never be cached (mutable content)")
   }
@@ -367,11 +227,11 @@ final class DiffResolverTests: XCTestCase {
     }
     let r = resolver(p)
     let first = await r.resolve(
-      desc("f.txt", .modified, .commit("c1")), in: "/repo", projectRoot: nil)
+      desc("f.txt", .modified, .commit("c1")), in: "/repo")
     guard case .failed = first else { return XCTFail("expected .failed, got \(first)") }
     // A transient failure isn't cached, so the retry re-hits the backend and succeeds.
     let second = await r.resolve(
-      desc("f.txt", .modified, .commit("c1")), in: "/repo", projectRoot: nil)
+      desc("f.txt", .modified, .commit("c1")), in: "/repo")
     guard case .diff = second else { return XCTFail("expected .diff on retry, got \(second)") }
   }
 }

@@ -24,7 +24,7 @@ enum VCSRemoteAction: String, Equatable, Sendable, CaseIterable {
 /// currently has a principled one for every case. Same reasoning that put `CIResolution`/`PRResolution`
 /// beside their resolver instead of in `VCSModels.swift`.
 enum VCSRemoteFailure: Equatable, Sendable {
-  /// `git`/`jj` not on PATH. Distinct from `VCSToolVersions`' floor check, which runs at launch —
+  /// `git` not on PATH. Distinct from `VCSToolVersions`' floor check, which runs at launch —
   /// this is the same condition caught at the point of use.
   case toolMissing(String)
   /// The command never ran — `CommandResult.launchFailed`, dominated by the working directory
@@ -52,7 +52,7 @@ enum VCSRemoteFailure: Equatable, Sendable {
   /// A failed or killed `git pull --rebase` left `rebase-merge`/`rebase-apply` behind. The repo needs
   /// `git rebase --abort`, so the UI must offer that instead of a retry that will fail identically.
   case rebaseInProgress
-  /// A repo lock was held — git `index.lock`/`packed-refs.lock`, or jj's `git_import_export.lock`.
+  /// A repo lock was held — `index.lock`/`packed-refs.lock`.
   ///
   /// The payload is the lock file itself when we could find it on disk, and that distinction decides
   /// what the UI offers. **`nil` ⇒ transient contention**, so Retry is genuine: another command held the
@@ -68,18 +68,9 @@ enum VCSRemoteFailure: Equatable, Sendable {
   /// lock corrupts the index — so this reports and explains, and the removal stays the user's call.
   /// That is also what git's own message tells you to do.
   case locked(VCSLockFile?)
-  /// jj refused to rewrite a commit protected by `immutable_heads()` — reached by Pull, whose
-  /// `jj rebase -b @` moves the whole branch containing `@`, and that branch usually contains a
-  /// remote-tracked commit. Measured on jj 0.43 for a workroom based off a feature branch while trunk
-  /// moved on: `Error: Commit 4c8e754829da is immutable`.
-  ///
-  /// Offers no retry, for `rebaseInProgress`'s reason: the destination doesn't change between clicks, so
-  /// every retry fails identically. The real fix is remembering each workroom's own base instead of
-  /// guessing `trunk()` — filed, not built.
-  case immutableHistory(String)
   /// The command was dispatched and we never heard back — `CommandResult.outcomeUnknown`. Only
   /// reachable on the agent-routed path, where a lost connection, a client-side deadline or a
-  /// cancellation ends the round trip while the host-side `git`/`jj` keeps running to completion.
+  /// cancellation ends the round trip while the host-side `git` keeps running to completion.
   ///
   /// The whole point of the case is the recovery. This is NOT `.other`: that one's recovery is a
   /// retry of the action that failed, and retrying a push that may already have landed is the one
@@ -88,11 +79,6 @@ enum VCSRemoteFailure: Equatable, Sendable {
   ///
   /// It is also NOT `.launchFailed`: that asserts nothing ran, which is the opposite falsehood.
   case outcomeUnknown(String)
-  /// jj refuses to push a commit with an empty description, changes or not. This is the state a workroom
-  /// sits in the moment you edit a file and before you write a message, so it is the most reachable
-  /// failure on the push path, not an edge case. Measured: `Error: Won't push commit 050e657d3c36 since
-  /// it has no description`.
-  case needsDescription(String)
   case other(String)
 }
 
@@ -150,19 +136,15 @@ struct VCSLockFile: Equatable, Sendable {
 /// transient blip must not blank a good toolbar.
 enum VCSRemoteResolution: Equatable, Sendable {
   case state(VCSRemoteState)
-  /// Not a git/jj repo, or a repo with no refs at all (a fresh `git init`).
+  /// Not a git repo, or a repo with no refs at all (a fresh `git init`).
   case absent
   case keepPrior
   case failed(VCSRemoteFailure)
 }
 
-/// What an action decided.
-///
-/// There is deliberately no `okWithConflicts`: jj records conflicts *inside* commits and `jj rebase`
-/// exits 0 when it produces them, so the exit code cannot distinguish them — and the working-copy read
-/// that could is not safe to make here (it would re-enter `JJSnapshotGate` for the same project root,
-/// which that type documents as a deadlock). `RemoteStateModel` upgrades a `.ok` pull to "conflicted"
-/// from the status refresh it already triggers, after the gate has released.
+/// What an action decided. There is deliberately no `okWithConflicts`: `RemoteStateModel` upgrades
+/// a `.ok` pull to "conflicted" from the status refresh it already triggers, after the gate has
+/// released.
 enum VCSRemoteActionResult: Equatable, Sendable {
   case ok(summary: String)
   case failed(VCSRemoteFailure)
@@ -173,21 +155,15 @@ enum VCSRemoteActionResult: Equatable, Sendable {
 /// Which commit verb to run. Deliberately NOT folded into `VCSRemoteAction`: that enum feeds
 /// `VCSRemoteFailure.timedOut`, `PendingVCSAction` and the toolbar's labels, none of which mean
 /// anything for a purely local write.
-///
-/// The cases are backend-scoped and the writer rejects a mismatch with `.unsupportedMode` rather
-/// than silently issuing the wrong command:
-/// - `.commit` — both backends.
-/// - `.amendMessage` — git only. jj's analogue is `.describe`, which is not the same operation.
-/// - `.describe` — jj only. Sets `@`'s description and stays on it.
 enum VCSCommitMode: String, Equatable, Sendable {
-  case commit, amendMessage, describe
+  case commit, amendMessage
 }
 
 /// One commit, fully specified. `files` carries `ChangedFile` rather than `String` because a rename
 /// needs BOTH sides of the pathspec — see `gitPathspecPayload`.
 struct VCSCommitRequest: Equatable, Sendable {
   let message: String
-  /// The user's selection. Empty for jj, which has no index and commits the whole change.
+  /// The user's selection.
   let files: [ChangedFile]
   let mode: VCSCommitMode
 }
@@ -210,8 +186,7 @@ enum VCSCommitFailure: Equatable, Sendable {
   /// folded into `toolMissing`.
   case launchFailed
   case timedOut
-  /// Nothing staged/changed for the selection. jj reports this as an ordinary success ("Nothing
-  /// changed."), so the writer maps it rather than surfacing a phantom commit.
+  /// Nothing staged/changed for the selection.
   case nothingToCommit
   /// `user.name`/`user.email` unset — git cannot build a signature.
   case identityMissing(String)
@@ -234,8 +209,6 @@ enum VCSCommitFailure: Equatable, Sendable {
   /// unchanged, which is not proof of anything because a commit host-side may simply not have
   /// finished. Hence copy that sends the user to check the history rather than asserting either way.
   case outcomeUnknown(String)
-  /// The verb doesn't exist for this backend (`.amendMessage` on jj, `.describe` on git).
-  case unsupportedMode
   case other(String)
 }
 
@@ -244,28 +217,15 @@ enum VCSCommitFailure: Equatable, Sendable {
 /// One value rather than three protocol methods because the dialog asks once, on appear, and every
 /// field is answered from the same repo at the same moment — three calls would be three round trips
 /// for one screen, and for a remote workroom that is three stream round trips.
-///
-/// Each field is backend-scoped, and the absent ones are `nil` rather than empty: git has no `@`
-/// description and jj has neither an amend target nor a git sequencer. The dialog already knows
-/// which backend it is looking at (`PendingCommit.vcs`), so it reads only the fields that apply.
 struct VCSCommitPreflight: Equatable, Sendable {
-  /// A parked merge/cherry-pick/revert/rebase/bisect, named for the user — git only. `commit`
+  /// A parked merge/cherry-pick/revert/rebase/bisect, named for the user. `commit`
   /// refuses outright while one is parked (`VCSCommitFailure.sequencerInProgress`), so the dialog
   /// says so up front instead of letting someone compose a whole message to be told at the click.
   let sequencer: String?
-  /// The subject of the commit `.amendMessage` would rewrite — git only. Shown so the message being
+  /// The subject of the commit `.amendMessage` would rewrite. Shown so the message being
   /// destroyed is visible BEFORE the click rather than recoverable only from the reflog.
   let amendTarget: String?
-  /// `@`'s description — jj only, and **verbatim**, not split or trimmed.
-  ///
-  /// The byte-exactness is load-bearing, not tidiness: `CommitDraft.split` and `.message` are
-  /// deliberately not inverses (a stored `"one\ntwo"` rejoins as `"one\n\ntwo"`), so
-  /// `CommitDraft.message(summary:body:preserving:)` compares against the original to tell "the user
-  /// edited this" from "the user opened the dialog and pressed Describe". Normalising here would
-  /// rewrite a message nobody touched.
-  let currentMessage: String?
-
-  static let none = VCSCommitPreflight(sequencer: nil, amendTarget: nil, currentMessage: nil)
+  static let none = VCSCommitPreflight(sequencer: nil, amendTarget: nil)
 }
 
 /// The seam for VCS operations that **write** — remote state reads plus fetch/push/pull.
@@ -273,31 +233,25 @@ struct VCSCommitPreflight: Equatable, Sendable {
 /// Separate from `LocalVCSProviding` on purpose. That protocol's doc calls it "the single seam the app
 /// **reads** VCS data through", and four resolvers construct providers freely and call them with no
 /// gate. Putting `fetch` there would mean nothing structurally prevented a read path from firing a
-/// network mutation — the opposite of what `JJSnapshotGate` exists to guarantee. Keeping writes on
-/// their own protocol also gives the injected `StatusCommandRunning` a home: `GitProvider` and
-/// `RustJJProvider` are stateless value types constructed at four call sites with nowhere to put one.
+/// network mutation — the opposite of what `RepositoryWriteGate` exists to guarantee. Keeping writes
+/// on their own protocol also gives the injected `StatusCommandRunning` a home: `GitProvider` is a
+/// stateless value type constructed at several call sites with nowhere to put one.
 ///
-/// This is the growth surface for the rest of the VCS write phase (commit/amend, bookmark management,
-/// the deep jj ops), which is why it's a protocol with a factory rather than one standalone resolver —
-/// otherwise each later operation re-derives repo kind and wires its own runner.
+/// This is the growth surface for the rest of the VCS write phase, which is why it's a protocol with
+/// a factory rather than one standalone resolver — otherwise each later operation re-derives repo
+/// kind and wires its own runner.
 protocol LocalVCSWriting: Sendable {
   /// Everything the toolbar renders, as ONE coherent snapshot.
   func remoteState(path: String, projectRoot: String) async -> VCSRemoteResolution
   func fetch(path: String, projectRoot: String, remote: String) async -> VCSRemoteActionResult
-  /// `anonymousRevision` is used only by jj, and only when `@` carries no bookmark: it is the revision
-  /// the auto-created `push-<change-id>` bookmark will point at. Compute it with
-  /// `CLIVCSWriter.jjPushRevision(hasChanges:hasDescription:)` — pushing a bare `@` fails when the
-  /// working copy is empty and undescribed, which is the state a fresh workroom sits in. Ignored by git.
   func push(
-    path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool,
-    anonymousRevision: String
+    path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool
   ) async -> VCSRemoteActionResult
   func pullRebase(
     path: String, projectRoot: String, current: VCSRef, remote: String,
     tracking: VCSTracking?
   ) async -> VCSRemoteActionResult
-  /// Recover a workroom left mid-rebase. git only; a no-op for jj, whose rebase is atomic and
-  /// `jj undo`-able.
+  /// Recover a workroom left mid-rebase.
   func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult
 
   /// Record a commit. **Local**, unlike everything above it, so it takes no `remote` and never runs
@@ -305,9 +259,8 @@ protocol LocalVCSWriting: Sendable {
   /// protocol's own doc gives: writes belong behind the gate, and a read seam that could commit is
   /// exactly what that separation prevents.
   ///
-  /// Always runs in the **workroom**, both backends. `opDirectory` records the measured bug where a
-  /// jj write at the project root operated on the ROOT workspace's `@` and reported success; a
-  /// commit at the root would publish the wrong workspace's work in the same way.
+  /// Always runs in the **workroom**: a commit at the project root would record the root's work, not
+  /// the workroom's.
   func commit(path: String, projectRoot: String, request: VCSCommitRequest) async -> VCSCommitResult
 
   /// Selected paths whose STAGED content a commit would silently discard, so the caller can confirm
@@ -318,14 +271,10 @@ protocol LocalVCSWriting: Sendable {
   ///
   /// **Here rather than on `LocalVCSProviding`, even though every field is a read.** The same reasoning
   /// that put `stagedContentAtRisk` here: these are facts about whether and how a WRITE will land,
-  /// asked by the one screen that is about to perform one, and two of the three have no meaning
-  /// outside that question. It also keeps the git sequencer check — a `.git` directory listing —
+  /// asked by the one screen that is about to perform one, and neither has meaning outside that
+  /// question. It also keeps the git sequencer check — a `.git` directory listing —
   /// behind the seam rather than in a View, which is what made the dialog fail for any path not on
   /// this Mac (issue #154, Phase 2).
-  ///
-  /// Deliberately NOT served by `LocalVCSProviding.log(limit: 1)`, which could otherwise answer both
-  /// message fields: it returns `VCSCommit.summary` + `.body`, already split and trimmed, and jj's
-  /// description has to survive byte for byte. See `VCSCommitPreflight.currentMessage`.
   func commitPreflight(path: String) async throws -> VCSCommitPreflight
 }
 
@@ -345,17 +294,16 @@ extension LocalVCSWriting {
   func commitPreflight(path: String) async throws -> VCSCommitPreflight { .none }
 }
 
-/// `LocalVCSWriting` over the real `git` / `jj` CLIs.
+/// `LocalVCSWriting` over the real `git` CLI.
 ///
 /// **Why the CLI and not the libraries.** SwiftGitX 0.4.0's `fetch`/`push` pass `NULL` for the options
 /// struct that would carry `git_remote_callbacks.credentials`, so they have no credential path at all —
 /// HTTPS authentication is impossible through them — and it has no `pull`. Shelling the real binaries
 /// means the user's own credential helpers, SSH agent and config just work, which is the same bet the
-/// status layer already makes with `gh`. jj has no Swift API for these at all.
+/// status layer already makes with `gh`.
 ///
 /// Pure `static` arg-builders, parsers and classifiers carry all the semantics, so they are unit-tested
-/// without spawning anything — the pattern `RustJJProvider.workingDiffArgs` established for exactly
-/// this reason.
+/// without spawning anything.
 ///
 /// ```
 ///                 ┌──────────── every network op ────────────┐
@@ -364,29 +312,25 @@ extension LocalVCSWriting {
 ///                 └────────────────────┬─────────────────────┘
 ///                                      │
 ///                 ┌────────────────────┴─────────────────────┐
-///                 │  JJSnapshotGate.run(projectRoot:)         │  git writes too
+///                 │  RepositoryWriteGate.run(projectRoot:)    │
 ///                 │  NEVER re-enter for the same root         │
 ///                 └────────────────────┬─────────────────────┘
 ///                                      │
-///     git ─────────────────────────────┼───────────────────────────── jj
-///  fetch → PROJECT ROOT (FETCH_HEAD    │   fetch → PROJECT ROOT (a workspace
-///          is per-worktree; the root   │           has no .git)
-///          is one shared answer)       │   push  → PROJECT ROOT (bookmarks are
-///  push  → workroom                    │           repo-global)
-///  pull  → root (fetch) + workroom     │   pull  → root (fetch) + workroom (rebase)
-///  abort → workroom                    │
+///  fetch → PROJECT ROOT (FETCH_HEAD is per-worktree; the root is one shared answer)
+///  push  → workroom
+///  pull  → root (fetch) + workroom
+///  abort → workroom
 /// ```
 struct CLIVCSWriter: LocalVCSWriting, Sendable {
-  /// `"git"` or `"jj"` — resolved once by `RepositoryRouter` so no method re-derives it.
+  /// The executable, `"git"` — resolved once by `RepositoryRouter` so no method re-derives it.
   let vcs: String
   let runner: StatusCommandRunning
-  /// For `currentRef` only. The app already has a canonical answer including jj `.ancestor` and git
-  /// `.detached`; re-deriving it from `%(HEAD)` would lose both.
+  /// For `currentRef` only. The app already has a canonical answer including `.detached`;
+  /// re-deriving it from `%(HEAD)` would lose it.
   let makeProvider: @Sendable (URL) throws -> LocalVCSProviding
-  /// Serializes writes per project root. Applied to **git** as well as jj: a project's workrooms are
-  /// `git worktree add` worktrees sharing one `.git`, so a lock lost mid-`pull --rebase` can leave a
-  /// workroom wedged in a rebase.
-  let gate: JJSnapshotGate
+  /// Serializes writes per project root: a project's workrooms are `git worktree add` worktrees
+  /// sharing one `.git`, so a lock lost mid-`pull --rebase` can leave a workroom wedged in a rebase.
+  let gate: RepositoryWriteGate
   /// The host the repository is on. It keys the write gate (`gated`), so a remote path is never
   /// resolved against this disk, nor shares a queue with a local repository at the same path.
   var host: HostID = .local
@@ -413,26 +357,13 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
 
   /// Where an operation must run.
   ///
-  /// **fetch always runs at the project root, for both backends.** For jj because a secondary
-  /// workspace has no `.git` (the same reason `gh` used to have to run there, until its probes named
-  /// their repository explicitly — see `WorkroomStatusResolver.ghDirectory`). For git because
-  /// `FETCH_HEAD` is **per-worktree** — fetching inside a workroom would leave
-  /// the project and every sibling workroom reading "never fetched" while their remote refs were
-  /// perfectly fresh. At the root it's one fact every workroom of the project agrees on.
+  /// **fetch always runs at the project root**, because `FETCH_HEAD` is **per-worktree** — fetching
+  /// inside a workroom would leave the project and every sibling workroom reading "never fetched"
+  /// while their remote refs were perfectly fresh. At the root it's one fact every workroom of the
+  /// project agrees on.
   ///
-  /// **Everything except fetch runs in the workroom, including jj push.** It used to send jj push to the
-  /// root on the grounds that bookmarks are repo-global. Bookmarks are — but `@` is not: it is
-  /// WORKSPACE-scoped, resolved against the working directory. So `jj git push --change @` run at the root
-  /// pushed the ROOT workspace's working copy and left the workroom's commit at home, while still
-  /// returning `.ok` so the toolbar reported "Pushed to origin".
-  ///
-  /// Measured, root holding `ROOT-WORKSPACE-WORK` and workspace `wsA` holding `WORKROOM-WORK`: the push
-  /// created `refs/heads/push-<root's change id>` carrying `ROOT-WORKSPACE-WORK`. Wrong commit published,
-  /// the user's work never sent, success reported. `--bookmark` works from a secondary workspace too, so
-  /// nothing needed the root.
-  ///
-  /// The integration test could not see this — it passes `path` and `projectRoot` as the same directory,
-  /// which makes the two indistinguishable. `opDirectoryTests` now pins them as different.
+  /// **Everything except fetch runs in the workroom**: push, pull and abort act on the workroom's own
+  /// branch and working tree. `opDirectoryTests` pins `path` and `projectRoot` as different.
   static func opDirectory(_ action: VCSRemoteAction, path: String, projectRoot: String) -> String {
     switch action {
     case .fetch: return projectRoot
@@ -762,207 +693,6 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     WorkroomStatusResolver.gitHardening + ["rev-parse", "--verify", "-q", "HEAD"]
   }
 
-  // MARK: - jj argument builders
-
-  /// Read-only jj flags. `--ignore-working-copy` is REQUIRED on reads: without it every toolbar poll
-  /// would snapshot `@` and take the working-copy lock (the house rule on `LocalVCSProviding`).
-  static let jjReadFlags = ["--ignore-working-copy", "--color", "never", "--no-pager"]
-  /// Mutating jj commands must NOT carry `--ignore-working-copy` — the snapshot is what preserves
-  /// uncommitted edits into the old `@` before the working copy is rewritten.
-  static let jjWriteFlags = ["--color", "never", "--no-pager"]
-
-  /// One record per `(name, remote)` pair.
-  ///
-  /// Three verified traps in this template. The keyword is **`self`**, not `ref` (`ref.name()` errors).
-  /// The `self.remote() && self.tracked() && self.tracking_present()` guards are load-bearing —
-  /// calling `tracking_*_count()` on a local ref renders the literal string
-  /// `<Error: Not a tracked remote ref>` into the output. And a colocated repo has a pseudo-remote
-  /// called `git` that `--all-remotes` includes, which `parseJJBookmarks` drops.
-  static func jjBookmarkListArgs() -> [String] {
-    let template = """
-      self.name() \
-      ++ "\\x00" ++ if(self.remote(), self.remote(), "") \
-      ++ "\\x00" ++ if(self.present() && !self.conflict(), self.normal_target().commit_id(), "") \
-      ++ "\\x00" ++ if(self.present(), "1", "0") \
-      ++ "\\x00" ++ if(self.conflict(), "1", "0") \
-      ++ "\\x00" ++ if(self.tracked(), "1", "0") \
-      ++ "\\x00" ++ if(self.remote() && self.tracked() && self.tracking_present(), \
-      self.tracking_ahead_count().lower(), "") \
-      ++ "\\x00" ++ if(self.remote() && self.tracked() && self.tracking_present(), \
-      self.tracking_behind_count().lower(), "") \
-      ++ "\\n"
-      """
-    return ["bookmark", "list", "--all-remotes"] + jjReadFlags + ["-T", template]
-  }
-
-  /// The CONFIGURED remotes, `<name> <url>` per line.
-  ///
-  /// The same distinction `gitRemoteListArgs` documents, and jj makes it sharper: `jj git remote add`
-  /// creates no remote bookmarks at all, so `bookmark list --all-remotes` on a freshly-remoted repo
-  /// lists only local rows and `@git`, and the toolbar said "No remote configured" while
-  /// `jj git remote list` showed origin.
-  ///
-  /// `--ignore-working-copy` is load-bearing for a second reason here: without it this command takes
-  /// the **Git import/export** lock (verified, jj 0.43), which no other read in this file does.
-  static func jjRemoteListArgs() -> [String] {
-    ["git", "remote", "list"] + jjReadFlags
-  }
-
-  /// Newest-first operations, for the last-fetch scan.
-  static func jjOpLogArgs(limit: Int = 200) -> [String] {
-    ["op", "log", "--no-graph"] + jjReadFlags + [
-      "--limit", "\(limit)",
-      "-T", #"self.time().end().format("%s") ++ "\x00" ++ self.description().first_line() ++ "\n""#,
-    ]
-  }
-
-  /// Count commits in a revset — one line of output per commit.
-  static func jjRevsetCountArgs(_ revset: String) -> [String] {
-    ["log", "--no-graph"] + jjReadFlags + ["-r", revset, "-T", #""x\n""#]
-  }
-
-  /// Quote a name for interpolation into a revset.
-  ///
-  /// Bare interpolation is a real parse bug, not a hypothetical. Verified against jj 0.43: a remote
-  /// named `a b`, `a)b` or `a:b` fails outright (`Failed to parse revset: Syntax error`), and — worse —
-  /// `a|b` *succeeds* as the UNION of two patterns, so the count comes back wrong with no error to
-  /// notice. Quoting fixes all of them.
-  ///
-  /// `\` is escaped before `"`, so the backslash pass cannot re-escape the escapes the quote pass adds.
-  static func jjQuote(_ name: String) -> String {
-    let escaped = name.replacingOccurrences(of: "\\", with: "\\\\")
-      .replacingOccurrences(of: "\"", with: "\\\"")
-    return "\"\(escaped)\""
-  }
-
-  /// Reverse jj's own template quoting. `self.name()` renders a bookmark name bare when it's a plain
-  /// identifier and `"quoted\"like\\this"` (jjQuote's exact escaping) when it isn't — verified against
-  /// jj 0.43: a bookmark named `main|evil` prints as `"main|evil"` from `self.name()`. Comparing that
-  /// raw template output against an unquoted name (from `currentRef`, or a UI-typed name) never
-  /// matches, so every downstream lookup (`parseJJBookmarks`'s tracking-by-name, `jjRemoteState`'s
-  /// bookmark match) needs the literal name back.
-  ///
-  /// Not a naive strip of the first/last character: an embedded escaped quote or backslash must
-  /// round-trip exactly, so this walks the escape sequences jjQuote produces (`\\` → `\`, `\"` → `"`)
-  /// rather than assuming the only quotes present are the wrapping pair.
-  static func jjUnquote(_ name: String) -> String {
-    guard name.count >= 2, name.hasPrefix("\""), name.hasSuffix("\"") else { return name }
-    let inner = name.dropFirst().dropLast()
-    var result = ""
-    var chars = Substring(inner)
-    while let c = chars.popFirst() {
-      guard c == "\\", let next = chars.first, next == "\\" || next == "\"" else {
-        result.append(c)
-        continue
-      }
-      result.append(next)
-      chars.removeFirst()
-    }
-    return result
-  }
-
-  /// The base an unbookmarked `@` is measured — and rebased — against.
-  ///
-  /// `trunk()` is jj's own alias, so this defers to the user's `revset-aliases.'trunk()'` when they've
-  /// set one and to jj's default (the latest of `main`/`master`/`trunk` on a remote) when they haven't.
-  /// Verified to degrade quietly: in a repo whose only remote bookmark was `weird-name`, `trunk()`
-  /// resolved without error and `@..trunk()` counted 0, so an unusual repo reports "not behind" rather
-  /// than a failure.
-  ///
-  /// One literal, shared by `jjBehindRevset` and `jjRebaseDestination`, because the count and the button
-  /// have to mean the same thing.
-  static let jjTrunkRevset = "trunk()"
-
-  /// Commits of ours that no remote bookmark has — what a push would send.
-  ///
-  /// Scoped to ALL of the remote's bookmarks on purpose, unlike `jjBehindRevset`: a commit already
-  /// reachable from some other remote branch IS pushed, so it must not count as ahead.
-  ///
-  /// The `~(empty() && description(exact:""))` filter is `jjPushRevision`'s rule expressed as a revset —
-  /// jj won't push a commit with no changes AND no description, and a workroom's `@` after `jj new` is
-  /// exactly that, so without this every clean workroom read as "1 to push". `~empty()` alone is NOT
-  /// equivalent and undercounts: describe an empty `@` and jj will push it while `~empty()` reports 0.
-  /// Both measured on jj 0.43.
-  static func jjAheadRevset(remote: String) -> String {
-    "(remote_bookmarks(remote=\(jjQuote(remote)))..@) & ~(empty() & description(exact:\"\"))"
-  }
-
-  /// Commits on the main line that we don't have — what a pull would bring.
-  ///
-  /// **Measured against `trunk()`, not against every remote bookmark.** It used to be
-  /// `@..remote_bookmarks(remote=…)`, which counts every commit on every remote branch that isn't in
-  /// `@`'s ancestry — so a repo with unmerged feature branches reported their commits as "to pull" while
-  /// sitting exactly on the tip of master. Reproduced on jj 0.43: with `@-` equal to `master@origin`,
-  /// origin holding master and one unmerged `feat`, that revset counted 3 and named `feat1`/`feat2`/
-  /// `feat3`; `@..trunk()` counted 0. The equivalent git query has always been scoped to one branch
-  /// (`HEAD...refs/remotes/<remote>/<branch>`), so this also ends an asymmetry between the backends.
-  static let jjBehindRevset = "@..\(jjTrunkRevset)"
-
-  /// Where a jj pull rebases `@`.
-  ///
-  /// A bookmarked `@` goes onto its own remote counterpart. An unbookmarked one has no counterpart and
-  /// goes onto `trunk()`, the same base its behind count is measured from.
-  ///
-  /// That second case used to return early without rebasing at all, so Pull fetched and stopped: the
-  /// toolbar offered "Pull" beside a count the button could not act on. git's Pull has always been
-  /// pull-and-rebase, and this is what makes jj's the same operation.
-  ///
-  /// Builds the revset from the raw bookmark name and remote, quoting each independently with
-  /// `jjQuote`, rather than reusing a pre-joined "name@remote" display string — a bookmark name needing
-  /// quoting (e.g. `main|evil`) parses as a union inside a bare revset, exactly the bug `jjQuote`'s own
-  /// doc comment warns about, so the destination must be built quoted from the start, not patched after
-  /// the fact.
-  static func jjRebaseDestination(current: VCSRef, remote: String) -> String {
-    guard current.kind == .branch, let name = current.name else { return jjTrunkRevset }
-    return "\(jjQuote(name))@\(jjQuote(remote))"
-  }
-
-  static func jjFetchArgs(remote: String) -> [String] {
-    ["git", "fetch", "--remote", remote] + jjWriteFlags
-  }
-
-  static func jjPushBookmarkArgs(bookmark: String, remote: String) -> [String] {
-    ["git", "push", "--remote", remote, "--bookmark", bookmark] + jjWriteFlags
-  }
-
-  /// jj's built-in anonymous-branch push: it creates the bookmark, tracks it automatically, and names
-  /// it from `templates.git_push_bookmark` (default `"push-" ++ change_id.short()`). This is the normal
-  /// workroom case — `jj workspace add --name` creates a workspace, not a bookmark, so `@` is
-  /// unbookmarked and there is otherwise nothing for `--bookmark` to name.
-  static func jjPushChangeArgs(revision: String, remote: String) -> [String] {
-    ["git", "push", "--remote", remote, "--change", revision] + jjWriteFlags
-  }
-
-  /// `-b @`, not `-s @`: `-b` moves the whole branch containing `@` onto the new tip, which is the
-  /// pull-rebase shape. `-s` would move only `@` and its descendants, orphaning its parents.
-  static func jjRebaseArgs(onto destination: String) -> [String] {
-    ["rebase", "-b", "@", "-d", destination] + jjWriteFlags
-  }
-
-  /// Describe `@` and start a new empty change on top of it — jj's analogue of a git commit.
-  ///
-  /// **No pathspec, deliberately.** jj has no index: it commits the whole change. Its path arguments
-  /// are a *fileset expression language*, not a list, and interpolating a plain path into one is the
-  /// bug `jjQuote` already documents for revsets — measured on jj 0.43, `jj commit -- 'a (copy).txt'`
-  /// fails to parse outright, and a fileset that matches nothing **still creates an empty commit and
-  /// exits 0**, so the UI would report a commit that recorded nothing. Since partial selection is not
-  /// offered for jj (it would need `jj split`), the parameter would carry all that risk to buy
-  /// nothing at all.
-  /// The message rides ATTACHED (`--message=…`), never as a detached `-m` value: jj's parser reads a
-  /// detached value that begins with `-` as another flag, so `-m "-fix the parser"` dies with
-  /// `error: unexpected argument '-f' found` where the attached form records it verbatim (measured,
-  /// jj 0.43). git tolerates the detached form, but this side has no `--` to fall back on, so the
-  /// option boundary has to live in the argument itself.
-  static func jjCommitArgs(message: String) -> [String] {
-    ["commit", "--message=\(message)"] + jjWriteFlags
-  }
-
-  /// Set `@`'s description and stay on it. Not an amend and not a commit — the third jj verb, which
-  /// git has no equivalent of. Attached `--message=` for the reason `jjCommitArgs` records.
-  static func jjDescribeArgs(message: String) -> [String] {
-    ["describe", "--message=\(message)"] + jjWriteFlags
-  }
-
   /// The subject of the commit an amend would rewrite.
   ///
   /// Read-only and cheap. Its purpose is honesty rather than prefill: amend replaces `HEAD`'s message
@@ -971,32 +701,6 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// deliberately — this is a label, and a multi-line body would wrap the dialog.
   static func gitHeadSubjectArgs() -> [String] {
     WorkroomStatusResolver.gitHardening + ["log", "-1", "--no-color", "--pretty=format:%h %s"]
-  }
-
-  /// `@`'s full description, for prefilling the dialog.
-  ///
-  /// Read-only, so it carries `jjReadFlags`: without `--ignore-working-copy` this would snapshot the
-  /// working copy and take its lock, ungated, just to populate a text field.
-  ///
-  /// The FULL description, not `JJCommitChanges.description`, which is only the first line — filling
-  /// the summary from that and then running Describe would silently discard the message body.
-  static func jjDescriptionArgs() -> [String] {
-    ["log", "-r", "@", "--no-graph"] + jjReadFlags + ["-T", "description"]
-  }
-
-  /// The jj operation id at the head of the op log, for the same before/after comparison
-  /// `gitHeadArgs` serves.
-  static func jjOpHeadArgs() -> [String] {
-    ["op", "log", "--no-graph"] + jjReadFlags + ["--limit", "1", "-T", "self.id().short()"]
-  }
-
-  /// Which revision an anonymous push should send.
-  ///
-  /// `@` when it carries work, otherwise its parent. jj refuses to push a commit with an empty
-  /// description, and a fresh `@` after `jj new` has neither changes nor a description — so pushing
-  /// `@` blindly fails for the most common state a workroom sits in.
-  static func jjPushRevision(hasChanges: Bool, hasDescription: Bool) -> String {
-    (hasChanges || hasDescription) ? "@" : "@-"
   }
 
   // MARK: - Parsers
@@ -1045,25 +749,6 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     return remotes
   }
 
-  /// `jj git remote list` output (`<name> <url>` per line) → remote names, listed order preserved.
-  ///
-  /// Split on the LAST space, not the first: jj accepts a remote name containing spaces (the same
-  /// permissiveness `jjQuote` exists for), while a URL has none.
-  static func parseJJRemoteList(_ stdout: String) -> [String] {
-    var remotes: [String] = []
-    for line in stdout.split(whereSeparator: \.isNewline) {
-      let row = String(line)
-      guard let lastSpace = row.lastIndex(of: " ") else { continue }
-      let name = String(row[row.startIndex..<lastSpace])
-      // `git` is jj's colocated pseudo-remote, not a server. `jj git remote list` doesn't list it
-      // (verified, jj 0.43) and `parseJJBookmarks` drops it — dropped here too so the invariant holds
-      // wherever the name comes from.
-      guard !name.isEmpty, name != "git", !remotes.contains(name) else { continue }
-      remotes.append(name)
-    }
-    return remotes
-  }
-
   /// `"3\t1"` → (ahead: 3, behind: 1). `nil` for anything unexpected — never a misleading zero.
   static func parseCounts(_ stdout: String) -> (ahead: Int, behind: Int)? {
     let fields = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1072,84 +757,6 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
       return nil
     }
     return (ahead, behind)
-  }
-
-  /// One bookmark, folded from its local row and its `@<remote>` row.
-  struct JJBookmark: Equatable, Sendable {
-    let name: String
-    let tracking: VCSTracking?
-  }
-
-  /// Parse `bookmark list --all-remotes` output into per-name tracking, plus the remote names.
-  ///
-  /// **jj's counts are inverted relative to git and are swapped here.** `tracking_ahead_count()` on an
-  /// `@origin` ref means *the remote is ahead of local*, which is git's **behind** — jj's own default
-  /// template proves it by printing "ahead by N commits" next to `@origin`. One line, one comment, and
-  /// a cross-backend integration test pins it.
-  ///
-  /// `primaryRemote` breaks ties when the SAME bookmark is tracked on more than one remote (`origin`
-  /// AND `upstream` both tracking `main`, say): the primary remote's row wins, rather than whichever
-  /// line happened to parse last. Every UI string interpolates `primaryRemote` elsewhere in this file,
-  /// so the counts have to agree with the name being shown. `nil` (no primary known yet, or only one
-  /// remote in the output — the common case) falls back to an arbitrary row, which is harmless because
-  /// there is only ever one candidate to choose from.
-  static func parseJJBookmarks(_ stdout: String, primaryRemote: String? = nil) -> (
-    bookmarks: [JJBookmark], remotes: [String]
-  ) {
-    var remotes: [String] = []
-    var trackingByNameAndRemote: [String: [String: VCSTracking]] = [:]
-    var localNames: [String] = []
-    for line in stdout.split(whereSeparator: \.isNewline) {
-      let f = line.components(separatedBy: "\0")
-      guard f.count == 8 else { continue }
-      // `self.name()` renders quoted for a non-identifier name (e.g. `"main|evil"`) — see `jjUnquote`.
-      let (name, remote) = (Self.jjUnquote(f[0]), f[1])
-      let present = f[3] == "1"
-      let tracked = f[5] == "1"
-      guard !name.isEmpty else { continue }
-      if remote.isEmpty {
-        if !localNames.contains(name) { localNames.append(name) }
-        continue
-      }
-      // A colocated repo exposes a pseudo-remote called `git` (jj's local git-tracking bookmarks).
-      // It is not a remote, and including it would both pollute the remote list and produce counts
-      // against the local git refs rather than a server.
-      guard remote != "git" else { continue }
-      if !remotes.contains(remote) { remotes.append(remote) }
-      // An untracked remote bookmark, or one deleted on the remote, cannot answer counts. `gone`
-      // reports the deletion; nil counts report "unanswerable" rather than a misleading zero.
-      let jjAhead = Int(f[6])
-      let jjBehind = Int(f[7])
-      trackingByNameAndRemote[name, default: [:]][remote] = VCSTracking(
-        comparedTo: "\(name)@\(remote)",
-        ahead: tracked && present ? jjBehind : nil,  // swapped — see the doc comment
-        behind: tracked && present ? jjAhead : nil,
-        gone: !present)
-    }
-    let bookmarks = localNames.map { name in
-      let byRemote = trackingByNameAndRemote[name]
-      let tracking = primaryRemote.flatMap { byRemote?[$0] } ?? byRemote?.values.first
-      return JJBookmark(name: name, tracking: tracking)
-    }
-    return (bookmarks, remotes)
-  }
-
-  /// The newest operation whose description says it fetched.
-  ///
-  /// Matches a prefix rather than the whole string so a reworded suffix survives. The failure mode is
-  /// graceful — one absent label, never a wrong one — and an integration test reddens on a jj bump.
-  ///
-  /// **Incomplete by design**: a `jj git fetch` that brings nothing prints "Nothing changed." and
-  /// records NO operation (verified, jj 0.43), so this answers "last fetch that changed something".
-  /// `RemoteStateModel` takes the max of this and Workroom's own recorded fetch time to close the gap.
-  static func parseJJFetchOp(_ stdout: String) -> Date? {
-    for line in stdout.split(whereSeparator: \.isNewline) {
-      let f = line.components(separatedBy: "\0")
-      guard f.count == 2, f[1].hasPrefix("fetch from git remote") else { continue }
-      guard let seconds = TimeInterval(f[0]) else { continue }
-      return Date(timeIntervalSince1970: seconds)
-    }
-    return nil
   }
 
   // MARK: - Classification
@@ -1203,7 +810,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     }
     if err.contains("would be overwritten") { return .dirtyWorkingTree(err) }
     if err.contains("does not appear to be a git repository") || err.contains("No such remote")
-      || err.contains("no such remote") || err.contains("No git remotes")
+      || err.contains("no such remote")
     {
       return .noRemote
     }
@@ -1215,19 +822,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     {
       return .rejected(err)
     }
-    // Both jj-only, and both permanent until the user acts — so they must NOT reach `.other`, whose
-    // recovery is a retry of the same doomed command. jj doesn't localize, so matching its prose is safe
-    // here in a way it wouldn't be for git.
-    if err.contains("since it has no description") || err.contains("has no description") {
-      return .needsDescription(err)
-    }
-    if err.contains("is immutable") || err.contains("immutable commits") {
-      return .immutableHistory(err)
-    }
-    if err.contains("Failed to take lock for Git import/export")
-      || (err.contains(".lock")
-        && (err.contains("could not be obtained") || err.contains("File exists")
-          || err.contains("Unable to create")))
+    if err.contains(".lock")
+      && (err.contains("could not be obtained") || err.contains("File exists")
+        || err.contains("Unable to create"))
     {
       return .locked(lockFile(in: err, disk: disk))
     }
@@ -1272,25 +869,10 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     "empty ident name", "no email was given",
   ]
 
-  /// git's phrasings, matched only on the FAILURE path — see `classifyCommit`. jj's exit-zero no-op
-  /// is not in here on purpose; it needs the whole-line check below.
+  /// git's phrasings, matched only on the FAILURE path — see `classifyCommit`.
   static let commitNothingMarkers = [
     "nothing to commit", "no changes added to commit", "nothing added to commit",
   ]
-
-  /// jj's no-op marker, as a whole line rather than a substring.
-  ///
-  /// jj echoes the change's description back in its `Working copy (@) now at:` and `Parent commit
-  /// (@-)` lines, so a `contains` here would fire on any commit whose own message happened to carry
-  /// the phrase — reporting a successful write as a no-op.
-  /// Both streams are checked. jj 0.43 writes this (and everything else) to stderr, but the whole-line
-  /// anchor is what makes the match safe, not the choice of stream — so covering stdout too costs
-  /// nothing and survives jj moving it.
-  static func saysNothingChanged(_ result: CommandResult) -> Bool {
-    let lines = (result.stderr + "\n" + result.stdout).split(
-      separator: "\n", omittingEmptySubsequences: false)
-    return lines.contains { $0.trimmingCharacters(in: .whitespaces) == "Nothing changed." }
-  }
 
   static let commitUnmergedMarkers = [
     "you have unmerged files", "Committing is not possible because you have unmerged files",
@@ -1324,22 +906,13 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
       return .outcomeUnknown(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
-    // jj says "Nothing changed." and exits ZERO, so its no-op has to be read BEFORE the success
-    // guard — an untouched working copy must not be reported as a commit that happened.
-    //
-    // Scoped to jj, matched on a whole stderr line, and never against stdout. All three matter:
-    // `git commit` echoes the SUBJECT on stdout, so the substring form this replaces classified
-    // `-m "explain the nothing to commit error"` — a commit that succeeded, exit 0 — as a failure,
-    // and `commit()` then upgraded it to `.committedThenFailed` because the ref had legitimately
-    // moved. The dialog told the user their commit had half-worked when it was perfect. jj puts
-    // everything on stderr including its own echo of the description (`Parent commit (@-) … <msg>`),
-    // hence the whole-line anchor rather than `contains`. Measured on git 2.55 / jj 0.43.
-    if tool == "jj", result.ok, saysNothingChanged(result) { return .nothingToCommit }
     if result.timedOut { return .timedOut }
     guard !result.ok else { return nil }
 
-    // Only now, on a genuine failure, is matching the combined output safe: git's own
-    // "nothing to commit, working tree clean" goes to stdout with a non-zero exit.
+    // Only now, on a genuine failure, is matching the combined output safe: `git commit` echoes the
+    // SUBJECT on stdout, so `-m "explain the nothing to commit error"` — a commit that succeeded —
+    // must never be read for markers, while git's own "nothing to commit, working tree clean" goes to
+    // stdout with a non-zero exit.
     let err = result.stderr + "\n" + result.stdout
     if commitNothingMarkers.contains(where: err.contains) { return .nothingToCommit }
     if commitIdentityMarkers.contains(where: err.contains) { return .identityMissing(err) }
@@ -1351,7 +924,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
       return .sequencerInProgress(err)
     }
     if commitHookMarkers.contains(where: err.contains) { return .hookRejected(err) }
-    if err.contains("Failed to take lock") || err.contains("index.lock")
+    if err.contains("index.lock")
       || (err.contains(".lock")
         && (err.contains("could not be obtained") || err.contains("File exists")
           || err.contains("Unable to create")))
@@ -1406,8 +979,8 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// mean different things — `index.lock`, `packed-refs.lock`, `HEAD.lock`, `config.lock`. Naming the
   /// wrong one would send someone to delete a file that isn't the problem.
   ///
-  /// Returns nil for jj's import/export lock, whose message carries no path, and — deliberately — when
-  /// the named file no longer exists: a lock that cleared between the failure and this check WAS
+  /// Returns nil when git's message carries no path, and — deliberately — when the named file no
+  /// longer exists: a lock that cleared between the failure and this check WAS
   /// transient contention, which is exactly the case where Retry is the right offer.
   static func lockFile(in stderr: String, disk: any RepositoryDisk = LocalDisk()) -> VCSLockFile? {
     guard let path = parseLockPath(stderr), let modified = disk.entry(path)?.modifiedAt else {
@@ -1517,9 +1090,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
 
   /// Run a write through the per-project gate.
   ///
-  /// `JJSnapshotGate`'s doc warns against timing the innermost call, because `withTimeout` cannot
-  /// cancel a blocking jj-lib call and the gate would release while the abandoned call still held the
-  /// lock. That reasoning does **not** apply to a subprocess: `StatusCommandRunner` SIGTERMs at
+  /// `RepositoryWriteGate`'s doc warns against timing the innermost call, because `withTimeout`
+  /// cannot cancel the call and the gate would release while the abandoned call still held the lock.
+  /// That reasoning does **not** apply to a subprocess run by the runner's own timeout: `StatusCommandRunner` SIGTERMs at
   /// `+timeout` and `ProcessTree.killTree`s at `+timeout+2`, so the process is genuinely gone and its
   /// locks genuinely released. Hence the runner's own timeout with no outer `withTimeout` — this looks
   /// like a violation of that doc and isn't.
@@ -1529,9 +1102,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     guard case .remote(let id) = host else {
       return try? await gate.run(projectRoot: projectRoot, body)
     }
-    // Keyed as the remote location it is: validated, not resolved against this disk. The gate takes
-    // no process barrier for it, having none to take on another host (`JJProcessBarrier`); the
-    // agent takes jj's for each command instead (`AgentCommandRunner.barrierRoot`).
+    // Keyed as the remote location it is: validated, not resolved against this disk.
     guard let repository = try? RepositoryLocation.remote(host: id, path: projectRoot) else {
       return nil
     }
@@ -1570,11 +1141,6 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     return (facts, gitDir, commonGitDir)
   }
 
-  private func rebaseParked(at path: String) async -> Bool {
-    let facts = await disk(at: path)
-    return Self.rebaseInProgress(gitDir: facts.gitDir, disk: facts.disk)
-  }
-
   private func parkedOperation(at path: String) async -> String? {
     let facts = await disk(at: path)
     return Self.sequencerState(gitDir: facts.gitDir, disk: facts.disk)
@@ -1604,9 +1170,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     } catch {
       return .failed(.other("couldn't read the current ref: \(error)"))
     }
-    return vcs == "jj"
-      ? await jjRemoteState(path: path, projectRoot: projectRoot, current: current)
-      : await gitRemoteState(path: path, current: current)
+    return await gitRemoteState(path: path, current: current)
   }
 
   private func gitRemoteState(path: String, current: VCSRef) async -> VCSRemoteResolution {
@@ -1650,77 +1214,6 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
         resolvedAt: Date()))
   }
 
-  private func jjRemoteState(path: String, projectRoot: String, current: VCSRef) async
-    -> VCSRemoteResolution
-  {
-    // Reads take no lock, so they stay ungated.
-    let list = await run(Self.jjBookmarkListArgs(), in: path, timeout: refTimeout)
-    if let failure = await classify(list, action: .fetch, tool: "jj", at: path, withGitDir: false) {
-      if case .timedOut = failure { return .keepPrior }
-      return .failed(failure)
-    }
-    let remoteList = await run(Self.jjRemoteListArgs(), in: path, timeout: refTimeout)
-    let configuredRemotes = remoteList.ok ? Self.parseJJRemoteList(remoteList.stdout) : []
-    // Resolved from the CONFIGURED remotes alone, ahead of the merge below — every remote a
-    // bookmark can be tracked on is itself configured, so this is the same answer `primary` below
-    // reaches in the success case, just available in time to hand to `parseJJBookmarks`, which
-    // needs it to pick the right row when more than one remote tracks the same bookmark name.
-    let parsed = Self.parseJJBookmarks(
-      list.stdout, primaryRemote: Self.primaryRemote(configuredRemotes))
-    let remotes = Self.mergeRemotes(configured: configuredRemotes, derived: parsed.remotes)
-    let primary = Self.primaryRemote(remotes)
-    var tracking: VCSTracking?
-    if let primary {
-      switch current.kind {
-      case .branch:
-        if let name = current.name {
-          // No `@<remote>` row for this bookmark ⇒ it has never been pushed. Reported as `gone`, exactly
-          // as the git path reports a missing counterpart, so the toolbar offers Publish. Leaving it nil
-          // fell through to the fetch tier, which offered a Fetch that can never produce the counterpart
-          // — the permanent dead end a freshly-remoted repo landed in.
-          tracking =
-            parsed.bookmarks.first { $0.name == name }?.tracking
-            ?? VCSTracking(
-              comparedTo: "\(name)@\(primary)", ahead: nil, behind: nil, gone: true)
-        }
-      // `.none` belongs with `.ancestor`, and leaving it out was a bug that hid the exact case this
-      // toolbar exists for. `jj git fetch` fast-forwards a tracked local bookmark, so as soon as the
-      // main line moves, an unbookmarked `@`'s ancestry contains no bookmark at all and `currentRef`
-      // drops from `.ancestor` to `.none`. Sending that to `tracking = nil` meant the counts, the pills
-      // and `canPull` all vanished at the moment the workroom first became behind — the toolbar went
-      // quiet precisely when it had something to say. The revsets below never needed a bookmark to
-      // begin with; `.detached` still yields nil, since that's git's shape and has no jj meaning.
-      case .ancestor, .none:
-        // `@` carries no bookmark — the normal workroom state, since `jj workspace add --name` creates
-        // no bookmark. The bookmark row's counts would describe the ANCESTOR, not the user's work, so
-        // count the actual revsets instead. The two are deliberately scoped differently: ahead against
-        // every remote bookmark (anything already pushed anywhere isn't ahead), behind against `trunk()`
-        // alone (see `jjBehindRevset` — the all-bookmarks form counted other branches' work as ours to
-        // pull). Both agree with what the buttons do: `jjPushRevision` and `jjRebaseDestination`.
-        let ahead = await run(
-          Self.jjRevsetCountArgs(Self.jjAheadRevset(remote: primary)), in: path, timeout: refTimeout
-        )
-        let behind = await run(
-          Self.jjRevsetCountArgs(Self.jjBehindRevset), in: path, timeout: refTimeout)
-        tracking = VCSTracking(
-          comparedTo: primary,
-          ahead: ahead.ok ? Self.countLines(ahead.stdout) : nil,
-          behind: behind.ok ? Self.countLines(behind.stdout) : nil,
-          gone: false)
-      case .detached:
-        tracking = nil
-      }
-    }
-    // jj's fetch is invisible to `FETCH_HEAD` (it passes `--no-write-fetch-head`), so scan the op log.
-    let ops = await run(Self.jjOpLogArgs(), in: path, timeout: refTimeout)
-    let lastFetch = ops.ok ? Self.parseJJFetchOp(ops.stdout) : nil
-    return .state(
-      VCSRemoteState(
-        current: current, tracking: tracking, remotes: remotes, primaryRemote: primary,
-        lastFetch: lastFetch.map { .at($0) } ?? (ops.ok ? .never : .unknown),
-        resolvedAt: Date()))
-  }
-
   /// `origin` when it exists, else the first remote, else nil. Origin-scoped by default, matching the
   /// deliberate choice `VCSPushState` documents.
   static func primaryRemote(_ remotes: [String]) -> String? {
@@ -1737,15 +1230,11 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     configured + derived.filter { !configured.contains($0) }
   }
 
-  static func countLines(_ stdout: String) -> Int {
-    stdout.split(whereSeparator: \.isNewline).count
-  }
-
   // MARK: - Actions
 
   func fetch(path: String, projectRoot: String, remote: String) async -> VCSRemoteActionResult {
     let dir = Self.opDirectory(.fetch, path: path, projectRoot: projectRoot)
-    let args = vcs == "jj" ? Self.jjFetchArgs(remote: remote) : Self.gitFetchArgs(remote: remote)
+    let args = Self.gitFetchArgs(remote: remote)
     guard
       let result = await gated(
         projectRoot,
@@ -1760,24 +1249,13 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   }
 
   func push(
-    path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool,
-    anonymousRevision: String
+    path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool
   ) async -> VCSRemoteActionResult {
     let dir = Self.opDirectory(.push, path: path, projectRoot: projectRoot)
-    let args: [String]
-    if vcs == "jj" {
-      if current.kind == .branch, let bookmark = current.name {
-        args = Self.jjPushBookmarkArgs(bookmark: bookmark, remote: remote)
-      } else {
-        // Unbookmarked `@`: let jj mint and track a `push-<change-id>` bookmark.
-        args = Self.jjPushChangeArgs(revision: anonymousRevision, remote: remote)
-      }
-    } else {
-      guard let branch = current.name, current.kind == .branch else {
-        return .failed(.other("HEAD is detached — check out a branch before pushing."))
-      }
-      args = Self.gitPushArgs(branch: branch, remote: remote, setUpstream: setUpstream)
+    guard let branch = current.name, current.kind == .branch else {
+      return .failed(.other("HEAD is detached — check out a branch before pushing."))
     }
+    let args = Self.gitPushArgs(branch: branch, remote: remote, setUpstream: setUpstream)
     guard
       let result = await gated(
         projectRoot,
@@ -1795,12 +1273,11 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     path: String, projectRoot: String, current: VCSRef, remote: String,
     tracking: VCSTracking?
   ) async -> VCSRemoteActionResult {
-    // Both backends fetch first, at the project root, for the reasons `opDirectory` documents. For git
-    // `pull` would fetch too, but doing it explicitly at the root keeps `FETCH_HEAD` — and so the
-    // "last fetched" label — correct for every workroom of the project.
+    // Fetch first, at the project root, for the reasons `opDirectory` documents. `pull` would fetch
+    // too, but doing it explicitly at the root keeps `FETCH_HEAD` — and so the "last fetched" label —
+    // correct for every workroom of the project.
     let fetchDir = Self.opDirectory(.fetch, path: path, projectRoot: projectRoot)
-    let fetchArgs =
-      vcs == "jj" ? Self.jjFetchArgs(remote: remote) : Self.gitFetchArgs(remote: remote)
+    let fetchArgs = Self.gitFetchArgs(remote: remote)
     guard
       let fetched = await gated(
         projectRoot,
@@ -1814,20 +1291,10 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     }
 
     let dir = Self.opDirectory(.pull, path: path, projectRoot: projectRoot)
-    let args: [String]
-    if vcs == "jj" {
-      // Always rebases now. An unbookmarked `@` falls back to `trunk()` rather than returning early:
-      // fetching moves the remote bookmarks but does NOT move `@`, so stopping there left the workroom
-      // as far behind as it started while the toolbar went on offering Pull. Already a descendant of the
-      // destination is not an error — jj prints "Nothing changed." and exits 0.
-      args = Self.jjRebaseArgs(
-        onto: Self.jjRebaseDestination(current: current, remote: remote))
-    } else {
-      guard let branch = Self.pullBranch(current: current, tracking: tracking) else {
-        return .failed(.other("no remote branch to pull from."))
-      }
-      args = Self.gitPullArgs(remote: remote, branch: branch)
+    guard let branch = Self.pullBranch(current: current, tracking: tracking) else {
+      return .failed(.other("no remote branch to pull from."))
     }
+    let args = Self.gitPullArgs(remote: remote, branch: branch)
     guard
       let result = await gated(
         projectRoot,
@@ -1851,32 +1318,16 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   }
 
   func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult {
-    if vcs == "jj", !(await rebaseParked(at: path)) {
-      // jj's own rebase is atomic and undoable — there is no half-finished state to abort. But a
-      // COLOCATED jj root still has a real `.git`, and a `git rebase` run in that root's terminal
-      // can leave a real `rebase-merge`/`rebase-apply` behind — exactly what `classify` checks for
-      // (via this same `rebaseInProgress`) to hand this action `.rebaseInProgress` in the first
-      // place. Only report "nothing to abort" when that check finds no such state on disk;
-      // otherwise fall through to the real `git rebase --abort` below, same as the plain-git path.
-      return .ok(summary: "Nothing to abort")
-    }
     let dir = Self.opDirectory(.abortRebase, path: path, projectRoot: projectRoot)
     guard
       let result = await gated(
         projectRoot,
         { [self] in
-          // Explicitly "git" here, never the private `run(_:in:timeout:)` helper — that helper
-          // spawns `self.vcs`, which for a colocated root falling through from the guard above is
-          // "jj", not "git". Running `jj` with git's rebase-abort args is not "abort a rebase" —
-          // jj's own default-command fallback rejects the flags outright, which is exactly what
-          // this was measured doing before this explicit executable was added.
-          await runner.run("git", Self.gitAbortRebaseArgs(), in: dir, timeout: refTimeout)
+          await run(Self.gitAbortRebaseArgs(), in: dir, timeout: refTimeout)
         })
     else { return .failed(.other("abort was cancelled")) }
-    // Always "git" here too, never `vcs`, for the same reason: attributing a failure to the wrong
-    // tool would misdirect ".toolMissing"/"exited N" messages.
     if let failure = await classify(
-      result, action: .abortRebase, tool: "git", at: path, withGitDir: false)
+      result, action: .abortRebase, tool: vcs, at: path, withGitDir: false)
     {
       return .failed(failure)
     }
@@ -1887,20 +1338,18 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
 
   func commit(path: String, projectRoot: String, request: VCSCommitRequest) async -> VCSCommitResult
   {
-    guard Self.supports(mode: request.mode, vcs: vcs) else { return .failed(.unsupportedMode) }
     // A parked merge/cherry-pick/rebase/bisect makes a path-limited commit outright invalid, and
     // finishing it is the user's call. Checked before the ref snapshot so nothing is spawned at all.
-    if vcs != "jj", let sequencer = await parkedOperation(at: path) {
+    if let sequencer = await parkedOperation(at: path) {
       return .failed(.sequencerInProgress(sequencer))
     }
 
     // ONE gate acquisition for the whole operation, not one per command. Two would let the 15s
     // status sweep, the FSEvents lane and DiffResolver interleave between the intent-to-add and the
-    // commit — contending on `index.lock` and, for jj, snapshotting `@` out from under a write.
+    // commit — contending on `index.lock`.
     //
     // `before` is read INSIDE the gate, not before acquiring it. Outside, anything that moves the ref
-    // while this call waits its turn — a queued status snapshot (which rewrites `@` for jj, so the op
-    // head moves on every one), another window, the user's own terminal during a slow hook — would
+    // while this call waits its turn — another window, the user's own terminal during a slow hook — would
     // make the before/after comparison below read a ref that moved for someone else's reason. A
     // commit that genuinely failed would then be reported as `.committedThenFailed`, whose copy tells
     // the user their work is saved and not to commit again. It would not be.
@@ -1914,8 +1363,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     guard let attempt = outcome else { return .failed(.other("commit was cancelled")) }
     let (before, result) = (attempt.before, attempt.result)
 
-    // Read only for a failure, as `classify` does: jj's "Nothing changed." exits 0 and is classified
-    // here too, but no probe reads the disk for it.
+    // Read only for a failure, as `classify` does.
     let commitDisk: any RepositoryDisk =
       stat == nil
       ? LocalDisk()
@@ -1951,14 +1399,6 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   private func runCommitSequence(
     _ request: VCSCommitRequest, in path: String, before: String?
   ) async -> CommandResult {
-    if vcs == "jj" {
-      let args =
-        request.mode == .describe
-        ? Self.jjDescribeArgs(message: request.message)
-        : Self.jjCommitArgs(message: request.message)
-      return await run(args, in: path, timeout: commitTimeout)
-    }
-
     if request.mode == .amendMessage {
       return await run(
         Self.gitAmendMessageArgs(message: request.message), in: path,
@@ -2057,37 +1497,22 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   }
 
   /// Selected paths whose staged content a commit would discard, for the dialog to confirm before it
-  /// happens. Empty for jj, which has no index, and for a mode that takes no pathspec.
+  /// happens. Empty for a mode that takes no pathspec.
   ///
   /// A pre-flight rather than a refusal: a partially-staged file is a legitimate thing to commit from
   /// — the user just has to know that the version on disk is the one that lands. Silence is the only
   /// unacceptable option, because the loss leaves no trace (`git status` is clean afterwards).
   func stagedContentAtRisk(path: String, files: [ChangedFile]) async throws -> [String] {
-    guard vcs != "jj", !files.isEmpty else { return [] }
+    guard !files.isEmpty else { return [] }
     let result = await run(Self.gitStatusPorcelainArgs(), in: path, timeout: refTimeout)
     guard result.ok else { throw VCSError.io("Could not check staged content: \(result.stderr)") }
     return Self.stagedContentAtRisk(
       porcelainZ: result.stdout, selecting: Set(files.map(\.path)))
   }
 
-  /// What the commit dialog shows before it writes. Ungated and read-only: the jj side carries
-  /// `jjReadFlags` so populating a text field cannot take the working-copy lock, and the git side is
-  /// a `rev-parse`-class read plus a directory listing.
-  ///
-  /// Each backend answers only its own fields, which is why the sequencer check is git-only here
-  /// even though `sequencerState` would happily run against a colocated jj root: the dialog
-  /// discards it for jj (a jj commit is not path-limited, so a parked git operation does not block
-  /// it), and computing an answer nobody reads is how a check ends up silently changing meaning.
+  /// What the commit dialog shows before it writes. Ungated and read-only: a `rev-parse`-class
+  /// read plus a directory listing.
   func commitPreflight(path: String) async throws -> VCSCommitPreflight {
-    if vcs == "jj" {
-      let result = await run(Self.jjDescriptionArgs(), in: path, timeout: refTimeout)
-      guard result.ok else {
-        throw VCSError.io("Could not read change description: \(result.stderr)")
-      }
-      // Verbatim — no trim. See `VCSCommitPreflight.currentMessage`.
-      return VCSCommitPreflight(
-        sequencer: nil, amendTarget: nil, currentMessage: result.ok ? result.stdout : nil)
-    }
     let head = await run(Self.gitHeadSubjectArgs(), in: path, timeout: refTimeout)
     if !head.ok {
       // An unborn branch is a valid preflight. A missing/corrupt repository or failed runner isn't.
@@ -2108,15 +1533,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     return VCSCommitPreflight(
       sequencer: await parkedOperation(at: path),
       // Empty on an unborn branch — a repo with no commits has nothing to amend.
-      amendTarget: subject.isEmpty ? nil : subject,
-      currentMessage: nil)
+      amendTarget: subject.isEmpty ? nil : subject)
   }
 
-  /// The current ref, for the before/after comparison. Ungated and cheap: git's `rev-parse` touches
-  /// nothing, and the jj form carries `jjReadFlags` so it cannot snapshot.
-  ///
-  /// Nil for an unborn branch (a repo with no commits), which is a legitimate state to commit from —
-  /// `nil != "abc123"` then reads correctly as "the ref moved".
   /// Whether HEAD provably still reads `before`. `currentRevision`'s nil is either an unborn branch
   /// or a failed read, so a nil `before` needs HEAD proved unborn now: a first commit that landed
   /// and whose re-read then failed would otherwise compare `nil == nil`.
@@ -2127,30 +1546,22 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     return result.exitCode == 1 && !result.signaled && !result.timedOut && result.stdout.isEmpty
   }
 
+  /// The current ref, for the before/after comparison. Ungated and cheap: `rev-parse` touches
+  /// nothing.
+  ///
+  /// Nil for an unborn branch (a repo with no commits), which is a legitimate state to commit from —
+  /// `nil != "abc123"` then reads correctly as "the ref moved".
   private func currentRevision(path: String) async -> String? {
-    let args = vcs == "jj" ? Self.jjOpHeadArgs() : Self.gitHeadArgs()
-    let result = await run(args, in: path, timeout: refTimeout)
+    let result = await run(Self.gitHeadArgs(), in: path, timeout: refTimeout)
     guard result.ok else { return nil }
     let value = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     return value.isEmpty ? nil : value
-  }
-
-  /// Which verbs each backend has. `.amendMessage` is git's and `.describe` is jj's; neither has a
-  /// counterpart on the other side, so a mismatch is a programming error the writer reports rather
-  /// than silently running the nearest command.
-  static func supports(mode: VCSCommitMode, vcs: String) -> Bool {
-    switch mode {
-    case .commit: return true
-    case .amendMessage: return vcs != "jj"
-    case .describe: return vcs == "jj"
-    }
   }
 
   static func commitSummary(_ mode: VCSCommitMode, vcs: String) -> String {
     switch mode {
     case .commit: return "Committed"
     case .amendMessage: return "Amended the last commit"
-    case .describe: return "Set the change message"
     }
   }
 
@@ -2169,7 +1580,6 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     case .nothingToCommit: return "Nothing to commit."
     case .locked(let file):
       return file.map { "Blocked by \($0.filename)." } ?? "The repository was busy."
-    case .unsupportedMode: return "That action isn’t available for this repository."
     case .launchFailed: return "This workroom’s folder is no longer there."
     }
   }

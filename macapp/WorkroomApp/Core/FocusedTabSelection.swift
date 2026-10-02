@@ -48,7 +48,7 @@ enum FocusedTabSelection: Equatable {
 
   /// Whether this selection is `path`'s diff from `source`, or `path`'s file tab. The Changes panel's
   /// rule, unchanged: a file tab has no revision, so it matches on path alone, while a diff keeps
-  /// `source` so the same path under `@` vs `@-` selects the right row.
+  /// `source` so the same path from the worktree vs a commit selects the right row.
   func selectsChangedFile(path: String, source: DiffSource) -> Bool {
     switch self {
     case .diff(let selectedPath, let selectedSource):

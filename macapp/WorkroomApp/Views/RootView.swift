@@ -425,7 +425,7 @@ struct RootView: View {
       .background(TitlebarAccessoryHost { accessoryBarContent })
       .background(WindowBackgroundThemer())
       // Keep the root branch labels reasonably current: refresh when the app regains
-      // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
+      // focus (throttled, so rapid alt-tabbing doesn't fork a git process per project).
       // Regaining focus also dismisses the now-visible terminal's notifications (you're looking at it).
       .onReceive(
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
@@ -514,11 +514,8 @@ struct RootView: View {
     AppStore.projectPath(of: store.selectedTargetID)
   }
   /// Whether the selected workroom's project has a run command configured.
-  /// Whether the `git`/`jj` on PATH can run the remote commands for the toolbar's current target
-  /// (`VCSToolVersions`). Scoped per project VCS, so an old `jj` doesn't disable a git project's menu.
-  private var vcsToolsUsable: Bool {
-    store.vcsAllowsRemoteActions(vcs: (store.remoteState.target?.vcs ?? .git).rawValue)
-  }
+  /// Whether the `git` on PATH can run the remote commands (`VCSToolVersions`).
+  private var vcsToolsUsable: Bool { store.vcsAllowsRemoteActions }
 
   /// Whether ⌘R (File ▸ Run) should be live for the selection — the shared `canRunCommand` gate, not a
   /// bare `hasRunCommand`. The menu is one of the callers `startRunCommand`'s guards were written for
@@ -713,7 +710,7 @@ struct RootView: View {
         // Zero projects: the sidebar's own empty-state copy (`ProjectSidebar`) — the sidebar itself
         // is hidden in this state (see `splitView`), so this is the only place left to say it.
         if store.projects.isEmpty {
-          Text("Add a Git or Jujutsu project folder to start managing its workrooms.")
+          Text("Add a Git project folder to start managing its workrooms.")
         } else {
           Text("Select a project's root, or open (⌘O) or create (⌘N) a workroom to get started.")
         }

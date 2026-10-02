@@ -69,7 +69,7 @@ final class NavigationHistoryContentUITests: XCTestCase {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     XCTAssertTrue(
-      element(app, id: "changes.workingCopy").waitForExistence(timeout: 10),
+      element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10),
       "the Changes panel should render its working copy")
 
     // Single-click two different rows. Different rows, so the 350ms double-click promotion that would

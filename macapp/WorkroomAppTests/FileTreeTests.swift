@@ -71,8 +71,6 @@ final class FileTreeTests: XCTestCase {
     XCTAssertEqual(
       FileListing.command(.git).args,
       ["-c", "core.fsmonitor=", "ls-files", "--cached", "--others", "--exclude-standard", "-z"])
-    XCTAssertEqual(FileListing.command(.jj).executable, "jj")
-    XCTAssertEqual(FileListing.command(.jj).args, ["file", "list"])
   }
 
   func testGitParseSplitsOnNulAndPreservesSpaces() {
@@ -80,30 +78,22 @@ final class FileTreeTests: XCTestCase {
     XCTAssertEqual(FileListing.parse(stdout, vcs: .git), ["a.txt", "b c.txt", "sub/d.txt"])
   }
 
-  func testJJParseSplitsOnNewlineTrimsCRAndStripsDotSlash() {
-    XCTAssertEqual(
-      FileListing.parse("a.txt\n./sub/d.txt\n\n", vcs: .jj), ["a.txt", "sub/d.txt"])
-    XCTAssertEqual(FileListing.parse("x.txt\r\n", vcs: .jj), ["x.txt"])
-  }
-
   private func registeredList(
-    path: String, projectRoot: String?, runner: StatusCommandRunning,
-    gate: JJSnapshotGate = .shared
+    path: String, projectRoot: String?, runner: StatusCommandRunning
   ) async -> FileTreeModel.ListResult {
     do {
       let location = try await RepositoryLocation.local(path)
       let shared = try await RepositoryLocation.local(projectRoot ?? path)
       let router = RepositoryRouter()
-      try router.register(.init(location: location, backend: .jj, sharedLocation: shared))
-      return await FileTreeModel.list(
-        location: location, runner: runner, gate: gate, router: router)
+      try router.register(.init(location: location, backend: .git, sharedLocation: shared))
+      return await FileTreeModel.list(location: location, runner: runner, router: router)
     } catch {
       XCTFail("\(error)")
       return .unavailable
     }
   }
 
-  // MARK: FileTreeModel.list (git → jj fallthrough)
+  // MARK: FileTreeModel.list
 
   func testListPrefersGitWhenAvailable() async {
     let runner = StubRunner(byExecutable: [
@@ -113,16 +103,7 @@ final class FileTreeTests: XCTestCase {
     XCTAssertEqual(result, .listing(["a.txt", "b.txt"]))
   }
 
-  func testListFallsThroughToJJWhenGitFails() async {
-    let runner = StubRunner(byExecutable: [
-      "git": CommandResult(stdout: "", stderr: "not a repo", exitCode: 128, timedOut: false),
-      "jj": CommandResult(stdout: "x.txt\ny.txt\n", stderr: "", exitCode: 0, timedOut: false),
-    ])
-    let result = await registeredList(path: "/repo", projectRoot: nil, runner: runner)
-    XCTAssertEqual(result, .listing(["x.txt", "y.txt"]))
-  }
-
-  func testListReturnsUnavailableWhenNeitherVCSResponds() async {
+  func testListReturnsUnavailableWhenGitDoesNotRespond() async {
     let runner = StubRunner(byExecutable: [:])  // every command → not-found
     let result = await registeredList(path: "/repo", projectRoot: nil, runner: runner)
     XCTAssertEqual(result, .unavailable)
@@ -132,37 +113,10 @@ final class FileTreeTests: XCTestCase {
   /// never silently fold into `.unavailable` (which the UI treats as "not a repo").
   func testListReturnsInterruptedWhenAToolIsSignalled() async {
     let runner = StubRunner(byExecutable: [
-      "git": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true),
-      "jj": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true),
+      "git": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
     ])
     let result = await registeredList(path: "/repo", projectRoot: nil, runner: runner)
     XCTAssertEqual(result, .interrupted)
-  }
-
-  /// If the OTHER tool succeeds after one is signalled, that's a real listing, not an interruption.
-  func testListPrefersARealListingOverAnEarlierSignal() async {
-    let runner = StubRunner(byExecutable: [
-      "git": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true),
-      "jj": CommandResult(stdout: "x.txt\n", stderr: "", exitCode: 0, timedOut: false),
-    ])
-    let result = await registeredList(path: "/repo", projectRoot: nil, runner: runner)
-    XCTAssertEqual(result, .listing(["x.txt"]))
-  }
-
-  /// `jj file list` has no `--ignore-working-copy` — it snapshots `@`, so same-project calls must
-  /// serialize through `JJSnapshotGate` (VCS-foundation eng-review follow-up: this call site was
-  /// found ungated by adversarial review after the initial fix).
-  func testListGatesJJBranchPerProjectRoot() async {
-    let recorder = ListConcurrencyRecorder()
-    let runner = DelayedJJRunner(recorder: recorder)
-    let gate = JJSnapshotGate()
-    async let first = registeredList(
-      path: "/proj/main", projectRoot: "/proj", runner: runner, gate: gate)
-    async let second = registeredList(
-      path: "/proj/ws", projectRoot: "/proj", runner: runner, gate: gate)
-    _ = await (first, second)
-    let maxConcurrent = await recorder.maxConcurrent
-    XCTAssertEqual(maxConcurrent, 1, "same-project jj file list calls must be gated")
   }
 
   // MARK: PlainFileViewer.classify (read gating)
@@ -311,13 +265,13 @@ final class FileTreeTests: XCTestCase {
       stdout: "", stderr: "", exitCode: 143, timedOut: true, signaled: true)
     let result = await registeredList(
       path: NSTemporaryDirectory(), projectRoot: nil,
-      runner: StubRunner(byExecutable: ["git": timedOut, "jj": timedOut]))
+      runner: StubRunner(byExecutable: ["git": timedOut]))
     XCTAssertEqual(result, .unavailable)
 
     let killed = CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
     let interrupted = await registeredList(
       path: NSTemporaryDirectory(), projectRoot: nil,
-      runner: StubRunner(byExecutable: ["git": killed, "jj": killed]))
+      runner: StubRunner(byExecutable: ["git": killed]))
     XCTAssertEqual(
       interrupted, .interrupted, "an external kill is still not evidence of a non-repo")
   }
@@ -384,7 +338,7 @@ private final class GatedRunner: StatusCommandRunning, @unchecked Sendable {
   }
 }
 
-/// A canned `StatusCommandRunning` for the git→jj fallthrough tests: returns a per-executable result,
+/// A canned `StatusCommandRunning` for the listing tests: returns a per-executable result,
 /// or a command-not-found (127) for anything unlisted.
 private struct StubRunner: StatusCommandRunning {
   let byExecutable: [String: CommandResult]
@@ -394,38 +348,5 @@ private struct StubRunner: StatusCommandRunning {
   {
     byExecutable[executable]
       ?? CommandResult(stdout: "", stderr: "", exitCode: 127, timedOut: false)
-  }
-}
-
-/// Tracks peak concurrently-running sections, for `testListGatesJJBranchPerProjectRoot`.
-private actor ListConcurrencyRecorder {
-  private(set) var maxConcurrent = 0
-  private var running = 0
-
-  func enter() {
-    running += 1
-    maxConcurrent = max(maxConcurrent, running)
-  }
-
-  func exit() {
-    running -= 1
-  }
-}
-
-/// A `jj file list` stub that holds its slot briefly (to create a measurable overlap window if
-/// ungated) and fails any other command — isolates the test to the `.jj` branch of `list`.
-private struct DelayedJJRunner: StatusCommandRunning {
-  let recorder: ListConcurrencyRecorder
-
-  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
-    async -> CommandResult
-  {
-    guard executable == "jj" else {
-      return CommandResult(stdout: "", stderr: "not a repo", exitCode: 128, timedOut: false)
-    }
-    await recorder.enter()
-    try? await Task.sleep(nanoseconds: 50_000_000)
-    await recorder.exit()
-    return CommandResult(stdout: "a.txt\n", stderr: "", exitCode: 0, timedOut: false)
   }
 }

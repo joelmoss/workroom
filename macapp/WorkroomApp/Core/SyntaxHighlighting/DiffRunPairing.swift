@@ -11,7 +11,7 @@ struct DiffRunPair: Equatable, Sendable {
 /// Used by both `IntraLineDiff.emphasis` (character-level change tinting) and
 /// `UnifiedDiff.sideBySideRows` (the side-by-side diff layout), so they share one index-pairing rule.
 /// (They group runs slightly differently — emphasis pairs each deletion-run with the addition-run
-/// that immediately follows it, side-by-side buffers a run between context lines — but git/jj `--git`
+/// that immediately follows it, side-by-side buffers a run between context lines — but git's
 /// output always emits a block's deletions before its additions, so for real diffs they pair the same
 /// lines; only impossible `+x -a` interleavings could diverge.)
 enum DiffRunPairing {

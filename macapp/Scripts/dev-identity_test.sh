@@ -4,9 +4,9 @@
 # Run: sh macapp/Scripts/dev-identity_test.sh   (exits non-zero on any mismatch).
 #
 # Pins the two promises the script makes: the project's own checkout keeps the canonical
-# `com.developwithstyle.workroom.dev` (no suffix), and every workroom — a linked git worktree or a
-# secondary jj workspace — gets a suffix that is a valid bundle-id component, stable for its path
-# and distinct from every other checkout's.
+# `com.developwithstyle.workroom.dev` (no suffix), and every workroom — a linked git worktree — gets
+# a suffix that is a valid bundle-id component, stable for its path and distinct from every other
+# checkout's.
 set -u
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,9 +23,6 @@ checkout() {
   case "$2" in
     git-main) mkdir -p "$1/.git" ;;
     git-worktree) echo "gitdir: /repo/.git/worktrees/x" >"$1/.git" ;;
-    jj-main) mkdir -p "$1/.jj/repo" ;;
-    jj-colocated) mkdir -p "$1/.git" "$1/.jj/repo" ;;
-    jj-workspace) mkdir -p "$1/.jj" && echo "/repo/.jj/repo" >"$1/.jj/repo" ;;
     none) ;;
   esac
 }
@@ -66,17 +63,11 @@ expect_suffix() {
 
 checkout "$TMP/project" git-main
 expect_none "$TMP/project" "a git repository's main checkout"
-checkout "$TMP/jjproject" jj-main
-expect_none "$TMP/jjproject" "a jj repository's main workspace"
-checkout "$TMP/colocated" jj-colocated
-expect_none "$TMP/colocated" "a colocated jj+git main checkout"
 checkout "$TMP/unversioned" none
 expect_none "$TMP/unversioned" "a directory with no VCS metadata"
 
 checkout "$TMP/workrooms/brave-otter" git-worktree
 expect_suffix "$TMP/workrooms/brave-otter" "brave-otter" "a git worktree"
-checkout "$TMP/workrooms/quiet-fern" jj-workspace
-expect_suffix "$TMP/workrooms/quiet-fern" "quiet-fern" "a secondary jj workspace"
 
 # Sanitised into one lower-case component.
 checkout "$TMP/workrooms/Fix Login_Flow.v2" git-worktree

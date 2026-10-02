@@ -1,9 +1,9 @@
 import Foundation
 
-/// App-native VCS domain models. Both backends (jj via the Rust core, git via SwiftGitX) map their
-/// own types into THESE — the UI depends only on these, never on `WrVcs.*` or `SwiftGitX.*`. That
-/// keeps the UI decoupled from the FFI/library shapes and lets a backend change without touching
-/// views (the hybrid-foundation plan's "unify at the Swift model layer").
+/// App-native VCS domain models. Both readers (local git via SwiftGitX, remote git via wr-agent) map
+/// their own types into THESE — the UI depends only on these, never on `SwiftGitX.*` or the agent's
+/// wire DTOs. That keeps the UI decoupled from the library/wire shapes and lets a reader change
+/// without touching views.
 
 enum VCSChangeKind: Equatable, Sendable {
   case added, modified, deleted, renamed, copied, conflicted, other
@@ -18,8 +18,7 @@ struct VCSAuthor: Equatable, Hashable, Sendable {
 /// nothing to compare against (no `origin`) or the reachability read failed, so the UI renders NOTHING
 /// for it — a missing badge beats a wrong one.
 ///
-/// "Pushed" = reachable from a tip of `origin` (git `refs/remotes/origin/*`, jj tracked `@origin`
-/// bookmarks). Deliberately origin-scoped, not any-remote: a commit sitting on a backup remote or a
+/// "Pushed" = reachable from a tip of `origin` (`refs/remotes/origin/*`). Deliberately origin-scoped, not any-remote: a commit sitting on a backup remote or a
 /// fork isn't on the shared repo, which is what the badge claims. Deliberately not `@{u}` either —
 /// workrooms are `git worktree add -b` branches with no upstream, so the badge would never appear
 /// where it matters most.
@@ -57,12 +56,11 @@ struct VCSPushScope: Equatable, Sendable {
   }
 }
 
-/// One row of history. `commitID` is the stable identity (git SHA / jj commit-id) used for dedupe
-/// and diffing; `changeID` is jj-only (display). `refs` are jj bookmarks / git branch+tag names.
+/// One row of history. `commitID` is the stable identity (git SHA) used for dedupe and diffing.
+/// `refs` are git branch+tag names.
 struct VCSCommit: Equatable, Identifiable, Sendable {
   let commitID: String
   let shortID: String
-  let changeID: String?
   let summary: String
   /// The commit message below the summary line, trimmed. Empty when the message is a single line.
   let body: String
@@ -70,36 +68,12 @@ struct VCSCommit: Equatable, Identifiable, Sendable {
   let timestamp: Date
   let refs: [String]
   let parentIDs: [String]
-  let isWorkingCopy: Bool
-  /// jj-only: this commit's offset within its divergent set (the `/N` in `xl/0`). `nil` unless the
-  /// change ID is divergent. Set on both a divergent commit and each of its `divergentSiblings`.
-  var changeOffset: Int? = nil
-  /// jj-only: the OTHER visible commits sharing this commit's change ID — the divergent copies that
-  /// live off the `::@` history line. Empty unless divergent; never nested. Defaulted so non-jj /
-  /// test call sites needn't pass it.
-  var divergentSiblings: [VCSCommit] = []
   /// Whether this commit is on `origin` — see `VCSPushState`. Defaulted so the many existing call
   /// sites (fixtures, tests, the changeset paths) needn't pass it and read as `.unknown`.
   var pushState: VCSPushState = .unknown
-  /// jj-only: the repo's virtual **root commit** (`◆ root() 00000000` in `jj log`) — the all-zero-id
-  /// commit every jj history terminates in. It's a real row on the log page (`::@` includes it, so
-  /// `jj log` prints it), but it carries no author, description or changes, and is stamped at the
-  /// epoch — so `HistoryRootRow` renders it as `root()` rather than letting it read as a
-  /// description-less commit from 1970. Defaulted false: git has no such pseudo-commit.
-  var isRoot: Bool = false
   var id: String { commitID }
-  /// jj-only: true when this commit's change ID diverges — it resolves to more than one visible
-  /// commit, so `divergentSiblings` carries the other copies. Always false for git (no change ID).
-  var isDivergent: Bool { !divergentSiblings.isEmpty }
-  /// The `id/N` label jj shows for a divergent copy (e.g. `xl/2`) — change ID plus its `/N` offset.
-  /// `nil` without both. Used to label the sibling copies in the History pane's divergence expander.
-  var divergentLabel: String? {
-    guard let changeID, let changeOffset else { return nil }
-    return "\(changeID)/\(changeOffset)"
-  }
-  /// The single place both badge-suppression rules live: render only for a DEFINITE `.unpushed`, and
-  /// never for jj's working-copy `@` (a pending change, not a commit you'd push).
-  var showsUnpushedBadge: Bool { pushState == .unpushed && !isWorkingCopy }
+  /// The single place the badge rule lives: render only for a DEFINITE `.unpushed`.
+  var showsUnpushedBadge: Bool { pushState == .unpushed }
 }
 
 struct VCSHistoryPage: Equatable, Sendable {
@@ -111,14 +85,13 @@ struct VCSHistoryPage: Equatable, Sendable {
   var pushScope: VCSPushScope? = nil
 }
 
-/// The kind of a repo's current ref (the sidebar root-row label). `ancestor` is jj-only (the nearest
-/// bookmark above a bookmark-less `@`); `detached` is git-only (HEAD on a raw commit, no branch).
+/// The kind of a repo's current ref (the sidebar root-row label). `detached` is HEAD on a raw
+/// commit, no branch.
 enum VCSRefKind: Equatable, Sendable {
-  case branch, ancestor, detached, none
+  case branch, detached, none
 }
 
-/// A repo's current ref: jj's `@` bookmark (or nearest ancestor bookmark), or git's current branch
-/// (or a short SHA when detached). `name` is nil only for `.none`.
+/// A repo's current ref: git's current branch (or a short SHA when detached). `name` is nil only for `.none`.
 struct VCSRef: Equatable, Sendable {
   let name: String?
   let kind: VCSRefKind
@@ -161,9 +134,9 @@ enum VCSError: Error, Equatable, Sendable {
   case io(String)
 }
 
-/// What kind of repo a path is — the backend-selection discriminant. Colocated jj+git prefers jj.
+/// What kind of repo a path is — the backend-selection discriminant.
 enum VCSRepoKind: Equatable, Sendable {
-  case plainGit, jjColocated, jjNonColocated
+  case plainGit
   case unsupported(String)
 }
 
@@ -171,17 +144,13 @@ enum VCSRepoKind: Equatable, Sendable {
 
 /// How far a local ref has diverged from the remote ref its push/pull actually acts on.
 ///
-/// `comparedTo` is the short form the backend itself prints — git `origin/main`, jj `main@origin` —
-/// because the toolbar's tooltip quotes it verbatim (the `VCSPushScope.unpushedHelp` rule: name the
+/// `comparedTo` is the short form git itself prints — `origin/main` — because the toolbar's tooltip quotes it verbatim (the `VCSPushScope.unpushedHelp` rule: name the
 /// ref, don't make the user guess what "behind" is behind).
 ///
 /// Counts are always from the LOCAL ref's point of view: `ahead` = local commits the remote doesn't
-/// have (what Push sends), `behind` = remote commits we don't have (what Pull brings). **jj states its
-/// own counts from the REMOTE ref's perspective and they are swapped on ingest** — see
-/// `CLIVCSWriter.parseJJBookmarks`.
+/// have (what Push sends), `behind` = remote commits we don't have (what Pull brings).
 ///
-/// `nil` counts mean "unanswerable", never zero: an untracked jj remote bookmark, or a git branch with
-/// no counterpart under `refs/remotes/`. A missing badge beats a wrong one (same rule as
+/// `nil` counts mean "unanswerable", never zero: a branch with no counterpart under `refs/remotes/`. A missing badge beats a wrong one (same rule as
 /// `VCSPushState.unknown`).
 ///
 /// Counts come from an explicit `git rev-list --left-right --count`, **not** from git's
@@ -206,11 +175,10 @@ struct VCSTracking: Equatable, Sendable {
 /// "can't tell" must never render as "no" (the `VCSPushState.unknown` rule).
 enum VCSLastFetch: Equatable, Sendable {
   case at(Date)
-  /// No fetch has ever been recorded: git has no `FETCH_HEAD` (`clone`/`init` never write one), or
-  /// jj's op log holds no fetch op within the scanned window.
+  /// No fetch has ever been recorded: git has no `FETCH_HEAD` (`clone`/`init` never write one).
   case never
   /// Unanswerable — the git dir couldn't be located, `FETCH_HEAD`'s attributes were unreadable, the
-  /// user has `fetch.writeFetchHEAD=false`, or the jj op-log read failed. Renders NO timestamp, and
+  /// user has `fetch.writeFetchHEAD=false`. Renders NO timestamp, and
   /// specifically never the word "never".
   case unknown
 }
@@ -218,16 +186,14 @@ enum VCSLastFetch: Equatable, Sendable {
 /// Everything the VCS inspector's toolbar renders, read as ONE coherent snapshot so the branch name
 /// and the counts beside it can't come from two different reads of a moving repo.
 struct VCSRemoteState: Equatable, Sendable {
-  /// The current branch/bookmark, straight from `VCSProviding.currentRef` — the app's existing
-  /// canonical answer, including jj `.ancestor` (an unbookmarked `@`) and git `.detached`.
+  /// The current branch, straight from `VCSProviding.currentRef` — the app's existing canonical
+  /// answer, including `.detached`.
   let current: VCSRef
   /// Divergence for `current`. `nil` ⇒ nothing to compare against (no counterpart on the remote,
-  /// detached HEAD, untracked bookmark) ⇒ no counts render.
+  /// detached HEAD) ⇒ no counts render.
   let tracking: VCSTracking?
   /// Configured remote names, first-listed first. Empty ⇒ no remote ⇒ every action is disabled.
-  /// Derived from the ref list (git `refs/remotes/<remote>/*`, jj `<name>@<remote>`), so it costs no
-  /// extra process — and deliberately NOT from `jj git remote list`, which takes the repo's
-  /// git import/export lock even to read.
+  /// Derived from the ref list (`refs/remotes/<remote>/*`), so it costs no extra process.
   let remotes: [String]
   /// The remote fetch/push/pull act on: `origin` when present, else the first remote, else `nil`.
   /// Interpolated into every UI string — the copy must never hardcode "origin", because

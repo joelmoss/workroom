@@ -101,8 +101,8 @@ final class ModalShortcutRoutingTests: XCTestCase {
   /// One assertion per disjunct, so dropping a term in a later edit fails here rather than silently
   /// leaving menu shortcuts live behind that one presentation.
   func testEveryPresentationKindIsCountedIndependently() {
-    let project = Project(path: "/p", vcs: "jj", workrooms: [])
-    let workroom = Workroom(name: "w", path: "/p/w", vcsName: "jj", warnings: [])
+    let project = Project(path: "/p", vcs: "git", workrooms: [])
+    let workroom = Workroom(name: "w", path: "/p/w", vcsName: "git", warnings: [])
     let target = TerminalTarget(
       id: TerminalTarget.rootID(project: "/p"), title: "p", path: "/p", isMissing: false)
 

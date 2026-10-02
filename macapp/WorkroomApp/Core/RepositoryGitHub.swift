@@ -28,11 +28,7 @@ struct RepositoryGitHub: Sendable {
     self.resolver = resolver
     supplied = repository
     path = context.location.path
-    if context.backend == .jj {
-      sharedPath = try context.requireOwnership().path
-    } else {
-      sharedPath = context.sharedLocation?.path ?? path
-    }
+    sharedPath = context.sharedLocation?.path ?? path
   }
 
   private var isLocal: Bool { context.location.host == .local }
@@ -43,7 +39,7 @@ struct RepositoryGitHub: Sendable {
   /// and finding it is a network round trip (`gh repo view`). One shared lookup keeps that at one.
   /// A supplied identity needs no lookup at all.
   ///
-  /// The lookup is read from the SHARED root, for git and jj alike, so CI, PR, checks and PR writes
+  /// The lookup is read from the SHARED root, so CI, PR, checks and PR writes
   /// all agree on one repository for a workroom. That assumes a project's git worktrees share remote
   /// config (they do, unless `extensions.worktreeConfig` gives one a remote of its own).
   func repository() async -> GitHubRepositoryResolution {
@@ -63,8 +59,7 @@ struct RepositoryGitHub: Sendable {
     guard isLocal else { return .absent }
     // The branch tip is a cheap local read; do it before the network lookup, as before.
     guard
-      let commit = await resolver.localCICommit(
-        path: path, vcs: context.backend.rawValue, branch: branch)
+      let commit = await resolver.localCICommit(path: path, branch: branch)
     else { return .absent }
     let found: GitHubRepositoryResolution
     if let resolution { found = resolution } else { found = await repository() }
@@ -80,8 +75,7 @@ struct RepositoryGitHub: Sendable {
   func pullRequest(branch: String?) async -> PRResolution {
     let resolved: String?
     if isLocal {
-      resolved = await resolver.localBranch(
-        path: path, vcs: context.backend.rawValue, branch: branch)
+      resolved = await resolver.localBranch(path: path, branch: branch)
     } else {
       resolved = branch
     }

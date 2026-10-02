@@ -3,8 +3,8 @@ import XCTest
 @testable import Workroom
 
 /// `withTimeout` had zero test coverage before this file, despite being the timeout seam every VCS
-/// read in the app relies on (`WorkroomStatusResolver`, `BranchResolver`, `JJSnapshotGate`'s own
-/// internal use). Covers the pre-existing success/deadline races plus the cancellation-propagation
+/// read in the app relies on (`WorkroomStatusResolver`, `BranchResolver`, `RepositoryWriteGate`'s
+/// own internal use). Covers the pre-existing success/deadline races plus the cancellation-propagation
 /// fix (VCS-foundation eng-review, `/review` follow-up): `withTimeout` used to only race its own
 /// internal deadline against the operation, never observing the CALLING task being cancelled from
 /// outside, so a superseded caller (e.g. a new status sweep replacing an old one) waited out the

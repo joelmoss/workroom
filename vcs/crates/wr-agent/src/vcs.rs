@@ -6,8 +6,6 @@ use crate::session::SharedWriter;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, RawFd};
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -57,8 +55,9 @@ const MAX_HISTORY_LIMIT: usize = 10000;
 /// The exec service's wire version, reported in `capabilities` so a client can tell a capable agent
 /// from one that predates the service. A version, not a count — see the `capabilities` reply.
 ///
-/// 3 added what a REMOTE host's writes need (#229): `host_environment`, `barrier_root`, and the
-/// `stat` request. 2 added chunked request reassembly; 1 accepted only single-envelope requests.
+/// 3 added what a REMOTE host's writes need (#229): `host_environment`, `barrier_root` (since
+/// ignored), and the `stat` request. 2 added chunked request reassembly; 1 accepted only
+/// single-envelope requests.
 const EXEC_SERVICE_VERSION: u32 = 3;
 /// `CLIVCSWriter.commitTimeout` (Swift) is 600s, the longest legitimate write timeout. Bounds a
 /// hostile/buggy request from wedging an exec thread indefinitely; the 32-slot `ACTIVE` permit
@@ -142,10 +141,9 @@ impl Drop for Quiet {
     }
 }
 
-/// Whether any dispatched VCS or File request — including a JJ snapshot that owns the working-copy
-/// lock and rewrites `@` in-process — is still running. Consulted by `serve`'s idle-exit check: a hard
-/// process exit while this is nonzero would abort a repo-level transaction mid-flight, not just
-/// drop a socket.
+/// Whether any dispatched VCS or File request is still running. Consulted by `serve`'s idle-exit
+/// check: a hard process exit while this is nonzero would cut a repository command off mid-flight,
+/// not just drop a socket.
 pub fn is_busy() -> bool {
     ACTIVE.load(Ordering::Acquire) > 0
 }
@@ -156,8 +154,15 @@ pub struct Request {
     version: u32,
     #[serde(default)]
     root: Option<String>,
-    #[serde(default)]
-    shared_root: Option<String>,
+    /// Accepted and ignored: the app still sends a repository's shared root, which only the
+    /// removed jj backend read.
+    ///
+    /// ponytail: kept only so `deny_unknown_fields` does not reject the app's request. Prune
+    /// once a protocol gate or a stable hand-off covers app/agent skew (see TODOS.md).
+    #[serde(default, rename = "shared_root")]
+    _shared_root: Option<String>,
+    /// Must still be present on a read, as before. Only `git` is a backend now: a request naming
+    /// `jj` fails to deserialize and is answered with the per-request error reply.
     #[serde(default)]
     backend: Option<Backend>,
     method: String,
@@ -171,18 +176,17 @@ pub struct Request {
     base: Option<String>,
 }
 
-#[derive(Clone, Copy, Deserialize, PartialEq)]
+#[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Backend {
     Git,
-    Jj,
 }
 
 /// A write command, run to completion and reported back raw — argv, cwd, stdin and timeout in;
 /// exit code, stdout, stderr, `timed_out`, `signaled` out. Every request-building, output-parsing
 /// and failure-classification decision (`CLIVCSWriter.classify`/`.classifyCommit`, the pathspec
 /// and refspec injection defenses, the retry/abort taxonomy) stays in Swift and sees exactly the
-/// bytes it would see from a local `git`/`jj` — this is deliberately NOT a reimplementation of
+/// bytes it would see from a local `git` — this is deliberately NOT a reimplementation of
 /// commit/push/pull semantics.
 ///
 /// One untouched classifier is necessary for criterion 2 ("typed failures... match pre-agent
@@ -195,28 +199,14 @@ enum Backend {
 /// (`VCSSyncPresenter.retryAction`): a lost push or pull offers `.fetch`, which resolves the doubt,
 /// a lost fetch or rebase abort offers itself, and a lost commit offers no action at all.
 ///
-/// **Never acquires `SnapshotLock`.** A caller that needs the JJ working-copy barrier for a
-/// mutating command already holds it — `CLIVCSWriter`'s `gate: JJSnapshotGate` takes the same
-/// `<shared>/.jj/workroom-vcs.lock` flock (`JJProcessBarrier`, shared by name with `SnapshotLock`
-/// above) for the whole gated operation before any exec request goes out. Taking it again here
-/// would self-deadlock the same actor for 30s and then fail as `LockContention`.
-///
-/// That argument holds only while the CLIENT's lock outlives this child, which is why
-/// `JJSnapshotGate.run` shields the whole gated operation from task cancellation once it holds the
-/// flock: unshielded, a cancelled commit returned at once and released it while this `jj commit`
-/// kept running, letting another instance or a read-side snapshot enter the supposedly protected
-/// operation. Known residual: if the AGENT dies mid-write the gate is released with the child
-/// potentially still alive. Native has the same shape on app death. Closing it needs an
-/// operation-scoped lock here with release-on-disconnect, which is a protocol change, not a patch.
-///
 /// **The child's environment is the request's `env`, wholesale** (`env_clear` in `run_exec`), never
 /// this daemon's own. wr-agent is "negotiated with, never replaced", so its inherited environment is
 /// a snapshot of whichever app launch first spawned it; an agent-routed commit was picking up that
 /// snapshot's `GIT_AUTHOR_*`/`GIT_CONFIG_GLOBAL`/`HOME` and authoring under a stale identity. A key
-/// allowlist could not fix it — what git and jj read for identity, config, signing and hooks is
+/// allowlist could not fix it — what git reads for identity, config, signing and hooks is
 /// open-ended — so `StatusCommandRunner.childEnvironment` builds one map for both paths.
 ///
-/// **`args` is unvalidated and the `git`/`jj` `executable` enum is NOT a containment boundary.**
+/// **`args` is unvalidated and the `git` `executable` enum is NOT a containment boundary.**
 /// `git` with arbitrary argv is arbitrary code execution (`-c alias.x='!…'`, `-c core.hooksPath=…`,
 /// `--exec-path`), the request's `PATH` decides which binary resolves, and `GIT_SSH_COMMAND` and the
 /// config paths in `env` are further routes. That is acceptable only because the sole transport
@@ -248,17 +238,13 @@ struct ExecRequest {
     /// its `SSH_AUTH_SOCK` and git identity are the user's Mac credentials.
     #[serde(default)]
     host_environment: bool,
-    /// The shared root of a jj repository whose working-copy barrier this command must run under,
-    /// set by the app for a REMOTE host only. Locally the app holds that barrier itself
-    /// (`JJSnapshotGate`) for the whole operation, which is why exec never takes it; a Mac cannot
-    /// flock a file on another host, so there the agent takes it for each command instead.
+    /// Accepted and ignored: an older app names the shared root of a jj repository whose
+    /// working-copy barrier the agent should hold across the command. There is no barrier now.
     ///
-    /// ponytail: per command, where the local gate holds it for a whole operation (a commit's
-    /// several commands under one acquisition). A snapshot can land between two commands of one
-    /// remote write. Upgrade path: an operation-scoped barrier the client acquires and releases,
-    /// held by this connection and dropped when it goes.
-    #[serde(default)]
-    barrier_root: Option<String>,
+    /// ponytail: kept only so `deny_unknown_fields` does not reject an older app's request. Prune
+    /// once a protocol gate or a stable hand-off covers app/agent skew (see TODOS.md).
+    #[serde(default, rename = "barrier_root")]
+    _barrier_root: Option<String>,
 }
 
 /// The child environment for a remote host: this agent's own, which is the host's, with the file
@@ -380,13 +366,11 @@ fn stat(request: StatRequest) -> model::Result<Value> {
 #[serde(rename_all = "snake_case")]
 enum Executable {
     Git,
-    Jj,
 }
 impl Executable {
     fn as_str(self) -> &'static str {
         match self {
             Executable::Git => "git",
-            Executable::Jj => "jj",
         }
     }
 }
@@ -417,103 +401,6 @@ pub(crate) fn relative(value: &str) -> model::Result<&str> {
         return Err(io("invalid relative file path"));
     }
     Ok(value)
-}
-
-/// This lock belongs to actual native work, not to a socket or the caller waiting for its reply.
-/// Native app writers take the same cross-process barrier before starting a JJ operation.
-pub(crate) struct SnapshotLock(std::fs::File);
-impl SnapshotLock {
-    /// The locked descriptor, for a child that must keep the barrier alive past this process.
-    pub(crate) fn fd(&self) -> RawFd {
-        self.0.as_raw_fd()
-    }
-
-    pub(crate) fn acquire(root: &Path, shared: Option<&str>) -> model::Result<Self> {
-        let shared = absolute(shared.ok_or_else(|| {
-            VcsError::UnsupportedRepo("registration required for JJ snapshot".into())
-        })?)?;
-        fn repository(root: &Path) -> model::Result<PathBuf> {
-            let path = root.join(".jj/repo");
-            if path.is_dir() {
-                path.canonicalize().map_err(io)
-            } else {
-                let target = std::fs::read_to_string(&path).map_err(io)?;
-                root.join(".jj")
-                    .join(target.trim())
-                    .canonicalize()
-                    .map_err(io)
-            }
-        }
-        if repository(root)? != repository(&shared)? {
-            return Err(io("working and shared JJ repository differ"));
-        }
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(shared.join(".jj/workroom-vcs.lock"))
-            .map_err(io)?;
-        let started = std::time::Instant::now();
-        loop {
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                return Ok(Self(file));
-            }
-            let error = std::io::Error::last_os_error();
-            if error.kind() != std::io::ErrorKind::WouldBlock {
-                return Err(io(error));
-            }
-            if started.elapsed() > std::time::Duration::from_secs(30) {
-                return Err(VcsError::LockContention);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    }
-}
-// Close, never LOCK_UN: a snapshotting CLI child may share the locked file description.
-
-fn jj(root: &Path, args: &[&str]) -> model::Result<String> {
-    String::from_utf8(wr_vcs_git::diff::run(root, "jj", args)?).map_err(io)
-}
-fn parent(root: &Path, rev: &str) -> model::Result<String> {
-    let text = jj(
-        root,
-        &[
-            "log",
-            "--ignore-working-copy",
-            "--no-graph",
-            "--color",
-            "never",
-            "-r",
-            rev,
-            "-T",
-            "parents.map(|c| c.commit_id()).join(\" \")",
-        ],
-    )?;
-    text.split_whitespace()
-        .next()
-        .map(str::to_owned)
-        .ok_or_else(|| VcsError::NotFound("parent".into()))
-}
-fn content(root: &Path, rev: &str, path: &str) -> model::Result<Value> {
-    // Preserve the existing best-effort highlighting semantics. Transport/service failures are
-    // handled outside this operation and cannot become nil content.
-    let value = jj(
-        root,
-        &[
-            "file",
-            "show",
-            "--ignore-working-copy",
-            "-r",
-            rev,
-            "--",
-            path,
-        ],
-    )
-    .ok()
-    .filter(|s| !s.is_empty() && s.len() <= 2 * 1024 * 1024 && !s.contains('\0'));
-    Ok(json!(value))
 }
 
 pub fn execute(bytes: &[u8]) -> Value {
@@ -649,20 +536,9 @@ fn run_exec(
     stdin: Option<&[u8]>,
     env: &[(&str, &str)],
 ) -> model::Result<Captured> {
-    run_exec_with(dir, executable, args, timeout, stdin, env, None)
+    run_exec_with(dir, executable, args, timeout, stdin, env)
 }
 
-/// `run_exec`, optionally keeping `barrier` open in the child.
-///
-/// **Why the barrier must ride into the child.** `SnapshotLock`'s descriptor is CLOEXEC (Rust's
-/// default), so without this the flock lives exactly as long as the AGENT does. Agent death then
-/// frees the lock while a snapshotting `jj` child is still rewriting `@` — and the app's native
-/// writers, which take the same flock, walk straight into it. Clearing CLOEXEC in the child only
-/// (never the parent, where an exec of anything else would leak it) makes the child a co-owner of
-/// the open file description, so the lock is held until the last of them exits. It is the same
-/// mechanism as `wr_vcs_git::diff::run_with_barrier`.
-///
-/// Exec commands from the client still never pass one: the client holds its own lock across those.
 pub(crate) fn run_exec_with(
     dir: &Path,
     executable: &str,
@@ -670,14 +546,13 @@ pub(crate) fn run_exec_with(
     timeout: Duration,
     stdin: Option<&[u8]>,
     env: &[(&str, &str)],
-    barrier: Option<RawFd>,
 ) -> model::Result<Captured> {
     // `/usr/bin/env <executable>`, byte-for-byte what native does
     // (`StatusCommandRunner.run`: `proc.executableURL = /usr/bin/env`). Not a style choice — it is
     // what makes a MISSING tool exit 127 (`env` ran and searched PATH) instead of failing to spawn.
     // Spawning the program directly made that an Io error, which the client reported as
     // `launchFailed`, the value whose own doc reserves it for "nothing ran" and warns it would
-    // "misdiagnose a deleted workroom as a missing git/jj/gh". Mapping `ErrorKind::NotFound` to 127
+    // "misdiagnose a deleted workroom as a missing git/gh". Mapping `ErrorKind::NotFound` to 127
     // by hand could not fix it either: `posix_spawn` returns ENOENT for a missing cwd AND a missing
     // executable, so the two stay indistinguishable. Letting `env` do the lookup makes 127/126 its
     // real exit codes, and narrows a spawn failure here to the cases that genuinely never ran — a
@@ -700,23 +575,12 @@ pub(crate) fn run_exec_with(
         // own. wr-agent is "negotiated with, never replaced", so its inherited environment is a
         // snapshot of whichever app launch first spawned it — an agent-routed commit was picking up
         // that snapshot's `GIT_AUTHOR_*`/`GIT_CONFIG_GLOBAL`/`HOME` and authoring under a stale
-        // identity. A key allowlist could not fix that: what git and jj read for identity, config,
+        // identity. A key allowlist could not fix that: what git reads for identity, config,
         // signing and hooks is open-ended. That one function also applies this codebase's subprocess
         // baseline (`GIT_OPTIONAL_LOCKS`, `GIT_TERMINAL_PROMPT`, `LC_ALL=C`, and the removal of
         // `GIT_EXTERNAL_DIFF` and the `GIT_DIR` family) so both paths get it from one place.
         .env_clear()
         .envs(env.iter().copied());
-    if let Some(fd) = barrier {
-        // SAFETY: only `fcntl`, which is async-signal-safe, runs between fork and exec.
-        unsafe {
-            command.pre_exec(move || {
-                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-    }
     let mut child = command.spawn().map_err(io)?;
 
     if let Some(payload) = stdin {
@@ -795,7 +659,7 @@ pub(crate) fn run_exec_with(
     //
     // 1. Timeout escalation. The wait loop above already SIGKILLs when the LEADER outlives the
     //    grace; this covers the leader exiting promptly on SIGTERM while group members do not. The
-    //    remaining grace is honoured rather than skipped — `git`/`jj` can exit on SIGTERM while a
+    //    remaining grace is honoured rather than skipped — `git` can exit on SIGTERM while a
     //    hook is still cleaning up, and cutting that short can leave hook-owned locks behind
     //    (`CLIVCSWriter.commitTimeout`: "Killing a commit is categorically more dangerous than
     //    killing a fetch"). Never on a normal exit: killing the group because a reader thread has
@@ -901,7 +765,7 @@ pub(crate) fn escaped_len(text: &str) -> usize {
 /// The longest prefix of `text` whose escaped form fits `budget`, cut on a character boundary.
 ///
 /// Head rather than tail, matching `drain_capped` and native's `StatusCommandRunner.readCapped`:
-/// git and jj put the line that classifies a failure first, and a tail-truncated stderr would lose
+/// git puts the line that classifies a failure first, and a tail-truncated stderr would lose
 /// it. Silent, also matching those two — the markers `CLIVCSWriter.classify` matches live in this
 /// text, so injecting a "truncated" notice here could only create a false positive.
 fn truncate_to_escaped_budget(text: &str, budget: usize) -> &str {
@@ -967,7 +831,7 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
         stdin,
         env,
         host_environment: from_host,
-        barrier_root,
+        _barrier_root: _,
     } = request;
     if version != 1 {
         return Err(VcsError::BackendVersion(
@@ -976,19 +840,6 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
     }
     let dir = absolute(&dir)?;
     let timeout = exec_timeout(timeout_ms);
-    // Held until the child exits, and handed to it, so an agent that dies mid-command leaves the
-    // barrier held by the child rather than released under it. No `.jj` there, no barrier: a git
-    // repository has none to take, as `JJProcessBarrier.acquire` decides in the app.
-    //
-    // Nor for a command that cannot snapshot (`--ignore-working-copy`): there is nothing to protect,
-    // and a read waiting out a long push's barrier would time out as a failure the toolbar shows.
-    let snapshots = !args.iter().any(|arg| arg == "--ignore-working-copy");
-    let barrier = match barrier_root.as_deref() {
-        Some(shared) if snapshots && absolute(shared)?.join(".jj").exists() => {
-            Some(SnapshotLock::acquire(&dir, Some(shared))?)
-        }
-        _ => None,
-    };
     let env = if from_host {
         host_environment(std::env::vars_os(), env)
     } else {
@@ -1003,9 +854,7 @@ fn exec(request: ExecRequest) -> model::Result<Value> {
         timeout,
         stdin.as_deref(),
         &env,
-        barrier.as_ref().map(SnapshotLock::fd),
     )?;
-    drop(barrier);
     let stdout = String::from_utf8_lossy(&captured.stdout);
     let stderr = String::from_utf8_lossy(&captured.stderr);
     // Truncate HERE rather than letting `send` refuse the reply. `send`'s blanket
@@ -1063,39 +912,17 @@ fn read(request: Request) -> model::Result<Value> {
         Some("parent") => false,
         _ => return Err(io("invalid working base")),
     };
-    let _lock = if backend == Backend::Jj
-        && (request.method == "working_status"
-            || (request.method == "working_file_diff" && working))
-    {
-        Some(SnapshotLock::acquire(
-            &root,
-            request.shared_root.as_deref(),
-        )?)
-    } else {
-        None
-    };
     let value = match (backend, request.method.as_str()) {
         (Backend::Git, "log") => serde_json::to_value(wr_vcs_git::log_page(
-            &root,
-            request.limit.unwrap_or(100).min(MAX_HISTORY_LIMIT),
-        )?),
-        (Backend::Jj, "log") => serde_json::to_value(wr_vcs_core::log_page(
             &root,
             request.limit.unwrap_or(100).min(MAX_HISTORY_LIMIT),
         )?),
         (Backend::Git, "changeset") => {
             serde_json::to_value(wr_vcs_git::changeset(&root, &param(rev)?)?)
         }
-        (Backend::Jj, "changeset") => {
-            serde_json::to_value(wr_vcs_core::changeset(&root, &param(rev)?)?)
-        }
         (Backend::Git, "current_ref") => serde_json::to_value(wr_vcs_git::current_ref(&root)?),
-        (Backend::Jj, "current_ref") => serde_json::to_value(wr_vcs_core::current_ref(&root)?),
         (Backend::Git, "working_status") => {
             serde_json::to_value(wr_vcs_git::diff::working_status(&root)?)
-        }
-        (Backend::Jj, "working_status") => {
-            serde_json::to_value(wr_vcs_core::working_status(&root)?)
         }
         (Backend::Git, "file_diff") => {
             let change = wr_vcs_git::changeset(&root, &param(rev)?)?;
@@ -1120,37 +947,6 @@ fn read(request: Request) -> model::Result<Value> {
         (Backend::Git, "working_base_file_content") if working => serde_json::to_value(
             wr_vcs_git::file_content(&root, "HEAD", &param(path)?, false)?,
         ),
-        (Backend::Jj, "file_diff" | "working_file_diff") => {
-            let revision = if request.method == "file_diff" {
-                param(rev)?
-            } else if working {
-                "@".into()
-            } else {
-                "@-".into()
-            };
-            let from = parent(&root, &revision)?;
-            let path = param(path)?;
-            let mut args = vec![
-                "diff", "--git", "--color", "never", "--from", &from, "--to", &revision,
-            ];
-            if request.method == "file_diff" || !working {
-                args.push("--ignore-working-copy");
-            }
-            args.extend(["--", &path]);
-            let bytes = if let Some(lock) = &_lock {
-                wr_vcs_git::diff::run_with_barrier(&root, "jj", &args, lock.0.as_raw_fd())?
-            } else {
-                wr_vcs_git::diff::run(&root, "jj", &args)?
-            };
-            serde_json::to_value(String::from_utf8(bytes).map_err(io)?)
-        }
-        (Backend::Jj, "file_content") => return content(&root, &param(rev)?, &param(path)?),
-        (Backend::Jj, "commit_parent_file_content") => {
-            return content(&root, &parent(&root, &param(rev)?)?, &param(path)?)
-        }
-        (Backend::Jj, "working_base_file_content") => {
-            return content(&root, if working { "@-" } else { "@--" }, &param(path)?)
-        }
         _ => return Err(VcsError::UnsupportedRepo("unsupported VCS read".into())),
     };
     value.map_err(io)
@@ -1330,86 +1126,13 @@ mod tests {
                 .get("error")
                 .is_some());
         }
-        let request = json!({"version":1,"method":"working_status","backend":"jj","root":"/definitely-absent"});
-        assert!(
-            execute(&serde_json::to_vec(&request).unwrap())["error"]["UnsupportedRepo"]
-                .as_str()
-                .unwrap()
-                .contains("registration required")
-        );
-    }
-
-    /// Whether another open of the lock file can take the flock within `within`.
-    ///
-    /// Polled, not tried once: any test in this binary that spawns a process forks the whole fd
-    /// table, CLOEXEC descriptors included, and holds it until that child execs. A child forked
-    /// while the lock was held keeps its open file description — and so the flock — for those
-    /// microseconds after the parent drops it (#224: measured 4 in 3000 back-to-back release checks
-    /// with a concurrent spawner, 0 in 3000 without). Keep `within` well under any window in which
-    /// a REAL holder would still hold it, so a poll cannot hide one.
-    fn lock_is_free(lock_file: &Path, within: Duration) -> bool {
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(lock_file)
-            .unwrap();
-        let deadline = std::time::Instant::now() + within;
-        loop {
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                return true;
-            }
-            if std::time::Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    /// Run `sleep 1` through `run_exec_with` under `barrier_of(lock)`, drop the parent's lock while
-    /// the child is alive, and report whether the lock was free at that moment and after it exited.
-    fn lock_state_around_a_child(name: &str, barrier: bool) -> (bool, bool) {
-        let root =
-            std::env::temp_dir().join(format!("wr-vcs-barrier-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(root.join(".jj/repo")).unwrap();
-        let lock = SnapshotLock::acquire(&root, root.to_str()).unwrap();
-        let fd = lock.fd();
-        let child_root = root.clone();
-        let runner = std::thread::spawn(move || {
-            run_exec_with(
-                &child_root,
-                "sh",
-                &["-c".into(), "sleep 1".into()],
-                Duration::from_secs(10),
-                None,
-                &[("PATH", "/usr/bin:/bin")],
-                barrier.then_some(fd),
-            )
-        });
-        // The child is running by now; the parent's descriptor is the only other holder.
-        std::thread::sleep(Duration::from_millis(400));
-        drop(lock);
-        // 200 ms of polling ends ~600 ms into the child's 1 s sleep: a child that really holds
-        // the lock still does, so the barrier case cannot read as free.
-        let free_while_running = lock_is_free(
-            &root.join(".jj/workroom-vcs.lock"),
-            Duration::from_millis(200),
-        );
-        runner.join().unwrap().unwrap();
-        let free_after = lock_is_free(&root.join(".jj/workroom-vcs.lock"), Duration::from_secs(1));
-        std::fs::remove_dir_all(root).unwrap();
-        (free_while_running, free_after)
-    }
-
-    #[test]
-    fn the_barrier_fd_keeps_the_jj_lock_held_by_the_child_until_it_exits() {
-        // The agent dying is `drop(lock)` here: the parent's descriptor closes while the child lives.
-        assert_eq!(lock_state_around_a_child("held", true), (false, true));
-    }
-
-    /// The negative control: without the barrier the same sequence frees the lock while the child
-    /// still runs, which is the hole (agent death admitting a native writer mid-snapshot).
-    #[test]
-    fn without_the_barrier_the_lock_dies_with_the_parents_descriptor() {
-        assert_eq!(lock_state_around_a_child("control", false), (true, true));
+        // The jj backend is gone: naming it fails to parse and is answered per request, not by
+        // special handling.
+        let request =
+            json!({"version":1,"method":"log","backend":"jj","root":"/definitely-absent"});
+        assert!(execute(&serde_json::to_vec(&request).unwrap())
+            .get("error")
+            .is_some());
     }
 
     #[test]
@@ -1425,11 +1148,19 @@ mod tests {
         assert!(flag.load(Ordering::Acquire));
     }
 
+    /// A VCS request that is slow in flight must block neither control frames nor disconnect, and
+    /// must keep `is_busy()` true until the work itself ends. The request is a real `git` exec that
+    /// a shell alias holds until the test releases it (capped, so a failed test cannot leave it
+    /// running for long).
     #[test]
-    fn a_blocked_snapshot_does_not_block_control_or_disconnect() {
-        let root = std::env::temp_dir().join(format!("wr-vcs-lock-test-{}", std::process::id()));
-        std::fs::create_dir_all(root.join(".jj/repo")).unwrap();
-        let held = SnapshotLock::acquire(&root, root.to_str()).unwrap();
+    fn a_slow_vcs_request_does_not_block_control_or_disconnect() {
+        let root = git_repo("slow-request");
+        let release = std::env::temp_dir().join(format!("wr-vcs-release-{}", std::process::id()));
+        let _ = std::fs::remove_file(&release);
+        let hold = format!(
+            "!i=0; while [ ! -e {} ] && [ $i -lt 400 ]; do sleep 0.02; i=$((i+1)); done",
+            release.display()
+        );
         let (mut client, server) = UnixStream::pair().unwrap();
         client
             .set_read_timeout(Some(std::time::Duration::from_secs(2)))
@@ -1444,11 +1175,9 @@ mod tests {
             client.read_exact(&mut byte).unwrap();
             hello.push(byte[0]);
         }
-        let request = json!({"version":1,"method":"working_status","backend":"jj","root":root,"shared_root":root});
+        let request = exec_request(&root, "git", &["-c", &format!("alias.hold={hold}"), "hold"]);
         client
-            .write_all(
-                &Envelope::new(Service::Vcs, 7, serde_json::to_vec(&request).unwrap()).encode(),
-            )
+            .write_all(&Envelope::new(Service::Vcs, 7, request).encode())
             .unwrap();
         client
             .write_all(
@@ -1471,15 +1200,19 @@ mod tests {
                 break;
             }
         }
+        // The control reply arrived while the exec is still held, and the daemon counts it as work.
+        assert!(is_busy());
         drop(client);
         worker.join().unwrap().unwrap();
-        drop(held);
-        // Worker may be finishing the deliberately invalid repository read; keep its fixture
-        // until the global permit count falls (the other tests in this module do no dispatch).
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while ACTIVE.load(Ordering::Acquire) != 0 && std::time::Instant::now() < deadline {
+        // Disconnect returned with the request still running; it ends only once released.
+        assert!(is_busy());
+        std::fs::write(&release, b"").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while is_busy() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        assert!(!is_busy());
+        let _ = std::fs::remove_file(&release);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1558,14 +1291,17 @@ mod tests {
     }
 
     #[test]
-    fn exec_rejects_an_executable_outside_the_git_jj_allowlist() {
+    fn exec_rejects_an_executable_outside_the_git_allowlist() {
         let root = git_repo("disallowed");
-        let request = json!({
-            "version": 1, "kind": "exec", "executable": "sh", "args": ["-c", "echo hi"],
-            "dir": root.to_str().unwrap(), "timeout_ms": 1000,
-        });
-        let reply = execute(&serde_json::to_vec(&request).unwrap());
-        assert!(reply.get("error").is_some());
+        // `jj` was allowed before its removal; an older app naming it now gets an error reply.
+        for executable in ["sh", "jj"] {
+            let request = json!({
+                "version": 1, "kind": "exec", "executable": executable, "args": ["--version"],
+                "dir": root.to_str().unwrap(), "timeout_ms": 1000,
+            });
+            let reply = execute(&serde_json::to_vec(&request).unwrap());
+            assert!(reply.get("error").is_some(), "{executable}: {reply}");
+        }
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -1659,85 +1395,10 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// The one property the whole design leans on (see `ExecRequest`'s doc): a caller that already
-    /// holds the JJ snapshot barrier for a gated write must be able to run an exec request against
-    /// the SAME repository without the agent trying to take that barrier again. If `exec` ever
-    /// acquires `SnapshotLock`, this test hangs for 30s and then fails instead of returning quickly.
+    /// An older app still names a `barrier_root` on every remote command. It is accepted and
+    /// ignored: the command runs normally on a git repository.
     #[test]
-    fn exec_never_contends_with_a_held_snapshot_barrier() {
-        let root =
-            std::env::temp_dir().join(format!("wr-vcs-exec-barrier-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join(".jj/repo")).unwrap();
-        let held = SnapshotLock::acquire(&root, root.to_str()).unwrap();
-        let start = Instant::now();
-        let reply = execute(&exec_request(&root, "jj", &["--version"]));
-        assert!(reply.get("result").is_some(), "exec failed: {reply:?}");
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "exec waited on the snapshot barrier instead of running independently"
-        );
-        drop(held);
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    /// The remote half of that property (#229): a Mac cannot flock the barrier on another host, so
-    /// an exec request that names a `barrier_root` must run under the barrier, taken here. Held by
-    /// another holder, the command waits for it rather than running alongside.
-    #[test]
-    fn exec_with_a_barrier_root_waits_on_a_held_barrier() {
-        let root =
-            std::env::temp_dir().join(format!("wr-vcs-exec-barrier-root-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join(".jj/repo")).unwrap();
-        let held = SnapshotLock::acquire(&root, root.to_str()).unwrap();
-        let releaser = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(700));
-            drop(held);
-        });
-        let mut request: Value =
-            serde_json::from_slice(&exec_request(&root, "git", &["--version"])).unwrap();
-        request["barrier_root"] = json!(root.to_str().unwrap());
-        let start = Instant::now();
-        let reply = execute(&serde_json::to_vec(&request).unwrap());
-        assert!(reply.get("result").is_some(), "exec failed: {reply:?}");
-        assert!(
-            start.elapsed() >= Duration::from_millis(600),
-            "the command ran without waiting for the barrier"
-        );
-        releaser.join().unwrap();
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    /// A command that cannot snapshot has nothing for the barrier to protect, so it does not wait.
-    #[test]
-    fn a_command_that_cannot_snapshot_skips_the_barrier() {
-        let root =
-            std::env::temp_dir().join(format!("wr-vcs-exec-barrier-read-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join(".jj/repo")).unwrap();
-        let held = SnapshotLock::acquire(&root, root.to_str()).unwrap();
-        let mut request: Value = serde_json::from_slice(&exec_request(
-            &root,
-            "git",
-            &["--version", "--ignore-working-copy"],
-        ))
-        .unwrap();
-        request["barrier_root"] = json!(root.to_str().unwrap());
-        let start = Instant::now();
-        let _ = execute(&serde_json::to_vec(&request).unwrap());
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "a read waited on the barrier"
-        );
-        drop(held);
-        std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    /// A git repository has no barrier to take, and naming one is not an error: the app sends the
-    /// shared root for every remote jj command, and decides nothing about git from it.
-    #[test]
-    fn a_barrier_root_without_jj_runs_the_command_unlocked() {
+    fn an_exec_naming_a_barrier_root_from_an_older_app_still_runs() {
         let root = git_repo("barrier-root-git");
         let mut request: Value =
             serde_json::from_slice(&exec_request(&root, "git", &["status"])).unwrap();
@@ -1800,8 +1461,8 @@ mod tests {
     /// The child's environment is EXACTLY the request's map — nothing of the daemon's own leaks
     /// through. This is the property that keeps an agent-routed commit from being authored under
     /// the stale identity of whichever app launch first spawned this daemon; a key allowlist could
-    /// not provide it, because what git and jj read for identity, config, signing and hooks is
-    /// open-ended. `env` (not in the git/jj allowlist) goes through `run_exec` directly, bypassing
+    /// not provide it, because what git reads for identity, config, signing and hooks is
+    /// open-ended. `env` (not in the git allowlist) goes through `run_exec` directly, bypassing
     /// `exec`'s executable restriction, specifically to observe what reaches the child.
     #[test]
     fn run_exec_replaces_the_daemons_environment_with_the_requests() {
@@ -1916,7 +1577,7 @@ mod tests {
     /// Native spawns `/usr/bin/env git`, so a missing tool exits 127 and `CLIVCSWriter.classify`
     /// answers `.toolMissing`. Spawning the program directly used to raise an Io error instead,
     /// which the client reported as `launchFailed` — the value whose own doc reserves it for
-    /// "nothing ran" and warns it would "misdiagnose a deleted workroom as a missing git/jj/gh".
+    /// "nothing ran" and warns it would "misdiagnose a deleted workroom as a missing git/gh".
     #[test]
     fn exec_reports_a_missing_tool_as_127_not_a_service_error() {
         let root = git_repo("run-exec-missing");
@@ -2155,7 +1816,7 @@ mod tests {
         let root = git_repo("huge-output");
         // 3 MiB of 0x01 on stdout, then a non-zero exit — the two facts that must both survive.
         let program = "import sys; sys.stdout.write('\\x01' * (3 * 1024 * 1024)); sys.exit(3)";
-        // `run_exec` directly rather than `execute`: the executable allowlist is git/jj only, and
+        // `run_exec` directly rather than `execute`: the executable allowlist is git only, and
         // neither will emit 3 MiB of control bytes on demand. The reply's wire size is then asserted
         // against the same budget `exec` applies, which is the contract under test.
         let captured = run_exec(

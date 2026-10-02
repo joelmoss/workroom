@@ -128,7 +128,7 @@ final class VCSSyncPresentationTests: XCTestCase {
     XCTAssertTrue(p.isEnabled)
   }
 
-  /// A detached HEAD (or a jj `@` with nothing to compare) has no tracking at all — that's in-sync-ish,
+  /// A detached HEAD has no tracking at all — that's in-sync-ish,
   /// not an error, and Fetch is still meaningful.
   func testNoTrackingFallsThroughToFetch() {
     let p = VCSSyncPresenter.make(
@@ -202,8 +202,7 @@ final class VCSSyncPresentationTests: XCTestCase {
   /// identically every press. Same rule `retryAction` applies to actions.
   func testAnUnfixableReadFailureIsAMessageNotAButton() {
     for failure: VCSRemoteFailure in [
-      .toolMissing("git"), .noRemote, .locked(lock()), .needsDescription("no description"),
-      .immutableHistory("immutable"),
+      .toolMissing("git"), .noRemote, .locked(lock()),
     ] {
       let p = VCSSyncPresenter.make(state: nil, hasTarget: true, readFailure: failure, now: now)
       XCTAssertFalse(p.isEnabled, "\(failure) cannot be retried away; got enabled")
@@ -376,30 +375,6 @@ final class VCSSyncPresentationTests: XCTestCase {
 
   // MARK: - permanent failures must not offer a retry
 
-  /// Two failures added because they are PERMANENT until the user acts outside Workroom. Both used to
-  /// fall through `retryAction`'s `default: return lastAction` and render a button that ran the identical
-  /// doomed command — the same defect the located-lock case exists to prevent.
-  func testPermanentFailuresOfferNoRetry() {
-    // jj refuses to push a commit with an empty description, changes or not — the state every workroom is
-    // in between the first edit and the first message. Measured: `Won't push commit … since it has no
-    // description`.
-    let undescribed = VCSSyncPresenter.make(
-      state: state(ahead: 1), hasTarget: true, failure: .needsDescription("no description"),
-      lastAction: .push, now: now)
-    XCTAssertNil(undescribed.action, "retrying the same push fails identically")
-    XCTAssertFalse(undescribed.isEnabled)
-    XCTAssertTrue(undescribed.subtitle.contains("Describe"), "got \(undescribed.subtitle)")
-
-    // jj refuses to rewrite commits `immutable_heads()` protects, which `rebase -b @` hits whenever the
-    // branch containing `@` holds a remote-tracked commit. Measured: `Commit … is immutable`.
-    let immutable = VCSSyncPresenter.make(
-      state: state(behind: 2), hasTarget: true, failure: .immutableHistory("is immutable"),
-      lastAction: .pull, now: now)
-    XCTAssertNil(immutable.action)
-    XCTAssertFalse(immutable.isEnabled)
-    XCTAssertTrue(immutable.titleVariants.isEmpty, "no title means no button to click")
-  }
-
   /// The recovery button must name the action it PERFORMS. It took its title from `lastAction` while its
   /// action came from `recovery`, so a rejected push rendered "Push" and ran a Pull.
   func testTheRecoveryButtonNamesWhatItDoes() {
@@ -413,15 +388,12 @@ final class VCSSyncPresentationTests: XCTestCase {
 
   // MARK: - the failure dialog
 
-  /// **What the one-line segment could never do.** The bar truncated `describe`'s sentence
-  /// ("Describe the change bef…") and hid the remedy in a tooltip. The dialog carries the whole thing.
+  /// **What the one-line segment could never do.** The bar truncates `describe`'s sentence and hid
+  /// the remedy in a tooltip. The dialog carries the whole thing.
   func testTheDialogCarriesTheRemedyTheBarCannot() {
-    let d = VCSSyncPresenter.failureDialog(
-      .needsDescription("Error: Won't push commit 050e657d3c36 since it has no description"),
-      action: .push, now: now)
+    let d = VCSSyncPresenter.failureDialog(.toolMissing("git"), action: .push, now: now)
     XCTAssertEqual(d.title, "Push failed", "the dialog names what was attempted")
-    XCTAssertTrue(d.message.contains("Describe the change"), "got \(d.message)")
-    XCTAssertTrue(d.message.contains("jj describe"), "the remedy must be copy-pasteable")
+    XCTAssertTrue(d.message.contains("Install git, or add it to your PATH"), "got \(d.message)")
     XCTAssertNil(d.recovery, "a permanent failure must not get a default button either")
   }
 
@@ -485,7 +457,6 @@ final class VCSSyncPresentationTests: XCTestCase {
   func testNoRemoteTellsYouHowToAddOne() {
     let d = VCSSyncPresenter.failureDialog(.noRemote, action: .push, now: now)
     XCTAssertTrue(d.message.contains("git remote add origin"), "got \(d.message)")
-    XCTAssertTrue(d.message.contains("jj git remote add origin"), "both backends; got \(d.message)")
   }
 
   // MARK: - an action running for another workroom
@@ -508,8 +479,8 @@ final class VCSSyncPresentationTests: XCTestCase {
 
   // MARK: - [14] a pull that landed conflicts
 
-  /// jj's rebase commits conflicts and exits 0, so a conflicted pull is a SUCCESS the segment still has
-  /// to report. Before this it said nothing: behind returns to 0, so the count tiers rendered "Push
+  /// A pull can exit 0 and still leave the tree conflicted, so a conflicted pull is a SUCCESS the
+  /// segment still has to report. Before this it said nothing: behind returns to 0, so the count tiers rendered "Push
   /// origin" over a conflicted tree.
   func testAConflictedPullIsReportedAndOffersNoAction() {
     let p = VCSSyncPresenter.make(
@@ -687,38 +658,5 @@ final class VCSSyncPresentationTests: XCTestCase {
     XCTAssertEqual(
       VCSSyncPresenter.fetchedAgo(.unknown, now: now), "",
       "unknown means we couldn't tell — rendering 'never' would be a claim we can't make")
-  }
-
-  // MARK: backend vocabulary
-
-  /// jj repos must say "bookmark", not "branch". The two behave differently — a jj bookmark doesn't
-  /// advance as you commit — so the wrong word teaches the wrong model of the tool in use.
-  ///
-  /// This is the assertion standing in for a screenshot: the caption is inside the toolbar view, and
-  /// reaching it in a real jj project needs both a selected sidebar row and an open terminal.
-  func testJJSaysBookmarkAndGitSaysBranch() {
-    XCTAssertEqual(VCSSyncPresenter.refNoun(vcs: "jj"), "bookmark")
-    XCTAssertEqual(VCSSyncPresenter.refNoun(vcs: "git"), "branch")
-    XCTAssertEqual(VCSSyncPresenter.refCaption(vcs: "jj"), "Current Bookmark")
-    XCTAssertEqual(VCSSyncPresenter.refCaption(vcs: "git"), "Current Branch")
-  }
-
-  /// An unknown or absent backend reads as git. `vcs` comes from the CLI config, so "git" is both the
-  /// safe default and correct for every non-jj repo the app can open — and a nil target (nothing
-  /// selected) still has to render a caption rather than an empty line.
-  func testUnknownBackendFallsBackToBranch() {
-    XCTAssertEqual(VCSSyncPresenter.refNoun(vcs: nil), "branch")
-    XCTAssertEqual(VCSSyncPresenter.refNoun(vcs: ""), "branch")
-    XCTAssertEqual(VCSSyncPresenter.refNoun(vcs: "hg"), "branch")
-  }
-
-  /// The caption is derived from the noun, not written twice — so a change to one can't leave the other
-  /// saying something else.
-  func testCaptionDerivesFromTheNoun() {
-    for vcs in ["jj", "git", "", "hg"] {
-      XCTAssertEqual(
-        VCSSyncPresenter.refCaption(vcs: vcs),
-        "Current \(VCSSyncPresenter.refNoun(vcs: vcs).capitalized)")
-    }
   }
 }

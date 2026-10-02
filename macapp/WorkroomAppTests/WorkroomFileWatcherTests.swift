@@ -3,33 +3,20 @@ import XCTest
 @testable import Workroom
 
 /// Tests for the live filesystem watch that keeps the selected workroom's VCS status current
-/// (issue #24 follow-up): the FSEvents watcher fires on a real change, and the jj-internal path
-/// filter that breaks the snapshot self-trigger loop.
+/// (issue #24 follow-up): the FSEvents watcher fires on a real change, and the root-branch watch
+/// target.
 final class WorkroomFileWatcherTests: XCTestCase {
-
-  // MARK: - jj-internal path filter (AppStore.isJJInternalPath)
-
-  func testIsJJInternalPath() {
-    // A `.jj` path component ⇒ internal (the jj snapshot writes here; must be ignored for jj).
-    XCTAssertTrue(AppStore.isJJInternalPath("/repo/.jj/working_copy/checkout"))
-    XCTAssertTrue(AppStore.isJJInternalPath("/repo/.jj"))
-    // Working files are not internal — these must still trigger a refresh.
-    XCTAssertFalse(AppStore.isJJInternalPath("/repo/src/main.swift"))
-    XCTAssertFalse(AppStore.isJJInternalPath("/repo"))
-    // Component-based, so a file merely *named* like `.jj…` isn't treated as internal.
-    XCTAssertFalse(AppStore.isJJInternalPath("/repo/.jjconfig.toml"))
-  }
 
   // MARK: - VCS metadata dir (AppStore.vcsMetadataDir — root-branch watch target, #3)
 
   func testVCSMetadataDir() {
-    // git/jj map to the metadata dir whose changes signal a branch/bookmark move.
+    // git maps to the metadata dir whose changes signal a branch move.
     XCTAssertEqual(AppStore.vcsMetadataDir(path: "/repo", vcs: "git"), "/repo/.git")
-    XCTAssertEqual(AppStore.vcsMetadataDir(path: "/repo", vcs: "jj"), "/repo/.jj")
     // Trailing slash is normalized by appendingPathComponent (no double slash).
     XCTAssertEqual(AppStore.vcsMetadataDir(path: "/repo/", vcs: "git"), "/repo/.git")
-    // Unknown vcs ⇒ no watch target.
+    // Unknown vcs ⇒ no watch target — including a stale "jj" from an old config.
     XCTAssertNil(AppStore.vcsMetadataDir(path: "/repo", vcs: "hg"))
+    XCTAssertNil(AppStore.vcsMetadataDir(path: "/repo", vcs: "jj"))
   }
 
   // MARK: - WorkroomFileWatcher (real FSEvents)

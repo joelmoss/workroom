@@ -2,12 +2,11 @@ import XCTest
 
 @testable import Workroom
 
-/// Integration tests that exercise `WorkroomStatusResolver` against REAL git/jj repos through the
-/// REAL `StatusCommandRunner` (no mock). These prove the porcelain-v2/jj parsing matches what the
-/// actual binaries emit (git 2.54, jj 0.42 verified) — the unit tests only cover hand-written
-/// fixtures.
+/// Integration tests that exercise `WorkroomStatusResolver` against REAL git repos through the
+/// REAL `StatusCommandRunner` (no mock). These prove the status reads match what the actual
+/// binaries emit (git 2.54 verified) — the unit tests only cover hand-written fixtures.
 ///
-/// They **require** real `git` and `jj` (CI installs both — see `.github/workflows/ci.yml`); a
+/// They **require** real `git` (CI installs it — see `.github/workflows/ci.yml`); a
 /// missing tool FAILS the suite rather than silently skipping, so the VCS layer can never go
 /// un-exercised. Every repo is a **throwaway** created fresh under `NSTemporaryDirectory()` and
 /// removed in `tearDown` — these tests NEVER touch any of the developer's own repositories.
@@ -29,7 +28,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
       let shared = try await RepositoryLocation.local(projectRoot)
       let router = RepositoryRouter()
       try router.register(
-        .init(location: location, backend: vcs == "jj" ? .jj : .git, sharedLocation: shared))
+        .init(location: location, backend: .git, sharedLocation: shared))
       return await resolver.resolve(location: location, router: router)
     } catch {
       XCTFail("\(error)")
@@ -268,7 +267,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     XCTAssertEqual(ws.deletions, 0)
   }
 
-  /// History rows carry branch/tag decoration on git, the way they carry bookmarks on jj: the tip
+  /// History rows carry branch/tag decoration: the tip
   /// commit gets its local branches + tags, the older commit gets none, and remote-tracking refs
   /// (`origin/main`, which points at the same tip here) are excluded so labels don't double up.
   func testGitProviderLogRefs() throws {
@@ -416,268 +415,5 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     let s = await registeredStatus(path: dir, vcs: "git", projectRoot: dir)
     XCTAssertNil(s.dirty)  // unknown, NOT clean
     XCTAssertEqual(s.failure, .notRepository)
-  }
-
-  // MARK: jj (jj 0.42)
-
-  private func jjRepo() throws -> String {
-    try requireTool("jj")
-    let dir = tempDir()
-    let r = sh("jj git init . 2>/dev/null || jj init --git . 2>/dev/null; echo done", in: dir)
-    XCTAssertTrue(r.out.contains("done"), "jj init failed in \(dir)")
-    // Self-contained author so `jj commit`/`jj describe` work on a fresh CI runner (no global
-    // jj config there — locally these would otherwise piggyback on the developer's ~/.jjconfig).
-    sh("jj config set --repo user.email a@b.c; jj config set --repo user.name t", in: dir)
-    return dir
-  }
-
-  func testJJClean() async throws {
-    let dir = try jjRepo()
-    let s = await registeredStatus(path: dir, vcs: "jj", projectRoot: dir)
-    XCTAssertEqual(s.dirty, false)
-    XCTAssertFalse(s.conflicted)
-    XCTAssertNil(s.failure)
-  }
-
-  func testJJDirtyWithFiles() async throws {
-    let dir = try jjRepo()
-    sh("echo hello > f1.txt && echo world > f2.txt", in: dir)
-    let s = await registeredStatus(path: dir, vcs: "jj", projectRoot: dir)
-    XCTAssertEqual(s.dirty, true)
-    XCTAssertEqual((s.changedFiles ?? []).count, 2)
-    XCTAssertTrue((s.changedFiles ?? []).allSatisfy { $0.change == .added })
-  }
-
-  func testJJModifyAndDelete() async throws {
-    let dir = try jjRepo()
-    sh("echo a > f1.txt && echo b > f2.txt && jj commit -m base 2>/dev/null", in: dir)
-    sh("echo changed > f1.txt && rm f2.txt", in: dir)
-    let s = await registeredStatus(path: dir, vcs: "jj", projectRoot: dir)
-    XCTAssertEqual(s.dirty, true)
-    let kinds = Set((s.changedFiles ?? []).map(\.change))
-    XCTAssertTrue(kinds.contains(.modified))
-    XCTAssertTrue(kinds.contains(.deleted))
-  }
-
-  /// The jj twin of `testGitConflict`: a conflicted jj working copy must report the conflict
-  /// **per file**, not as a plain modification. jj stores conflicts in the tree, so this rides the
-  /// whole native path the cargo test can't reach — `jj_backend::changed_files` → UniFFI →
-  /// `RustJJProvider.statusChange` → `WorkroomStatus.changedFiles`, which is what the Changes panel
-  /// renders. A mapping regression anywhere in that chain shows up here and nowhere else.
-  ///
-  /// `jj new <left> <right>` makes `@` a 2-sided merge of two commits that changed `f.txt`
-  /// differently, which is jj's ordinary way to end up with a conflicted working copy.
-  ///
-  /// The two sides are addressed by **commit id**, never by bookmark: these fixtures inherit the
-  /// developer's own `~/.config/jj` (only `user.name`/`user.email` are set per-repo), and with
-  /// `experimental-advance-branches` enabled a `jj commit` silently advances a bookmark onto the new
-  /// commit — which collapsed `jj new base` onto `left` and produced no conflict at all.
-  func testJJConflict() async throws {
-    let dir = try jjRepo()
-    sh(
-      """
-      id() { jj log -r @- --no-graph --ignore-working-copy --color never -T commit_id; }
-      echo base > f.txt && jj commit -m base 2>/dev/null
-      BASE=$(id)
-      echo left > f.txt && jj commit -m left 2>/dev/null
-      LEFT=$(id)
-      jj new "$BASE" -m right 2>/dev/null
-      echo right > f.txt && jj commit -m right 2>/dev/null
-      RIGHT=$(id)
-      jj new "$LEFT" "$RIGHT" 2>/dev/null
-      """, in: dir)
-    // Guard the fixture itself: if jj doesn't consider `@` conflicted, a failure below is the
-    // fixture's fault, not the resolver's.
-    XCTAssertEqual(
-      sh("jj log --no-graph --ignore-working-copy --color never -r @ -T conflict", in: dir).out
-        .trimmingCharacters(in: .whitespacesAndNewlines), "true",
-      "fixture should produce a conflicted @")
-
-    let s = await registeredStatus(path: dir, vcs: "jj", projectRoot: dir)
-    XCTAssertEqual(s.dirty, true)
-    XCTAssertTrue(s.conflicted)
-    XCTAssertTrue(
-      (s.changedFiles ?? []).contains { $0.path == "f.txt" && $0.change == .conflicted },
-      "f.txt should be .conflicted, not .modified; got \(s.changedFiles ?? [])")
-  }
-
-  /// The Changes header's `+N −M` must describe the SAME diff as the rows beside it, on a **merge** `@`
-  /// — end to end through the native read (`changed_files`' per-file counts → UniFFI →
-  /// `RustJJProvider.workingStatus` → `WorkroomStatus.insertions`).
-  ///
-  /// `@` is a clean 2-sided merge: `left` edited `a.txt`, `right` added a 3-line `right.txt`. The file
-  /// list is a tree diff against the FIRST parent, so `right.txt` is listed. The totals used to come
-  /// from a separate `jj diff -r @ --stat` process, and `-r @` on a merge diffs the *auto-merged
-  /// parents* — empty here — so the panel showed a listed 3-line file with no line delta at all. This
-  /// asserts both halves: our count, and that the old read really does report nothing.
-  ///
-  /// Sides are addressed by **commit id**, never by bookmark: with `experimental-advance-branches`
-  /// enabled (as in the author's own config) `jj commit` advances a bookmark onto the new commit, which
-  /// collapses the two sides and leaves no merge to test.
-  func testJJMergeWorkingCopyCountsMatchTheFileList() async throws {
-    let dir = try jjRepo()
-    sh(
-      """
-      id() { jj log -r @- --no-graph --ignore-working-copy --color never -T commit_id; }
-      printf 'one\\ntwo\\n' > a.txt && jj commit -m base 2>/dev/null
-      BASE=$(id)
-      printf 'ONE\\ntwo\\n' > a.txt && jj commit -m left 2>/dev/null
-      LEFT=$(id)
-      jj new "$BASE" -m right 2>/dev/null
-      printf 'r1\\nr2\\nr3\\n' > right.txt && jj commit -m right 2>/dev/null
-      RIGHT=$(id)
-      jj new "$LEFT" "$RIGHT" 2>/dev/null
-      """, in: dir)
-    // Guard the fixture: without a real merge `@` this test cannot fail, since the two diff bases
-    // coincide on a single-parent commit.
-    XCTAssertEqual(
-      sh("jj log --no-graph --ignore-working-copy --color never -r @ -T 'parents.len()'", in: dir)
-        .out
-        .trimmingCharacters(in: .whitespacesAndNewlines), "2",
-      "fixture should produce a 2-parent @")
-
-    let s = await registeredStatus(path: dir, vcs: "jj", projectRoot: dir)
-    XCTAssertTrue(
-      (s.changedFiles ?? []).contains { $0.path == "right.txt" },
-      "the file arriving from the merge's other side is listed; got \(s.changedFiles ?? [])")
-    XCTAssertEqual(s.insertions, 3, "…so its three lines must be in the header's total")
-    XCTAssertEqual(s.deletions, 0)
-
-    // The read this replaced, still reproducible through the CLI: against the auto-merged parents this
-    // merge changed NOTHING, so the header used to show no delta beside a listed 3-line file. (jj still
-    // prints its summary line at zero — "0 files changed, 0 insertions(+), 0 deletions(-)" — so match
-    // the file count, not the presence of the word "insertions".)
-    let stale = sh("jj diff -r @ --ignore-working-copy --stat --color never", in: dir).out
-    XCTAssertTrue(
-      stale.contains("0 files changed"),
-      "`-r @` on a merge is the wrong base this fixed — if it now reports files, re-derive this test; got \(stale)"
-    )
-  }
-
-  /// A jj command the user runs in a workroom terminal holds the working-copy lock, and the status
-  /// sweep must report that as a distinct, self-explaining state — end to end: `jj_backend`'s
-  /// non-blocking lock probe → `VcsError::LockContention` → UniFFI → `RustJJProvider.mapError` →
-  /// `WorkroomStatusResolver.failure(for:)` → the row's `.busy` badge. Nothing else in the suite
-  /// covers that chain, and the failure mode without the probe is the worst kind: jj-lib's `flock`
-  /// blocks with no timeout, so the row would sit on the sweep's 15s ceiling and report `.timeout`
-  /// while pinning the project's snapshot gate.
-  ///
-  /// The lock is taken the way another process takes it — `flock(2)` on jj's own lock file — since
-  /// `flock` is per open file description, so this really does contend with the probe's `try_lock`.
-  func testJJLockContentionReportsBusy() async throws {
-    let dir = try jjRepo()
-    sh("echo a > f.txt", in: dir)
-    // Baseline: a snapshot succeeds while nothing holds the lock, so `.busy` below can only be the lock.
-    let before = await registeredStatus(path: dir, vcs: "jj", projectRoot: dir)
-    XCTAssertEqual(before.dirty, true)
-    XCTAssertNil(before.failure)
-
-    let lockPath = (dir as NSString).appendingPathComponent(".jj/working_copy/working_copy.lock")
-    let fd = open(lockPath, O_CREAT | O_RDWR, 0o600)
-    try XCTSkipIf(fd < 0, "could not open jj's working-copy lock file at \(lockPath)")
-    XCTAssertEqual(flock(fd, LOCK_EX), 0, "hold the working-copy lock")
-
-    let busy = await registeredStatus(path: dir, vcs: "jj", projectRoot: dir)
-    XCTAssertEqual(
-      busy.failure, .busy, "a held working-copy lock reads as busy, not timeout/notRepo")
-    XCTAssertNil(busy.dirty)  // unknown, never clean
-
-    flock(fd, LOCK_UN)
-    close(fd)
-
-    // And it recovers: the probe must not have disturbed the repo or the lock file it touched.
-    let after = await registeredStatus(path: dir, vcs: "jj", projectRoot: dir)
-    XCTAssertEqual(after.dirty, true)
-    XCTAssertNil(after.failure)
-  }
-
-  /// Proves the real jj head template + parse produce the description + bookmark for the Changes
-  /// header (the jj "branch name" equivalent).
-  func testJJHeadDescriptionAndBookmark() async throws {
-    let dir = try jjRepo()
-    sh("echo a > f.txt", in: dir)
-    sh("jj describe -m 'my change (#9)' 2>/dev/null", in: dir)
-    sh("jj bookmark create mybook -r @ 2>/dev/null", in: dir)
-    let s = await registeredStatus(path: dir, vcs: "jj", projectRoot: dir)
-    let wc = s.jjWorkingCopy
-    XCTAssertEqual(wc?.description, "my change (#9)")
-    XCTAssertEqual(wc?.refs, ["mybook"])
-    XCTAssertNotNil(wc?.changeID)  // real jj always yields a change-id + commit-id for @
-    XCTAssertNotNil(wc?.commitID)
-    // The change-id is its shortest unique prefix, unpadded (a one-commit repo → a 1-char prefix).
-    XCTAssertFalse((wc?.changeID ?? "").isEmpty)
-    XCTAssertEqual((wc?.commitID ?? "").count, 8)  // commit-id is jj's shortest-8 id
-  }
-
-  /// The real reason `branchForCI` exists for jj: `@` is a *detached* git HEAD (so the
-  /// `git symbolic-ref` fallback in resolveCI/resolvePR finds nothing), and a bookmark normally
-  /// sits at `@-` because `@` is an empty working-copy change on top. This proves the
-  /// `heads(::@ & bookmarks())` revset resolves that ancestor bookmark — the branch pushed to
-  /// origin that `gh` keys PR/CI off — even though it's not on `@` itself. Without it, PR/CI are
-  /// inert for every jj workroom.
-  func testJJBranchForCIResolvesAncestorBookmark() async throws {
-    let dir = try jjRepo()
-    sh("echo a > f.txt && jj describe -m base 2>/dev/null", in: dir)
-    sh("jj bookmark create feature/login -r @ 2>/dev/null", in: dir)
-    sh("jj new 2>/dev/null", in: dir)  // @ becomes a fresh empty change; the bookmark stays at @-
-    let s = await registeredStatus(path: dir, vcs: "jj", projectRoot: dir)
-    // git symbolic-ref would fail here (detached HEAD); the revset finds the nearest bookmark.
-    XCTAssertEqual(s.branchForCI, "feature/login")
-  }
-
-  /// A primary `main` jj workspace + a secondary `ws` workspace (`jj workspace add`) sharing one
-  /// backing repo — the fixture shape for both `testJJWorkspaceResolvesAsJJ` and
-  /// `testConcurrentJJSnapshotsAcrossWorkspacesOfOneProjectDoNotRace`. Returns their paths;
-  /// `extraSetup` runs (in `main`) after `describe` but before `workspace add`, for a test that
-  /// needs e.g. a bookmark.
-  private func makeJJWorkspaceFixture(extraSetup: String = "") throws -> (main: String, ws: String)
-  {
-    try requireTool("jj")
-    let root = tempDir()
-    sh(
-      """
-      mkdir -p main && cd main
-      jj git init . 2>/dev/null || jj init --git . 2>/dev/null
-      jj config set --repo user.email a@b.c; jj config set --repo user.name t
-      echo hello > f.txt && jj describe -m base 2>/dev/null
-      \(extraSetup)
-      jj workspace add ../ws --name workroom/ws 2>/dev/null
-      """, in: root)
-    return (main: root + "/main", ws: root + "/ws")
-  }
-
-  /// The reported bug: a jj *workroom* is a `jj workspace add` workspace, not the main repo — and
-  /// (unlike the colocated main repo) a secondary workspace has no `.git`. It must be resolved as
-  /// "jj" (the project's VCS type), NOT by the workroom's `vcs_name` (`workroom/<name>`), which
-  /// made resolveLocal fall through to `.notRepository` and the header render the git "detached"
-  /// fallback. Proves a real workspace path reports its dirty state, the jj head, and the ancestor
-  /// bookmark — i.e. the Changes panel shows the jj line, not "not a repository" / "detached".
-  func testJJWorkspaceResolvesAsJJ() async throws {
-    let (main, ws) = try makeJJWorkspaceFixture(
-      extraSetup: "jj bookmark create feature/login -r @ 2>/dev/null\njj new 2>/dev/null")
-    sh("echo dirty >> f.txt", in: ws)
-    // `projectRoot` is the primary workspace's path (the parent project), NOT `ws` itself — same
-    // convention as `StatusWorkItem.projectRoot` for a workroom.
-    let s = await registeredStatus(path: ws, vcs: "jj", projectRoot: main)
-    XCTAssertNil(s.failure)  // NOT .notRepository
-    XCTAssertEqual(s.dirty, true)
-    XCTAssertEqual(s.branchForCI, "feature/login")  // ancestor bookmark via the jj revset
-    XCTAssertNotNil(s.jjWorkingCopy?.changeID)  // jj head populated → Changes shows the jj line
-  }
-
-  /// Regression for the VCS-foundation eng-review: two of a project's jj workspaces (the primary
-  /// `main` and a secondary `ws`) share one backing repo, so concurrent `resolveLocal` snapshots
-  /// used to be free to race on it (observed live as a `packed-refs.lock could not be obtained`
-  /// error). With `JJSnapshotGate` serializing same-`projectRoot` snapshots, both concurrent probes
-  /// must still resolve cleanly instead of racing. Uses an isolated gate (not `.shared`) so this
-  /// test can't be affected by/affect any other test.
-  func testConcurrentJJSnapshotsAcrossWorkspacesOfOneProjectDoNotRace() async throws {
-    let (main, ws) = try makeJJWorkspaceFixture()
-    async let mainStatus = registeredStatus(path: main, vcs: "jj", projectRoot: main)
-    async let wsStatus = registeredStatus(path: ws, vcs: "jj", projectRoot: main)
-    let (m, w) = await (mainStatus, wsStatus)
-    XCTAssertNil(m.failure, "main workspace snapshot must not fail under concurrent contention")
-    XCTAssertNil(
-      w.failure, "secondary workspace snapshot must not fail under concurrent contention")
   }
 }

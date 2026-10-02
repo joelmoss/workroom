@@ -50,10 +50,6 @@ struct DiffViewer: View {
   /// The workroom directory the VCS runs in (resolves the repo-relative path / picks the worktree).
   let directory: String
   var repositoryLocation: RepositoryLocation? = nil
-  /// The owning project's root (`AppStore.projectRoot(forTarget:)`), or `nil` when `descriptor`
-  /// can't be a `.jjWorkingCopy` source (e.g. the changeset detail view, always `.commit`). Passed
-  /// straight through to `DiffResolver.resolve` to key `JJSnapshotGate` — see that type's doc.
-  let projectRoot: String?
   /// This file's per-tab layout override from the tab toolbar's toggle (issue #66); `nil` ⇒ follow
   /// the global `Defaults[.diffViewMode]` (which additionally falls back to unified in a narrow pane).
   /// Owned by the tab (`TerminalTab.diffViewModeOverride`) and passed in, so the toolbar sets it and
@@ -76,8 +72,8 @@ struct DiffViewer: View {
   @ObservedObject var find: FileFindModel
   /// The diff fetch, injectable so a test can hold one file's load open while the pane is retargeted
   /// to another (the stale-write race `activeFetchKey` guards). Defaults to the real resolver.
-  var resolveDiff: (DiffDescriptor, String, String?) async -> DiffResult = {
-    await DiffResolver().resolve($0, in: $1, projectRoot: $2)
+  var resolveDiff: (DiffDescriptor, String) async -> DiffResult = {
+    await DiffResolver().resolve($0, in: $1)
   }
   #if DEBUG
     /// Test-only observation seam for the stale-load regression test — fires with the `LoadState`
@@ -393,7 +389,7 @@ struct DiffViewer: View {
     if let repositoryLocation {
       return await DiffResolver().resolve(descriptor, in: repositoryLocation)
     }
-    return await resolveDiff(descriptor, directory, projectRoot)
+    return await resolveDiff(descriptor, directory)
   }
 
   private func repositoryFileContent(old: Bool) async -> String? {
@@ -414,7 +410,7 @@ struct DiffViewer: View {
     highlightedLines = [:]  // drop any previous file's colours immediately (no stale flash)
     highlightedOldLines = [:]
     // In UI-test fixture mode the workroom path is a fake temp dir with no repo, so serve a canned
-    // diff instead of shelling out to git/jj (issue #66 UI tests).
+    // diff instead of shelling out to git (issue #66 UI tests).
     let result =
       UITestFixture.isActive
       ? UITestFixture.diff(for: descriptor)

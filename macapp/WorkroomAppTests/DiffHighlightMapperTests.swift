@@ -92,7 +92,7 @@ final class DiffHighlightMapperTests: XCTestCase {
   /// timing. Mirrors `DiffViewer.applyHighlight` in fixture mode.
   func testFixtureRubyDiffPipelineProducesHighlightedLines() {
     let desc = DiffDescriptor(
-      path: "app/models/user.rb", change: .modified, source: .jjWorkingCopy, isPreview: false)
+      path: "app/models/user.rb", change: .modified, source: .gitWorktree, isPreview: false)
     guard case .diff(let diff) = UITestFixture.diff(for: desc) else {
       return XCTFail("fixture should serve a Ruby diff")
     }

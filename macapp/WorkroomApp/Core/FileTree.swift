@@ -62,8 +62,8 @@ struct FileTreeRow: Equatable {
 /// Pure builders for the Files panel: a flat list of repo-relative paths → a sorted `FileNode` tree,
 /// and a tree + expansion set → the visible rows. No I/O, no view — unit-tested directly.
 enum FileTreeBuilder {
-  /// Build the sorted tree from a flat list of repo-relative file paths (as `git ls-files` / `jj file
-  /// list` emit them). Intermediate directories are synthesised; duplicates collapse; each level is
+  /// Build the sorted tree from a flat list of repo-relative file paths (as `git ls-files` emits
+  /// them). Intermediate directories are synthesised; duplicates collapse; each level is
   /// sorted directories-first then alpha (case-insensitive). Empty / `.`-only components are skipped.
   static func build(from relativePaths: [String]) -> [FileNode] {
     let root = MutableNode(name: "", path: "")
@@ -144,15 +144,14 @@ enum FileTreeBuilder {
 
 // MARK: - VCS listing (pure)
 
-/// Which VCS lists the working tree. The Files panel probes git first (covers git worktrees and
-/// colocated jj repos), then jj (a non-colocated jj workspace has no `.git` of its own).
+/// Which VCS lists the working tree. git is the only one; it stays a parameter because it is the
+/// wire's `backend` field on wr-agent's File-service listing.
 enum FileListVCS: Equatable, Sendable {
   case git
-  case jj
 }
 
 /// Pure command construction + output parsing for the working-tree listing, so the args and the
-/// path-cleanup are unit-tested without spawning git/jj.
+/// path-cleanup are unit-tested without spawning git.
 enum FileListing {
   /// Seconds a listing command may run. `LIST_TIMEOUT` in the agent's `file.rs` is the same value, so
   /// a slow tree fails the same way on both paths.
@@ -160,7 +159,6 @@ enum FileListing {
 
   /// The executable + args that list the working tree honoring ignore rules.
   /// - git: tracked + untracked-but-not-ignored, NUL-separated (`-z`) so odd filenames survive.
-  /// - jj: the working-copy files (jj auto-tracks, so this reflects new files too).
   static func command(_ vcs: FileListVCS) -> (executable: String, args: [String]) {
     switch vcs {
     // `--others` would run a repository-configured `core.fsmonitor` command; see `gitHardening`.
@@ -171,25 +169,14 @@ enum FileListing {
           "ls-files", "--cached", "--others", "--exclude-standard", "-z",
         ]
       )
-    case .jj: return ("jj", ["file", "list"])
     }
   }
 
   /// Parse a listing command's stdout into clean repo-relative paths. git output is NUL-separated
   /// (never split on newlines — a filename may legitimately contain spaces or a newline, which is
-  /// exactly why `-z` is used); jj output is newline-separated (split on any newline — `\n`, `\r\n`,
-  /// or `\r` — via `isNewline`, since Swift treats `\r\n` as a *single* Character that a literal
-  /// `"\n"` split would miss). Empties and a leading `./` are dropped.
+  /// exactly why `-z` is used). Empties and a leading `./` are dropped.
   static func parse(_ stdout: String, vcs: FileListVCS) -> [String] {
-    let raw: [Substring]
-    switch vcs {
-    case .git:
-      raw = stdout.split(separator: "\0", omittingEmptySubsequences: true)
-    case .jj:
-      raw = stdout.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline)
-    }
-    return
-      raw
+    stdout.split(separator: "\0", omittingEmptySubsequences: true)
       .map(String.init)
       .filter { !$0.isEmpty }
       .map { $0.hasPrefix("./") ? String($0.dropFirst(2)) : $0 }

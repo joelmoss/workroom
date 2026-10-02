@@ -2,11 +2,11 @@
 //! that owns the files. Requests and replies are JSON on the same chunked envelope as `Service::Vcs`
 //! (first payload byte 0 = continuation, 1 = final); a request is always one envelope.
 //!
-//! **Why this is not the exec service.** `Service::Vcs`'s exec runs `git` or `jj` with arbitrary argv,
+//! **Why this is not the exec service.** `Service::Vcs`'s exec runs `git` with arbitrary argv,
 //! which is arbitrary code execution by construction. File access has to be its own, narrower
 //! service, because a transport that has to authenticate peers will authenticate them differently:
 //! shell grade for exec, repository grade for this. So listing takes NO argv from the client — the
-//! two commands are fixed here, chosen by `backend` — and reads take a repository-relative path that
+//! command is fixed here, chosen by `backend` — and reads take a repository-relative path that
 //! is resolved and verified on this host.
 //!
 //! Methods:
@@ -17,13 +17,12 @@
 //! - `read` — return one regular file's bytes, base64, under one of two symlink policies.
 //! - `watch` / `unwatch` — subscribe to filesystem changes; see `watch.rs`.
 //!
-//! **Errors are this crate's own [`FileError`]**, not `wr_vcs_model::VcsError`: `build-apple.sh` hashes
-//! `wr-vcs-model`, so adding a variant there would force a rebuild of the app's Rust xcframework for a
-//! type only this agent and its Swift client care about.
+//! **Errors are this crate's own [`FileError`]**, not `wr_vcs_model::VcsError`: it is a type only this
+//! agent and its Swift client care about.
 
 use crate::protocol::envelope::{Envelope, Service};
 use crate::session::SharedWriter;
-use crate::vcs::{self, Permit, SnapshotLock};
+use crate::vcs::{self, Permit};
 use crate::watch::Subscriptions;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -72,21 +71,15 @@ pub enum FileError {
     /// The listing did not fit the 4 MiB capture cap. Never returned as a cut-off list: a truncation
     /// can land mid-filename, and a tree missing files without saying so is worse than no tree.
     ListingTruncated(String),
-    /// The 32-slot request budget is spent, or the jj working-copy lock could not be taken.
+    /// The 32-slot request budget is spent.
     LockContention(String),
-    /// A jj listing without a registered shared repository — the lock lives there.
-    Registration(String),
     /// A per-service cap was hit (concurrent reads, subscriptions).
     Busy(String),
 }
 
 impl From<VcsError> for FileError {
     fn from(error: VcsError) -> Self {
-        match error {
-            VcsError::LockContention => FileError::LockContention("jj working-copy lock".into()),
-            VcsError::UnsupportedRepo(detail) => FileError::Registration(detail),
-            other => FileError::Io(format!("{other:?}")),
-        }
+        FileError::Io(format!("{error:?}"))
     }
 }
 
@@ -99,11 +92,10 @@ impl From<std::io::Error> for FileError {
     }
 }
 
-#[derive(Clone, Copy, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Backend {
     Git,
-    Jj,
 }
 
 /// How a read treats symbolic links. Both verify the descriptor that was actually opened, so a
@@ -127,8 +119,13 @@ struct Request {
     backend: Option<Backend>,
     #[serde(default)]
     root: Option<String>,
-    #[serde(default)]
-    shared_root: Option<String>,
+    /// Accepted and ignored: the app still sends a repository's shared root, which only the
+    /// removed jj listing read.
+    ///
+    /// ponytail: kept only so `deny_unknown_fields` does not reject the app's request. Prune once
+    /// a protocol gate or a stable hand-off covers app/agent skew (see TODOS.md).
+    #[serde(default, rename = "shared_root")]
+    _shared_root: Option<String>,
     #[serde(default)]
     path: Option<String>,
     #[serde(default)]
@@ -262,12 +259,10 @@ fn handle(request: &Request) -> Result<Value, FileError> {
 // MARK: Listing
 
 /// The listing command for each backend, FIXED here. `FileListing.command` (Swift) builds the same
-/// two for the native path; `AgentFileIntegrationTests` lists one repository through both and
+/// one for the native path; `AgentFileIntegrationTests` lists one repository through both and
 /// compares, so the two cannot drift apart unnoticed.
 ///
 /// - git: tracked plus untracked-but-not-ignored, NUL-separated so a name with a newline survives.
-/// - jj: the working-copy files. jj auto-tracks, so this reflects new files too — and it SNAPSHOTS,
-///   which is why the jj branch below takes the working-copy lock.
 fn listing_command(backend: Backend) -> (&'static str, Vec<String>) {
     match backend {
         Backend::Git => (
@@ -286,7 +281,6 @@ fn listing_command(backend: Backend) -> (&'static str, Vec<String>) {
             .map(String::from)
             .to_vec(),
         ),
-        Backend::Jj => ("jj", ["file", "list"].map(String::from).to_vec()),
     }
 }
 
@@ -337,35 +331,12 @@ fn list(request: &Request) -> Result<Value, FileError> {
         .backend
         .ok_or_else(|| unsupported("missing backend"))?;
     let (executable, args) = listing_command(backend);
-    // jj snapshots the working copy as part of the listing, so it takes the same cross-process lock
-    // the app's native writers and the read side's `working_status` take. The AGENT holds it here
-    // (the discipline of #204's reads), never the client: a client that also held it would
-    // self-deadlock against this acquire for 30s and fail as `LockContention`.
-    let lock = match backend {
-        Backend::Jj => Some(SnapshotLock::acquire(
-            &root,
-            request.shared_root.as_deref(),
-        )?),
-        Backend::Git => None,
-    };
     let environment = listing_environment();
     let env: Vec<(&str, &str)> = environment
         .iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))
         .collect();
-    // The barrier rides into the child: if this agent dies mid-listing, the jj that is still
-    // snapshotting keeps the flock until it really exits. Without it the lock dies with the agent and
-    // a native writer enters the very operation the lock exists to exclude.
-    let captured = vcs::run_exec_with(
-        &root,
-        executable,
-        &args,
-        LIST_TIMEOUT,
-        None,
-        &env,
-        lock.as_ref().map(SnapshotLock::fd),
-    )?;
-    drop(lock);
+    let captured = vcs::run_exec_with(&root, executable, &args, LIST_TIMEOUT, None, &env)?;
     if captured.stdout_truncated {
         return Err(FileError::ListingTruncated(
             "listing exceeds the 4 MiB capture cap".into(),
@@ -844,17 +815,6 @@ mod tests {
         let request = json!({"version": 1, "method": "list", "backend": "git", "root": root});
         let reply = execute(&serde_json::to_vec(&request).unwrap());
         assert_ne!(reply["result"]["exit_code"], 0, "{reply}");
-    }
-
-    #[test]
-    fn a_jj_listing_without_a_shared_repository_is_a_registration_error() {
-        let root = scratch("jj-unregistered");
-        let request = json!({"version": 1, "method": "list", "backend": "jj", "root": root});
-        let reply = execute(&serde_json::to_vec(&request).unwrap());
-        assert!(reply["error"]["Registration"]
-            .as_str()
-            .unwrap()
-            .contains("registration required"));
     }
 
     #[test]

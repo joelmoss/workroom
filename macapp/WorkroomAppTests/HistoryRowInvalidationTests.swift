@@ -71,14 +71,14 @@ final class HistoryRowInvalidationTests: XCTestCase {
   private func commits(_ count: Int) -> [VCSCommit] {
     (0..<count).map { i in
       VCSCommit(
-        commitID: String(format: "%040x", i), shortID: String(format: "%08x", i), changeID: nil,
+        commitID: String(format: "%040x", i), shortID: String(format: "%08x", i),
         summary: "commit \(i)", body: "",
         authors: [
           VCSAuthor(name: "Grace Hopper", email: "grace\(i % 7)@example.com"),
           VCSAuthor(name: "Ada Lovelace", email: "ada\(i % 3)@example.com"),
         ],
         timestamp: Date(timeIntervalSince1970: TimeInterval(1_700_000_000 - i * 60)),
-        refs: [], parentIDs: [], isWorkingCopy: false)
+        refs: [], parentIDs: [])
     }
   }
 
@@ -202,12 +202,12 @@ final class HistoryRowInvalidationTests: XCTestCase {
     settle(view)
 
     HistoryRow.bodyPasses = 0
-    // A rewritten page (amend, new commits, a bookmark move) must reach the rows.
+    // A rewritten page (amend, new commits, a branch move) must reach the rows.
     var rewritten = commits(20)
     rewritten[0] = VCSCommit(
-      commitID: rewritten[0].commitID, shortID: rewritten[0].shortID, changeID: nil,
-      summary: "AMENDED SUMMARY", body: "", authors: rewritten[0].authors,
-      timestamp: rewritten[0].timestamp, refs: ["main"], parentIDs: [], isWorkingCopy: false)
+      commitID: rewritten[0].commitID, shortID: rewritten[0].shortID, summary: "AMENDED SUMMARY",
+      body: "", authors: rewritten[0].authors,
+      timestamp: rewritten[0].timestamp, refs: ["main"], parentIDs: [])
     provider.replace(commits: rewritten)
     store.commitHistory.refresh()
     await store.commitHistory.awaitCurrentLoad()

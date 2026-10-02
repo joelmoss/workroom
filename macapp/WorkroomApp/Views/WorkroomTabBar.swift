@@ -482,7 +482,7 @@ private struct WorkroomTabChip: View {
     return nil
   }
 
-  /// A root's branch/bookmark (nil for a workroom), reusing the sidebar's root presentation.
+  /// A root's branch (nil for a workroom), reusing the sidebar's root presentation.
   private var branchLabel: String? {
     guard case .root(let project) = sid else { return nil }
     return RootPresentation.make(store.rootRefs[project] ?? .unresolved).label

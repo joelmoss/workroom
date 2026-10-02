@@ -5,7 +5,7 @@ import XCTest
 /// `CLIVCSWriter`'s pure surface: argument builders, parsers, placement and failure classification.
 ///
 /// These carry every semantic in the write layer, which is why they're `static` and tested without
-/// spawning anything (the pattern `RustJJProvider.workingDiffArgs` established). Two of them pin bugs
+/// spawning anything. Two of them pin bugs
 /// this feature's review caught and verified against real tools:
 /// - `parseCounts` + `gitCountsArgs` exist because `%(push:track)` is EMPTY for a branch with no
 ///   upstream under git's default `push.default=simple` — i.e. for every `git worktree add -b` workroom.
@@ -15,16 +15,14 @@ final class VCSWritingTests: XCTestCase {
 
   // MARK: - Placement
 
-  /// fetch runs at the project root for BOTH backends: jj because a secondary workspace has no `.git`,
-  /// git because `FETCH_HEAD` is per-worktree and the root is the one answer every workroom shares.
+  /// fetch runs at the project root because `FETCH_HEAD` is per-worktree and the root is the one
+  /// answer every workroom shares.
   func testFetchAlwaysRunsAtTheProjectRoot() {
     XCTAssertEqual(CLIVCSWriter.opDirectory(.fetch, path: "/w/room", projectRoot: "/p"), "/p")
   }
 
-  /// **Push must run in the WORKROOM, for jj too.** It used to run jj's push at the project root because
-  /// bookmarks are repo-global. Bookmarks are — but `@` is workspace-scoped, so `jj git push --change @`
-  /// at the root published the ROOT workspace's working copy and left the workroom's commit at home,
-  /// reporting success. Measured: the push created `push-<root's change id>` carrying the root's commit.
+  /// **Push, pull and abort must run in the WORKROOM**: they act on the workroom's own branch and
+  /// working tree, and running them at the root would act on the root's instead.
   ///
   /// `path` and `projectRoot` are deliberately DIFFERENT here — `VCSRemoteIntegrationTests` passes the
   /// same directory for both, which is exactly why it could not catch this.
@@ -154,32 +152,6 @@ final class VCSWritingTests: XCTestCase {
       "the flag is one character followed by a TAB — a bare ! is prose")
   }
 
-  /// Two jj refusals that are permanent until the user acts. Both landed in `.other`, whose recovery is a
-  /// retry of the same doomed command, so both needed their own case. jj doesn't localize, which is what
-  /// makes matching its prose acceptable here.
-  func testJJPermanentRefusalsAreClassified() {
-    let undescribed = CommandResult(
-      stdout: "",
-      stderr: "Error: Won't push commit 050e657d3c36 since it has no description",
-      exitCode: 1, timedOut: false)
-    guard case .needsDescription = CLIVCSWriter.classify(undescribed, action: .push, tool: "jj")
-    else {
-      return XCTFail("an undescribed commit must not reach .other — it can never be pushed")
-    }
-
-    let immutable = CommandResult(
-      stdout: "",
-      stderr: """
-        Error: Commit 4c8e754829da is immutable
-        Hint: Could not modify commit: nlsnswmz 4c8e7548 feat@origin | feat1
-        """,
-      exitCode: 1, timedOut: false)
-    guard case .immutableHistory = CLIVCSWriter.classify(immutable, action: .pull, tool: "jj")
-    else {
-      return XCTFail("an immutable-commit refusal must not reach .other — the retry is doomed")
-    }
-  }
-
   /// The point of the flag column: classification must survive a translated stderr. This is the exact
   /// pairing Homebrew git 2.55 produces under `fr_FR.UTF-8` — no English anywhere in the message.
   func testARejectedPushClassifiesWithNoEnglishInTheMessage() {
@@ -209,160 +181,6 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertTrue(args.contains("--autostash"))
     // Fully qualified, not bare — see `testNoRepoDerivedNameLandsInABareArgvSlot`.
     XCTAssertEqual(Array(args.suffix(2)), ["origin", "refs/heads/main"])
-  }
-
-  // MARK: - jj argument builders
-
-  /// Reads must not snapshot the working copy; writes must, or uncommitted edits are lost.
-  func testJJReadsIgnoreTheWorkingCopyAndWritesDoNot() {
-    for args in [
-      CLIVCSWriter.jjBookmarkListArgs(), CLIVCSWriter.jjOpLogArgs(),
-      CLIVCSWriter.jjRevsetCountArgs("@"),
-    ] {
-      XCTAssertTrue(
-        args.contains("--ignore-working-copy"), "read must not take the WC lock: \(args)")
-    }
-    for args in [
-      CLIVCSWriter.jjFetchArgs(remote: "origin"),
-      CLIVCSWriter.jjPushBookmarkArgs(bookmark: "main", remote: "origin"),
-      CLIVCSWriter.jjPushChangeArgs(revision: "@", remote: "origin"),
-      CLIVCSWriter.jjRebaseArgs(onto: "main@origin"),
-    ] {
-      XCTAssertFalse(
-        args.contains("--ignore-working-copy"), "a write must snapshot first: \(args)")
-    }
-  }
-
-  /// The template keyword is `self`; `ref.name()` errors on jj 0.43. And the tracking-count guards are
-  /// load-bearing: calling `tracking_ahead_count()` on a local ref renders `<Error: …>` into the output.
-  func testBookmarkTemplateUsesSelfAndGuardsTrackingCounts() {
-    let template = CLIVCSWriter.jjBookmarkListArgs().last ?? ""
-    XCTAssertTrue(template.contains("self.name()"))
-    XCTAssertFalse(template.contains("ref.name()"))
-    XCTAssertTrue(template.contains("self.tracking_present()"), "guards the count calls")
-    XCTAssertTrue(
-      CLIVCSWriter.jjBookmarkListArgs().contains("--all-remotes"),
-      "the remote rows are where the tracking counts come from")
-  }
-
-  /// `-b @` moves the whole branch containing `@` (the pull-rebase shape). `-s @` would move only `@`
-  /// and its descendants, orphaning its parents.
-  func testJJRebaseMovesTheBranchNotJustTheWorkingCopy() {
-    let args = CLIVCSWriter.jjRebaseArgs(onto: "main@origin")
-    XCTAssertEqual(Array(args.prefix(5)), ["rebase", "-b", "@", "-d", "main@origin"])
-    XCTAssertFalse(args.contains("-s"))
-  }
-
-  /// The ahead revset must be exactly what a push would send, so the count and the button agree: every
-  /// remote bookmark in scope (already pushed anywhere isn't ahead), minus the empty-and-undescribed
-  /// commit jj refuses to push — which is what a fresh workroom `@` is.
-  func testJJAheadRevsetMatchesWhatPushWouldSend() {
-    let ahead = CLIVCSWriter.jjAheadRevset(remote: "origin")
-    XCTAssertTrue(ahead.contains(#"remote_bookmarks(remote="origin")..@"#))
-    XCTAssertTrue(
-      ahead.contains(#"~(empty() & description(exact:""))"#),
-      "a clean workroom's `@` would otherwise read as 1 to push; got \(ahead)")
-    XCTAssertFalse(
-      ahead.contains("& ~empty()"),
-      "`~empty()` alone undercounts — jj pushes an empty commit that HAS a description")
-  }
-
-  /// **Behind is measured against `trunk()`, never against every remote bookmark.**
-  ///
-  /// `@..remote_bookmarks(remote=…)` counts every commit on every remote branch that isn't in `@`'s
-  /// ancestry, so a repo with unmerged feature branches reported their commits as "to pull" while
-  /// sitting on the tip of master. `VCSRemoteIntegrationTests` proves the count against real jj; this
-  /// pins the shape, and that the count and the rebase share one base.
-  func testJJBehindRevsetIsScopedToTrunk() {
-    XCTAssertEqual(CLIVCSWriter.jjBehindRevset, "@..trunk()")
-    XCTAssertFalse(
-      CLIVCSWriter.jjBehindRevset.contains("remote_bookmarks"),
-      "every-bookmark scope is the bug: other branches' work is not ours to pull")
-    XCTAssertTrue(
-      CLIVCSWriter.jjBehindRevset.contains(CLIVCSWriter.jjTrunkRevset),
-      "the count must be measured from the base the rebase targets")
-  }
-
-  /// A bookmarked `@` rebases onto its counterpart; an unbookmarked one (or a detached/none ref) onto
-  /// `trunk()`.
-  func testJJPullRebaseDestinationFallsBackToTrunk() {
-    XCTAssertEqual(
-      CLIVCSWriter.jjRebaseDestination(
-        current: VCSRef(name: "main", kind: .branch), remote: "origin"),
-      "\"main\"@\"origin\"")
-    XCTAssertEqual(
-      CLIVCSWriter.jjRebaseDestination(
-        current: VCSRef(name: nil, kind: .ancestor), remote: "origin"),
-      CLIVCSWriter.jjTrunkRevset,
-      "an unbookmarked `@` must still rebase — returning early left Pull as a fetch")
-    XCTAssertEqual(
-      CLIVCSWriter.jjRebaseDestination(current: .none, remote: "origin"),
-      CLIVCSWriter.jjTrunkRevset)
-  }
-
-  /// A bookmark name needing revset quoting (e.g. containing `|`) must not be interpolated bare into
-  /// the rebase destination — bare `|` parses as a union, exactly the bug `jjQuote` exists to prevent.
-  func testJJPullRebaseDestinationQuotesANameThatNeedsIt() {
-    XCTAssertEqual(
-      CLIVCSWriter.jjRebaseDestination(
-        current: VCSRef(name: "main|evil", kind: .branch), remote: "origin"),
-      "\"main|evil\"@\"origin\"")
-  }
-
-  /// Interpolating a remote name bare is a parse bug. Verified against jj 0.43: `a b`, `a)b` and `a:b`
-  /// fail with `Failed to parse revset`, and `a|b` silently parses as a UNION of two patterns — a wrong
-  /// count with no error. Every one of them parses once quoted.
-  func testRevsetRemoteNamesAreQuotedAndEscaped() {
-    XCTAssertEqual(CLIVCSWriter.jjQuote("origin"), #""origin""#)
-    XCTAssertEqual(CLIVCSWriter.jjQuote("a b"), #""a b""#)
-    XCTAssertEqual(CLIVCSWriter.jjQuote("a|b"), #""a|b""#)
-    // `\` before `"`, so the quote pass's own escapes don't get re-escaped.
-    XCTAssertEqual(CLIVCSWriter.jjQuote(#"a"b"#), #""a\"b""#)
-    XCTAssertEqual(CLIVCSWriter.jjQuote(#"a\b"#), #""a\\b""#)
-    XCTAssertEqual(CLIVCSWriter.jjQuote(#"a\"b"#), #""a\\\"b""#)
-
-    // Only the ahead revset interpolates a remote at all — behind is scoped to `trunk()`, which names
-    // no remote, so there is nothing there left to quote.
-    for name in ["a b", "a)b", "a:b", "a|b", #"a"b"#] {
-      let revset = CLIVCSWriter.jjAheadRevset(remote: name)
-      XCTAssertTrue(
-        revset.contains("remote=\(CLIVCSWriter.jjQuote(name))"),
-        "the name must reach the revset quoted: \(revset)")
-    }
-  }
-
-  /// `jjUnquote` must be the exact inverse of `jjQuote`, not a naive strip of the first/last character —
-  /// an embedded escaped quote or backslash has to round-trip exactly, since a naive strip would mangle
-  /// either one.
-  func testJJUnquoteRoundTripsJJQuoteExactly() {
-    for name in ["origin", "a b", "a|b", #"a"b"#, #"a\b"#, #"a\"b"#, #"a\\b"#, #""a"#, ""] {
-      XCTAssertEqual(
-        CLIVCSWriter.jjUnquote(CLIVCSWriter.jjQuote(name)), name,
-        "round-trip failed for \(name.debugDescription)")
-    }
-  }
-
-  /// A bare (unquoted) name — what jj's template prints for an ordinary identifier-like bookmark — must
-  /// pass through unchanged, since it was never quoted to begin with.
-  func testJJUnquoteLeavesABareNameUnchanged() {
-    XCTAssertEqual(CLIVCSWriter.jjUnquote("main"), "main")
-    XCTAssertEqual(CLIVCSWriter.jjUnquote(""), "")
-  }
-
-  /// jj refuses to push a commit with an empty description, and a fresh `@` after `jj new` has neither
-  /// changes nor a description — the state a new workroom sits in.
-  func testAnonymousPushRevisionAvoidsAnEmptyWorkingCopy() {
-    XCTAssertEqual(CLIVCSWriter.jjPushRevision(hasChanges: false, hasDescription: false), "@-")
-    XCTAssertEqual(CLIVCSWriter.jjPushRevision(hasChanges: true, hasDescription: false), "@")
-    XCTAssertEqual(CLIVCSWriter.jjPushRevision(hasChanges: false, hasDescription: true), "@")
-    XCTAssertEqual(CLIVCSWriter.jjPushRevision(hasChanges: true, hasDescription: true), "@")
-  }
-
-  func testJJPushUsesChangeForAnonymousAndBookmarkOtherwise() {
-    XCTAssertTrue(
-      CLIVCSWriter.jjPushChangeArgs(revision: "@-", remote: "origin").contains("--change"))
-    XCTAssertTrue(
-      CLIVCSWriter.jjPushBookmarkArgs(bookmark: "main", remote: "origin").contains("--bookmark"))
   }
 
   // MARK: - parseGitRemoteRefs
@@ -422,139 +240,6 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertNil(CLIVCSWriter.parseCounts("wat"))
     XCTAssertNil(CLIVCSWriter.parseCounts("1"))
     XCTAssertNil(CLIVCSWriter.parseCounts("1\t2\t3"))
-  }
-
-  // MARK: - parseJJBookmarks (the inversion is the crown jewel)
-
-  /// jj states its counts from the REMOTE ref's perspective: `tracking_ahead_count()` means the remote
-  /// is ahead, which is git's BEHIND. If this ever stops failing on a swap, the toolbar lies about which
-  /// way to sync.
-  func testJJCountsAreSwappedToTheLocalPointOfView() {
-    let out = [
-      nul("main", "", "aaa", "1", "0", "0", "", ""),
-      nul("main", "origin", "aaa", "1", "0", "1", "6010", "0"),
-    ].joined(separator: "\n")
-    let parsed = CLIVCSWriter.parseJJBookmarks(out)
-    let tracking = parsed.bookmarks.first { $0.name == "main" }?.tracking
-    XCTAssertEqual(
-      tracking?.ahead, 0, "jj's tracking_BEHIND becomes our ahead")
-    XCTAssertEqual(
-      tracking?.behind, 6010, "jj's tracking_AHEAD (remote is ahead) becomes our behind")
-  }
-
-  /// A colocated repo exposes a pseudo-remote called `git`. It is not a remote.
-  func testDropsTheGitPseudoRemote() {
-    let out = [
-      nul("main", "", "aaa", "1", "0", "0", "", ""),
-      nul("main", "git", "aaa", "1", "0", "1", "0", "0"),
-      nul("main", "origin", "aaa", "1", "0", "1", "0", "0"),
-    ].joined(separator: "\n")
-    let parsed = CLIVCSWriter.parseJJBookmarks(out)
-    XCTAssertEqual(parsed.remotes, ["origin"], "the `git` pseudo-remote must not appear")
-    XCTAssertEqual(parsed.bookmarks.first?.tracking?.comparedTo, "main@origin")
-  }
-
-  /// **The bug T9 exists to close.** `origin` and `upstream` both tracking `main`: the PRIMARY
-  /// remote's row must win, not whichever line the parser read last. Two identical inputs differing
-  /// only in ROW ORDER must produce the SAME tracking once a primary is given.
-  func testMultiRemoteTrackingPicksThePrimaryNotTheLastRowRead() {
-    let originLast = [
-      nul("main", "", "aaa", "1", "0", "0", "", ""),
-      nul("main", "upstream", "aaa", "1", "0", "1", "9", "9"),
-      nul("main", "origin", "aaa", "1", "0", "1", "1", "2"),
-    ].joined(separator: "\n")
-    let upstreamLast = [
-      nul("main", "", "aaa", "1", "0", "0", "", ""),
-      nul("main", "origin", "aaa", "1", "0", "1", "1", "2"),
-      nul("main", "upstream", "aaa", "1", "0", "1", "9", "9"),
-    ].joined(separator: "\n")
-    for out in [originLast, upstreamLast] {
-      let tracking = CLIVCSWriter.parseJJBookmarks(out, primaryRemote: "origin").bookmarks.first?
-        .tracking
-      XCTAssertEqual(
-        tracking?.comparedTo, "main@origin", "row order must not decide the winner")
-      XCTAssertEqual(tracking?.ahead, 2)
-      XCTAssertEqual(tracking?.behind, 1)
-    }
-  }
-
-  func testAbsentRemoteBookmarkIsGone() {
-    let out = [
-      nul("feature", "", "aaa", "1", "0", "0", "", ""),
-      nul("feature", "origin", "", "0", "0", "1", "0", "6010"),
-    ].joined(separator: "\n")
-    let tracking = CLIVCSWriter.parseJJBookmarks(out).bookmarks.first?.tracking
-    XCTAssertEqual(tracking?.gone, true)
-    XCTAssertNil(tracking?.ahead, "a deleted counterpart can't answer counts")
-    XCTAssertNil(tracking?.behind)
-  }
-
-  func testUntrackedRemoteBookmarkHasNoCounts() {
-    let out = [
-      nul("feature", "", "aaa", "1", "0", "0", "", ""),
-      nul("feature", "origin", "bbb", "1", "0", "0", "", ""),
-    ].joined(separator: "\n")
-    let tracking = CLIVCSWriter.parseJJBookmarks(out).bookmarks.first?.tracking
-    XCTAssertEqual(tracking?.comparedTo, "feature@origin")
-    XCTAssertNil(tracking?.ahead, "jj cannot answer for an untracked remote bookmark")
-  }
-
-  /// Guarded in the template, but if a future jj change leaks `<Error: …>` into a count field it must
-  /// degrade to "unanswerable", not crash or read as zero.
-  func testErrorTextInACountFieldIsNil() {
-    let out = [
-      nul("main", "", "aaa", "1", "0", "0", "", ""),
-      nul("main", "origin", "aaa", "1", "0", "1", "<Error: Not a tracked remote ref>", "0"),
-    ].joined(separator: "\n")
-    let tracking = CLIVCSWriter.parseJJBookmarks(out).bookmarks.first?.tracking
-    XCTAssertNil(tracking?.behind)
-  }
-
-  func testLocalOnlyBookmarkHasNoTracking() {
-    let out = nul("local-only", "", "aaa", "1", "0", "0", "", "")
-    let parsed = CLIVCSWriter.parseJJBookmarks(out)
-    XCTAssertEqual(parsed.bookmarks.map(\.name), ["local-only"])
-    XCTAssertNil(parsed.bookmarks.first?.tracking)
-    XCTAssertEqual(parsed.remotes, [])
-  }
-
-  /// **The bug T8 exists to close.** jj's `self.name()` template field renders a non-identifier
-  /// bookmark name pre-quoted — verified against jj 0.43: `bookmark list -T 'self.name()'` for a
-  /// bookmark literally named `main|evil` prints `"main|evil"`, quotes included. Before `jjUnquote`,
-  /// `JJBookmark.name` carried that literal quoted string, so `parsed.bookmarks.first { $0.name ==
-  /// name }` against the raw name from `currentRef` never matched — tracking, counts and Pull went
-  /// silently nil for any workroom using such a name.
-  func testAQuotedBookmarkNameIsUnquotedNotLeftLiteral() {
-    let out = [
-      nul(#""main|evil""#, "", "aaa", "1", "0", "0", "", ""),
-      nul(#""main|evil""#, "origin", "aaa", "1", "0", "1", "2", "1"),
-    ].joined(separator: "\n")
-    let parsed = CLIVCSWriter.parseJJBookmarks(out)
-    XCTAssertEqual(parsed.bookmarks.map(\.name), ["main|evil"], "must be unquoted, not literal")
-    let tracking = parsed.bookmarks.first { $0.name == "main|evil" }?.tracking
-    XCTAssertNotNil(tracking, "the raw name must match the parsed, unquoted name")
-    XCTAssertEqual(tracking?.ahead, 1)
-    XCTAssertEqual(tracking?.behind, 2)
-  }
-
-  // MARK: - parseJJFetchOp
-
-  func testTakesTheNewestFetchOperation() {
-    let out = [
-      nul("1700000300", "snapshot working copy"),
-      nul("1700000200", "fetch from git remote origin"),
-      nul("1700000100", "fetch from git remote origin"),
-    ].joined(separator: "\n")
-    XCTAssertEqual(
-      CLIVCSWriter.parseJJFetchOp(out), Date(timeIntervalSince1970: 1_700_000_200),
-      "newest-first ordering means the FIRST match wins")
-  }
-
-  func testNoFetchOperationYieldsNil() {
-    let out = [
-      nul("1700000300", "snapshot working copy"), nul("1700000200", "new empty commit"),
-    ].joined(separator: "\n")
-    XCTAssertNil(CLIVCSWriter.parseJJFetchOp(out))
   }
 
   // MARK: - commonGitDir / worktreeGitDir / lastFetch
@@ -651,26 +336,6 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertEqual(
       CLIVCSWriter.parseGitRemoteList("origin\nupstream\n\n"), ["origin", "upstream"])
     XCTAssertEqual(CLIVCSWriter.parseGitRemoteList(""), [])
-  }
-
-  func testParseJJRemoteList() {
-    XCTAssertEqual(
-      CLIVCSWriter.parseJJRemoteList(
-        "origin https://example.com/x.git\nupstream ../bare.git\n"), ["origin", "upstream"])
-    XCTAssertEqual(CLIVCSWriter.parseJJRemoteList(""), [])
-  }
-
-  /// jj permits a remote name containing spaces, so the split must be on the LAST space — the URL has
-  /// none. Splitting on the first would report a remote called `my`.
-  func testParseJJRemoteListSplitsOnTheLastSpace() {
-    XCTAssertEqual(
-      CLIVCSWriter.parseJJRemoteList("my remote ../bare.git\n"), ["my remote"])
-  }
-
-  /// `git` is jj's colocated pseudo-remote, not a server.
-  func testParseJJRemoteListDropsTheGitPseudoRemote() {
-    XCTAssertEqual(
-      CLIVCSWriter.parseJJRemoteList("git /some/path\norigin ../bare.git\n"), ["origin"])
   }
 
   func testMergeRemotesPutsConfiguredFirstAndKeepsRefOnlyNames() {
@@ -780,10 +445,6 @@ final class VCSWritingTests: XCTestCase {
       CLIVCSWriter.classify(
         failed("fatal: 'nope' does not appear to be a git repository"),
         action: .fetch, tool: "git"), .noRemote)
-    XCTAssertEqual(
-      CLIVCSWriter.classify(
-        failed("Error: No git remotes to fetch from"), action: .fetch, tool: "jj"),
-      .noRemote)
   }
 
   // MARK: Lock files
@@ -808,9 +469,6 @@ final class VCSWritingTests: XCTestCase {
   }
 
   func testParseLockPathRejectsWhatItCannotUse() {
-    XCTAssertNil(
-      CLIVCSWriter.parseLockPath("Internal error: Failed to take lock for Git import/export"),
-      "jj's lock message names no path")
     XCTAssertNil(
       CLIVCSWriter.parseLockPath("fatal: Unable to create '.git/index.lock': File exists."),
       "a relative path is meaningless in a tooltip")
@@ -932,17 +590,12 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertEqual(CLIVCSWriter.existingLockFile(gitDir: worktree)?.filename, "index.lock")
   }
 
-  func testLockedForBothBackends() {
+  func testLockedWithAClearedPathIsTransient() {
     XCTAssertEqual(
       CLIVCSWriter.classify(
         failed("fatal: Unable to create '/r/.git/packed-refs.lock': File exists"),
         action: .fetch, tool: "git"), .locked(nil),
       "a path that isn't on disk means the lock already cleared — transient, so Retry is right")
-    XCTAssertEqual(
-      CLIVCSWriter.classify(
-        failed("Internal error: Failed to take lock for Git import/export"),
-        action: .fetch, tool: "jj"), .locked(nil),
-      "jj's import/export lock message carries no path at all")
   }
 
   /// A failed pull that left a rebase behind must report `.rebaseInProgress`, because that state needs
@@ -983,9 +636,9 @@ final class VCSWritingTests: XCTestCase {
   func testUnrecognisedFailureWithNoStderrNamesTheExitCode() {
     guard
       case .other(let message) = CLIVCSWriter.classify(
-        failed("", exit: 3), action: .fetch, tool: "jj")
+        failed("", exit: 3), action: .fetch, tool: "git")
     else { return XCTFail("expected .other") }
-    XCTAssertEqual(message, "jj exited 3")
+    XCTAssertEqual(message, "git exited 3")
   }
 
   /// REGRESSION for the dialog `a64e4269` ("stop 'exited with code 15' dialog on wake from sleep")
@@ -1151,48 +804,6 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertTrue(args.contains("--pathspec-file-nul"))
   }
 
-  /// Mutating jj commands must NOT carry `--ignore-working-copy`: the snapshot is what moves on-disk
-  /// edits into `@` before it is rewritten.
-  func testJJCommitAndDescribeUseWriteFlags() {
-    for args in [
-      CLIVCSWriter.jjCommitArgs(message: "m"), CLIVCSWriter.jjDescribeArgs(message: "m"),
-    ] {
-      XCTAssertFalse(
-        args.contains("--ignore-working-copy"),
-        "a jj write must snapshot, or the user's edits are not in the commit")
-      XCTAssertTrue(args.contains("--color"))
-    }
-    XCTAssertEqual(CLIVCSWriter.jjCommitArgs(message: "m").first, "commit")
-    XCTAssertEqual(CLIVCSWriter.jjDescribeArgs(message: "m").first, "describe")
-  }
-
-  /// The message rides ATTACHED. jj's parser reads a detached `-m` value that begins with `-` as
-  /// another flag — measured on 0.43: `jj describe -m "-fix the parser"` dies with
-  /// `error: unexpected argument '-f' found`, where `--message=-fix the parser` records it verbatim.
-  /// There is no `--` to fall back on here, so the option boundary has to be inside the argument.
-  func testJJMessageIsAttachedSoALeadingDashCannotBeReadAsAFlag() {
-    for args in [
-      CLIVCSWriter.jjCommitArgs(message: "-fix the parser"),
-      CLIVCSWriter.jjDescribeArgs(message: "-fix the parser"),
-    ] {
-      XCTAssertTrue(
-        args.contains("--message=-fix the parser"),
-        "the message must be one attached argument, got: \(args)")
-      XCTAssertFalse(args.contains("-m"), "a detached -m value starting with '-' fails to parse")
-      XCTAssertFalse(
-        args.contains("-fix the parser"),
-        "the message must never appear as a bare argv element")
-    }
-  }
-
-  /// jj takes NO pathspec: its path arguments are a fileset expression language where a space fails
-  /// to parse and a non-matching expression still creates an empty commit at exit 0.
-  func testJJCommitTakesNoPathspec() {
-    let args = CLIVCSWriter.jjCommitArgs(message: "m")
-    XCTAssertFalse(args.contains("--"), "no operand boundary, because there are no operands")
-    XCTAssertFalse(args.contains("--pathspec-from-file=-"))
-  }
-
   /// The amend target is a label, so it reads the SUBJECT plus a short sha — a full `%B` body would
   /// wrap the dialog. Read-only, hardened, and `--no-color` so the label can never carry escapes.
   func testHeadSubjectReadIsAOneLineLabel() {
@@ -1202,30 +813,6 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertTrue(args.contains("--pretty=format:%h %s"))
     XCTAssertTrue(args.contains("--no-color"), "a label must not carry terminal escapes")
     XCTAssertFalse(args.contains("%B"), "the full body would wrap the dialog")
-  }
-
-  /// The prefill read must not take the working-copy lock just to populate a text field.
-  func testJJDescriptionReadIsIgnoreWorkingCopy() {
-    let args = CLIVCSWriter.jjDescriptionArgs()
-    XCTAssertTrue(args.contains("--ignore-working-copy"))
-    XCTAssertTrue(args.contains("description"), "the FULL description, not just its first line")
-  }
-
-  func testOpHeadReadIsIgnoreWorkingCopy() {
-    XCTAssertTrue(CLIVCSWriter.jjOpHeadArgs().contains("--ignore-working-copy"))
-  }
-
-  // MARK: - Commit: mode support
-
-  /// Two of the six combinations are illegal, and they fail as a typed result rather than by
-  /// silently running the nearest command.
-  func testModeSupportMatrix() {
-    XCTAssertTrue(CLIVCSWriter.supports(mode: .commit, vcs: "git"))
-    XCTAssertTrue(CLIVCSWriter.supports(mode: .commit, vcs: "jj"))
-    XCTAssertTrue(CLIVCSWriter.supports(mode: .amendMessage, vcs: "git"))
-    XCTAssertFalse(CLIVCSWriter.supports(mode: .amendMessage, vcs: "jj"), "jj has no amend")
-    XCTAssertTrue(CLIVCSWriter.supports(mode: .describe, vcs: "jj"))
-    XCTAssertFalse(CLIVCSWriter.supports(mode: .describe, vcs: "git"), "git has no describe")
   }
 
   // MARK: - Commit: classification
@@ -1269,14 +856,6 @@ final class VCSWritingTests: XCTestCase {
       commitResult("fatal: unable to write new index file"), tool: "git")
     guard case .other(let message) = f else { return XCTFail("got \(String(describing: f))") }
     XCTAssertTrue(message.contains("unable to write new index file"), "git's own words survive")
-  }
-
-  /// jj reports an untouched working copy as SUCCESS (exit 0, "Nothing changed."). Without this the
-  /// UI would report a commit that recorded nothing.
-  func testJJNothingChangedIsAFailureNotASilentSuccess() {
-    let result = CommandResult(
-      stdout: "Nothing changed.\n", stderr: "", exitCode: 0, timedOut: false)
-    XCTAssertEqual(CLIVCSWriter.classifyCommit(result, tool: "jj"), .nothingToCommit)
   }
 
   func testClassifyCommitNothingToCommitForGit() {
@@ -1354,37 +933,8 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertEqual(CLIVCSWriter.classifyCommit(empty, tool: "git"), .nothingToCommit)
   }
 
-  /// jj's no-op is the one that must be caught BEFORE the success guard: it exits ZERO. Measured on
-  /// jj 0.43 — everything jj prints goes to stderr, including this.
-  func testJJNothingChangedIsCaughtDespiteExitingZero() {
-    for onStderr in [true, false] {
-      let noop = CommandResult(
-        stdout: onStderr ? "" : "Nothing changed.\n",
-        stderr: onStderr ? "Nothing changed.\n" : "", exitCode: 0, timedOut: false)
-      XCTAssertEqual(
-        CLIVCSWriter.classifyCommit(noop, tool: "jj"), .nothingToCommit,
-        "jj 0.43 uses stderr, but the whole-line anchor is what makes this safe, not the stream")
-    }
-  }
-
-  /// But jj echoes the description back in its own progress lines, so the match is a WHOLE line —
-  /// otherwise describing a change "Nothing changed." would report itself as a no-op.
-  func testJJEchoingTheMessageIsNotAnEmptyCommit() {
-    let landed = CommandResult(
-      stdout: "",
-      stderr: """
-        Working copy  (@) now at: rsuzonno 8d983e9b (empty) (no description set)
-        Parent commit (@-)      : trtwtxzs 5ba5b171 Nothing changed.
-        """,
-      exitCode: 0, timedOut: false)
-    XCTAssertNil(
-      CLIVCSWriter.classifyCommit(landed, tool: "jj"),
-      "jj echoes the description; only a whole line of its own may be read as the marker")
-  }
-
-  /// The exit-zero escape hatch is jj's alone. git never exits 0 on a no-op, so letting git take that
-  /// branch is what created the false positive in the first place.
-  func testTheExitZeroNoOpCheckIsScopedToJJ() {
+  /// git never exits 0 on a no-op, so an exit-zero commit is never read as one — whatever it printed.
+  func testAnExitZeroCommitIsNeverANoOp() {
     let gitSaysIt = CommandResult(
       stdout: "", stderr: "Nothing changed.\n", exitCode: 0, timedOut: false)
     XCTAssertNil(CLIVCSWriter.classifyCommit(gitSaysIt, tool: "git"))

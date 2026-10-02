@@ -16,21 +16,6 @@ final class RemoteStateModelTests: XCTestCase {
   private let otherTarget = RemoteStateModel.Target(
     sid: .workroom(project: "/p", name: "other"), path: "/p/other", vcs: .git, projectRoot: "/p")
 
-  /// Reset in setUp as well as tearDown. `Defaults[.vcsLastFetch]` is a PERSISTED dictionary in the
-  /// standard suite keyed by project ROOT PATH, and `VCSRemoteTriggerTests` drives real `.fetch`/`.pull`
-  /// completions for the same `/p` root, so `recordOwnFetch` there writes a stamp this class's
-  /// never-fetched preconditions read. `-parallel-testing` workers are separate processes sharing one
-  /// defaults domain, so tearDown alone leaves a window where the other class's stamp is already written.
-  override func setUp() {
-    super.setUp()
-    Defaults.reset(.vcsLastFetch)
-  }
-
-  override func tearDown() {
-    super.tearDown()
-    Defaults.reset(.vcsLastFetch)
-  }
-
   private func state(
     branch: String = "main", ahead: Int = 0, behind: Int = 0, gone: Bool = false,
     remotes: [String] = ["origin"], lastFetch: VCSLastFetch = .never
@@ -368,58 +353,10 @@ final class RemoteStateModelTests: XCTestCase {
     XCTAssertTrue(mutations.isEmpty)
   }
 
-  // MARK: The jj no-op-fetch gap
-
-  /// jj's fetch is invisible: it passes `--no-write-fetch-head`, and a fetch that brings nothing records
-  /// NO operation at all. So the backend can report `.never` right after a successful fetch, and without
-  /// Workroom's own stamp the user would watch a stale timestamp not move.
-  func testOwnFetchStampFillsTheGapWhenTheBackendReportsNever() async {
-    let writer = StubWriter(state: .state(state(lastFetch: .never)))
-    let m = model(writer, ttl: 0)
-    m.focus(target)
-    await m.awaitCurrentLoad()
-    XCTAssertEqual(m.snapshot?.lastFetch, .never)
-
-    m.perform(.fetch)
-    await m.awaitCurrentLoad()
-    guard case .at = m.snapshot?.lastFetch else {
-      return XCTFail(
-        "after our own fetch the label must move, got \(String(describing: m.snapshot?.lastFetch))")
-    }
-  }
-
-  /// …but the backend still wins when it is newer, which is what keeps a fetch run in the user's own
-  /// terminal visible.
-  func testBackendEvidenceWinsWhenNewer() {
-    let old = Date(timeIntervalSince1970: 1_000)
-    let newer = Date(timeIntervalSince1970: 2_000)
-    let merged = RemoteStateModel.merging(state(lastFetch: .at(newer)), ownFetch: old)
-    XCTAssertEqual(merged.lastFetch, .at(newer))
-  }
-
-  func testOwnStampWinsWhenNewer() {
-    let old = Date(timeIntervalSince1970: 1_000)
-    let newer = Date(timeIntervalSince1970: 2_000)
-    let merged = RemoteStateModel.merging(state(lastFetch: .at(old)), ownFetch: newer)
-    XCTAssertEqual(merged.lastFetch, .at(newer))
-  }
-
-  func testMergingWithNoOwnStampIsANoOp() {
-    let merged = RemoteStateModel.merging(state(lastFetch: .never), ownFetch: nil)
-    XCTAssertEqual(merged.lastFetch, .never)
-  }
-
-  /// `.unknown` means "couldn't tell", so our own stamp is strictly better information.
-  func testOwnStampReplacesUnknown() {
-    let stamp = Date(timeIntervalSince1970: 5_000)
-    let merged = RemoteStateModel.merging(state(lastFetch: .unknown), ownFetch: stamp)
-    XCTAssertEqual(merged.lastFetch, .at(stamp))
-  }
-
   // MARK: Conflict upgrade
 
-  /// A jj pull can succeed AND produce conflicts (they live inside commits; the rebase exits 0), so the
-  /// flag arrives from the status refresh afterwards, not from the exit code.
+  /// A pull can succeed AND leave the tree conflicted, so the flag arrives from the status refresh
+  /// afterwards, not from the exit code.
   func testPullConflictIsRecordedFromTheFollowUpStatus() async {
     let writer = StubWriter(state: .state(state(behind: 1)))
     let m = model(writer, ttl: 0)
@@ -516,17 +453,17 @@ final class RemoteStateModelTests: XCTestCase {
   // MARK: The failure dialog
 
   /// **The reported defect.** The toolbar's sync segment is one truncating line, so a failure rendered as
-  /// "Describe the change bef…" with the rest only reachable by hovering. Anything the user asked for and
+  /// a truncated first line with the rest only reachable by hovering. Anything the user asked for and
   /// that failed now raises a report the dialog presents in full.
   func testAUserInitiatedFailureRaisesAReport() async {
     let writer = StubWriter(
-      state: .state(state(ahead: 1)), action: .failed(.needsDescription("no description")))
+      state: .state(state(ahead: 1)), action: .failed(.authRequired("denied")))
     let m = model(writer, ttl: 0)
     m.focus(target)
     await m.awaitCurrentLoad()
     m.perform(.push)
     await m.awaitCurrentLoad()
-    XCTAssertEqual(m.failureReport?.failure, .needsDescription("no description"))
+    XCTAssertEqual(m.failureReport?.failure, .authRequired("denied"))
     XCTAssertEqual(m.failureReport?.action, .push, "the dialog's title names what was attempted")
   }
 
@@ -813,8 +750,7 @@ private actor StubWriter: LocalVCSWriting {
   }
 
   func push(
-    path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool,
-    anonymousRevision: String
+    path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool
   ) async -> VCSRemoteActionResult {
     pushes += 1
     return await settle()

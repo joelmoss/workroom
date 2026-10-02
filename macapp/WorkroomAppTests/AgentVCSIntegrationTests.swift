@@ -140,44 +140,6 @@ final class AgentVCSIntegrationTests: XCTestCase {
     await connection.close()
   }
 
-  func testAllNineJJReadsAndUnknownOwnership() async throws {
-    let root = try root()
-    try run("jj", ["git", "init", "--colocate"], at: root)
-    try "base\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
-    try run("jj", ["commit", "-m", "initial"], at: root)
-    try "working\n".write(
-      to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
-    let connection = try await connect()
-    let (router, location) = try await router(root: root, backend: .jj, connection: connection)
-    let reader = try await router.reader(for: location)
-    let status = try await reader.workingStatus()
-    XCTAssertEqual(status.dirty, true)
-    XCTAssertEqual(status.changedFiles?.map(\.path), ["file"])
-    let page = try await reader.log(limit: 20)
-    let id = try XCTUnwrap(page.commits.first?.commitID)
-    let change = try await reader.changeset(commitID: id)
-    XCTAssertEqual(change.files.map(\.path), ["file"])
-    let patch = try await reader.fileDiff(commitID: id, path: "file")
-    let working = try await reader.workingFileDiff(path: "file", base: .workingCopy)
-    XCTAssertTrue(patch.contains("-base\n+working"))
-    XCTAssertTrue(working.contains("-base\n+working"))
-    let content = try await reader.fileContent(rev: id, path: "file")
-    let parent = try await reader.commitParentFileContent(commitID: id, path: "file")
-    let base = try await reader.workingBaseFileContent(base: .workingCopy, path: "file")
-    XCTAssertEqual(content, "working\n")
-    XCTAssertEqual(parent, "base\n")
-    XCTAssertEqual(base, "base\n")
-    _ = try await reader.currentRef()
-    let fallback = RepositoryRouter(localReader: { try connection.reader(context: $0) })
-    let unknown = try await fallback.reader(for: location)
-    _ = try await unknown.log(limit: 1)
-    do {
-      _ = try await unknown.workingStatus()
-      XCTFail("Unknown ownership permitted a snapshot")
-    } catch RepositoryRoutingError.registrationRequired {}
-    await connection.close()
-  }
-
   func testChunkedReplyAndConcurrentRequests() async throws {
     let root = try gitRepo()
     // Over one envelope after JSON escaping; this must arrive as a single complete patch.
@@ -302,79 +264,8 @@ final class AgentVCSIntegrationTests: XCTestCase {
     await connection.close()
   }
 
-  func testAgentDeathKeepsSnapshotChildBarrierUntilActualCompletion() async throws {
-    let root = try root()
-    try run("jj", ["git", "init", "--colocate"], at: root)
-    try "base\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
-    try run("jj", ["commit", "-m", "initial"], at: root)
-    try "changed\n".write(
-      to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
-    let bin = root.appendingPathComponent("bin")
-    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-    let realJJ = try run("which", ["jj"], at: root)
-    let marker = root.appendingPathComponent("accepted")
-    let release = root.appendingPathComponent("release")
-    let wrapper = bin.appendingPathComponent("jj")
-    let quote = CommandLineInstaller.shellQuoted
-    let script = """
-      #!/bin/sh
-      if [ "$1" = diff ]; then
-        echo "$$" > \(quote(marker.path))
-        attempts=0
-        while [ ! -e \(quote(release.path)) ]; do
-          attempts=$((attempts + 1))
-          [ "$attempts" -lt 500 ] || exit 124
-          sleep 0.02
-        done
-      fi
-      exec \(quote(realJJ)) "$@"
-      """
-    try script.write(to: wrapper, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: wrapper.path)
-    var env = environment
-    env["PATH"] = bin.path + ":" + (env["PATH"] ?? "")
-    let agent = try AgentHarness.start(environment: env)
-    agents.append(agent)
-    let connection = try await AgentVCSConnection.connect(
-      host: .local, socketPath: agent.socketPath)
-    let (router, location) = try await router(root: root, backend: .jj, connection: connection)
-    let reader = try await router.reader(for: location)
-    let pending = Task { try await reader.workingFileDiff(path: "file", base: .workingCopy) }
-    defer { try? Data().write(to: release) }
-    let deadline = ContinuousClock.now + .seconds(5)
-    while !FileManager.default.fileExists(atPath: marker.path), ContinuousClock.now < deadline {
-      try await Task.sleep(for: .milliseconds(10))
-    }
-    XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "snapshot CLI never started")
-    agent.stop()
-    agents.removeLast()
-    do {
-      _ = try await pending.value
-      XCTFail("dead agent returned a patch")
-    } catch is HostConnectionError {}
-    // Agent is dead; its accepted child still owns the exact barrier native writers use.
-    actor Completion {
-      var entered = false
-      func mark() { entered = true }
-    }
-    let completion = Completion()
-    let native = Task {
-      try await JJSnapshotGate().run(repository: location) {
-        await completion.mark()
-      }
-    }
-    try await Task.sleep(for: .milliseconds(150))
-    let prematurelyEntered = await completion.entered
-    XCTAssertFalse(prematurelyEntered)
-    try Data().write(to: release)
-    try await native.value
-    let didEnter = await completion.entered
-    XCTAssertTrue(didEnter)
-    await connection.close()
-  }
-
   /// A single overdue reply must fail only its own waiter, never the shared connection: the agent's
-  /// own bounded waits (JJ snapshot contention, subprocess timeout) can legitimately run at or above
+  /// own bounded waits (lock contention, subprocess timeout) can legitimately run at or above
   /// the client's per-request timeout, so treating one slow reply as "the channel is unusable" would
   /// make every other in-flight window's read fail too — see `AgentVCSConnection.request`/`fail`.
   func testOneRequestTimingOutDoesNotDisconnectAnUnrelatedInFlightRequest() async throws {
@@ -614,76 +505,6 @@ final class AgentVCSIntegrationTests: XCTestCase {
     await connection.close()
   }
 
-  /// The property the whole design leans on: the agent-backed writer's `jj commit` runs inside the
-  /// SAME `JJSnapshotGate`/`JJProcessBarrier` a native writer would, and the agent's own exec
-  /// service must never try to take that barrier a second time — see `vcs.rs`'s
-  /// `exec_never_contends_with_a_held_snapshot_barrier` for the Rust-side proof of the same
-  /// property. If this ever regressed, the commit below would hang for up to 30s and fail the test
-  /// on timeout instead of completing.
-  /// A remote host's jj writes run under the working-copy barrier, which the agent takes around each
-  /// command because a Mac cannot flock a file on another host (#229). Driven through a local agent
-  /// under a remote host id, which takes that path end to end: while this test holds the barrier the
-  /// commit waits, and it lands once the barrier is released.
-  func testARemoteJJCommitWaitsOnTheBarrierTheAgentTakes() async throws {
-    let root = try root()
-    try run("jj", ["git", "init", "--colocate"], at: root)
-    try "base\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
-    try run("jj", ["commit", "-m", "initial"], at: root)
-    try "changed\n".write(
-      to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
-    let hostID = UUID()
-    let host = HostID.remote(hostID)
-    let manager = HostConnectionManager()
-    let connection = try await connect(host: host)
-    _ = try await manager.connect(host: host) { connection }
-    let router = RepositoryRouter(connections: manager)
-    let location = try RepositoryLocation.remote(host: hostID, path: root.path)
-    try router.register(.init(location: location, backend: .jj, sharedLocation: location))
-    let writer = try await router.writer(for: location)
-
-    let local = try await RepositoryLocation.local(root.path)
-    let held = try XCTUnwrap(JJProcessBarrier.acquire(local))
-    let release = Task {
-      try? await Task.sleep(for: .milliseconds(1500))
-      held.release()
-    }
-    let started = ContinuousClock.now
-    let result = await writer.commit(
-      request: VCSCommitRequest(message: "remote jj commit", files: [], mode: .commit))
-    let waited = ContinuousClock.now - started
-    await release.value
-    guard case .ok = result else { return XCTFail("jj commit failed: \(result)") }
-    XCTAssertGreaterThanOrEqual(waited, .milliseconds(1200), "the commit ran without the barrier")
-    let log = try run("jj", ["log", "--no-graph", "-r", "@-", "-T", "description"], at: root)
-    XCTAssertTrue(log.contains("remote jj commit"), log)
-    await connection.close()
-  }
-
-  func testJJCommitRoutesThroughTheAgentWithoutContendingItsOwnSnapshotBarrier() async throws {
-    let root = try root()
-    try run("jj", ["git", "init", "--colocate"], at: root)
-    try "base\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
-    try run("jj", ["commit", "-m", "initial"], at: root)
-    try "changed\n".write(
-      to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
-    let connection = try await connect()
-    let (router, location) = try await writingRouter(
-      root: root, backend: .jj, connection: connection)
-    let writer = try await router.writer(for: location)
-    let result = await writer.commit(
-      request: VCSCommitRequest(message: "agent jj commit", files: [], mode: .commit))
-    guard case .ok = result else {
-      XCTFail("jj commit failed: \(result)")
-      return
-    }
-    let reader = try await router.reader(for: location)
-    let status = try await reader.workingStatus()
-    XCTAssertEqual(status.dirty, false)
-    let page = try await reader.log(limit: 5)
-    XCTAssertTrue(page.commits.contains { $0.summary == "agent jj commit" })
-    await connection.close()
-  }
-
   func testPushAndPullRouteThroughTheAgentAgainstARealRemote() async throws {
     let root = try gitRepo()
     let bareRemote = try self.root()
@@ -694,8 +515,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
       root: root, backend: .git, connection: connection)
     let writer = try await router.writer(for: location)
     let pushed = await writer.push(
-      current: VCSRef(name: "main", kind: .branch), remote: "origin", setUpstream: true,
-      anonymousRevision: "")
+      current: VCSRef(name: "main", kind: .branch), remote: "origin", setUpstream: true)
     guard case .ok = pushed else {
       XCTFail("push failed: \(pushed)")
       return

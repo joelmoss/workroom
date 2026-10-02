@@ -1,12 +1,8 @@
 import XCTest
 
-/// UI test for the jj Changes panel: the working copy (`@`) renders as a header — its
-/// change-id/commit/refs + description — over a flat change list, the same shape git uses. There are
-/// no disclosure groups and no separate Parent Commit group (the History panel surfaces the parent).
-///
-/// The git flat-list path is covered by `DiffViewerUITests.testGitWorktreeFileOpensDiff`;
-/// `ChangesPanel` reaches `gitContent` only when `status.jjWorkingCopy == nil`, which the resolver
-/// never sets for git (see `WorkroomStatusIntegrationTests`).
+/// UI test for the Changes panel: the working tree renders as a flat change list with no header —
+/// git's working tree isn't a commit, so there is nothing to head it with — and no disclosure groups
+/// or separate Parent Commit group (the History panel surfaces commits).
 ///
 /// Run with `make app-uitest` on a real GUI login session — XCUITest can't drive a headless run, so
 /// this is excluded from `make app-test` (the unit gate) via a separate scheme.
@@ -44,9 +40,8 @@ final class ChangesPanelUITests: XCTestCase {
       for: [XCTNSPredicateExpectation(predicate: p, object: el)], timeout: timeout) == .completed
   }
 
-  /// The jj Changes panel renders the working copy as a single flat header + change list: the header
-  /// (`changes.workingCopy`, carrying the change-id/commit/refs + description) exists, its changed
-  /// files render as rows, and no separate Parent Commit group is shown (removed — History shows it).
+  /// The Changes panel renders the working tree as a flat change list: its changed files render as
+  /// rows, with no header and no separate Parent Commit group (removed — History shows it).
   func testWorkingCopyRendersFlatWithoutParentGroup() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
@@ -55,14 +50,15 @@ final class ChangesPanelUITests: XCTestCase {
       element(app, id: "inspector.header.Changes").waitForExistence(timeout: 10),
       "Changes section should exist")
 
-    XCTAssertTrue(
-      element(app, id: "changes.workingCopy").waitForExistence(timeout: 10),
-      "the jj Working Copy header should render")
-
     // The flat change list renders its file rows directly (no disclosure to expand first).
     XCTAssertTrue(
-      waitExists(fileRow(app, "Gemfile"), true),
+      element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10),
       "the working-copy change list renders its file rows")
+    XCTAssertTrue(waitExists(fileRow(app, "Gemfile"), true))
+
+    // No header: the working tree is not a commit, so nothing heads the list.
+    XCTAssertFalse(
+      element(app, id: "changes.workingCopy").exists, "the working tree renders headerless")
 
     // The Parent Commit group is gone — its old accessibility id must not exist.
     XCTAssertFalse(
@@ -70,47 +66,28 @@ final class ChangesPanelUITests: XCTestCase {
       "the Parent Commit group is no longer shown")
   }
 
-  /// The bookmark on `@` must appear exactly ONCE on screen — in the toolbar segment, not also in the
-  /// Changes header below it.
-  ///
-  /// jj reports a bookmarked `@`'s name twice (as the status' `branchForCI` and again in the working
-  /// copy's `refs`), so this row has always needed a filter or one bookmark rendered as two identical
-  /// capsules. The reference point has moved twice: first the branch-name pill beside the chips, then —
-  /// briefly, when that pill went — nothing, which put the name back on screen twice ~40pt apart. Now
-  /// the chips are filtered against the toolbar's own `branchName(for:)` answer, so this asserts both
-  /// halves: present above, absent below.
-  func testWorkingCopyBookmarkRendersOnceInTheToolbarNotTheHeader() throws {
+  /// The branch is named exactly once — in the toolbar segment — and not repeated in the Changes
+  /// panel below it, which carries no header at all.
+  func testBranchRendersInTheToolbarNotTheChangesPanel() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertTrue(
+      element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10),
+      "the Changes panel should render its file rows")
+    XCTAssertFalse(element(app, id: "changes.workingCopy").exists, "no Changes header to repeat it")
 
-    let header = element(app, id: "changes.workingCopy")
-    XCTAssertTrue(header.waitForExistence(timeout: 10))
-
-    // The combined header resolves to a `StaticText` that carries its children's text as the
-    // element's VALUE, with an empty label. Fall back to the label rather than concatenating the
-    // two: were AppKit to expose the same text both ways, a concatenation would double every hit
-    // and fail this test on correct code.
-    let value = (header.value as? String) ?? ""
-    let text = value.isEmpty ? header.label : value
-    let hits = text.components(separatedBy: "feature/login").count - 1
-    XCTAssertEqual(
-      hits, 0,
-      "the toolbar names the bookmark; the Changes header must not repeat it — got \(hits) in \(text)"
-    )
-
-    // …and it really is on screen, so the filter removed a duplicate rather than the only copy.
     let branch = element(app, id: "vcs.toolbar.branch")
     XCTAssertTrue(branch.waitForExistence(timeout: 10))
     XCTAssertTrue(
       branch.label.contains("feature/login"),
-      "the toolbar's bookmark segment must name it; got \(branch.label)")
+      "the toolbar's branch segment must name it; got \(branch.label)")
   }
 
-  // MARK: conflicted files (jj per-file conflict status)
+  // MARK: conflicted files (per-file conflict status)
 
   /// A conflicted file must render as its OWN state in the Changes panel, all the way from the VCS
-  /// layer to the row: the jj backend now classifies an unresolved tree value as `.conflicted`, and
-  /// the row's composed accessibility label must say so.
+  /// layer to the row: the status read classifies an unmerged path as `.conflicted`, and the row's
+  /// composed accessibility label must say so.
   ///
   /// The badge glyph/colour themselves are NOT assertable here — the row is
   /// `.accessibilityElement(children: .ignore)`, so the `Text(letter)` inside it never reaches the
@@ -120,7 +97,7 @@ final class ChangesPanelUITests: XCTestCase {
   func testConflictedFileRendersAsConflicted() throws {
     let app = launchedApp(extraArguments: ["-WorkroomUITestConflict", "1"])
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
 
     let conflictedRow = element(app, id: "changes.file.app/models/merge_me.rb")
     XCTAssertTrue(conflictedRow.waitForExistence(timeout: 10), "the conflicted row should render")
@@ -144,7 +121,7 @@ final class ChangesPanelUITests: XCTestCase {
   func testNoConflictedRowInTheDefaultFixture() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
     XCTAssertTrue(element(app, id: "changes.file.Gemfile").waitForExistence(timeout: 10))
 
     XCTAssertFalse(
@@ -166,7 +143,7 @@ final class ChangesPanelUITests: XCTestCase {
   func testCollapsedProjectRowAggregatesTheConflict() throws {
     let app = launchedApp(extraArguments: ["-WorkroomUITestConflict", "1"])
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
 
     // Expanded: no aggregate dot yet.
     let dot = app.descendants(matching: .any)
@@ -224,7 +201,7 @@ final class ChangesPanelUITests: XCTestCase {
   func testContextMenuOpensFileInApp() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
 
     let row = element(app, id: "changes.file.Gemfile")
     XCTAssertTrue(row.waitForExistence(timeout: 10), "the Gemfile row should render")

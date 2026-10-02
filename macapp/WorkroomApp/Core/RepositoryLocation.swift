@@ -63,7 +63,7 @@ struct RepositoryLocation: Hashable, Sendable {
 }
 
 enum RepositoryBackend: String, Hashable, Sendable {
-  case git, jj
+  case git
 }
 
 /// Immutable routing decision. Only the router constructs contexts from a captured registry entry.
@@ -250,7 +250,6 @@ final class RepositoryRouter: @unchecked Sendable {
     let backend: RepositoryBackend
     switch kind {
     case .plainGit: backend = .git
-    case .jjColocated, .jjNonColocated: backend = .jj
     case .unsupported(let reason): throw VCSError.unsupportedRepo(reason)
     }
     return try RepositoryContext(location: location, backend: backend, sharedLocation: nil)
@@ -276,14 +275,12 @@ final class RepositoryRouter: @unchecked Sendable {
 
   private func reader(context: RepositoryContext) throws -> VCSProviding {
     guard context.location.host == .local else { return try remoteReader(context) }
-    let provider: LocalVCSProviding = context.backend == .jj ? RustJJProvider() : GitProvider()
-    return BoundLocalReader(context: context, provider: provider)
+    return BoundLocalReader(context: context, provider: GitProvider())
   }
 
   /// Listing, raw reads and change notification for `location`'s files.
   ///
-  /// Registered or not: an unregistered repository lists and reads exactly as before, and only a jj
-  /// listing needs the shared repository (`FileContext.sharedLocation`), which it reports itself.
+  /// Registered or not: an unregistered repository lists and reads exactly as a registered one.
   ///
   /// **A local host never loses its files to its agent.** A local file is readable without one, so when
   /// the agent cannot be obtained — missing from the bundle, failed to start, too old for the File
@@ -295,8 +292,7 @@ final class RepositoryRouter: @unchecked Sendable {
   ///
   /// A REMOTE host has no native path: its unavailability is an explicit failure, never empty data.
   func files(
-    for location: RepositoryLocation, runner: StatusCommandRunning = StatusCommandRunner(),
-    gate: JJSnapshotGate = .shared
+    for location: RepositoryLocation, runner: StatusCommandRunning = StatusCommandRunner()
   ) async throws -> FileProviding {
     let context = FileContext(
       location: location, sharedLocation: entry(for: location)?.sharedLocation)
@@ -304,7 +300,7 @@ final class RepositoryRouter: @unchecked Sendable {
       guard let connections else { throw RepositoryRoutingError.unavailable(location.host) }
       return try await connections.files(context: context)
     }
-    let native = NativeFileProvider(context: context, runner: runner, gate: gate)
+    let native = NativeFileProvider(context: context, runner: runner)
     guard let localFiles else { return native }
     let agent: FileProviding
     do {
@@ -392,10 +388,9 @@ final class RepositoryRouter: @unchecked Sendable {
         return try await localWriter(context)
       } catch VCSError.backendVersion(_) {}
     }
-    let provider: LocalVCSProviding = context.backend == .jj ? RustJJProvider() : GitProvider()
     let writer = CLIVCSWriter(
       vcs: context.backend.rawValue, runner: StatusCommandRunner(),
-      makeProvider: { _ in provider }, gate: .shared)
+      makeProvider: { _ in GitProvider() }, gate: .shared)
     return try BoundLocalWriter(context: context, reader: reader, writer: writer)
   }
 }

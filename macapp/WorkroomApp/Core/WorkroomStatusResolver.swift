@@ -25,59 +25,34 @@ enum ChecksResolution: Equatable, Sendable {
   case keepPrior
 }
 
-/// `resolveGit`/`resolveJJ`'s native status seam (mirrors `StatusCommandRunning`'s role for the
-/// CLI-shelling probes) — real reads via `GitProvider`/`RustJJProvider`, a gated/counting double in
-/// tests.
-///
-/// ONE protocol, where there were two. They were separate because the two backends' `workingStatus`
-/// returned different concrete types, which is also why `workingStatus` was the one VCS read never
-/// on `LocalVCSProviding`. It is on it now and both return `WorkroomStatus`, so the split has nothing
-/// left to express. A single seam is also the precondition for a third implementation — a remote
-/// backend cannot satisfy a protocol whose shape depends on which backend it is.
+/// `resolveGit`'s native status seam (mirrors `StatusCommandRunning`'s role for the CLI-shelling
+/// probes) — real reads via `GitProvider`, a gated/counting double in tests.
 protocol VCSWorkingStatusReading: Sendable {
   func workingStatus(root: URL) throws -> WorkroomStatus
 }
 extension GitProvider: VCSWorkingStatusReading {}
-extension RustJJProvider: VCSWorkingStatusReading {}
 
-/// Resolves a workroom's VCS + CI status app-side by shelling to git/jj/gh. App-side (not in
+/// Resolves a workroom's VCS + CI status app-side by shelling to git/gh. App-side (not in
 /// the `workroom --json` contract) for the same reasons as `BranchResolver`: GUI-only, keeps
 /// `list` instant, isolates a slow repo to its own row. Stage 1 (`resolveLocal`) is fast/local;
 /// stage 2 (`resolveCI`) is the slow network call and runs separately so it never blocks the
 /// dirty dot. Pure parsers are `static` so they're unit-tested without spawning anything.
 struct WorkroomStatusResolver: Sendable {
   let runner: StatusCommandRunning
-  var timeout: TimeInterval  // local git/jj
+  var timeout: TimeInterval  // local git
   var ciTimeout: TimeInterval  // gh (network)
-  /// Serializes jj working-copy snapshots per project root (see `JJSnapshotGate`) — a project's
-  /// workrooms share a backing repo, so concurrent snapshots can contend on it.
-  var gate: JJSnapshotGate
-  /// `resolveGit`/`resolveJJ`'s native status seam — real reads by default (`GitProvider`/
-  /// `RustJJProvider`), a gated/counting double in tests. `workingStatus` IS on `LocalVCSProviding` now
-  /// and both backends return `WorkroomStatus`; these stay as injection points for the doubles, not
-  /// because the two sides differ. See `VCSWorkingStatusReading`.
+  /// `resolveGit`'s native status seam — real reads by default (`GitProvider`), a gated/counting
+  /// double in tests. See `VCSWorkingStatusReading`.
   var gitStatus: VCSWorkingStatusReading?
-  var jjStatus: VCSWorkingStatusReading?
-
-  /// How long `resolveJJ` waits its turn behind other same-project jj snapshots, before the row
-  /// reports `.timeout`. Deliberately larger than `timeout`: with the gate serializing a busy
-  /// project's workrooms, a healthy repo can sit queued behind several real (not contended)
-  /// snapshots — this budgets the *wait*, not any single native call (which stays un-timed inside
-  /// the gate; see `JJSnapshotGate`'s doc on why timing the operation itself would be unsafe).
-  static let jjGatedWaitTimeout: TimeInterval = 15
 
   init(
     runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 3,
-    ciTimeout: TimeInterval = 10, gate: JJSnapshotGate = .shared,
-    gitStatus: VCSWorkingStatusReading? = nil,
-    jjStatus: VCSWorkingStatusReading? = nil
+    ciTimeout: TimeInterval = 10, gitStatus: VCSWorkingStatusReading? = nil
   ) {
     self.runner = runner
     self.timeout = timeout
     self.ciTimeout = ciTimeout
-    self.gate = gate
     self.gitStatus = gitStatus
-    self.jjStatus = jjStatus
   }
 
   /// `-c` overrides prepended to every `git` invocation. A workroom can be a clone of an *untrusted*
@@ -89,11 +64,8 @@ struct WorkroomStatusResolver: Sendable {
 
   // MARK: Stage 1 — local VCS status
 
-  /// `projectRoot` is the colocated project root (`StatusWorkItem.projectRoot`) — required, not
-  /// defaulted, so every call site is forced to supply the key `resolveJJ`'s snapshot gate needs;
-  /// `resolveGit` ignores it (git reads are never gated).
-  func resolveLocal(path: String, vcs: String, projectRoot: String) async -> WorkroomStatus {
-    if gitStatus == nil, jjStatus == nil {
+  func resolveLocal(path: String, vcs: String) async -> WorkroomStatus {
+    if gitStatus == nil {
       do { return await resolve(location: try await RepositoryLocation.local(path)) } catch {
         return WorkroomStatus(dirty: nil, failure: .unavailable)
       }
@@ -102,16 +74,15 @@ struct WorkroomStatusResolver: Sendable {
     if FileManager.default.fileExists(atPath: path) {
       switch vcs {
       case "git": status = await resolveGit(path)
-      case "jj": status = await resolveJJ(path, projectRoot: projectRoot)
       default: status = WorkroomStatus(dirty: nil, failure: .notRepository)
       }
     } else {
       status = WorkroomStatus(dirty: nil, failure: .missingPath)
     }
     // Stamp when this read FINISHED, so `mergeLocalStatus` can order results that its five unordered
-    // lanes produce. It has to be stamped here rather than by the caller: a jj read can sit in
-    // `JJSnapshotGate` for seconds before it observes anything, so the caller's invocation time can
-    // say a probe is older when it actually saw a LATER tree. Completion is the closest observable
+    // lanes produce. It has to be stamped here rather than by the caller: a read can queue behind
+    // others for a while before it observes anything, so the caller's invocation time can say a
+    // probe is older when it actually saw a LATER tree. Completion is the closest observable
     // bound on when the tree was seen. (Two overlapping reads can still finish in the opposite order
     // to their observations; closing that needs a filesystem generation number, not a clock.)
     status.localReadAt = Date()
@@ -120,11 +91,11 @@ struct WorkroomStatusResolver: Sendable {
 
   func resolve(item: AppStore.StatusWorkItem) async -> WorkroomStatus {
     if let location = item.location {
-      if location.host != .local || (gitStatus == nil && jjStatus == nil) {
+      if location.host != .local || gitStatus == nil {
         return await resolve(location: location)
       }
     }
-    return await resolveLocal(path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+    return await resolveLocal(path: item.path, vcs: item.vcs)
   }
 
   func resolve(location: RepositoryLocation, router: RepositoryRouter = .shared) async
@@ -141,9 +112,7 @@ struct WorkroomStatusResolver: Sendable {
         }
       }
       let reader = try await router.reader(for: location)
-      status = try await withTimeout(
-        seconds: reader.context.backend == .jj ? Self.jjGatedWaitTimeout : timeout
-      ) {
+      status = try await withTimeout(seconds: timeout) {
         try await reader.workingStatus()
       }
     } catch RepositoryRoutingError.registrationRequired {
@@ -162,9 +131,9 @@ struct WorkroomStatusResolver: Sendable {
   /// Which "unknown" badge a typed backend error earns. Pure, so the mapping is unit-tested without
   /// a repo.
   ///
-  /// Only the two states a *retry* can clear get their own badge: the working-copy lock being held
-  /// (`.busy`) and a working copy that moved under the read (`.staleWorkingCopy`) — both raised by
-  /// the jj core's snapshot, both self-describing in the sidebar tooltip and the Changes panel.
+  /// Only the two states a *retry* can clear get their own badge: a repository that refused the
+  /// read as busy (`.busy`) and a working tree that moved under the read (`.staleWorkingCopy`) — both
+  /// self-describing in the sidebar tooltip and the Changes panel.
   /// Everything else stays `.notRepository`, which is also the honest answer for the common git case:
   /// `GitProvider` can't bind SwiftGitX's typed error (a Swift 6 SIL crash — see its doc), so a
   /// missing/broken repo arrives as `.io` and must keep reading as "not a repository".
@@ -199,49 +168,11 @@ struct WorkroomStatusResolver: Sendable {
     }
   }
 
-  private func resolveJJ(_ dir: String, projectRoot: String) async -> WorkroomStatus {
-    // Read the jj working-copy status structurally through the Rust core (jj-lib): it snapshots `@`
-    // (so it reflects disk) and returns the `@`/`@-` change sets, the ± line counts and the CI branch
-    // — replacing the old serial-snapshot-then-concurrent-CLI-reads dance. ONE read, deliberately: the
-    // counts used to come from a `jj diff -r @ --stat` process fired after this one, which stated them
-    // against a merge `@`'s auto-merged parents (a different base than the file list) and could be
-    // read across an intervening edit. `LocalVCSProviding` has no built-in timeout, so
-    // bound the (synchronous, off-main) read with `withTimeout` — for `resolveGit` a wedged repo
-    // abandons only its own caller. For THIS jj path that's no longer the full story: the read is
-    // additionally serialized per project root through `gate` (the ONE jj read that mutates — takes
-    // the working-copy lock, can commit a repo-level transaction — and a project's workrooms share
-    // that repo-level store, so concurrent snapshots across them can contend; see `JJSnapshotGate`'s
-    // doc). A genuinely wedged (never-returning) native call therefore doesn't just abandon its own
-    // caller — it can block later same-project calls too, bounded by `JJSnapshotGate.maxChainWait`
-    // (the gate self-heals past a hung predecessor instead of queuing behind it forever). `resolveGit`
-    // and `log`/`changeset`/`currentRef` (`BranchResolver`) are read-only and never gated, so they're
-    // unaffected.
-    let root = URL(fileURLWithPath: dir, isDirectory: true)
-    do {
-      return try await withTimeout(seconds: Self.jjGatedWaitTimeout) {
-        try await self.gate.run(projectRoot: projectRoot) {
-          // `runBlocking` (GCD), NOT `Task.detached` — the blocking, snapshot-taking jj-lib read
-          // must stay off the fixed-width cooperative pool (see `resolveGit` / the `runBlocking`
-          // doc). Left un-timed inside the gate on purpose — see `JJSnapshotGate`'s doc.
-          let jjStatus = self.jjStatus ?? RustJJProvider()
-          return try await runBlocking { try jjStatus.workingStatus(root: root) }
-        }
-      }
-    } catch is VCSTimeoutError, is VCSCancellationError {
-      return WorkroomStatus(dirty: nil, failure: .timeout)
-    } catch let error as VCSError {
-      return WorkroomStatus(dirty: nil, failure: Self.failure(for: error))
-    } catch {
-      return WorkroomStatus(dirty: nil, failure: .notRepository)
-    }
-  }
-
   // MARK: Stage 2 — CI (slow, network; never blocks stage 1)
 
   /// Where every `gh` probe runs. Each one names its repository explicitly (`--repo` /
-  /// `--hostname`), so none depends on a working directory: a remote workroom has no local one, and
-  /// for jj it used to have to be the colocated project root because a secondary workspace has no
-  /// `.git` of its own (issue #207). A neutral directory that always exists keeps that true.
+  /// `--hostname`), so none depends on a working directory: a remote workroom has no local one
+  /// (issue #207). A neutral directory that always exists keeps that true.
   static var ghDirectory: String { NSTemporaryDirectory() }
 
   /// `gh pr …` takes `--repo`; `gh api …` takes `--hostname` (it has no repository of its own — the
@@ -282,8 +213,8 @@ struct WorkroomStatusResolver: Sendable {
   /// aggregate the GitHub UI shows, covering *all* check types (Actions check-runs + external commit
   /// statuses + check-run apps), not just Actions runs (#76).
   ///
-  /// `commit` is the branch tip the caller resolved (`localCICommit` for a local host; for jj that's
-  /// the bookmark's tip, since `@` is an unpushed empty change). Everything goes through the
+  /// `commit` is the branch tip the caller resolved (`localCICommit` for a local host). Everything
+  /// goes through the
   /// authenticated `gh` token, so private repos work with no extra config. CI is hidden whenever the
   /// commit can't be resolved.
   func resolveCI(repo: GitHubRepository, commit: String) async -> CIResolution {
@@ -391,46 +322,32 @@ struct WorkroomStatusResolver: Sendable {
 
   // MARK: Local-only derivation (a local host reads these from its own checkout)
 
-  /// The branch a PR/CI probe keys off, for a **local** host: the stage-1 branch/bookmark when known;
-  /// else, for git, the colocated ref via `git symbolic-ref` (nil for a detached HEAD); for jj, nil
-  /// — a bookmark-less `@` has no branch to look up. A remote host has no checkout to ask, so it
-  /// never calls this and treats a nil branch as absent.
-  func localBranch(path: String, vcs: String, branch: String?) async -> String? {
-    if vcs == "jj" {
-      guard let branch, !branch.isEmpty else { return nil }
-      return branch
-    }
-    return await resolveBranchName(branch, in: path)
+  /// The branch a PR/CI probe keys off, for a **local** host: the stage-1 branch when known; else
+  /// the checked-out ref via `git symbolic-ref` (nil for a detached HEAD). A remote host has no
+  /// checkout to ask, so it never calls this and treats a nil branch as absent.
+  func localBranch(path: String, branch: String?) async -> String? {
+    await resolveBranchName(branch, in: path)
   }
 
   /// The commit CI must match for a **local** host — see `ciMatchCommit`. nil ⇒ no resolvable
   /// branch or commit ⇒ the caller treats CI as absent.
-  func localCICommit(path: String, vcs: String, branch: String?) async -> String? {
-    guard let branch = await localBranch(path: path, vcs: vcs, branch: branch) else { return nil }
-    return await ciMatchCommit(path: path, vcs: vcs, branch: branch)
+  func localCICommit(path: String, branch: String?) async -> String? {
+    guard await localBranch(path: path, branch: branch) != nil else { return nil }
+    return await ciMatchCommit(path: path)
   }
 
-  /// The commit a `gh run` must match to count as "this branch's CI". For a **git worktree** that's
-  /// `HEAD` (the branch tip). For a **jj workspace** it's the bookmark's tip commit — jj's `@` is an
-  /// unpushed empty change, so CI ran on the bookmark, not `@`. jj's `commit_id` is the git commit
-  /// hash in a git-backed repo, so it matches `gh`'s `headSha` exactly. `nil` ⇒ unresolved ⇒ absent.
-  private func ciMatchCommit(path: String, vcs: String, branch: String) async -> String? {
-    let r: CommandResult
-    if vcs == "jj" {
-      r = await runner.run(
-        "jj", ["log", "-r", branch, "--no-graph", "--color", "never", "-T", "commit_id"],
-        in: path, timeout: timeout)
-    } else {
-      r = await runner.run(
-        "git", Self.gitHardening + ["rev-parse", "HEAD"], in: path, timeout: timeout)
-    }
+  /// The commit a `gh run` must match to count as "this branch's CI": `HEAD` (the branch tip).
+  /// `nil` ⇒ unresolved ⇒ absent.
+  private func ciMatchCommit(path: String) async -> String? {
+    let r = await runner.run(
+      "git", Self.gitHardening + ["rev-parse", "HEAD"], in: path, timeout: timeout)
     guard r.ok else { return nil }
     let sha = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     return sha.isEmpty ? nil : sha
   }
 
-  /// The git branch CI/PR key off when not jj: the stage-1 branch when known, else the colocated
-  /// git ref via `git symbolic-ref` (empty for a *detached* HEAD). Returns `nil` when neither yields
+  /// The git branch CI/PR key off: the stage-1 branch when known, else the checked-out git ref
+  /// via `git symbolic-ref` (empty for a *detached* HEAD). Returns `nil` when neither yields
   /// a non-empty name. Faithful to the prior inline fallback: a non-nil `branch` is used as-is (the
   /// symbolic-ref probe runs only when it's nil).
   private func resolveBranchName(_ branch: String?, in path: String) async -> String? {

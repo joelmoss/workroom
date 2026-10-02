@@ -118,7 +118,7 @@ final class SyntaxHighlighterTests: XCTestCase {
   // this same "new path, then old/renamed path" fallback inline via grammar(forPath:) directly
   // (it also needs shebang detection, which detect couldn't do since it took no content). These
   // tests now describe the code path that actually runs. The byte-cap invariant detect used to
-  // gate locally is enforced upstream instead (GitProvider/RustJJProvider/DiffResolver, at fetch
+  // gate locally is enforced upstream instead (GitProvider/DiffResolver, at fetch
   // time), outside this file's scope.
 
   func testGrammarForPathByExtension() {

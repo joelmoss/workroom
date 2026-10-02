@@ -60,13 +60,9 @@ struct HostRepositoryWriter: VCSWriting {
   func fetch(remote: String) async -> VCSRemoteActionResult {
     await action { await service.fetch(remote: remote) }
   }
-  func push(current: VCSRef, remote: String, setUpstream: Bool, anonymousRevision: String) async
-    -> VCSRemoteActionResult
-  {
+  func push(current: VCSRef, remote: String, setUpstream: Bool) async -> VCSRemoteActionResult {
     await action {
-      await service.push(
-        current: current, remote: remote, setUpstream: setUpstream,
-        anonymousRevision: anonymousRevision)
+      await service.push(current: current, remote: remote, setUpstream: setUpstream)
     }
   }
   func pullRebase(current: VCSRef, remote: String, tracking: VCSTracking?) async

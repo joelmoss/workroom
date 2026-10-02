@@ -221,21 +221,6 @@ extension Defaults.Keys {
   static let switcherPaneModifier = Key<SwitcherModifier>(
     "switcher.paneModifier", default: .control, suite: .app)
 
-  /// When Workroom itself last fetched a project, keyed by the project's absolute path (fetch always
-  /// runs at the project root, so this is per-project, never per-workroom). Path-keyed map for the
-  /// same reason as `runCommands`.
-  ///
-  /// **Exists because of a jj asymmetry, not for convenience.** git writes `FETCH_HEAD` on *every*
-  /// fetch, so its mtime is a complete record and this map adds nothing for a git project. jj's fetch
-  /// is invisible: it passes `--no-write-fetch-head`, and a fetch that brings nothing prints
-  /// "Nothing changed." and records **no operation at all** (verified, jj 0.43) — so the op-log scan
-  /// alone would mean "last fetch that changed something", and a user clicking Fetch with nothing new
-  /// would watch a stale timestamp not move.
-  ///
-  /// `RemoteStateModel` therefore reports `max(backend evidence, this)`. The backend still wins when
-  /// it's newer, which is what keeps a `jj git fetch` run in the user's own terminal visible.
-  static let vcsLastFetch = Key<[String: Date]>("vcs.lastFetch", default: [:], suite: .app)
-
   /// Global inspector layout (issue #24): which of the inspector's sections are collapsed and the
   /// relative heights of the panes, ordered as `InspectorSectionKind.allCases` — Changes, Files, Pull
   /// Request, History. That is NOT the on-screen order (the Changes pane stacks Changes → History →
@@ -283,7 +268,7 @@ extension Defaults.Keys {
 
   /// Per-workroom display label (issue #41), keyed by the workroom's `targetIDString`
   /// ("wr|<project>|<name>", via `TerminalTarget.workroomID`). A label is a display-only alias —
-  /// the real workroom name and its Git/JJ workspace are unchanged. Absence of a key means no
+  /// the real workroom name and its git worktree are unchanged. Absence of a key means no
   /// label. Invariant: stored values are always trimmed and non-empty (normalised at the write
   /// boundary in `AppStore.setWorkroomLabel`); a cleared label removes the key rather than storing
   /// "". A single project-scoped map (mirrors `runCommands`): `Defaults` keys

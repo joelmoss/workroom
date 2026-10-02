@@ -31,7 +31,7 @@ struct CommandResult: Sendable, Equatable {
   /// it false, which is what a fake runner's short canned output is.
   let stdoutTruncated: Bool
 
-  /// `/usr/bin/env` exits 127 when the command (git/jj/gh) isn't on PATH. A REAL exit from a REAL
+  /// `/usr/bin/env` exits 127 when the command (git/gh) isn't on PATH. A REAL exit from a REAL
   /// process — env ran, tried to exec the tool, and failed to find it.
   static let commandNotFound: Int32 = 127
   /// git exits 128 for "not a git repository" and similar fatal usage errors.
@@ -41,7 +41,7 @@ struct CommandResult: Sendable, Equatable {
   /// directory vanished between when the caller decided to probe it and when this runner tried to
   /// launch. Deliberately NOT `commandNotFound`/127: that value means env itself ran and searched
   /// PATH, which is a completely different fact from "nothing ran." Every consumer that read 127 as
-  /// "tool not installed" would otherwise misdiagnose a deleted workroom as a missing git/jj/gh.
+  /// "tool not installed" would otherwise misdiagnose a deleted workroom as a missing git/gh.
   /// Negative and outside 0-255, so it can never collide with a real exit code or a signal number.
   static let launchFailed: Int32 = -1
   /// The command's outcome is **unknown**: it was dispatched and we stopped listening before an
@@ -88,7 +88,7 @@ struct CommandResult: Sendable, Equatable {
 }
 
 /// A seam (mirrors `CommandRunning`) so `WorkroomStatusResolver` is unit-testable without
-/// spawning real git/jj/gh — but typed (`CommandResult`, not `String?`).
+/// spawning real git/gh — but typed (`CommandResult`, not `String?`).
 protocol StatusCommandRunning: Sendable {
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
@@ -112,7 +112,7 @@ protocol StatusCommandRunning: Sendable {
   ) async -> CommandResult
 
   /// Like `run`, but for a command that will touch the **network** and therefore may want to
-  /// authenticate — `git fetch/push/pull`, `jj git fetch/push`.
+  /// authenticate — `git fetch/push/pull`.
   ///
   /// A read like `git status` can never prompt, so it wants the minimal, predictable environment
   /// `run` gives it. A push can: it may need an SSH agent the GUI environment can't see, and it may
@@ -146,7 +146,7 @@ extension StatusCommandRunning {
 }
 
 /// Default `StatusCommandRunning`: spawns via `/usr/bin/env` (augmented PATH finds Homebrew
-/// git/jj/gh), git locks/prompt disabled, and enforces `timeout` by terminating the process.
+/// git/gh), git locks/prompt disabled, and enforces `timeout` by terminating the process.
 ///
 /// Unlike `ProcessCommandRunner` (which reads stdout *in* the termination handler — safe only
 /// because a branch name is tiny), this drains stdout AND stderr **concurrently on background
@@ -214,7 +214,7 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
     "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C",
   ]
 
-  /// The complete environment a `git`/`jj` child gets, native or agent-routed.
+  /// The complete environment a `git` child gets, native or agent-routed.
   ///
   /// Extracted from `run` and made static so `AgentCommandRunner` can send the SAME map to
   /// wr-agent, which `env_clear()`s and replaces its own environment with it. Before this existed
@@ -222,8 +222,8 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
   /// child inherited everything else from the DAEMON — a process "negotiated with, never replaced"
   /// (`LocalAgentVCS`) whose environment is a snapshot of whichever app launch first spawned it.
   /// That silently authored commits under a stale `GIT_AUTHOR_*`/`GIT_CONFIG_GLOBAL`/`HOME`, and no
-  /// allowlist could fix it: the set of variables git and jj read for identity, config, signing and
-  /// hooks is open-ended (`GIT_CONFIG_PARAMETERS`, `JJ_CONFIG`, `EMAIL`, `GNUPGHOME`, …). Sending
+  /// allowlist could fix it: the set of variables git reads for identity, config, signing and
+  /// hooks is open-ended (`GIT_CONFIG_PARAMETERS`, `EMAIL`, `GNUPGHOME`, …). Sending
   /// the whole environment is the only construction under which the two paths agree.
   ///
   /// Pure, so `StatusCommandRunnerEnvironmentTests` can assert native/agent parity without spawning.
@@ -251,8 +251,8 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
     //
     // Safe for paths despite forcing the C charset: git writes pathnames as raw bytes (and quotes
     // non-ASCII per `core.quotePath` regardless of locale), so `LC_ALL=C` renders a `café-ünï.txt`
-    // byte-identically to the user's own locale — verified, not assumed. jj and gh are unaffected
-    // either way; neither localizes.
+    // byte-identically to the user's own locale — verified, not assumed. gh is unaffected either way;
+    // it doesn't localize.
     env["LC_ALL"] = "C"
     // A workroom can be a clone of an *untrusted* repo, and the status sweep runs git automatically
     // on load/focus/selection. `git diff` would otherwise run an inherited external-diff program;
@@ -423,7 +423,7 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
       }
     } onCancel: {
       // The awaiting Task was cancelled (e.g. a superseded sweep, or rapid selection cycling). Kill
-      // the in-flight child so a cancelled probe doesn't leave a git/jj/gh process running to its own
+      // the in-flight child so a cancelled probe doesn't leave a git/gh process running to its own
       // timeout. terminationHandler then resumes the continuation with the abandoned result, which
       // the cancelled caller discards. SIGKILL (not SIGTERM) so a wedged child dies promptly.
       box.terminate()

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Forwards `StatusCommandRunning` calls to wr-agent's exec service instead of spawning `git`/`jj`
+/// Forwards `StatusCommandRunning` calls to wr-agent's exec service instead of spawning `git`
 /// locally. This is the whole seam `AgentVCSConnection.writer` needs: `CLIVCSWriter`'s arg
 /// building, stdout/stderr parsing and failure classification are untouched Swift, and see exactly
 /// the bytes a host-executed command produced — see `vcs.rs`'s `ExecRequest` doc for the design.
@@ -10,10 +10,6 @@ import Foundation
 /// distinction is load-bearing — see `neverRan` and `outcomeUnknown`.
 struct AgentCommandRunner: StatusCommandRunning, Sendable {
   let connection: AgentVCSConnection
-  /// The shared root of a jj repository on a REMOTE host, whose working-copy barrier the agent
-  /// takes around each command (`barrier_root` in `vcs.rs`). Nil locally, where the caller's gate
-  /// holds it for the whole operation and the agent must never take it again.
-  var barrierRoot: String?
 
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
@@ -42,9 +38,9 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
     // adopts this map, so the child sees exactly what a native child sees. An allowlist could not
     // work here: wr-agent is a long-lived daemon "negotiated with, never replaced"
     // (`LocalAgentVCS`), so its own inherited environment is a snapshot of whichever app launch
-    // first spawned it, and the set of variables `git`/`jj` read for identity, config, signing and
+    // first spawned it, and the set of variables `git` reads for identity, config, signing and
     // hooks is open-ended (`GIT_AUTHOR_*`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_PARAMETERS`, `HOME`,
-    // `JJ_CONFIG`, `EMAIL`, `GNUPGHOME`, …). Forwarding only `PATH` silently authored commits under
+    // `EMAIL`, `GNUPGHOME`, …). Forwarding only `PATH` silently authored commits under
     // the daemon's stale identity — see `StatusCommandRunner.childEnvironment`'s doc.
     // Latin-1, not UTF-8: a pathspec payload is NUL-separated and paths are not guaranteed valid
     // UTF-8, and Latin-1 is a total bijection over every byte 0x00-0xFF, so this never fails and
@@ -61,23 +57,18 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
     }
     let request = Self.request(
       executable, args, in: directory, timeout: timeout, stdin: payload, network: network,
-      host: connection.host, barrierRoot: barrierRoot)
+      host: connection.host)
     let reply: Data
     do {
       // Slack above the command's own timeout: the round trip and the agent's own bookkeeping
       // must not race the command's own timeout.
       //
       // Cancellable on purpose. The write path's protection against a cancelled command releasing
-      // the JJ barrier early lives in `JJSnapshotGate.run`, which shields the whole gated operation
-      // once it holds the flock — see the comment there. Shielding HERE instead would also cover
-      // `remoteState`'s ungated reads, and a superseded `RemoteStateModel` refresh would then squat
-      // one of this connection's 32 shared slots until the agent answered.
-      //
-      // Plus the barrier's own wait where the agent takes one (a remote jj command): it can wait
-      // up to 30s for the barrier before the command starts (`SnapshotLock::acquire`), and a
-      // deadline that did not cover that would give up on a command still running.
-      let barrierWait: TimeInterval = request.barrierRoot == nil ? 0 : 30
-      reply = try await connection.request(request, timeout: timeout + 15 + barrierWait)
+      // the project's write tail early lives in `RepositoryWriteGate.run`, which shields the whole
+      // gated operation once it starts — see the comment there. Shielding HERE instead would also
+      // cover `remoteState`'s ungated reads, and a superseded `RemoteStateModel` refresh would then
+      // squat one of this connection's 32 shared slots until the agent answered.
+      reply = try await connection.request(request, timeout: timeout + 15)
     } catch let error as VCSError {
       // Raised before anything left this process — today only the 1 MiB single-envelope request
       // ceiling. Nothing ran, and the workroom is fine.
@@ -183,7 +174,7 @@ extension AgentCommandRunner {
   /// pins ssh to fail rather than prompt, as `networkEnvironment` does here.
   static func request(
     _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
-    stdin: String?, network: Bool, host: HostID, barrierRoot: String? = nil
+    stdin: String?, network: Bool, host: HostID
   ) -> AgentExecRequest {
     let remote = host != .local
     return AgentExecRequest(
@@ -193,12 +184,7 @@ extension AgentCommandRunner {
       env: remote
         ? StatusCommandRunner.remoteEnvironment
         : StatusCommandRunner.childEnvironment(network: network),
-      hostEnvironment: remote ? true : nil,
-      // Not for a network command (`jj git fetch`/`push`): the barrier is handed to the child, and
-      // git's detached helpers (`git maintenance --auto`, a credential cache daemon) would inherit
-      // it and hold it long after jj exits. jj's own op log reconciles a snapshot that runs
-      // alongside one of those.
-      barrierRoot: remote && !network ? barrierRoot : nil)
+      hostEnvironment: remote ? true : nil)
   }
 }
 
@@ -214,8 +200,6 @@ struct AgentExecRequest: Encodable, Sendable {
   /// Set only for a remote host, and omitted otherwise: an agent that predates the field rejects
   /// any request carrying it (`deny_unknown_fields`), and a local agent may be one.
   var hostEnvironment: Bool?
-  /// Remote only, for the same reason: see `AgentCommandRunner.barrierRoot`.
-  var barrierRoot: String?
 }
 
 struct AgentExecResult: Decodable, Sendable {

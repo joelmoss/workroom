@@ -94,7 +94,7 @@ fi
 # `rustup target list --installed` cheerfully listed the target, because that target belongs to a
 # different compiler. `rustup run stable cargo` does NOT fix it: cargo-zigbuild re-invokes `cargo`
 # from PATH, and the child finds Homebrew's again. The PATH is the thing that has to change.
-# macapp/Scripts/build-agent.sh and vcs/scripts/build-apple.sh both document the same trap.
+# macapp/Scripts/build-agent.sh documents the same trap.
 if [ -x "$HOME/.cargo/bin/cargo" ]; then
   PATH="$HOME/.cargo/bin:$PATH"
   export PATH

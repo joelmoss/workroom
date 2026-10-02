@@ -15,14 +15,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Pinned to jj-lib's version in vcs/Cargo.toml — bump both together. This is the ONLY jj version
-# `app` (macOS, 10x the runner cost) installs — `cli` and `vcs-core` (cheap Linux jobs) instead
-# matrix over several jj CLI versions (see their own `strategy:` comments), since that's where a
-# real skew bug was caught (2026-08-16): fixtures shelling to `jj` assumed 0.44-only behavior and
-# silently broke on 0.43 without any CI signal until this version was exercised end to end.
-env:
-  JJ_VERSION: 0.43.0
-
 jobs:
   # Keep the workflow/check names present for branch protection. Only standalone website
   # changes skip suites; unknown paths and unavailable history always run everything.
@@ -113,38 +105,16 @@ jobs:
       - name: Test
         run: go test ./...
 
-  # The Rust VCS core's own tests (jj-lib reads against real throwaway jj repos, incl. the
-  # working-copy snapshot + conflict classification). Its own Linux job rather than a step in `app`:
-  # off the macOS critical path (it was ~3min of it on a cold run), Linux minutes are 10x cheaper,
-  # and it's the only thing testing the core away from Apple targets.
-  vcs-core:
+  # The whole Rust workspace's format, lint and test gates — the only job that runs them for every
+  # crate (the agent jobs below cover wr-agent alone). Its own Linux job rather than a step in
+  # `app`: off the macOS critical path, Linux minutes are 10x cheaper, and it tests the agent away
+  # from Apple targets.
+  rust:
     needs: changes
     if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: ubuntu-latest
-    # Matrix over the jj CLI version the working_status fixtures shell out to for repo setup —
-    # see the `cli` job's comment for why this axis exists and is independent of $JJ_VERSION/the
-    # exact jj-lib pin in vcs/Cargo.toml. Also exercises jj-lib (always the pinned crate version)
-    # reading a repo laid out by a DIFFERENT jj CLI version — a real forward/backward-compat
-    # question given jj's on-disk format has changed across releases. Keep this list in sync with
-    # `cli`'s.
-    strategy:
-      fail-fast: false
-      matrix:
-        jj-version: ["0.43.0", "0.44.0"]
     steps:
       - uses: actions/checkout@v5
-
-      # protoc is a build-time dep of jj-lib. The `jj` CLI is what the working_status fixtures shell
-      # out to for repo setup (and the test SKIPS silently without it, so it must be installed) —
-      # apt has no jj package, hence the release tarball.
-      - name: Install protoc + jj
-        env:
-          JJ_VERSION: ${{ matrix.jj-version }}
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
-          curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-x86_64-unknown-linux-musl.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin ./jj
-          jj --version
 
       # Pinned for the lint gates below, unlike the `app` job (which deliberately tracks the runner's
       # rustc so a toolchain bump invalidates its output cache). rustfmt's layout and clippy's lint set
@@ -160,15 +130,11 @@ jobs:
         with:
           workspaces: vcs
 
-      # Ordered cheapest-first so a formatting nit doesn't wait on the jj-lib crate graph. Both run
-      # once, on the first matrix leg — see `cli`'s Lint step for why that's an index, not a
-      # comparison against $JJ_VERSION.
+      # Ordered cheapest-first so a formatting nit doesn't wait on the crate graph.
       - name: Format
-        if: strategy.job-index == 0
         run: cargo fmt --manifest-path vcs/Cargo.toml --all -- --check
 
       - name: Clippy
-        if: strategy.job-index == 0
         run: cargo clippy --manifest-path vcs/Cargo.toml --workspace --all-targets -- -D warnings
 
       # This already covers wr-agent, and covers it on LINUX — the workspace has no
@@ -180,7 +146,7 @@ jobs:
         run: cargo test --manifest-path vcs/Cargo.toml
 
   # The shadow terminal, which is what makes a reattaching client see its screen. Separate from
-  # `vcs-core` because it is the only thing in the repo that needs a Zig toolchain and a Ghostty
+  # `rust` because it is the only thing in the repo that needs a Zig toolchain and a Ghostty
   # checkout, and the rest of the workspace should not wait on either.
   agent-terminal-state:
     needs: changes
@@ -352,25 +318,13 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # XcodeGen generates the (gitignored) .xcodeproj. protobuf provides protoc, a build-time
-      # dependency of jj-lib (the Rust VCS core, built by `make app-vcs`). aws/tap ships
-      # pre-tapped but untrusted on the runner image, which makes every `brew install` on this
-      # job emit a "tap trust" warning annotation unrelated to our formulae.
-      - name: Install XcodeGen + protobuf
+      # XcodeGen generates the (gitignored) .xcodeproj. aws/tap ships pre-tapped but untrusted on
+      # the runner image, which makes every `brew install` on this job emit a "tap trust" warning
+      # annotation unrelated to our formulae.
+      - name: Install XcodeGen
         run: |
           brew untap aws/tap
-          brew install xcodegen protobuf
-
-      # jj (Jujutsu) is required by WorkroomStatusIntegrationTests, which exercise the VCS status
-      # resolver against real git + jj repos. git + gh are preinstalled on the runner; jj is not.
-      # Installed from the pinned release tarball (same mechanism as the `cli`/`vcs-core` jobs
-      # above) rather than `brew install jj`, so this job tracks the same $JJ_VERSION instead of
-      # whatever Homebrew resolves that day. macos-15 runners are Apple Silicon (arm64).
-      - name: Install jj
-        run: |
-          curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-aarch64-apple-darwin.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin ./jj
-          jj --version
+          brew install xcodegen
 
       - name: Lint (swift-format --strict)
         run: make app-lint
@@ -394,39 +348,13 @@ jobs:
           path: ~/.cache/workroom/ghostty-vt
           key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
 
-      # The Rust VCS core (jj-lib via UniFFI) the app links. `make app-vcs` runs
-      # vcs/scripts/build-apple.sh to produce the WrVcs package's xcframework + Swift bindings, and
-      # MUST run before SPM resolves that local package below. Rust is preinstalled on the runner.
-      #
-      # Use the build script's own freshness hash so CI and local builds share exactly
-      # the same inputs. Agent and experimental Git crate sources do not affect this library.
-      - name: VCS core input hash
-        id: vcs-input
-        run: |
-          hash=$(vcs/scripts/build-apple.sh --print-input-hash)
-          echo "hash=$hash" >> "$GITHUB_OUTPUT"
-
-      - name: Cache VCS core outputs
-        id: vcs-core
-        uses: actions/cache@v4
-        with:
-          path: |
-            vcs/swift/WrVcs/Frameworks
-            vcs/swift/WrVcs/Sources/WrVcs/wr_vcs_uniffi.swift
-            vcs/swift/WrVcs/Sources/wr_vcs_uniffiFFI/include
-          key: wrvcs-${{ runner.os }}-${{ runner.arch }}-${{ steps.vcs-input.outputs.hash }}
-
-      # Xcode still builds wr-agent when the VCS framework hits its output cache.
-      # Always restore Cargo dependencies; v2 avoids old entries saved without the agent build.
-      - name: Cache cargo (VCS core + agent)
+      # Xcode builds the bundled wr-agent (Scripts/build-agent.sh). v2 avoids old entries saved
+      # without the agent build.
+      - name: Cache cargo (agent)
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: vcs
           key: app-agent-v2
-
-      - name: Build VCS core (Rust → xcframework + Swift bindings)
-        if: steps.vcs-core.outputs.cache-hit != 'true'
-        run: make app-vcs
 
       # SPM resolves ~15 packages (Sparkle, Sentry, libghostty, the tree-sitter grammars, and
       # swift-syntax pulled transitively) by cloning them from GitHub on every run. Cache the
@@ -543,12 +471,6 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-
-      # protobuf provides protoc, a build-time dependency of jj-lib in the vcs workspace.
-      - name: Install protobuf
-        run: |
-          brew untap aws/tap
-          brew install protobuf
 
       - name: Install Zig
         uses: ./.github/actions/install-zig

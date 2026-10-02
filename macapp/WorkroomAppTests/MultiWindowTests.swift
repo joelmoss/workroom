@@ -9,9 +9,9 @@ import XCTest
 final class MultiWindowTests: XCTestCase {
   private func project(_ path: String, workrooms: [String] = []) -> Project {
     Project(
-      path: path, vcs: "jj",
+      path: path, vcs: "git",
       workrooms: workrooms.map {
-        Workroom(name: $0, path: "\(path)/\($0)", vcsName: "jj", warnings: [])
+        Workroom(name: $0, path: "\(path)/\($0)", vcsName: "git", warnings: [])
       }
     )
   }

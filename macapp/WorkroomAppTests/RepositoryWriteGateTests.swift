@@ -22,9 +22,9 @@ private actor EventLog {
   }
 }
 
-final class JJSnapshotGateTests: XCTestCase {
+final class RepositoryWriteGateTests: XCTestCase {
   /// Every test builds its OWN gate (never `.shared`) so tests can't leak state into each other.
-  private func makeGate() -> JJSnapshotGate { JJSnapshotGate() }
+  private func makeGate() -> RepositoryWriteGate { RepositoryWriteGate() }
 
   func testSameProjectCallsNeverOverlap() async throws {
     let gate = makeGate()
@@ -102,7 +102,7 @@ final class JJSnapshotGateTests: XCTestCase {
 
     // Models `withTimeout` abandoning a call: the caller stops waiting (cancels), but the
     // underlying operation is a black-box synchronous call that keeps running regardless —
-    // exactly `JJSnapshotGate`'s documented contract for why `operation` must be un-timed.
+    // exactly `RepositoryWriteGate`'s documented contract for why `operation` must be un-timed.
     let first = Task {
       try? await gate.run(projectRoot: "/p") {
         await log.append("first:start")
@@ -158,15 +158,15 @@ final class JJSnapshotGateTests: XCTestCase {
   }
 
   /// The self-healing ceiling (VCS-foundation eng-review follow-up): a predecessor that never
-  /// completes (a genuine jj-lib wedge, not just slow) must not block the chain forever. A tiny
+  /// completes (a genuinely wedged `git` process, not just slow) must not block the chain forever. A tiny
   /// injected `maxChainWait` proves a queued call gives up waiting once the ceiling elapses and
   /// runs its own operation anyway, rather than hanging for the test's (or a real predecessor's)
   /// entire lifetime.
   func testCeilingLetsQueueSelfHealPastAWedgedPredecessor() async throws {
-    let gate = JJSnapshotGate(maxChainWait: 0.05)
+    let gate = RepositoryWriteGate(maxChainWait: 0.05)
     let log = EventLog()
 
-    // Fire-and-forget: simulates a truly wedged native call. Never awaited directly by this test,
+    // Fire-and-forget: simulates a truly wedged call. Never awaited directly by this test,
     // so the test's own runtime isn't tied to it.
     Task {
       try? await gate.run(projectRoot: "/p") {
@@ -185,9 +185,9 @@ final class JJSnapshotGateTests: XCTestCase {
   }
 }
 
-extension JJSnapshotGateTests {
+extension RepositoryWriteGateTests {
   func testCancelledMiddleWaiterCannotReleaseRunningPredecessor() async throws {
-    let gate = JJSnapshotGate(maxChainWait: 5)
+    let gate = RepositoryWriteGate(maxChainWait: 5)
     let location = try RepositoryLocation.remote(host: UUID(), path: "/same/path")
     let log = EventLog()
     let entered = expectation(description: "native work started")
@@ -219,7 +219,7 @@ extension JJSnapshotGateTests {
   }
 
   func testSamePathOnDifferentHostsDoesNotShareOrdering() async throws {
-    let gate = JJSnapshotGate()
+    let gate = RepositoryWriteGate()
     let one = try RepositoryLocation.remote(host: UUID(), path: "/repo")
     let two = try RepositoryLocation.remote(host: UUID(), path: "/repo")
     let log = EventLog()
@@ -239,10 +239,10 @@ extension JJSnapshotGateTests {
   }
 }
 
-extension JJSnapshotGateTests {
+extension RepositoryWriteGateTests {
   func testTimedOutNativeCallKeepsItsTailUntilActualCompletion() async throws {
     let location = try RepositoryLocation.remote(host: UUID(), path: "/repo")
-    let gate = JJSnapshotGate(maxChainWait: 5)
+    let gate = RepositoryWriteGate(maxChainWait: 5)
     let log = EventLog()
     let started = expectation(description: "native operation started")
     let release = DispatchSemaphore(value: 0)
@@ -271,5 +271,34 @@ extension JJSnapshotGateTests {
     try await second.value
     let completed = await log.events
     XCTAssertEqual(completed, ["A:start", "A:end", "B"])
+  }
+}
+
+extension RepositoryWriteGateTests {
+  /// The `Task.detached` shield in `run(repository:)`. Every other blocking test here uses
+  /// `runBlocking`, which ignores cancellation, so they stay green without the shield. An
+  /// agent-routed git write DOES observe cancellation: unshielded, cancelling the caller throws out
+  /// of its `Task.sleep`-like wait, releases the tail early, and lets the next write start while the
+  /// agent's `git` is still running. With the shield the operation runs to its own end first.
+  func testCancelledCallKeepsTailUntilCancellationObservingOperationEnds() async throws {
+    let gate = RepositoryWriteGate(maxChainWait: 5)
+    let location = try RepositoryLocation.remote(host: UUID(), path: "/repo")
+    let log = EventLog()
+    let started = expectation(description: "operation started")
+    let first = Task {
+      try await gate.run(repository: location) {
+        await log.append("A:start")
+        started.fulfill()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        await log.append("A:end")
+      }
+    }
+    await fulfillment(of: [started], timeout: 2)
+    first.cancel()
+    let second = Task { try await gate.run(repository: location) { await log.append("B") } }
+    _ = try? await first.value
+    try await second.value
+    let events = await log.events
+    XCTAssertEqual(events, ["A:start", "A:end", "B"])
   }
 }

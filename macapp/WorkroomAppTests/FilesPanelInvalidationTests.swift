@@ -16,7 +16,7 @@ import XCTest
 ///
 /// Harness mirrors `HistoryRowInvalidationTests` (offscreen `NSHostingView`, the shared `settle`
 /// waiter for UI settling) — `FileTreeModel` is hosted standalone (not `store.fileTree`), fed by a
-/// fake `StatusCommandRunning` so no real `git`/`jj` process is ever spawned. `awaitLoaded` uses a
+/// fake `StatusCommandRunning` so no real `git` process is ever spawned. `awaitLoaded` uses a
 /// real `Task.sleep` poll instead: `settle`'s `RunLoop.current` pump (built for AppKit/SwiftUI layout)
 /// never gives `FileTreeModel.reload`'s unstructured `Task` a turn in this plain-XCTest context.
 @MainActor
@@ -24,8 +24,7 @@ final class FilesPanelInvalidationTests: XCTestCase {
 
   // MARK: harness
 
-  /// Returns a fixed `git ls-files -z` result for however many paths were configured; the `jj`
-  /// branch is never reached because git always succeeds first.
+  /// Returns a fixed `git ls-files -z` result for however many paths were configured.
   private final class FixedGitListRunner: StatusCommandRunning, @unchecked Sendable {
     var paths: [String] = []
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)

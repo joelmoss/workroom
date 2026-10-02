@@ -87,7 +87,7 @@ struct VCSToolbar: View {
   private func presentation(now: Date) -> VCSSyncPresentation {
     VCSSyncPresenter.make(
       state: model.snapshot, hasTarget: model.target != nil,
-      toolsUsable: store.vcsAllowsRemoteActions(vcs: (model.target?.vcs ?? .git).rawValue),
+      toolsUsable: store.vcsAllowsRemoteActions,
       // `activeAction`, not `inFlight`: the label must describe THIS workroom. `inFlight` is the
       // model-wide lock, so rendering it directly showed "Pushing…" on a workroom that wasn't pushing.
       activity: model.activeAction.map { .running($0) } ?? .idle,
@@ -130,7 +130,7 @@ struct VCSToolbar: View {
         // reintroduces the imbalance. (An earlier version gave sync `layoutPriority(1)` AND
         // `maxWidth: .infinity`, so it was offered the whole width first and claimed it, pinning the
         // branch cell at its floor even in a wide inspector: `feature/login` rendered as `fe…gin`.)
-        VCSBranchSegment(name: branchName, vcs: model.target?.vcs.rawValue)
+        VCSBranchSegment(name: branchName)
           .frame(minWidth: VCSToolbarMetrics.segmentMinWidth, maxWidth: .infinity)
         divider
         VCSSyncSegment(
@@ -147,7 +147,7 @@ struct VCSToolbar: View {
         VCSFetchSegment(
           isRunning: model.activeAction == .fetch,
           isEnabled: model.canFetch
-            && store.vcsAllowsRemoteActions(vcs: (model.target?.vcs ?? .git).rawValue),
+            && store.vcsAllowsRemoteActions,
           onFetch: { perform(.fetch) }
         )
         .frame(width: VCSToolbarMetrics.fetchWidth)
@@ -201,8 +201,7 @@ struct VCSToolbar: View {
 ///
 /// Not a dropdown, and not a button either. Workrooms **are** branches — a workroom's identity is its
 /// directory name, with no branch field anywhere in the config — so switching a workroom's branch would
-/// make its name permanently wrong, and the jj equivalent (`jj new <bookmark>`) was reproduced removing
-/// a file from the working copy and orphaning the workroom's commit. With switching gone there is no
+/// make its name permanently wrong. With switching gone there is no
 /// action left that belongs on the branch name, so this is a label: no `Button`, no hover well, no
 /// chevron. Each of those would promise something that doesn't happen.
 ///
@@ -210,13 +209,8 @@ struct VCSToolbar: View {
 /// how you read the whole thing — plus a right-click "Copy Branch Name". Neither is a click action.
 private struct VCSBranchSegment: View {
   let name: String?
-  /// The target's backend (`"git"` / `"jj"`), nil when nothing is selected. Every string in this segment
-  /// derives from it through `VCSSyncPresenter`, so the caption, the tooltip and the spoken label can't
-  /// drift out of agreement — and the mapping stays unit-testable rather than inline here.
-  let vcs: String?
 
-  private var noun: String { VCSSyncPresenter.refNoun(vcs: vcs) }
-  private var caption: String { VCSSyncPresenter.refCaption(vcs: vcs) }
+  private let caption = "Current Branch"
   private var theme: ThemeTokens { ThemeService.shared.tokens }
 
   var body: some View {
@@ -229,10 +223,8 @@ private struct VCSBranchSegment: View {
       // variant, which dropped it far more often than intended and in the wrong circumstances:
       // `ViewThatFits` measures each variant's IDEAL width, and a `.lineLimit(1)` truncating `Text`
       // reports its FULL untruncated string as its ideal — so the caption was vetoed by a long *name*,
-      // never by a narrow cell. jj repos lost it almost always (bookmark names, or the ancestor bookmark
-      // a workspace's unbookmarked `@` resolves to, run longer than a `feature/login`) while git repos
-      // kept it, which is exactly the asymmetry that got reported. The name truncates instead; at the
-      // 114pt floor the caption truncates too, which is honest degradation rather than a silent drop.
+      // never by a narrow cell. The name truncates instead; at the 114pt floor the caption truncates
+      // too, which is honest degradation rather than a silent drop.
       VStack(alignment: .leading, spacing: 1) {
         Text(caption)
           .font(VCSToolbarMetrics.captionFont)
@@ -250,7 +242,7 @@ private struct VCSBranchSegment: View {
     // the full cell as their hit region rather than just the glyph and text glyphs.
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     .contentShape(Rectangle())
-    .help(name ?? "No \(noun) resolved yet")
+    .help(name ?? "No branch resolved yet")
     // A `Button` was implicitly ONE accessibility element; a plain `HStack` is not, so without this its
     // caption and name would be exposed as two unrelated strings.
     .accessibilityElement(children: .ignore)
@@ -270,7 +262,7 @@ private struct VCSBranchSegment: View {
       // swallows real mouseDown, which would stop this segment being clickable with an actual mouse
       // while synthetic test clicks kept passing.
       if let name {
-        Button("Copy \(noun.capitalized) Name") {
+        Button("Copy Branch Name") {
           NSPasteboard.general.clearContents()
           NSPasteboard.general.setString(name, forType: .string)
         }

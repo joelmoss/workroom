@@ -1,7 +1,7 @@
 import XCTest
 
 /// UI test for the activity bar's **Changes dirty dot**. The fixture (`-WorkroomUITestFixture 1`)
-/// auto-selects the jj fixture workroom, whose seeded `WorkroomStatus` is `dirty: true`
+/// auto-selects the fixture workroom, whose seeded `WorkroomStatus` is `dirty: true`
 /// (`UITestFixture.workroomStatus`), so on launch the Changes icon must signal the uncommitted
 /// working tree. The dot itself is decorative (a11y-hidden); the state is announced on the icon
 /// button's accessibility **value** ("has changes"), which is what this test reads.

@@ -1,24 +1,23 @@
 import XCTest
 
 /// UI tests for the Changes → diff viewer flow (issue #66). Fixture mode serves canned diffs
-/// (`UITestFixture.diff(for:)`) so a real `DiffViewer` renders without shelling out to git/jj against
+/// (`UITestFixture.diff(for:)`) so a real `DiffViewer` renders without shelling out to git against
 /// the fake temp workroom — and the canned content encodes the `DiffSource`, so each test asserts it
-/// opened the *right* revision (jj `@`, jj `@-`, or git worktree).
+/// opened the *right* revision (git worktree or a commit).
 ///
 /// Run with `make app-uitest` on a real GUI login session (XCUITest can't drive a headless run), so
 /// these are excluded from `make app-test` (the unit gate) via the UI-test scheme.
 final class DiffViewerUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
 
-  /// Launch in fixture mode. `gitWorkroom: true` flips the fixture workroom from the default jj
-  /// change to a git working tree (flat changed-file list) so the `.gitWorktree` diff is reachable.
+  /// Launch in fixture mode: the fixture workroom is a git working tree (flat changed-file list).
   ///
   /// `diffViewMode` is passed on EVERY launch, never left implicit. `Defaults[.diffViewMode]` lives in
   /// the app's real (Dev) UserDefaults domain and is a Settings picker, so a test that says nothing
   /// inherits the developer's last choice — and the unified assertions here (`diff.line`) then fail on
   /// a machine sitting on side-by-side, which is exactly how three of them sat red. The fixture mirrors
   /// this into `Defaults` at launch (`UITestFixture.applyFixtureDefaults`).
-  private func launchedApp(gitWorkroom: Bool = false, diffViewMode: String = "unified")
+  private func launchedApp(diffViewMode: String = "unified")
     -> XCUIApplication
   {
     let app = XCUIApplication()
@@ -31,7 +30,6 @@ final class DiffViewerUITests: XCTestCase {
     // and a click on one lands on the History pane drawn over its accessibility frame. Give Changes
     // the room.
     app.launchArguments += ["-WorkroomUITestInspectorWeights", "6,1,1,1"]
-    if gitWorkroom { app.launchArguments += ["-WorkroomUITestGitWorkroom", "1"] }
     app.launch()
     app.activate()
     return app
@@ -92,32 +90,11 @@ final class DiffViewerUITests: XCTestCase {
       for: [XCTNSPredicateExpectation(predicate: p, object: el)], timeout: timeout) == .completed
   }
 
-  // MARK: jj
-
-  /// Clicking a working-copy (`@`) file opens a diff tab whose body is the jj working-copy diff.
-  func testJJWorkingCopyFileOpensDiffTab() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(
-      element(app, id: "changes.workingCopy").waitForExistence(timeout: 10),
-      "jj Working Copy header should render")
-
-    let row = fileRow(app, "app/models/user.rb")
-    XCTAssertTrue(row.waitForExistence(timeout: 10), "working-copy file row should render")
-    row.click()
-
-    XCTAssertTrue(
-      diffTab(app, "user.rb").waitForExistence(timeout: 6), "a diff tab opens for the clicked file")
-    XCTAssertTrue(
-      diffLineExists(app, contains: "jj-working-copy"),
-      "the working-copy file opens the jj `@` diff")
-  }
-
   // MARK: git
 
-  /// In git-workroom mode the Changes panel is a flat list; clicking a file opens the git worktree diff.
+  /// The Changes panel is a flat list; clicking a file opens the git worktree diff.
   func testGitWorktreeFileOpensDiff() throws {
-    let app = launchedApp(gitWorkroom: true)
+    let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
 
     let row = fileRow(app, "config/routes.rb")
@@ -142,7 +119,7 @@ final class DiffViewerUITests: XCTestCase {
   func testSingleClickPreviewIsReplacedInPlace() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
 
     fileRow(app, "app/models/user.rb").click()
     XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6))
@@ -167,7 +144,7 @@ final class DiffViewerUITests: XCTestCase {
   func testFocusedFileRowIsSelectedAndFollowsFocus() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
 
     let userRow = fileRow(app, "app/models/user.rb")
     XCTAssertTrue(userRow.waitForExistence(timeout: 10))
@@ -197,7 +174,7 @@ final class DiffViewerUITests: XCTestCase {
   func testDoubleClickPersistsAndCoexistsWithNextPreview() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
 
     fileRow(app, "app/models/user.rb").doubleClick()
     XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6))
@@ -218,7 +195,7 @@ final class DiffViewerUITests: XCTestCase {
   func testSideBySideRendersTwoColumns() throws {
     let app = launchedApp(diffViewMode: "sideBySide")
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
 
     let row = fileRow(app, "app/models/user.rb")
     XCTAssertTrue(row.waitForExistence(timeout: 10), "working-copy file row should render")
@@ -248,7 +225,7 @@ final class DiffViewerUITests: XCTestCase {
   func testTabToolbarToggleSwitchesThisFileToSideBySide() throws {
     let app = launchedApp(diffViewMode: "unified")  // the global default this toggle overrides
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
 
     let row = fileRow(app, "app/models/user.rb")
     XCTAssertTrue(row.waitForExistence(timeout: 10))

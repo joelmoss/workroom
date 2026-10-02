@@ -18,7 +18,7 @@ struct WorkroomLabel: Equatable {
   let project: String
   /// This item's own label-aware workroom name; nil for a project root.
   let workroom: String?
-  /// A root's resolved branch/bookmark; nil for a workroom, and nil while the ref is unresolved.
+  /// A root's resolved branch; nil for a workroom, and nil while the ref is unresolved.
   let branch: String?
 
   init(project: String, workroom: String? = nil, branch: String? = nil) {

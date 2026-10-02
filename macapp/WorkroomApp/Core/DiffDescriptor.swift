@@ -1,20 +1,13 @@
 import Foundation
 
 /// Where a changed-file row's diff comes from — picks the VCS revision the `DiffResolver` diffs
-/// against. The Changes panel renders three contexts (issue #66 + the jj working-copy/parent split
-/// landed in `2a9135e`); each row carries the source of the group it belongs to, so a click always
-/// opens the *right* diff:
+/// against (issue #66); each row carries its source, so a click always opens the *right* diff:
 ///   - `.gitWorktree`    — a git worktree's uncommitted changes vs `HEAD`.
-///   - `.jjWorkingCopy`  — the jj working copy (`@`).
-///   - `.jjParent`       — the jj working copy's parent commit (`@-`), the commit's own changes.
 ///   - `.commit(id)`     — an arbitrary commit's *own* changes (vs its first parent), addressed by a
-///     stable commit id. The generalization of `.jjParent` used by the changeset detail (issue #59);
-///     resolved structurally via `VCSProviding.fileDiff` (jj-lib / SwiftGitX), not by shelling — so
-///     it works the same for jj and git repos. The revision is part of the diff's tab identity.
+///     stable commit id, used by the changeset detail (issue #59); resolved structurally via
+///     `VCSProviding.fileDiff`, not by shelling. The revision is part of the diff's tab identity.
 enum DiffSource: Equatable, Hashable, Sendable {
   case gitWorktree
-  case jjWorkingCopy
-  case jjParent
   case commit(String)
 }
 

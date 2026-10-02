@@ -394,16 +394,6 @@ final class AgentFileIntegrationTests: XCTestCase {
     XCTAssertEqual(viaAgent.exitCode, viaNative.exitCode)
   }
 
-  func testAnUnregisteredJJListingIsRefusedBeforeAnythingIsSent() async throws {
-    let (connection, _) = try await connect()
-    let root = try gitRepo()
-    let files = try await agentFiles(root, connection: connection)  // sharedLocation == nil
-    do {
-      _ = try await files.list(.jj)
-      XCTFail("an unregistered jj listing must not reach the agent")
-    } catch { XCTAssertEqual(error as? RepositoryRoutingError, .registrationRequired) }
-  }
-
   /// D12: over the capture cap is a typed failure, never a short list. The native cap is injectable;
   /// the agent's 4 MiB cap is proven in `file_service.rs` against a 22,000-file repository.
   func testANativeListingOverTheCaptureCapIsATypedFailure() async throws {

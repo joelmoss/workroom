@@ -123,12 +123,12 @@ private struct CountingGHRunner: StatusCommandRunning, @unchecked Sendable {
 }
 
 /// REGRESSION (Muxy test-practices review, filed in TODOS.md — "N-in-flight concurrency accounting
-/// test for status sweeps"): `WorkroomStatusResolver.resolveGit`/`resolveJJ` called `GitProvider()`/
-/// `RustJJProvider()` directly, bypassing any injection seam, so this invariant was untestable until
-/// `GitStatusReading`/`JJStatusReading` existed. `testCISweepNeverExceedsItsConcurrencyCap` covers the
+/// test for status sweeps"): `WorkroomStatusResolver.resolveGit` called `GitProvider()` directly,
+/// bypassing any injection seam, so this invariant was untestable until `VCSWorkingStatusReading`
+/// existed. `testCISweepNeverExceedsItsConcurrencyCap` covers the
 /// remaining half of that same entry: the `runCISweep` stage's own cap, over `resolveCI`/`gh`, which
 /// already had an injectable `StatusCommandRunning` (see `GatedGHRunner` in `WorkroomStatusTests.swift`)
-/// — the seam gap this file was filed for was only ever `resolveGit`/`resolveJJ`'s.
+/// — the seam gap this file was filed for was only ever `resolveGit`'s.
 final class WorkroomStatusConcurrencyTests: XCTestCase {
   private var dirs: [String] = []
 
@@ -147,9 +147,7 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
     return Project(path: path, vcs: "git", workrooms: [])
   }
 
-  /// More work items than the sweep's cap, across DIFFERENT projects (so `JJSnapshotGate`'s
-  /// per-project serialization can't be mistaken for the thing bounding concurrency — these are all
-  /// git anyway, which is never gated): asserts `runLocalSweep` never lets more than 5 local probes
+  /// More work items than the sweep's cap, across DIFFERENT projects: asserts `runLocalSweep` never lets more than 5 local probes
   /// run at once, and that the fan-out actually overlaps at all (else this would pass even fully
   /// serial, proving nothing).
   @MainActor

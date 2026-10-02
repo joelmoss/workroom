@@ -11,7 +11,7 @@ import XCTest
 /// the responder chain was, which a real window exercises. The fix resigns the terminal's first
 /// responder when it stops being the focused pane.
 ///
-/// Driven through the real app in UI-test fixture mode (canned jj diffs, suppressed close/quit
+/// Driven through the real app in UI-test fixture mode (canned diffs, suppressed close/quit
 /// confirmations). Run with `make app-uitest` on a GUI login session.
 final class DiffPaneFocusUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
@@ -76,7 +76,7 @@ final class DiffPaneFocusUITests: XCTestCase {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     XCTAssertTrue(
-      element(app, id: "changes.workingCopy").waitForExistence(timeout: 10),
+      element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10),
       "the Changes panel should render so a diff can be opened")
 
     // Open a persisted diff tab (double-click skips preview so it survives).

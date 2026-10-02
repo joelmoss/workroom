@@ -308,8 +308,8 @@ struct AvatarView: View {
   }
 }
 
-/// Overlapping circular avatars for a set of people — a commit's authors (jj changes can carry
-/// several) or any multi-person context. One subject renders as a lone avatar; more overlap left
+/// Overlapping circular avatars for a set of people — a commit's authors (a co-authored commit
+/// carries several) or any multi-person context. One subject renders as a lone avatar; more overlap left
 /// over right, each with a background-coloured ring so the overlap reads as a stack. Every subject
 /// is shown (no cap) — a commit's full author set is always visible.
 struct AvatarStack: View {

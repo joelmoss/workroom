@@ -159,44 +159,8 @@ final class ChangesetDetailUITests: XCTestCase {
       "History empties once the selected workroom has no open tabs")
   }
 
-  /// The divergent fixture commit (change-id `wqp`, two off-line copies) carries a "diverges"
-  /// disclosure at the trailing end of its row. Expanding it reveals the two divergent sibling
-  /// copies — each labelled with jj's `id/N` offset — and clicking one opens its changeset detail.
-  func testDivergenceExpanderRevealsSiblings() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    openHistory(app)
-
-    let toggle = el(app, "HistoryRowDiverges")
-    XCTAssertTrue(
-      toggle.waitForExistence(timeout: 8), "the divergent row shows the diverges disclosure")
-
-    // Collapsed: the sibling copies are hidden until the disclosure is opened.
-    XCTAssertFalse(
-      els(app, "HistoryDivergentSibling").element(boundBy: 0).exists,
-      "divergent siblings stay hidden until expanded")
-
-    toggle.click()
-
-    // Expanded: both off-line copies appear, labelled with their jj offsets (e.g. `wqp/1`).
-    XCTAssertTrue(
-      els(app, "HistoryDivergentSibling").element(boundBy: 1).waitForExistence(timeout: 6),
-      "expanding reveals the divergent sibling copies")
-    // Scoped to the sibling rows themselves (they combine their children, so the offset surfaces as the
-    // row's own label/value) — an unscoped predicate query over every element times out now.
-    let labelled = els(app, "HistoryDivergentSibling").matching(
-      NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "wqp/1", "wqp/1")
-    ).firstMatch
-    XCTAssertTrue(waitExists(labelled), "a sibling is labelled with its id/offset (wqp/1)")
-
-    // Clicking a divergent sibling opens its changeset detail — it resolves like any other commit.
-    els(app, "HistoryDivergentSibling").element(boundBy: 0).click()
-    XCTAssertTrue(
-      waitExists(el(app, "ChangesetDetail")), "clicking a divergent sibling opens its changeset")
-  }
-
-  /// A moved file's row reads `old → new`. The rename is ONE row (both backends pair the delete with
-  /// the add), so this dimmed path line is the only place the old path appears — if it regressed to
+  /// A moved file's row reads `old → new`. The rename is ONE row (the delete is paired with the
+  /// add), so this dimmed path line is the only place the old path appears — if it regressed to
   /// the bare path, the row would look like a plain add at a path the user never created.
   ///
   /// Matched on the row's spoken content rather than its `Text`: `ChangesetFileRow` combines its
@@ -220,36 +184,5 @@ final class ChangesetDetailUITests: XCTestCase {
         "src/moved.rb \u{2192} lib/moved.rb")
     ).firstMatch
     XCTAssertTrue(waitExists(moved), "the renamed row shows `old → new`, not just the new path")
-  }
-
-  /// jj's virtual root commit gets its own row: `◆ root() 00000000`, with nothing it doesn't have (no
-  /// author, no relative time) and nothing to click. Before it existed, the oldest row of every jj
-  /// history read "(no description) · 56 yr ago" behind a `?` avatar — root's blank signature and epoch
-  /// timestamp rendered as if someone had authored it in 1970.
-  ///
-  /// Two halves: the row states what it is, and it is INERT (root has no diff, so a click must not open
-  /// a changeset tab). Its own identifier, not `HistoryRow` — the commit rows are indexed positionally
-  /// and counted against the unpushed badges elsewhere in this suite.
-  func testRootRowRendersAsRootAndOpensNothing() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    openHistory(app)
-
-    let row = el(app, "HistoryRootRow")
-    XCTAssertTrue(row.waitForExistence(timeout: 8), "the page's oldest row is the root() row")
-
-    // The row combines its children, so `root()` + the zero short id surface as its own content.
-    let spoken = "\(row.label) \(row.value as? String ?? "")"
-    XCTAssertTrue(spoken.contains("root()"), "the row names itself root(): \(spoken)")
-    XCTAssertTrue(spoken.contains("00000000"), "the row shows the zero short id: \(spoken)")
-    XCTAssertFalse(
-      spoken.contains("no description"), "root() must not read as a description-less commit")
-
-    // Inert: clicking it opens no changeset (and no tab chip for it).
-    row.click()
-    XCTAssertFalse(
-      waitExists(el(app, "ChangesetDetail"), true, 3), "root() has no changeset to open")
-    XCTAssertFalse(el(app, "terminal.tab.root()").exists, "no tab is opened for root()")
-    XCTAssertFalse(el(app, "terminal.tab.00000000").exists, "no tab is opened for root()")
   }
 }

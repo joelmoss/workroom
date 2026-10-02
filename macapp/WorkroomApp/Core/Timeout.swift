@@ -8,8 +8,8 @@ struct VCSTimeoutError: Error {}
 ///
 /// This is the timeout seam the VCS resolvers (`BranchResolver`, `WorkroomStatusResolver`) rely on
 /// now that their reads go through `VCSProviding` — which, unlike the old CLI command-runners, has
-/// no built-in per-call timeout/kill. Caveat: an in-flight *synchronous* backend read (libgit2 /
-/// jj-lib over UniFFI) can't be interrupted mid-call, so on timeout it keeps running to completion
+/// no built-in per-call timeout/kill. Caveat: an in-flight *synchronous* backend read (libgit2)
+/// can't be interrupted mid-call, so on timeout it keeps running to completion
 /// on its own thread and its result is abandoned. That still delivers the resolvers' contract — one
 /// wedged repo abandons only its own row and never blocks the others.
 ///
@@ -20,9 +20,9 @@ struct VCSTimeoutError: Error {}
 /// continuation resumes the caller the instant either side settles.
 ///
 /// Also observes the CALLING task's own cancellation (`withTaskCancellationHandler`, the same shape
-/// `JJSnapshotGate.run` uses) — without it, a caller that's cancelled from outside (e.g. a superseded
+/// `RepositoryWriteGate.run` uses) — without it, a caller that's cancelled from outside (e.g. a superseded
 /// status sweep) still had to wait out the full race above before this could return, wasting the
-/// wait's own time and, downstream of `JJSnapshotGate`, occupying that project's queue slot for
+/// wait's own time and, downstream of `RepositoryWriteGate`, occupying that project's queue slot for
 /// nothing. `onCancel` only unblocks the WAIT early, with `VCSCancellationError`; the underlying
 /// synchronous native call is exactly as uncancellable as the timeout path already documents above.
 func withTimeout<T: Sendable>(
@@ -105,7 +105,7 @@ private final class TimeoutGate<T: Sendable>: @unchecked Sendable {
 /// Run a synchronous, blocking closure OFF the Swift cooperative thread pool — on GCD's global queue,
 /// whose threads grow on demand.
 ///
-/// The VCS backends' reads (jj-lib over UniFFI, libgit2) block their thread for the whole call. Run
+/// The VCS backend's reads (libgit2) block their thread for the whole call. Run
 /// on the cooperative pool (`Task.detached`), a burst of them — e.g. the per-workroom status
 /// snapshots fanned out on selection (`refreshWorkroomStatuses`' task group) — saturates its fixed
 /// width (≈ core count) and starves any other blocking read queued behind it. That's the "History
