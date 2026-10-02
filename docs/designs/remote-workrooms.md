@@ -1434,8 +1434,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     stop` and `start`, a pane shows its last screen, the identity is unchanged, and git still mints.
     A workroom whose enrolment or checkout fails leaves no machine and no live grant.
   - **Gaps, for the issues that own them.**
-    - The app does not create remote workrooms yet; that is #253, which picks the driver. The
-      acceptance criterion's "from the app" is met through `RemoteProvisioning` only.
+    - The app creates remote workrooms on the container driver only (#253, part 2), so for boxd
+      the acceptance criterion's "from the app" is met through `RemoteProvisioning` only.
     - A derived workroom keeps boxd's default timers, so it hibernates after 4 h with no network
       traffic, busy or not. That is the lifecycle shim's job (#257).
     - Renaming a machine (`boxd machine rename`) changes its hostname, so its identity unit would
