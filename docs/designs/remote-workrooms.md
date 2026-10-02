@@ -6,6 +6,9 @@ Repo: joelmoss/workroom
 Status: APPROVED
 Mode: Builder
 
+> **Note:** Workroom dropped Jujutsu (jj) support in #266. Passages here that describe jj
+> behaviour are a record of the design as it stood then, not of the current code.
+
 ## Current Status — 2026-09-26
 
 **Phase 2 is merged to master** (2026-09-23, #201 through #218; review follow-ups #220–#226), and
