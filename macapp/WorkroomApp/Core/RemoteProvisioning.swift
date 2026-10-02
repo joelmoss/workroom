@@ -68,12 +68,16 @@ enum RemoteProvisioning {
     case git(command: String, detail: String)
     /// A step failed with `cause`, and undoing what the sequence had made failed too: `host` is
     /// still up (nil once it is gone) and `grantID` still live (nil once cancelled). The caller
-    /// has to record them and finish the job, since nothing else knows about them.
+    /// has to record them and finish the job, since nothing else knows about them. An empty
+    /// `cause` is a teardown that failed itself (`tearDown`), with nothing it was undoing.
     case rollbackIncomplete(cause: String, host: HostID?, grantID: String?, cleanup: [String])
 
     var errorDescription: String? {
       switch self {
       case .git(let command, let detail): return "git \(command) failed on the host: \(detail)"
+      case .rollbackIncomplete(let cause, _, _, let cleanup) where cause.isEmpty:
+        return "Taking it down didn't finish: \(cleanup.joined(separator: "; ")). Delete it again "
+          + "to finish."
       case .rollbackIncomplete(let cause, _, _, let cleanup):
         return "\(cause) Undoing it failed too: \(cleanup.joined(separator: "; "))"
       }
@@ -147,12 +151,13 @@ enum RemoteProvisioning {
       ["remote", "set-head", "origin", "--auto"], in: path, environment: extra, on: connection)
   }
 
-  /// Removes the base and its record. Workrooms derived from it are not affected: each is a copy.
+  /// Removes the base on `host` and its record. Workrooms derived from it are not affected: each is
+  /// a copy.
   static func destroyBase(
-    _ base: Base, in environment: Environment, forget: @Sendable () async throws -> Void
+    _ host: UUID, in environment: Environment, forget: @Sendable () async throws -> Void
   ) async throws {
-    try await BaseLocks.shared.exclusively(on: base.host) {
-      try await environment.driver.destroy(.remote(base.host))
+    try await BaseLocks.shared.exclusively(on: host) {
+      try await environment.driver.destroy(.remote(host))
     }
     try await forget()
   }
@@ -271,20 +276,34 @@ enum RemoteProvisioning {
     async throws
   {
     await instance.connection.close()
+    try await tearDown(
+      host: instance.host, grantID: instance.grantID, workroom: workroom, in: environment)
+  }
+
+  /// `destroy` by what a workroom's record says is live (#253), with no connection to it: the grant
+  /// if there is one, the workroom's route to the broker, and the box if there is one. Cancelling an
+  /// ended grant and removing a box already gone both succeed, so a delete can be tried again.
+  static func tearDown(
+    host: HostID?, grantID: String?, workroom: UUID?, in environment: Environment
+  ) async throws {
     var failures: [String] = []
     var (grantLive, hostLive): (String?, HostID?) = (nil, nil)
-    do { try await environment.client.cancelGrant(instance.grantID) } catch {
-      grantLive = instance.grantID
-      failures.append("cancelling grant \(instance.grantID): \(error.localizedDescription)")
+    if let grantID {
+      do { try await environment.client.cancelGrant(grantID) } catch {
+        grantLive = grantID
+        failures.append("cancelling grant \(grantID): \(error.localizedDescription)")
+      }
     }
-    await environment.agentBroker.release(workroom)
-    do { try await environment.driver.destroy(instance.host) } catch {
-      hostLive = instance.host
-      failures.append("destroying the instance: \(error.localizedDescription)")
+    if let workroom { await environment.agentBroker.release(workroom) }
+    if let host {
+      do { try await environment.driver.destroy(host) } catch {
+        hostLive = host
+        failures.append("destroying the instance: \(error.localizedDescription)")
+      }
     }
     guard !failures.isEmpty else { return }
     throw Failure.rollbackIncomplete(
-      cause: "Destroying the workroom failed.", host: hostLive, grantID: grantLive,
+      cause: "", host: hostLive, grantID: grantLive,
       cleanup: failures)
   }
 

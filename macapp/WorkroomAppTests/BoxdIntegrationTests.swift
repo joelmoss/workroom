@@ -489,7 +489,7 @@ final class BoxdIntegrationTests: XCTestCase {
       XCTAssertEqual(grantsCancelled, 1, "destroying a workroom left its grant live")
     }
     XCTAssertEqual(try leftovers("machine"), [name(.remote(base.host))])
-    try await RemoteProvisioning.destroyBase(base, in: environment, forget: {})
+    try await RemoteProvisioning.destroyBase(base.host, in: environment, forget: {})
     XCTAssertEqual(try leftovers("machine"), [])
   }
 
@@ -528,6 +528,6 @@ final class BoxdIntegrationTests: XCTestCase {
       XCTAssertEqual(try leftovers("snapshots"), [], "a failure at \(step) left a snapshot")
       XCTAssertEqual(grantsCancelled, 1, "a failure at \(step) left its grant live")
     }
-    try await RemoteProvisioning.destroyBase(base, in: environment(driver), forget: {})
+    try await RemoteProvisioning.destroyBase(base.host, in: environment(driver), forget: {})
   }
 }

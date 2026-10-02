@@ -255,9 +255,13 @@ struct RootView: View {
         }
         Button("Cancel", role: .cancel) { store.pendingDeletion = nil }
       } message: {
-        // Issue #146: deleteWorkroom reaps live terminals unconditionally, including a live
-        // Investigate session — which the base copy below never mentions stopping.
-        if let target = store.pendingDeletion,
+        // #253: a remote workroom has no directory here; its host goes, and all on it.
+        if let target = store.pendingDeletion, target.workroom.isRemote {
+          Text(
+            "This destroys the workroom's remote machine and everything on it, including changes "
+              + "and commits that aren't pushed."
+          )
+        } else if let target = store.pendingDeletion,
           WindowRegistry.shared.hasLiveInvestigateSession(for: [
             TerminalTarget.workroomID(project: target.project.path, name: target.workroom.name)
           ])

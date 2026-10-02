@@ -313,6 +313,74 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(try leftovers("ps", label: label).count, 3, "one base and two workrooms")
   }
 
+  /// Deleting a remote workroom from the app (#253) cancels its grant and removes its box, then
+  /// drops its entry. One whose grant can't be cancelled loses its box anyway and keeps its entry,
+  /// `failed` with the live grant, until deleting it again finishes the job. The base goes last,
+  /// then its record.
+  @MainActor
+  func testDeletingRemoteWorkroomsTakesThemDownAndThenTheirBase() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let environment = environment(
+      fixture, driver: driver, revoked: Revoked(),
+      brokerURL: URL(string: ProcessInfo.processInfo.environment["WR_SSH_FIXTURE_BROKER_URL"] ?? "")
+    )
+    let recorded = Recorded()
+    BrokerStub.reset([Self.cloneToken, Self.grant])
+    let first = try await RemoteWorkrooms.create(
+      repository: Self.repository, cloneURL: Self.originURL, base: nil, driver: driver,
+      environment: environment, recorder: recorded.recorder)
+    await first.instance.connection.close()
+    guard case .record(nil, let base) = recorded.calls.first, let baseID = base.id,
+      case .record("w1", let w1) = recorded.calls.last
+    else { return XCTFail("calls: \(recorded.calls)") }
+    cleanups.append { try? await driver.destroy(.remote(baseID)) }
+    cleanups.append { try? await driver.destroy(first.instance.host) }
+    BrokerStub.reset([Self.grant])
+    let second = try await RemoteWorkrooms.create(
+      repository: Self.repository, cloneURL: Self.originURL, base: base, driver: driver,
+      environment: environment, recorder: recorded.recorder)
+    await second.instance.connection.close()
+    cleanups.append { try? await driver.destroy(second.instance.host) }
+    guard case .record("w2", let w2) = recorded.calls.last else {
+      return XCTFail("calls: \(recorded.calls)")
+    }
+    XCTAssertEqual(try leftovers("ps", label: label).count, 3, "one base and two workrooms")
+
+    BrokerStub.reset([Self.cancelled])
+    try await RemoteWorkrooms.delete(
+      "w1", host: w1, environment: environment, recorder: recorded.recorder)
+    XCTAssertEqual(grantsCancelled, 1, "the grant was not cancelled")
+    XCTAssertEqual(recorded.calls.last, .forget("w1"))
+    XCTAssertEqual(try leftovers("ps", label: label).count, 2, "the workroom's box was kept")
+
+    BrokerStub.reset([.init(status: 503, body: #"{"error":"github_unavailable"}"#)])
+    do {
+      try await RemoteWorkrooms.delete(
+        "w2", host: w2, environment: environment, recorder: recorded.recorder)
+      XCTFail("a failed grant cancel was swallowed")
+    } catch RemoteProvisioning.Failure.rollbackIncomplete {}
+    guard case .record("w2", let left) = recorded.calls.last else {
+      return XCTFail("what is still live was not recorded: \(recorded.calls)")
+    }
+    XCTAssertEqual(left.state, "failed")
+    XCTAssertEqual(left.grantID, "g1", "the live grant was not kept")
+    XCTAssertNil(left.id, "a box already gone was kept")
+    XCTAssertEqual(try leftovers("ps", label: label).count, 1, "the second box was kept")
+
+    BrokerStub.reset([Self.cancelled])
+    try await RemoteWorkrooms.delete(
+      "w2", host: left, environment: environment, recorder: recorded.recorder)
+    XCTAssertEqual(grantsCancelled, 1)
+    XCTAssertEqual(recorded.calls.last, .forget("w2"))
+
+    let cleared = Revoked()
+    try await RemoteWorkrooms.deleteBase(base, environment: environment) { cleared.add("base") }
+    XCTAssertEqual(cleared.all, ["base"])
+    XCTAssertEqual(try leftovers("ps", label: label), [], "the base was kept")
+  }
+
   /// A derive that fails and undoes itself drops the name it took; nothing is recorded for it.
   @MainActor
   func testACreateWhoseDeriveFailsForgetsTheNameItTook() async throws {
@@ -740,12 +808,12 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     // already did to forget the record.
     do {
       try await RemoteProvisioning.destroyBase(
-        base, in: environment, forget: { throw WorkroomCLIError.timedOut })
+        base.host, in: environment, forget: { throw WorkroomCLIError.timedOut })
       XCTFail("a failed forget was swallowed")
     } catch WorkroomCLIError.timedOut {}
     XCTAssertEqual(try leftovers("ps", label: label), [])
     try await RemoteProvisioning.destroyBase(
-      base, in: environment, forget: { forgotten.add("forgot") })
+      base.host, in: environment, forget: { forgotten.add("forgot") })
     XCTAssertEqual(forgotten.all, ["forgot"])
 
     // A base this driver never knew (an app relaunched since) keeps its record: nothing has shown
@@ -754,7 +822,7 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
     do {
       try await RemoteProvisioning.destroyBase(
-        base, in: self.environment(fixture, driver: relaunched, revoked: Revoked()),
+        base.host, in: self.environment(fixture, driver: relaunched, revoked: Revoked()),
         forget: { forgotten.add("forgot again") })
       XCTFail("an unknown base was destroyed")
     } catch HostDriverError.unknownHost {}

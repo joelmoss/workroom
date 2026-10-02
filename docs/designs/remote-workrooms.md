@@ -1534,6 +1534,31 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     `brokerAgentTarget` set to a port still wins.
   - **An App that isn't installed** says which owner it is missing from, and the error sheet offers
     Codaset's install link (`install_url` on the `app_not_installed` refusal).
+- **As built (#253, part 4: deleting).** Delete Workroom and Delete Project now take remote
+  hosts down rather than refuse them.
+  - **A workroom** (`RemoteWorkrooms.delete`): the app's connection to its box is dropped, then
+    `RemoteProvisioning.tearDown` cancels its grant, releases its route to the broker and removes
+    its box, by what the descriptor records. Then the entry is marked `destroyed` and the CLI drops
+    it. A teardown that fails part-way leaves the entry `failed`, with what is still live, and
+    deleting it again finishes the job: the broker's cancel of an ended grant succeeds, and so do
+    `docker rm --force` and `rmi --force` of what is already gone (both measured).
+  - **Nothing live, nothing to take down.** A `destroyed` entry, or one a crash left at
+    `creating` with no box recorded, is only dropped. A container such a crash made is the
+    sweep's once no record names it. A `creating` workroom is refused while its project is busy,
+    since that is a create still deriving.
+  - **Checked first.** Another build's live host is refused (its key and labels are not this
+    build's), as is one that records no provisioner, and so is any live host while signed out or
+    without Docker. The checks run before
+    the optimistic removal, so a refusal leaves the sidebar as it was.
+  - **A project**, in every scope, config-only included: dropping its record would leave each
+    box to the next launch's sweep and each grant live. Its remote workrooms go first, then its
+    base (`RemoteWorkrooms.deleteBase`, then `host clear`), then the CLI's `delete-project`, which
+    still refuses any remote entry. That order matters: config keeps a project with a base when its
+    last workroom is removed, and only then. It also keeps `--from-disk` from handing a path on a
+    remote host to the Bin. The sheet warns that every option destroys them.
+  - **Not done.** No teardown script runs on the box: create runs no setup script there, and the
+    box goes anyway. A failure part-way through a project delete leaves the remote workrooms
+    already taken down gone, as the local cascade does.
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits

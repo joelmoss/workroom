@@ -44,6 +44,7 @@ enum RemoteWorkrooms {
     case notOnGitHub(String)
     case noDocker
     case anotherBuildsBase(String)
+    case anotherBuildsHost(String)
 
     var errorDescription: String? {
       switch self {
@@ -55,6 +56,9 @@ enum RemoteWorkrooms {
       case .anotherBuildsBase(let build):
         return "This project's base machine was made by another Workroom build (\(build)), "
           + "whose remote hosts this build can't reach. Create the remote workroom from that build."
+      case .anotherBuildsHost(let build):
+        return "It runs on a remote host another Workroom build made (\(build)), which this build "
+          + "can't take down. Delete it from that build."
       case .noDocker:
         return "Remote workrooms run on Docker on this Mac for now, and no docker command was "
           + "found. Install Docker Desktop, then run `make remote-host-image`."
@@ -183,6 +187,69 @@ enum RemoteWorkrooms {
     }
     return Created(name: name, instance: instance)
   }
+
+  /// Whether `host` records anything still up: a box or a grant. A destroyed one has nothing, and
+  /// neither has one a create left at `creating` before its derive made a box, whose container (if
+  /// any) the sweep takes once no record names it.
+  static func isLive(_ host: HostDescriptor) -> Bool {
+    !host.isDestroyed && (host.id != nil || host.grantID != nil)
+  }
+
+  /// Refuses to take down `hosts` when one that is live is another build's: its key and labels are
+  /// not this build's (`create`). Returns whether any of them is live, so needs an environment.
+  @discardableResult
+  static func checkDeletable(_ hosts: [HostDescriptor]) throws -> Bool {
+    let live = hosts.filter(isLive)
+    if let other = live.first(where: { $0.provisioner != provisioner }) {
+      throw Failure.anotherBuildsHost(other.provisioner ?? "an unknown build")
+    }
+    return !live.isEmpty
+  }
+
+  /// Deletes a remote workroom (#253): takes down what its record says is live (`isLive`), then has
+  /// the CLI drop the entry (`Recorder.forget`). The app's connection to the box goes first; a
+  /// pane's own ssh goes with the box.
+  ///
+  /// When part of the teardown fails, the entry keeps what is still live, as `failed`, so deleting
+  /// it again finishes the job. `environment` is needed only for a live one.
+  static func delete(
+    _ name: String, host: HostDescriptor, environment: RemoteProvisioning.Environment?,
+    recorder: Recorder
+  ) async throws {
+    guard try checkDeletable([host]) else { return try await recorder.forget(name) }
+    guard let environment else { throw Failure.signedOut }
+    let box = host.id.map(HostID.remote)
+    if let box, let lease = await HostConnectionManager.shared.snapshot(for: box).lease {
+      await HostConnectionManager.shared.disconnect(lease)
+    }
+    do {
+      try await RemoteProvisioning.tearDown(
+        host: box, grantID: host.grantID, workroom: host.workroomID, in: environment)
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(
+      let cause, let liveHost, let grant, let left)
+    {
+      var remaining = host
+      remaining.state = "failed"
+      remaining.grantID = grant
+      if liveHost == nil { (remaining.id, remaining.container) = (nil, nil) }
+      try? await recorder.record(name, remaining)
+      throw RemoteProvisioning.Failure.rollbackIncomplete(
+        cause: cause, host: liveHost, grantID: grant, cleanup: left)
+    }
+    try await recorder.forget(name)
+  }
+
+  /// Destroys a project's base (#253), for an explicit project delete, then clears its record
+  /// (`clear`). Its workrooms go first: config keeps a project with a base when its last workroom is
+  /// removed, and only while it has one.
+  static func deleteBase(
+    _ host: HostDescriptor, environment: RemoteProvisioning.Environment?,
+    clear: @Sendable () async throws -> Void
+  ) async throws {
+    guard try checkDeletable([host]), let id = host.id else { return try await clear() }
+    guard let environment else { throw Failure.signedOut }
+    try await RemoteProvisioning.destroyBase(id, in: environment, forget: clear)
+  }
 }
 
 /// The app's remote hosts (#253): one `ContainerHostDriver` on this Mac's Docker, the hosts config
@@ -278,6 +345,14 @@ final class RemoteHosts: @unchecked Sendable {
       }
     #endif
     return (driver, environment)
+  }
+
+  /// What deleting `hosts` needs, checked before anything is removed (#253): nil when none of them
+  /// is live, else the environment, which throws when signed out or without Docker. Refuses one
+  /// another build made (`RemoteWorkrooms.checkDeletable`).
+  @MainActor
+  func environment(toDelete hosts: [HostDescriptor]) throws -> RemoteProvisioning.Environment? {
+    try RemoteWorkrooms.checkDeletable(hosts) ? environment().1 : nil
   }
 
   /// The app's service connection to `host` (`HostConnectionManager`), with its agent bootstrapped
