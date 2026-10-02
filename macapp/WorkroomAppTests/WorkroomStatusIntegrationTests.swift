@@ -28,7 +28,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
       let shared = try await RepositoryLocation.local(projectRoot)
       let router = RepositoryRouter()
       try router.register(
-        .init(location: location, backend: .git, sharedLocation: shared))
+        .init(location: location, sharedLocation: shared))
       return await resolver.resolve(location: location, router: router)
     } catch {
       XCTFail("\(error)")

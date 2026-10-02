@@ -542,7 +542,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   // directory (not a git repo), so a probe RESOLVES a status with `.notRepository`; a suppressed
   // worktree records no local status at all.
   func testNoProbeAgainstWorktreeWhileCreating() async {
-    let (proj, root, _) = makeRealProject(workroom: "wr")
+    let (proj, root, wrPath) = makeRealProject(workroom: "wr")
     defer { try? FileManager.default.removeItem(atPath: root) }
     let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
     let sid = SidebarID.workroom(project: root, name: "wr")
@@ -552,7 +552,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     await store.reload()  // the sweep must SKIP the creating workroom
     // Selecting fires the didSet probe; the file-change burst is the storm — both must be suppressed.
     store.selectedTargetID = sid
-    store.handleWorkroomFileChange()
+    store.handleWorkroomFileChange(["\(wrPath)/node_modules/pkg/index.js"])
     // > selectionDebounce (0.3s), so a live probe WOULD have fired by now if it weren't suppressed.
     try? await Task.sleep(nanoseconds: 500_000_000)
 
@@ -564,7 +564,7 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   /// Once setup completes (the flag lifts), the worktree is probed again — the suppression is scoped
   /// to the create window, not permanent.
   func testWorktreeProbedOnceCreatingClears() async {
-    let (proj, root, _) = makeRealProject(workroom: "wr")
+    let (proj, root, wrPath) = makeRealProject(workroom: "wr")
     defer { try? FileManager.default.removeItem(atPath: root) }
     let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
     let sid = SidebarID.workroom(project: root, name: "wr")
@@ -574,12 +574,56 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     await store.reload()
     store.selectedTargetID = sid
     store.creatingWorkrooms.remove(wrID)  // setup finished
-    store.handleWorkroomFileChange()
+    store.handleWorkroomFileChange(["\(wrPath)/src/main.swift"])
 
     // A probe ran and resolved a status: wrPath isn't a real repo, so it's `.notRepository`.
     await waitUntil(
       { store.workroomStatuses[sid]?.failure == .notRepository },
       "once setup completes the worktree must be probed again")
+  }
+
+  /// The `.jj` churn guard, both sides of it. A colocated repo left from jj can still have `jj` run in
+  /// it, which writes under `.jj/` — Workroom never does — so a burst that touched ONLY jj-internal
+  /// paths is ignored. But an `overflow` batch says its path list is incomplete, so the same paths
+  /// must NOT be ignored then, or a refresh after an overflowed burst (or a reconnect's synthetic
+  /// refresh) would be silently dropped. Observed through `watchRefreshTask`, which only a started
+  /// probe sets.
+  func testAJJInternalOnlyBurstIsIgnoredUnlessItOverflowed() async {
+    let root = NSTemporaryDirectory() + "wr-jj-\(UUID().uuidString)"
+    let wrPath = "\(root)/.workrooms/wr"
+    try? makeGitCheckout(atPath: root)
+    try? makeGitCheckout(atPath: wrPath)
+    try? FileManager.default.createDirectory(
+      atPath: "\(wrPath)/.jj", withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: root) }
+    let proj = Project(
+      path: root, vcs: "git",
+      workrooms: [Workroom(name: "wr", path: wrPath, vcsName: "workroom/wr", warnings: [])])
+    let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
+    await store.reload()
+    store.selectedTargetID = SidebarID.workroom(project: root, name: "wr")
+    let internalOnly = ["\(wrPath)/.jj/working_copy/checkout"]
+    func reset() {
+      store.watchRefreshTask?.cancel()
+      store.watchRefreshTask = nil
+    }
+
+    reset()
+    store.handleWorkroomFileChange(internalOnly, overflow: false)
+    XCTAssertNil(store.watchRefreshTask, "a jj-internal-only burst is jj's own write")
+
+    reset()
+    store.handleWorkroomFileChange(internalOnly, overflow: true)
+    XCTAssertNotNil(store.watchRefreshTask, "an overflowed batch cannot be trusted to be internal")
+
+    reset()
+    store.handleWorkroomFileChange([], overflow: true)
+    XCTAssertNotNil(store.watchRefreshTask, "the synthetic refresh after a gap carries no paths")
+
+    reset()
+    store.handleWorkroomFileChange(["\(wrPath)/src/main.swift"], overflow: false)
+    XCTAssertNotNil(store.watchRefreshTask, "a working-tree edit always refreshes")
+    reset()
   }
 
   /// A landing that arrives after its create has ended (a late `onReady` echo) must record NOTHING:

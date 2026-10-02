@@ -3,6 +3,49 @@ import XCTest
 @testable import Workroom
 
 final class AgentVCSProtocolTests: XCTestCase {
+  // MARK: An older agent's replies
+
+  /// An agent built before #266 can still answer `current_ref` with jj's `Ancestor` kind (the nearest
+  /// bookmark below `@`). It names a branch, so it must read as one rather than fail the decode.
+  func testAnOlderAgentsAncestorRefReadsAsABranch() throws {
+    let ref = try AgentVCSReply<AgentRef>.decode(
+      Data(#"{"version":1,"result":{"name":"main","kind":"Ancestor"}}"#.utf8))
+    XCTAssertEqual(ref.name, "main")
+    XCTAssertEqual(ref.kind.model, .branch)
+  }
+
+  /// A commit from an older agent carries the jj-era fields (`change_id`, `is_working_copy`,
+  /// `is_root`, `change_offset`, `divergent_siblings`), all set. History must still parse.
+  func testAnOlderAgentsJJEraCommitDecodes() throws {
+    func commit(_ id: String, siblings: String) -> String {
+      #"{"commit_id":""# + id
+        + #"","short_id":"abc","change_id":"kxyzkxyz","summary":"s","body":"","#
+        + #""authors":[{"name":"A","email":"a@e.com"}],"timestamp_ms":1700000000000,"#
+        + #""refs":["main"],"parent_ids":["p1"],"is_working_copy":true,"is_root":false,"#
+        + #""change_offset":1,"divergent_siblings":"# + siblings + #","push_state":"Unpushed"}"#
+    }
+    let json =
+      #"{"version":1,"result":{"commits":["#
+      + commit("abc123", siblings: "[" + commit("def456", siblings: "[]") + "]")
+      + #"],"reached_end":true,"push_scope":null}}"#
+    let page = try AgentVCSReply<AgentHistory>.decode(Data(json.utf8))
+    let model = try XCTUnwrap(page.commits.first?.model)
+    XCTAssertEqual(model.commitID, "abc123")
+    XCTAssertEqual(model.refs, ["main"])
+    XCTAssertEqual(model.parentIDs, ["p1"])
+  }
+
+  /// `files` is required: a `working_status` reply without it is malformed, and reading it as "no
+  /// changes" would show a dirty checkout as clean.
+  func testAWorkingStatusWithoutFilesIsRejectedNotClean() {
+    let json = #"{"version":1,"result":{"conflicted":false,"untracked":[]}}"#
+    XCTAssertThrowsError(try AgentVCSReply<AgentStatus>.decode(Data(json.utf8))) {
+      guard case HostConnectionError.serviceUnavailable = $0 else {
+        return XCTFail("expected an invalid-response failure, got \($0)")
+      }
+    }
+  }
+
   func testAbsentContentIsDifferentFromMissingResult() throws {
     let content = try AgentVCSReply<String?>.decode(Data(#"{"version":1,"result":null}"#.utf8))
     XCTAssertNil(content)
@@ -210,7 +253,7 @@ final class AgentVCSProtocolTests: XCTestCase {
   /// could be authored under the identity of whichever app launch first spawned it.
   func testAgentAndNativeSendTheSameChildEnvironment() {
     for network in [false, true] {
-      let env = StatusCommandRunner.childEnvironment(network: network)
+      let env = StatusCommandRunner.childEnvironment(network: network, in: "/r")
       // The subprocess baseline every consumer's stderr classification depends on.
       XCTAssertEqual(env["LC_ALL"], "C")
       XCTAssertEqual(env["GIT_TERMINAL_PROMPT"], "0")
@@ -223,9 +266,10 @@ final class AgentVCSProtocolTests: XCTestCase {
       }
     }
     // The fail-fast ssh invariant is still network-only.
-    XCTAssertNil(StatusCommandRunner.childEnvironment(network: false)["SSH_ASKPASS_REQUIRE"])
+    XCTAssertNil(
+      StatusCommandRunner.childEnvironment(network: false, in: "/r")["SSH_ASKPASS_REQUIRE"])
     XCTAssertEqual(
-      StatusCommandRunner.childEnvironment(network: true)["SSH_ASKPASS_REQUIRE"], "never")
+      StatusCommandRunner.childEnvironment(network: true, in: "/r")["SSH_ASKPASS_REQUIRE"], "never")
   }
 
   /// These OUTRANK the working directory, so an inherited one silently redirects a command aimed at
@@ -243,10 +287,28 @@ final class AgentVCSProtocolTests: XCTestCase {
     var inherited = ProcessInfo.processInfo.environment
     for key in keys { inherited[key] = "/tmp/some-other-repo" }
     for network in [false, true] {
-      let env = StatusCommandRunner.childEnvironment(network: network, inherited: inherited)
+      let env = StatusCommandRunner.childEnvironment(
+        network: network, in: "/r", inherited: inherited)
       for key in keys {
         XCTAssertNil(env[key], "\(key) reached the child (network: \(network))")
       }
+    }
+  }
+
+  /// A local exec request carries the same ancestor-discovery ceiling a native child gets, derived
+  /// from the request's own directory. This pins the value Swift SENDS: a current agent sets its own
+  /// last, from the canonicalized `dir`, so it wins agent-side, but an older agent uses this one. A
+  /// remote request sends none: the agent sets it from `dir` when it builds the host's environment.
+  func testALocalExecRequestCarriesTheDiscoveryCeiling() {
+    for network in [false, true] {
+      let local = AgentCommandRunner.request(
+        "git", ["status"], in: "/projects/app/.workrooms/one", timeout: 1, stdin: nil,
+        network: network, host: .local)
+      XCTAssertEqual(local.env["GIT_CEILING_DIRECTORIES"], "/projects/app/.workrooms")
+      let remote = AgentCommandRunner.request(
+        "git", ["status"], in: "/projects/app/.workrooms/one", timeout: 1, stdin: nil,
+        network: network, host: .remote(UUID()))
+      XCTAssertNil(remote.env["GIT_CEILING_DIRECTORIES"])
     }
   }
 

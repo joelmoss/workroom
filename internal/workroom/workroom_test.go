@@ -12,7 +12,9 @@ import (
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/config"
+	"github.com/joelmoss/workroom/internal/ui"
 	"github.com/joelmoss/workroom/internal/vcs"
+	"github.com/joelmoss/workroom/internal/vcs/vcstest"
 )
 
 // mockExecutor returns canned VCS output for testing.
@@ -117,7 +119,7 @@ func TestCreateErrorsIfInWorkroom(t *testing.T) {
 
 func TestCreateSucceedsGit(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 
 	workroomsDir := filepath.Join(dir, "workrooms")
 
@@ -157,7 +159,7 @@ func TestCreateSucceedsGit(t *testing.T) {
 
 func TestCreateRunsSetupScript(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	// Create setup script
@@ -202,7 +204,7 @@ func TestCreateRunsSetupScript(t *testing.T) {
 
 func TestCreateOnReadyFiresBeforeSetup(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	// Setup script records a marker so we can assert ordering relative to OnReady.
@@ -254,7 +256,7 @@ func TestCreateOnReadyFiresBeforeSetup(t *testing.T) {
 
 func TestCreateOnReadyReportsNoSetupScript(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	// No scripts/workroom_setup exists, so HasSetup must be false.
@@ -289,7 +291,7 @@ func TestCreateOnReadyReportsNoSetupScript(t *testing.T) {
 
 func TestCreateErrorsOnFailedSetupScript(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	scriptsDir := filepath.Join(dir, "scripts")
@@ -323,7 +325,7 @@ func TestCreateErrorsOnFailedSetupScript(t *testing.T) {
 
 func TestCreateRetriesOnNameCollisionWorkspace(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	mock := &mockExecutor{
@@ -357,7 +359,7 @@ func TestCreateRetriesOnNameCollisionWorkspace(t *testing.T) {
 
 func TestCreateRetriesOnNameCollisionDirectory(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	os.MkdirAll(filepath.Join(workroomsDir, "taken"), 0o755)
 
@@ -392,7 +394,7 @@ func TestCreateRetriesOnNameCollisionDirectory(t *testing.T) {
 
 func TestCreateErrorsAfterTooManyNameCollisions(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	// Make the mock dynamically report every queried workspace as existing
@@ -444,7 +446,7 @@ func TestCreateErrorsAfterTooManyNameCollisions(t *testing.T) {
 
 func TestCreatePromptsToOpenEditorWhenSet(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	mock := &mockExecutor{output: gitWorktrees(dir)}
@@ -480,7 +482,7 @@ func TestCreatePromptsToOpenEditorWhenSet(t *testing.T) {
 
 func TestCreateDoesNotPromptEditorWhenUnset(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	mock := &mockExecutor{output: gitWorktrees(dir)}
@@ -512,7 +514,7 @@ func TestCreateDoesNotPromptEditorWhenUnset(t *testing.T) {
 
 func TestCreateOpensEditorWhenConfirmed(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	mock := &mockExecutor{output: gitWorktrees(dir)}
@@ -547,7 +549,7 @@ func TestCreateOpensEditorWhenConfirmed(t *testing.T) {
 
 func TestCreateSkipsEditorPromptInPretendMode(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	mock := &mockExecutor{output: gitWorktrees(dir)}
@@ -730,7 +732,7 @@ func TestDeleteInvalidName(t *testing.T) {
 	git := &vcs.Git{Executor: mock}
 
 	svc, _, _ := newTestService(t, git)
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 
 	err := svc.Delete(dir, "fo.o", "")
 	if !errors.Is(err, ErrInvalidName) {
@@ -754,7 +756,7 @@ func TestDeleteErrorsIfNotGit(t *testing.T) {
 
 func TestDeleteErrorsIfGitWorktreeNotFound(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 
 	mock := &mockExecutor{
 		output: "worktree " + dir + "\nHEAD cbace1f\nbranch refs/heads/master\n",
@@ -767,6 +769,74 @@ func TestDeleteErrorsIfGitWorktreeNotFound(t *testing.T) {
 	err := svc.Delete(dir, "foo", "foo")
 	if !errors.Is(err, ErrGitWorktreeNotFound) {
 		t.Fatalf("expected ErrGitWorktreeNotFound, got %v", err)
+	}
+}
+
+// A workroom made by Jujutsu before its removal (#266) is in config but is no git worktree, and
+// its folder has no .git. Delete must drop the config entry without running git there (git would
+// discover an ANCESTOR repository) and leave the folder for the user.
+func TestDeleteForgetsAWorkroomThatIsNotAGitWorktree(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.MakeGitDir(t, dir)
+	workroomsDir := filepath.Join(dir, "workrooms")
+	wrPath := filepath.Join(workroomsDir, "foo")
+	os.MkdirAll(filepath.Join(wrPath, ".jj"), 0o755)
+
+	mock := &mockExecutor{output: gitWorktrees(dir)}
+	svc, buf, _ := newTestService(t, &vcs.Git{Executor: mock})
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	svc.Config.SetWorkroomsDir(workroomsDir)
+	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
+
+	if err := svc.Delete(dir, "foo", "foo"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, call := range mock.calls {
+		if len(call) > 2 && call[0] == "git" && call[1] == "worktree" && call[2] == "remove" {
+			t.Fatalf("ran git worktree remove for a non-git workroom: %v", call)
+		}
+	}
+	projects, err := svc.Config.AllProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := projects[dir].Workrooms["foo"]; ok {
+		t.Fatal("expected the config entry to be removed")
+	}
+	if _, err := os.Stat(wrPath); err != nil {
+		t.Fatalf("expected the folder to be left in place: %v", err)
+	}
+	if !strings.Contains(buf.String(), ui.DisplayPath(wrPath)) {
+		t.Fatalf("expected output to name the folder left behind, got %q", buf.String())
+	}
+}
+
+// With KeepEmptyProject (the app's mode), forgetting a non-git workroom keeps the project.
+func TestDeleteForgetsANonGitWorkroomButKeepsAnEmptyProject(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.MakeGitDir(t, dir)
+	wrPath := filepath.Join(dir, "workrooms", "foo")
+	os.MkdirAll(filepath.Join(wrPath, ".jj"), 0o755)
+
+	svc, _, _ := newTestService(t, &vcs.Git{Executor: &mockExecutor{output: gitWorktrees(dir)}})
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	svc.Config.SetWorkroomsDir(filepath.Join(dir, "workrooms"))
+	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
+	svc.KeepEmptyProject = true
+
+	if err := svc.Delete(dir, "foo", "foo"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	projects, err := svc.Config.AllProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, ok := projects[dir]
+	if !ok {
+		t.Fatal("expected the now-empty project to be kept")
+	}
+	if _, ok := project.Workrooms["foo"]; ok {
+		t.Fatal("expected the workroom entry to be removed")
 	}
 }
 
@@ -783,7 +853,7 @@ func TestDeleteErrorsIfInWorkroom(t *testing.T) {
 
 func TestDeleteSucceeds(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -822,7 +892,7 @@ func TestDeleteSucceeds(t *testing.T) {
 
 func TestDeleteUpdatesConfig(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -850,7 +920,7 @@ func TestDeleteUpdatesConfig(t *testing.T) {
 
 func TestDeleteConfirmSkipsPrompt(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -881,7 +951,7 @@ func TestDeleteConfirmSkipsPrompt(t *testing.T) {
 
 func TestDeleteConfirmMismatchErrors(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -906,7 +976,7 @@ func TestDeleteConfirmMismatchErrors(t *testing.T) {
 
 func TestDeleteRunsTeardownScript(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -946,7 +1016,7 @@ func TestDeleteRunsTeardownScript(t *testing.T) {
 
 func TestDeleteErrorsOnFailedTeardownScript(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -980,7 +1050,7 @@ func TestDeleteErrorsOnFailedTeardownScript(t *testing.T) {
 // the output has already been streamed rather than being folded into the envelope.
 func TestDeleteTeardownFailureStreamsToScriptLogWriter(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -1021,7 +1091,7 @@ func TestDeleteTeardownFailureStreamsToScriptLogWriter(t *testing.T) {
 
 func TestDeleteGitShowsBranchNote(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -1051,7 +1121,7 @@ func TestDeleteGitShowsBranchNote(t *testing.T) {
 
 func TestInteractiveDeleteNoWorkrooms(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 
 	var buf bytes.Buffer
@@ -1070,7 +1140,7 @@ func TestInteractiveDeleteNoWorkrooms(t *testing.T) {
 
 func TestInteractiveDeleteSingle(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -1103,7 +1173,7 @@ func TestInteractiveDeleteSingle(t *testing.T) {
 
 func TestInteractiveDeleteMultiple(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	fooPath := filepath.Join(workroomsDir, "foo")
 	barPath := filepath.Join(workroomsDir, "bar")
@@ -1142,7 +1212,7 @@ func TestInteractiveDeleteMultiple(t *testing.T) {
 
 func TestInteractiveDeleteAbortsOnDecline(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -1178,7 +1248,7 @@ func TestInteractiveDeleteAbortsOnDecline(t *testing.T) {
 
 func TestInteractiveDeleteAbortsOnNoSelection(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -1223,7 +1293,7 @@ func TestInteractiveDeleteErrorsIfInWorkroom(t *testing.T) {
 func remoteDeleteFixture(t *testing.T) (svc *Service, dir, wrPath, marker string, mock *mockExecutor) {
 	t.Helper()
 	dir = t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath = filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)

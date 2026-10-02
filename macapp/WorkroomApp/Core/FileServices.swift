@@ -65,7 +65,7 @@ protocol FileProviding: Sendable {
   /// One raw listing command's result, exactly as the native runner would return it. Parsing stays
   /// in `FileListing.parse`, the only parser, so both paths agree on what a listing means.
   /// Throws `.listingTruncated` rather than returning a cut-off list.
-  func list(_ vcs: FileListVCS) async throws -> CommandResult
+  func list() async throws -> CommandResult
 
   /// The file's bytes, verified on the host that holds them. `path` is repository-relative.
   /// `maxBytes` is a ceiling the READ enforces (`.tooLarge`), not a hint.
@@ -83,8 +83,8 @@ struct NativeFileProvider: FileProviding {
   let context: FileContext
   var runner: StatusCommandRunning = StatusCommandRunner()
 
-  func list(_ vcs: FileListVCS) async throws -> CommandResult {
-    let command = FileListing.command(vcs)
+  func list() async throws -> CommandResult {
+    let command = FileListing.command
     let result = await runner.run(
       command.executable, command.args, in: context.location.path, timeout: FileListing.timeout)
     if result.stdoutTruncated { throw FileServiceError.listingTruncated }
@@ -199,11 +199,11 @@ struct LocalFallbackFileProvider: FileProviding {
   let fallback: FileProviding
   var context: FileContext { primary.context }
 
-  func list(_ vcs: FileListVCS) async throws -> CommandResult {
+  func list() async throws -> CommandResult {
     do {
-      return try await primary.list(vcs)
+      return try await primary.list()
     } catch is HostConnectionError {
-      return try await fallback.list(vcs)
+      return try await fallback.list()
     }
   }
 
@@ -231,7 +231,7 @@ struct UnavailableFileProvider: FileProviding {
 
   private var failure: HostConnectionError { .serviceUnavailable(reason) }
 
-  func list(_ vcs: FileListVCS) async throws -> CommandResult { throw failure }
+  func list() async throws -> CommandResult { throw failure }
   func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
     throw failure
   }
@@ -249,8 +249,8 @@ struct HostFileProvider: FileProviding {
   let manager: HostConnectionManager
   let lease: HostConnectionManager.Lease
 
-  func list(_ vcs: FileListVCS) async throws -> CommandResult {
-    try await manager.perform(on: lease) { try await service.list(vcs) }
+  func list() async throws -> CommandResult {
+    try await manager.perform(on: lease) { try await service.list() }
   }
   func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
     try await manager.perform(on: lease) {

@@ -8,11 +8,11 @@ import XCTest
 /// its closures record into it without capturing a mutable `var` across the `@Sendable` boundary.
 private final class StubDiffProvider: LocalVCSProviding, @unchecked Sendable {
   var commitText: (@Sendable (_ commitID: String, _ path: String) throws -> String)?
-  var workingText: (@Sendable (_ path: String, _ base: VCSWorkingDiffBase) throws -> String)?
+  var workingText: (@Sendable (_ path: String) throws -> String)?
 
   private let lock = NSLock()
   private var _commitCalls = 0
-  private var _workingCalls: [(path: String, base: VCSWorkingDiffBase)] = []
+  private var _workingCalls: [String] = []
   private var _lastCommit: (commitID: String, path: String)?
 
   var commitCalls: Int {
@@ -20,7 +20,7 @@ private final class StubDiffProvider: LocalVCSProviding, @unchecked Sendable {
     defer { lock.unlock() }
     return _commitCalls
   }
-  var workingCalls: [(path: String, base: VCSWorkingDiffBase)] {
+  var workingCalls: [String] {
     lock.lock()
     defer { lock.unlock() }
     return _workingCalls
@@ -47,11 +47,11 @@ private final class StubDiffProvider: LocalVCSProviding, @unchecked Sendable {
     return try commitText?(commitID, path) ?? ""
   }
 
-  func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+  func workingFileDiff(root: URL, path: String) async throws -> String {
     lock.lock()
-    _workingCalls.append((path, base))
+    _workingCalls.append(path)
     lock.unlock()
-    return try workingText?(path, base) ?? ""
+    return try workingText?(path) ?? ""
   }
 
   func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }
@@ -114,17 +114,16 @@ final class DiffResolverTests: XCTestCase {
 
   func testResolveGitWorktreeUsesWorkingCopyBase() async {
     let p = StubDiffProvider()
-    p.workingText = { _, _ in sampleDiff }
+    p.workingText = { _ in sampleDiff }
     let result = await resolver(p).resolve(
       desc("f.txt", .modified, .gitWorktree), in: "/repo")
     guard case .diff = result else { return XCTFail("expected .diff, got \(result)") }
-    XCTAssertEqual(p.workingCalls.map(\.base), [.workingCopy])
-    XCTAssertEqual(p.workingCalls.first?.path, "f.txt")
+    XCTAssertEqual(p.workingCalls, ["f.txt"])
   }
 
   func testResolveWorkingMapsBinaryEmptyTooLarge() async {
     let p = StubDiffProvider()
-    p.workingText = { path, _ in
+    p.workingText = { path in
       switch path {
       case "img.png": return binaryDiff
       case "clean.txt": return ""
@@ -145,7 +144,7 @@ final class DiffResolverTests: XCTestCase {
 
   func testResolveWorkingBackendErrorFails() async {
     let p = StubDiffProvider()
-    p.workingText = { _, _ in throw VCSError.lockContention }
+    p.workingText = { _ in throw VCSError.lockContention }
     let result = await resolver(p).resolve(
       desc("f.txt", .modified, .gitWorktree), in: "/repo")
     XCTAssertEqual(result, .failed("Repository is busy"))
@@ -209,7 +208,7 @@ final class DiffResolverTests: XCTestCase {
 
   func testWorkingCopyDiffIsNotCached() async {
     let p = StubDiffProvider()
-    p.workingText = { _, _ in sampleDiff }
+    p.workingText = { _ in sampleDiff }
     let r = resolver(p)
     _ = await r.resolve(desc("f.txt", .modified, .gitWorktree), in: "/repo")
     _ = await r.resolve(desc("f.txt", .modified, .gitWorktree), in: "/repo")
@@ -242,7 +241,7 @@ final class DiffCacheTests: XCTestCase {
   private func key(_ value: String) -> DiffCache.Key {
     let location = try! RepositoryLocation.remote(
       host: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, path: "/repo")
-    return DiffCache.Key(location: location, backend: .git, revision: value, path: "file")
+    return DiffCache.Key(location: location, revision: value, path: "file")
   }
 
   func testEvictsLeastRecentlyUsedOverBudget() async {

@@ -103,7 +103,7 @@ final class AgentFileIntegrationTests: XCTestCase {
     // The VCS reads that shipped before the File service are untouched by its negotiation.
     let location = try await RepositoryLocation.local(root.path)
     let router = RepositoryRouter()
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
     let reader = try connection.reader(context: try router.registeredContext(for: location))
     XCTAssertEqual(reader.context.location, location)
     await connection.close()
@@ -279,8 +279,8 @@ final class AgentFileIntegrationTests: XCTestCase {
     for failure in failures {
       let router = RepositoryRouter(localFiles: { _ in throw failure })
       let files = try await router.files(for: location)
-      let listing = try await files.list(.git)
-      XCTAssertEqual(FileListing.parse(listing.stdout, vcs: .git), ["a.txt"], "\(failure)")
+      let listing = try await files.list()
+      XCTAssertEqual(FileListing.parse(listing.stdout), ["a.txt"], "\(failure)")
       let data = try await files.read(path: "a.txt", symlinks: .refuse, maxBytes: 100)
       XCTAssertEqual(data, Data("x\n".utf8), "\(failure)")
       do {
@@ -321,12 +321,12 @@ final class AgentFileIntegrationTests: XCTestCase {
     let router = RepositoryRouter(localFiles: { try connection.files(context: $0) })
     let files = try await router.files(for: location)
 
-    let before = try await files.list(.git)
-    XCTAssertEqual(FileListing.parse(before.stdout, vcs: .git), ["a.txt"], "served by the agent")
+    let before = try await files.list()
+    XCTAssertEqual(FileListing.parse(before.stdout), ["a.txt"], "served by the agent")
 
     agent.stop()
-    let after = try await files.list(.git)
-    XCTAssertEqual(FileListing.parse(after.stdout, vcs: .git), ["a.txt"], "served natively")
+    let after = try await files.list()
+    XCTAssertEqual(FileListing.parse(after.stdout), ["a.txt"], "served natively")
     let data = try await files.read(path: "a.txt", symlinks: .refuse, maxBytes: 100)
     XCTAssertEqual(data, Data("x\n".utf8))
   }
@@ -350,7 +350,7 @@ final class AgentFileIntegrationTests: XCTestCase {
     // and says nothing was sent: for a write that is the difference between "may have completed"
     // and a safe retry.
     do {
-      _ = try await files.list(.git)
+      _ = try await files.list()
       XCTFail("a closed connection must fail")
     } catch { XCTAssertEqual(error as? HostConnectionError, .notDispatched) }
   }
@@ -375,11 +375,11 @@ final class AgentFileIntegrationTests: XCTestCase {
     let context = try await context(root)
     let agent = try connection.files(context: context)
     let native = NativeFileProvider(context: context)
-    let viaAgent = try await agent.list(.git)
-    let viaNative = try await native.list(.git)
+    let viaAgent = try await agent.list()
+    let viaNative = try await native.list()
     XCTAssertEqual(viaAgent.exitCode, 0)
     XCTAssertEqual(
-      FileListing.parse(viaAgent.stdout, vcs: .git), FileListing.parse(viaNative.stdout, vcs: .git))
+      FileListing.parse(viaAgent.stdout), FileListing.parse(viaNative.stdout))
     XCTAssertFalse(viaAgent.stdout.contains("ignored.o"))
     XCTAssertTrue(viaAgent.stdout.contains("with\nnewline.txt"))
   }
@@ -388,8 +388,8 @@ final class AgentFileIntegrationTests: XCTestCase {
     let (connection, _) = try await connect()
     let root = try root()
     let context = try await context(root)
-    let viaAgent = try await connection.files(context: context).list(.git)
-    let viaNative = try await NativeFileProvider(context: context).list(.git)
+    let viaAgent = try await connection.files(context: context).list()
+    let viaNative = try await NativeFileProvider(context: context).list()
     XCTAssertNotEqual(viaAgent.exitCode, 0)
     XCTAssertEqual(viaAgent.exitCode, viaNative.exitCode)
   }
@@ -406,11 +406,11 @@ final class AgentFileIntegrationTests: XCTestCase {
     let context = try await context(root)
     let capped = NativeFileProvider(context: context, runner: StatusCommandRunner(maxBytes: 100))
     do {
-      _ = try await capped.list(.git)
+      _ = try await capped.list()
       XCTFail("a truncated listing must throw")
     } catch { XCTAssertEqual(error as? FileServiceError, .listingTruncated) }
 
-    let whole = try await NativeFileProvider(context: context).list(.git)
+    let whole = try await NativeFileProvider(context: context).list()
     XCTAssertFalse(whole.stdoutTruncated)
     let result = await FileTreeModel.list(
       location: context.location, runner: StatusCommandRunner(maxBytes: 100),

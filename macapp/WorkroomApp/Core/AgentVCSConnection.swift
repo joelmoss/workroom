@@ -306,7 +306,6 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       throw VCSError.backendVersion("Agent does not support VCS writes.")
     }
     var engine = CLIVCSWriter(
-      vcs: context.backend.rawValue,
       runner: AgentCommandRunner(connection: self),
       makeProvider: { _ in AgentCurrentRefProvider(reader: reader) }, gate: .shared)
     if remote {

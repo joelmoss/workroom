@@ -17,7 +17,7 @@ final class LocalFileFallbackTests: XCTestCase {
       CommandResult(stdout: "agent", stderr: "", exitCode: 0, timedOut: false))
     var content: Result<Data, Error> = .success(Data("agent".utf8))
 
-    func list(_ vcs: FileListVCS) async throws -> CommandResult { try listing.get() }
+    func list() async throws -> CommandResult { try listing.get() }
     func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
       try content.get()
     }
@@ -42,7 +42,7 @@ final class LocalFileFallbackTests: XCTestCase {
       let files = LocalFallbackFileProvider(
         primary: Scripted(context: context, listing: .failure(failure), content: .failure(failure)),
         fallback: native("native"))
-      let listing = try await files.list(.git)
+      let listing = try await files.list()
       XCTAssertEqual(listing.stdout, "native", "\(failure)")
       let data = try await files.read(path: "a", symlinks: .refuse, maxBytes: 1)
       XCTAssertEqual(data, Data("native".utf8), "\(failure)")
@@ -63,7 +63,7 @@ final class LocalFileFallbackTests: XCTestCase {
         primary: Scripted(context: context, listing: .failure(answer), content: .failure(answer)),
         fallback: native("native"))
       do {
-        _ = try await files.list(.git)
+        _ = try await files.list()
         XCTFail("\(answer) must propagate from list")
       } catch { XCTAssertEqual("\(error)", "\(answer)") }
       do {
@@ -76,7 +76,7 @@ final class LocalFileFallbackTests: XCTestCase {
   func testAHealthyAgentIsUsedAndCancellationPropagates() async throws {
     let healthy = LocalFallbackFileProvider(
       primary: Scripted(context: context), fallback: native("native"))
-    let listing = try await healthy.list(.git)
+    let listing = try await healthy.list()
     XCTAssertEqual(listing.stdout, "agent")
 
     let cancelled = LocalFallbackFileProvider(
@@ -85,7 +85,7 @@ final class LocalFileFallbackTests: XCTestCase {
         content: .failure(CancellationError())),
       fallback: native("native"))
     do {
-      _ = try await cancelled.list(.git)
+      _ = try await cancelled.list()
       XCTFail("a cancelled request must not be retried")
     } catch { XCTAssertTrue(error is CancellationError) }
   }

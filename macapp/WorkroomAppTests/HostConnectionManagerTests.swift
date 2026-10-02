@@ -8,7 +8,7 @@ final class HostConnectionManagerTests: XCTestCase {
     let manager = HostConnectionManager()
     let router = RepositoryRouter(connections: manager)
     let root = try RepositoryLocation.remote(host: UUID(), path: "/repo")
-    try router.register(.init(location: root, backend: .git, sharedLocation: root))
+    try router.register(.init(location: root, sharedLocation: root))
     let connection = ConnectionFixture(delayStatus: true)
     let lease = try await manager.connect(host: root.host) { connection }
     let pending = Task { await WorkroomStatusResolver().resolve(location: root, router: router) }
@@ -60,7 +60,7 @@ final class HostConnectionManagerTests: XCTestCase {
     let root = try RepositoryLocation.remote(host: UUID(), path: "/repo")
     let wrong = try RepositoryLocation.remote(host: UUID(), path: "/repo")
     for location in [root, wrong] {
-      try router.register(.init(location: location, backend: .git, sharedLocation: location))
+      try router.register(.init(location: location, sharedLocation: location))
     }
     let wrongContext = try router.registeredContext(for: wrong)
     let connection = ConnectionFixture(readerContext: wrongContext)
@@ -80,7 +80,7 @@ final class HostConnectionManagerTests: XCTestCase {
     let manager = HostConnectionManager()
     let router = RepositoryRouter(connections: manager)
     let root = try RepositoryLocation.remote(host: UUID(), path: "/repo")
-    try router.register(.init(location: root, backend: .git, sharedLocation: root))
+    try router.register(.init(location: root, sharedLocation: root))
     let connection = ConnectionFixture()
     let lease = try await manager.connect(host: root.host) { connection }
     let writer = try await router.writer(for: root)
@@ -279,7 +279,7 @@ final class HostConnectionManagerTests: XCTestCase {
     let other = try RepositoryLocation.remote(host: UUID(), path: "/repo")
     for router in [first, second] {
       for root in [location, other] {
-        try router.register(.init(location: root, backend: .git, sharedLocation: root))
+        try router.register(.init(location: root, sharedLocation: root))
       }
     }
     let connection = ConnectionFixture(marker: "one")
@@ -322,7 +322,7 @@ final class HostConnectionManagerTests: XCTestCase {
     let manager = HostConnectionManager()
     let router = RepositoryRouter(connections: manager)
     let location = try RepositoryLocation.remote(host: UUID(), path: "/repo")
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
     let connection = ConnectionFixture()
     let lease = try await manager.connect(host: location.host) { connection }
     let writer = try await router.writer(for: location)
@@ -407,10 +407,10 @@ private struct ConnectionReader: VCSProviding {
   func log(limit: Int) async throws -> VCSHistoryPage { .init(commits: [], reachedEnd: true) }
   func changeset(commitID: String) async throws -> VCSChangeset { throw VCSError.io("unused") }
   func fileDiff(commitID: String, path: String) async throws -> String { marker }
-  func workingFileDiff(path: String, base: VCSWorkingDiffBase) async throws -> String { marker }
+  func workingFileDiff(path: String) async throws -> String { marker }
   func fileContent(rev: String, path: String) async throws -> String? { marker }
   func commitParentFileContent(commitID: String, path: String) async throws -> String? { marker }
-  func workingBaseFileContent(base: VCSWorkingDiffBase, path: String) async throws -> String? {
+  func workingBaseFileContent(path: String) async throws -> String? {
     marker
   }
   func workingStatus() async throws -> WorkroomStatus {

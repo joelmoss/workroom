@@ -7,7 +7,7 @@ struct AgentFileProvider: FileProviding {
   let context: FileContext
   let connection: AgentVCSConnection
 
-  func list(_ vcs: FileListVCS) async throws -> CommandResult {
+  func list() async throws -> CommandResult {
     let request = AgentFileRequest(
       method: "list", backend: "git", root: context.location.path,
       sharedRoot: context.sharedLocation?.path)

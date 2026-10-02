@@ -28,7 +28,7 @@ final class DiffResolverFileContentTests: XCTestCase {
       throw VCSError.io("unused")
     }
     func fileDiff(root: URL, commitID: String, path: String) async throws -> String { "" }
-    func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+    func workingFileDiff(root: URL, path: String) async throws -> String {
       ""
     }
     func currentRef(root: URL) async throws -> VCSRef { .none }

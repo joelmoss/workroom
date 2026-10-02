@@ -485,13 +485,20 @@ func (s *Service) Delete(dir, name, confirmValue string) error {
 		return err
 	}
 
+	orphan := ""
 	if !s.Pretend {
 		exists, err := s.workroomExists(dir, name)
 		if err != nil {
 			return err
 		}
 		if !exists {
-			return fmt.Errorf("%w: %s '%s' does not exist", ErrGitWorktreeNotFound, s.VCS.Label(), name)
+			orphan, err = s.nonGitWorkroomPath(dir, name)
+			if err != nil {
+				return err
+			}
+			if orphan == "" {
+				return fmt.Errorf("%w: %s '%s' does not exist", ErrGitWorktreeNotFound, s.VCS.Label(), name)
+			}
 		}
 
 		if confirmValue != "" {
@@ -510,7 +517,46 @@ func (s *Service) Delete(dir, name, confirmValue string) error {
 		}
 	}
 
+	if orphan != "" {
+		return s.forgetNonGitWorkroom(dir, name, orphan)
+	}
 	return s.deleteByName(dir, name)
+}
+
+// nonGitWorkroomPath returns the recorded path of workroom name when it is registered for project
+// dir but its folder holds no .git: a workspace Jujutsu made before Workroom dropped it (#266).
+// Returns "" when the workroom is unregistered or its folder is a git checkout.
+func (s *Service) nonGitWorkroomPath(dir, name string) (string, error) {
+	projects, err := s.Config.AllProjects()
+	if err != nil {
+		return "", err
+	}
+	wr, ok := projects[dir].Workrooms[name]
+	if !ok || wr.Path == "" {
+		return "", nil
+	}
+	if vcs.IsGitRepo(wr.Path) {
+		return "", nil
+	}
+	return wr.Path, nil
+}
+
+// forgetNonGitWorkroom removes a non-git workroom's config entry and nothing else. It runs no git
+// (git there would discover an ANCESTOR repository) and no teardown script (which would run in that
+// folder), and it leaves the folder for the user to remove.
+func (s *Service) forgetNonGitWorkroom(dir, name, path string) error {
+	var err error
+	if s.KeepEmptyProject {
+		err = s.Config.RemoveWorkroomKeepProject(dir, name)
+	} else {
+		err = s.Config.RemoveWorkroom(dir, name)
+	}
+	if err != nil {
+		return err
+	}
+	s.sayColor(fmt.Sprintf("Workroom '%s' removed from Workroom. It is not a git worktree, so no git or teardown ran.", name), "green")
+	s.say(fmt.Sprintf("Note: its folder was left at %s. Delete it manually if needed.", ui.DisplayPath(path)))
+	return nil
 }
 
 // InteractiveDelete shows a multi-select prompt for deleting workrooms.
@@ -666,11 +712,9 @@ func (s *Service) deleteByName(dir, name string) error {
 
 	s.sayColor(fmt.Sprintf("Workroom '%s' deleted successfully.", name), "green")
 
-	if s.VCS.Type() == vcs.TypeGit {
-		s.say("")
-		s.say(fmt.Sprintf("Note: Git branch '%s' was not deleted.", s.vcsName(name)))
-		s.say(fmt.Sprintf("      Delete manually with `git branch -D %s` if needed.", s.vcsName(name)))
-	}
+	s.say("")
+	s.say(fmt.Sprintf("Note: Git branch '%s' was not deleted.", s.vcsName(name)))
+	s.say(fmt.Sprintf("      Delete manually with `git branch -D %s` if needed.", s.vcsName(name)))
 
 	return nil
 }

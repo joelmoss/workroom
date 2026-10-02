@@ -72,9 +72,9 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     return (String(data: data, encoding: .utf8) ?? "", p.terminationStatus)
   }
 
-  private func writer(_ vcs: String) -> CLIVCSWriter {
+  private func writer() -> CLIVCSWriter {
     CLIVCSWriter(
-      vcs: vcs, runner: StatusCommandRunner(), makeProvider: { _ in GitProvider() },
+      runner: StatusCommandRunner(), makeProvider: { _ in GitProvider() },
       gate: RepositoryWriteGate(maxChainWait: 5))
   }
 
@@ -132,7 +132,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
   func testCountsAreIdenticalUnderEveryPushDefault() async throws {
     try requireTool("git")
     let f = gitFixture(commitsAhead: 5)
-    let w = writer("git")
+    let w = writer()
     for pushDefault in ["simple", "current", "upstream", "nothing", "matching"] {
       sh("git config push.default \(pushDefault)", in: f.project)
       let s = try await state(w, path: f.project, projectRoot: f.project)
@@ -151,7 +151,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
       "git commit -q --allow-empty -m remote-side && git push -q origin HEAD:\(f.branch)",
       in: f.root + "/other")
     sh("git fetch -q origin", in: f.project)
-    let s = try await state(writer("git"), path: f.project, projectRoot: f.project)
+    let s = try await state(writer(), path: f.project, projectRoot: f.project)
     XCTAssertEqual(s.tracking?.behind, 1)
     XCTAssertEqual(s.tracking?.ahead, 0)
   }
@@ -164,7 +164,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
       "git commit -q --allow-empty -m remote-side && git push -q origin HEAD:\(f.branch)",
       in: f.root + "/other")
     sh("git fetch -q origin", in: f.project)
-    let s = try await state(writer("git"), path: f.project, projectRoot: f.project)
+    let s = try await state(writer(), path: f.project, projectRoot: f.project)
     XCTAssertEqual(s.tracking?.ahead, 2)
     XCTAssertEqual(s.tracking?.behind, 1)
   }
@@ -176,7 +176,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     let f = gitFixture()
     sh("git worktree add -q -b workroom/coral ../coral", in: f.project)
     let workroom = f.root + "/coral"
-    let s = try await state(writer("git"), path: workroom, projectRoot: f.project)
+    let s = try await state(writer(), path: workroom, projectRoot: f.project)
     XCTAssertEqual(s.current.name, "workroom/coral")
     XCTAssertEqual(s.tracking?.gone, true, "no counterpart on the remote yet")
     XCTAssertNil(s.tracking?.ahead, "a missing counterpart can't be counted against")
@@ -185,7 +185,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
   func testRemoteRefsAndPrimaryRemoteAreResolved() async throws {
     try requireTool("git")
     let f = gitFixture()
-    let s = try await state(writer("git"), path: f.project, projectRoot: f.project)
+    let s = try await state(writer(), path: f.project, projectRoot: f.project)
     XCTAssertEqual(s.remotes, ["origin"])
     XCTAssertEqual(s.primaryRemote, "origin")
   }
@@ -204,7 +204,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
       sh("git for-each-ref refs/remotes", in: project).out.isEmpty,
       "precondition: no remote-tracking ref exists yet")
 
-    let s = try await state(writer("git"), path: project, projectRoot: project)
+    let s = try await state(writer(), path: project, projectRoot: project)
     XCTAssertEqual(s.remotes, ["origin"])
     XCTAssertEqual(s.primaryRemote, "origin")
     XCTAssertEqual(s.tracking?.gone, true, "no counterpart yet — this is the Publish state")
@@ -216,7 +216,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     try requireTool("git")
     let f = gitFixture()
     sh("git remote set-head origin master", in: f.project)
-    let s = try await state(writer("git"), path: f.project, projectRoot: f.project)
+    let s = try await state(writer(), path: f.project, projectRoot: f.project)
     XCTAssertEqual(s.remotes, ["origin"], "the symref must not add a phantom remote or branch")
   }
 
@@ -230,7 +230,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     let f = gitFixture()
     sh("git worktree add -q -b workroom/coral ../coral", in: f.project)
     let workroom = f.root + "/coral"
-    let w = writer("git")
+    let w = writer()
 
     // The workroom has never fetched in its own right.
     XCTAssertFalse(
@@ -252,7 +252,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     sh("git init -q solo", in: root)
     let project = root + "/solo"
     sh("git commit -q --allow-empty -m initial", in: project)
-    let s = try await state(writer("git"), path: project, projectRoot: project)
+    let s = try await state(writer(), path: project, projectRoot: project)
     XCTAssertEqual(s.lastFetch, .never, "clone/init never write FETCH_HEAD")
     XCTAssertNil(s.primaryRemote, "no remote configured")
   }
@@ -262,7 +262,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
   func testPushMovesTheRemoteRefAndClearsAhead() async throws {
     try requireTool("git")
     let f = gitFixture(commitsAhead: 3)
-    let w = writer("git")
+    let w = writer()
     let before = try await state(w, path: f.project, projectRoot: f.project)
     XCTAssertEqual(before.tracking?.ahead, 3)
 
@@ -282,7 +282,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     sh("git worktree add -q -b workroom/coral ../coral", in: f.project)
     let workroom = f.root + "/coral"
     sh("echo hi > a.txt && git add a.txt && git commit -q -m 'work'", in: workroom)
-    let w = writer("git")
+    let w = writer()
     let before = try await state(w, path: workroom, projectRoot: f.project)
     XCTAssertEqual(before.tracking?.gone, true)
 
@@ -308,7 +308,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     // An uncommitted change that must survive the rebase.
     sh("echo 'work in progress' > wip.txt && git add wip.txt", in: f.project)
 
-    let w = writer("git")
+    let w = writer()
     let before = try await state(w, path: f.project, projectRoot: f.project)
     let result = await w.pullRebase(
       path: f.project, projectRoot: f.project, current: before.current, remote: "origin",
@@ -351,7 +351,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     XCTAssertTrue(
       FileManager.default.createFile(atPath: lockPath, contents: Data()), "couldn't plant the lock")
 
-    let w = writer("git")
+    let w = writer()
     let before = try await state(w, path: f.project, projectRoot: f.project)
     let result = await w.pullRebase(
       path: f.project, projectRoot: f.project, current: before.current, remote: "origin",
@@ -390,7 +390,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
       in: f.root + "/other")
     sh("git fetch -q origin", in: f.project)
 
-    let w = writer("git")
+    let w = writer()
     let s = try await state(w, path: f.project, projectRoot: f.project)
     let result = await w.push(
       path: f.project, projectRoot: f.project, current: s.current, remote: "origin",
@@ -407,5 +407,29 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     XCTAssertTrue(
       message.split(whereSeparator: \.isNewline).contains { $0.hasPrefix("!\t") },
       "the porcelain flag column must be present in the output we classified: \(message)")
+  }
+
+  /// **Abort must run the REAL `git rebase --abort`.** A conflicted rebase — what a `git rebase` run by
+  /// hand in the workroom's terminal leaves behind — is built with plain git, then aborted through the
+  /// writer. The summary alone could be faked; `.git/rebase-merge` being gone cannot.
+  func testAbortRebaseRunsTheRealGitAbort() async throws {
+    try requireTool("git")
+    let f = gitFixture()
+    sh("echo base > a.txt && git add a.txt && git commit -qm base", in: f.project)
+    sh("git checkout -q -b other && echo other >> a.txt && git commit -qam other", in: f.project)
+    sh("git checkout -q \(f.branch) && echo mine >> a.txt && git commit -qam mine", in: f.project)
+    sh("git checkout -q other && git rebase \(f.branch)", in: f.project)
+    let rebaseMerge = f.project + "/.git/rebase-merge"
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: rebaseMerge),
+      "setup must actually leave a rebase-merge behind, or this test proves nothing")
+
+    let result = await writer().abortRebase(path: f.project, projectRoot: f.project)
+
+    guard case .ok(let summary) = result else { return XCTFail("expected .ok, got \(result)") }
+    XCTAssertEqual(summary, "Rebase aborted")
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: rebaseMerge),
+      "the real `git rebase --abort` must have cleared it")
   }
 }

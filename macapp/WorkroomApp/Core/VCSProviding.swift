@@ -1,12 +1,5 @@
 import Foundation
 
-/// Which working-copy revision a `workingFileDiff` is against:
-///   - `.workingCopy` — the uncommitted changes: worktree/index vs `HEAD`.
-/// Sent to wr-agent as `base: "working_copy"`, which the agent's wire protocol still requires.
-enum VCSWorkingDiffBase: Sendable, Equatable {
-  case workingCopy
-}
-
 /// Local engine interface. RepositoryRouter wraps these engines in a context-bound VCSProviding;
 /// application callers never supply an engine with a remote path. Synchronous native operations
 /// are offloaded by BoundLocalReader and keep their coordination tail until actual completion.
@@ -25,7 +18,7 @@ protocol LocalVCSProviding: Sendable {
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String
   /// The per-file diff for one path in the working copy, as git-format unified-diff
   /// text — the working-copy counterpart of `fileDiff`. Lazy, per-file (never a whole-tree diff).
-  func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String
+  func workingFileDiff(root: URL, path: String) async throws -> String
   /// The full content of `path` at revision `rev` (a git commit id), for syntax-highlighting a diff's
   /// new side. `nil` ⇒ absent at that rev / binary / over the highlight cap → the caller renders
   /// plain. Read-only.
@@ -38,7 +31,7 @@ protocol LocalVCSProviding: Sendable {
   /// The pre-image content of `path` for a working-copy file diff's base (git `HEAD`), for
   /// highlighting the diff's deleted lines. `nil` ⇒ absent / binary / over cap → deletions render
   /// plain.
-  func workingBaseFileContent(root: URL, base: VCSWorkingDiffBase, path: String) async throws
+  func workingBaseFileContent(root: URL, path: String) async throws
     -> String?
   /// The working copy's status: dirty flag, changed files, ± line counts, and the branch CI should
   /// be looked up for. Synchronous and throwing, with no timeout of its own — callers that need one
@@ -71,18 +64,37 @@ extension LocalVCSProviding {
   func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String? {
     nil
   }
-  func workingBaseFileContent(root: URL, base: VCSWorkingDiffBase, path: String) async throws
+  func workingBaseFileContent(root: URL, path: String) async throws
     -> String?
   { nil }
 }
 
-/// Backend selection + routing.
-enum VCS {
-  /// Classify a repo by pure filesystem inspection (no VCS call). `.git` is a dir for a normal
-  /// repo, a file for a worktree/submodule — either counts.
-  static func repoKind(at root: URL) -> VCSRepoKind {
-    FileManager.default.fileExists(atPath: root.appendingPathComponent(".git").path)
-      ? .plainGit : .unsupported("no .git at \(root.path)")
+/// Whether `root` is a git checkout of its own, by pure filesystem inspection (no git call): `.git` is
+/// a directory holding `HEAD` and the `objects` and `refs` directories (a normal repo), or a FILE
+/// whose first line is `gitdir: …` (a linked worktree or submodule). Anything else — no `.git`, an
+/// empty or HEAD-only `.git` directory, a `.git` file naming no gitdir — is not a repo, because git
+/// rejects it and discovers an ANCESTOR's repository instead (probed with git 2.56).
+///
+/// This is the only guard for a folder whose parent contains `:`, which gets no discovery ceiling
+/// (see `StatusCommandRunner.discoveryCeiling`).
+func isGitRepo(at root: URL) -> Bool {
+  let dotGit = root.appendingPathComponent(".git").resolvingSymlinksInPath()
+  let kind = try? dotGit.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+  if kind?.isDirectory == true {
+    let fm = FileManager.default
+    func isDirectory(_ name: String) -> Bool {
+      var dir: ObjCBool = false
+      return fm.fileExists(atPath: dotGit.appendingPathComponent(name).path, isDirectory: &dir)
+        && dir.boolValue
+    }
+    return fm.fileExists(atPath: dotGit.appendingPathComponent("HEAD").path)
+      && isDirectory("objects") && isDirectory("refs")
   }
-
+  // A regular file only: opening a FIFO named `.git` would block until something wrote to it.
+  guard kind?.isRegularFile == true, let handle = try? FileHandle(forReadingFrom: dotGit) else {
+    return false
+  }
+  defer { try? handle.close() }
+  let head = (try? handle.read(upToCount: 7)) ?? Data()
+  return head == Data("gitdir:".utf8)
 }

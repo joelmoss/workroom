@@ -62,26 +62,17 @@ struct RepositoryLocation: Hashable, Sendable {
   }
 }
 
-enum RepositoryBackend: String, Hashable, Sendable {
-  case git
-}
-
 /// Immutable routing decision. Only the router constructs contexts from a captured registry entry.
 struct RepositoryContext: Hashable, Sendable {
   let location: RepositoryLocation
-  let backend: RepositoryBackend
   /// Unknown for a fallback read. Never invent ownership from an unregistered workspace's path.
   let sharedLocation: RepositoryLocation?
 
-  fileprivate init(
-    location: RepositoryLocation, backend: RepositoryBackend,
-    sharedLocation: RepositoryLocation?
-  ) throws {
+  fileprivate init(location: RepositoryLocation, sharedLocation: RepositoryLocation?) throws {
     guard sharedLocation == nil || sharedLocation?.host == location.host else {
       throw RepositoryRoutingError.mixedHosts
     }
     self.location = location
-    self.backend = backend
     self.sharedLocation = sharedLocation
   }
 
@@ -93,11 +84,10 @@ struct RepositoryContext: Hashable, Sendable {
 
 /// Local input → async canonicalization ─┐
 /// Remote input → pure validation ────────┴→ location → captured registry entry → bound services
-///   Unregistered local: probe for immutable reads; snapshots/writes require registration.
+///   Unregistered local: probe for immutable reads; writes require registration.
 ///   Unregistered remote: unavailable, with no local filesystem or provider access.
 final class RepositoryRouter: @unchecked Sendable {
   struct Entry: Hashable, Sendable {
-    let backend: RepositoryBackend
     let sharedLocation: RepositoryLocation
     /// The GitHub repository this registration is a checkout of, when the registrant knows it. A
     /// local host leaves it nil (its identity comes from its own git remote); a remote host has no
@@ -111,14 +101,14 @@ final class RepositoryRouter: @unchecked Sendable {
     let localSourcePath: String?
 
     init(
-      location: RepositoryLocation, backend: RepositoryBackend,
-      sharedLocation: RepositoryLocation, localSourcePath: String? = nil,
+      location: RepositoryLocation, sharedLocation: RepositoryLocation,
+      localSourcePath: String? = nil,
       github: GitHubRepository? = nil
     ) throws {
       guard location.host == sharedLocation.host else { throw RepositoryRoutingError.mixedHosts }
       self.location = location
       self.localSourcePath = localSourcePath
-      self.entry = Entry(backend: backend, sharedLocation: sharedLocation, github: github)
+      self.entry = Entry(sharedLocation: sharedLocation, github: github)
     }
   }
 
@@ -184,20 +174,28 @@ final class RepositoryRouter: @unchecked Sendable {
   static func prepare(_ projects: [Project]) async throws -> [Registration] {
     var registrations: [Registration] = []
     for project in projects {
-      guard let backend = RepositoryBackend(rawValue: project.vcs) else { continue }
+      // Anything but git — including a stale "jj" from an old config — registers nothing.
+      guard project.vcs == "git" else { continue }
       let shared = try await RepositoryLocation.local(project.path)
+      // Same reason as a workroom below: git at a root with no usable `.git` discovers an ANCESTOR
+      // repository. Its workrooms go too — they would share this root as their project.
+      let sharedRoot = URL(fileURLWithPath: shared.path, isDirectory: true)
+      guard try await runBlocking({ isGitRepo(at: sharedRoot) }) else { continue }
       registrations.append(
-        try Registration(
-          location: shared, backend: backend, sharedLocation: shared, localSourcePath: project.path)
+        try Registration(location: shared, sharedLocation: shared, localSourcePath: project.path)
       )
       // A remote workroom's path is a path on its host: registering it here would route it as a
       // local repository. Remote registration comes with opening one (#253).
       for workroom in project.workrooms where !workroom.isRemote {
         let location = try await RepositoryLocation.local(workroom.path)
+        // A workroom left from jj has a `.jj` and no `.git`, and git run there would discover an
+        // ANCESTOR repository and commit into it. Left unregistered, it routes through
+        // `context(for:)`, which refuses it as unsupported; a write needs a registration.
+        let root = URL(fileURLWithPath: location.path, isDirectory: true)
+        guard try await runBlocking({ isGitRepo(at: root) }) else { continue }
         registrations.append(
           try Registration(
-            location: location, backend: backend, sharedLocation: shared,
-            localSourcePath: workroom.path))
+            location: location, sharedLocation: shared, localSourcePath: workroom.path))
       }
     }
     return registrations
@@ -241,18 +239,13 @@ final class RepositoryRouter: @unchecked Sendable {
 
   func context(for location: RepositoryLocation) async throws -> RepositoryContext {
     if let entry = entry(for: location) {
-      return try RepositoryContext(
-        location: location, backend: entry.backend,
-        sharedLocation: entry.sharedLocation)
+      return try RepositoryContext(location: location, sharedLocation: entry.sharedLocation)
     }
     let root = try location.requireLocalURL()
-    let kind = try await runBlocking { VCS.repoKind(at: root) }
-    let backend: RepositoryBackend
-    switch kind {
-    case .plainGit: backend = .git
-    case .unsupported(let reason): throw VCSError.unsupportedRepo(reason)
+    guard try await runBlocking({ isGitRepo(at: root) }) else {
+      throw VCSError.unsupportedRepo("no .git at \(root.path)")
     }
-    return try RepositoryContext(location: location, backend: backend, sharedLocation: nil)
+    return try RepositoryContext(location: location, sharedLocation: nil)
   }
 
   func reader(for location: RepositoryLocation) async throws -> VCSProviding {
@@ -323,9 +316,7 @@ final class RepositoryRouter: @unchecked Sendable {
 
   func registeredContext(for location: RepositoryLocation) throws -> RepositoryContext {
     let entry = try registeredEntry(for: location)
-    return try RepositoryContext(
-      location: location, backend: entry.backend,
-      sharedLocation: entry.sharedLocation)
+    return try RepositoryContext(location: location, sharedLocation: entry.sharedLocation)
   }
 
   /// GitHub status for a REGISTERED location, bound to the identity it was registered with. The one
@@ -342,8 +333,7 @@ final class RepositoryRouter: @unchecked Sendable {
     for location: RepositoryLocation, entry: Entry, resolver: WorkroomStatusResolver
   ) throws -> RepositoryGitHub {
     try RepositoryGitHub(
-      context: RepositoryContext(
-        location: location, backend: entry.backend, sharedLocation: entry.sharedLocation),
+      context: RepositoryContext(location: location, sharedLocation: entry.sharedLocation),
       resolver: resolver, repository: entry.github)
   }
 
@@ -389,8 +379,7 @@ final class RepositoryRouter: @unchecked Sendable {
       } catch VCSError.backendVersion(_) {}
     }
     let writer = CLIVCSWriter(
-      vcs: context.backend.rawValue, runner: StatusCommandRunner(),
-      makeProvider: { _ in GitProvider() }, gate: .shared)
+      runner: StatusCommandRunner(), makeProvider: { _ in GitProvider() }, gate: .shared)
     return try BoundLocalWriter(context: context, reader: reader, writer: writer)
   }
 }

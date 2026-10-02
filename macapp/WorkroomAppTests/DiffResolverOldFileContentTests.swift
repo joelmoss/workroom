@@ -6,23 +6,23 @@ import XCTest
 /// syntax-highlighting of a diff's DELETED lines. The crucial invariant is which backend method each
 /// `DiffSource` routes to, and the base it resolves:
 ///   - `.commit(id)`   → `commitParentFileContent(commitID: id)` (the commit's first parent)
-///   - `.gitWorktree`  → `workingBaseFileContent(base: .workingCopy)`
+///   - `.gitWorktree`  → `workingBaseFileContent` (the file at `HEAD`)
 /// Real-backend behaviour (git parent walk) is covered by `VCSProviderConformanceTests`.
 final class DiffResolverOldFileContentTests: XCTestCase {
 
-  /// Records which pre-image method was called (and with what commit id / base), returning a
+  /// Records which pre-image method was called (and with what commit id / path), returning a
   /// configurable result. The two recorded methods override `LocalVCSProviding`'s nil-returning defaults.
   private final class StubOldContentProvider: LocalVCSProviding, @unchecked Sendable {
     var result: Result<String?, Error> = .success(nil)
     private let lock = NSLock()
     private var _parentCalls: [(commitID: String, path: String)] = []
-    private var _baseCalls: [(base: VCSWorkingDiffBase, path: String)] = []
+    private var _baseCalls: [String] = []
     var parentCalls: [(commitID: String, path: String)] {
       lock.lock()
       defer { lock.unlock() }
       return _parentCalls
     }
-    var baseCalls: [(base: VCSWorkingDiffBase, path: String)] {
+    var baseCalls: [String] {
       lock.lock()
       defer { lock.unlock() }
       return _baseCalls
@@ -35,7 +35,7 @@ final class DiffResolverOldFileContentTests: XCTestCase {
       throw VCSError.io("unused")
     }
     func fileDiff(root: URL, commitID: String, path: String) async throws -> String { "" }
-    func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+    func workingFileDiff(root: URL, path: String) async throws -> String {
       ""
     }
     func currentRef(root: URL) async throws -> VCSRef { .none }
@@ -48,11 +48,11 @@ final class DiffResolverOldFileContentTests: XCTestCase {
       lock.unlock()
       return try resolved()
     }
-    func workingBaseFileContent(root: URL, base: VCSWorkingDiffBase, path: String) async throws
+    func workingBaseFileContent(root: URL, path: String) async throws
       -> String?
     {
       lock.lock()
-      _baseCalls.append((base, path))
+      _baseCalls.append(path)
       lock.unlock()
       return try resolved()
     }
@@ -101,7 +101,7 @@ final class DiffResolverOldFileContentTests: XCTestCase {
     p.result = .success("before\n")
     let content = await resolver(p).oldFileContent(for: desc("a.go", .gitWorktree), in: dir.path)
     XCTAssertEqual(content, "before\n")
-    XCTAssertEqual(p.baseCalls.first?.base, .workingCopy)
+    XCTAssertEqual(p.baseCalls, ["a.go"])
     XCTAssertTrue(p.parentCalls.isEmpty)
   }
 

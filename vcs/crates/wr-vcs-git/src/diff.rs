@@ -50,6 +50,20 @@ fn run_with_status(
     )
 }
 
+/// `GIT_CEILING_DIRECTORIES` for a git run in `dir`: its parent, so repository discovery stops at
+/// `dir` itself. Every git this codebase spawns runs at a repository root, and a folder there that
+/// is not a repository (a workspace Jujutsu left before #266, or a broken empty `.git`) would
+/// otherwise make git discover an ANCESTOR repository and read or write that one instead.
+///
+/// The parent of the RESOLVED directory: a symlinked or differently-cased spelling would otherwise
+/// name the wrong folder and leave the real parent open. `None` (no ceiling) for `/`, for a folder
+/// that cannot be resolved, and for a parent containing `:`, which git splits the variable on, so
+/// such a value would silently disable it; the strict `.git` checks are the backstop there (#266).
+pub fn ceiling_directories(dir: &Path) -> Option<std::path::PathBuf> {
+    let parent = std::fs::canonicalize(dir).ok()?.parent()?.to_path_buf();
+    (!parent.as_os_str().as_encoded_bytes().contains(&b':')).then_some(parent)
+}
+
 fn run_bounded(
     root: &Path,
     program: &str,
@@ -82,6 +96,9 @@ fn run_bounded(
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
         .envs(extra_env.iter().copied());
+    if let Some(ceiling) = ceiling_directories(root) {
+        command.env("GIT_CEILING_DIRECTORIES", ceiling);
+    }
     let mut child = command.spawn().map_err(super::io)?;
     let exceeded = Arc::new(AtomicBool::new(false));
     let start = Instant::now();

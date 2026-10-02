@@ -53,11 +53,11 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertTrue(r.out.contains("done"), "working-copy edit failed: \(r.out)")
 
     let git = GitProvider()
-    let gitModified = try await git.workingFileDiff(root: url, path: "a.txt", base: .workingCopy)
+    let gitModified = try await git.workingFileDiff(root: url, path: "a.txt")
     XCTAssertTrue(gitModified.contains("diff --git a/a.txt b/a.txt"), "git header: \(gitModified)")
     XCTAssertTrue(gitModified.contains("+three"), "git missing the edit: \(gitModified)")
 
-    let gitUntracked = try await git.workingFileDiff(root: url, path: "c.txt", base: .workingCopy)
+    let gitUntracked = try await git.workingFileDiff(root: url, path: "c.txt")
     XCTAssertTrue(gitUntracked.contains("+brand new"), "git untracked content: \(gitUntracked)")
     XCTAssertTrue(
       gitUntracked.contains("/dev/null"), "untracked old side is /dev/null: \(gitUntracked)")
@@ -83,7 +83,7 @@ final class VCSProviderConformanceTests: XCTestCase {
       """, in: root)
     XCTAssertTrue(r.out.contains("done"), "staged+further-modified setup failed: \(r.out)")
 
-    let diff = try await GitProvider().workingFileDiff(root: url, path: "a.txt", base: .workingCopy)
+    let diff = try await GitProvider().workingFileDiff(root: url, path: "a.txt")
     XCTAssertTrue(diff.contains("diff --git a/a.txt b/a.txt"), "header: \(diff)")
     XCTAssertTrue(diff.contains("+three"), "staged half missing from combined diff: \(diff)")
     XCTAssertTrue(diff.contains("+four"), "unstaged half missing from combined diff: \(diff)")
@@ -101,7 +101,7 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertTrue(r2.out.contains("done"), "staged-add+further-modified setup failed: \(r2.out)")
 
     let addDiff = try await GitProvider().workingFileDiff(
-      root: url, path: "d.txt", base: .workingCopy)
+      root: url, path: "d.txt")
     XCTAssertTrue(addDiff.contains("/dev/null"), "new-since-HEAD old side: \(addDiff)")
     XCTAssertTrue(addDiff.contains("+first"), "staged half missing: \(addDiff)")
     XCTAssertTrue(addDiff.contains("+second"), "unstaged half missing: \(addDiff)")
@@ -130,7 +130,7 @@ final class VCSProviderConformanceTests: XCTestCase {
       """, in: root)
     XCTAssertTrue(r.out.contains("done"), "staged+deleted setup failed: \(r.out)")
 
-    let diff = try await GitProvider().workingFileDiff(root: url, path: "a.txt", base: .workingCopy)
+    let diff = try await GitProvider().workingFileDiff(root: url, path: "a.txt")
     XCTAssertTrue(diff.contains("diff --git a/a.txt b/a.txt"), "header: \(diff)")
     XCTAssertTrue(diff.contains("-one"), "HEAD content must render as removed: \(diff)")
     XCTAssertTrue(diff.contains("-two"), "HEAD content must render as removed: \(diff)")
@@ -146,7 +146,7 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertTrue(r2.out.contains("done"), "staged-add+deleted setup failed: \(r2.out)")
 
     let addDiff = try await GitProvider().workingFileDiff(
-      root: url, path: "d.txt", base: .workingCopy)
+      root: url, path: "d.txt")
     XCTAssertEqual(
       addDiff, "",
       "staged-new-then-deleted never existed at HEAD and doesn't exist now — nothing to diff: \(addDiff)"
@@ -174,7 +174,7 @@ final class VCSProviderConformanceTests: XCTestCase {
       """, in: root)
     XCTAssertTrue(r.out.contains("done"), "staged-delete+recreated setup failed: \(r.out)")
 
-    let diff = try await GitProvider().workingFileDiff(root: url, path: "a.txt", base: .workingCopy)
+    let diff = try await GitProvider().workingFileDiff(root: url, path: "a.txt")
     XCTAssertTrue(diff.contains("diff --git a/a.txt b/a.txt"), "header: \(diff)")
     XCTAssertFalse(
       diff.contains("+++ /dev/null"),

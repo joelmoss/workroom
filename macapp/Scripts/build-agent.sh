@@ -65,7 +65,7 @@ AGENT_TOOLCHAIN="${WR_AGENT_RUST_TOOLCHAIN:-stable}"
 # terminal's Homebrew rust, so select stable when necessary.
 if ! rustc --version | awk '{split($2,v,"."); exit !(v[1] > 1 || v[1] == 1 && v[2] >= 93)}'; then
   if ! rustup run "$AGENT_TOOLCHAIN" rustc --version 2>/dev/null | awk '{split($2,v,"."); exit !(v[1] > 1 || v[1] == 1 && v[2] >= 93)}'; then
-    echo "error: wr-agent VCS needs Rust >= 1.93. Run 'rustup update $AGENT_TOOLCHAIN'." >&2
+    echo "error: wr-agent needs Rust >= 1.93. Run 'rustup update $AGENT_TOOLCHAIN'." >&2
     exit 1
   fi
   CARGO="rustup run $AGENT_TOOLCHAIN cargo"
@@ -82,7 +82,7 @@ if [ "${#TARGETS[@]}" -gt 1 ] || [ "${TARGETS[0]}" != "$(rustc -vV | awk '/^host
     fi
   done
   if ! rustup run "$AGENT_TOOLCHAIN" rustc --version 2>/dev/null | awk '{split($2,v,"."); exit !(v[1] > 1 || v[1] == 1 && v[2] >= 93)}'; then
-    echo "error: wr-agent VCS needs Rust >= 1.93. Update stable or set WR_AGENT_RUST_TOOLCHAIN to a compatible installed toolchain." >&2
+    echo "error: wr-agent needs Rust >= 1.93. Update stable or set WR_AGENT_RUST_TOOLCHAIN to a compatible installed toolchain." >&2
     exit 1
   fi
   CARGO="rustup run $AGENT_TOOLCHAIN cargo"

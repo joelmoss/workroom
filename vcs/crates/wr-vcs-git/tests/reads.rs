@@ -402,3 +402,121 @@ fn conflict_working_patch_uses_head_and_materialized_markers() {
     let patch = diff::working_patch(&repo.0, "file").unwrap();
     assert!(patch.contains("+<<<<<<<"));
 }
+
+/// Older apps decode a commit's jj-era fields non-optionally and accept the `Ancestor` ref kind
+/// (#266 kept both on the wire for app/agent skew). Dropping either breaks every history read from
+/// an older app talking to this agent.
+#[test]
+fn commits_still_carry_the_jj_era_fields_older_apps_decode() {
+    let repo = Repo::new();
+    repo.write("hello", "hello\n");
+    repo.commit();
+    let commit = serde_json::to_value(&vcs::log_page(&repo.0, 1).unwrap().commits[0]).unwrap();
+    // Present, not merely null: indexing a missing key would also read as null.
+    for key in [
+        "change_id",
+        "is_working_copy",
+        "is_root",
+        "change_offset",
+        "divergent_siblings",
+    ] {
+        assert!(
+            commit.get(key).is_some(),
+            "{key} dropped from the wire: {commit}"
+        );
+    }
+    assert_eq!(commit["change_id"], serde_json::Value::Null, "{commit}");
+    assert_eq!(commit["is_working_copy"], false, "{commit}");
+    assert_eq!(commit["is_root"], false, "{commit}");
+    assert_eq!(commit["change_offset"], serde_json::Value::Null, "{commit}");
+    assert_eq!(
+        commit["divergent_siblings"],
+        serde_json::json!([]),
+        "{commit}"
+    );
+    assert_eq!(
+        serde_json::to_value(wr_vcs_model::RefKind::Ancestor).unwrap(),
+        "Ancestor"
+    );
+}
+
+/// A binary file is deliberately not counted (`None`, never zeros), and must not stop its text
+/// sibling from being counted.
+#[test]
+fn a_binary_file_has_no_line_stats_and_its_sibling_still_counts() {
+    let repo = Repo::new();
+    repo.write("a.txt", "one\ntwo\n");
+    std::fs::write(repo.0.join("b.bin"), [0u8, 159, 146, 150, 0, 1, 2]).unwrap();
+    let id = repo.commit();
+    let change = vcs::changeset(&repo.0, &id).unwrap();
+    let file = |path: &str| change.files.iter().find(|f| f.path == path).unwrap();
+    assert_eq!(file("b.bin").line_stats, None);
+    assert_eq!(
+        file("a.txt").line_stats,
+        Some(LineStats {
+            insertions: 2,
+            deletions: 0
+        })
+    );
+}
+
+/// A merge's files and counts are against its FIRST parent: only what the merge brought in from
+/// the side branch shows, not the mainline's own edits.
+#[test]
+fn a_merge_counts_against_its_first_parent() {
+    let repo = Repo::new();
+    repo.write("base", "base\n");
+    repo.commit();
+    repo.git(&["switch", "-c", "side"]);
+    repo.write("side.txt", "s1\ns2\ns3\n");
+    repo.commit();
+    repo.git(&["switch", "main"]);
+    repo.write("main.txt", "m1\n");
+    repo.commit();
+    repo.git(&["merge", "--no-ff", "-m", "merge side", "side"]);
+    let merge = repo.git(&["rev-parse", "HEAD"]).trim().to_owned();
+    let change = vcs::changeset(&repo.0, &merge).unwrap();
+    assert!(change.is_merge);
+    let paths: Vec<&str> = change.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, ["side.txt"]);
+    assert_eq!(
+        change.files[0].line_stats,
+        Some(LineStats {
+            insertions: 3,
+            deletions: 0
+        })
+    );
+}
+
+/// A folder that is not itself a repository (a workspace Jujutsu left, or a broken empty `.git`)
+/// inside another repository: the CLI reads must not discover the ANCESTOR and report its state.
+#[test]
+fn cli_reads_never_discover_an_ancestor_repository() {
+    let repo = Repo::new();
+    repo.write("tracked", "x\n");
+    repo.commit();
+    let inner = repo.0.join("inner");
+    std::fs::create_dir_all(inner.join(".git")).unwrap();
+    assert!(diff::run(&repo.0, "git", &["rev-parse", "--show-toplevel"]).is_ok());
+    let error = diff::run(&inner, "git", &["rev-parse", "--show-toplevel"]).unwrap_err();
+    assert!(
+        format!("{error:?}").contains("not a git repository"),
+        "{error:?}"
+    );
+}
+
+/// git splits GIT_CEILING_DIRECTORIES on `:`, so a parent path containing one would silently
+/// disable it; no ceiling is set there and the strict `.git` check is the backstop (#266 D5).
+#[test]
+fn no_ceiling_for_a_parent_path_containing_a_colon() {
+    let repo = Repo::new();
+    let colon = repo.0.join("Acme: Inc").join("web");
+    std::fs::create_dir_all(&colon).unwrap();
+    assert_eq!(diff::ceiling_directories(&colon), None);
+    let plain = repo.0.join("plain").join("web");
+    std::fs::create_dir_all(&plain).unwrap();
+    assert_eq!(
+        diff::ceiling_directories(&plain),
+        Some(std::fs::canonicalize(repo.0.join("plain")).unwrap())
+    );
+}

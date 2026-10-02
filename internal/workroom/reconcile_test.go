@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/vcs"
+	"github.com/joelmoss/workroom/internal/vcs/vcstest"
 )
 
 // fakeVCS is a controlled vcs.VCS whose ListWorkrooms returns a fixed set, so tests that
@@ -50,9 +51,7 @@ func storedVCS(t *testing.T, svc *Service, path string) string {
 
 func TestEffectiveVCSHealsDriftAndPersists(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil { // plain git now
-		t.Fatal(err)
-	}
+	vcstest.MakeGitDir(t, dir) // plain git now
 	svc, _, cfg := newTestService(t, nil)
 	if err := cfg.AddProject(dir, "jj"); err != nil { // stored as jj (colocated legacy)
 		t.Fatal(err)
@@ -69,7 +68,7 @@ func TestEffectiveVCSHealsDriftAndPersists(t *testing.T) {
 
 func TestEffectiveVCSPersistFalseDoesNotWrite(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	svc, _, cfg := newTestService(t, nil)
 	cfg.AddProject(dir, "jj")
 
@@ -98,7 +97,7 @@ func TestEffectiveVCSFallsBackWhenUndetectable(t *testing.T) {
 
 func TestListDataFastHealsDrift(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	svc, _, cfg := newTestService(t, nil)
 	cfg.AddWorkroom(dir, "w1", filepath.Join(dir, "w1"), "jj") // stored jj
 
@@ -125,7 +124,7 @@ func TestListDataFastHealsDrift(t *testing.T) {
 
 func TestListDataNoneDoesNotReconcile(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	svc, _, cfg := newTestService(t, nil)
 	cfg.AddWorkroom(dir, "w1", filepath.Join(dir, "w1"), "jj")
 
@@ -145,7 +144,7 @@ func TestListDataNoneDoesNotReconcile(t *testing.T) {
 
 func TestListDataFullUsesReconciledVCS(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755) // drift: stored jj, on-disk git
+	vcstest.MakeGitDir(t, dir) // drift: stored jj, on-disk git
 	svc, _, cfg := newTestService(t, nil)
 	cfg.AddWorkroom(dir, "w1", filepath.Join(dir, "w1"), "jj")
 	cfg.AddWorkroom(dir, "w2", filepath.Join(dir, "w2"), "jj")
@@ -184,7 +183,7 @@ func TestListDataFullUsesReconciledVCS(t *testing.T) {
 
 func TestListHumanPathWarnsAndListsOnce(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755) // drift: stored jj, on-disk git
+	vcstest.MakeGitDir(t, dir) // drift: stored jj, on-disk git
 	svc, buf, cfg := newTestService(t, nil)
 	// Two workrooms whose dirs exist (so only the VCS-workspace warning can fire).
 	os.MkdirAll(filepath.Join(dir, "w1"), 0o755)
@@ -212,7 +211,7 @@ func TestListHumanPathWarnsAndListsOnce(t *testing.T) {
 
 func TestListHumanPathNoFalseWarningWhenListUnavailable(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	svc, buf, cfg := newTestService(t, nil)
 	os.MkdirAll(filepath.Join(dir, "w1"), 0o755)
 	cfg.AddWorkroom(dir, "w1", filepath.Join(dir, "w1"), "jj")
@@ -226,5 +225,36 @@ func TestListHumanPathNoFalseWarningWhenListUnavailable(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "workspace not found") {
 		t.Fatalf("must not emit a workspace warning when listing is unavailable, got:\n%s", buf.String())
+	}
+}
+
+// A project stored as "jj" whose directory holds only .jj (non-colocated, from before #266) is
+// unsupported now. Listing must neither fail nor flag its workrooms missing (it cannot ask git),
+// and keeps reporting the stored type so the app can show it as unsupported.
+func TestListDataFullToleratesAStoredJJProjectWithoutGit(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	svc, _, cfg := newTestService(t, nil)
+	cfg.AddWorkroom(dir, "w1", filepath.Join(dir, "w1"), "jj")
+
+	res, err := svc.ListData(WarningsFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Projects) != 1 || res.Projects[0].VCS != "jj" {
+		t.Fatalf("projects = %+v, want one project still reported as jj", res.Projects)
+	}
+	if len(res.Projects[0].Workrooms) != 1 {
+		t.Fatalf("workrooms = %+v, want w1 listed", res.Projects[0].Workrooms)
+	}
+	for _, w := range res.Projects[0].Workrooms {
+		for _, x := range w.Warnings {
+			if x.Kind == "VCSWorkroomMissing" {
+				t.Fatalf("w1 flagged %s although git cannot be asked about a jj-only repo", x.Kind)
+			}
+		}
+	}
+	if got := storedVCS(t, svc, dir); got != "jj" {
+		t.Fatalf("stored vcs = %q, want jj left untouched", got)
 	}
 }

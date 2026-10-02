@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/errs"
+	"github.com/joelmoss/workroom/internal/vcs/vcstest"
 )
 
 // MockExecutor records calls and returns canned output.
@@ -25,7 +27,7 @@ func (m *MockExecutor) Run(dir string, name string, args ...string) (string, err
 
 func TestDetectGit(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 
 	v, err := Detect(dir)
 	if err != nil {
@@ -47,7 +49,7 @@ func TestDetectGit(t *testing.T) {
 func TestDetectIgnoresJJ(t *testing.T) {
 	colocated := t.TempDir()
 	os.Mkdir(filepath.Join(colocated, ".jj"), 0o755)
-	os.Mkdir(filepath.Join(colocated, ".git"), 0o755)
+	vcstest.MakeGitDir(t, colocated)
 	v, err := Detect(colocated)
 	if err != nil {
 		t.Fatal(err)
@@ -195,5 +197,73 @@ func TestGitWorktreePathsWithSpaces(t *testing.T) {
 	}
 	if workrooms[0] != "feature one" {
 		t.Fatalf("expected 'feature one', got %q", workrooms[0])
+	}
+}
+
+// A folder that is not itself a repository (a workspace Jujutsu left before #266, or a broken
+// empty .git) inside another repository: git run there must not discover the ANCESTOR, however
+// the folder is spelled (trailing slash, or a symlink in a different folder from its target).
+func TestRealExecutorNeverDiscoversAnAncestorRepository(t *testing.T) {
+	parent := t.TempDir()
+	if out, err := (&RealExecutor{}).Run(parent, "git", "init", "-q"); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	if _, err := (&RealExecutor{}).Run(parent, "git", "rev-parse", "--show-toplevel"); err != nil {
+		t.Fatalf("control: git must still work at a repository root: %v", err)
+	}
+	inner := filepath.Join(parent, "plain", "inner")
+	if err := os.MkdirAll(filepath.Join(inner, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	links := filepath.Join(parent, "links")
+	if err := os.MkdirAll(links, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inner, filepath.Join(links, "inner")); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{inner, inner + "/", filepath.Join(links, "inner")} {
+		out, err := (&RealExecutor{}).Run(dir, "git", "rev-parse", "--show-toplevel")
+		if err == nil || !strings.Contains(out, "not a git repository") {
+			t.Fatalf("%s: git discovered the ancestor repository: %q (%v)", dir, out, err)
+		}
+	}
+}
+
+// git splits GIT_CEILING_DIRECTORIES on ':', so a parent containing one would silently disable
+// it: no ceiling there; Detect's strict .git check is the backstop (#266 D5).
+func TestNoCeilingForAParentPathContainingAColon(t *testing.T) {
+	base := t.TempDir()
+	colon := filepath.Join(base, "Acme: Inc", "web")
+	plain := filepath.Join(base, "plain", "web")
+	for _, d := range []string{colon, plain} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := ceilingDirectories(colon); got != "" {
+		t.Fatalf("ceiling for a colon parent = %q, want none", got)
+	}
+	want, _ := filepath.EvalSymlinks(filepath.Join(base, "plain"))
+	if got := ceilingDirectories(plain); got != want {
+		t.Fatalf("ceiling = %q, want %q", got, want)
+	}
+}
+
+// A .git that git itself would not accept (an empty dir, or HEAD alone) is no repository.
+func TestDetectRefusesAGitDirGitWouldNotAccept(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	if _, err := Detect(dir); !errors.Is(err, errs.ErrUnsupportedVCS) {
+		t.Fatalf("empty .git: expected ErrUnsupportedVCS, got %v", err)
+	}
+	os.WriteFile(filepath.Join(dir, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+	if _, err := Detect(dir); !errors.Is(err, errs.ErrUnsupportedVCS) {
+		t.Fatalf("HEAD-only .git: expected ErrUnsupportedVCS, got %v", err)
+	}
+	worktree := t.TempDir()
+	os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: /elsewhere\n"), 0o644)
+	if _, err := Detect(worktree); err != nil {
+		t.Fatalf("a gitdir: file is a worktree: %v", err)
 	}
 }

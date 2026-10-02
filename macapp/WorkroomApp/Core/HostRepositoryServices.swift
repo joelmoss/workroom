@@ -19,9 +19,9 @@ struct HostRepositoryReader: VCSProviding {
       try await service.fileDiff(commitID: commitID, path: path)
     }
   }
-  func workingFileDiff(path: String, base: VCSWorkingDiffBase) async throws -> String {
+  func workingFileDiff(path: String) async throws -> String {
     try await manager.perform(on: lease) {
-      try await service.workingFileDiff(path: path, base: base)
+      try await service.workingFileDiff(path: path)
     }
   }
   func fileContent(rev: String, path: String) async throws -> String? {
@@ -32,9 +32,9 @@ struct HostRepositoryReader: VCSProviding {
       try await service.commitParentFileContent(commitID: commitID, path: path)
     }
   }
-  func workingBaseFileContent(base: VCSWorkingDiffBase, path: String) async throws -> String? {
+  func workingBaseFileContent(path: String) async throws -> String? {
     try await manager.perform(on: lease) {
-      try await service.workingBaseFileContent(base: base, path: path)
+      try await service.workingBaseFileContent(path: path)
     }
   }
   func workingStatus() async throws -> WorkroomStatus {

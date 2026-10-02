@@ -134,12 +134,6 @@ enum VCSError: Error, Equatable, Sendable {
   case io(String)
 }
 
-/// What kind of repo a path is — the backend-selection discriminant.
-enum VCSRepoKind: Equatable, Sendable {
-  case plainGit
-  case unsupported(String)
-}
-
 // MARK: - Remote state (the VCS inspector's toolbar)
 
 /// How far a local ref has diverged from the remote ref its push/pull actually acts on.

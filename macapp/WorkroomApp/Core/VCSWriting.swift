@@ -322,8 +322,8 @@ extension LocalVCSWriting {
 ///  abort → workroom
 /// ```
 struct CLIVCSWriter: LocalVCSWriting, Sendable {
-  /// The executable, `"git"` — resolved once by `RepositoryRouter` so no method re-derives it.
-  let vcs: String
+  /// The executable every write runs, and the name failure copy uses for it.
+  static let tool = "git"
   let runner: StatusCommandRunning
   /// For `currentRef` only. The app already has a canonical answer including `.detached`;
   /// re-deriving it from `%(HEAD)` would lose it.
@@ -377,7 +377,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   /// `gitdir: <repo>/.git/worktrees/<name>`. That per-worktree directory has its own `FETCH_HEAD`,
   /// `HEAD` and `index`, so reading `FETCH_HEAD` from it after fetching at the root finds nothing —
   /// the root's fetch wrote the root's copy. Stripping the `/worktrees/<name>` suffix gets the shared
-  /// directory, which is where a root fetch's `FETCH_HEAD` actually lands.
+  /// directory, which is where a root fetch's `FETCH_HEAD` lands — unless the project root is ITSELF
+  /// a linked worktree, whose fetch writes `.git/worktrees/<name>/FETCH_HEAD` (verified, git 2.56).
+  /// That case reads as stale here; `Defaults.Keys.vcsLastFetch` covers Workroom's own fetches.
   ///
   /// Pure string work, no subprocess: `git rev-parse --git-common-dir` is authoritative but costs a
   /// process for something two file reads answer.
@@ -402,7 +404,9 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   }
 
   /// `FETCH_HEAD`'s modification time. git rewrites it on **every** fetch, no-ops included (verified),
-  /// so its mtime is a complete record of git fetches — including one the user ran in a terminal.
+  /// so its mtime records git fetches — including one the user ran in a terminal. Not every one: a
+  /// linked-worktree root's lands elsewhere (see `commonGitDir`), and `--no-write-fetch-head` writes
+  /// none.
   static func gitLastFetch(commonGitDir: URL?, disk: any RepositoryDisk = LocalDisk())
     -> VCSLastFetch
   {
@@ -1084,8 +1088,8 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     _ args: [String], in directory: String, timeout: TimeInterval, network: Bool = false
   ) async -> CommandResult {
     network
-      ? await runner.runNetwork(vcs, args, in: directory, timeout: timeout)
-      : await runner.run(vcs, args, in: directory, timeout: timeout)
+      ? await runner.runNetwork(Self.tool, args, in: directory, timeout: timeout)
+      : await runner.run(Self.tool, args, in: directory, timeout: timeout)
   }
 
   /// Run a write through the per-project gate.
@@ -1176,7 +1180,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
   private func gitRemoteState(path: String, current: VCSRef) async -> VCSRemoteResolution {
     let refs = await run(Self.gitRemoteRefsArgs(), in: path, timeout: refTimeout)
     if let failure = await classify(
-      refs, action: .fetch, tool: "git", at: path, withGitDir: false)
+      refs, action: .fetch, tool: Self.tool, at: path, withGitDir: false)
     {
       // A blip must not blank a good toolbar; a missing tool or a real error should show.
       if case .timedOut = failure { return .keepPrior }
@@ -1242,7 +1246,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
           await run(args, in: dir, timeout: fetchTimeout, network: true)
         })
     else { return .failed(.other("fetch was cancelled")) }
-    if let failure = await classify(result, action: .fetch, tool: vcs, at: path) {
+    if let failure = await classify(result, action: .fetch, tool: Self.tool, at: path) {
       return .failed(failure)
     }
     return .ok(summary: "Fetched \(remote)")
@@ -1263,7 +1267,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
           await run(args, in: dir, timeout: pushTimeout, network: true)
         })
     else { return .failed(.other("push was cancelled")) }
-    if let failure = await classify(result, action: .push, tool: vcs, at: path) {
+    if let failure = await classify(result, action: .push, tool: Self.tool, at: path) {
       return .failed(failure)
     }
     return .ok(summary: "Pushed to \(remote)")
@@ -1286,7 +1290,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
         })
     else { return .failed(.other("pull was cancelled")) }
     // Both steps classify against the worktree's git directory, since a lock can block either one.
-    if let failure = await classify(fetched, action: .pull, tool: vcs, at: path) {
+    if let failure = await classify(fetched, action: .pull, tool: Self.tool, at: path) {
       return .failed(failure)
     }
 
@@ -1302,7 +1306,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
           await run(args, in: dir, timeout: pullTimeout, network: true)
         })
     else { return .failed(.other("pull was cancelled")) }
-    if let failure = await classify(result, action: .pull, tool: vcs, at: path) {
+    if let failure = await classify(result, action: .pull, tool: Self.tool, at: path) {
       return .failed(failure)
     }
     return .ok(summary: "Pulled from \(remote)")
@@ -1327,7 +1331,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
         })
     else { return .failed(.other("abort was cancelled")) }
     if let failure = await classify(
-      result, action: .abortRebase, tool: vcs, at: path, withGitDir: false)
+      result, action: .abortRebase, tool: Self.tool, at: path, withGitDir: false)
     {
       return .failed(failure)
     }
@@ -1370,7 +1374,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
       : result.ok
         ? DiskSnapshot.unknown
         : await disk(at: path, stderr: result.stderr + "\n" + result.stdout).disk
-    if let failure = Self.classifyCommit(result, tool: vcs, disk: commitDisk) {
+    if let failure = Self.classifyCommit(result, tool: Self.tool, disk: commitDisk) {
       // The command failed, but did the ref move anyway? A `post-commit` hook runs AFTER git has
       // written the commit and moved HEAD, so a hook that fails — or that we killed at the timeout —
       // leaves a real commit behind a non-zero exit. Reporting that as a plain failure invites a
@@ -1382,7 +1386,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
       return .failed(failure)
     }
     let after = await currentRevision(path: path)
-    return .ok(summary: Self.commitSummary(request.mode, vcs: vcs), revision: after)
+    return .ok(summary: Self.commitSummary(request.mode), revision: after)
   }
 
   /// A commit's ref reading and its outcome, captured together inside one gate acquisition.
@@ -1417,7 +1421,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
       let added = Self.pathsAddedToTheIndex(in: request.files)
       guard !added.isEmpty else { return }
       _ = await runner.run(
-        vcs, Self.gitUnstageArgs(), in: path, timeout: refTimeout,
+        Self.tool, Self.gitUnstageArgs(), in: path, timeout: refTimeout,
         stdin: Self.gitPathspecPayload(literalPaths: added))
     }
 
@@ -1425,7 +1429,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     let unknown = Self.pathsGitMayNotKnow(in: request.files)
     if !unknown.isEmpty {
       let ita = await runner.run(
-        vcs, Self.gitIntentToAddArgs(), in: path, timeout: refTimeout,
+        Self.tool, Self.gitIntentToAddArgs(), in: path, timeout: refTimeout,
         stdin: Self.gitPathspecPayload(literalPaths: unknown))
       guard ita.ok else {
         // Rolled back HERE too, not only after a failed commit. A killed intent-to-add writes
@@ -1451,7 +1455,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
       }
     }
     let result = await runner.run(
-      vcs, Self.gitCommitOnlyArgs(message: request.message), in: path, timeout: commitTimeout,
+      Self.tool, Self.gitCommitOnlyArgs(message: request.message), in: path, timeout: commitTimeout,
       stdin: Self.gitPathspecPayload(request.files))
 
     // Only a commit that definitely did not land. One killed in a `post-commit` hook has already
@@ -1558,7 +1562,7 @@ struct CLIVCSWriter: LocalVCSWriting, Sendable {
     return value.isEmpty ? nil : value
   }
 
-  static func commitSummary(_ mode: VCSCommitMode, vcs: String) -> String {
+  static func commitSummary(_ mode: VCSCommitMode) -> String {
     switch mode {
     case .commit: return "Committed"
     case .amendMessage: return "Amended the last commit"

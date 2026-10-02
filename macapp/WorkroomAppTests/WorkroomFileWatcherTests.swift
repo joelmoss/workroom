@@ -3,9 +3,34 @@ import XCTest
 @testable import Workroom
 
 /// Tests for the live filesystem watch that keeps the selected workroom's VCS status current
-/// (issue #24 follow-up): the FSEvents watcher fires on a real change, and the root-branch watch
-/// target.
+/// (issue #24 follow-up): the FSEvents watcher fires on a real change, the jj-internal churn
+/// filters, and the root-branch watch target.
 final class WorkroomFileWatcherTests: XCTestCase {
+
+  // MARK: - jj-internal churn filters (a colocated repo left from jj can still have `jj` run in it)
+
+  func testIsJJInternalPath() {
+    // A `.jj` path component ⇒ internal (jj writes here; Workroom never does).
+    XCTAssertTrue(AppStore.isJJInternalPath("/repo/.jj/working_copy/checkout"))
+    XCTAssertTrue(AppStore.isJJInternalPath("/repo/.jj"))
+    // Working files are not internal — these must still trigger a refresh.
+    XCTAssertFalse(AppStore.isJJInternalPath("/repo/src/main.swift"))
+    XCTAssertFalse(AppStore.isJJInternalPath("/repo"))
+    // Component-based, so a file merely *named* like `.jj…` isn't treated as internal.
+    XCTAssertFalse(AppStore.isJJInternalPath("/repo/.jjconfig.toml"))
+  }
+
+  /// The Files tree's reload filter: `.git/` and `.jj/` churn alone never reloads; a real edit, or an
+  /// overflowed batch, always does.
+  func testFileTreeIgnoresGitAndJJInternalChurn() {
+    XCTAssertFalse(FileTreeModel.isRelevantChange(["/repo/.git/index"], overflow: false))
+    XCTAssertFalse(FileTreeModel.isRelevantChange(["/repo/.jj/repo/op_heads/x"], overflow: false))
+    XCTAssertFalse(
+      FileTreeModel.isRelevantChange(["/repo/.git/HEAD", "/repo/.jj/x"], overflow: false))
+    XCTAssertTrue(
+      FileTreeModel.isRelevantChange(["/repo/.jj/x", "/repo/src/main.swift"], overflow: false))
+    XCTAssertTrue(FileTreeModel.isRelevantChange(["/repo/.jj/x"], overflow: true))
+  }
 
   // MARK: - VCS metadata dir (AppStore.vcsMetadataDir — root-branch watch target, #3)
 

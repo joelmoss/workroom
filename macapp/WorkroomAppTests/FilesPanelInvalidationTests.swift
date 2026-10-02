@@ -43,11 +43,12 @@ final class FilesPanelInvalidationTests: XCTestCase {
     super.tearDown()
   }
 
-  /// A real, empty throwaway directory — `FileTreeModel.activate` requires the path to exist on
-  /// disk, but the listing itself is entirely faked, so nothing inside it is ever read.
+  /// A real throwaway directory holding a `.git` with a `HEAD` — `FileTreeModel.activate` requires the
+  /// path to exist on disk and listing requires its own `.git` (#266), but the listing itself is
+  /// entirely faked, so nothing else inside it is ever read.
   private func throwawayDir() -> String {
     let path = NSTemporaryDirectory() + "wr-filespanel-\(UUID().uuidString)"
-    try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+    try? makeGitCheckout(atPath: path)
     tempDirs.append(path)
     return path
   }

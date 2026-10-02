@@ -114,7 +114,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     _ = try await manager.connect(host: host) { connection }
     let router = RepositoryRouter(connections: manager)
     let location = try RepositoryLocation.remote(host: id, path: path)
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
 
     // VCS reads.
     let reader = try await router.reader(for: location)
@@ -139,8 +139,8 @@ final class RemoteHostIntegrationTests: XCTestCase {
     // File.
     let files = try connection.files(
       context: FileContext(location: location, sharedLocation: nil))
-    let listing = try await files.list(.git)
-    XCTAssertEqual(FileListing.parse(listing.stdout, vcs: .git), ["file"])
+    let listing = try await files.list()
+    XCTAssertEqual(FileListing.parse(listing.stdout), ["file"])
     let data = try await files.read(path: "file", symlinks: .refuse, maxBytes: 100)
     XCTAssertEqual(data, Data("next\n".utf8))
 
@@ -169,7 +169,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     _ = try await manager.connect(host: host) { connection }
     let router = RepositoryRouter(connections: manager)
     let location = try RepositoryLocation.remote(host: id, path: path)
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
     let writer = try await router.writer(for: location)
     let result = await writer.commit(
       request: VCSCommitRequest(

@@ -912,7 +912,9 @@ extension AppStore {
   /// (dirty/ahead-behind/changed-files) and merge. CI/PR stay on their TTLs — a file save
   /// shouldn't fire a `gh` call. Cancel-and-replace so the latest change wins and at most one probe
   /// from THIS lane runs at a time; results across lanes are ordered by `mergeLocalStatus`.
-  func handleWorkroomFileChange() {
+  /// `overflow` means some changes are unlisted (or the watch was interrupted and resumed), so `paths`
+  /// cannot be trusted to be complete and the `.jj`-internal filter below must not apply.
+  func handleWorkroomFileChange(_ paths: [String], overflow: Bool = false) {
     guard !UITestFixture.isActive, let sid = selectedTargetID,
       let item = selectedStatusWorkItem(for: sid), item.permitsLocalAccess
     else { return }
@@ -926,6 +928,9 @@ extension AppStore {
     // let through as real signal, so `git add`/`git commit` would each fork a probe against a tree
     // mid-write.
     if isCommittingProject(item.sharedLocation) { return }
+    // A colocated repo left from jj can still have `jj` run in it, which churns `.jj/`; Workroom never
+    // writes there, so a burst that touched ONLY jj-internal paths says nothing about the tree.
+    if !overflow, !paths.isEmpty, paths.allSatisfy(Self.isJJInternalPath) { return }
     let resolver = statusResolver
     watchRefreshTask?.cancel()
     watchRefreshTask = Task { [weak self] in
@@ -936,4 +941,10 @@ extension AppStore {
     }
   }
 
+  /// Whether an FSEvents path is inside a jj internal dir (a `.jj` path component). Component-based
+  /// so it doesn't match a working file merely named `.jj…`. `nonisolated` (pure) so it's callable
+  /// off the main actor.
+  nonisolated static func isJJInternalPath(_ path: String) -> Bool {
+    path.split(separator: "/").contains(".jj")
+  }
 }

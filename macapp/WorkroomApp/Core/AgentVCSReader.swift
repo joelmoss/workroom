@@ -6,12 +6,12 @@ struct AgentVCSReader: VCSProviding {
 
   private func read<T: Decodable & Sendable>(
     _ method: String, limit: Int? = nil, revision: String? = nil, path: String? = nil,
-    base: VCSWorkingDiffBase? = nil
+    base: String? = nil
   ) async throws -> T {
     let request = AgentVCSRequest(
       root: context.location.path, sharedRoot: context.sharedLocation?.path,
-      backend: context.backend.rawValue, method: method, limit: limit, revision: revision,
-      path: path, base: base.map { _ in "working_copy" })
+      backend: "git", method: method, limit: limit, revision: revision,
+      path: path, base: base)
     return try AgentVCSReply<T>.decode(await connection.request(request))
   }
 
@@ -33,8 +33,10 @@ struct AgentVCSReader: VCSProviding {
   func fileDiff(commitID: String, path: String) async throws -> String {
     try await read("file_diff", revision: commitID, path: path)
   }
-  func workingFileDiff(path: String, base: VCSWorkingDiffBase) async throws -> String {
-    try await read("working_file_diff", path: path, base: base)
+  func workingFileDiff(path: String) async throws -> String {
+    // ponytail: `base` is a jj-era wire field (#266). Every agent reads a missing base as
+    // "working_copy"; it is sent explicitly only until the protocol bump that drops `backend`.
+    try await read("working_file_diff", path: path, base: "working_copy")
   }
   func fileContent(rev: String, path: String) async throws -> String? {
     try await read("file_content", revision: rev, path: path)
@@ -42,8 +44,8 @@ struct AgentVCSReader: VCSProviding {
   func commitParentFileContent(commitID: String, path: String) async throws -> String? {
     try await read("commit_parent_file_content", revision: commitID, path: path)
   }
-  func workingBaseFileContent(base: VCSWorkingDiffBase, path: String) async throws -> String? {
-    try await read("working_base_file_content", path: path, base: base)
+  func workingBaseFileContent(path: String) async throws -> String? {
+    try await read("working_base_file_content", path: path, base: "working_copy")
   }
   func currentRef() async throws -> VCSRef {
     let ref: AgentRef = try await read("current_ref")
@@ -109,7 +111,9 @@ struct AgentVCSReply<T: Decodable>: Decodable {
   }
 }
 
-private enum AgentChangeKind: String, Decodable, Sendable {
+// The agent wire types below are internal, not private, so AgentVCSProtocolTests can decode canned
+// older-agent replies through them: the decode contract is the thing under test.
+enum AgentChangeKind: String, Decodable, Sendable {
   case added = "Added"
   case modified = "Modified"
   case deleted = "Deleted"
@@ -139,7 +143,7 @@ private enum AgentChangeKind: String, Decodable, Sendable {
     }
   }
 }
-private enum AgentPushState: String, Decodable, Sendable {
+enum AgentPushState: String, Decodable, Sendable {
   case pushed = "Pushed"
   case unpushed = "Unpushed"
   case unknown = "Unknown"
@@ -154,7 +158,7 @@ private enum AgentPushState: String, Decodable, Sendable {
 // ponytail: `Ancestor` (and AgentCommit's change-id/working-copy/root/divergence fields) are
 // jj-era wire shape, still decoded so an older agent's replies keep parsing. A git reader never
 // sends `Ancestor`; read it as a branch. Prune once app/agent skew no longer spans #266.
-private enum AgentRefKind: String, Decodable, Sendable {
+enum AgentRefKind: String, Decodable, Sendable {
   case branch = "Branch"
   case ancestor = "Ancestor"
   case detached = "Detached"
@@ -167,16 +171,16 @@ private enum AgentRefKind: String, Decodable, Sendable {
     }
   }
 }
-private struct AgentAuthor: Decodable, Sendable {
+struct AgentAuthor: Decodable, Sendable {
   let name: String
   let email: String
 }
-private struct AgentScope: Decodable, Sendable {
+struct AgentScope: Decodable, Sendable {
   let refName: String?
   let count: Int
   var model: VCSPushScope { VCSPushScope(refName: refName, count: count) }
 }
-private struct AgentCommit: Decodable, Sendable {
+struct AgentCommit: Decodable, Sendable {
   let commitId: String
   let shortId: String
   let changeId: String?
@@ -199,16 +203,16 @@ private struct AgentCommit: Decodable, Sendable {
       refs: refs, parentIDs: parentIds, pushState: pushState.model)
   }
 }
-private struct AgentHistory: Decodable, Sendable {
+struct AgentHistory: Decodable, Sendable {
   let commits: [AgentCommit]
   let reachedEnd: Bool
   let pushScope: AgentScope?
 }
-private struct AgentStats: Decodable, Sendable {
+struct AgentStats: Decodable, Sendable {
   let insertions: Int
   let deletions: Int
 }
-private struct AgentFile: Decodable, Sendable {
+struct AgentFile: Decodable, Sendable {
   let path: String
   let oldPath: String?
   let kind: AgentChangeKind
@@ -222,12 +226,12 @@ private struct AgentChangeset: Decodable, Sendable {
   let isMerge: Bool
   let pushScope: AgentScope?
 }
-private struct AgentRef: Decodable, Sendable {
+struct AgentRef: Decodable, Sendable {
   let name: String?
   let kind: AgentRefKind
 }
 /// Required fields are validated here: an invalid reply cannot mean a clean checkout.
-private struct AgentStatus: Decodable, Sendable {
+struct AgentStatus: Decodable, Sendable {
   let conflicted: Bool
   let files: [AgentFile]
   let untracked: [String]?

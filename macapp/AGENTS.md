@@ -290,7 +290,7 @@ the bound itself became the throughput floor above. Each fix was correct about i
 The same shape again on #205's review fixes, three times in two rounds: replacing an env allowlist
 with `env_clear()` + the app's own environment fixed a stale-identity bug and silently dropped the
 `GIT_DIR`/`GIT_WORK_TREE` scrub, so a commit requested in one repository landed in another and
-reported success; putting a cancellation shield in the command runner protected the working-copy lock and
+reported success; putting a cancellation shield in the command runner protected the jj flock (removed with jj, #266) and
 stranded connection slots on every superseded read; gating the resulting SIGKILL on `timed_out`
 stopped it firing after normal exits and opened a path where it never fired at all. Each fix was
 correct about its target. Each was caught by a reviewer that had not written it.

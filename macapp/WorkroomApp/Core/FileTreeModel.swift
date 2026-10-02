@@ -220,16 +220,19 @@ final class FileTreeModel: ObservableObject {
 
   private func startWatching(_ path: String) {
     let watcher = HostFileWatcher { [weak self] changed, overflow in
-      // Ignore pure VCS-internal churn (git writing `.git/`) so the tree
-      // doesn't self-trigger an endless reload; any real working-tree edit still refreshes it. The
-      // paths are ABSOLUTE host paths, so the `/.git/` test needs the leading slash. An `overflow`
-      // batch says some changes are unlisted, so it is relevant whatever the listed paths are.
-      let relevant =
-        overflow || changed.contains { !$0.contains("/.git/") }
-      if relevant { self?.reload() }
+      if Self.isRelevantChange(changed, overflow: overflow) { self?.reload() }
     }
     watcher.start(path: path)
     self.watcher = watcher
+  }
+
+  /// Ignore pure VCS-internal churn (git writing `.git/`) so the tree doesn't self-trigger an endless
+  /// reload; any real working-tree edit still refreshes it. `.jj/` too: a colocated repo left from jj
+  /// can still have `jj` run in it, and Workroom never writes `.jj`. The paths are ABSOLUTE host
+  /// paths, so the tests need the leading slash. An `overflow` batch says some changes are unlisted,
+  /// so it is relevant whatever the listed paths are.
+  nonisolated static func isRelevantChange(_ changed: [String], overflow: Bool) -> Bool {
+    overflow || changed.contains { !$0.contains("/.git/") && !$0.contains("/.jj/") }
   }
 
   /// The outcome of listing a working tree — richer than a bare optional so a killed probe can be
@@ -285,6 +288,10 @@ final class FileTreeModel: ObservableObject {
     router: RepositoryRouter = .shared
   ) async -> ListResult {
     guard location.host == .local else { return .failed(.unavailable(location.host)) }
+    // A folder without its own `.git` (e.g. a workspace Jujutsu made before #266) is no repository:
+    // git run there would discover an ANCESTOR repository and list that tree instead.
+    let root = URL(fileURLWithPath: location.path)
+    guard (try? await runBlocking({ isGitRepo(at: root) })) == true else { return .unavailable }
     let files: FileProviding
     do {
       files = try await router.files(for: location, runner: runner)
@@ -293,7 +300,7 @@ final class FileTreeModel: ObservableObject {
     }
     let result: CommandResult
     do {
-      result = try await files.list(.git)
+      result = try await files.list()
     } catch FileServiceError.listingTruncated {
       return .tooLarge
     } catch let error as RepositoryRoutingError {
@@ -301,7 +308,7 @@ final class FileTreeModel: ObservableObject {
     } catch {
       return await listFailure(error, path: location.path)
     }
-    if result.ok { return .listing(FileListing.parse(result.stdout, vcs: .git)) }
+    if result.ok { return .listing(FileListing.parse(result.stdout)) }
     // A killed probe is not evidence `path` isn't a repo. `timedOut` implies `signaled` (the
     // timeout SIGTERMs the child), and a timeout says nothing about an EXTERNAL kill —
     // `CommandResult.signaled`'s own doc says to test it first. Left as `.interrupted` it would also

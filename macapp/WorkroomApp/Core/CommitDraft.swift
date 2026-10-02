@@ -1,21 +1,12 @@
 import Foundation
 
-/// The VCS backend this subsystem works with — git is the only one. Owned here (beside
-/// `PendingCommit`, its first consumer) rather than retyping the upstream `String` fields
-/// (`Project.vcs`, `StatusWorkItem.vcs`) that live outside this subsystem — those stay `String`; a
-/// construction boundary converts via `VCSBackend(rawValue:) ?? .git` exactly once.
-enum VCSBackend: String, Equatable, Sendable {
-  case git
-}
-
 /// The commit sheet's target, carried the way `PendingVCSAction` carries a confirmation's.
 ///
 /// `.sheet(item:)` keys on `id`, so the sheet's `@State` — the draft and the selection — is rebuilt
 /// per target and can never leak from one workroom into another.
 struct PendingCommit: Identifiable, Equatable, Sendable {
   let sid: SidebarID
-  let vcs: VCSBackend
-  var id: String { "\(vcs.rawValue)-\(sid.hashValue)" }
+  var id: String { "\(sid.hashValue)" }
 }
 
 /// The commit sheet's pure logic: what the message is, what is selected, and what the button says.
@@ -55,7 +46,7 @@ enum CommitDraft {
 
   /// The primary button's label. Names the count so what is about to be recorded is never implicit —
   /// once the list scrolls, "Commit" alone is an unverifiable claim.
-  static func commitLabel(selectedCount: Int, vcs: VCSBackend) -> String {
+  static func commitLabel(selectedCount: Int) -> String {
     switch selectedCount {
     case 1: return "Commit 1 file"
     default: return "Commit \(selectedCount) files"
@@ -68,8 +59,7 @@ enum CommitDraft {
   /// different blocked states explained only by a tooltip would be invisible to anyone who doesn't
   /// hover a control that already looks dead, and unavailable to VoiceOver entirely.
   static func blockedReason(
-    vcs: VCSBackend, summary: String, selectedCount: Int, totalCount: Int, conflicted: Bool,
-    sequencer: String?
+    summary: String, selectedCount: Int, totalCount: Int, conflicted: Bool, sequencer: String?
   ) -> String? {
     if let reason = repoStateBlockedReason(conflicted: conflicted, sequencer: sequencer) {
       return reason

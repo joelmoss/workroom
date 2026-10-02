@@ -69,9 +69,9 @@ final class VCSCommitIntegrationTests: XCTestCase {
     return (String(data: data, encoding: .utf8) ?? "", p.terminationStatus)
   }
 
-  private func writer(_ vcs: String) -> CLIVCSWriter {
+  private func writer() -> CLIVCSWriter {
     CLIVCSWriter(
-      vcs: vcs, runner: StatusCommandRunner(),
+      runner: StatusCommandRunner(),
       makeProvider: { _ in GitProvider() }, gate: RepositoryWriteGate(maxChainWait: 5))
   }
 
@@ -129,7 +129,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     let dir = gitRepo(files: ["base.txt": "base\n", "old.txt": "content\n"])
     sh("git mv old.txt new.txt", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(
         message: "move it",
@@ -162,7 +162,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     sh("mv old.txt new.txt", in: dir)
     write("other changed\n", to: "other.txt", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(
         message: "move it",
@@ -194,7 +194,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     write("#!/bin/sh\nexit 1\n", to: ".git/hooks/commit-msg", in: dir)
     sh("chmod +x \(hook)", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(
         message: "will be rejected",
@@ -219,7 +219,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     write("fresh\n", to: "untracked.txt", in: dir)
     write("#!/bin/sh\nsleep 30\n", to: ".git/hooks/post-commit", in: dir)
     sh("chmod +x .git/hooks/post-commit", in: dir)
-    var landing = writer("git")
+    var landing = writer()
     landing.commitTimeout = 1
 
     let result = await landing.commit(
@@ -285,7 +285,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     let dir = gitRepo()
     write("fresh\n", to: "untracked.txt", in: dir)
     let staging = CLIVCSWriter(
-      vcs: "git", runner: StagingLosesContact(),
+      runner: StagingLosesContact(),
       makeProvider: { _ in GitProvider() as LocalVCSProviding },
       gate: RepositoryWriteGate(maxChainWait: 5))
 
@@ -331,7 +331,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     write("#!/bin/sh\nsleep 30\n", to: ".git/hooks/post-commit", in: dir)
     sh("chmod +x .git/hooks/post-commit", in: dir)
     var landing = CLIVCSWriter(
-      vcs: "git", runner: HeadReadsFailOnceItExists(failure: failure),
+      runner: HeadReadsFailOnceItExists(failure: failure),
       makeProvider: { _ in GitProvider() as LocalVCSProviding },
       gate: RepositoryWriteGate(maxChainWait: 5))
     landing.commitTimeout = 1
@@ -355,7 +355,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     write("#!/bin/sh\nexit 1\n", to: ".git/hooks/commit-msg", in: dir)
     sh("chmod +x .git/hooks/commit-msg", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(
         message: "will be rejected",
@@ -373,7 +373,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     write("neighbour changed\n", to: "ab.txt", in: dir)
     write("selected changed\n", to: "a[b].txt", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(message: "bracket", files: [modified("a[b].txt")], mode: .commit))
 
@@ -389,7 +389,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     let dir = gitRepo()
     write("brand new\n", to: "fresh.txt", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(
         message: "add fresh",
@@ -409,7 +409,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     sh("git add other.txt", in: dir)
     write("base changed\n", to: "base.txt", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(message: "only base", files: [modified("base.txt")], mode: .commit))
 
@@ -425,7 +425,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     let dir = gitRepo(files: ["base.txt": "base\n", "gone.txt": "bye\n"])
     try? FileManager.default.removeItem(atPath: dir + "/gone.txt")
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(
         message: "remove it",
@@ -443,7 +443,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     let dir = gitRepo()
     write("x\n", to: "My Notes café.md", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(
         message: "notes",
@@ -471,7 +471,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     // A worktree-only change, which is NOT at risk — nothing was staged for it.
     write("other changed\n", to: "g.txt", in: dir)
 
-    let atRisk = try await writer("git").stagedContentAtRisk(
+    let atRisk = try await writer().stagedContentAtRisk(
       path: dir, files: [modified("f.txt"), modified("g.txt")])
     XCTAssertEqual(atRisk, ["f.txt"], "only the partly-staged file is at risk")
   }
@@ -484,7 +484,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     sh("git add f.txt", in: dir)
     write("l1\nSTAGED\nl3\nWORKTREE\n", to: "f.txt", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(message: "partial", files: [modified("f.txt")], mode: .commit))
 
@@ -504,7 +504,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     write("two\n", to: "f.txt", in: dir)
     sh("git add f.txt", in: dir)
 
-    let atRisk = try await writer("git").stagedContentAtRisk(path: dir, files: [modified("f.txt")])
+    let atRisk = try await writer().stagedContentAtRisk(path: dir, files: [modified("f.txt")])
     XCTAssertTrue(atRisk.isEmpty, "staged and identical to disk — nothing is discarded")
   }
 
@@ -516,7 +516,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     let dir = gitRepo()
     write("changed\n", to: "base.txt", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(
         message: "Summary line\n\nBody paragraph explaining why.", files: [modified("base.txt")],
@@ -540,7 +540,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     write("staged\n", to: "other.txt", in: dir)
     sh("git add other.txt", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(message: "reworded", files: [], mode: .amendMessage))
 
@@ -555,7 +555,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
   func testNothingToCommitIsTyped() async throws {
     try requireTool("git")
     let dir = gitRepo()
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(message: "nothing", files: [modified("base.txt")], mode: .commit))
     XCTAssertEqual(result, .failed(.nothingToCommit))
@@ -568,7 +568,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     sh("git init -q . && git config user.email t@e.com && git config user.name T", in: dir)
     write("first\n", to: "first.txt", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(
         message: "first commit",
@@ -592,7 +592,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     sh("chmod +x '\(hook)'", in: dir)
     write("changed\n", to: "base.txt", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(message: "blocked", files: [modified("base.txt")], mode: .commit))
 
@@ -612,7 +612,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     FileManager.default.createFile(atPath: dir + "/.git/MERGE_HEAD", contents: Data("abc\n".utf8))
     write("changed\n", to: "base.txt", in: dir)
 
-    let result = await writer("git").commit(
+    let result = await writer().commit(
       path: dir, projectRoot: dir,
       request: VCSCommitRequest(message: "mid-merge", files: [modified("base.txt")], mode: .commit))
 
@@ -626,7 +626,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     let dir = gitRepo()
     sh("git commit -q --allow-empty -m 'the subject being replaced'", in: dir)
 
-    let preflight = try await writer("git").commitPreflight(path: dir)
+    let preflight = try await writer().commitPreflight(path: dir)
 
     let target = try XCTUnwrap(preflight.amendTarget)
     XCTAssertTrue(
@@ -640,7 +640,7 @@ final class VCSCommitIntegrationTests: XCTestCase {
     let dir = tempDir()
     sh("git init -q . && git config user.email t@e.com && git config user.name T", in: dir)
 
-    let preflight = try await writer("git").commitPreflight(path: dir)
+    let preflight = try await writer().commitPreflight(path: dir)
 
     XCTAssertNil(preflight.amendTarget)
   }
@@ -653,12 +653,12 @@ final class VCSCommitIntegrationTests: XCTestCase {
   /// `MERGE_HEAD`, so the file is the durable fact and the conflict is not).
   func testGitPreflightReportsAParkedOperation() async throws {
     let dir = gitRepo()
-    let before = try await writer("git").commitPreflight(path: dir)
+    let before = try await writer().commitPreflight(path: dir)
     XCTAssertNil(before.sequencer, "clean, before")
 
     FileManager.default.createFile(atPath: dir + "/.git/MERGE_HEAD", contents: Data())
 
-    let after = try await writer("git").commitPreflight(path: dir)
+    let after = try await writer().commitPreflight(path: dir)
     XCTAssertEqual(after.sequencer, "merge")
   }
 
@@ -723,7 +723,7 @@ extension VCSCommitIntegrationTests {
   func testPreflightAcceptsUnbornOrphanWithOtherExistingRefs() async throws {
     let dir = gitRepo()
     sh("git switch --orphan fresh", in: dir)
-    let preflight = try await writer("git").commitPreflight(path: dir)
+    let preflight = try await writer().commitPreflight(path: dir)
     XCTAssertNil(preflight.amendTarget)
   }
 }

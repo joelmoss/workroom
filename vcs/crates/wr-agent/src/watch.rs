@@ -92,11 +92,13 @@ const MAX_PENDING_PATHS: usize = 4096;
 /// tens of MiB per subscription during a sustained burst.
 const MAX_PENDING_BYTES: usize = 512 * 1024;
 
-/// A path is VCS-internal when any component is `.git`. Delivered after everything else when the
-/// cap forces a choice, because an internal change is usually the tool's own churn (git writing
-/// under `.git/`) and the consumer filters it out anyway.
+/// A path is VCS-internal when any component is `.git` or `.jj`. Delivered after everything else
+/// when the cap forces a choice, because an internal change is usually the tool's own churn (git
+/// writing under `.git/`) and the consumer filters it out anyway. `.jj` stays because a repo
+/// colocated with Jujutsu before #266 can still have `jj` run in it; Workroom never writes there.
 fn is_internal(path: &Path) -> bool {
-    path.components().any(|c| c.as_os_str() == ".git")
+    path.components()
+        .any(|c| c.as_os_str() == ".git" || c.as_os_str() == ".jj")
 }
 
 /// One delivery: paths in priority order (working-tree paths before VCS-internal ones), capped.
@@ -580,23 +582,14 @@ mod tests {
     #[test]
     fn worktree_paths_come_before_vcs_internal_ones() {
         let mut pending = Pending::default();
-        for path in [
-            "/r/.git/index",
-            "/r/a.txt",
-            "/r/.git/refs/heads/main",
-            "/r/b.txt",
-        ] {
+        // `.jj/` too: a repo colocated with Jujutsu before #266 can still have `jj` run in it.
+        for path in ["/r/.git/index", "/r/a.txt", "/r/.jj/repo/op", "/r/b.txt"] {
             pending.add(PathBuf::from(path));
         }
         let batch = pending.take().unwrap();
         assert_eq!(
             names(&batch),
-            [
-                "/r/a.txt",
-                "/r/b.txt",
-                "/r/.git/index",
-                "/r/.git/refs/heads/main"
-            ]
+            ["/r/a.txt", "/r/b.txt", "/r/.git/index", "/r/.jj/repo/op"]
         );
     }
 

@@ -231,10 +231,23 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
   /// `environ` at `ghostty_init` and keeps reading that fixed-length copy, so adding or removing a
   /// process variable afterwards leaves it reading freed memory — a later `ghostty_surface_new` in
   /// the same test host then segfaults.
+  ///
+  /// `directory` is the working directory the child runs in, which must be a repository ROOT — see
+  /// `GIT_CEILING_DIRECTORIES` below.
   static func childEnvironment(
-    network: Bool, inherited: [String: String] = ProcessInfo.processInfo.environment
+    network: Bool, in directory: String,
+    inherited: [String: String] = ProcessInfo.processInfo.environment
   ) -> [String: String] {
     var env = inherited
+    // Never discover an ANCESTOR repository. A folder whose `.git` is missing or empty (a workroom
+    // left from jj, a half-created worktree) sits inside the project's own tree, and git run there
+    // walks up and finds the PARENT repository — so a commit, push or fetch aimed at the workroom
+    // lands in another one, reported as success. The ceiling at the working directory's parent stops
+    // that walk: git still finds a repository AT the working directory, and a hook that `cd`s into a
+    // subfolder still finds this root, but nothing above it. This is only right because every caller
+    // runs git at a repository root (or in a neutral directory that holds none); a caller in a
+    // subfolder would lose its own repository. `gh` runs git internally and gets the same guard.
+    if let ceiling = discoveryCeiling(for: directory) { env["GIT_CEILING_DIRECTORIES"] = ceiling }
     env["PATH"] = ShellEnvironment.path()
     env["GIT_OPTIONAL_LOCKS"] = "0"
     env["GIT_TERMINAL_PROMPT"] = "0"
@@ -279,6 +292,23 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
     return env
   }
 
+  /// The parent of `directory`, or nil when it has none (`/`). Symlinks are resolved so the ceiling
+  /// is an ancestor of the REAL working directory git sees.
+  ///
+  /// Also nil when the parent contains `:` or is not absolute. git splits the variable on `:` (and
+  /// ignores relative entries), so such a value would silently set no ceiling at all while looking
+  /// like one. Protection for those paths rests on `isGitRepo`'s strict check instead, which
+  /// `RepositoryRouter` applies before it registers or routes a folder. wr-agent applies the same
+  /// rules (`ceiling_directories`).
+  static func discoveryCeiling(for directory: String) -> String? {
+    let dir = URL(fileURLWithPath: directory).resolvingSymlinksInPath().path
+    let parent = (dir as NSString).deletingLastPathComponent
+    guard !parent.isEmpty, parent != dir, parent.hasPrefix("/"), !parent.contains(":") else {
+      return nil
+    }
+    return parent
+  }
+
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
   {
@@ -308,7 +338,7 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
     proc.arguments = [executable] + args
     proc.currentDirectoryURL = URL(fileURLWithPath: directory)
 
-    proc.environment = Self.childEnvironment(network: network)
+    proc.environment = Self.childEnvironment(network: network, in: directory)
 
     let outPipe = Pipe()
     let errPipe = Pipe()
