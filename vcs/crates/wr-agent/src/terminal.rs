@@ -334,7 +334,15 @@ impl ShadowTerminal {
         }
 
         out.extend_from_slice(&self.cursor_position());
-        out
+        if out.is_empty() {
+            // Nothing could be read, which callers tell from an empty record.
+            return out;
+        }
+        // Ahead of it all, a blank screen and no scrollback: the paint erases nothing, and a
+        // client rarely starts blank — the app's panes run under macOS `login`, which prints its
+        // `Last login` banner first. Erasing the screen before the scrollback matters: Ghostty's
+        // ED 2 pushes the screen into the scrollback when its last rows are a shell prompt.
+        [b"\x1b[2J\x1b[3J".as_slice(), &out].concat()
     }
 
     /// Plain-text screen contents. Used by tests and by the session list's preview; never sent to
@@ -453,6 +461,26 @@ mod tests {
             b"\x1b[?1h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b[3;20rbody",
             "modes",
         );
+    }
+
+    /// A client's pane is rarely blank when the repaint arrives: the app's panes run under macOS
+    /// `login`, which prints `Last login: … on ttys019` first. A repaint drawn over that without
+    /// erasing it left the tail of the banner after any prompt shorter than it. Scrolled-off rows
+    /// count too (`visible_text` includes scrollback), and the client's last rows are a marked
+    /// prompt, which makes ED 2 push the screen into the scrollback rather than erase it.
+    #[test]
+    fn the_repaint_erases_what_the_client_showed_before_it() {
+        let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+        producer.write(b"short$ ");
+
+        let mut client = ShadowTerminal::new(80, 24).expect("client");
+        for _ in 0..30 {
+            client.write(b"Last login: Fri Oct  2 08:21:13 on ttys019\r\n");
+        }
+        client.write(b"\x1b]133;A\x07old$ ");
+        client.write(&producer.replay());
+
+        assert_eq!(producer.visible_text(), client.visible_text());
     }
 
     /// Without the hand-emitted CUP the client writes the next byte where the last cell landed,
