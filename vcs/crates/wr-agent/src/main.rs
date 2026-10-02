@@ -1075,7 +1075,10 @@ fn run_list(args: &[String]) -> ExitCode {
             }
         }
     }
-    ExitCode::SUCCESS
+    // Hung up, failed or timed out without a reply: callers use `list` as the readiness probe, and
+    // an agent that never answers is not ready.
+    eprintln!("error: the agent on {} did not answer", socket.display());
+    ExitCode::from(DAEMON_UNAVAILABLE)
 }
 
 /// Enrols with the credential broker (#251), then points git at `wr-agent credential`. The code
