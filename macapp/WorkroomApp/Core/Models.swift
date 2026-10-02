@@ -177,6 +177,9 @@ struct TerminalTarget: Identifiable, Hashable {
   /// workrooms are on (`RemoteWorkrooms.isEnabled`) and its host is recorded and serving. Panes
   /// mount there; every other local action still guards on `isMissing`, which stays true.
   var remoteHost: UUID? = nil
+  /// Why a remote workroom's panes don't open here, when that isn't simply this build
+  /// (`Workroom.remoteNote`).
+  var remoteNote: String? = nil
 
   var isMissing: Bool { unavailability != nil }
 
@@ -195,8 +198,8 @@ struct TerminalTarget: Identifiable, Hashable {
   enum Unavailability: Hashable {
     /// A local directory that no longer exists.
     case directoryMissing
-    /// A workroom on another host. Its path is not a path on this Mac, and nothing opens a remote
-    /// workroom yet (#253).
+    /// A workroom on another host. Its path is not a path on this Mac. Whether its panes open there
+    /// is `TerminalTarget.remoteHost` (#253).
     case remote
     /// A remote workroom whose host its provider destroyed. Not a missing directory.
     case hostDestroyed
@@ -222,6 +225,9 @@ struct TerminalTarget: Identifiable, Hashable {
       case .directoryMissing:
         return "\(target.title) points at a path that no longer exists.\n\(target.path)"
       case .remote:
+        if let note = target.remoteNote {
+          return "\(target.title) is a remote workroom. \(note)\n\(target.path)"
+        }
         return "\(target.title) is on another host, and this build cannot open it.\n\(target.path)"
       case .hostDestroyed:
         return "\(target.title)'s host was destroyed by its provider.\n\(target.path)"
@@ -253,7 +259,29 @@ extension Workroom {
     TerminalTarget(
       id: TerminalTarget.workroomID(project: projectPath, name: name),
       title: displayName, path: path, unavailability: unavailability,
-      remoteHost: reachableHost)
+      remoteHost: reachableHost, remoteNote: remoteNote)
+  }
+
+  /// Why this remote workroom's panes don't open here, for one this build could otherwise reach:
+  /// nil for a serving one, a destroyed one, and a local one.
+  var remoteNote: String? {
+    guard let host, !host.isDestroyed, reachableHost == nil else { return nil }
+    if host.provisioner != RemoteWorkrooms.provisioner {
+      return
+        "Another Workroom build made it (\(host.provisioner ?? "unknown")), and only that build "
+        + "can open it."
+    }
+    if !RemoteWorkrooms.isEnabled { return "Remote workrooms are turned off in this build." }
+    switch host.state {
+    case "creating":
+      return "It isn't ready: it is being created, or creating it was interrupted. If nothing is "
+        + "creating it, delete it."
+    case "failed":
+      return "Creating it failed, and part of it may still be running. Delete it to finish."
+    default:
+      // Serving, but naming no host to open.
+      return "Its record names no host to open. Delete it."
+    }
   }
 
   /// A host with no `state` is serving: "creating", "failed" and "destroyed" are not. Only this

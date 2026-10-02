@@ -266,11 +266,22 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(base.repository, "o/r")
     XCTAssertEqual(base.path, RemoteWorkrooms.clonePath(for: Self.repository))
     XCTAssertNotNil(base.container)
-    guard recorded.calls.count == 3, case .reserve(let path, let creating) = recorded.calls[1],
-      case .record("w1", let workroom) = recorded.calls[2]
+    guard recorded.calls.count == 5, case .reserve(let path, let creating) = recorded.calls[1],
+      case .record("w1", let hostMade) = recorded.calls[2],
+      case .record("w1", let grantMade) = recorded.calls[3],
+      case .record("w1", let workroom) = recorded.calls[4]
     else { return XCTFail("calls: \(recorded.calls)") }
     XCTAssertEqual(path, base.path)
     XCTAssertEqual(creating.state, "creating")
+    // Each live thing is recorded as soon as it exists, so a crash mid-create leaves a delete what to
+    // take down (#253).
+    XCTAssertEqual(hostMade.state, "creating")
+    XCTAssertEqual(hostMade.id, workroom.id)
+    XCTAssertNotNil(hostMade.container)
+    XCTAssertNil(hostMade.grantID)
+    XCTAssertEqual(grantMade.state, "creating")
+    XCTAssertEqual(grantMade.grantID, "g1")
+    XCTAssertTrue(RemoteWorkrooms.isLive(hostMade) && RemoteWorkrooms.isLive(grantMade))
     XCTAssertNil(workroom.state, "a serving workroom's descriptor has a state")
     XCTAssertEqual(workroom.grantID, "g1")
     XCTAssertEqual(workroom.workroomID, creating.workroomID)
@@ -379,6 +390,30 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     try await RemoteWorkrooms.deleteBase(base, environment: environment) { cleared.add("base") }
     XCTAssertEqual(cleared.all, ["base"])
     XCTAssertEqual(try leftovers("ps", label: label), [], "the base was kept")
+  }
+
+  /// A checkpoint that cannot be recorded is a failed step (#253): the derive undoes itself, so the
+  /// grant it minted is cancelled and its box removed, rather than either living on unrecorded.
+  @MainActor
+  func testADeriveWhoseCheckpointFailsUndoesItself() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let environment = environment(fixture, driver: driver, revoked: Revoked())
+    let base = try await build(environment)
+    cleanups.append { try? await driver.destroy(.remote(base.host)) }
+    BrokerStub.reset([Self.grant, Self.cancelled])
+
+    do {
+      _ = try await RemoteProvisioning.derive(
+        from: base, workroom: UUID(), branch: "wr-checkpoint", in: environment
+      ) { _, grant in
+        if grant != nil { throw WorkroomCLIError.timedOut }
+      }
+      XCTFail("a derive whose checkpoint failed succeeded")
+    } catch WorkroomCLIError.timedOut {}
+    XCTAssertEqual(grantsCancelled, 1, "the grant was left live")
+    XCTAssertEqual(try leftovers("ps", label: label).count, 1, "only the base should be left")
   }
 
   /// A derive that fails and undoes itself drops the name it took; nothing is recorded for it.

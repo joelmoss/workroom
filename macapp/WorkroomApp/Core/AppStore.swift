@@ -594,9 +594,15 @@ final class AppStore: ObservableObject {
   /// `didSet`s don't persist the values straight back (and the load isn't mistaken for a user edit).
   private var isLoadingInspectorState = false
 
-  /// Setting it drops `errorDetails`, which belong to whatever error set them: a later message
-  /// from a direct setter must not show an earlier error's codes. `present(_:)` sets them after it.
-  @Published var errorMessage: String? { didSet { errorDetails = nil } }
+  /// Setting it drops `errorDetails` and `errorLink`, which belong to whatever error set them: a
+  /// later message from a direct setter must not show an earlier error's codes or its Install
+  /// button. `present(_:)` and its callers set them after it.
+  @Published var errorMessage: String? {
+    didSet {
+      errorDetails = nil
+      errorLink = nil
+    }
+  }
   /// Title for the error alert. Nil falls back to the generic title; specific
   /// failures (e.g. teardown) set their own.
   @Published var errorTitle: String?
@@ -614,10 +620,8 @@ final class AppStore: ObservableObject {
 
   /// Dismisses the error sheet.
   func clearError() {
-    errorMessage = nil
+    errorMessage = nil  // and with it the details and the link
     errorTitle = nil
-    errorLink = nil
-    errorDetails = nil
   }
   @Published var isLoading = false
   /// How many creates are in flight per project path (for the sidebar row's spinner + disabling).
@@ -3450,10 +3454,16 @@ final class AppStore: ObservableObject {
       })
   }
 
+  /// Whether New Remote Workroom is on for `project`: not while another create holds it busy, since
+  /// a second create would build a second base.
+  func canCreateRemoteWorkroom(in project: Project) -> Bool {
+    RemoteWorkrooms.isEnabled && !isBusyProject(project.path)
+  }
+
   /// Creates a remote workroom for `project` (#253), derived from the project's base machine
   /// (built first if it has none), then selects it, which opens its first pane on the far side.
   func createRemoteWorkroom(in project: Project) async {
-    guard RemoteWorkrooms.isEnabled else { return }
+    guard canCreateRemoteWorkroom(in: project) else { return }
     beginBusy(project.path)
     defer { endBusy(project.path) }
     do {
@@ -3822,7 +3832,7 @@ final class AppStore: ObservableObject {
           var wr = wr
           wr.label = labels[TerminalTarget.workroomID(project: project.path, name: wr.name)]
           return wr
-        })
+        }, host: project.host)
     }
   }
 
@@ -5212,7 +5222,6 @@ final class AppStore: ObservableObject {
 
   private func present(_ error: Error) {
     errorTitle = nil  // generic title
-    errorLink = nil
     errorMessage = errorText(error)
     errorDetails = Self.errorDetails(error)
   }

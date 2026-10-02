@@ -279,4 +279,15 @@ final class WorkroomLabelTests: XCTestCase {
       b.displayName(forWorkroom: "fox", inProject: "/p"), "Auth",
       "the other window sees the label via the shared ProjectStore")
   }
+
+  /// Labels are merged onto every project on each reload; that must keep a project's base-machine
+  /// descriptor (#253), which the sweep and the next remote create read.
+  func testEnrichingLabelsKeepsAProjectsHost() {
+    let store = makeStore([])
+    Defaults[.workroomLabels] = [key("/p", "a"): "Alpha"]
+    let base = HostDescriptor(provisioner: "p", id: UUID(), repository: "o/r")
+    var p = project("/p", workrooms: ["a"])
+    p.host = base
+    XCTAssertEqual(store.enrichLabels([p]).first?.host, base)
+  }
 }

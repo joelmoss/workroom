@@ -105,6 +105,16 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
       host: base, stream: try await driver.openStream(to: base))
     connections.append(connection)
     XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label).count, 1)
+    // A Docker or Mac restart brings it back, on the port its record names (#253).
+    guard case .remote(let id) = base else { return XCTFail("\(base)") }
+    XCTAssertEqual(
+      try docker(
+        runtime,
+        [
+          "inspect", "-f", "{{.HostConfig.RestartPolicy.Name}}",
+          ContainerHostDriver.containerName(id),
+        ]),
+      "unless-stopped")
 
     try await driver.destroy(base)
     XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label), [])

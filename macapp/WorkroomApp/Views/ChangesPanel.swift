@@ -902,7 +902,8 @@ struct ChangesPanel: View {
   private func content(for sid: SidebarID) -> some View {
     let target = store.target(for: sid)
     let status = store.workroomStatuses[sid]
-    if let reason = target?.unavailability {
+    // `terminalUnavailability`: a remote workroom this app reaches has its changes read on its host.
+    if let reason = target?.terminalUnavailability {
       inspectorMessage("\(reason.title).")
     } else if status == nil || status?.lastChecked == nil {
       inspectorMessage("Checking\u{2026}")

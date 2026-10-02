@@ -310,7 +310,11 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     let container = Self.containerName(id)
     do {
       _ = try await runtime(
-        ["run", "--detach", "--init", "--name", container, "--publish", "127.0.0.1:\(port):22"]
+        // `unless-stopped`: a Docker or Mac restart brings it back, on the port its record names.
+        [
+          "run", "--detach", "--init", "--restart", "unless-stopped", "--name", container,
+          "--publish", "127.0.0.1:\(port):22",
+        ]
           + (provisioning.labels + [Self.created()]).flatMap { ["--label", $0] }
           + ["--env", "AUTHORIZED_KEY=\(provisioning.publicKey)", source])
       let hostKey = try await identity(of: container)

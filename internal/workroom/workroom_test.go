@@ -1443,6 +1443,26 @@ func TestDeleteDropsADestroyedRemoteWorkroomAndRunsNothing(t *testing.T) {
 	}
 }
 
+// The app drops a destroyed remote workroom after its project's checkout may be gone (#253): nothing
+// local is needed, so a project that is no longer a repository must not refuse it.
+func TestDeleteDropsADestroyedRemoteWorkroomOfAProjectNoLongerHere(t *testing.T) {
+	svc, dir, _, _, _ := remoteDeleteFixture(t)
+	if err := svc.Config.SetHost(dir, "foo", map[string]any{"id": "h1", "state": "destroyed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(dir, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	svc.VCS = nil // detected from the project, as the CLI does
+
+	if err := svc.Delete(dir, "foo", "foo"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if names, _ := svc.Config.WorkroomNames(dir); slices.Contains(names, "foo") {
+		t.Fatal("the destroyed workroom's entry survived")
+	}
+}
+
 func TestCreateAvoidsRemoteWorkroomNames(t *testing.T) {
 	svc, dir, _, _, _ := remoteDeleteFixture(t)
 	svc.VCS = &vcs.Git{Executor: &mockExecutor{output: gitWorktrees(dir)}}

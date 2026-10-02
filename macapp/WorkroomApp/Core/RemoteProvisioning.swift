@@ -196,8 +196,13 @@ enum RemoteProvisioning {
   /// default branch. Returns it serving. On a failure at any step, the grant is cancelled (by the
   /// enrolment itself when it was the step that failed) and the instance destroyed; if either of
   /// those fails too, `Failure.rollbackIncomplete` says what is still live.
+  ///
+  /// `checkpoint` is told what is live as soon as it is: the host once it exists, then the grant
+  /// once it is minted. A crash later still leaves both recorded for a delete to take down (#253).
+  /// A checkpoint that fails is a failed step, and undoes the derive.
   static func derive(
-    from base: Base, workroom: UUID, branch: String, in environment: Environment
+    from base: Base, workroom: UUID, branch: String, in environment: Environment,
+    checkpoint: @Sendable (_ host: HostID, _ grant: String?) async throws -> Void = { _, _ in }
   ) async throws -> Instance {
     // The snapshot only: a commit taken while a refresh's fetch holds its ref locks would hand
     // every workroom derived from it those stale `.lock` files.
@@ -207,6 +212,7 @@ enum RemoteProvisioning {
     var connection: AgentVCSConnection?
     var grant: String?
     do {
+      try await checkpoint(host, nil)
       let connected = try await environment.connect(host)
       connection = connected
       let grantID: String
@@ -220,6 +226,7 @@ enum RemoteProvisioning {
         throw RollbackStart.grantLive(live.grantID, cause: live.cause, failure: live.cancelFailure)
       }
       grant = grantID
+      try await checkpoint(host, grantID)
       // With the instance's own credentials: `wr-agent enrol` made its helper git's.
       try await fetch(base.path, on: connected)
       // Fully qualified: a tag or branch named `origin/HEAD` would make the short form ambiguous.

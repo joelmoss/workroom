@@ -309,7 +309,6 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 	return res, nil
 }
 
-// Create generates a unique name and creates a new workroom (human-facing).
 // CreateRemote registers a workroom on another host (#253) under a newly generated name, and
 // creates nothing on this Mac: no VCS workspace, no directory, no setup script. The app makes the
 // host and checks the repository out there; path is the checkout's path on it, and host its
@@ -336,6 +335,7 @@ func (s *Service) CreateRemote(dir, path string, host map[string]any) (CreateRes
 	return CreateResult{Name: name, Path: path, VCS: string(vcs.TypeGit), Project: dir}, nil
 }
 
+// Create generates a unique name and creates a new workroom (human-facing).
 func (s *Service) Create(dir string) error {
 	// The setup script's output streams live into this panel as it runs. The panel
 	// renders lazily on first output, so a script with no output draws nothing.
@@ -508,8 +508,12 @@ func (s *Service) Delete(dir, name, confirmValue string) error {
 		return err
 	}
 
-	if err := s.detectVCS(dir); err != nil {
-		return err
+	// A destroyed remote workroom is only dropped from config, which needs no local repository: the
+	// project's checkout may be gone by then.
+	if !destroyed {
+		if err := s.detectVCS(dir); err != nil {
+			return err
+		}
 	}
 
 	orphan := ""

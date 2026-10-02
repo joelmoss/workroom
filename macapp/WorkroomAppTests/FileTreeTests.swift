@@ -246,6 +246,15 @@ final class FileTreeTests: XCTestCase {
     XCTAssertEqual(busy, .unavailable, "a busy agent does not make a deleted folder come back")
   }
 
+  /// A remote workroom's path is on its host (#253): that this Mac has nothing there must not blank
+  /// its tree on an error.
+  func testAFailureOnARemotePathIsNotJudgedByThisMacsDisk() async {
+    let nowhere = NSTemporaryDirectory() + "remote-\(UUID().uuidString)"
+    let result = await FileTreeModel.listFailure(
+      FileServiceError.failed("No such file"), path: nowhere, onThisMac: false)
+    XCTAssertEqual(result, .transient("No such file"))
+  }
+
   /// An unreadable parent makes existence unknowable, which is not the same as gone.
   func testAnUnreadableParentKeepsTheTree() async throws {
     let parent = NSTemporaryDirectory() + "locked-\(UUID().uuidString)"

@@ -149,9 +149,15 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
   }
 
   @MainActor
-  private func waitFor(_ call: String, in cli: RecordingCLI) async {
-    for _ in 0..<500 where !cli.calls.all.contains(call) {
-      try? await Task.sleep(for: .milliseconds(2))
+  private func waitFor(
+    _ call: String, in cli: RecordingCLI, file: StaticString = #filePath, line: UInt = #line
+  ) async {
+    let deadline = ContinuousClock.now + .seconds(10)
+    while !cli.calls.all.contains(call) {
+      guard ContinuousClock.now < deadline else {
+        return XCTFail("\(call) never came: \(cli.calls.all)", file: file, line: line)
+      }
+      try? await Task.sleep(for: .milliseconds(5))
     }
   }
 
@@ -225,6 +231,19 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     XCTAssertEqual(
       failure.errorDescription,
       "Taking it down didn't finish: cancelling grant g: down. Delete it again to finish.")
+  }
+
+  /// A later message replaces an earlier error's link as well as its details: the Install button
+  /// belongs to the error that offered it.
+  @MainActor
+  func testANewErrorMessageDropsTheEarlierErrorsLink() throws {
+    let store = AppStore()
+    store.errorLink = AppStore.ErrorLink(
+      title: "Install", url: try XCTUnwrap(URL(string: "https://codaset.dev/install/o")))
+    store.errorDetails = "HTTP 409"
+    store.errorMessage = "Teardown failed"
+    XCTAssertNil(store.errorLink)
+    XCTAssertNil(store.errorDetails)
   }
 
   /// Every scope of a project delete takes its remote hosts down, so the sheet says so whichever
