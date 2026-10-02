@@ -30,7 +30,6 @@ protocol SessionControlPlane {
   /// the backend being retired and left it open on the one that owns every new session.
   func ownership(identifier: SessionIdentifier) -> SessionOwnership
   func kill(identifier: SessionIdentifier) -> Bool
-  func killAll() -> Bool
 }
 
 extension PersistentSessionControlClient: SessionControlPlane {}
@@ -92,10 +91,6 @@ struct AgentControlClient: SessionControlPlane {
     transact(
       SessionFrame(kind: .kill, payload: SessionIdentifierPayload.encode(identifier))
     ) { $0.kind == .acknowledged } ?? false
-  }
-
-  func killAll() -> Bool {
-    transact(SessionFrame(kind: .killAll)) { $0.kind == .acknowledged } ?? false
   }
 
   // MARK: - Wire

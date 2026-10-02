@@ -24,7 +24,6 @@ final class AgentControlPlaneTests: XCTestCase {
     // An empty list is a real answer, not a failure to connect: reaching it means the greeting was
     // exchanged, the version was accepted, and a zero-count descriptor list decoded.
     XCTAssertEqual(client.list().count, 0)
-    XCTAssertTrue(client.killAll(), "killAll on an empty agent still acknowledges")
   }
 
   /// The payoff. Rust's `encode_descriptor_list` and Swift's `SessionDescriptor.decodeList` were
@@ -55,7 +54,7 @@ final class AgentControlPlaneTests: XCTestCase {
       "an identifier nothing holds finds nothing")
   }
 
-  func testKillAndKillAllReachTheAgentsSessions() throws {
+  func testKillReachesTheAgentsSessions() throws {
     let harness = try AgentHarness.start()
     defer { harness.stop() }
 
@@ -71,9 +70,6 @@ final class AgentControlPlaneTests: XCTestCase {
     XCTAssertTrue(
       harness.wait { client.list().count == 1 }, "kill should remove exactly one")
     XCTAssertEqual(client.list().first?.identifier.uuid, second)
-
-    XCTAssertTrue(client.killAll())
-    XCTAssertTrue(harness.wait { client.list().isEmpty }, "killAll should empty the agent")
   }
 
   /// `decodeHello` throws `notAnAgent` rather than returning nil specifically so that a peer which
