@@ -50,8 +50,8 @@
     static let reopenAttempts = 60
 
     private let transport: Transport
-    /// The Puma port on this Mac each connection is carried to.
-    private let target: @Sendable () -> UInt16
+    /// The Puma port on this Mac each connection is carried to, asked again for each listener.
+    private let target: @Sendable () async -> UInt16
     private let reopenRetry: Duration
     private let log = Logger(subsystem: "com.developwithstyle.workroom", category: "broker")
 
@@ -69,7 +69,7 @@
 
     init(
       transport: Transport = .live,
-      target: @escaping @Sendable () -> UInt16 = { UInt16(clamping: Defaults[.brokerAgentTarget]) },
+      target: @escaping @Sendable () async -> UInt16 = { await DevelopmentCodaset.port() },
       reopenRetry: Duration = .seconds(5)
     ) {
       self.transport = transport
@@ -181,7 +181,7 @@
       _ lease: HostConnectionManager.Lease
     ) async -> Result<ReverseForward, ReverseForward.Refusal> {
       let ready = ListenOutcome()
-      let forward = service.reverse(remotePort: port, target: target()) {
+      let forward = service.reverse(remotePort: port, target: await target()) {
         [weak self, log] event in
         switch event {
         case .listening:
@@ -278,6 +278,58 @@
         }
         if let settled { continuation.resume(returning: settled) }
       }
+    }
+  }
+
+  /// Where the development Codaset's Puma listens on this Mac (#253). `bin/dev` serves it through
+  /// Caddy (`rails_caddy_dev`), which gives Puma a free port each start and routes the broker's host
+  /// (`codaset.localhost`) to it, so the port is read from Caddy's admin API each time a listener
+  /// opens. `Defaults[.brokerAgentTarget]` set to a port wins; with Caddy unreachable or not routing
+  /// the host, the port is 3000, Puma's own default.
+  enum DevelopmentCodaset {
+    static let caddyConfig = URL(string: "http://127.0.0.1:2019/config/apps/http/servers")!
+
+    static func port() async -> UInt16 {
+      let configured = Defaults[.brokerAgentTarget]
+      if configured > 0 { return UInt16(clamping: configured) }
+      let host = BrokerEndpoint.resolve(Defaults[.brokerURL], debug: true).host() ?? ""
+      var request = URLRequest(url: caddyConfig, timeoutInterval: 2)
+      request.setValue("application/json", forHTTPHeaderField: "Accept")
+      guard let (data, _) = try? await URLSession.shared.data(for: request) else { return 3000 }
+      return upstreamPort(for: host, inServers: data) ?? 3000
+    }
+
+    /// The port of the first upstream of the route matching `host` exactly, in Caddy's
+    /// `apps.http.servers` config: `{"srv0": {"routes": [{"match": [{"host": [...]}], "handle":
+    /// [... {"upstreams": [{"dial": "localhost:61938"}]} ...]}]}}`.
+    static func upstreamPort(for host: String, inServers data: Data) -> UInt16? {
+      guard let servers = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+        return nil
+      }
+      for case let server as [String: Any] in servers.values {
+        for case let route as [String: Any] in server["routes"] as? [Any] ?? [] {
+          let hosts = (route["match"] as? [[String: Any]] ?? []).flatMap {
+            $0["host"] as? [String] ?? []
+          }
+          guard hosts.contains(host), let dial = firstDial(in: route) else { continue }
+          return dial.split(separator: ":").last.flatMap { UInt16($0) }
+        }
+      }
+      return nil
+    }
+
+    private static func firstDial(in node: Any) -> String? {
+      if let object = node as? [String: Any] {
+        if let upstreams = object["upstreams"] as? [[String: Any]],
+          let dial = upstreams.first?["dial"] as? String
+        {
+          return dial
+        }
+        for value in object.values { if let dial = firstDial(in: value) { return dial } }
+      } else if let array = node as? [Any] {
+        for value in array { if let dial = firstDial(in: value) { return dial } }
+      }
+      return nil
     }
   }
 #endif

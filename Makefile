@@ -10,7 +10,8 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .DEFAULT_GOAL := help
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
-        app-run app-build app-test app-uitest app-identity app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-tool-logos app-clean
+        app-run app-build app-test app-uitest app-identity app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
+        remote-host-image
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -131,6 +132,9 @@ app-uitest: ## Run the app's UI tests (XCUITest — needs the GUI session; queue
 
 app-identity: ## Print the bundle id this checkout's Debug build gets (one per workroom)
 	@echo "com.developwithstyle.workroom.dev$(APP_DEV_ID_SUFFIX)"
+
+remote-host-image: ## Build the `workroom-host` image a Nightly or Dev app's remote workrooms run on (Docker, #253)
+	docker build --tag workroom-host vcs/scripts/ssh-fixture
 
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py

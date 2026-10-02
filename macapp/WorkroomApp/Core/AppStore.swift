@@ -587,10 +587,31 @@ final class AppStore: ObservableObject {
   /// `didSet`s don't persist the values straight back (and the load isn't mistaken for a user edit).
   private var isLoadingInspectorState = false
 
-  @Published var errorMessage: String?
+  /// Setting it drops `errorDetails`, which belong to whatever error set them: a later message
+  /// from a direct setter must not show an earlier error's codes. `present(_:)` sets them after it.
+  @Published var errorMessage: String? { didSet { errorDetails = nil } }
   /// Title for the error alert. Nil falls back to the generic title; specific
   /// failures (e.g. teardown) set their own.
   @Published var errorTitle: String?
+  /// A link the error alert offers beside OK, cleared with it: where to fix the failure, such as
+  /// the Workroom GitHub App's install page for a remote workroom's repository (#253).
+  @Published var errorLink: ErrorLink?
+  /// The error's codes and raw text, under the error sheet's collapsed Details. Set only by
+  /// `present(_:)`, cleared with the message.
+  @Published var errorDetails: String?
+
+  struct ErrorLink: Equatable {
+    let title: String
+    let url: URL
+  }
+
+  /// Dismisses the error sheet.
+  func clearError() {
+    errorMessage = nil
+    errorTitle = nil
+    errorLink = nil
+    errorDetails = nil
+  }
   @Published var isLoading = false
   /// How many creates are in flight per project path (for the sidebar row's spinner + disabling).
   /// Counted, not a set — see `ProjectStore.busyProjects`. (Named for creates AND deletes when it
@@ -3008,6 +3029,8 @@ final class AppStore: ObservableObject {
     // before the teardown persisted still lists them, so without this a concurrent reload would
     // resurrect a just-deleted workroom. Cleared from `deletingWorkrooms` when the teardown ends.
     let fresh = applyingDeletionTombstones(sorted)
+    // Before publishing, so a remote workroom's panes find its host when they mount (#253).
+    if RemoteWorkrooms.isEnabled { RemoteHosts.shared.adopt(fresh) }
     let acceptedPaths = Set(fresh.flatMap { [$0.path] + $0.workrooms.map(\.path) })
     RepositoryRouter.shared.replaceLocal(
       registrations.filter {
@@ -3388,6 +3411,61 @@ final class AppStore: ObservableObject {
         present(error)
       }
       clearPendingCreation(session)
+    }
+  }
+
+  /// Creates a remote workroom for `project` (#253), derived from the project's base machine
+  /// (built first if it has none), then selects it, which opens its first pane on the far side.
+  func createRemoteWorkroom(in project: Project) async {
+    guard RemoteWorkrooms.isEnabled else { return }
+    beginBusy(project.path)
+    defer { endBusy(project.path) }
+    do {
+      let (driver, environment) = try RemoteHosts.shared.environment()
+      let resolution = await WorkroomStatusResolver().resolveRepository(in: project.path)
+      guard case .found(let repository) = resolution else {
+        throw RemoteWorkrooms.Failure.notOnGitHub("Couldn't find its GitHub repository with gh.")
+      }
+      guard repository.host == "github.com" else {
+        throw RemoteWorkrooms.Failure.notOnGitHub("Its origin is on \(repository.host).")
+      }
+      let cli = self.cli
+      let path = project.path
+      let created = try await RemoteWorkrooms.create(
+        repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
+        base: project.host, driver: driver, environment: environment,
+        recorder: RemoteWorkrooms.Recorder(
+          reserve: { hostPath, descriptor in
+            try await cli.createRemote(
+              project: path, hostPath: hostPath, descriptor: try JSONEncoder().encode(descriptor)
+            ).name
+          },
+          record: { workroom, descriptor in
+            try await cli.setHost(
+              project: path, workroom: workroom, descriptor: try JSONEncoder().encode(descriptor))
+          },
+          forget: { workroom in
+            // A destroyed host is the one remote workroom the CLI deletes: there is nothing to
+            // take down.
+            try await cli.setHost(
+              project: path, workroom: workroom,
+              descriptor: try JSONEncoder().encode(HostDescriptor(state: "destroyed")))
+            try await cli.delete(name: workroom, project: path, onLog: nil)
+          }))
+      // Its panes attach through their own ssh; Changes and the rest connect for themselves.
+      await created.instance.connection.close()
+      await reload()
+      selectedProjectID = project.id
+      selectedTargetID = .workroom(project: project.path, name: created.name)
+    } catch {
+      await reload()
+      present(error)
+      if case BrokerError.refused(let refusal) = error, refusal.code == "app_not_installed",
+        let install = refusal.installURL
+      {
+        errorTitle = "Workroom's GitHub App isn't installed"
+        errorLink = ErrorLink(title: "Install the App…", url: install)
+      }
     }
   }
 
@@ -3972,7 +4050,7 @@ final class AppStore: ObservableObject {
 
   /// Open a new terminal tab in the selected target — root or workroom (⌘T).
   func newTerminalInSelectedTarget() {
-    guard let target = selectedTarget, !target.isMissing else { return }
+    guard let target = selectedTarget, target.opensTerminals else { return }
     // Never open a shell into a worktree a setup script is still writing (issues #167/#171). The
     // File menu item disables itself on the same predicate (`RootView.terminalInteractionAvailable`),
     // but that is a display rule — this is the chokepoint every caller routes through, the way
@@ -4402,22 +4480,22 @@ final class AppStore: ObservableObject {
   /// Split the focused pane by opening a new terminal beside it: ⌘D to the right, ⇧⌘D below
   /// (issue #3). The new terminal inherits the focused pane's working directory.
   func splitFocusedRight() {
-    guard let target = selectedTarget, !target.isMissing else { return }
+    guard let target = selectedTarget, target.opensTerminals else { return }
     terminals.splitFocusedPane(for: target, orientation: .horizontal)
   }
 
   func splitFocusedDown() {
-    guard let target = selectedTarget, !target.isMissing else { return }
+    guard let target = selectedTarget, target.opensTerminals else { return }
     terminals.splitFocusedPane(for: target, edge: .bottom)
   }
 
   func splitFocusedLeft() {
-    guard let target = selectedTarget, !target.isMissing else { return }
+    guard let target = selectedTarget, target.opensTerminals else { return }
     terminals.splitFocusedPane(for: target, edge: .left)
   }
 
   func splitFocusedUp() {
-    guard let target = selectedTarget, !target.isMissing else { return }
+    guard let target = selectedTarget, target.opensTerminals else { return }
     terminals.splitFocusedPane(for: target, edge: .top)
   }
 
@@ -4448,7 +4526,7 @@ final class AppStore: ObservableObject {
   /// a never-visited target records nothing until its first terminal exists, and the later
   /// `addTab`→`onFocusChange` records the real first entry (no `(target, nil)` ghost).
   private func recordCurrentLocation() {
-    guard let sid = selectedTargetID, let target = selectedTarget, !target.isMissing,
+    guard let sid = selectedTargetID, let target = selectedTarget, target.opensTerminals,
       let tab = terminals.focusedTab(for: target)
     else { return }
     history.record(Self.location(target: sid, tab: tab))
@@ -4503,7 +4581,7 @@ final class AppStore: ObservableObject {
     withHistorySuppressed {
       selectedProjectID = Self.projectPath(of: sid)
       selectedTargetID = sid
-      guard let target = selectedTarget, !target.isMissing else { return }
+      guard let target = selectedTarget, target.opensTerminals else { return }
       let resolved =
         tabID.flatMap { id in terminals.allTabs(for: target).contains { $0.id == id } ? id : nil }
         ?? terminals.focusedTab(for: target)?.id
@@ -4545,7 +4623,9 @@ final class AppStore: ObservableObject {
   /// arranged differently than it started. Content is always right; pane *placement* is not restored.
   private func applyLocation(_ loc: NavLocation) {
     applyLocation(target: loc.target, tab: loc.tab, recordHistory: false)
-    guard let payload = loc.payload, let target = selectedTarget, !target.isMissing else { return }
+    guard let payload = loc.payload, let target = selectedTarget, target.opensTerminals else {
+      return
+    }
     withHistorySuppressed {
       let landing = payload
 
@@ -4628,7 +4708,7 @@ final class AppStore: ObservableObject {
   /// per candidate while stepping, and the pane already renders its own "Diff unavailable" /
   /// "Changeset unavailable" state.
   private func isLive(_ loc: NavLocation) -> Bool {
-    guard let target = target(for: loc.target), !target.isMissing else { return false }
+    guard let target = target(for: loc.target), target.opensTerminals else { return false }
     // `allTabs`: a detached pane is still reachable (its own window, ⌃⌘O), so its history entries
     // are live.
     return terminals.allTabs(for: target).contains { $0.id == loc.tab }
@@ -5073,7 +5153,26 @@ final class AppStore: ObservableObject {
 
   private func present(_ error: Error) {
     errorTitle = nil  // generic title
+    errorLink = nil
     errorMessage = errorText(error)
+    errorDetails = Self.errorDetails(error)
+  }
+
+  /// The technical half of `error`, which the message leaves out: a refusal's HTTP status, code,
+  /// request and the broker's own words; for anything else its type and case, and its domain and
+  /// code.
+  nonisolated static func errorDetails(_ error: Error) -> String {
+    switch error {
+    case BrokerError.refused(let refusal), BrokerError.agentRefused(let refusal):
+      return [
+        refusal.status > 0 ? "HTTP \(refusal.status) · \(refusal.code)" : refusal.code,
+        refusal.request,
+        refusal.message == refusal.code ? nil : refusal.message,
+      ].compactMap { $0 }.joined(separator: "\n")
+    default:
+      let ns = error as NSError
+      return "\(String(reflecting: error))\n\(ns.domain) \(ns.code)"
+    }
   }
 }
 

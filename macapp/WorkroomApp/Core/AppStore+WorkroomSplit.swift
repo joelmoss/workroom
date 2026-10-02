@@ -204,7 +204,7 @@ extension AppStore {
     // Reject a self-drop, a non-resolving leaf (`.project` / deleted workroom), and a workroom whose
     // directory is gone (`isMissing`) — a missing leaf would render a "Directory not found" pane that
     // can only be backed out of again, so don't let one into the split in the first place (#23).
-    guard sid != beside, let dropped = target(for: sid), !dropped.isMissing,
+    guard sid != beside, let dropped = target(for: sid), dropped.opensTerminals,
       target(for: beside) != nil
     else { return false }
     // Pane floor. Workroom panes are the one place each pane draws its OWN `TerminalTabStrip`, whose
@@ -290,7 +290,7 @@ extension AppStore {
   func canOpenAsSplit(_ sid: SidebarID) -> Bool {
     guard let anchor = selectedTargetID, anchor != sid else { return false }
     // Same rejects `insertWorkroomSplit` applies, asked in advance.
-    guard let dropped = target(for: sid), !dropped.isMissing, target(for: anchor) != nil else {
+    guard let dropped = target(for: sid), dropped.opensTerminals, target(for: anchor) != nil else {
       return false
     }
     return canInsertWorkroomSplit(

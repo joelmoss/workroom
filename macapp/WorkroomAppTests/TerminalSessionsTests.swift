@@ -22,6 +22,35 @@ final class TerminalSessionsTests: XCTestCase {
     return sessions
   }
 
+  // MARK: Remote panes (#253)
+
+  /// A remote workroom's pane always attaches to a session on its host, whatever the background-
+  /// sessions setting, and its process on this Mac starts in a directory that exists here.
+  func testARemotePaneIsRegisteredWithItsHostAndStartsHomeHere() {
+    let s = TerminalSessions()
+    var started: String?
+    s.makeView = { _, cwd, _ in
+      started = cwd
+      return GhosttySurfaceView(workingDirectory: cwd)
+    }
+    s.recordUnrecognizedTool = { _ in }
+    s.recency = SwitcherRecency()
+    let host = UUID()
+    let remote = TerminalTarget(
+      id: "wr|/p|far", title: "far", path: "/home/workroom/r", unavailability: .remote,
+      remoteHost: host)
+
+    let tab = s.addTab(for: remote)
+
+    guard case .terminal(let state) = tab.content, let session = state.sessionID else {
+      return XCTFail("a remote pane has no session")
+    }
+    XCTAssertEqual(PersistentSessionService.shared.remoteHost(of: session), .remote(host))
+    XCTAssertEqual(started, NSHomeDirectory())
+    let attach = PersistentSessionService.shared.attachCommand(forSession: session) ?? ""
+    XCTAssertTrue(attach.contains("/home/workroom/r") || attach.contains("Could not reach"), attach)
+  }
+
   // MARK: onTabContentChange — the navigation-history seam
 
   /// Retargeting the shared preview tab mutates content without moving focus, so `onFocusChange` never

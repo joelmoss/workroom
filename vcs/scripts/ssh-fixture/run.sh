@@ -63,7 +63,7 @@ cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/identity.sh" "$HERE/fake-gith
 # would swap in a different agent. WR_FIXTURE_BUILD_FLAGS is word-split into extra build flags; CI
 # passes a GitHub Actions layer cache there so the apt layer is not rebuilt on every run.
 read -r -a BUILD_FLAGS <<< "${WR_FIXTURE_BUILD_FLAGS:-}"
-IMAGE="$("$RUNTIME" build --quiet ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$STAGE")"
+IMAGE="$("$RUNTIME" build --quiet --build-arg FIXTURE=1 ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$STAGE")"
 
 # The agent must run in there at all: an ELF for the wrong architecture would otherwise surface as
 # a supervisor restarting it forever and a relay that never connects.

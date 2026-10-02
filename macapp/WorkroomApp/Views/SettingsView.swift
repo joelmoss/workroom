@@ -195,7 +195,7 @@ private struct GeneralSettingsPane: View {
       Toggle("Show notifications in the menu bar", isOn: $showMenuBarItem)
         .help("Show the Workroom notifications item in the menu bar.")
 
-      if remoteWorkroomsPreview { RemoteWorkroomsSection() }
+      if remoteWorkroomsPreview && RemoteWorkrooms.isEnabled { RemoteWorkroomsSection() }
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)

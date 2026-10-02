@@ -369,6 +369,37 @@ func (c *Config) SetHost(parentPath, workroom string, host map[string]any) error
 	})
 }
 
+// AddRemoteWorkroom registers a workroom that lives on another host (#253). Its path is a path
+// there, and host, its descriptor, is written with the entry in one step, so the entry never reads
+// as a local workroom whose directory is missing. The project must already be registered, and an
+// entry of the same name is refused rather than replaced: AddWorkroom replaces one whole, which
+// would drop the only record of a remote machine.
+func (c *Config) AddRemoteWorkroom(parentPath, name, workroomPath string, host map[string]any) error {
+	if host == nil {
+		return fmt.Errorf("%w: null", errs.ErrInvalidHost)
+	}
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
+		project, ok := data[parentPath].(map[string]any)
+		if !ok || isReserved(parentPath) {
+			return fmt.Errorf("%w: %s", errs.ErrProjectNotFound, parentPath)
+		}
+		workrooms, ok := project["workrooms"].(map[string]any)
+		if !ok {
+			workrooms = map[string]any{}
+			project["workrooms"] = workrooms
+		}
+		if _, exists := workrooms[name]; exists {
+			return fmt.Errorf("%w: '%s' in %s", errs.ErrWorkroomExists, name, parentPath)
+		}
+		workrooms[name] = map[string]any{"path": workroomPath, "host": host}
+		return c.Write(data)
+	})
+}
+
 // RemoveWorkroom removes a workroom entry. If the parent has no remaining workrooms, it is
 // removed, unless it carries a host descriptor: that describes a remote machine, and dropping it
 // with the entry would lose the only record of it.

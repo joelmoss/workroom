@@ -138,6 +138,22 @@ protocol WorkroomCLIProtocol {
   func deleteProject(
     _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
   ) async throws -> [URL]
+  func setHost(project: String, workroom: String?, descriptor: Data?) async throws
+  func createRemote(project: String, hostPath: String, descriptor: Data) async throws
+    -> CreateResponse
+}
+
+/// Fakes that never meet a remote workroom need not implement its two calls.
+extension WorkroomCLIProtocol {
+  func setHost(project: String, workroom: String?, descriptor: Data?) async throws {
+    throw WorkroomCLIError.cli(kind: "Unsupported", message: "setHost is not faked")
+  }
+
+  func createRemote(project: String, hostPath: String, descriptor: Data) async throws
+    -> CreateResponse
+  {
+    throw WorkroomCLIError.cli(kind: "Unsupported", message: "createRemote is not faked")
+  }
 }
 
 /// Drives the bundled `workroom` binary over its `--json` contract. All work runs
@@ -169,6 +185,20 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     args += ["--json", "--project", project]
     if let workroom { args += ["--workroom", workroom] }
     try throwIfError(try await run(args, timeout: 5))
+  }
+
+  /// Registers a remote workroom the app is about to make (#253) under a new name, with
+  /// `descriptor` as its host descriptor and `hostPath` its checkout on the host. Nothing is made on
+  /// this Mac.
+  func createRemote(project: String, hostPath: String, descriptor: Data) async throws
+    -> CreateResponse
+  {
+    let result = try await run(
+      [
+        "create", "--json", "--no-editor", "--project", project, "--host",
+        String(decoding: descriptor, as: UTF8.self), "--host-path", hostPath,
+      ], timeout: 10)
+    return try decode(CreateResponse.self, from: result)
   }
 
   /// Registers a project. With `create`, the CLI creates and git-initializes the

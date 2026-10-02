@@ -201,6 +201,148 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     return (fixture, failing)
   }
 
+  // MARK: Creating from the app (#253)
+
+  /// What `RemoteWorkrooms.create` wrote to config, in order, in place of the CLI.
+  private final class Recorded: @unchecked Sendable {
+    enum Call: Equatable {
+      case reserve(path: String, HostDescriptor)
+      case record(workroom: String?, HostDescriptor)
+      case forget(String)
+    }
+    private let lock = NSLock()
+    private var log: [Call] = []
+    private var next = 0
+    var calls: [Call] { lock.withLock { log } }
+
+    var recorder: RemoteWorkrooms.Recorder {
+      RemoteWorkrooms.Recorder(
+        reserve: { path, descriptor in
+          self.lock.withLock {
+            self.log.append(.reserve(path: path, descriptor))
+            self.next += 1
+            return "w\(self.next)"
+          }
+        },
+        record: { workroom, descriptor in
+          self.lock.withLock { self.log.append(.record(workroom: workroom, descriptor)) }
+        },
+        forget: { workroom in self.lock.withLock { self.log.append(.forget(workroom)) } })
+    }
+  }
+
+  /// The project the tests create for, with the fixture's GitHub serving `/srv/origin.git`.
+  private static let repository = GitHubRepository(host: "github.com", owner: "o", name: "r")!
+  private static let originURL = "https://github.com/origin.git"
+
+  /// The first create builds and records the base, then names the workroom before deriving it,
+  /// and records everything a later launch needs to reach it; the second reuses the base.
+  @MainActor
+  func testCreatingRemoteWorkroomsBuildsTheBaseOnceAndRecordsWhatALaterLaunchNeeds() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    // The workroom fetches https://github.com with its own credentials, so its agent enrols with
+    // the fixture's own broker, which the fixture's GitHub takes tokens from.
+    let environment = environment(
+      fixture, driver: driver, revoked: Revoked(),
+      brokerURL: URL(string: ProcessInfo.processInfo.environment["WR_SSH_FIXTURE_BROKER_URL"] ?? "")
+    )
+    let recorded = Recorded()
+
+    BrokerStub.reset([Self.cloneToken, Self.grant])
+    let first = try await RemoteWorkrooms.create(
+      repository: Self.repository, cloneURL: Self.originURL, base: nil, driver: driver,
+      environment: environment, recorder: recorded.recorder)
+    await first.instance.connection.close()
+    guard case .record(nil, let base) = recorded.calls.first, let baseID = base.id else {
+      return XCTFail("the base was not recorded first: \(recorded.calls)")
+    }
+    cleanups.append { try? await driver.destroy(.remote(baseID)) }
+    cleanups.append { try? await driver.destroy(first.instance.host) }
+
+    XCTAssertEqual(base.driver, RemoteWorkrooms.containerDriver)
+    XCTAssertEqual(base.repository, "o/r")
+    XCTAssertEqual(base.path, RemoteWorkrooms.clonePath(for: Self.repository))
+    XCTAssertNotNil(base.container)
+    guard recorded.calls.count == 3, case .reserve(let path, let creating) = recorded.calls[1],
+      case .record("w1", let workroom) = recorded.calls[2]
+    else { return XCTFail("calls: \(recorded.calls)") }
+    XCTAssertEqual(path, base.path)
+    XCTAssertEqual(creating.state, "creating")
+    XCTAssertNil(workroom.state, "a serving workroom's descriptor has a state")
+    XCTAssertEqual(workroom.grantID, "g1")
+    XCTAssertEqual(workroom.workroomID, creating.workroomID)
+    XCTAssertEqual(workroom.container, driver.record(of: first.instance.host))
+    XCTAssertEqual(first.name, "w1")
+
+    // The workroom's branch is named for it, and another launch reaches it from its record.
+    let later = ContainerHostDriver(
+      hosts: [:], directory: directory.appendingPathComponent("later"),
+      provisioning: fixture.provisioning)
+    try later.adopt(try XCTUnwrap(workroom.id), try XCTUnwrap(workroom.container))
+    let head = try await onHost(
+      later, first.instance.host, "git -C \(base.path!) rev-parse --abbrev-ref HEAD")
+    XCTAssertEqual(head.output, RemoteWorkrooms.branch(for: "w1"))
+
+    // A pane mounts there as the app mounts one: its session registered with the host, its
+    // command from the app's routing, starting in the workroom's checkout on its branch.
+    let session = UUID()
+    PersistentSessionService.shared.registerRemoteSession(
+      session, on: first.instance.host, via: driver, workingDirectory: try XCTUnwrap(base.path))
+    let pane = try RemoteHostIntegrationTests.Pane(
+      command: try XCTUnwrap(PersistentSessionService.shared.attachCommand(forSession: session)))
+    defer { pane.dropLink() }
+    try await Task.sleep(for: .seconds(1))
+    // Typed with a split marker, so only the shell's answer reads `:END`.
+    pane.type("echo \"AT:$(pwd):ON:$(git rev-parse --abbrev-ref HEAD):E\"\"ND\"\n")
+    let seen = pane.read(until: ":END")
+    XCTAssertTrue(seen.contains("AT:\(base.path!):ON:workroom/w1:END"), seen)
+
+    // A second create derives from the recorded base: no new base, no clone token asked for.
+    BrokerStub.reset([Self.grant])
+    let second = try await RemoteWorkrooms.create(
+      repository: Self.repository, cloneURL: Self.originURL, base: base, driver: driver,
+      environment: environment, recorder: recorded.recorder)
+    await second.instance.connection.close()
+    cleanups.append { try? await driver.destroy(second.instance.host) }
+    XCTAssertEqual(second.name, "w2")
+    XCTAssertFalse(
+      BrokerStub.requests.contains { $0.request.url?.path == "/broker/base-clone-tokens" })
+    XCTAssertEqual(try leftovers("ps", label: label).count, 3, "one base and two workrooms")
+  }
+
+  /// A derive that fails and undoes itself drops the name it took; nothing is recorded for it.
+  @MainActor
+  func testACreateWhoseDeriveFailsForgetsTheNameItTook() async throws {
+    let (fixture, failing) = try failingFixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let environment = environment(fixture, driver: driver, revoked: Revoked())
+    BrokerStub.reset([Self.cloneToken])
+    let base = try await RemoteProvisioning.buildBase(
+      repository: "o/r", cloneURL: Self.originURL, path: Self.path, in: environment,
+      record: { _ in })
+    cleanups.append { try? await driver.destroy(.remote(base.host)) }
+    try "commit".write(to: failing, atomically: true, encoding: .utf8)
+    let recorded = Recorded()
+
+    do {
+      _ = try await RemoteWorkrooms.create(
+        repository: Self.repository, cloneURL: Self.originURL,
+        base: HostDescriptor(
+          provisioner: RemoteWorkrooms.provisioner, id: base.host, repository: base.repository,
+          cloneURL: base.cloneURL, path: base.path),
+        driver: driver, environment: environment, recorder: recorded.recorder)
+      XCTFail("a create whose derive failed succeeded")
+    } catch {}
+    guard recorded.calls.count == 2, case .reserve = recorded.calls[0] else {
+      return XCTFail("calls: \(recorded.calls)")
+    }
+    XCTAssertEqual(recorded.calls[1], .forget("w1"))
+    XCTAssertEqual(try leftovers("ps", label: label).count, 1, "only the base should be left")
+  }
+
   // MARK: The base
 
   @MainActor

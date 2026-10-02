@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
+
+	"github.com/joelmoss/workroom/internal/errs"
 
 	"github.com/joelmoss/workroom/internal/workroom"
 	"github.com/spf13/cobra"
@@ -10,6 +13,9 @@ import (
 var (
 	createProject  string
 	createNoEditor bool
+	// The desktop app's remote workrooms (#253): the descriptor and the checkout's path on the host.
+	createHost     string
+	createHostPath string
 )
 
 var createCmd = &cobra.Command{
@@ -30,6 +36,10 @@ var createCmd = &cobra.Command{
 		}
 		if createNoEditor {
 			svc.SuppressEditor = true
+		}
+
+		if cmd.Flags().Changed("host") {
+			return createRemote(svc, dir)
 		}
 
 		if jsonOutput {
@@ -66,7 +76,33 @@ var createCmd = &cobra.Command{
 	},
 }
 
+// createRemote records a remote workroom the app is about to make (#253), and prints its name.
+func createRemote(svc *workroom.Service, dir string) error {
+	host, err := decodeHost(createHost)
+	if err != nil {
+		return err
+	}
+	if createHostPath == "" {
+		return fmt.Errorf("%w: --host-path is required with --host", errs.ErrInvalidHost)
+	}
+	res, err := svc.CreateRemote(dir, createHostPath, host)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return writeJSONSuccess(os.Stdout, "create", map[string]any{
+			"name": res.Name, "path": res.Path, "vcs": res.VCS, "project": res.Project,
+		})
+	}
+	fmt.Println(res.Name)
+	return nil
+}
+
 func init() {
+	createCmd.Flags().StringVar(&createHost, "host", "", "Record a remote workroom with this host descriptor, a JSON object (used by the desktop app)")
+	createCmd.Flags().StringVar(&createHostPath, "host-path", "", "The remote workroom's path on its host (with --host)")
+	_ = createCmd.Flags().MarkHidden("host")
+	_ = createCmd.Flags().MarkHidden("host-path")
 	createCmd.Flags().StringVar(&createProject, "project", "", "Project directory to create the workroom in (defaults to the current directory)")
 	createCmd.Flags().BoolVar(&createNoEditor, "no-editor", false, "Do not offer to open the new workroom in $EDITOR")
 	rootCmd.AddCommand(createCmd)

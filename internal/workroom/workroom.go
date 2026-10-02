@@ -310,6 +310,32 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 }
 
 // Create generates a unique name and creates a new workroom (human-facing).
+// CreateRemote registers a workroom on another host (#253) under a newly generated name, and
+// creates nothing on this Mac: no VCS workspace, no directory, no setup script. The app makes the
+// host and checks the repository out there; path is the checkout's path on it, and host its
+// descriptor, which the app owns. Names are drawn as CreateNamed draws them, so a remote and a
+// local workroom never share one.
+func (s *Service) CreateRemote(dir, path string, host map[string]any) (CreateResult, error) {
+	var res CreateResult
+	if err := s.CheckNotInWorkroom(dir); err != nil {
+		return res, err
+	}
+	if err := s.detectVCS(dir); err != nil {
+		return res, err
+	}
+	name, err := s.generateUniqueName(dir)
+	if err != nil {
+		return res, err
+	}
+	if !s.Pretend {
+		if err := s.Config.AddRemoteWorkroom(dir, name, path, host); err != nil {
+			return res, err
+		}
+	}
+	// git: the host's checkout is a clone, whatever the project uses on this Mac.
+	return CreateResult{Name: name, Path: path, VCS: string(vcs.TypeGit), Project: dir}, nil
+}
+
 func (s *Service) Create(dir string) error {
 	// The setup script's output streams live into this panel as it runs. The panel
 	// renders lazily on first output, so a script with no output draws nothing.
@@ -477,7 +503,8 @@ func (s *Service) Delete(dir, name, confirmValue string) error {
 		return fmt.Errorf("%w: %q", ErrInvalidName, name)
 	}
 
-	if err := s.refuseRemote(dir, name); err != nil {
+	destroyed, err := s.destroyedRemote(dir, name)
+	if err != nil {
 		return err
 	}
 
@@ -487,9 +514,11 @@ func (s *Service) Delete(dir, name, confirmValue string) error {
 
 	orphan := ""
 	if !s.Pretend {
-		exists, err := s.workroomExists(dir, name)
-		if err != nil {
-			return err
+		exists := destroyed
+		if !destroyed {
+			if exists, err = s.workroomExists(dir, name); err != nil {
+				return err
+			}
 		}
 		if !exists {
 			orphan, err = s.nonGitWorkroomPath(dir, name)
@@ -622,9 +651,10 @@ func (s *Service) InteractiveDelete(dir string) error {
 	}
 
 	for _, name := range selected {
-		// Same rules as Delete: a remote workroom is refused, and a selection git does not list as a
-		// worktree may be a workroom Jujutsu made (#266), which is only forgotten.
-		if err := s.refuseRemote(dir, name); err != nil {
+		// Same rules as Delete: a remote workroom is refused unless its host is destroyed (then
+		// deleteByName only forgets it), and a selection git does not list as a worktree may be a
+		// workroom Jujutsu made (#266), which is only forgotten.
+		if _, err := s.destroyedRemote(dir, name); err != nil {
 			return err
 		}
 		if !s.Pretend {
@@ -688,6 +718,21 @@ func (s *Service) RunTeardown(dir, name string) error {
 	return nil
 }
 
+// destroyedRemote reports whether name is a remote workroom whose host is already destroyed, which
+// deleteByName drops from config with nothing to tear down (#253). A remote workroom whose host
+// is still there is refused: only the app can destroy it and cancel its grant.
+func (s *Service) destroyedRemote(dir, name string) (bool, error) {
+	projects, err := s.Config.AllProjects()
+	if err != nil {
+		return false, err
+	}
+	w := projects[dir].Workrooms[name]
+	if w.IsRemote() && !w.HostDestroyed() {
+		return false, fmt.Errorf("%w: workroom '%s' is remote", ErrRemoteWorkroom, name)
+	}
+	return w.HostDestroyed(), nil
+}
+
 // refuseRemote returns ErrRemoteWorkroom when name is a remote workroom of project dir. Each
 // local delete step (the teardown script, the VCS removal) works on
 // <workrooms_dir>/<name> on this Mac, which is not where a remote workroom lives. Remote deletion
@@ -704,6 +749,14 @@ func (s *Service) refuseRemote(dir, name string) error {
 }
 
 func (s *Service) deleteByName(dir, name string) error {
+	destroyed, err := s.destroyedRemote(dir, name)
+	if err != nil {
+		return err
+	}
+	if destroyed {
+		return s.forgetDestroyedRemote(dir, name)
+	}
+
 	wrPath, err := s.workroomPath(name)
 	if err != nil {
 		return err
@@ -744,5 +797,21 @@ func (s *Service) deleteByName(dir, name string) error {
 	s.say(fmt.Sprintf("Note: Git branch '%s' was not deleted.", s.vcsName(name)))
 	s.say(fmt.Sprintf("      Delete manually with `git branch -D %s` if needed.", s.vcsName(name)))
 
+	return nil
+}
+
+// forgetDestroyedRemote drops the config entry of a remote workroom whose host is gone. Nothing
+// runs: there is no box for the teardown script, and no workspace on this Mac.
+func (s *Service) forgetDestroyedRemote(dir, name string) error {
+	if !s.Pretend {
+		remove := s.Config.RemoveWorkroom
+		if s.KeepEmptyProject {
+			remove = s.Config.RemoveWorkroomKeepProject
+		}
+		if err := remove(dir, name); err != nil {
+			return err
+		}
+	}
+	s.sayColor(fmt.Sprintf("Workroom '%s' deleted successfully.", name), "green")
 	return nil
 }

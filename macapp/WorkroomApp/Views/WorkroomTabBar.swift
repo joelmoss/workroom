@@ -537,7 +537,7 @@ private struct WorkroomTabChip: View {
       Image(systemName: isRoot ? "house" : "cube")
         .font(.system(size: 10))
         .foregroundStyle(VCSStatusPresentation.iconTint(store.workroomStatuses[sid] ?? .unresolved))
-      if let reason = target.unavailability {
+      if let reason = target.terminalUnavailability {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 10))
           .foregroundStyle(.orange)
@@ -667,7 +667,7 @@ private struct WorkroomTabChip: View {
     if let branchLabel { parts.append("on \(branchLabel)") }
     let vcs = VCSStatusPresentation.accessibilityLabel(store.workroomStatuses[sid] ?? .unresolved)
     if !vcs.isEmpty { parts.append(vcs) }
-    if let reason = target.unavailability { parts.append(reason.title.lowercased()) }
+    if let reason = target.terminalUnavailability { parts.append(reason.title.lowercased()) }
     if running { parts.append("running") }
     if hasActivity { parts.append("unread activity") }
     return parts.joined(separator: ", ")

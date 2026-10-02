@@ -1479,6 +1479,57 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     than the grace (20 minutes by default, longer than a commit's 15-minute bound) is left, since
     it may be a create or derive still running, in this app or another one on the same daemon.
     Images are removed without `--force`, so one a container still uses stays.
+- **As built (#253, part 2: creating one).** Remote workrooms are on only in a Nightly or Dev
+  build with the hidden `remoteWorkroomsPreview` setting (`RemoteWorkrooms.isEnabled`); a stable
+  build shows no remote UI, including the Settings section, whatever the setting says. The
+  project's context menu gains **New Remote Workroom**.
+  - **The host.** `make remote-host-image` builds `workroom-host` from the ssh fixture's
+    Dockerfile with `FIXTURE=0`: sshd, git and CA certificates, no agent and no fake GitHub. The
+    fixture's GitHub, its `/etc/hosts` mapping, its seed repository and its baked-in agent are
+    `FIXTURE=1` only, which run.sh passes. The app installs its own agent on first connect, and
+    the supervisor waits until it has. `RemoteHosts` makes the one `ContainerHostDriver`: `docker`
+    from the usual install paths (a GUI app's PATH has none), the image from the hidden
+    `remoteHostImage` setting, an ed25519 key it makes under
+    `Application Support/Workroom/<bundle id>/remote`, and the label
+    `workroom.provisioner=<bundle id>`, so one build's sweep never takes another's hosts. A Debug
+    build carries no Linux agent unless built with `WR_AGENT_LINUX=1`.
+  - **The sequence** (`RemoteWorkrooms.create`): the project's GitHub repository from `gh`
+    (github.com only, since the broker mints for it alone); its base, built and recorded on the
+    project if it has none, cloned at `/home/workroom/<repo>`; then a name, taken before the
+    derive with `workroom create --host <descriptor> --host-path <path>` (hidden flags that record
+    the entry, with `state: "creating"` and the `workroom_id` its grant is keyed by, and make
+    nothing on this Mac); then the derive, on branch `workroom/<name>`; then the full descriptor
+    with `workroom host set`. The name comes first so a crash part-way leaves an entry the user
+    can see, and the sweep takes whatever it left on Docker. A derive that undid itself drops the
+    entry (it is marked `destroyed`, then deleted). One whose undo failed keeps the entry, as
+    `failed` with the live host and grant, for delete to finish: `destroyed` only when neither is
+    live, since the CLI deletes a destroyed entry and a live grant must keep its record. A
+    descriptor that cannot be written destroys the instance.
+  - **Each build owns its hosts.** Every descriptor records its `provisioner`, the bundle ID of
+    the build that made it. A Dev and a Nightly app share one config but not a key, so each
+    adopts, sweeps and opens panes on only its own hosts, and a create refuses a project whose
+    base another build made rather than replace that base's record.
+  - **The CLI deletes a destroyed remote workroom** (`delete` and the interactive delete), and
+    nothing else remote: it drops the entry and runs nothing, no teardown and no VCS. A remote
+    workroom with a live host is still refused. `create --host` refuses a name already configured
+    (`WorkroomExists`, a new error code), rather than replace an entry whole.
+  - **Panes.** `TerminalTarget.remoteHost` is set for a remote workroom whose descriptor has a host
+    ID and no `state` (so not `creating`, `failed` or `destroyed`), while remote workrooms are on.
+    Such a target `opensTerminals`, and the pane sites (the detail, new tab and splits, pane
+    switching, navigation history, workroom splits) ask that instead of `isMissing`. `isMissing`
+    stays true, so every other local action (editor, run command, status) still never sees a
+    remote path. A remote pane always gets a persistent session, whatever the background-sessions
+    setting, registered with its host before its surface spawns; its process on this Mac starts in
+    the home directory, and the session starts in the workroom's path on the far side.
+  - **A Debug build's enrolment** connects the host's service connection first
+    (`HostConnectionManager`), since the listener that carries its agent to this Mac's Codaset
+    lives on it. The listener's target is where Caddy routes the broker's host
+    (`DevelopmentCodaset`, from Caddy's admin API at `127.0.0.1:2019`), because `bin/dev` now
+    serves Codaset through `rails_caddy_dev`, which gives Puma a free port at each start. The
+    earlier fixed 3000 reached nothing, and the agent's enrolment failed with "Peer disconnected".
+    `brokerAgentTarget` set to a port still wins.
+  - **An App that isn't installed** says which owner it is missing from, and the error sheet offers
+    Codaset's install link (`install_url` on the `app_not_installed` refusal).
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits
