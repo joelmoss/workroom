@@ -1402,7 +1402,11 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     other. In another org its machines read as "not found", which `destroy` would otherwise take
     for gone, leaving a billed machine running, so a "not found" counts as gone only if the org
     still checks out afterwards. Only a switch away and back between those two calls gets past it.
-    #253 records the org beside each host.
+    A check is not a pin, though: a switch between the check and the call it guards still lands
+    that call in the other org, so a create there makes a machine this driver then looks for in
+    the wrong one. Closing it needs every call made with a credential fenced to the one org (an
+    API key, `boxd auth keys create --org`), which belongs with #253, which records the org beside
+    each host.
   - **Names, not records.** A host is the machine `<prefix>-<host id>`, and a derive's snapshot
     has the same name. A failed step removes by name; the CLI's own `error: VM '<name>' not
     found` and `error: snapshot not found` count as already removed, and nothing else does. So
@@ -1444,9 +1448,6 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       the one cleanup pass, leaving a machine or snapshot nothing records. This is the container
       driver's gap again, with the same owner: #253's reconciler, which can sweep this driver's
       resources by their `<prefix>-` names.
-    - The agent wait trusts `wr-agent list`'s exit status, and `run_list` exits 0 when the agent
-      closes the connection without answering (`main.rs`). Such an agent fails the connect that
-      follows instead, and the derive is rolled back there.
     - The pinned host key comes from the CLI's `known_hosts` block, which the CLI writes from the
       API before any ssh connection is made. That it never comes from a first ssh contact is
       inferred from that order, not read in the CLI's source.

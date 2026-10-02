@@ -1042,3 +1042,48 @@ fn a_remote_attach_whose_agent_goes_away_exits_255() {
     assert_eq!(local, Some(0));
     assert_eq!(remote, Some(255));
 }
+
+/// `list` is the readiness probe (`BoxdHostDriver`'s derive, the agent bootstrap, the ssh fixture),
+/// so an agent that negotiates and then hangs up without a `Sessions` reply must fail it. It used
+/// to exit 0, and a derive could return a host whose agent was not answering.
+///
+/// The peer reads the whole request before closing: closed any earlier, the client's write fails
+/// instead, which is a different branch and already exits non-zero.
+#[test]
+fn list_fails_when_the_agent_hangs_up_without_answering() {
+    use std::io::Write;
+    use wr_agent::protocol::envelope::{Envelope, Hello, Service};
+    use wr_agent::protocol::frame::{Frame, FrameKind};
+    use wr_agent::serve::BUILD;
+
+    let dir = scratch("list-eof");
+    let socket = dir.join("a.sock");
+    let listener = UnixListener::bind(&socket).expect("bind fake agent");
+    let request = Envelope::new(
+        Service::Control,
+        0,
+        Frame::control(FrameKind::List).encode(),
+    );
+    let expected = Hello::current(BUILD).encode().len() + request.encode().len();
+    let accepter = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        stream
+            .write_all(&Hello::current("fake-peer").encode())
+            .expect("greet");
+        let mut received = vec![0u8; expected];
+        stream.read_exact(&mut received).expect("the list request");
+    });
+
+    let output = Command::new(agent_binary())
+        .args(["list", "--socket"])
+        .arg(&socket)
+        .output()
+        .expect("list");
+    accepter.join().expect("the fake agent read the request");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "list passed an agent that never answered: {output:?}"
+    );
+}
