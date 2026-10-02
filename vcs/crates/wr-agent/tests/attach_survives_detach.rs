@@ -958,3 +958,85 @@ fn read_until_on_pty(pty: &Pty, needle: &str, timeout: Duration) -> bool {
     }
     false
 }
+
+/// A raw `KillAll` control frame is acknowledged and ends every session. The app no longer sends
+/// it (it ends sessions one by one), so this is the wire-level check for the path the
+/// `workroom-session kill --all` CLI and any other client still reach.
+#[test]
+fn kill_all_ends_every_session() {
+    use std::io::Read;
+    use std::os::unix::net::UnixStream;
+    use wr_agent::protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
+    use wr_agent::protocol::frame::{Frame, FrameDecoder, FrameKind};
+    use wr_agent::serve::BUILD;
+
+    let workspace = Workspace::new("kill-all");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+
+    let mut client = attach(&socket, SESSION);
+    assert!(
+        wait_for(Duration::from_secs(10), || list_sessions(&socket)
+            .contains(SESSION)),
+        "the session never appeared"
+    );
+    let _ = client.kill();
+    let _ = client.wait();
+
+    let mut stream = UnixStream::connect(&socket).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    stream
+        .write_all(&Hello::current(BUILD).encode())
+        .expect("greet");
+    let mut greeting = Vec::new();
+    let mut byte = [0u8; 1];
+    while Hello::decode(&greeting)
+        .expect("an agent greeting")
+        .is_none()
+    {
+        stream.read_exact(&mut byte).expect("greeting byte");
+        greeting.push(byte[0]);
+    }
+    stream
+        .write_all(
+            &Envelope::new(
+                Service::Control,
+                0,
+                Frame::control(FrameKind::KillAll).encode(),
+            )
+            .encode(),
+        )
+        .expect("send kill-all");
+
+    let mut envelopes = EnvelopeDecoder::new();
+    let mut buffer = [0u8; 4096];
+    let mut acknowledged = false;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !acknowledged && Instant::now() < deadline {
+        let n = stream.read(&mut buffer).expect("reply");
+        assert_ne!(n, 0, "the agent hung up without answering");
+        envelopes.push(&buffer[..n]);
+        while let Ok(Some(envelope)) = envelopes.next_envelope() {
+            let mut frames = FrameDecoder::new();
+            frames.push(&envelope.payload);
+            while let Ok(Some(frame)) = frames.next_frame() {
+                acknowledged |= frame.kind == FrameKind::Acknowledged;
+            }
+        }
+    }
+    assert!(acknowledged, "kill-all was not acknowledged");
+
+    let emptied = wait_for(Duration::from_secs(5), || {
+        !list_sessions(&socket).contains(SESSION)
+    });
+    assert!(
+        emptied,
+        "kill-all should end every session; list said {:?}",
+        list_sessions(&socket)
+    );
+
+    let _ = agent.kill();
+    let _ = agent.wait();
+}
