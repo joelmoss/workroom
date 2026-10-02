@@ -1138,6 +1138,45 @@ func TestInteractiveDeleteNoWorkrooms(t *testing.T) {
 	}
 }
 
+// Interactive deletion of a workroom Jujutsu made (#266) must take the same path as named
+// deletion: drop its config entry, run no git or teardown, leave the folder.
+func TestInteractiveDeleteForgetsAWorkroomThatIsNotAGitWorktree(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.MakeGitDir(t, dir)
+	workroomsDir := filepath.Join(dir, "workrooms")
+	wrPath := filepath.Join(workroomsDir, "foo")
+	os.MkdirAll(filepath.Join(wrPath, ".jj"), 0o755)
+
+	mock := &mockExecutor{output: gitWorktrees(dir)}
+	svc, buf, _ := newTestService(t, &vcs.Git{Executor: mock})
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	svc.Config.SetWorkroomsDir(workroomsDir)
+	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
+	svc.PromptFn = func(string, []string) ([]string, error) { return []string{"foo"}, nil }
+
+	if err := svc.InteractiveDelete(dir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, call := range mock.calls {
+		if len(call) > 2 && call[0] == "git" && call[1] == "worktree" && call[2] == "remove" {
+			t.Fatalf("ran git worktree remove for a non-git workroom: %v", call)
+		}
+	}
+	projects, err := svc.Config.AllProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := projects[dir].Workrooms["foo"]; ok {
+		t.Fatal("expected the config entry to be removed")
+	}
+	if _, err := os.Stat(wrPath); err != nil {
+		t.Fatalf("expected the folder to be left in place: %v", err)
+	}
+	if !strings.Contains(buf.String(), ui.DisplayPath(wrPath)) {
+		t.Fatalf("expected output to name the folder left behind, got %q", buf.String())
+	}
+}
+
 func TestInteractiveDeleteSingle(t *testing.T) {
 	dir := t.TempDir()
 	vcstest.MakeGitDir(t, dir)
