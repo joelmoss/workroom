@@ -433,14 +433,17 @@ private struct TerminalSettingsPane: View {
         ) {
           if let ids = detachedToStop, !ids.isEmpty {
             Button("Stop \(ids.count)", role: .destructive) {
-              // Only the sessions counted, and re-checked now: one a tab or client took over since
-              // the count must not lose its shell, and one created since was never offered.
+              // Only the sessions counted, each re-checked just before it is ended: one a tab or
+              // client took over since the count (or while an earlier kill was awaited) must not
+              // lose its shell, and one created since was never offered. The helper's kill does
+              // not check attachment itself, so a client attaching between this check and the kill
+              // can still lose it; the window is one list round trip.
               Task {
                 let service = PersistentSessionService.shared
-                let stillDetached = Set(
-                  PersistentSessionService.detachedSessionIDs(
-                    await service.liveSessions(), held: Self.heldSessionIDs()))
-                for id in ids where stillDetached.contains(id) {
+                for id in ids {
+                  let stillDetached = PersistentSessionService.detachedSessionIDs(
+                    await service.liveSessions(), held: Self.heldSessionIDs())
+                  guard stillDetached.contains(id) else { continue }
                   await service.endSession(sessionID: id)
                 }
               }
