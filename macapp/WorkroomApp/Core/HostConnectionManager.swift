@@ -21,6 +21,9 @@ protocol HostServiceConnection: Sendable {
   /// The working directory of terminal `session` on this host, or nil when the host holds no such
   /// session (#239). Concrete for the same reason `wakefulness()` is.
   func workingDirectory(of session: UUID) async throws -> String?
+  /// Ends terminal `session` on this host (#283): true once the host's agent acknowledges the kill,
+  /// which it also does for a session it no longer holds.
+  func endSession(_ session: UUID) async throws -> Bool
   func close() async
 }
 
@@ -40,6 +43,10 @@ extension HostServiceConnection {
   }
 
   func workingDirectory(of session: UUID) async throws -> String? {
+    throw HostConnectionError.serviceUnavailable("Host has no terminal sessions.")
+  }
+
+  func endSession(_ session: UUID) async throws -> Bool {
     throw HostConnectionError.serviceUnavailable("Host has no terminal sessions.")
   }
 }
@@ -274,6 +281,12 @@ actor HostConnectionManager {
   /// one: a remote pane's footer is not a reason to reach its host.
   func workingDirectory(of session: UUID, on host: HostID) async throws -> String? {
     try await connected(host).1.workingDirectory(of: session)
+  }
+
+  /// Not lease-tracked either: one request with no context to go stale. Like `workingDirectory`,
+  /// never connects; a caller that must reach the host connects first.
+  func endSession(_ session: UUID, on host: HostID) async throws -> Bool {
+    try await connected(host).1.endSession(session)
   }
 
   private func connected(_ host: HostID) throws -> (Lease, any HostServiceConnection) {

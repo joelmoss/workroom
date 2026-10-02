@@ -79,22 +79,31 @@ final class PersistentSessionService {
   /// Monotonic seconds, for the probe cooldown. `systemUptime` rather than `Date()` so a clock
   /// adjustment cannot make the cooldown never expire.
   private let now: () -> Double
+  /// Ends a session on its host (#283), connecting to the host first if need be. Throws when the
+  /// host cannot be reached; false when its agent did not acknowledge the kill.
+  private let endRemote: (UUID, HostID) async throws -> Bool
 
   private init() {
     self.probe = { SessionBackendProbe.probe($0) }
     self.ownershipOverride = nil
     self.now = { ProcessInfo.processInfo.systemUptime }
+    self.endRemote = { session, host in
+      try await RemoteHosts.shared.ensureConnected(host)
+      return try await HostConnectionManager.shared.endSession(session, on: host)
+    }
   }
 
   /// Test seam. `shared` never uses it; every other behaviour is identical.
   init(
     probe: @escaping (SessionBackend) -> SessionBackendAvailability,
     ownership: @escaping (UUID) -> SessionOwnership,
-    now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }
+    now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
+    endRemote: @escaping (UUID, HostID) async throws -> Bool = { _, _ in false }
   ) {
     self.probe = probe
     self.ownershipOverride = ownership
     self.now = now
+    self.endRemote = endRemote
   }
 
   /// Where a NEW session would be created, or **nil when nowhere can take one**. Existing sessions
@@ -530,16 +539,26 @@ final class PersistentSessionService {
 
   @discardableResult
   func endSession(sessionID: UUID) async -> Bool {
-    // Never routed to a local helper, which would be asked to kill an id it does not hold. Ending
-    // a session on its host belongs to that host's lifecycle (Phase 4); until then it is reported
-    // as not killed, which is true, and nothing that gates on this deletes a local directory for
-    // it. The registration STAYS: the session is still running there, and without it a retry
-    // would ask the local agent (which "kills" an id it never held) and a reattach would open a
-    // new session on this Mac.
-    if isRemote(sessionID) {
-      logger.error(
-        "remote session \(sessionID.uuidString, privacy: .public) left running on its host")
-      return false
+    // Never routed to a local helper, which would be asked to kill an id it does not hold: its
+    // host's agent ends it (#283). If that fails the registration STAYS: the session is still
+    // running there, and without it a retry would ask the local agent (which "kills" an id it never
+    // held) and a reattach would open a new session on this Mac.
+    if let remote = remoteSessions[sessionID] {
+      let id = sessionID.uuidString
+      logger.notice("ending remote session \(id, privacy: .public)")
+      let killed: Bool
+      do { killed = try await endRemote(sessionID, remote.host) } catch {
+        logger.error(
+          "remote session \(id, privacy: .public) left running on its host: \(error, privacy: .public)"
+        )
+        return false
+      }
+      guard killed else {
+        logger.error("remote session \(id, privacy: .public) left running: kill not acknowledged")
+        return false
+      }
+      remoteSessions.removeValue(forKey: sessionID)
+      return true
     }
     // An UNKNOWN owner must report failure, not success. `reap` gates deleting the workroom's
     // directory on this (issue #7), so answering "killed" for a session we could not even route to
