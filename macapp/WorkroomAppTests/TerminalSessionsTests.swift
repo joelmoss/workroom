@@ -1932,3 +1932,88 @@ private final class HostCwdConnection: HostServiceConnection, @unchecked Sendabl
   }
   func close() async {}
 }
+
+/// Closing a remote pane ends its session on its host (#283), which can take as long as an ssh
+/// connect. A quit stops waiting for it at its deadline, and a close whose kill fails says so.
+@MainActor
+final class RemotePaneCloseTests: XCTestCase {
+  private func remoteTarget() -> TerminalTarget {
+    var target = TerminalTarget(id: "wr|/p|remote", title: "remote", path: "/w", isMissing: false)
+    target.remoteHost = UUID()
+    return target
+  }
+
+  private func makeSessions(
+    endRemote: @escaping (UUID, HostID, Bool) async throws -> Bool
+  ) -> TerminalSessions {
+    let sessions = TerminalSessions()
+    sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    sessions.recordUnrecognizedTool = { _ in }
+    sessions.recency = SwitcherRecency()
+    sessions.sessionService = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "none here") }, ownership: { _ in .notOwned },
+      endRemote: endRemote)
+    return sessions
+  }
+
+  func testAQuitStopsWaitingForACloseItsHostNeverAnswers() async throws {
+    let target = remoteTarget()
+    let s = makeSessions { _, _, _ in
+      try await Task.sleep(for: .seconds(60))
+      return true
+    }
+    let tab = s.addTab(for: target)
+    s.closeTab(tab.id, for: target)
+
+    let started = ContinuousClock.now
+    await s.awaitPendingCloseKills(until: started + .milliseconds(200))
+    XCTAssertLessThan(ContinuousClock.now - started, .seconds(2))
+  }
+
+  func testAQuitWaitsForACloseThatFinishes() async throws {
+    let target = remoteTarget()
+    var ended = false
+    let s = makeSessions { _, _, _ in
+      try await Task.sleep(for: .milliseconds(100))
+      ended = true
+      return true
+    }
+    let tab = s.addTab(for: target)
+    s.closeTab(tab.id, for: target)
+    await s.awaitPendingCloseKills(until: .now + .seconds(5))
+    XCTAssertTrue(ended)
+  }
+
+  func testAFailedRemoteCloseIsReportedWithTheWorkroomsTitle() async throws {
+    let target = remoteTarget()
+    var connecting: [Bool] = []
+    let s = makeSessions { _, host, connects in
+      connecting.append(connects)
+      throw RepositoryRoutingError.unavailable(host)
+    }
+    var reported: [String] = []
+    s.onRemoteCloseFailed = { reported.append($0) }
+    let tab = s.addTab(for: target)
+    s.closeTab(tab.id, for: target)
+    await s.awaitPendingCloseKills(until: .now + .seconds(5))
+    XCTAssertEqual(reported, ["remote"])
+    XCTAssertEqual(connecting, [true], "a close connects to the host if need be")
+
+    // A delete's reap neither connects nor reports: the host goes next, with the session.
+    _ = s.addTab(for: target)
+    await s.reap(target.id)
+    XCTAssertEqual(connecting, [true, false])
+    XCTAssertEqual(reported, ["remote"])
+  }
+
+  func testASuccessfulRemoteCloseReportsNothing() async throws {
+    let target = remoteTarget()
+    let s = makeSessions { _, _, _ in true }
+    var reported: [String] = []
+    s.onRemoteCloseFailed = { reported.append($0) }
+    let tab = s.addTab(for: target)
+    s.closeTab(tab.id, for: target)
+    await s.awaitPendingCloseKills(until: .now + .seconds(5))
+    XCTAssertEqual(reported, [])
+  }
+}
