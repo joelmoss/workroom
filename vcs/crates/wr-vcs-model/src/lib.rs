@@ -149,7 +149,7 @@ pub enum VcsError {
     UnsupportedRepo(String),
     #[error("not found: {0}")]
     NotFound(String),
-    #[error("working-copy lock contention")]
+    #[error("repository busy: request budget spent")]
     LockContention,
     #[error("stale snapshot")]
     StaleSnapshot,

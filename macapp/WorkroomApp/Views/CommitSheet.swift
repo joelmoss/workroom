@@ -95,7 +95,7 @@ struct CommitSheet: View {
 
   private var blockedReason: String? {
     CommitDraft.blockedReason(
-      vcs: pending.vcs, summary: summary, selectedCount: selectedCount,
+      summary: summary, selectedCount: selectedCount,
       totalCount: files.count, conflicted: status?.conflicted ?? false, sequencer: sequencer)
   }
 
@@ -148,7 +148,7 @@ struct CommitSheet: View {
   /// warning is up so it can never read as an ordinary Commit.
   private var primaryLabel: String {
     if case .confirmingStagedLoss = phase { return "Commit anyway" }
-    return CommitDraft.commitLabel(selectedCount: selectedCount, vcs: pending.vcs)
+    return CommitDraft.commitLabel(selectedCount: selectedCount)
   }
 
   private var countCaption: String {

@@ -221,6 +221,20 @@ extension Defaults.Keys {
   static let switcherPaneModifier = Key<SwitcherModifier>(
     "switcher.paneModifier", default: .control, suite: .app)
 
+  /// When Workroom itself last fetched a project, keyed by the project's absolute path (fetch always
+  /// runs at the project root, so this is per-project, never per-workroom). Path-keyed map for the
+  /// same reason as `runCommands`.
+  ///
+  /// **Exists because `FETCH_HEAD` is not a complete record of our own fetches.** `gitLastFetch` reads
+  /// the mtime of the COMMON git dir's `FETCH_HEAD`, but a project whose root is itself a linked
+  /// worktree gets its fetch's `FETCH_HEAD` written under `.git/worktrees/<name>/` instead (verified,
+  /// git 2.56), so the backend reports `.never` or an older time right after a successful fetch. (A
+  /// fetch run with `--no-write-fetch-head` writes none at all; Workroom's own fetch never passes it.)
+  ///
+  /// `RemoteStateModel` therefore reports `max(backend evidence, this)`. The backend still wins when
+  /// it's newer, which is what keeps a `git fetch` run in the user's own terminal visible.
+  static let vcsLastFetch = Key<[String: Date]>("vcs.lastFetch", default: [:], suite: .app)
+
   /// Global inspector layout (issue #24): which of the inspector's sections are collapsed and the
   /// relative heights of the panes, ordered as `InspectorSectionKind.allCases` — Changes, Files, Pull
   /// Request, History. That is NOT the on-screen order (the Changes pane stacks Changes → History →

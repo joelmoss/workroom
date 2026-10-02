@@ -6,10 +6,10 @@ protocol VCSProviding: Sendable {
   func log(limit: Int) async throws -> VCSHistoryPage
   func changeset(commitID: String) async throws -> VCSChangeset
   func fileDiff(commitID: String, path: String) async throws -> String
-  func workingFileDiff(path: String, base: VCSWorkingDiffBase) async throws -> String
+  func workingFileDiff(path: String) async throws -> String
   func fileContent(rev: String, path: String) async throws -> String?
   func commitParentFileContent(commitID: String, path: String) async throws -> String?
-  func workingBaseFileContent(base: VCSWorkingDiffBase, path: String) async throws -> String?
+  func workingBaseFileContent(path: String) async throws -> String?
   func workingStatus() async throws -> WorkroomStatus
   func currentRef() async throws -> VCSRef
 }
@@ -46,8 +46,8 @@ struct BoundLocalReader: VCSProviding {
   func fileDiff(commitID: String, path: String) async throws -> String {
     try await provider.fileDiff(root: root, commitID: commitID, path: path)
   }
-  func workingFileDiff(path: String, base: VCSWorkingDiffBase) async throws -> String {
-    try await provider.workingFileDiff(root: root, path: path, base: base)
+  func workingFileDiff(path: String) async throws -> String {
+    try await provider.workingFileDiff(root: root, path: path)
   }
   func fileContent(rev: String, path: String) async throws -> String? {
     try await provider.fileContent(root: root, rev: rev, path: path)
@@ -55,8 +55,8 @@ struct BoundLocalReader: VCSProviding {
   func commitParentFileContent(commitID: String, path: String) async throws -> String? {
     try await provider.commitParentFileContent(root: root, commitID: commitID, path: path)
   }
-  func workingBaseFileContent(base: VCSWorkingDiffBase, path: String) async throws -> String? {
-    try await provider.workingBaseFileContent(root: root, base: base, path: path)
+  func workingBaseFileContent(path: String) async throws -> String? {
+    try await provider.workingBaseFileContent(root: root, path: path)
   }
   func workingStatus() async throws -> WorkroomStatus {
     let root = try root

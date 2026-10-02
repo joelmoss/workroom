@@ -67,25 +67,30 @@ final class FileTreeTests: XCTestCase {
   // MARK: FileListing
 
   func testListCommands() {
-    XCTAssertEqual(FileListing.command(.git).executable, "git")
+    XCTAssertEqual(FileListing.command.executable, "git")
     XCTAssertEqual(
-      FileListing.command(.git).args,
+      FileListing.command.args,
       ["-c", "core.fsmonitor=", "ls-files", "--cached", "--others", "--exclude-standard", "-z"])
   }
 
   func testGitParseSplitsOnNulAndPreservesSpaces() {
     let stdout = "a.txt\u{0}b c.txt\u{0}\u{0}sub/d.txt\u{0}"
-    XCTAssertEqual(FileListing.parse(stdout, vcs: .git), ["a.txt", "b c.txt", "sub/d.txt"])
+    XCTAssertEqual(FileListing.parse(stdout), ["a.txt", "b c.txt", "sub/d.txt"])
   }
 
-  private func registeredList(
-    path: String, projectRoot: String?, runner: StatusCommandRunning
-  ) async -> FileTreeModel.ListResult {
+  private func registeredList(path: String, runner: StatusCommandRunning) async
+    -> FileTreeModel.ListResult
+  {
     do {
-      let location = try await RepositoryLocation.local(path)
-      let shared = try await RepositoryLocation.local(projectRoot ?? path)
+      // A real folder holding `.git`: listing refuses to run git anywhere else (#266).
+      let base = NSTemporaryDirectory() + "list-\(UUID().uuidString)"
+      addTeardownBlock { try? FileManager.default.removeItem(atPath: base) }
+      let real = base + path
+      try makeGitCheckout(atPath: real)
+      let location = try await RepositoryLocation.local(real)
+      let shared = try await RepositoryLocation.local(real)
       let router = RepositoryRouter()
-      try router.register(.init(location: location, backend: .git, sharedLocation: shared))
+      try router.register(.init(location: location, sharedLocation: shared))
       return await FileTreeModel.list(location: location, runner: runner, router: router)
     } catch {
       XCTFail("\(error)")
@@ -99,13 +104,13 @@ final class FileTreeTests: XCTestCase {
     let runner = StubRunner(byExecutable: [
       "git": CommandResult(stdout: "a.txt\u{0}b.txt\u{0}", stderr: "", exitCode: 0, timedOut: false)
     ])
-    let result = await registeredList(path: "/repo", projectRoot: nil, runner: runner)
+    let result = await registeredList(path: "/repo", runner: runner)
     XCTAssertEqual(result, .listing(["a.txt", "b.txt"]))
   }
 
   func testListReturnsUnavailableWhenGitDoesNotRespond() async {
     let runner = StubRunner(byExecutable: [:])  // every command → not-found
-    let result = await registeredList(path: "/repo", projectRoot: nil, runner: runner)
+    let result = await registeredList(path: "/repo", runner: runner)
     XCTAssertEqual(result, .unavailable)
   }
 
@@ -115,7 +120,7 @@ final class FileTreeTests: XCTestCase {
     let runner = StubRunner(byExecutable: [
       "git": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
     ])
-    let result = await registeredList(path: "/repo", projectRoot: nil, runner: runner)
+    let result = await registeredList(path: "/repo", runner: runner)
     XCTAssertEqual(result, .interrupted)
   }
 
@@ -264,13 +269,13 @@ final class FileTreeTests: XCTestCase {
     let timedOut = CommandResult(
       stdout: "", stderr: "", exitCode: 143, timedOut: true, signaled: true)
     let result = await registeredList(
-      path: NSTemporaryDirectory(), projectRoot: nil,
+      path: "/timeout",
       runner: StubRunner(byExecutable: ["git": timedOut]))
     XCTAssertEqual(result, .unavailable)
 
     let killed = CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
     let interrupted = await registeredList(
-      path: NSTemporaryDirectory(), projectRoot: nil,
+      path: "/timeout",
       runner: StubRunner(byExecutable: ["git": killed]))
     XCTAssertEqual(
       interrupted, .interrupted, "an external kill is still not evidence of a non-repo")
@@ -283,7 +288,7 @@ final class FileTreeTests: XCTestCase {
   @MainActor
   func testABurstOfReloadsRunsOneListingAndOneFollowUp() async throws {
     let dir = NSTemporaryDirectory() + "reload-\(UUID().uuidString)"
-    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    try makeGitCheckout(atPath: dir)
     defer { try? FileManager.default.removeItem(atPath: dir) }
     let runner = GatedRunner()
     let model = FileTreeModel(runner: runner)

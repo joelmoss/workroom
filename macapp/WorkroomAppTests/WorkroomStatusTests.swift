@@ -870,19 +870,28 @@ final class WorkroomStatusTests: XCTestCase {
 
   // MARK: - performPRAction optimistic update + revert-on-failure (issue #77 follow-up)
 
+  /// A temp folder `prepare` registers as a project root: a PR write needs a registration.
+  private func checkout() throws -> String {
+    let path = NSTemporaryDirectory() + "wr-pr-\(UUID().uuidString)"
+    try makeGitCheckout(atPath: path)
+    addTeardownBlock { try? FileManager.default.removeItem(atPath: path) }
+    return path
+  }
+
   /// A PR write action flips the PR state immediately (so the badge/buttons react on click), then —
   /// when the `gh` command fails — reverts to the prior state and surfaces the error, so the UI
   /// never lies about a change that didn't land.
   @MainActor
   func testPerformPRActionRevertsOnFailure() async throws {
+    let p = try checkout()
     let store = AppStore()
-    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.projects = [Project(path: p, vcs: "git", workrooms: [])]
     RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
     store.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "pr already ready", exitCode: 1, timedOut: false)
       })
-    let sid = SidebarID.root(project: "/p")
+    let sid = SidebarID.root(project: p)
     let draft = PullRequestInfo(
       number: 5, title: "t", state: .open, isDraft: true, url: "u", reviewDecision: nil,
       reviewers: [])
@@ -904,14 +913,15 @@ final class WorkroomStatusTests: XCTestCase {
   /// Convert-to-draft also flips optimistically (open → draft) the instant it's invoked.
   @MainActor
   func testPerformPRActionConvertToDraftIsOptimistic() async throws {
+    let p = try checkout()
     let store = AppStore()
-    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.projects = [Project(path: p, vcs: "git", workrooms: [])]
     RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
     store.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "boom", exitCode: 1, timedOut: false)
       })
-    let sid = SidebarID.root(project: "/p")
+    let sid = SidebarID.root(project: p)
     store.workroomStatuses[sid] = WorkroomStatus(
       dirty: false,
       pr: PullRequestInfo(
@@ -928,14 +938,15 @@ final class WorkroomStatusTests: XCTestCase {
   /// `testPerformPRActionRevertsOnFailure`.
   @MainActor
   func testPerformMergeRevertsOnFailure() async throws {
+    let p = try checkout()
     let store = AppStore()
-    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.projects = [Project(path: p, vcs: "git", workrooms: [])]
     RepositoryRouter.shared.replaceLocal(try await RepositoryRouter.prepare(store.projects))
     store.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "not mergeable", exitCode: 1, timedOut: false)
       })
-    let sid = SidebarID.root(project: "/p")
+    let sid = SidebarID.root(project: p)
     let open = PullRequestInfo(
       number: 9, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: nil,
       reviewers: [], mergeable: true)

@@ -6,14 +6,14 @@
 //! which is arbitrary code execution by construction. File access has to be its own, narrower
 //! service, because a transport that has to authenticate peers will authenticate them differently:
 //! shell grade for exec, repository grade for this. So listing takes NO argv from the client — the
-//! command is fixed here, chosen by `backend` — and reads take a repository-relative path that
+//! command is fixed here (git) — and reads take a repository-relative path that
 //! is resolved and verified on this host.
 //!
 //! Methods:
 //!
 //! - `capabilities` — this service's version and limits. Probed on THIS service and never through the
 //!   VCS `capabilities` reply, whose `reads` count is compared for equality by an older client.
-//! - `list` — run the fixed listing command for `backend` and return its raw result.
+//! - `list` — run the fixed git listing command and return its raw result.
 //! - `read` — return one regular file's bytes, base64, under one of two symlink policies.
 //! - `watch` / `unwatch` — subscribe to filesystem changes; see `watch.rs`.
 //!
@@ -92,6 +92,8 @@ impl From<std::io::Error> for FileError {
     }
 }
 
+/// Required on a listing, as before #266, but only `git` deserializes: kept as a wire gate, so an
+/// older app's `jj` listing is refused rather than run, and nothing varies on it.
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Backend {
@@ -258,30 +260,28 @@ fn handle(request: &Request) -> Result<Value, FileError> {
 
 // MARK: Listing
 
-/// The listing command for each backend, FIXED here. `FileListing.command` (Swift) builds the same
+/// The git listing command, FIXED here. `FileListing.command` (Swift) builds the same
 /// one for the native path; `AgentFileIntegrationTests` lists one repository through both and
 /// compares, so the two cannot drift apart unnoticed.
 ///
 /// - git: tracked plus untracked-but-not-ignored, NUL-separated so a name with a newline survives.
-fn listing_command(backend: Backend) -> (&'static str, Vec<String>) {
-    match backend {
-        Backend::Git => (
-            "git",
-            [
-                // `--others` refreshes the fsmonitor state, which runs a repository-configured
-                // `core.fsmonitor` command (measured). `.git/config` is not trusted.
-                "-c",
-                "core.fsmonitor=",
-                "ls-files",
-                "--cached",
-                "--others",
-                "--exclude-standard",
-                "-z",
-            ]
-            .map(String::from)
-            .to_vec(),
-        ),
-    }
+fn listing_command() -> (&'static str, Vec<String>) {
+    (
+        "git",
+        [
+            // `--others` refreshes the fsmonitor state, which runs a repository-configured
+            // `core.fsmonitor` command (measured). `.git/config` is not trusted.
+            "-c",
+            "core.fsmonitor=",
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ]
+        .map(String::from)
+        .to_vec(),
+    )
 }
 
 /// The child's environment: this agent's own, with the same pins and scrubs
@@ -327,10 +327,11 @@ pub(crate) fn scrubbed_environment(
 
 fn list(request: &Request) -> Result<Value, FileError> {
     let root = root_of(request)?;
-    let backend = request
+    // Required as before; only `git` deserializes (see `Backend`), so the listing never varies on it.
+    request
         .backend
         .ok_or_else(|| unsupported("missing backend"))?;
-    let (executable, args) = listing_command(backend);
+    let (executable, args) = listing_command();
     let environment = listing_environment();
     let env: Vec<(&str, &str)> = environment
         .iter()
@@ -785,6 +786,19 @@ mod tests {
         assert!(names.contains(&"untracked.txt"));
         assert!(names.contains(&"with\nnewline.txt"));
         assert!(!names.contains(&"ignored.txt"), "{names:?}");
+    }
+
+    /// The app still sends `shared_root` on every listing (a jj-era field the agent ignores);
+    /// `Request` is `deny_unknown_fields`, so losing the ignored field would reject every listing.
+    #[test]
+    fn a_listing_naming_a_shared_root_still_runs() {
+        let root = scratch("shared-root-list");
+        git(&root, &["init", "-q", "-b", "main"]);
+        let request = json!({
+            "version": 1, "method": "list", "backend": "git", "root": root, "shared_root": root,
+        });
+        let reply = execute(&serde_json::to_vec(&request).unwrap());
+        assert_eq!(reply["result"]["exit_code"], 0, "{reply}");
     }
 
     #[test]

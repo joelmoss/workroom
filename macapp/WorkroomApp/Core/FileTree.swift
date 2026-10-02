@@ -144,12 +144,6 @@ enum FileTreeBuilder {
 
 // MARK: - VCS listing (pure)
 
-/// Which VCS lists the working tree. git is the only one; it stays a parameter because it is the
-/// wire's `backend` field on wr-agent's File-service listing.
-enum FileListVCS: Equatable, Sendable {
-  case git
-}
-
 /// Pure command construction + output parsing for the working-tree listing, so the args and the
 /// path-cleanup are unit-tested without spawning git.
 enum FileListing {
@@ -157,25 +151,20 @@ enum FileListing {
   /// a slow tree fails the same way on both paths.
   static let timeout: TimeInterval = 10
 
-  /// The executable + args that list the working tree honoring ignore rules.
-  /// - git: tracked + untracked-but-not-ignored, NUL-separated (`-z`) so odd filenames survive.
-  static func command(_ vcs: FileListVCS) -> (executable: String, args: [String]) {
-    switch vcs {
-    // `--others` would run a repository-configured `core.fsmonitor` command; see `gitHardening`.
-    case .git:
-      return (
-        "git",
-        WorkroomStatusResolver.gitHardening + [
-          "ls-files", "--cached", "--others", "--exclude-standard", "-z",
-        ]
-      )
-    }
-  }
+  /// The executable + args that list the working tree honoring ignore rules: tracked +
+  /// untracked-but-not-ignored, NUL-separated (`-z`) so odd filenames survive. `--others` would run a
+  /// repository-configured `core.fsmonitor` command; see `gitHardening`.
+  static let command: (executable: String, args: [String]) = (
+    "git",
+    WorkroomStatusResolver.gitHardening + [
+      "ls-files", "--cached", "--others", "--exclude-standard", "-z",
+    ]
+  )
 
   /// Parse a listing command's stdout into clean repo-relative paths. git output is NUL-separated
   /// (never split on newlines — a filename may legitimately contain spaces or a newline, which is
   /// exactly why `-z` is used). Empties and a leading `./` are dropped.
-  static func parse(_ stdout: String, vcs: FileListVCS) -> [String] {
+  static func parse(_ stdout: String) -> [String] {
     stdout.split(separator: "\0", omittingEmptySubsequences: true)
       .map(String.init)
       .filter { !$0.isEmpty }

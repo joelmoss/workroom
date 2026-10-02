@@ -59,18 +59,18 @@ final class CommitDraftTests: XCTestCase {
   // MARK: - Button label
 
   func testCommitLabelNamesTheCount() {
-    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 1, vcs: .git), "Commit 1 file")
-    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 12, vcs: .git), "Commit 12 files")
+    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 1), "Commit 1 file")
+    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 12), "Commit 12 files")
   }
 
   // MARK: - Blocked reasons
 
   private func reason(
-    vcs: VCSBackend = .git, summary: String = "Subject", selected: Int = 1, total: Int = 1,
+    summary: String = "Subject", selected: Int = 1, total: Int = 1,
     conflicted: Bool = false, sequencer: String? = nil
   ) -> String? {
     CommitDraft.blockedReason(
-      vcs: vcs, summary: summary, selectedCount: selected, totalCount: total,
+      summary: summary, selectedCount: selected, totalCount: total,
       conflicted: conflicted, sequencer: sequencer)
   }
 

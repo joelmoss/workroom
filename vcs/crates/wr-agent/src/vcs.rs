@@ -522,11 +522,7 @@ fn kill_recorded(descendants: &[crate::process::Descendant]) {
 /// therefore holding one of the 32 shared `ACTIVE` permits — forever.
 const REAP_GRACE: Duration = Duration::from_secs(2);
 
-/// Run `executable` to completion, capturing everything a `StatusCommandRunning` conformer needs
-/// to classify the outcome exactly as the native path would. Mirrors `StatusCommandRunner.run`'s
-/// SIGTERM-then-grace-then-SIGKILL shape (`CLIVCSWriter.commitTimeout`'s doc: "Killing a commit is
-/// categorically more dangerous than killing a fetch" — an immediate SIGKILL denies a `post-commit`
-/// hook the chance to exit cleanly and can leave `index.lock` behind).
+/// Test shorthand for `run_exec_with`.
 #[cfg(test)]
 fn run_exec(
     dir: &Path,
@@ -539,6 +535,11 @@ fn run_exec(
     run_exec_with(dir, executable, args, timeout, stdin, env)
 }
 
+/// Run `executable` to completion, capturing everything a `StatusCommandRunning` conformer needs
+/// to classify the outcome exactly as the native path would. Mirrors `StatusCommandRunner.run`'s
+/// SIGTERM-then-grace-then-SIGKILL shape (`CLIVCSWriter.commitTimeout`'s doc: "Killing a commit is
+/// categorically more dangerous than killing a fetch" — an immediate SIGKILL denies a `post-commit`
+/// hook the chance to exit cleanly and can leave `index.lock` behind).
 pub(crate) fn run_exec_with(
     dir: &Path,
     executable: &str,
@@ -581,6 +582,11 @@ pub(crate) fn run_exec_with(
         // `GIT_EXTERNAL_DIFF` and the `GIT_DIR` family) so both paths get it from one place.
         .env_clear()
         .envs(env.iter().copied());
+    // Set last so no request environment can widen it: git must not discover an ANCESTOR
+    // repository from `dir` (see `ceiling_directories`).
+    if let Some(ceiling) = wr_vcs_git::diff::ceiling_directories(dir) {
+        command.env("GIT_CEILING_DIRECTORIES", ceiling);
+    }
     let mut child = command.spawn().map_err(io)?;
 
     if let Some(payload) = stdin {
@@ -899,7 +905,8 @@ fn read(request: Request) -> model::Result<Value> {
         )));
     }
     let root = absolute(required(&request.root)?)?;
-    let backend = request.backend.ok_or_else(|| io("missing backend"))?;
+    // Required as before; only `git` deserializes (see `Backend`), so nothing below varies on it.
+    request.backend.ok_or_else(|| io("missing backend"))?;
     let path = request.path.as_deref().map(relative).transpose()?;
     let rev = request.revision.as_deref();
     let param = |value: Option<&str>| {
@@ -912,43 +919,43 @@ fn read(request: Request) -> model::Result<Value> {
         Some("parent") => false,
         _ => return Err(io("invalid working base")),
     };
-    let value = match (backend, request.method.as_str()) {
-        (Backend::Git, "log") => serde_json::to_value(wr_vcs_git::log_page(
-            &root,
-            request.limit.unwrap_or(100).min(MAX_HISTORY_LIMIT),
-        )?),
-        (Backend::Git, "changeset") => {
-            serde_json::to_value(wr_vcs_git::changeset(&root, &param(rev)?)?)
-        }
-        (Backend::Git, "current_ref") => serde_json::to_value(wr_vcs_git::current_ref(&root)?),
-        (Backend::Git, "working_status") => {
-            serde_json::to_value(wr_vcs_git::diff::working_status(&root)?)
-        }
-        (Backend::Git, "file_diff") => {
-            let change = wr_vcs_git::changeset(&root, &param(rev)?)?;
-            serde_json::to_value(wr_vcs_git::diff::committed_patch(
+    let value =
+        match request.method.as_str() {
+            "log" => serde_json::to_value(wr_vcs_git::log_page(
                 &root,
-                &change.commit,
+                request.limit.unwrap_or(100).min(MAX_HISTORY_LIMIT),
+            )?),
+            "changeset" => serde_json::to_value(wr_vcs_git::changeset(&root, &param(rev)?)?),
+            "current_ref" => serde_json::to_value(wr_vcs_git::current_ref(&root)?),
+            "working_status" => serde_json::to_value(wr_vcs_git::diff::working_status(&root)?),
+            "file_diff" => {
+                let change = wr_vcs_git::changeset(&root, &param(rev)?)?;
+                serde_json::to_value(wr_vcs_git::diff::committed_patch(
+                    &root,
+                    &change.commit,
+                    &param(path)?,
+                )?)
+            }
+            "working_file_diff" if working => {
+                serde_json::to_value(wr_vcs_git::diff::working_patch(&root, &param(path)?)?)
+            }
+            "file_content" => serde_json::to_value(wr_vcs_git::file_content(
+                &root,
+                &param(rev)?,
                 &param(path)?,
-            )?)
-        }
-        (Backend::Git, "working_file_diff") if working => {
-            serde_json::to_value(wr_vcs_git::diff::working_patch(&root, &param(path)?)?)
-        }
-        (Backend::Git, "file_content") => serde_json::to_value(wr_vcs_git::file_content(
-            &root,
-            &param(rev)?,
-            &param(path)?,
-            false,
-        )?),
-        (Backend::Git, "commit_parent_file_content") => serde_json::to_value(
-            wr_vcs_git::file_content(&root, &param(rev)?, &param(path)?, true)?,
-        ),
-        (Backend::Git, "working_base_file_content") if working => serde_json::to_value(
-            wr_vcs_git::file_content(&root, "HEAD", &param(path)?, false)?,
-        ),
-        _ => return Err(VcsError::UnsupportedRepo("unsupported VCS read".into())),
-    };
+                false,
+            )?),
+            "commit_parent_file_content" => serde_json::to_value(wr_vcs_git::file_content(
+                &root,
+                &param(rev)?,
+                &param(path)?,
+                true,
+            )?),
+            "working_base_file_content" if working => serde_json::to_value(
+                wr_vcs_git::file_content(&root, "HEAD", &param(path)?, false)?,
+            ),
+            _ => return Err(VcsError::UnsupportedRepo("unsupported VCS read".into())),
+        };
     value.map_err(io)
 }
 
@@ -1260,6 +1267,66 @@ mod tests {
         .unwrap()
     }
 
+    /// A folder that is not itself a repository (a workspace Jujutsu left, or a broken empty
+    /// `.git`) inside another repository: git there must not discover the ANCESTOR and act on it,
+    /// even when the request's own environment tries to widen the ceiling.
+    #[test]
+    fn exec_never_discovers_an_ancestor_repository() {
+        let root = git_repo("ceiling");
+        let control = execute(&exec_request(
+            &root,
+            "git",
+            &["rev-parse", "--show-toplevel"],
+        ));
+        assert_eq!(control["result"]["exit_code"], 0, "control: {control}");
+        let inner = root.join("inner");
+        std::fs::create_dir_all(inner.join(".git")).unwrap();
+        let mut request: Value = serde_json::from_slice(&exec_request(
+            &inner,
+            "git",
+            &["rev-parse", "--show-toplevel"],
+        ))
+        .unwrap();
+        request["env"] = json!({
+            "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+            "GIT_CEILING_DIRECTORIES": "/nonexistent",
+        });
+        let reply = execute(&serde_json::to_vec(&request).unwrap());
+        assert!(
+            reply["result"]["stderr"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not a git repository"),
+            "git found the ancestor: {reply}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The ceiling is the parent of the RESOLVED directory: a symlinked workroom whose link sits
+    /// in a different folder from its target must not leave the target's parent open.
+    #[test]
+    fn exec_through_a_symlinked_directory_still_stops_at_its_real_root() {
+        let root = git_repo("ceiling-link");
+        let real = root.join("plain").join("proj");
+        std::fs::create_dir_all(real.join(".git")).unwrap();
+        let links = root.join("links");
+        std::fs::create_dir_all(&links).unwrap();
+        std::os::unix::fs::symlink(&real, links.join("proj")).unwrap();
+        let reply = execute(&exec_request(
+            &links.join("proj"),
+            "git",
+            &["rev-parse", "--show-toplevel"],
+        ));
+        assert!(
+            reply["result"]["stderr"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not a git repository"),
+            "git found the ancestor through the link: {reply}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn exec_runs_a_real_command_and_reports_its_own_output() {
         let root = git_repo("basic");
@@ -1405,6 +1472,18 @@ mod tests {
         request["barrier_root"] = json!(root.to_str().unwrap());
         let reply = execute(&serde_json::to_vec(&request).unwrap());
         assert_eq!(reply["result"]["exit_code"], 0, "{reply}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The app still sends `shared_root` on every read (a jj-era field the agent now ignores), and
+    /// `Request` is `deny_unknown_fields`: dropping or renaming the ignored field would reject every
+    /// read from a registered repository.
+    #[test]
+    fn a_read_naming_a_shared_root_still_runs() {
+        let root = git_repo("shared-root-read");
+        let request = json!({"version":1,"method":"current_ref","backend":"git","root":root,"shared_root":root});
+        let reply = execute(&serde_json::to_vec(&request).unwrap());
+        assert!(reply.get("result").is_some(), "{reply}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -72,9 +72,11 @@ struct WorkroomStatusResolver: Sendable {
     }
     var status: WorkroomStatus
     if FileManager.default.fileExists(atPath: path) {
-      switch vcs {
-      case "git": status = await resolveGit(path)
-      default: status = WorkroomStatus(dirty: nil, failure: .notRepository)
+      if vcs == "git" {
+        status = await resolveGit(path)
+      } else {
+        // A stale "jj" from an old config, or anything else: not a repository we read.
+        status = WorkroomStatus(dirty: nil, failure: .notRepository)
       }
     } else {
       status = WorkroomStatus(dirty: nil, failure: .missingPath)

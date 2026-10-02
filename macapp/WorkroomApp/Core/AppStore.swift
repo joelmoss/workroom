@@ -490,8 +490,8 @@ final class AppStore: ObservableObject {
     }
     guard let project = projects.first(where: { $0.path == projectPath }) else { return nil }
     return RemoteStateModel.Target(
-      sid: sid, path: path, vcs: VCSBackend(rawValue: project.vcs) ?? .git,
-      projectRoot: project.path, location: RepositoryRouter.shared.localLocation(for: path))
+      sid: sid, path: path, projectRoot: project.path,
+      location: RepositoryRouter.shared.localLocation(for: path))
   }
 
   /// App-refocus safety net, mirroring `refreshHistoryIfActive`: a `git fetch` or a branch change made
@@ -851,8 +851,8 @@ final class AppStore: ObservableObject {
   /// Keeps the selected workroom's local VCS status live (without polling) by watching its directory
   /// for filesystem changes (issue #24 follow-up). Retargeted on selection; see
   /// `updateSelectedWorkroomWatch` / `handleWorkroomFileChange`.
-  lazy var workroomFileWatcher = HostFileWatcher { [weak self] _, _ in
-    self?.handleWorkroomFileChange()
+  lazy var workroomFileWatcher = HostFileWatcher { [weak self] paths, overflow in
+    self?.handleWorkroomFileChange(paths, overflow: overflow)
   }
   /// The watcher's local-refresh task — cancel-and-replace so the latest filesystem change wins and
   /// at most one probe from THIS lane is in flight.
@@ -3936,6 +3936,14 @@ final class AppStore: ObservableObject {
     // backstop, but clearing here keeps it immediate and prevents a same-named recreate from
     // inheriting a stale label.
     forgetLabels(forProject: project.path, workroomNames: project.workrooms.map(\.name))
+    // Drop this project's recorded fetch stamp for the same reason the labels go: it is keyed by
+    // project ROOT PATH in a persisted dictionary with no other pruning, so without this it survives
+    // for the life of the install and a re-add of the same path inherits a stale "last fetched".
+    if Defaults[.vcsLastFetch][project.path] != nil {
+      var stamps = Defaults[.vcsLastFetch]
+      stamps[project.path] = nil
+      Defaults[.vcsLastFetch] = stamps
+    }
     // Drop any pending sheet targeting this project — otherwise its Save path (e.g.
     // setRunConfig(forProject:)) still fires for the now-deleted path, and a later re-add of the
     // same path would silently inherit the stale config (#127 follow-up).

@@ -56,7 +56,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
     func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
       throw VCSError.io("unused")
     }
-    func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+    func workingFileDiff(root: URL, path: String) async throws -> String {
       throw VCSError.io("unused")
     }
     func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }

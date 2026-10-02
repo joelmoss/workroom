@@ -26,13 +26,46 @@ type VCS interface {
 	ListWorkrooms(dir string) ([]string, error)
 }
 
-// Detect determines the VCS type by checking for a .git directory (or worktree file).
+// Detect returns the Git VCS when dir is itself a git repository (see IsGitRepo).
 func Detect(dir string) (VCS, error) {
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-		// .git can be a directory (normal repo) or a file (worktree)
+	if IsGitRepo(dir) {
 		return &Git{Executor: &RealExecutor{}}, nil
 	}
 	return nil, errs.ErrUnsupportedVCS
+}
+
+// IsGitRepo reports whether dir is itself a git repository root, by the same rule git applies
+// before it would otherwise walk up to an ancestor: a .git directory holding HEAD, objects/ and
+// refs/, or a .git file (a linked worktree) that starts with "gitdir:". An empty or partial .git
+// (e.g. one Jujutsu left before #266) is not one.
+func IsGitRepo(dir string) bool {
+	gitPath := filepath.Join(dir, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil {
+		return false
+	}
+	if info.Mode().IsRegular() {
+		f, err := os.Open(gitPath)
+		if err != nil {
+			return false
+		}
+		defer f.Close()
+		head := make([]byte, len("gitdir:"))
+		n, _ := f.Read(head)
+		return string(head[:n]) == "gitdir:"
+	}
+	if !info.IsDir() {
+		return false
+	}
+	if head, err := os.Stat(filepath.Join(gitPath, "HEAD")); err != nil || !head.Mode().IsRegular() {
+		return false
+	}
+	for _, sub := range []string{"objects", "refs"} {
+		if d, err := os.Stat(filepath.Join(gitPath, sub)); err != nil || !d.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 // InitGit initializes a new Git repository at dir with an initial empty commit,

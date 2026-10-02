@@ -915,7 +915,12 @@ enum UITestFixture {
     Defaults[.inspectorLayout] = InspectorPaneState(
       collapsed: InspectorPaneState.default.collapsed,
       weights: inspectorWeights ?? InspectorPaneState.default.weights)
-    // The theme family, for the same reason as the collapse state: it PERSISTS.
+    // Workroom's own last-fetch stamps, for the same reason as the collapse state: they PERSIST, and a
+    // fetch performed by an earlier test writes one. `RemoteStateModel` takes the later of the backend's
+    // evidence and this stamp, so a leftover value silently overrode a seeded `.never` and the
+    // never-fetched state reported "just now" instead.
+    Defaults[.vcsLastFetch] = [:]
+    // The theme family, for the same reason as the collapse state and the fetch stamps: it PERSISTS.
     // Without this a theme test inherits whatever the developer last picked, and a test that applies
     // a theme leaves it applied for the next run.
     Defaults[.themeFamily] = themeFamily
@@ -1309,7 +1314,7 @@ struct FixtureVCSProvider: LocalVCSProviding {
     "diff --git a/\(path) b/\(path)\n@@ -1 +1 @@\n-old\n+new\n"
   }
 
-  func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+  func workingFileDiff(root: URL, path: String) async throws -> String {
     "diff --git a/\(path) b/\(path)\n@@ -1 +1 @@\n-old\n+new\n"
   }
 
@@ -1318,7 +1323,7 @@ struct FixtureVCSProvider: LocalVCSProviding {
   func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String? {
     nil
   }
-  func workingBaseFileContent(root: URL, base: VCSWorkingDiffBase, path: String) async throws
+  func workingBaseFileContent(root: URL, path: String) async throws
     -> String?
   { nil }
 
@@ -1400,7 +1405,7 @@ actor FixtureVCSWriter: LocalVCSWriting {
     if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
     return failing
       ? .failed(.hookRejected("fixture: pre-commit hook declined\nlint: 2 problems"))
-      : .ok(summary: CLIVCSWriter.commitSummary(request.mode, vcs: "git"), revision: "fixture01")
+      : .ok(summary: CLIVCSWriter.commitSummary(request.mode), revision: "fixture01")
   }
 
   private func record(_ action: VCSRemoteAction) async -> VCSRemoteActionResult {

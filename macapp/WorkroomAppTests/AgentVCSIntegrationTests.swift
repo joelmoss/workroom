@@ -72,17 +72,17 @@ final class AgentVCSIntegrationTests: XCTestCase {
     return root
   }
   private func router(
-    root: URL, backend: RepositoryBackend, connection: AgentVCSConnection
+    root: URL, connection: AgentVCSConnection
   ) async throws -> (RepositoryRouter, RepositoryLocation) {
     let location = try await RepositoryLocation.local(root.path)
     let router = RepositoryRouter(localReader: { try connection.reader(context: $0) })
-    try router.register(.init(location: location, backend: backend, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
     return (router, location)
   }
-  /// As `router(root:backend:connection:)`, but also wires `localWriter` — the write-path tests'
+  /// As `router(root:connection:)`, but also wires `localWriter` — the write-path tests'
   /// analogue of `reader(for:)`'s existing coverage.
   private func writingRouter(
-    root: URL, backend: RepositoryBackend, connection: AgentVCSConnection
+    root: URL, connection: AgentVCSConnection
   ) async throws -> (RepositoryRouter, RepositoryLocation) {
     let location = try await RepositoryLocation.local(root.path)
     let router = RepositoryRouter(
@@ -90,7 +90,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
       localWriter: { context in
         try connection.writer(context: context, reader: try connection.reader(context: context))
       })
-    try router.register(.init(location: location, backend: backend, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
     return (router, location)
   }
 
@@ -101,7 +101,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
       "git", ["commit", "-am", "second line\ncontinued\n\nbody", "--date", "2001-01-01T00:00:00Z"],
       at: root)
     let connection = try await connect()
-    let (router, location) = try await router(root: root, backend: .git, connection: connection)
+    let (router, location) = try await router(root: root, connection: connection)
     let reader = try await router.reader(for: location)
     let native = BoundLocalReader(context: reader.context, provider: GitProvider())
     let page = try await reader.log(limit: 10)
@@ -123,7 +123,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     XCTAssertTrue(patch.contains("-base\n+next"))
     let content = try await reader.fileContent(rev: id, path: "file")
     let parent = try await reader.commitParentFileContent(commitID: id, path: "file")
-    let base = try await reader.workingBaseFileContent(base: .workingCopy, path: "file")
+    let base = try await reader.workingBaseFileContent(path: "file")
     XCTAssertEqual(content, "next\n")
     XCTAssertEqual(parent, "base\n")
     XCTAssertEqual(base, "next\n")
@@ -132,7 +132,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     try "working\n".write(
       to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
     let status = try await reader.workingStatus()
-    let workingPatch = try await reader.workingFileDiff(path: "file", base: .workingCopy)
+    let workingPatch = try await reader.workingFileDiff(path: "file")
     XCTAssertEqual(status.dirty, true)
     XCTAssertEqual(status.insertions, 1)
     XCTAssertEqual(status.deletions, 1)
@@ -148,7 +148,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     try run("git", ["add", "."], at: root)
     try run("git", ["commit", "-m", "large"], at: root)
     let connection = try await connect()
-    let (router, location) = try await router(root: root, backend: .git, connection: connection)
+    let (router, location) = try await router(root: root, connection: connection)
     let reader = try await router.reader(for: location)
     let page = try await reader.log(limit: 1)
     let id = try XCTUnwrap(page.commits.first?.commitID)
@@ -228,7 +228,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
   func testConnectionLossIsUnavailableAndCannotReturnCleanStatus() async throws {
     let root = try gitRepo()
     let connection = try await connect()
-    let (router, location) = try await router(root: root, backend: .git, connection: connection)
+    let (router, location) = try await router(root: root, connection: connection)
     let reader = try await router.reader(for: location)
     await connection.close()
     do {
@@ -251,9 +251,9 @@ final class AgentVCSIntegrationTests: XCTestCase {
     let router = RepositoryRouter(connections: manager)
     let location = try RepositoryLocation.remote(host: hostID, path: root.path)
     let otherLocation = try RepositoryLocation.remote(host: otherID, path: root.path)
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
     try router.register(
-      .init(location: otherLocation, backend: .git, sharedLocation: otherLocation))
+      .init(location: otherLocation, sharedLocation: otherLocation))
     let reader = try await router.reader(for: location)
     let ref = try await reader.currentRef()
     XCTAssertEqual(ref.name, "main")
@@ -305,7 +305,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     agents.append(agent)
     let connection = try await AgentVCSConnection.connect(
       host: .local, socketPath: agent.socketPath)
-    let (router, location) = try await router(root: root, backend: .git, connection: connection)
+    let (router, location) = try await router(root: root, connection: connection)
     let reader = try await router.reader(for: location)
     defer { try? Data().write(to: release) }
     let page = try await reader.log(limit: 1)
@@ -313,7 +313,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     // Direct on the connection, with a short timeout — `AgentVCSReader` always uses the 30s
     // default, which this test cannot afford to wait out.
     let slowRequest = AgentVCSRequest(
-      root: location.path, sharedRoot: location.path, backend: RepositoryBackend.git.rawValue,
+      root: location.path, sharedRoot: location.path, backend: "git",
       method: "file_diff", revision: id, path: "file")
     let slow = Task { try await connection.request(slowRequest, timeout: 0.2) }
     let deadline = ContinuousClock.now + .seconds(5)
@@ -381,13 +381,13 @@ final class AgentVCSIntegrationTests: XCTestCase {
     agents.append(agent)
     let connection = try await AgentVCSConnection.connect(
       host: .local, socketPath: agent.socketPath)
-    let (router, location) = try await router(root: root, backend: .git, connection: connection)
+    let (router, location) = try await router(root: root, connection: connection)
     let reader = try await router.reader(for: location)
     defer { try? Data().write(to: release) }
     let page = try await reader.log(limit: 1)
     let id = try XCTUnwrap(page.commits.first?.commitID)
     let slowRequest = AgentVCSRequest(
-      root: location.path, sharedRoot: location.path, backend: RepositoryBackend.git.rawValue,
+      root: location.path, sharedRoot: location.path, backend: "git",
       method: "file_diff", revision: id, path: "file")
     let slow = Task { try await connection.request(slowRequest, timeout: 30) }
     let deadline = ContinuousClock.now + .seconds(5)
@@ -424,7 +424,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     let router = RepositoryRouter(localReader: { _ in
       throw VCSError.backendVersion("Agent predates VCS support.")
     })
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
     let reader = try await router.reader(for: location)
     let ref = try await reader.currentRef()
     XCTAssertEqual(ref.name, "main")
@@ -464,7 +464,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
       binaryURL: { try? AgentHarness.binaryURL() })
     let location = try await RepositoryLocation.local(root.path)
     let testRouter = RepositoryRouter(localReader: { try await localAgent.reader(context: $0) })
-    try testRouter.register(.init(location: location, backend: .git, sharedLocation: location))
+    try testRouter.register(.init(location: location, sharedLocation: location))
     async let first = testRouter.reader(for: location).currentRef()
     async let second = testRouter.reader(for: location).currentRef()
     async let third = testRouter.reader(for: location).currentRef()
@@ -485,7 +485,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     try "second\n".write(to: root.appendingPathComponent("file"), atomically: true, encoding: .utf8)
     let connection = try await connect()
     let (router, location) = try await writingRouter(
-      root: root, backend: .git, connection: connection)
+      root: root, connection: connection)
     let writer = try await router.writer(for: location)
     let result = await writer.commit(
       request: VCSCommitRequest(
@@ -512,7 +512,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     try run("git", ["remote", "add", "origin", bareRemote.path], at: root)
     let connection = try await connect()
     let (router, location) = try await writingRouter(
-      root: root, backend: .git, connection: connection)
+      root: root, connection: connection)
     let writer = try await router.writer(for: location)
     let pushed = await writer.push(
       current: VCSRef(name: "main", kind: .branch), remote: "origin", setUpstream: true)
@@ -555,7 +555,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     let root = try gitRepo()
     let connection = try await connect()
     let (router, location) = try await writingRouter(
-      root: root, backend: .git, connection: connection)
+      root: root, connection: connection)
     let writer = try await router.writer(for: location)
     let result = await writer.commit(
       request: VCSCommitRequest(
@@ -578,7 +578,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     let router = RepositoryRouter(
       localReader: { _ in throw VCSError.backendVersion("Agent predates VCS support.") },
       localWriter: { _ in throw VCSError.backendVersion("Agent predates VCS write support.") })
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
     let writer = try await router.writer(for: location)
     let result = await writer.commit(
       request: VCSCommitRequest(
@@ -605,7 +605,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     let router = RepositoryRouter(
       localReader: { try connection.reader(context: $0) },
       localWriter: { _ in throw VCSError.backendVersion("Agent predates VCS write support.") })
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
     // Confirms the reader really is agent-backed, not incidentally also falling back.
     let ref = try await router.reader(for: location).currentRef()
     XCTAssertEqual(ref.name, "main")
@@ -641,7 +641,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
       remoteReader: { try connection.reader(context: $0) },
       remoteWriter: { try connection.writer(context: $0, reader: $1) })
     try remoteRouter.register(
-      .init(location: elsewhere, backend: .git, sharedLocation: elsewhere))
+      .init(location: elsewhere, sharedLocation: elsewhere))
     do {
       _ = try await remoteRouter.writer(for: elsewhere)
       XCTFail("a writer was issued for another host's context")
@@ -660,7 +660,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     let localRouter = RepositoryRouter(
       localReader: { try connection.reader(context: $0) },
       localWriter: { try connection.writer(context: $0, reader: connection.reader(context: $0)) })
-    try localRouter.register(.init(location: location, backend: .git, sharedLocation: location))
+    try localRouter.register(.init(location: location, sharedLocation: location))
     await connection.close()
     do {
       _ = try await localRouter.writer(for: location)
@@ -685,7 +685,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     let router = RepositoryRouter(
       localReader: { try connection.reader(context: $0) },
       localWriter: { try connection.writer(context: $0, reader: connection.reader(context: $0)) })
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
 
     let result = await (try await router.writer(for: location)).commit(
       request: VCSCommitRequest(
@@ -721,7 +721,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     let router = RepositoryRouter(
       localReader: { try connection.reader(context: $0) },
       localWriter: { try connection.writer(context: $0, reader: connection.reader(context: $0)) })
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
     let writer = try await router.writer(for: location)
 
     let fetch = Task { await writer.fetch(remote: "origin") }
@@ -755,7 +755,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     let router = RepositoryRouter(
       localReader: { try connection.reader(context: $0) },
       localWriter: { try connection.writer(context: $0, reader: connection.reader(context: $0)) })
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
     // Obtained while the connection is live, so the failure can only come from the write itself.
     let writer = try await router.writer(for: location)
     await connection.close()
@@ -851,7 +851,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
     let router = RepositoryRouter(
       localReader: { try connection.reader(context: $0) },
       localWriter: { try connection.writer(context: $0, reader: connection.reader(context: $0)) })
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
 
     let result = await (try await router.writer(for: location)).commit(
       request: VCSCommitRequest(message: "chunked commit", files: files, mode: .commit))

@@ -107,6 +107,131 @@ final class StatusCommandRunnerTests: XCTestCase {
     XCTAssertFalse(r.signaled)
   }
 
+  // MARK: repository discovery
+
+  /// git must never discover an ANCESTOR repository from the folder it runs in. A workroom whose
+  /// `.git` is empty (or missing) inside a parent repository otherwise resolves to that parent, and a
+  /// commit, push or fetch aimed at the workroom acts on the wrong repository.
+  func testGitNeverDiscoversARepositoryAboveTheWorkingDirectory() async throws {
+    let parent = URL(fileURLWithPath: tmp).appendingPathComponent("ceiling-\(UUID().uuidString)")
+    let child = parent.appendingPathComponent("workroom")
+    try FileManager.default.createDirectory(
+      at: child.appendingPathComponent(".git"), withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: parent) }
+    let initialized = await runner.run("git", ["init", "-q"], in: parent.path, timeout: 10)
+    XCTAssertTrue(initialized.ok, initialized.stderr)
+
+    let r = await runner.run("git", ["rev-parse", "--show-toplevel"], in: child.path, timeout: 10)
+    XCTAssertFalse(r.ok, "git escaped to an ancestor repository: \(r.stdout)")
+    XCTAssertEqual(r.exitCode, CommandResult.gitFatal)
+    // The REASON, not just a failure: a missing git (127) or any other fatal must not pass for the
+    // ceiling having stopped the walk.
+    XCTAssertTrue(r.stderr.contains("not a git repository"), r.stderr)
+  }
+
+  /// A symlinked working directory: git runs in the symlink's TARGET (`getcwd` is the real path), so
+  /// the ceiling must be the target's parent. The symlink's own parent is not an ancestor of the real
+  /// directory, and a ceiling there would let git walk up to the repository above the target.
+  func testASymlinkedWorkingDirectoryGetsTheResolvedParentAsItsCeiling() async throws {
+    let scratch = URL(fileURLWithPath: tmp).appendingPathComponent("ceiling-\(UUID().uuidString)")
+    let base = scratch.appendingPathComponent("base")
+    let real = base.appendingPathComponent("real/wr")
+    let outside = scratch.appendingPathComponent("outside")
+    let link = outside.appendingPathComponent("link")
+    let fm = FileManager.default
+    try fm.createDirectory(
+      at: real.appendingPathComponent(".git"), withIntermediateDirectories: true)
+    try fm.createDirectory(at: outside, withIntermediateDirectories: true)
+    try fm.createSymbolicLink(at: link, withDestinationURL: real)
+    defer { try? fm.removeItem(at: scratch) }
+    let initialized = await runner.run("git", ["init", "-q"], in: base.path, timeout: 10)
+    XCTAssertTrue(initialized.ok, initialized.stderr)
+
+    let ceiling = try XCTUnwrap(StatusCommandRunner.discoveryCeiling(for: link.path))
+    XCTAssertEqual(
+      URL(fileURLWithPath: ceiling).resolvingSymlinksInPath().path,
+      real.deletingLastPathComponent().resolvingSymlinksInPath().path)
+    let r = await runner.run("git", ["rev-parse", "--show-toplevel"], in: link.path, timeout: 10)
+    XCTAssertFalse(r.ok, "git escaped to an ancestor repository: \(r.stdout)")
+    XCTAssertTrue(r.stderr.contains("not a git repository"), r.stderr)
+  }
+
+  /// The ceiling is the working directory's PARENT, so git still finds a repository AT the working
+  /// directory — the case every caller relies on.
+  func testGitStillFindsTheRepositoryAtTheWorkingDirectory() async throws {
+    let repo = URL(fileURLWithPath: tmp).appendingPathComponent("ceiling-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: repo) }
+    let initialized = await runner.run("git", ["init", "-q"], in: repo.path, timeout: 10)
+    XCTAssertTrue(initialized.ok, initialized.stderr)
+    let r = await runner.run("git", ["rev-parse", "--show-toplevel"], in: repo.path, timeout: 10)
+    XCTAssertTrue(r.ok, r.stderr)
+    let toplevel = URL(fileURLWithPath: r.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+    XCTAssertEqual(toplevel.resolvingSymlinksInPath().path, repo.resolvingSymlinksInPath().path)
+  }
+
+  /// A workroom is a LINKED worktree: its `.git` is a file whose `gitdir:` points into the project's
+  /// `.git/worktrees/<name>`, ABOVE the ceiling. The ceiling bounds only the upward discovery walk, so
+  /// reads and a commit there must still work.
+  func testALinkedWorktreeStillWorksUnderTheCeiling() async throws {
+    let project = URL(fileURLWithPath: tmp).appendingPathComponent("ceiling-\(UUID().uuidString)")
+    let workroom = project.appendingPathComponent(".workrooms/wr")
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: project) }
+    let identity = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+    for args in [
+      ["init", "-q"], identity + ["commit", "-q", "--allow-empty", "-m", "root"],
+      ["worktree", "add", "-q", workroom.path],
+    ] {
+      let r = await runner.run("git", args, in: project.path, timeout: 10)
+      XCTAssertTrue(r.ok, "\(args): \(r.stderr)")
+    }
+
+    let top = await runner.run(
+      "git", ["rev-parse", "--show-toplevel"], in: workroom.path, timeout: 10)
+    XCTAssertTrue(top.ok, top.stderr)
+    let toplevel = URL(fileURLWithPath: top.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+    XCTAssertEqual(
+      toplevel.resolvingSymlinksInPath().path, workroom.resolvingSymlinksInPath().path)
+    let status = await runner.run("git", ["status", "--porcelain"], in: workroom.path, timeout: 10)
+    XCTAssertTrue(status.ok, status.stderr)
+    let commit = await runner.run(
+      "git", identity + ["commit", "-q", "--allow-empty", "-m", "in workroom"], in: workroom.path,
+      timeout: 10)
+    XCTAssertTrue(commit.ok, commit.stderr)
+  }
+
+  func testCeilingIsTheWorkingDirectorysParent() {
+    let env = StatusCommandRunner.childEnvironment(network: false, in: "/a/b")
+    XCTAssertEqual(env["GIT_CEILING_DIRECTORIES"], "/a")
+    XCTAssertEqual(
+      StatusCommandRunner.childEnvironment(network: true, in: "/a/b/")["GIT_CEILING_DIRECTORIES"],
+      "/a")
+    XCTAssertEqual(
+      StatusCommandRunner.childEnvironment(network: false, in: "/a")["GIT_CEILING_DIRECTORIES"], "/"
+    )
+    // `/` has no parent: no ceiling is set, and an inherited one is left alone.
+    let root = StatusCommandRunner.childEnvironment(
+      network: false, in: "/", inherited: ["GIT_CEILING_DIRECTORIES": "/x"])
+    XCTAssertEqual(root["GIT_CEILING_DIRECTORIES"], "/x")
+    // Anywhere else ours replaces an inherited one.
+    let replaced = StatusCommandRunner.childEnvironment(
+      network: false, in: "/a/b", inherited: ["GIT_CEILING_DIRECTORIES": "/x"])
+    XCTAssertEqual(replaced["GIT_CEILING_DIRECTORIES"], "/a")
+  }
+
+  /// git splits `GIT_CEILING_DIRECTORIES` on `:`, so a parent containing one becomes two entries
+  /// that are neither an ancestor, and the ceiling silently stops nothing. No ceiling is set then;
+  /// `isGitRepo`'s strict check is what keeps git from running in such a folder.
+  func testAParentContainingAColonGetsNoCeiling() {
+    XCTAssertNil(StatusCommandRunner.discoveryCeiling(for: "/a:b/c"))
+    XCTAssertNil(
+      StatusCommandRunner.childEnvironment(network: false, in: "/a:b/c", inherited: [:])[
+        "GIT_CEILING_DIRECTORIES"])
+    // A colon in the working directory's own name is fine: only the parent goes in the variable.
+    XCTAssertEqual(StatusCommandRunner.discoveryCeiling(for: "/a/b:c"), "/a")
+  }
+
   // MARK: stdin
 
   /// A child must never inherit the app's stdin. Unpinned it does, and under `make app-run` that is a

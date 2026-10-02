@@ -142,7 +142,7 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
   /// guard must pass, but nothing inside it is ever read (the injected double never touches disk).
   private func throwawayProject(_ name: String) -> Project {
     let path = NSTemporaryDirectory() + "wr-cap-\(name)-\(UUID().uuidString)"
-    try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+    try? makeGitCheckout(atPath: path)
     dirs.append(path)
     return Project(path: path, vcs: "git", workrooms: [])
   }
@@ -206,7 +206,7 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
     let root = throwawayProject(name)
     let workrooms = (0..<count).map { index -> Workroom in
       let path = root.path + "/w\(index)"
-      try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+      try? makeGitCheckout(atPath: path)
       return Workroom(name: "w\(index)", path: path, vcsName: "git", warnings: [])
     }
     return Project(path: root.path, vcs: "git", workrooms: workrooms)

@@ -72,9 +72,14 @@ final class AppStoreWritingProjectTests: XCTestCase {
   /// `performCommit` must refuse immediately — never touching the writer, never entering
   /// `committingTargets` — when another write is already in flight for the same project root.
   func testPerformCommitRefusesWhenAnotherWriteIsInFlight() async throws {
-    let proj = try await RepositoryLocation.local("/proj")
-    let store = try await makeStore([project("/proj", workrooms: ["feat"])])
-    let sid = SidebarID.workroom(project: "/proj", name: "feat")
+    // Real checkouts: `prepare` registers only a project and workroom that are git checkouts.
+    let root = NSTemporaryDirectory() + "writing-project-\(UUID().uuidString)"
+    try makeGitCheckout(atPath: root)
+    try makeGitCheckout(atPath: root + "/feat")
+    defer { try? FileManager.default.removeItem(atPath: root) }
+    let proj = try await RepositoryLocation.local(root)
+    let store = try await makeStore([project(root, workrooms: ["feat"])])
+    let sid = SidebarID.workroom(project: root, name: "feat")
     store.beginWrite(projectRoot: proj)
 
     let request = VCSCommitRequest(message: "msg", files: [], mode: .commit)

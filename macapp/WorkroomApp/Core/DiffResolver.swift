@@ -69,9 +69,7 @@ struct DiffResolver: Sendable {
       let provider = try await router.reader(for: location)
       switch descriptor.source {
       case .commit(let revision):
-        let key = DiffCache.Key(
-          location: location, backend: provider.context.backend,
-          revision: revision, path: descriptor.path)
+        let key = DiffCache.Key(location: location, revision: revision, path: descriptor.path)
         if let cached = await cache.get(key) { return cached }
         let text = try await provider.fileDiff(commitID: revision, path: descriptor.path)
         let result = Self.interpret(text)
@@ -79,7 +77,7 @@ struct DiffResolver: Sendable {
         return result
       case .gitWorktree:
         return Self.interpret(
-          try await provider.workingFileDiff(path: descriptor.path, base: .workingCopy))
+          try await provider.workingFileDiff(path: descriptor.path))
       }
     } catch let error as VCSError { return .failed(Self.message(for: error)) } catch {
       return .failed(error.localizedDescription)
@@ -92,7 +90,7 @@ struct DiffResolver: Sendable {
   private func resolveCommit(commitID: String, path: String, root: URL) async -> DiffResult {
     do {
       let location = try await RepositoryLocation.local(root.path)
-      let key = DiffCache.Key(location: location, backend: .git, revision: commitID, path: path)
+      let key = DiffCache.Key(location: location, revision: commitID, path: path)
       if let cached = await cache.get(key) { return cached }
       let text = try await makeProvider!(root).fileDiff(root: root, commitID: commitID, path: path)
       let result = Self.interpret(text)
@@ -111,7 +109,7 @@ struct DiffResolver: Sendable {
   private func resolveWorking(path: String, root: URL) async -> DiffResult {
     do {
       let text = try await makeProvider!(root).workingFileDiff(
-        root: root, path: path, base: .workingCopy)
+        root: root, path: path)
       return Self.interpret(text)
     } catch let error as VCSError {
       return .failed(Self.message(for: error))
@@ -153,7 +151,6 @@ actor DiffCache {
 
   struct Key: Hashable, Sendable {
     let location: RepositoryLocation
-    let backend: RepositoryBackend
     let revision: String
     let path: String
   }
@@ -250,7 +247,7 @@ extension DiffResolver {
         root: root, commitID: commitID, path: descriptor.path)
     case .gitWorktree:
       return try? await provider?.workingBaseFileContent(
-        root: root, base: .workingCopy, path: descriptor.path)
+        root: root, path: descriptor.path)
     }
   }
 
@@ -274,7 +271,7 @@ extension DiffResolver {
     case .commit(let revision):
       return try? await provider.commitParentFileContent(commitID: revision, path: descriptor.path)
     case .gitWorktree:
-      return try? await provider.workingBaseFileContent(base: .workingCopy, path: descriptor.path)
+      return try? await provider.workingBaseFileContent(path: descriptor.path)
     }
   }
 

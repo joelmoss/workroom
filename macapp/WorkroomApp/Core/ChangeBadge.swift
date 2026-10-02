@@ -40,7 +40,7 @@ enum ChangeBadge {
 
   /// The path line for a changed-file row: `old → new` when the file moved, otherwise just the path.
   ///
-  /// A moved file is one row (both backends pair the delete with the add), so the old path has
+  /// A moved file is one row (git pairs the delete with the add), so the old path has
   /// nowhere else to appear — without this the move is invisible and the row looks like a plain add
   /// at a path the user never created. A no-op move (`old == new`) renders as the bare path.
   static func pathLine(path: String, oldPath: String?) -> String {

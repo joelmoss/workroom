@@ -26,10 +26,10 @@ final class RepositoryRoutingTests: XCTestCase {
     let local = try await RepositoryLocation.local("/tmp")
     let remote = try RepositoryLocation.remote(host: UUID(), path: local.path)
     XCTAssertThrowsError(
-      try RepositoryRouter.Registration(location: remote, backend: .git, sharedLocation: local))
+      try RepositoryRouter.Registration(location: remote, sharedLocation: local))
     let router = RepositoryRouter()
-    try router.register(.init(location: remote, backend: .git, sharedLocation: remote))
-    router.replaceLocal([try .init(location: local, backend: .git, sharedLocation: local)])
+    try router.register(.init(location: remote, sharedLocation: remote))
+    router.replaceLocal([try .init(location: local, sharedLocation: local)])
     router.replaceLocal([])
     XCTAssertNil(router.entry(for: local))
     XCTAssertEqual(router.entry(for: remote)?.sharedLocation, remote)
@@ -39,10 +39,10 @@ final class RepositoryRoutingTests: XCTestCase {
     let location = try await RepositoryLocation.local("/tmp/registered-no-repository")
     let otherShared = try await RepositoryLocation.local("/tmp")
     let router = RepositoryRouter()
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
     let writer = try await router.writer(for: location)
     let reader = try await router.reader(for: location)
-    try router.register(.init(location: location, backend: .git, sharedLocation: otherShared))
+    try router.register(.init(location: location, sharedLocation: otherShared))
     XCTAssertEqual(writer.context.sharedLocation, location)
     XCTAssertEqual(writer.reader.context, writer.context)
     XCTAssertEqual(reader.context.sharedLocation, location)
@@ -66,7 +66,7 @@ final class RepositoryRoutingTests: XCTestCase {
       let remote = try RepositoryLocation.remote(host: host, path: local.path)
       for registered in [false, true] {
         if registered {
-          try router.register(.init(location: remote, backend: .git, sharedLocation: remote))
+          try router.register(.init(location: remote, sharedLocation: remote))
         }
         do {
           _ = try await router.reader(for: remote)
@@ -102,7 +102,7 @@ final class RepositoryRoutingTests: XCTestCase {
     let shared = try await RepositoryLocation.local(directory.path)
     let sibling = try await RepositoryLocation.local(siblingPath)
     let router = RepositoryRouter()
-    try router.register(.init(location: shared, backend: .git, sharedLocation: shared))
+    try router.register(.init(location: shared, sharedLocation: shared))
     let reader = try await router.reader(for: sibling)
     XCTAssertNil(reader.context.sharedLocation)
     _ = try await reader.workingStatus()
@@ -110,7 +110,7 @@ final class RepositoryRoutingTests: XCTestCase {
       _ = try await router.writer(for: sibling)
       XCTFail("unregistered writer")
     } catch { XCTAssertEqual(error as? RepositoryRoutingError, .registrationRequired) }
-    try router.register(.init(location: sibling, backend: .git, sharedLocation: shared))
+    try router.register(.init(location: sibling, sharedLocation: shared))
     let registered = try await router.reader(for: sibling)
     XCTAssertEqual(registered.context.sharedLocation, shared)
     _ = try await registered.workingStatus()
@@ -118,15 +118,22 @@ final class RepositoryRoutingTests: XCTestCase {
     XCTAssertNil(reader.context.sharedLocation)
   }
 
-  func testPreparationUsesProjectBackendAndSharedRoot() async throws {
+  /// A temp folder `isGitRepo` accepts: all `prepare` checks of a repository.
+  private func dotGitFolder() throws -> String {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try makeGitCheckout(atPath: dir.path)
+    addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+    return dir.path
+  }
+
+  func testPreparationUsesTheProjectSharedRoot() async throws {
     let project = Project(
-      path: "/tmp/project", vcs: "git",
+      path: try dotGitFolder(), vcs: "git",
       workrooms: [
-        Workroom(name: "one", path: "/tmp/workroom", vcsName: "workroom/one", warnings: [])
+        Workroom(name: "one", path: try dotGitFolder(), vcsName: "workroom/one", warnings: [])
       ])
     let entries = try await RepositoryRouter.prepare([project])
     XCTAssertEqual(entries.count, 2)
-    XCTAssertTrue(entries.allSatisfy { $0.entry.backend == .git })
     XCTAssertEqual(entries[0].entry.sharedLocation, entries[1].entry.sharedLocation)
     // An unsupported vcs — including a stale "jj" from an old config — registers nothing.
     let unknown = try await RepositoryRouter.prepare([
@@ -136,18 +143,119 @@ final class RepositoryRoutingTests: XCTestCase {
     XCTAssertTrue(unknown.isEmpty)
   }
 
+  /// `.git` as a directory holding `HEAD`, `objects/` and `refs/` (a normal repo) or a FILE pointing
+  /// at a `gitdir:` (a linked worktree) is a git repo; a `.jj` alone is not, and a `.jj` beside a
+  /// `.git` (a colocated repo left from jj) still is. An EMPTY or HEAD-only `.git` directory, or a
+  /// `.git` file that names no `gitdir:`, is not: git rejects each and walks UP to an ancestor
+  /// repository instead (probed with git 2.56).
+  func testIsGitRepoChecksForDotGitOnly() throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? fm.removeItem(at: root) }
+    func folder(
+      _ name: String, dirs: [String] = [], files: [String: String] = [:]
+    ) throws -> URL {
+      let url = root.appendingPathComponent(name)
+      try fm.createDirectory(at: url, withIntermediateDirectories: true)
+      for dir in dirs {
+        try fm.createDirectory(
+          at: url.appendingPathComponent(dir), withIntermediateDirectories: true)
+      }
+      for (file, contents) in files {
+        try Data(contents.utf8).write(to: url.appendingPathComponent(file))
+      }
+      return url
+    }
+    let head = [".git/HEAD": "ref: refs/heads/main\n"]
+    let repo = [".git", ".git/objects", ".git/refs"]
+    let gitdir = [".git": "gitdir: /elsewhere/.git/worktrees/x\n"]
+    XCTAssertTrue(isGitRepo(at: try folder("dir", dirs: repo, files: head)))
+    XCTAssertFalse(isGitRepo(at: try folder("head-only", dirs: [".git"], files: head)))
+    XCTAssertFalse(
+      isGitRepo(at: try folder("no-refs", dirs: [".git", ".git/objects"], files: head)))
+    XCTAssertFalse(
+      isGitRepo(at: try folder("no-objects", dirs: [".git", ".git/refs"], files: head)))
+    let objectsFile = [".git/HEAD": "ref: refs/heads/main\n", ".git/objects": ""]
+    XCTAssertFalse(
+      isGitRepo(at: try folder("objects-file", dirs: [".git", ".git/refs"], files: objectsFile)))
+    XCTAssertFalse(isGitRepo(at: try folder("no-head", dirs: repo)))
+    XCTAssertTrue(isGitRepo(at: try folder("worktree", files: gitdir)))
+    XCTAssertFalse(isGitRepo(at: try folder("jj", dirs: [".jj"])))
+    XCTAssertTrue(isGitRepo(at: try folder("colocated", dirs: [".jj"] + repo, files: head)))
+    XCTAssertFalse(isGitRepo(at: try folder("empty")))
+    XCTAssertFalse(isGitRepo(at: try folder("empty-dot-git", dirs: [".git"])))
+    XCTAssertFalse(isGitRepo(at: try folder("not-a-gitdir", files: [".git": "hello\n"])))
+    XCTAssertFalse(isGitRepo(at: try folder("empty-file", files: [".git": ""])))
+  }
+
+  /// A project whose root is not a git repository registers nothing — not even its workrooms. git run
+  /// at that root would discover an ANCESTOR repository and act on it.
+  func testPreparationSkipsAProjectWhoseRootIsNotARepository() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let project = Project(
+      path: root.path, vcs: "git",
+      workrooms: [
+        Workroom(name: "one", path: try dotGitFolder(), vcsName: "workroom/one", warnings: [])
+      ])
+    let registrations = try await RepositoryRouter.prepare([project])
+    XCTAssertTrue(registrations.isEmpty, "\(registrations.map(\.localSourcePath))")
+  }
+
+  /// A workroom left from the jj era has a `.jj` and no `.git`. Registering it would hand git a folder
+  /// whose discovery walks UP to an ancestor repository — and a commit there lands in that repo. So
+  /// `prepare` skips it, and both a read and a write for it refuse rather than run git.
+  func testPreparationSkipsAWorkroomWithoutDotGit() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let gitWorkroom = root.appendingPathComponent(".workrooms/git")
+    let jjWorkroom = root.appendingPathComponent(".workrooms/jj")
+    for dir in [gitWorkroom, jjWorkroom.appendingPathComponent(".jj")] {
+      try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+    defer { try? FileManager.default.removeItem(at: root) }
+    let runner = StatusCommandRunner()
+    for path in [root.path, gitWorkroom.path] {
+      let initialized = await runner.run("git", ["init", "-q"], in: path, timeout: 10)
+      XCTAssertTrue(initialized.ok, initialized.stderr)
+    }
+    let project = Project(
+      path: root.path, vcs: "git",
+      workrooms: [
+        Workroom(name: "git", path: gitWorkroom.path, vcsName: "workroom/git", warnings: []),
+        Workroom(name: "jj", path: jjWorkroom.path, vcsName: "workroom/jj", warnings: []),
+      ])
+    let registrations = try await RepositoryRouter.prepare([project])
+    XCTAssertEqual(registrations.map(\.localSourcePath), [root.path, gitWorkroom.path])
+
+    let router = RepositoryRouter()
+    router.replaceLocal(registrations)
+    let jj = try await RepositoryLocation.local(jjWorkroom.path)
+    XCTAssertNil(router.entry(for: jj))
+    do {
+      _ = try await router.reader(for: jj)
+      XCTFail("built a reader for a folder with no .git")
+    } catch VCSError.unsupportedRepo(_) {}
+    do {
+      _ = try await router.writer(for: jj)
+      XCTFail("built a writer for a folder with no .git")
+    } catch { XCTAssertEqual(error as? RepositoryRoutingError, .registrationRequired) }
+  }
+
   /// A remote workroom's path is on its host: it must never be registered as a local repository.
   func testPreparationSkipsRemoteWorkrooms() async throws {
+    let local = try dotGitFolder()
+    let root = try dotGitFolder()
     let project = Project(
-      path: "/tmp/project", vcs: "git",
+      path: root, vcs: "git",
       workrooms: [
-        Workroom(name: "local", path: "/tmp/workroom", vcsName: "workroom/local", warnings: []),
+        Workroom(name: "local", path: local, vcsName: "workroom/local", warnings: []),
         Workroom(
           name: "remote", path: "/home/remote", vcsName: "workroom/remote", warnings: [],
           host: HostDescriptor()),
       ])
     let entries = try await RepositoryRouter.prepare([project])
-    XCTAssertEqual(entries.map(\.localSourcePath), ["/tmp/project", "/tmp/workroom"])
+    XCTAssertEqual(entries.map(\.localSourcePath), [root, local])
   }
 }
 
@@ -172,12 +280,12 @@ private struct HostTestReader: VCSProviding {
   func fileDiff(commitID: String, path: String) async throws -> String {
     "diff --git a/file b/file\n--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+\(marker)\n"
   }
-  func workingFileDiff(path: String, base: VCSWorkingDiffBase) async throws -> String {
+  func workingFileDiff(path: String) async throws -> String {
     try await fileDiff(commitID: "", path: path)
   }
   func fileContent(rev: String, path: String) async throws -> String? { nil }
   func commitParentFileContent(commitID: String, path: String) async throws -> String? { nil }
-  func workingBaseFileContent(base: VCSWorkingDiffBase, path: String) async throws -> String? {
+  func workingBaseFileContent(path: String) async throws -> String? {
     nil
   }
   func workingStatus() async throws -> WorkroomStatus { WorkroomStatus(dirty: false) }
@@ -203,7 +311,7 @@ extension RepositoryRoutingTests {
       HostTestReader(context: context, delay: context.location == one ? 150_000_000 : 0)
     })
     for location in [one, two] {
-      try router.register(.init(location: location, backend: .git, sharedLocation: location))
+      try router.register(.init(location: location, sharedLocation: location))
     }
     let model = HistoryModel(pageSize: 1, debounce: 0, router: router)
     model.focus(location: one)
@@ -227,7 +335,7 @@ extension RepositoryRoutingTests {
     let two = try RepositoryLocation.remote(host: UUID(), path: "/repo")
     let router = RepositoryRouter(remoteReader: { HostTestReader(context: $0) })
     for location in [one, two] {
-      try router.register(.init(location: location, backend: .git, sharedLocation: location))
+      try router.register(.init(location: location, sharedLocation: location))
     }
     let cache = DiffCache()
     let resolver = DiffResolver(router: router, cache: cache)
@@ -244,7 +352,7 @@ extension RepositoryRoutingTests {
   func testRemoteFilesAndGitHubCannotInvokeLocalCommands() async throws {
     let location = try RepositoryLocation.remote(host: UUID(), path: "/private/tmp")
     let router = RepositoryRouter()
-    try router.register(.init(location: location, backend: .git, sharedLocation: location))
+    try router.register(.init(location: location, sharedLocation: location))
     let runner = HostCountingRunner()
     let listing = await FileTreeModel.list(location: location, runner: runner, router: router)
     XCTAssertEqual(listing, .failed(.unavailable(location.host)))
@@ -268,7 +376,7 @@ extension RepositoryRoutingTests {
     let path = "/private/tmp"
     let local = try await RepositoryLocation.local(path)
     try RepositoryRouter.shared.register(
-      .init(location: local, backend: .git, sharedLocation: local))
+      .init(location: local, sharedLocation: local))
     let store = AppStore()
     store.projects = [Project(path: path, vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: path)
@@ -298,7 +406,7 @@ extension RepositoryRoutingTests {
     let path = "/private/tmp/registered-target"
     let location = try await RepositoryLocation.local(path)
     try RepositoryRouter.shared.register(
-      .init(location: location, backend: .git, sharedLocation: location))
+      .init(location: location, sharedLocation: location))
     let store = AppStore()
     store.projects = [Project(path: path, vcs: "git", workrooms: [])]
     store.terminals.makeView = { _, cwd, command in
@@ -330,7 +438,7 @@ private struct FailingPreflightRunner: StatusCommandRunning {
 extension RepositoryRoutingTests {
   func testFailedPreflightCannotBecomeEmptySuccess() async throws {
     let writer = CLIVCSWriter(
-      vcs: "git", runner: FailingPreflightRunner(),
+      runner: FailingPreflightRunner(),
       makeProvider: { _ in GitProvider() }, gate: RepositoryWriteGate())
     do {
       _ = try await writer.commitPreflight(path: "/nonexistent")
@@ -363,10 +471,28 @@ extension RepositoryRoutingTests {
     XCTAssertNotNil(status.localReadAt)
   }
 
+  /// A workroom Jujutsu made before #266 has `.jj` and no `.git`. Listing it must not run git at
+  /// all: git there would discover an ANCESTOR repository and list that tree instead.
+  func testAFolderWithoutDotGitListsNothingAndRunsNoGit() async throws {
+    let path = NSTemporaryDirectory() + "jj-era-\(UUID().uuidString)"
+    try FileManager.default.createDirectory(
+      atPath: path + "/.jj", withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let location = try await RepositoryLocation.local(path)
+    let runner = HostCountingRunner()
+    let result = await FileTreeModel.list(
+      location: location, runner: runner, router: RepositoryRouter())
+    XCTAssertEqual(result, .unavailable)
+    let calls = await runner.calls
+    XCTAssertEqual(calls, 0, "git must not run in a folder without .git")
+  }
+
   /// An unregistered location lists through git alone — one command, no registration needed.
   func testUnregisteredFileListRunsOnlyTheGitListing() async throws {
-    let location = try await RepositoryLocation.local(
-      "/private/tmp/unregistered-\(UUID().uuidString)")
+    let path = NSTemporaryDirectory() + "unregistered-\(UUID().uuidString)"
+    try makeGitCheckout(atPath: path)
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let location = try await RepositoryLocation.local(path)
     let runner = HostCountingRunner()
     let result = await FileTreeModel.list(
       location: location, runner: runner, router: RepositoryRouter())

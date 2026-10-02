@@ -122,7 +122,7 @@ struct GitProvider: LocalVCSProviding {
   /// built structurally from libgit2 (no subprocess, no `git diff` shell-out). Per-file by
   /// construction: it fetches the single path's status delta, then builds just that file's `Patch`
   /// (`git_patch_from_blob*`) — never a whole-worktree diff.
-  func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+  func workingFileDiff(root: URL, path: String) async throws -> String {
     try await runBlocking {
       do {
         let repo = try Repository.open(at: root)
@@ -197,7 +197,7 @@ struct GitProvider: LocalVCSProviding {
   }
 
   /// Old-side content of `path` for a working-copy diff — the file at `HEAD`. GCD-offloaded.
-  func workingBaseFileContent(root: URL, base: VCSWorkingDiffBase, path: String) async throws
+  func workingBaseFileContent(root: URL, path: String) async throws
     -> String?
   {
     try await runBlocking {

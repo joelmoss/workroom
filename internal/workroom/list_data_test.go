@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/vcs"
+	"github.com/joelmoss/workroom/internal/vcs/vcstest"
 )
 
 func TestListDataSortedIncludesEmptyAndMakesNoVCSCallsForNone(t *testing.T) {
@@ -195,7 +196,7 @@ func TestListDataFullListsVCSOncePerProject(t *testing.T) {
 
 func TestCreateNamedReturnsResult(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
+	vcstest.MakeGitDir(t, dir)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	mock := &mockExecutor{output: gitWorktrees(dir)}

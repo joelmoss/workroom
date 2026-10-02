@@ -27,7 +27,6 @@ final class RemoteStateModel: ObservableObject {
   struct Target: Equatable, Sendable {
     let sid: SidebarID
     let path: String
-    let vcs: VCSBackend
     let projectRoot: String
     var location: RepositoryLocation? = nil
   }
@@ -140,9 +139,7 @@ final class RemoteStateModel: ObservableObject {
       let root = try location.requireLocalURL()
       let shared = try await RepositoryLocation.local(target.projectRoot)
       let isolated = RepositoryRouter()
-      try isolated.register(
-        .init(
-          location: location, backend: .git, sharedLocation: shared))
+      try isolated.register(.init(location: location, sharedLocation: shared))
       let context = try await isolated.context(for: location)
       return try BoundLocalWriter(
         context: context,
@@ -250,7 +247,15 @@ final class RemoteStateModel: ObservableObject {
     guard self.target == target else { return }
     switch resolution {
     case .state(let state):
-      snapshot = state
+      // Merge in Workroom's own fetch record. Needed because `FETCH_HEAD` is not a complete record of
+      // our fetches (see `Defaults.Keys.vcsLastFetch`): a project root that is a linked worktree gets
+      // its `FETCH_HEAD` outside the common dir the backend reads, so clicking Fetch would leave a
+      // stale timestamp on screen. The backend still wins when it is newer, which keeps a fetch run in
+      // the user's own terminal visible.
+      snapshot = Self.merging(
+        state,
+        ownFetch: target.location?.host != nil && target.location?.host != .local
+          ? nil : Defaults[.vcsLastFetch][target.projectRoot])
       self.state = .loaded
       readFailure = nil
       onBranchResolved?(target, state.current.name)
@@ -271,6 +276,19 @@ final class RemoteStateModel: ObservableObject {
       readFailure = failure
       onBranchResolved?(target, nil)
     }
+  }
+
+  /// Take the later of the backend's own evidence and Workroom's recorded fetch.
+  static func merging(_ state: VCSRemoteState, ownFetch: Date?) -> VCSRemoteState {
+    guard let ownFetch else { return state }
+    let merged: VCSLastFetch
+    switch state.lastFetch {
+    case .at(let backend): merged = .at(max(backend, ownFetch))
+    case .never, .unknown: merged = .at(ownFetch)
+    }
+    return VCSRemoteState(
+      current: state.current, tracking: state.tracking, remotes: state.remotes,
+      primaryRemote: state.primaryRemote, lastFetch: merged, resolvedAt: state.resolvedAt)
   }
 
   // MARK: Derived
@@ -381,9 +399,14 @@ final class RemoteStateModel: ObservableObject {
     // NOT unconditional is the RESULT, below.
     inFlight = nil
     inFlightTarget = nil
-    // The work happened in `target`'s repo whatever is selected now, so the downstream refresh
-    // belongs to it and fires regardless.
+    // The work happened in `target`'s repo whatever is selected now, so the fetch stamp and the
+    // downstream refresh belong to it and fire regardless.
     if case .ok = result {
+      if action == .fetch || action == .pull,
+        target.location == nil || target.location?.host == .local
+      {
+        recordOwnFetch(projectRoot: target.projectRoot)
+      }
       onDidMutate?(action, target)
     }
     // The DIALOG is deliberately raised ahead of the identity guard below. Something the user asked for
@@ -444,6 +467,13 @@ final class RemoteStateModel: ObservableObject {
   /// the next action or refresh, so dismissing the dialog doesn't erase the fact that something failed.
   func dismissFailureReport() {
     failureReport = nil
+  }
+
+  /// Stamp Workroom's own fetch time for this project. See `merging` for why this exists.
+  private func recordOwnFetch(projectRoot: String) {
+    var stamps = Defaults[.vcsLastFetch]
+    stamps[projectRoot] = now()
+    Defaults[.vcsLastFetch] = stamps
   }
 
   /// Called by the store after the post-mutation status refresh lands: a pull that reported success may

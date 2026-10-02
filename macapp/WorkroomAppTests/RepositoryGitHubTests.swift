@@ -100,7 +100,7 @@ final class RepositoryGitHubTests: XCTestCase {
 
   /// A registered LOCAL repository: `path` is the workroom, `shared` the project root.
   private func local(
-    _ backend: RepositoryBackend, runner: GHRunner, github: GitHubRepository? = nil
+    runner: GHRunner, github: GitHubRepository? = nil
   ) async throws -> (service: RepositoryGitHub, path: String, shared: String) {
     let shared = unique("proj")
     let path = shared + "/ws"
@@ -108,7 +108,7 @@ final class RepositoryGitHubTests: XCTestCase {
     let location = try await RepositoryLocation.local(path)
     let router = RepositoryRouter()
     try router.register(
-      .init(location: location, backend: backend, sharedLocation: sharedLocation, github: github))
+      .init(location: location, sharedLocation: sharedLocation, github: github))
     let service = try router.registeredGitHub(
       for: location, resolver: WorkroomStatusResolver(runner: runner))
     return (service, location.path, sharedLocation.path)
@@ -116,14 +116,14 @@ final class RepositoryGitHubTests: XCTestCase {
 
   /// A registered REMOTE repository whose path exists nowhere on this Mac.
   private func remote(
-    _ backend: RepositoryBackend, runner: GHRunner, github: GitHubRepository? = octo
+    runner: GHRunner, github: GitHubRepository? = octo
   ) throws -> RepositoryGitHub {
     let host = UUID()
     let shared = try RepositoryLocation.remote(host: host, path: "/srv/proj")
     let location = try RepositoryLocation.remote(host: host, path: "/srv/proj/ws")
     let router = RepositoryRouter()
     try router.register(
-      .init(location: location, backend: backend, sharedLocation: shared, github: github))
+      .init(location: location, sharedLocation: shared, github: github))
     return try router.registeredGitHub(
       for: location, resolver: WorkroomStatusResolver(runner: runner))
   }
@@ -134,7 +134,7 @@ final class RepositoryGitHubTests: XCTestCase {
   /// GitHub probe itself runs in neither.
   func testLocalGitCIReadsTipInWorkroomAndRepositoryFromSharedRoot() async throws {
     let runner = GHRunner(healthy)
-    let (service, path, shared) = try await local(.git, runner: runner)
+    let (service, path, shared) = try await local(runner: runner)
     let res = await service.ci(branch: "main")
     XCTAssertEqual(res, .state(.passing))
     let calls = runner.calls
@@ -153,7 +153,7 @@ final class RepositoryGitHubTests: XCTestCase {
   /// REGRESSION (local behaviour unchanged): a nil branch falls back to `git symbolic-ref`.
   func testLocalGitNilBranchFallsBackToSymbolicRef() async throws {
     let runner = GHRunner(healthy)
-    let (service, _, _) = try await local(.git, runner: runner)
+    let (service, _, _) = try await local(runner: runner)
     let res = await service.pullRequest(branch: nil)
     guard case .info = res else { return XCTFail("expected .info via symbolic-ref") }
     let gh = runner.calls.first { $0.exe == "gh" && $0.args.first == "pr" }
@@ -165,7 +165,7 @@ final class RepositoryGitHubTests: XCTestCase {
     let runner = GHRunner { exe, args in
       args.contains("symbolic-ref") ? failed("", exit: 1) : healthy(exe, args)
     }
-    let (service, _, _) = try await local(.git, runner: runner)
+    let (service, _, _) = try await local(runner: runner)
     let pr = await service.pullRequest(branch: nil)
     let ci = await service.ci(branch: nil)
     XCTAssertEqual(pr, .absent)
@@ -178,7 +178,7 @@ final class RepositoryGitHubTests: XCTestCase {
       exe == "git" && args.contains("rev-parse")
         ? failed("not a repo", exit: 128) : healthy(exe, args)
     }
-    let (service, _, _) = try await local(.git, runner: runner)
+    let (service, _, _) = try await local(runner: runner)
     let res = await service.ci(branch: "main")
     XCTAssertEqual(res, .absent)
     XCTAssertTrue(runner.lookups.isEmpty)  // the cheap local read failed first: no network lookup
@@ -189,7 +189,7 @@ final class RepositoryGitHubTests: XCTestCase {
   /// A selection refresh fires ci, pullRequest, enrich and checks; the repository is found ONCE.
   func testConcurrentProbesShareOneLookup() async throws {
     let runner = GHRunner(delay: 30_000_000, healthy)
-    let (service, _, _) = try await local(.git, runner: runner)
+    let (service, _, _) = try await local(runner: runner)
     async let ci = service.ci(branch: "main")
     async let pr = service.pullRequest(branch: "main")
     async let checks = service.checks(number: 9)
@@ -210,7 +210,7 @@ final class RepositoryGitHubTests: XCTestCase {
   /// child's `keepPrior` instead of a PR.
   func testCancellingOneProbeDoesNotCancelTheSharedLookup() async throws {
     let runner = GHRunner(delay: 400_000_000, healthy)
-    let (service, _, _) = try await local(.git, runner: runner)
+    let (service, _, _) = try await local(runner: runner)
     let doomed = Task { await service.checks(number: 9) }
     await waitUntil("the lookup to start") { !runner.lookups.isEmpty }
     let sibling = Task { await service.pullRequest(branch: "main") }
@@ -228,7 +228,7 @@ final class RepositoryGitHubTests: XCTestCase {
     let runner = GHRunner(delay: 30_000_000_000, healthy)  // would outlive the test if never killed
     var probes: [Task<ChecksResolution, Never>] = []
     for _ in 0..<5 {
-      let (service, _, _) = try await local(.git, runner: runner)
+      let (service, _, _) = try await local(runner: runner)
       probes.append(Task { await service.checks(number: 9) })
     }
     await waitUntil("5 lookups to start") { runner.lookups.count == 5 }
@@ -245,7 +245,7 @@ final class RepositoryGitHubTests: XCTestCase {
   /// A cancelled lookup is not memoised: once every waiter has left, the next caller starts fresh.
   func testALookupCancelledByItsLastWaiterIsNotReused() async throws {
     let runner = GHRunner(delay: 300_000_000, healthy)
-    let (service, _, _) = try await local(.git, runner: runner)
+    let (service, _, _) = try await local(runner: runner)
     let first = Task { await service.checks(number: 9) }
     await waitUntil("the first lookup to start") { runner.lookups.count == 1 }
     first.cancel()
@@ -265,7 +265,7 @@ final class RepositoryGitHubTests: XCTestCase {
       }
       return healthy(exe, args)
     }
-    let (service, _, _) = try await local(.git, runner: runner)
+    let (service, _, _) = try await local(runner: runner)
     async let ci = service.ci(branch: "main")
     async let pr = service.pullRequest(branch: "main")
     async let checks = service.checks(number: 9)
@@ -282,7 +282,7 @@ final class RepositoryGitHubTests: XCTestCase {
       exe == "gh" && args.prefix(2) == ["repo", "view"]
         ? failed("no git remotes found") : healthy(exe, args)
     }
-    let (service, _, _) = try await local(.git, runner: runner)
+    let (service, _, _) = try await local(runner: runner)
     let ci = await service.ci(branch: "main")
     let pr = await service.pullRequest(branch: "main")
     let checks = await service.checks(number: 9)
@@ -294,7 +294,7 @@ final class RepositoryGitHubTests: XCTestCase {
   /// The sweep asks once per project and hands the answer to every workroom of it.
   func testCIUsesAPreResolvedLookupWithoutAskingAgain() async throws {
     let runner = GHRunner(healthy)
-    let (service, _, _) = try await local(.git, runner: runner)
+    let (service, _, _) = try await local(runner: runner)
     let other = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "other", name: "thing"))
     let found = await service.ci(branch: "main", repository: .found(other))
     // It is the SUPPLIED repository that is queried, not the one this service's own lookup would find.
@@ -321,7 +321,7 @@ final class RepositoryGitHubTests: XCTestCase {
     for name in ["wt-a", "wt-b"] {
       let runner = GHRunner(healthy)
       let location = try await RepositoryLocation.local(shared + "/" + name)
-      try router.register(.init(location: location, backend: .git, sharedLocation: sharedLocation))
+      try router.register(.init(location: location, sharedLocation: sharedLocation))
       let service = try router.registeredGitHub(
         for: location, resolver: WorkroomStatusResolver(runner: runner))
       found.append(await service.repository())
@@ -336,33 +336,31 @@ final class RepositoryGitHubTests: XCTestCase {
   /// The point of #207: a repository with no checkout on this Mac resolves PR, checks and writes from
   /// its supplied identity. Its path exists nowhere here, and no `git` or `gh repo view` runs.
   func testRemoteWithIdentityResolvesByIdentity() async throws {
-    for backend in [RepositoryBackend.git] {
-      let runner = GHRunner(healthy)
-      let service = try remote(backend, runner: runner)
-      XCTAssertFalse(FileManager.default.fileExists(atPath: service.context.location.path))
+    let runner = GHRunner(healthy)
+    let service = try remote(runner: runner)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: service.context.location.path))
 
-      let pr = await service.pullRequest(branch: "feature/x")
-      guard case .info = pr else { return XCTFail("\(backend): expected a PR") }
-      let checks = await service.checks(number: 9)
-      XCTAssertEqual(
-        checks, .list([CICheck(name: "build", state: .passing, workflow: nil, link: nil)]))
-      let write = await service.run(["pr", "close", "9"])
-      XCTAssertTrue(write.ok)
+    let pr = await service.pullRequest(branch: "feature/x")
+    guard case .info = pr else { return XCTFail("expected a PR") }
+    let checks = await service.checks(number: 9)
+    XCTAssertEqual(
+      checks, .list([CICheck(name: "build", state: .passing, workflow: nil, link: nil)]))
+    let write = await service.run(["pr", "close", "9"])
+    XCTAssertTrue(write.ok)
 
-      let calls = runner.calls
-      XCTAssertEqual(calls.count, 3, "\(backend)")
-      XCTAssertTrue(calls.allSatisfy { $0.exe == "gh" && $0.dir == NSTemporaryDirectory() })
-      XCTAssertTrue(calls.allSatisfy { Array($0.args.suffix(2)) == ["--repo", octo.flag] })
-      XCTAssertTrue(calls[0].args.contains("feature/x"))
-      XCTAssertEqual(Array(calls[2].args.prefix(3)), ["pr", "close", "9"])
-    }
+    let calls = runner.calls
+    XCTAssertEqual(calls.count, 3)
+    XCTAssertTrue(calls.allSatisfy { $0.exe == "gh" && $0.dir == NSTemporaryDirectory() })
+    XCTAssertTrue(calls.allSatisfy { Array($0.args.suffix(2)) == ["--repo", octo.flag] })
+    XCTAssertTrue(calls[0].args.contains("feature/x"))
+    XCTAssertEqual(Array(calls[2].args.prefix(3)), ["pr", "close", "9"])
   }
 
   /// A remote host has no checkout to read a branch tip from, so CI is absent — with no process run —
   /// until the agent supplies a commit (Phase 3).
   func testRemoteCIIsAbsentWithoutRunningAnything() async throws {
     let runner = GHRunner(healthy)
-    let service = try remote(.git, runner: runner)
+    let service = try remote(runner: runner)
     let res = await service.ci(branch: "main")
     XCTAssertEqual(res, .absent)
     let preResolved = await service.ci(branch: "main", repository: .found(octo))
@@ -372,7 +370,7 @@ final class RepositoryGitHubTests: XCTestCase {
 
   func testRemoteNilBranchIsAbsentWithoutRunningAnything() async throws {
     let runner = GHRunner(healthy)
-    let service = try remote(.git, runner: runner)
+    let service = try remote(runner: runner)
     let pr = await service.pullRequest(branch: nil)
     XCTAssertEqual(pr, .absent)
     XCTAssertTrue(runner.calls.isEmpty)
@@ -385,7 +383,7 @@ final class RepositoryGitHubTests: XCTestCase {
     let shared = try RepositoryLocation.remote(host: host, path: "/srv/proj")
     let location = try RepositoryLocation.remote(host: host, path: "/srv/proj/ws")
     let router = RepositoryRouter()
-    try router.register(.init(location: location, backend: .git, sharedLocation: shared))
+    try router.register(.init(location: location, sharedLocation: shared))
     XCTAssertThrowsError(try router.registeredGitHub(for: location)) {
       XCTAssertEqual($0 as? RepositoryRoutingError, .unavailable(.remote(host)))
     }
@@ -404,7 +402,7 @@ final class RepositoryGitHubTests: XCTestCase {
     let location = try RepositoryLocation.remote(host: host, path: "/srv/proj/ws")
     let router = RepositoryRouter()
     try router.register(
-      .init(location: location, backend: .git, sharedLocation: shared, github: octo))
+      .init(location: location, sharedLocation: shared, github: octo))
     let service = try await router.gitHub(
       for: location, resolver: WorkroomStatusResolver(runner: runner))
     let pr = await service.pullRequest(branch: "feature/x")
@@ -445,7 +443,7 @@ final class RepositoryGitHubTests: XCTestCase {
       let runner = GHRunner { exe, args in
         exe == "gh" && args.prefix(2) == ["repo", "view"] ? lookup : healthy(exe, args)
       }
-      let (service, _, _) = try await local(.git, runner: runner)
+      let (service, _, _) = try await local(runner: runner)
       let r = await service.run(["pr", "merge", "9", "--squash"])
       XCTAssertFalse(r.ok)
       XCTAssertFalse(r.stderr.isEmpty)
@@ -459,7 +457,7 @@ final class RepositoryGitHubTests: XCTestCase {
       let runner = GHRunner { exe, args in
         exe == "gh" && args.prefix(2) == ["repo", "view"] ? lookup : healthy(exe, args)
       }
-      let (service, _, _) = try await local(.git, runner: runner)
+      let (service, _, _) = try await local(runner: runner)
       return await service.run(["pr", "close", "9"]).stderr
     }
     let blip = try await message(
@@ -472,7 +470,7 @@ final class RepositoryGitHubTests: XCTestCase {
 
   func testLocalWriteNamesTheResolvedRepository() async throws {
     let runner = GHRunner(healthy)
-    let (service, _, _) = try await local(.git, runner: runner)
+    let (service, _, _) = try await local(runner: runner)
     let r = await service.run(["pr", "merge", "9", "--squash"])
     XCTAssertTrue(r.ok)
     let merge = runner.calls.last
@@ -487,10 +485,10 @@ final class RepositoryGitHubTests: XCTestCase {
     let shared = try RepositoryLocation.remote(host: host, path: "/srv/proj")
     let router = RepositoryRouter()
     try router.register(
-      .init(location: shared, backend: .git, sharedLocation: shared, github: octo))
+      .init(location: shared, sharedLocation: shared, github: octo))
     let localLocation = try await RepositoryLocation.local(unique("proj"))
     try router.register(
-      .init(location: localLocation, backend: .git, sharedLocation: localLocation))
+      .init(location: localLocation, sharedLocation: localLocation))
     XCTAssertEqual(router.entry(for: shared)?.github, octo)
     XCTAssertNil(router.entry(for: localLocation)?.github)  // a local host finds its own
     router.replaceLocal([])
@@ -506,8 +504,8 @@ final class RepositoryGitHubTests: XCTestCase {
     let without = try RepositoryLocation.remote(host: host, path: "/srv/without")
     let router = RepositoryRouter.shared
     try router.register(
-      .init(location: withIdentity, backend: .git, sharedLocation: withIdentity, github: octo))
-    try router.register(.init(location: without, backend: .git, sharedLocation: without))
+      .init(location: withIdentity, sharedLocation: withIdentity, github: octo))
+    try router.register(.init(location: without, sharedLocation: without))
     func item(_ location: RepositoryLocation?) -> AppStore.StatusWorkItem {
       AppStore.StatusWorkItem(
         sid: .root(project: "/srv"), path: "/srv", vcs: "git", projectRoot: "/srv",

@@ -183,7 +183,9 @@ extension AgentCommandRunner {
       stdin: stdin,
       env: remote
         ? StatusCommandRunner.remoteEnvironment
-        : StatusCommandRunner.childEnvironment(network: network),
+          // Carries `GIT_CEILING_DIRECTORIES`; a current agent overrides it from the canonical `dir`
+          // (`ceiling_directories`), but older agents rely on this one, so it is still sent.
+        : StatusCommandRunner.childEnvironment(network: network, in: directory),
       hostEnvironment: remote ? true : nil)
   }
 }
@@ -224,7 +226,7 @@ struct AgentCurrentRefProvider: LocalVCSProviding {
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
     throw Self.unused
   }
-  func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+  func workingFileDiff(root: URL, path: String) async throws -> String {
     throw Self.unused
   }
   func fileContent(root: URL, rev: String, path: String) async throws -> String? {
