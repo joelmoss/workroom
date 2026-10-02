@@ -502,7 +502,7 @@ private struct WorkroomPaneTitleBar: View {
       Image(systemName: workroomName == nil ? "house" : "cube")
         .font(.system(size: 10))
         .foregroundStyle(focused ? theme.tokens.accent : theme.tokens.fgMuted)
-      if let reason = target.unavailability {
+      if let reason = target.terminalUnavailability {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 10))
           .foregroundStyle(.orange)

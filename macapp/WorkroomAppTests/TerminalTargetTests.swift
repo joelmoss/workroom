@@ -1,3 +1,4 @@
+import Defaults
 import XCTest
 
 @testable import Workroom
@@ -93,6 +94,36 @@ final class TerminalTargetTests: XCTestCase {
 
   /// A remote workroom is unavailable on this Mac (every local action guards on `isMissing`) but
   /// never shown as a missing directory; a destroyed host is its own state.
+  /// A serving remote workroom opens panes only while remote workrooms are on (#253), and stays
+  /// `isMissing` for every other local action; one being created, failed or destroyed opens none.
+  func testARemoteWorkroomOpensPanesOnlyWhenServingAndEnabled() {
+    let saved = Defaults[.remoteWorkroomsPreview]
+    defer { Defaults[.remoteWorkroomsPreview] = saved }
+    let id = UUID()
+    func target(_ host: HostDescriptor) -> TerminalTarget {
+      Workroom(name: "x", path: "/home/w", vcsName: "workroom/x", warnings: [], host: host)
+        .target(inProject: "/proj")
+    }
+
+    Defaults[.remoteWorkroomsPreview] = true
+    let mine = RemoteWorkrooms.provisioner
+    let serving = target(HostDescriptor(provisioner: mine, id: id))
+    XCTAssertEqual(serving.remoteHost, id)
+    XCTAssertTrue(serving.opensTerminals)
+    XCTAssertTrue(serving.isMissing, "a remote path must stay out of every local action")
+    for state in ["creating", "failed", "destroyed"] {
+      XCTAssertFalse(
+        target(HostDescriptor(state: state, provisioner: mine, id: id)).opensTerminals, state)
+    }
+    XCTAssertFalse(target(HostDescriptor(provisioner: mine)).opensTerminals, "no host ID")
+    XCTAssertFalse(
+      target(HostDescriptor(provisioner: "another.build", id: id)).opensTerminals,
+      "another build's host takes another key")
+
+    Defaults[.remoteWorkroomsPreview] = false
+    XCTAssertFalse(target(HostDescriptor(provisioner: mine, id: id)).opensTerminals)
+  }
+
   func testUnavailabilityReasons() {
     func target(_ warnings: [Warning], _ host: HostDescriptor?) -> TerminalTarget {
       Workroom(name: "x", path: "/p", vcsName: "workroom/x", warnings: warnings, host: host)

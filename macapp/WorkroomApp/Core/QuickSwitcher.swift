@@ -238,14 +238,14 @@ enum QuickSwitcher {
 
   /// The selected workroom's panes in MRU order, or `[]` when nothing is selected.
   static func paneTabs(in store: AppStore, recency: SwitcherRecency = .shared) -> [TerminalTab] {
-    guard let target = store.selectedTarget, !target.isMissing else { return [] }
+    guard let target = store.selectedTarget, target.opensTerminals else { return [] }
     return recency.paneOrder(store.terminals.tabs(for: target))
   }
 
   private static func stepPanes(
     reverse: Bool, in store: AppStore, recency: SwitcherRecency
   ) -> (switched: Bool, spoken: String?) {
-    guard let target = store.selectedTarget, !target.isMissing else { return (false, nil) }
+    guard let target = store.selectedTarget, target.opensTerminals else { return (false, nil) }
     let tabs = paneTabs(in: store, recency: recency)
     guard tabs.count > 1 else { return (false, nil) }
     let activeID = store.terminals.activeTab(for: target)?.id
@@ -263,7 +263,7 @@ enum QuickSwitcher {
   static func commit(
     pane id: TerminalTab.ID, in store: AppStore, target: TerminalTarget? = nil
   ) -> Bool {
-    guard let target = target ?? store.selectedTarget, !target.isMissing else { return false }
+    guard let target = target ?? store.selectedTarget, target.opensTerminals else { return false }
     guard !store.hasModalPresentation else { return false }
     guard store.terminals.activeTab(for: target)?.id != id else { return false }
     guard store.terminals.tabs(for: target).contains(where: { $0.id == id }) else { return false }

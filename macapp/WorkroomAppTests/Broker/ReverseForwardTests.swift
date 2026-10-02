@@ -485,3 +485,36 @@ final class StubBroker: @unchecked Sendable {
     }
   }
 }
+
+/// Where a Debug build carries its agents' broker requests (#253): the port Caddy routes the
+/// broker's host to, since `bin/dev` gives Puma a free port each start.
+final class DevelopmentCodasetTests: XCTestCase {
+  /// The shape Caddy's admin API answers with (`/config/apps/http/servers`), trimmed from a real
+  /// one: other apps' routes first, a route matching a longer name of the same suffix, and the
+  /// upstream nested in a subroute.
+  private static let servers = Data(
+    """
+    {"srv0": {"listen": [":443"], "routes": [
+      {"match": [{"host": ["bert.localhost", "*.bert.localhost"]}],
+       "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": ":55849"}]}]},
+      {"match": [{"host": ["sc-cooled-fermion-858a-codaset.localhost"]}],
+       "handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": ":62886"}]}]},
+      {"match": [{"host": ["codaset.localhost", "*.codaset.localhost"]}],
+       "handle": [{"handler": "subroute", "routes": [{"handle": [
+         {"handler": "reverse_proxy", "upstreams": [{"dial": "localhost:61938"}]}]}]}]}
+    ]}}
+    """.utf8)
+
+  func testTheBrokersHostResolvesToItsOwnUpstreamPort() {
+    XCTAssertEqual(
+      DevelopmentCodaset.upstreamPort(for: "codaset.localhost", inServers: Self.servers), 61938)
+    XCTAssertEqual(
+      DevelopmentCodaset.upstreamPort(for: "bert.localhost", inServers: Self.servers), 55849)
+  }
+
+  func testAHostCaddyDoesNotRouteHasNoPort() {
+    XCTAssertNil(DevelopmentCodaset.upstreamPort(for: "nope.localhost", inServers: Self.servers))
+    XCTAssertNil(
+      DevelopmentCodaset.upstreamPort(for: "codaset.localhost", inServers: Data("[]".utf8)))
+  }
+}

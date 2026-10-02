@@ -9,13 +9,18 @@ struct BrokerRefusal: Error, Equatable, Sendable {
   let message: String
   /// `app_not_installed` carries where an admin installs the App (`codaset.dev/install/{owner}`).
   let installURL: URL?
+  /// The refused request, such as `POST broker/grants`, for the error's details.
+  var request: String? = nil
 
   /// What Workroom says, for the codes a person can act on (#251).
   var userMessage: String {
     switch code {
     case "app_not_installed":
-      return "The Workroom GitHub App doesn't cover this repository, or it was deleted. "
-        + "An admin of its owner can install the App."
+      // The owner is the last part of the install URL Codaset sends (`/install/{owner}`).
+      let owner = installURL?.lastPathComponent
+      return "The Workroom GitHub App isn't installed on \(owner ?? "this repository's owner"), "
+        + "or doesn't include this repository. If you're an admin of \(owner ?? "it"), install "
+        + "it; otherwise ask one to."
     case "no_push_access": return "You can't push to this repository on GitHub."
     case "no_read_access": return "You can't read this repository on GitHub."
     case "ip_allow_list":
@@ -27,7 +32,17 @@ struct BrokerRefusal: Error, Equatable, Sendable {
     case "rate_limited": return "Too many requests to Codaset. Try again in a few minutes."
     case "github_unavailable": return "GitHub isn't responding. Try again shortly."
     case "invalid_code": return "The sign-in expired. Start again."
-    default: return message
+    default: break
+    }
+    switch status {
+    // A gateway's answer, not Codaset's: whatever stands in front of it found nothing behind it.
+    case 502 where SentryConfig.isDebugBuild:
+      return "Codaset isn't responding. In a Debug build that usually means its dev server isn't "
+        + "running: start it with `bin/dev` in the codaset repository, then try again."
+    case 502, 503, 504: return "Codaset isn't responding right now. Try again in a minute."
+    case 500...: return "Codaset ran into a problem on its side. Try again in a minute."
+    // A code this build doesn't know: the broker's own words, when it sent any.
+    default: return message == code ? "Codaset refused the request." : message
     }
   }
 }
@@ -224,7 +239,7 @@ struct BrokerClient: Sendable {
           throw BrokerError.malformed("\(path): \(error.localizedDescription)")
         }
       }
-      let refusal = Self.refusal(status: http.statusCode, data: data)
+      let refusal = Self.refusal(status: http.statusCode, data: data, request: "\(method) \(path)")
       if attempt == 0, refusal.status == 401, refusal.code == "stale_proof",
         let date = http.value(forHTTPHeaderField: "Date").flatMap(Self.httpDate)
       {
@@ -247,12 +262,12 @@ struct BrokerClient: Sendable {
     ) async -> URLRequest? { nil }
   }
 
-  private static func refusal(status: Int, data: Data) -> BrokerRefusal {
+  private static func refusal(status: Int, data: Data, request: String) -> BrokerRefusal {
     let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
     let code = object["error"] as? String ?? "http_\(status)"
     return BrokerRefusal(
       status: status, code: code, message: object["message"] as? String ?? code,
-      installURL: (object["install_url"] as? String).flatMap(URL.init(string:)))
+      installURL: (object["install_url"] as? String).flatMap(URL.init(string:)), request: request)
   }
 
   /// An HTTP `Date` (IMF-fixdate).

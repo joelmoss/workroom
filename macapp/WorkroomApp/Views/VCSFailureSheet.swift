@@ -92,7 +92,9 @@ struct VCSFailureSheet: View {
       .frame(maxHeight: 160)
       .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.5)))
     } label: {
-      Text("Details").font(.subheadline.weight(.semibold))
+      DisclosureLabel(isExpanded: $showDetails) {
+        Text("Details").font(.subheadline.weight(.semibold))
+      }
     }
     .accessibilityIdentifier("vcs.failure.detailsToggle")
   }

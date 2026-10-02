@@ -238,6 +238,9 @@ final class BrokerClientTests: XCTestCase {
       XCTAssertEqual(refusal.code, "app_not_installed")
       XCTAssertEqual(refusal.installURL?.absoluteString, "https://codaset.localhost/install/o")
       XCTAssertTrue(refusal.userMessage.contains("GitHub App"))
+      // Names the owner from the install URL, and says an admin can install it themselves.
+      XCTAssertTrue(refusal.userMessage.contains("installed on o,"), refusal.userMessage)
+      XCTAssertTrue(refusal.userMessage.contains("If you're an admin of o, install"))
     } catch {
       XCTFail("unexpected \(error)")
     }
@@ -251,7 +254,14 @@ final class BrokerClientTests: XCTestCase {
       XCTFail("expected a refusal")
     } catch BrokerError.refused(let refusal) {
       XCTAssertEqual(refusal.code, "http_502")
-      XCTAssertEqual(refusal.userMessage, "http_502")
+      XCTAssertEqual(refusal.request, "POST broker/grants")
+      // Caddy's 502 for a stopped Codaset is the case that showed a bare "http_502" (#253).
+      XCTAssertFalse(refusal.userMessage.contains("http_502"), refusal.userMessage)
+      XCTAssertTrue(refusal.userMessage.contains("isn't responding"), refusal.userMessage)
+      // The code and the request go under the error sheet's Details instead.
+      XCTAssertEqual(
+        AppStore.errorDetails(BrokerError.refused(refusal)),
+        "HTTP 502 · http_502\nPOST broker/grants")
     } catch {
       XCTFail("unexpected \(error)")
     }

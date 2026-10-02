@@ -1408,6 +1408,41 @@ func TestDeleteRefusesRemoteWorkroom(t *testing.T) {
 	}
 }
 
+// A remote workroom whose host is already destroyed has nothing left to take down, so delete
+// drops its entry (#253), and still runs nothing on this Mac.
+func TestDeleteDropsADestroyedRemoteWorkroomAndRunsNothing(t *testing.T) {
+	for name, del := range map[string]func(*Service, string) error{
+		"Delete":            func(s *Service, dir string) error { return s.Delete(dir, "foo", "foo") },
+		"InteractiveDelete": func(s *Service, dir string) error { return s.InteractiveDelete(dir) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, dir, wrPath, marker, mock := remoteDeleteFixture(t)
+			svc.PromptFn = func(string, []string) ([]string, error) { return []string{"foo"}, nil }
+			if err := svc.Config.SetHost(dir, "foo", map[string]any{"id": "h1", "state": "destroyed"}); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := del(svc, dir); err != nil {
+				t.Fatalf("delete: %v", err)
+			}
+			if names, _ := svc.Config.WorkroomNames(dir); slices.Contains(names, "foo") {
+				t.Fatal("the destroyed workroom's entry survived")
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatal("the teardown script ran for a remote workroom")
+			}
+			if _, err := os.Stat(wrPath); err != nil {
+				t.Fatalf("the local directory of the same name was removed: %v", err)
+			}
+			for _, call := range mock.calls {
+				if slices.Contains(call, "forget") {
+					t.Fatalf("a local workspace was forgotten: %v", call)
+				}
+			}
+		})
+	}
+}
+
 func TestCreateAvoidsRemoteWorkroomNames(t *testing.T) {
 	svc, dir, _, _, _ := remoteDeleteFixture(t)
 	svc.VCS = &vcs.Git{Executor: &mockExecutor{output: gitWorktrees(dir)}}

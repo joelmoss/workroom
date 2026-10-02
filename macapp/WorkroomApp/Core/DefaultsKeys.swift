@@ -90,17 +90,24 @@ extension Defaults.Keys {
   /// OQ22 semantics: report only, and never let a box sleep on its own.
   static let askAtAwakeCeiling = Key<Bool>("askAtAwakeCeiling", default: false, suite: .app)
 
-  /// Shows the Remote workrooms section in Settings (the broker sign-in, #251) before remote
-  /// workrooms ship. Hidden: `defaults write <bundle id> remoteWorkroomsPreview -bool YES`.
+  /// Turns remote workrooms on in a Nightly or Dev build (`RemoteWorkrooms.isEnabled`): the
+  /// Remote workrooms section in Settings (the broker sign-in, #251) and creating, opening and
+  /// deleting them (#253). A stable build ignores it. Hidden:
+  /// `defaults write <bundle id> remoteWorkroomsPreview -bool YES`.
   static let remoteWorkroomsPreview = Key<Bool>(
     "remoteWorkroomsPreview", default: false, suite: .app)
+  /// The Docker image a remote workroom's host runs (#253): `make remote-host-image` builds it.
+  /// Hidden; override with `defaults write <bundle id> remoteHostImage <image>`.
+  static let remoteHostImage = Key<String>("remoteHostImage", default: "workroom-host", suite: .app)
   /// The Workroom credential broker (Codaset). Empty means the build's own: codaset.dev, or
   /// `https://codaset.localhost` in a Debug build, which only ever reaches this Mac
   /// (`BrokerEndpoint`). Hidden; override with `defaults write <bundle id> brokerURL <url>`.
   static let brokerURL = Key<String>("brokerURL", default: "", suite: .app)
   /// Debug builds only: the port of the development Codaset's Puma on this Mac, which a remote
-  /// agent's broker requests are carried to (`BrokerReverseForwards`). `bin/dev` pins it to 3000.
-  static let brokerAgentTarget = Key<Int>("brokerAgentTarget", default: 3000, suite: .app)
+  /// agent's broker requests are carried to (`BrokerReverseForwards`). 0, the default, asks Caddy
+  /// where it routes the broker's host (`DevelopmentCodaset`): `bin/dev` gives Puma a free port each
+  /// start. Hidden; pin one with `defaults write <bundle id> brokerAgentTarget -int <port>`.
+  static let brokerAgentTarget = Key<Int>("brokerAgentTarget", default: 0, suite: .app)
 
   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
   static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true, suite: .app)

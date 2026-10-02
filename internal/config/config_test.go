@@ -494,6 +494,40 @@ func TestSetHostStoresAndClearsDescriptorsVerbatim(t *testing.T) {
 	}
 }
 
+func TestAddRemoteWorkroomRecordsPathAndHostAndNeverReplaces(t *testing.T) {
+	c := newTestConfig(t)
+	if err := c.AddProject("/project", "git"); err != nil {
+		t.Fatal(err)
+	}
+	host := map[string]any{"driver": "container"}
+	if err := c.AddRemoteWorkroom("/project", "foo", "/home/workroom/p", host); err != nil {
+		t.Fatal(err)
+	}
+	projects, _ := c.AllProjects()
+	if w := projects["/project"].Workrooms["foo"]; !w.IsRemote() || w.Path != "/home/workroom/p" {
+		t.Fatalf("workroom = %#v", w)
+	}
+	if projects["/project"].VCS != "git" {
+		t.Fatalf("the project's vcs changed: %q", projects["/project"].VCS)
+	}
+	if err := c.AddRemoteWorkroom("/project", "foo", "/x", host); !errors.Is(err, errs.ErrWorkroomExists) {
+		t.Fatalf("same name: err = %v, want ErrWorkroomExists", err)
+	}
+	if err := c.AddRemoteWorkroom("/elsewhere", "bar", "/x", host); !errors.Is(err, errs.ErrProjectNotFound) {
+		t.Fatalf("unknown project: err = %v, want ErrProjectNotFound", err)
+	}
+	if err := c.AddRemoteWorkroom("workrooms_dir", "bar", "/x", host); !errors.Is(err, errs.ErrProjectNotFound) {
+		t.Fatalf("reserved key: err = %v, want ErrProjectNotFound", err)
+	}
+	if err := c.AddRemoteWorkroom("/project", "bar", "/x", nil); !errors.Is(err, errs.ErrInvalidHost) {
+		t.Fatalf("nil host: err = %v, want ErrInvalidHost", err)
+	}
+	projects, _ = c.AllProjects()
+	if w := projects["/project"].Workrooms["foo"]; w.Path != "/home/workroom/p" || len(projects["/project"].Workrooms) != 1 {
+		t.Fatalf("a refusal changed the config: %#v", projects["/project"])
+	}
+}
+
 func TestSetHostNeverCreatesAnEntry(t *testing.T) {
 	c := newTestConfig(t)
 	if err := c.AddProject("/project", "git"); err != nil {

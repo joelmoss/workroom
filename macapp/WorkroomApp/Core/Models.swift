@@ -21,10 +21,16 @@ struct HostDescriptor: Codable, Hashable {
   var state: String? = nil
   /// Which `HostDriver` made the host: `container` (`ContainerHostDriver`).
   var driver: String? = nil
+  /// The bundle ID of the build that made the host, whose key and labels it carries: a Dev and a
+  /// Nightly app share config but not keys, so each adopts only its own hosts.
+  var provisioner: String? = nil
   /// The host's `HostID.remote` ID.
   var id: UUID? = nil
   /// A workroom's broker grant, which destroying it cancels.
   var grantID: String? = nil
+  /// The ID a workroom's grant and its agent's route to the broker are keyed by
+  /// (`RemoteProvisioning.derive`). Chosen before the host exists, so not the host's.
+  var workroomID: UUID? = nil
   /// A base's repository, as `RemoteProvisioning.Base` records it.
   var repository: String? = nil
   var cloneURL: String? = nil
@@ -35,20 +41,23 @@ struct HostDescriptor: Codable, Hashable {
   var isDestroyed: Bool { state == "destroyed" }
 
   enum CodingKeys: String, CodingKey {
-    case state, driver, id, repository, path, container
+    case state, driver, provisioner, id, repository, path, container
     case grantID = "grant_id"
+    case workroomID = "workroom_id"
     case cloneURL = "clone_url"
   }
 
   init(
-    state: String? = nil, driver: String? = nil, id: UUID? = nil, grantID: String? = nil,
-    repository: String? = nil, cloneURL: String? = nil, path: String? = nil,
-    container: ContainerHostDriver.Record? = nil
+    state: String? = nil, driver: String? = nil, provisioner: String? = nil, id: UUID? = nil,
+    grantID: String? = nil, workroomID: UUID? = nil, repository: String? = nil,
+    cloneURL: String? = nil, path: String? = nil, container: ContainerHostDriver.Record? = nil
   ) {
     self.state = state
     self.driver = driver
+    self.provisioner = provisioner
     self.id = id
     self.grantID = grantID
+    self.workroomID = workroomID
     self.repository = repository
     self.cloneURL = cloneURL
     self.path = path
@@ -59,8 +68,10 @@ struct HostDescriptor: Codable, Hashable {
     let fields = try? decoder.container(keyedBy: CodingKeys.self)
     state = try? fields?.decodeIfPresent(String.self, forKey: .state)
     driver = try? fields?.decodeIfPresent(String.self, forKey: .driver)
+    provisioner = try? fields?.decodeIfPresent(String.self, forKey: .provisioner)
     id = try? fields?.decodeIfPresent(UUID.self, forKey: .id)
     grantID = try? fields?.decodeIfPresent(String.self, forKey: .grantID)
+    workroomID = try? fields?.decodeIfPresent(UUID.self, forKey: .workroomID)
     repository = try? fields?.decodeIfPresent(String.self, forKey: .repository)
     cloneURL = try? fields?.decodeIfPresent(String.self, forKey: .cloneURL)
     path = try? fields?.decodeIfPresent(String.self, forKey: .path)
@@ -162,8 +173,17 @@ struct TerminalTarget: Identifiable, Hashable {
   /// editor, run command, status) guards on `isMissing`; only the rendering sites tell the reasons
   /// apart.
   let unavailability: Unavailability?
+  /// The host of a remote workroom whose panes this app can reach (#253): set only while remote
+  /// workrooms are on (`RemoteWorkrooms.isEnabled`) and its host is recorded and serving. Panes
+  /// mount there; every other local action still guards on `isMissing`, which stays true.
+  var remoteHost: UUID? = nil
 
   var isMissing: Bool { unavailability != nil }
+
+  /// Why no pane can mount here, or nil when one can: `unavailability`, except for a remote
+  /// workroom whose host this app reaches.
+  var terminalUnavailability: Unavailability? { remoteHost == nil ? unavailability : nil }
+  var opensTerminals: Bool { terminalUnavailability == nil }
 
   enum Unavailability: Hashable {
     /// A local directory that no longer exists.
@@ -225,7 +245,17 @@ extension Workroom {
   func target(inProject projectPath: String) -> TerminalTarget {
     TerminalTarget(
       id: TerminalTarget.workroomID(project: projectPath, name: name),
-      title: displayName, path: path, unavailability: unavailability)
+      title: displayName, path: path, unavailability: unavailability,
+      remoteHost: reachableHost)
+  }
+
+  /// A host with no `state` is serving: "creating", "failed" and "destroyed" are not. Only this
+  /// build's: another build's host takes its key.
+  private var reachableHost: UUID? {
+    guard let host, host.state == nil, host.provisioner == RemoteWorkrooms.provisioner,
+      RemoteWorkrooms.isEnabled
+    else { return nil }
+    return host.id
   }
 
   private var unavailability: TerminalTarget.Unavailability? {

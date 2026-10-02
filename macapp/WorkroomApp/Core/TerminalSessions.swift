@@ -2082,8 +2082,17 @@ final class TerminalSessions: ObservableObject {
   ) -> TerminalTab {
     let count = (counts[target.id] ?? 0) + 1
     counts[target.id] = count
-    let view = makeView(target, cwd, command)
-    let assignedSessionID = assignedSessionID(persisted: sessionID, isRunCommand: command != nil)
+    // A remote workroom's path is a path on its host; this Mac's process starts in the home
+    // directory, and the session starts in the path on the far side (`registerRemote`).
+    let view = makeView(
+      target, target.remoteHost == nil ? cwd : NSHomeDirectory(), command)
+    let assignedSessionID =
+      target.remoteHost != nil && command == nil
+      ? sessionID ?? UUID()
+      : assignedSessionID(persisted: sessionID, isRunCommand: command != nil)
+    if let host = target.remoteHost, let assignedSessionID {
+      registerRemote(assignedSessionID, on: host, workingDirectory: target.path)
+    }
     view.persistentSessionID = assignedSessionID
     // `sessionID` non-nil means this pane is being rebuilt from a restore payload, so its id names
     // a session that may no longer exist. A fresh pane's id was minted a line ago.
@@ -2219,6 +2228,18 @@ final class TerminalSessions: ObservableObject {
         state.view.ensureSurfaceCreated(initialSize: CGSize(width: 800, height: 480))
       }
     }
+  }
+
+  /// A remote pane always has a session: without one the pane would be a plain shell on this Mac
+  /// that reads as the remote workroom's. With no driver to reach the host (no Docker), the
+  /// session is still registered against a driver that knows no host, so the pane says why
+  /// rather than opening that shell (`PersistentSessionService.attachCommand`).
+  private func registerRemote(_ session: UUID, on host: UUID, workingDirectory: String) {
+    let driver =
+      RemoteHosts.shared.existingDriver
+      ?? ContainerHostDriver(hosts: [:], directory: RemoteHosts.directory)
+    PersistentSessionService.shared.registerRemoteSession(
+      session, on: .remote(host), via: driver, workingDirectory: workingDirectory)
   }
 
   private func assignedSessionID(persisted: UUID?, isRunCommand: Bool) -> UUID? {

@@ -388,7 +388,7 @@ final class QuickSwitcherController {
 
   /// The `.panes` session's workroom, resolved from the id frozen at open.
   private func frozenPaneTarget(in store: AppStore) -> TerminalTarget? {
-    guard let sid = paneTargetID, let target = store.target(for: sid), !target.isMissing else {
+    guard let sid = paneTargetID, let target = store.target(for: sid), target.opensTerminals else {
       return nil
     }
     return target

@@ -49,7 +49,7 @@ struct RootView: View {
   /// the terminal is still withheld. Asking the pane's own question keeps ⌘T and its neighbours
   /// disabled over a create that has no terminal to act on.
   private var terminalInteractionAvailable: Bool {
-    guard let target = store.selectedTarget, !target.isMissing else { return false }
+    guard let target = store.selectedTarget, target.opensTerminals else { return false }
     return !store.isCreationBlocking(target.id)
   }
 
@@ -192,28 +192,20 @@ struct RootView: View {
     }
   }
 
-  /// Error alert, add-project importer, and the new-workroom / workroom-delete / project-delete
+  /// Error sheet, add-project importer, and the new-workroom / workroom-delete / project-delete
   /// presenters — all driven by store flags plus the `showImporter` state.
   private func rootModals<V: View>(_ content: V) -> some View {
     content
-      .alert(
-        store.errorTitle ?? "Something went wrong",
+      // A sheet, not an alert: an alert's message can't hold the collapsed Details.
+      .sheet(
         isPresented: Binding(
           get: { store.errorMessage != nil },
-          set: {
-            if !$0 {
-              store.errorMessage = nil
-              store.errorTitle = nil
-            }
-          }
+          set: { if !$0 { store.clearError() } }
         )
       ) {
-        Button("OK", role: .cancel) {
-          store.errorMessage = nil
-          store.errorTitle = nil
-        }
-      } message: {
-        Text(store.errorMessage ?? "")
+        ErrorSheet(
+          title: store.errorTitle ?? "Something went wrong", message: store.errorMessage ?? "",
+          details: store.errorDetails, link: store.errorLink, onDismiss: { store.clearError() })
       }
       // Add-project importer + delete confirmation, re-homed here from ProjectSidebar (issue #23 OV1) so
       // the ⌘O / ⌘⌫ menu commands present reliably even when the sidebar is collapsed in Workrooms View.

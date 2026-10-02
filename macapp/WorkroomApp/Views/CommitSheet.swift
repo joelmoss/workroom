@@ -605,7 +605,9 @@ private struct CommitFailureNotice: View {
           .frame(maxHeight: 120)
           .background(RoundedRectangle(cornerRadius: 5).fill(.quaternary.opacity(0.5)))
         } label: {
-          Text("Output").font(.caption.weight(.semibold))
+          DisclosureLabel(isExpanded: $showDetails) {
+            Text("Output").font(.caption.weight(.semibold))
+          }
         }
         .accessibilityIdentifier("commit.failure.detailsToggle")
       }

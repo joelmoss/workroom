@@ -261,6 +261,19 @@ struct ProjectSidebar: View {
       // of which can own the loader slot. Re-read here rather than reusing the `busy` above: that one
       // is scoped to the row's own `HStack` builder.
       .disabled(store.isBusyProject(project.path))
+      // Nightly and Dev, behind the preview setting (#253). The workroom belongs to this local
+      // project: its base machine is cloned from the project's GitHub origin.
+      if RemoteWorkrooms.isEnabled {
+        Button {
+          Task { await store.createRemoteWorkroom(in: project) }
+        } label: {
+          Label("New Remote Workroom", systemImage: "network")
+        }
+        .help(
+          "A workroom of \(project.displayName) on a remote host, cloned from its GitHub origin"
+        )
+        .disabled(store.isBusyProject(project.path))
+      }
       Divider()
       Button {
         store.pendingProjectSettings = PendingProjectSettings(project: project)

@@ -34,7 +34,7 @@ struct TargetTerminalDetail: View {
 
   var body: some View {
     ZStack {
-      if !target.isMissing && !store.isCreationBlocking(target.id) {
+      if target.opensTerminals && !store.isCreationBlocking(target.id) {
         WorkroomTerminalsView(
           target: target, sessions: store.terminals, surfaceActive: surfaceActive,
           workroomIsSplit: workroomIsSplit)
@@ -58,7 +58,7 @@ struct TargetTerminalDetail: View {
       } else if store.isCreationBlocking(target.id) {
         CreationLoader()
       }
-      if let reason = target.unavailability {
+      if let reason = target.terminalUnavailability {
         ContentUnavailableView {
           Label(reason.title, systemImage: reason.systemImage)
         } description: {

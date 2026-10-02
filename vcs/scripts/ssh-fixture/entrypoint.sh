@@ -43,7 +43,10 @@ chmod 600 /home/workroom/.ssh/authorized_keys
 # agent, and it is the client run.sh and the Rust tests use over ssh. A test that removes the
 # installed one models a host with no agent, and the loop idles until the app pushes one.
 AGENT=/run/workroom/wr-agent
-install -o workroom -g workroom -m 700 /usr/local/bin/wr-agent "$AGENT"
+# Only the fixture's image has one; a `workroom-host` waits for the app's (#253).
+if [ -x /usr/local/bin/wr-agent ]; then
+  install -o workroom -g workroom -m 700 /usr/local/bin/wr-agent "$AGENT"
+fi
 
 # `--idle-timeout never`: a remote agent must keep running with no client attached, because its
 # BUSY/IDLE reports have to keep flowing while the Mac sleeps. Run as the ssh user, so the relay
@@ -68,9 +71,12 @@ install -o workroom -g workroom -m 700 /usr/local/bin/wr-agent "$AGENT"
 # The fixture's GitHub and broker (fake-github.py, #252), as the ssh user, with only the capability
 # it needs for 443. `/etc/hosts` is the runtime's, written afresh at every start and never
 # committed, so the name is mapped here each boot.
-grep -q ' github.com$' /etc/hosts || echo '127.0.0.1 github.com' >> /etc/hosts
-setpriv --reuid=workroom --regid=workroom --init-groups \
-  --inh-caps=+net_bind_service --ambient-caps=+net_bind_service \
-  env -i PATH=/usr/bin:/bin python3 /usr/local/bin/fake-github.py &
+# Only in the fixture's image: a `workroom-host` talks to the real github.com (#253).
+if [ -f /etc/workroom-fixture/github.pem ]; then
+  grep -q ' github.com$' /etc/hosts || echo '127.0.0.1 github.com' >> /etc/hosts
+  setpriv --reuid=workroom --regid=workroom --init-groups \
+    --inh-caps=+net_bind_service --ambient-caps=+net_bind_service \
+    env -i PATH=/usr/bin:/bin python3 /usr/local/bin/fake-github.py &
+fi
 
 exec /usr/sbin/sshd -D -e
