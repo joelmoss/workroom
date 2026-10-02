@@ -542,7 +542,8 @@ func (s *Service) nonGitWorkroomPath(dir, name string) (string, error) {
 		return "", err
 	}
 	wr, ok := projects[dir].Workrooms[name]
-	if !ok || wr.Path == "" {
+	// A remote workroom's path is on its host, so its absent local .git says nothing about it.
+	if !ok || wr.Path == "" || wr.IsRemote() {
 		return "", nil
 	}
 	if vcs.IsGitRepo(wr.Path) {
@@ -621,8 +622,11 @@ func (s *Service) InteractiveDelete(dir string) error {
 	}
 
 	for _, name := range selected {
-		// Same rule as Delete: a selection git does not list as a worktree may be a workroom Jujutsu
-		// made (#266), which is only forgotten.
+		// Same rules as Delete: a remote workroom is refused, and a selection git does not list as a
+		// worktree may be a workroom Jujutsu made (#266), which is only forgotten.
+		if err := s.refuseRemote(dir, name); err != nil {
+			return err
+		}
 		if !s.Pretend {
 			orphan, err := s.legacyWorkroomPath(dir, name)
 			if err != nil {
