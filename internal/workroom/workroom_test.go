@@ -1355,6 +1355,29 @@ func remoteDeleteFixture(t *testing.T) (svc *Service, dir, wrPath, marker string
 	return svc, dir, wrPath, marker, mock
 }
 
+// A remote workroom selected interactively is refused like a named one, and never mistaken for a
+// workroom Jujutsu made (git cannot list a remote path, and it has no local .git): its config entry
+// must survive and nothing local may run for it.
+func TestInteractiveDeleteRefusesRemoteWorkroom(t *testing.T) {
+	svc, dir, _, marker, mock := remoteDeleteFixture(t)
+	mock.output = gitWorktrees(dir)
+	svc.PromptFn = func(string, []string) ([]string, error) { return []string{"foo"}, nil }
+
+	if err := svc.InteractiveDelete(dir); !errors.Is(err, ErrRemoteWorkroom) {
+		t.Fatalf("expected ErrRemoteWorkroom, got %v", err)
+	}
+	projects, err := svc.Config.AllProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := projects[dir].Workrooms["foo"]; !ok {
+		t.Fatal("a remote workroom's config entry was removed")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the teardown script ran for a remote workroom")
+	}
+}
+
 func TestDeleteRefusesRemoteWorkroom(t *testing.T) {
 	for name, del := range map[string]func(*Service, string) error{
 		"Delete":            func(s *Service, dir string) error { return s.Delete(dir, "foo", "foo") },
