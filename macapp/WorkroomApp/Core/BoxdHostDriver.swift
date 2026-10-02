@@ -32,6 +32,13 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     var cli: URL
     /// What every machine and snapshot this driver makes is named after.
     var prefix = "workroom"
+    /// The boxd org this driver's machines belong to, as `boxd auth --json` reports the active
+    /// one: nil for the account's own. The CLI acts in whichever org is active, and its own org
+    /// cannot be named with `--org` (measured: "you are not a member of org …"), so the driver
+    /// checks the active org instead of choosing it, and refuses to act in another: there, its
+    /// machines read as "not found", which `destroy` would take for gone and leave running.
+    /// Whoever records a host records this beside it.
+    var org: String?
     /// The agent's socket on every host. On the home disk, never the tmpfs `/run`: the agent keeps
     /// its broker enrolment beside it (`broker.rs`), and a stopped machine would lose it.
     var agentSocket = "/home/boxd/.local/state/workroom/agent/agent.sock"
@@ -45,7 +52,8 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   /// Estimated from its measured parts, not timed end to end: the snapshot is most of it (9-11 s
-  /// for a stock machine's disk), the restore half a second, and the reboot a few seconds more. A derive keeps no process: the reboot ends every one.
+  /// for a stock machine's disk), the restore half a second, and the reboot a few seconds more.
+  /// A derive keeps no process: the reboot ends every one.
   var traits: HostDriverTraits {
     HostDriverTraits(
       transport: .sshStdio, deriveSpeed: .seconds(20), deriveCarriesLiveProcesses: false,
@@ -82,6 +90,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// A fresh machine, set up as a base: the identity unit has minted its identity and the
   /// supervisor is waiting for an agent. A machine that gets no further is removed.
   func create() async throws -> HostID {
+    try await checkOrg()
     let id = UUID()
     let name = name(of: id)
     do {
@@ -109,6 +118,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// writes the base's repository (`BaseLocks`).
   func deriveFromBase(_ base: HostID) async throws -> HostID {
     let baseName = name(of: try id(of: base))
+    try await checkOrg()
     // An instance's disk holds its enrolment key and credential helper: a copy would start with
     // both. Every base is a fresh machine, and every instance is made from a snapshot.
     let machine: Machine
@@ -134,13 +144,31 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       }
       // `snapshots save` prints nothing until it is done, and copying a base's disk takes a while.
       _ = try await cli(["snapshots", "save", baseName, name], timeout: 900)
+      // From here until the reboot the instance runs the base's processes (a restore resumes
+      // them), so nothing waits in between that does not have to.
       _ = try await cli(["machine", "new", name, "--from-snapshot", name])
-      _ = try await cli(["snapshots", "remove", name, "-y"])
-      // boxd names the machine on restore; a reboot before it had would boot it with the base's
-      // hostname, which its identity unit would take for its own. Measured to be there at once.
+      // boxd names the machine on restore; minting before it had would key the identity on the
+      // base's hostname. Measured to be there at once.
       try await awaitHostname(of: id)
+      // Minted before the reboot, so nothing in the boot can start with the base's: systemd
+      // documents that a process caches the machine-id it first reads, and the unit runs after
+      // early boot. Defensive: not reproduced on boxd, where PID 1 reported the new one either way
+      // (measured over D-Bus, 2026-10-02). The unit then finds its marker current.
+      // Flushed after: the reboot is a power cut, and an identity still in the page cache would
+      // boot as the base's.
+      let (minted, said) = try await exec(
+        "sudo /usr/local/libexec/workroom-identity && sync", on: .remote(id)
+      ).communicate(nil, timeout: 60)
+      guard minted == 0 else {
+        throw HostDriverError.provisioning("minting \(name)'s identity failed: \(said)")
+      }
+      let boot = try await bootID(of: id)
       _ = try await cli(["machine", "reboot", name])
-      try await awaitIdentity(of: id)
+      _ = try await cli(["snapshots", "remove", name, "-y"])
+      try await awaitIdentity(of: id, rebootedFrom: boot)
+      // The identity unit is done before the supervisor starts the agent, so a connection made
+      // the moment the marker is right can find nothing listening yet.
+      try await awaitAgent(of: id)
       return .remote(id)
     } catch {
       try await undo(error, id: id, snapshot: name)
@@ -151,7 +179,9 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// step of its own failed gets past the destroy it already did.
   func destroy(_ host: HostID) async throws {
     let id = try id(of: host)
+    try await checkOrg()
     if let failure = await remove(machine: name(of: id)) {
+      try Task.checkCancellation()
       throw HostDriverError.provisioning(failure)
     }
     try? FileManager.default.removeItem(at: hostDirectory(id))
@@ -162,6 +192,12 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   private func undo(_ error: any Error, id: UUID, snapshot: String?) async throws -> Never {
     let name = name(of: id)
     let leftover = await Task { () -> [String] in
+      // In another org, both would read as not found and count as removed.
+      do { try await self.checkOrg() } catch {
+        return ([name] + (snapshot.map { [$0] } ?? [])).map {
+          "\($0) not removed: \(error.localizedDescription)"
+        }
+      }
       var left: [String] = []
       if let failure = await self.remove(machine: name) { left.append(failure) }
       if let snapshot, let failure = await self.remove(snapshot: snapshot) { left.append(failure) }
@@ -181,7 +217,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       _ = try await cli(["machine", "remove", name, "-y"])
       return nil
     } catch let failure as CLIFailure where failure.notFound {
-      return nil
+      return await goneUnlessOrgChanged(name)
     } catch { return "machine \(name): \(error.localizedDescription)" }
   }
 
@@ -190,8 +226,17 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       _ = try await cli(["snapshots", "remove", name, "-y"])
       return nil
     } catch let failure as CLIFailure where failure.notFound {
-      return nil
+      return await goneUnlessOrgChanged(name)
     } catch { return "snapshot \(name): \(error.localizedDescription)" }
+  }
+
+  /// "Not found" means gone only in this driver's org: one switched to since the last check would
+  /// say the same of a machine still running there.
+  private func goneUnlessOrgChanged(_ name: String) async -> String? {
+    do {
+      try await checkOrg()
+      return nil
+    } catch { return "\(name) not removed: \(error.localizedDescription)" }
   }
 
   /// boxd's own readiness signal is not one: a restore can report `"boot": "timeout"` for a
@@ -202,15 +247,61 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     }
   }
 
-  /// Until the identity unit has run on this machine, its marker names another (the base's, on a
-  /// restored instance not yet rebooted) or none, so this also waits out the reboot.
-  private func awaitIdentity(of id: UUID) async throws {
+  /// Until the identity unit has run on this machine, its marker names another or none. With
+  /// `rebootedFrom`, it also waits out the reboot: the boot must be a new one.
+  private func awaitIdentity(of id: UUID, rebootedFrom boot: String? = nil) async throws {
+    let name = PosixShell.quoted(name(of: id))
     try await poll(
       id,
-      "test \"$(cat /etc/workroom-identity 2>/dev/null)\" = \(PosixShell.quoted(name(of: id)))"
-        + " && test \"$(hostname)\" = \(PosixShell.quoted(name(of: id)))",
+      "test \"$(cat /etc/workroom-identity 2>/dev/null)\" = \(name)"
+        + " && test \"$(hostname)\" = \(name)"
+        // A failed read is empty, which differs from any boot_id, so it must not pass as new.
+        + (boot.map {
+          " && boot=$(cat /proc/sys/kernel/random/boot_id) && test -n \"$boot\""
+            + " && test \"$boot\" != \(PosixShell.quoted($0))"
+        } ?? ""),
       tries: 150
     ) { "\(self.name(of: id)) never minted its identity: \($0)" }
+  }
+
+  private func bootID(of id: UUID) async throws -> String {
+    let (status, output) = try await exec(
+      "cat /proc/sys/kernel/random/boot_id", on: .remote(id)
+    ).communicate(nil, timeout: 30)
+    // The whole output must be the UUID: it carries stderr too, and a warning in it would make
+    // an unchanged boot_id compare as a new one.
+    let boot = output.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard status == 0, UUID(uuidString: boot) != nil else {
+      throw HostDriverError.provisioning("reading \(name(of: id))'s boot_id failed: \(output)")
+    }
+    return boot
+  }
+
+  /// Until the supervisor's agent answers on its socket. A base that was never given an agent
+  /// hands none on, and there is nothing to wait for: the bootstrap installs one and waits itself.
+  private func awaitAgent(of id: UUID) async throws {
+    let socket = configuration.agentSocket
+    let binary = PosixShell.quoted(AgentBootstrap.binary(besideSocket: socket))
+    try await poll(
+      id,
+      "test ! -e \(binary) || \(binary) list --socket \(PosixShell.quoted(socket)) > /dev/null",
+      tries: 75
+    ) { "\(self.name(of: id))'s agent never answered: \($0)" }
+  }
+
+  /// Refuses to act while boxd's active org is not this driver's (`Configuration.org`).
+  private func checkOrg() async throws {
+    let account: Account
+    do {
+      account = try decode(Account.self, await cli(["auth"]), "the signed-in account")
+    } catch let failure as CLIFailure {
+      throw HostDriverError.provisioning(failure.localizedDescription)
+    }
+    guard account.activeOrg == configuration.org else {
+      throw HostDriverError.invalidConfiguration(
+        "boxd's active org is \(account.activeOrg ?? "your own"), but this workroom's machines are"
+          + " in \(configuration.org ?? "your own"); switch back with `boxd auth switch`")
+    }
   }
 
   private func poll(
@@ -218,13 +309,15 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   ) async throws {
     var last = ""
     for _ in 0..<tries {
-      // A machine mid-reboot refuses, or holds the connection: neither is the answer.
-      if let (status, output) = try? await exec(check, on: .remote(id)).communicate(
-        nil, timeout: 20)
-      {
+      // A machine mid-reboot refuses, or holds the connection: neither is the answer, but the
+      // last one is what the failure says.
+      do {
+        let (status, output) = try await exec(check, on: .remote(id)).communicate(nil, timeout: 20)
         if status == 0 { return }
         last = output
-      }
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch { last = error.localizedDescription }
       try await Task.sleep(for: .milliseconds(400))
     }
     throw HostDriverError.provisioning(failure(last))
@@ -241,9 +334,14 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     var errorDescription: String? { "boxd \(command): \(said)" }
   }
 
+  /// `auth --json`, as far as the driver reads it.
+  private struct Account: Decodable {
+    let activeOrg: String?
+    enum CodingKeys: String, CodingKey { case activeOrg = "active_org" }
+  }
+
   /// `machine get --json`, as far as the driver reads it.
   struct Machine: Decodable {
-    let name: String
     /// `standalone`, `fork/<name>` or `snapshot/<name>:<version>`.
     let source: String
   }
@@ -261,6 +359,8 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   private func cli(_ arguments: [String], timeout: TimeInterval = 120) async throws -> String {
     let result = await runner.run(
       configuration.cli.path, arguments + ["--json"], in: NSHomeDirectory(), timeout: timeout)
+    // The runner kills the CLI when the task is cancelled, and that reads as a failure.
+    try Task.checkCancellation()
     guard result.ok else {
       let said =
         Self.errorLine(result.stderr)

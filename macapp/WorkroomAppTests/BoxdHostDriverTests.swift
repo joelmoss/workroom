@@ -93,21 +93,40 @@ final class BoxdHostDriverTests: XCTestCase {
     private let lock = NSLock()
     private var calls: [[String]] = []
     let answers: [String: CommandResult]
+    /// The active org each `auth` answers with, in turn; the account's own once they run out.
+    private var orgs: [String?]
+    /// Cancels the calling task from inside the CLI call naming this command.
+    var cancelling: String?
 
-    init(_ answers: [String: CommandResult]) { self.answers = answers }
+    init(_ answers: [String: CommandResult], orgs: [String?] = []) {
+      self.answers = answers
+      self.orgs = orgs
+    }
 
-    var commands: [String] { lock.withLock { calls.map { $0.prefix(2).joined(separator: " ") } } }
+    /// Every command but the org checks.
+    var commands: [String] {
+      lock.withLock { calls.map { $0.prefix(2).joined(separator: " ") } }
+        .filter { $0 != "auth --json" }
+    }
 
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
       async -> CommandResult
     {
       lock.withLock { calls.append(args) }
-      return answers[args.prefix(2).joined(separator: " ")]
+      let command = args.prefix(2).joined(separator: " ")
+      if command == cancelling { withUnsafeCurrentTask { $0?.cancel() } }
+      // The account's own org is active unless a test says otherwise.
+      if command == "auth --json", answers[command] == nil {
+        let org = lock.withLock { orgs.isEmpty ? nil : orgs.removeFirst() }
+        return BoxdHostDriverTests.ok(
+          org.map { #"{"active_org":"\#($0)"}"# } ?? #"{"active_org":null}"#)
+      }
+      return answers[command]
         ?? CommandResult(stdout: "", stderr: "error: unexpected", exitCode: 1, timedOut: false)
     }
   }
 
-  private static func ok(_ json: String) -> CommandResult {
+  fileprivate static func ok(_ json: String) -> CommandResult {
     CommandResult(stdout: json, stderr: "", exitCode: 0, timedOut: false)
   }
   private static func failed(_ said: String) -> CommandResult {
@@ -184,6 +203,55 @@ final class BoxdHostDriverTests: XCTestCase {
     } catch HostDriverError.unknownHost(let host) {
       XCTAssertEqual(host, base)
     }
+  }
+
+  /// In another org this driver's machines read as not found, which `destroy` takes for gone: so
+  /// nothing is done there, and a rollback names what it could not remove.
+  func testNothingIsDoneWhileAnotherOrgIsActive() async throws {
+    let cli = StubCLI([
+      "auth --json": Self.ok(#"{"active_org":"acme"}"#),
+      "machine remove": Self.failed("error: VM 'x' not found"),
+    ])
+    do {
+      try await driver(cli).destroy(.remote(UUID()))
+      XCTFail("a destroy went ahead in another org")
+    } catch HostDriverError.invalidConfiguration(let detail) {
+      XCTAssertTrue(detail.contains("acme"), detail)
+    }
+    do {
+      _ = try await driver(cli).create()
+      XCTFail("a create went ahead in another org")
+    } catch HostDriverError.invalidConfiguration {}
+    XCTAssertEqual(cli.commands, [], "a command ran in another org")
+
+    // The same org, named: it goes ahead.
+    let named = BoxdHostDriver(
+      configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), org: "acme"),
+      directory: FileManager.default.temporaryDirectory, runner: cli)
+    try await named.destroy(.remote(UUID()))
+    XCTAssertEqual(cli.commands, ["machine remove"])
+  }
+
+  /// The org can change between the check and the removal: "not found" then means nothing.
+  func testANotFoundAfterTheOrgChangedIsNotTakenForGone() async throws {
+    let cli = StubCLI(
+      ["machine remove": Self.failed("error: VM 'x' not found")], orgs: [nil, "acme"])
+    do {
+      try await driver(cli).destroy(.remote(UUID()))
+      XCTFail("a machine in the old org was taken for gone")
+    } catch HostDriverError.provisioning(let detail) {
+      XCTAssertTrue(detail.contains("acme"), detail)
+    }
+  }
+
+  /// A cancelled call is a cancellation, not a provisioning failure.
+  func testACancelledCLICallThrowsCancellation() async throws {
+    let cli = StubCLI(["machine remove": Self.ok("{}")])
+    cli.cancelling = "machine remove"
+    do {
+      try await driver(cli).destroy(.remote(UUID()))
+      XCTFail("a cancelled destroy reported success")
+    } catch is CancellationError {}
   }
 
   func testDestroyingAMachineAlreadyGoneSucceedsAndAFailedRemovalThrows() async throws {

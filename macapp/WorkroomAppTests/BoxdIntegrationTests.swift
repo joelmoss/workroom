@@ -164,6 +164,29 @@ final class BoxdIntegrationTests: XCTestCase {
     XCTAssertEqual(try leftovers("machine"), [])
   }
 
+  /// A derive returns once its agent answers, not merely once its identity is minted: the
+  /// supervisor starts the agent after the identity unit, so a connection made at once could find
+  /// nothing listening. The base's supervisor is made slow to show it.
+  func testADerivedWorkroomServesAsSoonAsItsDeriveReturns() async throws {
+    let driver = driver()
+    let base = try await driver.create()
+    _ = try await connect(driver, base)
+    try await onHost(
+      driver, base,
+      "sudo mkdir -p /etc/systemd/system/workroom-agent.service.d"
+        + " && printf '[Service]\\nExecStartPre=/bin/sleep 8\\n'"
+        + " | sudo tee /etc/systemd/system/workroom-agent.service.d/slow.conf > /dev/null"
+        + " && sudo systemctl daemon-reload")
+
+    let instance = try await driver.deriveFromBase(base)
+    // No bootstrap: straight to the agent, as a caller would once the derive has returned.
+    let connection = try await AgentVCSConnection.connect(
+      host: instance, stream: try await driver.openStream(to: instance))
+    connections.append(connection)
+
+    for host in [instance, base] { try await driver.destroy(host) }
+  }
+
   /// AC 5, for the provider's steps: a derive that fails at each CLI step, or after it ran (`+`:
   /// the machine or snapshot exists and the CLI said otherwise), leaves no machine or snapshot.
   func testADeriveThatFailsAtEachStepLeavesNoMachineOrSnapshot() async throws {
