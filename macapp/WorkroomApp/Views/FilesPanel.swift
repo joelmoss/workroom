@@ -42,7 +42,8 @@ struct FilesPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     // Point the tree at the inspector's active target (nil once all its tabs close → the tree
     // clears), only while Files is the active activity-bar section. Re-runs on either change;
-    // `activate` no-ops when already on the path, so re-selecting the same target is instant.
+    // `activate` no-ops when already on a local path, so re-selecting the same target is instant; a
+    // remote tree has no watcher, so it is listed again.
     .task(id: activationKey) {
       guard store.activeInspectorSection == .files else { return }
       let target = store.inspectorTarget
@@ -62,6 +63,8 @@ struct FilesPanel: View {
   /// of behaving like `VStack` with no viewport to bound against.
   private var fileList: some View {
     let rows = model.rows
+    // Once per list, not per row: resolving the target can stat its directory.
+    let canOpenInEditor = store.inspectorTarget?.isMissing == false
     let capped = Array(rows.prefix(FileTreeModel.renderCap))
     return LazyVStack(alignment: .leading, spacing: 0) {
       ForEach(capped, id: \.node.path) { row in
@@ -71,7 +74,7 @@ struct FilesPanel: View {
           onOpenPreview: { store.openFilePreview(path: row.node.path) },
           onOpenPersistent: { store.openFilePersistent(path: row.node.path) },
           onOpenInEditor: { store.openFileInEditor(path: row.node.path) },
-          canOpenInEditor: store.inspectorTarget?.isMissing == false
+          canOpenInEditor: canOpenInEditor
         )
         .equatable()
       }

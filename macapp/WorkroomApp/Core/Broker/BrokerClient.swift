@@ -267,7 +267,10 @@ struct BrokerClient: Sendable {
     let code = object["error"] as? String ?? "http_\(status)"
     return BrokerRefusal(
       status: status, code: code, message: object["message"] as? String ?? code,
-      installURL: (object["install_url"] as? String).flatMap(URL.init(string:)), request: request)
+      // Opened by a button (`ErrorSheet`), so only an https one is kept.
+      installURL: (object["install_url"] as? String).flatMap(URL.init(string:)).flatMap {
+        $0.scheme == "https" ? $0 : nil
+      }, request: request)
   }
 
   /// An HTTP `Date` (IMF-fixdate).

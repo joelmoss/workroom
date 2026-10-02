@@ -867,7 +867,10 @@ final class TerminalSessions: ObservableObject {
       if saved.kind == TabSession.terminalKind, let payload = saved.terminal {
         // `command:` is deliberately never passed: run tabs are not persisted, and this makes even a
         // hand-edited file unable to start a process on launch.
-        let cwd = Self.restoredCwd(payload.cwd, fallback: target.path)
+        // A remote pane's path is on its host, which this Mac can't check: its own path, always.
+        let cwd =
+          target.remoteHost == nil
+          ? Self.restoredCwd(payload.cwd, fallback: target.path) : target.path
         tab = makeTerminalTab(
           for: target,
           cwd: cwd,
@@ -1370,7 +1373,15 @@ final class TerminalSessions: ObservableObject {
       desc.isPreview = true
       return TerminalTab.changeset(desc)
     }
-    let cwd = anchor.surface?.lastKnownCwd ?? target.path
+    // A remote pane's directory is the host's answer (`hostCwd`): its local surface sees no OSC 7.
+    var cwd = anchor.surface?.lastKnownCwd ?? target.path
+    if target.remoteHost != nil {
+      if case .terminal(let state) = anchor.content, let hostCwd = state.hostCwd {
+        cwd = hostCwd
+      } else {
+        cwd = target.path
+      }
+    }
     return makeTerminalTab(for: target, cwd: cwd)
   }
 
@@ -1860,7 +1871,7 @@ final class TerminalSessions: ObservableObject {
       shell: (ShellEnvironment.loginShell() as NSString).lastPathComponent,
       output: view.readCommandRegion() ?? "",
       isRunTab: view.isRunCommandSurface,
-      isRemote: false)
+      isRemote: s.sessionID.map(PersistentSessionService.shared.isRemote) ?? false)
     agentManager.commandFinished(tab: tabID, target: target, failure: failure)
   }
 
@@ -2091,7 +2102,8 @@ final class TerminalSessions: ObservableObject {
       ? sessionID ?? UUID()
       : assignedSessionID(persisted: sessionID, isRunCommand: command != nil)
     if let host = target.remoteHost, let assignedSessionID {
-      registerRemote(assignedSessionID, on: host, workingDirectory: target.path)
+      // `cwd` is a path on the host here: the target's, or a split's anchor pane's.
+      registerRemote(assignedSessionID, on: host, workingDirectory: cwd)
     }
     view.persistentSessionID = assignedSessionID
     // `sessionID` non-nil means this pane is being rebuilt from a restore payload, so its id names

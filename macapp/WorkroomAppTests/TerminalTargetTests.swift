@@ -141,4 +141,35 @@ final class TerminalTargetTests: XCTestCase {
       target([destroyed], HostDescriptor(state: "destroyed")).unavailability, .hostDestroyed)
     XCTAssertTrue(target([destroyed], HostDescriptor(state: "destroyed")).isMissing)
   }
+
+  /// A remote workroom this build could reach says why its panes don't open, rather than that this
+  /// build cannot open remote workrooms (#253).
+  func testAnUnopenedRemoteWorkroomSaysWhy() {
+    let saved = Defaults[.remoteWorkroomsPreview]
+    defer { Defaults[.remoteWorkroomsPreview] = saved }
+    Defaults[.remoteWorkroomsPreview] = true
+    let mine = RemoteWorkrooms.provisioner
+    func detail(_ host: HostDescriptor) -> String {
+      let target = Workroom(
+        name: "x", path: "/home/w", vcsName: "workroom/x", warnings: [], host: host
+      ).target(inProject: "/proj")
+      return target.terminalUnavailability?.detail(for: target) ?? ""
+    }
+
+    XCTAssertTrue(
+      detail(HostDescriptor(state: "creating", provisioner: mine)).contains("isn't ready"))
+    XCTAssertTrue(
+      detail(HostDescriptor(state: "failed", provisioner: mine, id: UUID()))
+        .contains("Delete it to finish"))
+    XCTAssertTrue(
+      detail(HostDescriptor(provisioner: "another.build", id: UUID())).contains("another.build"))
+    XCTAssertNil(
+      Workroom(
+        name: "x", path: "/home/w", vcsName: "workroom/x", warnings: [],
+        host: HostDescriptor(provisioner: mine, id: UUID())
+      ).remoteNote, "a serving workroom opens")
+    Defaults[.remoteWorkroomsPreview] = false
+    XCTAssertTrue(
+      detail(HostDescriptor(provisioner: mine, id: UUID())).contains("turned off in this build"))
+  }
 }

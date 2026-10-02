@@ -246,6 +246,35 @@ final class BrokerClientTests: XCTestCase {
     }
   }
 
+  /// The install link is opened by a button: only an https one is kept.
+  func testAnInstallLinkThatIsNotHTTPSIsDropped() async {
+    BrokerStub.reset([
+      .init(
+        status: 409,
+        body: #"{"error":"app_not_installed","message":"x","install_url":"file:///Applications"}"#)
+    ])
+    do {
+      _ = try await client().createGrant(repository: "o/r", workroomID: UUID())
+      XCTFail("expected a refusal")
+    } catch BrokerError.refused(let refusal) {
+      XCTAssertNil(refusal.installURL)
+    } catch {
+      XCTFail("unexpected \(error)")
+    }
+  }
+
+  /// A server failure and a code this build doesn't know each read as what they are.
+  func testServerFailuresAndUnknownCodesHaveTheirOwnWords() {
+    func message(_ status: Int, _ code: String, _ text: String) -> String {
+      BrokerRefusal(status: status, code: code, message: text, installURL: nil).userMessage
+    }
+    XCTAssertTrue(message(503, "http_503", "http_503").contains("isn't responding right now"))
+    XCTAssertTrue(message(504, "http_504", "http_504").contains("isn't responding right now"))
+    XCTAssertTrue(message(500, "http_500", "http_500").contains("a problem on its side"))
+    XCTAssertEqual(message(400, "weird", "weird"), "Codaset refused the request.")
+    XCTAssertEqual(message(400, "weird", "Because."), "Because.")
+  }
+
   func testANonJSONErrorBecomesAnHTTPStatusRefusal() async {
     BrokerStub.reset([.init(status: 502, body: "<html>Bad Gateway</html>")])
 

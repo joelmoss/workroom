@@ -45,6 +45,7 @@ enum RemoteWorkrooms {
     case noDocker
     case anotherBuildsBase(String)
     case anotherBuildsHost(String)
+    case baseRepositoryChanged(base: String, origin: String)
 
     var errorDescription: String? {
       switch self {
@@ -59,6 +60,12 @@ enum RemoteWorkrooms {
       case .anotherBuildsHost(let build):
         return "It runs on a remote host another Workroom build made (\(build)), which this build "
           + "can't take down. Delete it from that build."
+      case .baseRepositoryChanged(let base, let origin):
+        return
+          "This project's base machine is a clone of \(base), but its GitHub repository is now "
+          + "\(origin): its origin changed, or the repository was renamed or moved. Its remote "
+          + "workrooms would clone \(base). To start over from \(origin), delete the project (its "
+          + "remote workrooms and base go with it) and add it again."
       case .noDocker:
         return "Remote workrooms run on Docker on this Mac for now, and no docker command was "
           + "found. Install Docker Desktop, then run `make remote-host-image`."
@@ -124,6 +131,13 @@ enum RemoteWorkrooms {
       throw Failure.anotherBuildsBase(existing.provisioner ?? "an unknown build")
     }
     if let recorded = existing?.base {
+      // Reused only for the repository it cloned: a changed origin would otherwise get workrooms of
+      // the old one, with credentials for it.
+      let origin = "\(repository.owner)/\(repository.name)"
+      // GitHub names are case-insensitive.
+      guard recorded.repository.lowercased() == origin.lowercased() else {
+        throw Failure.baseRepositoryChanged(base: recorded.repository, origin: origin)
+      }
       base = recorded
     } else {
       base = try await RemoteProvisioning.buildBase(
@@ -150,19 +164,23 @@ enum RemoteWorkrooms {
     let instance: RemoteProvisioning.Instance
     do {
       instance = try await RemoteProvisioning.derive(
-        from: base, workroom: workroomID, branch: branch(for: name), in: environment)
+        from: base, workroom: workroomID, branch: branch(for: name), in: environment
+      ) { host, grant in
+        // Still `creating`, but now naming what a delete has to take down.
+        try await recorder.record(
+          name,
+          remaining(
+            state: "creating", workroomID: workroomID, host: host, grant: grant, driver: driver))
+      }
     } catch RemoteProvisioning.Failure.rollbackIncomplete(let cause, let host, let grant, let left)
     {
       // `destroyed` only with nothing live: the CLI deletes a destroyed entry, and a live grant
       // must keep its record until the app's delete cancels it.
-      var live = HostDescriptor(
-        state: host == nil && grant == nil ? "destroyed" : "failed", driver: containerDriver,
-        provisioner: provisioner, grantID: grant, workroomID: workroomID)
-      if case .remote(let id) = host {
-        live.id = id
-        live.container = driver.record(of: .remote(id))
-      }
-      try? await recorder.record(name, live)
+      try? await recorder.record(
+        name,
+        remaining(
+          state: host == nil && grant == nil ? "destroyed" : "failed", workroomID: workroomID,
+          host: host, grant: grant, driver: driver))
       throw RemoteProvisioning.Failure.rollbackIncomplete(
         cause: cause, host: host, grantID: grant, cleanup: left)
     } catch {
@@ -181,11 +199,36 @@ enum RemoteWorkrooms {
           workroomID: workroomID, container: driver.record(of: instance.host)))
     } catch {
       // Unrecorded, the instance would be found by nothing but the sweep, and its grant by nothing.
-      try? await RemoteProvisioning.destroy(instance, workroom: workroomID, in: environment)
+      do {
+        try await RemoteProvisioning.destroy(instance, workroom: workroomID, in: environment)
+      } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, let grant, _) {
+        // Something is still live: the entry stays, `failed`, for delete to finish.
+        try? await recorder.record(
+          name,
+          remaining(
+            state: "failed", workroomID: workroomID, host: host, grant: grant, driver: driver))
+        throw error
+      } catch {
+        // `destroy` throws nothing else: everything it made is gone.
+      }
       try? await recorder.forget(name)
       throw error
     }
     return Created(name: name, instance: instance)
+  }
+
+  /// The descriptor of a workroom whose undoing left `host` and `grant` live.
+  private static func remaining(
+    state: String, workroomID: UUID, host: HostID?, grant: String?, driver: ContainerHostDriver
+  ) -> HostDescriptor {
+    var descriptor = HostDescriptor(
+      state: state, driver: containerDriver, provisioner: provisioner, grantID: grant,
+      workroomID: workroomID)
+    if case .remote(let id) = host {
+      descriptor.id = id
+      descriptor.container = driver.record(of: .remote(id))
+    }
+    return descriptor
   }
 
   /// Whether `host` records anything still up: a box or a grant. A destroyed one has nothing, and
@@ -264,6 +307,20 @@ final class RemoteHosts: @unchecked Sendable {
   private var connecting: [HostID: Task<Void, Error>] = [:]
   /// When each host's last attempt failed, which answers for it for `retryAfter`.
   private var failedAt: [HostID: ContinuousClock.Instant] = [:]
+  /// `ensureConnected`'s seams, nil in the app: the connect itself, whether a host is up, the clock.
+  private let connectHost: (@Sendable (HostID) async throws -> Void)?
+  private let isConnected: (@Sendable (HostID) async -> Bool)?
+  private let now: @Sendable () -> ContinuousClock.Instant
+
+  init(
+    connectHost: (@Sendable (HostID) async throws -> Void)? = nil,
+    isConnected: (@Sendable (HostID) async -> Bool)? = nil,
+    now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
+  ) {
+    self.connectHost = connectHost
+    self.isConnected = isConnected
+    self.now = now
+  }
 
   /// How long a failed connect answers for its host before another is tried. The status sweep and
   /// every panel ask again, and each attempt at a host that is down waits out ssh's connect
@@ -352,7 +409,18 @@ final class RemoteHosts: @unchecked Sendable {
   /// another build made (`RemoteWorkrooms.checkDeletable`).
   @MainActor
   func environment(toDelete hosts: [HostDescriptor]) throws -> RemoteProvisioning.Environment? {
-    try RemoteWorkrooms.checkDeletable(hosts) ? environment().1 : nil
+    guard try RemoteWorkrooms.checkDeletable(hosts) else { return nil }
+    let (driver, environment) = try environment()
+    // Taking a box down needs it on the driver, whatever a reload adopted: with previews off it
+    // adopted nothing, and the box would read as unknown.
+    for host in hosts where RemoteWorkrooms.isLive(host) {
+      guard let id = host.id, let record = host.container, driver.record(of: .remote(id)) == nil
+      else { continue }
+      do { try driver.adopt(id, record) } catch {
+        Self.logger.error("adopting host \(id, privacy: .public): \(error, privacy: .public)")
+      }
+    }
+    return environment
   }
 
   /// The app's service connection to `host` (`HostConnectionManager`), with its agent bootstrapped
@@ -374,15 +442,24 @@ final class RemoteHosts: @unchecked Sendable {
   /// logged.
   func ensureConnected(_ host: HostID) async throws {
     guard case .remote = host else { return }
-    if await HostConnectionManager.shared.snapshot(for: host).status == .connected { return }
-    if let failed = lock.withLock({ failedAt[host] }), .now - failed < Self.retryAfter {
+    let up: Bool
+    if let isConnected {
+      up = await isConnected(host)
+    } else {
+      up = await HostConnectionManager.shared.snapshot(for: host).status == .connected
+    }
+    if up { return }
+    if let failed = lock.withLock({ failedAt[host] }), now() - failed < Self.retryAfter {
       throw RepositoryRoutingError.unavailable(host)
     }
     do {
-      let driver = try driver()
+      let connect =
+        try connectHost ?? { [driver = try driver()] in
+          try await self.connect($0, driver: driver)
+        }
       let task = lock.withLock { () -> Task<Void, Error> in
         if let running = connecting[host] { return running }
-        let task = Task { try await self.connect(host, driver: driver) }
+        let task = Task { try await connect(host) }
         connecting[host] = task
         return task
       }
@@ -392,7 +469,7 @@ final class RemoteHosts: @unchecked Sendable {
     } catch is CancellationError {
       throw CancellationError()
     } catch {
-      lock.withLock { failedAt[host] = .now }
+      lock.withLock { failedAt[host] = now() }
       Self.logger.error(
         "connecting \(String(describing: host), privacy: .public): \(error, privacy: .public)")
       throw RepositoryRoutingError.unavailable(host)
@@ -432,23 +509,39 @@ final class RemoteHosts: @unchecked Sendable {
       labels: ["workroom.provisioner=\(RemoteWorkrooms.provisioner)"])
   }
 
-  /// This Mac's ssh key for its remote hosts, made the first time: ed25519, no passphrase (ssh
-  /// runs in `BatchMode`), in the app's own 0700 directory.
-  private static func clientKey() throws -> URL {
+  /// This Mac's ssh key for its remote hosts, in `directory`, made the first time: ed25519, no
+  /// passphrase (ssh runs in `BatchMode`), in the app's own 0700 directory.
+  static func clientKey(in directory: URL = RemoteHosts.directory) throws -> URL {
     let key = directory.appendingPathComponent("id_ed25519")
-    if FileManager.default.fileExists(atPath: key.path) { return key }
+    let pub = key.appendingPathExtension("pub")
+    if FileManager.default.fileExists(atPath: key.path) {
+      // A keygen cut short can leave the private half alone; the public half follows from it.
+      if !FileManager.default.fileExists(atPath: pub.path) {
+        try keygen(["-y", "-f", key.path]).write(to: pub, options: .atomic)
+      }
+      return key
+    }
     try FileManager.default.createDirectory(
       at: directory, withIntermediateDirectories: true,
       attributes: [.posixPermissions: 0o700])
-    let keygen = Process()
-    keygen.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
-    keygen.arguments = ["-q", "-t", "ed25519", "-N", "", "-C", "workroom-remote", "-f", key.path]
-    try keygen.run()
-    keygen.waitUntilExit()
-    guard keygen.terminationStatus == 0 else {
-      throw HostDriverError.invalidConfiguration(
-        "ssh-keygen exited \(keygen.terminationStatus) making \(key.path)")
-    }
+    _ = try keygen(["-q", "-t", "ed25519", "-N", "", "-C", "workroom-remote", "-f", key.path])
     return key
+  }
+
+  /// Runs `ssh-keygen` with `arguments`, returning what it printed.
+  private static func keygen(_ arguments: [String]) throws -> Data {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+    process.arguments = arguments
+    let out = Pipe()
+    process.standardOutput = out
+    try process.run()
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+      throw HostDriverError.invalidConfiguration(
+        "ssh-keygen \(arguments.joined(separator: " ")) exited \(process.terminationStatus)")
+    }
+    return data
   }
 }

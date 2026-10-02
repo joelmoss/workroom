@@ -272,7 +272,7 @@ struct ProjectSidebar: View {
         .help(
           "A workroom of \(project.displayName) on a remote host, cloned from its GitHub origin"
         )
-        .disabled(store.isBusyProject(project.path))
+        .disabled(!store.canCreateRemoteWorkroom(in: project))
       }
       Divider()
       Button {
