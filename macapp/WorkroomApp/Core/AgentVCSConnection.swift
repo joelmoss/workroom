@@ -430,6 +430,18 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     return directory?.isEmpty == false ? directory : nil
   }
 
+  /// The same `Kill` frame the local control client sends, on this connection's Control service.
+  func endSession(_ session: UUID) async throws -> Bool {
+    guard let identifier = SessionIdentifier(uuidString: session.uuidString) else { return true }
+    let reply = try await request(
+      bytes: Data(
+        SessionFrame(kind: .kill, payload: SessionIdentifierPayload.encode(identifier)).encoded()),
+      timeout: 30, service: Self.controlService)
+    var frames = SessionFrameDecoder()
+    frames.push(Array(reply))
+    return try frames.next()?.kind == .acknowledged
+  }
+
   /// The port-forwarding service on this connection, or `VCSError.backendVersion` when the peer
   /// predates it (issue #208).
   ///

@@ -185,6 +185,34 @@ final class AgentVCSIntegrationTests: XCTestCase {
     await connection.close()
   }
 
+  /// Closing a remote pane ends its session over the service connection (#283): the agent
+  /// acknowledges the kill and no longer holds the session. A session it never held is
+  /// acknowledged too, so a second close succeeds, and the connection's other services keep working.
+  func testTheServiceConnectionEndsASession() async throws {
+    let agent = try AgentHarness.start(environment: environment)
+    agents.append(agent)
+    let connection = try await AgentVCSConnection.connect(
+      host: .local, socketPath: agent.socketPath)
+    let session = UUID()
+    try agent.startSession(identifier: session)
+    var directory: String?
+    for _ in 0..<100 {
+      directory = try await connection.workingDirectory(of: session)
+      if directory != nil { break }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    XCTAssertNotNil(directory, "the session never started")
+
+    let ended = try await connection.endSession(session)
+    XCTAssertTrue(ended)
+    let gone = try await connection.workingDirectory(of: session)
+    XCTAssertNil(gone)
+    let again = try await connection.endSession(session)
+    XCTAssertTrue(again)
+    _ = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
+    await connection.close()
+  }
+
   /// A Control envelope nobody asked for (a late reply, or something a newer agent sends) is
   /// dropped. Failing the connection over it would take every VCS, File and Status request on it
   /// down with a session list nobody is waiting for.

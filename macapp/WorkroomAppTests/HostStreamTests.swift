@@ -285,8 +285,8 @@ final class HostStreamTests: XCTestCase {
     XCTAssertTrue(notice.hasPrefix("/bin/sh -c "), notice)
     XCTAssertTrue(notice.contains("Could not reach this terminal"), notice)
 
-    // Closing it reaches no local helper (the ownership closure above fails the test if asked),
-    // and reports it not killed, which is true.
+    // Closing it reaches no local helper (the ownership closure above fails the test if asked).
+    // This service's host never acknowledges a kill, so the session is reported not killed.
     let killed = await service.endSession(sessionID: session)
     XCTAssertFalse(killed)
     // Still remote: the session runs on, and a retry or a reattach must not go local.
@@ -295,6 +295,41 @@ final class HostStreamTests: XCTestCase {
     XCTAssertFalse(again)
     XCTAssertTrue(
       service.attachCommand(forSession: session, restored: true)?.contains("/usr/bin/ssh") == true)
+  }
+
+  /// Closing a remote pane ends its session through its own host (#283). An acknowledged kill
+  /// forgets the registration; an unreachable host keeps it, since the session runs on there.
+  @MainActor
+  func testClosingARemotePaneEndsItsSessionOnItsHost() async throws {
+    let host = UUID()
+    var ended: [(UUID, HostID)] = []
+    var reachable = false
+    let service = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "none here") },
+      ownership: { _ in
+        XCTFail("a local helper was asked about a remote session")
+        return .notOwned
+      },
+      endRemote: { session, onHost in
+        ended.append((session, onHost))
+        guard reachable else { throw RepositoryRoutingError.unavailable(onHost) }
+        return true
+      })
+    let driver = ContainerHostDriver(hosts: [:], directory: FileManager.default.temporaryDirectory)
+    let session = UUID()
+    service.registerRemoteSession(
+      session, on: .remote(host), via: driver, workingDirectory: "/home/w")
+
+    let unreachable = await service.endSession(sessionID: session)
+    XCTAssertFalse(unreachable)
+    XCTAssertTrue(service.isRemote(session))
+
+    reachable = true
+    let killed = await service.endSession(sessionID: session)
+    XCTAssertTrue(killed)
+    XCTAssertFalse(service.isRemote(session))
+    XCTAssertEqual(ended.map(\.0), [session, session])
+    XCTAssertEqual(ended.map(\.1), [.remote(host), .remote(host)])
   }
 
   /// Why a carrier ended, read from its termination handler (#231 moved it off `isRunning` and

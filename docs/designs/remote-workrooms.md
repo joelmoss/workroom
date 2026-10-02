@@ -1087,10 +1087,11 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     erases that once ssh is in (`RemoteReconnectBackoff`, `ContainerHostDriver.attachWrapper`). A
     session that itself exited 255 is reported as 254 by the remote attach, so it never reads as
     a dropped link.
-  - *Closing a remote pane does not end its session yet.* Nothing on the service connection can
-    ask the host's agent to, so the session is left running and reported as not killed. It stays
-    registered as remote, so a second close is never handed to the local helpers. Ending it
-    belongs with the host's lifecycle (Phase 4).
+  - *Closing a remote pane ends its session on the host (#283).* The app connects to the host if
+    need be and sends the agent's `Kill` on the service connection's Control service. If the host
+    cannot be reached or does not acknowledge, the session is left running and reported as not
+    killed. It then stays registered as remote, so a second close is never handed to the local
+    helpers.
   - *`CREATE=0` is only as good as the agent that reads it.* An agent older than the flag ignores
     it and creates the session. The version hand-off (#230) and the bootstrap (#231) keep the
     host's agent current; a host whose agent predates hand-off, which the bootstrap leaves
