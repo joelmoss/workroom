@@ -167,6 +167,15 @@ final class ProjectStore: ObservableObject {
   /// `WindowAccessor` can resolve the same window more than once, and a repeat claim must return the
   /// same session rather than consume a second one.
   private var claimedSessions: [UUID: WindowSession] = [:]
+
+  /// Every helper session the saved session file names, claimed or not: a window that has not
+  /// opened or applied yet will still reattach to these.
+  var savedSessionIDs: Set<UUID> {
+    (unclaimedSessionWindows + claimedSessions.values)
+      .reduce(into: Set<UUID>()) { ids, window in
+        for target in window.targets { ids.formUnion(target.sessionIDs) }
+      }
+  }
   /// Keys handed to `openWindow` whose window has not claimed yet. Dispatched once so a `.task`
   /// re-fire cannot open a second copy of the same window.
   private var dispatchedSessionKeys: Set<UUID> = []

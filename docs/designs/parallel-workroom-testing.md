@@ -127,6 +127,8 @@ UUID-named agent sockets (`AgentHarness`). Builds are per checkout. None of that
 5. **A test launch never ends sessions at quit.**
    `TerminalPersistentSessionPolicy.endsSessionsOnQuit` now backs both quit paths and is false for
    a hosted unit run or an XCUITest launch, which cannot own a persistent session.
+   *(Historical: the "Persist sessions" setting, `endsSessionsOnQuit` and `endAllSessions` were
+   later removed. Quitting never ends sessions now, so this hazard no longer exists.)*
 6. **`ShellEnvironmentTests`** matches its own UUID-scoped stub path instead of a bare name.
 
 `test-invariants_test.sh` pins the Makefile and `project.yml` halves (the suffix reaches the Debug

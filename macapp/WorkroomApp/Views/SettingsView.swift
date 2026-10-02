@@ -387,6 +387,12 @@ private struct AppearanceSettingsPane: View {
 }
 
 private struct TerminalSettingsPane: View {
+  /// Sessions any window has open or will reattach to: stopping "detached" terminals must never end
+  /// one someone is looking at or that a restore is about to bring back.
+  @MainActor private static func heldSessionIDs() -> Set<UUID> {
+    WindowRegistry.shared.allStores.reduce(into: Set<UUID>()) { $0.formUnion($1.heldSessionIDs) }
+  }
+
   @Default(.copyOnSelect) private var copyOnSelect
   @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
   // Only the ask-at-ceiling toggle has a row: the ceiling and the prompt timeout are durations most
@@ -399,6 +405,8 @@ private struct TerminalSettingsPane: View {
   @ObservedObject private var wakefulness = WakefulnessModel.shared
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @Default(.filePathEditor) private var pathEditor
+  // The detached sessions "Stop Detached Terminals" found; non-nil presents its alert.
+  @State private var detachedToStop: [UUID]?
 
   var body: some View {
     Form {
@@ -408,6 +416,52 @@ private struct TerminalSettingsPane: View {
 
       Toggle("Confirm before closing a terminal", isOn: $confirmOnCloseTerminal)
         .help("Ask before closing a terminal (kills its shell and any running process, no undo).")
+
+      VStack(alignment: .leading, spacing: 4) {
+        Button("Stop Detached Terminals…") {
+          Task {
+            let held = Self.heldSessionIDs()
+            detachedToStop = await PersistentSessionService.shared.liveSessions()
+              .compactMap(\.identifier.uuid).filter { !held.contains($0) }
+          }
+        }
+        .accessibilityIdentifier("settings.control.stopDetachedTerminals")
+        .alert(
+          detachedToStop?.isEmpty == true ? "No detached terminals" : "Stop detached terminals?",
+          isPresented: Binding(
+            get: { detachedToStop != nil }, set: { if !$0 { detachedToStop = nil } })
+        ) {
+          if let ids = detachedToStop, !ids.isEmpty {
+            Button("Stop \(ids.count)", role: .destructive) {
+              // Only the sessions counted, and re-checked now: one a tab took over since the count
+              // must not lose its shell, and one created since was never offered.
+              let held = Self.heldSessionIDs()
+              Task {
+                for id in ids where !held.contains(id) {
+                  await PersistentSessionService.shared.endSession(sessionID: id)
+                }
+              }
+            }
+            Button("Cancel", role: .cancel) {}
+          } else {
+            Button("OK", role: .cancel) {}
+          }
+        } message: {
+          if let ids = detachedToStop, !ids.isEmpty {
+            Text(
+              "\(ids.count) background terminal(s) with no open tab will be stopped, "
+                + "along with anything running in them.")
+          }
+        }
+        Text(
+          "Terminals keep running in the background after you quit, and reattach when you "
+            + "relaunch Workroom. Closing a terminal ends it. Run commands and the Quick Terminal "
+            + "are never kept. Stopping detached terminals ends every one no open tab is "
+            + "attached to."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
 
       VStack(alignment: .leading, spacing: 4) {
         Toggle("Ask before a busy machine sleeps", isOn: $askAtAwakeCeiling)

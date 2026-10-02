@@ -919,6 +919,8 @@ final class AppStore: ObservableObject {
   /// then. Each is written back with every save, and restored whole once its workroom is
   /// reachable and opens its first pane (`restoreDeferredSession`).
   var deferredTargetSessions: [TerminalTarget.ID: TargetSession] = [:]
+  /// Set once `endOrphanedSessionsOnce` has run: it is per process, not per window.
+  static var sweptOrphanedSessions = false
   /// One-shot guard: `WindowAccessor` can resolve the same window more than once, and a claim must
   /// never be taken twice.
   var didClaimSession = false
@@ -3119,6 +3121,7 @@ final class AppStore: ObservableObject {
     // `WorkroomTerminalsView`'s `.task` runs `ensureInitialTerminal`, `tabCount != 0`, so its existing
     // guard makes it a no-op and no stray "Terminal 1" appears beside the restored panes.
     restorePersistedSessionIfPending(in: fresh)
+    endOrphanedSessionsOnce(in: fresh)
   }
 
   /// Remove workrooms with an in-flight deletion from the accepted listing. The same accepted

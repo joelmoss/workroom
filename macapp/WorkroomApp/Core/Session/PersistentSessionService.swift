@@ -474,9 +474,9 @@ final class PersistentSessionService {
 
   /// A client for each helper that is actually running.
   ///
-  /// Used wherever an operation spans every session rather than one — listing, and killing
-  /// everything — because during the migration sessions genuinely live in both, and a caller that
-  /// saw only one would orphan whatever it could not see.
+  /// Used wherever an operation spans every session rather than one, such as listing, because
+  /// during the migration sessions genuinely live in both, and a caller that saw only one would
+  /// orphan whatever it could not see.
   private func liveControlPlanes() -> [any SessionControlPlane & Sendable] {
     SessionBackend.allCases.compactMap { backend in
       guard let socketPath = existingSocketPath(for: backend) else { return nil }
@@ -585,6 +585,29 @@ final class PersistentSessionService {
     for session in sessions
     where session.value(forMetadataKey: SessionMetadataKey.workroom) == workroomID {
       if let uuid = session.identifier.uuid { await endSession(sessionID: uuid) }
+    }
+  }
+
+  /// Ends every session whose workroom no longer exists. Sessions always outlive a quit, so one
+  /// whose workroom was deleted while the app was closed has no tab to come back to and no
+  /// Detached-terminals list that would show it: without this it runs until the helper dies.
+  func endOrphanedSessions(resolves: (String) -> Bool) async {
+    let orphans = Self.orphanedSessionIDs(await liveSessions(), resolves: resolves)
+    guard !orphans.isEmpty else { return }
+    logger.notice("ending \(orphans.count) orphaned persistent session(s)")
+    for id in orphans { await endSession(sessionID: id) }
+  }
+
+  /// The sessions tagged with a workroom `resolves` rejects. A session with no workroom tag is
+  /// left alone: nothing says which workroom it belonged to, so nothing proves it is orphaned.
+  nonisolated static func orphanedSessionIDs(
+    _ sessions: [SessionDescriptor], resolves: (String) -> Bool
+  ) -> [UUID] {
+    sessions.compactMap { session in
+      guard let workroom = session.value(forMetadataKey: SessionMetadataKey.workroom),
+        !resolves(workroom)
+      else { return nil }
+      return session.identifier.uuid
     }
   }
 }
