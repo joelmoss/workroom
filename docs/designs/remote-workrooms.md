@@ -1285,7 +1285,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     gets a hidden local surface that tries to reattach its old shell (and can fall back to a new
     one if that session is gone by then). The same gap
     applies to a `.directoryMissing` target and predates #249; #253's reconnect work exercises
-    this path, and the fix touches `Core/Session/` (AGENTS.md rule 3).
+    this path, and the fix touches `Core/Session/` (AGENTS.md rule 3). Closed by #253, part 5 (below).
   - `workroom host set|clear` writes a descriptor (#252, below); the app (#253) is its caller.
 - **As built (#252, portable derivation on the container driver).** The sequence is
   `RemoteProvisioning` in the Mac app, over any `HostDriver`; the container fixture is the first
@@ -1559,6 +1559,22 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **Not done.** No teardown script runs on the box: create runs no setup script there, and the
     box goes anyway. A failure part-way through a project delete leaves the remote workrooms
     already taken down gone, as the local cascade does.
+- **As built (#253, part 5: gating restore).** The gap #249 left (restore not gated on
+  availability, above) is closed in two places.
+  - **Reattaching.** After a restore, `PersistentSessionRecovery` reattaches panes to this Mac's
+    live sessions only for a target that still exists, is local, opens here, and whose path is
+    there (`AppStore.reattachesLocally`, asked once the daemon has answered). The path is stat-ed
+    because the restore runs in the first load, which reads config only and flags no missing
+    directory (found in review). A missing directory's panes, and a workroom that turned remote,
+    are left alone: they reattach when shown, which a target that can't open terminals never is.
+  - **Waiting.** A remote workroom this app can't reach (creating, failed, destroyed, another
+    build's, or previews off) is not restored at all. Its terminals built then would be shells on
+    this Mac that read as the workroom's once it is reachable. Its saved session is held
+    (`deferredTargetSessions`) and written back with every save, so a launch that can't reach it
+    loses nothing. When it is reachable and opens its first pane, the whole session is restored
+    instead of a fresh shell: its terminals as panes on its host, each attaching with
+    `--no-create`. A held session whose workroom is deleted is dropped at the next save.
+  - **Not done.** A held session is restored only in the window that claimed it.
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits

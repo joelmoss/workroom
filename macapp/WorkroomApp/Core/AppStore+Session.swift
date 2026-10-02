@@ -38,7 +38,12 @@ extension AppStore {
   /// the same limit at both ends means what is written is exactly what comes back, and the drop is
   /// logged the one time it happens rather than being invisible.
   private func captureTargetSessions() -> [TargetSession] {
-    let active = terminals.activeTargetIDs.sorted()
+    // Held-back targets are written back as they were read, so a launch that can't reach a remote
+    // workroom doesn't lose its panes; one whose workroom is gone is dropped.
+    let held = deferredTargetSessions.filter { id, _ in
+      terminals.tabCount(forTargetID: id) == 0 && terminalTarget(forID: id) != nil
+    }
+    let active = terminals.activeTargetIDs.union(held.keys).sorted()
     if active.count > SessionLimits.maxTargetsPerWindow {
       let message =
         "session capture is over the target cap — persisting "
@@ -46,6 +51,7 @@ extension AppStore {
       Self.sessionLogger.notice("\(message, privacy: .public)")
     }
     return active.prefix(SessionLimits.maxTargetsPerWindow).compactMap { targetID in
+      if let saved = held[targetID] { return saved }
       guard let captured = terminals.sessionCapture(forTargetID: targetID) else { return nil }
 
       // Tabs the bridge refuses (today: run tabs) drop out here, and the split leaf that pointed at
@@ -133,6 +139,15 @@ extension AppStore {
       guard let sid = Self.sidebarID(forTargetID: saved.targetID, in: projects),
         let target = target(for: sid)
       else { continue }
+      // A remote workroom this app can't reach (#253) waits: its terminals built now would be
+      // shells on this Mac, which would read as the workroom's once it is reachable.
+      if target.remoteHost == nil,
+        target.unavailability == .remote
+          || target.unavailability == .hostDestroyed
+      {
+        deferredTargetSessions[target.id] = saved
+        continue
+      }
       let result = terminals.restore(saved, for: target)
       guard result.count > 0 else { continue }
       restoredTargetIDs.insert(target.id)
@@ -146,10 +161,40 @@ extension AppStore {
     }
     // Sidebar terminal-subtree expansion (issue #30). Only for targets that actually came back —
     // an expand flag pointing at nothing would render an empty disclosure.
-    expandedTerminalTargets = Set(session.expandedTargets ?? []).intersection(restoredTargetIDs)
+    // A held target's flag is kept for when it comes back; below two tabs it renders nothing.
+    expandedTerminalTargets = Set(session.expandedTargets ?? []).intersection(
+      restoredTargetIDs.union(deferredTargetSessions.keys))
 
     refreshSelectionHasTabs()
 
-    Task { await PersistentSessionRecovery.recover(in: terminals) }
+    // Asked after the daemon answers, of the projects then: a reload in between may have turned a
+    // workroom remote or taken its directory away.
+    Task { [weak self] in
+      guard let self else { return }
+      await PersistentSessionRecovery.recover(in: self.terminals) { [weak self] in
+        self?.reattachesLocally($0) ?? false
+      }
+    }
+  }
+
+  /// Whether `targetID`'s restored panes may reattach to this Mac's live sessions: a target that
+  /// still exists, is local, and opens here (`TerminalSessions.materializeLivePersistentSessions`).
+  /// The path is stat-ed too: the first load, which the restore runs in, reads config only and
+  /// never flags a missing directory.
+  func reattachesLocally(_ targetID: TerminalTarget.ID) -> Bool {
+    guard let target = terminalTarget(forID: targetID), !target.isMissing else { return false }
+    return FileManager.default.fileExists(atPath: target.path)
+  }
+
+  /// Restores `target`'s held-back session (`deferredTargetSessions`) once its workroom is
+  /// reachable, before its first pane would open fresh.
+  func restoreDeferredSession(for target: TerminalTarget) {
+    guard target.remoteHost != nil, terminals.tabCount(forTargetID: target.id) == 0,
+      let saved = deferredTargetSessions.removeValue(forKey: target.id)
+    else { return }
+    terminals.restore(saved, for: target)
+    // `restore` focuses without notifying, so nothing else tells the inspector there are tabs.
+    refreshSelectionHasTabs()
+    markSessionDirty()
   }
 }
