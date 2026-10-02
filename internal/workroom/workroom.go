@@ -153,8 +153,8 @@ func (s *Service) vcsForType(t vcs.Type) (vcs.VCS, error) {
 }
 
 // effectiveVCS returns the project's real VCS type, preferring live on-disk detection over
-// the stored type so a project converted between VCSes (e.g. a colocated jj repo whose .jj
-// dir was removed, leaving plain git) is reported correctly. It falls back to `stored` when
+// the stored type so a project whose stored type is stale (e.g. "jj", from before Jujutsu
+// support was removed, on a repo that also has .git) is reported correctly. It falls back to `stored` when
 // the directory is absent or has no supported VCS — preserving the ability to list a project
 // whose directory is gone. When persist is true and the detected type differs from stored, it
 // heals the config (best-effort: the returned type is already correct even if the write fails).
@@ -174,8 +174,7 @@ func (s *Service) effectiveVCS(path, stored string, persist bool) string {
 // membership set. It returns nil on any error (empty type, unknown type, non-repo directory,
 // or a failed VCS command) to signal "couldn't determine" — callers must treat a nil set as
 // "don't warn" (fail-open), distinct from a non-nil empty set which authoritatively means the
-// repo has no workspaces. git lists bare basenames; jj lists "workroom/<name>" (callers check
-// both keys).
+// repo has no workspaces. git lists bare worktree basenames.
 func (s *Service) vcsWorkspaceSet(path, vcsType string) map[string]bool {
 	if vcsType == "" {
 		return nil
@@ -245,9 +244,6 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 			return res, err
 		}
 		if exists {
-			if s.VCS.Type() == vcs.TypeJJ {
-				return res, fmt.Errorf("%w: %s '%s' already exists", ErrJJWorkspaceExists, s.VCS.Label(), name)
-			}
 			return res, fmt.Errorf("%w: %s '%s' already exists", ErrGitWorktreeExists, s.VCS.Label(), name)
 		}
 
@@ -495,9 +491,6 @@ func (s *Service) Delete(dir, name, confirmValue string) error {
 			return err
 		}
 		if !exists {
-			if s.VCS.Type() == vcs.TypeJJ {
-				return fmt.Errorf("%w: %s '%s' does not exist", ErrJJWorkspaceNotFound, s.VCS.Label(), name)
-			}
 			return fmt.Errorf("%w: %s '%s' does not exist", ErrGitWorktreeNotFound, s.VCS.Label(), name)
 		}
 
@@ -622,7 +615,7 @@ func (s *Service) RunTeardown(dir, name string) error {
 }
 
 // refuseRemote returns ErrRemoteWorkroom when name is a remote workroom of project dir. Each
-// local delete step (the teardown script, the VCS removal, the jj directory cleanup) works on
+// local delete step (the teardown script, the VCS removal) works on
 // <workrooms_dir>/<name> on this Mac, which is not where a remote workroom lives. Remote deletion
 // is its own path (#253).
 func (s *Service) refuseRemote(dir, name string) error {
@@ -655,17 +648,6 @@ func (s *Service) deleteByName(dir, name string) error {
 	if !s.Pretend {
 		if _, err := s.VCS.Delete(dir, s.vcsName(name), wrPath); err != nil {
 			return fmt.Errorf("%w: %v", ErrVCSCommand, err)
-		}
-	}
-
-	// Cleanup directory for JJ
-	if s.VCS.Type() == vcs.TypeJJ {
-		if _, err := os.Stat(wrPath); err == nil {
-			if !s.Pretend {
-				if err := os.RemoveAll(wrPath); err != nil {
-					s.sayColor(fmt.Sprintf("Warning: failed to remove directory %s: %v", wrPath, err), "yellow")
-				}
-			}
 		}
 	}
 

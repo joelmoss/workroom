@@ -15,8 +15,8 @@ const (
 	// stored vcs is reported verbatim (no on-disk reconciliation).
 	WarningsNone WarningsLevel = "none"
 	// WarningsFast adds an os.Stat per workroom to flag missing directories, and re-detects
-	// each project's VCS from disk (a project-level .jj/.git stat) — reporting the real type
-	// and healing the stored vcs on drift (e.g. a colocated jj repo whose .jj dir was removed).
+	// each project's VCS from disk (a project-level .git stat) — reporting the real type
+	// and healing the stored vcs on drift (e.g. a stale "jj" from before Jujutsu support was removed).
 	// No per-project VCS command is run at this level.
 	WarningsFast WarningsLevel = "fast"
 	// WarningsFull additionally verifies VCS workspace membership using the reconciled type,

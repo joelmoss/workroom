@@ -12,7 +12,7 @@ func TestAddProjectNewAndIdempotent(t *testing.T) {
 
 	// A project created via a workroom, then re-registered via AddProject with a
 	// different vcs: vcs updates, workrooms are preserved (idempotent, no clobber).
-	if err := c.AddWorkroom("/proj", "foo", "/wr/foo", "jj"); err != nil {
+	if err := c.AddWorkroom("/proj", "foo", "/wr/foo", "git"); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.AddProject("/proj", "git"); err != nil {
@@ -29,7 +29,7 @@ func TestAddProjectNewAndIdempotent(t *testing.T) {
 	}
 
 	// A brand-new project registers with an empty workrooms map.
-	if err := c.AddProject("/fresh", "jj"); err != nil {
+	if err := c.AddProject("/fresh", "git"); err != nil {
 		t.Fatal(err)
 	}
 	data, _ = c.Read()
@@ -47,7 +47,7 @@ func TestAllProjectsIncludesEmptyAndSkipsScalars(t *testing.T) {
 	if err := c.AddProject("/empty", "git"); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.AddWorkroom("/full", "x", "/wr/x", "jj"); err != nil {
+	if err := c.AddWorkroom("/full", "x", "/wr/x", "git"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -114,7 +114,7 @@ func TestAllProjectsHandlesMalformedWorkroomsValue(t *testing.T) {
 
 func TestRemoveWorkroomKeepProject(t *testing.T) {
 	c := newTestConfig(t)
-	if err := c.AddWorkroom("/proj", "foo", "/wr/foo", "jj"); err != nil {
+	if err := c.AddWorkroom("/proj", "foo", "/wr/foo", "git"); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.RemoveWorkroomKeepProject("/proj", "foo"); err != nil {
@@ -130,7 +130,7 @@ func TestRemoveWorkroomKeepProject(t *testing.T) {
 	}
 
 	// Contrast: plain RemoveWorkroom deletes the now-empty project.
-	if err := c.AddWorkroom("/p2", "bar", "/wr/bar", "jj"); err != nil {
+	if err := c.AddWorkroom("/p2", "bar", "/wr/bar", "git"); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.RemoveWorkroom("/p2", "bar"); err != nil {
@@ -144,10 +144,10 @@ func TestRemoveWorkroomKeepProject(t *testing.T) {
 
 func TestRemoveProjectRemovesEntryAndKeepsSiblings(t *testing.T) {
 	c := newTestConfig(t)
-	if err := c.AddWorkroom("/proj", "foo", "/wr/foo", "jj"); err != nil {
+	if err := c.AddWorkroom("/proj", "foo", "/wr/foo", "git"); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.AddWorkroom("/proj", "bar", "/wr/bar", "jj"); err != nil {
+	if err := c.AddWorkroom("/proj", "bar", "/wr/bar", "git"); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.AddProject("/other", "git"); err != nil {
@@ -197,10 +197,10 @@ func TestRemoveProjectRefusesReservedKey(t *testing.T) {
 
 func TestWorkroomNames(t *testing.T) {
 	c := newTestConfig(t)
-	if err := c.AddWorkroom("/proj", "zebra", "/wr/zebra", "jj"); err != nil {
+	if err := c.AddWorkroom("/proj", "zebra", "/wr/zebra", "git"); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.AddWorkroom("/proj", "alpha", "/wr/alpha", "jj"); err != nil {
+	if err := c.AddWorkroom("/proj", "alpha", "/wr/alpha", "git"); err != nil {
 		t.Fatal(err)
 	}
 

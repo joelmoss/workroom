@@ -32,6 +32,16 @@ func (m *mockExecutor) Run(dir string, name string, args ...string) (string, err
 	return m.output, m.err
 }
 
+// gitWorktrees renders `git worktree list --porcelain` output for a main worktree at dir plus one
+// linked worktree per path in linked.
+func gitWorktrees(dir string, linked ...string) string {
+	out := "worktree " + dir + "\nHEAD cbace1f\nbranch refs/heads/master\n"
+	for _, p := range linked {
+		out += "\nworktree " + p + "\nHEAD abc123\nbranch refs/heads/workroom/" + filepath.Base(p) + "\n"
+	}
+	return out
+}
+
 func newTestConfig(t *testing.T, path string) *config.Config {
 	t.Helper()
 	cfg, err := config.New(path)
@@ -81,7 +91,7 @@ func TestCheckNotInWorkroomOK(t *testing.T) {
 
 // --- Create ---
 
-func TestCreateErrorsIfNotJJOrGit(t *testing.T) {
+func TestCreateErrorsIfNotGit(t *testing.T) {
 	dir := t.TempDir()
 	svc := &Service{
 		Config: newTestConfig(t, filepath.Join(dir, "config.json")),
@@ -102,56 +112,6 @@ func TestCreateErrorsIfInWorkroom(t *testing.T) {
 	err := svc.Create(dir)
 	if !errors.Is(err, ErrInWorkroom) {
 		t.Fatalf("expected ErrInWorkroom, got %v", err)
-	}
-}
-
-func TestCreateSucceedsJJ(t *testing.T) {
-	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
-
-	workroomsDir := filepath.Join(dir, "workrooms")
-
-	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)",
-	}
-	jj := &vcs.JJ{Executor: mock}
-
-	svc, buf, cfg := newTestService(t, jj)
-	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
-
-	// Override workrooms dir
-	svc.Config.SetWorkroomsDir(workroomsDir)
-
-	nameIdx := 0
-	svc.NameGenFunc = func() string {
-		nameIdx++
-		return "foo"
-	}
-
-	err := svc.Create(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	output := buf.String()
-	if !strings.Contains(output, "Workroom 'foo' created successfully") {
-		t.Fatalf("expected success message, got %q", output)
-	}
-
-	// Verify config was updated
-	data, _ := cfg.Read()
-	_ = data // config updated via svc.Config, not cfg
-
-	data2, _ := svc.Config.Read()
-	project := data2[dir].(map[string]any)
-	if project["vcs"] != "jj" {
-		t.Fatalf("expected vcs jj, got %v", project["vcs"])
-	}
-
-	workrooms := project["workrooms"].(map[string]any)
-	foo := workrooms["foo"].(map[string]any)
-	if foo["path"] != filepath.Join(workroomsDir, "foo") {
-		t.Fatalf("expected workroom path, got %v", foo["path"])
 	}
 }
 
@@ -181,11 +141,23 @@ func TestCreateSucceedsGit(t *testing.T) {
 	if !strings.Contains(output, "Workroom 'bar' created successfully") {
 		t.Fatalf("expected success message, got %q", output)
 	}
+
+	// Verify config was updated
+	data, _ := svc.Config.Read()
+	project := data[dir].(map[string]any)
+	if project["vcs"] != "git" {
+		t.Fatalf("expected vcs git, got %v", project["vcs"])
+	}
+	workrooms := project["workrooms"].(map[string]any)
+	bar := workrooms["bar"].(map[string]any)
+	if bar["path"] != filepath.Join(workroomsDir, "bar") {
+		t.Fatalf("expected workroom path, got %v", bar["path"])
+	}
 }
 
 func TestCreateRunsSetupScript(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	// Create setup script
@@ -195,17 +167,17 @@ func TestCreateRunsSetupScript(t *testing.T) {
 	os.WriteFile(scriptPath, []byte("#!/usr/bin/env bash\necho \"I succeeded\"\nexit 0\n"), 0o755)
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)",
+		output: gitWorktrees(dir),
 		onRun: func(dir, name string, args []string) {
-			// Simulate jj workspace add creating the directory
-			if name == "jj" && len(args) > 1 && args[0] == "workspace" && args[1] == "add" {
-				os.MkdirAll(args[2], 0o755)
+			// Simulate git worktree add creating the directory
+			if name == "git" && len(args) > 4 && args[0] == "worktree" && args[1] == "add" {
+				os.MkdirAll(args[4], 0o755)
 			}
 		},
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, jj)
+	svc, buf, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "foo" }
@@ -230,7 +202,7 @@ func TestCreateRunsSetupScript(t *testing.T) {
 
 func TestCreateOnReadyFiresBeforeSetup(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	// Setup script records a marker so we can assert ordering relative to OnReady.
@@ -241,16 +213,16 @@ func TestCreateOnReadyFiresBeforeSetup(t *testing.T) {
 	os.WriteFile(scriptPath, []byte("#!/usr/bin/env bash\ntouch "+marker+"\n"), 0o755)
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)",
+		output: gitWorktrees(dir),
 		onRun: func(_, name string, args []string) {
-			if name == "jj" && len(args) > 1 && args[0] == "workspace" && args[1] == "add" {
-				os.MkdirAll(args[2], 0o755)
+			if name == "git" && len(args) > 4 && args[0] == "worktree" && args[1] == "add" {
+				os.MkdirAll(args[4], 0o755)
 			}
 		},
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, _, _ := newTestService(t, jj)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "foo" }
@@ -282,21 +254,21 @@ func TestCreateOnReadyFiresBeforeSetup(t *testing.T) {
 
 func TestCreateOnReadyReportsNoSetupScript(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	// No scripts/workroom_setup exists, so HasSetup must be false.
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)",
+		output: gitWorktrees(dir),
 		onRun: func(_, name string, args []string) {
-			if name == "jj" && len(args) > 1 && args[0] == "workspace" && args[1] == "add" {
-				os.MkdirAll(args[2], 0o755)
+			if name == "git" && len(args) > 4 && args[0] == "worktree" && args[1] == "add" {
+				os.MkdirAll(args[4], 0o755)
 			}
 		},
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, _, _ := newTestService(t, jj)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "foo" }
@@ -317,7 +289,7 @@ func TestCreateOnReadyReportsNoSetupScript(t *testing.T) {
 
 func TestCreateErrorsOnFailedSetupScript(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	scriptsDir := filepath.Join(dir, "scripts")
@@ -326,16 +298,16 @@ func TestCreateErrorsOnFailedSetupScript(t *testing.T) {
 	os.WriteFile(scriptPath, []byte("#!/usr/bin/env bash\necho \"I failed\"\nexit 1\n"), 0o755)
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)",
+		output: gitWorktrees(dir),
 		onRun: func(dir, name string, args []string) {
-			if name == "jj" && len(args) > 1 && args[0] == "workspace" && args[1] == "add" {
-				os.MkdirAll(args[2], 0o755)
+			if name == "git" && len(args) > 4 && args[0] == "worktree" && args[1] == "add" {
+				os.MkdirAll(args[4], 0o755)
 			}
 		},
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, _, _ := newTestService(t, jj)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "foo" }
@@ -351,15 +323,15 @@ func TestCreateErrorsOnFailedSetupScript(t *testing.T) {
 
 func TestCreateRetriesOnNameCollisionWorkspace(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)\nworkroom/taken: qo a41890ed (empty) (no description set)\n",
+		output: gitWorktrees(dir, filepath.Join(workroomsDir, "taken")),
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, jj)
+	svc, buf, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 
@@ -385,16 +357,16 @@ func TestCreateRetriesOnNameCollisionWorkspace(t *testing.T) {
 
 func TestCreateRetriesOnNameCollisionDirectory(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	os.MkdirAll(filepath.Join(workroomsDir, "taken"), 0o755)
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)",
+		output: gitWorktrees(dir),
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, jj)
+	svc, buf, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 
@@ -420,20 +392,20 @@ func TestCreateRetriesOnNameCollisionDirectory(t *testing.T) {
 
 func TestCreateErrorsAfterTooManyNameCollisions(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
 	// Make the mock dynamically report every queried workspace as existing
 	// by including the requested name in the output.
 	mock := &mockExecutor{}
 	mock.onRun = func(_, name string, args []string) {
-		if name == "jj" && len(args) > 0 && args[0] == "workspace" && args[1] == "list" {
-			mock.output = "default: mk 6ec05f05 (no description set)\nworkroom/taken: qo a41890ed (empty) (no description set)\n"
+		if name == "git" && len(args) > 1 && args[0] == "worktree" && args[1] == "list" {
+			mock.output = gitWorktrees(dir, filepath.Join(workroomsDir, "taken"))
 		}
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, _, _ := newTestService(t, jj)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 
@@ -459,12 +431,12 @@ func TestCreateErrorsAfterTooManyNameCollisions(t *testing.T) {
 	// (not once per candidate name) — this is the worst case, all 15 attempts collide.
 	listCalls := 0
 	for _, call := range mock.calls {
-		if len(call) >= 3 && call[0] == "jj" && call[1] == "workspace" && call[2] == "list" {
+		if len(call) >= 3 && call[0] == "git" && call[1] == "worktree" && call[2] == "list" {
 			listCalls++
 		}
 	}
 	if listCalls != 1 {
-		t.Fatalf("expected exactly 1 'jj workspace list' call across all retry attempts, got %d", listCalls)
+		t.Fatalf("expected exactly 1 'git worktree list' call across all retry attempts, got %d", listCalls)
 	}
 }
 
@@ -472,13 +444,13 @@ func TestCreateErrorsAfterTooManyNameCollisions(t *testing.T) {
 
 func TestCreatePromptsToOpenEditorWhenSet(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
-	mock := &mockExecutor{output: "default: mk 6ec05f05 (no description set)"}
-	jj := &vcs.JJ{Executor: mock}
+	mock := &mockExecutor{output: gitWorktrees(dir)}
+	git := &vcs.Git{Executor: mock}
 
-	svc, _, _ := newTestService(t, jj)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "foo" }
@@ -508,13 +480,13 @@ func TestCreatePromptsToOpenEditorWhenSet(t *testing.T) {
 
 func TestCreateDoesNotPromptEditorWhenUnset(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
-	mock := &mockExecutor{output: "default: mk 6ec05f05 (no description set)"}
-	jj := &vcs.JJ{Executor: mock}
+	mock := &mockExecutor{output: gitWorktrees(dir)}
+	git := &vcs.Git{Executor: mock}
 
-	svc, _, _ := newTestService(t, jj)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "foo" }
@@ -540,13 +512,13 @@ func TestCreateDoesNotPromptEditorWhenUnset(t *testing.T) {
 
 func TestCreateOpensEditorWhenConfirmed(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
-	mock := &mockExecutor{output: "default: mk 6ec05f05 (no description set)"}
-	jj := &vcs.JJ{Executor: mock}
+	mock := &mockExecutor{output: gitWorktrees(dir)}
+	git := &vcs.Git{Executor: mock}
 
-	svc, _, _ := newTestService(t, jj)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "foo" }
@@ -575,13 +547,13 @@ func TestCreateOpensEditorWhenConfirmed(t *testing.T) {
 
 func TestCreateSkipsEditorPromptInPretendMode(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
-	mock := &mockExecutor{output: "default: mk 6ec05f05 (no description set)"}
-	jj := &vcs.JJ{Executor: mock}
+	mock := &mockExecutor{output: gitWorktrees(dir)}
+	git := &vcs.Git{Executor: mock}
 
-	svc, _, _ := newTestService(t, jj)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "foo" }
@@ -616,8 +588,8 @@ func TestListWorkroomsForCurrentProject(t *testing.T) {
 	os.MkdirAll(fooDir, 0o755)
 	os.MkdirAll(barDir, 0o755)
 
-	cfg.AddWorkroom(dir, "foo", fooDir, "jj")
-	cfg.AddWorkroom(dir, "bar", barDir, "jj")
+	cfg.AddWorkroom(dir, "foo", fooDir, "git")
+	cfg.AddWorkroom(dir, "bar", barDir, "git")
 
 	var buf bytes.Buffer
 	svc := &Service{Config: cfg, Out: &buf}
@@ -639,7 +611,7 @@ func TestListWorkroomsForCurrentProject(t *testing.T) {
 func TestListWarnsWhenDirNotFound(t *testing.T) {
 	dir := t.TempDir()
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
-	cfg.AddWorkroom(dir, "foo", "/nonexistent", "jj")
+	cfg.AddWorkroom(dir, "foo", "/nonexistent", "git")
 
 	var buf bytes.Buffer
 	svc := &Service{Config: cfg, Out: &buf}
@@ -660,7 +632,7 @@ func TestListNoWarningWhenDirExists(t *testing.T) {
 	wrDir := filepath.Join(dir, "myworkroom")
 	os.MkdirAll(wrDir, 0o755)
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
-	cfg.AddWorkroom(dir, "foo", wrDir, "jj")
+	cfg.AddWorkroom(dir, "foo", wrDir, "git")
 
 	var buf bytes.Buffer
 	svc := &Service{Config: cfg, Out: &buf}
@@ -686,7 +658,7 @@ func TestListAllGroupedByParent(t *testing.T) {
 	os.MkdirAll(quxDir, 0o755)
 
 	cfg.AddWorkroom("/other/project", "baz", bazDir, "git")
-	cfg.AddWorkroom("/another/project", "qux", quxDir, "jj")
+	cfg.AddWorkroom("/another/project", "qux", quxDir, "git")
 
 	var buf bytes.Buffer
 	svc := &Service{Config: cfg, Out: &buf}
@@ -731,7 +703,7 @@ func TestListInsideWorkroom(t *testing.T) {
 	wrDir := filepath.Join(dir, "myworkroom")
 	os.MkdirAll(wrDir, 0o755)
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
-	cfg.AddWorkroom(dir, "myworkroom", wrDir, "jj")
+	cfg.AddWorkroom(dir, "myworkroom", wrDir, "git")
 
 	var buf bytes.Buffer
 	svc := &Service{Config: cfg, Out: &buf}
@@ -755,10 +727,10 @@ func TestListInsideWorkroom(t *testing.T) {
 func TestDeleteInvalidName(t *testing.T) {
 	dir := t.TempDir()
 	mock := &mockExecutor{}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, _, _ := newTestService(t, jj)
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	svc, _, _ := newTestService(t, git)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 
 	err := svc.Delete(dir, "fo.o", "")
 	if !errors.Is(err, ErrInvalidName) {
@@ -766,7 +738,7 @@ func TestDeleteInvalidName(t *testing.T) {
 	}
 }
 
-func TestDeleteErrorsIfNotJJOrGit(t *testing.T) {
+func TestDeleteErrorsIfNotGit(t *testing.T) {
 	dir := t.TempDir()
 
 	svc := &Service{
@@ -777,24 +749,6 @@ func TestDeleteErrorsIfNotJJOrGit(t *testing.T) {
 	err := svc.Delete(dir, "foo", "")
 	if !errors.Is(err, ErrUnsupportedVCS) {
 		t.Fatalf("expected ErrUnsupportedVCS, got %v", err)
-	}
-}
-
-func TestDeleteErrorsIfJJWorkspaceNotFound(t *testing.T) {
-	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
-
-	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)",
-	}
-	jj := &vcs.JJ{Executor: mock}
-
-	svc, _, _ := newTestService(t, jj)
-	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
-
-	err := svc.Delete(dir, "foo", "foo")
-	if !errors.Is(err, ErrJJWorkspaceNotFound) {
-		t.Fatalf("expected ErrJJWorkspaceNotFound, got %v", err)
 	}
 }
 
@@ -829,20 +783,26 @@ func TestDeleteErrorsIfInWorkroom(t *testing.T) {
 
 func TestDeleteSucceeds(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)\nworkroom/foo: mk 6ec05f05 (no description set)\n",
+		output: gitWorktrees(dir, wrPath),
+		onRun: func(_, name string, args []string) {
+			// Simulate git worktree remove deleting the directory
+			if name == "git" && len(args) > 2 && args[0] == "worktree" && args[1] == "remove" {
+				os.RemoveAll(args[2])
+			}
+		},
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, jj)
+	svc, buf, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
+	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
 	err := svc.Delete(dir, "foo", "foo")
 	if err != nil {
@@ -854,7 +814,7 @@ func TestDeleteSucceeds(t *testing.T) {
 		t.Fatalf("expected success message, got %q", output)
 	}
 
-	// JJ cleanup should remove directory
+	// git worktree remove (simulated by the mock) removes the directory
 	if _, err := os.Stat(wrPath); !os.IsNotExist(err) {
 		t.Fatal("expected directory to be removed")
 	}
@@ -862,20 +822,20 @@ func TestDeleteSucceeds(t *testing.T) {
 
 func TestDeleteUpdatesConfig(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)\nworkroom/foo: mk 6ec05f05 (no description set)\n",
+		output: gitWorktrees(dir, wrPath),
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, _, _ := newTestService(t, jj)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
+	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
 	err := svc.Delete(dir, "foo", "foo")
 	if err != nil {
@@ -890,21 +850,21 @@ func TestDeleteUpdatesConfig(t *testing.T) {
 
 func TestDeleteConfirmSkipsPrompt(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)\nworkroom/foo: mk 6ec05f05 (no description set)\n",
+		output: gitWorktrees(dir, wrPath),
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
 	confirmCalled := false
-	svc, _, _ := newTestService(t, jj)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
+	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 	svc.ConfirmFn = func(string) (bool, error) {
 		confirmCalled = true
 		return true, nil
@@ -921,17 +881,17 @@ func TestDeleteConfirmSkipsPrompt(t *testing.T) {
 
 func TestDeleteConfirmMismatchErrors(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)\nworkroom/foo: mk 6ec05f05 (no description set)\n",
+		output: gitWorktrees(dir, wrPath),
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, _, _ := newTestService(t, jj)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 
@@ -946,7 +906,7 @@ func TestDeleteConfirmMismatchErrors(t *testing.T) {
 
 func TestDeleteRunsTeardownScript(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -957,14 +917,14 @@ func TestDeleteRunsTeardownScript(t *testing.T) {
 	os.WriteFile(scriptPath, []byte("#!/usr/bin/env bash\necho \"I teared down\"\nexit 0\n"), 0o755)
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)\nworkroom/foo: mk 6ec05f05 (no description set)\n",
+		output: gitWorktrees(dir, wrPath),
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, jj)
+	svc, buf, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
+	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
 	err := svc.Delete(dir, "foo", "foo")
 	if err != nil {
@@ -986,7 +946,7 @@ func TestDeleteRunsTeardownScript(t *testing.T) {
 
 func TestDeleteErrorsOnFailedTeardownScript(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -997,14 +957,14 @@ func TestDeleteErrorsOnFailedTeardownScript(t *testing.T) {
 	os.WriteFile(scriptPath, []byte("#!/usr/bin/env bash\necho \"I failed to tear down\"\nexit 1\n"), 0o755)
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)\nworkroom/foo: mk 6ec05f05 (no description set)\n",
+		output: gitWorktrees(dir, wrPath),
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, _, _ := newTestService(t, jj)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
+	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
 	err := svc.Delete(dir, "foo", "foo")
 	if err == nil {
@@ -1020,7 +980,7 @@ func TestDeleteErrorsOnFailedTeardownScript(t *testing.T) {
 // the output has already been streamed rather than being folded into the envelope.
 func TestDeleteTeardownFailureStreamsToScriptLogWriter(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -1031,17 +991,17 @@ func TestDeleteTeardownFailureStreamsToScriptLogWriter(t *testing.T) {
 	os.WriteFile(scriptPath, []byte("#!/usr/bin/env bash\necho \"boom diagnostic\"\nexit 1\n"), 0o755)
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)\nworkroom/foo: mk 6ec05f05 (no description set)\n",
+		output: gitWorktrees(dir, wrPath),
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, _, _ := newTestService(t, jj)
+	svc, _, _ := newTestService(t, git)
 	svc.Out = io.Discard // machine/JSON mode discards human output
 	var logged bytes.Buffer
 	svc.ScriptLogWriter = &logged // ...but script output streams here
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
+	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
 	err := svc.Delete(dir, "foo", "foo")
 	if err == nil {
@@ -1091,7 +1051,7 @@ func TestDeleteGitShowsBranchNote(t *testing.T) {
 
 func TestInteractiveDeleteNoWorkrooms(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 
 	var buf bytes.Buffer
@@ -1110,20 +1070,20 @@ func TestInteractiveDeleteNoWorkrooms(t *testing.T) {
 
 func TestInteractiveDeleteSingle(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)\nworkroom/foo: mk 6ec05f05 (no description set)\n",
+		output: gitWorktrees(dir, wrPath),
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, jj)
+	svc, buf, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
+	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
 	svc.PromptFn = func(msg string, opts []string) ([]string, error) {
 		return []string{"foo"}, nil
@@ -1143,7 +1103,7 @@ func TestInteractiveDeleteSingle(t *testing.T) {
 
 func TestInteractiveDeleteMultiple(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	fooPath := filepath.Join(workroomsDir, "foo")
 	barPath := filepath.Join(workroomsDir, "bar")
@@ -1151,15 +1111,15 @@ func TestInteractiveDeleteMultiple(t *testing.T) {
 	os.MkdirAll(barPath, 0o755)
 
 	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)\nworkroom/foo: mk 6ec05f05 (no description set)\nworkroom/bar: xz b12345 (no description set)\n",
+		output: gitWorktrees(dir, fooPath, barPath),
 	}
-	jj := &vcs.JJ{Executor: mock}
+	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, jj)
+	svc, buf, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.Config.AddWorkroom(dir, "foo", fooPath, "jj")
-	svc.Config.AddWorkroom(dir, "bar", barPath, "jj")
+	svc.Config.AddWorkroom(dir, "foo", fooPath, "git")
+	svc.Config.AddWorkroom(dir, "bar", barPath, "git")
 
 	svc.PromptFn = func(msg string, opts []string) ([]string, error) {
 		return []string{"foo", "bar"}, nil
@@ -1182,14 +1142,14 @@ func TestInteractiveDeleteMultiple(t *testing.T) {
 
 func TestInteractiveDeleteAbortsOnDecline(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
 
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	cfg.SetWorkroomsDir(workroomsDir)
-	cfg.AddWorkroom(dir, "foo", wrPath, "jj")
+	cfg.AddWorkroom(dir, "foo", wrPath, "git")
 
 	var buf bytes.Buffer
 	svc := &Service{
@@ -1218,14 +1178,14 @@ func TestInteractiveDeleteAbortsOnDecline(t *testing.T) {
 
 func TestInteractiveDeleteAbortsOnNoSelection(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
 
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	cfg.SetWorkroomsDir(workroomsDir)
-	cfg.AddWorkroom(dir, "foo", wrPath, "jj")
+	cfg.AddWorkroom(dir, "foo", wrPath, "git")
 
 	var buf bytes.Buffer
 	svc := &Service{
@@ -1258,12 +1218,12 @@ func TestInteractiveDeleteErrorsIfInWorkroom(t *testing.T) {
 	}
 }
 
-// A remote workroom named like a local directory and a local workspace, so every local delete
-// step (teardown script, jj forget, directory removal) would have something to act on.
+// A remote workroom named like a local directory and a local worktree, so every local delete
+// step (teardown script, worktree removal, directory removal) would have something to act on.
 func remoteDeleteFixture(t *testing.T) (svc *Service, dir, wrPath, marker string, mock *mockExecutor) {
 	t.Helper()
 	dir = t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 	wrPath = filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
@@ -1273,11 +1233,11 @@ func remoteDeleteFixture(t *testing.T) (svc *Service, dir, wrPath, marker string
 	os.WriteFile(filepath.Join(dir, "scripts", "workroom_teardown"),
 		[]byte("#!/usr/bin/env bash\ntouch "+marker+"\n"), 0o755)
 
-	mock = &mockExecutor{output: "default: mk 0 (no description set)\nworkroom/foo: mk 1 (no description set)\n"}
-	svc, _, _ = newTestService(t, &vcs.JJ{Executor: mock})
+	mock = &mockExecutor{output: gitWorktrees(dir, wrPath)}
+	svc, _, _ = newTestService(t, &vcs.Git{Executor: mock})
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.Config.AddWorkroom(dir, "foo", "/home/wr/foo", "jj")
+	svc.Config.AddWorkroom(dir, "foo", "/home/wr/foo", "git")
 	data, _ := svc.Config.Read()
 	data[dir].(map[string]any)["workrooms"].(map[string]any)["foo"].(map[string]any)["host"] = map[string]any{"id": "h1"}
 	if err := svc.Config.Write(data); err != nil {
@@ -1305,8 +1265,8 @@ func TestDeleteRefusesRemoteWorkroom(t *testing.T) {
 				t.Fatalf("the local directory of the same name was removed: %v", err)
 			}
 			for _, call := range mock.calls {
-				if slices.Contains(call, "forget") {
-					t.Fatalf("a local workspace was forgotten: %v", call)
+				if slices.Contains(call, "remove") {
+					t.Fatalf("a local worktree was removed: %v", call)
 				}
 			}
 			if names, _ := svc.Config.WorkroomNames(dir); !slices.Contains(names, "foo") {
@@ -1318,7 +1278,7 @@ func TestDeleteRefusesRemoteWorkroom(t *testing.T) {
 
 func TestCreateAvoidsRemoteWorkroomNames(t *testing.T) {
 	svc, dir, _, _, _ := remoteDeleteFixture(t)
-	svc.VCS = &vcs.JJ{Executor: &mockExecutor{output: "default: mk 0 (no description set)\n"}}
+	svc.VCS = &vcs.Git{Executor: &mockExecutor{output: gitWorktrees(dir)}}
 	calls := 0
 	svc.NameGenFunc = func() string {
 		calls++

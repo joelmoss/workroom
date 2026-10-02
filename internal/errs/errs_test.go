@@ -45,7 +45,7 @@ func TestRegistryCoversEveryPublicSentinel(t *testing.T) {
 	// would silently fall through to InternalError/exit 1.
 	sentinels := []error{
 		ErrInWorkroom, ErrUnsupportedVCS, ErrNotDirectory, ErrInvalidName, ErrDirExists,
-		ErrJJWorkspaceExists, ErrGitWorktreeExists, ErrJJWorkspaceNotFound, ErrGitWorktreeNotFound,
+		ErrGitWorktreeExists, ErrGitWorktreeNotFound,
 		ErrSetup, ErrTeardown, ErrConfirmMismatch, ErrUnsafeDeletePath, ErrCancelled,
 		ErrConfigRead, ErrConfigWrite, ErrVCSCommand, ErrRemoteProject, ErrRemoteWorkroom,
 		ErrProjectNotFound, ErrWorkroomNotFound, ErrInvalidHost,

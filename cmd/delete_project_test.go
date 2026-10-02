@@ -18,8 +18,7 @@ import (
 
 // fakeVCS is a no-disk VCS double: it records the vcsNames passed to Delete and can
 // be told to fail on a specific one, so the cascade loop can be exercised without
-// shelling out to real git/jj. Type() is git so deleteByName skips the jj-only
-// os.RemoveAll path — nothing on disk is touched.
+// shelling out to real git. Nothing on disk is touched.
 type fakeVCS struct {
 	deleteCalls []string
 	failOn      string   // vcsName to fail on (e.g. "workroom/bravo"); "" never fails

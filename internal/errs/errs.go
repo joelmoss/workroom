@@ -4,13 +4,11 @@ import "errors"
 
 var (
 	ErrInWorkroom          = errors.New("looks like you are already in a workroom. Run this command from the root of your main development directory, not from within an existing workroom")
-	ErrUnsupportedVCS      = errors.New("no supported VCS detected in this directory. Workroom requires either Git or Jujutsu to manage workspaces")
+	ErrUnsupportedVCS      = errors.New("no supported VCS detected in this directory. Workroom requires Git to manage workspaces")
 	ErrNotDirectory        = errors.New("path exists but is not a directory")
 	ErrInvalidName         = errors.New("workroom name must be alphanumeric (dashes and underscores allowed), and must not start or end with a dash or underscore")
 	ErrDirExists           = errors.New("workroom directory already exists")
-	ErrJJWorkspaceExists   = errors.New("JJ workspace already exists")
 	ErrGitWorktreeExists   = errors.New("git worktree already exists")
-	ErrJJWorkspaceNotFound = errors.New("JJ workspace does not exist")
 	ErrGitWorktreeNotFound = errors.New("git worktree does not exist")
 	ErrSetup               = errors.New("setup script failed")
 	ErrTeardown            = errors.New("teardown script failed")
@@ -20,7 +18,7 @@ var (
 	ErrConfigRead          = errors.New("failed to read config")
 	ErrConfigWrite         = errors.New("failed to write config")
 	ErrVCSCommand          = errors.New("version control command failed")
-	ErrRemoteProject       = errors.New("remote projects are not supported: add the project from a local Git or JJ repository. A remote workroom belongs to a local project")
+	ErrRemoteProject       = errors.New("remote projects are not supported: add the project from a local Git repository. A remote workroom belongs to a local project")
 	ErrRemoteWorkroom      = errors.New("not supported for a remote workroom yet")
 	ErrProjectNotFound     = errors.New("project is not registered")
 	ErrWorkroomNotFound    = errors.New("workroom is not registered")
@@ -45,9 +43,7 @@ var registry = []classification{
 	{ErrNotDirectory, "NotADirectory", 3},
 	{ErrInvalidName, "InvalidName", 3},
 	{ErrDirExists, "DirExists", 3},
-	{ErrJJWorkspaceExists, "WorkspaceExists", 3},
 	{ErrGitWorktreeExists, "WorkspaceExists", 3},
-	{ErrJJWorkspaceNotFound, "WorkspaceNotFound", 3},
 	{ErrGitWorktreeNotFound, "WorkspaceNotFound", 3},
 	{ErrConfirmMismatch, "ConfirmationMismatch", 2},
 	{ErrUnsafeDeletePath, "UnsafeDeletePath", 2},

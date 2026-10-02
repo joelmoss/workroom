@@ -17,7 +17,7 @@ import (
 
 // addProjectCreate backs the --create flag: when set, add-project will create
 // (and git-initialize) the directory if it does not already exist, instead of
-// requiring an existing Git/JJ repo. Set per-invocation by the macOS app's
+// requiring an existing Git repo. Set per-invocation by the macOS app's
 // "Create new directory…" mode (issue #103).
 var addProjectCreate bool
 
@@ -27,7 +27,7 @@ var addProjectCreate bool
 // human `list` only shows projects that have workrooms — so it is hidden and
 // available solely in --json mode, which is how the app invokes it.
 //
-// By default the PATH must already be a Git/JJ repo (repo-only). With --create,
+// By default the PATH must already be a Git repo (repo-only). With --create,
 // a missing directory is created and git-initialized so it is immediately usable
 // as a project — see runAddProjectCreate.
 var addProjectCmd = &cobra.Command{
@@ -80,7 +80,7 @@ func isRemotePath(p string) bool {
 }
 
 // runAddProjectExisting is the default (repo-only) path: PATH must already be a
-// Git/JJ repo, else ErrUnsupportedVCS. Detection still runs under --pretend (so
+// Git repo, else ErrUnsupportedVCS. Detection still runs under --pretend (so
 // a bad path still errors), but the config write is skipped and a dry-run
 // envelope is reported instead, mirroring runAddProjectCreate's --pretend
 // contract.
@@ -117,7 +117,7 @@ func runAddProjectExisting(svc *workroom.Service, canon string, out io.Writer) e
 //	 └── exists && IsDir ──────────────┐
 //	                                   ▼
 //	                             Detect(canon)
-//	                              ├── ok (git|jj repo) ─► register, no init
+//	                              ├── ok (git repo) ─► register, no init
 //	                              └── not a repo
 //	                                   ├── empty* ─► git init + initial commit ─► register git
 //	                                   └── non-empty ──────────► ErrUnsupportedVCS
