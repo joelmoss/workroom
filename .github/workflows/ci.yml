@@ -75,17 +75,6 @@ jobs:
     needs: changes
     if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: ubuntu-latest
-    # Matrix over jj CLI versions the Go tests shell out to (see the "Install jj" step below) —
-    # NOT the same axis as $JJ_VERSION above, which stays the single version `app`'s fixed-cost
-    # macOS job installs. This caught a real bug (2026-08-16): fixtures shelling to `jj` assumed
-    # 0.44's "auto-advance @ off an immutable tip after push" and silently broke on 0.43, where
-    # `jj` behaves differently. Keep this list and vcs-core's in sync — both exercise the same
-    # CLI-shelling concern from different languages. Bump when jj cuts a new release worth
-    # covering; no need to chase every patch release.
-    strategy:
-      fail-fast: false
-      matrix:
-        jj-version: ["0.43.0", "0.44.0"]
     steps:
       - uses: actions/checkout@v5
 
@@ -93,25 +82,6 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # `jj` is what TestAddProjectCreate_ExistingJJRepoUsedAsIs / TestDeleteProjectSafetyJJ_* shell
-      # out to — both `t.Skip` silently without it, so without this step they never ran in CI at
-      # all. Same pattern as the `vcs-core` job below (apt has no jj package, hence the release
-      # tarball).
-      - name: Install jj
-        env:
-          JJ_VERSION: ${{ matrix.jj-version }}
-        run: |
-          curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-x86_64-unknown-linux-musl.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin ./jj
-          jj --version
-
-      # jj only affects tests, so the three steps below run once, on the first matrix leg.
-      # `strategy.job-index`, NOT a `matrix.jj-version == env.JJ_VERSION` comparison: JJ_VERSION
-      # tracks the jj-lib pin and this list tracks jj CLI releases, on different cadences — the
-      # first bump that leaves them disjoint would make such an `if` false on EVERY leg and
-      # silently delete the lint, format and cross-compile gates with CI still green. An index
-      # always matches exactly one leg however either value moves.
-      #
       # Uses a prebuilt linter instead of compiling it and downloading its Go toolchain per runner.
       #
       # The pin must stay on golangci-lint /v2: v1 rejects the v2-format .golangci.yml and its
@@ -120,7 +90,6 @@ jobs:
       # reads (older cannot decode newer export data; that is what killed v1 here), so a linter
       # built by a NEWER Go than the module targets is correct, not a mismatch.
       - name: Lint
-        if: strategy.job-index == 0
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
@@ -128,7 +97,6 @@ jobs:
       # v2 moved formatters out of `run`, so `run` alone reports NO gofmt/goimports findings and
       # the formatting gate would be silently lost. Keep in step with the Makefile's cli-lint.
       - name: Format
-        if: strategy.job-index == 0
         run: golangci-lint fmt --diff
 
       # Includes the native Linux build; no separate unused binary is necessary.
@@ -137,7 +105,6 @@ jobs:
       # builds, but this job only ever compiled for the runner. A unix-only syscall (Setpgid,
       # syscall.Kill) therefore passed CI and broke the nightly + the next tag.
       - name: Cross-compile check
-        if: strategy.job-index == 0
         run: |
           for os in windows linux darwin; do
             GOOS="$os" GOARCH=amd64 go build -o /dev/null .

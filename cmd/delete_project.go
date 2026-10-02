@@ -31,7 +31,7 @@ var (
 // workroom teardown the `delete` command runs: teardown script + VCS worktree/
 // workspace removal + dir cleanup, streaming NDJSON logs), then removes the project.
 // Branches/bookmarks are never deleted in either mode — the cascade reuses
-// Service.Delete, whose VCS removal (`git worktree remove` / `jj workspace forget`)
+// Service.Delete, whose VCS removal (`git worktree remove`)
 // leaves refs intact.
 //
 // With --from-disk the CLI runs teardown scripts and drops the project from config,

@@ -66,7 +66,7 @@ func TestReadRejectsTrailingData(t *testing.T) {
 func TestAddWorkroom(t *testing.T) {
 	c := newTestConfig(t)
 
-	if err := c.AddWorkroom("/project", "foo", "/foo", "jj"); err != nil {
+	if err := c.AddWorkroom("/project", "foo", "/foo", "git"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -76,8 +76,8 @@ func TestAddWorkroom(t *testing.T) {
 	}
 
 	project := data["/project"].(map[string]any)
-	if project["vcs"] != "jj" {
-		t.Fatalf("expected vcs jj, got %v", project["vcs"])
+	if project["vcs"] != "git" {
+		t.Fatalf("expected vcs git, got %v", project["vcs"])
 	}
 
 	workrooms := project["workrooms"].(map[string]any)
@@ -90,10 +90,10 @@ func TestAddWorkroom(t *testing.T) {
 func TestAddMultipleWorkrooms(t *testing.T) {
 	c := newTestConfig(t)
 
-	if err := c.AddWorkroom("/project", "foo", "/foo", "jj"); err != nil {
+	if err := c.AddWorkroom("/project", "foo", "/foo", "git"); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.AddWorkroom("/project", "bar", "/bar", "jj"); err != nil {
+	if err := c.AddWorkroom("/project", "bar", "/bar", "git"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -118,7 +118,7 @@ func TestAddMultipleWorkrooms(t *testing.T) {
 func TestRemoveWorkroomCleansUpEmptyParent(t *testing.T) {
 	c := newTestConfig(t)
 
-	if err := c.AddWorkroom("/project", "foo", "/foo", "jj"); err != nil {
+	if err := c.AddWorkroom("/project", "foo", "/foo", "git"); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.RemoveWorkroom("/project", "foo"); err != nil {
@@ -138,10 +138,10 @@ func TestRemoveWorkroomCleansUpEmptyParent(t *testing.T) {
 func TestRemoveWorkroomKeepsRemainingWorkrooms(t *testing.T) {
 	c := newTestConfig(t)
 
-	if err := c.AddWorkroom("/project", "foo", "/foo", "jj"); err != nil {
+	if err := c.AddWorkroom("/project", "foo", "/foo", "git"); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.AddWorkroom("/project", "bar", "/bar", "jj"); err != nil {
+	if err := c.AddWorkroom("/project", "bar", "/bar", "git"); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.RemoveWorkroom("/project", "foo"); err != nil {
@@ -226,7 +226,7 @@ func TestWorkroomsDirExpandsTilde(t *testing.T) {
 
 func TestSetProjectVCSUpdatesAndPreservesWorkrooms(t *testing.T) {
 	c := newTestConfig(t)
-	if err := c.AddWorkroom("/project", "foo", "/foo", "jj"); err != nil {
+	if err := c.AddWorkroom("/project", "foo", "/foo", "git"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -267,7 +267,7 @@ func TestSetProjectVCSAbsentProjectIsNoOp(t *testing.T) {
 
 func TestFindCurrentProjectAsProject(t *testing.T) {
 	c := newTestConfig(t)
-	if err := c.AddWorkroom("/project", "foo", "/foo", "jj"); err != nil {
+	if err := c.AddWorkroom("/project", "foo", "/foo", "git"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -278,14 +278,14 @@ func TestFindCurrentProjectAsProject(t *testing.T) {
 	if path != "/project" {
 		t.Fatalf("expected /project, got %s", path)
 	}
-	if project.VCS != "jj" {
-		t.Fatalf("expected jj, got %v", project.VCS)
+	if project.VCS != "git" {
+		t.Fatalf("expected git, got %v", project.VCS)
 	}
 }
 
 func TestFindCurrentProjectAsWorkroom(t *testing.T) {
 	c := newTestConfig(t)
-	if err := c.AddWorkroom("/project", "foo", "/workrooms/foo", "jj"); err != nil {
+	if err := c.AddWorkroom("/project", "foo", "/workrooms/foo", "git"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -296,8 +296,8 @@ func TestFindCurrentProjectAsWorkroom(t *testing.T) {
 	if path != "/project" {
 		t.Fatalf("expected /project, got %s", path)
 	}
-	if project.VCS != "jj" {
-		t.Fatalf("expected jj, got %v", project.VCS)
+	if project.VCS != "git" {
+		t.Fatalf("expected git, got %v", project.VCS)
 	}
 }
 
@@ -318,7 +318,7 @@ func TestFindCurrentProjectNotFound(t *testing.T) {
 
 func TestProjectsWithWorkrooms(t *testing.T) {
 	c := newTestConfig(t)
-	if err := c.AddWorkroom("/project1", "foo", "/foo", "jj"); err != nil {
+	if err := c.AddWorkroom("/project1", "foo", "/foo", "git"); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.AddWorkroom("/project2", "bar", "/bar", "git"); err != nil {
@@ -341,7 +341,7 @@ func TestCreatesConfigDirOnWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := c.AddWorkroom("/project", "foo", "/foo", "jj"); err != nil {
+	if err := c.AddWorkroom("/project", "foo", "/foo", "git"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -363,7 +363,7 @@ func TestHostDescriptorsRoundTripThroughEveryWriter(t *testing.T) {
 	}
 	if err := c.Write(map[string]any{
 		"/p": map[string]any{
-			"vcs":  "jj",
+			"vcs":  "git",
 			"host": projectHost,
 			"workrooms": map[string]any{
 				"remote": map[string]any{"path": "/home/wr/remote", "host": workroomHost},
@@ -378,8 +378,8 @@ func TestHostDescriptorsRoundTripThroughEveryWriter(t *testing.T) {
 		name string
 		run  func() error
 	}{
-		{"AddWorkroom", func() error { return c.AddWorkroom("/p", "local", "/wr/local", "jj") }},
-		{"AddProject", func() error { return c.AddProject("/p", "jj") }},
+		{"AddWorkroom", func() error { return c.AddWorkroom("/p", "local", "/wr/local", "git") }},
+		{"AddProject", func() error { return c.AddProject("/p", "git") }},
 		{"SetProjectVCS", func() error { return c.SetProjectVCS("/p", "git") }},
 		{"RemoveWorkroomKeepProject", func() error { return c.RemoveWorkroomKeepProject("/p", "local") }},
 		{"AddWorkroom again", func() error { return c.AddWorkroom("/p", "local", "/wr/local", "git") }},

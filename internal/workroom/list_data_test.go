@@ -12,9 +12,9 @@ import (
 
 func TestListDataSortedIncludesEmptyAndMakesNoVCSCallsForNone(t *testing.T) {
 	mock := &mockExecutor{}
-	svc, _, cfg := newTestService(t, &vcs.JJ{Executor: mock})
+	svc, _, cfg := newTestService(t, &vcs.Git{Executor: mock})
 
-	if err := cfg.AddProject("/b", "jj"); err != nil { // empty project
+	if err := cfg.AddProject("/b", "git"); err != nil { // empty project
 		t.Fatal(err)
 	}
 	if err := cfg.AddWorkroom("/a", "zeta", "/wr/zeta", "git"); err != nil {
@@ -53,15 +53,15 @@ func TestListDataSortedIncludesEmptyAndMakesNoVCSCallsForNone(t *testing.T) {
 
 func TestListDataFastFlagsMissingDirectory(t *testing.T) {
 	mock := &mockExecutor{}
-	svc, _, cfg := newTestService(t, &vcs.JJ{Executor: mock})
+	svc, _, cfg := newTestService(t, &vcs.Git{Executor: mock})
 
 	dir := t.TempDir()
 	existing := filepath.Join(dir, "exists")
 	if err := os.MkdirAll(existing, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg.AddWorkroom("/a", "here", existing, "jj")
-	cfg.AddWorkroom("/a", "gone", filepath.Join(dir, "missing"), "jj")
+	cfg.AddWorkroom("/a", "here", existing, "git")
+	cfg.AddWorkroom("/a", "gone", filepath.Join(dir, "missing"), "git")
 
 	res, err := svc.ListData(WarningsFast)
 	if err != nil {
@@ -84,9 +84,9 @@ func TestListDataFastFlagsMissingDirectory(t *testing.T) {
 
 func TestListDataFlagsEmptyPathAsMissingDirectory(t *testing.T) {
 	mock := &mockExecutor{}
-	svc, _, cfg := newTestService(t, &vcs.JJ{Executor: mock})
+	svc, _, cfg := newTestService(t, &vcs.Git{Executor: mock})
 
-	cfg.AddWorkroom("/a", "ghost", "", "jj")
+	cfg.AddWorkroom("/a", "ghost", "", "git")
 
 	res, err := svc.ListData(WarningsFast)
 	if err != nil {
@@ -104,9 +104,9 @@ func TestListDataFlagsEmptyPathAsMissingDirectory(t *testing.T) {
 // now share projectInfo, so they must agree.
 func TestListAndListDataAgreeOnEmptyPath(t *testing.T) {
 	mock := &mockExecutor{}
-	svc, buf, cfg := newTestService(t, &vcs.JJ{Executor: mock})
+	svc, buf, cfg := newTestService(t, &vcs.Git{Executor: mock})
 
-	cfg.AddWorkroom("/a", "ghost", "", "jj")
+	cfg.AddWorkroom("/a", "ghost", "", "git")
 
 	if err := svc.List("/a"); err != nil {
 		t.Fatal(err)
@@ -134,10 +134,10 @@ func TestListAndListDataAgreeOnEmptyPath(t *testing.T) {
 // human path always did — deliberately, not by accident, and now proven on both outputs.
 func TestListAndListDataAgreeOnMalformedWorkroomEntry(t *testing.T) {
 	mock := &mockExecutor{}
-	svc, buf, cfg := newTestService(t, &vcs.JJ{Executor: mock})
+	svc, buf, cfg := newTestService(t, &vcs.Git{Executor: mock})
 
 	if err := cfg.Write(map[string]any{
-		"/a": map[string]any{"vcs": "jj", "workrooms": map[string]any{"ghost": "oops"}},
+		"/a": map[string]any{"vcs": "git", "workrooms": map[string]any{"ghost": "oops"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -159,14 +159,14 @@ func TestListAndListDataAgreeOnMalformedWorkroomEntry(t *testing.T) {
 }
 
 func TestListDataFullListsVCSOncePerProject(t *testing.T) {
-	// jj workspace list output: foo present, bar absent.
-	mock := &mockExecutor{output: "default: mk 0 (no description)\nworkroom/foo: mk 1 (no description)\n"}
-	jj := &vcs.JJ{Executor: mock}
-	svc, _, cfg := newTestService(t, jj)
-	svc.VCSForTypeFunc = func(vcs.Type) (vcs.VCS, error) { return jj, nil }
+	// git worktree list output: foo present, bar absent.
+	mock := &mockExecutor{output: gitWorktrees("/a", "/wr/foo")}
+	git := &vcs.Git{Executor: mock}
+	svc, _, cfg := newTestService(t, git)
+	svc.VCSForTypeFunc = func(vcs.Type) (vcs.VCS, error) { return git, nil }
 
-	cfg.AddWorkroom("/a", "foo", "/wr/foo", "jj")
-	cfg.AddWorkroom("/a", "bar", "/wr/bar", "jj")
+	cfg.AddWorkroom("/a", "foo", "/wr/foo", "git")
+	cfg.AddWorkroom("/a", "bar", "/wr/bar", "git")
 
 	res, err := svc.ListData(WarningsFull)
 	if err != nil {
@@ -195,12 +195,12 @@ func TestListDataFullListsVCSOncePerProject(t *testing.T) {
 
 func TestCreateNamedReturnsResult(t *testing.T) {
 	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
 	workroomsDir := filepath.Join(dir, "workrooms")
 
-	mock := &mockExecutor{output: "default: mk 0 (no description)\n"} // no workroom/* exists yet
-	jj := &vcs.JJ{Executor: mock}
-	svc, _, _ := newTestService(t, jj)
+	mock := &mockExecutor{output: gitWorktrees(dir)}
+	git := &vcs.Git{Executor: mock}
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "fixed-name" }
@@ -212,7 +212,7 @@ func TestCreateNamedReturnsResult(t *testing.T) {
 	if res.Name != "fixed-name" {
 		t.Fatalf("name = %q", res.Name)
 	}
-	if res.VCS != "jj" {
+	if res.VCS != "git" {
 		t.Fatalf("vcs = %q", res.VCS)
 	}
 	if res.Project != dir {
@@ -226,12 +226,12 @@ func TestCreateNamedReturnsResult(t *testing.T) {
 // remoteConfig writes a project with one local workroom whose directory and workspace are both
 // gone, one live remote workroom and one whose host was destroyed. The remote paths do not exist
 // here and neither is in the VCS listing, so each would warn if it were treated as local.
-func remoteConfig(t *testing.T, svc *Service, jj *vcs.JJ) {
+func remoteConfig(t *testing.T, svc *Service, g *vcs.Git) {
 	t.Helper()
-	svc.VCSForTypeFunc = func(vcs.Type) (vcs.VCS, error) { return jj, nil }
+	svc.VCSForTypeFunc = func(vcs.Type) (vcs.VCS, error) { return g, nil }
 	if err := svc.Config.Write(map[string]any{
 		"/a": map[string]any{
-			"vcs":  "jj",
+			"vcs":  "git",
 			"host": map[string]any{"provider": "boxd"},
 			"workrooms": map[string]any{
 				"local":  map[string]any{"path": "/wr/local"},
@@ -245,9 +245,9 @@ func remoteConfig(t *testing.T, svc *Service, jj *vcs.JJ) {
 }
 
 func TestListDataGatesLocalWarningsOnRemoteWorkrooms(t *testing.T) {
-	jj := &vcs.JJ{Executor: &mockExecutor{output: "default: mk 0 (no description)\n"}}
-	svc, _, _ := newTestService(t, jj)
-	remoteConfig(t, svc, jj)
+	git := &vcs.Git{Executor: &mockExecutor{output: gitWorktrees("/a")}}
+	svc, _, _ := newTestService(t, git)
+	remoteConfig(t, svc, git)
 
 	for _, level := range []WarningsLevel{WarningsNone, WarningsFast, WarningsFull} {
 		res, err := svc.ListData(level)
@@ -276,9 +276,9 @@ func TestListDataGatesLocalWarningsOnRemoteWorkrooms(t *testing.T) {
 }
 
 func TestListDataReportsHostDescriptors(t *testing.T) {
-	jj := &vcs.JJ{Executor: &mockExecutor{}}
-	svc, _, _ := newTestService(t, jj)
-	remoteConfig(t, svc, jj)
+	git := &vcs.Git{Executor: &mockExecutor{}}
+	svc, _, _ := newTestService(t, git)
+	remoteConfig(t, svc, git)
 
 	res, err := svc.ListData(WarningsNone)
 	if err != nil {
@@ -312,9 +312,9 @@ func TestListDataReportsHostDescriptors(t *testing.T) {
 }
 
 func TestListShowsHostDestroyed(t *testing.T) {
-	jj := &vcs.JJ{Executor: &mockExecutor{}}
-	svc, buf, _ := newTestService(t, jj)
-	remoteConfig(t, svc, jj)
+	git := &vcs.Git{Executor: &mockExecutor{}}
+	svc, buf, _ := newTestService(t, git)
+	remoteConfig(t, svc, git)
 
 	if err := svc.List("/a"); err != nil {
 		t.Fatal(err)

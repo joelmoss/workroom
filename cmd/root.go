@@ -34,7 +34,7 @@ func SetBakedChannel(c string) {
 var rootCmd = &cobra.Command{
 	Use:           "workroom",
 	Short:         "Manage development workrooms",
-	Long:          "Create and manage local development workrooms using JJ workspaces or Git worktrees.",
+	Long:          "Create and manage local development workrooms using Git worktrees.",
 	SilenceUsage:  true,
 	SilenceErrors: true, // we render errors ourselves (JSON envelope or "Error:" line) in Execute
 }

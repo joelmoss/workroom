@@ -148,31 +148,6 @@ func TestAddProjectCreate_ExistingGitRepoUsedAsIs(t *testing.T) {
 	}
 }
 
-// TestAddProjectCreate_ExistingJJRepoUsedAsIs: an existing jj repo registers as
-// vcs=jj and is NOT git-inited. Skipped without jj.
-func TestAddProjectCreate_ExistingJJRepoUsedAsIs(t *testing.T) {
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Skip("jj not available")
-	}
-	svc, cfg := newCreateSvc(t)
-	canon, err := config.CanonicalPath(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	run(t, canon, "jj", "git", "init")
-
-	if err := runAddProjectCreate(svc, canon, &bytes.Buffer{}); err != nil {
-		t.Fatalf("create on existing jj repo failed: %v", err)
-	}
-	// vcs=jj proves Detect took the jj branch and InitGit was NOT run (jj git init
-	// may colocate a .git, so .git presence is not a reliable signal here).
-	data, _ := cfg.Read()
-	proj, _ := data[canon].(map[string]any)
-	if proj["vcs"] != "jj" {
-		t.Fatalf("expected vcs=jj, got %v", proj["vcs"])
-	}
-}
-
 // TestAddProjectCreate_EndToEndWorkroomCreatable is the load-bearing proof for
 // 1A+OV1: after creating a new project, a workroom can actually be created in it,
 // and it branches from the initial commit (a real base, not an orphan).

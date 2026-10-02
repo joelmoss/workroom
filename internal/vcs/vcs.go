@@ -11,7 +11,6 @@ import (
 type Type string
 
 const (
-	TypeJJ  Type = "jj"
 	TypeGit Type = "git"
 )
 
@@ -27,11 +26,8 @@ type VCS interface {
 	ListWorkrooms(dir string) ([]string, error)
 }
 
-// Detect determines the VCS type by checking for .jj then .git directories.
+// Detect determines the VCS type by checking for a .git directory (or worktree file).
 func Detect(dir string) (VCS, error) {
-	if info, err := os.Stat(filepath.Join(dir, ".jj")); err == nil && info.IsDir() {
-		return &JJ{Executor: &RealExecutor{}}, nil
-	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 		// .git can be a directory (normal repo) or a file (worktree)
 		return &Git{Executor: &RealExecutor{}}, nil
@@ -58,8 +54,6 @@ func InitGit(dir string) error {
 // workrooms for a project whose directory may not currently exist.
 func New(t Type) (VCS, error) {
 	switch t {
-	case TypeJJ:
-		return &JJ{Executor: &RealExecutor{}}, nil
 	case TypeGit:
 		return &Git{Executor: &RealExecutor{}}, nil
 	default:

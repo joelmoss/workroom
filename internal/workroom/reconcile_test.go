@@ -10,7 +10,7 @@ import (
 )
 
 // fakeVCS is a controlled vcs.VCS whose ListWorkrooms returns a fixed set, so tests that
-// exercise the reconcile/warning paths don't depend on a real git/jj repo on disk (per the
+// exercise the reconcile/warning paths don't depend on a real git repo on disk (per the
 // eng-review note: a bare .git dir makes real Git.ListWorkrooms shell out and silently yield
 // nothing). listCalls counts ListWorkrooms invocations to assert "list once per project".
 type fakeVCS struct {
@@ -67,21 +67,6 @@ func TestEffectiveVCSHealsDriftAndPersists(t *testing.T) {
 	}
 }
 
-func TestEffectiveVCSColocatedNoDrift(t *testing.T) {
-	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
-	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
-	svc, _, cfg := newTestService(t, nil)
-	cfg.AddProject(dir, "jj")
-
-	if got := svc.effectiveVCS(dir, "jj", true); got != "jj" { // .jj has detection priority
-		t.Fatalf("effectiveVCS = %q, want jj (priority)", got)
-	}
-	if s := storedVCS(t, svc, dir); s != "jj" {
-		t.Fatalf("config vcs = %q, want unchanged jj", s)
-	}
-}
-
 func TestEffectiveVCSPersistFalseDoesNotWrite(t *testing.T) {
 	dir := t.TempDir()
 	os.Mkdir(filepath.Join(dir, ".git"), 0o755)
@@ -104,7 +89,7 @@ func TestEffectiveVCSFallsBackWhenUndetectable(t *testing.T) {
 	if got := svc.effectiveVCS(missing, "jj", true); got != "jj" {
 		t.Fatalf("missing dir: effectiveVCS = %q, want fallback jj", got)
 	}
-	// Directory exists but is neither a git nor jj repo.
+	// Directory exists but is not a git repo.
 	empty := t.TempDir()
 	if got := svc.effectiveVCS(empty, "git", true); got != "git" {
 		t.Fatalf("non-repo dir: effectiveVCS = %q, want fallback git", got)

@@ -222,7 +222,7 @@ func (c *Config) withLock(fn func() error) error {
 	// 30s is a backstop against a genuinely pathological hang (e.g. a suspended
 	// or wedged holder), not a throttle on ordinary contention: a config
 	// read-modify-write is microseconds to low milliseconds of work, so any real
-	// holder releases long before this fires. Sized to match JJSnapshotGate's own
+	// holder releases long before this fires. Sized to match RepositoryWriteGate's own
 	// "well above any routine case" self-heal ceiling elsewhere in this codebase.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -323,8 +323,8 @@ func (c *Config) AddProject(parentPath, vcs string) error {
 // SetProjectVCS updates the stored vcs type for an already-registered project. It is a
 // no-op (returning nil) if the project isn't in the config — it never creates a project,
 // and it preserves the project's workrooms map. Used to reconcile the persisted type when
-// a project's on-disk VCS has changed (e.g. a colocated jj repo whose .jj dir was removed,
-// leaving plain git); see Service.effectiveVCS.
+// a project's on-disk VCS differs from the stored one (e.g. a stale "jj" from before Jujutsu
+// support was removed); see Service.effectiveVCS.
 func (c *Config) SetProjectVCS(parentPath, vcs string) error {
 	return c.withLock(func() error {
 		data, err := c.Read()
