@@ -183,6 +183,11 @@ struct TerminalTarget: Identifiable, Hashable {
 
   var isMissing: Bool { unavailability != nil }
 
+  /// A remote workroom, reachable or not: its path names nothing on this Mac.
+  var isRemoteWorkroom: Bool {
+    remoteHost != nil || unavailability == .remote || unavailability == .hostDestroyed
+  }
+
   /// Why no pane can mount here, or nil when one can: `unavailability`, except for a remote
   /// workroom whose host this app reaches.
   var terminalUnavailability: Unavailability? { remoteHost == nil ? unavailability : nil }

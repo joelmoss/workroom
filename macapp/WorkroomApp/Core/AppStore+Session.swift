@@ -141,10 +141,7 @@ extension AppStore {
       else { continue }
       // A remote workroom this app can't reach (#253) waits: its terminals built now would be
       // shells on this Mac, which would read as the workroom's once it is reachable.
-      if target.remoteHost == nil,
-        target.unavailability == .remote
-          || target.unavailability == .hostDestroyed
-      {
+      if target.remoteHost == nil, target.isRemoteWorkroom {
         deferredTargetSessions[target.id] = saved
         continue
       }

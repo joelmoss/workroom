@@ -10,6 +10,7 @@ enum RemoteWorkrooms {
   /// Phase 4 success criteria pass on two real providers (design doc, Next Steps item 5). A stable
   /// build shows no remote UI whatever the setting says.
   static var isEnabled: Bool {
+    if let enabledForTesting { return enabledForTesting }
     #if DEBUG
       let channel = true
     #else
@@ -17,6 +18,10 @@ enum RemoteWorkrooms {
     #endif
     return channel && Defaults[.remoteWorkroomsPreview]
   }
+
+  /// Set by tests in place of `Defaults[.remoteWorkroomsPreview]`: parallel test processes share one
+  /// defaults domain, and this is per process.
+  nonisolated(unsafe) static var enabledForTesting: Bool?
 
   /// The descriptor's `driver` for `ContainerHostDriver`, the only driver until boxd (#256).
   static let containerDriver = "container"
@@ -46,6 +51,7 @@ enum RemoteWorkrooms {
     case anotherBuildsBase(String)
     case anotherBuildsHost(String)
     case baseRepositoryChanged(base: String, origin: String)
+    case incompleteBase
 
     var errorDescription: String? {
       switch self {
@@ -66,6 +72,10 @@ enum RemoteWorkrooms {
           + "\(origin): its origin changed, or the repository was renamed or moved. Its remote "
           + "workrooms would clone \(base). To start over from \(origin), delete the project (its "
           + "remote workrooms and base go with it) and add it again."
+      case .incompleteBase:
+        return "This project's base machine record is incomplete, so it can't be reused, and "
+          + "building another would leave it running unrecorded. Delete the project (its remote "
+          + "workrooms and base go with it) and add it again."
       case .noDocker:
         return "Remote workrooms run on Docker on this Mac for now, and no docker command was "
           + "found. Install Docker Desktop, then run `make remote-host-image`."
@@ -139,6 +149,10 @@ enum RemoteWorkrooms {
         throw Failure.baseRepositoryChanged(base: recorded.repository, origin: origin)
       }
       base = recorded
+    } else if existing?.id != nil {
+      // A host is recorded but not enough of it to derive from: a second base would leave this one
+      // live with nothing pointing at it.
+      throw Failure.incompleteBase
     } else {
       base = try await RemoteProvisioning.buildBase(
         repository: "\(repository.owner)/\(repository.name)",

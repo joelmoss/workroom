@@ -473,9 +473,8 @@ final class SessionRestoreTests: XCTestCase {
   /// save. Once the workroom is reachable, its first pane restores the whole session rather than
   /// opening a fresh shell.
   func testAnUnreachableRemoteWorkroomsSessionWaitsUntilItIsReachable() throws {
-    let saved = Defaults[.remoteWorkroomsPreview]
-    Defaults[.remoteWorkroomsPreview] = false
-    defer { Defaults[.remoteWorkroomsPreview] = saved }
+    RemoteWorkrooms.enabledForTesting = false
+    defer { RemoteWorkrooms.enabledForTesting = nil }
     let store = AppStore()
     store.terminals.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
@@ -507,7 +506,7 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertEqual(store.captureWindowSession().expandedTargets, [id], "its expansion was lost")
     store.selectedTargetID = .workroom(project: "/proj", name: "r")
 
-    Defaults[.remoteWorkroomsPreview] = true
+    RemoteWorkrooms.enabledForTesting = true
     let target = try XCTUnwrap(store.terminalTarget(forID: id))
     store.ensureInitialTerminal(for: target)
     XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 2, "the session was not restored")
@@ -553,9 +552,8 @@ final class SessionRestoreTests: XCTestCase {
   /// directory, not a remote workroom (reachable or not), not one that no longer exists.
   func testOnlyALocalTargetThatOpensReattaches() {
     // On, so the remote workroom is one whose panes do open, on its host.
-    let saved = Defaults[.remoteWorkroomsPreview]
-    Defaults[.remoteWorkroomsPreview] = true
-    defer { Defaults[.remoteWorkroomsPreview] = saved }
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
     let store = AppStore()
     let here = FileManager.default.temporaryDirectory.path
     store.projects = [

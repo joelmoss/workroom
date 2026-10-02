@@ -71,15 +71,16 @@ final class FileTreeModel: ObservableObject {
   /// Point the model at `target`'s tree: a remote workroom's by its location on its host, which its
   /// path alone can't name (#253), and any other's by its path.
   func activate(target: TerminalTarget?) {
-    guard let target, target.remoteHost != nil else {
+    guard let target, target.isRemoteWorkroom else {
       // A remote tree left `currentPath` nil, which `activate(path: nil)` takes for a no-op.
       if target == nil, currentPath == nil { return activate(location: nil) }
       return activate(path: target?.path)
     }
     // Forgotten, so a later `activate(path:)` back to that path is not taken for a no-op.
     currentPath = nil
-    // No watcher refreshes a remote tree, so coming back to it is when it is read again. One whose
-    // recorded path can't name a location shows nothing, never that path on this Mac.
+    // No watcher refreshes a remote tree, so coming back to it is when it is read again. One this
+    // app can't reach, or whose recorded path can't name a location, shows nothing, never that path
+    // on this Mac.
     let location = target.remoteLocation
     if let location, currentLocation == location { return reload() }
     activate(location: location)
