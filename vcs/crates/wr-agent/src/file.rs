@@ -379,7 +379,7 @@ impl ReadSlot {
     /// cap against its own counter instead of racing every other read test for the shared one.
     fn acquire_from(counter: &'static AtomicUsize, max: usize) -> Result<Self, FileError> {
         counter
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < max).then_some(count + 1)
             })
             .map(|_| ReadSlot(counter))
