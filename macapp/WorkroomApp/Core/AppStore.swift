@@ -1045,6 +1045,14 @@ final class AppStore: ObservableObject {
     // Also collapse a target's sidebar terminal subtree once a close drops it below the 2-tab
     // disclosure threshold (issue #30), so a stale expand flag can't auto-reveal if the count climbs
     // back later — the subtree is meant to be re-opened deliberately.
+    // A closed remote pane whose host could not end its session (#283). Not while quitting: the
+    // quit has stopped waiting for it, and an alert would hold the quit up instead.
+    terminals.onRemoteCloseFailed = { [weak self] title in
+      guard let self, !WindowRegistry.shared.isTerminating else { return }
+      self.errorMessage =
+        "Its host didn't confirm the terminal stopped, so whatever was running in it may still be running there."
+      self.errorTitle = "Couldn't stop the terminal in \(title)"
+    }
     terminals.onTabsRemoved = { [weak self] targetID, ids in
       guard let self else { return }
       self.history.prune(removing: Set(ids))

@@ -1090,8 +1090,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - *Closing a remote pane ends its session on the host (#283).* The app connects to the host if
     need be and sends the agent's `Kill` on the service connection's Control service. If the host
     cannot be reached or does not acknowledge, the session is left running and reported as not
-    killed. It then stays registered as remote, so a second close is never handed to the local
-    helpers.
+    killed, and the app says so. It then stays registered as remote, so a second close is never
+    handed to the local helpers. A quit waits at most 5 seconds for such a kill. Deleting a remote
+    workroom ends its sessions only over a connection already up: the host goes next, with them.
   - *`CREATE=0` is only as good as the agent that reads it.* An agent older than the flag ignores
     it and creates the session. The version hand-off (#230) and the bootstrap (#231) keep the
     host's agent current; a host whose agent predates hand-off, which the bootstrap leaves

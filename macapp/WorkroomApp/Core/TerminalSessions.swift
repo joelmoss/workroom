@@ -549,25 +549,40 @@ final class TerminalSessions: ObservableObject {
   /// into the environment (see `WorkroomApp`) so the pane banner observes it. Opt-in, default off.
   let agentManager: TerminalAgentManager
 
-  /// `closeTab`'s persisted-session kill, in flight. Tracked so quitting can wait for it —
-  /// `closeTab` itself stays synchronous (it's called from UI actions, not `async` contexts), but
-  /// an unawaited kill racing an immediate app quit would leave that tab's daemon session running
-  /// despite the user having explicitly closed it moments before.
-  private var pendingCloseKills: [Task<Void, Never>] = []
+  /// How many of `closeTab`'s persisted-session kills are in flight. Counted so quitting can wait
+  /// for them — `closeTab` itself stays synchronous (it's called from UI actions, not `async`
+  /// contexts), but an unawaited kill racing an immediate app quit would leave that tab's daemon
+  /// session running despite the user having explicitly closed it moments before.
+  private var closeKillsInFlight = 0
 
   /// Where a remote pane's host-side working directory is asked for (#239). Settable for tests.
   var hostConnections: HostConnectionManager = .shared
+  /// Where panes' persistent sessions are registered and ended. Settable for tests.
+  var sessionService: PersistentSessionService = .shared
   /// Each remote tab's latest host cwd query. An entry also marks a tab whose first prompt has
   /// already asked, so after that only `command_finished` asks again.
   private var hostCwdQueries: [TerminalTab.ID: Task<Void, Never>] = [:]
 
-  /// Wait for every `closeTab`-initiated kill still in flight. Called at quit, across every
-  /// window's `TerminalSessions`: a closed tab's session must not outlive the quit.
-  func awaitPendingCloseKills() async {
-    let tasks = pendingCloseKills
-    pendingCloseKills.removeAll()
-    for task in tasks { await task.value }
+  /// How long a quit waits for `closeTab`'s kills: past a local kill's own bounds (the agent
+  /// control client's 2-second connect and read deadlines, `AgentControlClient`), well short of a
+  /// remote one's ssh connect.
+  static let closeKillQuitBudget: Duration = .seconds(5)
+
+  /// Wait for every `closeTab`-initiated kill still in flight, until `deadline`. Called at quit,
+  /// across every window's `TerminalSessions` with one shared deadline: a closed tab's session must
+  /// not outlive the quit, but a remote kill on a host that cannot be reached can take as long as
+  /// an ssh connect (#283), and a quit must not wait that out with no sign of why.
+  func awaitPendingCloseKills(until deadline: ContinuousClock.Instant) async {
+    // Polled rather than awaited, as `WakefulnessModel.drainKeep` is: `await task.value` cannot be
+    // given up on.
+    while closeKillsInFlight > 0, ContinuousClock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(20))
+    }
   }
+
+  /// Set once by `AppStore`: a closed remote pane's session could not be ended on its host, so it
+  /// is still running there (#283). Given the target's title.
+  var onRemoteCloseFailed: ((String) -> Void)?
 
   init() {
     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
@@ -1638,7 +1653,12 @@ final class TerminalSessions: ObservableObject {
 
     // Close the detached window first, so it can never outlive the tab it hosts (issue #172).
     undetach(tabID)
-    pendingCloseKills.append(Task { await self.endPersistentSession(for: tab) })
+    closeKillsInFlight += 1
+    Task {
+      let ended = await self.endPersistentSession(for: tab)
+      self.closeKillsInFlight -= 1
+      if ended == false { self.onRemoteCloseFailed?(target.title) }
+    }
     teardown(tab)
     tabsByTarget[target.id]?[tabID] = nil
     orderByTarget[target.id]?.removeAll { $0 == tabID }
@@ -1664,12 +1684,14 @@ final class TerminalSessions: ObservableObject {
     let removedIDs = Array((tabsByTarget[id] ?? [:]).keys)
     for removed in removedIDs { undetach(removed) }  // no detached window outlives its tab (#172)
     for tab in (tabsByTarget[id] ?? [:]).values {
-      await endPersistentSession(for: tab)
+      // Over a connection already up only: a remote target is reaped as its workroom is deleted,
+      // which takes the host and every session on it down next (#283).
+      await endPersistentSession(for: tab, connectingRemote: false)
       teardown(tab)
       activityPulses[tab.id] = nil
       hostCwdQueries.removeValue(forKey: tab.id)?.cancel()
     }
-    await PersistentSessionService.shared.endSessions(matchingWorkroom: id)
+    await sessionService.endSessions(matchingWorkroom: id)
     tabsByTarget[id] = nil
     orderByTarget[id] = nil
     splitsByTarget[id] = nil
@@ -1822,7 +1844,7 @@ final class TerminalSessions: ObservableObject {
   private func refreshHostCwd(forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
     guard let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content,
       let session = s.sessionID ?? s.view.persistentSessionID,
-      let host = PersistentSessionService.shared.remoteHost(of: session)
+      let host = sessionService.remoteHost(of: session)
     else { return }
     hostCwdQueries[tabID]?.cancel()
     let connections = hostConnections
@@ -1869,7 +1891,7 @@ final class TerminalSessions: ObservableObject {
       shell: (ShellEnvironment.loginShell() as NSString).lastPathComponent,
       output: view.readCommandRegion() ?? "",
       isRunTab: view.isRunCommandSurface,
-      isRemote: s.sessionID.map(PersistentSessionService.shared.isRemote) ?? false)
+      isRemote: s.sessionID.map(sessionService.isRemote) ?? false)
     agentManager.commandFinished(tab: tabID, target: target, failure: failure)
   }
 
@@ -2253,22 +2275,32 @@ final class TerminalSessions: ObservableObject {
     let driver =
       RemoteHosts.shared.existingDriver
       ?? ContainerHostDriver(hosts: [:], directory: RemoteHosts.directory)
-    PersistentSessionService.shared.registerRemoteSession(
+    sessionService.registerRemoteSession(
       session, on: .remote(host), via: driver, workingDirectory: workingDirectory)
   }
 
   private func assignedSessionID(persisted: UUID?, isRunCommand: Bool) -> UUID? {
     let policy = TerminalPersistentSessionPolicy.usesPersistentSession(
-      isAvailable: PersistentSessionService.shared.isAvailable,
+      isAvailable: sessionService.isAvailable,
       isRunCommand: isRunCommand,
       hasExistingSession: persisted != nil)
     guard policy else { return nil }
     return persisted ?? UUID()
   }
 
-  private func endPersistentSession(for tab: TerminalTab) async {
-    guard case .terminal(let state) = tab.content, let sessionID = state.sessionID else { return }
-    await PersistentSessionService.shared.endSession(sessionID: sessionID)
+  /// Whether a REMOTE session was ended (#283); nil for a local session or none, whose failures
+  /// stay in the log as they always have.
+  @discardableResult
+  private func endPersistentSession(for tab: TerminalTab, connectingRemote: Bool = true) async
+    -> Bool?
+  {
+    guard case .terminal(let state) = tab.content, let sessionID = state.sessionID else {
+      return nil
+    }
+    let service = sessionService
+    let remote = service.isRemote(sessionID)
+    let ended = await service.endSession(sessionID: sessionID, connectingRemote: connectingRemote)
+    return remote ? ended : nil
   }
 
   private func projectPath(from targetID: TerminalTarget.ID) -> String? {
