@@ -100,7 +100,7 @@ const QUIETING: usize = 1 << (usize::BITS - 1);
 /// Counts a request in, unless the limit is reached or a hand-off is waiting.
 fn admit(count: &AtomicUsize) -> bool {
     count
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
             (count & QUIETING == 0 && count < MAX_ACTIVE).then_some(count + 1)
         })
         .is_ok()
