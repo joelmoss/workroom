@@ -58,6 +58,20 @@ enum DeleteProjectSheetModel {
     guard hasLiveInvestigateSession else { return nil }
     return "⚠️ This project has an active Investigate agent session running — deleting will stop it."
   }
+
+  /// #253: every scope takes the project's remote workrooms and its base machine down, since
+  /// nothing would record them once the project is gone — so even "keep all files" loses them.
+  static func remoteWarning(remoteWorkroomCount: Int, hasBase: Bool) -> String? {
+    guard remoteWorkroomCount > 0 || hasBase else { return nil }
+    let plural = remoteWorkroomCount == 1 ? "" : "s"
+    let what =
+      remoteWorkroomCount == 0
+      ? "its base machine"
+      : "its \(remoteWorkroomCount) remote workroom\(plural)" + (hasBase ? " and base machine" : "")
+    let them = remoteWorkroomCount + (hasBase ? 1 : 0) == 1 ? "it" : "them"
+    return "⚠️ Whichever option you choose, this destroys \(what), with everything on \(them) "
+      + "that isn't pushed."
+  }
 }
 
 /// Type-to-confirm sheet for deleting a project (issue #61). Opened from the project row's
@@ -99,6 +113,11 @@ struct DeleteProjectSheet: View {
   private var investigateWarning: String? {
     DeleteProjectSheetModel.investigateWarning(hasLiveInvestigateSession: hasLiveInvestigateSession)
   }
+  private var remoteWarning: String? {
+    DeleteProjectSheetModel.remoteWarning(
+      remoteWorkroomCount: project.workrooms.filter(\.isRemote).count,
+      hasBase: project.host != nil)
+  }
 
   var body: some View {
     // Everything is left-aligned for one consistent edge; only the action buttons keep the
@@ -129,6 +148,13 @@ struct DeleteProjectSheet: View {
           .font(.callout.weight(.semibold))
           .foregroundStyle(.orange)
           .accessibilityIdentifier("deleteProject.investigateWarning")
+      }
+
+      if let remoteWarning {
+        Text(remoteWarning)
+          .font(.callout.weight(.semibold))
+          .foregroundStyle(.orange)
+          .accessibilityIdentifier("deleteProject.remoteWarning")
       }
 
       if hasWorkrooms {

@@ -230,14 +230,15 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertNotNil(store.selectedStatusWorkItem(for: .workroom(project: "/p", name: "local")))
   }
 
-  /// The CLI refuses to delete remote workrooms (#249). The app must refuse before its optimistic
-  /// local cleanup, which would otherwise drop the row and forget labels for a delete that fails.
+  /// A remote workroom on a host this build can't take down (#253) is refused before the
+  /// optimistic local cleanup, which would otherwise drop the row and forget labels for a delete
+  /// that fails. So is its project.
   @MainActor
-  func testDeletingRemoteWorkroomsIsRefusedBeforeLocalCleanup() {
+  func testDeletingAnotherBuildsRemoteWorkroomIsRefusedBeforeLocalCleanup() {
     let store = AppStore()
     let remote = Workroom(
       name: "remote", path: "/home/remote", vcsName: "workroom/remote", warnings: [],
-      host: HostDescriptor())
+      host: HostDescriptor(provisioner: "another.build", id: UUID()))
     let project = Project(
       path: "/p", vcs: "git",
       workrooms: [
@@ -248,12 +249,13 @@ final class WorkroomStatusTests: XCTestCase {
     store.deleteWorkroom(remote, in: project)
     XCTAssertEqual(store.projects, [project])
     XCTAssertEqual(store.errorTitle, "Can't delete remote")
+    XCTAssertTrue(store.errorMessage?.contains("another Workroom build") == true)
 
     store.errorTitle = nil
     store.errorMessage = nil
     store.deleteProject(project, scope: .configOnly)
     XCTAssertEqual(store.projects, [project])
-    XCTAssertTrue(store.errorMessage?.contains("remote workrooms (remote)") == true)
+    XCTAssertEqual(store.errorTitle, "Can't delete p")
   }
 
   /// A workroom that turns remote is no longer swept, so a reload must drop its last local status

@@ -3422,6 +3422,29 @@ final class AppStore: ObservableObject {
     }
   }
 
+  /// Writes what the remote create and delete sequences record to `path`'s config, through the CLI.
+  private func remoteRecorder(project path: String) -> RemoteWorkrooms.Recorder {
+    let cli = self.cli
+    return RemoteWorkrooms.Recorder(
+      reserve: { hostPath, descriptor in
+        try await cli.createRemote(
+          project: path, hostPath: hostPath, descriptor: try JSONEncoder().encode(descriptor)
+        ).name
+      },
+      record: { workroom, descriptor in
+        try await cli.setHost(
+          project: path, workroom: workroom, descriptor: try JSONEncoder().encode(descriptor))
+      },
+      forget: { workroom in
+        // A destroyed host is the one remote workroom the CLI deletes: there is nothing to take
+        // down.
+        try await cli.setHost(
+          project: path, workroom: workroom,
+          descriptor: try JSONEncoder().encode(HostDescriptor(state: "destroyed")))
+        try await cli.delete(name: workroom, project: path, onLog: nil)
+      })
+  }
+
   /// Creates a remote workroom for `project` (#253), derived from the project's base machine
   /// (built first if it has none), then selects it, which opens its first pane on the far side.
   func createRemoteWorkroom(in project: Project) async {
@@ -3437,29 +3460,10 @@ final class AppStore: ObservableObject {
       guard repository.host == "github.com" else {
         throw RemoteWorkrooms.Failure.notOnGitHub("Its origin is on \(repository.host).")
       }
-      let cli = self.cli
-      let path = project.path
       let created = try await RemoteWorkrooms.create(
         repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
         base: project.host, driver: driver, environment: environment,
-        recorder: RemoteWorkrooms.Recorder(
-          reserve: { hostPath, descriptor in
-            try await cli.createRemote(
-              project: path, hostPath: hostPath, descriptor: try JSONEncoder().encode(descriptor)
-            ).name
-          },
-          record: { workroom, descriptor in
-            try await cli.setHost(
-              project: path, workroom: workroom, descriptor: try JSONEncoder().encode(descriptor))
-          },
-          forget: { workroom in
-            // A destroyed host is the one remote workroom the CLI deletes: there is nothing to
-            // take down.
-            try await cli.setHost(
-              project: path, workroom: workroom,
-              descriptor: try JSONEncoder().encode(HostDescriptor(state: "destroyed")))
-            try await cli.delete(name: workroom, project: path, onLog: nil)
-          }))
+        recorder: remoteRecorder(project: project.path))
       // Its panes attach through their own ssh; Changes and the rest connect for themselves.
       await created.instance.connection.close()
       await reload()
@@ -3627,6 +3631,9 @@ final class AppStore: ObservableObject {
   func isCreatingWorkroom(_ workroom: Workroom, in project: Project) -> Bool {
     creatingWorkrooms.contains(
       TerminalTarget.workroomID(project: project.path, name: workroom.name))
+      // A remote create (#253) holds its project busy, not this set: `creating` while it does is
+      // one still deriving. One a crash left at `creating` is deletable.
+      || (workroom.host?.state == "creating" && isBusyProject(project.path))
   }
 
   /// Dismiss ONE workroom's setup dialog after its setup script (or its failure) — the user clicked
@@ -3647,12 +3654,16 @@ final class AppStore: ObservableObject {
     // Don't delete a workroom whose create is still in flight (issue #116) — its setup script is
     // running against the worktree, so tearing it down now would race the script. The delete
     // affordances are disabled while creating; this is the chokepoint that guarantees it.
-    guard !creatingWorkrooms.contains(targetID) else { return }
-    // The CLI refuses a remote workroom (#249); refuse before the optimistic removal forgets its label.
-    guard !workroom.isRemote else {
-      errorTitle = "Can't delete \(workroom.displayName)"
-      errorMessage = "It is a remote workroom, and deleting remote workrooms isn't supported yet."
-      return
+    guard !isCreatingWorkroom(workroom, in: project) else { return }
+    // A remote workroom's delete takes its host down (#253): what that needs is checked before the
+    // optimistic removal below forgets its label.
+    var remote: RemoteProvisioning.Environment?
+    if let host = workroom.host {
+      do { remote = try RemoteHosts.shared.environment(toDelete: [host]) } catch {
+        present(error)
+        errorTitle = "Can't delete \(workroom.displayName)"
+        return
+      }
     }
     // Was the deleted workroom the one selected in *this* window? Captured before `detachTarget`
     // mutates selection, so the issue #80 fallback below can re-point only when the delete left us
@@ -3682,7 +3693,7 @@ final class AppStore: ObservableObject {
     stopRunsAcrossWindows([targetID], stores: stores) { [weak self] in
       Task {
         for store in stores { await store.reapTargetLocally(targetID) }
-        self?.startWorkroomTeardown(workroom, in: project)
+        self?.startWorkroomTeardown(workroom, in: project, remote: remote)
       }
     }
   }
@@ -3746,13 +3757,21 @@ final class AppStore: ObservableObject {
   /// Run the VCS teardown (worktree/workspace removal) in the background, surfacing any failure with
   /// its captured output in an alert. Split out of `deleteWorkroom` so the run command can stop first
   /// (issue #7) — the worktree must not be deleted while its dev server still holds the directory.
-  private func startWorkroomTeardown(_ workroom: Workroom, in project: Project) {
+  private func startWorkroomTeardown(
+    _ workroom: Workroom, in project: Project, remote: RemoteProvisioning.Environment?
+  ) {
     let targetID = TerminalTarget.workroomID(project: project.path, name: workroom.name)
     Task {
       let log = ScriptLogSession(title: "Tearing down \(workroom.name)", phase: "teardown")
       do {
-        try await cli.delete(name: workroom.name, project: project.path) { text in
-          DispatchQueue.main.async { log.append(text) }
+        if let host = workroom.host {
+          try await RemoteWorkrooms.delete(
+            workroom.name, host: host, environment: remote,
+            recorder: remoteRecorder(project: project.path))
+        } else {
+          try await cli.delete(name: workroom.name, project: project.path) { text in
+            DispatchQueue.main.async { log.append(text) }
+          }
         }
         // Teardown persisted (the workroom is gone from config): drop the tombstone. Future `list`
         // snapshots no longer include it, and the optimistic removal already matches (issue #116).
@@ -3773,7 +3792,8 @@ final class AppStore: ObservableObject {
     guard let idx = projects.firstIndex(where: { $0.id == project.id }) else { return }
     let p = projects[idx]
     projects[idx] = Project(
-      path: p.path, vcs: p.vcs, workrooms: p.workrooms.filter { $0.id != workroom.id })
+      path: p.path, vcs: p.vcs, workrooms: p.workrooms.filter { $0.id != workroom.id },
+      host: p.host)
     forgetLabels(forProject: project.path, workroomNames: [workroom.name])
     // Same reasoning as the label: a per-workroom cache keyed by `SidebarID` with no other pruning,
     // so without this it outlives the workroom and a same-named recreate inherits its branch name.
@@ -3884,8 +3904,13 @@ final class AppStore: ObservableObject {
   private func presentTeardownFailure(_ workroom: Workroom, error: Error, log: ScriptLogSession) {
     let output = log.lines.map(\.text).joined(separator: "\n").trimmingCharacters(
       in: .whitespacesAndNewlines)
+    guard output.isEmpty else {
+      errorTitle = "Teardown of ‘\(workroom.name)’ failed"
+      errorMessage = output
+      return
+    }
+    present(error)
     errorTitle = "Teardown of ‘\(workroom.name)’ failed"
-    errorMessage = output.isEmpty ? errorText(error) : output
   }
 
   /// Removes a project from the sidebar immediately, then runs the chosen `scope` in the
@@ -3918,14 +3943,18 @@ final class AppStore: ObservableObject {
         "A workroom is still being created in this project. Wait for it to finish, then try again."
       return
     }
-    // The CLI refuses a project with remote workrooms in every mode (#249), so refuse here, before
-    // the local cleanup below kills this project's shells and forgets its labels.
-    let remote = project.workrooms.filter(\.isRemote).map(\.name)
-    guard remote.isEmpty else {
+    // Every scope takes the project's remote workrooms and its base down (#253), even config-only:
+    // with its record dropped, a box would be left to the next launch's sweep and its grant live.
+    // What that needs is checked here, before the local cleanup below kills this project's shells
+    // and forgets its labels.
+    let remoteWorkrooms = project.workrooms.filter(\.isRemote)
+    let remote: RemoteProvisioning.Environment?
+    do {
+      remote = try RemoteHosts.shared.environment(
+        toDelete: remoteWorkrooms.compactMap(\.host) + [project.host].compactMap { $0 })
+    } catch {
+      present(error)
       errorTitle = "Can't delete \(project.displayName)"
-      errorMessage =
-        "It has remote workrooms (\(remote.joined(separator: ", "))), and deleting remote "
-        + "workrooms isn't supported yet."
       return
     }
     let targetIDs = removeProjectLocally(project)
@@ -3949,6 +3978,21 @@ final class AppStore: ObservableObject {
           scope == .configOnly
           ? nil : ScriptLogSession(title: "Deleting \(project.displayName)", phase: "teardown")
         do {
+          // The CLI refuses a project with remote entries in every mode, and `--from-disk` would
+          // hand a remote path to the Bin, so they go first: the workrooms, then the base, since
+          // config keeps a project with a base when its last workroom is removed.
+          let recorder = self.remoteRecorder(project: project.path)
+          for workroom in remoteWorkrooms {
+            guard let host = workroom.host else { continue }
+            try await RemoteWorkrooms.delete(
+              workroom.name, host: host, environment: remote, recorder: recorder)
+          }
+          if let base = project.host {
+            let cli = self.cli
+            try await RemoteWorkrooms.deleteBase(base, environment: remote) {
+              try await cli.setHost(project: project.path, workroom: nil, descriptor: nil)
+            }
+          }
           let trashPaths = try await self.cli.deleteProject(
             project.path,
             withWorkrooms: scope == .workrooms,
