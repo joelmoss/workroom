@@ -9,7 +9,23 @@ Mode: Builder
 > **Note:** Workroom dropped Jujutsu (jj) support in #266. Passages here that describe jj
 > behaviour are a record of the design as it stood then, not of the current code.
 
-## Current Status — 2026-09-26
+## Current Status — 2026-10-02
+
+**Phase 4 is under way, and the app can now create, open and delete remote workrooms.** That works
+only in a Nightly or Dev build with the hidden `remoteWorkroomsPreview` setting, and only on the
+container driver (the Mac's own Docker, from the `workroom-host` image). Merged so far: host
+descriptors in config (#249, PR #275, 2026-10-01); the credential broker service (#250, in
+joelmoss/codaset#43, 2026-10-01) and its clients (#251, PR #263, 2026-09-30); portable derivation
+on the container driver (#252, PR #280, 2026-10-01); the boxd driver with portable derivation
+(#256, PR #281, 2026-10-02), which the app does not yet create on; and remote workrooms in the app
+(#253, PR #289, 2026-10-02). Follow-ups from #253's reviews are #283 to #288. The rest of Phase 4 is
+open: pane parity (#254), cross-machine reattach (#255), the lifecycle shim (#257), boxd live fork
+(#258) and the second real provider, exe.dev (#259). #260 is the gate: it runs the Success
+Criteria on two real providers, and the remote UI leaves Nightly only after they pass. The first
+Nightly DMG with the Linux agent inside (#227) still has to be checked, and that check is part of
+#260. Each merged item has its "As built" entry under Phase 4.
+
+The 2026-09-26 status follows.
 
 **Phase 2 is merged to master** (2026-09-23, #201 through #218; review follow-ups #220–#226), and
 **every Phase 3 milestone is merged** (#154's checklist). None of it is reachable in the shipped app
@@ -3445,9 +3461,10 @@ service milestones below so each layer can be reviewed and landed independently.
    Nightly-only until the success criteria pass; the container fixture alone does not establish
    parity across two real providers. **Filed 2026-09-27** as #249 (host descriptors; built
    2026-10-01, PR #275), #250 (broker
-   service) → #251 (broker clients) → #252 (portable derivation on the container driver) → #253
-   (remote workrooms in the app) → #254 (pane parity) and #255 (cross-machine reattach, OQ8); #256
-   (boxd driver) → #257 (lifecycle shim) and #258 (boxd live fork); #259 (the second real provider,
+   service; built 2026-10-01, joelmoss/codaset#43) → #251 (broker clients; built 2026-09-30, PR
+   #263) → #252 (portable derivation on the container driver; built 2026-10-01, PR #280) → #253
+   (remote workrooms in the app; built 2026-10-02, PR #289) → #254 (pane parity) and #255
+   (cross-machine reattach, OQ8); #256 (boxd driver; built 2026-10-02, PR #281) → #257 (lifecycle shim) and #258 (boxd live fork); #259 (the second real provider,
    exe.dev, decided 2026-09-27);
    and #260, the gate that runs the success criteria on two real providers.
 
