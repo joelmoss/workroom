@@ -226,7 +226,7 @@ there.
       missing binary used to produce.
 
 ### Build shapes CI doesn't cover
-- [ ] **Universal Release build links**: `VCS_APPLE_FLAGS=--universal make app-vcs`, then
+- [ ] **Universal Release build links**:
       `xcodebuild -configuration Release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO build`, then
       `lipo -info` the binary → both slices. CI only builds Debug/native.
 - [ ] **Bake gate**: N clean nightlies before this enters a `pre` tag.

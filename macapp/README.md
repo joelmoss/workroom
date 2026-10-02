@@ -136,7 +136,7 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
 
 ## Architecture
 
-- `WorkroomApp.swift` — `@main`; sets `PATH` at launch so the helper/terminals find git/jj.
+- `WorkroomApp.swift` — `@main`; sets `PATH` at launch so the helper/terminals find git.
 - `Core/WorkroomCLI.swift` — `Process` wrapper over the bundled binary: locates it in the
   bundle, overlays `PATH` onto the inherited env, drains stdout/stderr concurrently,
   enforces per-command timeouts, and decodes the JSON envelope (`ok` / `error.kind`).
@@ -172,4 +172,4 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
    + staple + package the DMG installer (after the one-time `notarytool store-credentials`
    above). See "Signing & distribution".
 4. **Process-group kill** (`WorkroomCLI.run`): the MVP uses `terminate()` + non-interactive
-   git env; a full group-kill of git/jj grandchildren would need a `posix_spawn` launch.
+   git env; a full group-kill of git grandchildren would need a `posix_spawn` launch.

@@ -62,10 +62,10 @@ split view.
 
 ## Key Features
 
-- **Multiple projects** — add/create Git or JJ repos.
-- **Mutiple Workrooms** — each workroom is an isolated project copy (Git worktree or JJ workspace),
+- **Multiple projects** — add/create Git repos.
+- **Mutiple Workrooms** — each workroom is an isolated project copy (a Git worktree),
   so several branches/features run side by side without stashing or switching.
-- **Git/Jujutsu Support** — Shows changes, commits, and file diffs (side-by-side or unified) for each workroom.
+- **Git support** — Shows changes, commits, and file diffs (side-by-side or unified) for each workroom.
 - **Pull Requests** — create, view, and manage pull requests directly from each workroom.
 - **File explorer** — browse and view the workroom's files with automatic language detection, and syntax highlighting.
 - **Multiple terminals, multiple tabs** — each workroom keeps its own terminal alive, and you can
@@ -86,14 +86,12 @@ split view.
 ## What is a "workroom"?
 
 A **workroom** is an isolated, on-disk copy of your project that shares the same underlying
-repository history but has its own working directory and its own branch/bookmark. It's implemented as:
-
-- a **Git worktree** (`git worktree add`) when the project is a Git repo, or
-- a **Jujutsu workspace** (`jj workspace add`) when the project is a JJ repo.
+repository history but has its own working directory and its own branch. It's implemented as a
+**Git worktree** (`git worktree add`).
 
 Workrooms live under a central directory (default `~/workrooms`) rather than next to the source repo,
-each named after the generated workroom name (e.g. `~/workrooms/swift-meadow`). The branch/bookmark
-created inside the VCS is namespaced `workroom/<name>` (e.g. `workroom/swift-meadow`).
+each named after the generated workroom name (e.g. `~/workrooms/swift-meadow`). The branch
+created inside the repo is namespaced `workroom/<name>` (e.g. `workroom/swift-meadow`).
 
 This lets you have, say, three feature branches and a hotfix all checked out simultaneously — four
 real directories, four terminals — without the constant `git stash` / `git switch` churn.
@@ -105,8 +103,7 @@ real directories, four terminals — without the constant `git stash` / `git swi
 **The macOS app:** nothing to install — the `.dmg` is self-contained (the CLI is bundled inside it).
 macOS 15 Sequoia or later on Apple Silicon.
 
-**The standalone CLI:** [Git](https://git-scm.com/) or [JJ (Jujutsu)](https://martinvonz.github.io/jj/)
-on your `PATH`. That's it.
+**The standalone CLI:** [Git](https://git-scm.com/) on your `PATH`. That's it.
 
 **Optional:** [`gh`](https://cli.github.com) ≥ 2.57.0, authenticated — the app's Pull Request / CI
 inspector shells out to the GitHub CLI.
@@ -143,7 +140,7 @@ and [`macapp/README.md`](macapp/README.md) (`make app-run`).
 ### What you get
 
 **A sidebar of everything you're working on.** Each project expands into its workrooms as a tree,
-and every row shows its current Git branch or JJ bookmark inline, with a change badge and a warning
+and every row shows its current Git branch inline, with a change badge and a warning
 when a folder has gone missing. Add a project, expand/collapse it, and pick a target; your layout,
 selection, and expansion state are remembered across launches.
 
@@ -169,8 +166,8 @@ terminal windows keep only their pane footer.
 directly — a **History** log of commits, a **changeset detail** tab (message, authors, changed files,
 and per-file diffs in unified or side-by-side), and a live **Changes** view of the working copy.
 A **Pull Request** panel lets you create and track PRs, and a **file explorer** browses the tree
-with language detection and syntax highlighting. It's read structurally from Git (libgit2) and JJ
-(jj-lib) — not scraped from CLI output.
+with language detection and syntax highlighting. It's read structurally from Git (libgit2) — not
+scraped from CLI output.
 
 **Create and delete without touching the command line.** Hit the **+** on a project to spin up a
 new workroom. Your `scripts/workroom_setup` runs behind a live progress overlay so you watch
@@ -269,8 +266,7 @@ workroom create
 ```
 
 A random friendly name (e.g. `swift-meadow`) is auto-generated from a 120-adjective × 210-noun word
-list. Workroom automatically detects whether you're using JJ or Git and uses the appropriate
-mechanism (JJ workspace or Git worktree). If the generated name collides, it retries up to 5 times,
+list. Workroom creates a Git worktree for it. If the generated name collides, it retries up to 5 times,
 then falls back to appending a random 2-digit suffix (e.g. `swift-meadow-42`).
 
 Alias: `workroom c`. Flags: `--project <dir>` (operate on a directory other than the cwd),
@@ -402,7 +398,7 @@ whose host its provider destroyed gets `HostDestroyed` instead.
 | `kind` | Meaning |
 | --- | --- |
 | `InWorkroom` | Command run from inside an existing workroom |
-| `UnsupportedVCS` | No Git or JJ repo detected |
+| `UnsupportedVCS` | No Git repo detected |
 | `InvalidName` | Workroom name failed validation |
 | `DirExists` / `WorkspaceExists` | Target dir / VCS workspace already exists |
 | `WorkspaceNotFound` | Workroom to delete doesn't exist |
@@ -410,7 +406,7 @@ whose host its provider destroyed gets `HostDestroyed` instead.
 | `Cancelled` | User aborted / no-op |
 | `SetupScriptFailed` / `TeardownScriptFailed` | Hook returned non-zero |
 | `ConfigReadFailed` / `ConfigWriteFailed` | Config I/O / parse error |
-| `VCSCommandFailed` | Underlying `git`/`jj` command failed |
+| `VCSCommandFailed` | Underlying `git` command failed |
 | `RemoteProjectUnsupported` | `add-project` was given a remote path (`host:path`, `ssh://…`) |
 | `RemoteWorkroomUnsupported` | `delete` / `delete-project` on a remote workroom (not yet supported) |
 | `InternalError` | Anything else |
@@ -537,7 +533,7 @@ else is managed by Workroom.
 ## Troubleshooting
 
 **"no supported VCS detected in this directory"** — `workroom create`/`delete` must be run from the
-root of a Git or JJ repo (a directory containing `.git` or `.jj`). Use `--project <dir>` to point at
+root of a Git repo (a directory containing `.git`). Use `--project <dir>` to point at
 one explicitly.
 
 **"looks like you are already in a workroom"** — you're inside a workroom directory (it has a
@@ -551,7 +547,7 @@ on setup failure; the app offers to delete the half-created workroom).
 Install from a release, via `make cli-install` with a tag, or `go install …@latest`.
 
 **Deleted a workroom but the Git branch is still there** — that's intentional. Workroom never deletes
-the `workroom/<name>` branch/bookmark; remove it with `git branch -D workroom/<name>` if you want.
+the `workroom/<name>` branch; remove it with `git branch -D workroom/<name>` if you want.
 
 **`list` shows "directory not found" / "workspace not found"** — the workroom's directory or its VCS
 workspace was removed out from under Workroom. Run `workroom delete <name>` to reconcile the config.

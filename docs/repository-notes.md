@@ -2,8 +2,7 @@
 
 ## Overview
 
-Workroom manages development workrooms (isolated project copies) using Git worktrees or JJ
-(Jujutsu) workspaces. It ships as two components that share one engine:
+Workroom manages development workrooms (isolated project copies) using Git worktrees. It ships as two components that share one engine:
 
 - **The macOS app** (`macapp/` — see [`macapp/AGENTS.md`](../macapp/AGENTS.md)) is the primary,
   recommended product: a native SwiftUI app (macOS 15 Sequoia+) with a project/workroom sidebar and
@@ -11,12 +10,12 @@ Workroom manages development workrooms (isolated project copies) using Git workt
   (`create`/`list`/`delete`/`add-project`/`delete-project --json`).
 - **The Go CLI** (repo root, documented below) is the engine that does the VCS work. It's also a
   fully **standalone** tool — terminal-first, and the only option on Linux/Windows — so app users
-  never need to install it separately. It auto-detects VCS type, generates friendly workroom
-  names, and stores config at `~/.config/workroom/config.json`.
+  never need to install it separately. It checks the project is a Git repo, generates friendly
+  workroom names, and stores config at `~/.config/workroom/config.json`.
 
-The app's structured **VCS engine** lives in `vcs/` — a Rust workspace (jj via `jj-lib`/UniFFI)
-plus SwiftGitX (libgit2) for git, built via `make app-vcs`. It's app-only and separate from this
-Go CLI; see `macapp/AGENTS.md` → "VCS core".
+The app's structured **VCS engine** reads git through SwiftGitX (libgit2), with the `vcs/` Rust
+workspace (the `wr-agent` daemon and its git read crates) serving agent-routed reads and writes. It's
+app-only and separate from this Go CLI; see `macapp/AGENTS.md` → "VCS core".
 
 When working on the app, start with `macapp/AGENTS.md`; the rest of this file covers the Go CLI.
 
@@ -55,10 +54,10 @@ channel architecture and note curation when it is available in your agent enviro
 - `workroom version` — Print version
 - `workroom add-project [PATH]` / `delete-project [PATH]` — Hidden, app-only: register/remove a
   project in config so the macOS app's sidebar can show empty projects. Both error outside `--json`
-  mode. `add-project` is repo-only by default (PATH must already be a Git/JJ repo) unless `--create`:
+  mode. `add-project` is repo-only by default (PATH must already be a Git repo) unless `--create`:
   with `--create` a missing PATH is created and git-initialized with an initial empty commit (so it's
   immediately usable as a project), an empty/junk-only existing dir is git-initialized, an existing
-  Git/JJ repo is used as-is, and a non-empty non-repo dir or a file path is rejected
+  Git repo is used as-is, and a non-empty non-repo dir or a file path is rejected
   (`ErrUnsupportedVCS` / `ErrNotDirectory`); `--create --pretend` is a dry-run (reports
   `would_create`, mutates nothing). Backs the app's "Create new directory…" mode (issue #103).
   `delete-project` is config-only unless: `--with-workrooms` cascades the per-workroom
