@@ -2,8 +2,8 @@ import Foundation
 
 /// The first `HostDriver`: a Linux container running sshd and a supervised `wr-agent`
 /// (`vcs/scripts/ssh-fixture`, #228), reached over plain ssh-stdio. It is the test fixture for
-/// the remote path, and its `openStream` is the ssh transport a real ssh-reachable driver (boxd)
-/// will share.
+/// the remote path, and its ssh transport (`exec`, `attachCommand`) is the one a real
+/// ssh-reachable driver shares (`BoxdHostDriver`, #256).
 ///
 /// Its hosts are the ones the caller hands in, plus, given `Provisioning`, the containers it makes
 /// itself (#252): `create` runs a base from the fixture's image, `deriveFromBase` snapshots a base

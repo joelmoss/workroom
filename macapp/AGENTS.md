@@ -258,7 +258,9 @@ CLI (`--json`) and reached over the container driver's ssh transport (its `exec`
 CLI manages in `~/.ssh/config` and `~/.ssh/known_hosts` (`SSHDetails`). A base is set up by
 `Resources/host-setup/boxd.sh` (an identity unit and the agent's supervisor, both systemd). A
 derive is snapshot, restore, then reboot, and the reboot is not optional: a restored snapshot
-runs the base's processes until it happens. Machines and snapshots are named
+runs the base's processes until it happens. The CLI acts in boxd's active org, so the driver
+is told its org (`Configuration.org`) and refuses to act while another is active. Machines and
+snapshots are named
 `<prefix>-<host id>`, so cleanup and a relaunched app find them by ID. `BoxdIntegrationTests`
 make real machines: they run only with `TEST_RUNNER_WR_BOXD_TESTS=1`, a `WR_AGENT_LINUX=1` build,
 and the sandbox off. See "As built (#256)" in `docs/designs/remote-workrooms.md`.

@@ -1377,17 +1377,32 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     binary, the socket, `broker.json`, the token cache and the screens. That closes the #252 gap
     for boxd: a machine that is stopped and started keeps its enrolment, and its panes come back
     with their last screens.
-  - **A derive** runs `sync` on the base over ssh, then `snapshots save`, `machine new
-    --from-snapshot`, `snapshots remove`, a check that the hostname is the new machine's, and
-    `machine reboot`. It then waits until the identity marker names the new machine. Measured on
-    boxd: a snapshot restores memory as well as disk, so a restored machine runs the base's
-    processes with its machine-id and boot_id, and only its hostname is new. The reboot ends the
-    processes and gives the machine its own kernel, and the identity unit mints the rest at boot.
-    The `sync` is load-bearing twice over. The reboot is a power cut to the restored memory, so
-    without it the base's unflushed page cache would never reach the instance's disk. And a
-    hibernated base refuses a snapshot (`vm is 'suspended' — must be running to snapshot`), while
-    an ssh login wakes it in about a second. A machine outlives the snapshot it was made from, so
-    the snapshot goes as soon as the machine exists.
+  - **A derive** runs `sync` on the base over ssh, then `snapshots save` and `machine new
+    --from-snapshot`. It checks that the hostname is the new machine's, mints the identity over
+    ssh (the identity unit's own script, then `sync`, since the reboot is a power cut), and runs
+    `machine reboot`, then `snapshots remove`. It waits for a readable boot_id other than the
+    pre-reboot one with the marker naming the machine, and then, when the base had an agent, for
+    it to answer `list` on its socket. Measured on boxd: a snapshot restores memory as
+    well as disk, so a restored machine runs the base's processes with its machine-id and boot_id,
+    and only its hostname is new. The reboot ends those processes and gives the machine its own
+    kernel. Steps that need not happen before the reboot come after it, to keep that window short.
+    The identity is minted before the reboot rather than by the unit during it, so nothing in the
+    boot can start with the base's. That is defensive: on boxd, PID 1 reported the new machine-id
+    either way (measured over D-Bus). The agent wait is not: the supervisor starts the agent after
+    the identity unit, and a test that delays it shows a connection made the moment the identity
+    is right finding nothing listening. The `sync` is load-bearing twice over. The reboot is a power
+    cut to the restored memory, so without it the base's unflushed page cache would never reach
+    the instance's disk. And a hibernated base refuses a snapshot (`vm is 'suspended' — must be
+    running to snapshot`), while an ssh login wakes it in about a second. A machine outlives the
+    snapshot it was made from (measured).
+  - **The org.** The CLI acts in whichever org `boxd auth switch` last made active, and the
+    account's own org cannot be named with `--org` (measured: "you are not a member of org …").
+    So the driver is told its org (`Configuration.org`, nil for the account's own) and checks
+    `boxd auth --json` before it creates, derives, destroys or rolls back, refusing to act in any
+    other. In another org its machines read as "not found", which `destroy` would otherwise take
+    for gone, leaving a billed machine running, so a "not found" counts as gone only if the org
+    still checks out afterwards. Only a switch away and back between those two calls gets past it.
+    #253 records the org beside each host.
   - **Names, not records.** A host is the machine `<prefix>-<host id>`, and a derive's snapshot
     has the same name. A failed step removes by name; the CLI's own `error: VM '<name>' not
     found` and `error: snapshot not found` count as already removed, and nothing else does. So
@@ -1396,10 +1411,13 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **Traits.** `.sshStdio`, `durableDisk: true`, `deriveCarriesLiveProcesses: false` (the reboot
     ends them), `maxLifetime: nil`, and `deriveSpeed` 20 s, estimated from the measured parts (a 9-11 s
     snapshot, a 0.5 s restore, then the reboot), not timed end to end.
-  - **Tests.** `BoxdHostDriverTests` (CI) pin the ssh-block parsing, the not-found matching and
-    the rollback with the CLI stubbed. `BoxdIntegrationTests` run on real boxd machines, only with
-    `TEST_RUNNER_WR_BOXD_TESTS=1`, the sandbox off and a build with `WR_AGENT_LINUX=1`. They
-    cover distinct ssh host keys, machine-ids and boot_ids across two instances. Every fresh boxd
+  - **Tests.** `BoxdHostDriverTests` (CI) pin the ssh-block parsing, the not-found matching, the
+    org check and the rollback with the CLI stubbed. `BoxdIntegrationTests` run on real boxd
+    machines, only with `TEST_RUNNER_WR_BOXD_TESTS=1`, the sandbox off and a build with
+    `WR_AGENT_LINUX=1`. They
+    cover a derive returning only once its agent answers, even with the base's supervisor made
+    slow (red without the wait), and distinct ssh host keys, machine-ids and boot_ids across two
+    instances. Every fresh boxd
     machine shares one boot_id (measured), so a boot_id that differs from the base's shows the
     reboot ran, and with it that no process the snapshot carried survived. Without the reboot,
     the test goes red on all three. They cover a failure at each CLI step, and after each one ran, leaving no
@@ -1418,6 +1436,17 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
       traffic, busy or not. That is the lifecycle shim's job (#257).
     - Renaming a machine (`boxd machine rename`) changes its hostname, so its identity unit would
       mint a new identity and drop the enrolment. Nothing renames one.
+    - Machines are not `--isolated`, because isolation also removes the in-VM `boxd` CLI the
+      lifecycle shim needs (Phase 0, result 1). So any boxd integration connected on the account
+      (its short-lived tokens under `/run/boxd`) can be read by code a workroom runs, and
+      cancelling the broker grant does not revoke it. Only git's credential path is the broker's.
+    - A CLI call ended by its timeout or a cancelled derive can still finish on boxd's side after
+      the one cleanup pass, leaving a machine or snapshot nothing records. This is the container
+      driver's gap again, with the same owner: #253's reconciler, which can sweep this driver's
+      resources by their `<prefix>-` names.
+    - The agent wait trusts `wr-agent list`'s exit status, and `run_list` exits 0 when the agent
+      closes the connection without answering (`main.rs`). Such an agent fails the connect that
+      follows instead, and the derive is rolled back there.
     - The pinned host key comes from the CLI's `known_hosts` block, which the CLI writes from the
       API before any ssh connection is made. That it never comes from a first ssh contact is
       inferred from that order, not read in the CLI's source.
