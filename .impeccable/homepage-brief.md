@@ -4,7 +4,7 @@
 - Audience/job: agentic developers evaluating a native Mac environment for running and reviewing parallel isolated tasks.
 - Primary action: download Workroom for macOS.
 - Belief to earn: Workroom keeps concurrent development contexts isolated, visible, and reviewable in one terminal-first environment.
-- Proof: the current annotated Workroom screenshot, repository-backed feature copy, Git/Jujutsu mechanisms, and real split/diff/file/VCS capabilities. The screenshot is approved but deliberately easy to replace soon.
+- Proof: the current annotated Workroom screenshot, repository-backed feature copy, Git worktree mechanisms, and real split/diff/file/VCS capabilities. The screenshot is approved but deliberately easy to replace soon.
 - Constraints: static site; no beta, source-code, or repository-facing language; no invented metrics, customers, testimonials, pricing, dates, or persistence across app restarts; parent brand is Codaset; the square blocked mark is shared by Codaset and Workroom; responsive and accessible.
 
 ## Chosen direction

@@ -2,6 +2,9 @@
 
 Research and product exploration consolidated September 18, 2026.
 
+> **Note:** Workroom dropped Jujutsu (jj) support in #266. Passages here that describe jj
+> behaviour are a record of the design as it stood then, not of the current code.
+
 Workroom could use Jev to help users supervise parallel work, understand changes, find relevant context, and move pull requests through CI and review. The strongest opportunities combine Workroom's existing terminal, VCS, and session data with narrow semantic judgments.
 
 This document consolidates the discussion, merges overlapping suggestions, and ranks proposals by expected usefulness, evidence of model fit, implementation dependencies, and ease of validation. Rankings are recommendations, not an approved roadmap. No Jev integration or live Workroom benchmark has been implemented.

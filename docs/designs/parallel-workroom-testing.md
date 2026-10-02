@@ -4,6 +4,9 @@ Repo: joelmoss/workroom
 Status: host-side isolation IMPLEMENTED on master (13202838); one VM guest per UI-test run
 PROPOSED and reviewed, not built
 
+> **Note:** Workroom dropped Jujutsu (jj) support in #266. Passages here that describe jj
+> behaviour are a record of the design as it stood then, not of the current code.
+
 ## The problem
 
 Developing Workroom in several workrooms at once stalled at the test step. `make app-test` and
