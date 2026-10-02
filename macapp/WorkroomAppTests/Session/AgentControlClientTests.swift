@@ -136,7 +136,6 @@ final class AgentControlClientTests: XCTestCase {
     // Nothing is listening, so both must report empty rather than hang or crash.
     for client in clients {
       XCTAssertTrue(client.list().isEmpty)
-      XCTAssertFalse(client.killAll())
     }
   }
 }

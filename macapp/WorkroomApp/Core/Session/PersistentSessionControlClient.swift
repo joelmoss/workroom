@@ -112,10 +112,6 @@ struct PersistentSessionControlClient {
     ) { $0.kind == .acknowledged } ?? false
   }
 
-  func killAll() -> Bool {
-    transact(SessionFrame(kind: .killAll)) { $0.kind == .acknowledged } ?? false
-  }
-
   private func transact<T>(_ frame: SessionFrame, parse: (SessionFrame) -> T?) -> T? {
     if case .answered(let value) = exchange(frame, parse: parse) { return value }
     return nil
