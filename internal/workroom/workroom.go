@@ -523,6 +523,16 @@ func (s *Service) Delete(dir, name, confirmValue string) error {
 	return s.deleteByName(dir, name)
 }
 
+// legacyWorkroomPath is nonGitWorkroomPath for a workroom git does not list as a worktree, or ""
+// when git lists it (an ordinary worktree, deleted the usual way).
+func (s *Service) legacyWorkroomPath(dir, name string) (string, error) {
+	exists, err := s.workroomExists(dir, name)
+	if err != nil || exists {
+		return "", err
+	}
+	return s.nonGitWorkroomPath(dir, name)
+}
+
 // nonGitWorkroomPath returns the recorded path of workroom name when it is registered for project
 // dir but its folder holds no .git: a workspace Jujutsu made before Workroom dropped it (#266).
 // Returns "" when the workroom is unregistered or its folder is a git checkout.
@@ -611,6 +621,20 @@ func (s *Service) InteractiveDelete(dir string) error {
 	}
 
 	for _, name := range selected {
+		// Same rule as Delete: a selection git does not list as a worktree may be a workroom Jujutsu
+		// made (#266), which is only forgotten.
+		if !s.Pretend {
+			orphan, err := s.legacyWorkroomPath(dir, name)
+			if err != nil {
+				return err
+			}
+			if orphan != "" {
+				if err := s.forgetNonGitWorkroom(dir, name, orphan); err != nil {
+					return err
+				}
+				continue
+			}
+		}
 		if err := s.deleteByName(dir, name); err != nil {
 			return err
 		}
