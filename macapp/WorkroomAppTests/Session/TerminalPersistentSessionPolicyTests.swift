@@ -102,10 +102,10 @@ final class OrphanedSessionTests: XCTestCase {
     XCTAssertTrue(store.heldSessionIDs.contains(held))
   }
 
-  private func session(workroom: String?) -> SessionDescriptor {
+  private func session(workroom: String?, attached: Bool = false) -> SessionDescriptor {
     SessionDescriptor(
       identifier: SessionIdentifier(UUID()), shellProcessID: 1,
-      ttyDevice: 0, workingDirectory: "/tmp", isAttached: false,
+      ttyDevice: 0, workingDirectory: "/tmp", isAttached: attached,
       metadata: workroom.map {
         [SessionEnvironmentEntry(key: SessionMetadataKey.workroom, value: $0)]
       }
@@ -121,6 +121,31 @@ final class OrphanedSessionTests: XCTestCase {
     let orphans = PersistentSessionService.orphanedSessionIDs(
       [live, gone, untagged], resolves: { $0 == "wr|/p|live" })
     XCTAssertEqual(orphans, [gone.identifier.uuid!])
+  }
+
+  /// The whole sweep over a listing: ends the orphan and nothing else. A live workroom's session,
+  /// an untagged one, and an orphan that a client is attached to all survive.
+  func testTheSweepEndsOnlyDetachedOrphans() async {
+    let live = session(workroom: "wr|/p|live")
+    let gone = session(workroom: "wr|/p|gone")
+    let goneButAttached = session(workroom: "wr|/p|gone", attached: true)
+    let untagged = session(workroom: nil)
+    var ended: [UUID] = []
+    let returned = await PersistentSessionService.endOrphans(
+      in: [live, gone, goneButAttached, untagged], resolves: { $0 == "wr|/p|live" },
+      end: { ended.append($0) })
+    XCTAssertEqual(ended, [gone.identifier.uuid!])
+    XCTAssertEqual(returned, ended)
+  }
+
+  /// "Stop Detached Terminals" offers only sessions no window holds and no client is attached to.
+  func testDetachedExcludesHeldAndAttached() {
+    let free = session(workroom: "wr|/p|a")
+    let held = session(workroom: "wr|/p|a")
+    let attached = session(workroom: "wr|/p|a", attached: true)
+    let ids = PersistentSessionService.detachedSessionIDs(
+      [free, held, attached], held: [held.identifier.uuid!])
+    XCTAssertEqual(ids, [free.identifier.uuid!])
   }
 
   /// REGRESSION GUARD. A test launch lists only fixture projects while the helpers it would ask

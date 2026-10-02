@@ -421,8 +421,8 @@ private struct TerminalSettingsPane: View {
         Button("Stop Detached Terminals…") {
           Task {
             let held = Self.heldSessionIDs()
-            detachedToStop = await PersistentSessionService.shared.liveSessions()
-              .compactMap(\.identifier.uuid).filter { !held.contains($0) }
+            detachedToStop = PersistentSessionService.detachedSessionIDs(
+              await PersistentSessionService.shared.liveSessions(), held: held)
           }
         }
         .accessibilityIdentifier("settings.control.stopDetachedTerminals")
@@ -433,12 +433,15 @@ private struct TerminalSettingsPane: View {
         ) {
           if let ids = detachedToStop, !ids.isEmpty {
             Button("Stop \(ids.count)", role: .destructive) {
-              // Only the sessions counted, and re-checked now: one a tab took over since the count
-              // must not lose its shell, and one created since was never offered.
-              let held = Self.heldSessionIDs()
+              // Only the sessions counted, and re-checked now: one a tab or client took over since
+              // the count must not lose its shell, and one created since was never offered.
               Task {
-                for id in ids where !held.contains(id) {
-                  await PersistentSessionService.shared.endSession(sessionID: id)
+                let service = PersistentSessionService.shared
+                let stillDetached = Set(
+                  PersistentSessionService.detachedSessionIDs(
+                    await service.liveSessions(), held: Self.heldSessionIDs()))
+                for id in ids where stillDetached.contains(id) {
+                  await service.endSession(sessionID: id)
                 }
               }
             }

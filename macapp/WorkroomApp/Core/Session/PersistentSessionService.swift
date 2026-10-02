@@ -592,22 +592,48 @@ final class PersistentSessionService {
   /// whose workroom was deleted while the app was closed has no tab to come back to and no
   /// Detached-terminals list that would show it: without this it runs until the helper dies.
   func endOrphanedSessions(resolves: (String) -> Bool) async {
-    let orphans = Self.orphanedSessionIDs(await liveSessions(), resolves: resolves)
-    guard !orphans.isEmpty else { return }
-    logger.notice("ending \(orphans.count) orphaned persistent session(s)")
-    for id in orphans { await endSession(sessionID: id) }
+    let ended = await Self.endOrphans(in: await liveSessions(), resolves: resolves) {
+      await self.endSession(sessionID: $0)
+    }
+    if !ended.isEmpty { logger.notice("ended \(ended.count) orphaned persistent session(s)") }
   }
 
-  /// The sessions tagged with a workroom `resolves` rejects. A session with no workroom tag is
-  /// left alone: nothing says which workroom it belonged to, so nothing proves it is orphaned.
+  /// The sweep itself, apart from the helpers: ends each orphan in `sessions` through `end` and
+  /// returns what it ended.
+  static func endOrphans(
+    in sessions: [SessionDescriptor], resolves: (String) -> Bool, end: (UUID) async -> Void
+  ) async -> [UUID] {
+    let orphans = orphanedSessionIDs(sessions, resolves: resolves)
+    for id in orphans { await end(id) }
+    return orphans
+  }
+
+  /// The sessions tagged with a workroom `resolves` rejects. Two kinds are left alone: a session
+  /// with no workroom tag, since nothing says which workroom it belonged to, and one a client is
+  /// attached to right now (an external `attach`, say), since someone is using it.
   nonisolated static func orphanedSessionIDs(
     _ sessions: [SessionDescriptor], resolves: (String) -> Bool
   ) -> [UUID] {
     sessions.compactMap { session in
-      guard let workroom = session.value(forMetadataKey: SessionMetadataKey.workroom),
+      guard !session.isAttached,
+        let workroom = session.value(forMetadataKey: SessionMetadataKey.workroom),
         !resolves(workroom)
       else { return nil }
       return session.identifier.uuid
+    }
+  }
+
+  /// The sessions "Stop Detached Terminals" may end: not held by any window (`held`) and with no
+  /// client attached. The attachment flag covers clients the app does not own, such as another
+  /// app instance or an external `attach`, which the helper's kill would not protect.
+  nonisolated static func detachedSessionIDs(
+    _ sessions: [SessionDescriptor], held: Set<UUID>
+  ) -> [UUID] {
+    sessions.compactMap { session in
+      guard !session.isAttached, let id = session.identifier.uuid, !held.contains(id) else {
+        return nil
+      }
+      return id
     }
   }
 }
