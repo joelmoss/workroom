@@ -73,10 +73,6 @@ extension Defaults.Keys {
   static let confirmOnCloseTerminal = Key<Bool>(
     "confirmOnCloseTerminal", default: true, suite: .app)
 
-  /// Keep ordinary workroom shells running after quit and reattach them on relaunch.
-  /// On by default; turn off to restore in-process PTYs that die with the app.
-  static let backgroundSessions = Key<Bool>("backgroundSessions", default: true, suite: .app)
-
   /// How long a remote box may stay continuously busy before the agent reports it as past its awake
   /// ceiling (issue #208, OQ22). Advisory: the ceiling never sleeps a box. Hours, because that is the
   /// unit the setting is written in; `AgentWakefulnessSettings` converts to the seconds the agent

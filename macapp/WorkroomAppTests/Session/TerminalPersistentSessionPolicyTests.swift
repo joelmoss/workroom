@@ -3,46 +3,23 @@ import XCTest
 @testable import Workroom
 
 final class TerminalPersistentSessionPolicyTests: XCTestCase {
-  func testDefaultOnWhenAvailable() {
+  func testOnWhenAvailable() {
     XCTAssertTrue(
       TerminalPersistentSessionPolicy.usesPersistentSession(
-        preferenceEnabled: true,
         isAvailable: true,
         isRunCommand: false,
         hasExistingSession: false,
-        isFixture: false))
-  }
-
-  func testOffPreferenceDisables() {
-    XCTAssertFalse(
-      TerminalPersistentSessionPolicy.usesPersistentSession(
-        preferenceEnabled: false,
-        isAvailable: true,
-        isRunCommand: false,
-        hasExistingSession: false,
-        isFixture: false))
-  }
-
-  /// The user's preference beats a restored id. Turning background sessions off means off, even for
-  /// a pane that already has one.
-  func testOffPreferenceDisablesEvenWithAnExistingSession() {
-    XCTAssertFalse(
-      TerminalPersistentSessionPolicy.usesPersistentSession(
-        preferenceEnabled: false,
-        isAvailable: false,
-        isRunCommand: false,
-        hasExistingSession: true,
         isFixture: false))
   }
 
   func testRunCommandAndFixtureAreExcluded() {
     XCTAssertFalse(
       TerminalPersistentSessionPolicy.usesPersistentSession(
-        preferenceEnabled: true, isAvailable: true, isRunCommand: true,
+        isAvailable: true, isRunCommand: true,
         hasExistingSession: false, isFixture: false))
     XCTAssertFalse(
       TerminalPersistentSessionPolicy.usesPersistentSession(
-        preferenceEnabled: true, isAvailable: true, isRunCommand: false,
+        isAvailable: true, isRunCommand: false,
         hasExistingSession: false, isFixture: true))
   }
 
@@ -50,7 +27,6 @@ final class TerminalPersistentSessionPolicyTests: XCTestCase {
   func testUnavailableHelperGivesANewPaneNoSession() {
     XCTAssertFalse(
       TerminalPersistentSessionPolicy.usesPersistentSession(
-        preferenceEnabled: true,
         isAvailable: false,
         isRunCommand: false,
         hasExistingSession: false,
@@ -68,7 +44,6 @@ final class TerminalPersistentSessionPolicyTests: XCTestCase {
   func testARestoredSessionSurvivesAnUnavailableHelper() {
     XCTAssertTrue(
       TerminalPersistentSessionPolicy.usesPersistentSession(
-        preferenceEnabled: true,
         isAvailable: false,
         isRunCommand: false,
         hasExistingSession: true,
@@ -80,40 +55,12 @@ final class TerminalPersistentSessionPolicyTests: XCTestCase {
   func testARestoredRunCommandIsStillExcluded() {
     XCTAssertFalse(
       TerminalPersistentSessionPolicy.usesPersistentSession(
-        preferenceEnabled: true,
         isAvailable: false,
         isRunCommand: true,
         hasExistingSession: true,
         isFixture: false))
   }
 
-  /// The quit paths' promise: with persistence off, nothing outlives the app.
-  func testQuittingWithPersistenceOffEndsSessions() {
-    XCTAssertTrue(
-      TerminalPersistentSessionPolicy.endsSessionsOnQuit(
-        preferenceEnabled: false, isTestLaunch: false))
-  }
-
-  func testQuittingWithPersistenceOnKeepsSessions() {
-    XCTAssertFalse(
-      TerminalPersistentSessionPolicy.endsSessionsOnQuit(
-        preferenceEnabled: true, isTestLaunch: false))
-  }
-
-  /// REGRESSION. Fixture mode pins persistence off, and "every session" is every session on this
-  /// bundle id's sockets — none of them the test launch's own. Every XCUITest `terminate()` ended
-  /// the developer's own Workroom Dev terminals.
-  func testATestLaunchNeverEndsSessionsOnQuit() {
-    XCTAssertFalse(
-      TerminalPersistentSessionPolicy.endsSessionsOnQuit(
-        preferenceEnabled: false, isTestLaunch: true),
-      "a test launch's quit reached sessions that belong to another app")
-  }
-
-  /// This test host is itself a test launch, so the real default must say so.
-  func testAHostedUnitRunIsATestLaunch() {
-    XCTAssertTrue(TerminalPersistentSessionPolicy.isTestLaunch)
-  }
 }
 
 final class TerminalPayloadSessionIDTests: XCTestCase {

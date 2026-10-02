@@ -1,4 +1,3 @@
-import Defaults
 import Foundation
 
 enum TerminalPersistentSessionPolicy {
@@ -18,44 +17,11 @@ enum TerminalPersistentSessionPolicy {
   /// nil for an unresolved owner and `GhosttySurfaceView` opens a plain shell, which is the same
   /// outcome as having no id at all.
   static func usesPersistentSession(
-    preferenceEnabled: Bool = Defaults[.backgroundSessions],
     isAvailable: Bool,
     isRunCommand: Bool,
     hasExistingSession: Bool,
     isFixture: Bool = UITestFixture.isActive
   ) -> Bool {
-    preferenceEnabled && (isAvailable || hasExistingSession) && !isRunCommand && !isFixture
+    (isAvailable || hasExistingSession) && !isRunCommand && !isFixture
   }
-
-  /// Whether quitting ends every session the helpers hold — the quit paths' promise that with
-  /// persistence off nothing outlives the app (`AppDelegate.installSigtermHandler` and
-  /// `stopRunCommandsThenTerminate`, which must agree).
-  ///
-  /// **Never from a test launch.** "Every session" means every session on the sockets under
-  /// `Application Support/<bundle id>/`, whoever made them, and a test launch has made none: with
-  /// persistence off nothing new is persisted, and a fixture never persists anything anyway. So
-  /// all it could reach are the sessions of the developer's own Workroom Dev with the same bundle
-  /// id — and fixture mode pins `backgroundSessions` off in its throwaway suite, whatever the
-  /// developer chose. XCUITest ends the app with SIGTERM (`terminate()`), which runs this path,
-  /// so every `make app-uitest` used to end the terminals of the Dev app it shared an id with.
-  static func endsSessionsOnQuit(
-    preferenceEnabled: Bool = Defaults[.backgroundSessions],
-    isTestLaunch: Bool = TerminalPersistentSessionPolicy.isTestLaunch
-  ) -> Bool {
-    !preferenceEnabled && !isTestLaunch
-  }
-
-  /// A hosted unit run (`XCTestConfigurationFilePath`), or an app XCUITest launched, which has no
-  /// such variable and is known by its fixture flags — the same three signals
-  /// `applicationDidFinishLaunching` and `UserDefaults.app` use to keep a test launch off the
-  /// developer's real agent.
-  ///
-  /// Delegated, not re-spelled. Written out here it was a fourth copy of that expression, and
-  /// crucially one WITHOUT `UITestFixture`'s `#if DEBUG` gate: `isActive` and `isolatesPreferences`
-  /// are both false in Release, but the bare env-var probe is not, so a shipped app launched from a
-  /// shell still exporting `XCTestConfigurationFilePath` (a wrapper script, `launchctl setenv`, a
-  /// terminal left over from a test run — the trap `UserDefaults.app` documents) answered "test
-  /// launch" and `endsSessionsOnQuit` went false. With background sessions OFF that leaks every
-  /// terminal's shell forever, silently breaking the quit alert's own promise to stop them.
-  static var isTestLaunch: Bool { UITestFixture.isTestProcess }
 }

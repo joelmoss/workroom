@@ -587,28 +587,4 @@ final class PersistentSessionService {
       if let uuid = session.identifier.uuid { await endSession(sessionID: uuid) }
     }
   }
-
-  /// Kills every live daemon session except those in `attachedSessionIDs` — a session still owned
-  /// by an open tab in some window is left running rather than yanked out from under whoever is
-  /// looking at it right now. Pass an empty set (the default) to kill everything.
-  func endAllSessions(excluding attachedSessionIDs: Set<UUID> = []) async {
-    guard !attachedSessionIDs.isEmpty else {
-      // Owners go with them: these session ids are dead, and a tab reopened later reuses its
-      // persisted id (`TerminalSessions.assignedSessionID`) — a surviving entry would pin it to
-      // the helper that held the session just killed.
-      owners.removeAll()
-      logger.notice("ending every persistent session")
-      // Every helper, and NOT gated on the preferred backend's socket: during the migration the
-      // daemon may still hold sessions the agent knows nothing about, and "stop everything" has to
-      // mean everything. `liveControlPlanes()` is already the enumeration of what is running.
-      let clients = liveControlPlanes()
-      _ = await Task.detached(priority: .utility) { clients.map { $0.killAll() } }.value
-      return
-    }
-    let sessions = await liveSessions()
-    for session in sessions {
-      guard let uuid = session.identifier.uuid, !attachedSessionIDs.contains(uuid) else { continue }
-      await endSession(sessionID: uuid)
-    }
-  }
 }
