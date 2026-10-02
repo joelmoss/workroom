@@ -29,8 +29,7 @@ import Foundation
 ///
 /// # What is deliberately absent
 ///
-/// - **The PTY of a dead session.** With background sessions on (the default), ordinary workroom
-///   shells live in `workroom-session` and reattach via `TerminalPayload.sessionID`. A pane whose
+/// - **The PTY of a dead session.** Ordinary workroom shells live in `workroom-session` and reattach via `TerminalPayload.sessionID`. A pane whose
 ///   session is gone just opens a fresh shell in the remembered directory, with no prior text —
 ///   the daemon's own live output is the only source of restored content now (issue #144's old
 ///   disk-sidecar capture/replay was removed once background sessions made it redundant).

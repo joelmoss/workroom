@@ -896,7 +896,6 @@ enum UITestFixture {
   /// source instead of racing and cleaning up.
   static func applyFixtureDefaults(active: Bool = isActive) {
     guard active else { return }
-    Defaults[.backgroundSessions] = false
     Defaults[.showInspector] = true
     Defaults[.activeInspectorSection] = inspectorSection
     Defaults[.diffViewMode] = diffViewMode

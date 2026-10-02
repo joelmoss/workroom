@@ -371,7 +371,7 @@ struct TerminalState {
 /// The shared tab strip lists every tab; each group's members render as a contiguous bracketed run,
 /// ordered by its split tree (`displayedTabIDs`). The whole layout — tabs, order, splits, focus — is
 /// captured to disk and rehydrated by `restore(_:for:)` (issue #46); ordinary workroom shells reattach
-/// via `sessionID` when background sessions are on.
+/// via `sessionID`.
 ///
 /// ```
 ///   STRIP:  A  [ B │ C ]  D  [ E │ F ]    focused == C  →  CONTENT renders B│C.
@@ -562,9 +562,7 @@ final class TerminalSessions: ObservableObject {
   private var hostCwdQueries: [TerminalTab.ID: Task<Void, Never>] = [:]
 
   /// Wait for every `closeTab`-initiated kill still in flight. Called at quit, across every
-  /// window's `TerminalSessions`, alongside (not instead of) the persistence-off `endAllSessions`
-  /// sweep — that sweep only fires when persistence is off, but a closed tab's session must not
-  /// outlive the quit either way.
+  /// window's `TerminalSessions`: a closed tab's session must not outlive the quit.
   func awaitPendingCloseKills() async {
     let tasks = pendingCloseKills
     pendingCloseKills.removeAll()
@@ -848,8 +846,8 @@ final class TerminalSessions: ObservableObject {
   /// - **No-op when the target already has tabs**, so a restore can never race or duplicate a live
   ///   session.
   ///
-  /// Terminals come back in their remembered directory. When background sessions are on they
-  /// reattach to the daemon; otherwise they are a fresh login shell. Nothing spawns here:
+  /// Terminals come back in their remembered directory and reattach to their session if it is
+  /// still alive; otherwise they are a fresh login shell. Nothing spawns here:
   /// constructing a surface is inert until it enters a window.
   @discardableResult
   func restore(

@@ -147,8 +147,8 @@ final class PersistentSessionAttachGateTests: XCTestCase {
   ///
   /// Every test in `TerminalPersistentSessionPolicyTests` calls `usesPersistentSession` directly
   /// with literal arguments, so changing the CALLER to `hasExistingSession: false` restores the
-  /// original bug — an unhealthy agent strands every daemon-held terminal — with all eight of them
-  /// still green. The argument-passing half is what this commit added, and it needs its own pin.
+  /// original bug — an unhealthy agent strands every daemon-held terminal — with all of them still
+  /// green. The argument-passing half is what this commit added, and it needs its own pin.
   func testAssignedSessionIDReportsWhetherTheSessionAlreadyExists() throws {
     let url = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
