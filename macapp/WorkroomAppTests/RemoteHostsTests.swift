@@ -157,9 +157,8 @@ final class RemoteHostsTests: XCTestCase {
   /// base.
   @MainActor
   func testARemoteCreateIsOffWhileItsProjectIsBusy() {
-    let saved = Defaults[.remoteWorkroomsPreview]
-    Defaults[.remoteWorkroomsPreview] = true
-    defer { Defaults[.remoteWorkroomsPreview] = saved }
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
     let store = AppStore()
     let project = Project(path: "/proj", vcs: "git", workrooms: [])
     XCTAssertTrue(store.canCreateRemoteWorkroom(in: project))
@@ -171,9 +170,8 @@ final class RemoteHostsTests: XCTestCase {
   /// would be a no-op.
   @MainActor
   func testReactivatingARemoteTreeListsItAgain() async throws {
-    let saved = Defaults[.remoteWorkroomsPreview]
-    Defaults[.remoteWorkroomsPreview] = true
-    defer { Defaults[.remoteWorkroomsPreview] = saved }
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
     let lists = Connects()
     lists.fail(true)
     lists.hold(false)
@@ -190,5 +188,53 @@ final class RemoteHostsTests: XCTestCase {
       for _ in 0..<500 where lists.calls < expected { try await Task.sleep(for: .milliseconds(2)) }
       XCTAssertEqual(lists.calls, expected)
     }
+  }
+
+  /// A remote workroom this app can't reach (previews off, here) reads nothing on this Mac: its
+  /// path names a directory on its host, not here.
+  @MainActor
+  func testAnUnreachableRemoteWorkroomReadsNothingHere() {
+    RemoteWorkrooms.enabledForTesting = false
+    defer { RemoteWorkrooms.enabledForTesting = nil }
+    let target = Workroom(
+      name: "r", path: NSTemporaryDirectory(), vcsName: "workroom/r", warnings: [],
+      host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID())
+    ).target(inProject: "/proj")
+    XCTAssertNil(target.remoteHost)
+
+    let history = HistoryModel()
+    history.focus(target: target)
+    XCTAssertNil(history.root, "History read the remote path on this Mac")
+    XCTAssertEqual(history.state, .idle)
+
+    let files = FileTreeModel(router: RepositoryRouter())
+    files.activate(target: target)
+    XCTAssertEqual(files.state, .idle, "Files listed the remote path on this Mac")
+  }
+
+  /// A base record that names a host but not enough to derive from is refused: building another
+  /// would leave the recorded one running with nothing pointing at it.
+  func testAnIncompleteBaseIsNotReplaced() async throws {
+    let driver = ContainerHostDriver(hosts: [:], directory: FileManager.default.temporaryDirectory)
+    let environment = RemoteProvisioning.Environment(
+      driver: driver, agentSocket: RemoteWorkrooms.agentSocket,
+      client: BrokerClient(
+        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())))
+    let recorder = RemoteWorkrooms.Recorder(
+      reserve: { _, _ in
+        XCTFail("a name was taken")
+        return "x"
+      },
+      record: { _, _ in XCTFail("something was recorded") },
+      forget: { _ in XCTFail("something was forgotten") })
+
+    do {
+      _ = try await RemoteWorkrooms.create(
+        repository: try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r")),
+        cloneURL: "https://github.com/o/r.git",
+        base: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID()),
+        driver: driver, environment: environment, recorder: recorder)
+      XCTFail("an incomplete base was replaced")
+    } catch RemoteWorkrooms.Failure.incompleteBase {}
   }
 }

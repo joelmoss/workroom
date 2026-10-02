@@ -130,19 +130,26 @@ final class HistoryModel: ObservableObject {
   /// can't name (#253), and any other's by its directory.
   func focus(target: TerminalTarget?) {
     if let location = target?.remoteLocation { return focus(location: location) }
-    focus(target.map { URL(fileURLWithPath: $0.path) })
+    focus(Self.localRoot(of: target))
   }
 
   /// `activate` for a target, as `focus(target:)` picks.
   func activate(target: TerminalTarget?) {
     guard let location = target?.remoteLocation else {
-      return activate(target.map { URL(fileURLWithPath: $0.path) })
+      return activate(Self.localRoot(of: target))
     }
     if self.location == location, state.isSettled {
       refresh()
     } else {
       focus(location: location)
     }
+  }
+
+  /// Where `target`'s log is read on this Mac: nowhere for a remote workroom this app can't reach,
+  /// whose path is on its host.
+  private static func localRoot(of target: TerminalTarget?) -> URL? {
+    guard let target, !target.isRemoteWorkroom else { return nil }
+    return URL(fileURLWithPath: target.path)
   }
 
   /// Grow the page by one `pageSize` (the "Load more" affordance), up to `maxWindow`.

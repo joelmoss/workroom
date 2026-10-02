@@ -6,17 +6,15 @@ import XCTest
 /// A reachable remote workroom's Changes, History, Files, diffs and PR/CI status route by its
 /// location on its host, never by its path, which one project's remote workrooms share (#253).
 final class RemoteWorkroomRoutingTests: XCTestCase {
-  private var savedPreview = false
   private let path = "/home/workroom/r"
 
   override func setUp() {
     super.setUp()
-    savedPreview = Defaults[.remoteWorkroomsPreview]
-    Defaults[.remoteWorkroomsPreview] = true
+    RemoteWorkrooms.enabledForTesting = true
   }
 
   override func tearDown() {
-    Defaults[.remoteWorkroomsPreview] = savedPreview
+    RemoteWorkrooms.enabledForTesting = nil
     RepositoryRouter.shared.replaceRemote([])
     super.tearDown()
   }

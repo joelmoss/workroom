@@ -97,15 +97,14 @@ final class TerminalTargetTests: XCTestCase {
   /// A serving remote workroom opens panes only while remote workrooms are on (#253), and stays
   /// `isMissing` for every other local action; one being created, failed or destroyed opens none.
   func testARemoteWorkroomOpensPanesOnlyWhenServingAndEnabled() {
-    let saved = Defaults[.remoteWorkroomsPreview]
-    defer { Defaults[.remoteWorkroomsPreview] = saved }
+    defer { RemoteWorkrooms.enabledForTesting = nil }
     let id = UUID()
     func target(_ host: HostDescriptor) -> TerminalTarget {
       Workroom(name: "x", path: "/home/w", vcsName: "workroom/x", warnings: [], host: host)
         .target(inProject: "/proj")
     }
 
-    Defaults[.remoteWorkroomsPreview] = true
+    RemoteWorkrooms.enabledForTesting = true
     let mine = RemoteWorkrooms.provisioner
     let serving = target(HostDescriptor(provisioner: mine, id: id))
     XCTAssertEqual(serving.remoteHost, id)
@@ -120,7 +119,7 @@ final class TerminalTargetTests: XCTestCase {
       target(HostDescriptor(provisioner: "another.build", id: id)).opensTerminals,
       "another build's host takes another key")
 
-    Defaults[.remoteWorkroomsPreview] = false
+    RemoteWorkrooms.enabledForTesting = false
     XCTAssertFalse(target(HostDescriptor(provisioner: mine, id: id)).opensTerminals)
   }
 
@@ -145,9 +144,8 @@ final class TerminalTargetTests: XCTestCase {
   /// A remote workroom this build could reach says why its panes don't open, rather than that this
   /// build cannot open remote workrooms (#253).
   func testAnUnopenedRemoteWorkroomSaysWhy() {
-    let saved = Defaults[.remoteWorkroomsPreview]
-    defer { Defaults[.remoteWorkroomsPreview] = saved }
-    Defaults[.remoteWorkroomsPreview] = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
+    RemoteWorkrooms.enabledForTesting = true
     let mine = RemoteWorkrooms.provisioner
     func detail(_ host: HostDescriptor) -> String {
       let target = Workroom(
@@ -168,7 +166,7 @@ final class TerminalTargetTests: XCTestCase {
         name: "x", path: "/home/w", vcsName: "workroom/x", warnings: [],
         host: HostDescriptor(provisioner: mine, id: UUID())
       ).remoteNote, "a serving workroom opens")
-    Defaults[.remoteWorkroomsPreview] = false
+    RemoteWorkrooms.enabledForTesting = false
     XCTAssertTrue(
       detail(HostDescriptor(provisioner: mine, id: UUID())).contains("turned off in this build"))
   }
