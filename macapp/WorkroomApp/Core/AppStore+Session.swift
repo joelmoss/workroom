@@ -174,6 +174,40 @@ extension AppStore {
     }
   }
 
+  /// Once per process, on the first full project listing: end the background sessions of
+  /// workrooms that no longer exist (`PersistentSessionService.endOrphanedSessions`). "Exists"
+  /// is the same resolver the restore above drops targets by, so a session is ended exactly when
+  /// its workroom's panes would not come back. A remote workroom that is not reachable yet still
+  /// resolves, so its sessions are kept.
+  ///
+  /// **Never from a test launch.** A fixture lists only its temp-directory projects, and the
+  /// helpers it would ask are the developer's own Workroom Dev's on the shared bundle id, so every
+  /// real session would look orphaned. An empty listing is skipped for the same reason: a config
+  /// that read as nothing must not end everything.
+  func endOrphanedSessionsOnce(
+    in projects: [Project], isTestProcess: Bool = UITestFixture.isTestProcess
+  ) {
+    guard !Self.sweptOrphanedSessions, !isTestProcess, !projects.isEmpty else { return }
+    Self.sweptOrphanedSessions = true
+    // Resolved against the project list as it is when the sessions are judged, not the listing
+    // that triggered the sweep: a workroom added in between must not lose its first session.
+    Task {
+      await PersistentSessionService.shared.endOrphanedSessions {
+        Self.sidebarID(forTargetID: $0, in: self.projects) != nil
+      }
+    }
+  }
+
+  /// Every helper session this window will or might reattach to: its open tabs, the remote targets
+  /// it is holding back, its claimed-but-unapplied restore, and the rest of the saved session.
+  /// "Stop Detached Terminals" spares all of them.
+  var heldSessionIDs: Set<UUID> {
+    var ids = terminals.allOwnedSessionIDs.union(projectStore.savedSessionIDs)
+    for saved in deferredTargetSessions.values { ids.formUnion(saved.sessionIDs) }
+    for saved in pendingSessionRestore?.targets ?? [] { ids.formUnion(saved.sessionIDs) }
+    return ids
+  }
+
   /// Whether `targetID`'s restored panes may reattach to this Mac's live sessions: a target that
   /// still exists, is local, and opens here (`TerminalSessions.materializeLivePersistentSessions`).
   /// The path is stat-ed too: the first load, which the restore runs in, reads config only and

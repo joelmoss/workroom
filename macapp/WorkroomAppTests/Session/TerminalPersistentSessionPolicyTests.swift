@@ -1,3 +1,4 @@
+import WorkroomSessionProtocol
 import XCTest
 
 @testable import Workroom
@@ -79,5 +80,58 @@ final class TerminalPayloadSessionIDTests: XCTestCase {
     let data = try JSONEncoder().encode(payload)
     let decoded = try JSONDecoder().decode(TerminalPayload.self, from: data)
     XCTAssertEqual(decoded.sessionID, payload.sessionID)
+  }
+}
+
+final class OrphanedSessionTests: XCTestCase {
+  /// "Stop Detached Terminals" spares every session a window will reattach to, not just open tabs:
+  /// a remote target held back until its host is reachable keeps its saved session ids, and those
+  /// shells look detached until it comes back.
+  @MainActor
+  func testHeldSessionsIncludeADeferredTarget() {
+    let store = AppStore()
+    let held = UUID()
+    store.deferredTargetSessions["wr|/p|remote"] = TargetSession(
+      targetID: "wr|/p|remote",
+      tabs: [
+        TabSession(
+          key: "t1", kind: TabSession.terminalKind,
+          terminal: TerminalPayload(
+            defaultTitle: "Terminal 1", cwd: nil, sessionID: held.uuidString))
+      ])
+    XCTAssertTrue(store.heldSessionIDs.contains(held))
+  }
+
+  private func session(workroom: String?) -> SessionDescriptor {
+    SessionDescriptor(
+      identifier: SessionIdentifier(UUID()), shellProcessID: 1,
+      ttyDevice: 0, workingDirectory: "/tmp", isAttached: false,
+      metadata: workroom.map {
+        [SessionEnvironmentEntry(key: SessionMetadataKey.workroom, value: $0)]
+      }
+        ?? [])
+  }
+
+  /// Only a session tagged with a workroom that no longer resolves is orphaned. An untagged one
+  /// proves nothing about where it belonged, so it is kept.
+  func testOnlyUnresolvedWorkroomsAreOrphaned() {
+    let live = session(workroom: "wr|/p|live")
+    let gone = session(workroom: "wr|/p|gone")
+    let untagged = session(workroom: nil)
+    let orphans = PersistentSessionService.orphanedSessionIDs(
+      [live, gone, untagged], resolves: { $0 == "wr|/p|live" })
+    XCTAssertEqual(orphans, [gone.identifier.uuid!])
+  }
+
+  /// REGRESSION GUARD. A test launch lists only fixture projects while the helpers it would ask
+  /// belong to the developer's own Workroom Dev, so the sweep must never run from one, and must
+  /// not use up the once-per-process flag either.
+  @MainActor
+  func testATestLaunchNeverSweeps() {
+    let projects = UITestFixture.projects()
+    XCTAssertFalse(projects.isEmpty, "the empty-listing guard would make this pass vacuously")
+    let before = AppStore.sweptOrphanedSessions
+    AppStore().endOrphanedSessionsOnce(in: projects, isTestProcess: true)
+    XCTAssertEqual(AppStore.sweptOrphanedSessions, before)
   }
 }

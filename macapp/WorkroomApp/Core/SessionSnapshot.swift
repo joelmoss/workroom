@@ -29,10 +29,11 @@ import Foundation
 ///
 /// # What is deliberately absent
 ///
-/// - **The PTY of a dead session.** Ordinary workroom shells live in `workroom-session` and reattach via `TerminalPayload.sessionID`. A pane whose
-///   session is gone just opens a fresh shell in the remembered directory, with no prior text —
-///   the daemon's own live output is the only source of restored content now (issue #144's old
-///   disk-sidecar capture/replay was removed once background sessions made it redundant).
+/// - **The PTY of a dead session.** Ordinary workroom shells live in a session helper and
+///   reattach via `TerminalPayload.sessionID`. A pane whose session is gone just opens a fresh
+///   shell in the remembered directory, with no prior text — the daemon's own live output is the
+///   only source of restored content now (issue #144's old disk-sidecar capture/replay was removed
+///   once background sessions made it redundant).
 ///   Run-command tabs are never persisted.
 /// - **Run tabs.** Restoring one would resurrect a dev server with no `AppStore.RunState` behind it —
 ///   an untracked process orphaned on its port, the failure `WindowRegistry.runOwner(for:excluding:)`
@@ -447,6 +448,13 @@ struct TargetSession: Codable, Hashable, Sendable {
     self.split = nil
     self.focusedKey = focusedKey
     self.terminalCounter = terminalCounter
+  }
+}
+
+extension TargetSession {
+  /// The helper sessions this target's terminal tabs will reattach to.
+  var sessionIDs: Set<UUID> {
+    Set(tabs.compactMap { $0.terminal?.sessionID.flatMap(UUID.init(uuidString:)) })
   }
 }
 
