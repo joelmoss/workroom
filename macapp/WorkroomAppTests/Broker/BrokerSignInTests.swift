@@ -255,7 +255,7 @@ final class AgentEnrolmentTests: XCTestCase {
           "-c", "cat > \"$1\"; sleep \"$4\"; printf '%s' \"$2\" >&2; exit \"$3\"", "stub",
           stdinFile.path, output, String(status), String(delay),
         ],
-        environment: [:], handshakeTimeout: 5)
+        environment: [:], handshakeTimeout: 5, purpose: .exchange)
     }
   }
 

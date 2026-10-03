@@ -409,7 +409,8 @@ private final class ShellDriver: HostDriver, @unchecked Sendable {
   func exec(_ command: String, on host: HostID) async throws -> HostStream {
     try HostStream.spawn(
       URL(fileURLWithPath: "/bin/sh"), ["-c", command],
-      environment: ["HOME": home.path, "PATH": "/usr/bin:/bin"], handshakeTimeout: 5)
+      environment: ["HOME": home.path, "PATH": "/usr/bin:/bin"], handshakeTimeout: 5,
+      purpose: .exchange)
   }
 }
 

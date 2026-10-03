@@ -101,19 +101,39 @@ enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
 }
 
 /// A bidirectional byte stream to the agent on a far-side host: one end of a socketpair, whose
-/// other end is the stdin and stdout of the local process carrying it (`ssh host wr-agent relay`).
+/// other end is the stdout of the local process carrying it (`ssh host wr-agent relay`), and its
+/// stdin too for a connection (see `Purpose`).
 ///
 /// Whoever connects over it owns both: `AgentVCSConnection` closes the descriptor and ends the
 /// process with the connection. The carrier's exit is also how a lost link is noticed. The child
 /// holds the only copy of its end of the pair, so when it exits, that end closes and the next read
 /// on this one sees EOF.
 final class HostStream: @unchecked Sendable {
+  /// What the stream is spawned for, which decides how the carrier's stdin is wired.
+  enum Purpose {
+    /// A connection (`AgentVCSConnection.connect(host:stream:)`): the carrier's stdin and stdout
+    /// are one socket, the descriptor handed off.
+    case connection
+    /// A one-off exchange (`communicate`): the carrier's stdin is a socketpair of its own, so the
+    /// end of the input can be a `close` of it. A `shutdown(SHUT_WR)` of a shared socket, the
+    /// other way to half-close, is recorded on the far end but does not always wake a carrier
+    /// blocked in `read` there: it sleeps on with the EOF unread (#305; measured in a C harness,
+    /// 4 in 1600 exchanges with `sh -c 'wc -c'`, none in 2500 with this). A carrier that `poll`s
+    /// its stdin saw that EOF every time (none in 2500).
+    case exchange
+  }
+
   let descriptor: Int32
   /// How long the agent's greeting may take: a local relay answers at once, ssh must connect and
   /// authenticate first.
   let handshakeTimeout: TimeInterval
   private let process: Process
+  private let purpose: Purpose
   private let lock = NSLock()
+  /// An exchange's end of the carrier's stdin, until `communicate` closes it to send EOF. Taken
+  /// under `lock` both to close and to shut down, so a shutdown never lands on a descriptor
+  /// number already closed and reused by something else.
+  private var input: Int32?
   private var errors = Data()
   /// stderr reached EOF: everything the carrier said is in `errors`.
   private var errorsClosed = false
@@ -127,15 +147,21 @@ final class HostStream: @unchecked Sendable {
 
   var processIdentifier: Int32 { process.processIdentifier }
 
-  private init(descriptor: Int32, process: Process, handshakeTimeout: TimeInterval) {
+  private init(
+    descriptor: Int32, input: Int32?, process: Process, purpose: Purpose,
+    handshakeTimeout: TimeInterval
+  ) {
     self.descriptor = descriptor
+    self.input = input
     self.process = process
+    self.purpose = purpose
     self.handshakeTimeout = handshakeTimeout
   }
 
   /// A stream nothing connected over is still this object's: an ssh whose stdin never reads EOF
   /// holds a healthy link open for good.
   deinit {
+    closeInput()
     guard !lock.withLock({ handedOff }) else { return }
     Darwin.close(descriptor)
     end()
@@ -144,44 +170,79 @@ final class HostStream: @unchecked Sendable {
   /// Gives the descriptor and the process to the connection made over them, which closes and ends
   /// them from then on.
   func handOff() -> Int32 {
+    precondition(purpose == .connection, "an exchange's stream is not a connection's")
     lock.withLock { handedOff = true }
     return descriptor
   }
 
-  /// Runs `executable` with a socketpair end as both its stdin and its stdout.
+  /// Closes an exchange's end of the carrier's stdin, which is EOF there. Idempotent.
+  private func closeInput() {
+    lock.withLock {
+      guard let input else { return }
+      Darwin.close(input)
+      self.input = nil
+    }
+  }
+
+  /// Wakes a `send` blocked on an exchange's input, if it is still open.
+  private func shutDownInput() {
+    lock.withLock {
+      guard let input else { return }
+      shutdown(input, SHUT_WR)
+    }
+  }
+
+  /// A connected pair of stream sockets: ours, with `SO_NOSIGPIPE`, and the child's.
+  ///
+  /// Close-on-exec on both, so a process spawned later cannot inherit an end: a stray copy of the
+  /// child's end would keep it open after the carrier exits, and the lost link would never read
+  /// as EOF here. There is still a window between `socketpair` and the `fcntl`s, which Darwin
+  /// cannot close (it has no `SOCK_CLOEXEC`); Foundation's own spawns close every descriptor they
+  /// were not given, so only a raw `fork` in that window could catch one. The spawn dup2s the
+  /// child's end onto its stdin or stdout, which clears the flag on those copies only.
+  private static func socketPair() throws -> (ours: Int32, theirs: Int32) {
+    var pair: [Int32] = [0, 0]
+    guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else {
+      throw HostConnectionError.serviceUnavailable("socketpair failed: errno \(errno)")
+    }
+    AgentVCSConnection.noSignalOnWrite(pair[0])
+    _ = fcntl(pair[0], F_SETFD, FD_CLOEXEC)
+    _ = fcntl(pair[1], F_SETFD, FD_CLOEXEC)
+    return (pair[0], pair[1])
+  }
+
+  /// Runs `executable` with a socketpair end as its stdout, and as its stdin too for a
+  /// `.connection`; an `.exchange` gives its stdin a pair of its own (see `Purpose`).
   ///
   /// `environment` is the carrier's WHOLE environment, never merged with the app's: whatever it
   /// holds can reach the far side, so a driver passes exactly what its transport needs.
   static func spawn(
     _ executable: URL, _ arguments: [String], environment: [String: String],
-    handshakeTimeout: TimeInterval
+    handshakeTimeout: TimeInterval, purpose: Purpose
   ) throws -> HostStream {
-    var pair: [Int32] = [0, 0]
-    guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else {
-      throw HostConnectionError.serviceUnavailable("socketpair failed: errno \(errno)")
+    let (ours, theirs) = try socketPair()
+    let input: (ours: Int32, theirs: Int32)?
+    do {
+      input = purpose == .exchange ? try socketPair() : nil
+    } catch {
+      Darwin.close(ours)
+      Darwin.close(theirs)
+      throw error
     }
-    let (ours, theirs) = (pair[0], pair[1])
-    AgentVCSConnection.noSignalOnWrite(ours)
-    // Close-on-exec on both, so a process spawned later cannot inherit an end: a stray copy of the
-    // child's end would keep it open after the carrier exits, and the lost link would never read
-    // as EOF here. There is still a window between `socketpair` and these two calls, which Darwin
-    // cannot close (it has no `SOCK_CLOEXEC`); Foundation's own spawns close every descriptor they
-    // were not given, so only a raw `fork` in that window could catch one. The spawn below dup2s
-    // the child's end onto 0 and 1, which clears the flag on those copies only.
-    _ = fcntl(ours, F_SETFD, FD_CLOEXEC)
-    _ = fcntl(theirs, F_SETFD, FD_CLOEXEC)
 
     let process = Process()
     process.executableURL = executable
     process.arguments = arguments
     process.environment = environment
     let child = FileHandle(fileDescriptor: theirs, closeOnDealloc: false)
-    process.standardInput = child
+    process.standardInput =
+      input.map { FileHandle(fileDescriptor: $0.theirs, closeOnDealloc: false) } ?? child
     process.standardOutput = child
     let errors = Pipe()
     process.standardError = errors
     let stream = HostStream(
-      descriptor: ours, process: process, handshakeTimeout: handshakeTimeout)
+      descriptor: ours, input: input?.ours, process: process, purpose: purpose,
+      handshakeTimeout: handshakeTimeout)
     errors.fileHandleForReading.readabilityHandler = { [weak stream] handle in
       let data = handle.availableData
       guard !data.isEmpty else {
@@ -206,14 +267,17 @@ final class HostStream: @unchecked Sendable {
     do {
       try process.run()
     } catch {
-      // Only the child's end: `ours` is the stream's, and its `deinit` closes it on the way out.
+      // Only the child's ends: ours are the stream's, and its `deinit` closes them on the way out.
       Darwin.close(theirs)
+      if let input { Darwin.close(input.theirs) }
       errors.fileHandleForReading.readabilityHandler = nil
       throw HostConnectionError.serviceUnavailable(
         "Could not start \(executable.lastPathComponent): \(error.localizedDescription)")
     }
-    // The child now holds the only copy. Keeping this one would hide the child's exit.
+    // The child now holds the only copies. Keeping these would hide the child's exit, and keep its
+    // stdin from ever reading EOF.
     Darwin.close(theirs)
+    if let input { Darwin.close(input.theirs) }
     return stream
   }
 
@@ -238,13 +302,19 @@ final class HostStream: @unchecked Sendable {
   func communicate(_ input: Data?, timeout: TimeInterval) async throws -> (
     status: Int32, output: String
   ) {
+    precondition(purpose == .exchange, "communicate needs a stream spawned for an exchange")
     let fd = descriptor
+    // Read once: only this exchange closes it, after its last `send` on it.
+    guard let inputFD = lock.withLock({ self.input }) else {
+      preconditionFailure("communicate runs once per stream")
+    }
     let process = self.process
     let name = process.executableURL?.lastPathComponent ?? "carrier"
-    // On silence: end the carrier, and shut the socket down too, which wakes a `send` or `recv`
+    // On silence: end the carrier, and shut the sockets down too, which wakes a `send` or `recv`
     // below whatever the carrier does about SIGTERM (a child of its own holding the far end, say).
     let watchdog = SilenceWatchdog(timeout) { [weak self] in
       self?.end()
+      self?.shutDownInput()
       // Two calls: on macOS `SHUT_RDWR` does nothing once the peer has shut its side.
       shutdown(fd, SHUT_RD)
       shutdown(fd, SHUT_WR)
@@ -263,7 +333,7 @@ final class HostStream: @unchecked Sendable {
                 // would return only once the last byte was queued, and the silence bound would be
                 // a transfer bound after all.
                 let count = Darwin.send(
-                  fd, bytes.baseAddress! + sent, min(bytes.count - sent, 64 * 1024), 0)
+                  inputFD, bytes.baseAddress! + sent, min(bytes.count - sent, 64 * 1024), 0)
                 if count < 0, errno == EINTR { continue }
                 // `EPIPE` (`SO_NOSIGPIPE` is set), not a signal: the far side stopped reading.
                 // What it printed before it did (`cat` failing to open its file, say) is still the
@@ -274,9 +344,9 @@ final class HostStream: @unchecked Sendable {
               }
             }
           }
-          // EOF on the command's stdin, which is what ends a `cat >` there. Half-closed: its stdout
-          // still flows back.
-          shutdown(fd, SHUT_WR)
+          // EOF on the command's stdin, which is what ends a `cat >` there. A close of its own
+          // pair, never a `shutdown` of the one its stdout flows back on (see `Purpose`).
+          self.closeInput()
           var collected = Data()
           var chunk = [UInt8](repeating: 0, count: 64 * 1024)
           while true {
@@ -300,6 +370,7 @@ final class HostStream: @unchecked Sendable {
         }
       } onCancel: {
         self.end()
+        self.shutDownInput()
         shutdown(fd, SHUT_RD)
         shutdown(fd, SHUT_WR)
       }

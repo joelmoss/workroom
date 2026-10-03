@@ -41,7 +41,7 @@ final class AgentBootstrapTests: XCTestCase {
           "-c", "cat > /dev/null; printf '%s' \"$1\"; exit \"$2\"", "stub", answer.output,
           String(answer.status),
         ],
-        environment: [:], handshakeTimeout: 5)
+        environment: [:], handshakeTimeout: 5, purpose: .exchange)
     }
   }
 
@@ -416,7 +416,7 @@ final class AgentBootstrapTests: XCTestCase {
   func testAnExchangeWhoseCommandClosesItsOutputButDoesNotExitIsEnded() async throws {
     let stream = try HostStream.spawn(
       URL(fileURLWithPath: "/bin/sh"), ["-c", "exec 0<&- 1>&-; exec sleep 30"],
-      environment: [:], handshakeTimeout: 5)
+      environment: [:], handshakeTimeout: 5, purpose: .exchange)
     let started = ContinuousClock.now
     do {
       _ = try await stream.communicate(nil, timeout: 20)
@@ -459,7 +459,7 @@ final class AgentBootstrapTests: XCTestCase {
     let stream = try HostStream.spawn(
       // `exec`, so the process ended is the one holding the stream's far end.
       URL(fileURLWithPath: "/bin/sh"), ["-c", "cat > /dev/null; exec sleep 30"],
-      environment: [:], handshakeTimeout: 5)
+      environment: [:], handshakeTimeout: 5, purpose: .exchange)
     let started = ContinuousClock.now
     do {
       _ = try await stream.communicate(Data("x".utf8), timeout: 0.5)
@@ -476,7 +476,7 @@ final class AgentBootstrapTests: XCTestCase {
     let stream = try HostStream.spawn(
       URL(fileURLWithPath: "/bin/sh"),
       ["-c", "for i in 1 2 3 4 5 6 7 8 9 10; do echo x; sleep 0.2; done"],
-      environment: [:], handshakeTimeout: 5)
+      environment: [:], handshakeTimeout: 5, purpose: .exchange)
     let (status, output) = try await stream.communicate(nil, timeout: 1)
     XCTAssertEqual(status, 0)
     XCTAssertEqual(output, String(repeating: "x\n", count: 10))
@@ -491,7 +491,7 @@ final class AgentBootstrapTests: XCTestCase {
       [
         "-c",
         "while [ $(( $(head -c 32768 | wc -c) )) -gt 0 ]; do sleep 0.1; done; echo drained",
-      ], environment: [:], handshakeTimeout: 5)
+      ], environment: [:], handshakeTimeout: 5, purpose: .exchange)
     let (status, output) = try await stream.communicate(
       Data(repeating: 0, count: 1_000_000), timeout: 0.5)
     XCTAssertEqual(status, 0)
@@ -503,7 +503,7 @@ final class AgentBootstrapTests: XCTestCase {
   func testAFarSideThatStopsReadingStillAnswers() async throws {
     let stream = try HostStream.spawn(
       URL(fileURLWithPath: "/bin/sh"), ["-c", "echo said; exec 0<&-; exit 4"],
-      environment: [:], handshakeTimeout: 5)
+      environment: [:], handshakeTimeout: 5, purpose: .exchange)
     let (status, output) = try await stream.communicate(
       Data(repeating: 0, count: 1_000_000), timeout: 5)
     XCTAssertEqual(status, 4)
@@ -511,15 +511,20 @@ final class AgentBootstrapTests: XCTestCase {
   }
 
   /// What the command printed comes back whole, with its stderr after, and its status.
+  ///
+  /// Many times over: the end of the input once failed to wake a `wc` blocked in `read`, in about
+  /// one exchange in twenty here (#305), which one exchange would catch only now and then.
   func testAnExchangeReturnsWhatTheCommandSaidAndItsStatus() async throws {
-    let stream = try HostStream.spawn(
-      URL(fileURLWithPath: "/bin/sh"),
-      ["-c", "n=$(wc -c | tr -d ' '); echo \"got $n\"; echo oops >&2; exit 3"],
-      environment: [:], handshakeTimeout: 5)
-    let (status, output) = try await stream.communicate(
-      Data(repeating: 0, count: 100_000), timeout: 5)
-    XCTAssertEqual(status, 3)
-    XCTAssertEqual(output, "got 100000\noops\n")
+    for attempt in 1...40 {
+      let stream = try HostStream.spawn(
+        URL(fileURLWithPath: "/bin/sh"),
+        ["-c", "n=$(wc -c | tr -d ' '); echo \"got $n\"; echo oops >&2; exit 3"],
+        environment: [:], handshakeTimeout: 5, purpose: .exchange)
+      let (status, output) = try await stream.communicate(
+        Data(repeating: 0, count: 100_000), timeout: 5)
+      XCTAssertEqual(status, 3, "attempt \(attempt)")
+      XCTAssertEqual(output, "got 100000\noops\n", "attempt \(attempt)")
+    }
   }
 
   /// A host's shell startup can print anything ahead of the script; only the last 1 MiB is kept,
@@ -528,7 +533,7 @@ final class AgentBootstrapTests: XCTestCase {
     let stream = try HostStream.spawn(
       URL(fileURLWithPath: "/bin/sh"),
       ["-c", "head -c 3000000 /dev/zero | tr '\\0' x; echo; echo 'WRB host Linux aarch64'"],
-      environment: [:], handshakeTimeout: 5)
+      environment: [:], handshakeTimeout: 5, purpose: .exchange)
     let (status, output) = try await stream.communicate(nil, timeout: 5)
     XCTAssertEqual(status, 0)
     XCTAssertLessThanOrEqual(output.utf8.count, 1024 * 1024)
@@ -561,7 +566,7 @@ final class AgentBootstrapTests: XCTestCase {
     func exec(_ command: String, on host: HostID) async throws -> HostStream {
       try HostStream.spawn(
         URL(fileURLWithPath: "/bin/sh"), ["-c", command], environment: ["PATH": path],
-        handshakeTimeout: 5)
+        handshakeTimeout: 5, purpose: .exchange)
     }
   }
 
