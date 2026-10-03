@@ -473,17 +473,27 @@ impl<T: Transport> Transport for RetryInterrupted<T> {
     fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
         let start = std::time::Instant::now();
         let mut next = timeout;
+        let mut last = false;
         loop {
             match self.0.await_input(next) {
                 Err(ureq::Error::Io(e)) if e.kind() == io::ErrorKind::Interrupted => {}
                 result => return result,
+            }
+            if last {
+                return Err(ureq::Error::Timeout(timeout.reason));
             }
             // A retry restarts the socket's timeout, so it gets only what is left of this one:
             // otherwise a steady stream of signals holds the read open past `TIMEOUT`.
             if !timeout.after.is_not_happening() {
                 match timeout.after.checked_sub(start.elapsed()) {
                     Some(left) if !left.is_zero() => next.after = left.into(),
-                    _ => return Err(ureq::Error::Timeout(timeout.reason)),
+                    // Out of time: one last read, which ureq times at a second as it does any
+                    // expired read (`NextTimeout::not_zero`), so an answer that arrived while the
+                    // process was stopped is still taken rather than thrown away.
+                    _ => {
+                        next.after = Duration::ZERO.into();
+                        last = true;
+                    }
                 }
             }
         }
@@ -518,8 +528,7 @@ fn call(
         .build();
     // ureq's default chain less the warnings it keeps private (SOCKS without the feature, a
     // missing TLS provider), with interrupted reads retried beneath TLS so the handshake is
-    // covered too. Without that TLS warning, a provider other than the default Rustls would send
-    // https in the clear rather than panic, so `config` must keep it.
+    // covered too.
     let connector =
         ().chain(ConnectProxyConnector::default())
             .chain(RetryInterrupted(TcpConnector::default()))
@@ -791,6 +800,11 @@ mod tests {
         assert_eq!(given.len(), 4);
         assert_eq!(given[0], Duration::from_millis(5000));
         assert!(given.windows(2).all(|pair| pair[1] < pair[0]), "{given:?}");
+
+        // An answer waiting when the time runs out is still read, given ureq's last-read timeout.
+        let mut late = transport(1);
+        assert!(matches!(late.await_input(timeout(1)), Ok(true)));
+        assert_eq!(late.0.timeouts, [Duration::from_millis(1), Duration::ZERO]);
 
         // 100 interruptions take 500ms, five times the timeout.
         assert!(matches!(
