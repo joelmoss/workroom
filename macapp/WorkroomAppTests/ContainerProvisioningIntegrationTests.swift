@@ -124,6 +124,27 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     } catch HostDriverError.unknownHost {}
   }
 
+  /// A stopped container is started again, and logged in to, when its workroom is opened (#309); a
+  /// running one is left as it is.
+  func testAStoppedHostIsStartedAndReachableAgain() async throws {
+    let provisioning = try provisioning()
+    let driver = ContainerHostDriver(hosts: [:], directory: directory, provisioning: provisioning)
+    let base = try await driver.create()
+    guard case .remote(let id) = base else { return XCTFail("\(base)") }
+    let container = ContainerHostDriver.containerName(id)
+
+    try await driver.startIfStopped(base)
+    XCTAssertEqual(try docker(runtime, ["inspect", "-f", "{{.State.Running}}", container]), "true")
+    _ = try docker(runtime, ["stop", container])
+    XCTAssertEqual(
+      try docker(runtime, ["inspect", "-f", "{{.State.Running}}", container]), "false")
+
+    try await driver.startIfStopped(base)
+    let answer = try await onHost(driver, base, "echo up")
+    XCTAssertEqual(answer, "up")
+    try await driver.destroy(base)
+  }
+
   func testInstancesDerivedFromOneBaseCarryItsDiskButMintTheirOwnIdentity() async throws {
     let provisioning = try provisioning()
     let driver = ContainerHostDriver(hosts: [:], directory: directory, provisioning: provisioning)
