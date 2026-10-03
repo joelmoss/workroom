@@ -3520,18 +3520,21 @@ final class AppStore: ObservableObject {
       && !deletingProjects.contains(project.path)
   }
 
-  /// Creates a remote workroom for `project` (#253), derived from the project's base machine
-  /// (built first if it has none), then selects it, which opens its first pane on the far side.
-  func createRemoteWorkroom(in project: Project) async {
+  /// Creates a container workroom for `project` on `runtime` (#253, #309), derived from the
+  /// project's base machine (built first if it has none), then selects it, which opens its first
+  /// pane on the far side.
+  func createRemoteWorkroom(
+    in project: Project, runtime: RemoteWorkrooms.Runtime = .docker
+  ) async {
     guard canCreateRemoteWorkroom(in: project) else { return }
     beginBusy(project.path)
     defer { endBusy(project.path) }
     do {
-      // Signed out says so before anything asks Docker (`environment` checks it again).
+      // Signed out says so before anything asks the runtime (`environment` checks it again).
       guard BrokerSession.shared.client() != nil else { throw RemoteWorkrooms.Failure.signedOut }
-      // A new base is pinned to the Docker context in use now; a workroom goes where its base is.
-      let context = try await RemoteHosts.shared.context(forBase: project.host)
-      let (driver, environment) = try RemoteHosts.shared.environment(context: context)
+      // A new Docker base is pinned to the context in use now; a workroom goes where its base is.
+      let key = try await RemoteHosts.shared.key(for: runtime, base: project.host)
+      let (driver, environment) = try RemoteHosts.shared.environment(key)
       let resolution = await WorkroomStatusResolver().resolveRepository(in: project.path)
       guard case .found(let repository) = resolution else {
         throw RemoteWorkrooms.Failure.notOnGitHub("Couldn't find its GitHub repository with gh.")
@@ -3541,7 +3544,7 @@ final class AppStore: ObservableObject {
       }
       let created = try await RemoteWorkrooms.create(
         repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
-        base: project.host, driver: driver, environment: environment,
+        base: project.host, runtime: runtime, driver: driver, environment: environment,
         recorder: remoteRecorder(project: project.path))
       // Its panes attach through their own ssh; Changes and the rest connect for themselves.
       await created.instance.connection.close()
