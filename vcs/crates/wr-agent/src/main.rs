@@ -159,22 +159,20 @@ fn run_serve_stdio() -> ExitCode {
     let sessions = wr_agent::session::SessionStore::new();
     let result =
         wr_agent::serve::handle_connection(wr_agent::transport::StdioTransport, sessions.clone());
-    // A kill still on its own thread has taken its session out of the store, so `kill_all` would
-    // not reach it, and exiting now would cut it off between its SIGHUP and its SIGKILL. Bounded
-    // well past that grace, and a shell stuck in the kernel is not waited out.
+    // Nothing else can reach these sessions: the stream was their only route in.
+    sessions.kill_all();
+    // A kill still on its own thread took its session out of the store before `kill_all` looked,
+    // and exiting now would cut it off between its SIGHUP and its SIGKILL. Waited for after
+    // `kill_all`, so no other session's SIGHUP waits on it. Bounded well past that grace, and a
+    // shell stuck in the kernel is not waited out.
     let deadline = std::time::Instant::now() + wr_agent::session::SIGHUP_GRACE * 4;
     while sessions.is_killing() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     match result {
-        Ok(()) => {
-            // Nothing else can reach these sessions: the stream was their only route in.
-            sessions.kill_all();
-            ExitCode::SUCCESS
-        }
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
-            sessions.kill_all();
             ExitCode::FAILURE
         }
     }

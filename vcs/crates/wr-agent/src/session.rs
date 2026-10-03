@@ -300,11 +300,10 @@ pub struct SessionSpec<'a> {
 
 impl SessionStore {
     /// Whether a kill is still running on a thread of its own. Its session has left the map before
-    /// its shell is gone, so the idle-exit check, a hand-off and `serve --stdio`'s exit consult
-    /// this as well as the map: each would otherwise cut it off between its SIGHUP and SIGKILL.
-    /// A hand-off refuses while one is running; a kill that arrives after that check waits on
-    /// `TERMINATING`, so its session is carried through the exec intact and the kill goes
-    /// unanswered.
+    /// its shell is gone, so the idle-exit check and `serve --stdio`'s exit consult this as well
+    /// as the map: either would otherwise end the process between the SIGHUP and the SIGKILL. A
+    /// hand-off is kept out of that grace by `TERMINATING` instead, and waits on this only for the
+    /// kill's acknowledgement, which an exec would lose.
     pub fn is_killing(&self) -> bool {
         self.kills_in_flight.load(Ordering::Acquire) > 0
     }

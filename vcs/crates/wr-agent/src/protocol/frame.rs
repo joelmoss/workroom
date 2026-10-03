@@ -34,6 +34,8 @@ pub enum FrameKind {
 
     List = 0x21,
     Info = 0x22,
+    /// Acknowledged once the session's processes are gone, not when the kill is read: a client
+    /// that sends another request without waiting for this can still see the session (#283).
     Kill = 0x23,
     KillAll = 0x24,
     /// Replace this agent's program with another binary, keeping every session (#230). Payload:
