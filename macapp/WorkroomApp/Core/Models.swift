@@ -37,11 +37,18 @@ struct HostDescriptor: Codable, Hashable {
   var path: String? = nil
   /// How `ContainerHostDriver` finds the host again, including the Docker context it runs in.
   var container: ContainerHostDriver.Record? = nil
+  /// A project's bases when it has more than one (#309): one per container runtime and Docker
+  /// context, each a whole base descriptor. nil for a project with one base, whose descriptor is
+  /// the base itself, as every project before #309 has it.
+  var bases: [HostDescriptor]? = nil
+
+  /// The bases a project's descriptor records.
+  var allBases: [HostDescriptor] { bases ?? [self] }
 
   var isDestroyed: Bool { state == "destroyed" }
 
   enum CodingKeys: String, CodingKey {
-    case state, driver, provisioner, id, repository, path, container
+    case state, driver, provisioner, id, repository, path, container, bases
     case grantID = "grant_id"
     case workroomID = "workroom_id"
     case cloneURL = "clone_url"
@@ -50,7 +57,8 @@ struct HostDescriptor: Codable, Hashable {
   init(
     state: String? = nil, driver: String? = nil, provisioner: String? = nil, id: UUID? = nil,
     grantID: String? = nil, workroomID: UUID? = nil, repository: String? = nil,
-    cloneURL: String? = nil, path: String? = nil, container: ContainerHostDriver.Record? = nil
+    cloneURL: String? = nil, path: String? = nil, container: ContainerHostDriver.Record? = nil,
+    bases: [HostDescriptor]? = nil
   ) {
     self.state = state
     self.driver = driver
@@ -62,6 +70,7 @@ struct HostDescriptor: Codable, Hashable {
     self.cloneURL = cloneURL
     self.path = path
     self.container = container
+    self.bases = bases
   }
 
   init(from decoder: Decoder) throws {
@@ -76,6 +85,7 @@ struct HostDescriptor: Codable, Hashable {
     cloneURL = try? fields?.decodeIfPresent(String.self, forKey: .cloneURL)
     path = try? fields?.decodeIfPresent(String.self, forKey: .path)
     container = try? fields?.decodeIfPresent(ContainerHostDriver.Record.self, forKey: .container)
+    bases = try? fields?.decodeIfPresent([HostDescriptor].self, forKey: .bases)
   }
 
   /// A project's base, when the descriptor records a whole one.

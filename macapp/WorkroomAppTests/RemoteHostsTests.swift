@@ -391,28 +391,59 @@ final class RemoteHostsTests: XCTestCase {
     }
   }
 
-  /// A new base is pinned to the context the CLI uses now, except `default`, which is whatever
-  /// `DOCKER_HOST` says and so pins nothing. A project with a base stays on the base's context.
-  func testANewWorkroomGoesInItsBasesContextOrTheCurrentOne() async throws {
+  /// A new Docker workroom wants the context the CLI uses now, except `default`, which is whatever
+  /// `DOCKER_HOST` says and so pins nothing. Apple's runtime has no contexts and asks nothing.
+  func testANewWorkroomWantsTheCurrentDockerContext() async throws {
     for (current, expected) in [("orbstack", "orbstack"), ("default", nil)] as [(String, String?)] {
       let (runtime, log) = try stubRuntime(output: current + "\n")
       let remote = RemoteHosts(makeDriver: { Self.driver(runtime: runtime, context: $0.context) })
-      let context = try await remote.context(forBase: nil)
-      XCTAssertEqual(context, expected, current)
+      let key = try await remote.key(for: .docker)
+      XCTAssertEqual(key, RemoteHosts.DriverKey(runtime: .docker, context: expected), current)
       XCTAssertEqual(try String(contentsOf: log, encoding: .utf8), "context show\n")
     }
-
     let remote = RemoteHosts(makeDriver: { _ in
-      XCTFail("a project with a base asked Docker")
+      XCTFail("Apple's key asked a runtime")
       throw RemoteWorkrooms.Failure.noDocker
     })
-    for context in [nil, "desktop-linux"] as [String?] {
-      let base = HostDescriptor(
-        provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+    let apple = try await remote.key(for: .apple)
+    XCTAssertEqual(apple, RemoteHosts.DriverKey(runtime: .apple))
+  }
+
+  /// A project keeps a base per runtime and Docker context (#309): a workroom derives from the one
+  /// where it is asked for, a base made before #309 (no context) still serves Docker, and recording
+  /// or removing one keeps the others.
+  func testAProjectKeepsABasePerRuntimeAndContext() throws {
+    let base = { (runtime: RemoteWorkrooms.Runtime, context: String?) in
+      HostDescriptor(
+        driver: runtime.rawValue, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
         container: Self.record(context: context))
-      let found = try await remote.context(forBase: base)
-      XCTAssertEqual(found, context)
     }
+    let old = base(.docker, nil)
+    let key = { (runtime: RemoteWorkrooms.Runtime, context: String?) in
+      RemoteHosts.DriverKey(runtime: runtime, context: context)
+    }
+    // The one-base form a project before #309 has serves Docker on any context, and not Apple.
+    XCTAssertEqual(RemoteWorkrooms.base(in: old, for: key(.docker, "orbstack"))?.id, old.id)
+    XCTAssertNil(RemoteWorkrooms.base(in: old, for: key(.apple, nil)))
+
+    let apple = base(.apple, nil)
+    let both = RemoteWorkrooms.recording(apple, in: old)
+    XCTAssertEqual(both.allBases.map(\.id), [old.id, apple.id])
+    XCTAssertEqual(RemoteWorkrooms.base(in: both, for: key(.apple, nil))?.id, apple.id)
+    // An exact match wins over the context-less one.
+    let pinned = base(.docker, "orbstack")
+    let three = RemoteWorkrooms.recording(pinned, in: both)
+    XCTAssertEqual(RemoteWorkrooms.base(in: three, for: key(.docker, "orbstack"))?.id, pinned.id)
+    XCTAssertEqual(RemoteWorkrooms.base(in: three, for: key(.docker, "desktop-linux"))?.id, old.id)
+    // Round-trips through config, and comes apart again base by base.
+    let decoded = try JSONDecoder().decode(
+      HostDescriptor.self, from: try JSONEncoder().encode(three))
+    XCTAssertEqual(decoded, three)
+    let fewer = RemoteWorkrooms.removing(try XCTUnwrap(old.id), from: three)
+    XCTAssertEqual(fewer?.allBases.map(\.id), [apple.id, pinned.id])
+    let one = RemoteWorkrooms.removing(try XCTUnwrap(apple.id), from: fewer)
+    XCTAssertEqual(one, pinned, "one base left goes back to the one-base form")
+    XCTAssertNil(RemoteWorkrooms.removing(try XCTUnwrap(pinned.id), from: one))
   }
 
   /// Each recorded host is adopted into its own context's driver, and every driver's sweep keeps
@@ -720,20 +751,31 @@ final class RemoteHostsTests: XCTestCase {
         UUID(), Self.record(context: "orbstack")))
   }
 
-  /// One delete runs one driver, so hosts in two contexts are refused before anything is removed.
-  @MainActor
-  func testADeleteAcrossContextsIsRefused() throws {
-    let live = { (context: String?) in
-      HostDescriptor(
-        driver: RemoteWorkrooms.containerDriver, provisioner: RemoteWorkrooms.provisioner,
-        id: UUID(), container: Self.record(context: context))
+  /// A delete takes each host down with the environment of its own runtime and context (#309).
+  func testADeleteRoutesEachHostToItsRuntimesEnvironment() throws {
+    let (runtime, _) = try stubRuntime()
+    let environment = { (key: RemoteHosts.DriverKey) in
+      RemoteProvisioning.Environment(
+        driver: Self.driver(
+          runtime: runtime, context: key.context, dialect: key.runtime == .apple ? .apple : .docker),
+        agentSocket: RemoteWorkrooms.agentSocket,
+        client: BrokerClient(
+          baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())))
     }
-    XCTAssertThrowsError(
-      try RemoteHosts().environment(toDelete: [live(nil), live("orbstack")])
-    ) { error in
-      guard case HostDriverError.invalidConfiguration = error else {
-        return XCTFail("\(error)")
-      }
+    let keys = [
+      RemoteHosts.DriverKey(runtime: .docker),
+      RemoteHosts.DriverKey(runtime: .docker, context: "orbstack"),
+      RemoteHosts.DriverKey(runtime: .apple),
+    ]
+    let deletion = RemoteHosts.Deletion(
+      environments: Dictionary(uniqueKeysWithValues: keys.map { ($0, environment($0)) }))
+    for key in keys {
+      let host = HostDescriptor(
+        driver: key.runtime.rawValue, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+        container: Self.record(context: key.context))
+      let driver = try XCTUnwrap(deletion.environment(for: host)?.driver as? ContainerHostDriver)
+      XCTAssertEqual(driver.provisioning?.context, key.context)
+      XCTAssertEqual(driver.provisioning?.dialect, key.runtime == .apple ? .apple : .docker)
     }
   }
 
