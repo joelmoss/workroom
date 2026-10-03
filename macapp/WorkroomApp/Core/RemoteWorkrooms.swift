@@ -395,6 +395,7 @@ enum RemoteWorkrooms {
       throw RemoteProvisioning.Failure.rollbackIncomplete(
         cause: cause, host: liveHost, grantID: grant, cleanup: left)
     }
+    if let id = host.id { await RemoteHosts.shared.forgetRelay(id) }
     try await recorder.forget(name)
   }
 
@@ -669,15 +670,26 @@ final class RemoteHosts: @unchecked Sendable {
     // connection, and its secret with this launch, so it is set up again on every connect. A
     // failure leaves the workroom usable except for git's remote commands, so it is logged.
     guard case .remote(let id) = host, isRelayed(id) else { return }
-    do {
-      try await CredentialRelay.shared.install(
-        on: host, driver: driver,
-        agentBinary: AgentBootstrap.binary(besideSocket: RemoteWorkrooms.agentSocket))
-    } catch {
-      Self.logger.error(
-        "credential relay for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)"
-      )
+    // Tried a few times: a listen can lose a race with the last connection's teardown.
+    for attempt in 1...3 {
+      do {
+        try await CredentialRelay.shared.install(
+          on: host, driver: driver,
+          agentBinary: AgentBootstrap.binary(besideSocket: RemoteWorkrooms.agentSocket))
+        return
+      } catch {
+        Self.logger.error(
+          "credential relay for \(id, privacy: .public) (attempt \(attempt)): \(error.localizedDescription, privacy: .public)"
+        )
+        try? await Task.sleep(for: .seconds(1))
+      }
     }
+  }
+
+  /// A relayed workroom's host is gone: its relay with it (#309).
+  func forgetRelay(_ id: UUID) async {
+    guard lock.withLock({ relayed.remove(id) }) != nil else { return }
+    await CredentialRelay.shared.close(id)
   }
 
   /// Whether host `id` is a workroom whose git credentials come through the Mac's relay (#309).
