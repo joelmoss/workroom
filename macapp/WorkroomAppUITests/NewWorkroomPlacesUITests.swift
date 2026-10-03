@@ -67,19 +67,23 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     XCTAssertEqual(progress.value as? Double, 0.42)
     attach(app, "image-pull-progress")
 
-    // Meanwhile the project's New Workroom entries say why they are off.
+    // Meanwhile the project's New Workroom says once why its entries are off, and each is off.
     app.otherElements["sidebar.project.UITestProject"].rightClick()
     app.menuItems["New Workroom"].hover()
-    let busy = " — a workroom is already being created"
-    let thisMac = app.menuItems["This Mac\(busy)"]
-    XCTAssertTrue(thisMac.waitForExistence(timeout: 5), "This Mac doesn't say why it's off")
+    XCTAssertTrue(
+      app.menuItems["A workroom is already being created"].waitForExistence(timeout: 5),
+      "the submenu doesn't say why its entries are off")
+    let thisMac = app.menuItems["This Mac"]
+    XCTAssertTrue(thisMac.waitForExistence(timeout: 5))
     XCTAssertFalse(thisMac.isEnabled)
     for runtime in ["Docker", "Apple Container"] {
       let entry = app.menuItems.matching(
-        NSPredicate(format: "title BEGINSWITH %@", "\(runtime) — ")
+        NSPredicate(format: "title == %@ OR title BEGINSWITH %@", runtime, "\(runtime) — ")
       ).firstMatch
       XCTAssertTrue(entry.waitForExistence(timeout: 5), "\(runtime) isn't listed")
       XCTAssertFalse(entry.isEnabled, entry.title)
+      XCTAssertFalse(
+        entry.title.contains("already being created"), "the reason is repeated: \(entry.title)")
     }
     let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
     shot.name = "new-workroom-busy"
