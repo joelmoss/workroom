@@ -404,6 +404,19 @@ final class HostStreamTests: XCTestCase {
     XCTAssertEqual(waited, "sh did not answer in time")
   }
 
+  /// Output on stderr counts against the silence bound as stdout's does: a pull or build may report
+  /// its progress there alone, and must not be ended for silence while it does (#309).
+  func testStderrAloneKeepsACommandAlive() async throws {
+    let stream = try HostStream.spawn(
+      URL(fileURLWithPath: "/bin/sh"),
+      ["-c", "for i in 1 2 3 4 5 6 7; do echo tick >&2; sleep 0.3; done; echo done"],
+      environment: [:], handshakeTimeout: 5, purpose: .exchange)
+    let (status, output) = try await stream.communicate(nil, timeout: 1)
+    XCTAssertEqual(status, 0)
+    // stdout, then what stderr said.
+    XCTAssertTrue(output.hasPrefix("done\n"), output)
+  }
+
   /// The binary is derived from the socket and run by path from any cwd, so a relative socket is
   /// refused before anything is written.
   func testARelativeAgentSocketIsRefused() {

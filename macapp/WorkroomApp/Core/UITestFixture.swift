@@ -617,22 +617,22 @@ enum UITestFixture {
   /// header fades all key off this, so a drifted value silently rebaselines every visual QA pass
   /// (issue #162 review). Fixture-namespaced because a bare `-dimUnfocusedPanes 0` cannot work: see
   /// `applyFixtureDefaults`'s note on argument-domain strings.
-  /// Whether a fixture launch has the remote preview on (`-WorkroomUITestRemotePreview 1`, #309):
-  /// New Workroom becomes a submenu of places. Off unless given, so no other test sees it; mirrored
-  /// into `Defaults` (`applyFixtureDefaults`), since the argument domain would shadow the key.
-  /// A container workroom create downloading its image, this far along (`-WorkroomUITestImagePull
-  /// 0.42`, #309), seeded on the fixture project so the row's progress can be seen without a real
-  /// pull. nil unless given.
-  static var imagePull: Double? { text("WorkroomUITestImagePull").flatMap(Double.init) }
-
-  static var remotePreview: Bool {
-    text("WorkroomUITestRemotePreview").map { ($0 as NSString).boolValue } ?? false
-  }
-
   static var dimUnfocusedPanes: Bool {
     // The arg arrives as a STRING, so parse it as one; unset ⇒ the shipped default.
     text("WorkroomUITestDimUnfocusedPanes").map { ($0 as NSString).boolValue } ?? true
   }
+
+  /// Whether a fixture launch has the remote preview on (`-WorkroomUITestRemotePreview 1`, #309):
+  /// New Workroom becomes a submenu of places. Off unless given, so no other test sees it; mirrored
+  /// into `Defaults` (`applyFixtureDefaults`), since the argument domain would shadow the key.
+  static var remotePreview: Bool {
+    text("WorkroomUITestRemotePreview").map { ($0 as NSString).boolValue } ?? false
+  }
+
+  /// A container workroom create downloading its image, this far along (`-WorkroomUITestImagePull
+  /// 0.42`, #309), seeded on the fixture project so the row's progress can be seen without a real
+  /// pull. nil unless given.
+  static var imagePull: Double? { text("WorkroomUITestImagePull").flatMap(Double.init) }
 
   /// Whether splits auto-even on add/remove in a fixture launch
   /// (`-WorkroomUITestAutoResizeSplitsEvenly 0` to turn it off). Defaults to the shipped `true`, and

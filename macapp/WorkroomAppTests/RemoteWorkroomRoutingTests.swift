@@ -57,6 +57,34 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     }
   }
 
+  /// A workroom carries its own base's GitHub identity: a base on another runtime, made after the
+  /// project's origin changed, is a clone of another repository (#309).
+  func testEachWorkroomCarriesItsOwnBasesRepository() throws {
+    let (docker, apple) = (UUID(), UUID())
+    let workroom = { (name: String, host: UUID, driver: String) in
+      Workroom(
+        name: name, path: self.path, vcsName: "workroom/\(name)", warnings: [],
+        host: HostDescriptor(driver: driver, provisioner: RemoteWorkrooms.provisioner, id: host))
+    }
+    let registrations = RemoteWorkrooms.registrations([
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [workroom("d", docker, "container"), workroom("a", apple, "apple-container")],
+        host: HostDescriptor(bases: [
+          HostDescriptor(
+            driver: "container", provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+            repository: "o/old"),
+          HostDescriptor(
+            driver: "apple-container", provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+            repository: "o/new"),
+        ]))
+    ])
+    let github = Dictionary(
+      uniqueKeysWithValues: registrations.map { ($0.location, $0.entry.github?.flag) })
+    XCTAssertEqual(github[try .remote(host: docker, path: path)], "github.com/o/old")
+    XCTAssertEqual(github[try .remote(host: apple, path: path)], "github.com/o/new")
+  }
+
   /// No base identity, no GitHub identity: its PR and CI stay off rather than guess.
   func testAProjectWithoutABaseRepositoryRegistersNoGitHubIdentity() {
     let registrations = RemoteWorkrooms.registrations([

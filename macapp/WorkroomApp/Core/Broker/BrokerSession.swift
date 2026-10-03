@@ -13,6 +13,11 @@ final class BrokerSession: ObservableObject {
   }
 
   @Published private(set) var state: State = .signedOut
+
+  var isSignedIn: Bool {
+    if case .signedIn = state { return true }
+    return false
+  }
   @Published var error: String?
 
   private let credentials: BrokerCredentials

@@ -50,7 +50,9 @@ enum RemoteWorkrooms {
       appleSilicon: appleSilicon,
       macOS26: ProcessInfo.processInfo.isOperatingSystemAtLeast(
         OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)),
-      signedIn: BrokerSession.shared.client() != nil || CredentialRelay.hasGitHubSignIn())
+      // The session's state, not `client()`: that reads the Keychain and rebuilds the device key,
+      // and this runs in menus' and the picker's bodies. A create checks for real.
+      signedIn: BrokerSession.shared.isSignedIn || CredentialRelay.hasGitHubSignIn())
   }
 
   static func unavailability(
@@ -171,16 +173,20 @@ enum RemoteWorkrooms {
   }
 
   /// The router registrations of `projects`' reachable remote workrooms (#253). Each is its own
-  /// shared root on its host, as an independent clone is. Its GitHub identity is the base's, so its
-  /// PR and CI status read through `gh` here.
+  /// shared root on its host, as an independent clone is. Its GitHub identity is its own base's, so
+  /// its PR and CI status read through `gh` here: a project's bases on other runtimes may be clones
+  /// of another repository, made before its origin changed (#309).
   static func registrations(_ projects: [Project]) -> [RepositoryRouter.Registration] {
     projects.flatMap { project in
-      let github = project.host?.allBases.lazy.compactMap(\.repository).first.flatMap(
-        gitHubRepository)
+      let any = project.host?.allBases.lazy.compactMap(\.repository).first
       return project.workrooms.compactMap { workroom -> RepositoryRouter.Registration? in
         guard let host = workroom.reachableHost,
           let location = try? RepositoryLocation.remote(host: host, path: workroom.path)
         else { return nil }
+        let own = workroom.host.flatMap(RemoteHosts.DriverKey.init).flatMap {
+          base(in: project.host, for: $0)?.repository
+        }
+        let github = (own ?? any).flatMap(gitHubRepository)
         return try? RepositoryRouter.Registration(
           location: location, sharedLocation: location, github: github)
       }
@@ -450,15 +456,21 @@ final class RemoteHosts: @unchecked Sendable {
   private var swept = false
   /// A call reached the sweep while a delete was in flight and left it for later (#296).
   private var held = false
-  /// The connection attempt running for each host, which `ensureConnected` callers share.
-  private var connecting: [HostID: Task<Void, Error>] = [:]
+  /// The connection attempt running for each host, which `ensureConnected` callers share, and
+  /// whether it starts a stopped container first.
+  private var connecting: [HostID: (task: Task<Void, Error>, starts: Bool)] = [:]
   /// When each host's last attempt failed, which answers for it for `retryAfter`.
   private var failedAt: [HostID: ContinuousClock.Instant] = [:]
   /// Hosts of workrooms the user has opened this launch (`activate`), whose connect starts a
   /// stopped container first.
   private var activated: Set<HostID> = []
+  /// Relayed hosts whose relay couldn't be set up on their connection, and when that was last
+  /// tried (#309): nothing else tries again before a reconnect, so a connection check does.
+  private var relayPending: [UUID: ContinuousClock.Instant] = [:]
   /// `ensureConnected`'s seams, nil in the app: the connect itself, whether a host is up, the clock.
   private let connectHost: (@Sendable (HostID) async throws -> Void)?
+  /// Sets up a relayed host's credential relay on its connection; nil in the app.
+  private let relayHost: (@Sendable (HostID) async throws -> Void)?
   private let isConnected: (@Sendable (HostID) async -> Bool)?
   private let startHost: (@Sendable (HostID) async throws -> Void)?
   private let now: @Sendable () -> ContinuousClock.Instant
@@ -473,9 +485,11 @@ final class RemoteHosts: @unchecked Sendable {
     startHost: (@Sendable (HostID) async throws -> Void)? = nil,
     now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
     makeDriver: (@Sendable (DriverKey) throws -> ContainerHostDriver)? = nil,
-    sweepDriver: (@Sendable (ContainerHostDriver, Set<UUID>, Set<String>) async -> [String])? = nil
+    sweepDriver: (@Sendable (ContainerHostDriver, Set<UUID>, Set<String>) async -> [String])? = nil,
+    relayHost: (@Sendable (HostID) async throws -> Void)? = nil
   ) {
     self.connectHost = connectHost
+    self.relayHost = relayHost
     self.isConnected = isConnected
     self.startHost = startHost
     self.now = now
@@ -673,19 +687,34 @@ final class RemoteHosts: @unchecked Sendable {
     // failure leaves the workroom usable except for git's remote commands, so it is logged.
     guard case .remote(let id) = host, isRelayed(id) else { return }
     // Tried a few times: a listen can lose a race with the last connection's teardown.
-    for attempt in 1...3 {
+    await installRelay(host, attempts: 3, driver: driver)
+  }
+
+  /// Sets up `host`'s credential relay on its connection, up to `attempts` times. One that never
+  /// takes is left pending, for a later connection check to try again.
+  func installRelay(
+    _ host: HostID, attempts: Int, driver: ContainerHostDriver? = nil
+  ) async {
+    guard case .remote(let id) = host else { return }
+    for attempt in 1...attempts {
       do {
-        try await CredentialRelay.shared.install(
-          on: host, driver: driver,
-          agentBinary: AgentBootstrap.binary(besideSocket: RemoteWorkrooms.agentSocket))
+        if let relayHost {
+          try await relayHost(host)
+        } else {
+          try await CredentialRelay.shared.install(
+            on: host, driver: try driver ?? heldDriver(host),
+            agentBinary: AgentBootstrap.binary(besideSocket: RemoteWorkrooms.agentSocket))
+        }
+        _ = lock.withLock { relayPending.removeValue(forKey: id) }
         return
       } catch {
         Self.logger.error(
           "credential relay for \(id, privacy: .public) (attempt \(attempt)): \(error.localizedDescription, privacy: .public)"
         )
-        try? await Task.sleep(for: .seconds(1))
+        if attempt < attempts { try? await Task.sleep(for: .seconds(1)) }
       }
     }
+    lock.withLock { relayPending[id] = now() }
   }
 
   /// A relayed workroom's host is gone: its relay with it (#309).
@@ -713,8 +742,21 @@ final class RemoteHosts: @unchecked Sendable {
     } else {
       up = await HostConnectionManager.shared.snapshot(for: host).status == .connected
     }
-    if up { return }
-    if let failed = lock.withLock({ failedAt[host] }), now() - failed < Self.retryAfter {
+    // An opened host is up already: there is nothing to start, and later probes mustn't start it.
+    if up {
+      _ = lock.withLock { activated.remove(host) }
+      // A relay that didn't take on this connection is tried again, at most once a `retryAfter`.
+      if case .remote(let id) = host,
+        let tried = lock.withLock({ relayPending[id] }), now() - tried >= Self.retryAfter
+      {
+        await installRelay(host, attempts: 1)
+      }
+      return
+    }
+    // An opened host is tried whatever a probe of it found: its connect starts it.
+    if !lock.withLock({ activated.contains(host) }),
+      let failed = lock.withLock({ failedAt[host] }), now() - failed < Self.retryAfter
+    {
       throw RepositoryRoutingError.unavailable(host)
     }
     do {
@@ -730,15 +772,24 @@ final class RemoteHosts: @unchecked Sendable {
         }
         : nil
       let task = lock.withLock { () -> Task<Void, Error> in
-        if let running = connecting[host] { return running }
+        if let running = connecting[host], running.starts || start == nil { return running.task }
+        // A probe that won't start the container is under way: joined, it would fail on a stopped
+        // one and hold the opened workroom back for `retryAfter`. This one goes after it instead.
+        let probe = connecting[host]?.task
         let task = Task {
-          try await start?(host)
-          try await connect(host)
+          if let probe, (try? await probe.value) != nil {
+          } else {
+            try await start?(host)
+            try await connect(host)
+          }
+          // Once: a container the user stops later stays stopped for the status sweep, until its
+          // workroom is opened again.
+          if start != nil { _ = self.lock.withLock { self.activated.remove(host) } }
         }
-        connecting[host] = task
+        connecting[host] = (task, start != nil)
         return task
       }
-      defer { lock.withLock { if connecting[host] == task { connecting[host] = nil } } }
+      defer { lock.withLock { if connecting[host]?.task == task { connecting[host] = nil } } }
       try await task.value
       lock.withLock { failedAt[host] = nil }
     } catch is CancellationError {
@@ -751,9 +802,9 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
-  /// The user opened a workroom on `host` (#309): its connects start its container if it is stopped,
-  /// and a failure from before, such as a status probe of the stopped container, no longer holds
-  /// the next attempt back.
+  /// The user opened a workroom on `host` (#309): its next connect starts its container if it is
+  /// stopped, and a failure from before, such as a status probe of the stopped container, no longer
+  /// holds that attempt back.
   func activate(_ host: HostID) {
     lock.withLock {
       activated.insert(host)

@@ -203,6 +203,39 @@ final class ReverseForwardTests: XCTestCase {
     registry.close(workroom: workroom)
   }
 
+  /// The port on this Mac can move on the same connection (the credential relay listening again,
+  /// #309): the next open carries the workroom's listener to the new one rather than keeping the
+  /// old, which nothing answers any more.
+  @MainActor
+  func testAnOpenAfterTheTargetMovesCarriesToTheNewTarget() async throws {
+    let first = try echo()
+    let second = try echo()
+    let agent = try agent()
+    let host = HostID.remote(UUID())
+    let current = Current(
+      lease: .init(host: host, generation: UUID()), connection: try await connection(to: agent))
+    let target = Target(first.port)
+    let registry = ReverseForwardRegistry(
+      transport: .init(
+        forwarding: { _ in
+          let (lease, connection) = current.get()
+          return (lease, try connection.forwarding())
+        },
+        updates: { _ in AsyncStream { _ in } }),
+      port: { BrokerReverseForwards.port(for: $0) }, target: { target.get() },
+      failure: { HostDriverError.provisioning($0) })
+    let workroom = UUID()
+    let port = BrokerReverseForwards.port(for: workroom)
+    try await registry.open(workroom: workroom, host: host)
+    try roundTrip(port)
+
+    target.set(second.port)
+    first.stop()
+    try await registry.open(workroom: workroom, host: host)
+    try roundTrip(port)
+    registry.close(workroom: workroom)
+  }
+
   /// A link lost without a goodbye: the old connection's listener still holds the port when the new
   /// connection asks, for longer than a bind is retried. The registry keeps trying on the new
   /// connection, and gets the port once the old one lets it go.
@@ -351,6 +384,14 @@ private final class Current: @unchecked Sendable {
       self.connection = connection
     }
   }
+}
+
+private final class Target: @unchecked Sendable {
+  private let lock = NSLock()
+  private var port: UInt16
+  init(_ port: UInt16) { self.port = port }
+  func get() -> UInt16 { lock.withLock { port } }
+  func set(_ port: UInt16) { lock.withLock { self.port = port } }
 }
 
 /// A reverse forward's events, with the first answer to its `listen` awaitable.

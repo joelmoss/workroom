@@ -42,13 +42,15 @@ final class ReverseForwardRegistry {
   /// The error a listener the agent refuses becomes, from the agent's reason.
   private let failure: @Sendable (String) -> Error
   private let reopenRetry: Duration
-  private let log = Logger(subsystem: "com.developwithstyle.workroom", category: "broker")
+  private let log = Logger(subsystem: "com.developwithstyle.workroom", category: "reverse-forward")
 
   private struct Entry {
     let host: HostID
     /// The connection the listener is open on, once it is.
     var lease: HostConnectionManager.Lease?
     var forward: ReverseForward?
+    /// The port on this Mac the listener carries to, which can move (the relay listening again).
+    var target: UInt16?
     var watch: Task<Void, Never>?
     /// An open in flight, which a second caller waits on rather than opening a second listener.
     /// The id is how the task, finishing, clears only itself.
@@ -115,8 +117,11 @@ final class ReverseForwardRegistry {
   private func reopen(_ workroom: UUID) async throws {
     guard let host = entries[workroom]?.host else { return }
     let (lease, service) = try await transport.forwarding(host)
+    let target = await target()
+    // Nothing is listening on this Mac to carry to (the relay couldn't listen again).
+    guard target != 0 else { throw failure("nothing on this Mac is listening for it") }
     guard var entry = entries[workroom] else { return }
-    if entry.lease == lease, entry.forward != nil { return }
+    if entry.lease == lease, entry.forward != nil, entry.target == target { return }
     entry.forward?.stop()
     entry.forward = nil
     entries[workroom] = entry
@@ -125,13 +130,13 @@ final class ReverseForwardRegistry {
     // once it notices that connection ended, which can be just after the new one asks. The
     // port is this workroom's alone, so a bind failure is retried for a moment, not reported.
     var attempt = 0
-    var outcome = await listen(service, port: port(workroom), workroom, lease)
+    var outcome = await listen(service, port: port(workroom), to: target, workroom, lease)
     while case .failure(let refusal) = outcome, refusal.detail.hasPrefix("bind:"),
       attempt < Self.bindRetries
     {
       attempt += 1
       try await Task.sleep(for: Self.bindRetryDelay)
-      outcome = await listen(service, port: port(workroom), workroom, lease)
+      outcome = await listen(service, port: port(workroom), to: target, workroom, lease)
     }
     let forward: ReverseForward
     switch outcome {
@@ -146,15 +151,16 @@ final class ReverseForwardRegistry {
     }
     entries[workroom]?.lease = lease
     entries[workroom]?.forward = forward
+    entries[workroom]?.target = target
   }
 
   /// One `listen`, answered or timed out. A refused listener is stopped before it is returned.
   private func listen(
-    _ service: AgentForwardService, port: UInt16, _ workroom: UUID,
+    _ service: AgentForwardService, port: UInt16, to target: UInt16, _ workroom: UUID,
     _ lease: HostConnectionManager.Lease
   ) async -> Result<ReverseForward, ReverseForward.Refusal> {
     let ready = ListenOutcome()
-    let forward = service.reverse(remotePort: port, target: await target()) {
+    let forward = service.reverse(remotePort: port, target: target) {
       [weak self, log] event in
       switch event {
       case .listening:

@@ -38,16 +38,16 @@ final class AppleContainerIntegrationTests: XCTestCase {
     // Whatever a failed test left, by this run's label.
     if runtime != nil {
       let containers = (try? AppleContainerCLI.objects(cli(["list", "--all", "--format", "json"])))
-      for container in containers ?? [] where Self.carries(AppleContainerCLI.labels(of: container))
-      {
+      for container in containers ?? [] where carries(AppleContainerCLI.labels(of: container)) {
         if let id = AppleContainerCLI.id(of: container) { _ = try? cli(["delete", "--force", id]) }
       }
     }
     if let directory { try? FileManager.default.removeItem(at: directory) }
   }
 
-  private static func carries(_ labels: [String: String]) -> Bool {
-    labels["workroom.provisioner"]?.hasPrefix("apple-test-") == true
+  /// This run's own, never another run's: two runs at once would otherwise delete each other's.
+  private func carries(_ labels: [String: String]) -> Bool {
+    labels["workroom.provisioner"] == label.split(separator: "=")[1].description
   }
 
   /// The real CLI, run from here rather than through the driver, so a check is never the driver
@@ -68,9 +68,7 @@ final class AppleContainerIntegrationTests: XCTestCase {
 
   private func ours() throws -> [String] {
     try AppleContainerCLI.objects(cli(["list", "--all", "--format", "json"])).filter {
-      AppleContainerCLI.labels(of: $0)["workroom.provisioner"]
-        == label.split(separator: "=")[1]
-        .description
+      carries(AppleContainerCLI.labels(of: $0))
     }.compactMap(AppleContainerCLI.id)
   }
 
@@ -111,7 +109,10 @@ final class AppleContainerIntegrationTests: XCTestCase {
     XCTAssertNotEqual(instanceKey, baseKey)
     let images = try AppleContainerCLI.objects(cli(["image", "list", "--format", "json"]))
     XCTAssertFalse(
-      images.contains { AppleContainerCLI.name(ofImage: $0)?.contains("workroom-derive-") == true },
+      images.contains {
+        AppleContainerCLI.name(ofImage: $0)?.contains("workroom-derive-") == true
+          && carries(AppleContainerCLI.labels(ofImage: $0))
+      },
       "the derived image was left behind")
     // The base was stopped for the export and started again.
     let back = try await onHost(driver, base, "cat ~/marker")

@@ -13,8 +13,9 @@ import os
 /// and installed on every connect (`install`).
 ///
 /// **Accepted exposure (D9, #309).** Anything in the workroom can read the secret and ask, so such
-/// a workroom has the GitHub access the user's own `gh` has, while the app is connected to it, as a
-/// workroom on the Mac itself does. A remote workroom never uses this: it always enrols.
+/// a workroom has the GitHub access the user's own `gh` has, as a workroom on the Mac itself does.
+/// It can ask only while the app is connected, but a token it was answered with works until the
+/// user revokes it. A remote workroom never uses this: it always enrols.
 final class CredentialRelay: @unchecked Sendable {
   static let shared = CredentialRelay()
 
@@ -64,11 +65,17 @@ final class CredentialRelay: @unchecked Sendable {
     }
   }
 
-  /// Requests served at once; one more is turned away. A request takes a thread for up to
-  /// `requestDeadline`, so this bounds what a flood of connections can hold.
+  /// Connections read at once, before anything is known of them; one more is turned away. A read
+  /// takes a thread for up to `requestDeadline`, so this bounds what a flood can hold.
+  static let maxReading = 32
+  /// Requests answered at once, each a gh run of up to 15 s. Only a request with a known secret
+  /// gets here, so connections that never say one, from anyone who can reach the listener, can't
+  /// keep a workroom from being answered.
   static let maxConcurrent = 8
-  /// The most one request may take to arrive, whatever pace its bytes come at.
-  static let requestDeadline: TimeInterval = 15
+  /// The most one request may take to arrive, whatever pace its bytes come at. The agent writes it
+  /// whole, at once (`relay` in `broker.rs`), so a second is plenty.
+  static let requestDeadline: TimeInterval = 2
+  private let reading = DispatchSemaphore(value: maxReading)
   private let serving = DispatchSemaphore(value: maxConcurrent)
   private let queue = DispatchQueue(
     label: "com.developwithstyle.workroom.credential-relay", qos: .userInitiated,
@@ -105,15 +112,12 @@ final class CredentialRelay: @unchecked Sendable {
           return
         }
       }
-      guard serving.wait(timeout: .now()) == .success else {
+      guard reading.wait(timeout: .now()) == .success else {
         Darwin.close(connection)
         continue
       }
       queue.async { [weak self] in
-        defer {
-          Darwin.close(connection)
-          self?.serving.signal()
-        }
+        defer { Darwin.close(connection) }
         self?.serve(connection)
       }
     }
@@ -130,9 +134,29 @@ final class CredentialRelay: @unchecked Sendable {
     var timeout = timeval(tv_sec: Int(Self.requestDeadline), tv_usec: 0)
     setsockopt(
       connection, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-    guard let request = Self.readRequest(connection) else { return }
-    let reply = respond(to: request)
+    let request = { () -> String? in
+      defer { reading.signal() }
+      return Self.readRequest(connection)
+    }()
+    guard let request else { return }
+    // Only a known secret waits its turn for an answer; anything else is answered at once.
+    let reply: String
+    if knows(request) {
+      guard serving.wait(timeout: .now() + 5) == .success else { return }
+      defer { serving.signal() }
+      reply = respond(to: request)
+    } else {
+      reply = respond(to: request)
+    }
     _ = reply.withCString { send(connection, $0, strlen($0), 0) }
+  }
+
+  /// Whether `request` starts with a secret this launch made.
+  private func knows(_ request: String) -> Bool {
+    guard let secret = request.split(separator: "\n", omittingEmptySubsequences: false).first,
+      !secret.isEmpty
+    else { return false }
+    return lock.withLock { secrets.values.contains { Self.same($0, String(secret)) } }
   }
 
   /// Reads up to the blank line that ends git's request, or nil past `maxRequest` or
@@ -212,24 +236,53 @@ final class CredentialRelay: @unchecked Sendable {
     }
   }
 
-  /// Whether `gh` lists a sign-in for github.com, read from its config without running it: for the
-  /// New Workroom menu, which can't wait. A create checks for real (`gitHubToken`).
+  /// Whether `gh` has a sign-in for github.com, read from its config without running it: for the
+  /// New Workroom menu, which can't wait. A create checks for real (`gitHubToken`). Found as the gh
+  /// this app runs finds it, in this app's environment: a token there, else `hosts.yml` in
+  /// `GH_CONFIG_DIR`, `$XDG_CONFIG_HOME/gh` or `~/.config/gh`, in gh's order.
   static func hasGitHubSignIn(
-    hosts: URL = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(".config/gh/hosts.yml")
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    home: URL = FileManager.default.homeDirectoryForCurrentUser
   ) -> Bool {
-    guard let text = try? String(contentsOf: hosts, encoding: .utf8) else { return false }
+    let set = { (name: String) in environment[name].flatMap { $0.isEmpty ? nil : $0 } }
+    if set("GH_TOKEN") != nil || set("GITHUB_TOKEN") != nil { return true }
+    let directory =
+      set("GH_CONFIG_DIR").map { URL(fileURLWithPath: $0) }
+      ?? set("XDG_CONFIG_HOME").map { URL(fileURLWithPath: $0).appendingPathComponent("gh") }
+      ?? home.appendingPathComponent(".config/gh")
+    guard
+      let text = try? String(
+        contentsOf: directory.appendingPathComponent("hosts.yml"), encoding: .utf8)
+    else { return false }
     return text.split(separator: "\n").contains { $0.hasPrefix("github.com:") }
   }
 
   private static func runGH(_ arguments: [String], input: String?) throws -> String {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    process.arguments = ["gh"] + arguments
     // A Finder-launched app's PATH has no Homebrew; gh is wherever the user's shell finds it.
     var environment = ProcessInfo.processInfo.environment
     environment["PATH"] = ShellEnvironment.path()
     environment["GH_PROMPT_DISABLED"] = "1"
+    let (status, output) = try run(
+      URL(fileURLWithPath: "/usr/bin/env"), ["gh"] + arguments, input: input,
+      environment: environment, name: "gh")
+    guard status == 0 else {
+      throw HostDriverError.provisioning(
+        "gh has no GitHub sign-in on this Mac: run `gh auth login`")
+    }
+    return output
+  }
+
+  /// Runs `executable`, bounded by `deadline` from start to the end of its output, whatever it or
+  /// anything it started does: a relay request holds a serving slot until this returns. One that
+  /// ignores SIGTERM is killed; a child of its that keeps its stdout open is left to it, unread.
+  static func run(
+    _ executable: URL, _ arguments: [String], input: String?, environment: [String: String],
+    name: String, deadline seconds: TimeInterval = 15
+  ) throws -> (status: Int32, output: String) {
+    let deadline = DispatchTime.now() + seconds
+    let process = Process()
+    process.executableURL = executable
+    process.arguments = arguments
     process.environment = environment
     let stdin = Pipe()
     let stdout = Pipe()
@@ -250,16 +303,15 @@ final class CredentialRelay: @unchecked Sendable {
     }
     if let input { try? stdin.fileHandleForWriting.write(contentsOf: Data(input.utf8)) }
     try? stdin.fileHandleForWriting.close()
-    guard exited.wait(timeout: .now() + 15) == .success else {
+    guard exited.wait(timeout: deadline) == .success else {
       process.terminate()
-      throw HostDriverError.provisioning("gh didn't answer in time")
+      if exited.wait(timeout: .now() + 1) != .success { kill(process.processIdentifier, SIGKILL) }
+      throw HostDriverError.provisioning("\(name) didn't answer in time")
     }
-    read.wait()
-    guard process.terminationStatus == 0 else {
-      throw HostDriverError.provisioning(
-        "gh has no GitHub sign-in on this Mac: run `gh auth login`")
+    guard read.wait(timeout: deadline) == .success else {
+      throw HostDriverError.provisioning("\(name)'s output didn't end in time")
     }
-    return String(decoding: output, as: UTF8.self)
+    return (process.terminationStatus, String(decoding: output, as: UTF8.self))
   }
 
   // MARK: Hosts
@@ -270,8 +322,9 @@ final class CredentialRelay: @unchecked Sendable {
   @MainActor
   func install(on host: HostID, driver: any HostDriver, agentBinary: String) async throws {
     guard case .remote(let id) = host else { return }
-    let target = try localPort()
-    try await registry(target: target).open(workroom: id, host: host)
+    // Listening first, so a listener that can't be made fails here rather than in the registry.
+    _ = try localPort()
+    try await registry().open(workroom: id, host: host)
     let command =
       ContainerHostDriver.shellQuoted(agentBinary)
       + " credential relay --port \(Self.port(for: id))"
@@ -290,10 +343,13 @@ final class CredentialRelay: @unchecked Sendable {
   }
 
   @MainActor
-  private func registry(target: UInt16) -> ReverseForwardRegistry {
+  private func registry() -> ReverseForwardRegistry {
     if let made = lock.withLock({ forwards }) { return made }
+    // Asked for each listener: a listener that stopped accepting is made again on a new port, and
+    // the next connect's install carries the forwards there.
     let made = ReverseForwardRegistry(
-      transport: transport, port: { Self.port(for: $0) }, target: { target },
+      transport: transport, port: { Self.port(for: $0) },
+      target: { [weak self] in (try? self?.localPort()) ?? 0 },
       failure: {
         HostDriverError.provisioning("the workroom's agent couldn't relay git's credentials: \($0)")
       })

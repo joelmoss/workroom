@@ -78,13 +78,52 @@ final class CredentialRelayTests: XCTestCase {
 
   /// gh lists github.com in its hosts file when signed in there; the menu reads that, not gh.
   func testAGhSignInIsReadFromItsHostsFile() throws {
-    let file = FileManager.default.temporaryDirectory.appendingPathComponent("gh-\(UUID()).yml")
-    defer { try? FileManager.default.removeItem(at: file) }
-    XCTAssertFalse(CredentialRelay.hasGitHubSignIn(hosts: file))
+    let home = try directory()
+    let file = home.appendingPathComponent(".config/gh/hosts.yml")
+    try FileManager.default.createDirectory(
+      at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+    XCTAssertFalse(CredentialRelay.hasGitHubSignIn(environment: [:], home: home))
     try "github.example.com:\n    user: x\n".write(to: file, atomically: true, encoding: .utf8)
-    XCTAssertFalse(CredentialRelay.hasGitHubSignIn(hosts: file))
+    XCTAssertFalse(CredentialRelay.hasGitHubSignIn(environment: [:], home: home))
     try "github.com:\n    user: joel\n".write(to: file, atomically: true, encoding: .utf8)
-    XCTAssertTrue(CredentialRelay.hasGitHubSignIn(hosts: file))
+    XCTAssertTrue(CredentialRelay.hasGitHubSignIn(environment: [:], home: home))
+  }
+
+  /// gh's sign-in is found where gh looks in this app's environment: a token, then
+  /// `GH_CONFIG_DIR`, then `XDG_CONFIG_HOME`, in gh's order.
+  func testAGhSignInIsFoundWhereGhLooks() throws {
+    let home = try directory()
+    let signedIn = "github.com:\n    user: joel\n"
+    let config = home.appendingPathComponent("config-dir")
+    let xdg = home.appendingPathComponent("xdg")
+    for directory in [config, xdg.appendingPathComponent("gh")] {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      try signedIn.write(
+        to: directory.appendingPathComponent("hosts.yml"), atomically: true, encoding: .utf8)
+    }
+    XCTAssertTrue(CredentialRelay.hasGitHubSignIn(environment: ["GH_TOKEN": "x"], home: home))
+    XCTAssertTrue(CredentialRelay.hasGitHubSignIn(environment: ["GITHUB_TOKEN": "x"], home: home))
+    XCTAssertFalse(CredentialRelay.hasGitHubSignIn(environment: ["GH_TOKEN": ""], home: home))
+    XCTAssertTrue(
+      CredentialRelay.hasGitHubSignIn(environment: ["GH_CONFIG_DIR": config.path], home: home))
+    XCTAssertTrue(
+      CredentialRelay.hasGitHubSignIn(environment: ["XDG_CONFIG_HOME": xdg.path], home: home))
+    // GH_CONFIG_DIR wins, even over a signed-in XDG config.
+    XCTAssertFalse(
+      CredentialRelay.hasGitHubSignIn(
+        environment: [
+          "GH_CONFIG_DIR": home.appendingPathComponent("empty").path,
+          "XDG_CONFIG_HOME": xdg.path,
+        ],
+        home: home))
+  }
+
+  private func directory() throws -> URL {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "gh-\(UUID().uuidString.prefix(8))")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    return directory
   }
 
   /// Secrets compare whole, and only equal ones match.
@@ -102,9 +141,14 @@ final class CredentialRelayTests: XCTestCase {
     let secret = try relay.secret(for: UUID())
     let port = try relay.localPort()
     for _ in 0..<30 {
-      guard let socket = LoopbackSocket.connect(port: port, timeout: 2) else {
-        return XCTFail("connect \(errno)")
+      // A burst like this can overrun the listen backlog for a moment, which refuses a connect;
+      // that's the kernel, not the relay, so it is tried again. The request below must still land.
+      var connected: Int32?
+      for _ in 0..<50 where connected == nil {
+        connected = LoopbackSocket.connect(port: port, timeout: 2)
+        if connected == nil { Thread.sleep(forTimeInterval: 0.01) }
       }
+      guard let socket = connected else { return XCTFail("connect \(errno)") }
       _ = "x\n\n".withCString { send(socket, $0, 3, 0) }
       var linger = linger(l_onoff: 1, l_linger: 0)
       setsockopt(socket, SOL_SOCKET, SO_LINGER, &linger, socklen_t(MemoryLayout<linger>.size))
@@ -124,5 +168,124 @@ final class CredentialRelayTests: XCTestCase {
       reply.append(buffer, count: count)
     }
     XCTAssertEqual(String(decoding: reply, as: UTF8.self), "username=u\npassword=p\n")
+  }
+
+  /// Everything `socket` is sent before it closes.
+  private func reply(_ socket: Int32) -> String {
+    var reply = Data()
+    var buffer = [UInt8](repeating: 0, count: 256)
+    while true {
+      let count = recv(socket, &buffer, buffer.count, 0)
+      guard count > 0 else { break }
+      reply.append(buffer, count: count)
+    }
+    return String(decoding: reply, as: UTF8.self)
+  }
+
+  /// A request past `maxRequest` with no end in sight is dropped unanswered, and gh never asked.
+  func testAnOversizedRequestIsDroppedUnanswered() throws {
+    let asked = Asked()
+    let relay = CredentialRelay(answer: { request in
+      asked.add(request)
+      return "username=u\npassword=p\n"
+    })
+    let secret = try relay.secret(for: UUID())
+    let port = try relay.localPort()
+    guard let socket = LoopbackSocket.connect(port: port, timeout: 2) else {
+      return XCTFail("connect \(errno)")
+    }
+    defer { Darwin.close(socket) }
+    // The relay may close before it has read all of this: an EPIPE, not a signal that ends the run.
+    var on: Int32 = 1
+    setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+    let request =
+      "\(secret)\nprotocol=https\nhost=github.com\n"
+      + String(repeating: "x", count: CredentialRelay.maxRequest) + "\n\n"
+    _ = request.withCString { send(socket, $0, strlen($0), 0) }
+    XCTAssertEqual(reply(socket), "")
+    XCTAssertEqual(asked.all, [])
+  }
+
+  /// Idle connections that never say a secret, more than there are answering slots, don't keep a
+  /// workroom's request from being answered: anyone who can reach the listener could open them.
+  func testIdleStrangersDoNotBlockAKnownWorkroom() throws {
+    let relay = CredentialRelay(answer: { _ in "username=u\npassword=p\n" })
+    let secret = try relay.secret(for: UUID())
+    let port = try relay.localPort()
+    var held: [Int32] = []
+    defer { for socket in held { Darwin.close(socket) } }
+    for _ in 0..<(CredentialRelay.maxConcurrent + 4) {
+      guard let socket = LoopbackSocket.connect(port: port, timeout: 2) else {
+        return XCTFail("connect \(errno)")
+      }
+      held.append(socket)
+    }
+    Thread.sleep(forTimeInterval: 0.3)
+    guard let socket = LoopbackSocket.connect(port: port, timeout: 2) else {
+      return XCTFail("connect \(errno)")
+    }
+    defer { Darwin.close(socket) }
+    let request = "\(secret)\nprotocol=https\nhost=github.com\n\n"
+    _ = request.withCString { send(socket, $0, strlen($0), 0) }
+    XCTAssertEqual(reply(socket), "username=u\npassword=p\n")
+  }
+
+  /// Past `maxReading` connections at once, one more is closed at once rather than read; the idle
+  /// ones are dropped after `requestDeadline`, and a real request is answered again.
+  func testConnectionsPastTheReadingCapAreTurnedAway() throws {
+    let relay = CredentialRelay(answer: { _ in "username=u\npassword=p\n" })
+    let secret = try relay.secret(for: UUID())
+    let port = try relay.localPort()
+    var held: [Int32] = []
+    defer { for socket in held { Darwin.close(socket) } }
+    for _ in 0..<CredentialRelay.maxReading {
+      guard let socket = LoopbackSocket.connect(port: port, timeout: 2) else {
+        return XCTFail("connect \(errno)")
+      }
+      held.append(socket)
+    }
+    // Each idle one is being read, waiting for its request.
+    Thread.sleep(forTimeInterval: 0.3)
+    guard let extra = LoopbackSocket.connect(port: port, timeout: 2) else {
+      return XCTFail("connect \(errno)")
+    }
+    let request = "\(secret)\nprotocol=https\nhost=github.com\n\n"
+    _ = request.withCString { send(extra, $0, strlen($0), 0) }
+    XCTAssertEqual(reply(extra), "", "a connection past the cap was read")
+    Darwin.close(extra)
+
+    Thread.sleep(forTimeInterval: CredentialRelay.requestDeadline + 0.5)
+    guard let socket = LoopbackSocket.connect(port: port, timeout: 2) else {
+      return XCTFail("connect \(errno)")
+    }
+    defer { Darwin.close(socket) }
+    _ = request.withCString { send(socket, $0, strlen($0), 0) }
+    XCTAssertEqual(reply(socket), "username=u\npassword=p\n")
+  }
+
+  /// A workroom that's gone takes its secret with it: what it was given answers nothing any more.
+  @MainActor
+  func testAClosedWorkroomsSecretIsRefused() throws {
+    let relay = CredentialRelay(answer: { _ in "username=u\npassword=p\n" })
+    let id = UUID()
+    let secret = try relay.secret(for: id)
+    let request = "\(secret)\nprotocol=https\nhost=github.com\n\n"
+    XCTAssertEqual(relay.respond(to: request), "username=u\npassword=p\n")
+    relay.close(id)
+    XCTAssertTrue(relay.respond(to: request).hasPrefix("error="))
+  }
+
+  /// gh is bounded however it ends: one that exits while something it started keeps its output
+  /// open, and one that ignores SIGTERM, each give the slot back by the deadline.
+  func testGhIsBoundedWhateverItDoes() throws {
+    for script in ["(sleep 30) & exit 0", "trap '' TERM; sleep 30"] {
+      let start = Date()
+      XCTAssertThrowsError(
+        try CredentialRelay.run(
+          URL(fileURLWithPath: "/bin/sh"), ["-c", script], input: nil, environment: [:],
+          name: "gh", deadline: 1),
+        script)
+      XCTAssertLessThan(Date().timeIntervalSince(start), 5, script)
+    }
   }
 }
