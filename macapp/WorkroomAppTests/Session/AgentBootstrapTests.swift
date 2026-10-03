@@ -470,6 +470,49 @@ final class AgentBootstrapTests: XCTestCase {
     XCTAssertLessThan(ContinuousClock.now - started, .seconds(5))
   }
 
+  /// A carrier that reads nothing and ignores SIGTERM (ignored dispositions survive the `exec`),
+  /// so only the sockets' own shutdown can wake an exchange blocked sending to it.
+  private func carrierThatNeitherReadsNorYieldsToSIGTERM() throws -> HostStream {
+    try HostStream.spawn(
+      URL(fileURLWithPath: "/bin/sh"), ["-c", "trap '' TERM; exec sleep 30"],
+      environment: [:], handshakeTimeout: 5, purpose: .exchange)
+  }
+
+  // Value: protects=a push blocked on a far side that never reads is ended when the link goes
+  // silent; fails_when=the watchdog stops shutting down the carrier's input socket (#305);
+  // why_new=testAnExchangeThatHangsIsEnded sends 1 byte, which never blocks; seam=none
+  func testASilentFarSideThatNeverReadsDoesNotHoldABlockedPushOpen() async throws {
+    let stream = try carrierThatNeitherReadsNorYieldsToSIGTERM()
+    defer { kill(stream.processIdentifier, SIGKILL) }
+    let started = ContinuousClock.now
+    do {
+      _ = try await stream.communicate(Data(repeating: 0, count: 8_000_000), timeout: 0.5)
+      XCTFail("a push nobody read returned")
+    } catch HostConnectionError.serviceUnavailable {
+    }
+    XCTAssertLessThan(ContinuousClock.now - started, .seconds(15))
+  }
+
+  // Value: protects=cancelling an exchange blocked sending ends it at once; fails_when=cancel stops
+  // shutting down the carrier's input socket (#305); why_new=no test cancels an exchange at all;
+  // seam=none
+  func testCancellingAPushBlockedOnAFarSideThatNeverReadsEndsIt() async throws {
+    let stream = try carrierThatNeitherReadsNorYieldsToSIGTERM()
+    defer { kill(stream.processIdentifier, SIGKILL) }
+    let started = ContinuousClock.now
+    let exchange = Task {
+      try await stream.communicate(Data(repeating: 0, count: 8_000_000), timeout: 60)
+    }
+    try await Task.sleep(for: .milliseconds(300))
+    exchange.cancel()
+    do {
+      _ = try await exchange.value
+      XCTFail("a cancelled exchange returned")
+    } catch is CancellationError {
+    }
+    XCTAssertLessThan(ContinuousClock.now - started, .seconds(15))
+  }
+
   /// The bound is on silence, not the exchange: a slow but steady far side that takes longer than
   /// the timeout is not ended (the `WRITE_TIMEOUT` lesson).
   func testASlowButSteadyExchangeIsNotEnded() async throws {
