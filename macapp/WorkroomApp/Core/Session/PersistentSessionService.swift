@@ -15,6 +15,47 @@ final class PersistentSessionService {
   private let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "PersistentSession")
 
+  /// How many of `TerminalSessions.closeTab`'s kills are in flight, local and remote apart. Counted
+  /// so quitting can wait for them: `closeTab` stays synchronous (it's called from UI actions, not
+  /// `async` contexts), and an unawaited kill racing an immediate quit would leave that pane's
+  /// session running although its user closed it moments before. Counted here rather than per
+  /// window, so a quit also waits for the kill of a pane whose window has closed since (#297).
+  private var localCloseKillsInFlight = 0
+  private var remoteCloseKillsInFlight = 0
+
+  func closeKillStarted(remote: Bool) {
+    if remote { remoteCloseKillsInFlight += 1 } else { localCloseKillsInFlight += 1 }
+  }
+
+  func closeKillEnded(remote: Bool) {
+    if remote { remoteCloseKillsInFlight -= 1 } else { localCloseKillsInFlight -= 1 }
+  }
+
+  /// How long a quit waits for close kills that are REMOTE: a remote kill on a host that cannot be
+  /// reached can take as long as an ssh connect (#283), and a quit must not wait that out with no
+  /// sign of why. Local kills are not bounded by it: they end within the agent control client's own
+  /// deadlines, and a slow local daemon is no reason to leave a closed pane's shell running.
+  static let closeKillQuitBudget: Duration = .seconds(5)
+
+  /// Waits for every close kill still in flight: every local one, and remote ones until `deadline`.
+  /// Called at quit.
+  func awaitPendingCloseKills(until deadline: ContinuousClock.Instant) async {
+    // Polled rather than awaited, as `WakefulnessModel.drainKeep` is: `await task.value` cannot be
+    // given up on.
+    while Self.quitKeepsWaiting(
+      local: localCloseKillsInFlight, remote: remoteCloseKillsInFlight,
+      pastDeadline: ContinuousClock.now >= deadline)
+    {
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+  }
+
+  /// Whether a quit still waits, given the kills in flight: always for a local one, and for a remote
+  /// one until the deadline has passed.
+  nonisolated static func quitKeepsWaiting(local: Int, remote: Int, pastDeadline: Bool) -> Bool {
+    local > 0 || (remote > 0 && !pastDeadline)
+  }
+
   /// One socket path per backend. They deliberately differ, so these must never be conflated —
   /// the daemon's sessions and the agent's are reached through different files.
   private var resolvedSocketPaths: [SessionBackend: String] = [:]
