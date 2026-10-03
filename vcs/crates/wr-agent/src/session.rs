@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::input::InputClassifier;
@@ -273,6 +273,33 @@ pub struct SessionStore {
     /// Kills still running on threads of their own (`serve`'s Kill), whose sessions have already
     /// left the map. See `is_killing`.
     kills_in_flight: Arc<AtomicUsize>,
+    /// Sessions out of the map whose shells `kill` or `kill_all` is still ending. A second kill of
+    /// one waits on the first, so neither returns before the shell is gone. See `Ending`. Counted,
+    /// so a session created again under an id still being ended, and killed, is not unmarked when
+    /// the first kill finishes.
+    ending: Arc<(Mutex<HashMap<SessionId, usize>>, Condvar)>,
+}
+
+/// Sessions marked as being ended in `SessionStore::ending` until dropped, panics included.
+struct Ending<'a> {
+    store: &'a SessionStore,
+    ids: Vec<SessionId>,
+}
+
+impl Drop for Ending<'_> {
+    fn drop(&mut self) {
+        let (ending, ended) = &*self.store.ending;
+        let mut ending = ending.lock().unwrap_or_else(|e| e.into_inner());
+        for id in &self.ids {
+            if let Some(count) = ending.get_mut(id) {
+                *count -= 1;
+                if *count == 0 {
+                    ending.remove(id);
+                }
+            }
+        }
+        ended.notify_all();
+    }
 }
 
 /// One kill counted in `SessionStore::is_killing`, given back when dropped: when its thread ends,
@@ -315,6 +342,27 @@ impl SessionStore {
     pub fn kill_in_flight(&self) -> KillInFlight {
         self.kills_in_flight.fetch_add(1, Ordering::AcqRel);
         KillInFlight(Arc::clone(&self.kills_in_flight))
+    }
+
+    /// Marks `ids` as being ended. Called with the session map still locked, as they leave it, so
+    /// a session is always in one or the other while its shell lives.
+    fn mark_ending(&self, ids: Vec<SessionId>) -> Ending<'_> {
+        let (ending, _) = &*self.ending;
+        let mut ending = ending.lock().unwrap_or_else(|e| e.into_inner());
+        for id in &ids {
+            *ending.entry(*id).or_default() += 1;
+        }
+        drop(ending);
+        Ending { store: self, ids }
+    }
+
+    /// Whether `id` has left the map and its shell is still being ended.
+    pub fn is_ending(&self, id: SessionId) -> bool {
+        let (ending, _) = &*self.ending;
+        ending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&id)
     }
 
     /// Waits until no kill is in flight, or `deadline` passes: true if none is.
@@ -887,11 +935,12 @@ impl SessionStore {
     /// store lock across that would stall every `list` and `attach` for the duration.
     pub fn kill(&self, id: SessionId) -> bool {
         let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
-        let session = self
-            .sessions
-            .lock()
-            .expect("session store poisoned")
-            .remove(&id);
+        let (session, _ending) = {
+            let mut sessions = self.sessions.lock().expect("session store poisoned");
+            let session = sessions.remove(&id);
+            let ending = session.as_ref().map(|_| self.mark_ending(vec![id]));
+            (session, ending)
+        };
         // Killing is how the app says its user closed the pane, and that ends a record too: of a
         // session that ended with its host, or of this one. After the session leaves the map, so
         // the screens thread cannot take it as live and write the record back.
@@ -908,7 +957,18 @@ impl SessionStore {
                 terminate(&[&session.pty]);
                 true
             }
-            None => false,
+            None => {
+                // Another kill took it out of the map first and may still be ending its shell.
+                // Returning now would have this kill acknowledged while the shell lives (#283).
+                let (ending, ended) = &*self.ending;
+                let ending = ending.lock().unwrap_or_else(|e| e.into_inner());
+                drop(
+                    ended
+                        .wait_while(ending, |ending| ending.contains_key(&id))
+                        .unwrap_or_else(|e| e.into_inner()),
+                );
+                false
+            }
         }
     }
 
@@ -917,9 +977,11 @@ impl SessionStore {
     /// the one before it. That matters on quit, where this runs with the user watching.
     pub fn kill_all(&self) -> usize {
         let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
-        let ending: Vec<Session> = {
+        let (ending, _ending) = {
             let mut sessions = self.sessions.lock().expect("session store poisoned");
-            sessions.drain().map(|(_, session)| session).collect()
+            let ending: Vec<Session> = sessions.drain().map(|(_, session)| session).collect();
+            let marked = self.mark_ending(ending.iter().map(|s| s.id).collect());
+            (ending, marked)
         };
         if let Some(screens) = self.screens.get() {
             screens.remove_all();
@@ -1458,6 +1520,24 @@ mod tests {
 
     fn id(byte: u8) -> SessionId {
         SessionId([byte; 16])
+    }
+
+    /// A session ended twice over, as an id is created again while its first kill still runs, stays
+    /// marked as being ended until both are done: the first finishing must not let a third kill be
+    /// acknowledged early (#283).
+    #[test]
+    fn an_id_ended_twice_stays_marked_until_both_end() {
+        let store = SessionStore::new();
+        let id = id(0x51);
+        let first = store.mark_ending(vec![id]);
+        let second = store.mark_ending(vec![id]);
+        drop(first);
+        assert!(
+            store.is_ending(id),
+            "unmarked while the second is still ending"
+        );
+        drop(second);
+        assert!(!store.is_ending(id), "still marked once both ended");
     }
 
     /// Waiting for kills returns as soon as none is in flight, and gives up at its deadline while
