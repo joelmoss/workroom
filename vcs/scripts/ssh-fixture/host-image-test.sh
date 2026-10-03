@@ -110,6 +110,23 @@ KEEPS=(
   "CA certificates"             'test -s /etc/ssl/certs/ca-certificates.crt'
 )
 
+# The sshd settings the Dockerfile writes to sshd_config.d (#299), as sshd itself resolves them:
+# key login keeps working without them, so the ssh wait above would not notice them gone, as when a
+# base image's sshd_config stops including sshd_config.d. Resolved for a login, by `-C`, so a
+# `Match` block that turns one back on for that user counts too: workroom's, the one login there
+# is, and root's for root login. Needs a booted container (/run/sshd). An `sshd -T` that fails is
+# the probe failing, never a setting that is off.
+sshd_for() {
+  printf '%s %s' "t=\$(/usr/sbin/sshd -T -C user=$1,host=localhost,addr=127.0.0.1) || exit 2;" \
+    "printf '%s\\n' \"\$t\" | grep -qx"
+}
+HARDENED=(
+  "no password login"           "$(sshd_for workroom) 'passwordauthentication no'"
+  "no keyboard-interactive"     "$(sshd_for workroom) 'kbdinteractiveauthentication no'"
+  "only workroom may log in"    "$(sshd_for workroom) 'allowusers workroom'"
+  "no root login"               "$(sshd_for root) 'permitrootlogin no'"
+)
+
 # Runs each piece's command in container $1, from the name/command pairs after $2, which is
 # "present" or "absent", what each must find. The verdict is printed inside the container, from
 # the probe's own status, since an `exec` that never ran, or ran in a dead container, fails too.
@@ -150,14 +167,18 @@ fail() {
 }
 
 boot "$CONTROL"
-expect "$CONTROL" present "${PIECES[@]}" "${KEEPS[@]}"
+expect "$CONTROL" present "${PIECES[@]}"
 if [ "$failed" = 1 ]; then
   fail "$CONTROL" "the fixture image does not match the checks, so they prove nothing"
+fi
+expect "$CONTROL" present "${KEEPS[@]}" "${HARDENED[@]}"
+if [ "$failed" = 1 ]; then
+  fail "$CONTROL" "the image both variants are built from lacks what every host needs"
 fi
 
 boot "$NAME"
 expect "$NAME" absent "${PIECES[@]}"
-expect "$NAME" present "${KEEPS[@]}"
+expect "$NAME" present "${KEEPS[@]}" "${HARDENED[@]}"
 if [ "$failed" = 1 ]; then
   fail "$NAME" "the host image carries fixture pieces or lacks what a host needs"
 fi
