@@ -2035,8 +2035,8 @@ final class RemotePaneCloseTests: XCTestCase {
     XCTAssertEqual(reported, [])
   }
 
-  /// Value: protects=deleting a workroom still ends its LOCAL panes' persistent sessions; only remote ones are left to the host's teardown; fails_when=reap's isRemoteSession guard is inverted or skips every session; why_new=the reap test above only proves a remote pane is skipped; seam=none
-  func testReapStillEndsALocalPanesSession() async throws {
+  /// Value: protects=deleting a workroom still asks to end its LOCAL panes' persistent sessions; only remote ones are left to the host's teardown; fails_when=reap's isRemoteSession guard is inverted or skips every session; why_new=the reap test above only proves a remote pane is skipped; seam=none
+  func testReapStillAsksToEndALocalPanesSession() async throws {
     let target = TerminalTarget(id: "wr|/p|local", title: "local", path: "/w", isMissing: false)
     let s = makeSessions { _, _ in true }
     var asked = 0

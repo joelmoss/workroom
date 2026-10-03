@@ -3407,9 +3407,10 @@ service milestones below so each layer can be reviewed and landed independently.
      - *Limits.* The agent does not flush on SIGTERM, so a stop can lose up to 2 s of screen. The
        container test's `restart -t 0` is a SIGKILL, which is the harder case. Closing a remote
        pane ends its session and its record (#283), but only while its host answers: the record
-       of a remote pane closed while its host was down stays until the 64-record bound drops it. An agent that crashes
-       without a reboot leaves orphaned shells running (the `KillMode` caveat in "Two requirements
-       on #229's real supervisor"), and their records then read as ended while their shells live.
+       of a remote pane closed while its host was down stays until the 64-record bound drops it.
+       An agent that crashes without a reboot leaves orphaned shells running (the `KillMode`
+       caveat in "Two requirements on #229's real supervisor"), and their records then read as
+       ended while their shells live.
        The notice says "host restarted" in that case too. A record is removed on the tick after
        its session ends. A restored attach inside those 2 s is shown it as ended with its host,
        and a hand-off inside them leaves it behind for a later one. Deleting a record the moment its
