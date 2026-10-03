@@ -36,12 +36,14 @@ protocol HostDriver: Sendable {
   /// A byte stream to the agent on `host`, base or instance, for
   /// `AgentVCSConnection.connect(host:stream:)`. Not the first thing to open on a host:
   /// `AgentBootstrap.connect` runs the bootstrap first (#231), which is what puts an agent there.
+  /// Spawned as a `.connection`, which `connect` takes over (`HostStream.handOff`).
   func openStream(to host: HostID) async throws -> HostStream
-  /// Runs `command`, a line for the host's shell, with the returned stream as its stdin and stdout:
-  /// a one-off exchange (`HostStream.communicate`) rather than a connection, for what the agent
-  /// bootstrap runs before there is an agent to talk to (#231). For ssh it is the remote command;
-  /// an SDK driver runs it through the provider's exec call. `openStream` is this with the relay
-  /// as the command.
+  /// Runs `command`, a line for the host's shell, as a one-off exchange (`HostStream.communicate`)
+  /// rather than a connection, for what the agent bootstrap runs before there is an agent to talk
+  /// to (#231). For ssh it is the remote command; an SDK driver runs it through the provider's exec
+  /// call. The stream must be spawned as an `.exchange`, which `communicate` requires: its stdout
+  /// is the stream, its stdin a socket of its own that `communicate` closes for EOF (#305).
+  /// `openStream` runs the same carrier with the relay as the command, as a `.connection`.
   func exec(_ command: String, on host: HostID) async throws -> HostStream
 }
 
@@ -133,7 +135,7 @@ final class HostStream: @unchecked Sendable {
   /// An exchange's end of the carrier's stdin, until `communicate` closes it to send EOF. Taken
   /// under `lock` both to close and to shut down, so a shutdown never lands on a descriptor
   /// number already closed and reused by something else.
-  private var input: Int32?
+  private var inputDescriptor: Int32?
   private var errors = Data()
   /// stderr reached EOF: everything the carrier said is in `errors`.
   private var errorsClosed = false
@@ -148,11 +150,11 @@ final class HostStream: @unchecked Sendable {
   var processIdentifier: Int32 { process.processIdentifier }
 
   private init(
-    descriptor: Int32, input: Int32?, process: Process, purpose: Purpose,
+    descriptor: Int32, inputDescriptor: Int32?, process: Process, purpose: Purpose,
     handshakeTimeout: TimeInterval
   ) {
     self.descriptor = descriptor
-    self.input = input
+    self.inputDescriptor = inputDescriptor
     self.process = process
     self.purpose = purpose
     self.handshakeTimeout = handshakeTimeout
@@ -178,17 +180,17 @@ final class HostStream: @unchecked Sendable {
   /// Closes an exchange's end of the carrier's stdin, which is EOF there. Idempotent.
   private func closeInput() {
     lock.withLock {
-      guard let input else { return }
-      Darwin.close(input)
-      self.input = nil
+      guard let inputDescriptor else { return }
+      Darwin.close(inputDescriptor)
+      self.inputDescriptor = nil
     }
   }
 
   /// Wakes a `send` blocked on an exchange's input, if it is still open.
   private func shutDownInput() {
     lock.withLock {
-      guard let input else { return }
-      shutdown(input, SHUT_WR)
+      guard let inputDescriptor else { return }
+      shutdown(inputDescriptor, SHUT_WR)
     }
   }
 
@@ -241,7 +243,7 @@ final class HostStream: @unchecked Sendable {
     let errors = Pipe()
     process.standardError = errors
     let stream = HostStream(
-      descriptor: ours, input: input?.ours, process: process, purpose: purpose,
+      descriptor: ours, inputDescriptor: input?.ours, process: process, purpose: purpose,
       handshakeTimeout: handshakeTimeout)
     errors.fileHandleForReading.readabilityHandler = { [weak stream] handle in
       let data = handle.availableData
@@ -305,7 +307,7 @@ final class HostStream: @unchecked Sendable {
     precondition(purpose == .exchange, "communicate needs a stream spawned for an exchange")
     let fd = descriptor
     // Read once: only this exchange closes it, after its last `send` on it.
-    guard let inputFD = lock.withLock({ self.input }) else {
+    guard let inputFD = lock.withLock({ self.inputDescriptor }) else {
       preconditionFailure("communicate runs once per stream")
     }
     let process = self.process
