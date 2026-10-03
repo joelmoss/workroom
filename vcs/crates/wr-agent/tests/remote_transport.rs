@@ -396,6 +396,12 @@ fn a_slow_kill_does_not_hold_up_its_connection() {
     client.send(Service::Control, 3, Frame::control(FrameKind::List));
     client.envelope(Service::Control, 3, Duration::from_secs(5));
     let listed = started.elapsed();
+    // Still running on its own thread, and counted, so the agent cannot idle-exit or hand off
+    // under it.
+    assert!(
+        wr_agent::serve::is_killing(),
+        "a kill in flight is not counted"
+    );
     client.envelope(Service::Control, 2, Duration::from_secs(5));
     let killed = started.elapsed();
 
@@ -404,9 +410,11 @@ fn a_slow_kill_does_not_hold_up_its_connection() {
         killed >= Duration::from_millis(400),
         "the shell did not decline SIGHUP (killed in {killed:?})"
     );
+    // Against the kill's own length rather than a fixed figure, so a loaded machine slowing both
+    // does not fail it: served behind the kill, the list would have waited all of it.
     assert!(
-        listed < Duration::from_millis(250),
-        "a request behind the kill waited {listed:?} for it"
+        listed + Duration::from_millis(300) < killed,
+        "a request behind the kill waited {listed:?} of the kill's {killed:?}"
     );
     assert!(sessions.list().is_empty(), "the session outlived its kill");
 

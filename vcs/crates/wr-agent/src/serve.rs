@@ -660,8 +660,27 @@ pub fn exit_code(status: i32) -> i32 {
 /// store and no connections could otherwise end the agent between the SIGHUP and the SIGKILL.
 static KILLS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
+/// Whether a kill is still running on its own thread. Also consulted by a hand-off, which must not
+/// exec over one, and by `serve --stdio` before it exits.
 pub fn is_killing() -> bool {
     KILLS_IN_FLIGHT.load(Ordering::Acquire) > 0
+}
+
+/// One kill in `KILLS_IN_FLIGHT`, given back when dropped: when its thread ends, panics included,
+/// or when the thread could not be started and the closure holding it was dropped unrun.
+struct KillInFlight;
+
+impl KillInFlight {
+    fn new() -> Self {
+        KILLS_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for KillInFlight {
+    fn drop(&mut self) {
+        KILLS_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// Ends `id` on a thread of its own and acknowledges it there, once the shell is gone. A shell
@@ -669,6 +688,10 @@ pub fn is_killing() -> bool {
 /// stuck in the kernel holds it in `waitpid` for as long as that lasts. Run on the connection's
 /// reader, either held up every other request on the connection behind it: the app's service
 /// connection to a host carries its VCS, File and forwarding traffic as well (#283).
+///
+/// Only a live session gets a thread. An id the store does not hold costs at most the removal of a
+/// screen record, so it is ended here, and a stream of kills for ids that are not sessions cannot
+/// start a thread apiece.
 fn kill_off_the_reader(
     sessions: &SessionStore,
     id: SessionId,
@@ -683,22 +706,25 @@ fn kill_off_the_reader(
             Frame::control(FrameKind::Acknowledged).encode(),
         )
     };
-    KILLS_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+    if !sessions.contains(id) {
+        sessions.kill(id);
+        return Some(acknowledged());
+    }
+    // Counted before the thread starts, so a hand-off read next on this connection already sees it.
+    let in_flight = KillInFlight::new();
     let (store, shared) = (sessions.clone(), Arc::clone(writer));
     let spawned = std::thread::Builder::new().spawn(move || {
+        let _in_flight = in_flight;
         store.kill(id);
         let bytes = acknowledged().encode();
         if let Ok(mut writer) = shared.lock() {
             let _ = writer.write_all(&bytes).and_then(|()| writer.flush());
         }
-        KILLS_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
     });
     if spawned.is_ok() {
         return None;
     }
-    // No thread to be had: the closure was dropped without running, so the count is ours to undo,
-    // and the kill happens here after all rather than not at all.
-    KILLS_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+    // No thread to be had: the kill happens here after all rather than not at all.
     sessions.kill(id);
     Some(acknowledged())
 }

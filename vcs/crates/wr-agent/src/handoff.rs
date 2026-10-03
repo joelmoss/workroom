@@ -286,6 +286,11 @@ pub fn hand_off(
     // be running, and none may start: every slot is taken until the exec, or until this returns.
     let _quiet = crate::vcs::Quiet::acquire(QUIET_TIMEOUT)
         .ok_or("a repository command is still running; try again when it finishes")?;
+    // A kill finishing on its own thread would be cut off by the exec between its SIGHUP and its
+    // SIGKILL, with the session it removed carried nowhere (#283).
+    if crate::serve::is_killing() {
+        return Err("a session is being ended; try again when it finishes".into());
+    }
     sessions
         .frozen(FREEZE_TIMEOUT, |frozen| {
             replace(context, binary, frozen, before_exec)
