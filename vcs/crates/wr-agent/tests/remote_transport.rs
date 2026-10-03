@@ -363,7 +363,7 @@ fn a_restored_pane_is_shown_the_record_of_a_session_that_ended_with_its_host() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Ending a session whose shell declines SIGHUP takes the agent half a second and then a SIGKILL.
+/// Ending a session whose shell declines SIGHUP takes the agent `SIGHUP_GRACE` and then a SIGKILL.
 /// That wait must not hold up the connection the kill arrived on: the app's service connection to
 /// a host carries its VCS, File and forwarding requests too (#283). A request sent right behind the
 /// kill is answered first, and the kill is still acknowledged once the shell is gone.
@@ -398,10 +398,7 @@ fn a_slow_kill_does_not_hold_up_its_connection() {
     let listed = started.elapsed();
     // Still running on its own thread, and counted, so the agent cannot idle-exit or hand off
     // under it.
-    assert!(
-        wr_agent::serve::is_killing(),
-        "a kill in flight is not counted"
-    );
+    assert!(sessions.is_killing(), "a kill in flight is not counted");
     client.envelope(Service::Control, 2, Duration::from_secs(5));
     let killed = started.elapsed();
 

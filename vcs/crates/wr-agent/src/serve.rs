@@ -169,11 +169,11 @@ impl Agent {
                     // otherwise let `connections` and `sessions` both read empty while that thread is
                     // still mutating the repository. `crate::vcs::is_busy()` is the only thing that
                     // actually knows.
-                    // A kill on its own thread is the same shape: see `is_killing`.
+                    // A kill on its own thread is the same shape: see `SessionStore::is_killing`.
                     let busy = self.connections.load(Ordering::SeqCst) > 0
                         || !self.sessions.is_empty()
                         || crate::vcs::is_busy()
-                        || is_killing();
+                        || self.sessions.is_killing();
                     if busy {
                         idle_since = None;
                     } else {
@@ -658,35 +658,8 @@ pub fn exit_code(status: i32) -> i32 {
 /// Kills in flight on their own threads. Consulted by `serve`'s idle-exit check, like
 /// `vcs::is_busy`: a kill's session has left the store before its shell is gone, so an empty
 /// store and no connections could otherwise end the agent between the SIGHUP and the SIGKILL.
-static KILLS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
-
-/// Whether a kill is still running on its own thread. Also consulted by a hand-off, which refuses
-/// while one is (a kill that arrives after that check waits on `TERMINATING`, so the session is
-/// carried through the exec intact and that kill goes unanswered), and by `serve --stdio` before
-/// it exits.
-pub fn is_killing() -> bool {
-    KILLS_IN_FLIGHT.load(Ordering::Acquire) > 0
-}
-
-/// One kill in `KILLS_IN_FLIGHT`, given back when dropped: when its thread ends, panics included,
-/// or when the thread could not be started and the closure holding it was dropped unrun.
-struct KillInFlight;
-
-impl KillInFlight {
-    fn new() -> Self {
-        KILLS_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
-        Self
-    }
-}
-
-impl Drop for KillInFlight {
-    fn drop(&mut self) {
-        KILLS_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
 /// Ends `id` on a thread of its own and acknowledges it there, once the shell is gone. A shell
-/// that declines SIGHUP holds `SessionStore::kill` for half a second before the SIGKILL, and one
+/// that declines SIGHUP holds `SessionStore::kill` for `SIGHUP_GRACE` before the SIGKILL, and one
 /// stuck in the kernel holds it in `waitpid` for as long as that lasts. Run on the connection's
 /// reader, either held up every other request on the connection behind it: the app's service
 /// connection to a host carries its VCS, File and forwarding traffic as well (#283).
@@ -713,7 +686,7 @@ fn kill_off_the_reader(
         return Some(acknowledged());
     }
     // Counted before the thread starts, so a hand-off read next on this connection already sees it.
-    let in_flight = KillInFlight::new();
+    let in_flight = sessions.kill_in_flight();
     let (store, shared) = (sessions.clone(), Arc::clone(writer));
     let spawned = std::thread::Builder::new().spawn(move || {
         let _in_flight = in_flight;

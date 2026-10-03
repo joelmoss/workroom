@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -257,6 +257,8 @@ pub struct TakenScreen {
 
 /// How long a session's processes get to exit on SIGHUP before `terminate` sends SIGKILL.
 pub const SIGHUP_GRACE: Duration = Duration::from_millis(500);
+/// How often `terminate` checks, within `SIGHUP_GRACE`, whether they have.
+const SIGHUP_POLL: Duration = Duration::from_millis(10);
 
 /// Owns every live session. Cheap to clone; all clones share one map.
 #[derive(Clone, Default)]
@@ -265,6 +267,20 @@ pub struct SessionStore {
     /// Where each session's screen is kept for after a reboot, when the agent was asked to keep
     /// them (`serve --screens`). See `crate::screens`.
     screens: Arc<OnceLock<Screens>>,
+    /// Kills still running on threads of their own (`serve`'s Kill), whose sessions have already
+    /// left the map. See `is_killing`.
+    kills_in_flight: Arc<AtomicUsize>,
+}
+
+/// One kill counted in `SessionStore::is_killing`, given back when dropped: when its thread ends,
+/// panics included, or when the thread could not be started and the closure holding it was dropped
+/// unrun.
+pub struct KillInFlight(Arc<AtomicUsize>);
+
+impl Drop for KillInFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// How a session's pty should be started. Grouped into one struct because the list is long enough
@@ -283,6 +299,22 @@ pub struct SessionSpec<'a> {
 }
 
 impl SessionStore {
+    /// Whether a kill is still running on a thread of its own. Its session has left the map before
+    /// its shell is gone, so the idle-exit check, a hand-off and `serve --stdio`'s exit consult
+    /// this as well as the map: each would otherwise cut it off between its SIGHUP and SIGKILL.
+    /// A hand-off refuses while one is running; a kill that arrives after that check waits on
+    /// `TERMINATING`, so its session is carried through the exec intact and the kill goes
+    /// unanswered.
+    pub fn is_killing(&self) -> bool {
+        self.kills_in_flight.load(Ordering::Acquire) > 0
+    }
+
+    /// Counts a kill in `is_killing` until the returned guard is dropped.
+    pub fn kill_in_flight(&self) -> KillInFlight {
+        self.kills_in_flight.fetch_add(1, Ordering::AcqRel);
+        KillInFlight(Arc::clone(&self.kills_in_flight))
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -1363,7 +1395,7 @@ fn terminate(ptys: &[&Arc<Pty>]) {
         return;
     }
     // Each descendant is recorded with its start time, not just its pid, because the SIGKILL
-    // sweep below happens up to half a second later — long enough for one to exit and its number
+    // sweep below happens up to `SIGHUP_GRACE` later — long enough for one to exit and its number
     // to be reused. See `process::Descendant`.
     let descendants = crate::process::descendants(&roots);
 
@@ -1374,7 +1406,7 @@ fn terminate(ptys: &[&Arc<Pty>]) {
     // Only the roots are our children, so only they can be reaped; a descendant's exit is observed
     // by probing instead. Both are checked, because the point is that nothing is left.
     let mut unreaped: Vec<i32> = roots.clone();
-    for _ in 0..(SIGHUP_GRACE.as_millis() / 10) {
+    for _ in 0..(SIGHUP_GRACE.as_millis() / SIGHUP_POLL.as_millis()) {
         unreaped.retain(|pid| {
             let mut status = 0;
             let rc = unsafe { libc::waitpid(*pid, &mut status, libc::WNOHANG) };
@@ -1383,10 +1415,10 @@ fn terminate(ptys: &[&Arc<Pty>]) {
         if unreaped.is_empty() && !descendants.iter().any(|d| d.is_running()) {
             return;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(SIGHUP_POLL);
     }
 
-    // Half a second of SIGHUP was declined. Anything still running gets SIGKILL — and `is_running`
+    // `SIGHUP_GRACE` of SIGHUP was declined. Anything still running gets SIGKILL — and `is_running`
     // is checked first, and compares start times, so a descendant that has exited cannot cost an
     // unrelated process that inherited its pid a SIGKILL.
     let survivors = descendants
@@ -1395,7 +1427,7 @@ fn terminate(ptys: &[&Arc<Pty>]) {
         .map(|d| &d.pid);
     let killing: Vec<i32> = unreaped.iter().chain(survivors).copied().collect();
     if !killing.is_empty() {
-        crate::note!("SIGHUP declined for half a second; SIGKILL to pids {killing:?}");
+        crate::note!("SIGHUP declined for {SIGHUP_GRACE:?}; SIGKILL to pids {killing:?}");
     }
     for pid in &killing {
         unsafe { libc::kill(*pid, libc::SIGKILL) };
@@ -1783,7 +1815,7 @@ mod tests {
 
         drop(repainting);
         // Generous: `TERMINATING` is shared with every other test in the crate, and a kill
-        // holds it for half a second.
+        // holds it for `SIGHUP_GRACE`.
         let frozen = store.frozen(Duration::from_secs(5), |sessions| sessions.len());
         assert_eq!(frozen, Some(1));
         store.kill_all();

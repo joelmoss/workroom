@@ -163,7 +163,7 @@ fn run_serve_stdio() -> ExitCode {
     // not reach it, and exiting now would cut it off between its SIGHUP and its SIGKILL. Bounded
     // well past that grace, and a shell stuck in the kernel is not waited out.
     let deadline = std::time::Instant::now() + wr_agent::session::SIGHUP_GRACE * 4;
-    while wr_agent::serve::is_killing() && std::time::Instant::now() < deadline {
+    while sessions.is_killing() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     match result {

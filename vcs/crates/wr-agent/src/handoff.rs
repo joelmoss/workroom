@@ -288,7 +288,7 @@ pub fn hand_off(
         .ok_or("a repository command is still running; try again when it finishes")?;
     // A kill finishing on its own thread would be cut off by the exec between its SIGHUP and its
     // SIGKILL, with the session it removed carried nowhere (#283).
-    if crate::serve::is_killing() {
+    if sessions.is_killing() {
         return Err("a session is being ended; try again when it finishes".into());
     }
     sessions
