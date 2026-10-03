@@ -125,6 +125,129 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(connects.calls, 2)
   }
 
+  /// Opening a workroom while a status probe of its stopped container is under way starts it: joined,
+  /// the probe would fail and hold the workroom back for `retryAfter`.
+  func testOpeningDuringAProbeStartsTheHost() async throws {
+    let connects = Connects()
+    connects.fail(true)
+    let started = Swept()
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) },
+      isConnected: { _ in
+        connects.ask()
+        return false
+      },
+      startHost: { host in
+        guard case .remote(let id) = host else { return }
+        started.add(nil, [id])
+        connects.fail(false)
+      }, now: { connects.now })
+    let id = UUID()
+
+    let probe = Task { try await remote.ensureConnected(.remote(id)) }
+    while connects.calls < 1 { try await Task.sleep(for: .milliseconds(1)) }
+    remote.activate(.remote(id))
+    let opened = Task { try await remote.ensureConnected(.remote(id)) }
+    while connects.arrived < 2 { try await Task.sleep(for: .milliseconds(1)) }
+    try await Task.sleep(for: .milliseconds(20))
+    connects.hold(false)
+    _ = try? await probe.value
+    try await opened.value
+    XCTAssertEqual(started.calls.map(\.known), [[id]], "the opened workroom's host wasn't started")
+  }
+
+  /// Opening starts a container once: one the user stops afterwards is not started again by the
+  /// status sweep's next probe.
+  func testOpeningStartsTheHostOnce() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let started = Swept()
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
+      startHost: { host in
+        guard case .remote(let id) = host else { return }
+        started.add(nil, [id])
+      })
+    let id = UUID()
+    remote.activate(.remote(id))
+    try await remote.ensureConnected(.remote(id))
+    try await remote.ensureConnected(.remote(id))
+    XCTAssertEqual(started.calls.count, 1, "a later probe started the container again")
+    remote.activate(.remote(id))
+    try await remote.ensureConnected(.remote(id))
+    XCTAssertEqual(started.calls.count, 2, "opening it again didn't start it")
+  }
+
+  /// A workroom opened while its container runs has nothing to start, and the opening is spent:
+  /// stopped later, the status sweep's probe doesn't start it.
+  func testOpeningARunningHostLeavesItStoppedLater() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let running = Connects()
+    let started = Swept()
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) },
+      isConnected: { _ in
+        // Up the first time it's asked, stopped after.
+        defer { running.ask() }
+        return running.arrived == 0
+      },
+      startHost: { host in
+        guard case .remote(let id) = host else { return }
+        started.add(nil, [id])
+      })
+    let id = UUID()
+    remote.activate(.remote(id))
+    try await remote.ensureConnected(.remote(id))
+    try await remote.ensureConnected(.remote(id))
+    XCTAssertTrue(started.calls.isEmpty, "a probe started a container opened while it ran")
+  }
+
+  /// A probe of the stopped container that fails after the workroom was opened doesn't hold it back:
+  /// the opened workroom's next connect starts it at once.
+  func testAProbeFailingAfterTheOpeningDoesNotHoldItBack() async throws {
+    let connects = Connects()
+    connects.fail(true)
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
+      startHost: { _ in connects.fail(false) }, now: { connects.now })
+    let host = HostID.remote(UUID())
+    let probe = Task { try await remote.ensureConnected(host) }
+    while connects.calls < 1 { try await Task.sleep(for: .milliseconds(1)) }
+    remote.activate(host)
+    connects.hold(false)
+    _ = try? await probe.value
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(connects.calls, 2)
+  }
+
+  /// A relay that didn't take on a connection is tried again by a later connection check, at most
+  /// once a `retryAfter`, until it does; nothing else would try before a reconnect.
+  func testARelayThatDidNotTakeIsTriedAgain() async throws {
+    let connects = Connects()
+    connects.fail(true)
+    let relays = Connects()
+    relays.hold(false)
+    relays.fail(true)
+    let remote = RemoteHosts(
+      connectHost: { _ in }, isConnected: { _ in true }, startHost: { _ in },
+      now: { connects.now }, relayHost: { try await relays.connect($0) })
+    let host = HostID.remote(UUID())
+
+    await remote.installRelay(host, attempts: 1)
+    XCTAssertEqual(relays.calls, 1)
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(relays.calls, 1, "tried again inside its window")
+
+    relays.fail(false)
+    connects.advance(RemoteHosts.retryAfter)
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(relays.calls, 2, "a later check didn't try again")
+    connects.advance(RemoteHosts.retryAfter)
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(relays.calls, 2, "tried again once it had taken")
+  }
+
   /// `destroy` removes a host's image with `--force`, so a record's image must be a commit's ID.
   func testOnlyAWholeLowercaseSHA256IsAnImageID() {
     let hex = String(repeating: "a1", count: 32)
@@ -333,14 +456,16 @@ final class RemoteHostsTests: XCTestCase {
 
   /// A stand-in runtime CLI that logs every call and fails `image inspect` (the image is missing),
   /// `run`, and `pull` when `pullFails`, so `create` stops at its first container.
-  private func failingRuntime(pullFails: Bool) throws -> (runtime: URL, log: URL) {
+  private func failingRuntime(pullFails: Bool, said: String = "denied") throws -> (
+    runtime: URL, log: URL
+  ) {
     let (runtime, log) = try stubRuntime()
     let script = try String(contentsOf: runtime, encoding: .utf8)
     try
       (script + """
 
         case "$1 $2" in "image inspect") exit 1 ;; esac
-        case "$1" in run) exit 1 ;; pull) \(pullFails ? "echo 'denied' >&2; exit 1" : "exit 0") ;; esac
+        case "$1" in run) exit 1 ;; pull) \(pullFails ? "echo '\(said)' >&2; exit 1" : "exit 0") ;; esac
         """).write(to: runtime, atomically: true, encoding: .utf8)
     return (runtime, log)
   }
@@ -362,12 +487,14 @@ final class RemoteHostsTests: XCTestCase {
 
   private final class Fractions: @unchecked Sendable {
     private let lock = NSLock()
-    private var heard: [Double] = []
-    var all: [Double] { lock.withLock { heard } }
-    func add(_ fraction: Double) { lock.withLock { heard.append(fraction) } }
+    private var heard: [Double?] = []
+    var all: [Double?] { lock.withLock { heard } }
+    func add(_ fraction: Double?) { lock.withLock { heard.append(fraction) } }
   }
 
-  /// A pull's progress reaches the create that asked for it as it goes, rising to the whole (#309).
+  /// A pull's progress reaches the create that asked for it as it goes, rising to the whole, then
+  /// says it is done (#309). How many steps arrive between depends on how the pipe's reads fall, so
+  /// only their order and ends are pinned (`ImagePullProgressTests` pins the parsing).
   func testAPullsProgressReachesItsCreate() async throws {
     let (runtime, _) = try scriptedRuntime(
       """
@@ -379,25 +506,75 @@ final class RemoteHostsTests: XCTestCase {
       run*) exit 1 ;;
       """)
     let heard = Fractions()
-    let report: @Sendable (Double) -> Void = { heard.add($0) }
+    let report: @Sendable (Double?) -> Void = { heard.add($0) }
+    // The scripted `run` fails, after the pull.
     try? await ContainerHostDriver.$pullProgress.withValue(report) {
       _ = try await Self.driver(runtime: runtime, context: nil).create()
     }
-    XCTAssertEqual(heard.all, [0, 0.5, 1])
+    let all = heard.all
+    XCTAssertEqual(all.last, .some(nil), "the pull never said it was done: \(all)")
+    let fractions = all.dropLast().compactMap { $0 }
+    XCTAssertEqual(fractions.count, all.count - 1, "done before the end: \(all)")
+    XCTAssertEqual(fractions.last, 1, "\(all)")
+    XCTAssertEqual(fractions, fractions.sorted(), "\(all)")
+    XCTAssertTrue(fractions.allSatisfy { (0...1).contains($0) }, "\(all)")
   }
 
-  /// A pull that fails says the host image couldn't be downloaded, and runs nothing.
-  func testAFailedPullSaysTheImageCouldNotBeDownloaded() async throws {
-    let (runtime, log) = try failingRuntime(pullFails: true)
-    do {
-      _ = try await Self.driver(runtime: runtime, context: nil).create()
-      XCTFail("a failed pull created a host")
-    } catch {
-      XCTAssertTrue(
-        error.localizedDescription.contains("couldn't download the workroom host image"),
-        error.localizedDescription)
+  /// A pull that fails says why, by cause, and runs nothing: a registry that refused the image, a
+  /// runtime that isn't running, or else the network.
+  func testAFailedPullSaysWhy() async throws {
+    for (said, expected) in [
+      ("denied", "the registry refused the workroom host image"),
+      (
+        "Cannot connect to the Docker daemon at unix:///x. Is the docker daemon running?",
+        "Docker didn't answer"
+      ),
+      (
+        "Got permission denied while trying to connect to the Docker daemon socket at unix:///x",
+        "Docker didn't answer"
+      ),
+      ("manifest unknown", "the registry refused the workroom host image"),
+      ("read: connection reset by peer", "couldn't download the workroom host image"),
+    ] {
+      let (runtime, log) = try failingRuntime(pullFails: true, said: said)
+      do {
+        _ = try await Self.driver(runtime: runtime, context: nil).create()
+        XCTFail("a failed pull created a host")
+      } catch {
+        XCTAssertTrue(error.localizedDescription.contains(expected), error.localizedDescription)
+      }
+      XCTAssertFalse(try String(contentsOf: log, encoding: .utf8).contains("run "))
     }
-    XCTAssertFalse(try String(contentsOf: log, encoding: .utf8).contains("run "))
+  }
+
+  /// A runtime that isn't running says so at its first command, rather than pulling: its inspect
+  /// failing is not a missing image.
+  func testARuntimeThatIsNotRunningSaysSo() async throws {
+    for (dialect, said, expected) in [
+      (
+        ContainerHostDriver.Dialect.docker,
+        "Cannot connect to the Docker daemon at unix:///x. Is the docker daemon running?",
+        "Docker didn't answer"
+      ),
+      (
+        .apple,
+        "Error: interrupted: \"XPC connection error: Connection invalid\"\nEnsure container "
+          + "system service has been started with `container system start`.",
+        "container system start"
+      ),
+    ] {
+      let (runtime, log) = try stubRuntime()
+      let script = try String(contentsOf: runtime, encoding: .utf8)
+      try (script + "\nprintf '%s\\n' \(ContainerHostDriver.shellQuoted(said)) >&2; exit 1\n")
+        .write(to: runtime, atomically: true, encoding: .utf8)
+      do {
+        _ = try await Self.driver(runtime: runtime, context: nil, dialect: dialect).create()
+        XCTFail("created without a runtime")
+      } catch {
+        XCTAssertTrue(error.localizedDescription.contains(expected), error.localizedDescription)
+      }
+      XCTAssertFalse(try String(contentsOf: log, encoding: .utf8).contains("pull"), "it pulled")
+    }
   }
 
   /// The image a new base runs: the hidden override, else the build's pinned digest, else a local
@@ -673,6 +850,42 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(
       removed,
       ["delete --force \(ContainerHostDriver.containerName(swept))", "image delete leftover:1"])
+  }
+
+  /// A derive's snapshot image whose delete failed goes with the next sweep, though its workroom's
+  /// container was run from it: Apple's container runs without its image, and the snapshot is a
+  /// whole disk.
+  func testAppleSweepRemovesALeftoverSnapshotItsContainerRanFrom() async throws {
+    let workroom = UUID()
+    let snapshot = ContainerHostDriver.deriveDirectoryPrefix + "abc:latest"
+    let ours = ["workroom.provisioner": "test", "workroom.created": "1"]
+    let list: [[String: Any]] = [
+      [
+        "id": ContainerHostDriver.containerName(workroom), "status": ["state": "running"],
+        "configuration": ["labels": ours, "image": ["reference": snapshot]],
+      ]
+    ]
+    let images: [[String: Any]] = [
+      [
+        "configuration": ["name": snapshot],
+        "variants": [
+          ["platform": ["architecture": "arm64"], "config": ["config": ["Labels": ours]]]
+        ],
+      ]
+    ]
+    let json = { (o: Any) in
+      String(decoding: try JSONSerialization.data(withJSONObject: o), as: UTF8.self)
+    }
+    let (runtime, log) = try scriptedRuntime(
+      """
+      "list --all --format json") printf '%s' \(ContainerHostDriver.shellQuoted(try json(list))) ;;
+      "image list --format json") printf '%s' \(ContainerHostDriver.shellQuoted(try json(images))) ;;
+      """)
+    let failures = await Self.driver(runtime: runtime, context: nil, dialect: .apple).sweep(
+      keeping: [workroom], images: [])
+    XCTAssertEqual(failures, [])
+    let removed = try calls(log).filter { $0.hasPrefix("delete ") || $0.hasPrefix("image delete ") }
+    XCTAssertEqual(removed, ["image delete \(snapshot)"])
   }
 
   /// A derived image is rebuilt from the exported disk with the host image's own process: its

@@ -144,6 +144,9 @@ final class HostStream: @unchecked Sendable {
   private var errorsClosed = false
   /// Told each piece of output as it arrives, stdout's and stderr's alike (`communicate`).
   private var onOutput: (@Sendable (Data) -> Void)?
+  /// Told stderr spoke, so output there counts against `communicate`'s silence bound too: a pull or
+  /// build may report its progress there alone.
+  private var heard: (@Sendable () -> Void)?
   /// `end()` stopped a carrier that was still running, so its exit status is our own signal.
   private var endedByUs = false
   /// A connection took the descriptor and the process (`handOff`), so `deinit` leaves them alone.
@@ -338,7 +341,11 @@ final class HostStream: @unchecked Sendable {
       shutdown(fd, SHUT_RD)
       shutdown(fd, SHUT_WR)
     }
-    defer { watchdog.stop() }
+    lock.withLock { heard = { watchdog.heard() } }
+    defer {
+      lock.withLock { heard = nil }
+      watchdog.stop()
+    }
     // A cancelled caller (a pane closed, a host removed mid-push) ends the exchange the same way,
     // rather than leaving `runBlocking`, which cannot be cancelled, pushing 11 MB to no one.
     let (printed, exit): (Data, (status: Int32, reason: Process.TerminationReason)?) =
@@ -506,10 +513,12 @@ final class HostStream: @unchecked Sendable {
 
   /// Keeps the first 16 KiB of stderr: enough for any diagnosis, and bounded against a chatty one.
   private func collect(_ data: Data) {
-    let listener = lock.withLock { () -> (@Sendable (Data) -> Void)? in
+    let (listener, heard) = lock.withLock {
+      () -> ((@Sendable (Data) -> Void)?, (@Sendable () -> Void)?) in
       if errors.count < 16 * 1024 { errors.append(data.prefix(16 * 1024 - errors.count)) }
-      return onOutput
+      return (onOutput, self.heard)
     }
+    heard?()
     listener?(data)
   }
 }

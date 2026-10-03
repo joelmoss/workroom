@@ -3095,9 +3095,14 @@ final class AppStore: ObservableObject {
         acceptedPaths.contains($0.localSourcePath ?? $0.location.path)
       })
     RepositoryRouter.shared.replaceRemote(RemoteWorkrooms.registrations(fresh))
+    let resolved = selectedWorkroom?.reachableHost
     projects = fresh
-    // A selection restored before its projects were loaded opened nothing then (#309).
-    if let host = selectedWorkroom?.reachableHost { RemoteHosts.shared.activate(.remote(host)) }
+    // A selection restored before its projects were loaded opened nothing then (#309). Only then:
+    // every reload passes here, and opening again on each would restart a container the user
+    // stopped.
+    if resolved == nil, let host = selectedWorkroom?.reachableHost {
+      RemoteHosts.shared.activate(.remote(host))
+    }
     // Prune shared caches only when publishing an accepted snapshot.
     let liveIDs = Set(fresh.map(\.id))
     rootRefs = rootRefs.filter { liveIDs.contains($0.key) }
@@ -3519,8 +3524,6 @@ final class AppStore: ObservableObject {
       })
   }
 
-  /// Whether creating a container workroom is on for `project`: not while another create holds it busy, since
-  /// a second create would build a second base.
   /// How far each project's container workroom create has got downloading its host image, 0 to 1
   /// (#309): the first create in a project pulls it, a couple of hundred MB. The row's spinner
   /// shows it.
@@ -3534,6 +3537,17 @@ final class AppStore: ObservableObject {
     return nil
   }
 
+  /// Whether a create must say that its new base fell back to the Mac's own GitHub token (#309, D9):
+  /// signed in to Codaset, yet the base it made relays, which only an uninstalled Codaset App does.
+  /// Said once, when the base is made; signed out, the relay is the only way, and expected.
+  nonisolated static func fellBackToGitHub(
+    signedIn: Bool, hadBase: Bool, made: HostDescriptor?
+  ) -> Bool {
+    signedIn && !hadBase && made?.isRelayed == true
+  }
+
+  /// Whether creating a container workroom is on for `project`: not while another create holds it
+  /// busy, since a second create would build a second base.
   func canCreateRemoteWorkroom(in project: Project) -> Bool {
     RemoteWorkrooms.isEnabled && !isBusyProject(project.path)
       && !deletingProjects.contains(project.path)
@@ -3545,6 +3559,9 @@ final class AppStore: ObservableObject {
   func createRemoteWorkroom(
     in project: Project, runtime: RemoteWorkrooms.Runtime = .docker, splitAnchor: SidebarID? = nil
   ) async {
+    // As it is now, not as a menu or the picker caught it: a create that finished meanwhile may
+    // have recorded the project's first base, which this one must derive from, not overwrite.
+    let project = projects.first { $0.path == project.path } ?? project
     guard canCreateRemoteWorkroom(in: project) else { return }
     beginBusy(project.path)
     defer { endBusy(project.path) }
@@ -3564,7 +3581,7 @@ final class AppStore: ObservableObject {
       }
       let path = project.path
       defer { imagePulls[path] = nil }
-      let report: @Sendable (Double) -> Void = { fraction in
+      let report: @Sendable (Double?) -> Void = { fraction in
         Task { @MainActor [weak self] in
           // A report that arrives after the create ended shows nothing.
           guard let self, self.isBusyProject(path) else { return }
@@ -3589,6 +3606,18 @@ final class AppStore: ObservableObject {
             sid, beside: $0, edge: .right, destinationRect: workroomPaneRect(for: $0))
         } ?? false
       if !landedInSplit { selectedTargetID = sid }
+      let made = RemoteWorkrooms.base(
+        in: projects.first { $0.path == project.path }?.host, for: wanted)
+      if Self.fellBackToGitHub(
+        signedIn: environment.client != nil, hadBase: base != nil, made: made)
+      {
+        errorTitle =
+          "\(runtime.displayName) workrooms of \(project.displayName) use your own GitHub access"
+        errorMessage =
+          "The Codaset App isn't installed for \(repository.owner), so git in this project's "
+          + "\(runtime.displayName) workrooms asks your gh sign-in on this Mac, with all of its "
+          + "access, as a workroom on this Mac does. They keep doing so after the App is installed."
+      }
     } catch {
       await reload()
       present(error)
@@ -4129,7 +4158,8 @@ final class AppStore: ObservableObject {
           let cli = self.cli
           var left = project.host
           for base in bases {
-            let rest = base.id.flatMap { RemoteWorkrooms.removing($0, from: left) }
+            // A base without an id can't be told apart, so the record stays as it is.
+            let rest = base.id.map { RemoteWorkrooms.removing($0, from: left) } ?? left
             try await RemoteWorkrooms.deleteBase(base, environment: remote?.environment(for: base))
             {
               try await cli.setHost(

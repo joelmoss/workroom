@@ -26,6 +26,8 @@ if [ "$(cat "$IDENTITY" 2>/dev/null)" != "$(hostname)" ]; then
   tr -d '-' < /proc/sys/kernel/random/uuid > /etc/machine-id
   # With the agent's interrupted saves (`.broker.json.<pid>`), which can hold a key.
   rm -f /run/workroom/broker.json /run/workroom/broker-token.json /run/workroom/.broker*
+  # The Mac's relay (#309): its port and secret are the base's, and the app installs its own.
+  rm -f /run/workroom/relay.json /run/workroom/.relay*
   rm -rf /home/workroom/.local/state/workroom/screens
   hostname > "$IDENTITY"
 fi

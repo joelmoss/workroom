@@ -1634,8 +1634,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   be created in a container on the Mac, on Docker (Desktop, OrbStack, Colima) or on Apple's
   `container`. These are not remote workrooms: they stop when the Mac sleeps. They ship with the
   remote targets, behind the same preview and Nightly gate, until #260.
-  - **Choosing.** With the preview on, a project's New Workroom is a submenu: This Mac, then Docker
-    and Apple Container under "Local containers". It replaced New Remote Workroom. An entry that
+  - **Choosing.** With the preview on, every way in asks where: a project's New Workroom is a
+    submenu, its row's "+" opens the same menu, and File ▸ New Workroom… (⌘N, ⌥⌘N, the tab bar's
+    "+") asks once its project is picked. The places are This Mac, then Docker and Apple Container
+    under "Local containers". It replaced New Remote Workroom. An entry that
     can't be used says why in its title (`RemoteWorkrooms.unavailability`): Apple's runtime needs
     Apple silicon and macOS 26, either may not be installed, and a create needs a Codaset or `gh` sign-in.
   - **Drivers.** `RemoteHosts` keeps a `ContainerHostDriver` per `DriverKey`: runtime, and for
@@ -1671,17 +1673,21 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     relay` on every connect); `ReverseForwardRegistry`, lifted out of the Debug broker route,
     carries it to `CredentialRelay`'s listener on the Mac's loopback, which answers github.com over
     https only, from `gh auth git-credential get`. Accepted (D9): anything in the workroom can ask,
-    so it has the user's `gh` access while the app is connected, as a workroom on the Mac does; git
-    is told to open the workroom when it isn't. An enrolled workroom never uses the relay.
+    so it has the user's `gh` access, as a workroom on the Mac does. It can ask only while the app
+    is connected (git is told to open the workroom when it isn't), but a token it was answered with
+    works until the user revokes it. An enrolled workroom never uses the relay.
   - **Starting.** Selecting a container workroom marks its host opened (`RemoteHosts.activate`), and
-    its connects then start a stopped container first. Background status probes reach every
-    reachable remote workroom, so they never start one.
-  - **The image.** Nightly and Release build the `FIXTURE=0` image once per architecture, run
-    `host-image-test.sh` against that exact image (`WR_HOST_IMAGE`), push it by digest and join the
-    two into one manifest on ghcr (`host-image.yml`). The manifest's digest is pinned into the app
-    (`WorkroomHostImage`); the hidden `remoteHostImage` overrides it, and a local build runs
-    `workroom-host`. A missing image is pulled before `run`, which never pulls (`--pull=never`).
-    The ghcr package must be made public once, by hand, after its first push.
+    its next connect starts a stopped container first, once: one the user stops afterwards stays
+    stopped until its workroom is selected again. Background status probes reach every reachable
+    remote workroom, so they never start one; an opened connect that finds one under way goes
+    after it rather than joining it.
+  - **The image.** Nightly (and Release, once #260 lifts the gate) builds the `FIXTURE=0` image
+    once per architecture, runs `host-image-test.sh` against that exact image (`WR_HOST_IMAGE`),
+    pushes it by digest and joins the two into one manifest on ghcr (`host-image.yml`). The
+    manifest's digest is pinned into the app (`WorkroomHostImage`); the hidden `remoteHostImage`
+    overrides it, and a local build runs `workroom-host`. A missing image is pulled before `run`, which never pulls (`--pull=never`).
+    The ghcr package must be made public once, by hand, after its first push: the workflow checks
+    the digest can be pulled anonymously, and `release.sh` won't build a Nightly without a pin.
   - **Tests.** `RemoteHostsTests` drive both dialects through a stub CLI. The Docker fixture suites
     (`run.sh`) cover the Docker path; `AppleContainerIntegrationTests` run the whole lifecycle on
     the real Apple runtime, opt-in (`TEST_RUNNER_WR_APPLE_CONTAINER_TESTS=1`), since CI's macOS

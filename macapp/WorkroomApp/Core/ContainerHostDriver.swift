@@ -138,19 +138,25 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     return try await run(provisioning.image, image: nil, isBase: true)
   }
 
+  /// Told how far a host image's pull has got, 0 to 1, then nil once it is done, for a create run
+  /// inside `$pullProgress.withValue` (#309): a task-local, so `HostDriver.create` keeps its shape
+  /// and two creates at once each hear only their own.
+  @TaskLocal static var pullProgress: (@Sendable (Double?) -> Void)?
+
   /// Pulls `image` unless the runtime already has it (#309). `run` itself never pulls
   /// (`--pull=never`): left to it, a missing `workroom-host` was looked for on Docker Hub as
   /// `library/workroom-host`, and failed with a registry error that said nothing about why.
-  /// Told how far a host image's pull has got, 0 to 1, for a create run inside
-  /// `$pullProgress.withValue` (#309): a task-local, so `HostDriver.create` keeps its shape and two
-  /// creates at once each hear only their own.
-  @TaskLocal static var pullProgress: (@Sendable (Double) -> Void)?
-
   private func ensureImage(_ image: String) async throws {
     let apple = provisioning?.dialect == .apple
     let inspect =
       apple ? ["image", "inspect", image] : ["image", "inspect", "--format", "{{.Id}}", image]
-    if (try? await runtime(inspect)) != nil { return }
+    do {
+      _ = try await runtime(inspect)
+      return
+    } catch {
+      // Missing, unless it's the runtime itself that didn't answer.
+      if let down = Self.runtimeDown(error.localizedDescription, apple: apple) { throw down }
+    }
     do {
       // Silence-bounded, and a pull reports its progress as it goes. Apple's unpacks every
       // platform of a multi-arch image unless told which, and it runs on Apple silicon only.
@@ -161,11 +167,44 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
         onOutput: report.map { report in
           { data in if let fraction = progress.read(data) { report(fraction) } }
         })
+      // The rest of the create (a clone, a derive) can take minutes, and isn't a download.
+      report?(nil)
     } catch {
+      let said = error.localizedDescription
+      if let down = Self.runtimeDown(said, apple: apple) { throw down }
+      if ["denied", "unauthorized", "forbidden", "manifest unknown"].contains(where: {
+        said.lowercased().contains($0)
+      }) {
+        throw HostDriverError.provisioning(
+          "the registry refused the workroom host image \(image): it isn't public, or this build "
+            + "names one that doesn't exist. (\(said))")
+      }
       throw HostDriverError.provisioning(
         "couldn't download the workroom host image \(image). Check your network connection, "
-          + "then try again. (\(error.localizedDescription))")
+          + "then try again. (\(said))")
     }
+  }
+
+  /// The error for a runtime that didn't answer at all, by what it printed, or nil when it did
+  /// (#309): every create's first command would otherwise blame the image or the network.
+  static func runtimeDown(_ said: String, apple: Bool) -> Error? {
+    if apple {
+      guard said.contains("container system start") || said.contains("XPC connection") else {
+        return nil
+      }
+      return HostDriverError.provisioning(
+        "Apple's container runtime isn't running. Run `container system start`, then try again.")
+    }
+    // "Cannot connect to…", and a socket the user can't open ("permission denied while trying to
+    // connect to the Docker daemon socket"), which the registry check would read as a refusal.
+    let lowered = said.lowercased()
+    guard
+      ["connect to the docker daemon", "error during connect", "unable to resolve docker"]
+        .contains(where: lowered.contains)
+    else { return nil }
+    return HostDriverError.provisioning(
+      "Docker didn't answer. Start it (Docker Desktop, OrbStack or Colima), or check that the "
+        + "Docker context is one on this Mac, then try again.")
   }
 
   /// A snapshot of `base`'s disk, run as a container of its own. The base keeps running: `commit`
@@ -242,8 +281,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     let rootfs = work.appendingPathComponent("rootfs.tar")
     // Stopped only if running, and started again whatever happens, even if this derive is
     // cancelled: a cancelled `runtime` call ends its CLI, so the start runs in a task of its own.
-    // `stop` and `start` are both no-ops when already done (1.5.0, measured), so a base an
-    // earlier derive left stopped is exported and started here.
+    // A base found stopped (an earlier derive cut off mid-export) is exported as it is and left
+    // stopped: nothing needs it running, since a derive reads its disk, not its processes.
     let wasRunning =
       try AppleContainerCLI.objects(
         try await runtime(["inspect", source.container], allLines: true)
@@ -511,7 +550,13 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       for container in try AppleContainerCLI.objects(
         try await runtime(["list", "--all", "--format", "json"], allLines: true))
       {
-        if let image = AppleContainerCLI.imageReference(of: container) { inUse.insert(image) }
+        // A derive's snapshot is the exception: its container runs without it (1.5.0, measured),
+        // and one whose delete failed would otherwise hold a whole disk for the workroom's life.
+        if let image = AppleContainerCLI.imageReference(of: container),
+          !image.contains(Self.deriveDirectoryPrefix)
+        {
+          inUse.insert(image)
+        }
         let labels = AppleContainerCLI.labels(of: container)
         guard let id = AppleContainerCLI.id(of: container), ours(labels), old(labels),
           !keptContainers.contains(id)

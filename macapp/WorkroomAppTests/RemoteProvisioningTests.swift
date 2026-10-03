@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 
 @testable import Workroom
@@ -63,5 +64,179 @@ final class RemoteProvisioningTests: XCTestCase {
     XCTAssertEqual(probe.peaks[first], 1, "two operations on one base overlapped")
     XCTAssertEqual(probe.peaks[second], 1, "two operations on one base overlapped")
     XCTAssertEqual(probe.overlap, 2, "different bases did not run at once")
+  }
+}
+
+/// Which credentials a base's clone and a workroom's derive take (#309): the broker's clone token,
+/// or the Mac's own GitHub token through the relay.
+final class RemoteProvisioningCredentialsTests: XCTestCase {
+  private let repository = "o/r"
+
+  private func environment(
+    client: Bool, gitHubToken: (@Sendable () async throws -> String)?,
+    driver: any HostDriver = RefusingDriver(), revoked: Revoked = Revoked()
+  ) -> RemoteProvisioning.Environment {
+    RemoteProvisioning.Environment(
+      driver: driver, agentSocket: RemoteWorkrooms.agentSocket,
+      client: client
+        ? BrokerClient(
+          baseURL: URL(string: "https://codaset.localhost")!,
+          key: .software(P256.Signing.PrivateKey()), session: BrokerStub.session)
+        : nil,
+      gitHubToken: gitHubToken, revoke: { _ in revoked.add() })
+  }
+
+  private static let appNotInstalled = BrokerStub.Answer(
+    status: 409, body: #"{"error":"app_not_installed","message":"x"}"#)
+
+  func testTheBrokersTokenClonesAndIsRevoked() async throws {
+    BrokerStub.reset([.init(body: #"{"token":"ghs_broker","expires_at":"x"}"#)])
+    let revoked = Revoked()
+    let heard = Heard()
+    let relayed = try await RemoteProvisioning.withCloneToken(
+      repository, relayed: nil,
+      in: environment(client: true, gitHubToken: { "gho_mac" }, revoked: revoked)
+    ) { heard.set($0) }
+    XCTAssertFalse(relayed)
+    XCTAssertEqual(heard.get(), RemoteProvisioning.cloneEnvironment(token: "ghs_broker"))
+    XCTAssertEqual(revoked.count, 1)
+  }
+
+  /// The repository's owner hasn't installed the Codaset App: the Mac's own token clones, and the
+  /// base is relayed. It is the user's, so it is never revoked.
+  func testAnUninstalledAppFallsBackToTheMacsToken() async throws {
+    BrokerStub.reset([Self.appNotInstalled])
+    let revoked = Revoked()
+    let heard = Heard()
+    let relayed = try await RemoteProvisioning.withCloneToken(
+      repository, relayed: nil,
+      in: environment(client: true, gitHubToken: { "gho_mac" }, revoked: revoked)
+    ) { heard.set($0) }
+    XCTAssertTrue(relayed)
+    XCTAssertEqual(heard.get(), RemoteProvisioning.cloneEnvironment(token: "gho_mac"))
+    XCTAssertEqual(revoked.count, 0)
+  }
+
+  /// Without `gh` either, the App's install is what the user needs to hear about.
+  func testAnUninstalledAppWithoutGhIsTheRefusal() async throws {
+    BrokerStub.reset([Self.appNotInstalled])
+    do {
+      try await RemoteProvisioning.withCloneToken(
+        repository, relayed: nil,
+        in: environment(client: true, gitHubToken: { throw RemoteWorkrooms.Failure.signedOut })
+      ) { _ in XCTFail("cloned") }
+      XCTFail("expected the refusal")
+    } catch BrokerError.refused(let refusal) {
+      XCTAssertEqual(refusal.code, "app_not_installed")
+    }
+  }
+
+  /// An existing broker base doesn't fall back: its workrooms enrol.
+  func testABrokerBaseKeepsItsRefusal() async throws {
+    BrokerStub.reset([Self.appNotInstalled])
+    do {
+      try await RemoteProvisioning.withCloneToken(
+        repository, relayed: false, in: environment(client: true, gitHubToken: { "gho_mac" })
+      ) { _ in XCTFail("cloned") }
+      XCTFail("expected the refusal")
+    } catch BrokerError.refused(let refusal) {
+      XCTAssertEqual(refusal.code, "app_not_installed")
+    }
+  }
+
+  func testSignedOutOfCodasetANewBaseIsRelayed() async throws {
+    let heard = Heard()
+    let relayed = try await RemoteProvisioning.withCloneToken(
+      repository, relayed: nil, in: environment(client: false, gitHubToken: { "gho_mac" })
+    ) { heard.set($0) }
+    XCTAssertTrue(relayed)
+    XCTAssertEqual(heard.get(), RemoteProvisioning.cloneEnvironment(token: "gho_mac"))
+  }
+
+  func testSignedOutOfCodasetABrokerBaseIsSignedOut() async throws {
+    do {
+      try await RemoteProvisioning.withCloneToken(
+        repository, relayed: false, in: environment(client: false, gitHubToken: { "gho_mac" })
+      ) { _ in XCTFail("cloned") }
+      XCTFail("expected signedOut")
+    } catch RemoteWorkrooms.Failure.signedOut {}
+  }
+
+  /// A workroom of a broker base needs the broker before its base is copied, which can take many
+  /// minutes, not after.
+  func testSignedOutOfCodasetADeriveFromABrokerBaseCopiesNothing() async throws {
+    let driver = RefusingDriver()
+    do {
+      _ = try await RemoteProvisioning.derive(
+        from: .init(host: UUID(), repository: repository, cloneURL: "u", path: "/p"),
+        workroom: UUID(), branch: "b",
+        in: environment(client: false, gitHubToken: { "gho_mac" }, driver: driver))
+      XCTFail("expected signedOut")
+    } catch RemoteWorkrooms.Failure.signedOut {}
+    XCTAssertEqual(driver.derives, 0, "the base was copied first")
+  }
+
+  /// A relayed base's workroom needs the Mac's token, also before the copy.
+  func testWithoutGhADeriveFromARelayedBaseCopiesNothing() async throws {
+    let driver = RefusingDriver()
+    do {
+      _ = try await RemoteProvisioning.derive(
+        from: .init(host: UUID(), repository: repository, cloneURL: "u", path: "/p", relayed: true),
+        workroom: UUID(), branch: "b",
+        in: environment(
+          client: true, gitHubToken: { throw RemoteWorkrooms.Failure.signedOut }, driver: driver))
+      XCTFail("expected signedOut")
+    } catch RemoteWorkrooms.Failure.signedOut {}
+    XCTAssertEqual(driver.derives, 0, "the base was copied first")
+  }
+}
+
+extension RemoteProvisioningCredentialsTests {
+  /// The fallback to the Mac's token is said once, to someone signed in, when the base is made.
+  func testOnlyASignedInFirstBaseThatRelaysSaysItFellBack() {
+    let relayed = HostDescriptor(id: UUID(), credentials: "relay")
+    let broker = HostDescriptor(id: UUID())
+    XCTAssertTrue(AppStore.fellBackToGitHub(signedIn: true, hadBase: false, made: relayed))
+    XCTAssertFalse(AppStore.fellBackToGitHub(signedIn: false, hadBase: false, made: relayed))
+    XCTAssertFalse(AppStore.fellBackToGitHub(signedIn: true, hadBase: true, made: relayed))
+    XCTAssertFalse(AppStore.fellBackToGitHub(signedIn: true, hadBase: false, made: broker))
+    XCTAssertFalse(AppStore.fellBackToGitHub(signedIn: true, hadBase: false, made: nil))
+  }
+}
+
+private final class Revoked: @unchecked Sendable {
+  private let lock = NSLock()
+  private var revokes = 0
+  func add() { lock.withLock { revokes += 1 } }
+  var count: Int { lock.withLock { revokes } }
+}
+
+private final class Heard: @unchecked Sendable {
+  private let lock = NSLock()
+  private var environment: [String: String]?
+  func set(_ environment: [String: String]) { lock.withLock { self.environment = environment } }
+  func get() -> [String: String]? { lock.withLock { environment } }
+}
+
+/// Counts derives, and refuses everything.
+private final class RefusingDriver: HostDriver, @unchecked Sendable {
+  private let lock = NSLock()
+  private var derived = 0
+  var derives: Int { lock.withLock { derived } }
+  let traits = HostDriverTraits(
+    transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
+    durableDisk: false, maxLifetime: nil)
+
+  func create() async throws -> HostID { throw HostDriverError.notImplemented("create") }
+  func deriveFromBase(_ base: HostID) async throws -> HostID {
+    lock.withLock { derived += 1 }
+    throw HostDriverError.notImplemented("derive")
+  }
+  func destroy(_ host: HostID) async throws { throw HostDriverError.notImplemented("destroy") }
+  func openStream(to host: HostID) async throws -> HostStream {
+    throw HostDriverError.notImplemented("openStream")
+  }
+  func exec(_ command: String, on host: HostID) async throws -> HostStream {
+    throw HostDriverError.notImplemented("exec")
   }
 }

@@ -182,7 +182,7 @@ enum RemoteProvisioning {
   /// unless the repository's owner hasn't installed the Codaset App; the Mac's token otherwise.
   /// Returns whether it was relayed.
   @discardableResult
-  private static func withCloneToken(
+  static func withCloneToken(
     _ repository: String, relayed: Bool?, in environment: Environment,
     _ body: ([String: String]) async throws -> Void
   ) async throws -> Bool {
@@ -250,6 +250,11 @@ enum RemoteProvisioning {
     from base: Base, workroom: UUID, branch: String, in environment: Environment,
     checkpoint: @Sendable (_ host: HostID, _ grant: String?) async throws -> Void = { _, _ in }
   ) async throws -> Instance {
+    // What the workroom's git will need, checked before the copy, which can take many minutes: a
+    // relayed base the Mac's token, any other the broker.
+    let relayHeader =
+      base.relayed == true ? cloneEnvironment(token: try await relayToken(environment)) : nil
+    if relayHeader == nil, environment.client == nil { throw RemoteWorkrooms.Failure.signedOut }
     // The snapshot only: a commit taken while a refresh's fetch holds its ref locks would hand
     // every workroom derived from it those stale `.lock` files.
     let host = try await BaseLocks.shared.exclusively(on: base.host) {
@@ -264,8 +269,8 @@ enum RemoteProvisioning {
       // A relayed workroom never enrols (#309): these two git commands carry the Mac's token,
       // and later ones ask the Mac through the relay its connect installs.
       var header: [String: String] = [:]
-      if base.relayed == true {
-        header = cloneEnvironment(token: try await relayToken(environment))
+      if let relayHeader {
+        header = relayHeader
       } else {
         guard let client = environment.client else { throw RemoteWorkrooms.Failure.signedOut }
         let grantID: String
