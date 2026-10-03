@@ -60,26 +60,36 @@ final class ThemePickerInvalidationTests: XCTestCase {
       ThemeService.families.first { $0.name != "Workroom" }?.name,
       "fixture needs a second family to switch to")
 
-    FamilyRow.bodyPasses = 0
-    let started = Date()
-    ThemeService.shared.applyFamily(otherFamily)
-    settle(view, until: { FamilyRow.bodyPasses > 0 })
-    let elapsed = Date().timeIntervalSince(started)
-
-    XCTAssertGreaterThan(
-      FamilyRow.bodyPasses, 0,
-      "applyFamily must actually re-render the rows that read tokens — a gate of zero here would "
-        + "mean the settle() ceiling was hit, not that the storm disappeared")
+    // The fastest of several switches, back and forth, not one: the time is wall-clock, so a
+    // machine busy with other work stretches any single switch past the ceiling (#311). A real
+    // regression is in every switch, so the fastest still shows it.
+    var samples: [(elapsed: TimeInterval, passes: Int)] = []
+    for family in [otherFamily, "Workroom", otherFamily, "Workroom", otherFamily] {
+      FamilyRow.bodyPasses = 0
+      let started = Date()
+      ThemeService.shared.applyFamily(family)
+      // Waited for far past the ceiling, so a switch a busy machine slows still gets its rows
+      // re-rendered and is merely slow, while one that never re-renders them fails.
+      settle(view, seconds: 5, until: { FamilyRow.bodyPasses > 0 })
+      samples.append((Date().timeIntervalSince(started), FamilyRow.bodyPasses))
+      XCTAssertGreaterThan(
+        FamilyRow.bodyPasses, 0,
+        "switching to \(family) did not re-render the rows that read tokens within 5s")
+    }
+    let fastest = try XCTUnwrap(samples.min { $0.elapsed < $1.elapsed })
+    let all = samples.map { String(format: "%.3f", $0.elapsed) }.joined(separator: ", ")
     // Measured (2026-08-13, this fixture): ~8 rows rebuilt (the visible rows in a 300×420 popover),
     // ~0.07s elapsed — comfortably clear of "perceptible", let alone the multi-second WORKROOM-2B
     // App Hang threshold this test family exists to catch. 0.3s leaves real margin over that
     // measurement (some of which is `settle()`'s own 0.02s poll granularity, not row-render work)
-    // while still catching a real regression — e.g. the preview cache disappearing would put file
-    // I/O back on this path and balloon it by orders of magnitude.
+    // while still catching a row body that got expensive: 50ms more per row fails it (0.44s at
+    // best). It does not catch the preview cache going missing, whose file reads cost a few
+    // milliseconds here (measured 2026-10-03: 0.030s at best with the cache off). The cache's own
+    // tests are in ThemeServiceTests.
     XCTAssertLessThan(
-      elapsed, 0.3,
-      "re-rendering the picker's visible rows after one arrow-key apply took "
-        + "\(String(format: "%.3f", elapsed))s (\(FamilyRow.bodyPasses) row passes) — perceptible "
-        + "as a keypress stall")
+      fastest.elapsed, 0.3,
+      "re-rendering the picker's visible rows after one arrow-key apply took at best "
+        + "\(String(format: "%.3f", fastest.elapsed))s (\(fastest.passes) row passes; all: \(all)) "
+        + "— perceptible as a keypress stall")
   }
 }
