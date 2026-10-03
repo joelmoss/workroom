@@ -3523,6 +3523,8 @@ final class AppStore: ObservableObject {
     beginBusy(project.path)
     defer { endBusy(project.path) }
     do {
+      // Signed out says so before anything asks Docker (`environment` checks it again).
+      guard BrokerSession.shared.client() != nil else { throw RemoteWorkrooms.Failure.signedOut }
       // A new base is pinned to the Docker context in use now; a workroom goes where its base is.
       let context = try await RemoteHosts.shared.context(forBase: project.host)
       let (driver, environment) = try RemoteHosts.shared.environment(context: context)
