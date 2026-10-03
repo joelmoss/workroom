@@ -45,6 +45,21 @@ struct HostDescriptor: Codable, Hashable {
   /// relay instead of the broker (#309); nil for the broker.
   var credentials: String? = nil
 
+  /// What kind of host this is, for the workroom's icon in the sidebar (#309): a container on this
+  /// Mac, on Docker (naming its context when it has one) or Apple's runtime, or a remote provider by
+  /// its driver's name.
+  var kindDescription: String {
+    switch driver.flatMap(RemoteWorkrooms.Runtime.init(rawValue:)) {
+    case .docker:
+      let context = container?.context.map { " (\($0))" } ?? ""
+      return "Docker container\(context) on this Mac"
+    case .apple:
+      return "Apple container on this Mac"
+    case nil:
+      return driver.map { "Remote workroom on \($0)" } ?? "Remote workroom"
+    }
+  }
+
   /// Whether git's credentials on this host come through the Mac's relay (#309).
   var isRelayed: Bool { credentials == "relay" }
 
