@@ -483,8 +483,10 @@ impl<T: Transport> Transport for RetryInterrupted<T> {
             if last {
                 return Err(ureq::Error::Timeout(timeout.reason));
             }
-            // A retry restarts the socket's timeout, so it gets only what is left of this one:
-            // otherwise a steady stream of signals holds the read open past `TIMEOUT`.
+            // A retry restarts the socket's timeout, so it gets only what is left of this call's:
+            // otherwise a steady stream of signals holds the read open indefinitely. Over TLS,
+            // rustls calls again with the same timeout for the rest of a record, as it does
+            // without this wrapper.
             if !timeout.after.is_not_happening() {
                 match timeout.after.checked_sub(start.elapsed()) {
                     Some(left) if !left.is_zero() => next.after = left.into(),
@@ -492,8 +494,7 @@ impl<T: Transport> Transport for RetryInterrupted<T> {
                     // (`NextTimeout::not_zero`), so an answer that arrived while the process was
                     // stopped is still taken. ureq itself refuses an expired read
                     // (`Connection::maybe_await_input`), so this goes further, deliberately: an
-                    // enrolment's code is already spent. An answer split across reads still times
-                    // out on the next one.
+                    // enrolment's code is already spent.
                     _ => {
                         next.after = Duration::ZERO.into();
                         last = true;
