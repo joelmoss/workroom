@@ -259,6 +259,9 @@ pub struct TakenScreen {
 pub const SIGHUP_GRACE: Duration = Duration::from_millis(500);
 /// How often `terminate` checks, within `SIGHUP_GRACE`, whether they have.
 const SIGHUP_POLL: Duration = Duration::from_millis(10);
+/// How long `serve --stdio` waits, as it exits, for kills still in flight: well past
+/// `SIGHUP_GRACE`, and a shell stuck in the kernel is not waited out.
+pub const KILL_EXIT_WAIT: Duration = SIGHUP_GRACE.saturating_mul(4);
 
 /// Owns every live session. Cheap to clone; all clones share one map.
 #[derive(Clone, Default)]
@@ -312,6 +315,17 @@ impl SessionStore {
     pub fn kill_in_flight(&self) -> KillInFlight {
         self.kills_in_flight.fetch_add(1, Ordering::AcqRel);
         KillInFlight(Arc::clone(&self.kills_in_flight))
+    }
+
+    /// Waits until no kill is in flight, or `deadline` passes: true if none is.
+    pub fn wait_for_kills(&self, deadline: Instant) -> bool {
+        while self.is_killing() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(SIGHUP_POLL);
+        }
+        true
     }
 
     pub fn new() -> Self {
@@ -1449,6 +1463,30 @@ mod tests {
     /// A kill counted in flight is given back when its guard drops: a count that leaked would keep
     /// the agent from ever idle-exiting and every hand-off refused (#283). Counted, not flagged, so
     /// one kill ending does not clear another's.
+    /// Waiting for kills returns as soon as none is in flight, and gives up at its deadline while
+    /// one still is (#283).
+    #[test]
+    fn waiting_for_kills_ends_with_them_or_at_its_deadline() {
+        let store = SessionStore::new();
+        assert!(
+            store.wait_for_kills(Instant::now()),
+            "nothing in flight to wait for"
+        );
+        let in_flight = store.kill_in_flight();
+        let started = Instant::now();
+        assert!(!store.wait_for_kills(started + Duration::from_millis(50)));
+        assert!(
+            started.elapsed() >= Duration::from_millis(50),
+            "gave up before its deadline"
+        );
+        let releasing = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            drop(in_flight);
+        });
+        assert!(store.wait_for_kills(Instant::now() + Duration::from_secs(5)));
+        releasing.join().unwrap();
+    }
+
     #[test]
     fn a_kill_in_flight_is_given_back_when_its_guard_drops() {
         let store = SessionStore::new();

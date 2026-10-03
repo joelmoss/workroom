@@ -395,7 +395,15 @@ fn a_slow_kill_does_not_hold_up_its_connection() {
     );
     client.send(Service::Control, 3, Frame::control(FrameKind::List));
     client.envelope(Service::Control, 3, Duration::from_secs(5));
-    let listed = started.elapsed();
+    // Answered before the kill's acknowledgement, which comes only once the shell is gone: order,
+    // not a measured time, so a loaded machine slowing both cannot fail it.
+    assert!(
+        !client
+            .other
+            .iter()
+            .any(|e| e.service == Service::Control && e.stream == 2),
+        "the request behind the kill was answered only after it"
+    );
     // Still running on its own thread, and counted, so the agent cannot idle-exit or hand off
     // under it.
     assert!(sessions.is_killing(), "a kill in flight is not counted");
@@ -406,12 +414,6 @@ fn a_slow_kill_does_not_hold_up_its_connection() {
     assert!(
         killed >= Duration::from_millis(400),
         "the shell did not decline SIGHUP (killed in {killed:?})"
-    );
-    // Against the kill's own length rather than a fixed figure, so a loaded machine slowing both
-    // does not fail it: served behind the kill, the list would have waited all of it.
-    assert!(
-        listed + Duration::from_millis(300) < killed,
-        "a request behind the kill waited {listed:?} of the kill's {killed:?}"
     );
     assert!(sessions.list().is_empty(), "the session outlived its kill");
 

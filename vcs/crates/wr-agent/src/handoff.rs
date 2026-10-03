@@ -292,16 +292,20 @@ pub fn hand_off(
     // wait for it out of `FREEZE_TIMEOUT`, and give `frozen` what is left: the waits stay inside
     // `APP_TIMEOUT` (checked above) however the time is split.
     let deadline = Instant::now() + FREEZE_TIMEOUT;
-    while sessions.is_killing() {
-        if Instant::now() >= deadline {
-            return Err("a session is being ended; try again when it finishes".into());
-        }
-        std::thread::sleep(Duration::from_millis(10));
+    if !sessions.wait_for_kills(deadline) {
+        return Err("a session is being ended; try again when it finishes".into());
     }
     sessions
         .frozen(
             deadline.saturating_duration_since(Instant::now()),
-            |frozen| replace(context, binary, frozen, before_exec),
+            |frozen| {
+                // Again, now that no kill can start: one from another connection may have begun
+                // between the wait above and the freeze.
+                if sessions.is_killing() {
+                    return Err("a session is being ended; try again when it finishes".into());
+                }
+                replace(context, binary, frozen, before_exec)
+            },
         )
         .unwrap_or_else(|| {
             Err("a session is being ended or repainted; try again when it finishes".into())
