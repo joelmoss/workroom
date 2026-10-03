@@ -443,10 +443,13 @@ pub fn directory() -> io::Result<PathBuf> {
 
 /// Retries a read that a signal interrupted (#301). On Linux a read from a socket with a timeout,
 /// as `call`'s `timeout_global` gives each of its sockets, fails with EINTR when any handled signal
-/// arrives, `SA_RESTART` or not, and even with no handler after a stop and continue (signal(7));
-/// ureq 3.4.2 hands that straight back as an error. The read failed before taking anything, so it
-/// is safe to repeat. Repeating the whole request is not: the broker may already have spent an
-/// enrolment's code.
+/// arrives, `SA_RESTART` or not, and even with no handler after a stop and continue (signal(7)).
+/// ureq 3.4.2's TCP transport hands that straight back as an error, which failed an enrolment
+/// against a plain-http broker. Over TLS rustls already retries it, but with the timeout it was
+/// first given, so a steady stream of signals held the read open indefinitely; here each retry
+/// gets only the time left. Only reads are bounded: writes go through std's `write_all`, which
+/// retries without a limit. The read failed before taking anything, so it is safe to repeat.
+/// Repeating the whole request is not: the broker may already have spent an enrolment's code.
 #[derive(Debug)]
 struct RetryInterrupted<T>(T);
 
@@ -532,8 +535,8 @@ fn call(
         .timeout_global(Some(TIMEOUT))
         .build();
     // ureq's default chain less the warnings it keeps private (SOCKS without the feature, a
-    // missing TLS provider), with interrupted reads retried beneath TLS so the handshake is
-    // covered too.
+    // missing TLS provider), with interrupted reads retried beneath TLS so the handshake's reads
+    // are bounded too.
     let connector =
         ().chain(ConnectProxyConnector::default())
             .chain(RetryInterrupted(TcpConnector::default()))
