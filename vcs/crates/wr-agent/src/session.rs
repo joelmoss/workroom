@@ -1447,6 +1447,21 @@ mod tests {
         SessionId([byte; 16])
     }
 
+    /// A kill counted in flight is given back when its guard drops: a count that leaked would keep
+    /// the agent from ever idle-exiting and every hand-off refused (#283). Counted, not flagged, so
+    /// one kill ending does not clear another's.
+    #[test]
+    fn a_kill_in_flight_is_given_back_when_its_guard_drops() {
+        let store = SessionStore::new();
+        assert!(!store.is_killing());
+        let first = store.kill_in_flight();
+        let second = store.kill_in_flight();
+        drop(first);
+        assert!(store.is_killing(), "one kill ending cleared another's");
+        drop(second);
+        assert!(!store.is_killing(), "the count leaked");
+    }
+
     fn env() -> Vec<(OsString, OsString)> {
         vec![
             (OsString::from("TERM"), OsString::from("xterm-256color")),

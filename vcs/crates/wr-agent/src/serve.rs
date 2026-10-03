@@ -655,14 +655,12 @@ pub fn exit_code(status: i32) -> i32 {
     128 + signal
 }
 
-/// Kills in flight on their own threads. Consulted by `serve`'s idle-exit check, like
-/// `vcs::is_busy`: a kill's session has left the store before its shell is gone, so an empty
-/// store and no connections could otherwise end the agent between the SIGHUP and the SIGKILL.
-/// Ends `id` on a thread of its own and acknowledges it there, once the shell is gone. A shell
-/// that declines SIGHUP holds `SessionStore::kill` for `SIGHUP_GRACE` before the SIGKILL, and one
-/// stuck in the kernel holds it in `waitpid` for as long as that lasts. Run on the connection's
-/// reader, either held up every other request on the connection behind it: the app's service
-/// connection to a host carries its VCS, File and forwarding traffic as well (#283).
+/// Ends `id` on a thread of its own and acknowledges it there, once the shell is gone, counted in
+/// `SessionStore::is_killing` meanwhile. A shell that declines SIGHUP holds `SessionStore::kill`
+/// for `SIGHUP_GRACE` before the SIGKILL, and one stuck in the kernel holds it in `waitpid` for as
+/// long as that lasts. Either, run on the connection's reader, held up every other request on the
+/// connection behind it: the app's service connection to a host carries its VCS, File and
+/// forwarding traffic as well (#283).
 ///
 /// Only a live session gets a thread. An id the store does not hold costs at most the removal of a
 /// screen record, so it is ended here, and a stream of kills for ids that are not sessions cannot
