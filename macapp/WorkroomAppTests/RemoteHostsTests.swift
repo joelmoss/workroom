@@ -203,7 +203,7 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertFalse(remote.claimSweep(allowed: true))
   }
 
-  /// New Remote Workroom is off while its project is busy: a second create would build a second
+  /// A container workroom's create is off while its project is busy: a second create would build a second
   /// base.
   @MainActor
   func testARemoteCreateIsOffWhileItsProjectIsBusy() {
@@ -676,6 +676,37 @@ final class RemoteHostsTests: XCTestCase {
     } catch RemoteWorkrooms.Failure.baseOnOtherRuntime(let runtime) {
       XCTAssertEqual(runtime, "Docker")
     }
+  }
+
+  /// Why a container runtime's New Workroom entry is off, in the order a user has to fix it:
+  /// Apple's needs Apple silicon and macOS 26 before installing it means anything (#309).
+  func testARuntimeEntrySaysWhyItIsOff() {
+    let ready = { (runtime: RemoteWorkrooms.Runtime) in
+      RemoteWorkrooms.unavailability(
+        of: runtime, installed: true, appleSilicon: true, macOS26: true, signedIn: true)
+    }
+    XCTAssertNil(ready(.docker))
+    XCTAssertNil(ready(.apple))
+    XCTAssertEqual(
+      RemoteWorkrooms.unavailability(
+        of: .apple, installed: false, appleSilicon: false, macOS26: false, signedIn: false),
+      "needs Apple silicon")
+    XCTAssertEqual(
+      RemoteWorkrooms.unavailability(
+        of: .apple, installed: false, appleSilicon: true, macOS26: false, signedIn: true),
+      "needs macOS 26")
+    // Docker runs on an Intel Mac and on macOS 15.
+    XCTAssertNil(
+      RemoteWorkrooms.unavailability(
+        of: .docker, installed: true, appleSilicon: false, macOS26: false, signedIn: true))
+    XCTAssertEqual(
+      RemoteWorkrooms.unavailability(
+        of: .docker, installed: false, appleSilicon: true, macOS26: true, signedIn: true),
+      "not installed")
+    XCTAssertEqual(
+      RemoteWorkrooms.unavailability(
+        of: .docker, installed: true, appleSilicon: true, macOS26: true, signedIn: false),
+      "sign in to Codaset in Settings")
   }
 
   /// A driver takes on only a host of its own context: its commands would not reach another's.
