@@ -3513,7 +3513,7 @@ final class AppStore: ObservableObject {
       })
   }
 
-  /// Whether New Remote Workroom is on for `project`: not while another create holds it busy, since
+  /// Whether creating a container workroom is on for `project`: not while another create holds it busy, since
   /// a second create would build a second base.
   func canCreateRemoteWorkroom(in project: Project) -> Bool {
     RemoteWorkrooms.isEnabled && !isBusyProject(project.path)

@@ -35,6 +35,34 @@ enum RemoteWorkrooms {
 
   /// The descriptor's `driver` for a Docker host.
   static let containerDriver = Runtime.docker.rawValue
+
+  /// Why a workroom can't be created on `runtime` now, as the New Workroom menu shows it beside the
+  /// entry, or nil when it can (#309).
+  @MainActor
+  static func unavailability(of runtime: Runtime) -> String? {
+    var arm64: Int32 = 0
+    var size = MemoryLayout<Int32>.size
+    let appleSilicon = sysctlbyname("hw.optional.arm64", &arm64, &size, nil, 0) == 0 && arm64 == 1
+    return unavailability(
+      of: runtime, installed: RemoteHosts.executable(for: runtime) != nil,
+      appleSilicon: appleSilicon,
+      macOS26: ProcessInfo.processInfo.isOperatingSystemAtLeast(
+        OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)),
+      signedIn: BrokerSession.shared.client() != nil)
+  }
+
+  static func unavailability(
+    of runtime: Runtime, installed: Bool, appleSilicon: Bool, macOS26: Bool, signedIn: Bool
+  ) -> String? {
+    if runtime == .apple {
+      // Apple's runtime runs each container in a VM of its own, on Apple silicon and macOS 26.
+      if !appleSilicon { return "needs Apple silicon" }
+      if !macOS26 { return "needs macOS 26" }
+    }
+    if !installed { return "not installed" }
+    if !signedIn { return "sign in to Codaset in Settings" }
+    return nil
+  }
   /// The descriptor's `provisioner`: this build, whose ssh key and Docker labels its hosts carry.
   static var provisioner: String { Bundle.main.bundleIdentifier ?? "com.developwithstyle.workroom" }
   /// Fixed by the host image's entrypoint (`vcs/scripts/ssh-fixture/entrypoint.sh`).

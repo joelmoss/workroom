@@ -188,6 +188,37 @@ struct ProjectSidebar: View {
 
   // MARK: Rows
 
+  /// New Workroom on this Mac. Disabled while a create is in flight, matching the row's own "+"
+  /// button (issue #167): ungated, the menu was one right-click away from N concurrent pre-name
+  /// creates, only one of which can own the loader slot.
+  private func newLocalWorkroomButton(_ label: some View, in project: Project) -> some View {
+    Button {
+      Task { await store.createWorkroom(in: project) }
+    } label: {
+      label
+    }
+    .help("A workroom of \(project.displayName) on this Mac")
+    .disabled(store.isBusyProject(project.path))
+  }
+
+  /// New Workroom in a local container on `runtime` (#309), cloned from the project's GitHub
+  /// origin. One that can't be used now says why in its title.
+  private func newContainerWorkroomButton(
+    on runtime: RemoteWorkrooms.Runtime, in project: Project
+  ) -> some View {
+    let reason = RemoteWorkrooms.unavailability(of: runtime)
+    return Button {
+      Task { await store.createRemoteWorkroom(in: project, runtime: runtime) }
+    } label: {
+      Text(reason.map { "\(runtime.displayName) — \($0)" } ?? runtime.displayName)
+    }
+    .help(
+      reason.map { "\(runtime.displayName) can't be used: \($0)" }
+        ?? "A workroom of \(project.displayName) in a \(runtime.displayName) container on this Mac"
+    )
+    .disabled(reason != nil || !store.canCreateRemoteWorkroom(in: project))
+  }
+
   @ViewBuilder
   private func projectRow(_ project: Project) -> some View {
     let id = SidebarID.project(project.path)
@@ -251,28 +282,22 @@ struct ProjectSidebar: View {
       if inside { hovered = id } else if hovered == id { hovered = nil }
     }
     .contextMenu {
-      Button {
-        Task { await store.createWorkroom(in: project) }
-      } label: {
-        Label("New Workroom", systemImage: "plus")
-      }
-      // Disabled while a create is in flight, matching the row's own "+" button above (issue #167) —
-      // ungated, this menu item was one right-click away from N concurrent pre-name creates, only one
-      // of which can own the loader slot. Re-read here rather than reusing the `busy` above: that one
-      // is scoped to the row's own `HStack` builder.
-      .disabled(store.isBusyProject(project.path))
-      // Nightly and Dev, behind the preview setting (#253). The workroom belongs to this local
-      // project: its base machine is cloned from the project's GitHub origin.
+      // Nightly and Dev, behind the preview setting (#253, #309): New Workroom asks where, this Mac
+      // or a local container. Without the preview there is only this Mac, so no submenu.
       if RemoteWorkrooms.isEnabled {
-        Button {
-          Task { await store.createRemoteWorkroom(in: project) }
+        Menu {
+          newLocalWorkroomButton(Text("This Mac"), in: project)
+          Section("Local containers") {
+            ForEach(RemoteWorkrooms.Runtime.allCases, id: \.self) { runtime in
+              newContainerWorkroomButton(on: runtime, in: project)
+            }
+          }
         } label: {
-          Label("New Remote Workroom", systemImage: "network")
+          Label("New Workroom", systemImage: "plus")
         }
-        .help(
-          "A workroom of \(project.displayName) on a remote host, cloned from its GitHub origin"
-        )
-        .disabled(!store.canCreateRemoteWorkroom(in: project))
+        .help("Create a workroom of \(project.displayName), on this Mac or in a local container")
+      } else {
+        newLocalWorkroomButton(Label("New Workroom", systemImage: "plus"), in: project)
       }
       Divider()
       Button {
