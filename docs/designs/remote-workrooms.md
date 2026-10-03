@@ -1100,6 +1100,16 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     kills are waited for in full. Deleting a remote workroom does not ask the host to end its
     sessions: its teardown destroys the host, and them with it. A teardown that fails leaves them
     running with it.
+    **A late attach does not undo the kill (#297).** A closed pane's `ssh` attach can still be on its
+    way when the kill arrives, by seconds over a slow link, and an attach that created the session
+    then would leave a shell with no pane. So the agent refuses an id it was asked to kill a new
+    session for 60 seconds (`REFUSED_ID_WINDOW`): the attach is answered with a failure and starts
+    nothing. The refusal is recorded before the kill looks for the session, and a create checks it
+    under the session map's lock, so either the create is refused or the kill finds the session it
+    made. Refusals are not carried across a hand-off, so the program that takes over may still
+    create a session killed just before it (#310). The app counts its close kills in flight on
+    `PersistentSessionService`, not on each window's `TerminalSessions`, so a quit also waits for
+    the kill of a pane whose window has closed since.
   - *`CREATE=0` is only as good as the agent that reads it.* An agent older than the flag ignores
     it and creates the session. The version hand-off (#230) and the bootstrap (#231) keep the
     host's agent current; a host whose agent predates hand-off, which the bootstrap leaves
@@ -2837,9 +2847,10 @@ disagreement passes every test on either side alone while presenting as an empty
       running, and checks again under the freeze. The carried
       duplicates are numbered 3 or above, so none lands on the new program's stdio.
     - *What does not cross:* the size owner, which is a connection's token (the first client to
-      attach with a size takes it, as on a new session), and one row of scrollback per hand-off
-      (the re-synthesis offset above). The environment does cross: it is the first agent's, as
-      it was before.
+      attach with a size takes it, as on a new session), one row of scrollback per hand-off
+      (the re-synthesis offset above), and the ids a client asked to kill in the last 60 seconds,
+      which a new session is refused (#297, #310). The environment does cross: it is the first
+      agent's, as it was before.
     - *Gated to Nightly and Dev* (`AgentHandOff.isEnabled`). Stable waits until Nightly has run it.
     - *Trust model: the socket is the boundary. DECIDED (2026-09-25, owner).* `HandOff` makes the
       agent execute any regular file a socket client names. That crosses no user boundary, because
