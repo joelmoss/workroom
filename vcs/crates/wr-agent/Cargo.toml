@@ -30,9 +30,10 @@ notify = "8"
 # never native-tls, so the Linux build stays a static musl binary with no OpenSSL; ring compiles
 # its own C and assembly, which cargo-zigbuild handles for the musl targets. ring also signs the
 # proofs, so no separate ECDSA crate. webpki-roots bundles the CA roots, because a minimal
-# provider image may have none. `broker.rs` builds its own connector from `ureq::unversioned`
-# (#301), which semver does not cover, so a minor bump may stop that compiling.
-ureq = { version = "3", default-features = false, features = ["rustls"] }
+# provider image may have none. Held to 3.4: `broker.rs` rebuilds ureq's default connector chain
+# from `ureq::unversioned` (#301), which semver does not cover, so a minor bump must re-check that
+# chain against ureq's `DefaultConnector`.
+ureq = { version = "~3.4", default-features = false, features = ["rustls"] }
 # Parses the broker's expiry and `Date` header.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 ring = "0.17"
