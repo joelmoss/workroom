@@ -139,6 +139,11 @@ final class ProjectStore: ObservableObject {
   /// resurrect a just-deleted workroom (the create/delete reload race). Cleared when teardown ends.
   @Published var deletingWorkrooms: Set<TerminalTarget.ID> = []
 
+  /// Paths of projects with an in-flight Delete Project — the project-level counterpart of
+  /// `deletingWorkrooms` (#287). Tearing down a project's remote hosts can take minutes, and a
+  /// reload in that window would otherwise republish it with half-destroyed workrooms.
+  @Published var deletingProjects: Set<String> = []
+
   /// Whether the persisted last-session selection is still up for grabs (issue #70). The first
   /// window to launch with `restore == true` consumes it and restores the saved selection; every
   /// other window — including every ⌘N window — gets `false` and so starts blank.

@@ -656,6 +656,11 @@ final class AppStore: ObservableObject {
     get { projectStore.deletingWorkrooms }
     set { projectStore.deletingWorkrooms = newValue }
   }
+  /// Paths of projects with an in-flight Delete Project, filtered out of every reload (#287).
+  var deletingProjects: Set<String> {
+    get { projectStore.deletingProjects }
+    set { projectStore.deletingProjects = newValue }
+  }
   /// Set by the "Add Project" menu command to trigger the sidebar's file importer.
   @Published var requestAddProject = false
   /// Set by the "New Workroom" menu command (⌘N) to raise the project-picker dialog (issue #81).
@@ -3043,9 +3048,10 @@ final class AppStore: ObservableObject {
       let byName = $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
       return byName == .orderedSame ? $0.path < $1.path : byName == .orderedAscending
     }
-    // Drop workrooms with an in-flight optimistic deletion (issue #116): a `list` snapshot taken
-    // before the teardown persisted still lists them, so without this a concurrent reload would
-    // resurrect a just-deleted workroom. Cleared from `deletingWorkrooms` when the teardown ends.
+    // Drop projects (#287) and workrooms (issue #116) with an in-flight optimistic deletion: a
+    // `list` snapshot taken before the teardown persisted still lists them, so without this a
+    // concurrent reload would resurrect them. Cleared from `deletingProjects`/`deletingWorkrooms`
+    // when the teardown ends.
     let fresh = applyingDeletionTombstones(sorted)
     // Before publishing, so a remote workroom's panes find its host when they mount (#253).
     if RemoteWorkrooms.isEnabled { RemoteHosts.shared.adopt(fresh) }
@@ -3124,9 +3130,12 @@ final class AppStore: ObservableObject {
     endOrphanedSessionsOnce(in: fresh)
   }
 
-  /// Remove workrooms with an in-flight deletion from the accepted listing. The same accepted
-  /// path set filters the already-normalized routing entries before projects are published.
+  /// Remove projects and workrooms with an in-flight deletion from the accepted listing. The same
+  /// accepted path set filters the already-normalized routing entries before projects are
+  /// published.
   private func applyingDeletionTombstones(_ projects: [Project]) -> [Project] {
+    let deletingProjects = deletingProjects
+    let projects = projects.filter { !deletingProjects.contains($0.path) }
     let tombstoned = deletingWorkrooms
     guard !tombstoned.isEmpty else { return projects }
     return projects.map { project in
@@ -3325,6 +3334,12 @@ final class AppStore: ObservableObject {
   /// A parameter rather than store state, so each landing closure captures its own — nothing
   /// serializes overlapping creates, and every create's state is its own (issue #167).
   func createWorkroom(in project: Project, splitAnchor: SidebarID? = nil) async {
+    // A picker opened before Delete Project still holds the project (#287).
+    guard !deletingProjects.contains(project.path) else {
+      errorTitle = "Can't create a workroom in \(project.displayName)"
+      errorMessage = "\(project.displayName) is being deleted."
+      return
+    }
     beginBusy(project.path)
 
     let session = ScriptLogSession(
@@ -3461,6 +3476,7 @@ final class AppStore: ObservableObject {
   /// a second create would build a second base.
   func canCreateRemoteWorkroom(in project: Project) -> Bool {
     RemoteWorkrooms.isEnabled && !isBusyProject(project.path)
+      && !deletingProjects.contains(project.path)
   }
 
   /// Creates a remote workroom for `project` (#253), derived from the project's base machine
@@ -3961,6 +3977,12 @@ final class AppStore: ObservableObject {
         "A workroom is still being created in this project. Wait for it to finish, then try again."
       return
     }
+    // Another window's confirm dialog can outlive the first delete (#287).
+    guard !deletingProjects.contains(project.path) else {
+      errorTitle = "Can't delete \(project.displayName)"
+      errorMessage = "\(project.displayName) is already being deleted."
+      return
+    }
     // Every scope takes the project's remote workrooms and its base down (#253), even config-only:
     // with its record dropped, a box would be left to the next launch's sweep and its grant live.
     // What that needs is checked here, before the local cleanup below kills this project's shells
@@ -3975,6 +3997,9 @@ final class AppStore: ObservableObject {
       errorTitle = "Can't delete \(project.displayName)"
       return
     }
+    // Tombstone it so a reload while the teardown runs can't republish it (#287), the project-level
+    // twin of `deleteWorkroom`'s. Lifted once config has dropped it, or before the failure reload.
+    deletingProjects.insert(project.path)
     let targetIDs = removeProjectLocally(project)
     let stores = affectedStores
     // Clear the project's targets (root + each workroom) from every OTHER window's split + selection
@@ -4018,10 +4043,18 @@ final class AppStore: ObservableObject {
           ) { text in DispatchQueue.main.async { log?.append(text) } }
           if scope == .fromDisk {
             // CLI already ran teardowns + dropped config; move the returned dirs to the Bin.
+            // Before the reload below suspends, so nothing can re-register them in between.
             let failed = self.trashToBin(trashPaths)
             if !failed.isEmpty { self.presentTrashFailure(project, failedPaths: failed) }
           }
+          // Reload BEFORE lifting the tombstone: a read issued before config dropped the project
+          // could otherwise publish it once the tombstone is gone. This newer read supersedes it.
+          // Quiet: a failed `list` must not report a delete that succeeded as an error.
+          await self.load(warnings: "fast", surfaceErrors: false)
+          self.deletingProjects.remove(project.path)
         } catch {
+          // Before the reload, so the project (still in config) reappears.
+          self.deletingProjects.remove(project.path)
           await self.reload()
           self.presentDeleteProjectFailure(project, error: error, log: log)
         }
