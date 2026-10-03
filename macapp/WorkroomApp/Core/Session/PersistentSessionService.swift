@@ -88,6 +88,12 @@ final class PersistentSessionService {
     self.ownershipOverride = nil
     self.now = { ProcessInfo.processInfo.systemUptime }
     self.endRemote = { session, host in
+      // No container runtime on this Mac: the app's remote hosts run in it (#253), so there is no
+      // host for the session to be running on, and nothing to stop. Reported as ended, rather
+      // than as a close that left something running.
+      do { _ = try RemoteHosts.shared.driver() } catch RemoteWorkrooms.Failure.noDocker {
+        return true
+      }
       try await RemoteHosts.shared.ensureConnected(host)
       return try await HostConnectionManager.shared.endSession(session, on: host)
     }
