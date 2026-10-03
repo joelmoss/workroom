@@ -680,9 +680,7 @@ fn kill_off_the_reader(
             Frame::control(FrameKind::Acknowledged).encode(),
         )
     };
-    // In this order: a session leaves the map only once it is marked as being ended.
-    if !sessions.contains(id) && !sessions.is_ending(id) {
-        sessions.kill(id);
+    if sessions.end_if_absent(id) {
         return Some(acknowledged());
     }
     // Counted before the thread starts, so a hand-off read next on this connection already sees it.
