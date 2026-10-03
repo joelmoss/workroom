@@ -136,7 +136,7 @@ app-identity: ## Print the bundle id this checkout's Debug build gets (one per w
 remote-host-image: ## Build the `workroom-host` image a Nightly or Dev app's remote workrooms run on (Docker, #253)
 	docker build --tag workroom-host vcs/scripts/ssh-fixture
 
-remote-host-image-test: ## Build the `workroom-host` image, without its tag, and smoke-test it: sshd serves, no fixture pieces, a pushed agent starts (#288)
+remote-host-image-test: ## Build the `workroom-host` image, without its tag, and smoke-test it: sshd serves and is hardened, no fixture pieces, a pushed agent starts (#288)
 	vcs/scripts/ssh-fixture/host-image-test.sh
 
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
