@@ -282,6 +282,16 @@ pub fn refusals_path(socket: &Path) -> PathBuf {
 }
 
 const REFUSALS_MAGIC: [u8; 4] = *b"WRRF";
+/// One refusal in the file: the session's 16-byte id, then when it ends.
+const REFUSAL_LEN: usize = 16 + 8;
+
+/// The time since the epoch, for a refusal's end as another process reads it. Zero on a clock
+/// before the epoch, which can only lengthen a refusal, never shorten one.
+fn wall_now() -> Duration {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+}
 
 /// Magic, then per refusal its id and when it ends, as milliseconds since the epoch: an `Instant`
 /// means nothing to another process. Through a temporary file and a rename, so a program that
@@ -291,20 +301,20 @@ fn write_refusals(
     refused: &HashMap<SessionId, Instant>,
     now: Instant,
 ) -> std::io::Result<()> {
-    let wall = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
+    let wall = wall_now();
     let mut out = REFUSALS_MAGIC.to_vec();
     for (id, until) in refused {
         let ends = wall + until.saturating_duration_since(now);
         out.extend_from_slice(&id.0);
         out.extend_from_slice(&(ends.as_millis() as u64).to_be_bytes());
     }
+    // Created afresh, as the hand-off table is: an existing file or link at this path is never
+    // written through.
     let temporary = path.with_extension("refused-new");
+    let _ = std::fs::remove_file(&temporary);
     std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(&temporary)
         .and_then(|mut file| file.write_all(&out))?;
@@ -319,13 +329,11 @@ fn read_refusals(path: &Path) -> std::io::Result<Vec<(SessionId, Instant)>> {
     let (entries, rest) = bytes
         .strip_prefix(&REFUSALS_MAGIC)
         .ok_or_else(invalid)?
-        .as_chunks::<24>();
+        .as_chunks::<REFUSAL_LEN>();
     if !rest.is_empty() {
         return Err(invalid());
     }
-    let wall = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
+    let wall = wall_now();
     let now = Instant::now();
     Ok(entries
         .iter()
@@ -465,7 +473,7 @@ impl SessionStore {
     /// Called before the kill looks for the session, and `create_then` checks under the map's
     /// lock, so either a create sees the refusal or the kill sees the session it created.
     ///
-    /// Written to the refusals file under the map's lock, so two kills cannot write their copies
+    /// Written to the refusals file under the refusals' own lock, so two kills cannot write their copies
     /// out of order and lose one; a file this small costs a kill nothing it would notice.
     pub fn refuse(&self, id: SessionId) {
         let now = Instant::now();
@@ -1979,11 +1987,35 @@ mod tests {
         after.keep_refusals(path.clone());
         assert!(!after.is_refused(id(45)), "an ended refusal was taken up");
 
+        // A clock set back, or a program whose clock was ahead, cannot stretch a refusal past a
+        // window from now.
+        let mut ahead = REFUSALS_MAGIC.to_vec();
+        ahead.extend_from_slice(&id(46).0);
+        let hour = wall_now() + Duration::from_secs(3600);
+        ahead.extend_from_slice(&(hour.as_millis() as u64).to_be_bytes());
+        std::fs::write(&path, ahead).unwrap();
+        let clamped = SessionStore::new();
+        clamped.keep_refusals(path.clone());
+        let until = clamped.refused.lock().unwrap()[&id(46)];
+        assert!(
+            until <= Instant::now() + REFUSED_ID_WINDOW,
+            "a refusal from a clock ahead outlasts the window"
+        );
+
         std::fs::write(&path, b"WRRF and then nonsense").unwrap();
         let damaged = SessionStore::new();
         damaged.keep_refusals(path.clone());
         assert!(damaged.refused.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A refusal that cannot be written still refuses: the file only carries it further.
+    #[test]
+    fn a_refusal_that_cannot_be_kept_still_refuses() {
+        let store = SessionStore::new();
+        store.keep_refusals(std::env::temp_dir().join("wr-no-such-dir/agent.refused"));
+        store.refuse(id(47));
+        assert!(store.is_refused(id(47)));
     }
 
     /// Adopting a hand-off's session under an id already in use is refused, as creating one is.

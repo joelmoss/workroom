@@ -872,10 +872,10 @@ fn an_agent_whose_stderr_is_read_writes_no_log_file() {
 /// Asks the agent at `socket` to kill `session`, which it does not hold, and waits for the answer:
 /// the refusal is kept before it is given.
 fn kill_absent(socket: &Path, session: &str) {
-    let hex = session.replace('-', "");
-    let id: Vec<u8> = (0..16)
-        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).expect("hex"))
-        .collect();
+    let id = wr_agent::serve::parse_session_id(std::ffi::OsStr::new(session))
+        .expect("a session id")
+        .0
+        .to_vec();
     let mut stream = greeted(socket);
     let request = Frame::new(FrameKind::Kill, id);
     stream
@@ -961,7 +961,7 @@ fn a_kill_before_an_idle_exit_still_refuses_the_late_attach() {
     let mut agent = Command::new(agent_binary())
         .args(["serve", "--socket"])
         .arg(&socket)
-        .args(["--idle-timeout", "1"])
+        .args(["--idle-timeout", "2"])
         .env("SHELL", "/bin/sh")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
