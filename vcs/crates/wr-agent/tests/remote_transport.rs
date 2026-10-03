@@ -394,23 +394,34 @@ fn a_slow_kill_does_not_hold_up_its_connection() {
         Frame::new(FrameKind::Kill, id.to_vec()),
     );
     client.send(Service::Control, 3, Frame::control(FrameKind::List));
-    client.envelope(Service::Control, 3, Duration::from_secs(5));
-    // Answered before the kill's acknowledgement, which comes only once the shell is gone: order,
-    // not a measured time, so a loaded machine slowing both cannot fail it.
-    assert!(
-        !client
+    // Answered before the kill's acknowledgement, which comes only once the shell is gone. Judged
+    // by where each lands in `other`, which keeps arrival order even when one read takes in both,
+    // so a loaded machine slowing the test cannot fail it.
+    let at = |client: &Client, stream: u32| {
+        client
             .other
             .iter()
-            .any(|e| e.service == Service::Control && e.stream == 2),
+            .position(|e| e.service == Service::Control && e.stream == stream)
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while at(&client, 3).is_none() {
+        assert!(
+            client.pump(deadline),
+            "the request behind the kill was never answered"
+        );
+    }
+    assert!(
+        at(&client, 2).is_none_or(|kill| kill > at(&client, 3).unwrap()),
         "the request behind the kill was answered only after it"
     );
+    client.envelope(Service::Control, 3, Duration::from_secs(1));
     // Still running on its own thread, and counted, so the agent cannot idle-exit or hand off
     // under it.
     assert!(sessions.is_killing(), "a kill in flight is not counted");
     client.envelope(Service::Control, 2, Duration::from_secs(5));
     let killed = started.elapsed();
 
-    // The control: this kill really was the slow kind, or the comparison below proves nothing.
+    // The control: this kill really was the slow kind, or the order above proves nothing.
     assert!(
         killed >= Duration::from_millis(400),
         "the shell did not decline SIGHUP (killed in {killed:?})"

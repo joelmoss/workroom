@@ -1460,9 +1460,6 @@ mod tests {
         SessionId([byte; 16])
     }
 
-    /// A kill counted in flight is given back when its guard drops: a count that leaked would keep
-    /// the agent from ever idle-exiting and every hand-off refused (#283). Counted, not flagged, so
-    /// one kill ending does not clear another's.
     /// Waiting for kills returns as soon as none is in flight, and gives up at its deadline while
     /// one still is (#283).
     #[test]
@@ -1487,6 +1484,9 @@ mod tests {
         releasing.join().unwrap();
     }
 
+    /// A kill counted in flight is given back when its guard drops: a count that leaked would keep
+    /// the agent from ever idle-exiting and every hand-off refused (#283). Counted, not flagged, so
+    /// one kill ending does not clear another's.
     #[test]
     fn a_kill_in_flight_is_given_back_when_its_guard_drops() {
         let store = SessionStore::new();

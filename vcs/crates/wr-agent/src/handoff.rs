@@ -299,8 +299,10 @@ pub fn hand_off(
         .frozen(
             deadline.saturating_duration_since(Instant::now()),
             |frozen| {
-                // Again, now that no kill can start: one from another connection may have begun
-                // between the wait above and the freeze.
+                // Again, under the freeze, which holds off any kill not yet past its session
+                // lookup: one from another connection may have begun since the wait above. A kill
+                // already past that lookup can still count itself after this; it then waits out
+                // the exec, and its acknowledgement is lost, so the app reports it as not killed.
                 if sessions.is_killing() {
                     return Err("a session is being ended; try again when it finishes".into());
                 }
