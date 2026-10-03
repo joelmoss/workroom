@@ -1091,10 +1091,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     need be and sends the agent's `Kill` on the service connection's Control service. If the host
     cannot be reached or does not acknowledge, the session is left running and reported as not
     killed, and the app says so. It then stays registered as remote, so a second close is never
-    handed to the local helpers. A quit waits at most 5 seconds for such a kill. A host's kills go one
-    at a time, and its agent ends each on a thread of its own, so a shell that declines SIGHUP
-    holds up neither the next kill nor the host's other requests. Local kills are waited for
-    in full. Deleting a remote workroom does not ask the host to end its sessions: its teardown
+    handed to the local helpers. A quit waits at most 5 seconds for such a kill. Up to 8 of a
+    host's kills are in flight at once, and its agent ends each on a thread of its own, so a shell
+    that declines SIGHUP holds up neither the next kill nor the host's other requests. Local kills
+    are waited for in full. Deleting a remote workroom does not ask the host to end its sessions: its teardown
     destroys the host, and them with it. A teardown that fails leaves them running with it.
   - *`CREATE=0` is only as good as the agent that reads it.* An agent older than the flag ignores
     it and creates the session. The version hand-off (#230) and the bootstrap (#231) keep the

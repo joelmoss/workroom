@@ -160,9 +160,9 @@ fn run_serve_stdio() -> ExitCode {
     let result =
         wr_agent::serve::handle_connection(wr_agent::transport::StdioTransport, sessions.clone());
     // A kill still on its own thread has taken its session out of the store, so `kill_all` would
-    // not reach it, and exiting now would cut it off between its SIGHUP and its SIGKILL. Bounded a
-    // little past that half second, and a shell stuck in the kernel is not waited out.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    // not reach it, and exiting now would cut it off between its SIGHUP and its SIGKILL. Bounded
+    // well past that grace, and a shell stuck in the kernel is not waited out.
+    let deadline = std::time::Instant::now() + wr_agent::session::SIGHUP_GRACE * 4;
     while wr_agent::serve::is_killing() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }

@@ -2086,7 +2086,7 @@ final class RemotePaneCloseTests: XCTestCase {
     XCTAssertGreaterThan(asked, 0, "the reap never asked to end the local session")
   }
 
-  /// Value: protects=a quit waits for every close kill in flight, not just the first to finish; fails_when=closeKillsInFlight stops being a count (a flag, or reset by one finish); why_new=the other quit tests close a single tab; seam=none
+  /// Value: protects=a quit waits for every close kill in flight, not just the first to finish; fails_when=the close-kill counts stop being counts (a flag, or reset by one finish); why_new=the other quit tests close a single tab; seam=none
   func testAQuitWaitsForEveryCloseInFlight() async throws {
     let target = remoteTarget()
     var ended = 0
