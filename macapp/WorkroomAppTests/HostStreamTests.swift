@@ -332,6 +332,42 @@ final class HostStreamTests: XCTestCase {
     XCTAssertEqual(ended.map(\.1), [.remote(host), .remote(host)])
   }
 
+  /// A host's remote kills go one at a time (#283): closing a workroom closes every pane at once,
+  /// and that many requests together would fill the host connection's request slots and be refused
+  /// unsent. Kills on different hosts do not wait for each other.
+  @MainActor
+  func testAHostsRemoteKillsGoOneAtATime() async throws {
+    let (busy, other) = (UUID(), UUID())
+    var active: [HostID: Int] = [:]
+    var most: [HostID: Int] = [:]
+    var ended = 0
+    let service = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "none here") }, ownership: { _ in .notOwned },
+      endRemote: { _, host in
+        active[host, default: 0] += 1
+        most[host] = max(most[host] ?? 0, active[host]!)
+        try await Task.sleep(for: .milliseconds(50))
+        active[host]! -= 1
+        ended += 1
+        return true
+      })
+    let driver = ContainerHostDriver(hosts: [:], directory: FileManager.default.temporaryDirectory)
+    var sessions: [UUID] = []
+    for host in [busy, busy, busy, other] {
+      let session = UUID()
+      service.registerRemoteSession(
+        session, on: .remote(host), via: driver, workingDirectory: "/home/w")
+      sessions.append(session)
+    }
+    await withTaskGroup(of: Bool.self) { group in
+      for session in sessions { group.addTask { await service.endSession(sessionID: session) } }
+    }
+    XCTAssertEqual(ended, 4)
+    XCTAssertEqual(most[.remote(busy)], 1, "a host's kills overlapped")
+    XCTAssertEqual(most[.remote(other)], 1)
+    XCTAssertTrue(sessions.allSatisfy { !service.isRemote($0) })
+  }
+
   /// Why a carrier ended, read from its termination handler (#231 moved it off `isRunning` and
   /// `terminationStatus`): its own exit status, our SIGTERM, or still running when the wait gave up.
   func testAFailedCarrierSaysHowItEnded() async throws {

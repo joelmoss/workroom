@@ -439,7 +439,10 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       timeout: 30, service: Self.controlService)
     var frames = SessionFrameDecoder()
     frames.push(Array(reply))
-    return try frames.next()?.kind == .acknowledged
+    guard let frame = try frames.next() else {
+      throw HostConnectionError.serviceUnavailable("Incomplete kill reply.")
+    }
+    return frame.kind == .acknowledged
   }
 
   /// The port-forwarding service on this connection, or `VCSError.backendVersion` when the peer

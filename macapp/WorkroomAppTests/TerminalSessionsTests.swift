@@ -2001,10 +2001,25 @@ final class RemotePaneCloseTests: XCTestCase {
     XCTAssertEqual(asked, 1)
 
     // A delete's reap neither asks the host nor reports: the host goes next, with the session.
-    _ = s.addTab(for: target)
+    // Its registration goes too, rather than living as long as the app.
+    let reaped = s.addTab(for: target)
+    guard case .terminal(let state) = reaped.content, let session = state.sessionID else {
+      return XCTFail("a remote pane always has a session")
+    }
+    XCTAssertTrue(s.sessionService.isRemote(session))
     await s.reap(target.id)
     XCTAssertEqual(asked, 1)
     XCTAssertEqual(reported, ["remote"])
+    XCTAssertFalse(s.sessionService.isRemote(session), "the reaped pane's registration leaked")
+  }
+
+  /// Value: protects=a quit waits out every local close kill and only gives up on remote ones at its deadline; fails_when=one budget caps local kills too, or remote kills hold the quit past it; why_new=the quit tests above drive remote kills only; seam=none
+  func testAQuitWaitsForLocalKillsAndGivesUpOnlyOnRemoteOnes() {
+    XCTAssertTrue(TerminalSessions.quitKeepsWaiting(local: 1, remote: 0, pastDeadline: true))
+    XCTAssertTrue(TerminalSessions.quitKeepsWaiting(local: 1, remote: 3, pastDeadline: true))
+    XCTAssertTrue(TerminalSessions.quitKeepsWaiting(local: 0, remote: 1, pastDeadline: false))
+    XCTAssertFalse(TerminalSessions.quitKeepsWaiting(local: 0, remote: 1, pastDeadline: true))
+    XCTAssertFalse(TerminalSessions.quitKeepsWaiting(local: 0, remote: 0, pastDeadline: false))
   }
 
   func testASuccessfulRemoteCloseReportsNothing() async throws {

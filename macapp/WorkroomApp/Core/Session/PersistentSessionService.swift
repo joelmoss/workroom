@@ -386,6 +386,10 @@ final class PersistentSessionService {
 
   func isRemote(_ sessionID: UUID) -> Bool { remoteSessions[sessionID] != nil }
 
+  /// Drops a remote session's registration without asking its host anything: for a pane whose
+  /// workroom is being deleted, whose host goes with it (#283).
+  func forgetRemoteSession(_ sessionID: UUID) { remoteSessions.removeValue(forKey: sessionID) }
+
   /// The host a remote session's pane attaches to, or nil for a local session.
   func remoteHost(of sessionID: UUID) -> HostID? { remoteSessions[sessionID]?.host }
 
@@ -537,6 +541,27 @@ final class PersistentSessionService {
     return false
   }
 
+  /// Each host's last remote kill, which the next one on that host waits for (#283). One at a time
+  /// per host: closing a workroom closes every pane at once, and that many kills together would
+  /// fill the host connection's request slots and be refused before they were sent. The ceiling
+  /// is that a host's kills take as long as each other end to end; a pane's shell normally ends on
+  /// its SIGHUP within milliseconds.
+  private var remoteKillTails: [HostID: Task<Void, Never>] = [:]
+
+  private func endOnItsHostInTurn(_ sessionID: UUID, on host: HostID) async throws -> Bool {
+    let previous = remoteKillTails[host]
+    let attempt = Task { [endRemote] () -> Result<Bool, Error> in
+      await previous?.value
+      do { return .success(try await endRemote(sessionID, host)) } catch {
+        return .failure(error)
+      }
+    }
+    let tail = Task { _ = await attempt.value }
+    remoteKillTails[host] = tail
+    defer { if remoteKillTails[host] == tail { remoteKillTails.removeValue(forKey: host) } }
+    return try await attempt.value.get()
+  }
+
   @discardableResult
   func endSession(sessionID: UUID) async -> Bool {
     // Never routed to a local helper, which would be asked to kill an id it does not hold: its
@@ -547,7 +572,7 @@ final class PersistentSessionService {
       let id = sessionID.uuidString
       logger.notice("ending remote session \(id, privacy: .public)")
       let killed: Bool
-      do { killed = try await endRemote(sessionID, remote.host) } catch {
+      do { killed = try await endOnItsHostInTurn(sessionID, on: remote.host) } catch {
         logger.error(
           "remote session \(id, privacy: .public) left running on its host: \(error, privacy: .public)"
         )
