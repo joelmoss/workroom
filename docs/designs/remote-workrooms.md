@@ -1507,7 +1507,12 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     Dockerfile with `FIXTURE=0`: sshd, git and CA certificates, no agent and no fake GitHub. The
     fixture's GitHub, its `/etc/hosts` mapping, its seed repository and its baked-in agent are
     `FIXTURE=1` only, which run.sh passes. The app installs its own agent on first connect, and
-    the supervisor waits until it has. `RemoteHosts` makes the one `ContainerHostDriver`: `docker`
+    the supervisor waits until it has. `make remote-host-image-test` (#288) smoke-tests this
+    variant, which run.sh never builds: it builds the host image as that target does, boots it and
+    checks that sshd serves and that none of the fixture's pieces are there. A `FIXTURE=1` control
+    with a stub agent goes first, and every one of those checks must find its piece in it, or the
+    check has gone stale and proves nothing. CI runs it as the `workroom-host image` step of the
+    `agent-linux` job (x86_64 only). `RemoteHosts` makes the one `ContainerHostDriver`: `docker`
     from the usual install paths (a GUI app's PATH has none), the image from the hidden
     `remoteHostImage` setting, an ed25519 key it makes under
     `Application Support/Workroom/<bundle id>/remote`, and the label
