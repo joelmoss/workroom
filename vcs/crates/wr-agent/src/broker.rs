@@ -471,10 +471,20 @@ impl<T: Transport> Transport for RetryInterrupted<T> {
     }
 
     fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+        let start = std::time::Instant::now();
+        let mut next = timeout;
         loop {
-            match self.0.await_input(timeout) {
-                Err(ureq::Error::Io(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
+            match self.0.await_input(next) {
+                Err(ureq::Error::Io(e)) if e.kind() == io::ErrorKind::Interrupted => {}
                 result => return result,
+            }
+            // A retry restarts the socket's timeout, so it gets only what is left of this one:
+            // otherwise a steady stream of signals holds the read open past `TIMEOUT`.
+            if !timeout.after.is_not_happening() {
+                match timeout.after.checked_sub(start.elapsed()) {
+                    Some(left) if !left.is_zero() => next.after = left.into(),
+                    _ => return Err(ureq::Error::Timeout(timeout.reason)),
+                }
             }
         }
     }
@@ -508,7 +518,8 @@ fn call(
         .build();
     // ureq's default chain less the warnings it keeps private (SOCKS without the feature, a
     // missing TLS provider), with interrupted reads retried beneath TLS so the handshake is
-    // covered too.
+    // covered too. Without that TLS warning, a provider other than the default Rustls would send
+    // https in the clear rather than panic, so `config` must keep it.
     let connector =
         ().chain(ConnectProxyConnector::default())
             .chain(RetryInterrupted(TcpConnector::default()))
@@ -724,6 +735,57 @@ mod tests {
         let signature = URL_SAFE_NO_PAD.decode(parts[2]).unwrap();
         let input = format!("{}.{}", parts[0], parts[1]);
         assert!(verifier.verify(input.as_bytes(), &signature).is_ok());
+    }
+
+    /// Answers `Interrupted` to its first `interruptions` reads, 5ms apart, then `Ok(true)`.
+    #[derive(Debug)]
+    struct Interrupting {
+        interruptions: usize,
+        buffers: ureq::unversioned::transport::LazyBuffers,
+    }
+
+    impl Transport for Interrupting {
+        fn buffers(&mut self) -> &mut dyn Buffers {
+            &mut self.buffers
+        }
+
+        fn transmit_output(&mut self, _: usize, _: NextTimeout) -> Result<(), ureq::Error> {
+            Ok(())
+        }
+
+        fn await_input(&mut self, _: NextTimeout) -> Result<bool, ureq::Error> {
+            if self.interruptions == 0 {
+                return Ok(true);
+            }
+            self.interruptions -= 1;
+            std::thread::sleep(Duration::from_millis(5));
+            Err(io::Error::from(io::ErrorKind::Interrupted).into())
+        }
+
+        fn is_open(&mut self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn interrupted_reads_are_retried_only_until_the_timeout() {
+        let transport = |interruptions| {
+            RetryInterrupted(Interrupting {
+                interruptions,
+                buffers: ureq::unversioned::transport::LazyBuffers::new(1, 1),
+            })
+        };
+        let timeout = NextTimeout {
+            after: Duration::from_millis(100).into(),
+            reason: ureq::Timeout::RecvResponse,
+        };
+
+        assert!(matches!(transport(3).await_input(timeout), Ok(true)));
+        // 100 interruptions take 500ms, five times the timeout.
+        assert!(matches!(
+            transport(100).await_input(timeout),
+            Err(ureq::Error::Timeout(ureq::Timeout::RecvResponse))
+        ));
     }
 
     #[test]
