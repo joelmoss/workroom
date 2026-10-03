@@ -4050,7 +4050,7 @@ final class AppStore: ObservableObject {
     let remote: RemoteHosts.Deletion?
     do {
       remote = try RemoteHosts.shared.environment(
-        toDelete: remoteWorkrooms.compactMap(\.host) + bases)
+        toDelete: remoteWorkrooms.compactMap(\.host) + bases, bases: Set(bases.compactMap(\.id)))
     } catch {
       present(error)
       errorTitle = "Can't delete \(project.displayName)"

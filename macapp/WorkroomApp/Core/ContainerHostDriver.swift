@@ -52,6 +52,11 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     var context: String? = nil
     /// Which runtime's CLI `runtime` is: Docker's, or Apple's `container` (#309).
     var dialect: Dialect = .docker
+    /// CPUs and memory (`4G`) each container gets, or nil for the runtime's own default. Apple's is
+    /// 1 GB per container VM, too little for a compiler or an agent; Docker's containers share its
+    /// VM's.
+    var cpus: Int? = nil
+    var memory: String? = nil
   }
 
   /// The two container CLIs a driver can speak (#309). Apple's `container` (1.5.0) runs each
@@ -216,50 +221,75 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Apple also removes an image a container still uses, so nothing would protect one later.
   private func appleDerive(from source: Provisioned) async throws -> HostID {
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
-    let tag = "workroom-derive-\(UUID().uuidString.lowercased())"
+    let tag = Self.deriveDirectoryPrefix + UUID().uuidString.lowercased()
     let work = FileManager.default.temporaryDirectory.appendingPathComponent(tag)
     try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: work) }
 
-    let base = try AppleContainerCLI.objects(
-      try await runtime(["inspect", source.container], allLines: true))
-    guard let reference = base.first.flatMap(AppleContainerCLI.imageReference),
-      let image = try AppleContainerCLI.objects(
-        try await runtime(["image", "inspect", reference], allLines: true)
-      ).first,
-      let process = AppleContainerCLI.processConfig(ofImage: image, architecture: "arm64")
-    else {
-      throw HostDriverError.provisioning("couldn't read the base's image to derive from")
-    }
-    try AppleContainerCLI.dockerfile(process).write(
+    try AppleContainerCLI.dockerfile(try await appleProcess(of: source, provisioning)).write(
       to: work.appendingPathComponent("Dockerfile"), atomically: true, encoding: .utf8)
 
     let rootfs = work.appendingPathComponent("rootfs.tar")
-    _ = try await runtime(["stop", source.container])
+    // Stopped only if running, and started again whatever happens, even if this derive is
+    // cancelled: a cancelled `runtime` call ends its CLI, so the start runs in a task of its own.
+    // `stop` and `start` are both no-ops when already done (1.5.0, measured), so a base an
+    // earlier derive left stopped is exported and started here.
+    let wasRunning =
+      try AppleContainerCLI.objects(
+        try await runtime(["inspect", source.container], allLines: true)
+      ).first.flatMap(AppleContainerCLI.state) == "running"
+    if wasRunning { _ = try await runtime(["stop", source.container]) }
+    let exported: Error?
     do {
-      // `export` prints nothing until the whole disk is written.
-      _ = try await runtime(["export", "--output", rootfs.path, source.container], timeout: 900)
-    } catch {
-      _ = try? await runtime(["start", source.container])
-      throw error
+      // ponytail: `export` prints nothing until the whole disk is written, so this silence bound
+      // is a total one, an hour; upgrade path: export to stdout and stream it to the file.
+      _ = try await runtime(["export", "--output", rootfs.path, source.container], timeout: 3600)
+      exported = nil
+    } catch { exported = error }
+    if wasRunning {
+      try await Task { _ = try await self.runtime(["start", source.container]) }.value
     }
-    _ = try await runtime(["start", source.container])
+    if let exported { throw exported }
 
-    // Never `--quiet`: in 1.5.0 a quiet build never returns. The builder is a VM of its own (2
-    // CPUs, 2 GB), stopped again afterwards; the next derive starts it again in seconds.
-    defer { Task { _ = try? await self.runtime(["builder", "stop"]) } }
+    // Never `--quiet`: in 1.5.0 a quiet build never returns. The builder is one VM for the whole
+    // Mac, which other builds may be using, so it is left running.
     do {
       _ = try await runtime(
         ["build"] + (provisioning.labels + [Self.created()]).flatMap { ["--label", $0] }
           + ["--tag", tag, work.path], timeout: 900)
+      // The image holds the disk now; the tar is as big again.
+      try? FileManager.default.removeItem(at: rootfs)
       let host = try await run(tag, image: nil, isBase: false)
       _ = try? await runtime(["image", "delete", tag])
       return host
     } catch {
-      _ = try? await runtime(["image", "delete", "--force", tag])
+      _ = await Task { try? await self.runtime(["image", "delete", "--force", tag]) }.value
       throw error
     }
   }
+
+  /// How the image `source` was run from starts its process, for the derived image to start the
+  /// same way; the host image's own when that image is gone (Apple removes images still in use, so
+  /// a prune or a newer pinned image can take it).
+  private func appleProcess(of source: Provisioned, _ provisioning: Provisioning) async throws
+    -> AppleContainerCLI.ProcessConfig
+  {
+    let base = try AppleContainerCLI.objects(
+      try await runtime(["inspect", source.container], allLines: true))
+    for reference in [base.first.flatMap(AppleContainerCLI.imageReference), provisioning.image]
+      .compactMap({ $0 })
+    {
+      guard let text = try? await runtime(["image", "inspect", reference], allLines: true),
+        let image = try? AppleContainerCLI.objects(text).first,
+        let process = AppleContainerCLI.processConfig(ofImage: image, architecture: "arm64")
+      else { continue }
+      return process
+    }
+    throw HostDriverError.provisioning("couldn't read the base's image to derive from")
+  }
+
+  /// Where an Apple derive stages a base's exported disk, and the derived image's name.
+  static let deriveDirectoryPrefix = "workroom-derive-"
 
   /// Removes the container and the image it alone was run from. A host handed in rather than
   /// made here is not this driver's to remove.
@@ -430,6 +460,22 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       (labels[Self.createdLabel].flatMap(TimeInterval.init) ?? 0) <= cutoff
     }
     var failed: [String] = []
+    // A derive a crash cut short leaves its staged disk behind, the size of a base's whole disk. One
+    // still under way is writing to it, which keeps its newest time recent.
+    let temp = FileManager.default.temporaryDirectory
+    for name in (try? FileManager.default.contentsOfDirectory(atPath: temp.path)) ?? []
+    where name.hasPrefix(Self.deriveDirectoryPrefix) {
+      let directory = temp.appendingPathComponent(name)
+      let times =
+        ([directory]
+        + ((try? FileManager.default.contentsOfDirectory(
+          at: directory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []))
+        .compactMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]) }
+        .compactMap(\.contentModificationDate)
+      if let newest = times.max(), newest.timeIntervalSince1970 <= cutoff {
+        try? FileManager.default.removeItem(at: directory)
+      }
+    }
     let keptContainers = Set(known.map(Self.containerName))
     var inUse = kept
     do {
@@ -508,8 +554,11 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
         provisioning.dialect == .apple
         ? ["run", "--detach", "--init", "--arch", "arm64"]
         : ["run", "--pull=never", "--detach", "--init", "--restart", "unless-stopped"]
+      let resources =
+        (provisioning.cpus.map { ["--cpus", "\($0)"] } ?? [])
+        + (provisioning.memory.map { ["--memory", $0] } ?? [])
       _ = try await runtime(
-        start + ["--name", container, "--publish", "127.0.0.1:\(port):22"]
+        start + resources + ["--name", container, "--publish", "127.0.0.1:\(port):22"]
           + (provisioning.labels + [Self.created()]).flatMap { ["--label", $0] }
           + ["--env", "AUTHORIZED_KEY=\(provisioning.publicKey)", source])
       let hostKey = try await identity(of: container)

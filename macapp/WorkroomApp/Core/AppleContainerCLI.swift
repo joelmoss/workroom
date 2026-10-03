@@ -83,18 +83,24 @@ enum AppleContainerCLI {
     guard !values.contains(where: { $0.contains(where: \.isNewline) }) else {
       throw HostDriverError.invalidConfiguration("the host image's config has a newline in it")
     }
+    // A builder expands `$` in ENV, WORKDIR and USER; the image holds the values already expanded.
+    // Quotes only matter inside ENV's quoted value.
+    func literal(_ text: some StringProtocol, quoted: Bool = false) -> String {
+      let escaped = text.replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "$", with: "\\$")
+      return quoted ? escaped.replacingOccurrences(of: "\"", with: "\\\"") : escaped
+    }
     var lines = ["FROM scratch", "ADD rootfs.tar /"]
     for variable in process.env {
       guard let equals = variable.firstIndex(of: "=") else { continue }
-      let value = variable[variable.index(after: equals)...]
-        .replacingOccurrences(of: "\\", with: "\\\\")
-        .replacingOccurrences(of: "\"", with: "\\\"")
-      lines.append("ENV \(variable[..<equals])=\"\(value)\"")
+      lines.append(
+        "ENV \(variable[..<equals])=\"\(literal(variable[variable.index(after: equals)...], quoted: true))\""
+      )
     }
     if let directory = process.workingDir, !directory.isEmpty {
-      lines.append("WORKDIR \(directory)")
+      lines.append("WORKDIR \(literal(directory))")
     }
-    if let user = process.user, !user.isEmpty { lines.append("USER \(user)") }
+    if let user = process.user, !user.isEmpty { lines.append("USER \(literal(user))") }
     if let entrypoint = process.entrypoint { lines.append("ENTRYPOINT \(try json(entrypoint))") }
     if let cmd = process.cmd { lines.append("CMD \(try json(cmd))") }
     return lines.joined(separator: "\n") + "\n"

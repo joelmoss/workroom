@@ -97,6 +97,10 @@ extension Defaults.Keys {
   /// `defaults write <bundle id> remoteHostImage <image>`, e.g. `workroom-host` for the image
   /// `make remote-host-image` builds.
   static let remoteHostImage = Key<String?>("remoteHostImage", default: nil, suite: .app)
+  /// CPUs and memory (`8G`) each container workroom gets (#309), over the defaults
+  /// `RemoteHosts.resources` picks. Hidden: `defaults write <bundle id> containerCPUs -int 6`.
+  static let containerCPUs = Key<Int?>("containerCPUs", default: nil, suite: .app)
+  static let containerMemory = Key<String?>("containerMemory", default: nil, suite: .app)
   /// The Workroom credential broker (Codaset). Empty means the build's own: codaset.dev, or
   /// `https://codaset.localhost` in a Debug build, which only ever reaches this Mac
   /// (`BrokerEndpoint`). Hidden; override with `defaults write <bundle id> brokerURL <url>`.
