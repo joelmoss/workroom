@@ -175,7 +175,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh', 'vcs/scripts/ghostty-patches/**') }}
 
       # Scripts/build-agent.sh builds wr-agent per darwin arch and lipos the slices for this
       # universal build, so both targets are needed even though the app links no other Rust.
