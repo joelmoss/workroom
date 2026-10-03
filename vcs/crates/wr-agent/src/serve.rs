@@ -169,9 +169,11 @@ impl Agent {
                     // otherwise let `connections` and `sessions` both read empty while that thread is
                     // still mutating the repository. `crate::vcs::is_busy()` is the only thing that
                     // actually knows.
+                    // A kill on its own thread is the same shape: see `is_killing`.
                     let busy = self.connections.load(Ordering::SeqCst) > 0
                         || !self.sessions.is_empty()
-                        || crate::vcs::is_busy();
+                        || crate::vcs::is_busy()
+                        || is_killing();
                     if busy {
                         idle_since = None;
                     } else {
@@ -541,14 +543,20 @@ fn dispatch(
         }
         FrameKind::List => reply(list_reply(encode_descriptor_list(&sessions.list()))),
         FrameKind::Kill => {
-            let id = SessionId::from_slice(frame.payload.get(..16)?)?;
+            // Answered, not dropped: a request with no reply holds the app's request open until its
+            // timeout.
+            let Some(id) = frame.payload.get(..16).and_then(SessionId::from_slice) else {
+                return reply(Frame::new(
+                    FrameKind::Failure,
+                    b"a kill names one 16-byte session id".to_vec(),
+                ));
+            };
             crate::note!(
                 "kill of session {} requested by {}",
                 id.to_hyphenated(),
                 services.peer
             );
-            sessions.kill(id);
-            reply(Frame::control(FrameKind::Acknowledged))
+            kill_off_the_reader(sessions, id, writer, envelope.service, envelope.stream)
         }
         FrameKind::KillAll => {
             crate::note!("kill of every session requested by {}", services.peer);
@@ -645,6 +653,54 @@ pub fn exit_code(status: i32) -> i32 {
         return 0;
     }
     128 + signal
+}
+
+/// Kills in flight on their own threads. Consulted by `serve`'s idle-exit check, like
+/// `vcs::is_busy`: a kill's session has left the store before its shell is gone, so an empty
+/// store and no connections could otherwise end the agent between the SIGHUP and the SIGKILL.
+static KILLS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+pub fn is_killing() -> bool {
+    KILLS_IN_FLIGHT.load(Ordering::Acquire) > 0
+}
+
+/// Ends `id` on a thread of its own and acknowledges it there, once the shell is gone. A shell
+/// that declines SIGHUP holds `SessionStore::kill` for half a second before the SIGKILL, and one
+/// stuck in the kernel holds it in `waitpid` for as long as that lasts. Run on the connection's
+/// reader, either held up every other request on the connection behind it: the app's service
+/// connection to a host carries its VCS, File and forwarding traffic as well (#283).
+fn kill_off_the_reader(
+    sessions: &SessionStore,
+    id: SessionId,
+    writer: &SharedWriter,
+    service: Service,
+    stream: u32,
+) -> Option<Envelope> {
+    let acknowledged = move || {
+        Envelope::new(
+            service,
+            stream,
+            Frame::control(FrameKind::Acknowledged).encode(),
+        )
+    };
+    KILLS_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+    let (store, shared) = (sessions.clone(), Arc::clone(writer));
+    let spawned = std::thread::Builder::new().spawn(move || {
+        store.kill(id);
+        let bytes = acknowledged().encode();
+        if let Ok(mut writer) = shared.lock() {
+            let _ = writer.write_all(&bytes).and_then(|()| writer.flush());
+        }
+        KILLS_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+    });
+    if spawned.is_ok() {
+        return None;
+    }
+    // No thread to be had: the closure was dropped without running, so the count is ours to undo,
+    // and the kill happens here after all rather than not at all.
+    KILLS_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+    sessions.kill(id);
+    Some(acknowledged())
 }
 
 pub fn encode_descriptor_list(sessions: &[crate::session::SessionInfo]) -> Vec<u8> {

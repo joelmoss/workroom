@@ -363,6 +363,81 @@ fn a_restored_pane_is_shown_the_record_of_a_session_that_ended_with_its_host() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Ending a session whose shell declines SIGHUP takes the agent half a second and then a SIGKILL.
+/// That wait must not hold up the connection the kill arrived on: the app's service connection to
+/// a host carries its VCS, File and forwarding requests too (#283). A request sent right behind the
+/// kill is answered first, and the kill is still acknowledged once the shell is gone.
+#[test]
+fn a_slow_kill_does_not_hold_up_its_connection() {
+    let sessions = SessionStore::new();
+    let (mut client, handle) = serve_over_pipe(sessions.clone());
+    client.handshake();
+    let id = [0x47; 16];
+    client.send(Service::Terminal, 1, attach_frame(id));
+    // `exec`, so the process holding the pty is one that ignores SIGHUP: an ignored signal stays
+    // ignored across exec.
+    client.send(
+        Service::Terminal,
+        1,
+        Frame::new(
+            FrameKind::Input,
+            b"trap '' HUP; echo READY-$((1+1)); exec sleep 100\n".to_vec(),
+        ),
+    );
+    client.read_until("READY-2", Duration::from_secs(10));
+    std::thread::sleep(Duration::from_millis(300));
+
+    let started = Instant::now();
+    client.send(
+        Service::Control,
+        2,
+        Frame::new(FrameKind::Kill, id.to_vec()),
+    );
+    client.send(Service::Control, 3, Frame::control(FrameKind::List));
+    client.envelope(Service::Control, 3, Duration::from_secs(5));
+    let listed = started.elapsed();
+    client.envelope(Service::Control, 2, Duration::from_secs(5));
+    let killed = started.elapsed();
+
+    // The control: this kill really was the slow kind, or the comparison below proves nothing.
+    assert!(
+        killed >= Duration::from_millis(400),
+        "the shell did not decline SIGHUP (killed in {killed:?})"
+    );
+    assert!(
+        listed < Duration::from_millis(250),
+        "a request behind the kill waited {listed:?} for it"
+    );
+    assert!(sessions.list().is_empty(), "the session outlived its kill");
+
+    close(&client.writer);
+    let _ = handle.join();
+}
+
+/// A kill too short to name a session is refused, not dropped: a request with no reply would hold
+/// the app's request open until its timeout.
+#[test]
+fn a_kill_without_a_session_id_is_refused() {
+    let (mut client, handle) = serve_over_pipe(SessionStore::new());
+    client.handshake();
+    client.send(
+        Service::Control,
+        2,
+        Frame::new(FrameKind::Kill, vec![0x47; 4]),
+    );
+    let reply = client.envelope(Service::Control, 2, Duration::from_secs(5));
+    let mut frames = FrameDecoder::new();
+    frames.push(&reply.payload);
+    let frame = frames
+        .next_frame()
+        .expect("a frame")
+        .expect("a whole frame");
+    assert_eq!(frame.kind, FrameKind::Failure);
+
+    close(&client.writer);
+    let _ = handle.join();
+}
+
 /// The record dispatch chunks with `crate::session::READ_CHUNK`, precisely because `Frame::encode`
 /// PANICS above the protocol's frame cap rather than truncating (see the comment on that call
 /// site in `serve.rs`). A record wide enough that its repaint needs more than one 8 KiB frame must
