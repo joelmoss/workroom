@@ -1686,8 +1686,14 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     (`run.sh`) cover the Docker path; `AppleContainerIntegrationTests` run the whole lifecycle on
     the real Apple runtime, opt-in (`TEST_RUNNER_WR_APPLE_CONTAINER_TESTS=1`), since CI's macOS
     runners can't run its VMs.
-  - **Not done.** Pull progress is not shown, only a pull's failure. A development environment in
-    the container (toolchains, agent CLIs) is #308; Docker on another machine is #307.
+  - **Pull progress.** The first create in a project pulls the host image, a couple of hundred MB.
+    The pull's output is read as it arrives (`HostStream.communicate`'s `onOutput`) and turned
+    into a fraction (`ImagePullProgress`): Docker prints only each layer's state without a
+    terminal, so it is the layers done of those seen; Apple's `[step/steps] … N%` lines give its
+    step and percent. It reaches the create through a task-local (`pullProgress`), and the
+    project row's spinner fills as a circle with the percentage as its tooltip.
+  - **Not done.** A development environment in the container (toolchains, agent CLIs) is #308;
+    Docker on another machine is #307.
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits

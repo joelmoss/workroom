@@ -141,6 +141,11 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Pulls `image` unless the runtime already has it (#309). `run` itself never pulls
   /// (`--pull=never`): left to it, a missing `workroom-host` was looked for on Docker Hub as
   /// `library/workroom-host`, and failed with a registry error that said nothing about why.
+  /// Told how far a host image's pull has got, 0 to 1, for a create run inside
+  /// `$pullProgress.withValue` (#309): a task-local, so `HostDriver.create` keeps its shape and two
+  /// creates at once each hear only their own.
+  @TaskLocal static var pullProgress: (@Sendable (Double) -> Void)?
+
   private func ensureImage(_ image: String) async throws {
     let apple = provisioning?.dialect == .apple
     let inspect =
@@ -149,8 +154,13 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     do {
       // Silence-bounded, and a pull reports its progress as it goes. Apple's unpacks every
       // platform of a multi-arch image unless told which, and it runs on Apple silicon only.
+      let report = Self.pullProgress
+      let progress = PullReader()
       _ = try await runtime(
-        apple ? ["image", "pull", "--arch", "arm64", image] : ["pull", image], timeout: 900)
+        apple ? ["image", "pull", "--arch", "arm64", image] : ["pull", image], timeout: 900,
+        onOutput: report.map { report in
+          { data in if let fraction = progress.read(data) { report(fraction) } }
+        })
     } catch {
       throw HostDriverError.provisioning(
         "couldn't download the workroom host image \(image). Check your network connection, "
@@ -286,6 +296,25 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       return process
     }
     throw HostDriverError.provisioning("couldn't read the base's image to derive from")
+  }
+
+  /// A pull's output, read as it arrives from two streams at once.
+  private final class PullReader: @unchecked Sendable {
+    private let lock = NSLock()
+    private var progress = ImagePullProgress()
+    private var last: Double?
+
+    /// The fraction now, when it moved by a whole percent or more since the last one told.
+    func read(_ data: Data) -> Double? {
+      lock.withLock {
+        progress.read(String(decoding: data, as: UTF8.self))
+        guard let fraction = progress.fraction,
+          last.map({ abs(fraction - $0) >= 0.01 }) ?? true
+        else { return nil }
+        last = fraction
+        return fraction
+      }
+    }
   }
 
   /// Where an Apple derive stages a base's exported disk, and the derived image's name.
@@ -623,7 +652,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// or with `allLines` all of it. Its environment is the few variables that say which daemon to
   /// talk to, never the app's whole one.
   private func runtime(
-    _ arguments: [String], timeout: TimeInterval = 120, allLines: Bool = false
+    _ arguments: [String], timeout: TimeInterval = 120, allLines: Bool = false,
+    onOutput: (@Sendable (Data) -> Void)? = nil
   ) async throws -> String {
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
     let environment = ProcessInfo.processInfo.environment.filter {
@@ -632,7 +662,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     let (status, output) = try await HostStream.spawn(
       provisioning.runtime, Self.runtimeArguments(arguments, context: provisioning.context),
       environment: environment, handshakeTimeout: 20, purpose: .exchange
-    ).communicate(nil, timeout: timeout)
+    ).communicate(nil, timeout: timeout, onOutput: onOutput)
     let said = output.trimmingCharacters(in: .whitespacesAndNewlines)
     guard status == 0 else {
       if let context = provisioning.context, said.contains("context not found") {
