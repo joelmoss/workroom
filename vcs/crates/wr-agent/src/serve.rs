@@ -680,6 +680,8 @@ fn kill_off_the_reader(
             Frame::control(FrameKind::Acknowledged).encode(),
         )
     };
+    // First, so an attach still on its way cannot start the session after this has looked (#297).
+    sessions.refuse(id);
     if sessions.end_if_absent(id) {
         return Some(acknowledged());
     }

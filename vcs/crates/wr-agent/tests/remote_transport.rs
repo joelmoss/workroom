@@ -508,6 +508,85 @@ fn a_second_kill_waits_for_the_first() {
     let _ = handle.join();
 }
 
+/// Sends `Attach` for `id` on terminal stream `stream`, then a `List` behind it on the same
+/// connection, and says whether the attach was answered `Attached`. The connection's reader takes
+/// requests in order, so the list's answer means the attach has been dealt with.
+fn attached_after(client: &mut Client, id: [u8; 16], stream: u32) -> bool {
+    client.send(Service::Terminal, stream, attach_frame(id));
+    client.send(
+        Service::Control,
+        stream + 1,
+        Frame::control(FrameKind::List),
+    );
+    client.envelope(Service::Control, stream + 1, Duration::from_secs(10));
+    client
+        .other
+        .iter()
+        .any(|e| e.service == Service::Control && e.stream == stream)
+}
+
+/// A closed pane's attach can reach the agent after the pane's kill, over ssh by seconds. It is
+/// refused rather than starting a shell that would run on with no pane (#297).
+#[test]
+fn an_attach_behind_a_kill_does_not_start_the_session() {
+    let sessions = SessionStore::new();
+    let (mut client, handle) = serve_over_pipe(sessions.clone());
+    client.handshake();
+    let id = [0x49; 16];
+    client.send(
+        Service::Control,
+        2,
+        Frame::new(FrameKind::Kill, id.to_vec()),
+    );
+    client.envelope(Service::Control, 2, Duration::from_secs(5));
+
+    assert!(
+        !attached_after(&mut client, id, 3),
+        "the attach behind the kill was answered Attached"
+    );
+    assert!(
+        !sessions.contains(SessionId(id)),
+        "the attach behind the kill started the session"
+    );
+
+    close(&client.writer);
+    let _ = handle.join();
+}
+
+/// The same for a live session: killed, it is not started again by an attach that follows.
+#[test]
+fn a_killed_session_is_not_started_again_by_an_attach() {
+    let sessions = SessionStore::new();
+    let (mut client, handle) = serve_over_pipe(sessions.clone());
+    client.handshake();
+    let id = [0x4a; 16];
+    client.send(Service::Terminal, 1, attach_frame(id));
+    client.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Input, b"echo READY-$((1+1))\n".to_vec()),
+    );
+    client.read_until("READY-2", Duration::from_secs(10));
+    client.send(
+        Service::Control,
+        2,
+        Frame::new(FrameKind::Kill, id.to_vec()),
+    );
+    client.envelope(Service::Control, 2, Duration::from_secs(5));
+
+    assert!(
+        !attached_after(&mut client, id, 3),
+        "the attach after the kill was answered Attached"
+    );
+    assert!(
+        !sessions.contains(SessionId(id)),
+        "the attach after the kill started the session again"
+    );
+
+    close(&client.writer);
+    let _ = handle.join();
+}
+
 /// A kill too short to name a session is refused, not dropped: a request with no reply would hold
 /// the app's request open until its timeout.
 #[test]
