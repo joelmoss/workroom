@@ -431,12 +431,6 @@ struct ProjectSidebar: View {
           .foregroundStyle(.yellow)
           .help(warning.message)
       }
-      // A destroyed host already shows its HostDestroyed warning above.
-      if target.unavailability == .remote {
-        Image(systemName: "network")
-          .foregroundStyle(.secondary)
-          .help(workroom.host?.kindDescription ?? "Remote workroom")
-      }
       // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
       // command runs (issue #28), swapped for the delete button on hover — so a workroom stays
       // deletable even mid-run. The delete button is always laid out (it reveals via opacity), so it
@@ -524,11 +518,14 @@ struct ProjectSidebar: View {
         store.toggleTerminals(for: target.id)
       }
     } else {
-      // The glyph's tint carries the VCS dirty signal (orange) in place of a separate status dot.
-      Image(systemName: root ? "house" : "cube")
+      // The glyph's tint carries the VCS dirty signal (orange) in place of a separate status dot. A
+      // workroom on a host wears the network, with the host's kind as its tooltip (#309).
+      Image(systemName: root ? "house" : target.workroomGlyph)
         .font(.system(size: 10))
         .foregroundStyle(VCSStatusPresentation.iconTint(store.workroomStatuses[id] ?? .unresolved))
         .frame(width: caretWidth, height: 18, alignment: .center)
+        .help(root ? "" : target.hostKind ?? "")
+        .accessibilityLabel(root ? "Project root" : target.hostKind ?? "Workroom")
     }
   }
 
