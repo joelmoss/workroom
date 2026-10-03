@@ -65,9 +65,27 @@ final class NewWorkroomPlacesUITests: XCTestCase {
       .firstMatch
     XCTAssertTrue(progress.waitForExistence(timeout: 10), "the row shows no download progress")
     XCTAssertEqual(progress.value as? Double, 0.42)
-    progress.hover()
-    sleep(2)  // for the tooltip
     attach(app, "image-pull-progress")
+
+    // Meanwhile the project's New Workroom entries say why they are off.
+    app.otherElements["sidebar.project.UITestProject"].rightClick()
+    app.menuItems["New Workroom"].hover()
+    let busy = " — a workroom is already being created"
+    let thisMac = app.menuItems["This Mac\(busy)"]
+    XCTAssertTrue(thisMac.waitForExistence(timeout: 5), "This Mac doesn't say why it's off")
+    XCTAssertFalse(thisMac.isEnabled)
+    for runtime in ["Docker", "Apple Container"] {
+      let entry = app.menuItems.matching(
+        NSPredicate(format: "title BEGINSWITH %@", "\(runtime) — ")
+      ).firstMatch
+      XCTAssertTrue(entry.waitForExistence(timeout: 5), "\(runtime) isn't listed")
+      XCTAssertFalse(entry.isEnabled, entry.title)
+    }
+    let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+    shot.name = "new-workroom-busy"
+    shot.lifetime = .keepAlways
+    add(shot)
+    app.typeKey(.escape, modifierFlags: [])
   }
 
   private func attach(_ app: XCUIApplication, _ name: String) {

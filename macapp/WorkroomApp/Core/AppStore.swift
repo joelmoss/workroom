@@ -3525,6 +3525,14 @@ final class AppStore: ObservableObject {
   /// shows it.
   @Published var imagePulls: [String: Double] = [:]
 
+  /// Why no workroom can be created in `project` right now, as the New Workroom menu shows it beside
+  /// an entry (#309), or nil when one can: another create holds the project, or it is being deleted.
+  func createBlockedReason(in project: Project) -> String? {
+    if deletingProjects.contains(project.path) { return "the project is being deleted" }
+    if isBusyProject(project.path) { return "a workroom is already being created" }
+    return nil
+  }
+
   func canCreateRemoteWorkroom(in project: Project) -> Bool {
     RemoteWorkrooms.isEnabled && !isBusyProject(project.path)
       && !deletingProjects.contains(project.path)

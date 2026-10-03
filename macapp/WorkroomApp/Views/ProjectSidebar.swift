@@ -206,7 +206,9 @@ struct ProjectSidebar: View {
   private func newContainerWorkroomButton(
     on runtime: RemoteWorkrooms.Runtime, in project: Project
   ) -> some View {
-    let reason = RemoteWorkrooms.unavailability(of: runtime)
+    // The runtime's own reason first: it outlasts the create in flight.
+    let reason =
+      RemoteWorkrooms.unavailability(of: runtime) ?? store.createBlockedReason(in: project)
     return Button {
       Task { await store.createRemoteWorkroom(in: project, runtime: runtime) }
     } label: {
@@ -297,7 +299,9 @@ struct ProjectSidebar: View {
       // or a local container. Without the preview there is only this Mac, so no submenu.
       if RemoteWorkrooms.isEnabled {
         Menu {
-          newLocalWorkroomButton(Text("This Mac"), in: project)
+          newLocalWorkroomButton(
+            Text(store.createBlockedReason(in: project).map { "This Mac — \($0)" } ?? "This Mac"),
+            in: project)
           Section("Local containers") {
             ForEach(RemoteWorkrooms.Runtime.allCases, id: \.self) { runtime in
               newContainerWorkroomButton(on: runtime, in: project)
