@@ -16,6 +16,7 @@ Run commands from the repository root; `make` lists available targets.
 
 - `make cli-build`, `make cli-test`: build the CLI and run `go test ./...`.
 - `make cli-lint`: run golangci-lint v2 and check gofmt/goimports formatting.
+- `make actions-lint`: lint `.github/workflows` with actionlint, shellcheck included.
 - `make app-build`: build Rust dependencies, generate the Xcode project, and build Debug.
 - `make app-run`: rebuild and relaunch this checkout's Workroom Dev; stops its persisted session helpers.
 - `make app-test`: run app unit/integration tests; safe alongside other workrooms' runs.

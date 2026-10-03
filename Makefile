@@ -3,7 +3,8 @@
 #
 # App recipes run inside macapp/ and need its toolchain on PATH (xcodegen via Homebrew). The
 # Xcode build also runs project.yml phases — a non-fatal swift-format lint and embedding the Go
-# helper (macapp/Scripts/build-helper.sh). `cli-lint` needs golangci-lint installed (see AGENTS.md).
+# helper (macapp/Scripts/build-helper.sh). `cli-lint` needs golangci-lint installed (see AGENTS.md),
+# `actions-lint` actionlint (CONTRIBUTING).
 export PATH := /opt/homebrew/bin:/usr/local/bin:$(PATH)
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
@@ -11,7 +12,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
         app-run app-build app-test app-uitest app-identity app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
-        remote-host-image remote-host-image-test
+        remote-host-image remote-host-image-test actions-lint
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -38,6 +39,11 @@ cli-lint: ## Lint Go with golangci-lint (analyzers + formatters)
 
 cli-clean: ## Remove the built binary
 	rm -f workroom
+
+# --- GitHub Actions ---
+
+actions-lint: ## Lint .github/workflows with actionlint (shellcheck included)
+	actionlint
 
 # --- macOS app (macapp/) ---
 

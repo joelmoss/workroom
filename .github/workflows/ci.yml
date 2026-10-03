@@ -63,6 +63,20 @@ jobs:
           DIFF_HEAD: ${{ github.sha }}
         run: python3 scripts/ci/changes.py >> "$GITHUB_OUTPUT"
 
+  # Every workflow, shellchecked `run:` blocks included. Not behind `changes`: it takes seconds,
+  # and a workflow edit is exactly what the selector would skip. The pin moves with the Makefile's
+  # `actions-lint` (CONTRIBUTING); the download script is fetched at the same tag, not from main.
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Lint the workflows
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
+
   cli:
     needs: changes
     if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
