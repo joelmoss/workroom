@@ -254,7 +254,11 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// since it may belong to a create or derive still under way, in this app or another sharing
   /// the daemon. Returns what it could not remove.
   /// ponytail: a resource made before `createdLabel` existed has no age and counts as old.
-  func sweep(keeping known: Set<UUID>, grace: TimeInterval = 20 * 60) async -> [String] {
+  /// `images` are images other drivers' hosts were run from, kept too: a driver for another Docker
+  /// context can reach the same daemon (#309).
+  func sweep(
+    keeping known: Set<UUID>, images: Set<String> = [], grace: TimeInterval = 20 * 60
+  ) async -> [String] {
     guard let provisioning, !provisioning.labels.isEmpty else { return [] }
     let filters = provisioning.labels.flatMap { ["--filter", "label=\($0)"] }
     let cutoff = Date().timeIntervalSince1970 - grace
@@ -263,7 +267,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
 
     let keptContainers = Set(known.map(Self.containerName))
     let keptImages = Set(
-      lock.withLock { known.compactMap { provisioned[$0]?.image } }.map(Self.shortImageID))
+      (lock.withLock { known.compactMap { provisioned[$0]?.image } } + images).map(
+        Self.shortImageID))
     do {
       for line in try await runtime(
         ["ps", "-a"] + filters + ["--format", "{{.Names}}\t{{.Label \"\(Self.createdLabel)\"}}"],

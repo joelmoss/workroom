@@ -347,14 +347,15 @@ final class RemoteHosts: @unchecked Sendable {
   private let now: @Sendable () -> ContinuousClock.Instant
   /// `adopt`'s seams, nil in the app: making a context's driver, and sweeping one.
   private let makeDriver: (@Sendable (String?) throws -> ContainerHostDriver)?
-  private let sweepDriver: (@Sendable (ContainerHostDriver, Set<UUID>) async -> [String])?
+  private let sweepDriver:
+    (@Sendable (ContainerHostDriver, Set<UUID>, Set<String>) async -> [String])?
 
   init(
     connectHost: (@Sendable (HostID) async throws -> Void)? = nil,
     isConnected: (@Sendable (HostID) async -> Bool)? = nil,
     now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
     makeDriver: (@Sendable (String?) throws -> ContainerHostDriver)? = nil,
-    sweepDriver: (@Sendable (ContainerHostDriver, Set<UUID>) async -> [String])? = nil
+    sweepDriver: (@Sendable (ContainerHostDriver, Set<UUID>, Set<String>) async -> [String])? = nil
   ) {
     self.connectHost = connectHost
     self.isConnected = isConnected
@@ -451,11 +452,16 @@ final class RemoteHosts: @unchecked Sendable {
     // (the nil driver's current context and that context by name), and a sweep that kept only its
     // own hosts would remove the other's, labelled as this build's and old enough.
     let known = Set(recorded.compactMap(\.id))
-    let sweep = sweepDriver ?? { await $0.sweep(keeping: $1) }
+    let images = Set(recorded.compactMap { $0.container?.image })
+    let sweep = sweepDriver ?? { await $0.sweep(keeping: $1, images: $2) }
+    // At once: a context whose daemon is slow to answer holds up no other context's sweep.
     Task.detached(priority: .utility) {
-      for driver in drivers {
-        for failure in await sweep(driver, known) {
-          Self.logger.error("remote host sweep: \(failure, privacy: .public)")
+      await withTaskGroup(of: [String].self) { group in
+        for driver in drivers { group.addTask { await sweep(driver, known, images) } }
+        for await failures in group {
+          for failure in failures {
+            Self.logger.error("remote host sweep: \(failure, privacy: .public)")
+          }
         }
       }
     }

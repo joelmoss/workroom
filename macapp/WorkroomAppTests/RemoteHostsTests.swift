@@ -322,6 +322,11 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertNil(decoded.context)
     XCTAssertEqual(decoded, Self.record(context: nil))
 
+    // Written back with no `context` key at all, so an old record's bytes don't change.
+    let written = try JSONSerialization.jsonObject(
+      with: try JSONEncoder().encode(Self.record(context: nil)))
+    XCTAssertNil((written as? [String: Any])?["context"])
+
     let pinned = Self.record(context: "orbstack")
     XCTAssertEqual(
       try JSONDecoder().decode(
@@ -378,7 +383,7 @@ final class RemoteHostsTests: XCTestCase {
     let swept = Swept()
     let remote = RemoteHosts(
       makeDriver: { Self.driver(runtime: runtime, context: $0) },
-      sweepDriver: { driver, known in
+      sweepDriver: { driver, known, _ in
         swept.add(driver.provisioning?.context, known)
         return []
       })
@@ -411,6 +416,25 @@ final class RemoteHostsTests: XCTestCase {
     var calls: [(context: String?, known: Set<UUID>)] { lock.withLock { made } }
     func add(_ context: String?, _ known: Set<UUID>) {
       lock.withLock { made.append((context, known)) }
+    }
+  }
+
+  /// A sweep keeps an image another context's host was run from: both contexts can name one daemon,
+  /// where that image is labelled as this build's and old enough to go.
+  func testASweepKeepsImagesOtherContextsHostsRunFrom() async throws {
+    let image = "sha256:" + String(repeating: "b", count: 64)
+    for kept in [true, false] {
+      let (runtime, log) = try stubRuntime()
+      let script = try String(contentsOf: runtime, encoding: .utf8)
+      try
+        (script + """
+
+          case "$1 $2" in "images -aq") echo \(image.dropFirst(7).prefix(12)) ;; "image inspect") echo 0 ;; esac
+          """).write(to: runtime, atomically: true, encoding: .utf8)
+      _ = await Self.driver(runtime: runtime, context: nil).sweep(
+        keeping: [], images: kept ? [image] : [])
+      let removed = try String(contentsOf: log, encoding: .utf8).contains("rmi ")
+      XCTAssertEqual(removed, !kept, kept ? "a recorded image was removed" : "the control kept it")
     }
   }
 
