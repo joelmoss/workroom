@@ -631,7 +631,7 @@ final class RemoteHostsTests: XCTestCase {
     for context in [nil, "orbstack"] as [String?] {
       let (runtime, log) = try stubRuntime()
       _ = await Self.driver(runtime: runtime, context: context).sweep(keeping: [])
-      let calls = try String(contentsOf: log, encoding: .utf8).split(separator: "\n")
+      let calls = try self.calls(log)
       let prefix = context.map { "--context \($0) " } ?? ""
       XCTAssertEqual(
         calls,
