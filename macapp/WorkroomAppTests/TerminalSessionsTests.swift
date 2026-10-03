@@ -1993,7 +1993,7 @@ final class RemotePaneCloseTests: XCTestCase {
       throw RepositoryRoutingError.unavailable(host)
     }
     var reported: [String] = []
-    s.onRemoteCloseFailed = { reported.append($0) }
+    s.onRemoteCloseFailed = { reported.append($1) }
     let tab = s.addTab(for: target)
     s.closeTab(tab.id, for: target)
     await s.awaitPendingCloseKills(until: .now + .seconds(5))
@@ -2011,7 +2011,7 @@ final class RemotePaneCloseTests: XCTestCase {
     let target = remoteTarget()
     let s = makeSessions { _, _ in true }
     var reported: [String] = []
-    s.onRemoteCloseFailed = { reported.append($0) }
+    s.onRemoteCloseFailed = { reported.append($1) }
     let tab = s.addTab(for: target)
     s.closeTab(tab.id, for: target)
     await s.awaitPendingCloseKills(until: .now + .seconds(5))
@@ -2026,7 +2026,7 @@ final class RemotePaneCloseTests: XCTestCase {
     s.sessionService = PersistentSessionService(
       probe: { _ in .ready(version: "test") }, ownership: { _ in .unreachable })
     var reported: [String] = []
-    s.onRemoteCloseFailed = { reported.append($0) }
+    s.onRemoteCloseFailed = { reported.append($1) }
     let tab = s.addTab(for: target, sessionID: UUID())
     guard case .terminal(let state) = tab.content else { return XCTFail("not a terminal") }
     XCTAssertNotNil(state.sessionID, "the pane has a session to fail to kill")
