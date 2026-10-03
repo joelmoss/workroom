@@ -868,3 +868,124 @@ fn an_agent_whose_stderr_is_read_writes_no_log_file() {
     );
     assert!(!socket.with_extension("log").exists());
 }
+
+/// Asks the agent at `socket` to kill `session`, which it does not hold, and waits for the answer:
+/// the refusal is kept before it is given.
+fn kill_absent(socket: &Path, session: &str) {
+    let hex = session.replace('-', "");
+    let id: Vec<u8> = (0..16)
+        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).expect("hex"))
+        .collect();
+    let mut stream = greeted(socket);
+    let request = Frame::new(FrameKind::Kill, id);
+    stream
+        .write_all(&Envelope::new(Service::Control, 2, request.encode()).encode())
+        .expect("kill");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    let mut decoder = wr_agent::protocol::envelope::EnvelopeDecoder::new();
+    let mut buffer = [0u8; 4096];
+    loop {
+        if let Some(envelope) = decoder.next_envelope().expect("envelope") {
+            if envelope.service == Service::Control && envelope.stream == 2 {
+                let mut frames = wr_agent::protocol::frame::FrameDecoder::new();
+                frames.push(&envelope.payload);
+                let frame = frames.next_frame().expect("frame").expect("whole frame");
+                assert_eq!(
+                    frame.kind,
+                    FrameKind::Acknowledged,
+                    "the kill was not answered"
+                );
+                return;
+            }
+            continue;
+        }
+        let read = stream.read(&mut buffer).expect("the kill's answer");
+        assert!(read > 0, "the agent closed before answering the kill");
+        decoder.push(&buffer[..read]);
+    }
+}
+
+/// What an attach that creates its session says when the agent refuses it.
+fn refused_attach(socket: &Path, session: &str) -> String {
+    let mut client = attach(socket, session);
+    assert!(
+        wait_for(Duration::from_secs(10), || matches!(
+            client.try_wait(),
+            Ok(Some(_))
+        )),
+        "the attach was not refused: it is still running"
+    );
+    let status = client.try_wait().expect("wait").expect("status");
+    let mut stderr = String::new();
+    let _ = client
+        .stderr
+        .take()
+        .expect("stderr")
+        .read_to_string(&mut stderr);
+    assert!(!status.success(), "the attach succeeded; stderr {stderr:?}");
+    stderr
+}
+
+/// A pane's kill handled by one program refuses its late attach in the program handed to (#310):
+/// otherwise that attach would start a shell nobody can see.
+#[test]
+fn a_kill_before_a_hand_off_still_refuses_the_late_attach() {
+    let workspace = Workspace::new("refused-handoff");
+    let socket = workspace.socket();
+    let _agent = start_agent(&socket);
+    let session = "4c4c4c4c-0000-4000-8000-000000000031";
+    kill_absent(&socket, session);
+
+    let output = hand_off(&socket, &agent_binary(), true);
+    assert!(
+        output.status.success(),
+        "hand-off failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = refused_attach(&socket, session);
+    assert!(
+        stderr.contains("was ended and is not started again"),
+        "refused for another reason: {stderr:?}"
+    );
+    assert!(!list_sessions(&socket).contains(session));
+}
+
+/// The same when the program that took the kill idled out and the attach starts a new one.
+#[test]
+fn a_kill_before_an_idle_exit_still_refuses_the_late_attach() {
+    let workspace = Workspace::new("refused-idle");
+    let socket = workspace.socket();
+    let mut agent = Command::new(agent_binary())
+        .args(["serve", "--socket"])
+        .arg(&socket)
+        .args(["--idle-timeout", "1"])
+        .env("SHELL", "/bin/sh")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn agent");
+    assert!(
+        wait_for(Duration::from_secs(5), || socket.exists()),
+        "agent never bound its socket"
+    );
+    let session = "4c4c4c4c-0000-4000-8000-000000000032";
+    kill_absent(&socket, session);
+    assert!(
+        wait_for(Duration::from_secs(10), || matches!(
+            agent.try_wait(),
+            Ok(Some(_))
+        )),
+        "the agent did not idle out"
+    );
+
+    let stderr = refused_attach(&socket, session);
+    assert!(
+        stderr.contains("was ended and is not started again"),
+        "refused for another reason: {stderr:?}"
+    );
+    assert!(!list_sessions(&socket).contains(session));
+}
