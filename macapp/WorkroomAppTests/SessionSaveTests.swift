@@ -62,6 +62,19 @@ final class SessionSaveTests: XCTestCase {
     }
   }
 
+  /// Spin until `condition` holds. A write lands on the store's own queue, so waiting for an
+  /// expected write with a fixed `pump` flakes when a parallel test run loads the machine.
+  private func pump(
+    until condition: () -> Bool, timeout: TimeInterval = 5,
+    file: StaticString = #filePath, line: UInt = #line
+  ) {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() {
+      guard Date() < deadline else { return XCTFail("timed out waiting", file: file, line: line) }
+      RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+    }
+  }
+
   // MARK: Coalescing
 
   func testDebouncedWriteLands() {
@@ -69,7 +82,7 @@ final class SessionSaveTests: XCTestCase {
     coordinator.markDirty()
     XCTAssertNil(readWindows(), "nothing is written before the debounce elapses")
 
-    pump(0.3)
+    pump(until: { readWindows()?.count == 1 })
     XCTAssertEqual(readWindows()?.count, 1)
   }
 
@@ -98,7 +111,7 @@ final class SessionSaveTests: XCTestCase {
     let coordinator = makeCoordinator()
     coordinator.writeIfChanged()
     // `write` hands off to the store's serial queue — only the quit path writes synchronously.
-    pump(0.2)
+    pump(until: { FileManager.default.fileExists(atPath: url.path) })
     let firstWrite = try XCTUnwrap(try? Data(contentsOf: url))
 
     // A later capture that is byte-identical must not touch the file — checked via the timestamp,
@@ -118,12 +131,12 @@ final class SessionSaveTests: XCTestCase {
   func testChangedSessionIsWritten() {
     let coordinator = makeCoordinator()
     coordinator.writeIfChanged()
-    pump(0.2)
+    pump(until: { readWindows()?.first?.targets.first?.tabs.count == 1 })
     XCTAssertEqual(readWindows()?.first?.targets.first?.tabs.count, 1)
 
     captured = [window(tabCount: 3)]
     coordinator.writeIfChanged()
-    pump(0.2)
+    pump(until: { readWindows()?.first?.targets.first?.tabs.count == 3 })
     XCTAssertEqual(readWindows()?.first?.targets.first?.tabs.count, 3)
   }
 
@@ -141,12 +154,12 @@ final class SessionSaveTests: XCTestCase {
       debounce: 0.05, ceiling: 0.2, capture: { [weak self] in self?.captured ?? [] })
 
     coordinator.writeIfChanged()
-    pump(0.3)
+    pump(until: { coordinator.lastWrittenWindows == nil })
     XCTAssertNil(coordinator.lastWrittenWindows, "a failed write must be retried, not latched")
 
     // The same unchanged state must therefore still attempt a write rather than be dropped.
     coordinator.writeIfChanged()
-    pump(0.3)
+    pump(until: { coordinator.lastWrittenWindows == nil })
     XCTAssertNil(coordinator.lastWrittenWindows)
   }
 
@@ -193,7 +206,7 @@ final class SessionSaveTests: XCTestCase {
     XCTAssertNil(readWindows(), "still suspended by the outer claim")
 
     coordinator.resumeSaves()
-    pump(0.3)
+    pump(until: { readWindows() != nil })
     XCTAssertNotNil(readWindows())
   }
 
@@ -238,12 +251,12 @@ final class SessionSaveTests: XCTestCase {
   func testCoordinatorThatWasNeverFlushedKeepsSaving() {
     let coordinator = makeCoordinator()
     coordinator.writeIfChanged()
-    pump(0.2)
+    pump(until: { readWindows()?.first?.targets.first?.tabs.count == 1 })
     XCTAssertEqual(readWindows()?.first?.targets.first?.tabs.count, 1)
 
     captured = [window(tabCount: 4)]
     coordinator.markDirty()
-    pump(0.3)
+    pump(until: { readWindows()?.first?.targets.first?.tabs.count == 4 })
     XCTAssertEqual(readWindows()?.first?.targets.first?.tabs.count, 4)
   }
 
