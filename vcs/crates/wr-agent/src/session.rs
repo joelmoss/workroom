@@ -228,6 +228,10 @@ pub enum SessionError {
     AlreadyExists(String),
     #[error("no session {0}")]
     NotFound(String),
+    /// A client asked for this id to be killed a moment ago, so it is not started again: see
+    /// `SessionStore::refuse`.
+    #[error("session {0} was ended and is not started again")]
+    Ended(String),
     #[error(transparent)]
     Pty(#[from] PtyError),
     /// The client could not take its repaint whole, so it was not attached at all.
@@ -262,6 +266,11 @@ const SIGHUP_POLL: Duration = Duration::from_millis(10);
 /// How long `serve --stdio` waits, as it exits, for kills still in flight: well past
 /// `SIGHUP_GRACE`, and a shell stuck in the kernel is not waited out.
 pub const KILL_EXIT_WAIT: Duration = SIGHUP_GRACE.saturating_mul(4);
+/// How long an id a client asked to kill is refused a new session (`SessionStore::refuse`): long
+/// enough for an attach that set out before the kill to arrive behind it. Over ssh that is a
+/// connect bounded at 10s (`ContainerHostDriver`'s `ConnectTimeout`), authentication and the
+/// agent's start, so a minute has room to spare.
+pub const REFUSED_ID_WINDOW: Duration = Duration::from_secs(60);
 
 /// Owns every live session. Cheap to clone; all clones share one map.
 #[derive(Clone, Default)]
@@ -278,6 +287,9 @@ pub struct SessionStore {
     /// so a session created again under an id still being ended, and killed, is not unmarked when
     /// the first kill finishes.
     ending: Arc<(Mutex<HashMap<SessionId, usize>>, Condvar)>,
+    /// Ids a client asked to kill, and when, which `create_then` refuses for `REFUSED_ID_WINDOW`
+    /// (#297). Only ever locked alone or inside the session map's lock, never the other way round.
+    refused: Arc<Mutex<HashMap<SessionId, Instant>>>,
 }
 
 /// Sessions marked as being ended in `SessionStore::ending` until dropped, panics included.
@@ -376,6 +388,26 @@ impl SessionStore {
         true
     }
 
+    /// Refuses `id` a new session for `REFUSED_ID_WINDOW`. A closed pane's attach can still be on
+    /// its way when its kill arrives, and created after it the shell would run on with no pane.
+    ///
+    /// Called before the kill looks for the session, and `create_then` checks under the map's
+    /// lock, so either a create sees the refusal or the kill sees the session it created.
+    pub fn refuse(&self, id: SessionId) {
+        let now = Instant::now();
+        let mut refused = self.refused.lock().unwrap_or_else(|e| e.into_inner());
+        refused.retain(|_, at| now.duration_since(*at) < REFUSED_ID_WINDOW);
+        refused.insert(id, now);
+    }
+
+    fn is_refused(&self, id: SessionId) -> bool {
+        self.refused
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .is_some_and(|at| at.elapsed() < REFUSED_ID_WINDOW)
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -402,6 +434,9 @@ impl SessionStore {
         let mut sessions = self.sessions.lock().expect("session store poisoned");
         if sessions.contains_key(&spec.id) {
             return Err(SessionError::AlreadyExists(spec.id.to_hyphenated()));
+        }
+        if self.is_refused(spec.id) {
+            return Err(SessionError::Ended(spec.id.to_hyphenated()));
         }
         // Resolve the size ONCE, here, and hand the same numbers to both the pty and the shadow.
         //
@@ -1789,6 +1824,27 @@ mod tests {
             store.create(spec(id(2), &args, &e)),
             Err(SessionError::AlreadyExists(_))
         ));
+        store.kill_all();
+    }
+
+    /// A refused id is not created again until the window has passed, and other ids are not held
+    /// up by it.
+    #[test]
+    fn a_refused_id_is_not_created_until_its_window_passes() {
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 2")];
+        let e = env();
+        store.refuse(id(40));
+        assert!(matches!(
+            store.create(spec(id(40), &args, &e)),
+            Err(SessionError::Ended(_))
+        ));
+        store.create(spec(id(41), &args, &e)).expect("another id");
+        let past = Instant::now() - REFUSED_ID_WINDOW;
+        store.refused.lock().unwrap().insert(id(40), past);
+        store
+            .create(spec(id(40), &args, &e))
+            .expect("after the window");
         store.kill_all();
     }
 
