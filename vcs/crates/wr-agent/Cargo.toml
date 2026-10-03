@@ -41,8 +41,9 @@ wr-vcs-git = { path = "../wr-vcs-git" }
 wr-vcs-model = { path = "../wr-vcs-model" }
 
 [dev-dependencies]
-# The raw-mode test reads the pty's line discipline directly. `libc` is already a runtime
-# dependency, so this adds nothing to the graph — it only makes it visible to `tests/`.
+# The raw-mode test reads the pty's line discipline directly, and the broker's signal test calls
+# sigaction and pthread_kill. `libc` is already a runtime dependency, so this adds nothing to the
+# graph — it only makes it visible to `tests/`.
 libc = "0.2"
 
 [features]

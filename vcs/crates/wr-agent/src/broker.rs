@@ -737,10 +737,12 @@ mod tests {
         assert!(verifier.verify(input.as_bytes(), &signature).is_ok());
     }
 
-    /// Answers `Interrupted` to its first `interruptions` reads, 5ms apart, then `Ok(true)`.
+    /// Answers `Interrupted` to its first `interruptions` reads, 5ms apart, then `Ok(true)`, and
+    /// records the timeout each read was given.
     #[derive(Debug)]
     struct Interrupting {
         interruptions: usize,
+        timeouts: Vec<Duration>,
         buffers: ureq::unversioned::transport::LazyBuffers,
     }
 
@@ -753,7 +755,8 @@ mod tests {
             Ok(())
         }
 
-        fn await_input(&mut self, _: NextTimeout) -> Result<bool, ureq::Error> {
+        fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+            self.timeouts.push(*timeout.after);
             if self.interruptions == 0 {
                 return Ok(true);
             }
@@ -772,18 +775,26 @@ mod tests {
         let transport = |interruptions| {
             RetryInterrupted(Interrupting {
                 interruptions,
+                timeouts: Vec::new(),
                 buffers: ureq::unversioned::transport::LazyBuffers::new(1, 1),
             })
         };
-        let timeout = NextTimeout {
-            after: Duration::from_millis(100).into(),
+        let timeout = |millis| NextTimeout {
+            after: Duration::from_millis(millis).into(),
             reason: ureq::Timeout::RecvResponse,
         };
 
-        assert!(matches!(transport(3).await_input(timeout), Ok(true)));
+        // Each retry is given only what is left, so the socket never waits past the deadline.
+        let mut retried = transport(3);
+        assert!(matches!(retried.await_input(timeout(5000)), Ok(true)));
+        let given = &retried.0.timeouts;
+        assert_eq!(given.len(), 4);
+        assert_eq!(given[0], Duration::from_millis(5000));
+        assert!(given.windows(2).all(|pair| pair[1] < pair[0]), "{given:?}");
+
         // 100 interruptions take 500ms, five times the timeout.
         assert!(matches!(
-            transport(100).await_input(timeout),
+            transport(100).await_input(timeout(100)),
             Err(ureq::Error::Timeout(ureq::Timeout::RecvResponse))
         ));
     }
