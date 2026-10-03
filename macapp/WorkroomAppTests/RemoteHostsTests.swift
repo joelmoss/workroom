@@ -335,14 +335,16 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(RemoteWorkrooms.hostImage(override: nil, pinned: nil), "workroom-host")
   }
 
-  private static func driver(runtime: URL, context: String?) -> ContainerHostDriver {
+  private static func driver(
+    runtime: URL, context: String?, dialect: ContainerHostDriver.Dialect = .docker
+  ) -> ContainerHostDriver {
     ContainerHostDriver(
       hosts: [:], directory: FileManager.default.temporaryDirectory,
       provisioning: ContainerHostDriver.Provisioning(
         runtime: runtime, image: "workroom-host", user: RemoteWorkrooms.user,
         identityFile: "/dev/null", publicKey: "ssh-ed25519 AAAA",
         agentSocket: RemoteWorkrooms.agentSocket, labels: ["workroom.provisioner=test"],
-        context: context))
+        context: context, dialect: dialect))
   }
 
   private static func record(context: String?) -> ContainerHostDriver.Record {
@@ -394,7 +396,7 @@ final class RemoteHostsTests: XCTestCase {
   func testANewWorkroomGoesInItsBasesContextOrTheCurrentOne() async throws {
     for (current, expected) in [("orbstack", "orbstack"), ("default", nil)] as [(String, String?)] {
       let (runtime, log) = try stubRuntime(output: current + "\n")
-      let remote = RemoteHosts(makeDriver: { Self.driver(runtime: runtime, context: $0) })
+      let remote = RemoteHosts(makeDriver: { Self.driver(runtime: runtime, context: $0.context) })
       let context = try await remote.context(forBase: nil)
       XCTAssertEqual(context, expected, current)
       XCTAssertEqual(try String(contentsOf: log, encoding: .utf8), "context show\n")
@@ -420,7 +422,7 @@ final class RemoteHostsTests: XCTestCase {
     let (runtime, _) = try stubRuntime()
     let swept = Swept()
     let remote = RemoteHosts(
-      makeDriver: { Self.driver(runtime: runtime, context: $0) },
+      makeDriver: { Self.driver(runtime: runtime, context: $0.context) },
       sweepDriver: { driver, known, _ in
         swept.add(driver.provisioning?.context, known)
         return []
@@ -473,6 +475,206 @@ final class RemoteHostsTests: XCTestCase {
         keeping: [], images: kept ? [image] : [])
       let removed = try String(contentsOf: log, encoding: .utf8).contains("rmi ")
       XCTAssertEqual(removed, !kept, kept ? "a recorded image was removed" : "the control kept it")
+    }
+  }
+
+  // MARK: Apple's container runtime (#309)
+
+  /// A stand-in CLI that answers each command by the shell `cases` given (a `case "$*" in` body),
+  /// and logs every call.
+  private func scriptedRuntime(_ cases: String) throws -> (runtime: URL, log: URL) {
+    let (runtime, log) = try stubRuntime()
+    let script = try String(contentsOf: runtime, encoding: .utf8)
+    try (script + "\ncase \"$*\" in\n\(cases)\nesac\n").write(
+      to: runtime, atomically: true, encoding: .utf8)
+    return (runtime, log)
+  }
+
+  private func calls(_ log: URL) throws -> [String] {
+    try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map(String.init)
+  }
+
+  /// Apple's runtime has no `--restart` or `--pull`, and pulls every platform of an image unless
+  /// told its architecture: a missing image is pulled for arm64, and run with neither flag.
+  func testAppleRunsAndPullsInItsOwnDialect() async throws {
+    let (runtime, log) = try scriptedRuntime(
+      """
+      "image inspect workroom-host") exit 1 ;;
+      run*) exit 1 ;;
+      """)
+    do {
+      _ = try await Self.driver(runtime: runtime, context: nil, dialect: .apple).create()
+      XCTFail("run was meant to fail")
+    } catch {}
+    let made = try calls(log)
+    XCTAssertEqual(
+      Array(made.prefix(2)),
+      ["image inspect workroom-host", "image pull --arch arm64 workroom-host"])
+    let run = try XCTUnwrap(made.first { $0.hasPrefix("run ") })
+    XCTAssertTrue(run.hasPrefix("run --detach --init --arch arm64 --name workroom-"), run)
+    XCTAssertFalse(run.contains("--restart") || run.contains("--pull"), run)
+    XCTAssertTrue(made.contains { $0.hasPrefix("delete --force workroom-") }, "\(made)")
+  }
+
+  /// Apple's sweep: containers and images labelled as this build's and old enough go, unless a
+  /// recorded host is theirs; an image any container was run from stays, since Apple removes an
+  /// image that is in use where Docker refuses.
+  func testAppleSweepsByJSONAndKeepsImagesInUse() async throws {
+    let (kept, swept) = (UUID(), UUID())
+    func container(_ id: String, labels: [String: String], image: String) -> [String: Any] {
+      [
+        "id": id, "status": ["state": "running"],
+        "configuration": ["labels": labels, "image": ["reference": image]],
+      ]
+    }
+    func image(_ name: String, labels: [String: String]) -> [String: Any] {
+      [
+        "configuration": ["name": name],
+        "variants": [
+          ["platform": ["architecture": "arm64"], "config": ["config": ["Labels": labels]]]
+        ],
+      ]
+    }
+    let ours = ["workroom.provisioner": "test", "workroom.created": "1"]
+    let list = [
+      container(ContainerHostDriver.containerName(kept), labels: ours, image: "in-use:1"),
+      container(ContainerHostDriver.containerName(swept), labels: ours, image: "other:1"),
+      container(
+        "theirs", labels: ["workroom.provisioner": "other", "workroom.created": "1"], image: "x"),
+      container(
+        "fresh",
+        labels: [
+          "workroom.provisioner": "test",
+          "workroom.created": "\(Int(Date().timeIntervalSince1970))",
+        ], image: "y"),
+    ]
+    let images = [
+      image("in-use:1", labels: ours), image("leftover:1", labels: ours),
+      image("recorded:1", labels: ours), image("user:1", labels: [:]),
+    ]
+    let json = { (o: Any) in
+      String(decoding: try JSONSerialization.data(withJSONObject: o), as: UTF8.self)
+    }
+    let (runtime, log) = try scriptedRuntime(
+      """
+      "list --all --format json") printf '%s' \(ContainerHostDriver.shellQuoted(try json(list))) ;;
+      "image list --format json") printf '%s' \(ContainerHostDriver.shellQuoted(try json(images))) ;;
+      """)
+    let failures = await Self.driver(runtime: runtime, context: nil, dialect: .apple).sweep(
+      keeping: [kept], images: ["recorded:1"])
+    XCTAssertEqual(failures, [])
+    let removed = try calls(log).filter { $0.hasPrefix("delete ") || $0.hasPrefix("image delete ") }
+    XCTAssertEqual(
+      removed,
+      ["delete --force \(ContainerHostDriver.containerName(swept))", "image delete leftover:1"])
+  }
+
+  /// A derived image is rebuilt from the exported disk with the host image's own process: its
+  /// entrypoint, command and environment, not the run-time ones a container carries.
+  func testAppleDerivesWithTheImagesOwnProcess() throws {
+    let image: [String: Any] = [
+      "variants": [
+        [
+          "platform": ["architecture": "amd64"],
+          "config": ["config": ["Entrypoint": ["/wrong"]]],
+        ],
+        [
+          "platform": ["architecture": "arm64"],
+          "config": [
+            "config": [
+              "Entrypoint": ["/usr/local/bin/entrypoint.sh"], "Cmd": ["serve", "a b"],
+              "Env": ["PATH=/usr/bin:/bin", #"QUOTED=say "hi" \ bye"#], "WorkingDir": "/srv",
+              "User": "",
+            ]
+          ],
+        ],
+      ]
+    ]
+    let process = try XCTUnwrap(
+      AppleContainerCLI.processConfig(ofImage: image, architecture: "arm64"))
+    XCTAssertEqual(
+      try AppleContainerCLI.dockerfile(process),
+      """
+      FROM scratch
+      ADD rootfs.tar /
+      ENV PATH="/usr/bin:/bin"
+      ENV QUOTED="say \\"hi\\" \\\\ bye"
+      WORKDIR /srv
+      ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+      CMD ["serve","a b"]
+
+      """)
+    var broken = process
+    broken.env.append("BAD=line\nbreak")
+    XCTAssertThrowsError(try AppleContainerCLI.dockerfile(broken))
+  }
+
+  /// Only a base is derived from. An Apple instance records no image, as a base doesn't, so a
+  /// host is a base only when its adopter says so; deriving from an instance would copy its
+  /// enrolment.
+  func testAnAppleInstanceIsNeverDerivedFrom() async throws {
+    let (runtime, log) = try stubRuntime()
+    let driver = Self.driver(runtime: runtime, context: nil, dialect: .apple)
+    let instance = UUID()
+    try driver.adopt(instance, Self.record(context: nil), isBase: false)
+    do {
+      _ = try await driver.deriveFromBase(.remote(instance))
+      XCTFail("derived from an instance")
+    } catch HostDriverError.invalidConfiguration {}
+    XCTAssertFalse(FileManager.default.fileExists(atPath: log.path), "the instance was touched")
+  }
+
+  /// A recorded Apple host is adopted into Apple's driver, and a Docker one beside it into
+  /// Docker's, by the descriptor's `driver`.
+  func testHostsAreAdoptedIntoTheirRuntimesDrivers() throws {
+    let (runtime, _) = try stubRuntime()
+    let remote = RemoteHosts(
+      makeDriver: { key in
+        Self.driver(
+          runtime: runtime, context: key.context, dialect: key.runtime == .apple ? .apple : .docker)
+      }, sweepDriver: { _, _, _ in [] })
+    let (docker, apple) = (UUID(), UUID())
+    let host = { (id: UUID, runtime: RemoteWorkrooms.Runtime) in
+      HostDescriptor(
+        driver: runtime.rawValue, provisioner: RemoteWorkrooms.provisioner, id: id,
+        container: Self.record(context: nil))
+    }
+    let project = Project(
+      path: "/proj", vcs: "git",
+      workrooms: [
+        Workroom(
+          name: "w", path: "/home/workroom/r", vcsName: "workroom/w", warnings: [],
+          host: host(apple, .apple))
+      ], host: host(docker, .docker))
+    remote.adopt([project])
+    XCTAssertEqual(remote.existingDriver(holding: docker)?.provisioning?.dialect, .docker)
+    XCTAssertEqual(remote.existingDriver(holding: apple)?.provisioning?.dialect, .apple)
+  }
+
+  /// A project's workrooms are derived from its base, so they go on the base's runtime: asking
+  /// for another is refused before anything is made.
+  func testAWorkroomOnAnotherRuntimeThanItsBaseIsRefused() async throws {
+    let (runtime, _) = try stubRuntime()
+    let driver = Self.driver(runtime: runtime, context: nil, dialect: .apple)
+    let environment = RemoteProvisioning.Environment(
+      driver: driver, agentSocket: RemoteWorkrooms.agentSocket,
+      client: BrokerClient(
+        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())))
+    do {
+      _ = try await RemoteWorkrooms.create(
+        repository: try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r")),
+        cloneURL: "https://github.com/o/r.git",
+        base: HostDescriptor(
+          driver: RemoteWorkrooms.Runtime.docker.rawValue, provisioner: RemoteWorkrooms.provisioner,
+          id: UUID(), repository: "o/r", cloneURL: "https://github.com/o/r.git",
+          path: "/home/workroom/r"),
+        runtime: .apple, driver: driver, environment: environment,
+        recorder: RemoteWorkrooms.Recorder(
+          reserve: { _, _ in "x" }, record: { _, _ in XCTFail("recorded") },
+          forget: { _ in }))
+      XCTFail("a workroom went on another runtime than its base")
+    } catch RemoteWorkrooms.Failure.baseOnOtherRuntime(let runtime) {
+      XCTAssertEqual(runtime, "Docker")
     }
   }
 

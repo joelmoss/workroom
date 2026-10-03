@@ -50,13 +50,25 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// are each a context behind the one `docker`, so without it a host made on one is looked for
     /// on whichever the user switched to since.
     var context: String? = nil
+    /// Which runtime's CLI `runtime` is: Docker's, or Apple's `container` (#309).
+    var dialect: Dialect = .docker
   }
 
-  /// A host this driver made: its container, and for a derived one the image it was run from,
-  /// which only it uses.
+  /// The two container CLIs a driver can speak (#309). Apple's `container` (1.5.0) runs each
+  /// container in a VM of its own and has no `commit`, no `--restart`, no `--filter` and no Go
+  /// templates (`AppleContainerCLI`).
+  enum Dialect: Sendable {
+    case docker
+    case apple
+  }
+
+  /// A host this driver made: its container, whether it is a base (the one kind a workroom is
+  /// derived from), and for a derived one the image it was run from, which only it uses. An Apple
+  /// instance has no image: its own disk outlives the image it was run from, which is removed.
   private struct Provisioned {
     let container: String
     let image: String?
+    let isBase: Bool
   }
 
   /// What a host this driver made needs to be reached and destroyed again by a driver in a later
@@ -118,17 +130,22 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   func create() async throws -> HostID {
     guard let provisioning else { throw HostDriverError.notImplemented("Creating a base") }
     try await ensureImage(provisioning.image)
-    return try await run(provisioning.image, image: nil)
+    return try await run(provisioning.image, image: nil, isBase: true)
   }
 
   /// Pulls `image` unless the runtime already has it (#309). `run` itself never pulls
   /// (`--pull=never`): left to it, a missing `workroom-host` was looked for on Docker Hub as
   /// `library/workroom-host`, and failed with a registry error that said nothing about why.
   private func ensureImage(_ image: String) async throws {
-    if (try? await runtime(["image", "inspect", "--format", "{{.Id}}", image])) != nil { return }
+    let apple = provisioning?.dialect == .apple
+    let inspect =
+      apple ? ["image", "inspect", image] : ["image", "inspect", "--format", "{{.Id}}", image]
+    if (try? await runtime(inspect)) != nil { return }
     do {
-      // Silence-bounded, and a pull reports its progress as it goes.
-      _ = try await runtime(["pull", image], timeout: 900)
+      // Silence-bounded, and a pull reports its progress as it goes. Apple's unpacks every
+      // platform of a multi-arch image unless told which, and it runs on Apple silicon only.
+      _ = try await runtime(
+        apple ? ["image", "pull", "--arch", "arm64", image] : ["pull", image], timeout: 900)
     } catch {
       throw HostDriverError.provisioning(
         "couldn't download the workroom host image \(image). Check your network connection, "
@@ -149,9 +166,10 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     }
     // An instance has enrolled, and its key and credential helper are on its disk: a copy of it
     // would start with them.
-    guard source.image == nil else {
+    guard source.isBase else {
       throw HostDriverError.invalidConfiguration("a workroom instance cannot be derived from")
     }
+    if provisioning.dialect == .apple { return try await appleDerive(from: source) }
     // Labelled with an ID chosen here, because the runtime's own is known only from its output:
     // a commit that outlives its CLI (killed by the silence bound, or a cancelled derive) leaves
     // an image nothing would otherwise find.
@@ -165,7 +183,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
           + [source.container],
         // `commit` prints nothing until it is done, and copying a base's disk takes a while.
         timeout: 900)
-      return try await run(image, image: image)
+      return try await run(image, image: image, isBase: false)
     } catch {
       let removals = await Task { () -> [String] in
         do {
@@ -190,6 +208,59 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     }
   }
 
+  /// Apple's derive (#309). `container` 1.5.0 has no `commit`, so the base's disk is exported (with
+  /// the base stopped, so the copy is consistent, and started again whatever happens), built back
+  /// into an image from scratch with the host image's own entrypoint and environment, and run.
+  /// The image is then removed: Apple's runtime gives each container a disk of its own, which
+  /// outlives the image it came from, and a derived image is the size of the base's whole disk.
+  /// Apple also removes an image a container still uses, so nothing would protect one later.
+  private func appleDerive(from source: Provisioned) async throws -> HostID {
+    guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
+    let tag = "workroom-derive-\(UUID().uuidString.lowercased())"
+    let work = FileManager.default.temporaryDirectory.appendingPathComponent(tag)
+    try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: work) }
+
+    let base = try AppleContainerCLI.objects(
+      try await runtime(["inspect", source.container], allLines: true))
+    guard let reference = base.first.flatMap(AppleContainerCLI.imageReference),
+      let image = try AppleContainerCLI.objects(
+        try await runtime(["image", "inspect", reference], allLines: true)
+      ).first,
+      let process = AppleContainerCLI.processConfig(ofImage: image, architecture: "arm64")
+    else {
+      throw HostDriverError.provisioning("couldn't read the base's image to derive from")
+    }
+    try AppleContainerCLI.dockerfile(process).write(
+      to: work.appendingPathComponent("Dockerfile"), atomically: true, encoding: .utf8)
+
+    let rootfs = work.appendingPathComponent("rootfs.tar")
+    _ = try await runtime(["stop", source.container])
+    do {
+      // `export` prints nothing until the whole disk is written.
+      _ = try await runtime(["export", "--output", rootfs.path, source.container], timeout: 900)
+    } catch {
+      _ = try? await runtime(["start", source.container])
+      throw error
+    }
+    _ = try await runtime(["start", source.container])
+
+    // Never `--quiet`: in 1.5.0 a quiet build never returns. The builder is a VM of its own (2
+    // CPUs, 2 GB), stopped again afterwards; the next derive starts it again in seconds.
+    defer { Task { _ = try? await self.runtime(["builder", "stop"]) } }
+    do {
+      _ = try await runtime(
+        ["build"] + (provisioning.labels + [Self.created()]).flatMap { ["--label", $0] }
+          + ["--tag", tag, work.path], timeout: 900)
+      let host = try await run(tag, image: nil, isBase: false)
+      _ = try? await runtime(["image", "delete", tag])
+      return host
+    } catch {
+      _ = try? await runtime(["image", "delete", "--force", tag])
+      throw error
+    }
+  }
+
   /// Removes the container and the image it alone was run from. A host handed in rather than
   /// made here is not this driver's to remove.
   func destroy(_ host: HostID) async throws {
@@ -200,8 +271,12 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       }
       throw HostDriverError.unknownHost(host)
     }
-    _ = try await runtime(["rm", "--force", "--volumes", made.container])
-    if let image = made.image { _ = try await runtime(["rmi", "--force", image]) }
+    if provisioning?.dialect == .apple {
+      _ = try await runtime(["delete", "--force", made.container])
+    } else {
+      _ = try await runtime(["rm", "--force", "--volumes", made.container])
+      if let image = made.image { _ = try await runtime(["rmi", "--force", image]) }
+    }
     lock.withLock {
       hosts[id] = nil
       provisioned[id] = nil
@@ -218,8 +293,16 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     guard case .remote(let id) = host, let made = lock.withLock({ provisioned[id] }) else {
       throw HostDriverError.unknownHost(host)
     }
-    let running = try await runtime(["inspect", "--format", "{{.State.Running}}", made.container])
-    guard running == "false" else { return }
+    let stopped: Bool
+    if provisioning?.dialect == .apple {
+      let containers = try AppleContainerCLI.objects(
+        try await runtime(["inspect", made.container], allLines: true))
+      stopped = containers.first.flatMap(AppleContainerCLI.state) == "stopped"
+    } else {
+      stopped =
+        try await runtime(["inspect", "--format", "{{.State.Running}}", made.container]) == "false"
+    }
+    guard stopped else { return }
     _ = try await runtime(["start", made.container])
     try await awaitLogin(host)
   }
@@ -238,8 +321,10 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// Takes a host an earlier launch made back on (#253), as its `record` describes it, so it can
   /// be reached, derived from and destroyed as if this driver had made it. Whether its container
-  /// is still there is found out by using it.
-  func adopt(_ id: UUID, _ record: Record) throws {
+  /// is still there is found out by using it. `isBase` says whether it is a project's base; left
+  /// out, a Docker host with no image is one, as only a base has none. An Apple instance has none
+  /// either, so it is a base only when the caller says so.
+  func adopt(_ id: UUID, _ record: Record, isBase: Bool? = nil) throws {
     guard let provisioning else { throw HostDriverError.notImplemented("Adopting a host") }
     // `destroy` removes it by this, with `--force`: a config edited by hand must not name an image
     // that is not a commit's.
@@ -257,7 +342,9 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
         address: record.address, port: record.port, user: record.user,
         identityFile: provisioning.identityFile, hostKey: record.hostKey,
         agentSocket: provisioning.agentSocket)
-      provisioned[id] = Provisioned(container: Self.containerName(id), image: record.image)
+      provisioned[id] = Provisioned(
+        container: Self.containerName(id), image: record.image,
+        isBase: isBase ?? (provisioning.dialect == .docker && record.image == nil))
       destroyed.remove(id)
     }
   }
@@ -274,6 +361,9 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     keeping known: Set<UUID>, images: Set<String> = [], grace: TimeInterval = 20 * 60
   ) async -> [String] {
     guard let provisioning, !provisioning.labels.isEmpty else { return [] }
+    if provisioning.dialect == .apple {
+      return await appleSweep(keeping: known, images: images, grace: grace)
+    }
     let filters = provisioning.labels.flatMap { ["--filter", "label=\($0)"] }
     let cutoff = Date().timeIntervalSince1970 - grace
     func old(_ created: Substring) -> Bool { (TimeInterval(created) ?? 0) <= cutoff }
@@ -322,6 +412,59 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     return failed
   }
 
+  /// Apple's sweep (#309): the same rules as Docker's, read from JSON, since its CLI has no
+  /// `--filter` and no templates. An image is kept while any container at all was run from it:
+  /// Apple removes an image a container still uses, where Docker refuses.
+  private func appleSweep(keeping known: Set<UUID>, images kept: Set<String>, grace: TimeInterval)
+    async -> [String]
+  {
+    guard let provisioning else { return [] }
+    let cutoff = Date().timeIntervalSince1970 - grace
+    func ours(_ labels: [String: String]) -> Bool {
+      provisioning.labels.allSatisfy { label in
+        let parts = label.split(separator: "=", maxSplits: 1).map(String.init)
+        return parts.count == 2 && labels[parts[0]] == parts[1]
+      }
+    }
+    func old(_ labels: [String: String]) -> Bool {
+      (labels[Self.createdLabel].flatMap(TimeInterval.init) ?? 0) <= cutoff
+    }
+    var failed: [String] = []
+    let keptContainers = Set(known.map(Self.containerName))
+    var inUse = kept
+    do {
+      for container in try AppleContainerCLI.objects(
+        try await runtime(["list", "--all", "--format", "json"], allLines: true))
+      {
+        if let image = AppleContainerCLI.imageReference(of: container) { inUse.insert(image) }
+        let labels = AppleContainerCLI.labels(of: container)
+        guard let id = AppleContainerCLI.id(of: container), ours(labels), old(labels),
+          !keptContainers.contains(id)
+        else { continue }
+        do { _ = try await runtime(["delete", "--force", id]) } catch {
+          failed.append("container \(id): \(error.localizedDescription)")
+        }
+      }
+    } catch {
+      // Without the list, no image is known to be unused.
+      return ["listing containers: \(error.localizedDescription)"]
+    }
+    do {
+      for image in try AppleContainerCLI.objects(
+        try await runtime(["image", "list", "--format", "json"], allLines: true))
+      {
+        let labels = AppleContainerCLI.labels(ofImage: image)
+        guard let name = AppleContainerCLI.name(ofImage: image), ours(labels), old(labels),
+          !inUse.contains(name)
+        else { continue }
+        do { _ = try await runtime(["image", "delete", name]) } catch {
+          failed.append("image \(name): \(error.localizedDescription)")
+        }
+      }
+    } catch { failed.append("listing images: \(error.localizedDescription)") }
+    return failed
+  }
+
   static func containerName(_ id: UUID) -> String { "workroom-\(id.uuidString.lowercased())" }
 
   private static func created() -> String {
@@ -343,7 +486,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Runs a container from `source` and waits until it can be reached: its identity minted, its
   /// host key pinned, and an ssh login through this driver's own configuration answering. A
   /// container that gets no further is removed.
-  private func run(_ source: String, image: String?) async throws -> HostID {
+  private func run(_ source: String, image: String?, isBase: Bool) async throws -> HostID {
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
     // A port of its own rather than an ephemeral one (`127.0.0.1::22`): a restart keeps it, so the
     // host's address outlives a reboot, as a provider's box keeps its address.
@@ -358,13 +501,15 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     // outlives its CLI still leaves a container this name removes.
     let container = Self.containerName(id)
     do {
+      // Docker's `unless-stopped`: a Docker or Mac restart brings it back, on the port its record
+      // names. Apple's runtime has no restart policy; opening the workroom starts it
+      // (`startIfStopped`), on the port it keeps.
+      let start =
+        provisioning.dialect == .apple
+        ? ["run", "--detach", "--init", "--arch", "arm64"]
+        : ["run", "--pull=never", "--detach", "--init", "--restart", "unless-stopped"]
       _ = try await runtime(
-        // `unless-stopped`: a Docker or Mac restart brings it back, on the port its record names.
-        [
-          "run", "--pull=never", "--detach", "--init", "--restart", "unless-stopped", "--name",
-          container,
-          "--publish", "127.0.0.1:\(port):22",
-        ]
+        start + ["--name", container, "--publish", "127.0.0.1:\(port):22"]
           + (provisioning.labels + [Self.created()]).flatMap { ["--label", $0] }
           + ["--env", "AUTHORIZED_KEY=\(provisioning.publicKey)", source])
       let hostKey = try await identity(of: container)
@@ -373,7 +518,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
           address: "127.0.0.1", port: Int(port), user: provisioning.user,
           identityFile: provisioning.identityFile, hostKey: hostKey,
           agentSocket: provisioning.agentSocket)
-        provisioned[id] = Provisioned(container: container, image: image)
+        provisioned[id] = Provisioned(container: container, image: image, isBase: isBase)
       }
       try await awaitLogin(.remote(id))
       return .remote(id)
@@ -382,9 +527,12 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
         hosts[id] = nil
         provisioned[id] = nil
       }
+      let remove =
+        provisioning.dialect == .apple
+        ? ["delete", "--force", container] : ["rm", "--force", "--volumes", container]
       let removal = await Task { () -> String? in
         do {
-          _ = try await self.runtime(["rm", "--force", "--volumes", container])
+          _ = try await self.runtime(remove)
           return nil
         } catch { return "container \(container): \(error.localizedDescription)" }
       }.value

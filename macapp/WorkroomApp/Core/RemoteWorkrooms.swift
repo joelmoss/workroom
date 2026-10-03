@@ -23,8 +23,18 @@ enum RemoteWorkrooms {
   /// defaults domain, and this is per process.
   nonisolated(unsafe) static var enabledForTesting: Bool?
 
-  /// The descriptor's `driver` for `ContainerHostDriver`, the only driver until boxd (#256).
-  static let containerDriver = "container"
+  /// Which container runtime makes a workroom's host (#309): Docker (Desktop, OrbStack, Colima) or
+  /// Apple's `container`. The raw value is the descriptor's `driver`; `container` predates Apple's
+  /// and keeps meaning Docker, so every record made before stays Docker's.
+  enum Runtime: String, CaseIterable, Sendable {
+    case docker = "container"
+    case apple = "apple-container"
+
+    var displayName: String { self == .docker ? "Docker" : "Apple Container" }
+  }
+
+  /// The descriptor's `driver` for a Docker host.
+  static let containerDriver = Runtime.docker.rawValue
   /// The descriptor's `provisioner`: this build, whose ssh key and Docker labels its hosts carry.
   static var provisioner: String { Bundle.main.bundleIdentifier ?? "com.developwithstyle.workroom" }
   /// Fixed by the host image's entrypoint (`vcs/scripts/ssh-fixture/entrypoint.sh`).
@@ -64,6 +74,8 @@ enum RemoteWorkrooms {
     case signedOut
     case notOnGitHub(String)
     case noDocker
+    case noAppleContainer
+    case baseOnOtherRuntime(String)
     case anotherBuildsBase(String)
     case anotherBuildsHost(String)
     case baseRepositoryChanged(base: String, origin: String)
@@ -93,8 +105,13 @@ enum RemoteWorkrooms {
           + "building another would leave it running unrecorded. Delete the project (its remote "
           + "workrooms and base go with it) and add it again."
       case .noDocker:
-        return "Remote workrooms run on Docker on this Mac for now, and no docker command was "
-          + "found. Install Docker Desktop, then run `make remote-host-image`."
+        return "No docker command was found. Install Docker Desktop, OrbStack or Colima."
+      case .noAppleContainer:
+        return "Apple's container command wasn't found. Install it from "
+          + "github.com/apple/container, then run `container system start`."
+      case .baseOnOtherRuntime(let runtime):
+        return "This project's base machine runs on \(runtime), so its workrooms are created there "
+          + "too."
       }
     }
   }
@@ -149,12 +166,19 @@ enum RemoteWorkrooms {
   /// the entry keeps what is still live (host, grant) so deleting it can finish the job.
   static func create(
     repository: GitHubRepository, cloneURL: String, base existing: HostDescriptor?,
-    driver: ContainerHostDriver, environment: RemoteProvisioning.Environment, recorder: Recorder
+    runtime: Runtime = .docker, driver: ContainerHostDriver,
+    environment: RemoteProvisioning.Environment, recorder: Recorder
   ) async throws -> Created {
     let base: RemoteProvisioning.Base
     if let existing, existing.provisioner != provisioner {
       // Its key and labels are another build's, so this one can neither reach nor replace it.
       throw Failure.anotherBuildsBase(existing.provisioner ?? "an unknown build")
+    }
+    // A workroom is derived from its base, on the base's runtime.
+    if let existing, existing.id != nil,
+      let other = Runtime(rawValue: existing.driver ?? Runtime.docker.rawValue), other != runtime
+    {
+      throw Failure.baseOnOtherRuntime(other.displayName)
     }
     if let recorded = existing?.base {
       // Reused only for the repository it cloned: a changed origin would otherwise get workrooms of
@@ -178,7 +202,7 @@ enum RemoteWorkrooms {
         try await recorder.record(
           nil,
           HostDescriptor(
-            driver: containerDriver, provisioner: provisioner, id: base.host,
+            driver: runtime.rawValue, provisioner: provisioner, id: base.host,
             repository: base.repository,
             cloneURL: base.cloneURL, path: base.path,
             container: driver.record(of: .remote(base.host))))
@@ -189,7 +213,7 @@ enum RemoteWorkrooms {
     let name = try await recorder.reserve(
       base.path,
       HostDescriptor(
-        state: "creating", driver: containerDriver, provisioner: provisioner,
+        state: "creating", driver: runtime.rawValue, provisioner: provisioner,
         workroomID: workroomID))
     let instance: RemoteProvisioning.Instance
     do {
@@ -200,7 +224,8 @@ enum RemoteWorkrooms {
         try await recorder.record(
           name,
           remaining(
-            state: "creating", workroomID: workroomID, host: host, grant: grant, driver: driver))
+            state: "creating", workroomID: workroomID, host: host, grant: grant, runtime: runtime,
+            driver: driver))
       }
     } catch RemoteProvisioning.Failure.rollbackIncomplete(let cause, let host, let grant, let left)
     {
@@ -210,7 +235,7 @@ enum RemoteWorkrooms {
         name,
         remaining(
           state: host == nil && grant == nil ? "destroyed" : "failed", workroomID: workroomID,
-          host: host, grant: grant, driver: driver))
+          host: host, grant: grant, runtime: runtime, driver: driver))
       throw RemoteProvisioning.Failure.rollbackIncomplete(
         cause: cause, host: host, grantID: grant, cleanup: left)
     } catch {
@@ -225,7 +250,7 @@ enum RemoteWorkrooms {
       try await recorder.record(
         name,
         HostDescriptor(
-          driver: containerDriver, provisioner: provisioner, id: id, grantID: instance.grantID,
+          driver: runtime.rawValue, provisioner: provisioner, id: id, grantID: instance.grantID,
           workroomID: workroomID, container: driver.record(of: instance.host)))
     } catch {
       // Unrecorded, the instance would be found by nothing but the sweep, and its grant by nothing.
@@ -236,7 +261,8 @@ enum RemoteWorkrooms {
         try? await recorder.record(
           name,
           remaining(
-            state: "failed", workroomID: workroomID, host: host, grant: grant, driver: driver))
+            state: "failed", workroomID: workroomID, host: host, grant: grant, runtime: runtime,
+            driver: driver))
         throw error
       } catch {
         // `destroy` throws nothing else: everything it made is gone.
@@ -249,10 +275,11 @@ enum RemoteWorkrooms {
 
   /// The descriptor of a workroom whose undoing left `host` and `grant` live.
   private static func remaining(
-    state: String, workroomID: UUID, host: HostID?, grant: String?, driver: ContainerHostDriver
+    state: String, workroomID: UUID, host: HostID?, grant: String?, runtime: Runtime,
+    driver: ContainerHostDriver
   ) -> HostDescriptor {
     var descriptor = HostDescriptor(
-      state: state, driver: containerDriver, provisioner: provisioner, grantID: grant,
+      state: state, driver: runtime.rawValue, provisioner: provisioner, grantID: grant,
       workroomID: workroomID)
     if case .remote(let id) = host {
       descriptor.id = id
@@ -325,15 +352,35 @@ enum RemoteWorkrooms {
   }
 }
 
-/// The app's remote hosts (#253): a `ContainerHostDriver` per Docker context on this Mac (#309),
-/// the hosts config records adopted into theirs at each reload, and one sweep per launch for what
-/// no record names.
+/// The app's remote hosts (#253): a `ContainerHostDriver` per container runtime and Docker context
+/// on this Mac (#309), the hosts config records adopted into theirs at each reload, and one sweep
+/// per launch for what no record names.
 final class RemoteHosts: @unchecked Sendable {
   static let shared = RemoteHosts()
 
   private let lock = NSLock()
-  /// The drivers made so far, by the Docker context they name; nil is the one that names none.
-  private var made: [String?: ContainerHostDriver] = [:]
+  /// Which driver a host is in: its runtime, and for Docker the context it names (nil names none).
+  struct DriverKey: Hashable, Sendable {
+    var runtime: RemoteWorkrooms.Runtime = .docker
+    var context: String? = nil
+
+    /// The driver a recorded host is in, or nil for a descriptor of no container runtime.
+    init?(_ descriptor: HostDescriptor) {
+      guard let runtime = RemoteWorkrooms.Runtime(rawValue: descriptor.driver ?? "") else {
+        return nil
+      }
+      self.init(runtime: runtime, context: descriptor.container?.context)
+    }
+
+    init(runtime: RemoteWorkrooms.Runtime = .docker, context: String? = nil) {
+      self.runtime = runtime
+      // Apple's runtime has no contexts.
+      self.context = runtime == .docker ? context : nil
+    }
+  }
+
+  /// The drivers made so far.
+  private var made: [DriverKey: ContainerHostDriver] = [:]
   private var swept = false
   /// A call reached the sweep while a delete was in flight and left it for later (#296).
   private var held = false
@@ -349,8 +396,8 @@ final class RemoteHosts: @unchecked Sendable {
   private let isConnected: (@Sendable (HostID) async -> Bool)?
   private let startHost: (@Sendable (HostID) async throws -> Void)?
   private let now: @Sendable () -> ContinuousClock.Instant
-  /// `adopt`'s seams, nil in the app: making a context's driver, and sweeping one.
-  private let makeDriver: (@Sendable (String?) throws -> ContainerHostDriver)?
+  /// `adopt`'s seams, nil in the app: making a key's driver, and sweeping one.
+  private let makeDriver: (@Sendable (DriverKey) throws -> ContainerHostDriver)?
   private let sweepDriver:
     (@Sendable (ContainerHostDriver, Set<UUID>, Set<String>) async -> [String])?
 
@@ -359,7 +406,7 @@ final class RemoteHosts: @unchecked Sendable {
     isConnected: (@Sendable (HostID) async -> Bool)? = nil,
     startHost: (@Sendable (HostID) async throws -> Void)? = nil,
     now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
-    makeDriver: (@Sendable (String?) throws -> ContainerHostDriver)? = nil,
+    makeDriver: (@Sendable (DriverKey) throws -> ContainerHostDriver)? = nil,
     sweepDriver: (@Sendable (ContainerHostDriver, Set<UUID>, Set<String>) async -> [String])? = nil
   ) {
     self.connectHost = connectHost
@@ -378,18 +425,18 @@ final class RemoteHosts: @unchecked Sendable {
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "RemoteWorkrooms")
 
-  /// The driver for Docker `context`, made on first use: it needs Docker and this Mac's ssh key.
-  /// nil names no context, as every driver did before #309. Each driver writes its hosts' ssh
-  /// files under their own IDs, so they share one directory.
-  func driver(context: String? = nil) throws -> ContainerHostDriver {
+  /// The driver for `key`, made on first use: it needs that runtime's CLI and this Mac's ssh key.
+  /// The default key is Docker naming no context, as every driver did before #309. Each driver
+  /// writes its hosts' ssh files under their own IDs, so they share one directory.
+  func driver(_ key: DriverKey = DriverKey()) throws -> ContainerHostDriver {
     try lock.withLock {
-      if let made = made[context] { return made }
+      if let made = made[key] { return made }
       let driver =
-        try makeDriver?(context)
+        try makeDriver?(key)
         ?? ContainerHostDriver(
           hosts: [:], directory: Self.directory.appendingPathComponent("hosts", isDirectory: true),
-          provisioning: try Self.provisioning(context: context))
-      made[context] = driver
+          provisioning: try Self.provisioning(key))
+      made[key] = driver
       return driver
     }
   }
@@ -427,28 +474,29 @@ final class RemoteHosts: @unchecked Sendable {
       projects.compactMap(\.host) + projects.flatMap { $0.workrooms.compactMap(\.host) }
     // Another build's hosts take another key: adopted here, they would refuse every login.
     let recorded = descriptors.filter {
-      $0.driver == RemoteWorkrooms.containerDriver
-        && $0.provisioner == RemoteWorkrooms.provisioner
+      DriverKey($0) != nil && $0.provisioner == RemoteWorkrooms.provisioner
     }
+    // Only a base is derived from; on Apple nothing in its record says which a host is.
+    let bases = Set(projects.compactMap(\.host?.id))
     let already = lock.withLock { Set(made.keys) }
     guard !recorded.isEmpty || !already.isEmpty else { return }
-    // A descriptor with no container record yet goes to the driver that names no context, where the
-    // one driver before #309 would have had it.
-    let contexts = already.union(recorded.map { $0.container?.context })
+    // A descriptor with no container record yet goes to its runtime's driver that names no
+    // context, where the one driver before #309 would have had it.
+    let keys = already.union(recorded.compactMap(DriverKey.init))
     var drivers: [ContainerHostDriver] = []
-    for context in contexts {
+    for key in keys {
       let driver: ContainerHostDriver
-      do { driver = try self.driver(context: context) } catch {
+      do { driver = try self.driver(key) } catch {
+        // That runtime isn't installed; another's may be.
         Self.logger.error("remote hosts: \(error.localizedDescription, privacy: .public)")
-        return
+        continue
       }
       drivers.append(driver)
-      for descriptor in recorded
-      where !descriptor.isDestroyed && descriptor.container?.context == context {
+      for descriptor in recorded where !descriptor.isDestroyed && DriverKey(descriptor) == key {
         guard let id = descriptor.id, let record = descriptor.container,
           driver.record(of: .remote(id)) == nil
         else { continue }
-        do { try driver.adopt(id, record) } catch {
+        do { try driver.adopt(id, record, isBase: bases.contains(id)) } catch {
           Self.logger.error("adopting host \(id, privacy: .public): \(error, privacy: .public)")
         }
       }
@@ -479,18 +527,25 @@ final class RemoteHosts: @unchecked Sendable {
   /// every host made before #309 does.
   func context(forBase base: HostDescriptor?) async throws -> String? {
     if let base, base.id != nil { return base.container?.context }
-    return try await driver(context: nil).currentContext()
+    return try await driver().currentContext()
   }
 
-  /// The sequence's environment over Docker `context`'s driver, signed in as this Mac.
+  /// The driver key a new workroom on `runtime` goes in, for a project with `base`: Apple's
+  /// runtime has one; Docker's is pinned to a context (`context(forBase:)`).
+  func key(for runtime: RemoteWorkrooms.Runtime, base: HostDescriptor?) async throws -> DriverKey {
+    guard runtime == .docker else { return DriverKey(runtime: runtime) }
+    return DriverKey(runtime: .docker, context: try await context(forBase: base))
+  }
+
+  /// The sequence's environment over `key`'s driver, signed in as this Mac.
   @MainActor
-  func environment(context: String?) throws -> (
+  func environment(_ key: DriverKey = DriverKey()) throws -> (
     ContainerHostDriver, RemoteProvisioning.Environment
   ) {
     guard let client = BrokerSession.shared.client() else {
       throw RemoteWorkrooms.Failure.signedOut
     }
-    let driver = try driver(context: context)
+    let driver = try driver(key)
     var environment = RemoteProvisioning.Environment(
       driver: driver, agentSocket: RemoteWorkrooms.agentSocket, client: client)
     #if DEBUG
@@ -511,16 +566,16 @@ final class RemoteHosts: @unchecked Sendable {
   @MainActor
   func environment(toDelete hosts: [HostDescriptor]) throws -> RemoteProvisioning.Environment? {
     guard try RemoteWorkrooms.checkDeletable(hosts) else { return nil }
-    // One environment has one driver, so one context. A project's workrooms are derived from its
-    // base, on its daemon, so the hosts of one delete share it.
-    let contexts = Set(
-      hosts.filter(RemoteWorkrooms.isLive).compactMap(\.container).map(\.context))
-    guard contexts.count <= 1 else {
+    // One environment has one driver. A project's workrooms are derived from its base, on its
+    // runtime and daemon, so the hosts of one delete share one.
+    let keys = Set(hosts.filter(RemoteWorkrooms.isLive).compactMap(DriverKey.init))
+    guard keys.count <= 1 else {
       throw HostDriverError.invalidConfiguration(
-        "these hosts are in different Docker contexts: "
-          + contexts.map { $0 ?? "(current)" }.sorted().joined(separator: ", "))
+        "these hosts are on different container runtimes or Docker contexts: "
+          + keys.map { "\($0.runtime.displayName) \($0.context ?? "(current)")" }.sorted()
+          .joined(separator: ", "))
     }
-    let (driver, environment) = try environment(context: contexts.first ?? nil)
+    let (driver, environment) = try environment(keys.first ?? DriverKey())
     // Taking a box down needs it on the driver, whatever a reload adopted: with previews off it
     // adopted nothing, and the box would read as unknown.
     for host in hosts where RemoteWorkrooms.isLive(host) {
@@ -629,13 +684,21 @@ final class RemoteHosts: @unchecked Sendable {
     "/usr/local/bin/docker", "/opt/homebrew/bin/docker",
     "/Applications/Docker.app/Contents/Resources/bin/docker",
   ]
+  /// Where Apple's `container` is: its installer's, or Homebrew's.
+  static let appleCandidates = ["/usr/local/bin/container", "/opt/homebrew/bin/container"]
 
-  private static func provisioning(context: String?) throws -> ContainerHostDriver.Provisioning {
-    guard
-      let runtime = runtimeCandidates.first(where: {
-        FileManager.default.isExecutableFile(atPath: $0)
-      })
-    else { throw RemoteWorkrooms.Failure.noDocker }
+  /// `runtime`'s CLI on this Mac, or nil when it isn't installed.
+  static func executable(for runtime: RemoteWorkrooms.Runtime) -> String? {
+    (runtime == .docker ? runtimeCandidates : appleCandidates).first {
+      FileManager.default.isExecutableFile(atPath: $0)
+    }
+  }
+
+  private static func provisioning(_ target: DriverKey) throws -> ContainerHostDriver.Provisioning {
+    guard let runtime = executable(for: target.runtime) else {
+      throw target.runtime == .docker
+        ? RemoteWorkrooms.Failure.noDocker : RemoteWorkrooms.Failure.noAppleContainer
+    }
     let key = try clientKey()
     return ContainerHostDriver.Provisioning(
       runtime: URL(fileURLWithPath: runtime), image: RemoteWorkrooms.hostImage,
@@ -644,7 +707,8 @@ final class RemoteHosts: @unchecked Sendable {
         .trimmingCharacters(in: .whitespacesAndNewlines),
       agentSocket: RemoteWorkrooms.agentSocket,
       // Per build, so a Dev app's sweep never takes a Nightly app's hosts, nor the other way.
-      labels: ["workroom.provisioner=\(RemoteWorkrooms.provisioner)"], context: context)
+      labels: ["workroom.provisioner=\(RemoteWorkrooms.provisioner)"], context: target.context,
+      dialect: target.runtime == .docker ? .docker : .apple)
   }
 
   /// This Mac's ssh key for its remote hosts, in `directory`, made the first time: ed25519, no

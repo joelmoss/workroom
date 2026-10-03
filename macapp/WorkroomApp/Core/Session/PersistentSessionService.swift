@@ -129,20 +129,13 @@ final class PersistentSessionService {
     self.ownershipOverride = nil
     self.now = { ProcessInfo.processInfo.systemUptime }
     self.endRemote = { session, host in
-      // No container runtime on this Mac: the app's remote hosts run in it (#253), so there is no
-      // host for the session to be running on, and nothing to stop. Reported as ended, rather
-      // than as a close that left something running. "No runtime" is no runtime CLI where the
-      // app looks for one, which a daemon still running behind a moved CLI would defeat. Off the
-      // main actor: making the driver for the first time can generate its ssh key.
+      // No container runtime on this Mac, Docker's or Apple's: the app's remote hosts run in one
+      // (#253, #309), so there is no host for the session to be running on, and nothing to stop.
+      // Reported as ended, rather than as a close that left something running. "No runtime" is no
+      // runtime CLI where the app looks for one, which a daemon still running behind a moved CLI
+      // would defeat. Off the main actor: it looks at the file system.
       let noRuntime = await Task.detached { () -> Bool in
-        do {
-          _ = try RemoteHosts.shared.driver()
-          return false
-        } catch RemoteWorkrooms.Failure.noDocker {
-          return true
-        } catch {
-          return false
-        }
+        RemoteWorkrooms.Runtime.allCases.allSatisfy { RemoteHosts.executable(for: $0) == nil }
       }.value
       if noRuntime { return true }
       try await RemoteHosts.shared.ensureConnected(host)
