@@ -216,6 +216,19 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertFalse(store.canCreateRemoteWorkroom(in: project))
   }
 
+  /// A workroom's icon says what kind of host it is on (#309).
+  func testAHostSaysWhatKindItIs() {
+    let host = { (driver: String?, context: String?) in
+      HostDescriptor(driver: driver, container: Self.record(context: context))
+    }
+    XCTAssertEqual(host("container", nil).kindDescription, "Docker container on this Mac")
+    XCTAssertEqual(
+      host("container", "orbstack").kindDescription, "Docker container (orbstack) on this Mac")
+    XCTAssertEqual(host("apple-container", nil).kindDescription, "Apple container on this Mac")
+    XCTAssertEqual(host("boxd", nil).kindDescription, "Remote workroom on boxd")
+    XCTAssertEqual(host(nil, nil).kindDescription, "Remote workroom")
+  }
+
   /// The New Workroom menu says why its entries are off while a create holds the project, or a
   /// delete is taking it (#309).
   @MainActor

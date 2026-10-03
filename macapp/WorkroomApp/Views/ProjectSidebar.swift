@@ -188,6 +188,23 @@ struct ProjectSidebar: View {
 
   // MARK: Rows
 
+  /// Where a new workroom of `project` can go (#309), for both doors to it: the row's "+" and its
+  /// context menu's New Workroom.
+  @ViewBuilder
+  private func newWorkroomPlaces(in project: Project) -> some View {
+    if let blocked = store.createBlockedReason(in: project) {
+      // Said once for every entry, rather than after each.
+      Text(blocked.prefix(1).uppercased() + blocked.dropFirst())
+      Divider()
+    }
+    newLocalWorkroomButton(Text("This Mac"), in: project)
+    Section("Local containers") {
+      ForEach(RemoteWorkrooms.Runtime.allCases, id: \.self) { runtime in
+        newContainerWorkroomButton(on: runtime, in: project)
+      }
+    }
+  }
+
   /// New Workroom on this Mac. Disabled while a create is in flight, matching the row's own "+"
   /// button (issue #167): ungated, the menu was one right-click away from N concurrent pre-name
   /// creates, only one of which can own the loader slot.
@@ -268,8 +285,17 @@ struct ProjectSidebar: View {
       ) {
         store.pendingProjectSettings = PendingProjectSettings(project: project)
       }
-      CreateRowButton(help: "New workroom in \(project.displayName)") {
-        Task { await store.createWorkroom(in: project) }
+      Group {
+        // With the preview on, "+" asks where, as the context menu does (#309).
+        if RemoteWorkrooms.isEnabled {
+          CreateRowButton(
+            help: "New workroom in \(project.displayName), on this Mac or in a local container",
+            places: { newWorkroomPlaces(in: project) })
+        } else {
+          CreateRowButton(help: "New workroom in \(project.displayName)") {
+            Task { await store.createWorkroom(in: project) }
+          }
+        }
       }
       .opacity(busy ? 0 : 1)
       .allowsHitTesting(!busy)
@@ -299,17 +325,7 @@ struct ProjectSidebar: View {
       // or a local container. Without the preview there is only this Mac, so no submenu.
       if RemoteWorkrooms.isEnabled {
         Menu {
-          if let blocked = store.createBlockedReason(in: project) {
-            // Said once for every entry, rather than after each.
-            Text(blocked.prefix(1).uppercased() + blocked.dropFirst())
-            Divider()
-          }
-          newLocalWorkroomButton(Text("This Mac"), in: project)
-          Section("Local containers") {
-            ForEach(RemoteWorkrooms.Runtime.allCases, id: \.self) { runtime in
-              newContainerWorkroomButton(on: runtime, in: project)
-            }
-          }
+          newWorkroomPlaces(in: project)
         } label: {
           Label("New Workroom", systemImage: "plus")
         }
@@ -419,7 +435,7 @@ struct ProjectSidebar: View {
       if target.unavailability == .remote {
         Image(systemName: "network")
           .foregroundStyle(.secondary)
-          .help("Remote workroom")
+          .help(workroom.host?.kindDescription ?? "Remote workroom")
       }
       // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
       // command runs (issue #28), swapped for the delete button on hover — so a workroom stays
@@ -721,24 +737,48 @@ private struct SetupSpinner: View {
 
 /// The always-visible "new workroom" button on a project row. Its own hover paints a
 /// subtle neutral background to read as an actionable control.
-private struct CreateRowButton: View {
+private struct CreateRowButton<Places: View>: View {
   let help: String
-  let action: () -> Void
+  /// What a click does, or nil when it opens `places` instead (#309).
+  let action: (() -> Void)?
+  let places: (() -> Places)?
   @State private var hovering = false
   private let theme = ThemeService.shared
 
+  init(help: String, action: @escaping () -> Void) where Places == EmptyView {
+    (self.help, self.action, self.places) = (help, action, nil)
+  }
+
+  init(help: String, @ViewBuilder places: @escaping () -> Places) {
+    (self.help, self.action, self.places) = (help, nil, places)
+  }
+
+  private var glyph: some View {
+    Image(systemName: "plus")
+      .font(.system(size: 11))
+      .foregroundStyle(.secondary)
+      .padding(4)
+      .background(
+        RoundedRectangle(cornerRadius: 5)
+          .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
+      )
+  }
+
   var body: some View {
-    Button(action: action) {
-      Image(systemName: "plus")
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-        .padding(4)
-        .background(
-          RoundedRectangle(cornerRadius: 5)
-            .fill(theme.tokens.hover.opacity(hovering ? 1 : 0))
-        )
+    Group {
+      if let places {
+        // A menu that looks exactly like the button it replaces: drawn by SwiftUI as a plain
+        // button, so the glyph keeps its size, weight and colour, with no arrow.
+        Menu(content: places) { glyph.accessibilityLabel(help) }
+          .menuStyle(.button)
+          .buttonStyle(.plain)
+          .menuIndicator(.hidden)
+          .fixedSize()
+      } else if let action {
+        Button(action: action) { glyph }
+          .buttonStyle(.plain)
+      }
     }
-    .buttonStyle(.plain)
     .onHover { hovering = $0 }
     .help(help)
     .accessibilityLabel(help)

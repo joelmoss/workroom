@@ -99,8 +99,45 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     add(shot)
   }
 
+  /// The row's "+" asks where too, with the same places as the context menu.
+  func testTheRowsPlusAsksWhereWithThePreviewOn() {
+    let app = launch(preview: true)
+    app.typeKey(.escape, modifierFlags: [])  // the context menu `launch` opened
+    let plus = app.menuButtons.matching(
+      NSPredicate(format: "title BEGINSWITH %@", "New workroom in UITestProject, on this Mac")
+    ).firstMatch
+    XCTAssertTrue(plus.waitForExistence(timeout: 5), "the row has no places +")
+    plus.hover()
+    let idle = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+    idle.name = "plus-places-idle"
+    idle.lifetime = .keepAlways
+    add(idle)
+    plus.click()
+    XCTAssertTrue(app.menuItems["This Mac"].waitForExistence(timeout: 5), "+ didn't ask where")
+    for runtime in ["Docker", "Apple Container"] {
+      XCTAssertTrue(
+        app.menuItems.matching(
+          NSPredicate(format: "title == %@ OR title BEGINSWITH %@", runtime, "\(runtime) — ")
+        ).firstMatch.exists, "\(runtime) isn't listed")
+    }
+    let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+    shot.name = "plus-places"
+    shot.lifetime = .keepAlways
+    add(shot)
+    app.typeKey(.escape, modifierFlags: [])
+  }
+
   func testNewWorkroomIsOneItemWithThePreviewOff() {
     let app = launch(preview: false)
+    defer {
+      // The row's "+" as it looks without the preview, to compare with the places one.
+      app.typeKey(.escape, modifierFlags: [])
+      app.otherElements["sidebar.project.UITestProject"].hover()
+      let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+      shot.name = "plus-plain"
+      shot.lifetime = .keepAlways
+      add(shot)
+    }
     XCTAssertTrue(app.menuItems["New Workroom"].waitForExistence(timeout: 5))
     XCTAssertFalse(app.menuItems["This Mac"].exists, "a submenu appeared without the preview")
     XCTAssertFalse(app.menuItems["New Remote Workroom"].exists)
