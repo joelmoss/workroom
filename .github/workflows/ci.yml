@@ -301,6 +301,22 @@ jobs:
             --cache-to type=gha,mode=max,scope=ssh-fixture
         run: vcs/scripts/ssh-fixture/run.sh "vcs/target/$TARGET/release/wr-agent"
 
+      # The `workroom-host` image (`make remote-host-image`, FIXTURE=0) a Nightly app's remote
+      # workrooms run on (#253). The step above only builds FIXTURE=1, so this is the only check on
+      # the variant's own paths (#288). It builds twice: a FIXTURE=1 control, whose apt layer is the
+      # one the step above caches under `ssh-fixture`, so it only reads that scope; then the host,
+      # under its own scope. Never one scope for both: a second export replaces the first.
+      - name: workroom-host image
+        if: matrix.arch == 'x86_64'
+        timeout-minutes: 10
+        env:
+          BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
+          WR_FIXTURE_CONTROL_BUILD_FLAGS: --load --cache-from type=gha,scope=ssh-fixture
+          WR_FIXTURE_BUILD_FLAGS: >-
+            --load --cache-from type=gha,scope=workroom-host
+            --cache-to type=gha,mode=max,scope=workroom-host,ignore-error=true
+        run: vcs/scripts/ssh-fixture/host-image-test.sh
+
   app:
     needs: changes
     if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
