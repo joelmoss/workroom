@@ -1106,7 +1106,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     session for 60 seconds (`REFUSED_ID_WINDOW`): the attach is answered with a failure and starts
     nothing. The refusal is recorded before the kill looks for the session, and a create checks it
     under the session map's lock, so either the create is refused or the kill finds the session it
-    made. The refusals are also written to a file beside the agent's socket (`.refused`), and
+    made. The refusals are also written to a file beside the agent's socket (`agent.refused` for `agent.sock`), and
     the next program to serve that socket reads them, so a hand-off, an idle exit or a crash in
     between does not let it create a session killed just before it (#310). The app counts its close kills in flight on
     `PersistentSessionService`, not on each window's `TerminalSessions`, so a quit also waits for
