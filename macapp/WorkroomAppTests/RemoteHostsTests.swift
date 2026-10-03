@@ -216,6 +216,19 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertFalse(store.canCreateRemoteWorkroom(in: project))
   }
 
+  /// The New Workroom menu says why its entries are off while a create holds the project, or a
+  /// delete is taking it (#309).
+  @MainActor
+  func testACreateBlockedProjectSaysWhy() {
+    let store = AppStore()
+    let project = Project(path: "/proj", vcs: "git", workrooms: [])
+    XCTAssertNil(store.createBlockedReason(in: project))
+    store.busyProjects["/proj"] = 1
+    XCTAssertEqual(store.createBlockedReason(in: project), "a workroom is already being created")
+    store.deletingProjects.insert("/proj")
+    XCTAssertEqual(store.createBlockedReason(in: project), "the project is being deleted")
+  }
+
   /// No watcher refreshes a remote tree, so coming back to it reads it again; the same local path
   /// would be a no-op.
   @MainActor
