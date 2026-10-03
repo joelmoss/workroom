@@ -58,9 +58,11 @@ ssh-keygen -q -t ed25519 -N '' -C wr-host-image-test -f "$STAGE/id_ed25519"
 # sshd is the entrypoint's last step, so the checks see /etc/hosts after the fake-GitHub guard ran.
 # Throwaway containers on loopback, so their host keys are neither pinned nor recorded. `-F
 # /dev/null`: a user's ssh config could reroute the probe, and with ControlMaster the host's would
-# ride the control's connection, since both are workroom@127.0.0.1.
+# ride the control's connection, since both are workroom@127.0.0.1. A minute in all, by the clock
+# rather than a count of tries: a port that accepts and then stalls costs a whole ConnectTimeout per
+# try, and the error and log below must still print before CI's step timeout ends the run.
 boot() {
-  local name="$1" port tries=100
+  local name="$1" port deadline=$((SECONDS + 60))
   # `--pull=never`: only the image this run built, never one a registry has under the same name.
   "$RUNTIME" run --pull=never --detach --init --name "$name" --publish 127.0.0.1::22 \
     --env "AUTHORIZED_KEY=$(cat "$STAGE/id_ed25519.pub")" "$name" >/dev/null
@@ -70,13 +72,12 @@ boot() {
     "$RUNTIME" logs "$name" >&2
     exit 1
   fi
-  while [ "$tries" -gt 0 ]; do
+  while [ "$SECONDS" -lt "$deadline" ]; do
     if ssh -F /dev/null -i "$STAGE/id_ed25519" -p "$port" -o IdentitiesOnly=yes -o BatchMode=yes \
-      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
       -o LogLevel=ERROR workroom@127.0.0.1 true 2>"$STAGE/ssh.err"; then
       return 0
     fi
-    tries=$((tries - 1))
     sleep 0.2
   done
   echo "error: $name never served ssh: $(cat "$STAGE/ssh.err"); its log:" >&2
