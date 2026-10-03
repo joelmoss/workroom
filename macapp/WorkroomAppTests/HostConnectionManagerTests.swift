@@ -170,6 +170,27 @@ final class HostConnectionManagerTests: XCTestCase {
     await manager.disconnect(lease)
   }
 
+  /// Value: protects=a remote pane's close reaches its host's agent over the open connection and never opens one (#283); fails_when=endSession connects or drops the session id; why_new=no manager test covers endSession; seam=none
+  func testEndSessionRidesTheOpenConnectionAndNeverConnects() async throws {
+    let manager = HostConnectionManager()
+    let host = HostID.remote(UUID())
+    let session = UUID()
+    do {
+      _ = try await manager.endSession(session, on: host)
+      XCTFail("ended a session on a host nothing connected to")
+    } catch { XCTAssertEqual(error as? RepositoryRoutingError, .unavailable(host)) }
+    let idle = await manager.snapshot(for: host)
+    XCTAssertEqual(idle.status, .disconnected, "ending a session never connects")
+
+    let connection = ConnectionFixture()
+    let lease = try await manager.connect(host: host) { connection }
+    let ended = try await manager.endSession(session, on: host)
+    XCTAssertTrue(ended)
+    let sessions = await connection.ended.ids
+    XCTAssertEqual(sessions, [session])
+    await manager.disconnect(lease)
+  }
+
   func testSupersededHandshakeClosesLateConnection() async throws {
     let manager = HostConnectionManager()
     let host = HostID.remote(UUID())
@@ -369,6 +390,11 @@ private actor ConnectionCount {
   func increment() { value += 1 }
 }
 
+private actor EndedSessions {
+  private(set) var ids: [UUID] = []
+  func record(_ id: UUID) { ids.append(id) }
+}
+
 private final class ConnectionFixture: HostServiceConnection, Sendable {
   let disconnection: AsyncStream<Void>
   let loss: AsyncStream<Void>.Continuation
@@ -379,6 +405,7 @@ private final class ConnectionFixture: HostServiceConnection, Sendable {
   let statusStarted = ConnectionSignal()
   let statusRelease = ConnectionSignal()
   let commits = ConnectionCount()
+  let ended = EndedSessions()
   let marker: String
   let readerContext: RepositoryContext?
   let delayStatus: Bool
@@ -396,6 +423,10 @@ private final class ConnectionFixture: HostServiceConnection, Sendable {
   }
   func writer(context: RepositoryContext, reader: VCSProviding) throws -> VCSWriting {
     ConnectionWriter(context: context, reader: reader, connection: self)
+  }
+  func endSession(_ session: UUID) async throws -> Bool {
+    await ended.record(session)
+    return true
   }
   func close() async { await closed.open() }
 }

@@ -374,6 +374,39 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertNil(unknown)
   }
 
+  /// Closing a remote pane ends its session on the host (#283): the kill goes over the service
+  /// connection, not the pane's own link, and the shell it held is gone from the host, not just
+  /// detached from.
+  func testEndingARemoteSessionStopsItsShellOnTheHost() async throws {
+    let fixture = try fixture()
+    let (connection, id) = try await connect(fixture.host)
+    let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
+    let session = UUID()
+    let pane = try Pane(
+      command: driver.attachCommand(
+        to: .remote(id), session: session, workingDirectory: "/home/workroom", restored: false))
+    defer { pane.dropLink() }
+    pane.type("echo PID=$$ RE\"\"ADY\n")
+    let ready = pane.read(until: "READY")
+    let pid = try XCTUnwrap(
+      ready.components(separatedBy: "PID=").dropFirst().compactMap {
+        Int($0.prefix { $0.isNumber })
+      }.first, ready)
+    XCTAssertEqual(try onHost(fixture, "kill -0 \(pid) && echo alive"), "alive")
+
+    let ended = try await connection.endSession(session)
+    XCTAssertTrue(ended)
+    var state = ""
+    for _ in 0..<50 {
+      state = try onHost(fixture, "kill -0 \(pid) 2>/dev/null && echo alive || echo gone")
+      if state == "gone" { break }
+      Thread.sleep(forTimeInterval: 0.1)
+    }
+    XCTAssertEqual(state, "gone", "the shell outlived its session")
+    let listed = try await connection.workingDirectory(of: session)
+    XCTAssertNil(listed, "the host still lists the session")
+  }
+
   /// A newer app reconnecting (#231): the host's agent is handed off to the pushed binary (#230)
   /// with an attached pane's shell, its pid and its exit code intact. The pane's link ends with
   /// the exec and it exits 255, which is what the app reattaches on; the pane that comes back is

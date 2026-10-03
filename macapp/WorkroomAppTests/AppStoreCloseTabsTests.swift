@@ -81,4 +81,44 @@ final class AppStoreCloseTabsTests: XCTestCase {
     store.requestCloseAllTerminalTabs(for: target)
     XCTAssertTrue(store.terminals.tabs(for: target).isEmpty)
   }
+
+  /// Value: protects=a closed remote pane whose host kept its session shows an alert naming the workroom, but not once a quit has begun; fails_when=AppStore drops the handler or ignores isTerminating; why_new=RemotePaneCloseTests stops at TerminalSessions.onRemoteCloseFailed; seam=none
+  func testAFailedRemoteCloseAlertsUnlessTheAppIsQuitting() {
+    let store = makeStore()
+    store.terminals.onRemoteCloseFailed?("remote")
+    XCTAssertEqual(store.errorTitle, "Couldn't stop the terminal in remote")
+    XCTAssertTrue(store.errorMessage?.contains("may still be running") == true)
+
+    store.errorTitle = nil
+    store.errorMessage = nil
+    WindowRegistry.shared.isTerminating = true
+    defer { WindowRegistry.shared.isTerminating = false }
+    store.terminals.onRemoteCloseFailed?("remote")
+    XCTAssertNil(store.errorTitle, "a quit has stopped waiting; an alert would hold it up")
+    XCTAssertNil(store.errorMessage)
+  }
+
+  /// Value: protects=a failed remote close never replaces an error already on screen, and is shown once that error is dismissed; fails_when=the notice overwrites errorMessage or the queue is not drained by clearError; why_new=the test above starts with no error showing; seam=none
+  func testAFailedRemoteCloseWaitsBehindAnErrorAlreadyShowing() async throws {
+    let store = makeStore()
+    store.errorTitle = "Couldn't delete it"
+    store.errorMessage = "The teardown failed."
+    store.terminals.onRemoteCloseFailed?("first")
+    store.terminals.onRemoteCloseFailed?("second")
+    XCTAssertEqual(store.errorTitle, "Couldn't delete it", "the error being read is kept")
+    XCTAssertEqual(store.errorMessage, "The teardown failed.")
+
+    store.clearError()
+    for _ in 0..<100 where store.errorTitle == nil { try await Task.sleep(for: .milliseconds(10)) }
+    XCTAssertEqual(store.errorTitle, "Couldn't stop the terminal in first")
+    XCTAssertTrue(store.errorMessage?.contains("Deleting the workroom stops it") == true)
+
+    store.clearError()
+    for _ in 0..<100 where store.errorTitle == nil { try await Task.sleep(for: .milliseconds(10)) }
+    XCTAssertEqual(store.errorTitle, "Couldn't stop the terminal in second")
+
+    store.clearError()
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertNil(store.errorTitle, "the queue is empty")
+  }
 }

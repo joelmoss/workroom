@@ -1944,7 +1944,7 @@ final class RemotePaneCloseTests: XCTestCase {
   }
 
   private func makeSessions(
-    endRemote: @escaping (UUID, HostID, Bool) async throws -> Bool
+    endRemote: @escaping (UUID, HostID) async throws -> Bool
   ) -> TerminalSessions {
     let sessions = TerminalSessions()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
@@ -1958,8 +1958,9 @@ final class RemotePaneCloseTests: XCTestCase {
 
   func testAQuitStopsWaitingForACloseItsHostNeverAnswers() async throws {
     let target = remoteTarget()
-    let s = makeSessions { _, _, _ in
-      try await Task.sleep(for: .seconds(60))
+    // Past the test's 2-second bound, and short enough that no kill outlives the test for long.
+    let s = makeSessions { _, _ in
+      try await Task.sleep(for: .seconds(3))
       return true
     }
     let tab = s.addTab(for: target)
@@ -1973,7 +1974,7 @@ final class RemotePaneCloseTests: XCTestCase {
   func testAQuitWaitsForACloseThatFinishes() async throws {
     let target = remoteTarget()
     var ended = false
-    let s = makeSessions { _, _, _ in
+    let s = makeSessions { _, _ in
       try await Task.sleep(for: .milliseconds(100))
       ended = true
       return true
@@ -1986,9 +1987,9 @@ final class RemotePaneCloseTests: XCTestCase {
 
   func testAFailedRemoteCloseIsReportedWithTheWorkroomsTitle() async throws {
     let target = remoteTarget()
-    var connecting: [Bool] = []
-    let s = makeSessions { _, host, connects in
-      connecting.append(connects)
+    var asked = 0
+    let s = makeSessions { _, host in
+      asked += 1
       throw RepositoryRoutingError.unavailable(host)
     }
     var reported: [String] = []
@@ -1997,23 +1998,59 @@ final class RemotePaneCloseTests: XCTestCase {
     s.closeTab(tab.id, for: target)
     await s.awaitPendingCloseKills(until: .now + .seconds(5))
     XCTAssertEqual(reported, ["remote"])
-    XCTAssertEqual(connecting, [true], "a close connects to the host if need be")
+    XCTAssertEqual(asked, 1)
 
-    // A delete's reap neither connects nor reports: the host goes next, with the session.
+    // A delete's reap neither asks the host nor reports: the host goes next, with the session.
     _ = s.addTab(for: target)
     await s.reap(target.id)
-    XCTAssertEqual(connecting, [true, false])
+    XCTAssertEqual(asked, 1)
     XCTAssertEqual(reported, ["remote"])
   }
 
   func testASuccessfulRemoteCloseReportsNothing() async throws {
     let target = remoteTarget()
-    let s = makeSessions { _, _, _ in true }
+    let s = makeSessions { _, _ in true }
     var reported: [String] = []
     s.onRemoteCloseFailed = { reported.append($0) }
     let tab = s.addTab(for: target)
     s.closeTab(tab.id, for: target)
     await s.awaitPendingCloseKills(until: .now + .seconds(5))
     XCTAssertEqual(reported, [])
+  }
+
+  /// Value: protects=a local pane whose kill fails closes without the remote-only "still running on its host" alert; fails_when=endPersistentSession returns a local kill's result; why_new=the other cases here are all remote panes; seam=none
+  func testAFailedLocalCloseReportsNothing() async throws {
+    let target = TerminalTarget(id: "wr|/p|local", title: "local", path: "/w", isMissing: false)
+    let s = makeSessions { _, _ in true }
+    // An unreachable owner makes a local kill report failure, which stays in the log.
+    s.sessionService = PersistentSessionService(
+      probe: { _ in .ready(version: "test") }, ownership: { _ in .unreachable })
+    var reported: [String] = []
+    s.onRemoteCloseFailed = { reported.append($0) }
+    let tab = s.addTab(for: target, sessionID: UUID())
+    guard case .terminal(let state) = tab.content else { return XCTFail("not a terminal") }
+    XCTAssertNotNil(state.sessionID, "the pane has a session to fail to kill")
+    s.closeTab(tab.id, for: target)
+    await s.awaitPendingCloseKills(until: .now + .seconds(5))
+    XCTAssertEqual(reported, [])
+  }
+
+  /// Value: protects=a quit waits for every close kill in flight, not just the first to finish; fails_when=closeKillsInFlight stops being a count (a flag, or reset by one finish); why_new=the other quit tests close a single tab; seam=none
+  func testAQuitWaitsForEveryCloseInFlight() async throws {
+    let target = remoteTarget()
+    var ended = 0
+    var delays: [Duration] = [.milliseconds(50), .milliseconds(400)]
+    let s = makeSessions { _, _ in
+      let delay = delays.removeFirst()
+      try await Task.sleep(for: delay)
+      ended += 1
+      return true
+    }
+    let first = s.addTab(for: target)
+    let second = s.addTab(for: target)
+    s.closeTab(first.id, for: target)
+    s.closeTab(second.id, for: target)
+    await s.awaitPendingCloseKills(until: .now + .seconds(5))
+    XCTAssertEqual(ended, 2)
   }
 }
