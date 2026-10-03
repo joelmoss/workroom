@@ -1458,7 +1458,7 @@ final class AppStore: ObservableObject {
     let location = detachedLocation(for: target)
     detachedPanes.open(
       tabID: tabID, title: tab.title, project: location.project, workroom: location.workroom,
-      origin: origin, frame: frame,
+      glyph: target.workroomGlyph, origin: origin, frame: frame,
       onCloseTab: { [weak self] in self?.requestCloseTerminalTab(tabID, for: target) },
       onDock: { [weak self] in self?.dockPane(tabID, for: target) },
       content: {
@@ -1469,7 +1469,8 @@ final class AppStore: ObservableObject {
             guard let self else { return }
             let location = self.detachedLocation(for: target)
             self.detachedPanes.setTitle(
-              title, project: location.project, workroom: location.workroom, for: tabID)
+              title, project: location.project, workroom: location.workroom,
+              glyph: target.workroomGlyph, for: tabID)
           }
         )
       })

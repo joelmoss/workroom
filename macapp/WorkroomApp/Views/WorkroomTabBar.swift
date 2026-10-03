@@ -534,9 +534,10 @@ private struct WorkroomTabChip: View {
     HStack(spacing: 6) {
       // Leading glyph: a house marks a project root, a cube an isolated workroom — set before the name.
       // Its tint carries the VCS dirty signal (orange) in place of a separate status dot.
-      Image(systemName: isRoot ? "house" : "cube")
+      Image(systemName: isRoot ? "house" : target.workroomGlyph)
         .font(.system(size: 10))
         .foregroundStyle(VCSStatusPresentation.iconTint(store.workroomStatuses[sid] ?? .unresolved))
+        .help(isRoot ? "" : target.hostKind ?? "")
       if let reason = target.terminalUnavailability {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 10))
