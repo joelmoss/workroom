@@ -3823,8 +3823,11 @@ final class AppStore: ObservableObject {
             DispatchQueue.main.async { log.append(text) }
           }
         }
-        // Teardown persisted (the workroom is gone from config): drop the tombstone. Future `list`
-        // snapshots no longer include it, and the optimistic removal already matches (issue #116).
+        // Teardown persisted (the workroom is gone from config). Reload BEFORE lifting the
+        // tombstone: a read issued before config dropped the workroom could otherwise publish it
+        // once the tombstone is gone (#295). This newer read supersedes it. Quiet: a failed `list`
+        // must not report a delete that succeeded as an error.
+        await load(warnings: "fast", surfaceErrors: false)
         deletingWorkrooms.remove(targetID)
         await runHeldHostSweep()
       } catch {

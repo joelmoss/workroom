@@ -145,6 +145,38 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     XCTAssertEqual(workroomNames(store), ["b"])
   }
 
+  /// A read issued before config dropped the workroom, still in flight when the teardown succeeds,
+  /// must not publish the workroom once the tombstone lifts: the success path's own reload
+  /// supersedes it (#295).
+  func testStaleReloadInFlightAcrossSuccessfulTeardownDoesNotResurrectWorkroom() async {
+    let a = workroom("a")
+    let b = workroom("b")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a, b])]
+    let shared = ProjectStore()
+    let gate = PrepareGate()
+    shared.prepareRepositories = { _ in
+      // Hold only the stale read (the second call), between its `list` and its publication.
+      if gate.enter() == 2 { while !gate.open { await Task.yield() } }
+      return []
+    }
+    let store = AppStore(projectStore: shared, cli: fake)
+    await store.reload()
+
+    store.deleteWorkroom(a, in: project([a, b]))
+    await waitUntil({ fake.deleteStarted }, "teardown should start")
+    let stale = Task { await store.reload() }  // `list` still has `a`
+    await waitUntil({ gate.calls == 2 }, "stale read should reach publication")
+
+    fake.listResult = [project([b])]  // config drops `a`
+    fake.allowDelete = true
+    await waitUntil({ store.deletingWorkrooms.isEmpty }, "tombstone should clear after teardown")
+    gate.open = true
+    await stale.value
+    XCTAssertEqual(
+      workroomNames(store), ["b"], "a stale in-flight read must not republish the workroom")
+  }
+
   /// A FAILED teardown must restore the workroom: the tombstone is cleared and the reload brings it
   /// back (it still exists on disk / in config).
   func testFailedTeardownRestoresWorkroom() async {

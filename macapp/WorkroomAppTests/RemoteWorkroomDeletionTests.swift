@@ -126,8 +126,10 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
   /// The CLI, recording each call the delete flows make, in order.
   private final class RecordingCLI: WorkroomCLIProtocol, @unchecked Sendable {
     let calls = Calls()
+    /// What config lists: a delete's reload publishes it.
+    var listed: [Project] = []
     func list(warnings: String, project: String?) async throws -> ListResponse {
-      ListResponse(projects: [], workroomsDir: nil, configPath: nil)
+      ListResponse(projects: listed, workroomsDir: nil, configPath: nil)
     }
     func addProject(_ path: String, create: Bool) async throws -> String { path }
     func create(
@@ -197,6 +199,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
       host: HostDescriptor(state: "destroyed", provisioner: mine))
     let project = Project(path: "/proj", vcs: "git", workrooms: [remote])
     store.projects = [project]
+    cli.listed = [Project(path: "/proj", vcs: "git", workrooms: [])]
 
     store.deleteWorkroom(remote, in: project)
     await waitFor("delete r", in: cli)
