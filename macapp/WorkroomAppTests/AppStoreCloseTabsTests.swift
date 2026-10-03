@@ -125,8 +125,12 @@ final class AppStoreCloseTabsTests: XCTestCase {
 
     store.clearError()
     store.terminals.onRemoteCloseFailed?(id, title)
+    XCTAssertEqual(store.errorTitle, "Couldn't stop the terminal in remote")
+    // Another pane of the same workroom fails too. Showing it again would reset the details,
+    // which only a new error does, so this marks whether the notice was shown a second time.
+    store.errorDetails = "first notice"
     store.terminals.onRemoteCloseFailed?(id, title)
-    XCTAssertEqual(store.errorTitle, "Couldn't stop the terminal in remote", "shown, and only once")
+    XCTAssertEqual(store.errorDetails, "first notice", "shown only once")
   }
 
   /// Value: protects=a failed remote close is not shown for a workroom that has been deleted or is being deleted, which it would tell the user to delete; fails_when=the notice ignores deletingWorkrooms or the project list; why_new=the tests above keep their workrooms; seam=none
