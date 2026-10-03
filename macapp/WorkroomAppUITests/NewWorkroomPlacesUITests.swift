@@ -127,6 +127,64 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     app.typeKey(.escape, modifierFlags: [])
   }
 
+  /// File ▸ New Workroom… (⌘N, and the tab bar's +) asks where too: picking a project offers the
+  /// same places, rather than creating on this Mac. Nothing is picked, so nothing is created.
+  func testThePickerAsksWhereWithThePreviewOn() {
+    let app = openPicker(extraArgs: [])
+    XCTAssertFalse(app.textFields["newWorkroom.filter"].exists, "still listing projects")
+    let thisMac = app.buttons["newWorkroom.place.thisMac"]
+    XCTAssertTrue(thisMac.waitForExistence(timeout: 5), "the picker didn't ask where")
+    XCTAssertTrue(thisMac.isEnabled)
+    for runtime in ["container", "apple-container"] {
+      XCTAssertTrue(app.buttons["newWorkroom.place.\(runtime)"].exists, "\(runtime) isn't offered")
+    }
+    XCTAssertFalse(app.staticTexts["newWorkroom.placesBlocked"].exists)
+    attach(app, "picker-places")
+
+    // Back lists the projects again.
+    app.buttons["newWorkroom.back"].click()
+    XCTAssertTrue(app.textFields["newWorkroom.filter"].waitForExistence(timeout: 5))
+    app.typeKey(.escape, modifierFlags: [])
+  }
+
+  /// While a create runs in the project, the picker says so once and offers no place.
+  func testThePickersPlacesAreOffWhileACreateRuns() {
+    let app = openPicker(extraArgs: ["-WorkroomUITestImagePull", "0.42"])
+    let blocked = app.staticTexts["newWorkroom.placesBlocked"]
+    XCTAssertTrue(blocked.waitForExistence(timeout: 5), "the picker doesn't say why")
+    XCTAssertEqual(blocked.value as? String, "A workroom is already being created")
+    for place in ["thisMac", "container", "apple-container"] {
+      let button = app.buttons["newWorkroom.place.\(place)"]
+      XCTAssertTrue(button.exists, "\(place) isn't listed")
+      XCTAssertFalse(button.isEnabled, "\(place) can be picked while a create runs")
+    }
+    attach(app, "picker-places-busy")
+    app.typeKey(.escape, modifierFlags: [])
+  }
+
+  /// Opens File ▸ New Workroom… with the preview on, and picks the fixture project.
+  private func openPicker(extraArgs: [String]) -> XCUIApplication {
+    let app = XCUIApplication()
+    app.launchArguments += [
+      "-WorkroomUITestFixture", "1", "-WorkroomUITestRemotePreview", "1",
+      "-ApplePersistenceIgnoreState", "YES",
+    ]
+    app.launchArguments += extraArgs
+    app.launch()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+    XCTAssertTrue(
+      app.otherElements["sidebar.project.UITestProject"].waitForExistence(timeout: 10),
+      "fixture project row should exist")
+    let file = app.menuBars.menuBarItems["File"]
+    file.click()
+    file.menuItems["New Workroom…"].click()
+    let project = app.descendants(matching: .any)
+      .matching(identifier: "newWorkroom.project.UITestProject").firstMatch
+    XCTAssertTrue(project.waitForExistence(timeout: 5), "the picker didn't list the project")
+    project.click()
+    return app
+  }
+
   func testNewWorkroomIsOneItemWithThePreviewOff() {
     let app = launch(preview: false)
     defer {

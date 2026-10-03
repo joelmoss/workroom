@@ -31,6 +31,8 @@ enum RemoteWorkrooms {
     case apple = "apple-container"
 
     var displayName: String { self == .docker ? "Docker" : "Apple Container" }
+    /// One of its containers, in a sentence: "a Docker container", "an Apple container".
+    var containerPhrase: String { self == .docker ? "a Docker container" : "an Apple container" }
   }
 
   /// The descriptor's `driver` for a Docker host.

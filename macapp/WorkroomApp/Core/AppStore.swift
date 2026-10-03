@@ -3541,9 +3541,9 @@ final class AppStore: ObservableObject {
 
   /// Creates a container workroom for `project` on `runtime` (#253, #309), derived from the
   /// project's base machine (built first if it has none), then selects it, which opens its first
-  /// pane on the far side.
+  /// pane on the far side. `splitAnchor` lands it beside that workroom instead, as `createWorkroom`.
   func createRemoteWorkroom(
-    in project: Project, runtime: RemoteWorkrooms.Runtime = .docker
+    in project: Project, runtime: RemoteWorkrooms.Runtime = .docker, splitAnchor: SidebarID? = nil
   ) async {
     guard canCreateRemoteWorkroom(in: project) else { return }
     beginBusy(project.path)
@@ -3582,7 +3582,13 @@ final class AppStore: ObservableObject {
       await created.instance.connection.close()
       await reload()
       selectedProjectID = project.id
-      selectedTargetID = .workroom(project: project.path, name: created.name)
+      let sid = SidebarID.workroom(project: project.path, name: created.name)
+      let landedInSplit =
+        splitAnchor.map {
+          insertWorkroomSplit(
+            sid, beside: $0, edge: .right, destinationRect: workroomPaneRect(for: $0))
+        } ?? false
+      if !landedInSplit { selectedTargetID = sid }
     } catch {
       await reload()
       present(error)

@@ -233,7 +233,7 @@ struct ProjectSidebar: View {
     }
     .help(
       reason.map { "\(runtime.displayName) can't be used: \($0)" }
-        ?? "A workroom of \(project.displayName) in a \(runtime.displayName) container on this Mac"
+        ?? "A workroom of \(project.displayName) in \(runtime.containerPhrase) on this Mac"
     )
     .disabled(reason != nil || !store.canCreateRemoteWorkroom(in: project))
   }
