@@ -306,8 +306,11 @@ jobs:
       # the variant's own paths (#288). It builds twice: a FIXTURE=1 control, whose apt layer is the
       # one the step above caches under `ssh-fixture`, so it only reads that scope; then the host,
       # under its own scope. Never one scope for both: a second export replaces the first.
+      # Not skipped when the ssh fixture step fails, since it needs nothing that step makes, only the
+      # buildx builder above; when that never came up, an earlier step failed and this would only add
+      # a second, confusing failure.
       - name: workroom-host image
-        if: matrix.arch == 'x86_64'
+        if: ${{ !cancelled() && matrix.arch == 'x86_64' && steps.buildx.outcome == 'success' }}
         timeout-minutes: 10
         env:
           BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
