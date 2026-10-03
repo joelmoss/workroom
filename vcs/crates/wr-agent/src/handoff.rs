@@ -286,15 +286,23 @@ pub fn hand_off(
     // be running, and none may start: every slot is taken until the exec, or until this returns.
     let _quiet = crate::vcs::Quiet::acquire(QUIET_TIMEOUT)
         .ok_or("a repository command is still running; try again when it finishes")?;
-    // A kill finishing on its own thread would be cut off by the exec between its SIGHUP and its
-    // SIGKILL, with the session it removed carried nowhere (#283).
-    if sessions.is_killing() {
-        return Err("a session is being ended; try again when it finishes".into());
+    // A kill on its own thread holds `TERMINATING` until its shell is gone, so `frozen` already
+    // keeps the exec out of its SIGHUP grace. What is left is its acknowledgement, written after:
+    // an exec there loses it, and the app reads a kill that worked as one that failed (#283). So
+    // wait for it out of `FREEZE_TIMEOUT`, and give `frozen` what is left: the waits stay inside
+    // `APP_TIMEOUT` (checked above) however the time is split.
+    let deadline = Instant::now() + FREEZE_TIMEOUT;
+    while sessions.is_killing() {
+        if Instant::now() >= deadline {
+            return Err("a session is being ended; try again when it finishes".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
     sessions
-        .frozen(FREEZE_TIMEOUT, |frozen| {
-            replace(context, binary, frozen, before_exec)
-        })
+        .frozen(
+            deadline.saturating_duration_since(Instant::now()),
+            |frozen| replace(context, binary, frozen, before_exec),
+        )
         .unwrap_or_else(|| {
             Err("a session is being ended or repainted; try again when it finishes".into())
         })
