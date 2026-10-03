@@ -1510,13 +1510,15 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     the supervisor waits until it has. `make remote-host-image-test` (#288) smoke-tests this
     variant, which run.sh never builds: it builds the host image as that target does, boots it and
     checks that sshd serves, that none of the fixture's pieces are there, that it keeps what a real
-    host needs (git, pgrep, setpriv, the CA bundle), and that the supervisor starts an agent pushed
-    after boot. A `FIXTURE=1` control with a stub agent goes first, and every one of those checks
-    must find its piece in it, or the check has gone stale and proves nothing. CI runs it as the
-    `workroom-host image` step of the `agent-linux` job (x86_64 only). `RemoteHosts` makes the
-    one `ContainerHostDriver`: `docker` from the usual install paths (a GUI app's PATH has none),
-    the image from the hidden `remoteHostImage` setting, an ed25519 key it makes under
-    `Application Support/Workroom/<bundle id>/remote`, and the label
+    host needs (git, pgrep, setpriv, the CA bundle) and its sshd hardening (`sshd -T`: no password,
+    keyboard-interactive or root login, `AllowUsers workroom`), and that the supervisor starts an
+    agent pushed after boot. A `FIXTURE=1` control with a stub agent goes first, and every one of
+    those checks must find its piece in it, or the check has gone stale and proves nothing. CI runs
+    it as the `workroom-host image` step of the `agent-linux` job (x86_64), and on arm64, what an
+    Apple Silicon Mac runs, as the `host-image-arm64` job on `ubuntu-24.04-arm` (#299).
+    `RemoteHosts` makes the one `ContainerHostDriver`: `docker` from the usual install paths (a GUI
+    app's PATH has none), the image from the hidden `remoteHostImage` setting, an ed25519 key it
+    makes under `Application Support/Workroom/<bundle id>/remote`, and the label
     `workroom.provisioner=<bundle id>`, so one build's sweep never takes another's hosts. A Debug
     build carries no Linux agent unless built with `WR_AGENT_LINUX=1`.
   - **The sequence** (`RemoteWorkrooms.create`): the project's GitHub repository from `gh`
