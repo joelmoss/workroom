@@ -19,9 +19,12 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
   /// What a released `deleteProject` hands back to move to the Bin.
   var trashPaths: [URL] = []
   private(set) var listCalls = 0
+  /// When true, `list` throws — modelling a config read that fails after a delete succeeded.
+  var listFails = false
 
   func list(warnings: String, project: String?) async throws -> ListResponse {
     listCalls += 1
+    if listFails { throw WorkroomCLIError.timedOut }
     return ListResponse(projects: listResult, workroomsDir: nil, configPath: nil)
   }
 
@@ -175,6 +178,29 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     await stale.value
     XCTAssertEqual(
       workroomNames(store), ["b"], "a stale in-flight read must not republish the workroom")
+  }
+
+  /// The reload a successful teardown runs is quiet: if that `list` fails, the delete that worked
+  /// is not reported as an error, and the workroom stays gone (#295).
+  // Value: protects=a successful delete is never reported as an error because its follow-up read
+  //   failed; fails_when=the success path's load surfaces errors (plain reload());
+  //   why_new=no other test makes list throw after a successful teardown; seam=none
+  func testFailedReloadAfterSuccessfulTeardownShowsNoError() async {
+    let a = workroom("a")
+    let b = workroom("b")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a, b])]
+    let store = makeStore(fake)
+    await store.reload()
+
+    store.deleteWorkroom(a, in: project([a, b]))
+    await waitUntil({ fake.deleteStarted }, "teardown should start")
+    fake.listFails = true
+    fake.allowDelete = true
+    // The tombstone lifts only after the success path's load returns.
+    await waitUntil({ store.deletingWorkrooms.isEmpty }, "tombstone should clear after teardown")
+    XCTAssertNil(store.errorMessage, "a delete that succeeded must not report an error")
+    XCTAssertEqual(workroomNames(store), ["b"], "the workroom stays gone")
   }
 
   /// A FAILED teardown must restore the workroom: the tombstone is cleared and the reload brings it
