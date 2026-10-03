@@ -581,8 +581,8 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// Set once by `AppStore`: a closed remote pane's session could not be ended on its host, so it
-  /// is still running there (#283). Given the target's title.
-  var onRemoteCloseFailed: ((String) -> Void)?
+  /// is still running there (#283). Given the target's id and title.
+  var onRemoteCloseFailed: ((TerminalTarget.ID, String) -> Void)?
 
   init() {
     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
@@ -1657,7 +1657,7 @@ final class TerminalSessions: ObservableObject {
     Task {
       let ended = await self.endPersistentSession(for: tab)
       self.closeKillsInFlight -= 1
-      if ended == false { self.onRemoteCloseFailed?(target.title) }
+      if ended == false { self.onRemoteCloseFailed?(target.id, target.title) }
     }
     teardown(tab)
     tabsByTarget[target.id]?[tabID] = nil
@@ -2289,9 +2289,7 @@ final class TerminalSessions: ObservableObject {
     return persisted ?? UUID()
   }
 
-  /// Whether a REMOTE session was ended (#283); nil for a local session or none, whose failures
-  /// stay in the log as they always have.
-  @discardableResult
+  /// Whether the tab's session is registered as remote (#283).
   private func isRemoteSession(_ tab: TerminalTab) -> Bool {
     guard case .terminal(let state) = tab.content, let sessionID = state.sessionID else {
       return false
@@ -2299,6 +2297,9 @@ final class TerminalSessions: ObservableObject {
     return sessionService.isRemote(sessionID)
   }
 
+  /// Whether a REMOTE session was ended (#283); nil for a local session or none, whose failures
+  /// stay in the log as they always have.
+  @discardableResult
   private func endPersistentSession(for tab: TerminalTab) async -> Bool? {
     guard case .terminal(let state) = tab.content, let sessionID = state.sessionID else {
       return nil

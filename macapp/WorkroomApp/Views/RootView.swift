@@ -201,7 +201,9 @@ struct RootView: View {
         isPresented: Binding(
           get: { store.errorMessage != nil },
           set: { if !$0 { store.clearError() } }
-        )
+        ),
+        // After the dismissal has finished, so a queued notice is not presented over it (#283).
+        onDismiss: { store.presentNextRemoteCloseFailure() }
       ) {
         ErrorSheet(
           title: store.errorTitle ?? "Something went wrong", message: store.errorMessage ?? "",

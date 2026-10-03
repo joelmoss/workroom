@@ -82,43 +82,83 @@ final class AppStoreCloseTabsTests: XCTestCase {
     XCTAssertTrue(store.terminals.tabs(for: target).isEmpty)
   }
 
+  private func remoteWorkroomStore(_ names: [String]) -> AppStore {
+    let store = makeStore()
+    store.projects = [
+      Project(
+        path: "/p", vcs: "git",
+        workrooms: names.map { Workroom(name: $0, path: "/p/\($0)", vcsName: "main", warnings: []) }
+      )
+    ]
+    return store
+  }
+
+  private func failed(_ name: String) -> (TerminalTarget.ID, String) {
+    (TerminalTarget.workroomID(project: "/p", name: name), name)
+  }
+
   /// Value: protects=a closed remote pane whose host kept its session shows an alert naming the workroom, but not once a quit has begun; fails_when=AppStore drops the handler or ignores isTerminating; why_new=RemotePaneCloseTests stops at TerminalSessions.onRemoteCloseFailed; seam=none
   func testAFailedRemoteCloseAlertsUnlessTheAppIsQuitting() {
-    let store = makeStore()
-    store.terminals.onRemoteCloseFailed?("remote")
+    let store = remoteWorkroomStore(["remote"])
+    let (id, title) = failed("remote")
+    store.terminals.onRemoteCloseFailed?(id, title)
     XCTAssertEqual(store.errorTitle, "Couldn't stop the terminal in remote")
     XCTAssertTrue(store.errorMessage?.contains("may still be running") == true)
 
-    store.errorTitle = nil
-    store.errorMessage = nil
+    store.clearError()
+    store.presentNextRemoteCloseFailure()
     WindowRegistry.shared.isTerminating = true
     defer { WindowRegistry.shared.isTerminating = false }
-    store.terminals.onRemoteCloseFailed?("remote")
+    store.terminals.onRemoteCloseFailed?(id, title)
     XCTAssertNil(store.errorTitle, "a quit has stopped waiting; an alert would hold it up")
     XCTAssertNil(store.errorMessage)
   }
 
-  /// Value: protects=a failed remote close never replaces an error already on screen, and is shown once that error is dismissed; fails_when=the notice overwrites errorMessage or the queue is not drained by clearError; why_new=the test above starts with no error showing; seam=none
-  func testAFailedRemoteCloseWaitsBehindAnErrorAlreadyShowing() async throws {
-    let store = makeStore()
+  /// Value: protects=a failed remote close never replaces an error already on screen, is shown once that error's sheet has gone, and shows once per workroom; fails_when=the notice overwrites errorMessage, the queue is not drained on dismissal, or each failed pane queues its own notice; why_new=the test above starts with no error showing; seam=none
+  func testAFailedRemoteCloseWaitsBehindAnErrorAlreadyShowing() {
+    let store = remoteWorkroomStore(["first", "second"])
     store.errorTitle = "Couldn't delete it"
     store.errorMessage = "The teardown failed."
-    store.terminals.onRemoteCloseFailed?("first")
-    store.terminals.onRemoteCloseFailed?("second")
+    let (first, firstTitle) = failed("first")
+    let (second, secondTitle) = failed("second")
+    // Closing a workroom whose host is down fails every one of its panes.
+    store.terminals.onRemoteCloseFailed?(first, firstTitle)
+    store.terminals.onRemoteCloseFailed?(first, firstTitle)
+    store.terminals.onRemoteCloseFailed?(second, secondTitle)
     XCTAssertEqual(store.errorTitle, "Couldn't delete it", "the error being read is kept")
     XCTAssertEqual(store.errorMessage, "The teardown failed.")
 
     store.clearError()
-    for _ in 0..<100 where store.errorTitle == nil { try await Task.sleep(for: .milliseconds(10)) }
+    store.presentNextRemoteCloseFailure()
     XCTAssertEqual(store.errorTitle, "Couldn't stop the terminal in first")
     XCTAssertTrue(store.errorMessage?.contains("Deleting the workroom stops it") == true)
+    store.terminals.onRemoteCloseFailed?(first, firstTitle)
+    XCTAssertEqual(store.errorTitle, "Couldn't stop the terminal in first", "not queued again")
 
     store.clearError()
-    for _ in 0..<100 where store.errorTitle == nil { try await Task.sleep(for: .milliseconds(10)) }
+    store.presentNextRemoteCloseFailure()
     XCTAssertEqual(store.errorTitle, "Couldn't stop the terminal in second")
 
     store.clearError()
-    try await Task.sleep(for: .milliseconds(100))
-    XCTAssertNil(store.errorTitle, "the queue is empty")
+    store.presentNextRemoteCloseFailure()
+    XCTAssertNil(store.errorTitle, "one notice per workroom, and the queue is empty")
+  }
+
+  /// Value: protects=a failed remote close is not shown for a workroom that has been deleted, which it would tell the user to delete; fails_when=the notice or its queued copy ignores deletingWorkrooms or the project list; why_new=the tests above keep their workrooms; seam=none
+  func testAFailedRemoteCloseForADeletedWorkroomIsDropped() {
+    let store = remoteWorkroomStore(["kept", "going"])
+    let (kept, keptTitle) = failed("kept")
+    let (going, goingTitle) = failed("going")
+    let (gone, goneTitle) = failed("gone")
+    store.terminals.onRemoteCloseFailed?(gone, goneTitle)
+    XCTAssertNil(store.errorTitle, "a workroom no longer listed")
+
+    store.errorMessage = "Something else."
+    store.terminals.onRemoteCloseFailed?(going, goingTitle)
+    store.terminals.onRemoteCloseFailed?(kept, keptTitle)
+    store.deletingWorkrooms.insert(going)
+    store.clearError()
+    store.presentNextRemoteCloseFailure()
+    XCTAssertEqual(store.errorTitle, "Couldn't stop the terminal in kept", "its queued copy too")
   }
 }
