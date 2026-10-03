@@ -617,6 +617,13 @@ enum UITestFixture {
   /// header fades all key off this, so a drifted value silently rebaselines every visual QA pass
   /// (issue #162 review). Fixture-namespaced because a bare `-dimUnfocusedPanes 0` cannot work: see
   /// `applyFixtureDefaults`'s note on argument-domain strings.
+  /// Whether a fixture launch has the remote preview on (`-WorkroomUITestRemotePreview 1`, #309):
+  /// New Workroom becomes a submenu of places. Off unless given, so no other test sees it; mirrored
+  /// into `Defaults` (`applyFixtureDefaults`), since the argument domain would shadow the key.
+  static var remotePreview: Bool {
+    text("WorkroomUITestRemotePreview").map { ($0 as NSString).boolValue } ?? false
+  }
+
   static var dimUnfocusedPanes: Bool {
     // The arg arrives as a STRING, so parse it as one; unset ⇒ the shipped default.
     text("WorkroomUITestDimUnfocusedPanes").map { ($0 as NSString).boolValue } ?? true
@@ -931,6 +938,8 @@ enum UITestFixture {
     // Auto-even splits: same persistence trap, and it decides where every divider in a split lands
     // (issue #126) — an unpinned value rebaselines any test or screenshot that measures panes.
     Defaults[.autoResizeSplitsEvenly] = autoResizeSplitsEvenly
+    // The remote preview PERSISTS too, and decides whether New Workroom is a submenu (#309).
+    Defaults[.remoteWorkroomsPreview] = remotePreview
     // Pinned "already onboarded" for the same reason as `themeFamily`/`diffViewMode` above: the flag
     // PERSISTS in the real Dev `Defaults` domain, so a fresh machine with zero registered projects
     // would otherwise pop the onboarding wizard (issue #151) over e.g. `NewWorkroomDialogUITests`'
