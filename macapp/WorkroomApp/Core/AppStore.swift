@@ -3135,6 +3135,16 @@ final class AppStore: ObservableObject {
     endOrphanedSessionsOnce(in: fresh)
   }
 
+  /// Runs the remote-host sweep a reload held back while a delete was in flight (#296), once the
+  /// last tombstone lifts. A failed delete's reload does this itself. `adopt` takes on only hosts
+  /// it doesn't hold, and sweeps at most once per launch.
+  private func runHeldHostSweep() {
+    guard RemoteWorkrooms.isEnabled, deletingProjects.isEmpty, deletingWorkrooms.isEmpty else {
+      return
+    }
+    RemoteHosts.shared.adopt(projects)
+  }
+
   /// Remove projects and workrooms with an in-flight deletion from the accepted listing. The same
   /// accepted path set filters the already-normalized routing entries before projects are
   /// published.
@@ -3815,6 +3825,7 @@ final class AppStore: ObservableObject {
         // Teardown persisted (the workroom is gone from config): drop the tombstone. Future `list`
         // snapshots no longer include it, and the optimistic removal already matches (issue #116).
         deletingWorkrooms.remove(targetID)
+        runHeldHostSweep()
       } catch {
         // Teardown failed → the workroom still exists. Clear the tombstone BEFORE reloading so the
         // reload's `apply` doesn't filter it out — it must reappear in the sidebar.
@@ -4057,6 +4068,7 @@ final class AppStore: ObservableObject {
           // Quiet: a failed `list` must not report a delete that succeeded as an error.
           await self.load(warnings: "fast", surfaceErrors: false)
           self.deletingProjects.remove(project.path)
+          self.runHeldHostSweep()
         } catch {
           // Before the reload, so the project (still in config) reappears.
           self.deletingProjects.remove(project.path)
