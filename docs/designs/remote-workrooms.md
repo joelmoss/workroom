@@ -1106,11 +1106,11 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     session for 60 seconds (`REFUSED_ID_WINDOW`): the attach is answered with a failure and starts
     nothing. The refusal is recorded before the kill looks for the session, and a create checks it
     under the session map's lock, so either the create is refused or the kill finds the session it
-    made. The refusals are also written to a file beside the agent's socket (`agent.refused` for `agent.sock`), and
-    the next program to serve that socket reads them, so a hand-off, an idle exit or a crash in
-    between does not let it create a session killed just before it (#310). The app counts its close kills in flight on
-    `PersistentSessionService`, not on each window's `TerminalSessions`, so a quit also waits for
-    the kill of a pane whose window has closed since.
+    made. The refusals are also written to a file beside the agent's socket (`agent.refused` for
+    `agent.sock`), and the next program to serve that socket reads them, so a hand-off, an idle
+    exit or a crash in between does not let it create a session killed just before it (#310). The
+    app counts its close kills in flight on `PersistentSessionService`, not on each window's
+    `TerminalSessions`, so a quit also waits for the kill of a pane whose window has closed since.
   - *`CREATE=0` is only as good as the agent that reads it.* An agent older than the flag ignores
     it and creates the session. The version hand-off (#230) and the bootstrap (#231) keep the
     host's agent current; a host whose agent predates hand-off, which the bootstrap leaves
@@ -2852,8 +2852,8 @@ disagreement passes every test on either side alone while presenting as an empty
       (the re-synthesis offset above). The environment does cross: it is the first agent's, as
       it was before. So do the ids a client asked to kill in the last 60 seconds, which a new
       session is refused (#297): not in the table but in the `.refused` file beside the socket,
-      which any program serving it reads at start, so an older binary handed to simply ignores
-      it (#310).
+      which a program of this build or later reads when it starts serving. An older binary handed
+      to ignores it, so a kill's refusal does not survive a hand-off to one (#310).
     - *Gated to Nightly and Dev* (`AgentHandOff.isEnabled`). Stable waits until Nightly has run it.
     - *Trust model: the socket is the boundary. DECIDED (2026-09-25, owner).* `HandOff` makes the
       agent execute any regular file a socket client names. That crosses no user boundary, because
