@@ -3515,6 +3515,11 @@ final class AppStore: ObservableObject {
 
   /// Whether creating a container workroom is on for `project`: not while another create holds it busy, since
   /// a second create would build a second base.
+  /// How far each project's container workroom create has got downloading its host image, 0 to 1
+  /// (#309): the first create in a project pulls it, a couple of hundred MB. The row's spinner
+  /// shows it.
+  @Published var imagePulls: [String: Double] = [:]
+
   func canCreateRemoteWorkroom(in project: Project) -> Bool {
     RemoteWorkrooms.isEnabled && !isBusyProject(project.path)
       && !deletingProjects.contains(project.path)
@@ -3543,11 +3548,22 @@ final class AppStore: ObservableObject {
       guard repository.host == "github.com" else {
         throw RemoteWorkrooms.Failure.notOnGitHub("Its origin is on \(repository.host).")
       }
-      let created = try await RemoteWorkrooms.create(
-        repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
-        base: base, project: project.host, runtime: runtime, driver: driver,
-        environment: environment,
-        recorder: remoteRecorder(project: project.path))
+      let path = project.path
+      defer { imagePulls[path] = nil }
+      let report: @Sendable (Double) -> Void = { fraction in
+        Task { @MainActor [weak self] in
+          // A report that arrives after the create ended shows nothing.
+          guard let self, self.isBusyProject(path) else { return }
+          self.imagePulls[path] = fraction
+        }
+      }
+      let created = try await ContainerHostDriver.$pullProgress.withValue(report) {
+        try await RemoteWorkrooms.create(
+          repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
+          base: base, project: project.host, runtime: runtime, driver: driver,
+          environment: environment,
+          recorder: remoteRecorder(project: project.path))
+      }
       // Its panes attach through their own ssh; Changes and the rest connect for themselves.
       await created.instance.connection.close()
       await reload()

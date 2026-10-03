@@ -311,6 +311,32 @@ final class RemoteHostsTests: XCTestCase {
       Array(calls.prefix(3)), ["image inspect", "pull workroom-host", "run --pull=never"])
   }
 
+  private final class Fractions: @unchecked Sendable {
+    private let lock = NSLock()
+    private var heard: [Double] = []
+    var all: [Double] { lock.withLock { heard } }
+    func add(_ fraction: Double) { lock.withLock { heard.append(fraction) } }
+  }
+
+  /// A pull's progress reaches the create that asked for it as it goes, rising to the whole (#309).
+  func testAPullsProgressReachesItsCreate() async throws {
+    let (runtime, _) = try scriptedRuntime(
+      """
+      "image inspect --format {{.Id}} workroom-host") exit 1 ;;
+      "pull workroom-host")
+        printf 'aaaaaaaaaaaa: Pulling fs layer\nbbbbbbbbbbbb: Pulling fs layer\n'
+        sleep 0.2; printf 'aaaaaaaaaaaa: Pull complete\n'
+        sleep 0.2; printf 'bbbbbbbbbbbb: Pull complete\n' ;;
+      run*) exit 1 ;;
+      """)
+    let heard = Fractions()
+    let report: @Sendable (Double) -> Void = { heard.add($0) }
+    try? await ContainerHostDriver.$pullProgress.withValue(report) {
+      _ = try await Self.driver(runtime: runtime, context: nil).create()
+    }
+    XCTAssertEqual(heard.all, [0, 0.5, 1])
+  }
+
   /// A pull that fails says the host image couldn't be downloaded, and runs nothing.
   func testAFailedPullSaysTheImageCouldNotBeDownloaded() async throws {
     let (runtime, log) = try failingRuntime(pullFails: true)

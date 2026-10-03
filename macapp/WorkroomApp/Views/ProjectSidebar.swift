@@ -272,7 +272,19 @@ struct ProjectSidebar: View {
       .opacity(busy ? 0 : 1)
       .allowsHitTesting(!busy)
       .overlay {
-        if busy { ProgressView().controlSize(.small) }
+        if busy {
+          // A container workroom's first create downloads its host image, which can take a while:
+          // how far it has got, rather than a spinner that says nothing (#309).
+          if let pulled = store.imagePulls[project.path] {
+            ProgressView(value: pulled)
+              .progressViewStyle(.circular)
+              .controlSize(.small)
+              .help("Downloading the workroom image: \(Int(pulled * 100))%")
+              .accessibilityIdentifier("sidebar.project.imagePull")
+          } else {
+            ProgressView().controlSize(.small)
+          }
+        }
       }
     }
     .frame(height: rowHeight)

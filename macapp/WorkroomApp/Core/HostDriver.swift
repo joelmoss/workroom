@@ -142,6 +142,8 @@ final class HostStream: @unchecked Sendable {
   private var errors = Data()
   /// stderr reached EOF: everything the carrier said is in `errors`.
   private var errorsClosed = false
+  /// Told each piece of output as it arrives, stdout's and stderr's alike (`communicate`).
+  private var onOutput: (@Sendable (Data) -> Void)?
   /// `end()` stopped a carrier that was still running, so its exit status is our own signal.
   private var endedByUs = false
   /// A connection took the descriptor and the process (`handOff`), so `deinit` leaves them alone.
@@ -304,10 +306,16 @@ final class HostStream: @unchecked Sendable {
   ///
   /// The writes and reads block, on GCD (`runBlocking`), not the cooperative pool: an 11 MB
   /// binary over a slow link is exactly the kind of wait that starves other blocking work there.
-  func communicate(_ input: Data?, timeout: TimeInterval) async throws -> (
+  ///
+  /// `onOutput` is told each piece of its output as it arrives, from stdout and stderr, for a
+  /// command that reports progress (`ContainerHostDriver`'s image pull).
+  func communicate(
+    _ input: Data?, timeout: TimeInterval, onOutput: (@Sendable (Data) -> Void)? = nil
+  ) async throws -> (
     status: Int32, output: String
   ) {
     precondition(purpose == .exchange, "communicate needs a stream spawned for an exchange")
+    lock.withLock { self.onOutput = onOutput }
     let fd = descriptor
     // Claimed once: only this exchange closes it, after its last `send` on it. A second call, even
     // a concurrent one, traps rather than sending on a descriptor this one may have closed.
@@ -368,6 +376,7 @@ final class HostStream: @unchecked Sendable {
             // and the scripts' report, which comes after whatever a shell startup printed,
             // survives even a startup that printed more than that.
             collected.append(chunk, count: count)
+            onOutput?(Data(chunk[0..<count]))
             if collected.count > 1024 * 1024 {
               collected.removeFirst(collected.count - 1024 * 1024)
             }
@@ -497,9 +506,10 @@ final class HostStream: @unchecked Sendable {
 
   /// Keeps the first 16 KiB of stderr: enough for any diagnosis, and bounded against a chatty one.
   private func collect(_ data: Data) {
-    lock.withLock {
-      guard errors.count < 16 * 1024 else { return }
-      errors.append(data.prefix(16 * 1024 - errors.count))
+    let listener = lock.withLock { () -> (@Sendable (Data) -> Void)? in
+      if errors.count < 16 * 1024 { errors.append(data.prefix(16 * 1024 - errors.count)) }
+      return onOutput
     }
+    listener?(data)
   }
 }
