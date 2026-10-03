@@ -117,7 +117,23 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   func create() async throws -> HostID {
     guard let provisioning else { throw HostDriverError.notImplemented("Creating a base") }
+    try await ensureImage(provisioning.image)
     return try await run(provisioning.image, image: nil)
+  }
+
+  /// Pulls `image` unless the runtime already has it (#309). `run` itself never pulls
+  /// (`--pull=never`): left to it, a missing `workroom-host` was looked for on Docker Hub as
+  /// `library/workroom-host`, and failed with a registry error that said nothing about why.
+  private func ensureImage(_ image: String) async throws {
+    if (try? await runtime(["image", "inspect", "--format", "{{.Id}}", image])) != nil { return }
+    do {
+      // Silence-bounded, and a pull reports its progress as it goes.
+      _ = try await runtime(["pull", image], timeout: 900)
+    } catch {
+      throw HostDriverError.provisioning(
+        "couldn't download the workroom host image \(image). Check your network connection, "
+          + "then try again. (\(error.localizedDescription))")
+    }
   }
 
   /// A snapshot of `base`'s disk, run as a container of its own. The base keeps running: `commit`
@@ -326,7 +342,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       _ = try await runtime(
         // `unless-stopped`: a Docker or Mac restart brings it back, on the port its record names.
         [
-          "run", "--detach", "--init", "--restart", "unless-stopped", "--name", container,
+          "run", "--pull=never", "--detach", "--init", "--restart", "unless-stopped", "--name",
+          container,
           "--publish", "127.0.0.1:\(port):22",
         ]
           + (provisioning.labels + [Self.created()]).flatMap { ["--label", $0] }

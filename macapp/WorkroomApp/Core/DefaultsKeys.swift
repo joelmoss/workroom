@@ -92,9 +92,11 @@ extension Defaults.Keys {
   /// `defaults write <bundle id> remoteWorkroomsPreview -bool YES`.
   static let remoteWorkroomsPreview = Key<Bool>(
     "remoteWorkroomsPreview", default: false, suite: .app)
-  /// The Docker image a remote workroom's host runs (#253): `make remote-host-image` builds it.
-  /// Hidden; override with `defaults write <bundle id> remoteHostImage <image>`.
-  static let remoteHostImage = Key<String>("remoteHostImage", default: "workroom-host", suite: .app)
+  /// Overrides the image a container workroom's host runs (#253, #309), which is otherwise the one
+  /// this build pins (`RemoteWorkrooms.hostImage`). Hidden; set it with
+  /// `defaults write <bundle id> remoteHostImage <image>`, e.g. `workroom-host` for the image
+  /// `make remote-host-image` builds.
+  static let remoteHostImage = Key<String?>("remoteHostImage", default: nil, suite: .app)
   /// The Workroom credential broker (Codaset). Empty means the build's own: codaset.dev, or
   /// `https://codaset.localhost` in a Debug build, which only ever reaches this Mac
   /// (`BrokerEndpoint`). Hidden; override with `defaults write <bundle id> brokerURL <url>`.

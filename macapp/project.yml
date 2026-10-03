@@ -274,6 +274,9 @@ targets:
         # selectable at runtime), "nightly" for the side-by-side Workroom Nightly build. Read by
         # ReleaseChannel.current → Updater.allowedChannels + CommandLineInstaller's binary name.
         WorkroomReleaseChannel: "$(WORKROOM_RELEASE_CHANNEL)"
+        # The `workroom-host` image local container workrooms run, by digest (#309): CI publishes
+        # it and release.sh passes it in. Empty for a local build, which runs `workroom-host`.
+        WorkroomHostImage: "$(WORKROOM_HOST_IMAGE)"
         LSMinimumSystemVersion: "15.0"
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.developer-tools
@@ -328,6 +331,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Base identity is the main/release channel (empty marker). Debug + Nightly override below.
         WORKROOM_RELEASE_CHANNEL: ""
+        WORKROOM_HOST_IMAGE: ""
         # Sparkle feed filename, substituted into SUFeedURL above. Nightly overrides it; Debug
         # inherits the main feed (Dev builds can't self-update, so it is never fetched).
         WORKROOM_APPCAST: appcast.xml

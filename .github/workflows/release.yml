@@ -41,7 +41,18 @@ jobs:
   # NOTARY_KEY / NOTARY_KEY_ID / NOTARY_ISSUER_ID.
   # Optional: SENTRY_AUTH_TOKEN / SENTRY_ORG / SENTRY_PROJECT enable Sentry dSYM upload so release
   # crashes symbolicate; release.sh skips that step when any of them (or sentry-cli) is absent.
+  # The `workroom-host` image this release's local container workrooms run (#309), built, tested
+  # and published per architecture; its digest is pinned into the app below.
+  host-image:
+    uses: ./.github/workflows/host-image.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      tag: ${{ github.ref_name }}
+
   macapp:
+    needs: host-image
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
@@ -124,6 +135,8 @@ jobs:
           # Empty until the secret is added — release.sh then skips signing (DMG still ships).
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           VERSION: ${{ github.ref_name }}
+          # The host image this app runs, by digest (release.sh → WorkroomHostImage).
+          WORKROOM_HOST_IMAGE: ${{ needs.host-image.outputs.image }}
           # Sentry dSYM upload (optional — release.sh skips when any is empty). ORG/PROJECT are
           # slugs, not secrets, but kept as secrets here to match this job's convention.
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}

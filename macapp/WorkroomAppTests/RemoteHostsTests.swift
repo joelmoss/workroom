@@ -244,6 +244,59 @@ final class RemoteHostsTests: XCTestCase {
     return (runtime, log)
   }
 
+  /// A stand-in runtime CLI that logs every call and fails `image inspect` (the image is missing),
+  /// `run`, and `pull` when `pullFails`, so `create` stops at its first container.
+  private func failingRuntime(pullFails: Bool) throws -> (runtime: URL, log: URL) {
+    let (runtime, log) = try stubRuntime()
+    let script = try String(contentsOf: runtime, encoding: .utf8)
+    try
+      (script + """
+
+        case "$1 $2" in "image inspect") exit 1 ;; esac
+        case "$1" in run) exit 1 ;; pull) \(pullFails ? "echo 'denied' >&2; exit 1" : "exit 0") ;; esac
+        """).write(to: runtime, atomically: true, encoding: .utf8)
+    return (runtime, log)
+  }
+
+  /// A missing host image is pulled, by itself, before the base's container runs, and `run` never
+  /// pulls: left to it, a missing image was looked for on Docker Hub (#309).
+  func testAMissingHostImageIsPulledBeforeRunAndRunNeverPulls() async throws {
+    let (runtime, log) = try failingRuntime(pullFails: false)
+    do {
+      _ = try await Self.driver(runtime: runtime, context: nil).create()
+      XCTFail("run was meant to fail")
+    } catch {}
+    let calls = try String(contentsOf: log, encoding: .utf8).split(separator: "\n").map {
+      $0.split(separator: " ").prefix(2).joined(separator: " ")
+    }
+    XCTAssertEqual(
+      Array(calls.prefix(3)), ["image inspect", "pull workroom-host", "run --pull=never"])
+  }
+
+  /// A pull that fails says the host image couldn't be downloaded, and runs nothing.
+  func testAFailedPullSaysTheImageCouldNotBeDownloaded() async throws {
+    let (runtime, log) = try failingRuntime(pullFails: true)
+    do {
+      _ = try await Self.driver(runtime: runtime, context: nil).create()
+      XCTFail("a failed pull created a host")
+    } catch {
+      XCTAssertTrue(
+        error.localizedDescription.contains("couldn't download the workroom host image"),
+        error.localizedDescription)
+    }
+    XCTAssertFalse(try String(contentsOf: log, encoding: .utf8).contains("run "))
+  }
+
+  /// The image a new base runs: the hidden override, else the build's pinned digest, else a local
+  /// `workroom-host`. Empty values, as an unset build setting leaves `WorkroomHostImage`, don't count.
+  func testTheHostImageIsTheOverrideThenThePinThenLocal() {
+    let pinned = "ghcr.io/joelmoss/workroom-host@sha256:" + String(repeating: "a", count: 64)
+    XCTAssertEqual(RemoteWorkrooms.hostImage(override: "mine", pinned: pinned), "mine")
+    XCTAssertEqual(RemoteWorkrooms.hostImage(override: nil, pinned: pinned), pinned)
+    XCTAssertEqual(RemoteWorkrooms.hostImage(override: " ", pinned: ""), "workroom-host")
+    XCTAssertEqual(RemoteWorkrooms.hostImage(override: nil, pinned: nil), "workroom-host")
+  }
+
   private static func driver(runtime: URL, context: String?) -> ContainerHostDriver {
     ContainerHostDriver(
       hosts: [:], directory: FileManager.default.temporaryDirectory,

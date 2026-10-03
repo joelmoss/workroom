@@ -1,0 +1,101 @@
+name: Host image
+
+# Publishes the `workroom-host` image a local container workroom runs (#309), for the Nightly and
+# Release workflows, which pin the app they build to the digest this outputs.
+#
+# Each architecture is built once, smoke-tested as that exact image (host-image-test.sh with
+# WR_HOST_IMAGE), and only then pushed by digest: a second build for the push could resolve other
+# Debian packages than the ones tested. The two digests are then joined into one multi-arch manifest
+# under `tag`, and the manifest's digest is the output.
+#
+# The package must be public for an app to pull it without signing in to ghcr: set once, by hand,
+# in the package's settings after its first push.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag the manifest is published under (nightly, or the release version).
+        required: true
+        type: string
+    outputs:
+      image:
+        description: The published manifest, by digest (ghcr.io/<owner>/workroom-host@sha256:…).
+        value: ${{ jobs.manifest.outputs.image }}
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      # One output per leg; a matrix job's outputs are last-writer-wins otherwise.
+      digest-amd64: ${{ steps.push.outputs.digest-amd64 }}
+      digest-arm64: ${{ steps.push.outputs.digest-arm64 }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build
+        run: docker build --tag workroom-host-candidate vcs/scripts/ssh-fixture
+
+      - name: Smoke-test that image
+        env:
+          WR_HOST_IMAGE: workroom-host-candidate
+        run: vcs/scripts/ssh-fixture/host-image-test.sh
+
+      - name: Log in to ghcr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      # Pushed under a per-run, per-arch tag only so `docker push` has something to push; the
+      # manifest below references it by digest, which is what the app pins.
+      - name: Push
+        id: push
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/workroom-host"
+          tag="$repo:build-${{ github.run_id }}-${{ matrix.arch }}"
+          docker tag workroom-host-candidate "$tag"
+          digest="$(docker push "$tag" | sed -n 's/.*digest: \(sha256:[0-9a-f]\{64\}\).*/\1/p')"
+          test -n "$digest" || { echo "::error::no digest from docker push"; exit 1; }
+          echo "digest-${{ matrix.arch }}=$digest" >> "$GITHUB_OUTPUT"
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.create.outputs.image }}
+    steps:
+      - name: Log in to ghcr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      - name: Create the multi-arch manifest
+        id: create
+        env:
+          AMD64: ${{ needs.build.outputs.digest-amd64 }}
+          ARM64: ${{ needs.build.outputs.digest-arm64 }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/workroom-host"
+          docker buildx imagetools create --tag "$repo:$TAG" "$repo@$AMD64" "$repo@$ARM64"
+          digest="$(docker buildx imagetools inspect "$repo:$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          case "$digest" in sha256:*) ;; *) echo "::error::no manifest digest: $digest"; exit 1 ;; esac
+          echo "image=$repo@$digest" >> "$GITHUB_OUTPUT"
+          echo "Published $repo@$digest ($TAG)" >> "$GITHUB_STEP_SUMMARY"
