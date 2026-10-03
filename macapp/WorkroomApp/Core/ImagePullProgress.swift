@@ -10,7 +10,9 @@ struct ImagePullProgress: Sendable {
   private var layers: Set<String> = []
   private var done: Set<String> = []
   private var stepped: Double?
-  private var pending = ""
+  /// Each stream's line so far: stdout's and stderr's arrive interleaved, and a line of one must
+  /// never run on into the other's.
+  private var pending: [Bool: String] = [:]
 
   /// The fraction done, 0 to 1, or nil before anything says how far.
   var fraction: Double? {
@@ -19,12 +21,12 @@ struct ImagePullProgress: Sendable {
     return Double(done.count) / Double(layers.count)
   }
 
-  /// Takes a piece of output, which may end mid-line.
-  mutating func read(_ text: String) {
-    pending += text
+  /// Takes a piece of output from one stream, which may end mid-line.
+  mutating func read(_ text: String, stderr: Bool = false) {
+    let joined = pending[stderr, default: ""] + text
     // `\r` too: a progress bar redraws its line that way.
-    var lines = pending.split(omittingEmptySubsequences: false) { $0 == "\n" || $0 == "\r" }
-    pending = String(lines.removeLast())
+    var lines = joined.split(omittingEmptySubsequences: false) { $0 == "\n" || $0 == "\r" }
+    pending[stderr] = String(lines.removeLast())
     for line in lines { take(String(line)) }
   }
 

@@ -273,8 +273,9 @@ final class CredentialRelay: @unchecked Sendable {
   }
 
   /// Runs `executable`, bounded by `deadline` from start to the end of its output, whatever it or
-  /// anything it started does: a relay request holds a serving slot until this returns. One that
-  /// ignores SIGTERM is killed; a child of its that keeps its stdout open is left to it, unread.
+  /// anything it started does: a relay request holds a serving slot until this returns. Its output
+  /// is read here, on this thread, so a deadline leaves no reader behind: one that ignores SIGTERM
+  /// is killed, and a child of its that keeps its stdout open loses the pipe.
   static func run(
     _ executable: URL, _ arguments: [String], input: String?, environment: [String: String],
     name: String, deadline seconds: TimeInterval = 15
@@ -294,22 +295,36 @@ final class CredentialRelay: @unchecked Sendable {
     // A gh gone before its input is written would raise SIGPIPE, which ends the app.
     _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
     try process.run()
-    // Read on another queue, so a gh that hangs (a keychain prompt) is ended by the deadline
-    // rather than holding this thread until it closes its output.
-    let read = DispatchGroup()
-    nonisolated(unsafe) var output = Data()
-    DispatchQueue.global().async(group: read) {
-      output = stdout.fileHandleForReading.readDataToEndOfFile()
+    let out = stdout.fileHandleForReading
+    defer { try? out.close() }
+    let stop = {
+      process.terminate()
+      if exited.wait(timeout: .now() + 1) != .success { kill(process.processIdentifier, SIGKILL) }
     }
     if let input { try? stdin.fileHandleForWriting.write(contentsOf: Data(input.utf8)) }
     try? stdin.fileHandleForWriting.close()
-    guard exited.wait(timeout: deadline) == .success else {
-      process.terminate()
-      if exited.wait(timeout: .now() + 1) != .success { kill(process.processIdentifier, SIGKILL) }
-      throw HostDriverError.provisioning("\(name) didn't answer in time")
+    // To EOF or the deadline: a gh that hangs (a keychain prompt) is ended rather than waited on.
+    var output = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    var reader = pollfd(fd: out.fileDescriptor, events: Int16(POLLIN), revents: 0)
+    while true {
+      let left = Int(
+        (deadline.uptimeNanoseconds &- DispatchTime.now().uptimeNanoseconds) / 1_000_000)
+      guard deadline > .now(), left > 0 else {
+        stop()
+        throw HostDriverError.provisioning("\(name) didn't answer in time")
+      }
+      let ready = poll(&reader, 1, Int32(min(left, Int(Int32.max))))
+      if ready < 0, errno == EINTR { continue }
+      guard ready > 0 else { continue }
+      let count = Darwin.read(out.fileDescriptor, &buffer, buffer.count)
+      if count < 0, errno == EINTR { continue }
+      guard count > 0 else { break }
+      output.append(buffer, count: count)
     }
-    guard read.wait(timeout: deadline) == .success else {
-      throw HostDriverError.provisioning("\(name)'s output didn't end in time")
+    guard exited.wait(timeout: deadline) == .success else {
+      stop()
+      throw HostDriverError.provisioning("\(name) didn't answer in time")
     }
     return (process.terminationStatus, String(decoding: output, as: UTF8.self))
   }

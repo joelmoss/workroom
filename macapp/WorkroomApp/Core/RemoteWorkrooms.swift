@@ -777,14 +777,12 @@ final class RemoteHosts: @unchecked Sendable {
         // one and hold the opened workroom back for `retryAfter`. This one goes after it instead.
         let probe = connecting[host]?.task
         let task = Task {
-          if let probe, (try? await probe.value) != nil {
-          } else {
-            try await start?(host)
-            try await connect(host)
-          }
-          // Once: a container the user stops later stays stopped for the status sweep, until its
-          // workroom is opened again.
-          if start != nil { _ = self.lock.withLock { self.activated.remove(host) } }
+          // Once, whatever comes of it: a container the user stops later, or one that won't start,
+          // is left to the status sweep's backoff until its workroom is opened again.
+          defer { if start != nil { _ = self.lock.withLock { self.activated.remove(host) } } }
+          if let probe, (try? await probe.value) != nil { return }
+          try await start?(host)
+          try await connect(host)
         }
         connecting[host] = (task, start != nil)
         return task

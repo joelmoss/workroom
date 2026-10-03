@@ -118,7 +118,7 @@ final class NewWorkroomPlacesUITests: XCTestCase {
       XCTAssertTrue(
         app.menuItems.matching(
           NSPredicate(format: "title == %@ OR title BEGINSWITH %@", runtime, "\(runtime) — ")
-        ).firstMatch.exists, "\(runtime) isn't listed")
+        ).firstMatch.waitForExistence(timeout: 5), "\(runtime) isn't listed")
     }
     let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
     shot.name = "plus-places"

@@ -37,4 +37,18 @@ final class ImagePullProgressTests: XCTestCase {
     odd.read("[3/2] nonsense 40%\n[x/y] 10%\n")
     XCTAssertNil(odd.fraction)
   }
+
+  /// stdout and stderr interleave mid-line: each stream's line is its own, so neither garbles the
+  /// other and every layer's completion counts.
+  func testInterleavedStreamsKeepTheirOwnLines() {
+    var progress = ImagePullProgress()
+    progress.read("aaaaaaaaaaaa: Pulling fs layer\nbbbbbbbbbbbb: Pulling fs layer\n")
+    progress.read("aaaaaaaaaaaa: Pull com")
+    progress.read("some warning on std", stderr: true)
+    progress.read("plete\n")
+    progress.read("err\n", stderr: true)
+    XCTAssertEqual(progress.fraction, 0.5)
+    progress.read("bbbbbbbbbbbb: Already exists\n")
+    XCTAssertEqual(progress.fraction, 1)
+  }
 }
