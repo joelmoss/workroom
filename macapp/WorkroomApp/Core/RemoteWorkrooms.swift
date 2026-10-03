@@ -341,9 +341,13 @@ final class RemoteHosts: @unchecked Sendable {
   private var connecting: [HostID: Task<Void, Error>] = [:]
   /// When each host's last attempt failed, which answers for it for `retryAfter`.
   private var failedAt: [HostID: ContinuousClock.Instant] = [:]
+  /// Hosts of workrooms the user has opened this launch (`activate`), whose connect starts a
+  /// stopped container first.
+  private var activated: Set<HostID> = []
   /// `ensureConnected`'s seams, nil in the app: the connect itself, whether a host is up, the clock.
   private let connectHost: (@Sendable (HostID) async throws -> Void)?
   private let isConnected: (@Sendable (HostID) async -> Bool)?
+  private let startHost: (@Sendable (HostID) async throws -> Void)?
   private let now: @Sendable () -> ContinuousClock.Instant
   /// `adopt`'s seams, nil in the app: making a context's driver, and sweeping one.
   private let makeDriver: (@Sendable (String?) throws -> ContainerHostDriver)?
@@ -353,12 +357,14 @@ final class RemoteHosts: @unchecked Sendable {
   init(
     connectHost: (@Sendable (HostID) async throws -> Void)? = nil,
     isConnected: (@Sendable (HostID) async -> Bool)? = nil,
+    startHost: (@Sendable (HostID) async throws -> Void)? = nil,
     now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
     makeDriver: (@Sendable (String?) throws -> ContainerHostDriver)? = nil,
     sweepDriver: (@Sendable (ContainerHostDriver, Set<UUID>, Set<String>) async -> [String])? = nil
   ) {
     self.connectHost = connectHost
     self.isConnected = isConnected
+    self.startHost = startHost
     self.now = now
     self.makeDriver = makeDriver
     self.sweepDriver = sweepDriver
@@ -561,9 +567,19 @@ final class RemoteHosts: @unchecked Sendable {
         try connectHost ?? { [driver = try heldDriver(host)] in
           try await self.connect($0, driver: driver)
         }
+      // Only a workroom the user opened has its container started: the status sweep connects to
+      // every remote workroom, and would otherwise start them all.
+      let start =
+        lock.withLock({ activated.contains(host) })
+        ? try startHost ?? { [driver = try heldDriver(host)] in try await driver.startIfStopped($0)
+        }
+        : nil
       let task = lock.withLock { () -> Task<Void, Error> in
         if let running = connecting[host] { return running }
-        let task = Task { try await connect(host) }
+        let task = Task {
+          try await start?(host)
+          try await connect(host)
+        }
         connecting[host] = task
         return task
       }
@@ -577,6 +593,16 @@ final class RemoteHosts: @unchecked Sendable {
       Self.logger.error(
         "connecting \(String(describing: host), privacy: .public): \(error, privacy: .public)")
       throw RepositoryRoutingError.unavailable(host)
+    }
+  }
+
+  /// The user opened a workroom on `host` (#309): its connects start its container if it is stopped,
+  /// and a failure from before, such as a status probe of the stopped container, no longer holds
+  /// the next attempt back.
+  func activate(_ host: HostID) {
+    lock.withLock {
+      activated.insert(host)
+      failedAt[host] = nil
     }
   }
 

@@ -40,7 +40,7 @@ final class RemoteHostsTests: XCTestCase {
         connects.ask()
         return false
       },
-      now: { connects.now })
+      startHost: { _ in }, now: { connects.now })
   }
 
   /// The inspector's panels ask together when a remote workroom is selected: one connect serves
@@ -83,6 +83,44 @@ final class RemoteHostsTests: XCTestCase {
 
     connects.fail(false)
     connects.advance(RemoteHosts.retryAfter)
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(connects.calls, 2)
+  }
+
+  /// Only a host whose workroom the user opened has its container started before connecting: the
+  /// status sweep connects to every remote workroom, and must not start them all (#309).
+  func testOnlyAnOpenedHostIsStartedBeforeItsConnect() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let started = Swept()
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
+      startHost: { host in
+        guard case .remote(let id) = host else { return }
+        started.add(nil, [id])
+      })
+    let (probed, opened) = (UUID(), UUID())
+
+    try await remote.ensureConnected(.remote(probed))
+    XCTAssertTrue(started.calls.isEmpty, "a probe of an unopened host started it")
+
+    remote.activate(.remote(opened))
+    try await remote.ensureConnected(.remote(opened))
+    XCTAssertEqual(started.calls.map(\.known), [[opened]])
+    XCTAssertEqual(connects.calls, 2)
+  }
+
+  /// Opening a workroom whose host just failed a probe tries it again at once, starting it: the
+  /// probe's failure was the container being stopped, which opening is about to fix.
+  func testOpeningAHostLiftsItsRetryWindow() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    connects.fail(true)
+    let remote = hosts(connects)
+    let host = HostID.remote(UUID())
+    do { try await remote.ensureConnected(host) } catch {}
+    connects.fail(false)
+    remote.activate(host)
     try await remote.ensureConnected(host)
     XCTAssertEqual(connects.calls, 2)
   }

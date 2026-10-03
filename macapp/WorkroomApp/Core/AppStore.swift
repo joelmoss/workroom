@@ -208,6 +208,8 @@ final class AppStore: ObservableObject {
       // instead of lingering on the previous workroom's commits until the panel's `.task` catches
       // up. `focus` is idempotent, so the panel's later re-focus to the same root no-ops.
       if selectedTargetID != oldValue {
+        // Opening a container workroom starts its container if it was stopped (#309).
+        if let host = selectedWorkroom?.reachableHost { RemoteHosts.shared.activate(.remote(host)) }
         focusHistoryIfShown()
         focusRemoteStateIfShown()
         // A confirmation asking about the OLD workroom's dirty tree is meaningless once the selection
@@ -3088,6 +3090,8 @@ final class AppStore: ObservableObject {
       })
     RepositoryRouter.shared.replaceRemote(RemoteWorkrooms.registrations(fresh))
     projects = fresh
+    // A selection restored before its projects were loaded opened nothing then (#309).
+    if let host = selectedWorkroom?.reachableHost { RemoteHosts.shared.activate(.remote(host)) }
     // Prune shared caches only when publishing an accepted snapshot.
     let liveIDs = Set(fresh.map(\.id))
     rootRefs = rootRefs.filter { liveIDs.contains($0.key) }

@@ -210,6 +210,20 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
   }
 
+  /// Starts `host`'s container if it is stopped, and waits until it can be logged in to (#309): a
+  /// container someone stopped stays stopped, and a runtime with no restart policy (Apple's) leaves
+  /// every one stopped after a reboot. Only for a workroom the user opens (`RemoteHosts.activate`),
+  /// never for a background probe, which would start every container the app knows.
+  func startIfStopped(_ host: HostID) async throws {
+    guard case .remote(let id) = host, let made = lock.withLock({ provisioned[id] }) else {
+      throw HostDriverError.unknownHost(host)
+    }
+    let running = try await runtime(["inspect", "--format", "{{.State.Running}}", made.container])
+    guard running == "false" else { return }
+    _ = try await runtime(["start", made.container])
+    try await awaitLogin(host)
+  }
+
   /// What a later launch's driver needs to `adopt` `host`, or nil for a host this driver did not
   /// make.
   func record(of host: HostID) -> Record? {
