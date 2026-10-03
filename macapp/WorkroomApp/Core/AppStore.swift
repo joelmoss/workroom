@@ -637,6 +637,7 @@ final class AppStore: ObservableObject {
       "Its host didn't confirm the terminal stopped, so whatever was running in it may still be running there. Deleting the workroom stops it."
     errorTitle = "Couldn't stop the terminal in \(title)"
   }
+
   @Published var isLoading = false
   /// How many creates are in flight per project path (for the sidebar row's spinner + disabling).
   /// Counted, not a set — see `ProjectStore.busyProjects`. (Named for creates AND deletes when it
