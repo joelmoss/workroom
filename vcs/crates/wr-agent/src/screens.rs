@@ -47,8 +47,8 @@ const INTERVAL: Duration = Duration::from_secs(2);
 /// The largest record kept. One over it is removed rather than left stale.
 const MAX_RECORD: usize = 4 << 20;
 
-/// How many records `open` keeps, newest first. A pane closed while its host was down cannot kill
-/// its record: the app has no way to end a remote session yet (Phase 4).
+/// How many records `open` keeps, newest first. A pane closed while its host was down cannot end
+/// its record: the kill that would have removed it never reached the host (#283).
 const MAX_RECORDS: usize = 64;
 
 const NOTICE: &str = "This terminal ended when its host restarted. Close it to start again.";
