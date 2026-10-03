@@ -549,13 +549,6 @@ final class TerminalSessions: ObservableObject {
   /// into the environment (see `WorkroomApp`) so the pane banner observes it. Opt-in, default off.
   let agentManager: TerminalAgentManager
 
-  /// How many of `closeTab`'s persisted-session kills are in flight, local and remote apart. Counted
-  /// so quitting can wait for them — `closeTab` itself stays synchronous (it's called from UI
-  /// actions, not `async` contexts), but an unawaited kill racing an immediate app quit would leave
-  /// that tab's session running despite the user having explicitly closed it moments before.
-  private var localCloseKillsInFlight = 0
-  private var remoteCloseKillsInFlight = 0
-
   /// Where a remote pane's host-side working directory is asked for (#239). Settable for tests.
   var hostConnections: HostConnectionManager = .shared
   /// Where panes' persistent sessions are registered and ended. Settable for tests.
@@ -563,32 +556,6 @@ final class TerminalSessions: ObservableObject {
   /// Each remote tab's latest host cwd query. An entry also marks a tab whose first prompt has
   /// already asked, so after that only `command_finished` asks again.
   private var hostCwdQueries: [TerminalTab.ID: Task<Void, Never>] = [:]
-
-  /// How long a quit waits for `closeTab`'s REMOTE kills: a remote kill on a host that cannot be
-  /// reached can take as long as an ssh connect (#283), and a quit must not wait that out with no
-  /// sign of why. Local kills are not bounded by it: they end within the agent control client's own
-  /// deadlines, and a slow local daemon is no reason to leave a closed pane's shell running.
-  static let closeKillQuitBudget: Duration = .seconds(5)
-
-  /// Wait for every `closeTab`-initiated kill still in flight: every local one, and remote ones
-  /// until `deadline`. Called at quit, across every window's `TerminalSessions` with one shared
-  /// deadline.
-  func awaitPendingCloseKills(until deadline: ContinuousClock.Instant) async {
-    // Polled rather than awaited, as `WakefulnessModel.drainKeep` is: `await task.value` cannot be
-    // given up on.
-    while Self.quitKeepsWaiting(
-      local: localCloseKillsInFlight, remote: remoteCloseKillsInFlight,
-      pastDeadline: ContinuousClock.now >= deadline)
-    {
-      try? await Task.sleep(for: .milliseconds(20))
-    }
-  }
-
-  /// Whether a quit still waits, given the kills in flight: always for a local one, and for a remote
-  /// one until the deadline has passed.
-  nonisolated static func quitKeepsWaiting(local: Int, remote: Int, pastDeadline: Bool) -> Bool {
-    local > 0 || (remote > 0 && !pastDeadline)
-  }
 
   /// Set once by `AppStore`: a closed remote pane's session could not be ended on its host, so it
   /// is still running there (#283). Given the target's id and title.
@@ -1664,10 +1631,13 @@ final class TerminalSessions: ObservableObject {
     // Close the detached window first, so it can never outlive the tab it hosts (issue #172).
     undetach(tabID)
     let remote = isRemoteSession(tab)
-    if remote { remoteCloseKillsInFlight += 1 } else { localCloseKillsInFlight += 1 }
+    // Counted on the service, which outlives this window: a quit right after the window closes
+    // still waits for the kill (#297).
+    let service = sessionService
+    service.closeKillStarted(remote: remote)
     Task {
       let ended = await self.endPersistentSession(for: tab)
-      if remote { self.remoteCloseKillsInFlight -= 1 } else { self.localCloseKillsInFlight -= 1 }
+      service.closeKillEnded(remote: remote)
       if remote && !ended { self.onRemoteCloseFailed?(target.id, target.title) }
     }
     teardown(tab)

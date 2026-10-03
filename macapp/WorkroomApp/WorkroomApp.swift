@@ -610,10 +610,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // running despite the explicit close.
         group.enter()
         Task {
-          let deadline = ContinuousClock.now + TerminalSessions.closeKillQuitBudget
-          for store in WindowRegistry.shared.allStores {
-            await store.terminals.awaitPendingCloseKills(until: deadline)
-          }
+          await PersistentSessionService.shared.awaitPendingCloseKills(
+            until: ContinuousClock.now + PersistentSessionService.closeKillQuitBudget)
           group.leave()
         }
         group.enter()
@@ -747,10 +745,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // that one session outlive the quit despite the user having explicitly closed it.
     group.enter()
     Task {
-      let deadline = ContinuousClock.now + TerminalSessions.closeKillQuitBudget
-      for store in registry.allStores {
-        await store.terminals.awaitPendingCloseKills(until: deadline)
-      }
+      await PersistentSessionService.shared.awaitPendingCloseKills(
+        until: ContinuousClock.now + PersistentSessionService.closeKillQuitBudget)
       group.leave()
     }
     if registry.hasAnyLiveRunCommand {

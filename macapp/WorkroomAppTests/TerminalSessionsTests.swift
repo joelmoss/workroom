@@ -1967,7 +1967,7 @@ final class RemotePaneCloseTests: XCTestCase {
     s.closeTab(tab.id, for: target)
 
     let started = ContinuousClock.now
-    await s.awaitPendingCloseKills(until: started + .milliseconds(200))
+    await s.sessionService.awaitPendingCloseKills(until: started + .milliseconds(200))
     XCTAssertLessThan(ContinuousClock.now - started, .seconds(2))
   }
 
@@ -1981,7 +1981,7 @@ final class RemotePaneCloseTests: XCTestCase {
     }
     let tab = s.addTab(for: target)
     s.closeTab(tab.id, for: target)
-    await s.awaitPendingCloseKills(until: .now + .seconds(5))
+    await s.sessionService.awaitPendingCloseKills(until: .now + .seconds(5))
     XCTAssertTrue(ended)
   }
 
@@ -1996,7 +1996,7 @@ final class RemotePaneCloseTests: XCTestCase {
     s.onRemoteCloseFailed = { reported.append($1) }
     let tab = s.addTab(for: target)
     s.closeTab(tab.id, for: target)
-    await s.awaitPendingCloseKills(until: .now + .seconds(5))
+    await s.sessionService.awaitPendingCloseKills(until: .now + .seconds(5))
     XCTAssertEqual(reported, ["remote"])
     XCTAssertEqual(asked, 1)
 
@@ -2027,17 +2027,35 @@ final class RemotePaneCloseTests: XCTestCase {
     let tab = s.addTab(for: target, sessionID: UUID())
     s.closeTab(tab.id, for: target)
     // A deadline already gone: a quit gives up on remote kills at once, never on a local one.
-    await s.awaitPendingCloseKills(until: .now - .seconds(1))
+    await s.sessionService.awaitPendingCloseKills(until: .now - .seconds(1))
     XCTAssertGreaterThan(asked, 0, "the quit did not wait for the local kill")
   }
 
   /// Value: protects=a quit waits out every local close kill and only gives up on remote ones at its deadline; fails_when=one budget caps local kills too, or remote kills hold the quit past it; why_new=the quit tests above drive remote kills only; seam=none
   func testAQuitWaitsForLocalKillsAndGivesUpOnlyOnRemoteOnes() {
-    XCTAssertTrue(TerminalSessions.quitKeepsWaiting(local: 1, remote: 0, pastDeadline: true))
-    XCTAssertTrue(TerminalSessions.quitKeepsWaiting(local: 1, remote: 3, pastDeadline: true))
-    XCTAssertTrue(TerminalSessions.quitKeepsWaiting(local: 0, remote: 1, pastDeadline: false))
-    XCTAssertFalse(TerminalSessions.quitKeepsWaiting(local: 0, remote: 1, pastDeadline: true))
-    XCTAssertFalse(TerminalSessions.quitKeepsWaiting(local: 0, remote: 0, pastDeadline: false))
+    let service = PersistentSessionService.self
+    XCTAssertTrue(service.quitKeepsWaiting(local: 1, remote: 0, pastDeadline: true))
+    XCTAssertTrue(service.quitKeepsWaiting(local: 1, remote: 3, pastDeadline: true))
+    XCTAssertTrue(service.quitKeepsWaiting(local: 0, remote: 1, pastDeadline: false))
+    XCTAssertFalse(service.quitKeepsWaiting(local: 0, remote: 1, pastDeadline: true))
+    XCTAssertFalse(service.quitKeepsWaiting(local: 0, remote: 0, pastDeadline: false))
+  }
+
+  /// Value: protects=a quit waits for a pane's close kill after the pane's window has closed and its sessions are gone; fails_when=close kills are counted per window again, so a quit that looks only at open windows misses this one; why_new=the quit tests above keep the window's sessions alive; seam=none
+  func testAQuitWaitsForACloseWhoseWindowHasClosed() async throws {
+    let target = remoteTarget()
+    var ended = false
+    var s: TerminalSessions? = makeSessions { _, _ in
+      try await Task.sleep(for: .milliseconds(100))
+      ended = true
+      return true
+    }
+    let service = try XCTUnwrap(s?.sessionService)
+    let tab = try XCTUnwrap(s?.addTab(for: target))
+    s?.closeTab(tab.id, for: target)
+    s = nil
+    await service.awaitPendingCloseKills(until: .now + .seconds(5))
+    XCTAssertTrue(ended, "the quit did not wait for the closed window's kill")
   }
 
   func testASuccessfulRemoteCloseReportsNothing() async throws {
@@ -2047,7 +2065,7 @@ final class RemotePaneCloseTests: XCTestCase {
     s.onRemoteCloseFailed = { reported.append($1) }
     let tab = s.addTab(for: target)
     s.closeTab(tab.id, for: target)
-    await s.awaitPendingCloseKills(until: .now + .seconds(5))
+    await s.sessionService.awaitPendingCloseKills(until: .now + .seconds(5))
     XCTAssertEqual(reported, [])
   }
 
@@ -2064,7 +2082,7 @@ final class RemotePaneCloseTests: XCTestCase {
     guard case .terminal(let state) = tab.content else { return XCTFail("not a terminal") }
     XCTAssertNotNil(state.sessionID, "the pane has a session to fail to kill")
     s.closeTab(tab.id, for: target)
-    await s.awaitPendingCloseKills(until: .now + .seconds(5))
+    await s.sessionService.awaitPendingCloseKills(until: .now + .seconds(5))
     XCTAssertEqual(reported, [])
   }
 
@@ -2101,7 +2119,7 @@ final class RemotePaneCloseTests: XCTestCase {
     let second = s.addTab(for: target)
     s.closeTab(first.id, for: target)
     s.closeTab(second.id, for: target)
-    await s.awaitPendingCloseKills(until: .now + .seconds(5))
+    await s.sessionService.awaitPendingCloseKills(until: .now + .seconds(5))
     XCTAssertEqual(ended, 2)
   }
 }
