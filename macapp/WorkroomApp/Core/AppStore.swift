@@ -3523,7 +3523,9 @@ final class AppStore: ObservableObject {
     beginBusy(project.path)
     defer { endBusy(project.path) }
     do {
-      let (driver, environment) = try RemoteHosts.shared.environment()
+      // A new base is pinned to the Docker context in use now; a workroom goes where its base is.
+      let context = try await RemoteHosts.shared.context(forBase: project.host)
+      let (driver, environment) = try RemoteHosts.shared.environment(context: context)
       let resolution = await WorkroomStatusResolver().resolveRepository(in: project.path)
       guard case .found(let repository) = resolution else {
         throw RemoteWorkrooms.Failure.notOnGitHub("Couldn't find its GitHub repository with gh.")

@@ -35,7 +35,7 @@ struct HostDescriptor: Codable, Hashable {
   var repository: String? = nil
   var cloneURL: String? = nil
   var path: String? = nil
-  /// How `ContainerHostDriver` finds the host again.
+  /// How `ContainerHostDriver` finds the host again, including the Docker context it runs in.
   var container: ContainerHostDriver.Record? = nil
 
   var isDestroyed: Bool { state == "destroyed" }

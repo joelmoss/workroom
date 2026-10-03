@@ -224,6 +224,171 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(files.state, .idle, "Files listed the remote path on this Mac")
   }
 
+  // MARK: Docker contexts (#309)
+
+  /// A stand-in runtime CLI: a script that appends its arguments to `log`, one call per line, and
+  /// prints `output`.
+  private func stubRuntime(output: String = "") throws -> (runtime: URL, log: URL) {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-runtime-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let runtime = directory.appendingPathComponent("docker")
+    let log = directory.appendingPathComponent("calls")
+    try """
+    #!/bin/sh
+    printf '%s\\n' "$*" >> \(ContainerHostDriver.shellQuoted(log.path))
+    printf '%s' \(ContainerHostDriver.shellQuoted(output))
+    """.write(to: runtime, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtime.path)
+    return (runtime, log)
+  }
+
+  private static func driver(runtime: URL, context: String?) -> ContainerHostDriver {
+    ContainerHostDriver(
+      hosts: [:], directory: FileManager.default.temporaryDirectory,
+      provisioning: ContainerHostDriver.Provisioning(
+        runtime: runtime, image: "workroom-host", user: RemoteWorkrooms.user,
+        identityFile: "/dev/null", publicKey: "ssh-ed25519 AAAA",
+        agentSocket: RemoteWorkrooms.agentSocket, labels: ["workroom.provisioner=test"],
+        context: context))
+  }
+
+  private static func record(context: String?) -> ContainerHostDriver.Record {
+    ContainerHostDriver.Record(
+      address: "127.0.0.1", port: 2222, user: RemoteWorkrooms.user, hostKey: "ssh-ed25519 AAAA",
+      image: nil, context: context)
+  }
+
+  /// A record written before #309 has no context: it reads as nil, which names no context on any
+  /// command, as every command did then. A pinned one keeps its context through config.
+  func testARecordWithoutAContextReadsAsTheUnpinnedOne() throws {
+    let old = Data(
+      #"{"address":"127.0.0.1","port":2222,"user":"workroom","host_key":"ssh-ed25519 AAAA"}"#.utf8)
+    let decoded = try JSONDecoder().decode(ContainerHostDriver.Record.self, from: old)
+    XCTAssertNil(decoded.context)
+    XCTAssertEqual(decoded, Self.record(context: nil))
+
+    let pinned = Self.record(context: "orbstack")
+    XCTAssertEqual(
+      try JSONDecoder().decode(
+        ContainerHostDriver.Record.self, from: try JSONEncoder().encode(pinned)), pinned)
+  }
+
+  /// Every runtime command names a pinned context, ahead of the command (Docker refuses it after),
+  /// and an unpinned driver's commands are exactly what they were before #309.
+  func testRuntimeCommandsNameTheContextAheadOfTheCommand() async throws {
+    for context in [nil, "orbstack"] as [String?] {
+      let (runtime, log) = try stubRuntime()
+      _ = await Self.driver(runtime: runtime, context: context).sweep(keeping: [])
+      let calls = try String(contentsOf: log, encoding: .utf8).split(separator: "\n")
+      let prefix = context.map { "--context \($0) " } ?? ""
+      XCTAssertEqual(
+        calls,
+        [
+          "\(prefix)ps -a --filter label=workroom.provisioner=test --format "
+            + "{{.Names}}\t{{.Label \"workroom.created\"}}",
+          "\(prefix)images -aq --filter label=workroom.provisioner=test",
+        ], "context \(context ?? "nil")")
+    }
+  }
+
+  /// A new base is pinned to the context the CLI uses now, except `default`, which is whatever
+  /// `DOCKER_HOST` says and so pins nothing. A project with a base stays on the base's context.
+  func testANewWorkroomGoesInItsBasesContextOrTheCurrentOne() async throws {
+    for (current, expected) in [("orbstack", "orbstack"), ("default", nil)] as [(String, String?)] {
+      let (runtime, log) = try stubRuntime(output: current + "\n")
+      let remote = RemoteHosts(makeDriver: { Self.driver(runtime: runtime, context: $0) })
+      let context = try await remote.context(forBase: nil)
+      XCTAssertEqual(context, expected, current)
+      XCTAssertEqual(try String(contentsOf: log, encoding: .utf8), "context show\n")
+    }
+
+    let remote = RemoteHosts(makeDriver: { _ in
+      XCTFail("a project with a base asked Docker")
+      throw RemoteWorkrooms.Failure.noDocker
+    })
+    for context in [nil, "desktop-linux"] as [String?] {
+      let base = HostDescriptor(
+        provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+        container: Self.record(context: context))
+      let found = try await remote.context(forBase: base)
+      XCTAssertEqual(found, context)
+    }
+  }
+
+  /// Each recorded host is adopted into its own context's driver, and every driver's sweep keeps
+  /// every recorded host: two contexts can name one daemon, and a sweep that kept only its own
+  /// driver's hosts would remove the other's.
+  func testHostsAreAdoptedByContextAndEverySweepKeepsThemAll() async throws {
+    let (runtime, _) = try stubRuntime()
+    let swept = Swept()
+    let remote = RemoteHosts(
+      makeDriver: { Self.driver(runtime: runtime, context: $0) },
+      sweepDriver: { driver, known in
+        swept.add(driver.provisioning?.context, known)
+        return []
+      })
+    let (base, pinned) = (UUID(), UUID())
+    let descriptor = { (id: UUID, context: String?) in
+      HostDescriptor(
+        driver: RemoteWorkrooms.containerDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+        container: Self.record(context: context))
+    }
+    let project = Project(
+      path: "/proj", vcs: "git",
+      workrooms: [
+        Workroom(
+          name: "w", path: "/home/workroom/r", vcsName: "workroom/w", warnings: [],
+          host: descriptor(pinned, "orbstack"))
+      ], host: descriptor(base, nil))
+
+    remote.adopt([project])
+
+    XCTAssertNil(try XCTUnwrap(remote.existingDriver(holding: base)).provisioning?.context)
+    XCTAssertEqual(remote.existingDriver(holding: pinned)?.provisioning?.context, "orbstack")
+    for _ in 0..<500 where swept.calls.count < 2 { try await Task.sleep(for: .milliseconds(2)) }
+    XCTAssertEqual(Set(swept.calls.map(\.context)), [nil, "orbstack"])
+    for call in swept.calls { XCTAssertEqual(call.known, [base, pinned], call.context ?? "nil") }
+  }
+
+  private final class Swept: @unchecked Sendable {
+    private let lock = NSLock()
+    private var made: [(context: String?, known: Set<UUID>)] = []
+    var calls: [(context: String?, known: Set<UUID>)] { lock.withLock { made } }
+    func add(_ context: String?, _ known: Set<UUID>) {
+      lock.withLock { made.append((context, known)) }
+    }
+  }
+
+  /// A driver takes on only a host of its own context: its commands would not reach another's.
+  func testADriverRefusesAHostOfAnotherContext() throws {
+    let (runtime, _) = try stubRuntime()
+    XCTAssertThrowsError(
+      try Self.driver(runtime: runtime, context: "orbstack").adopt(
+        UUID(), Self.record(context: nil)))
+    XCTAssertNoThrow(
+      try Self.driver(runtime: runtime, context: "orbstack").adopt(
+        UUID(), Self.record(context: "orbstack")))
+  }
+
+  /// One delete runs one driver, so hosts in two contexts are refused before anything is removed.
+  @MainActor
+  func testADeleteAcrossContextsIsRefused() throws {
+    let live = { (context: String?) in
+      HostDescriptor(
+        driver: RemoteWorkrooms.containerDriver, provisioner: RemoteWorkrooms.provisioner,
+        id: UUID(), container: Self.record(context: context))
+    }
+    XCTAssertThrowsError(
+      try RemoteHosts().environment(toDelete: [live(nil), live("orbstack")])
+    ) { error in
+      guard case HostDriverError.invalidConfiguration = error else {
+        return XCTFail("\(error)")
+      }
+    }
+  }
+
   /// A base record that names a host but not enough to derive from is refused: building another
   /// would leave the recorded one running with nothing pointing at it.
   func testAnIncompleteBaseIsNotReplaced() async throws {

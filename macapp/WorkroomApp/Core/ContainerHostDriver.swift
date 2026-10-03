@@ -45,6 +45,11 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// `key=value` labels on every container and image made, so whoever started the fixture can
     /// sweep up what a crashed test left (run.sh does).
     let labels: [String]
+    /// The Docker context every command names (`--context`, #309), or nil for whichever daemon
+    /// the environment and the CLI's current context pick. Docker Desktop, OrbStack and Colima
+    /// are each a context behind the one `docker`, so without it a host made on one is looked for
+    /// on whichever the user switched to since.
+    var context: String? = nil
   }
 
   /// A host this driver made: its container, and for a derived one the image it was run from,
@@ -65,9 +70,12 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     let hostKey: String
     /// The image a derived instance was run from, which only it uses; nil for a base.
     let image: String?
+    /// The Docker context it runs in (`Provisioning.context`). nil, as every record made before
+    /// #309 has it, follows the environment and the CLI's current context, as those always did.
+    var context: String? = nil
 
     enum CodingKeys: String, CodingKey {
-      case address, port, user, image
+      case address, port, user, image, context
       case hostKey = "host_key"
     }
   }
@@ -194,7 +202,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       guard let target = hosts[id], let made = provisioned[id] else { return nil }
       return Record(
         address: target.address, port: target.port, user: target.user, hostKey: target.hostKey,
-        image: made.image)
+        image: made.image, context: provisioning?.context)
     }
   }
 
@@ -207,6 +215,12 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     // that is not a commit's.
     if let image = record.image, !Self.isImageID(image) {
       throw HostDriverError.invalidConfiguration("image \(image) is not an image ID")
+    }
+    // Its container is on that context's daemon, which this driver's commands don't reach.
+    guard record.context == provisioning.context else {
+      throw HostDriverError.invalidConfiguration(
+        "host is in Docker context \(record.context ?? "(current)"), not "
+          + (provisioning.context ?? "(current)"))
     }
     lock.withLock {
       hosts[id] = Host(
@@ -383,15 +397,36 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       ["HOME", "PATH", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"].contains($0.key)
     }
     let (status, output) = try await HostStream.spawn(
-      provisioning.runtime, arguments, environment: environment, handshakeTimeout: 20,
-      purpose: .exchange
+      provisioning.runtime, Self.runtimeArguments(arguments, context: provisioning.context),
+      environment: environment, handshakeTimeout: 20, purpose: .exchange
     ).communicate(nil, timeout: timeout)
     let said = output.trimmingCharacters(in: .whitespacesAndNewlines)
     guard status == 0 else {
+      if let context = provisioning.context, said.contains("context not found") {
+        throw HostDriverError.provisioning(
+          "the Docker context \(context) this host was made in no longer exists. Create it "
+            + "again (`docker context create \(context)`), or delete the workroom.")
+      }
       throw HostDriverError.provisioning(
         "\(provisioning.runtime.lastPathComponent) \(arguments[0]) exited \(status): \(said)")
     }
     return allLines ? said : said.split(separator: "\n").first.map(String.init) ?? ""
+  }
+
+  /// `arguments` for the runtime, naming `context` when there is one. `--context` is global, so it
+  /// goes before the command (after it, Docker refuses it), and it outranks both `DOCKER_HOST` and
+  /// `DOCKER_CONTEXT` (Docker 29, measured).
+  static func runtimeArguments(_ arguments: [String], context: String?) -> [String] {
+    guard let context else { return arguments }
+    return ["--context", context] + arguments
+  }
+
+  /// The Docker context the CLI would use now, to pin a new host to (#309), or nil for `default`:
+  /// that one is whatever `DOCKER_HOST` says, so naming it pins nothing. Asks a driver whose own
+  /// context is nil, so the answer is the environment's and the CLI's.
+  func currentContext() async throws -> String? {
+    let name = try await runtime(["context", "show"])
+    return name.isEmpty || name == "default" ? nil : name
   }
 
   func openStream(to host: HostID) async throws -> HostStream {
