@@ -163,12 +163,8 @@ fn run_serve_stdio() -> ExitCode {
     sessions.kill_all();
     // A kill still on its own thread took its session out of the store before `kill_all` looked,
     // and exiting now would cut it off between its SIGHUP and its SIGKILL. Waited for after
-    // `kill_all`, so no other session's SIGHUP waits on it. Bounded well past that grace, and a
-    // shell stuck in the kernel is not waited out.
-    let deadline = std::time::Instant::now() + wr_agent::session::SIGHUP_GRACE * 4;
-    while sessions.is_killing() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    // `kill_all`, so no other session's SIGHUP waits on it.
+    sessions.wait_for_kills(std::time::Instant::now() + wr_agent::session::KILL_EXIT_WAIT);
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
