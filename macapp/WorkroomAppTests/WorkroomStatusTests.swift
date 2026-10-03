@@ -256,6 +256,7 @@ final class WorkroomStatusTests: XCTestCase {
     store.deleteProject(project, scope: .configOnly)
     XCTAssertEqual(store.projects, [project])
     XCTAssertEqual(store.errorTitle, "Can't delete p")
+    XCTAssertTrue(store.deletingProjects.isEmpty, "a refused delete must not tombstone (#287)")
   }
 
   /// A workroom that turns remote is no longer swept, so a reload must drop its last local status
