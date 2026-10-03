@@ -397,6 +397,8 @@ impl SessionStore {
     pub fn refuse(&self, id: SessionId) {
         let now = Instant::now();
         let mut refused = self.refused.lock().unwrap_or_else(|e| e.into_inner());
+        // ponytail: a scan per kill, which kills at the rate panes close never notice; a flood of
+        // kills would want pruning on a timer or past a size.
         refused.retain(|_, at| now.duration_since(*at) < REFUSED_ID_WINDOW);
         refused.insert(id, now);
     }
@@ -1841,7 +1843,10 @@ mod tests {
             Err(SessionError::Ended(_))
         ));
         store.create(spec(id(41), &args, &e)).expect("another id");
-        let past = Instant::now() - REFUSED_ID_WINDOW;
+        // Checked: `Instant` counts from boot on macOS, so a minute back does not exist in the first.
+        let past = Instant::now()
+            .checked_sub(REFUSED_ID_WINDOW)
+            .expect("a machine up for a minute");
         store.refused.lock().unwrap().insert(id(40), past);
         store
             .create(spec(id(40), &args, &e))

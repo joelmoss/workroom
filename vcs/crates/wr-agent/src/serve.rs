@@ -664,8 +664,8 @@ pub fn exit_code(status: i32) -> i32 {
 ///
 /// Only a live session gets a thread, or one another kill is still ending, which this kill waits on
 /// so that it too is acknowledged only once the shell is gone. An id the store does not hold costs
-/// at most the removal of a screen record, so it is ended here, and a stream of kills for ids that
-/// are not sessions cannot start a thread apiece.
+/// the removal of a screen record and a refusal kept for `REFUSED_ID_WINDOW`, so it is ended here,
+/// and a stream of kills for ids that are not sessions cannot start a thread apiece.
 fn kill_off_the_reader(
     sessions: &SessionStore,
     id: SessionId,
