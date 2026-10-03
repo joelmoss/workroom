@@ -289,11 +289,27 @@ fn a_signal_while_waiting_for_the_broker_does_not_fail_the_enrolment() {
     let workspace = Workspace::new("broker-signal");
     // `pthread_t` is a pointer on macOS, so it crosses to the broker's thread as an integer.
     let client = unsafe { libc::pthread_self() } as usize;
+    // Cleared as this thread leaves the test, even by a panic, so a signal never reaches a thread
+    // id that has ended or been reused by another test.
+    struct Leaving(Arc<Mutex<bool>>);
+    impl Drop for Leaving {
+        fn drop(&mut self) {
+            *self.0.lock().unwrap() = false;
+        }
+    }
+    let here = Arc::new(Mutex::new(true));
+    let _leaving = Leaving(here.clone());
     // The client is blocked reading the answer for most of this window, so some of these land
-    // mid-read rather than all before it.
-    let broker = Broker::start_with(vec![enrolled_answer()], move || {
+    // mid-read rather than all before it. A second answer is scripted so that a retried request
+    // would succeed and be counted, rather than fail on a closed listener.
+    let broker = Broker::start_with(vec![enrolled_answer(), enrolled_answer()], move || {
         for _ in 0..20 {
+            let here = here.lock().unwrap();
+            if !*here {
+                return;
+            }
             unsafe { libc::pthread_kill(client as libc::pthread_t, libc::SIGUSR1) };
+            drop(here);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     });
