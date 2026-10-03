@@ -435,6 +435,7 @@ final class AgentBootstrapTests: XCTestCase {
     let stream = try HostStream.spawn(
       URL(fileURLWithPath: "/bin/sh"), ["-c", "trap '' TERM; exec 0<&- 1>&-; exec sleep 30"],
       environment: [:], handshakeTimeout: 5, purpose: .exchange)
+    defer { stopIfStillRunning(stream) }
     let started = ContinuousClock.now
     do {
       _ = try await stream.communicate(nil, timeout: 20)
@@ -499,6 +500,14 @@ final class AgentBootstrapTests: XCTestCase {
 
   /// The carrier has exited and been reaped. Not `kill(pid, 0)`, which a reused pid would pass
   /// (see `AgentHarness.waitForExit`): an unexited child of ours reads 0 here.
+  /// Failure-path cleanup for a carrier that ignores SIGTERM: a SIGKILL only while it is still an
+  /// unexited child of ours, whose pid cannot have been reused. A passing test has seen it reaped.
+  private func stopIfStillRunning(_ stream: HostStream) {
+    if waitpid(stream.processIdentifier, nil, WNOHANG) == 0 {
+      kill(stream.processIdentifier, SIGKILL)
+    }
+  }
+
   private func assertGone(_ stream: HostStream, line: UInt = #line) {
     XCTAssertNotEqual(
       waitpid(stream.processIdentifier, nil, WNOHANG), 0, "the carrier is still running", line: line
@@ -512,6 +521,7 @@ final class AgentBootstrapTests: XCTestCase {
   // testAnExchangeThatHangsIsEnded sends 1 byte, which never blocks; seam=none
   func testASilentFarSideThatNeverReadsDoesNotHoldABlockedPushOpen() async throws {
     let stream = try carrierThatNeitherReadsNorYieldsToSIGTERM()
+    defer { stopIfStillRunning(stream) }
     let started = ContinuousClock.now
     do {
       _ = try await stream.communicate(Data(repeating: 0, count: 8_000_000), timeout: 0.5)
@@ -534,6 +544,7 @@ final class AgentBootstrapTests: XCTestCase {
       URL(fileURLWithPath: "/bin/sh"),
       ["-c", "trap '' TERM; sleep 30 & echo $! > '\(pidFile.path)'; wait"],
       environment: [:], handshakeTimeout: 5, purpose: .exchange)
+    defer { stopIfStillRunning(stream) }
     do {
       // Long enough for the shell to set its trap and write the pid before the silence ends it.
       _ = try await stream.communicate(nil, timeout: 2)
@@ -560,6 +571,7 @@ final class AgentBootstrapTests: XCTestCase {
   // seam=none
   func testCancellingAPushBlockedOnAFarSideThatNeverReadsEndsIt() async throws {
     let stream = try carrierThatNeitherReadsNorYieldsToSIGTERM()
+    defer { stopIfStillRunning(stream) }
     let started = ContinuousClock.now
     let exchange = Task {
       try await stream.communicate(Data(repeating: 0, count: 8_000_000), timeout: 60)
