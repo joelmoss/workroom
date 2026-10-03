@@ -383,7 +383,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       ["HOME", "PATH", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"].contains($0.key)
     }
     let (status, output) = try await HostStream.spawn(
-      provisioning.runtime, arguments, environment: environment, handshakeTimeout: 20
+      provisioning.runtime, arguments, environment: environment, handshakeTimeout: 20,
+      purpose: .exchange
     ).communicate(nil, timeout: timeout)
     let said = output.trimmingCharacters(in: .whitespacesAndNewlines)
     guard status == 0 else {
@@ -394,14 +395,17 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   func openStream(to host: HostID) async throws -> HostStream {
-    let (_, target) = try target(host)
-    return try await exec(
-      Self.relayCommand(binary: target.agentBinary, socket: target.agentSocket), on: host)
+    let (id, target) = try target(host)
+    return try Self.exec(
+      Self.relayCommand(binary: target.agentBinary, socket: target.agentSocket), on: target,
+      in: directory.appendingPathComponent(id.uuidString), purpose: .connection)
   }
 
   func exec(_ command: String, on host: HostID) async throws -> HostStream {
     let (id, target) = try target(host)
-    return try Self.exec(command, on: target, in: directory.appendingPathComponent(id.uuidString))
+    return try Self.exec(
+      command, on: target, in: directory.appendingPathComponent(id.uuidString),
+      purpose: .exchange)
   }
 
   func attachCommand(
@@ -426,7 +430,9 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// Runs `command` on `host` over ssh, with the host's `ssh_config` and `known_hosts` written to
   /// `hostDirectory` first.
-  static func exec(_ command: String, on host: Host, in hostDirectory: URL) throws -> HostStream {
+  static func exec(
+    _ command: String, on host: Host, in hostDirectory: URL, purpose: HostStream.Purpose
+  ) throws -> HostStream {
     let config = try writeConfiguration(for: host, in: hostDirectory)
     return try HostStream.spawn(
       URL(fileURLWithPath: "/usr/bin/ssh"),
@@ -437,7 +443,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       environment: [:],
       // ssh connects and authenticates before the agent can greet. `ConnectTimeout` bounds the
       // connect; this leaves room for the rest.
-      handshakeTimeout: 20)
+      handshakeTimeout: 20, purpose: purpose)
   }
 
   /// The command a pane runs to attach to `session` on `host` over ssh, with the host's

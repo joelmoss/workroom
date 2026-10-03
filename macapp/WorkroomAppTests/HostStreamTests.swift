@@ -24,7 +24,7 @@ final class HostStreamTests: XCTestCase {
   private func relay(to socket: String) throws -> HostStream {
     try HostStream.spawn(
       try AgentHarness.binaryURL(), ["relay", "--socket", socket], environment: [:],
-      handshakeTimeout: 5)
+      handshakeTimeout: 5, purpose: .connection)
   }
 
   private func eventually(_ condition: () async -> Bool) async -> Bool {
@@ -381,13 +381,14 @@ final class HostStreamTests: XCTestCase {
   /// `terminationStatus`): its own exit status, our SIGTERM, or still running when the wait gave up.
   func testAFailedCarrierSaysHowItEnded() async throws {
     let exited = try HostStream.spawn(
-      URL(fileURLWithPath: "/bin/sh"), ["-c", "exit 7"], environment: [:], handshakeTimeout: 5)
+      URL(fileURLWithPath: "/bin/sh"), ["-c", "exit 7"], environment: [:], handshakeTimeout: 5,
+      purpose: .connection)
     let said = await exited.failure()
     XCTAssertEqual(said, "sh exited with status 7")
     // `exec`, so the process ended is the one holding the stderr pipe.
     let ended = try HostStream.spawn(
       URL(fileURLWithPath: "/bin/sh"), ["-c", "exec sleep 30"], environment: [:],
-      handshakeTimeout: 5)
+      handshakeTimeout: 5, purpose: .connection)
     ended.end()
     let asked = ContinuousClock.now
     let stopped = await ended.failure()
@@ -397,7 +398,7 @@ final class HostStreamTests: XCTestCase {
     XCTAssertLessThan(ContinuousClock.now - asked, .seconds(1))
     let running = try HostStream.spawn(
       URL(fileURLWithPath: "/bin/sh"), ["-c", "exec sleep 30"], environment: [:],
-      handshakeTimeout: 5)
+      handshakeTimeout: 5, purpose: .connection)
     defer { running.end() }
     let waited = await running.failure()
     XCTAssertEqual(waited, "sh did not answer in time")

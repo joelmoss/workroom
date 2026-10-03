@@ -409,15 +409,17 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   func openStream(to host: HostID) async throws -> HostStream {
-    let target = try ssh(try id(of: host))
-    return try await exec(
+    let id = try id(of: host)
+    let target = try ssh(id)
+    return try ContainerHostDriver.exec(
       ContainerHostDriver.relayCommand(binary: target.agentBinary, socket: target.agentSocket),
-      on: host)
+      on: target, in: hostDirectory(id), purpose: .connection)
   }
 
   func exec(_ command: String, on host: HostID) async throws -> HostStream {
     let id = try id(of: host)
-    return try ContainerHostDriver.exec(command, on: try ssh(id), in: hostDirectory(id))
+    return try ContainerHostDriver.exec(
+      command, on: try ssh(id), in: hostDirectory(id), purpose: .exchange)
   }
 
   func attachCommand(
