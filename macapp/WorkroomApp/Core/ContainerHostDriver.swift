@@ -624,17 +624,17 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       // Docker's `unless-stopped`: a Docker or Mac restart brings it back, on the port its record
       // names. Apple's runtime has no restart policy; opening the workroom starts it
       // (`startIfStopped`), on the port it keeps.
-      let start =
+      // In steps, typed: as one expression, CI's Swift gave up type-checking it.
+      var arguments: [String] =
         provisioning.dialect == .apple
         ? ["run", "--detach", "--init", "--arch", "arm64"]
         : ["run", "--pull=never", "--detach", "--init", "--restart", "unless-stopped"]
-      let resources =
-        (provisioning.cpus.map { ["--cpus", "\($0)"] } ?? [])
-        + (provisioning.memory.map { ["--memory", $0] } ?? [])
-      _ = try await runtime(
-        start + resources + ["--name", container, "--publish", "127.0.0.1:\(port):22"]
-          + (provisioning.labels + [Self.created()]).flatMap { ["--label", $0] }
-          + ["--env", "AUTHORIZED_KEY=\(provisioning.publicKey)", source])
+      if let cpus = provisioning.cpus { arguments += ["--cpus", String(cpus)] }
+      if let memory = provisioning.memory { arguments += ["--memory", memory] }
+      arguments += ["--name", container, "--publish", "127.0.0.1:\(port):22"]
+      for label in provisioning.labels + [Self.created()] { arguments += ["--label", label] }
+      arguments += ["--env", "AUTHORIZED_KEY=\(provisioning.publicKey)", source]
+      _ = try await runtime(arguments)
       let hostKey = try await identity(of: container)
       lock.withLock {
         hosts[id] = Host(
