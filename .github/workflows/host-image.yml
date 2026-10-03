@@ -1,7 +1,7 @@
 name: Host image
 
-# Publishes the `workroom-host` image a local container workroom runs (#309), for the Nightly and
-# Release workflows, which pin the app they build to the digest this outputs.
+# Publishes the `workroom-host` image a local container workroom runs (#309), for the Nightly
+# workflow, which pins the app it builds to the digest this outputs. Release joins it with #260.
 #
 # Each architecture is built once, smoke-tested as that exact image (host-image-test.sh with
 # WR_HOST_IMAGE), and only then pushed by digest: a second build for the push could resolve other
@@ -99,3 +99,22 @@ jobs:
           case "$digest" in sha256:*) ;; *) echo "::error::no manifest digest: $digest"; exit 1 ;; esac
           echo "image=$repo@$digest" >> "$GITHUB_OUTPUT"
           echo "Published $repo@$digest ($TAG)" >> "$GITHUB_STEP_SUMMARY"
+
+      # The app pulls without signing in to ghcr, so a package left private would ship a digest
+      # every create fails to pull. Asked as a stranger: an anonymous token, then the manifest.
+      - name: Check the image can be pulled anonymously
+        env:
+          IMAGE: ${{ steps.create.outputs.image }}
+        run: |
+          path="${IMAGE#ghcr.io/}"; name="${path%@*}"; digest="${IMAGE#*@}"
+          # A private package refuses the token itself, which the manifest's refusal below reports.
+          token="$(curl -sS "https://ghcr.io/token?scope=repository:$name:pull" | jq -r '.token // empty')"
+          status="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $token" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json' \
+            -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+            "https://ghcr.io/v2/$name/manifests/$digest")"
+          if [ "$status" != 200 ]; then
+            echo "::error::$IMAGE can't be pulled anonymously (HTTP $status): make the package public in its settings"
+            exit 1
+          fi
