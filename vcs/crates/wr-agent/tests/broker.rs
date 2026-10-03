@@ -741,7 +741,8 @@ fn an_unreadable_state_file_is_not_an_enrolment() {
 
 /// A stand-in for the Mac's end of a relay (#309): takes one connection, records what was sent,
 /// and answers with `answer`.
-fn relay_listener(answer: &'static str) -> (u16, std::thread::JoinHandle<String>) {
+fn relay_listener(answer: impl Into<String>) -> (u16, std::thread::JoinHandle<String>) {
+    let answer = answer.into();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let thread = std::thread::spawn(move || {
@@ -881,6 +882,96 @@ fn a_relay_needs_a_port_and_a_one_word_secret() {
         assert!(
             broker::install_relay(&workspace.dir, port, secret).is_err(),
             "{port} {secret:?}"
+        );
+    }
+}
+
+/// `get` through the relay with `answer` from the Mac: what git is told, and what reached it.
+fn relayed_get(name: &str, answer: impl Into<String>) -> (Result<(), BrokerError>, Vec<u8>) {
+    let workspace = Workspace::new(name);
+    let (port, mac) = relay_listener(answer);
+    broker::install_relay(&workspace.dir, port, "s3cret").unwrap();
+    let mut output = Vec::new();
+    let result = broker::credential(
+        &workspace.dir,
+        "get",
+        &b"protocol=https\nhost=github.com\n\n"[..],
+        &mut output,
+    );
+    mac.join().unwrap();
+    (result, output)
+}
+
+#[test]
+fn a_relay_answer_with_an_error_is_the_error_and_gives_git_nothing() {
+    // The credential before the error: the error still wins, and none of it reaches git.
+    let (result, output) = relayed_get(
+        "broker-relay-error",
+        "username=joel\npassword=gho_mac\nerror=the Mac said no\n",
+    );
+    match result {
+        Err(BrokerError::Invalid(message)) => assert_eq!(message, "the Mac said no"),
+        other => panic!("expected the Mac's error, got {other:?}"),
+    }
+    assert!(output.is_empty());
+}
+
+#[test]
+fn a_relay_answer_without_a_username_and_password_says_to_sign_in_to_gh() {
+    for (name, answer) in [
+        ("broker-relay-bare", "protocol=https\nhost=github.com\n"),
+        ("broker-relay-half", "username=joel\n"),
+        ("broker-relay-empty", ""),
+    ] {
+        let (result, output) = relayed_get(name, answer);
+        match result {
+            Err(BrokerError::Invalid(message)) => {
+                assert!(message.contains("gh auth login"), "{name}: {message}")
+            }
+            other => panic!("{name}: expected a sign-in error, got {other:?}"),
+        }
+        assert!(output.is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn a_relay_answer_is_read_only_up_to_the_cap() {
+    // 16 KiB is RELAY_MAX: the password and an error sit past it, so neither is ever seen.
+    let answer = format!(
+        "username=joel\npad={}\npassword=gho_beyond\nerror=beyond\n",
+        "a".repeat(16 * 1024)
+    );
+    let (result, output) = relayed_get("broker-relay-oversized", answer);
+    match result {
+        Err(BrokerError::Invalid(message)) => {
+            assert!(message.contains("gh auth login"), "{message}")
+        }
+        other => panic!("expected a sign-in error, got {other:?}"),
+    }
+    assert!(output.is_empty());
+}
+
+/// `wr-agent credential relay` with a missing or unusable `--port` fails before it touches stdin,
+/// the agent's directory or git config (a valid port would write beside this test binary's agent).
+#[test]
+fn credential_relay_without_a_usable_port_fails() {
+    for args in [
+        &["credential", "relay"][..],
+        &["credential", "relay", "--port"],
+        &["credential", "relay", "--port", "abc"],
+        &["credential", "relay", "--port", "70000"],
+        &["credential", "relay", "--port", "-1"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_wr-agent"))
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("credential relay needs --port"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }
