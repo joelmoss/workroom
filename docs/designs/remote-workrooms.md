@@ -2901,9 +2901,14 @@ disagreement passes every test on either side alone while presenting as an empty
       and the attach run it from there by path: a host has no `wr-agent` on its PATH. In the
       fixture that is `/run/workroom/wr-agent`, on tmpfs, so a reboot means one 11 MB push on the
       next connect.
-    - *`HostDriver.exec` is the primitive.* A command on the host with the stream as its stdin and
-      stdout (`HostStream.communicate`); `openStream` is that with the relay as the command. ssh
-      runs it as the remote command, and an SDK driver would run it through the provider's exec.
+    - *`HostDriver.exec` is the primitive.* A command on the host with the stream as its stdout and
+      a socket of its own as its stdin (`HostStream.communicate`, spawned as a `.exchange`), which
+      `communicate` closes to end the input: a `shutdown(SHUT_WR)` of one socket shared as stdin
+      and stdout left a carrier blocked in `read` asleep on an EOF it never saw, in 4 of 1600
+      exchanges (`sh -c 'wc -c'`; none in 2500 with the close, #305). `openStream` runs the same
+      carrier with the relay as the command, as a `.connection` with one socket for both, the one
+      `connect` takes over. ssh runs it as the remote command, and an SDK driver would run it
+      through the provider's exec.
       The far side is two POSIX-sh scripts sent as `sh -c '<script>' <args>`, needing only
       coreutils there (`sha256sum`; a host without it is reported and never pushed to), since the
       host may hold nothing of Workroom's yet. A script arrives as one quoted word for the host's
