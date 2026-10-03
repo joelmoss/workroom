@@ -1668,7 +1668,7 @@ final class TerminalSessions: ObservableObject {
     Task {
       let ended = await self.endPersistentSession(for: tab)
       if remote { self.remoteCloseKillsInFlight -= 1 } else { self.localCloseKillsInFlight -= 1 }
-      if ended == false { self.onRemoteCloseFailed?(target.id, target.title) }
+      if remote && !ended { self.onRemoteCloseFailed?(target.id, target.title) }
     }
     teardown(tab)
     tabsByTarget[target.id]?[tabID] = nil
@@ -1699,10 +1699,10 @@ final class TerminalSessions: ObservableObject {
       // destroys the host and the sessions with it. Asking the host first could only hold the
       // delete up, for as long as a request on a link that died while the Mac slept (#283). Its
       // registration goes, so the pane's session is not held for the life of the app.
-      if case .terminal(let state) = tab.content, let id = state.sessionID,
-        sessionService.isRemote(id)
+      if case .terminal(let state) = tab.content, let sessionID = state.sessionID,
+        sessionService.isRemote(sessionID)
       {
-        sessionService.forgetRemoteSession(id)
+        sessionService.forgetRemoteSession(sessionID)
       } else {
         await endPersistentSession(for: tab)
       }
@@ -2315,17 +2315,12 @@ final class TerminalSessions: ObservableObject {
     return sessionService.isRemote(sessionID)
   }
 
-  /// Whether a REMOTE session was ended (#283); nil for a local session or none, whose failures
-  /// stay in the log as they always have.
   @discardableResult
-  private func endPersistentSession(for tab: TerminalTab) async -> Bool? {
+  private func endPersistentSession(for tab: TerminalTab) async -> Bool {
     guard case .terminal(let state) = tab.content, let sessionID = state.sessionID else {
-      return nil
+      return true
     }
-    let service = sessionService
-    let remote = service.isRemote(sessionID)
-    let ended = await service.endSession(sessionID: sessionID)
-    return remote ? ended : nil
+    return await sessionService.endSession(sessionID: sessionID)
   }
 
   private func projectPath(from targetID: TerminalTarget.ID) -> String? {

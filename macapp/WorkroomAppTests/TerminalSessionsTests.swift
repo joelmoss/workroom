@@ -2013,6 +2013,24 @@ final class RemotePaneCloseTests: XCTestCase {
     XCTAssertFalse(s.sessionService.isRemote(session), "the reaped pane's registration leaked")
   }
 
+  /// Value: protects=a closed LOCAL pane's kill is counted as local, so a quit waits for it even past its deadline; fails_when=closeTab counts a local close as remote (or not at all); why_new=quitKeepsWaiting's test pins the rule, not which count a close lands in; seam=none
+  func testAQuitWaitsForALocalCloseEvenPastItsDeadline() async throws {
+    let target = TerminalTarget(id: "wr|/p|local", title: "local", path: "/w", isMissing: false)
+    let s = makeSessions { _, _ in true }
+    var asked = 0
+    s.sessionService = PersistentSessionService(
+      probe: { _ in .ready(version: "test") },
+      ownership: { _ in
+        asked += 1
+        return .unreachable
+      })
+    let tab = s.addTab(for: target, sessionID: UUID())
+    s.closeTab(tab.id, for: target)
+    // A deadline already gone: a quit gives up on remote kills at once, never on a local one.
+    await s.awaitPendingCloseKills(until: .now - .seconds(1))
+    XCTAssertGreaterThan(asked, 0, "the quit did not wait for the local kill")
+  }
+
   /// Value: protects=a quit waits out every local close kill and only gives up on remote ones at its deadline; fails_when=one budget caps local kills too, or remote kills hold the quit past it; why_new=the quit tests above drive remote kills only; seam=none
   func testAQuitWaitsForLocalKillsAndGivesUpOnlyOnRemoteOnes() {
     XCTAssertTrue(TerminalSessions.quitKeepsWaiting(local: 1, remote: 0, pastDeadline: true))
