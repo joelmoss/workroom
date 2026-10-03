@@ -68,16 +68,15 @@ final class ThemePickerInvalidationTests: XCTestCase {
       FamilyRow.bodyPasses = 0
       let started = Date()
       ThemeService.shared.applyFamily(family)
-      settle(view, until: { FamilyRow.bodyPasses > 0 })
+      // Waited for far past the ceiling, so a switch a busy machine slows still gets its rows
+      // re-rendered and is merely slow, while one that never re-renders them fails.
+      settle(view, seconds: 5, until: { FamilyRow.bodyPasses > 0 })
       samples.append((Date().timeIntervalSince(started), FamilyRow.bodyPasses))
+      XCTAssertGreaterThan(
+        FamilyRow.bodyPasses, 0,
+        "switching to \(family) did not re-render the rows that read tokens within 5s")
     }
     let fastest = try XCTUnwrap(samples.min { $0.elapsed < $1.elapsed })
-    // On the fastest switch only: a slow one that ran into settle()'s ceiling is never the fastest
-    // unless all of them did, so asserting on each would bring the load flake back.
-    XCTAssertGreaterThan(
-      fastest.passes, 0,
-      "applyFamily must actually re-render the rows that read tokens — a gate of zero here would "
-        + "mean the settle() ceiling was hit, not that the storm disappeared")
     let all = samples.map { String(format: "%.3f", $0.elapsed) }.joined(separator: ", ")
     // Measured (2026-08-13, this fixture): ~8 rows rebuilt (the visible rows in a 300×420 popover),
     // ~0.07s elapsed — comfortably clear of "perceptible", let alone the multi-second WORKROOM-2B
