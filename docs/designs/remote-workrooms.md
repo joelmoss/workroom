@@ -1630,6 +1630,64 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     instead of a fresh shell: its terminals as panes on its host, each attaching with
     `--no-create`. A held session whose workroom is deleted is dropped at the next save.
   - **Not done.** A held session is restored only in the window that claimed it.
+- **As built (#309, local container workrooms on Docker and Apple's runtime).** A workroom can
+  be created in a container on the Mac, on Docker (Desktop, OrbStack, Colima) or on Apple's
+  `container`. These are not remote workrooms: they stop when the Mac sleeps. They ship with the
+  remote targets, behind the same preview and Nightly gate, until #260.
+  - **Choosing.** With the preview on, a project's New Workroom is a submenu: This Mac, then Docker
+    and Apple Container under "Local containers". It replaced New Remote Workroom. An entry that
+    can't be used says why in its title (`RemoteWorkrooms.unavailability`): Apple's runtime needs
+    Apple silicon and macOS 26, either may not be installed, and a create needs a Codaset or `gh` sign-in.
+  - **Drivers.** `RemoteHosts` keeps a `ContainerHostDriver` per `DriverKey`: runtime, and for
+    Docker the context. A descriptor's `driver` names the runtime; `container` stays Docker, so
+    every record before #309 is unchanged, and `apple-container` is Apple's. Each driver's sweep
+    keeps every recorded host and image, since two keys can reach one daemon.
+  - **Docker contexts.** A new Docker base is pinned to `docker context show` (never `default`,
+    which is whatever `DOCKER_HOST` says), recorded in its container record, and every command for
+    it names `--context`, which outranks `DOCKER_HOST` and `DOCKER_CONTEXT` (Docker 29, measured).
+    A record with no context runs with no `--context`, as before.
+  - **Bases.** A project keeps a base per runtime and context, in its descriptor's `bases` list
+    once it has more than one; a descriptor without the list is one base, as before. A workroom
+    derives from the base where it is asked for, made there first when there is none; a base made
+    before #309 (no context) still serves Docker. A delete builds an environment per key.
+  - **Apple's runtime (1.5.0, measured; its docs on `main` describe an unreleased CLI).**
+    `ContainerHostDriver.Dialect.apple` covers what differs. There is no `commit`: a derive stops
+    the base if running, exports its disk, starts it again in a task of its own, builds the disk
+    back into an image `FROM scratch` with the host image's own entrypoint and environment
+    (`AppleContainerCLI.dockerfile`, `$` escaped), runs it, and removes the image, since a
+    container's disk outlives it. `build --quiet` never returns. The builder is one VM for the whole
+    Mac and is left running. Apple removes an image a container still uses, so its sweep keeps any
+    image a container was run from. There is no `--filter` or template output, so it reads JSON;
+    no `--restart`, so a stopped container is started when its workroom is opened (below);
+    published ports survive a restart. Images are pulled `--arch arm64`. Each container gets
+    explicit CPUs and memory (half the cores, a quarter of memory, 2-8 GB; hidden
+    `containerCPUs`/`containerMemory` override), since Apple's default is a 1 GB VM.
+  - **Credentials.** A base decides how its workrooms reach GitHub, once, and records it
+    (`credentials: relay`): the broker when signed in to Codaset, else, or when the broker refuses
+    with `app_not_installed`, the Mac's own `gh`. A relayed base clones and a relayed workroom
+    fetches and branches with `gh auth token` as git's header (`cloneEnvironment`); the workroom
+    never enrols. Later git in it asks `wr-agent credential`, which, unenrolled, sends a per-launch
+    secret and the request to a port on its loopback (`relay.json`, set by `wr-agent credential
+    relay` on every connect); `ReverseForwardRegistry`, lifted out of the Debug broker route,
+    carries it to `CredentialRelay`'s listener on the Mac's loopback, which answers github.com over
+    https only, from `gh auth git-credential get`. Accepted (D9): anything in the workroom can ask,
+    so it has the user's `gh` access while the app is connected, as a workroom on the Mac does; git
+    is told to open the workroom when it isn't. An enrolled workroom never uses the relay.
+  - **Starting.** Selecting a container workroom marks its host opened (`RemoteHosts.activate`), and
+    its connects then start a stopped container first. Background status probes reach every
+    reachable remote workroom, so they never start one.
+  - **The image.** Nightly and Release build the `FIXTURE=0` image once per architecture, run
+    `host-image-test.sh` against that exact image (`WR_HOST_IMAGE`), push it by digest and join the
+    two into one manifest on ghcr (`host-image.yml`). The manifest's digest is pinned into the app
+    (`WorkroomHostImage`); the hidden `remoteHostImage` overrides it, and a local build runs
+    `workroom-host`. A missing image is pulled before `run`, which never pulls (`--pull=never`).
+    The ghcr package must be made public once, by hand, after its first push.
+  - **Tests.** `RemoteHostsTests` drive both dialects through a stub CLI. The Docker fixture suites
+    (`run.sh`) cover the Docker path; `AppleContainerIntegrationTests` run the whole lifecycle on
+    the real Apple runtime, opt-in (`TEST_RUNNER_WR_APPLE_CONTAINER_TESTS=1`), since CI's macOS
+    runners can't run its VMs.
+  - **Not done.** Pull progress is not shown, only a pull's failure. A development environment in
+    the container (toolchains, agent CLIs) is #308; Docker on another machine is #307.
 - **Cross-machine session enumeration** (from Phase 1's S4 note): agent-side session naming, a
   pane→tab mapping on the wire, and workroom UI state stored with the workroom.
 - **OSC 7 and cmd-click (C7).** `SessionDaemon.swift:395-401` deliberately emits
