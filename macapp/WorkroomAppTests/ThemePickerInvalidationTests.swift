@@ -70,19 +70,23 @@ final class ThemePickerInvalidationTests: XCTestCase {
       ThemeService.shared.applyFamily(family)
       settle(view, until: { FamilyRow.bodyPasses > 0 })
       samples.append((Date().timeIntervalSince(started), FamilyRow.bodyPasses))
-      XCTAssertGreaterThan(
-        FamilyRow.bodyPasses, 0,
-        "applyFamily must actually re-render the rows that read tokens — a gate of zero here would "
-          + "mean the settle() ceiling was hit, not that the storm disappeared")
     }
     let fastest = try XCTUnwrap(samples.min { $0.elapsed < $1.elapsed })
+    // On the fastest switch only: a slow one that ran into settle()'s ceiling is never the fastest
+    // unless all of them did, so asserting on each would bring the load flake back.
+    XCTAssertGreaterThan(
+      fastest.passes, 0,
+      "applyFamily must actually re-render the rows that read tokens — a gate of zero here would "
+        + "mean the settle() ceiling was hit, not that the storm disappeared")
     let all = samples.map { String(format: "%.3f", $0.elapsed) }.joined(separator: ", ")
     // Measured (2026-08-13, this fixture): ~8 rows rebuilt (the visible rows in a 300×420 popover),
     // ~0.07s elapsed — comfortably clear of "perceptible", let alone the multi-second WORKROOM-2B
     // App Hang threshold this test family exists to catch. 0.3s leaves real margin over that
     // measurement (some of which is `settle()`'s own 0.02s poll granularity, not row-render work)
-    // while still catching a real regression — e.g. the preview cache disappearing would put file
-    // I/O back on this path and balloon it by orders of magnitude.
+    // while still catching a row body that got expensive: 50ms more per row fails it (0.44s at
+    // best). It does not catch the preview cache going missing, whose file reads cost a few
+    // milliseconds here (measured 2026-10-03: 0.030s at best with the cache off). The cache's own
+    // tests are in ThemeServiceTests.
     XCTAssertLessThan(
       fastest.elapsed, 0.3,
       "re-rendering the picker's visible rows after one arrow-key apply took at best "
