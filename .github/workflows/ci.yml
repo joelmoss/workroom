@@ -65,16 +65,23 @@ jobs:
 
   # Every workflow, shellchecked `run:` blocks included. Not behind `changes`: it takes seconds,
   # and a workflow edit is exactly what the selector would skip. The pin moves with the Makefile's
-  # `actions-lint` (CONTRIBUTING); the download script is fetched at the same tag, not from main.
+  # `actions-lint` (CONTRIBUTING). The release archive is checked against its pinned sha256 before
+  # it runs, so a replaced asset or tag fails here instead of running.
   workflows:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
     steps:
       - uses: actions/checkout@v5
 
       - name: Lint the workflows
         run: |
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLO "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
+          echo "$ACTIONLINT_SHA256  $archive" | sha256sum --check --strict
+          tar -xzf "$archive" actionlint
           ./actionlint -color
 
   cli:

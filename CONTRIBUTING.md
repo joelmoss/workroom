@@ -71,7 +71,8 @@ the v2-format `.golangci.yml`.
 
 **To change a GitHub workflow:** **`actionlint` 1.7.12** for `make actions-lint`
 (`go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`), with `shellcheck` on `PATH` so
-`run:` blocks are checked too. CI's `workflows` job runs the same version: bump both together.
+`run:` blocks are checked too. CI's `workflows` job runs the same version, checked by the
+release archive's sha256: bump the version and the hash there together.
 
 Runtime requirements for *using* Workroom are in [the README](README.md#requirements).
 
