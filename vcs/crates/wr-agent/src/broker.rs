@@ -442,10 +442,11 @@ pub fn directory() -> io::Result<PathBuf> {
 // MARK: - Requests
 
 /// Retries a read that a signal interrupted (#301). On Linux a read from a socket with a timeout,
-/// as every ureq socket has, fails with EINTR when any handled signal arrives, `SA_RESTART` or
-/// not, and even with no handler after a stop and continue (signal(7)); ureq 3.4.2 hands that
-/// straight back as an error. The read failed before taking anything, so it is safe to repeat.
-/// Repeating the whole request is not: the broker may already have spent an enrolment's code.
+/// as `call`'s `timeout_global` gives each of its sockets, fails with EINTR when any handled signal
+/// arrives, `SA_RESTART` or not, and even with no handler after a stop and continue (signal(7));
+/// ureq 3.4.2 hands that straight back as an error. The read failed before taking anything, so it
+/// is safe to repeat. Repeating the whole request is not: the broker may already have spent an
+/// enrolment's code.
 #[derive(Debug)]
 struct RetryInterrupted<T>(T);
 
@@ -487,9 +488,12 @@ impl<T: Transport> Transport for RetryInterrupted<T> {
             if !timeout.after.is_not_happening() {
                 match timeout.after.checked_sub(start.elapsed()) {
                     Some(left) if !left.is_zero() => next.after = left.into(),
-                    // Out of time: one last read, which ureq times at a second as it does any
-                    // expired read (`NextTimeout::not_zero`), so an answer that arrived while the
-                    // process was stopped is still taken rather than thrown away.
+                    // Out of time: one last read, which the socket times at a second
+                    // (`NextTimeout::not_zero`), so an answer that arrived while the process was
+                    // stopped is still taken. ureq itself refuses an expired read
+                    // (`Connection::maybe_await_input`), so this goes further, deliberately: an
+                    // enrolment's code is already spent. An answer split across reads still times
+                    // out on the next one.
                     _ => {
                         next.after = Duration::ZERO.into();
                         last = true;
@@ -793,7 +797,7 @@ mod tests {
             reason: ureq::Timeout::RecvResponse,
         };
 
-        // Each retry is given only what is left, so the socket never waits past the deadline.
+        // Each retry is given only what is left of the deadline.
         let mut retried = transport(3);
         assert!(matches!(retried.await_input(timeout(5000)), Ok(true)));
         let given = &retried.0.timeouts;
