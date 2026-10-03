@@ -38,6 +38,11 @@ use ring::rand::{SecureRandom, SystemRandom};
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use ureq::unversioned::resolver::DefaultResolver;
+use ureq::unversioned::transport::{
+    Buffers, ConnectProxyConnector, ConnectionDetails, Connector, NextTimeout, RustlsConnector,
+    TcpConnector, Transport,
+};
 
 const STATE_FILE: &str = "broker.json";
 const TOKEN_FILE: &str = "broker-token.json";
@@ -436,6 +441,53 @@ pub fn directory() -> io::Result<PathBuf> {
 
 // MARK: - Requests
 
+/// Retries a read that a signal interrupted (#301). On Linux a read from a socket with a timeout,
+/// as every ureq socket has, fails with EINTR when any handled signal arrives, `SA_RESTART` or
+/// not, and even with no handler after a stop and continue (signal(7)); ureq 3.4.2 hands that
+/// straight back as an error. The read failed before taking anything, so it is safe to repeat.
+/// Repeating the whole request is not: the broker may already have spent an enrolment's code.
+#[derive(Debug)]
+struct RetryInterrupted<T>(T);
+
+impl<In: Transport, C: Connector<In>> Connector<In> for RetryInterrupted<C> {
+    type Out = RetryInterrupted<C::Out>;
+
+    fn connect(
+        &self,
+        details: &ConnectionDetails,
+        chained: Option<In>,
+    ) -> Result<Option<Self::Out>, ureq::Error> {
+        Ok(self.0.connect(details, chained)?.map(RetryInterrupted))
+    }
+}
+
+impl<T: Transport> Transport for RetryInterrupted<T> {
+    fn buffers(&mut self) -> &mut dyn Buffers {
+        self.0.buffers()
+    }
+
+    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
+        self.0.transmit_output(amount, timeout)
+    }
+
+    fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+        loop {
+            match self.0.await_input(timeout) {
+                Err(ureq::Error::Io(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
+                result => return result,
+            }
+        }
+    }
+
+    fn is_open(&mut self) -> bool {
+        self.0.is_open()
+    }
+
+    fn is_tls(&self) -> bool {
+        self.0.is_tls()
+    }
+}
+
 /// One signed JSON POST (every agent request is one), its proof dated `skew` seconds from this
 /// machine's clock and retried once with a corrected clock on `stale_proof`. Returns the answer
 /// and the skew that worked.
@@ -447,14 +499,21 @@ fn call(
 ) -> Result<(Value, i64), BrokerError> {
     let key = key_pair(&state.key)?;
     let url = format!("{}{}", state.broker, path);
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+    let config = ureq::Agent::config_builder()
         .http_status_as_error(false)
         // A redirect would carry the proof to wherever it points, and `/broker/tokens` has no
         // body to tie it to one host. The broker never redirects; a 3xx is an outage.
         .max_redirects(0)
         .timeout_global(Some(TIMEOUT))
-        .build()
-        .into();
+        .build();
+    // ureq's default chain less the warnings it keeps private (SOCKS without the feature, a
+    // missing TLS provider), with interrupted reads retried beneath TLS so the handshake is
+    // covered too.
+    let connector =
+        ().chain(ConnectProxyConnector::default())
+            .chain(RetryInterrupted(TcpConnector::default()))
+            .chain(RustlsConnector::default());
+    let agent = ureq::Agent::with_parts(config, connector, DefaultResolver::default());
     for attempt in 0..2 {
         let proof = proof(&key, "POST", &url, unix_now() + skew)?;
         let request = agent

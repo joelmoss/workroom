@@ -85,6 +85,11 @@ struct Broker {
 
 impl Broker {
     fn start(responses: Vec<Response>) -> Broker {
+        Broker::start_with(responses, || {})
+    }
+
+    /// As `start`, running `before_answer` once each request is read and before it is answered.
+    fn start_with(responses: Vec<Response>, before_answer: impl Fn() + Send + 'static) -> Broker {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
         let received = Arc::new(Mutex::new(Vec::new()));
@@ -119,6 +124,7 @@ impl Broker {
                     body: String::from_utf8(body).unwrap(),
                 });
 
+                before_answer();
                 let (status, headers, body) = response;
                 let mut answer = format!(
                     "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\
@@ -262,6 +268,39 @@ fn enrolling_again_replaces_the_key_and_its_token() {
         !workspace.dir.join("broker-token.json").exists(),
         "the old key's token is gone"
     );
+}
+
+extern "C" fn ignore_signal(_: libc::c_int) {}
+
+/// #301: on Linux a read from a socket with a timeout fails with EINTR when any handled signal
+/// arrives, whatever `SA_RESTART` says, and even with no handler after a stop and continue. The
+/// handler here has no `SA_RESTART`, so macOS, which restarts such reads, interrupts them too.
+/// It is process-wide, but only this test's own thread is ever sent SIGUSR1.
+#[test]
+fn a_signal_while_waiting_for_the_broker_does_not_fail_the_enrolment() {
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = ignore_signal as extern "C" fn(libc::c_int) as usize;
+        assert_eq!(
+            libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut()),
+            0
+        );
+    }
+    let workspace = Workspace::new("broker-signal");
+    // `pthread_t` is a pointer on macOS, so it crosses to the broker's thread as an integer.
+    let client = unsafe { libc::pthread_self() } as usize;
+    // The client is blocked reading the answer for most of this window, so some of these land
+    // mid-read rather than all before it.
+    let broker = Broker::start_with(vec![enrolled_answer()], move || {
+        for _ in 0..20 {
+            unsafe { libc::pthread_kill(client as libc::pthread_t, libc::SIGUSR1) };
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    });
+
+    enrolled(&workspace, &broker, "wr-1");
+
+    assert_eq!(broker.received().len(), 1, "one request, not a retried one");
 }
 
 #[test]
