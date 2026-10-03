@@ -280,7 +280,6 @@ struct ProjectSidebar: View {
               .progressViewStyle(.circular)
               .controlSize(.small)
               .help("Downloading the workroom image: \(Int(pulled * 100))%")
-              .accessibilityIdentifier("sidebar.project.imagePull")
           } else {
             ProgressView().controlSize(.small)
           }
@@ -307,7 +306,8 @@ struct ProjectSidebar: View {
         } label: {
           Label("New Workroom", systemImage: "plus")
         }
-        .help("Create a workroom of \(project.displayName), on this Mac or in a local container")
+        // No tooltip here: a submenu's parent shows it on top of the submenu, over This Mac. Each
+        // entry has its own.
       } else {
         newLocalWorkroomButton(Label("New Workroom", systemImage: "plus"), in: project)
       }

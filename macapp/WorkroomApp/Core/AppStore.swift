@@ -2925,6 +2925,11 @@ final class AppStore: ObservableObject {
   private func loadFixture() {
     let fixtures = applyingDeletionTombstones(UITestFixture.projects())
     projects = fixtures
+    // A create mid-download, for the row's progress (#309).
+    if let pulled = UITestFixture.imagePull, let project = fixtures.first {
+      beginBusy(project.path)
+      imagePulls[project.path] = pulled
+    }
     // Fixture mode never reaches `apply`, so restore has to be released here or saves would stay
     // suspended for the whole run (issue #46). Fixture projects live in a temp directory that a real
     // saved session can't address anyway.

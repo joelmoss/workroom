@@ -620,6 +620,11 @@ enum UITestFixture {
   /// Whether a fixture launch has the remote preview on (`-WorkroomUITestRemotePreview 1`, #309):
   /// New Workroom becomes a submenu of places. Off unless given, so no other test sees it; mirrored
   /// into `Defaults` (`applyFixtureDefaults`), since the argument domain would shadow the key.
+  /// A container workroom create downloading its image, this far along (`-WorkroomUITestImagePull
+  /// 0.42`, #309), seeded on the fixture project so the row's progress can be seen without a real
+  /// pull. nil unless given.
+  static var imagePull: Double? { text("WorkroomUITestImagePull").flatMap(Double.init) }
+
   static var remotePreview: Bool {
     text("WorkroomUITestRemotePreview").map { ($0 as NSString).boolValue } ?? false
   }
