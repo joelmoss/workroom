@@ -31,6 +31,22 @@ enum RemoteWorkrooms {
   static let agentSocket = "/run/workroom/agent.sock"
   static let user = "workroom"
 
+  /// The image a new base runs (#309): the hidden `remoteHostImage` override, else the published
+  /// image this build pins by digest (`WorkroomHostImage`, from CI), else a local `workroom-host`,
+  /// as `make remote-host-image` builds it for a Dev build.
+  static var hostImage: String {
+    hostImage(
+      override: Defaults[.remoteHostImage],
+      pinned: Bundle.main.object(forInfoDictionaryKey: "WorkroomHostImage") as? String)
+  }
+
+  static func hostImage(override: String?, pinned: String?) -> String {
+    for image in [override, pinned] {
+      if let image = image?.trimmingCharacters(in: .whitespaces), !image.isEmpty { return image }
+    }
+    return "workroom-host"
+  }
+
   /// The branch a remote workroom checks out, as a local workroom's is named.
   static func branch(for name: String) -> String { "workroom/\(name)" }
 
@@ -590,7 +606,7 @@ final class RemoteHosts: @unchecked Sendable {
     else { throw RemoteWorkrooms.Failure.noDocker }
     let key = try clientKey()
     return ContainerHostDriver.Provisioning(
-      runtime: URL(fileURLWithPath: runtime), image: Defaults[.remoteHostImage],
+      runtime: URL(fileURLWithPath: runtime), image: RemoteWorkrooms.hostImage,
       user: RemoteWorkrooms.user, identityFile: key.path,
       publicKey: try String(contentsOf: key.appendingPathExtension("pub"), encoding: .utf8)
         .trimmingCharacters(in: .whitespacesAndNewlines),

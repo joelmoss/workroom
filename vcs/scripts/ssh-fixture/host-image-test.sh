@@ -3,6 +3,7 @@
 # Smoke-tests the `workroom-host` image (FIXTURE=0, `make remote-host-image`, #253, #288).
 #
 #   vcs/scripts/ssh-fixture/host-image-test.sh
+#   WR_HOST_IMAGE=<image> vcs/scripts/ssh-fixture/host-image-test.sh   # test a built image (#309)
 #
 # run.sh only ever builds FIXTURE=1, so nothing else exercises the paths only this variant takes:
 # the `[ "$FIXTURE" = 1 ] || exit 0` steps, the `wr-agen[t]` COPY with no agent in the context, and
@@ -50,7 +51,14 @@ cp "$HERE/Dockerfile" "$HERE/entrypoint.sh" "$HERE/identity.sh" "$HERE/fake-gith
 printf '#!/bin/sh\nexit 0\n' > "$STAGE/control/wr-agent"
 "$RUNTIME" build --quiet --tag "$CONTROL" --build-arg FIXTURE=1 \
   ${CONTROL_BUILD_FLAGS[@]+"${CONTROL_BUILD_FLAGS[@]}"} "$STAGE/control" >/dev/null
-"$RUNTIME" build --quiet --tag "$NAME" ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$HERE" >/dev/null
+# WR_HOST_IMAGE names an image already built, to test it rather than build one (#309): CI tests the
+# exact image it then publishes, since a second build could resolve other packages. Tagged with this
+# run's name, so cleanup's `rmi` only takes that tag off and the image stays for the push.
+if [ -n "${WR_HOST_IMAGE:-}" ]; then
+  "$RUNTIME" tag "$WR_HOST_IMAGE" "$NAME"
+else
+  "$RUNTIME" build --quiet --tag "$NAME" ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} "$HERE" >/dev/null
+fi
 
 ssh-keygen -q -t ed25519 -N '' -C wr-host-image-test -f "$STAGE/id_ed25519"
 

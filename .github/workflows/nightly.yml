@@ -121,8 +121,20 @@ jobs:
 
   # Build + sign + notarize + staple the DMG alongside the CLI. The publish job below
   # uploads it, updates the appcast, then stamps the successful version as the skip marker.
-  macapp:
+  # The `workroom-host` image tonight's local container workrooms run (#309), built, tested and
+  # published per architecture; its digest is pinned into the app below.
+  host-image:
     needs: check
+    if: needs.check.outputs.should_build == 'true'
+    uses: ./.github/workflows/host-image.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      tag: nightly
+
+  macapp:
+    needs: [check, host-image]
     if: needs.check.outputs.should_build == 'true'
     runs-on: macos-15
     env:
@@ -240,6 +252,8 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          # The host image this app runs, by digest (release.sh → WorkroomHostImage).
+          WORKROOM_HOST_IMAGE: ${{ needs.host-image.outputs.image }}
           # release.sh derives MARKETING_VERSION = ${VERSION#v} and CURRENT_PROJECT_VERSION = commit
           # count; the nightly version has no leading v, so it flows through unchanged.
         run: |

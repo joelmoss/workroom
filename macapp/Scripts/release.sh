@@ -95,6 +95,12 @@ BUILD_NUMBER="$(git -C "$MACAPP_DIR/.." rev-list --count HEAD 2>/dev/null || ech
 # Go helper — with our Developer ID, hardened runtime, and a secure timestamp. A plain `build`
 # leaves nested helpers without a timestamp (and injects get-task-allow), which notarization
 # rejects. Archiving also produces a distribution build with get-task-allow omitted.
+# The `workroom-host` image the app's local container workrooms run, by digest (#309): CI's
+# host-image workflow publishes it and passes it here. Without it the app falls back to a locally
+# built `workroom-host` (`make remote-host-image`), which a user won't have.
+if [ -z "${WORKROOM_HOST_IMAGE:-}" ]; then
+  echo "warning: WORKROOM_HOST_IMAGE is unset; this build runs a local workroom-host image" >&2
+fi
 echo "==> Archiving $CONFIGURATION ($APP_NAME) $SHORT_VERSION ($BUILD_NUMBER)"
 rm -rf "$ARCHIVE" "$EXPORT_DIR"
 xcodebuild -project "$PROJ" -scheme WorkroomApp -configuration "$CONFIGURATION" \
@@ -102,6 +108,7 @@ xcodebuild -project "$PROJ" -scheme WorkroomApp -configuration "$CONFIGURATION" 
   -clonedSourcePackagesDirPath "$BUILD/SourcePackages" \
   -archivePath "$ARCHIVE" \
   MARKETING_VERSION="$SHORT_VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+  WORKROOM_HOST_IMAGE="${WORKROOM_HOST_IMAGE:-}" \
   archive
 
 # Upload dSYMs to Sentry so release crashes symbolicate. The archive bundles them in
