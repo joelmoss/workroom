@@ -1512,9 +1512,15 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     Dockerfile with `FIXTURE=0`: sshd, git and CA certificates, no agent and no fake GitHub. The
     fixture's GitHub, its `/etc/hosts` mapping, its seed repository and its baked-in agent are
     `FIXTURE=1` only, which run.sh passes. The app installs its own agent on first connect, and
-    the supervisor waits until it has. `RemoteHosts` makes the one `ContainerHostDriver`: `docker`
-    from the usual install paths (a GUI app's PATH has none), the image from the hidden
-    `remoteHostImage` setting, an ed25519 key it makes under
+    the supervisor waits until it has. `make remote-host-image-test` (#288) smoke-tests this
+    variant, which run.sh never builds: it builds the host image as that target does, boots it and
+    checks that sshd serves, that none of the fixture's pieces are there, that it keeps what a real
+    host needs (git, pgrep, setpriv, the CA bundle), and that the supervisor starts an agent pushed
+    after boot. A `FIXTURE=1` control with a stub agent goes first, and every one of those checks
+    must find its piece in it, or the check has gone stale and proves nothing. CI runs it as the
+    `workroom-host image` step of the `agent-linux` job (x86_64 only). `RemoteHosts` makes the
+    one `ContainerHostDriver`: `docker` from the usual install paths (a GUI app's PATH has none),
+    the image from the hidden `remoteHostImage` setting, an ed25519 key it makes under
     `Application Support/Workroom/<bundle id>/remote`, and the label
     `workroom.provisioner=<bundle id>`, so one build's sweep never takes another's hosts. A Debug
     build carries no Linux agent unless built with `WR_AGENT_LINUX=1`.
@@ -1577,6 +1583,13 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     still refuses any remote entry. That order matters: config keeps a project with a base when its
     last workroom is removed, and only then. It also keeps `--from-disk` from handing a path on a
     remote host to the Bin. The sheet warns that every option destroys them.
+  - **A reload can't bring a deleting project back (#287).** Tearing down a project's boxes can
+    take minutes, so the project's path goes into `deletingProjects` (the project-level twin of
+    `deletingWorkrooms`, in the shared `ProjectStore`) once the checks pass, and every reload drops
+    it. While it is there a second delete, a local create and a remote create in that project are
+    refused. On success the app reloads before it lifts the tombstone, so a read begun before
+    config dropped the project can't publish it; on failure it lifts the tombstone first, so the
+    project, still in config, reappears.
   - **Not done.** No teardown script runs on the box: create runs no setup script there, and the
     box goes anyway. A failure part-way through a project delete leaves the remote workrooms
     already taken down gone, as the local cascade does.

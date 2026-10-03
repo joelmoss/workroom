@@ -9,6 +9,7 @@
 #   remote workrooms run on, on the Mac's own Docker (#253). It talks to the real github.com and
 #   has no agent baked in: the app installs its own on first connect (#231), and the supervisor
 #   below waits until it has.
+#   host-image-test.sh (`make remote-host-image-test`, #288) smoke-tests this variant in CI.
 FROM debian:bookworm-slim
 ARG FIXTURE=0
 

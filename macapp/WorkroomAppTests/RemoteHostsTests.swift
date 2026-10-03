@@ -153,6 +153,18 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertThrowsError(try RemoteHosts.clientKey(in: directory))
   }
 
+  /// The launch's one sweep waits out a delete (#296): a call that isn't allowed leaves it for the
+  /// next, and only one call ever runs it.
+  func testTheSweepIsHeldUntilAllowedThenRunsOnce() {
+    let remote = RemoteHosts()
+    XCTAssertFalse(remote.sweepHeld, "nothing has reached the sweep, so nothing is owed")
+    XCTAssertFalse(remote.claimSweep(allowed: false))
+    XCTAssertTrue(remote.sweepHeld, "a held sweep is still owed")
+    XCTAssertTrue(remote.claimSweep(allowed: true))
+    XCTAssertFalse(remote.sweepHeld)
+    XCTAssertFalse(remote.claimSweep(allowed: true))
+  }
+
   /// New Remote Workroom is off while its project is busy: a second create would build a second
   /// base.
   @MainActor

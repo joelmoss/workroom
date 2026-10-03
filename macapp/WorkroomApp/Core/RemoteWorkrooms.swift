@@ -317,6 +317,8 @@ final class RemoteHosts: @unchecked Sendable {
   private let lock = NSLock()
   private var made: ContainerHostDriver?
   private var swept = false
+  /// A call reached the sweep while a delete was in flight and left it for later (#296).
+  private var held = false
   /// The connection attempt running for each host, which `ensureConnected` callers share.
   private var connecting: [HostID: Task<Void, Error>] = [:]
   /// When each host's last attempt failed, which answers for it for `retryAfter`.
@@ -356,13 +358,32 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
+  /// Whether this call runs the launch's one sweep. A call that isn't allowed leaves it for the
+  /// next.
+  func claimSweep(allowed: Bool) -> Bool {
+    return lock.withLock {
+      guard allowed else {
+        held = held || !swept
+        return false
+      }
+      defer { swept = true }
+      return !swept
+    }
+  }
+
+  /// Whether a sweep was held back and has yet to run. False when no call has reached the sweep,
+  /// so a launch with nothing recorded never reads config again for one.
+  var sweepHeld: Bool { lock.withLock { held && !swept } }
+
   /// The driver if something has already made it, for a pane, which must not probe Docker.
   var existingDriver: ContainerHostDriver? { lock.withLock { made } }
 
   /// Takes on every host `projects` record, so their panes and services reach them after a
   /// relaunch, then sweeps once per launch what carries this app's labels and no record names.
   /// Does nothing, and never touches Docker, when nothing is recorded and nothing has been made.
-  func adopt(_ projects: [Project]) {
+  /// `sweep: false` holds the sweep for a later call: a list with a delete in flight leaves out
+  /// hosts config still records (#296).
+  func adopt(_ projects: [Project], sweep: Bool = true) {
     let descriptors =
       projects.compactMap(\.host) + projects.flatMap { $0.workrooms.compactMap(\.host) }
     // Another build's hosts take another key: adopted here, they would refuse every login.
@@ -384,11 +405,7 @@ final class RemoteHosts: @unchecked Sendable {
         Self.logger.error("adopting host \(id, privacy: .public): \(error, privacy: .public)")
       }
     }
-    let shouldSweep = lock.withLock {
-      defer { swept = true }
-      return !swept
-    }
-    guard shouldSweep else { return }
+    guard claimSweep(allowed: sweep) else { return }
     let known = Set(recorded.compactMap(\.id))
     Task.detached(priority: .utility) {
       for failure in await driver.sweep(keeping: known) {

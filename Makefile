@@ -11,7 +11,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
         app-run app-build app-test app-uitest app-identity app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
-        remote-host-image
+        remote-host-image remote-host-image-test
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -135,6 +135,9 @@ app-identity: ## Print the bundle id this checkout's Debug build gets (one per w
 
 remote-host-image: ## Build the `workroom-host` image a Nightly or Dev app's remote workrooms run on (Docker, #253)
 	docker build --tag workroom-host vcs/scripts/ssh-fixture
+
+remote-host-image-test: ## Build the `workroom-host` image, without its tag, and smoke-test it: sshd serves, no fixture pieces, a pushed agent starts (#288)
+	vcs/scripts/ssh-fixture/host-image-test.sh
 
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py

@@ -16,9 +16,13 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
   var allowDelete = false
   /// When true, the released `delete` throws — modelling a failed teardown (workroom stays on disk).
   var deleteFails = false
+  /// What a released `deleteProject` hands back to move to the Bin.
+  var trashPaths: [URL] = []
+  private(set) var listCalls = 0
 
   func list(warnings: String, project: String?) async throws -> ListResponse {
-    ListResponse(projects: listResult, workroomsDir: nil, configPath: nil)
+    listCalls += 1
+    return ListResponse(projects: listResult, workroomsDir: nil, configPath: nil)
   }
 
   func addProject(_ path: String, create: Bool) async throws -> String { path }
@@ -40,7 +44,33 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
 
   func deleteProject(
     _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
-  ) async throws -> [URL] { [] }
+  ) async throws -> [URL] {
+    // Gated like `delete`, so the project tombstone stays live across a concurrent reload (#287).
+    deleteStarted = true
+    while !allowDelete { await Task.yield() }
+    if deleteFails { throw WorkroomCLIError.timedOut }
+    return trashPaths
+  }
+}
+
+/// Holds one `prepareRepositories` call open so a test can park a read between its `list` and its
+/// publication. Polled across tasks without a lock, which is enough for a test gate.
+private final class PrepareGate: @unchecked Sendable {
+  private(set) var calls = 0
+  var open = false
+
+  func enter() -> Int {
+    calls += 1
+    return calls
+  }
+}
+
+/// Records what each trash request saw: whether the project was still tombstoned, and how many
+/// `list` reads had started.
+private final class OrderTrasher: Trashing {
+  var observe: () -> (tombstoned: Bool, listCalls: Int) = { (false, 0) }
+  private(set) var seen: [(tombstoned: Bool, listCalls: Int)] = []
+  func trash(_ url: URL) throws { seen.append(observe()) }
 }
 
 @MainActor
@@ -214,5 +244,152 @@ final class AppStoreDeleteRaceTests: XCTestCase {
 
     XCTAssertEqual(workroomNames(store), ["a"], "delete is blocked while the setup is in progress")
     XCTAssertFalse(store.deletingWorkrooms.contains(targetID("a")), "no teardown was started")
+  }
+
+  // MARK: - Delete Project tombstone (#287)
+
+  /// A reload while Delete Project's teardown is in flight must not republish the project, and a
+  /// second delete of it is refused.
+  func testStaleReloadDoesNotResurrectDeletingProject() async {
+    let a = workroom("a")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a])]
+    let store = makeStore(fake)
+    await store.reload()
+
+    store.deleteProject(project([a]), scope: .configOnly)
+    XCTAssertTrue(store.projects.isEmpty, "optimistic removal")
+    await waitUntil({ fake.deleteStarted }, "teardown should start")
+
+    await store.reload()  // stale: `list` still has the project
+    XCTAssertTrue(store.projects.isEmpty, "a stale reload must NOT bring the project back")
+
+    store.deleteProject(project([a]), scope: .configOnly)
+    XCTAssertEqual(store.errorMessage, "\(project([a]).displayName) is already being deleted.")
+
+    fake.allowDelete = true
+    await waitUntil({ store.deletingProjects.isEmpty }, "tombstone should clear after teardown")
+    fake.listResult = []
+    await store.reload()
+    XCTAssertTrue(store.projects.isEmpty, "a fresh list after the teardown keeps it gone")
+  }
+
+  /// The tombstone lives in the shared `ProjectStore`, so another window's reload can't republish
+  /// the project and its stale confirm dialog can't start a second delete.
+  func testDeletingProjectTombstoneIsSharedAcrossWindows() async {
+    let a = workroom("a")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a])]
+    let shared = ProjectStore()
+    let windowA = AppStore(projectStore: shared, cli: fake)
+    let windowB = AppStore(projectStore: shared, cli: fake)
+    await windowA.reload()
+
+    windowA.deleteProject(project([a]), scope: .configOnly)
+    await waitUntil({ fake.deleteStarted }, "teardown should start")
+
+    await windowB.reload()  // stale: `list` still has the project
+    XCTAssertTrue(windowB.projects.isEmpty, "another window's reload must not republish it")
+    windowB.deleteProject(project([a]), scope: .configOnly)
+    XCTAssertEqual(windowB.errorMessage, "\(project([a]).displayName) is already being deleted.")
+
+    fake.allowDelete = true
+    await waitUntil({ shared.deletingProjects.isEmpty }, "tombstone should clear after teardown")
+  }
+
+  /// A read issued before config dropped the project, still in flight when the delete succeeds,
+  /// must not publish the project once the tombstone lifts: the success path's own reload
+  /// supersedes it.
+  func testStaleReloadInFlightAcrossSuccessfulDeleteDoesNotResurrectProject() async {
+    let a = workroom("a")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a])]
+    let shared = ProjectStore()
+    let gate = PrepareGate()
+    shared.prepareRepositories = { _ in
+      // Hold only the stale read (the second call), between its `list` and its publication.
+      if gate.enter() == 2 { while !gate.open { await Task.yield() } }
+      return []
+    }
+    let store = AppStore(projectStore: shared, cli: fake)
+    await store.reload()
+
+    store.deleteProject(project([a]), scope: .configOnly)
+    await waitUntil({ fake.deleteStarted }, "teardown should start")
+    let stale = Task { await store.reload() }  // `list` still has the project
+    await waitUntil({ gate.calls == 2 }, "stale read should reach publication")
+
+    fake.listResult = []  // config drops the project
+    fake.allowDelete = true
+    await waitUntil({ shared.deletingProjects.isEmpty }, "tombstone should clear after teardown")
+    gate.open = true
+    await stale.value
+    XCTAssertTrue(store.projects.isEmpty, "a stale in-flight read must not republish the project")
+  }
+
+  /// A create from a picker opened before the delete is refused while the project is tombstoned.
+  func testCreateRefusedWhileProjectIsBeingDeleted() async {
+    let a = workroom("a")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a])]
+    let store = makeStore(fake)
+    await store.reload()
+
+    store.deleteProject(project([a]), scope: .configOnly)
+    await waitUntil({ fake.deleteStarted }, "teardown should start")
+    await store.createWorkroom(in: project([a]))
+    XCTAssertEqual(store.errorMessage, "\(project([a]).displayName) is being deleted.")
+    XCTAssertFalse(store.isBusyProject(projectPath), "no create was started")
+    RemoteWorkrooms.enabledForTesting = true
+    XCTAssertFalse(store.canCreateRemoteWorkroom(in: project([a])), "nor a remote one")
+    RemoteWorkrooms.enabledForTesting = nil
+
+    fake.allowDelete = true
+    await waitUntil({ store.deletingProjects.isEmpty }, "tombstone should clear after teardown")
+  }
+
+  /// `--from-disk` moves the returned directories to the Bin while the project is still tombstoned
+  /// and before the success path's reload suspends, so nothing can re-register them in between.
+  func testFromDiskTrashesBeforeTheReloadAndTheLift() async {
+    let a = workroom("a")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a])]
+    fake.trashPaths = [URL(fileURLWithPath: projectPath)]
+    let store = makeStore(fake)
+    let trasher = OrderTrasher()
+    trasher.observe = { [unowned store] in
+      (store.deletingProjects.contains(self.projectPath), fake.listCalls)
+    }
+    store.trasher = trasher
+    await store.reload()
+
+    store.deleteProject(project([a]), scope: .fromDisk)
+    await waitUntil({ fake.deleteStarted }, "teardown should start")
+    let readsBefore = fake.listCalls
+    fake.listResult = []
+    fake.allowDelete = true
+    await waitUntil({ store.deletingProjects.isEmpty }, "tombstone should clear after teardown")
+
+    XCTAssertEqual(trasher.seen.count, 1)
+    XCTAssertEqual(trasher.seen.first?.tombstoned, true, "trashed while still tombstoned")
+    XCTAssertEqual(trasher.seen.first?.listCalls, readsBefore, "trashed before the reload began")
+    XCTAssertTrue(store.projects.isEmpty)
+  }
+
+  /// A FAILED Delete Project lifts the tombstone before reloading, so the project reappears.
+  func testFailedDeleteProjectRestoresProject() async {
+    let a = workroom("a")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a])]
+    fake.deleteFails = true
+    let store = makeStore(fake)
+    await store.reload()
+
+    store.deleteProject(project([a]), scope: .configOnly)
+    await waitUntil({ fake.deleteStarted }, "teardown should start")
+    fake.allowDelete = true
+    await waitUntil({ self.workroomNames(store) == ["a"] }, "failed delete restores the project")
+    XCTAssertTrue(store.deletingProjects.isEmpty, "tombstone cleared on failure")
+    XCTAssertNotNil(store.errorTitle, "the failure is surfaced")
   }
 }
