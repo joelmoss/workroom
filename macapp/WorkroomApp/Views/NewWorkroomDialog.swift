@@ -12,6 +12,10 @@ import SwiftUI
 /// replacing it (issue #163); raised by ⌥⌘N the whole dialog is already in split mode, so a plain
 /// ⏎ splits — which is why the title and footer are derived from `PickerSplitIntent`, not fixed.
 ///
+/// With the remote preview on (#309), picking a project doesn't create yet: the dialog then asks
+/// where, This Mac or a local container, as the sidebar's New Workroom menu does, and the place
+/// picked creates.
+///
 ///   ┌─ "New Workroom [(split right)]" ─ Done ─┐
 ///   │ 🔍 [ filter…                       ] │  ← auto-focused; single-line, so ↑/↓/⏎ bubble up
 ///   │ ┌─────────────────────────────────┐ │
@@ -34,6 +38,11 @@ struct NewWorkroomDialog: View {
   /// Index into `filtered` of the keyboard-highlighted row (↑/↓ move it, ⏎ / click pick it).
   @State private var highlighted = 0
   @FocusState private var searchFocused: Bool
+  /// The project picked while the remote preview is on (#309), whose workroom's place is asked next.
+  @State private var placing: Project?
+  /// Where that workroom lands beside, taken when its project was picked.
+  @State private var placeAnchor: SidebarID?
+  @FocusState private var placesFocused: Bool
 
   private var filtered: [Project] {
     ProjectPickerModel.filtered(store.projects, query: query)
@@ -42,84 +51,196 @@ struct NewWorkroomDialog: View {
   /// Pick a project: dismiss first, then kick off the (async) create+open. `createWorkroom` mounts
   /// and selects the new workroom, so the detail pane opens it — no extra wiring here.
   private func pick(_ project: Project, split: Bool = false) {
-    onClose()
     // Capture the anchor NOW, not at landing: the create is async and the user can select a
     // different workroom while a setup script runs.
     let anchor = (split || splitIntent) ? store.selectedTargetID : nil
+    if RemoteWorkrooms.isEnabled {
+      placing = project
+      placeAnchor = anchor
+      highlighted = WorkroomPlace.all.firstIndex { isUsable($0, in: project) } ?? 0
+      return
+    }
+    onClose()
     Task { await store.createWorkroom(in: project, splitAnchor: anchor) }
   }
 
+  /// Creates `project`'s workroom at `place`, unless it can't go there now.
+  private func pick(_ place: WorkroomPlace, in project: Project, split: Bool = false) {
+    guard isUsable(place, in: project) else { return }
+    onClose()
+    let anchor = placeAnchor ?? (split ? store.selectedTargetID : nil)
+    Task {
+      switch place {
+      case .thisMac: await store.createWorkroom(in: project, splitAnchor: anchor)
+      case .container(let runtime):
+        await store.createRemoteWorkroom(in: project, runtime: runtime, splitAnchor: anchor)
+      }
+    }
+  }
+
+  /// Whether a workroom of `project` can be created at `place` now. The same rules as the sidebar's
+  /// New Workroom menu.
+  private func isUsable(_ place: WorkroomPlace, in project: Project) -> Bool {
+    switch place {
+    case .thisMac: !store.isBusyProject(project.path)
+    case .container(let runtime):
+      RemoteWorkrooms.unavailability(of: runtime) == nil
+        && store.canCreateRemoteWorkroom(in: project)
+    }
+  }
+
+  private var rowCount: Int { placing == nil ? filtered.count : WorkroomPlace.all.count }
+
+  /// Where `project`'s workroom can go: the reason none can, said once, then each place, a
+  /// container one saying why it can't be used.
+  private func placesList(_ project: Project) -> some View {
+    VStack(alignment: .leading, spacing: 2) {
+      if let blocked = store.createBlockedReason(in: project) {
+        Text(blocked.prefix(1).uppercased() + blocked.dropFirst())
+          .font(.footnote)
+          .foregroundStyle(theme.tokens.fgMuted)
+          .padding(.horizontal, 8)
+          .padding(.bottom, 6)
+          .accessibilityIdentifier("newWorkroom.placesBlocked")
+      }
+      ForEach(Array(WorkroomPlace.all.enumerated()), id: \.element) { index, place in
+        placeRow(place, in: project, isHighlighted: index == highlighted)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
+    // Nothing in here takes the keyboard, so the list itself does: ↑/↓/⏎ reach the handlers below.
+    .focusable()
+    .focusEffectDisabled()
+    .focused($placesFocused)
+    .onAppear { placesFocused = true }
+  }
+
+  private func placeRow(_ place: WorkroomPlace, in project: Project, isHighlighted: Bool)
+    -> some View
+  {
+    let usable = isUsable(place, in: project)
+    let reason: String? =
+      if case .container(let runtime) = place {
+        RemoteWorkrooms.unavailability(of: runtime)
+      } else {
+        nil
+      }
+    return Button {
+      pick(place, in: project, split: PickerSplitIntent.requestedFromCurrentModifiers())
+    } label: {
+      PickerRow(
+        icon: place.icon, title: place.name, detail: reason ?? place.detail,
+        help: reason.map { "\(place.name) can't be used: \($0)" } ?? place.detail,
+        isHighlighted: isHighlighted, dimmed: !usable)
+    }
+    .buttonStyle(.plain)
+    .disabled(!usable)
+    .accessibilityIdentifier("newWorkroom.place.\(place.id)")
+  }
+
   private func projectRow(_ project: Project, isHighlighted: Bool) -> some View {
-    ProjectRow(project: project, isHighlighted: isHighlighted)
-      .contentShape(Rectangle())
-      .onTapGesture { pick(project, split: PickerSplitIntent.requestedFromCurrentModifiers()) }
-      .accessibilityIdentifier("newWorkroom.project.\(project.displayName)")
+    PickerRow(
+      icon: "folder", title: project.displayName, detail: project.path, help: project.path,
+      detailTruncation: .head, isHighlighted: isHighlighted
+    )
+    .contentShape(Rectangle())
+    .onTapGesture { pick(project, split: PickerSplitIntent.requestedFromCurrentModifiers()) }
+    .accessibilityIdentifier("newWorkroom.project.\(project.displayName)")
   }
 
   var body: some View {
     VStack(spacing: 0) {
       HStack {
-        Text(PickerSplitIntent.title(open: false, split: splitIntent)).font(.headline)
+        if let placing {
+          Text("New Workroom in \(placing.displayName)").font(.headline)
+        } else {
+          Text(PickerSplitIntent.title(open: false, split: splitIntent)).font(.headline)
+        }
         Spacer()
+        if placing != nil {
+          Button("Back") {
+            placing = nil
+            placeAnchor = nil
+            highlighted = 0
+            searchFocused = true
+          }
+          .accessibilityIdentifier("newWorkroom.back")
+        }
         Button("Cancel") { onClose() }.keyboardShortcut(.cancelAction)
       }
       .padding(12)
       Divider()
 
-      searchField
-
-      ScrollViewReader { proxy in
-        ScrollView {
-          LazyVStack(spacing: 2) {
-            if filtered.isEmpty {
-              Text("No projects match “\(query)”")
-                .font(.footnote)
-                .foregroundStyle(theme.tokens.fgMuted)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-            } else {
-              ForEach(Array(filtered.enumerated()), id: \.element.id) { index, project in
-                projectRow(project, isHighlighted: index == highlighted)
-                  .id(project.id)
-              }
-            }
-          }
-          .padding(.horizontal, 10)
-          .padding(.vertical, 8)
-        }
-        .onChange(of: highlighted) { _, new in
-          if filtered.indices.contains(new) {
-            withAnimation(.easeInOut(duration: 0.1)) { proxy.scrollTo(filtered[new].id) }
-          }
-        }
+      if let placing {
+        placesList(placing)
+      } else {
+        searchField
+        projectList
       }
 
       PickerHintFooter(open: false, split: splitIntent)
     }
     .frame(width: 420, height: 460)
     .onAppear { searchFocused = true }
-    // ↑/↓ move the highlight (no create); ⏎ picks the highlighted project. The single-line search
+    // ↑/↓ move the highlight (no create); ⏎ picks the highlighted row. The single-line search
     // field doesn't consume the arrow keys, so they bubble here (same as ThemePicker). ⏎ is wired
     // ONLY here — never on the field's `.onSubmit` — so a pick can't double-fire into a double-create.
     .onKeyPress(.upArrow) {
-      highlighted = ProjectPickerModel.move(highlight: highlighted, by: -1, count: filtered.count)
+      highlighted = ProjectPickerModel.move(highlight: highlighted, by: -1, count: rowCount)
       return .handled
     }
     .onKeyPress(.downArrow) {
-      highlighted = ProjectPickerModel.move(highlight: highlighted, by: 1, count: filtered.count)
+      highlighted = ProjectPickerModel.move(highlight: highlighted, by: 1, count: rowCount)
       return .handled
     }
     // ⌥⏎ splits, plain ⏎ creates (issue #163). The `keys:` overload is what carries the modifiers;
     // the plain `.onKeyPress(.return)` closure has none. Still wired ONLY here, never on the
     // field's `.onSubmit` — a double-fire would be a double *create*.
     .onKeyPress(keys: [.return]) { press in
-      if let project = ProjectPickerModel.selection(filtered: filtered, highlight: highlighted) {
-        pick(project, split: PickerSplitIntent.requested(press.modifiers))
+      let split = PickerSplitIntent.requested(press.modifiers)
+      if let placing {
+        if WorkroomPlace.all.indices.contains(highlighted) {
+          pick(WorkroomPlace.all[highlighted], in: placing, split: split)
+        }
+      } else if let project = ProjectPickerModel.selection(
+        filtered: filtered, highlight: highlighted)
+      {
+        pick(project, split: split)
       }
       return .handled
     }
     // Re-filtering can shrink the list below the old index, so reset the highlight to the top.
     .onChange(of: query) { _, _ in highlighted = 0 }
+  }
+
+  private var projectList: some View {
+    ScrollViewReader { proxy in
+      ScrollView {
+        LazyVStack(spacing: 2) {
+          if filtered.isEmpty {
+            Text("No projects match “\(query)”")
+              .font(.footnote)
+              .foregroundStyle(theme.tokens.fgMuted)
+              .frame(maxWidth: .infinity)
+              .padding(.vertical, 16)
+          } else {
+            ForEach(Array(filtered.enumerated()), id: \.element.id) { index, project in
+              projectRow(project, isHighlighted: index == highlighted)
+                .id(project.id)
+            }
+          }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+      }
+      .onChange(of: highlighted) { _, new in
+        if filtered.indices.contains(new) {
+          withAnimation(.easeInOut(duration: 0.1)) { proxy.scrollTo(filtered[new].id) }
+        }
+      }
+    }
   }
 
   private var searchField: some View {
@@ -191,30 +312,76 @@ struct NewWorkroomPresenter: ViewModifier {
   }
 }
 
-/// One project row: the project's display name, with its full path dimmed beneath to disambiguate
-/// same-named directories. Highlight + hover styling mirrors `ThemePicker`'s `FamilyRow`.
-private struct ProjectRow: View {
+/// Where a new workroom can go (#309): this Mac, or a local container on one of the runtimes.
+enum WorkroomPlace: Hashable {
+  case thisMac
+  case container(RemoteWorkrooms.Runtime)
+
+  static var all: [WorkroomPlace] {
+    [.thisMac] + RemoteWorkrooms.Runtime.allCases.map { .container($0) }
+  }
+
+  var name: String {
+    switch self {
+    case .thisMac: "This Mac"
+    case .container(let runtime): runtime.displayName
+    }
+  }
+
+  var id: String {
+    switch self {
+    case .thisMac: "thisMac"
+    case .container(let runtime): runtime.rawValue
+    }
+  }
+
+  var icon: String {
+    switch self {
+    case .thisMac: "laptopcomputer"
+    case .container: "network"
+    }
+  }
+
+  var detail: String {
+    switch self {
+    case .thisMac: "A workroom on this Mac"
+    case .container(let runtime): "A workroom in \(runtime.containerPhrase) on this Mac"
+    }
+  }
+}
+
+/// One picker row: a title, with a dimmed detail beneath — a project's full path, to disambiguate
+/// same-named directories, or what a place is. Highlight + hover styling mirrors `ThemePicker`'s
+/// `FamilyRow`.
+private struct PickerRow: View {
   private let theme = ThemeService.shared
-  let project: Project
+  let icon: String
+  let title: String
+  let detail: String
+  let help: String
+  var detailTruncation: Text.TruncationMode = .tail
   var isHighlighted = false
+  /// A row that can't be picked now.
+  var dimmed = false
   @State private var hovered = false
 
   var body: some View {
     HStack(spacing: 8) {
-      Image(systemName: "folder")
+      Image(systemName: icon)
         .font(.system(size: 12))
         .foregroundStyle(theme.tokens.fgDim)
+        .frame(width: 16)
       VStack(alignment: .leading, spacing: 1) {
-        Text(project.displayName)
+        Text(title)
           .font(.system(size: 12, weight: .medium))
-          .foregroundStyle(theme.tokens.fg)
+          .foregroundStyle(dimmed ? theme.tokens.fgMuted : theme.tokens.fg)
           .lineLimit(1)
           .truncationMode(.tail)
-        Text(project.path)
+        Text(detail)
           .font(.system(size: 10))
           .foregroundStyle(theme.tokens.fgMuted)
           .lineLimit(1)
-          .truncationMode(.head)
+          .truncationMode(detailTruncation)
       }
       Spacer(minLength: 0)
     }
@@ -229,7 +396,8 @@ private struct ProjectRow: View {
       RoundedRectangle(cornerRadius: 6)
         .strokeBorder(isHighlighted ? theme.tokens.fgDim : .clear, lineWidth: 1.5)
     )
-    .help(project.path)
+    .contentShape(Rectangle())
+    .help(help)
     .onHover { hovered = $0 }
   }
 }
