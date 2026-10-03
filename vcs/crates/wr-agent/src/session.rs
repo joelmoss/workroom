@@ -928,6 +928,24 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Ends what is left of `id` when it is neither a live session nor one being ended, which is at
+    /// most its screen record, and says so; false leaves it to `kill`, which has a shell to end or
+    /// wait for. Decided in one look under the map's lock, where a session leaving it is marked as
+    /// being ended, so a caller that must not wait on a shell (`serve`'s reader) never does.
+    pub fn end_if_absent(&self, id: SessionId) -> bool {
+        let _terminating = TERMINATING.read().unwrap_or_else(|e| e.into_inner());
+        {
+            let sessions = self.sessions.lock().expect("session store poisoned");
+            if sessions.contains_key(&id) || self.is_ending(id) {
+                return false;
+            }
+        }
+        if let Some(screens) = self.screens.get() {
+            screens.remove(id);
+        }
+        true
+    }
+
     /// Ends a session and its pty. Returns whether there was one to end.
     ///
     /// The session leaves the map first and the killing happens with the lock released: a
@@ -1520,6 +1538,20 @@ mod tests {
 
     fn id(byte: u8) -> SessionId {
         SessionId([byte; 16])
+    }
+
+    /// The reader's one look at a kill's id: nothing to wait for only when the id is neither a
+    /// session nor one being ended, so a kill racing in from another connection is never waited
+    /// on there (#283).
+    #[test]
+    fn only_an_id_neither_live_nor_ending_is_absent() {
+        let store = SessionStore::new();
+        let id = id(0x52);
+        assert!(store.end_if_absent(id), "an unknown id");
+        let ending = store.mark_ending(vec![id]);
+        assert!(!store.end_if_absent(id), "an id still being ended");
+        drop(ending);
+        assert!(store.end_if_absent(id), "once ended");
     }
 
     /// A session ended twice over, as an id is created again while its first kill still runs, stays
