@@ -136,6 +136,9 @@ final class HostStream: @unchecked Sendable {
   /// under `lock` both to close and to shut down, so a shutdown never lands on a descriptor
   /// number already closed and reused by something else.
   private var inputDescriptor: Int32?
+  /// `communicate` has claimed the stream. Set in the same `withLock` that reads
+  /// `inputDescriptor`, so two concurrent calls cannot both pass (#316).
+  private var communicating = false
   private var errors = Data()
   /// stderr reached EOF: everything the carrier said is in `errors`.
   private var errorsClosed = false
@@ -306,8 +309,14 @@ final class HostStream: @unchecked Sendable {
   ) {
     precondition(purpose == .exchange, "communicate needs a stream spawned for an exchange")
     let fd = descriptor
-    // Read once: only this exchange closes it, after its last `send` on it.
-    guard let inputFD = lock.withLock({ self.inputDescriptor }) else {
+    // Claimed once: only this exchange closes it, after its last `send` on it. A second call, even
+    // a concurrent one, traps rather than sending on a descriptor this one may have closed.
+    let claimed: Int32? = lock.withLock {
+      guard !communicating, let inputDescriptor else { return nil }
+      communicating = true
+      return inputDescriptor
+    }
+    guard let inputFD = claimed else {
       preconditionFailure("communicate runs once per stream")
     }
     let process = self.process
@@ -367,7 +376,28 @@ final class HostStream: @unchecked Sendable {
           watchdog.stop()
           // EOF on its output means the command closed it, not that it has exited; a bounded wait
           // for the handler (see `spawn`) covers a child of its own holding the descriptor open.
-          guard self.exited.wait(timeout: .now() + 5) == .success else { return (collected, nil) }
+          // Read before that wait: a SIGTERM already sent (silence, or a cancel that woke the
+          // reads) has had the whole wait as its grace; one sent during it may have had none.
+          let terminatedBeforeWait = self.lock.withLock { self.endedByUs }
+          guard self.exited.wait(timeout: .now() + 5) == .success else {
+            // Still running: SIGTERM, then SIGKILL for a carrier that ignores it, so no path out
+            // of here (silence, cancel, a closed output) leaves it behind (#316). The exit this
+            // reaps is not the answer, so the exchange still fails.
+            self.end()
+            var exitedInGrace = false
+            if !terminatedBeforeWait {
+              exitedInGrace = self.exited.wait(timeout: .now() + 2) == .success
+            }
+            if !exitedInGrace, process.isRunning {
+              // The whole tree, so a child of the carrier's own holding the socket goes too. A
+              // carrier that yielded to the SIGTERM has already orphaned its children out of reach.
+              // ponytail: `isRunning` then a signal can race a reap and a pid's reuse; macOS has
+              // no atomic way to signal a process, and `StatusCommandRunner` takes the same window.
+              ProcessTree.killTree(process.processIdentifier)
+              _ = self.exited.wait(timeout: .now() + 1)
+            }
+            return (collected, nil)
+          }
           return (collected, self.lock.withLock { self.exit })
         }
       } onCancel: {
@@ -377,17 +407,17 @@ final class HostStream: @unchecked Sendable {
         shutdown(fd, SHUT_WR)
       }
     try Task.checkCancellation()
-    guard let exit else {
-      end()
-      throw HostConnectionError.serviceUnavailable("\(name) closed its output but did not exit")
-    }
     // The watchdog's own kill, whatever the carrier made of the SIGTERM (ssh catches it and exits
     // 255 by itself, so its reason is `.exit`). A carrier that exited 0 by itself in the same
     // instant is not exempt: its `SHUT_RD` may have discarded the last line queued, and a report
     // short of one line reads as an answer (a probe whose hand-off was refused reads as current).
+    // Before the exit check, so a carrier that ignored the SIGTERM still reads as silence (#316).
     guard !watchdog.fired else {
       throw HostConnectionError.serviceUnavailable(
         "\(name) moved nothing for \(Int(timeout.rounded(.up)))s")
+    }
+    guard let exit else {
+      throw HostConnectionError.serviceUnavailable("\(name) closed its output but did not exit")
     }
     // Its stderr may still be draining through the readability handler after the exit.
     for _ in 0..<40 where !lock.withLock({ errorsClosed }) {

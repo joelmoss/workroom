@@ -427,6 +427,25 @@ final class AgentBootstrapTests: XCTestCase {
     XCTAssertLessThan(ContinuousClock.now - started, .seconds(15))
   }
 
+  // Value: protects=a carrier that closes its output and ignores SIGTERM, with no silence or
+  // cancel, does not outlive the failed exchange; fails_when=that path stops escalating to SIGKILL
+  // after its grace (#316); why_new=the test above's `sleep` dies on the first SIGTERM, and the
+  // other carrier tests were already sent SIGTERM by the watchdog or a cancel; seam=none
+  func testACarrierThatClosesItsOutputAndIgnoresSIGTERMIsKilled() async throws {
+    let stream = try HostStream.spawn(
+      URL(fileURLWithPath: "/bin/sh"), ["-c", "trap '' TERM; exec 0<&- 1>&-; exec sleep 30"],
+      environment: [:], handshakeTimeout: 5, purpose: .exchange)
+    let started = ContinuousClock.now
+    do {
+      _ = try await stream.communicate(nil, timeout: 20)
+      XCTFail("a command that never exited returned")
+    } catch HostConnectionError.serviceUnavailable(let detail) {
+      XCTAssertTrue(detail.contains("did not exit"), detail)
+    }
+    XCTAssertLessThan(ContinuousClock.now - started, .seconds(15))
+    assertGone(stream)
+  }
+
   /// A shell startup file on the host printing ahead of the script, or ssh's own stderr after
   /// it, is not the report.
   func testOnlyPrefixedLinesAreTheReport() throws {
@@ -478,27 +497,69 @@ final class AgentBootstrapTests: XCTestCase {
       environment: [:], handshakeTimeout: 5, purpose: .exchange)
   }
 
+  /// The carrier has exited and been reaped. Not `kill(pid, 0)`, which a reused pid would pass
+  /// (see `AgentHarness.waitForExit`): an unexited child of ours reads 0 here.
+  private func assertGone(_ stream: HostStream, line: UInt = #line) {
+    XCTAssertNotEqual(
+      waitpid(stream.processIdentifier, nil, WNOHANG), 0, "the carrier is still running", line: line
+    )
+  }
+
   // Value: protects=a push blocked on a far side that never reads is ended when the link goes
-  // silent; fails_when=the watchdog stops shutting down the carrier's input socket (#305);
-  // why_new=testAnExchangeThatHangsIsEnded sends 1 byte, which never blocks; seam=none
+  // silent, reported as silence, and the carrier does not outlive it; fails_when=the watchdog
+  // stops shutting down the carrier's input socket (#305), the exit check runs before the
+  // watchdog's, or the exchange stops escalating to SIGKILL (#316); why_new=
+  // testAnExchangeThatHangsIsEnded sends 1 byte, which never blocks; seam=none
   func testASilentFarSideThatNeverReadsDoesNotHoldABlockedPushOpen() async throws {
     let stream = try carrierThatNeitherReadsNorYieldsToSIGTERM()
-    defer { kill(stream.processIdentifier, SIGKILL) }
     let started = ContinuousClock.now
     do {
       _ = try await stream.communicate(Data(repeating: 0, count: 8_000_000), timeout: 0.5)
       XCTFail("a push nobody read returned")
-    } catch HostConnectionError.serviceUnavailable {
+    } catch HostConnectionError.serviceUnavailable(let detail) {
+      XCTAssertTrue(detail.contains("moved nothing"), detail)
     }
     XCTAssertLessThan(ContinuousClock.now - started, .seconds(15))
+    assertGone(stream)
   }
 
-  // Value: protects=cancelling an exchange blocked sending ends it at once; fails_when=cancel stops
-  // shutting down the carrier's input socket (#305); why_new=no test cancels an exchange at all;
+  // Value: protects=a child of the carrier's own that holds the socket and ignores SIGTERM does not
+  // outlive the exchange; fails_when=the escalation SIGKILLs only the carrier, not its tree (#316);
+  // why_new=every other carrier test is a single process; seam=none
+  func testASilentCarriersOwnChildIsKilledWithIt() async throws {
+    let pidFile = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "carrier-child-\(UUID().uuidString.prefix(8))")
+    defer { try? FileManager.default.removeItem(at: pidFile) }
+    let stream = try HostStream.spawn(
+      URL(fileURLWithPath: "/bin/sh"),
+      ["-c", "trap '' TERM; sleep 30 & echo $! > '\(pidFile.path)'; wait"],
+      environment: [:], handshakeTimeout: 5, purpose: .exchange)
+    do {
+      // Long enough for the shell to set its trap and write the pid before the silence ends it.
+      _ = try await stream.communicate(nil, timeout: 2)
+      XCTFail("a silent carrier returned")
+    } catch HostConnectionError.serviceUnavailable(let detail) {
+      XCTAssertTrue(detail.contains("moved nothing"), detail)
+    }
+    assertGone(stream)
+    let child = try XCTUnwrap(
+      pid_t(
+        String(decoding: try Data(contentsOf: pidFile), as: UTF8.self).trimmingCharacters(
+          in: .whitespacesAndNewlines)))
+    // Not our child, so no `waitpid`: launchd reaps it once its parent is gone. A second is far
+    // too short for its pid to come round again.
+    for _ in 0..<50 where kill(child, 0) == 0 { try await Task.sleep(for: .milliseconds(20)) }
+    let alive = kill(child, 0) == 0
+    if alive { kill(child, SIGKILL) }
+    XCTAssertFalse(alive, "the carrier's own child is still running")
+  }
+
+  // Value: protects=cancelling an exchange blocked sending ends it at once, and the carrier does
+  // not outlive it; fails_when=cancel stops shutting down the carrier's input socket (#305), or
+  // the exchange stops escalating to SIGKILL (#316); why_new=no test cancels an exchange at all;
   // seam=none
   func testCancellingAPushBlockedOnAFarSideThatNeverReadsEndsIt() async throws {
     let stream = try carrierThatNeitherReadsNorYieldsToSIGTERM()
-    defer { kill(stream.processIdentifier, SIGKILL) }
     let started = ContinuousClock.now
     let exchange = Task {
       try await stream.communicate(Data(repeating: 0, count: 8_000_000), timeout: 60)
@@ -511,6 +572,7 @@ final class AgentBootstrapTests: XCTestCase {
     } catch is CancellationError {
     }
     XCTAssertLessThan(ContinuousClock.now - started, .seconds(15))
+    assertGone(stream)
   }
 
   /// The bound is on silence, not the exchange: a slow but steady far side that takes longer than
