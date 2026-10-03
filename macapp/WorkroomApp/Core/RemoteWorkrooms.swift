@@ -144,12 +144,36 @@ enum RemoteWorkrooms {
     }
   }
 
+  /// The base a workroom on `key` derives from, in a project whose descriptor is `host` (#309): the
+  /// one made on that runtime and Docker context, else for Docker one made before #309, which names
+  /// no context and follows the current one, as `key` does.
+  static func base(in host: HostDescriptor?, for key: RemoteHosts.DriverKey) -> HostDescriptor? {
+    let bases = host?.allBases ?? []
+    return bases.first { RemoteHosts.DriverKey($0) == key }
+      ?? bases.first { RemoteHosts.DriverKey($0) == RemoteHosts.DriverKey(runtime: key.runtime) }
+  }
+
+  /// A project's descriptor `host` with `base` recorded in it, in place of any base on the same
+  /// runtime and context (#309). A project with one base keeps the one-base form.
+  static func recording(_ base: HostDescriptor, in host: HostDescriptor?) -> HostDescriptor {
+    let key = RemoteHosts.DriverKey(base)
+    let others = (host?.allBases ?? []).filter { $0.id != nil && RemoteHosts.DriverKey($0) != key }
+    return others.isEmpty ? base : HostDescriptor(bases: others + [base])
+  }
+
+  /// A project's descriptor `host` without the base `id`, or nil when it had no other.
+  static func removing(_ id: UUID, from host: HostDescriptor?) -> HostDescriptor? {
+    let others = (host?.allBases ?? []).filter { $0.id != nil && $0.id != id }
+    return others.count > 1 ? HostDescriptor(bases: others) : others.first
+  }
+
   /// The router registrations of `projects`' reachable remote workrooms (#253). Each is its own
   /// shared root on its host, as an independent clone is. Its GitHub identity is the base's, so its
   /// PR and CI status read through `gh` here.
   static func registrations(_ projects: [Project]) -> [RepositoryRouter.Registration] {
     projects.flatMap { project in
-      let github = project.host?.repository.flatMap(gitHubRepository)
+      let github = project.host?.allBases.lazy.compactMap(\.repository).first.flatMap(
+        gitHubRepository)
       return project.workrooms.compactMap { workroom -> RepositoryRouter.Registration? in
         guard let host = workroom.reachableHost,
           let location = try? RepositoryLocation.remote(host: host, path: workroom.path)
@@ -194,7 +218,8 @@ enum RemoteWorkrooms {
   /// the entry keeps what is still live (host, grant) so deleting it can finish the job.
   static func create(
     repository: GitHubRepository, cloneURL: String, base existing: HostDescriptor?,
-    runtime: Runtime = .docker, driver: ContainerHostDriver,
+    project projectHost: HostDescriptor? = nil, runtime: Runtime = .docker,
+    driver: ContainerHostDriver,
     environment: RemoteProvisioning.Environment, recorder: Recorder
   ) async throws -> Created {
     let base: RemoteProvisioning.Base
@@ -227,13 +252,16 @@ enum RemoteWorkrooms {
         cloneURL: cloneURL,
         path: clonePath(for: repository), in: environment
       ) { base in
+        // Beside the project's bases on other runtimes and contexts (#309).
         try await recorder.record(
           nil,
-          HostDescriptor(
-            driver: runtime.rawValue, provisioner: provisioner, id: base.host,
-            repository: base.repository,
-            cloneURL: base.cloneURL, path: base.path,
-            container: driver.record(of: .remote(base.host))))
+          recording(
+            HostDescriptor(
+              driver: runtime.rawValue, provisioner: provisioner, id: base.host,
+              repository: base.repository,
+              cloneURL: base.cloneURL, path: base.path,
+              container: driver.record(of: .remote(base.host))),
+            in: projectHost))
       }
     }
 
@@ -499,13 +527,14 @@ final class RemoteHosts: @unchecked Sendable {
   /// with a delete in flight leaves out hosts config still records (#296).
   func adopt(_ projects: [Project], sweep: Bool = true) {
     let descriptors =
-      projects.compactMap(\.host) + projects.flatMap { $0.workrooms.compactMap(\.host) }
+      projects.flatMap { $0.host?.allBases ?? [] }
+      + projects.flatMap { $0.workrooms.compactMap(\.host) }
     // Another build's hosts take another key: adopted here, they would refuse every login.
     let recorded = descriptors.filter {
       DriverKey($0) != nil && $0.provisioner == RemoteWorkrooms.provisioner
     }
     // Only a base is derived from; on Apple nothing in its record says which a host is.
-    let bases = Set(projects.compactMap(\.host?.id))
+    let bases = Set(projects.flatMap { $0.host?.allBases.compactMap(\.id) ?? [] })
     let already = lock.withLock { Set(made.keys) }
     guard !recorded.isEmpty || !already.isEmpty else { return }
     // A descriptor with no container record yet goes to its runtime's driver that names no
@@ -549,20 +578,12 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
-  /// The Docker context a new workroom of a project with `base` goes in (#309): its base's, since
-  /// it is derived from the base on that daemon, or for a project with no base yet the context the
-  /// CLI would use now, which the new base is then pinned to. nil follows the environment, as
-  /// every host made before #309 does.
-  func context(forBase base: HostDescriptor?) async throws -> String? {
-    if let base, base.id != nil { return base.container?.context }
-    return try await driver().currentContext()
-  }
-
-  /// The driver key a new workroom on `runtime` goes in, for a project with `base`: Apple's
-  /// runtime has one; Docker's is pinned to a context (`context(forBase:)`).
-  func key(for runtime: RemoteWorkrooms.Runtime, base: HostDescriptor?) async throws -> DriverKey {
+  /// The driver key a new workroom on `runtime` wants (#309): Apple's runtime has one, and Docker's
+  /// is the context the CLI uses now, which a new base is pinned to. `RemoteWorkrooms.base(in:for:)`
+  /// then finds the project's base there, if it has one.
+  func key(for runtime: RemoteWorkrooms.Runtime) async throws -> DriverKey {
     guard runtime == .docker else { return DriverKey(runtime: runtime) }
-    return DriverKey(runtime: .docker, context: try await context(forBase: base))
+    return DriverKey(runtime: .docker, context: try await driver().currentContext())
   }
 
   /// The sequence's environment over `key`'s driver, signed in as this Mac.
@@ -588,32 +609,37 @@ final class RemoteHosts: @unchecked Sendable {
     return (driver, environment)
   }
 
-  /// What deleting `hosts` needs, checked before anything is removed (#253): nil when none of them
-  /// is live, else the environment, which throws when signed out or without Docker. Refuses one
-  /// another build made (`RemoteWorkrooms.checkDeletable`).
+  /// What deleting `hosts` needs, checked before anything is removed (#253): an environment per
+  /// runtime and Docker context they are on (#309), or nil when none of them is live. Throws when
+  /// signed out or without a runtime they need. Refuses one another build made
+  /// (`RemoteWorkrooms.checkDeletable`).
   @MainActor
-  func environment(toDelete hosts: [HostDescriptor]) throws -> RemoteProvisioning.Environment? {
+  func environment(toDelete hosts: [HostDescriptor]) throws -> Deletion? {
     guard try RemoteWorkrooms.checkDeletable(hosts) else { return nil }
-    // One environment has one driver. A project's workrooms are derived from its base, on its
-    // runtime and daemon, so the hosts of one delete share one.
-    let keys = Set(hosts.filter(RemoteWorkrooms.isLive).compactMap(DriverKey.init))
-    guard keys.count <= 1 else {
-      throw HostDriverError.invalidConfiguration(
-        "these hosts are on different container runtimes or Docker contexts: "
-          + keys.map { "\($0.runtime.displayName) \($0.context ?? "(current)")" }.sorted()
-          .joined(separator: ", "))
-    }
-    let (driver, environment) = try environment(keys.first ?? DriverKey())
-    // Taking a box down needs it on the driver, whatever a reload adopted: with previews off it
-    // adopted nothing, and the box would read as unknown.
+    var environments: [DriverKey: RemoteProvisioning.Environment] = [:]
     for host in hosts where RemoteWorkrooms.isLive(host) {
+      let key = DriverKey(host) ?? DriverKey()
+      if environments[key] == nil { environments[key] = try environment(key).1 }
+      // Taking a box down needs it on its driver, whatever a reload adopted: with previews off it
+      // adopted nothing, and the box would read as unknown.
+      let driver = try driver(key)
       guard let id = host.id, let record = host.container, driver.record(of: .remote(id)) == nil
       else { continue }
       do { try driver.adopt(id, record) } catch {
         Self.logger.error("adopting host \(id, privacy: .public): \(error, privacy: .public)")
       }
     }
-    return environment
+    return environments.isEmpty ? nil : Deletion(environments: environments)
+  }
+
+  /// The environments a delete takes hosts down with, one per runtime and Docker context.
+  struct Deletion {
+    let environments: [DriverKey: RemoteProvisioning.Environment]
+
+    /// The environment for `host`, or nil when it isn't live and needs none.
+    func environment(for host: HostDescriptor) -> RemoteProvisioning.Environment? {
+      environments[DriverKey(host) ?? DriverKey()]
+    }
   }
 
   /// The app's service connection to `host` (`HostConnectionManager`), with its agent bootstrapped

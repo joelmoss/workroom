@@ -3532,8 +3532,11 @@ final class AppStore: ObservableObject {
     do {
       // Signed out says so before anything asks the runtime (`environment` checks it again).
       guard BrokerSession.shared.client() != nil else { throw RemoteWorkrooms.Failure.signedOut }
-      // A new Docker base is pinned to the context in use now; a workroom goes where its base is.
-      let key = try await RemoteHosts.shared.key(for: runtime, base: project.host)
+      // A project keeps a base per runtime and Docker context (#309): the workroom derives from the
+      // one where it is asked for, made there first if there is none.
+      let wanted = try await RemoteHosts.shared.key(for: runtime)
+      let base = RemoteWorkrooms.base(in: project.host, for: wanted)
+      let key = base.flatMap(RemoteHosts.DriverKey.init) ?? wanted
       let (driver, environment) = try RemoteHosts.shared.environment(key)
       let resolution = await WorkroomStatusResolver().resolveRepository(in: project.path)
       guard case .found(let repository) = resolution else {
@@ -3544,7 +3547,8 @@ final class AppStore: ObservableObject {
       }
       let created = try await RemoteWorkrooms.create(
         repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
-        base: project.host, runtime: runtime, driver: driver, environment: environment,
+        base: base, project: project.host, runtime: runtime, driver: driver,
+        environment: environment,
         recorder: remoteRecorder(project: project.path))
       // Its panes attach through their own ssh; Changes and the rest connect for themselves.
       await created.instance.connection.close()
@@ -3741,7 +3745,9 @@ final class AppStore: ObservableObject {
     // optimistic removal below forgets its label.
     var remote: RemoteProvisioning.Environment?
     if let host = workroom.host {
-      do { remote = try RemoteHosts.shared.environment(toDelete: [host]) } catch {
+      do {
+        remote = try RemoteHosts.shared.environment(toDelete: [host])?.environment(for: host)
+      } catch {
         present(error)
         errorTitle = "Can't delete \(workroom.displayName)"
         return
@@ -4040,10 +4046,11 @@ final class AppStore: ObservableObject {
     // What that needs is checked here, before the local cleanup below kills this project's shells
     // and forgets its labels.
     let remoteWorkrooms = project.workrooms.filter(\.isRemote)
-    let remote: RemoteProvisioning.Environment?
+    let bases = project.host?.allBases ?? []
+    let remote: RemoteHosts.Deletion?
     do {
       remote = try RemoteHosts.shared.environment(
-        toDelete: remoteWorkrooms.compactMap(\.host) + [project.host].compactMap { $0 })
+        toDelete: remoteWorkrooms.compactMap(\.host) + bases)
     } catch {
       present(error)
       errorTitle = "Can't delete \(project.displayName)"
@@ -4080,13 +4087,25 @@ final class AppStore: ObservableObject {
           for workroom in remoteWorkrooms {
             guard let host = workroom.host else { continue }
             try await RemoteWorkrooms.delete(
-              workroom.name, host: host, environment: remote, recorder: recorder)
+              workroom.name, host: host, environment: remote?.environment(for: host),
+              recorder: recorder)
           }
-          if let base = project.host {
-            let cli = self.cli
-            try await RemoteWorkrooms.deleteBase(base, environment: remote) {
-              try await cli.setHost(project: project.path, workroom: nil, descriptor: nil)
+          // Each base on its own runtime and context (#309). Config keeps the ones still to go, so
+          // a failure part-way leaves what is live recorded for the next delete.
+          let cli = self.cli
+          var left = project.host
+          for base in bases {
+            let rest = base.id.flatMap { RemoteWorkrooms.removing($0, from: left) }
+            try await RemoteWorkrooms.deleteBase(base, environment: remote?.environment(for: base))
+            {
+              try await cli.setHost(
+                project: project.path, workroom: nil,
+                descriptor: try rest.map { try JSONEncoder().encode($0) })
             }
+            left = rest
+          }
+          if left != nil {
+            try await cli.setHost(project: project.path, workroom: nil, descriptor: nil)
           }
           let trashPaths = try await self.cli.deleteProject(
             project.path,
