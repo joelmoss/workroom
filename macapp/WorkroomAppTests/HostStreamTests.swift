@@ -302,7 +302,7 @@ final class HostStreamTests: XCTestCase {
   @MainActor
   func testClosingARemotePaneEndsItsSessionOnItsHost() async throws {
     let host = UUID()
-    var ended: [(UUID, HostID, Bool)] = []
+    var ended: [(UUID, HostID)] = []
     var reachable = false
     let service = PersistentSessionService(
       probe: { _ in .unhealthy(reason: "none here") },
@@ -310,8 +310,8 @@ final class HostStreamTests: XCTestCase {
         XCTFail("a local helper was asked about a remote session")
         return .notOwned
       },
-      endRemote: { session, onHost, connecting in
-        ended.append((session, onHost, connecting))
+      endRemote: { session, onHost in
+        ended.append((session, onHost))
         guard reachable else { throw RepositoryRoutingError.unavailable(onHost) }
         return true
       })
@@ -330,14 +330,6 @@ final class HostStreamTests: XCTestCase {
     XCTAssertFalse(service.isRemote(session))
     XCTAssertEqual(ended.map(\.0), [session, session])
     XCTAssertEqual(ended.map(\.1), [.remote(host), .remote(host)])
-    XCTAssertEqual(ended.map(\.2), [true, true], "a close connects to the host if need be")
-
-    // A delete's reap asks over a connection already up, and says so.
-    let reaped = UUID()
-    service.registerRemoteSession(
-      reaped, on: .remote(host), via: driver, workingDirectory: "/home/w")
-    await service.endSession(sessionID: reaped, connectingRemote: false)
-    XCTAssertEqual(ended.last?.2, false)
   }
 
   /// Why a carrier ended, read from its termination handler (#231 moved it off `isRunning` and

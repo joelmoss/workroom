@@ -1092,7 +1092,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     cannot be reached or does not acknowledge, the session is left running and reported as not
     killed, and the app says so. It then stays registered as remote, so a second close is never
     handed to the local helpers. A quit waits at most 5 seconds for such a kill. Deleting a remote
-    workroom ends its sessions only over a connection already up: the host goes next, with them.
+    workroom does not ask the host to end its sessions: the host goes next, with them.
   - *`CREATE=0` is only as good as the agent that reads it.* An agent older than the flag ignores
     it and creates the session. The version hand-off (#230) and the bootstrap (#231) keep the
     host's agent current; a host whose agent predates hand-off, which the bootstrap leaves
@@ -3405,9 +3405,9 @@ service milestones below so each layer can be reviewed and landed independently.
        asking it again cannot help. A new remote pane still gets that shell (#229), since it has no
        session to wait for.
      - *Limits.* The agent does not flush on SIGTERM, so a stop can lose up to 2 s of screen. The
-       container test's `restart -t 0` is a SIGKILL, which is the harder case. The app cannot end
-       a remote session when its pane closes (Phase 4), so the record of a remote pane closed
-       while its host was down stays until the 64-record bound drops it. An agent that crashes
+       container test's `restart -t 0` is a SIGKILL, which is the harder case. Closing a remote
+       pane ends its session and its record (#283), but only while its host answers: the record
+       of a remote pane closed while its host was down stays until the 64-record bound drops it. An agent that crashes
        without a reboot leaves orphaned shells running (the `KillMode` caveat in "Two requirements
        on #229's real supervisor"), and their records then read as ended while their shells live.
        The notice says "host restarted" in that case too. A record is removed on the tick after

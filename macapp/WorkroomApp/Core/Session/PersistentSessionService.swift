@@ -79,16 +79,16 @@ final class PersistentSessionService {
   /// Monotonic seconds, for the probe cooldown. `systemUptime` rather than `Date()` so a clock
   /// adjustment cannot make the cooldown never expire.
   private let now: () -> Double
-  /// Ends a session on its host (#283), connecting to the host first if `connecting` and need be.
-  /// Throws when the host cannot be reached; false when its agent did not acknowledge the kill.
-  private let endRemote: (UUID, HostID, _ connecting: Bool) async throws -> Bool
+  /// Ends a session on its host (#283), connecting to the host first if need be. Throws when the
+  /// host cannot be reached; false when its agent did not acknowledge the kill.
+  private let endRemote: (UUID, HostID) async throws -> Bool
 
   private init() {
     self.probe = { SessionBackendProbe.probe($0) }
     self.ownershipOverride = nil
     self.now = { ProcessInfo.processInfo.systemUptime }
-    self.endRemote = { session, host, connecting in
-      if connecting { try await RemoteHosts.shared.ensureConnected(host) }
+    self.endRemote = { session, host in
+      try await RemoteHosts.shared.ensureConnected(host)
       return try await HostConnectionManager.shared.endSession(session, on: host)
     }
   }
@@ -98,7 +98,7 @@ final class PersistentSessionService {
     probe: @escaping (SessionBackend) -> SessionBackendAvailability,
     ownership: @escaping (UUID) -> SessionOwnership,
     now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
-    endRemote: @escaping (UUID, HostID, Bool) async throws -> Bool = { _, _, _ in false }
+    endRemote: @escaping (UUID, HostID) async throws -> Bool = { _, _ in false }
   ) {
     self.probe = probe
     self.ownershipOverride = ownership
@@ -537,11 +537,8 @@ final class PersistentSessionService {
     return false
   }
 
-  /// `connectingRemote` false ends a remote session only over a connection already up: for a
-  /// workroom being deleted, whose host is about to go with every session on it, connecting (and
-  /// perhaps pushing it an agent) first would only hold up the delete.
   @discardableResult
-  func endSession(sessionID: UUID, connectingRemote: Bool = true) async -> Bool {
+  func endSession(sessionID: UUID) async -> Bool {
     // Never routed to a local helper, which would be asked to kill an id it does not hold: its
     // host's agent ends it (#283). If that fails the registration STAYS: the session is still
     // running there, and without it a retry would ask the local agent (which "kills" an id it never
@@ -550,7 +547,7 @@ final class PersistentSessionService {
       let id = sessionID.uuidString
       logger.notice("ending remote session \(id, privacy: .public)")
       let killed: Bool
-      do { killed = try await endRemote(sessionID, remote.host, connectingRemote) } catch {
+      do { killed = try await endRemote(sessionID, remote.host) } catch {
         logger.error(
           "remote session \(id, privacy: .public) left running on its host: \(error, privacy: .public)"
         )

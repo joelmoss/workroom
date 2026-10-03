@@ -1684,9 +1684,10 @@ final class TerminalSessions: ObservableObject {
     let removedIDs = Array((tabsByTarget[id] ?? [:]).keys)
     for removed in removedIDs { undetach(removed) }  // no detached window outlives its tab (#172)
     for tab in (tabsByTarget[id] ?? [:]).values {
-      // Over a connection already up only: a remote target is reaped as its workroom is deleted,
-      // which takes the host and every session on it down next (#283).
-      await endPersistentSession(for: tab, connectingRemote: false)
+      // Not a remote session: a remote target is reaped as its workroom is deleted, which takes
+      // the host and every session on it down next. Asking the host first could only hold the
+      // delete up, for as long as a request on a link that died while the Mac slept (#283).
+      if !isRemoteSession(tab) { await endPersistentSession(for: tab) }
       teardown(tab)
       activityPulses[tab.id] = nil
       hostCwdQueries.removeValue(forKey: tab.id)?.cancel()
@@ -2291,15 +2292,20 @@ final class TerminalSessions: ObservableObject {
   /// Whether a REMOTE session was ended (#283); nil for a local session or none, whose failures
   /// stay in the log as they always have.
   @discardableResult
-  private func endPersistentSession(for tab: TerminalTab, connectingRemote: Bool = true) async
-    -> Bool?
-  {
+  private func isRemoteSession(_ tab: TerminalTab) -> Bool {
+    guard case .terminal(let state) = tab.content, let sessionID = state.sessionID else {
+      return false
+    }
+    return sessionService.isRemote(sessionID)
+  }
+
+  private func endPersistentSession(for tab: TerminalTab) async -> Bool? {
     guard case .terminal(let state) = tab.content, let sessionID = state.sessionID else {
       return nil
     }
     let service = sessionService
     let remote = service.isRemote(sessionID)
-    let ended = await service.endSession(sessionID: sessionID, connectingRemote: connectingRemote)
+    let ended = await service.endSession(sessionID: sessionID)
     return remote ? ended : nil
   }
 
