@@ -624,53 +624,18 @@ final class AppStore: ObservableObject {
     errorTitle = nil
   }
 
-  /// A workroom whose closed remote pane could not be stopped (#283).
-  struct RemoteCloseFailure: Equatable {
-    let target: TerminalTarget.ID
-    let title: String
-  }
-
-  /// Failed remote closes waiting for the error sheet. The notice arrives up to a connect and a
-  /// request timeout after the close, so it queues behind whatever error is showing rather than
-  /// replacing it and its details or link. One per workroom: closing a workroom whose host is
-  /// down fails every pane at once.
-  private var pendingRemoteCloseFailures: [RemoteCloseFailure] = []
-  /// The failed remote close on the error sheet now, if that is what it shows.
-  private var shownRemoteCloseFailure: RemoteCloseFailure?
-
-  func reportRemoteCloseFailure(_ failure: RemoteCloseFailure) {
-    guard remoteCloseFailureStillApplies(failure), failure != shownRemoteCloseFailure,
-      !pendingRemoteCloseFailures.contains(failure)
+  /// Tells the user a closed remote pane's session may still be running on its host (#283), unless
+  /// something else is on the error sheet. The notice arrives up to a connect and a request timeout
+  /// after the close, so it must not replace an error the user is reading, or its details or link;
+  /// `PersistentSessionService` has logged the failure either way. Not for a workroom that is gone
+  /// or going, which the notice would tell the user to delete.
+  func reportRemoteCloseFailure(target: TerminalTarget.ID, title: String) {
+    guard errorMessage == nil, !deletingWorkrooms.contains(target),
+      Self.sidebarID(forTargetID: target, in: projects) != nil
     else { return }
-    if errorMessage == nil {
-      showRemoteCloseFailure(failure)
-    } else {
-      pendingRemoteCloseFailures.append(failure)
-    }
-  }
-
-  /// Shows the next queued failed remote close. Called by the error sheet once it has finished
-  /// dismissing, so the next one is never presented over a sheet still on its way out.
-  func presentNextRemoteCloseFailure() {
-    shownRemoteCloseFailure = nil
-    guard errorMessage == nil else { return }
-    while !pendingRemoteCloseFailures.isEmpty {
-      let next = pendingRemoteCloseFailures.removeFirst()
-      if remoteCloseFailureStillApplies(next) { return showRemoteCloseFailure(next) }
-    }
-  }
-
-  /// A notice for a workroom that is gone, or going, would tell the user to delete it.
-  private func remoteCloseFailureStillApplies(_ failure: RemoteCloseFailure) -> Bool {
-    !deletingWorkrooms.contains(failure.target)
-      && Self.sidebarID(forTargetID: failure.target, in: projects) != nil
-  }
-
-  private func showRemoteCloseFailure(_ failure: RemoteCloseFailure) {
-    shownRemoteCloseFailure = failure
     errorMessage =
       "Its host didn't confirm the terminal stopped, so whatever was running in it may still be running there. Deleting the workroom stops it."
-    errorTitle = "Couldn't stop the terminal in \(failure.title)"
+    errorTitle = "Couldn't stop the terminal in \(title)"
   }
   @Published var isLoading = false
   /// How many creates are in flight per project path (for the sidebar row's spinner + disabling).
@@ -1094,7 +1059,7 @@ final class AppStore: ObservableObject {
     // quit has stopped waiting for it, and an alert would hold the quit up instead.
     terminals.onRemoteCloseFailed = { [weak self] target, title in
       guard let self, !WindowRegistry.shared.isTerminating else { return }
-      self.reportRemoteCloseFailure(.init(target: target, title: title))
+      self.reportRemoteCloseFailure(target: target, title: title)
     }
     // Prune dead entries when tabs are closed/reaped, so canGoBack/Forward stay honest (issue #26).
     // Also collapse a target's sidebar terminal subtree once a close drops it below the 2-tab
