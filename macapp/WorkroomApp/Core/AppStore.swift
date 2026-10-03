@@ -3530,8 +3530,6 @@ final class AppStore: ObservableObject {
     beginBusy(project.path)
     defer { endBusy(project.path) }
     do {
-      // Signed out says so before anything asks the runtime (`environment` checks it again).
-      guard BrokerSession.shared.client() != nil else { throw RemoteWorkrooms.Failure.signedOut }
       // A project keeps a base per runtime and Docker context (#309): the workroom derives from the
       // one where it is asked for, made there first if there is none.
       let wanted = try await RemoteHosts.shared.key(for: runtime)

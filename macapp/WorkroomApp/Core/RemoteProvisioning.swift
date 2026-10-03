@@ -18,7 +18,11 @@ enum RemoteProvisioning {
     let driver: any HostDriver
     /// The agent's socket on each host of `driver`, which puts the agent's binary beside it.
     let agentSocket: String
-    let client: BrokerClient
+    /// The broker, when signed in to Codaset. Without it, only a relayed base can be made (#309).
+    let client: BrokerClient?
+    /// The Mac's own GitHub token (`gh`), for a base whose repository's git goes through the Mac's
+    /// credential relay rather than the broker (#309), or nil where there is none (a remote host).
+    var gitHubToken: (@Sendable () async throws -> String)? = nil
     var agentBroker: AgentEnrolment.AgentBroker = .standard
     /// A connection to the agent on a host, bootstrapping one there first.
     var connect: @Sendable (HostID) async throws -> AgentVCSConnection
@@ -26,7 +30,8 @@ enum RemoteProvisioning {
     var revoke: @Sendable (BrokerClient.CloneToken) async -> Void = CloneToken.revoke
 
     init(
-      driver: any HostDriver, agentSocket: String, client: BrokerClient,
+      driver: any HostDriver, agentSocket: String, client: BrokerClient?,
+      gitHubToken: (@Sendable () async throws -> String)? = nil,
       agentBroker: AgentEnrolment.AgentBroker = .standard,
       connect: (@Sendable (HostID) async throws -> AgentVCSConnection)? = nil,
       revoke: @escaping @Sendable (BrokerClient.CloneToken) async -> Void = CloneToken.revoke
@@ -34,6 +39,7 @@ enum RemoteProvisioning {
       self.driver = driver
       self.agentSocket = agentSocket
       self.client = client
+      self.gitHubToken = gitHubToken
       self.agentBroker = agentBroker
       self.connect =
         connect ?? { host in
@@ -53,12 +59,17 @@ enum RemoteProvisioning {
     let cloneURL: String
     /// The clone on the host.
     let path: String
+    /// Whether its workrooms take git's credentials from the Mac's relay instead of enrolling with
+    /// the broker (#309): made when signed out of Codaset, or when the repository's owner hasn't
+    /// installed the Codaset App. nil, as every base before #309 has it, is the broker.
+    var relayed: Bool? = nil
   }
 
   /// A workroom derived from a base, serving requests over `connection`.
   struct Instance: Sendable {
     let host: HostID
-    let grantID: String
+    /// Its broker grant; nil for a relayed workroom, which never enrols.
+    let grantID: String?
     let path: String
     let branch: String
     let connection: AgentVCSConnection
@@ -105,12 +116,14 @@ enum RemoteProvisioning {
       guard case .remote(let id) = host else { throw HostDriverError.unknownHost(host) }
       let connection = try await environment.connect(host)
       defer { Task { await connection.close() } }
-      try await withCloneToken(repository, in: environment) { header in
+      let relayed = try await withCloneToken(repository, relayed: nil, in: environment) { header in
         _ = try await git(
           ["clone", "--quiet", "--origin", "origin", "--", cloneURL, path], in: "/",
           environment: header, on: connection)
       }
-      let base = Base(host: id, repository: repository, cloneURL: cloneURL, path: path)
+      let base = Base(
+        host: id, repository: repository, cloneURL: cloneURL, path: path,
+        relayed: relayed ? true : nil)
       try await record(base)
       return base
     } catch {
@@ -133,7 +146,8 @@ enum RemoteProvisioning {
     try await BaseLocks.shared.exclusively(on: base.host) {
       let connection = try await environment.connect(.remote(base.host))
       defer { Task { await connection.close() } }
-      try await withCloneToken(base.repository, in: environment) { header in
+      try await withCloneToken(base.repository, relayed: base.relayed == true, in: environment) {
+        header in
         try await fetch(base.path, environment: header, on: connection)
       }
     }
@@ -163,19 +177,47 @@ enum RemoteProvisioning {
   }
 
   /// Mints a clone token, hands `body` the exec environment carrying it, and revokes it after,
-  /// whatever `body` did.
+  /// whatever `body` did. A relayed base (#309) uses the Mac's own GitHub token instead, which is
+  /// the user's and not revoked. `relayed` nil decides, for a new base: the broker when signed in,
+  /// unless the repository's owner hasn't installed the Codaset App; the Mac's token otherwise.
+  /// Returns whether it was relayed.
+  @discardableResult
   private static func withCloneToken(
-    _ repository: String, in environment: Environment,
+    _ repository: String, relayed: Bool?, in environment: Environment,
     _ body: ([String: String]) async throws -> Void
-  ) async throws {
-    let token = try await environment.client.baseCloneToken(repository: repository)
-    do {
-      try await body(cloneEnvironment(token: token.token))
-    } catch {
+  ) async throws -> Bool {
+    if relayed != true, let client = environment.client {
+      let token: BrokerClient.CloneToken
+      do {
+        token = try await client.baseCloneToken(repository: repository)
+      } catch BrokerError.refused(let refusal)
+        where relayed == nil && refusal.code == "app_not_installed"
+        && environment.gitHubToken != nil
+      {
+        try await body(cloneEnvironment(token: try await relayToken(environment)))
+        return true
+      }
+      do {
+        try await body(cloneEnvironment(token: token.token))
+      } catch {
+        await cleanUp { await environment.revoke(token) }
+        throw error
+      }
       await cleanUp { await environment.revoke(token) }
-      throw error
+      return false
     }
-    await cleanUp { await environment.revoke(token) }
+    // The broker's base needs the broker.
+    guard relayed != false else { throw RemoteWorkrooms.Failure.signedOut }
+    try await body(cloneEnvironment(token: try await relayToken(environment)))
+    return true
+  }
+
+  /// The Mac's GitHub token, for a relayed base or workroom (#309).
+  private static func relayToken(_ environment: Environment) async throws -> String {
+    guard let gitHubToken = environment.gitHubToken else {
+      throw RemoteWorkrooms.Failure.signedOut
+    }
+    return try await gitHubToken()
   }
 
   /// git's configuration through its environment (`GIT_CONFIG_COUNT`), so the token is in no
@@ -215,26 +257,35 @@ enum RemoteProvisioning {
       try await checkpoint(host, nil)
       let connected = try await environment.connect(host)
       connection = connected
-      let grantID: String
-      do {
-        grantID = try await AgentEnrolment.enrol(
-          client: environment.client, driver: environment.driver, host: host,
-          agentBinary: environment.agentBinary, workroomID: workroom,
-          repository: base.repository, agentBroker: environment.agentBroker)
-      } catch let live as AgentEnrolment.GrantStillLive {
-        // The enrolment's own cancel failed; the grant is still live, and only this knows it.
-        throw RollbackStart.grantLive(live.grantID, cause: live.cause, failure: live.cancelFailure)
+      // A relayed workroom never enrols (#309): these two git commands carry the Mac's token,
+      // and later ones ask the Mac through the relay its connect installs.
+      var header: [String: String] = [:]
+      if base.relayed == true {
+        header = cloneEnvironment(token: try await relayToken(environment))
+      } else {
+        guard let client = environment.client else { throw RemoteWorkrooms.Failure.signedOut }
+        let grantID: String
+        do {
+          grantID = try await AgentEnrolment.enrol(
+            client: client, driver: environment.driver, host: host,
+            agentBinary: environment.agentBinary, workroomID: workroom,
+            repository: base.repository, agentBroker: environment.agentBroker)
+        } catch let live as AgentEnrolment.GrantStillLive {
+          // The enrolment's own cancel failed; the grant is still live, and only this knows it.
+          throw RollbackStart.grantLive(
+            live.grantID, cause: live.cause, failure: live.cancelFailure)
+        }
+        grant = grantID
+        try await checkpoint(host, grantID)
       }
-      grant = grantID
-      try await checkpoint(host, grantID)
       // With the instance's own credentials: `wr-agent enrol` made its helper git's.
-      try await fetch(base.path, on: connected)
+      try await fetch(base.path, environment: header, on: connected)
       // Fully qualified: a tag or branch named `origin/HEAD` would make the short form ambiguous.
       _ = try await git(
         ["switch", "--quiet", "--no-track", "--create", branch, "refs/remotes/origin/HEAD"],
-        in: base.path, on: connected)
+        in: base.path, environment: header, on: connected)
       return Instance(
-        host: host, grantID: grantID, path: base.path, branch: branch, connection: connected)
+        host: host, grantID: grant, path: base.path, branch: branch, connection: connected)
     } catch {
       var error = error
       var alreadyFailed: (grant: String, failure: String)?
@@ -249,7 +300,7 @@ enum RemoteProvisioning {
         var grantLive: String?
         var hostLive: HostID?
         var failures: [String] = []
-        if let made {
+        if let made, let client {
           do { try await client.cancelGrant(made) } catch {
             grantLive = made
             failures.append("cancelling grant \(made): \(error.localizedDescription)")
@@ -296,7 +347,11 @@ enum RemoteProvisioning {
     var failures: [String] = []
     var (grantLive, hostLive): (String?, HostID?) = (nil, nil)
     if let grantID {
-      do { try await environment.client.cancelGrant(grantID) } catch {
+      do {
+        // A grant needs the broker to cancel; signed out, it is left for a later delete.
+        guard let client = environment.client else { throw RemoteWorkrooms.Failure.signedOut }
+        try await client.cancelGrant(grantID)
+      } catch {
         grantLive = grantID
         failures.append("cancelling grant \(grantID): \(error.localizedDescription)")
       }

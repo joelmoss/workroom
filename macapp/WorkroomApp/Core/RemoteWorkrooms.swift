@@ -48,7 +48,7 @@ enum RemoteWorkrooms {
       appleSilicon: appleSilicon,
       macOS26: ProcessInfo.processInfo.isOperatingSystemAtLeast(
         OperatingSystemVersion(majorVersion: 26, minorVersion: 0, patchVersion: 0)),
-      signedIn: BrokerSession.shared.client() != nil)
+      signedIn: BrokerSession.shared.client() != nil || CredentialRelay.hasGitHubSignIn())
   }
 
   static func unavailability(
@@ -60,7 +60,8 @@ enum RemoteWorkrooms {
       if !macOS26 { return "needs macOS 26" }
     }
     if !installed { return "not installed" }
-    if !signedIn { return "sign in to Codaset in Settings" }
+    // Codaset's broker, or the Mac's own `gh` through the relay (#309).
+    if !signedIn { return "sign in to Codaset or run gh auth login" }
     return nil
   }
   /// The descriptor's `provisioner`: this build, whose ssh key and Docker labels its hosts carry.
@@ -112,8 +113,8 @@ enum RemoteWorkrooms {
     var errorDescription: String? {
       switch self {
       case .signedOut:
-        return "Sign in to Codaset in Settings → Remote workrooms first: it gives remote "
-          + "workrooms their GitHub access."
+        return "Sign in to Codaset in Settings → Remote workrooms, or to GitHub with "
+          + "`gh auth login`: one of them gives the workroom its GitHub access."
       case .notOnGitHub(let detail):
         return "A remote workroom needs a project whose origin is on github.com. \(detail)"
       case .anotherBuildsBase(let build):
@@ -260,7 +261,8 @@ enum RemoteWorkrooms {
               driver: runtime.rawValue, provisioner: provisioner, id: base.host,
               repository: base.repository,
               cloneURL: base.cloneURL, path: base.path,
-              container: driver.record(of: .remote(base.host))),
+              container: driver.record(of: .remote(base.host)),
+              credentials: base.relayed == true ? "relay" : nil),
             in: projectHost))
       }
     }
@@ -307,7 +309,8 @@ enum RemoteWorkrooms {
         name,
         HostDescriptor(
           driver: runtime.rawValue, provisioner: provisioner, id: id, grantID: instance.grantID,
-          workroomID: workroomID, container: driver.record(of: instance.host)))
+          workroomID: workroomID, container: driver.record(of: instance.host),
+          credentials: base.relayed == true ? "relay" : nil))
     } catch {
       // Unrecorded, the instance would be found by nothing but the sweep, and its grant by nothing.
       do {
@@ -439,6 +442,8 @@ final class RemoteHosts: @unchecked Sendable {
   private var made: [DriverKey: ContainerHostDriver] = [:]
   /// The runtime each host config records is on, whether or not a driver holds it.
   private var runtimes: [UUID: RemoteWorkrooms.Runtime] = [:]
+  /// Workroom hosts whose git credentials come through the Mac's relay (#309).
+  private var relayed: Set<UUID> = []
   private var swept = false
   /// A call reached the sweep while a delete was in flight and left it for later (#296).
   private var held = false
@@ -540,6 +545,8 @@ final class RemoteHosts: @unchecked Sendable {
     let already = lock.withLock {
       for descriptor in recorded {
         if let id = descriptor.id, let key = DriverKey(descriptor) { runtimes[id] = key.runtime }
+        // A base never has git ask for credentials; only its workrooms are relayed.
+        if let id = descriptor.id, descriptor.isRelayed, !bases.contains(id) { relayed.insert(id) }
       }
       return Set(made.keys)
     }
@@ -598,12 +605,13 @@ final class RemoteHosts: @unchecked Sendable {
   func environment(_ key: DriverKey = DriverKey()) throws -> (
     ContainerHostDriver, RemoteProvisioning.Environment
   ) {
-    guard let client = BrokerSession.shared.client() else {
-      throw RemoteWorkrooms.Failure.signedOut
-    }
+    // Signed out of Codaset, a local container workroom's git credentials come from the Mac's own
+    // `gh` instead (#309): every runtime here is a local one.
+    let client = BrokerSession.shared.client()
     let driver = try driver(key)
     var environment = RemoteProvisioning.Environment(
-      driver: driver, agentSocket: RemoteWorkrooms.agentSocket, client: client)
+      driver: driver, agentSocket: RemoteWorkrooms.agentSocket, client: client,
+      gitHubToken: CredentialRelay.gitHubToken)
     #if DEBUG
       // A Debug agent reaches this Mac's Codaset through a listener on its host, which lives on
       // the host's service connection (`BrokerReverseForwards`), so that connection comes first.
@@ -657,7 +665,23 @@ final class RemoteHosts: @unchecked Sendable {
       try await AgentBootstrap.connect(
         host: host, driver: driver, socket: RemoteWorkrooms.agentSocket)
     }
+    // A relayed workroom's git asks this Mac for credentials (#309): its listener goes with the
+    // connection, and its secret with this launch, so it is set up again on every connect. A
+    // failure leaves the workroom usable except for git's remote commands, so it is logged.
+    guard case .remote(let id) = host, isRelayed(id) else { return }
+    do {
+      try await CredentialRelay.shared.install(
+        on: host, driver: driver,
+        agentBinary: AgentBootstrap.binary(besideSocket: RemoteWorkrooms.agentSocket))
+    } catch {
+      Self.logger.error(
+        "credential relay for \(id, privacy: .public): \(error.localizedDescription, privacy: .public)"
+      )
+    }
   }
+
+  /// Whether host `id` is a workroom whose git credentials come through the Mac's relay (#309).
+  func isRelayed(_ id: UUID) -> Bool { lock.withLock { relayed.contains(id) } }
 
   /// Connects `host`'s service connection unless it is up, for a read, write or listing that needs
   /// it (`RepositoryRouter`). One attempt per host at a time: the inspector's panels ask together
