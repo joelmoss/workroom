@@ -432,6 +432,82 @@ fn a_slow_kill_does_not_hold_up_its_connection() {
     let _ = handle.join();
 }
 
+/// A second kill of a session whose first is still ending its shell is acknowledged only once the
+/// shell is gone too: the session has left the map by then, and an early acknowledgement would let
+/// the app forget a shell that is still running (#283).
+#[test]
+fn a_second_kill_waits_for_the_first() {
+    let sessions = SessionStore::new();
+    let (mut client, handle) = serve_over_pipe(sessions.clone());
+    client.handshake();
+    let id = [0x48; 16];
+    client.send(Service::Terminal, 1, attach_frame(id));
+    client.send(
+        Service::Terminal,
+        1,
+        Frame::new(
+            FrameKind::Input,
+            b"trap '' HUP; echo READY-$((1+1)); exec sleep 100\n".to_vec(),
+        ),
+    );
+    client.read_until("READY-2", Duration::from_secs(10));
+    std::thread::sleep(Duration::from_millis(300));
+
+    let started = Instant::now();
+    client.send(
+        Service::Control,
+        2,
+        Frame::new(FrameKind::Kill, id.to_vec()),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while sessions.contains(SessionId(id)) {
+        assert!(
+            Instant::now() < deadline,
+            "the first kill never took the session"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    client.send(
+        Service::Control,
+        3,
+        Frame::new(FrameKind::Kill, id.to_vec()),
+    );
+    // Its wait is off the reader too: a request sent behind it is answered first.
+    client.send(Service::Control, 4, Frame::control(FrameKind::List));
+    let at = |client: &Client, stream: u32| {
+        client
+            .other
+            .iter()
+            .position(|e| e.service == Service::Control && e.stream == stream)
+    };
+    while at(&client, 4).is_none() {
+        assert!(
+            client.pump(deadline),
+            "the request behind the second kill was never answered"
+        );
+    }
+    assert!(
+        at(&client, 3).is_none_or(|kill| kill > at(&client, 4).unwrap()),
+        "the request behind the second kill was answered only after it"
+    );
+    client.envelope(Service::Control, 3, Duration::from_secs(5));
+    let second = started.elapsed();
+    client.envelope(Service::Control, 2, Duration::from_secs(5));
+
+    // The shell declines SIGHUP, so it is gone only after `SIGHUP_GRACE` and a SIGKILL.
+    assert!(
+        second >= Duration::from_millis(400),
+        "the second kill was acknowledged after {second:?}, before the shell was gone"
+    );
+    assert!(
+        !sessions.is_ending(SessionId(id)),
+        "the session is still marked as being ended"
+    );
+
+    close(&client.writer);
+    let _ = handle.join();
+}
+
 /// A kill too short to name a session is refused, not dropped: a request with no reply would hold
 /// the app's request open until its timeout.
 #[test]

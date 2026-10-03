@@ -662,9 +662,10 @@ pub fn exit_code(status: i32) -> i32 {
 /// connection behind it: the app's service connection to a host carries its VCS, File and
 /// forwarding traffic as well (#283).
 ///
-/// Only a live session gets a thread. An id the store does not hold costs at most the removal of a
-/// screen record, so it is ended here, and a stream of kills for ids that are not sessions cannot
-/// start a thread apiece.
+/// Only a live session gets a thread, or one another kill is still ending, which this kill waits on
+/// so that it too is acknowledged only once the shell is gone. An id the store does not hold costs
+/// at most the removal of a screen record, so it is ended here, and a stream of kills for ids that
+/// are not sessions cannot start a thread apiece.
 fn kill_off_the_reader(
     sessions: &SessionStore,
     id: SessionId,
@@ -679,7 +680,8 @@ fn kill_off_the_reader(
             Frame::control(FrameKind::Acknowledged).encode(),
         )
     };
-    if !sessions.contains(id) {
+    // In this order: a session leaves the map only once it is marked as being ended.
+    if !sessions.contains(id) && !sessions.is_ending(id) {
         sessions.kill(id);
         return Some(acknowledged());
     }
