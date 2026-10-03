@@ -269,7 +269,8 @@ pub const KILL_EXIT_WAIT: Duration = SIGHUP_GRACE.saturating_mul(4);
 /// How long an id a client asked to kill is refused a new session (`SessionStore::refuse`): long
 /// enough for an attach that set out before the kill to arrive behind it. Over ssh that is a
 /// connect bounded at 10s (`ContainerHostDriver`'s `ConnectTimeout`), authentication and the
-/// agent's start, so a minute has room to spare.
+/// agent's start, so a minute has room to spare. Refusals are not carried across a hand-off, so
+/// the program that takes over may still create a session killed just before it (#310).
 pub const REFUSED_ID_WINDOW: Duration = Duration::from_secs(60);
 
 /// Owns every live session. Cheap to clone; all clones share one map.

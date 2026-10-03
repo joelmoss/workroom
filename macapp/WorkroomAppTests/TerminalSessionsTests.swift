@@ -2041,7 +2041,10 @@ final class RemotePaneCloseTests: XCTestCase {
     XCTAssertFalse(service.quitKeepsWaiting(local: 0, remote: 0, pastDeadline: false))
   }
 
-  /// Value: protects=a quit waits for a pane's close kill after the pane's window has closed and its sessions are gone; fails_when=close kills are counted per window again, so a quit that looks only at open windows misses this one; why_new=the quit tests above keep the window's sessions alive; seam=none
+  /// Value: protects=a close kill is counted on the session service, which the quit reads without any window's sessions in hand; fails_when=closeTab stops counting its kill on the service; why_new=the quit tests above ask the window's own sessions; seam=none
+  ///
+  /// The close's own task keeps `s` alive until the kill ends, so dropping it here does not model
+  /// the window going away; what it shows is that the quit needs no reference to it.
   func testAQuitWaitsForACloseWhoseWindowHasClosed() async throws {
     let target = remoteTarget()
     var ended = false
@@ -2056,6 +2059,11 @@ final class RemotePaneCloseTests: XCTestCase {
     s = nil
     await service.awaitPendingCloseKills(until: .now + .seconds(5))
     XCTAssertTrue(ended, "the quit did not wait for the closed window's kill")
+  }
+
+  /// Value: protects=every window's panes count their close kills where the quit looks for them; fails_when=TerminalSessions defaults to a service other than PersistentSessionService.shared; why_new=the quit sites in WorkroomApp.swift have no test seam; seam=none
+  func testPanesCountCloseKillsOnTheSharedService() {
+    XCTAssertTrue(TerminalSessions().sessionService === PersistentSessionService.shared)
   }
 
   func testASuccessfulRemoteCloseReportsNothing() async throws {
