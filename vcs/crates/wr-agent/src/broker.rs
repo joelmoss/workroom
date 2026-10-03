@@ -41,6 +41,11 @@ use serde_json::{json, Value};
 
 const STATE_FILE: &str = "broker.json";
 const TOKEN_FILE: &str = "broker-token.json";
+/// Where the Mac relays a workroom that never enrolled (#309): a local container workroom whose
+/// user is signed in to `gh` but not to Codaset. See `relay`.
+const RELAY_FILE: &str = "relay.json";
+/// The most a relayed answer may be: git's credential protocol is a handful of short lines.
+const RELAY_MAX: u64 = 16 * 1024;
 /// A cached token with less than this left is replaced, so git never starts a long push with a
 /// token about to die. If the broker cannot be reached it is still used until it expires.
 const REFRESH_MARGIN: i64 = 300;
@@ -295,7 +300,13 @@ pub fn credential(
     if action != "get" {
         return Ok(());
     }
-    let token = token(dir)?;
+    // An enrolled workroom always mints its own; only one that never enrolled is relayed.
+    let token = match token(dir) {
+        Err(BrokerError::NotEnrolled) if load::<Relay>(dir, RELAY_FILE)?.is_some() => {
+            return relay(dir, &mut output);
+        }
+        result => result?,
+    };
     // `x-access-token` is the username GitHub documents for installation tokens over HTTPS.
     // `password_expiry_utc` (git 2.41+) stops git reusing it past its expiry; older gits ignore it.
     write!(
@@ -304,6 +315,86 @@ pub fn credential(
         token.token,
         token.local_expiry()
     )?;
+    Ok(())
+}
+
+/// Where a workroom that never enrolled asks the Mac for git's credentials (#309): a port on this
+/// box's loopback that the app carries back to itself over its own connection (a reverse
+/// forward), and the secret that tells the app which workroom is asking. Anything in the workroom
+/// can read it and ask, which is the accepted trade: such a workroom gets the GitHub access the
+/// user's own `gh` has, as a workroom on the Mac itself does.
+#[derive(Serialize, Deserialize)]
+struct Relay {
+    port: u16,
+    secret: String,
+}
+
+/// Records the relay for `credential get` (`wr-agent credential relay`).
+pub fn install_relay(dir: &Path, port: u16, secret: &str) -> Result<(), BrokerError> {
+    let secret = secret.trim();
+    if port == 0 || secret.is_empty() || secret.contains(char::is_whitespace) {
+        return Err(BrokerError::Invalid(
+            "a relay needs a port and a one-word secret".into(),
+        ));
+    }
+    save(
+        dir,
+        RELAY_FILE,
+        &Relay {
+            port,
+            secret: secret.to_string(),
+        },
+    )
+}
+
+/// `get` through the Mac: sends the secret, then the request (only ever github.com over HTTPS,
+/// which `credential` checked), and copies back the answer's `username` and `password`. Nothing
+/// else in the answer reaches git.
+fn relay(dir: &Path, output: &mut impl Write) -> Result<(), BrokerError> {
+    use std::io::Read;
+    use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+    let Some(relay) = load::<Relay>(dir, RELAY_FILE)? else {
+        return Err(BrokerError::NotEnrolled);
+    };
+    let unreachable = |e: io::Error| {
+        BrokerError::Transport(format!(
+            "the Workroom app isn't connected to this workroom, so git has no GitHub credentials. \
+             Open the workroom in Workroom. ({e})"
+        ))
+    };
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, relay.port));
+    let mut stream = TcpStream::connect_timeout(&address, TIMEOUT).map_err(unreachable)?;
+    stream.set_read_timeout(Some(TIMEOUT))?;
+    stream.set_write_timeout(Some(TIMEOUT))?;
+    write!(
+        stream,
+        "{}\nprotocol=https\nhost=github.com\n\n",
+        relay.secret
+    )
+    .map_err(unreachable)?;
+    let mut answer = String::new();
+    stream
+        .take(RELAY_MAX)
+        .read_to_string(&mut answer)
+        .map_err(unreachable)?;
+    let mut fields = answer.lines().filter_map(|line| line.split_once('='));
+    let mut username = None;
+    let mut password = None;
+    for (key, value) in fields.by_ref() {
+        match key {
+            "username" => username = Some(value),
+            "password" => password = Some(value),
+            "error" => return Err(BrokerError::Invalid(value.to_string())),
+            _ => {}
+        }
+    }
+    let (Some(username), Some(password)) = (username, password) else {
+        return Err(BrokerError::Invalid(
+            "the Workroom app had no GitHub credentials to give: sign in with `gh auth login`"
+                .into(),
+        ));
+    };
+    write!(output, "username={username}\npassword={password}\n")?;
     Ok(())
 }
 
