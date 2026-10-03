@@ -284,6 +284,11 @@ fn run_serve(
             ),
         }
     }
+    // In both cases: the program handed off, or one that idled out or crashed, left its refusals
+    // here, and an attach still on its way to it must not start a session it was told to end.
+    agent
+        .sessions
+        .keep_refusals(wr_agent::session::refusals_path(&socket));
     handoff::install(handoff::Context {
         socket: socket.clone(),
         listener: listener.as_raw_fd(),

@@ -15,9 +15,11 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::input::InputClassifier;
 use crate::protocol::envelope::{Envelope, Service};
@@ -269,9 +271,73 @@ pub const KILL_EXIT_WAIT: Duration = SIGHUP_GRACE.saturating_mul(4);
 /// How long an id a client asked to kill is refused a new session (`SessionStore::refuse`): long
 /// enough for an attach that set out before the kill to arrive behind it. Over ssh that is a
 /// connect bounded at 10s (`ContainerHostDriver`'s `ConnectTimeout`), authentication and the
-/// agent's start, so a minute has room to spare. Refusals are not carried across a hand-off, so
-/// the program that takes over may still create a session killed just before it (#310).
+/// agent's start, so a minute has room to spare. The refusals outlive this program in a file beside
+/// its socket (`SessionStore::keep_refusals`), so a hand-off, an idle exit or a crash does not let
+/// the next one create a session killed just before it (#310).
 pub const REFUSED_ID_WINDOW: Duration = Duration::from_secs(60);
+
+/// Where a socket's refusals are kept, beside it in the agent's own directory.
+pub fn refusals_path(socket: &Path) -> PathBuf {
+    socket.with_extension("refused")
+}
+
+const REFUSALS_MAGIC: [u8; 4] = *b"WRRF";
+
+/// Magic, then per refusal its id and when it ends, as milliseconds since the epoch: an `Instant`
+/// means nothing to another process. Through a temporary file and a rename, so a program that
+/// dies mid-write leaves the previous file whole rather than one that loses every refusal.
+fn write_refusals(
+    path: &Path,
+    refused: &HashMap<SessionId, Instant>,
+    now: Instant,
+) -> std::io::Result<()> {
+    let wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let mut out = REFUSALS_MAGIC.to_vec();
+    for (id, until) in refused {
+        let ends = wall + until.saturating_duration_since(now);
+        out.extend_from_slice(&id.0);
+        out.extend_from_slice(&(ends.as_millis() as u64).to_be_bytes());
+    }
+    let temporary = path.with_extension("refused-new");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&temporary)
+        .and_then(|mut file| file.write_all(&out))?;
+    std::fs::rename(&temporary, path)
+}
+
+/// The refusals in `path` that have not ended, each ending no later than a window from now: a
+/// clock set back must not stretch one.
+fn read_refusals(path: &Path) -> std::io::Result<Vec<(SessionId, Instant)>> {
+    let bytes = std::fs::read(path)?;
+    let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidData, "not a refusals file");
+    let (entries, rest) = bytes
+        .strip_prefix(&REFUSALS_MAGIC)
+        .ok_or_else(invalid)?
+        .as_chunks::<24>();
+    if !rest.is_empty() {
+        return Err(invalid());
+    }
+    let wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let now = Instant::now();
+    Ok(entries
+        .iter()
+        .filter_map(|entry| {
+            let id = SessionId(entry[..16].try_into().expect("16 bytes"));
+            let ends =
+                Duration::from_millis(u64::from_be_bytes(entry[16..].try_into().expect("8 bytes")));
+            let left = ends.checked_sub(wall).filter(|left| !left.is_zero())?;
+            Some((id, now + left.min(REFUSED_ID_WINDOW)))
+        })
+        .collect())
+}
 
 /// Owns every live session. Cheap to clone; all clones share one map.
 #[derive(Clone, Default)]
@@ -288,9 +354,13 @@ pub struct SessionStore {
     /// so a session created again under an id still being ended, and killed, is not unmarked when
     /// the first kill finishes.
     ending: Arc<(Mutex<HashMap<SessionId, usize>>, Condvar)>,
-    /// Ids a client asked to kill, and when, which `create_then` refuses for `REFUSED_ID_WINDOW`
-    /// (#297). Only ever locked alone or inside the session map's lock, never the other way round.
+    /// Ids a client asked to kill, and when each refusal ends, which `create_then` refuses until
+    /// then (#297). Only ever locked alone or inside the session map's lock, never the other way
+    /// round.
     refused: Arc<Mutex<HashMap<SessionId, Instant>>>,
+    /// Where `refused` is kept for the next program to serve this socket, when this one serves
+    /// one (`keep_refusals`).
+    refusals: Arc<OnceLock<PathBuf>>,
 }
 
 /// Sessions marked as being ended in `SessionStore::ending` until dropped, panics included.
@@ -394,13 +464,21 @@ impl SessionStore {
     ///
     /// Called before the kill looks for the session, and `create_then` checks under the map's
     /// lock, so either a create sees the refusal or the kill sees the session it created.
+    ///
+    /// Written to the refusals file under the map's lock, so two kills cannot write their copies
+    /// out of order and lose one; a file this small costs a kill nothing it would notice.
     pub fn refuse(&self, id: SessionId) {
         let now = Instant::now();
         let mut refused = self.refused.lock().unwrap_or_else(|e| e.into_inner());
         // ponytail: a scan per kill, which kills at the rate panes close never notice; a flood of
         // kills would want pruning on a timer or past a size.
-        refused.retain(|_, at| now.duration_since(*at) < REFUSED_ID_WINDOW);
-        refused.insert(id, now);
+        refused.retain(|_, until| *until > now);
+        refused.insert(id, now + REFUSED_ID_WINDOW);
+        if let Some(path) = self.refusals.get() {
+            if let Err(e) = write_refusals(path, &refused, now) {
+                crate::note!("could not keep refusals in {}: {e}", path.display());
+            }
+        }
     }
 
     fn is_refused(&self, id: SessionId) -> bool {
@@ -408,7 +486,22 @@ impl SessionStore {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&id)
-            .is_some_and(|at| at.elapsed() < REFUSED_ID_WINDOW)
+            .is_some_and(|until| *until > Instant::now())
+    }
+
+    /// Keeps refusals in `path` from now on, starting from the ones it already holds: those of the
+    /// program that served this socket before, whether it handed off, idled out or crashed. Once
+    /// per store. A file that cannot be read costs its refusals, never the agent.
+    pub fn keep_refusals(&self, path: PathBuf) {
+        match read_refusals(&path) {
+            Ok(kept) => {
+                let mut refused = self.refused.lock().unwrap_or_else(|e| e.into_inner());
+                refused.extend(kept);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => crate::note!("not taking refusals from {}: {e}", path.display()),
+        }
+        let _ = self.refusals.set(path);
     }
 
     pub fn new() -> Self {
@@ -1843,15 +1936,54 @@ mod tests {
             Err(SessionError::Ended(_))
         ));
         store.create(spec(id(41), &args, &e)).expect("another id");
-        // Checked: `Instant` counts from boot on macOS, so a minute back does not exist in the first.
-        let past = Instant::now()
-            .checked_sub(REFUSED_ID_WINDOW)
-            .expect("a machine up for a minute");
-        store.refused.lock().unwrap().insert(id(40), past);
+        store.refused.lock().unwrap().insert(id(40), Instant::now());
         store
             .create(spec(id(40), &args, &e))
             .expect("after the window");
         store.kill_all();
+    }
+
+    /// The next program to serve the socket refuses what this one did: the refusals file carries
+    /// them, an ended one is left behind, and a file that is not one costs only its refusals.
+    #[test]
+    fn refusals_outlive_the_store_that_made_them() {
+        let dir = std::env::temp_dir().join(format!("wr-refusals-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = refusals_path(&dir.join("agent.sock"));
+
+        let first = SessionStore::new();
+        first.refuse(id(42));
+        assert!(!path.exists(), "a store with no file wrote one");
+        first.keep_refusals(path.clone());
+        first.refuse(id(43));
+        assert!(first.is_refused(id(42)) && first.is_refused(id(43)));
+
+        let next = SessionStore::new();
+        next.keep_refusals(path.clone());
+        assert!(
+            next.is_refused(id(42)),
+            "the refusal made before the file was lost"
+        );
+        assert!(
+            next.is_refused(id(43)),
+            "the refusal did not reach the next store"
+        );
+        assert!(!next.is_refused(id(44)));
+
+        let mut ended = HashMap::new();
+        ended.insert(id(45), Instant::now());
+        let later = Instant::now() + Duration::from_secs(1);
+        write_refusals(&path, &ended, later).unwrap();
+        let after = SessionStore::new();
+        after.keep_refusals(path.clone());
+        assert!(!after.is_refused(id(45)), "an ended refusal was taken up");
+
+        std::fs::write(&path, b"WRRF and then nonsense").unwrap();
+        let damaged = SessionStore::new();
+        damaged.keep_refusals(path.clone());
+        assert!(damaged.refused.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Adopting a hand-off's session under an id already in use is refused, as creating one is.
