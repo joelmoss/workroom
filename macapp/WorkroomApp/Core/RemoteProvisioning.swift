@@ -194,7 +194,11 @@ enum RemoteProvisioning {
         where relayed == nil && refusal.code == "app_not_installed"
         && environment.gitHubToken != nil
       {
-        try await body(cloneEnvironment(token: try await relayToken(environment)))
+        // Without `gh` either, the App's install is what the user needs to hear about.
+        guard let token = try? await relayToken(environment) else {
+          throw BrokerError.refused(refusal)
+        }
+        try await body(cloneEnvironment(token: token))
         return true
       }
       do {
