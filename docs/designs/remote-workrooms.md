@@ -1585,6 +1585,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     refused. On success the app reloads before it lifts the tombstone, so a read begun before
     config dropped the project can't publish it; on failure it lifts the tombstone first, so the
     project, still in config, reappears.
+  - **A workroom's delete does the same (#295).** Its tombstone (`deletingWorkrooms`) lifts only
+    after a reload that follows the teardown, so a read begun before config dropped the workroom
+    can't publish it again. That reload is quiet: a failed `list` is not reported as a failed
+    delete. On failure the tombstone lifts first, so the workroom, still in config, reappears.
   - **Not done.** No teardown script runs on the box: create runs no setup script there, and the
     box goes anyway. A failure part-way through a project delete leaves the remote workrooms
     already taken down gone, as the local cascade does.
