@@ -2035,6 +2035,24 @@ final class RemotePaneCloseTests: XCTestCase {
     XCTAssertEqual(reported, [])
   }
 
+  /// Value: protects=deleting a workroom still ends its LOCAL panes' persistent sessions; only remote ones are left to the host's teardown; fails_when=reap's isRemoteSession guard is inverted or skips every session; why_new=the reap test above only proves a remote pane is skipped; seam=none
+  func testReapStillEndsALocalPanesSession() async throws {
+    let target = TerminalTarget(id: "wr|/p|local", title: "local", path: "/w", isMissing: false)
+    let s = makeSessions { _, _ in true }
+    var asked = 0
+    s.sessionService = PersistentSessionService(
+      probe: { _ in .ready(version: "test") },
+      ownership: { _ in
+        asked += 1
+        return .unreachable
+      })
+    let tab = s.addTab(for: target, sessionID: UUID())
+    guard case .terminal(let state) = tab.content else { return XCTFail("not a terminal") }
+    XCTAssertNotNil(state.sessionID, "the pane has a session to end")
+    await s.reap(target.id)
+    XCTAssertGreaterThan(asked, 0, "the reap never asked to end the local session")
+  }
+
   /// Value: protects=a quit waits for every close kill in flight, not just the first to finish; fails_when=closeKillsInFlight stops being a count (a flag, or reset by one finish); why_new=the other quit tests close a single tab; seam=none
   func testAQuitWaitsForEveryCloseInFlight() async throws {
     let target = remoteTarget()
