@@ -2263,7 +2263,7 @@ final class TerminalSessions: ObservableObject {
   /// rather than opening that shell (`PersistentSessionService.attachCommand`).
   private func registerRemote(_ session: UUID, on host: UUID, workingDirectory: String) {
     let driver =
-      RemoteHosts.shared.existingDriver
+      RemoteHosts.shared.existingDriver(holding: host)
       ?? ContainerHostDriver(hosts: [:], directory: RemoteHosts.directory)
     sessionService.registerRemoteSession(
       session, on: .remote(host), via: driver, workingDirectory: workingDirectory)

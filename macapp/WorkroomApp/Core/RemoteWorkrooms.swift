@@ -309,13 +309,15 @@ enum RemoteWorkrooms {
   }
 }
 
-/// The app's remote hosts (#253): one `ContainerHostDriver` on this Mac's Docker, the hosts config
-/// records adopted into it at each reload, and one sweep per launch for what no record names.
+/// The app's remote hosts (#253): a `ContainerHostDriver` per Docker context on this Mac (#309),
+/// the hosts config records adopted into theirs at each reload, and one sweep per launch for what
+/// no record names.
 final class RemoteHosts: @unchecked Sendable {
   static let shared = RemoteHosts()
 
   private let lock = NSLock()
-  private var made: ContainerHostDriver?
+  /// The drivers made so far, by the Docker context they name; nil is the one that names none.
+  private var made: [String?: ContainerHostDriver] = [:]
   private var swept = false
   /// A call reached the sweep while a delete was in flight and left it for later (#296).
   private var held = false
@@ -327,15 +329,22 @@ final class RemoteHosts: @unchecked Sendable {
   private let connectHost: (@Sendable (HostID) async throws -> Void)?
   private let isConnected: (@Sendable (HostID) async -> Bool)?
   private let now: @Sendable () -> ContinuousClock.Instant
+  /// `adopt`'s seams, nil in the app: making a context's driver, and sweeping one.
+  private let makeDriver: (@Sendable (String?) throws -> ContainerHostDriver)?
+  private let sweepDriver: (@Sendable (ContainerHostDriver, Set<UUID>) async -> [String])?
 
   init(
     connectHost: (@Sendable (HostID) async throws -> Void)? = nil,
     isConnected: (@Sendable (HostID) async -> Bool)? = nil,
-    now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
+    now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+    makeDriver: (@Sendable (String?) throws -> ContainerHostDriver)? = nil,
+    sweepDriver: (@Sendable (ContainerHostDriver, Set<UUID>) async -> [String])? = nil
   ) {
     self.connectHost = connectHost
     self.isConnected = isConnected
     self.now = now
+    self.makeDriver = makeDriver
+    self.sweepDriver = sweepDriver
   }
 
   /// How long a failed connect answers for its host before another is tried. The status sweep and
@@ -346,14 +355,18 @@ final class RemoteHosts: @unchecked Sendable {
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "RemoteWorkrooms")
 
-  /// The driver, made on first use: it needs Docker and this Mac's ssh key.
-  func driver() throws -> ContainerHostDriver {
+  /// The driver for Docker `context`, made on first use: it needs Docker and this Mac's ssh key.
+  /// nil names no context, as every driver did before #309. Each driver writes its hosts' ssh
+  /// files under their own IDs, so they share one directory.
+  func driver(context: String? = nil) throws -> ContainerHostDriver {
     try lock.withLock {
-      if let made { return made }
-      let driver = ContainerHostDriver(
-        hosts: [:], directory: Self.directory.appendingPathComponent("hosts", isDirectory: true),
-        provisioning: try Self.provisioning())
-      made = driver
+      if let made = made[context] { return made }
+      let driver =
+        try makeDriver?(context)
+        ?? ContainerHostDriver(
+          hosts: [:], directory: Self.directory.appendingPathComponent("hosts", isDirectory: true),
+          provisioning: try Self.provisioning(context: context))
+      made[context] = driver
       return driver
     }
   }
@@ -375,14 +388,17 @@ final class RemoteHosts: @unchecked Sendable {
   /// so a launch with nothing recorded never reads config again for one.
   var sweepHeld: Bool { lock.withLock { held && !swept } }
 
-  /// The driver if something has already made it, for a pane, which must not probe Docker.
-  var existingDriver: ContainerHostDriver? { lock.withLock { made } }
+  /// The driver that holds host `id`, for a pane, which must not probe Docker: nil when no driver
+  /// made so far has it.
+  func existingDriver(holding id: UUID) -> ContainerHostDriver? {
+    lock.withLock { made.values.first { $0.record(of: .remote(id)) != nil } }
+  }
 
-  /// Takes on every host `projects` record, so their panes and services reach them after a
-  /// relaunch, then sweeps once per launch what carries this app's labels and no record names.
-  /// Does nothing, and never touches Docker, when nothing is recorded and nothing has been made.
-  /// `sweep: false` holds the sweep for a later call: a list with a delete in flight leaves out
-  /// hosts config still records (#296).
+  /// Takes on every host `projects` record, each into the driver for its Docker context, so their
+  /// panes and services reach them after a relaunch, then sweeps once per launch what carries this
+  /// app's labels and no record names. Does nothing, and never touches Docker, when nothing is
+  /// recorded and nothing has been made. `sweep: false` holds the sweep for a later call: a list
+  /// with a delete in flight leaves out hosts config still records (#296).
   func adopt(_ projects: [Project], sweep: Bool = true) {
     let descriptors =
       projects.compactMap(\.host) + projects.flatMap { $0.workrooms.compactMap(\.host) }
@@ -391,36 +407,62 @@ final class RemoteHosts: @unchecked Sendable {
       $0.driver == RemoteWorkrooms.containerDriver
         && $0.provisioner == RemoteWorkrooms.provisioner
     }
-    guard !recorded.isEmpty || existingDriver != nil else { return }
-    let driver: ContainerHostDriver
-    do { driver = try self.driver() } catch {
-      Self.logger.error("remote hosts: \(error.localizedDescription, privacy: .public)")
-      return
-    }
-    for descriptor in recorded where !descriptor.isDestroyed {
-      guard let id = descriptor.id, let record = descriptor.container,
-        driver.record(of: .remote(id)) == nil
-      else { continue }
-      do { try driver.adopt(id, record) } catch {
-        Self.logger.error("adopting host \(id, privacy: .public): \(error, privacy: .public)")
+    let already = lock.withLock { Set(made.keys) }
+    guard !recorded.isEmpty || !already.isEmpty else { return }
+    // A descriptor with no container record yet goes to the driver that names no context, where the
+    // one driver before #309 would have had it.
+    let contexts = already.union(recorded.map { $0.container?.context })
+    var drivers: [ContainerHostDriver] = []
+    for context in contexts {
+      let driver: ContainerHostDriver
+      do { driver = try self.driver(context: context) } catch {
+        Self.logger.error("remote hosts: \(error.localizedDescription, privacy: .public)")
+        return
+      }
+      drivers.append(driver)
+      for descriptor in recorded
+      where !descriptor.isDestroyed && descriptor.container?.context == context {
+        guard let id = descriptor.id, let record = descriptor.container,
+          driver.record(of: .remote(id)) == nil
+        else { continue }
+        do { try driver.adopt(id, record) } catch {
+          Self.logger.error("adopting host \(id, privacy: .public): \(error, privacy: .public)")
+        }
       }
     }
     guard claimSweep(allowed: sweep) else { return }
+    // Every driver keeps every recorded host, not only its own: two contexts can name one daemon
+    // (the nil driver's current context and that context by name), and a sweep that kept only its
+    // own hosts would remove the other's, labelled as this build's and old enough.
     let known = Set(recorded.compactMap(\.id))
+    let sweep = sweepDriver ?? { await $0.sweep(keeping: $1) }
     Task.detached(priority: .utility) {
-      for failure in await driver.sweep(keeping: known) {
-        Self.logger.error("remote host sweep: \(failure, privacy: .public)")
+      for driver in drivers {
+        for failure in await sweep(driver, known) {
+          Self.logger.error("remote host sweep: \(failure, privacy: .public)")
+        }
       }
     }
   }
 
-  /// The sequence's environment over the driver, signed in as this Mac.
+  /// The Docker context a new workroom of a project with `base` goes in (#309): its base's, since
+  /// it is derived from the base on that daemon, or for a project with no base yet the context the
+  /// CLI would use now, which the new base is then pinned to. nil follows the environment, as
+  /// every host made before #309 does.
+  func context(forBase base: HostDescriptor?) async throws -> String? {
+    if let base, base.id != nil { return base.container?.context }
+    return try await driver(context: nil).currentContext()
+  }
+
+  /// The sequence's environment over Docker `context`'s driver, signed in as this Mac.
   @MainActor
-  func environment() throws -> (ContainerHostDriver, RemoteProvisioning.Environment) {
+  func environment(context: String?) throws -> (
+    ContainerHostDriver, RemoteProvisioning.Environment
+  ) {
     guard let client = BrokerSession.shared.client() else {
       throw RemoteWorkrooms.Failure.signedOut
     }
-    let driver = try driver()
+    let driver = try driver(context: context)
     var environment = RemoteProvisioning.Environment(
       driver: driver, agentSocket: RemoteWorkrooms.agentSocket, client: client)
     #if DEBUG
@@ -441,7 +483,16 @@ final class RemoteHosts: @unchecked Sendable {
   @MainActor
   func environment(toDelete hosts: [HostDescriptor]) throws -> RemoteProvisioning.Environment? {
     guard try RemoteWorkrooms.checkDeletable(hosts) else { return nil }
-    let (driver, environment) = try environment()
+    // One environment has one driver, so one context. A project's workrooms are derived from its
+    // base, on its daemon, so the hosts of one delete share it.
+    let contexts = Set(
+      hosts.filter(RemoteWorkrooms.isLive).compactMap(\.container).map(\.context))
+    guard contexts.count <= 1 else {
+      throw HostDriverError.invalidConfiguration(
+        "these hosts are in different Docker contexts: "
+          + contexts.map { $0 ?? "(current)" }.sorted().joined(separator: ", "))
+    }
+    let (driver, environment) = try environment(context: contexts.first ?? nil)
     // Taking a box down needs it on the driver, whatever a reload adopted: with previews off it
     // adopted nothing, and the box would read as unknown.
     for host in hosts where RemoteWorkrooms.isLive(host) {
@@ -485,7 +536,7 @@ final class RemoteHosts: @unchecked Sendable {
     }
     do {
       let connect =
-        try connectHost ?? { [driver = try driver()] in
+        try connectHost ?? { [driver = try heldDriver(host)] in
           try await self.connect($0, driver: driver)
         }
       let task = lock.withLock { () -> Task<Void, Error> in
@@ -507,6 +558,14 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
+  /// The driver holding `host`, which a reload adopted it into (`adopt`) or which made it.
+  private func heldDriver(_ host: HostID) throws -> ContainerHostDriver {
+    guard case .remote(let id) = host, let driver = existingDriver(holding: id) else {
+      throw HostDriverError.unknownHost(host)
+    }
+    return driver
+  }
+
   /// `Application Support/Workroom/<bundle id>/remote`.
   static var directory: URL {
     FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -523,7 +582,7 @@ final class RemoteHosts: @unchecked Sendable {
     "/Applications/Docker.app/Contents/Resources/bin/docker",
   ]
 
-  private static func provisioning() throws -> ContainerHostDriver.Provisioning {
+  private static func provisioning(context: String?) throws -> ContainerHostDriver.Provisioning {
     guard
       let runtime = runtimeCandidates.first(where: {
         FileManager.default.isExecutableFile(atPath: $0)
@@ -537,7 +596,7 @@ final class RemoteHosts: @unchecked Sendable {
         .trimmingCharacters(in: .whitespacesAndNewlines),
       agentSocket: RemoteWorkrooms.agentSocket,
       // Per build, so a Dev app's sweep never takes a Nightly app's hosts, nor the other way.
-      labels: ["workroom.provisioner=\(RemoteWorkrooms.provisioner)"])
+      labels: ["workroom.provisioner=\(RemoteWorkrooms.provisioner)"], context: context)
   }
 
   /// This Mac's ssh key for its remote hosts, in `directory`, made the first time: ed25519, no
