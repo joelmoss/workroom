@@ -255,6 +255,9 @@ pub struct TakenScreen {
     pub record: Vec<u8>,
 }
 
+/// How long a session's processes get to exit on SIGHUP before `terminate` sends SIGKILL.
+pub const SIGHUP_GRACE: Duration = Duration::from_millis(500);
+
 /// Owns every live session. Cheap to clone; all clones share one map.
 #[derive(Clone, Default)]
 pub struct SessionStore {
@@ -1371,7 +1374,7 @@ fn terminate(ptys: &[&Arc<Pty>]) {
     // Only the roots are our children, so only they can be reaped; a descendant's exit is observed
     // by probing instead. Both are checked, because the point is that nothing is left.
     let mut unreaped: Vec<i32> = roots.clone();
-    for _ in 0..50 {
+    for _ in 0..(SIGHUP_GRACE.as_millis() / 10) {
         unreaped.retain(|pid| {
             let mut status = 0;
             let rc = unsafe { libc::waitpid(*pid, &mut status, libc::WNOHANG) };

@@ -660,8 +660,10 @@ pub fn exit_code(status: i32) -> i32 {
 /// store and no connections could otherwise end the agent between the SIGHUP and the SIGKILL.
 static KILLS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
-/// Whether a kill is still running on its own thread. Also consulted by a hand-off, which must not
-/// exec over one, and by `serve --stdio` before it exits.
+/// Whether a kill is still running on its own thread. Also consulted by a hand-off, which refuses
+/// while one is (a kill that arrives after that check waits on `TERMINATING`, so the session is
+/// carried through the exec intact and that kill goes unanswered), and by `serve --stdio` before
+/// it exits.
 pub fn is_killing() -> bool {
     KILLS_IN_FLIGHT.load(Ordering::Acquire) > 0
 }
