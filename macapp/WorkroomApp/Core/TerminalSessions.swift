@@ -1698,7 +1698,8 @@ final class TerminalSessions: ObservableObject {
       // Not a remote session: a remote target is reaped as its workroom is deleted, whose teardown
       // destroys the host and the sessions with it. Asking the host first could only hold the
       // delete up, for as long as a request on a link that died while the Mac slept (#283). Its
-      // registration goes, so the pane's session is not held for the life of the app.
+      // registration goes, so the pane's session is not held for the life of the app. A teardown
+      // that fails leaves the host, and these sessions, running; a later delete takes them down.
       if case .terminal(let state) = tab.content, let sessionID = state.sessionID,
         sessionService.isRemote(sessionID)
       {
