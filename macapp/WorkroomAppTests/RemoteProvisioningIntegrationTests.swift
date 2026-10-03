@@ -781,6 +781,86 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       try onBox("git -C /srv/origin.git rev-parse refs/heads/wr-pushed"), "\(pushed)\nexit=0")
   }
 
+  /// Signed out of Codaset (#309), a local container's base clones with the Mac's own GitHub token,
+  /// its workroom never enrols, and git in the workroom gets credentials through the Mac's relay:
+  /// a push works while the app is connected and says so when it isn't. The fixture's GitHub takes
+  /// its clone token, which stands in for the Mac's `gh`.
+  @MainActor
+  func testARelayedWorkroomPushesThroughTheMacWithoutEnrolling() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let agent = fixture.agent
+    let socket = fixture.provisioning.agentSocket
+    let token = Self.token
+    let environment = RemoteProvisioning.Environment(
+      driver: driver, agentSocket: socket, client: nil, gitHubToken: { token },
+      connect: { host in
+        try await AgentBootstrap.connect(
+          host: host, driver: driver, socket: socket,
+          agent: { $0 == "aarch64" || $0 == "x86_64" ? agent : nil }, handOff: false,
+          resources: nil)
+      })
+    let base = try await RemoteProvisioning.buildBase(
+      repository: "o/r", cloneURL: "https://github.com/origin.git", path: Self.path,
+      in: environment, record: { _ in })
+    cleanups.append { try? await driver.destroy(.remote(base.host)) }
+    XCTAssertEqual(base.relayed, true)
+    let instance = try await RemoteProvisioning.derive(
+      from: base, workroom: UUID(), branch: "wr-relayed", in: environment)
+    cleanups.append { try? await driver.destroy(instance.host) }
+    XCTAssertNil(instance.grantID, "a relayed workroom enrolled")
+
+    // The relay, over a connection of its own as the app's registry holds one.
+    let generation = UUID()
+    let relay = CredentialRelay(
+      answer: { _ in "username=x-access-token\npassword=\(token)\n" },
+      transport: .init(
+        forwarding: { host in
+          let connection = try await AgentVCSConnection.connect(
+            host: host, stream: try await driver.openStream(to: host))
+          return (.init(host: host, generation: generation), try connection.forwarding())
+        },
+        updates: { host in
+          AsyncStream {
+            $0.yield(.init(lease: .init(host: host, generation: generation), status: .connected))
+          }
+        }))
+    try await relay.install(
+      on: instance.host, driver: driver, agentBinary: AgentBootstrap.binary(besideSocket: socket))
+
+    guard case .remote(let id) = instance.host else { return XCTFail("not a remote host") }
+    let container = "workroom-\(id.uuidString.lowercased())"
+    func onBox(_ script: String) throws -> String {
+      try docker(
+        runtime,
+        [
+          "exec", "--user", "workroom", "--env", "HOME=/home/workroom", "--workdir", Self.path,
+          container, "sh", "-c", script + "; echo exit=$?",
+        ])
+    }
+    XCTAssertEqual(
+      try onBox("test -e \(socket.replacingOccurrences(of: "agent.sock", with: "broker.json"))"),
+      "exit=1", "a relayed workroom has a broker enrolment")
+    _ = try onBox(
+      "git -c user.name=W -c user.email=w@example.com commit -q --allow-empty -m relayed")
+    let push = try onBox("git push -q origin HEAD 2>&1")
+    XCTAssertTrue(push.hasSuffix("exit=0"), push)
+    XCTAssertTrue(
+      try onBox("git -C /srv/origin.git rev-parse --verify -q refs/heads/wr-relayed")
+        .hasSuffix("exit=0"))
+
+    // With the relay gone, git is told why rather than asked for a password.
+    relay.close(id)
+    var failed = ""
+    for _ in 0..<50 {
+      failed = try onBox("git -c credential.interactive=false push -q origin HEAD:wr-later 2>&1")
+      if !failed.hasSuffix("exit=0") { break }
+      try await Task.sleep(for: .milliseconds(200))
+    }
+    XCTAssertTrue(failed.contains("isn't connected to this workroom"), failed)
+  }
+
   /// A workroom branches from the remote's default branch as it is now, not as it was when the
   /// base was cloned: `fetch` never moves `origin/HEAD`, and once `--prune` drops the old default
   /// it names nothing.

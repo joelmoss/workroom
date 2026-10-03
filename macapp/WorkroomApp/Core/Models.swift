@@ -41,6 +41,12 @@ struct HostDescriptor: Codable, Hashable {
   /// context, each a whole base descriptor. nil for a project with one base, whose descriptor is
   /// the base itself, as every project before #309 has it.
   var bases: [HostDescriptor]? = nil
+  /// `relay` for a local container base or workroom whose git credentials come from the Mac's
+  /// relay instead of the broker (#309); nil for the broker.
+  var credentials: String? = nil
+
+  /// Whether git's credentials on this host come through the Mac's relay (#309).
+  var isRelayed: Bool { credentials == "relay" }
 
   /// The bases a project's descriptor records.
   var allBases: [HostDescriptor] { bases ?? [self] }
@@ -48,7 +54,7 @@ struct HostDescriptor: Codable, Hashable {
   var isDestroyed: Bool { state == "destroyed" }
 
   enum CodingKeys: String, CodingKey {
-    case state, driver, provisioner, id, repository, path, container, bases
+    case state, driver, provisioner, id, repository, path, container, bases, credentials
     case grantID = "grant_id"
     case workroomID = "workroom_id"
     case cloneURL = "clone_url"
@@ -58,7 +64,7 @@ struct HostDescriptor: Codable, Hashable {
     state: String? = nil, driver: String? = nil, provisioner: String? = nil, id: UUID? = nil,
     grantID: String? = nil, workroomID: UUID? = nil, repository: String? = nil,
     cloneURL: String? = nil, path: String? = nil, container: ContainerHostDriver.Record? = nil,
-    bases: [HostDescriptor]? = nil
+    bases: [HostDescriptor]? = nil, credentials: String? = nil
   ) {
     self.state = state
     self.driver = driver
@@ -71,6 +77,7 @@ struct HostDescriptor: Codable, Hashable {
     self.path = path
     self.container = container
     self.bases = bases
+    self.credentials = credentials
   }
 
   init(from decoder: Decoder) throws {
@@ -86,12 +93,15 @@ struct HostDescriptor: Codable, Hashable {
     path = try? fields?.decodeIfPresent(String.self, forKey: .path)
     container = try? fields?.decodeIfPresent(ContainerHostDriver.Record.self, forKey: .container)
     bases = try? fields?.decodeIfPresent([HostDescriptor].self, forKey: .bases)
+    credentials = try? fields?.decodeIfPresent(String.self, forKey: .credentials)
   }
 
   /// A project's base, when the descriptor records a whole one.
   var base: RemoteProvisioning.Base? {
     guard let id, let repository, let cloneURL, let path else { return nil }
-    return RemoteProvisioning.Base(host: id, repository: repository, cloneURL: cloneURL, path: path)
+    return RemoteProvisioning.Base(
+      host: id, repository: repository, cloneURL: cloneURL, path: path,
+      relayed: isRelayed ? true : nil)
   }
 }
 

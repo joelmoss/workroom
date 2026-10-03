@@ -784,7 +784,7 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(
       RemoteWorkrooms.unavailability(
         of: .docker, installed: true, appleSilicon: true, macOS26: true, signedIn: false),
-      "sign in to Codaset in Settings")
+      "sign in to Codaset or run gh auth login")
   }
 
   /// A driver takes on only a host of its own context: its commands would not reach another's.
