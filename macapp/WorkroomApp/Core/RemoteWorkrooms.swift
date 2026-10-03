@@ -356,13 +356,25 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
+  /// Whether this call runs the launch's one sweep. A call that isn't allowed leaves it for the
+  /// next.
+  func claimSweep(allowed: Bool) -> Bool {
+    guard allowed else { return false }
+    return lock.withLock {
+      defer { swept = true }
+      return !swept
+    }
+  }
+
   /// The driver if something has already made it, for a pane, which must not probe Docker.
   var existingDriver: ContainerHostDriver? { lock.withLock { made } }
 
   /// Takes on every host `projects` record, so their panes and services reach them after a
   /// relaunch, then sweeps once per launch what carries this app's labels and no record names.
   /// Does nothing, and never touches Docker, when nothing is recorded and nothing has been made.
-  func adopt(_ projects: [Project]) {
+  /// `sweep: false` holds the sweep for a later call: a list with a delete in flight leaves out
+  /// hosts config still records (#296).
+  func adopt(_ projects: [Project], sweep: Bool = true) {
     let descriptors =
       projects.compactMap(\.host) + projects.flatMap { $0.workrooms.compactMap(\.host) }
     // Another build's hosts take another key: adopted here, they would refuse every login.
@@ -384,11 +396,7 @@ final class RemoteHosts: @unchecked Sendable {
         Self.logger.error("adopting host \(id, privacy: .public): \(error, privacy: .public)")
       }
     }
-    let shouldSweep = lock.withLock {
-      defer { swept = true }
-      return !swept
-    }
-    guard shouldSweep else { return }
+    guard claimSweep(allowed: sweep) else { return }
     let known = Set(recorded.compactMap(\.id))
     Task.detached(priority: .utility) {
       for failure in await driver.sweep(keeping: known) {

@@ -3054,7 +3054,12 @@ final class AppStore: ObservableObject {
     // when the teardown ends.
     let fresh = applyingDeletionTombstones(sorted)
     // Before publishing, so a remote workroom's panes find its host when they mount (#253).
-    if RemoteWorkrooms.isEnabled { RemoteHosts.shared.adopt(fresh) }
+    // No sweep while a delete is in flight: `fresh` leaves out hosts config still records, and a
+    // delete that fails keeps them (#296).
+    if RemoteWorkrooms.isEnabled {
+      RemoteHosts.shared.adopt(
+        fresh, sweep: deletingProjects.isEmpty && deletingWorkrooms.isEmpty)
+    }
     let acceptedPaths = Set(fresh.flatMap { [$0.path] + $0.workrooms.map(\.path) })
     RepositoryRouter.shared.replaceLocal(
       registrations.filter {

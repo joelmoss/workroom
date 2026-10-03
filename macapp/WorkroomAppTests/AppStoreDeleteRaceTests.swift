@@ -16,9 +16,13 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
   var allowDelete = false
   /// When true, the released `delete` throws — modelling a failed teardown (workroom stays on disk).
   var deleteFails = false
+  /// What a released `deleteProject` hands back to move to the Bin.
+  var trashPaths: [URL] = []
+  private(set) var listCalls = 0
 
   func list(warnings: String, project: String?) async throws -> ListResponse {
-    ListResponse(projects: listResult, workroomsDir: nil, configPath: nil)
+    listCalls += 1
+    return ListResponse(projects: listResult, workroomsDir: nil, configPath: nil)
   }
 
   func addProject(_ path: String, create: Bool) async throws -> String { path }
@@ -45,7 +49,7 @@ private final class DeleteRaceFakeCLI: WorkroomCLIProtocol {
     deleteStarted = true
     while !allowDelete { await Task.yield() }
     if deleteFails { throw WorkroomCLIError.timedOut }
-    return []
+    return trashPaths
   }
 }
 
@@ -59,6 +63,14 @@ private final class PrepareGate: @unchecked Sendable {
     calls += 1
     return calls
   }
+}
+
+/// Records what each trash request saw: whether the project was still tombstoned, and how many
+/// `list` reads had started.
+private final class OrderTrasher: Trashing {
+  var observe: () -> (tombstoned: Bool, listCalls: Int) = { (false, 0) }
+  private(set) var seen: [(tombstoned: Bool, listCalls: Int)] = []
+  func trash(_ url: URL) throws { seen.append(observe()) }
 }
 
 @MainActor
@@ -334,6 +346,34 @@ final class AppStoreDeleteRaceTests: XCTestCase {
 
     fake.allowDelete = true
     await waitUntil({ store.deletingProjects.isEmpty }, "tombstone should clear after teardown")
+  }
+
+  /// `--from-disk` moves the returned directories to the Bin while the project is still tombstoned
+  /// and before the success path's reload suspends, so nothing can re-register them in between.
+  func testFromDiskTrashesBeforeTheReloadAndTheLift() async {
+    let a = workroom("a")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a])]
+    fake.trashPaths = [URL(fileURLWithPath: projectPath)]
+    let store = makeStore(fake)
+    let trasher = OrderTrasher()
+    trasher.observe = { [unowned store] in
+      (store.deletingProjects.contains(self.projectPath), fake.listCalls)
+    }
+    store.trasher = trasher
+    await store.reload()
+
+    store.deleteProject(project([a]), scope: .fromDisk)
+    await waitUntil({ fake.deleteStarted }, "teardown should start")
+    let readsBefore = fake.listCalls
+    fake.listResult = []
+    fake.allowDelete = true
+    await waitUntil({ store.deletingProjects.isEmpty }, "tombstone should clear after teardown")
+
+    XCTAssertEqual(trasher.seen.count, 1)
+    XCTAssertEqual(trasher.seen.first?.tombstoned, true, "trashed while still tombstoned")
+    XCTAssertEqual(trasher.seen.first?.listCalls, readsBefore, "trashed before the reload began")
+    XCTAssertTrue(store.projects.isEmpty)
   }
 
   /// A FAILED Delete Project lifts the tombstone before reloading, so the project reappears.
