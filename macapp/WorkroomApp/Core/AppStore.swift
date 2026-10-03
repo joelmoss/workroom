@@ -3136,13 +3136,14 @@ final class AppStore: ObservableObject {
   }
 
   /// Runs the remote-host sweep a reload held back while a delete was in flight (#296), once the
-  /// last tombstone lifts. A failed delete's reload does this itself. `adopt` takes on only hosts
-  /// it doesn't hold, and sweeps at most once per launch.
-  private func runHeldHostSweep() {
-    guard RemoteWorkrooms.isEnabled, deletingProjects.isEmpty, deletingWorkrooms.isEmpty else {
-      return
-    }
-    RemoteHosts.shared.adopt(projects)
+  /// last tombstone lifts. It reads config afresh rather than trusting `projects`, which can still
+  /// hide a failed sibling delete's hosts when that delete's own reload failed. A failed delete's
+  /// reload does this itself, and `apply` holds the sweep again if another delete has begun.
+  private func runHeldHostSweep() async {
+    guard RemoteWorkrooms.isEnabled, deletingProjects.isEmpty, deletingWorkrooms.isEmpty,
+      RemoteHosts.shared.sweepPending
+    else { return }
+    await load(warnings: "fast", surfaceErrors: false)
   }
 
   /// Remove projects and workrooms with an in-flight deletion from the accepted listing. The same
@@ -3825,7 +3826,7 @@ final class AppStore: ObservableObject {
         // Teardown persisted (the workroom is gone from config): drop the tombstone. Future `list`
         // snapshots no longer include it, and the optimistic removal already matches (issue #116).
         deletingWorkrooms.remove(targetID)
-        runHeldHostSweep()
+        await runHeldHostSweep()
       } catch {
         // Teardown failed → the workroom still exists. Clear the tombstone BEFORE reloading so the
         // reload's `apply` doesn't filter it out — it must reappear in the sidebar.
@@ -4068,7 +4069,7 @@ final class AppStore: ObservableObject {
           // Quiet: a failed `list` must not report a delete that succeeded as an error.
           await self.load(warnings: "fast", surfaceErrors: false)
           self.deletingProjects.remove(project.path)
-          self.runHeldHostSweep()
+          await self.runHeldHostSweep()
         } catch {
           // Before the reload, so the project (still in config) reappears.
           self.deletingProjects.remove(project.path)

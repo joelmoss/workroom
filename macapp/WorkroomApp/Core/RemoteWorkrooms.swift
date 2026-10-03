@@ -366,6 +366,9 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
+  /// Whether the launch's one sweep has yet to run.
+  var sweepPending: Bool { lock.withLock { !swept } }
+
   /// The driver if something has already made it, for a pane, which must not probe Docker.
   var existingDriver: ContainerHostDriver? { lock.withLock { made } }
 
