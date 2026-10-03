@@ -124,6 +124,20 @@ final class AppleContainerIntegrationTests: XCTestCase {
     let up = try await onHost(driver, instance, "echo up")
     XCTAssertEqual(up, "up")
 
+    // A base left stopped (a reboot: Apple restarts nothing) is still derived from, and left
+    // stopped.
+    guard case .remote(let stoppedBase) = base else { return XCTFail("\(base)") }
+    try cli(["stop", ContainerHostDriver.containerName(stoppedBase)])
+    let second = try await driver.deriveFromBase(base)
+    let carried = try await onHost(driver, second, "cat ~/marker")
+    XCTAssertEqual(carried, "carried")
+    let state = try AppleContainerCLI.objects(
+      cli(["inspect", ContainerHostDriver.containerName(stoppedBase)])
+    ).first.flatMap(AppleContainerCLI.state)
+    XCTAssertEqual(state, "stopped")
+    try await driver.destroy(second)
+    try await driver.startIfStopped(base)
+
     // Both are recorded hosts: the sweep takes neither, however old.
     guard case .remote(let baseID) = base else { return XCTFail("\(base)") }
     let failures = await driver.sweep(keeping: [baseID, id], grace: 0)

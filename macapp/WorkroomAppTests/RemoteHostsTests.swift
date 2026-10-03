@@ -614,7 +614,7 @@ final class RemoteHostsTests: XCTestCase {
           "config": [
             "config": [
               "Entrypoint": ["/usr/local/bin/entrypoint.sh"], "Cmd": ["serve", "a b"],
-              "Env": ["PATH=/usr/bin:/bin", #"QUOTED=say "hi" \ bye"#], "WorkingDir": "/srv",
+              "Env": ["PATH=/usr/bin:/bin", #"QUOTED=say "hi" \ $HOME"#], "WorkingDir": "/srv/$x",
               "User": "",
             ]
           ],
@@ -629,8 +629,8 @@ final class RemoteHostsTests: XCTestCase {
       FROM scratch
       ADD rootfs.tar /
       ENV PATH="/usr/bin:/bin"
-      ENV QUOTED="say \\"hi\\" \\\\ bye"
-      WORKDIR /srv
+      ENV QUOTED="say \\"hi\\" \\\\ \\$HOME"
+      WORKDIR /srv/\\$x
       ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
       CMD ["serve","a b"]
 
@@ -638,6 +638,53 @@ final class RemoteHostsTests: XCTestCase {
     var broken = process
     broken.env.append("BAD=line\nbreak")
     XCTAssertThrowsError(try AppleContainerCLI.dockerfile(broken))
+  }
+
+  /// What each container gets: Apple's own default is a 1 GB VM, too small for a compiler or an
+  /// agent, so it gets half the cores and a quarter of the memory, between 2 and 8 GB, unless set.
+  /// Docker's containers share Docker's VM and get nothing unless set.
+  func testContainerResourcesDefaultForAppleOnly() {
+    let gb: UInt64 = 1_073_741_824
+    let apple = { (cores: Int, memory: UInt64) in
+      RemoteHosts.resources(
+        for: .apple, cpus: nil, memory: nil, cores: cores, physicalMemory: memory)
+    }
+    XCTAssertTrue(apple(10, 32 * gb) == (5, "8G"))
+    XCTAssertTrue(apple(8, 16 * gb) == (4, "4G"))
+    XCTAssertTrue(apple(2, 4 * gb) == (2, "2G"))
+    XCTAssertTrue(
+      RemoteHosts.resources(
+        for: .apple, cpus: 6, memory: "12G", cores: 8, physicalMemory: 16 * gb) == (6, "12G"))
+    XCTAssertTrue(
+      RemoteHosts.resources(for: .docker, cpus: nil, memory: nil, cores: 8, physicalMemory: 16 * gb)
+        == (nil, nil))
+  }
+
+  /// A derive a crash cut short leaves its staged disk in the temporary folder; the sweep removes
+  /// one gone quiet, and leaves one still being written.
+  func testAppleSweepRemovesStaleDeriveFolders() async throws {
+    let temp = FileManager.default.temporaryDirectory
+    let stale = temp.appendingPathComponent(
+      ContainerHostDriver.deriveDirectoryPrefix + "stale-\(UUID())")
+    let live = temp.appendingPathComponent(
+      ContainerHostDriver.deriveDirectoryPrefix + "live-\(UUID())")
+    for directory in [stale, live] {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      try Data("disk".utf8).write(to: directory.appendingPathComponent("rootfs.tar"))
+    }
+    defer { for d in [stale, live] { try? FileManager.default.removeItem(at: d) } }
+    let old = Date(timeIntervalSinceNow: -3600)
+    for url in [stale, stale.appendingPathComponent("rootfs.tar"), live] {
+      try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: url.path)
+    }
+    let (runtime, _) = try scriptedRuntime(
+      """
+      "list --all --format json") printf '[]' ;;
+      "image list --format json") printf '[]' ;;
+      """)
+    _ = await Self.driver(runtime: runtime, context: nil, dialect: .apple).sweep(keeping: [])
+    XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path), "a stale folder stayed")
+    XCTAssertTrue(FileManager.default.fileExists(atPath: live.path), "a live derive's was taken")
   }
 
   /// Only a base is derived from. An Apple instance records no image, as a base doesn't, so a

@@ -437,6 +437,8 @@ final class RemoteHosts: @unchecked Sendable {
 
   /// The drivers made so far.
   private var made: [DriverKey: ContainerHostDriver] = [:]
+  /// The runtime each host config records is on, whether or not a driver holds it.
+  private var runtimes: [UUID: RemoteWorkrooms.Runtime] = [:]
   private var swept = false
   /// A call reached the sweep while a delete was in flight and left it for later (#296).
   private var held = false
@@ -535,7 +537,12 @@ final class RemoteHosts: @unchecked Sendable {
     }
     // Only a base is derived from; on Apple nothing in its record says which a host is.
     let bases = Set(projects.flatMap { $0.host?.allBases.compactMap(\.id) ?? [] })
-    let already = lock.withLock { Set(made.keys) }
+    let already = lock.withLock {
+      for descriptor in recorded {
+        if let id = descriptor.id, let key = DriverKey(descriptor) { runtimes[id] = key.runtime }
+      }
+      return Set(made.keys)
+    }
     guard !recorded.isEmpty || !already.isEmpty else { return }
     // A descriptor with no container record yet goes to its runtime's driver that names no
     // context, where the one driver before #309 would have had it.
@@ -614,7 +621,7 @@ final class RemoteHosts: @unchecked Sendable {
   /// signed out or without a runtime they need. Refuses one another build made
   /// (`RemoteWorkrooms.checkDeletable`).
   @MainActor
-  func environment(toDelete hosts: [HostDescriptor]) throws -> Deletion? {
+  func environment(toDelete hosts: [HostDescriptor], bases: Set<UUID> = []) throws -> Deletion? {
     guard try RemoteWorkrooms.checkDeletable(hosts) else { return nil }
     var environments: [DriverKey: RemoteProvisioning.Environment] = [:]
     for host in hosts where RemoteWorkrooms.isLive(host) {
@@ -625,7 +632,8 @@ final class RemoteHosts: @unchecked Sendable {
       let driver = try driver(key)
       guard let id = host.id, let record = host.container, driver.record(of: .remote(id)) == nil
       else { continue }
-      do { try driver.adopt(id, record) } catch {
+      // Whether it is a base sticks for the launch: a later create derives from it.
+      do { try driver.adopt(id, record, isBase: bases.contains(id)) } catch {
         Self.logger.error("adopting host \(id, privacy: .public): \(error, privacy: .public)")
       }
     }
@@ -715,6 +723,16 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
+  /// Whether `host`'s runtime is missing from this Mac, so nothing can be running on it: the
+  /// runtime config records it on, or with none recorded, every runtime.
+  func runtimeIsMissing(for host: HostID) -> Bool {
+    guard case .remote(let id) = host else { return false }
+    let runtime = lock.withLock { runtimes[id] }
+    return (runtime.map { [$0] } ?? RemoteWorkrooms.Runtime.allCases).allSatisfy {
+      Self.executable(for: $0) == nil
+    }
+  }
+
   /// The driver holding `host`, which a reload adopted it into (`adopt`) or which made it.
   private func heldDriver(_ host: HostID) throws -> ContainerHostDriver {
     guard case .remote(let id) = host, let driver = existingDriver(holding: id) else {
@@ -748,7 +766,23 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
+  /// What each container workroom on `runtime` gets (#309): the hidden settings, else for Apple's
+  /// runtime, whose own default is a 1 GB VM per container, half this Mac's cores and a quarter of
+  /// its memory, between 2 and 8 GB. Docker's containers share Docker's VM, which already bounds
+  /// them, so they get nothing unless set.
+  static func resources(
+    for runtime: RemoteWorkrooms.Runtime, cpus: Int? = Defaults[.containerCPUs],
+    memory: String? = Defaults[.containerMemory],
+    cores: Int = ProcessInfo.processInfo.activeProcessorCount,
+    physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory
+  ) -> (cpus: Int?, memory: String?) {
+    guard runtime == .apple else { return (cpus, memory) }
+    let gigabytes = min(max(Int(physicalMemory / 4 / 1_073_741_824), 2), 8)
+    return (cpus ?? max(2, cores / 2), memory ?? "\(gigabytes)G")
+  }
+
   private static func provisioning(_ target: DriverKey) throws -> ContainerHostDriver.Provisioning {
+    let resources = resources(for: target.runtime)
     guard let runtime = executable(for: target.runtime) else {
       throw target.runtime == .docker
         ? RemoteWorkrooms.Failure.noDocker : RemoteWorkrooms.Failure.noAppleContainer
@@ -762,7 +796,8 @@ final class RemoteHosts: @unchecked Sendable {
       agentSocket: RemoteWorkrooms.agentSocket,
       // Per build, so a Dev app's sweep never takes a Nightly app's hosts, nor the other way.
       labels: ["workroom.provisioner=\(RemoteWorkrooms.provisioner)"], context: target.context,
-      dialect: target.runtime == .docker ? .docker : .apple)
+      dialect: target.runtime == .docker ? .docker : .apple, cpus: resources.cpus,
+      memory: resources.memory)
   }
 
   /// This Mac's ssh key for its remote hosts, in `directory`, made the first time: ed25519, no
