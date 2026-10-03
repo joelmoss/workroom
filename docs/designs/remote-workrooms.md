@@ -9,7 +9,7 @@ Mode: Builder
 > **Note:** Workroom dropped Jujutsu (jj) support in #266. Passages here that describe jj
 > behaviour are a record of the design as it stood then, not of the current code.
 
-## Current Status — 2026-10-02
+## Current Status — 2026-10-03
 
 **Phase 4 is under way, and the app can now create, open and delete remote workrooms.** That works
 only in a Nightly or Dev build with the hidden `remoteWorkroomsPreview` setting, and only on the
@@ -18,7 +18,9 @@ descriptors in config (#249, PR #275, 2026-10-01); the credential broker service
 joelmoss/codaset#43, 2026-10-01) and its clients (#251, PR #263, 2026-09-30); portable derivation
 on the container driver (#252, PR #280, 2026-10-01); the boxd driver with portable derivation
 (#256, PR #281, 2026-10-02), which the app does not yet create on; and remote workrooms in the app
-(#253, PR #289, 2026-10-02). Follow-ups from #253's reviews are #283 to #288. The rest of Phase 4 is
+(#253, PR #289, 2026-10-02). Follow-ups from #253's reviews are #283 to #288; #283 (closing a
+remote pane ends its session on the host) is merged (PR #306, 2026-10-03), with its own follow-ups
+in #293, #297 and #304. The rest of Phase 4 is
 open: pane parity (#254), cross-machine reattach (#255), the lifecycle shim (#257), boxd live fork
 (#258) and the second real provider, exe.dev (#259). #260 is the gate: it runs the Success
 Criteria on two real providers, and the remote UI leaves Nightly only after they pass. The first
@@ -2829,7 +2831,10 @@ disagreement passes every test on either side alone while presenting as an empty
       being killed (its termination runs outside the store lock, with a SIGKILL sweep after a grace
       period) finishes before the exec, through the `TERMINATING` lock in `session.rs`. A shell
       that exits on its own is reaped and removed under the same lock, so the table never carries
-      a session whose shell is already gone. The carried
+      a session whose shell is already gone. A kill on a thread of its own (#283) writes its
+      acknowledgement after its shell is gone, outside that lock, and an exec then would lose it:
+      the hand-off waits for such kills out of its 0.5 s freeze budget, refuses if one is still
+      running, and checks again under the freeze. The carried
       duplicates are numbered 3 or above, so none lands on the new program's stdio.
     - *What does not cross:* the size owner, which is a connection's token (the first client to
       attach with a size takes it, as on a new session), and one row of scrollback per hand-off
