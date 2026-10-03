@@ -317,6 +317,8 @@ final class RemoteHosts: @unchecked Sendable {
   private let lock = NSLock()
   private var made: ContainerHostDriver?
   private var swept = false
+  /// A call reached the sweep while a delete was in flight and left it for later (#296).
+  private var held = false
   /// The connection attempt running for each host, which `ensureConnected` callers share.
   private var connecting: [HostID: Task<Void, Error>] = [:]
   /// When each host's last attempt failed, which answers for it for `retryAfter`.
@@ -359,15 +361,19 @@ final class RemoteHosts: @unchecked Sendable {
   /// Whether this call runs the launch's one sweep. A call that isn't allowed leaves it for the
   /// next.
   func claimSweep(allowed: Bool) -> Bool {
-    guard allowed else { return false }
     return lock.withLock {
+      guard allowed else {
+        held = held || !swept
+        return false
+      }
       defer { swept = true }
       return !swept
     }
   }
 
-  /// Whether the launch's one sweep has yet to run.
-  var sweepPending: Bool { lock.withLock { !swept } }
+  /// Whether a sweep was held back and has yet to run. False when no call has reached the sweep,
+  /// so a launch with nothing recorded never reads config again for one.
+  var sweepHeld: Bool { lock.withLock { held && !swept } }
 
   /// The driver if something has already made it, for a pane, which must not probe Docker.
   var existingDriver: ContainerHostDriver? { lock.withLock { made } }

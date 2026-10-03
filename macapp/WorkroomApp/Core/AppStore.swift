@@ -3141,7 +3141,7 @@ final class AppStore: ObservableObject {
   /// reload does this itself, and `apply` holds the sweep again if another delete has begun.
   private func runHeldHostSweep() async {
     guard RemoteWorkrooms.isEnabled, deletingProjects.isEmpty, deletingWorkrooms.isEmpty,
-      RemoteHosts.shared.sweepPending
+      RemoteHosts.shared.sweepHeld
     else { return }
     await load(warnings: "fast", surfaceErrors: false)
   }

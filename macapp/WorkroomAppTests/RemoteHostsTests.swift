@@ -157,10 +157,11 @@ final class RemoteHostsTests: XCTestCase {
   /// next, and only one call ever runs it.
   func testTheSweepIsHeldUntilAllowedThenRunsOnce() {
     let remote = RemoteHosts()
+    XCTAssertFalse(remote.sweepHeld, "nothing has reached the sweep, so nothing is owed")
     XCTAssertFalse(remote.claimSweep(allowed: false))
-    XCTAssertTrue(remote.sweepPending, "a held sweep is still owed")
+    XCTAssertTrue(remote.sweepHeld, "a held sweep is still owed")
     XCTAssertTrue(remote.claimSweep(allowed: true))
-    XCTAssertFalse(remote.sweepPending)
+    XCTAssertFalse(remote.sweepHeld)
     XCTAssertFalse(remote.claimSweep(allowed: true))
   }
 
