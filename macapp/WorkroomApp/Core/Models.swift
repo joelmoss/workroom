@@ -215,8 +215,15 @@ struct TerminalTarget: Identifiable, Hashable {
   /// Why a remote workroom's panes don't open here, when that isn't simply this build
   /// (`Workroom.remoteNote`).
   var remoteNote: String? = nil
+  /// What kind of host a remote workroom is on (`HostDescriptor.kindDescription`), for its icon's
+  /// tooltip (#309).
+  var hostKind: String? = nil
 
   var isMissing: Bool { unavailability != nil }
+
+  /// The glyph that marks a workroom: the network for one on a host, a container on this Mac or a
+  /// remote provider (#309), and a cube for one on this Mac itself. A root takes a house instead.
+  var workroomGlyph: String { isRemoteWorkroom ? "network" : "cube" }
 
   /// A remote workroom, reachable or not: its path names nothing on this Mac.
   var isRemoteWorkroom: Bool {
@@ -299,7 +306,7 @@ extension Workroom {
     TerminalTarget(
       id: TerminalTarget.workroomID(project: projectPath, name: name),
       title: displayName, path: path, unavailability: unavailability,
-      remoteHost: reachableHost, remoteNote: remoteNote)
+      remoteHost: reachableHost, remoteNote: remoteNote, hostKind: host?.kindDescription)
   }
 
   /// Why this remote workroom's panes don't open here, for one this build could otherwise reach:

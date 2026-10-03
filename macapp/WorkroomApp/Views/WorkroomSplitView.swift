@@ -499,9 +499,10 @@ private struct WorkroomPaneTitleBar: View {
     HStack(spacing: 6) {
       // Leading glyph mirrors the tab chip's: a house for a project root, a cube for a workroom
       // (`workroomName` is nil only for a root). Accent on the focused pane, muted otherwise.
-      Image(systemName: workroomName == nil ? "house" : "cube")
+      Image(systemName: workroomName == nil ? "house" : target.workroomGlyph)
         .font(.system(size: 10))
         .foregroundStyle(focused ? theme.tokens.accent : theme.tokens.fgMuted)
+        .help(workroomName == nil ? "" : target.hostKind ?? "")
       if let reason = target.terminalUnavailability {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 10))

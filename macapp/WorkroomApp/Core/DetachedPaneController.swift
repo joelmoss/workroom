@@ -116,16 +116,19 @@ final class DetachedPaneWindows {
   /// `title` also stays on the window for the Window menu and Mission Control, which read it even
   /// though the title bar itself draws the toolbar's label.
   func setTitle(
-    _ title: String, project: String, workroom: String?, for tabID: TerminalTab.ID
+    _ title: String, project: String, workroom: String?, glyph: String = "cube",
+    for tabID: TerminalTab.ID
   ) {
     windows[tabID]?.title = title
-    toolbarDelegates[tabID]?.update(title: title, project: project, workroom: workroom)
+    toolbarDelegates[tabID]?.update(
+      title: title, project: project, workroom: workroom, glyph: glyph)
   }
 
   /// Open a window for a freshly-detached pane. `origin` is a SCREEN point (the cursor at drop time);
   /// the window is placed so its top-left lands there, then nudged onto a visible screen.
   func open<Content: View>(
-    tabID: TerminalTab.ID, title: String, project: String, workroom: String?, origin: CGPoint?,
+    tabID: TerminalTab.ID, title: String, project: String, workroom: String?,
+    glyph: String = "cube", origin: CGPoint?,
     frame: NSRect? = nil, onCloseTab: @escaping () -> Void, onDock: @escaping () -> Void,
     content: () -> Content
   ) {
@@ -158,7 +161,7 @@ final class DetachedPaneWindows {
     // `.unifiedCompact` rather than `.unified`: the tall variant leaves a band of empty space under
     // the title, which on a window whose whole job is to show one pane is just less pane.
     let toolbarDelegate = ToolbarDelegate(
-      title: title, project: project, workroom: workroom, onDock: onDock)
+      title: title, project: project, workroom: workroom, glyph: glyph, onDock: onDock)
     let toolbar = NSToolbar(identifier: "detachedPane")
     toolbar.delegate = toolbarDelegate
     toolbar.showsBaselineSeparator = false
@@ -231,27 +234,30 @@ final class DetachedPaneWindows {
     private let label = NSTextField(labelWithString: "")
     private let onDock: () -> Void
 
-    init(title: String, project: String, workroom: String?, onDock: @escaping () -> Void) {
+    init(
+      title: String, project: String, workroom: String?, glyph: String,
+      onDock: @escaping () -> Void
+    ) {
       self.onDock = onDock
       super.init()
       label.attributedStringValue = Self.attributed(
-        title: title, project: project, workroom: workroom)
+        title: title, project: project, workroom: workroom, glyph: glyph)
       label.lineBreakMode = .byTruncatingTail
       label.setAccessibilityIdentifier("detachedPane.title")
     }
 
-    func update(title: String, project: String, workroom: String?) {
+    func update(title: String, project: String, workroom: String?, glyph: String) {
       label.attributedStringValue = Self.attributed(
-        title: title, project: project, workroom: workroom)
+        title: title, project: project, workroom: workroom, glyph: glyph)
     }
 
     /// `Terminal 2      ⌂ my-project · ▣ my-workroom` — the pane's name, then where it lives, in
     /// smaller secondary type. The glyphs are the sidebar's own vocabulary (`ProjectSidebar`: `house`
     /// for a project root, `cube` for a workroom), so the window names the pane the same way the
-    /// sidebar does.
-    private static func attributed(title: String, project: String, workroom: String?)
-      -> NSAttributedString
-    {
+    /// sidebar does, and a workroom on a host takes the network (`TerminalTarget.workroomGlyph`).
+    private static func attributed(
+      title: String, project: String, workroom: String?, glyph: String
+    ) -> NSAttributedString {
       let small = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
       let secondary: [NSAttributedString.Key: Any] = [
         .font: small, .foregroundColor: NSColor.secondaryLabelColor,
@@ -272,7 +278,7 @@ final class DetachedPaneWindows {
       result.append(NSAttributedString(string: project, attributes: secondary))
       if let workroom {
         result.append(NSAttributedString(string: " · ", attributes: secondary))
-        result.append(symbol("cube", font: small))
+        result.append(symbol(glyph, font: small))
         result.append(NSAttributedString(string: workroom, attributes: secondary))
       }
       return result

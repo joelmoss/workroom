@@ -216,6 +216,29 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertFalse(store.canCreateRemoteWorkroom(in: project))
   }
 
+  /// A workroom on a host, a container or a remote provider, wears the network glyph on its tab and
+  /// pane in place of the cube, with what kind of host it is as the tooltip; one on this Mac keeps
+  /// the cube (#309).
+  func testAWorkroomOnAHostWearsTheNetworkGlyph() {
+    let local = Workroom(name: "w", path: "/tmp/w", vcsName: "workroom/w", warnings: [])
+      .target(inProject: "/proj")
+    XCTAssertEqual(local.workroomGlyph, "cube")
+    XCTAssertNil(local.hostKind)
+    let docker = Workroom(
+      name: "d", path: "/home/workroom/r", vcsName: "workroom/d", warnings: [],
+      host: HostDescriptor(
+        driver: "container", provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+        container: Self.record(context: "orbstack"))
+    ).target(inProject: "/proj")
+    XCTAssertEqual(docker.workroomGlyph, "network")
+    XCTAssertEqual(docker.hostKind, "Docker container (orbstack) on this Mac")
+    let destroyed = Workroom(
+      name: "x", path: "/home/workroom/r", vcsName: "workroom/x", warnings: [],
+      host: HostDescriptor(state: "destroyed", driver: "apple-container")
+    ).target(inProject: "/proj")
+    XCTAssertEqual(destroyed.workroomGlyph, "network")
+  }
+
   /// A workroom's icon says what kind of host it is on (#309).
   func testAHostSaysWhatKindItIs() {
     let host = { (driver: String?, context: String?) in
