@@ -178,6 +178,26 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(started.calls.count, 2, "opening it again didn't start it")
   }
 
+  /// An opening whose start fails is spent too: the status sweep's later probes neither start the
+  /// container again nor skip its backoff.
+  func testAFailedOpeningIsSpent() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let starts = Connects()
+    starts.hold(false)
+    starts.fail(true)
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
+      startHost: { try await starts.connect($0) }, now: { connects.now })
+    let host = HostID.remote(UUID())
+    remote.activate(host)
+    do { try await remote.ensureConnected(host) } catch {}
+    XCTAssertEqual(starts.calls, 1)
+    do { try await remote.ensureConnected(host) } catch {}
+    XCTAssertEqual(starts.calls, 1, "a probe started the container again")
+    XCTAssertEqual(connects.calls, 0, "a probe skipped the backoff")
+  }
+
   /// A workroom opened while its container runs has nothing to start, and the opening is spent:
   /// stopped later, the status sweep's probe doesn't start it.
   func testOpeningARunningHostLeavesItStoppedLater() async throws {
@@ -973,6 +993,47 @@ final class RemoteHostsTests: XCTestCase {
     _ = await Self.driver(runtime: runtime, context: nil, dialect: .apple).sweep(keeping: [])
     XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path), "a stale folder stayed")
     XCTAssertTrue(FileManager.default.fileExists(atPath: live.path), "a live derive's was taken")
+  }
+
+  /// A derive whose stop of the base fails, as a cancelled create's does, starts the base again:
+  /// the stop may have taken effect all the same, and the base must not be left down.
+  func testAnAppleDeriveCutOffMidStopStartsTheBaseAgain() async throws {
+    let base = UUID()
+    let container = ContainerHostDriver.containerName(base)
+    let inspected: [[String: Any]] = [
+      [
+        "id": container, "status": ["state": "running"],
+        "configuration": ["image": ["reference": "host:1"]],
+      ]
+    ]
+    let image: [[String: Any]] = [
+      [
+        "variants": [
+          [
+            "platform": ["architecture": "arm64"],
+            "config": ["config": ["Entrypoint": ["/usr/local/bin/entrypoint.sh"]]],
+          ]
+        ]
+      ]
+    ]
+    let json = { (o: Any) in
+      String(decoding: try JSONSerialization.data(withJSONObject: o), as: UTF8.self)
+    }
+    let (runtime, log) = try scriptedRuntime(
+      """
+      "inspect \(container)") printf '%s' \(ContainerHostDriver.shellQuoted(try json(inspected))) ;;
+      "image inspect host:1") printf '%s' \(ContainerHostDriver.shellQuoted(try json(image))) ;;
+      "stop \(container)") exit 1 ;;
+      """)
+    let driver = Self.driver(runtime: runtime, context: nil, dialect: .apple)
+    try driver.adopt(base, Self.record(context: nil), isBase: true)
+    do {
+      _ = try await driver.deriveFromBase(.remote(base))
+      XCTFail("derived through a failed stop")
+    } catch {}
+    let made = try calls(log)
+    XCTAssertTrue(made.contains("stop \(container)"), "\(made)")
+    XCTAssertTrue(made.contains("start \(container)"), "the base was left stopped: \(made)")
   }
 
   /// Only a base is derived from. An Apple instance records no image, as a base doesn't, so a

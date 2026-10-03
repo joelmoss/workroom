@@ -275,6 +275,15 @@ final class CredentialRelayTests: XCTestCase {
     XCTAssertTrue(relay.respond(to: request).hasPrefix("error="))
   }
 
+  /// What gh prints and its exit status come back as they are, its input reaching it.
+  func testGhsOutputAndStatusComeBack() throws {
+    let ran = try CredentialRelay.run(
+      URL(fileURLWithPath: "/bin/sh"), ["-c", "cat; printf done; exit 3"], input: "asked\n",
+      environment: [:], name: "gh")
+    XCTAssertEqual(ran.status, 3)
+    XCTAssertEqual(ran.output, "asked\ndone")
+  }
+
   /// gh is bounded however it ends: one that exits while something it started keeps its output
   /// open, and one that ignores SIGTERM, each give the slot back by the deadline.
   func testGhIsBoundedWhateverItDoes() throws {

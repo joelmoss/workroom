@@ -165,7 +165,9 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       _ = try await runtime(
         apple ? ["image", "pull", "--arch", "arm64", image] : ["pull", image], timeout: 900,
         onOutput: report.map { report in
-          { data in if let fraction = progress.read(data) { report(fraction) } }
+          { data, stderr in
+            if let fraction = progress.read(data, stderr: stderr) { report(fraction) }
+          }
         })
       // The rest of the create (a clone, a derive) can take minutes, and isn't a download.
       report?(nil)
@@ -287,7 +289,14 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       try AppleContainerCLI.objects(
         try await runtime(["inspect", source.container], allLines: true)
       ).first.flatMap(AppleContainerCLI.state) == "running"
-    if wasRunning { _ = try await runtime(["stop", source.container]) }
+    if wasRunning {
+      do { _ = try await runtime(["stop", source.container]) } catch {
+        // Cut off mid-stop (a cancelled create ends its CLI), it may have stopped all the same:
+        // started again, as after the export, so a failed create never leaves the base down.
+        _ = try? await Task { _ = try await self.runtime(["start", source.container]) }.value
+        throw error
+      }
+    }
     let exported: Error?
     do {
       // ponytail: `export` prints nothing until the whole disk is written, so this silence bound
@@ -344,9 +353,9 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     private var last: Double?
 
     /// The fraction now, when it moved by a whole percent or more since the last one told.
-    func read(_ data: Data) -> Double? {
+    func read(_ data: Data, stderr: Bool) -> Double? {
       lock.withLock {
-        progress.read(String(decoding: data, as: UTF8.self))
+        progress.read(String(decoding: data, as: UTF8.self), stderr: stderr)
         guard let fraction = progress.fraction,
           last.map({ abs(fraction - $0) >= 0.01 }) ?? true
         else { return nil }
@@ -698,7 +707,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// talk to, never the app's whole one.
   private func runtime(
     _ arguments: [String], timeout: TimeInterval = 120, allLines: Bool = false,
-    onOutput: (@Sendable (Data) -> Void)? = nil
+    onOutput: (@Sendable (Data, _ stderr: Bool) -> Void)? = nil
   ) async throws -> String {
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
     let environment = ProcessInfo.processInfo.environment.filter {
