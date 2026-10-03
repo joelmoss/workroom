@@ -110,6 +110,18 @@ KEEPS=(
   "CA certificates"             'test -s /etc/ssl/certs/ca-certificates.crt'
 )
 
+# The sshd settings the Dockerfile writes to sshd_config.d (#299), as sshd itself resolves them:
+# key login keeps working without them, so the ssh wait above would not notice them gone, as when a
+# base image's sshd_config stops including sshd_config.d. Needs a booted container (/run/sshd). An
+# `sshd -T` that fails is the probe failing, never a setting that is off.
+SSHD_T="t=\$(/usr/sbin/sshd -T) || exit 2; printf '%s\\n' \"\$t\" | grep -qx"
+HARDENED=(
+  "no password login"           "$SSHD_T 'passwordauthentication no'"
+  "no keyboard-interactive"     "$SSHD_T 'kbdinteractiveauthentication no'"
+  "no root login"               "$SSHD_T 'permitrootlogin no'"
+  "only workroom may log in"    "$SSHD_T 'allowusers workroom'"
+)
+
 # Runs each piece's command in container $1, from the name/command pairs after $2, which is
 # "present" or "absent", what each must find. The verdict is printed inside the container, from
 # the probe's own status, since an `exec` that never ran, or ran in a dead container, fails too.
@@ -150,14 +162,18 @@ fail() {
 }
 
 boot "$CONTROL"
-expect "$CONTROL" present "${PIECES[@]}" "${KEEPS[@]}"
+expect "$CONTROL" present "${PIECES[@]}"
 if [ "$failed" = 1 ]; then
   fail "$CONTROL" "the fixture image does not match the checks, so they prove nothing"
+fi
+expect "$CONTROL" present "${KEEPS[@]}" "${HARDENED[@]}"
+if [ "$failed" = 1 ]; then
+  fail "$CONTROL" "the image both variants are built from lacks what every host needs"
 fi
 
 boot "$NAME"
 expect "$NAME" absent "${PIECES[@]}"
-expect "$NAME" present "${KEEPS[@]}"
+expect "$NAME" present "${KEEPS[@]}" "${HARDENED[@]}"
 if [ "$failed" = 1 ]; then
   fail "$NAME" "the host image carries fixture pieces or lacks what a host needs"
 fi
