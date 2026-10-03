@@ -738,3 +738,149 @@ fn an_unreadable_state_file_is_not_an_enrolment() {
         Err(BrokerError::NotEnrolled)
     ));
 }
+
+/// A stand-in for the Mac's end of a relay (#309): takes one connection, records what was sent,
+/// and answers with `answer`.
+fn relay_listener(answer: &'static str) -> (u16, std::thread::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let thread = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut sent = String::new();
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap() == 0 || line == "\n" {
+                break;
+            }
+            sent.push_str(&line);
+        }
+        let mut stream = stream;
+        stream.write_all(answer.as_bytes()).unwrap();
+        sent
+    });
+    (port, thread)
+}
+
+#[test]
+fn a_workroom_that_never_enrolled_is_answered_through_the_relay() {
+    let workspace = Workspace::new("broker-relay");
+    let (port, mac) = relay_listener(
+        "protocol=https\nhost=github.com\nusername=joel\npassword=gho_mac\nextra=dropped\n",
+    );
+    broker::install_relay(&workspace.dir, port, "s3cret\n").unwrap();
+
+    let mut output = Vec::new();
+    broker::credential(
+        &workspace.dir,
+        "get",
+        &b"protocol=https\nhost=github.com\npath=joelmoss/workroom.git\n\n"[..],
+        &mut output,
+    )
+    .unwrap();
+    // Only the credential reaches git, and the Mac gets the secret and a github.com request only.
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "username=joel\npassword=gho_mac\n"
+    );
+    assert_eq!(
+        mac.join().unwrap(),
+        "s3cret\nprotocol=https\nhost=github.com\n"
+    );
+
+    // Nothing but github.com over HTTPS is ever relayed, and `store`/`erase` ask nothing.
+    for (action, input) in [
+        ("get", &b"protocol=https\nhost=gitlab.com\n\n"[..]),
+        (
+            "store",
+            &b"protocol=https\nhost=github.com\npassword=x\n\n"[..],
+        ),
+        ("erase", &b"protocol=https\nhost=github.com\n\n"[..]),
+    ] {
+        let mut output = Vec::new();
+        broker::credential(&workspace.dir, action, input, &mut output).unwrap();
+        assert!(output.is_empty(), "{action}");
+    }
+}
+
+#[test]
+fn an_enrolled_workroom_mints_its_own_and_never_asks_the_relay() {
+    let workspace = Workspace::new("broker-relay-enrolled");
+    let broker = Broker::start(vec![
+        enrolled_answer(),
+        ok(&format!(
+            r#"{{"token":"ghs_own","expires_at":"{}"}}"#,
+            iso8601(now() + 3600)
+        )),
+    ]);
+    enrolled(&workspace, &broker, "wr-1");
+    // A port nothing listens on: a relay asked would fail the get.
+    let unused = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    broker::install_relay(&workspace.dir, unused, "s3cret").unwrap();
+
+    let mut output = Vec::new();
+    broker::credential(
+        &workspace.dir,
+        "get",
+        &b"protocol=https\nhost=github.com\n\n"[..],
+        &mut output,
+    )
+    .unwrap();
+    assert!(String::from_utf8(output)
+        .unwrap()
+        .starts_with("username=x-access-token\npassword=ghs_own\n"));
+}
+
+#[test]
+fn a_relay_the_mac_is_not_listening_on_says_to_open_the_workroom() {
+    let workspace = Workspace::new("broker-relay-closed");
+    let unused = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    broker::install_relay(&workspace.dir, unused, "s3cret").unwrap();
+    let mut output = Vec::new();
+    match broker::credential(
+        &workspace.dir,
+        "get",
+        &b"protocol=https\nhost=github.com\n\n"[..],
+        &mut output,
+    ) {
+        Err(BrokerError::Transport(message)) => {
+            assert!(
+                message.contains("isn't connected to this workroom"),
+                "{message}"
+            )
+        }
+        other => panic!("expected a transport error, got {other:?}"),
+    }
+    assert!(output.is_empty());
+
+    // Neither is a workroom with no relay and no enrolment.
+    let bare = Workspace::new("broker-relay-none");
+    assert!(matches!(
+        broker::credential(
+            &bare.dir,
+            "get",
+            &b"protocol=https\nhost=github.com\n\n"[..],
+            Vec::new()
+        ),
+        Err(BrokerError::NotEnrolled)
+    ));
+}
+
+#[test]
+fn a_relay_needs_a_port_and_a_one_word_secret() {
+    let workspace = Workspace::new("broker-relay-install");
+    for (port, secret) in [(0, "s"), (1, ""), (1, "two words"), (1, "  \n")] {
+        assert!(
+            broker::install_relay(&workspace.dir, port, secret).is_err(),
+            "{port} {secret:?}"
+        );
+    }
+}
