@@ -332,40 +332,49 @@ final class HostStreamTests: XCTestCase {
     XCTAssertEqual(ended.map(\.1), [.remote(host), .remote(host)])
   }
 
-  /// A host's remote kills go one at a time (#283): closing a workroom closes every pane at once,
-  /// and that many requests together would fill the host connection's request slots and be refused
-  /// unsent. Kills on different hosts do not wait for each other.
+  /// A host's remote kills are bounded (#283): closing a workroom closes every pane at once, and
+  /// that many requests together would fill the host connection's request slots and be refused
+  /// unsent. Bounded rather than serial, so a kill that fails or hangs does not hold up the rest,
+  /// and kills on another host do not count against it.
   @MainActor
-  func testAHostsRemoteKillsGoOneAtATime() async throws {
+  func testAHostsRemoteKillsAreBoundedAndOneFailureHoldsNoneUp() async throws {
     let (busy, other) = (UUID(), UUID())
+    let limit = PersistentSessionService.remoteKillsPerHost
     var active: [HostID: Int] = [:]
     var most: [HostID: Int] = [:]
-    var ended = 0
+    var asked = 0
     let service = PersistentSessionService(
       probe: { _ in .unhealthy(reason: "none here") }, ownership: { _ in .notOwned },
       endRemote: { _, host in
+        asked += 1
+        let first = asked == 1
         active[host, default: 0] += 1
         most[host] = max(most[host] ?? 0, active[host]!)
+        defer { active[host]! -= 1 }
         try await Task.sleep(for: .milliseconds(50))
-        active[host]! -= 1
-        ended += 1
+        if first { throw RepositoryRoutingError.unavailable(host) }
         return true
       })
     let driver = ContainerHostDriver(hosts: [:], directory: FileManager.default.temporaryDirectory)
-    var sessions: [UUID] = []
-    for host in [busy, busy, busy, other] {
+    var sessions: [(UUID, UUID)] = []
+    for host in Array(repeating: busy, count: limit + 4) + [other] {
       let session = UUID()
       service.registerRemoteSession(
         session, on: .remote(host), via: driver, workingDirectory: "/home/w")
-      sessions.append(session)
+      sessions.append((session, host))
     }
-    await withTaskGroup(of: Bool.self) { group in
-      for session in sessions { group.addTask { await service.endSession(sessionID: session) } }
+    var results: [UUID: Bool] = [:]
+    await withTaskGroup(of: (UUID, Bool).self) { group in
+      for (session, _) in sessions {
+        group.addTask { (session, await service.endSession(sessionID: session)) }
+      }
+      for await (session, ended) in group { results[session] = ended }
     }
-    XCTAssertEqual(ended, 4)
-    XCTAssertEqual(most[.remote(busy)], 1, "a host's kills overlapped")
+    XCTAssertEqual(asked, limit + 5, "every kill was sent")
+    XCTAssertEqual(most[.remote(busy)], limit, "a host's kills were not bounded, or ran one by one")
     XCTAssertEqual(most[.remote(other)], 1)
-    XCTAssertTrue(sessions.allSatisfy { !service.isRemote($0) })
+    XCTAssertEqual(results.values.filter { !$0 }.count, 1, "only the failed kill failed")
+    XCTAssertEqual(sessions.filter { service.isRemote($0.0) }.count, 1, "the failed one stays")
   }
 
   /// Why a carrier ended, read from its termination handler (#231 moved it off `isRunning` and

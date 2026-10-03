@@ -541,25 +541,35 @@ final class PersistentSessionService {
     return false
   }
 
-  /// Each host's last remote kill, which the next one on that host waits for (#283). One at a time
-  /// per host: closing a workroom closes every pane at once, and that many kills together would
-  /// fill the host connection's request slots and be refused before they were sent. The ceiling
-  /// is that a host's kills take as long as each other end to end; a pane's shell normally ends on
-  /// its SIGHUP within milliseconds.
-  private var remoteKillTails: [HostID: Task<Void, Never>] = [:]
+  /// At most this many remote kills in flight per host (#283). Closing a workroom closes every pane
+  /// at once, and that many kills together would fill the host connection's 32 request slots and
+  /// be refused unsent. Bounded rather than one at a time: the host's agent ends each on a thread
+  /// of its own, and one kill whose reply never comes must not hold up every close behind it.
+  static let remoteKillsPerHost = 8
+  private var remoteKillsInFlight: [HostID: Int] = [:]
+  /// Kills waiting for one of their host's slots, in the order they asked.
+  private var remoteKillWaiters: [HostID: [CheckedContinuation<Void, Never>]] = [:]
 
   private func endOnItsHostInTurn(_ sessionID: UUID, on host: HostID) async throws -> Bool {
-    let previous = remoteKillTails[host]
-    let attempt = Task { [endRemote] () -> Result<Bool, Error> in
-      await previous?.value
-      do { return .success(try await endRemote(sessionID, host)) } catch {
-        return .failure(error)
-      }
+    if remoteKillsInFlight[host, default: 0] < Self.remoteKillsPerHost {
+      remoteKillsInFlight[host, default: 0] += 1
+    } else {
+      // The slot is handed over by `releaseRemoteKillSlot`, so the count is already ours.
+      await withCheckedContinuation { remoteKillWaiters[host, default: []].append($0) }
     }
-    let tail = Task { _ = await attempt.value }
-    remoteKillTails[host] = tail
-    defer { if remoteKillTails[host] == tail { remoteKillTails.removeValue(forKey: host) } }
-    return try await attempt.value.get()
+    defer { releaseRemoteKillSlot(on: host) }
+    return try await endRemote(sessionID, host)
+  }
+
+  private func releaseRemoteKillSlot(on host: HostID) {
+    if var waiting = remoteKillWaiters[host], !waiting.isEmpty {
+      let next = waiting.removeFirst()
+      remoteKillWaiters[host] = waiting.isEmpty ? nil : waiting
+      next.resume()
+      return
+    }
+    remoteKillsInFlight[host, default: 1] -= 1
+    if remoteKillsInFlight[host] == 0 { remoteKillsInFlight.removeValue(forKey: host) }
   }
 
   @discardableResult
