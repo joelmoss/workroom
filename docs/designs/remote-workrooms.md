@@ -2923,6 +2923,9 @@ disagreement passes every test on either side alone while presenting as an empty
       at the end. The install prints `WRB receiving <bytes>` from a subshell every 10 s that the
       staged file grew while `cat` runs, which keeps the bound a silence bound; a tick that only
       said the shell was alive would keep a push wedged on a stalled disk from ever being ended.
+      An ended exchange's carrier is SIGTERMed, then SIGKILLed with any children of its own if it
+      ignores that (#316). The tree is best effort: a child forked while it is listed, or one
+      orphaned by a carrier that yielded to the SIGTERM, can outlive it.
     - *Two hashes, two questions.* The app hashes its bundled ELF (SHA-256) and the probe hashes
       the installed file (`sha256sum`): that decides whether to push, and the same build pushes
       nothing. The agent hashes its own program at startup (`handoff.rs`, a process-local hash)
