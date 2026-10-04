@@ -230,6 +230,37 @@ final class CredentialRelayTests: XCTestCase {
     XCTAssertEqual(reply(socket), "username=u\npassword=p\n")
   }
 
+  /// The relay's accept queue holds a burst while its accept thread is behind, as it is on a busy
+  /// Mac (#322). On loopback macOS resets a connection once the queue is full, so a short queue
+  /// turned a real workroom's request away; at the old 8, the burst here was reset about halfway
+  /// (`ECONNRESET`). Nothing accepts here, standing in for a thread that is behind.
+  func testTheRelaysAcceptQueueHoldsABurstWhileNothingIsAccepted() throws {
+    let made = try XCTUnwrap(LoopbackSocket.listen(backlog: CredentialRelay.backlog))
+    defer { Darwin.close(made.descriptor) }
+    var held: [Int32] = []
+    defer { for socket in held { Darwin.close(socket) } }
+    for index in 0..<40 {
+      guard let socket = LoopbackSocket.connect(port: made.port, timeout: 2) else {
+        return XCTFail("connection \(index) of 40: errno \(errno)")
+      }
+      held.append(socket)
+    }
+  }
+
+  /// A client socket can't end the process when its peer resets: `LoopbackSocket.connect` sets
+  /// `SO_NOSIGPIPE`. Without it, a test writing to a relay that had reset it crashed the whole
+  /// test run with SIGPIPE (#322).
+  func testALoopbackClientNeverRaisesSIGPIPE() throws {
+    let made = try XCTUnwrap(LoopbackSocket.listen(backlog: 1))
+    defer { Darwin.close(made.descriptor) }
+    let socket = try XCTUnwrap(LoopbackSocket.connect(port: made.port, timeout: 2))
+    defer { Darwin.close(socket) }
+    var value: Int32 = 0
+    var length = socklen_t(MemoryLayout<Int32>.size)
+    XCTAssertEqual(getsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &value, &length), 0)
+    XCTAssertNotEqual(value, 0)
+  }
+
   /// Past `maxReading` connections at once, one more is closed at once rather than read; the idle
   /// ones are dropped after `requestDeadline`, and a real request is answered again.
   func testConnectionsPastTheReadingCapAreTurnedAway() throws {
