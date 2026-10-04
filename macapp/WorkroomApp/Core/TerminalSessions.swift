@@ -2272,10 +2272,12 @@ final class TerminalSessions: ObservableObject {
             // the lexical path is the wrong file whenever the host's answer would differ.
           } catch FileServiceError.failed(let message)
             where message.hasPrefix(AgentFileProvider.resolveTimedOut)
+            || message == AgentFileProvider.resolveWalksBusy
           {
-            // The walk hung on a mount (#334). The other candidates differ only after the last
-            // `..`, so they would each hang another 10 s and leave another walk behind.
-            NSLog("Workroom: resolving %@ on the host timed out", onHost)
+            // The walk hung on a mount, or earlier ones still are (#334). The other candidates
+            // would resolve the same prefix or read through the same link, and a read has no
+            // deadline (#343), so nothing more in this click goes to the host.
+            NSLog("Workroom: resolving %@ on the host: %@", onHost, message)
             return nil
           }
         }

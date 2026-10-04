@@ -14,6 +14,11 @@ struct AgentFileProvider: FileProviding {
   /// stops there. `RESOLVE_TIMED_OUT` in `file.rs`, whose tests pin the prefix.
   static let resolveTimedOut = "resolving timed out"
 
+  /// The agent's `Busy` answer to a `resolve` while too many earlier walks are still stuck (#334).
+  /// A click ends on it as on a timeout: its other candidates could read through the same hung
+  /// link, and a read has no deadline (#343). Pinned by the cap test in `file.rs`.
+  static let resolveWalksBusy = "too many earlier resolves are still walking"
+
   let context: FileContext
   let connection: AgentVCSConnection
 
