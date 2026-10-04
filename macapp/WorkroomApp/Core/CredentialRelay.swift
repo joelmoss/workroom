@@ -126,15 +126,17 @@ final class CredentialRelay: @unchecked Sendable {
   }
 
   /// One accepted connection: read under a `reading` permit, or closed at once when none is free.
-  /// Owns `connection` and closes it either way.
+  /// Owns `connection` and closes it either way. The block holds the relay strongly: once a permit
+  /// is taken, `serve` must run to give it back, and a semaphore freed below its starting count
+  /// traps.
   func take(_ connection: Int32) {
     guard reading.wait(timeout: .now()) == .success else {
       Darwin.close(connection)
       return
     }
-    queue.async { [weak self] in
+    queue.async { [self] in
       defer { Darwin.close(connection) }
-      self?.serve(connection)
+      serve(connection)
     }
   }
 

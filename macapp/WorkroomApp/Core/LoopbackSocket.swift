@@ -44,28 +44,23 @@ enum LoopbackSocket {
     let descriptor = socket(AF_INET, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return nil }
     _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
-    var noSignal: Int32 = 1
-    guard
-      setsockopt(
-        descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size)) == 0
-    else {
-      let saved = errno
-      close(descriptor)
-      errno = saved
-      return nil
-    }
-    let flags = fcntl(descriptor, F_GETFL)
-    var address = sockaddr_in()
-    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-    address.sin_family = sa_family_t(AF_INET)
-    address.sin_port = port.bigEndian
-    address.sin_addr.s_addr = INADDR_LOOPBACK.bigEndian
     let fail = { () -> Int32? in
       let saved = errno
       close(descriptor)
       errno = saved
       return nil
     }
+    var noSignal: Int32 = 1
+    guard
+      setsockopt(
+        descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size)) == 0
+    else { return fail() }
+    let flags = fcntl(descriptor, F_GETFL)
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    address.sin_addr.s_addr = INADDR_LOOPBACK.bigEndian
     guard fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else { return fail() }
     let started = withUnsafePointer(to: &address) {
       $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
