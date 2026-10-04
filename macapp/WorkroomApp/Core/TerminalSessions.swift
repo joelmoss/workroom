@@ -2186,12 +2186,14 @@ final class TerminalSessions: ObservableObject {
     try await RepositoryRouter.shared.files(for: $0)
   }
 
-  /// What ⌘-hover found for a word in a remote pane, keyed by target, host cwd and word. The probe
-  /// is a round trip and the hover callback is synchronous, so the first hover over a word starts
-  /// one and the cursor follows on the next move.
-  // ponytail: cleared whole at 256 entries, and a file made after its word was hovered keeps the
-  // plain cursor until then; the click itself always asks again.
-  private var remoteHoverAnswers: [String: Bool] = [:]
+  /// What the host said about a word in a remote pane, keyed by target, host cwd and word: nil
+  /// while its probe is out. The hover callback is synchronous and is also the ⌘-click's gate
+  /// (`GhosttySurfaceView.mouseDown`), and the probe is a round trip, so an answer can't wait.
+  // ponytail: cleared whole at 256 entries; an LRU if hovering ever thrashes it.
+  private var remoteHoverAnswers: [String: (found: Bool?, at: ContinuousClock.Instant)] = [:]
+  /// How long a host's answer stands before a hover asks again: a file can appear, and a probe can
+  /// fail on a passing disconnect. Swapped by tests.
+  var remoteHoverTTL: Duration = .seconds(3)
 
   /// ⌘-click in a remote pane resolves on the HOST (C7): against the shell's directory there, as
   /// its agent reports it (`hostCwd`), and through the host's file service. The file opens in the
@@ -2224,26 +2226,39 @@ final class TerminalSessions: ObservableObject {
   func openRemoteFile(_ word: String, tab tabID: TerminalTab.ID, target: TerminalTarget) {
     let cwd = hostCwd(of: tabID, in: target.id)
     Task { [weak self] in
-      guard let self, let file = await self.remoteFile(word, cwd: cwd, target: target) else {
+      guard let self else { return }
+      guard let file = await self.remoteFile(word, cwd: cwd, target: target) else {
+        // As `TerminalLinkOpener.handleOpenURL` does locally: a dropped click is otherwise
+        // indistinguishable from a broken app.
+        NSLog("Workroom: no file on the host for terminal link %@", word)
         return
       }
       self.openFilePreview(FileDescriptor(path: file.path, isPreview: true), for: target)
     }
   }
 
-  private func remoteFileExists(
-    _ word: String, tab tabID: TerminalTab.ID, target: TerminalTarget
-  ) -> Bool {
+  /// The ⌘-hover cursor and the ⌘-click gate. A word the host has answered for gets that answer
+  /// while it is fresh. Any other word that could name a file in the workroom counts as one while
+  /// its probe is out, so a ⌘-click made before the answer reaches `openRemoteFile`, which asks the
+  /// host again; answering "no" until then lost every click made straight after pressing ⌘. The
+  /// cost: such a click on a word that turns out to be plain text is consumed and opens nothing.
+  /// A URL or a path outside the workroom is never a candidate, so it still reaches libghostty.
+  func remoteFileExists(_ word: String, tab tabID: TerminalTab.ID, target: TerminalTarget) -> Bool {
     let cwd = hostCwd(of: tabID, in: target.id)
+    guard !TerminalLinkOpener.remoteCandidates(for: word, cwd: cwd, root: target.path).isEmpty
+    else { return false }
     let key = [target.id, cwd ?? "", word].joined(separator: "\u{0}")
-    if let known = remoteHoverAnswers[key] { return known }
+    let now = ContinuousClock.now
+    if let answer = remoteHoverAnswers[key], now - answer.at < remoteHoverTTL {
+      return answer.found ?? true
+    }
     if remoteHoverAnswers.count >= 256 { remoteHoverAnswers.removeAll() }
-    remoteHoverAnswers[key] = false
+    remoteHoverAnswers[key] = (nil, now)
     Task { [weak self] in
       let found = await self?.remoteFile(word, cwd: cwd, target: target) != nil
-      self?.remoteHoverAnswers[key] = found
+      self?.remoteHoverAnswers[key] = (found, .now)
     }
-    return false
+    return true
   }
 
   /// The first of `word`'s candidates that is a file on the host, or nil. A read capped at one byte
@@ -2261,8 +2276,12 @@ final class TerminalSessions: ObservableObject {
         return candidate
       } catch FileServiceError.tooLarge {
         return candidate
-      } catch {
+      } catch FileServiceError.notFound, FileServiceError.refused {
         continue
+      } catch {
+        // The host, not the candidate: the next one would fail the same way.
+        NSLog("Workroom: probing the host for %@: %@", candidate.path, "\(error)")
+        return nil
       }
     }
     return nil

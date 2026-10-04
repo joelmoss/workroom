@@ -291,12 +291,19 @@ enum TerminalLinkOpener {
   /// URL rather than a path gives none, through the same `filePath(from:)` a local pane uses.
   static func remoteCandidates(for word: String, cwd: String?, root: String) -> [PathCandidate] {
     guard let path = filePath(from: word), root.hasPrefix("/") else { return [] }
+    // `standardized` keeps `//`, and the host joins a relative path whose first character is `/`
+    // as an absolute one, so slashes are collapsed first, the root's trailing one with them.
+    func collapsed(_ path: String) -> String {
+      path.replacingOccurrences(of: "/+", with: "/", options: .regularExpression)
+    }
+    let root = collapsed(root + "/")
     let base = cwd.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? root
-    let prefix = root.hasSuffix("/") ? root : root + "/"
+    let prefix = root
     var seen = Set<String>()
     return pathCandidates(from: path).compactMap { candidate in
       guard !candidate.path.hasPrefix("~") else { return nil }
-      let joined = candidate.path.hasPrefix("/") ? candidate.path : base + "/" + candidate.path
+      let joined = collapsed(
+        candidate.path.hasPrefix("/") ? candidate.path : base + "/" + candidate.path)
       // Lexical only: `isDirectory: false` keeps `URL` from probing this Mac's disk for the path.
       let absolute = URL(fileURLWithPath: joined, isDirectory: false).standardized.path
       guard absolute.hasPrefix(prefix) else { return nil }

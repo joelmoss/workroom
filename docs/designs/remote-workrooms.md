@@ -1721,8 +1721,15 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     `~`, which is this Mac's home. Each candidate is probed with a one-byte read, which the agent
     answers from the file's size without sending it (`file.rs`, `read_file`). The first that exists
     opens in the in-app viewer as the workroom's preview tab, since no editor on the Mac can open
-    a file on another machine. The hand cursor on cmd-hover comes from a cache that the first hover
-    over a word fills, so it shows from the second move on. Web URLs still go to the Mac's browser.
+    a file on another machine. Web URLs still go to the Mac's browser.
+  - **The ⌘-click gate.** `GhosttySurfaceView.mouseDown` passes a ⌘-click on only when the
+    synchronous `resolveCmdHoverFile` says the word is a file, and the host's answer is a round
+    trip. So a word that could name a file in the workroom passes while its probe is out, and the
+    click then asks the host itself. A first version answered "no" until the probe came back,
+    which lost every click made straight after pressing ⌘ (found in review). An answer stands for
+    3 s (`remoteHoverTTL`), so a file made after its word was hovered becomes clickable. The cost:
+    a ⌘-click on a plain word before its answer arrives is consumed and opens nothing. A URL or a
+    path outside the workroom is never a candidate, so it still reaches libghostty.
   - **Ports.** `PortForwardingModel` is one model per host (`model(for:)`), kept for the launch,
     and the inspector's Ports section shows the selected workroom's host. A remote workroom the
     app can't reach shows no Ports section, rather than the Mac's list. A forward never connects a
