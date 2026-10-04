@@ -944,6 +944,47 @@ final class PortForwardingModelTests: XCTestCase {
     old.draft = "5173"
     await old.add()
     XCTAssertEqual(old.message, "Agent does not support port forwarding.")
+
+    // A remote workroom's host is not "this Mac" (#254).
+    let remote = try await model(
+      lease: lease(), forwarding: { throw RepositoryRoutingError.unavailable(.remote(UUID())) })
+    remote.draft = "5173"
+    await remote.add()
+    XCTAssertEqual(remote.message, "This workroom's host is not connected.")
+  }
+
+  /// One model per host, kept: the Ports section going to another workroom and back finds its
+  /// forwards where it left them, and two hosts never share a list (#254).
+  func testEachHostHasItsOwnModelForTheLaunch() {
+    let host = HostID.remote(UUID())
+    XCTAssertTrue(PortForwardingModel.model(for: host) === PortForwardingModel.model(for: host))
+    XCTAssertTrue(PortForwardingModel.model(for: .local) === PortForwardingModel.model(for: .local))
+    XCTAssertFalse(PortForwardingModel.model(for: host) === PortForwardingModel.model(for: .local))
+    XCTAssertEqual(PortForwardingModel.model(for: host).host, host)
+  }
+
+  /// A remote host's transport reads that host's connection in the manager and never another's.
+  /// With only this Mac connected, a forward on the host is refused as the host's, not served by
+  /// the local agent.
+  func testARemoteHostsTransportAsksForThatHostsConnection() async throws {
+    let agent = try FakeAgent(version: 5, forward: true)
+    fakes.append(agent)
+    let manager = HostConnectionManager()
+    _ = try await manager.connect(host: .local) {
+      try await AgentVCSConnection.connect(host: .local, socketPath: agent.socketPath)
+    }
+    let host = HostID.remote(UUID())
+    let transport = PortForwardingModel.Transport.on(host, manager: manager)
+    do {
+      _ = try await transport.forwarding()
+      XCTFail("a remote host with no connection was served")
+    } catch RepositoryRoutingError.unavailable(let refused) {
+      XCTAssertEqual(refused, host)
+    }
+    let current = await transport.current()
+    XCTAssertNil(current)
+    let local = await PortForwardingModel.Transport.on(.local, manager: manager).current()
+    XCTAssertNotNil(local)
   }
 
   /// A refusal on a row is a fact about one connection — the dev server was not up yet — and the

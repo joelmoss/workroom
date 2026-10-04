@@ -894,33 +894,56 @@ private final class ForwardedConnection: @unchecked Sendable {
   }
 }
 
-/// The forwards the user has asked for on the local box, and the listeners serving them.
+/// The forwards the user has asked for on one host, and the listeners serving them.
 ///
-/// One list, not one per host: only the local host has an agent today, and `wakefulness()` is shared
-/// the same way. Forwards are per HOST rather than per workroom, so two workrooms on this box see
-/// the same list.
+/// One model per HOST (`model(for:)`), not per workroom: a forward runs on the host's agent
+/// connection, so two workrooms on one host see the same list. A remote workroom is its own host
+/// (#254), so in practice each remote workroom has its own list and every local one shares this
+/// Mac's.
 @MainActor
 final class PortForwardingModel: ObservableObject {
-  static let shared = PortForwardingModel()
+  /// Each host's model, made on first use and kept for the launch: its listeners must outlive the
+  /// Ports panel showing another workroom and coming back. A host that goes away takes its
+  /// forwards with its connection (`watch()`), leaving an empty model behind.
+  private static var models: [HostID: PortForwardingModel] = [:]
+
+  static func model(for host: HostID) -> PortForwardingModel {
+    if let model = models[host] { return model }
+    let model = PortForwardingModel(host: host, transport: .live(host))
+    models[host] = model
+    return model
+  }
 
   /// How the model reaches the agent, so a test can hand it a scripted agent and a connection
   /// stream it controls — the shape `WakefulnessModel.Transport` set.
   struct Transport {
-    /// The service and the lease of the connection it runs on. Never spawns an agent; the reasoning
-    /// is on `LocalAgentVCS.forwarding()`, the decision point.
+    /// The service and the lease of the connection it runs on. Never spawns an agent or connects a
+    /// host; the reasoning is on `LocalAgentVCS.forwarding()`, the decision point.
     var forwarding: @Sendable () async throws -> (HostConnectionManager.Lease, AgentForwardService)
     var updates: @Sendable () async -> AsyncStream<HostConnectionManager.Snapshot>
     /// The connected lease right now, or nil. What `add()` reconciles against: the watch's last
     /// snapshot can lag a reconnect that `forwarding` has already seen.
     var current: @Sendable () async -> HostConnectionManager.Lease?
 
-    static let live = Transport(
-      forwarding: { try await LocalAgentVCS.shared.forwarding() },
-      updates: { await HostConnectionManager.shared.updates(for: .local) },
-      current: {
-        let snapshot = await HostConnectionManager.shared.snapshot(for: .local)
-        return snapshot.status == .connected ? snapshot.lease : nil
-      })
+    static func live(_ host: HostID) -> Transport {
+      var transport = on(host, manager: .shared)
+      if host == .local { transport.forwarding = { try await LocalAgentVCS.shared.forwarding() } }
+      return transport
+    }
+
+    /// `host`'s connection in `manager`. A remote host's connection is made by selecting its
+    /// workroom (`RemoteHosts.ensureConnected`, through the inspector's reads), so a forward asks
+    /// for the one there is and never makes one: the local reasoning in `LocalAgentVCS.forwarding()`
+    /// holds for a host too, and connecting one could start a container the user stopped.
+    static func on(_ host: HostID, manager: HostConnectionManager) -> Transport {
+      Transport(
+        forwarding: { try await manager.forwarding(host: host) },
+        updates: { await manager.updates(for: host) },
+        current: {
+          let snapshot = await manager.snapshot(for: host)
+          return snapshot.status == .connected ? snapshot.lease : nil
+        })
+    }
   }
 
   struct Entry: Identifiable, Equatable {
@@ -943,11 +966,12 @@ final class PortForwardingModel: ObservableObject {
   @Published private(set) var forwards: [Entry] = []
   /// What went wrong adding one, or why the last forwards went away. Cleared by the next attempt.
   @Published private(set) var message: String?
-  /// Whether the local agent connection is up, for the row's caption: the controls are useless
+  /// Whether the host's agent connection is up, for the row's caption: the controls are useless
   /// without one, and a caption says so before the user finds out from `+`.
   @Published private(set) var connected = false
   @Published var draft = ""
 
+  let host: HostID
   private let transport: Transport
   private var listeners: [UUID: PortForward] = [:]
   private var watching = false
@@ -957,7 +981,8 @@ final class PortForwardingModel: ObservableObject {
   /// How many snapshots the watch has consumed, for the tests.
   private(set) var snapshotsSeen = 0
 
-  init(transport: Transport = .live) {
+  init(host: HostID = .local, transport: Transport) {
+    self.host = host
     self.transport = transport
   }
 
@@ -1003,6 +1028,8 @@ final class PortForwardingModel: ObservableObject {
   /// `VCSError` is not `LocalizedError`, so interpolating it prints its Swift case.
   static func describe(_ error: Error) -> String {
     switch error {
+    case RepositoryRoutingError.unavailable(.remote):
+      return "This workroom's host is not connected."
     case RepositoryRoutingError.unavailable:
       return "No agent is running on this Mac. Open a workroom to start one."
     case VCSError.backendVersion(let detail):

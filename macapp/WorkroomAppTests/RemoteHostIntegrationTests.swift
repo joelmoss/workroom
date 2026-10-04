@@ -156,6 +156,29 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertEqual(banner, "SSH-2.0-")
   }
 
+  /// The Ports panel's model on a remote workroom's host (#254, the last of #208): a port added
+  /// there is the HOST's port, and a client on this Mac reaches the process listening on it. The
+  /// fixture's sshd is that process; it speaks first, so the banner proves the bytes came from the
+  /// host and not from anything on this Mac.
+  @MainActor
+  func testThePortsModelForwardsAPortFromARemoteHost() async throws {
+    let fixture = try fixture()
+    let (connection, id) = try await connect(fixture.host)
+    let host = HostID.remote(id)
+    let manager = HostConnectionManager()
+    _ = try await manager.connect(host: host) { connection }
+    let model = PortForwardingModel(host: host, transport: .on(host, manager: manager))
+    model.draft = "22"
+    await model.add()
+    XCTAssertNil(model.message)
+    let entry = try XCTUnwrap(model.forwards.first)
+    defer { model.remove(entry.id) }
+    let client = try TCPClient(port: entry.localPort)
+    defer { client.close() }
+    let banner = String(decoding: try client.read(8, timeout: 10), as: UTF8.self)
+    XCTAssertEqual(banner, "SSH-2.0-")
+  }
+
   /// A failed remote write is classified from the HOST's disk (#229): a leftover `index.lock` there
   /// is named by its path on the host. Read from this Mac's disk, that path is not there, and the
   /// failure would name no lock at all.
