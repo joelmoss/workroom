@@ -18,9 +18,10 @@ closed the `Pipe` of its `sh` helper (`VCSProviderConformanceTests.swift:424`, c
 opens and closes no descriptors, and an immediate re-run of the full suite passed.
 
 **Why:** The file handle closed a number it believed it owned, and the kernel found a guarded
-descriptor there. So something earlier in that worker closed descriptor 25 without owning it (a
-double close), and a guarded descriptor reused the number. If the double close is in app code
-rather than a test, the shipping app can intermittently close the wrong file.
+descriptor there. The suspected cause, not yet confirmed by the worker's trace: something earlier
+in that worker closed descriptor 25 without owning it (a double close), and a guarded descriptor
+reused the number. If so, and the double close is in app code rather than a test, the shipping
+app can intermittently close the wrong file.
 
 **How to start:** List what else ran in the same worker before the crash (the `xcresult`, or the
 log lines tagged with that worker's pid) and grep those tests and their code for raw `close(` and
@@ -41,8 +42,10 @@ the #327 branch. It fails at three places:
 
 **Why:** It tests that the broker's reverse forward (`BrokerReverseForwards`) reopens after a
 reconnect while the old connection's listener still holds the port. If the race is in the
-registry rather than the test, a real reconnect can leave a workroom's broker forward dead, and a
-remote `git push` loses its credentials.
+registry rather than the test, a real reconnect can leave a workroom's broker forward dead. In a
+Debug build that forward is how the remote agent reaches the development Codaset
+(`BrokerReverseForwards`), so once the token it holds expires (up to an hour) it can't mint a new
+git credential. Release and Nightly agents reach codaset.dev directly and don't use it.
 
 **How to start:** Pin which step loses the race. The test leans on a fixed 3 s sleep (longer than
 the bind retries) and a 5 s reopen deadline. A `roundTrip` that reads 0 bytes means the port
