@@ -1796,7 +1796,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     `good.rb` variant (#345). `read` itself has no deadline (#343), so a read opened through a link
     onto a hung mount still holds its slot. A newer click replaces the one before it, and an
     answer whose pane has closed opens nothing. An error reading one path moves on to the next
-    candidate; a transport failure or a resolve that timed out stops the probe.
+    candidate; a transport failure, a resolve that timed out, or the agent refusing a resolve
+    because too many earlier walks are stuck stops the probe.
 
 ## Phase 0 Results
 

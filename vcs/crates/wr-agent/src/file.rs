@@ -481,6 +481,8 @@ fn resolve(request: &Request) -> Result<Value, FileError> {
     if !stays_under_root(relative) {
         return Err(unsupported("invalid relative file path"));
     }
+    // The app matches this text (`AgentFileProvider.resolveWalksBusy`) and ends the click, as on a
+    // timeout: its other candidates could read through the same hung link with no deadline.
     if ABANDONED_WALKS.load(Ordering::Acquire) >= MAX_ABANDONED_WALKS {
         return Err(FileError::Busy(
             "too many earlier resolves are still walking".into(),
@@ -1083,7 +1085,11 @@ mod tests {
             ABANDONED_WALKS.fetch_add(MAX_ABANDONED_WALKS, Ordering::AcqRel);
             let _restore = Restore;
             let reply = execute(&request);
-            assert!(reply["error"]["Busy"].is_string(), "{reply}");
+            // The literal: the app matches this text (`AgentFileProvider.resolveWalksBusy`).
+            assert_eq!(
+                reply["error"]["Busy"], "too many earlier resolves are still walking",
+                "{reply}"
+            );
         }
         assert_eq!(execute(&request)["result"]["path"], "f");
     }
