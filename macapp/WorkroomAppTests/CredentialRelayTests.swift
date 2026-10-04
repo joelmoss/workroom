@@ -226,6 +226,34 @@ final class CredentialRelayTests: XCTestCase {
     XCTAssertEqual(reply(socket), "username=u\npassword=p\n")
   }
 
+  /// A connection whose peer has already reset when it is taken gives its reading permit back
+  /// (#322 review). Setting `SO_NOSIGPIPE` on it fails (EINVAL), and that path returned before the
+  /// release, so each such peer leaked a permit; past `maxReading` of them every request was
+  /// closed unread, a workroom's included, for the rest of the launch.
+  func testAPeerThatResetBeforeItIsTakenGivesItsPermitBack() throws {
+    let relay = CredentialRelay(answer: { _ in "username=u\npassword=p\n" })
+    let secret = try relay.secret(for: UUID())
+    let port = try relay.localPort()
+    let side = try XCTUnwrap(LoopbackSocket.listen(backlog: 128))
+    defer { Darwin.close(side.descriptor) }
+    for _ in 0..<(CredentialRelay.maxReading * 2) {
+      let client = try XCTUnwrap(LoopbackSocket.connect(port: side.port, timeout: 2))
+      let accepted = Darwin.accept(side.descriptor, nil, nil)
+      XCTAssertGreaterThanOrEqual(accepted, 0)
+      var linger = linger(l_onoff: 1, l_linger: 0)
+      setsockopt(client, SOL_SOCKET, SO_LINGER, &linger, socklen_t(MemoryLayout<linger>.size))
+      Darwin.close(client)
+      Thread.sleep(forTimeInterval: 0.005)
+      relay.take(accepted)
+    }
+    Thread.sleep(forTimeInterval: 0.2)
+    let socket = try XCTUnwrap(LoopbackSocket.connect(port: port, timeout: 2))
+    defer { Darwin.close(socket) }
+    let request = "\(secret)\nprotocol=https\nhost=github.com\n\n"
+    _ = request.withCString { send(socket, $0, strlen($0), 0) }
+    XCTAssertEqual(reply(socket), "username=u\npassword=p\n", "the reading permits leaked")
+  }
+
   /// The relay's accept queue holds a burst while its accept thread is behind, as it is on a busy
   /// Mac (#322). On loopback macOS resets a connection once the queue is full, so a short queue
   /// turned a real workroom's request away; at the old 8, the burst here was reset about halfway

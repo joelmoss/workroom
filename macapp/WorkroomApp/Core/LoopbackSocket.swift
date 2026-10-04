@@ -33,8 +33,9 @@ enum LoopbackSocket {
 
   /// A blocking TCP connection to `127.0.0.1:<port>`, close-on-exec and `SO_NOSIGPIPE`, or nil
   /// with `errno` set. Bounded by `timeout`, for a listener that never answers. A closed port is
-  /// refused at once on loopback, and so, measured, is a listener whose accept queue is full: macOS
-  /// resets the connection (`ECONNRESET`) rather than leave the SYN unanswered.
+  /// refused at once on loopback. A listener whose accept queue overflows doesn't leave the SYN
+  /// unanswered either: macOS resets connections (`ECONNRESET`), measured, both the new one and
+  /// ones already waiting in the queue, so a connection made here can still be reset afterwards.
   ///
   /// `SO_NOSIGPIPE` from the start: a write to a peer that has reset would otherwise raise SIGPIPE
   /// and end the process. Set before `connect`, so it holds even for a peer that resets at once,
@@ -44,8 +45,15 @@ enum LoopbackSocket {
     guard descriptor >= 0 else { return nil }
     _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
     var noSignal: Int32 = 1
-    setsockopt(
-      descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
+    guard
+      setsockopt(
+        descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size)) == 0
+    else {
+      let saved = errno
+      close(descriptor)
+      errno = saved
+      return nil
+    }
     let flags = fcntl(descriptor, F_GETFL)
     var address = sockaddr_in()
     address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
