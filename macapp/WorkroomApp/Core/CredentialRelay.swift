@@ -66,20 +66,23 @@ final class CredentialRelay: @unchecked Sendable {
   }
 
   /// Connections read at once, before anything is known of them; one more is turned away. A read
-  /// takes a thread for up to `requestDeadline`, so this bounds what a flood can hold.
+  /// takes a thread for up to `requestDeadline`, so this bounds what a flood can hold. It is also
+  /// all a flood needs: anyone on this Mac who keeps this many idle connections open, renewing them
+  /// every `requestDeadline`, has every other connection closed unread, a workroom's included.
   static let maxReading = 32
   /// Requests answered at once, each a gh run of up to 15 s. Only a request with a known secret
-  /// gets here, so connections that never say one, from anyone who can reach the listener, can't
-  /// keep a workroom from being answered.
+  /// gets here, so connections that never say one can't hold these slots; they can only hold the
+  /// reading ones (`maxReading`).
   static let maxConcurrent = 8
   /// The most one request may take to arrive, whatever pace its bytes come at. The agent writes it
   /// whole, at once (`relay` in `broker.rs`), so a second is plenty.
   static let requestDeadline: TimeInterval = 2
-  /// The listener's accept queue: the kernel's ceiling, `SOMAXCONN`. Connections wait there while
-  /// the accept thread is behind, and on loopback macOS resets the next one (`ECONNRESET`) once the
-  /// queue is full, measured. At 8, a burst of idle connections on a busy Mac filled it and a real
-  /// workroom's request was reset (#322). A long queue holds nothing a flood could keep: the accept
-  /// loop still takes each connection and closes what `maxReading` won't read.
+  /// The listener's accept queue: `SOMAXCONN` (128; the `kern.ipc.somaxconn` sysctl caps what
+  /// takes effect). Connections wait there while the accept thread is behind, and on loopback macOS
+  /// resets connections once the queue overflows (`ECONNRESET`), measured: new ones, and ones
+  /// already waiting in it. At 8, a burst of idle connections on a busy Mac overflowed it and a
+  /// real workroom's request was reset (#322). A long queue adds nothing a flood can hold: the
+  /// accept loop still takes each connection and closes what `maxReading` won't read.
   static let backlog = SOMAXCONN
   private let reading = DispatchSemaphore(value: maxReading)
   private let serving = DispatchSemaphore(value: maxConcurrent)
@@ -118,30 +121,39 @@ final class CredentialRelay: @unchecked Sendable {
           return
         }
       }
-      guard reading.wait(timeout: .now()) == .success else {
-        Darwin.close(connection)
-        continue
-      }
-      queue.async { [weak self] in
-        defer { Darwin.close(connection) }
-        self?.serve(connection)
-      }
+      take(connection)
+    }
+  }
+
+  /// One accepted connection: read under a `reading` permit, or closed at once when none is free.
+  /// Owns `connection` and closes it either way.
+  func take(_ connection: Int32) {
+    guard reading.wait(timeout: .now()) == .success else {
+      Darwin.close(connection)
+      return
+    }
+    queue.async { [weak self] in
+      defer { Darwin.close(connection) }
+      self?.serve(connection)
     }
   }
 
   /// One request: a known secret, then `protocol=https` and `host=github.com`, or nothing back.
   private func serve(_ connection: Int32) {
-    // A peer that resets before the reply would otherwise raise SIGPIPE, which ends the app.
-    var on: Int32 = 1
-    guard
-      setsockopt(connection, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
-        == 0
-    else { return }
-    var timeout = timeval(tv_sec: Int(Self.requestDeadline), tv_usec: 0)
-    setsockopt(
-      connection, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    // The reading permit the accept loop took is given back on every way out of this, the setup
+    // included: a peer that resets at once makes `SO_NOSIGPIPE` fail (EINVAL), and returning
+    // before the release leaked a permit per such peer, until 32 of them closed every request.
     let request = { () -> String? in
       defer { reading.signal() }
+      // A peer that resets before the reply would otherwise raise SIGPIPE, which ends the app.
+      var on: Int32 = 1
+      guard
+        setsockopt(
+          connection, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size)) == 0
+      else { return nil }
+      var timeout = timeval(tv_sec: Int(Self.requestDeadline), tv_usec: 0)
+      setsockopt(
+        connection, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
       return Self.readRequest(connection)
     }()
     guard let request else { return }
