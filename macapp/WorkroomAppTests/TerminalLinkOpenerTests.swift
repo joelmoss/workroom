@@ -686,7 +686,9 @@ final class TerminalLinkOpenerTests: XCTestCase {
         context: FileContext(location: location, sharedLocation: nil), files: disk.snapshot)
     }
     let tab = sessions.addTab(for: target)
-    let gate = { (word: String) in sessions.remoteFileExists(word, tab: tab.id, target: target) }
+    // Through the view's own closure, which is what the real gate reads.
+    let view = try XCTUnwrap(sessions.view(forTab: tab.id, inTarget: target.id))
+    let gate = { (word: String) in view.resolveCmdHoverFile?(word) == true }
 
     XCTAssertFalse(gate("https://example.com/a.rb"))
     XCTAssertFalse(gate("/etc/passwd"))

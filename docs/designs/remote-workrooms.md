@@ -1707,7 +1707,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   hostname. From a remote agent that is a *remote* path labelled local, and
   `TerminalLinkOpener.absolutePath(for:cwd:)` (`TerminalLinkOpener.swift:27-31,202`) will then
   resolve a cmd-clicked file against it **on the Mac**. Week-one bug; needs a host-tagged cwd and a
-  link opener that routes through the file service.
+  link opener that routes through the file service. Done: see "As built (#254)" below.
 - Per-workroom credential: enrol on create, revoke on destroy, and revoke on the failure paths too.
   It is a broker grant, not a deploy key (OQ20).
 - Idle state per remote workroom in the sidebar. **Cost display is deliberately deferred** —
