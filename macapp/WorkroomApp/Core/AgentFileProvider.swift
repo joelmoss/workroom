@@ -4,6 +4,11 @@ import Foundation
 /// `vcs/crates/wr-agent/src/file.rs` and `watch.rs`; the two are kept in step by
 /// `AgentFileIntegrationTests`, which drives the real agent binary.
 struct AgentFileProvider: FileProviding {
+  /// What every agent with a File service answers a method it doesn't know with, as `Unsupported`
+  /// (`file.rs`, unchanged since the service was added). It is how the app tells an agent that
+  /// predates `resolve` (#327) from one that answered.
+  static let unknownMethod = "unsupported file method"
+
   let context: FileContext
   let connection: AgentVCSConnection
 
@@ -27,6 +32,11 @@ struct AgentFileProvider: FileProviding {
       throw FileServiceError.failed("Malformed file reply.")
     }
     return data
+  }
+
+  func resolve(path: String) async throws -> String {
+    let request = AgentFileRequest(method: "resolve", root: context.location.path, path: path)
+    return try AgentFileReply<AgentFileResolved>.decode(await connection.fileRequest(request)).path
   }
 
   func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
@@ -60,6 +70,10 @@ private struct AgentFileListing: Decodable {
   let exitCode: Int32
   let timedOut: Bool
   let signaled: Bool
+}
+
+private struct AgentFileResolved: Decodable {
+  let path: String
 }
 
 private struct AgentFileContent: Decodable {

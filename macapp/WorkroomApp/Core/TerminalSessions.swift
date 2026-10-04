@@ -2250,7 +2250,8 @@ final class TerminalSessions: ObservableObject {
 
   /// The first of `word`'s candidates that is a file on the host, or nil. A read capped at one byte
   /// is the probe: it answers `.tooLarge` for any longer file without sending it, and fails for
-  /// anything missing, refused or outside the workroom.
+  /// anything missing, refused or outside the workroom. A candidate written with a `..` is
+  /// resolved on the host first (#327), so `link/../file.rb` is the file beside the link's target.
   func remoteFile(_ word: String, cwd: String?, target: TerminalTarget) async
     -> TerminalLinkOpener.PathCandidate?
   {
@@ -2258,11 +2259,25 @@ final class TerminalSessions: ObservableObject {
     let candidates = TerminalLinkOpener.remoteCandidates(for: word, cwd: cwd, root: target.path)
     guard !candidates.isEmpty, let files = try? await remoteFiles(location) else { return nil }
     for candidate in candidates {
+      var path = candidate.path
       do {
-        _ = try await files.read(path: candidate.path, symlinks: .followWithinRoot, maxBytes: 1)
-        return candidate
-      } catch FileServiceError.tooLarge {
-        return candidate
+        if let onHost = candidate.onHost {
+          do {
+            path = try await files.resolve(path: onHost)
+          } catch FileServiceError.failed(let message)
+            where message == AgentFileProvider.unknownMethod
+          {
+            // An agent from before `resolve`: probe the lexical path, as every agent did before
+            // #327. Any other failure (busy, unreadable, a loop) skips the candidate below, since
+            // the lexical path is the wrong file whenever the host's answer would differ.
+          }
+        }
+        let found = TerminalLinkOpener.PathCandidate(
+          path: path, line: candidate.line, column: candidate.column)
+        do {
+          _ = try await files.read(path: path, symlinks: .followWithinRoot, maxBytes: 1)
+        } catch FileServiceError.tooLarge {}
+        return found
       } catch is FileServiceError {
         // About this path: missing, refused, or an error reading it (too long, not a directory
         // on the way). The next candidate, `file.rb` from `file.rb:12`, may still be there. An

@@ -71,6 +71,10 @@ protocol FileProviding: Sendable {
   /// `maxBytes` is a ceiling the READ enforces (`.tooLarge`), not a hint.
   func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data
 
+  /// The repository-relative path `path` names once resolved on the host, through any symlink on
+  /// the way (#327). `path` may hold `..`, but never one that climbs above the root as written.
+  func resolve(path: String) async throws -> String
+
   /// Subscribe to changes under `root`. `nil` means this provider cannot watch — the native one —
   /// and the caller uses local FSEvents instead.
   func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
@@ -96,6 +100,14 @@ struct NativeFileProvider: FileProviding {
     return try await runBlocking {
       try Self.readVerified(root: root, relative: path, symlinks: symlinks, maxBytes: maxBytes)
     }
+  }
+
+  /// Only a remote pane resolves on the host; a local pane's ⌘-click has this Mac's filesystem.
+  ///
+  /// ponytail: unimplemented natively, since nothing local calls it. Port the agent's
+  /// `resolve_path` here if a local caller ever needs it.
+  func resolve(path: String) async throws -> String {
+    throw FileServiceError.failed("Resolving a path is only done on a remote host.")
   }
 
   func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
@@ -215,6 +227,14 @@ struct LocalFallbackFileProvider: FileProviding {
     }
   }
 
+  func resolve(path: String) async throws -> String {
+    do {
+      return try await primary.resolve(path: path)
+    } catch is HostConnectionError {
+      return try await fallback.resolve(path: path)
+    }
+  }
+
   func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
     -> FileWatchHandle?
   { try await primary.watch(root: root, onEvent: onEvent) }
@@ -235,6 +255,7 @@ struct UnavailableFileProvider: FileProviding {
   func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
     throw failure
   }
+  func resolve(path: String) async throws -> String { throw failure }
   func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
     -> FileWatchHandle?
   { throw failure }
@@ -256,6 +277,9 @@ struct HostFileProvider: FileProviding {
     try await manager.perform(on: lease) {
       try await service.read(path: path, symlinks: symlinks, maxBytes: maxBytes)
     }
+  }
+  func resolve(path: String) async throws -> String {
+    try await manager.perform(on: lease) { try await service.resolve(path: path) }
   }
   func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
     -> FileWatchHandle?

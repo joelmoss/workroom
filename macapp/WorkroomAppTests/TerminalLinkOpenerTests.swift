@@ -568,9 +568,10 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(Array(found.path.utf8), Array(name.utf8))
   }
 
-  /// What the host is sent never has a `.` or `..` component: the agent refuses such a path
-  /// before it opens anything (`vcs::relative`), so a parent traversal is resolved here. Sent as
-  /// written, every `../file.rb` click opened nothing (found in review).
+  /// What a read is sent never has a `.` or `..` component: the agent refuses such a path before
+  /// it opens anything (`vcs::relative`), so a parent traversal is also resolved here. Sent to a
+  /// read as written, every `../file.rb` click opened nothing (found in review). The `..` goes to
+  /// the host's `resolve` instead (#327), as `onHost`, and only when it stays in the workroom.
   func testARemoteLinkNeverSendsTheHostAParentComponent() {
     let root = "/home/workroom/repo"
     for (link, cwd) in [
@@ -586,6 +587,73 @@ final class TerminalLinkOpenerTests: XCTestCase {
     }
     XCTAssertEqual(
       TerminalLinkOpener.remoteCandidates(for: "link/../../../out.rb", cwd: root, root: root), [])
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(for: "link/../file.rb:3", cwd: root, root: root).last,
+      .init(path: "file.rb", line: 3, column: nil, onHost: "link/../file.rb"))
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(for: "../x.txt", cwd: "\(root)/lib", root: root).first?
+        .onHost, "lib/../x.txt")
+    // No `..`, nothing to resolve; and one that climbs out of the root as written and back in is
+    // only resolved here, since the agent refuses it before any lookup.
+    XCTAssertNil(
+      TerminalLinkOpener.remoteCandidates(for: "a/b.rb", cwd: root, root: root).first?.onHost)
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(for: "../repo/x.rb", cwd: root, root: root),
+      [.init(path: "x.rb", line: nil, column: nil)])
+    // Value: protects=the host is only asked to resolve a path that starts at the workroom root as
+    // written, so a click from a cwd outside it never sends the host a path cut from the middle
+    // (`workroom/repo/link/../x.rb`), which it would join to the root and read as another file;
+    // fails_when=`onHost` is computed without checking that the written path starts at the root;
+    // why_new=the cases above all start at the root, so the check is never false there; seam=none
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(
+        for: "../home/workroom/repo/link/../x.rb", cwd: "/srv", root: root),
+      [.init(path: "x.rb", line: nil, column: nil)])
+  }
+
+  /// #327: `link/../file.rb` is the file beside the link's TARGET, which the host resolves. An
+  /// agent from before `resolve` answers it as unsupported, and the click falls back to the
+  /// lexical path, as before. A host that says the path is not there is believed.
+  @MainActor
+  func testARemoteParentTraversalIsResolvedOnTheHost() async throws {
+    let target = TerminalTarget(
+      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
+      remoteHost: UUID())
+    let sessions = TerminalSessions()
+    func provider(resolved: [String: String] = [:], failing: [String: Error] = [:])
+      -> (RepositoryLocation) async throws -> FileProviding
+    {
+      { location in
+        HostFiles(
+          context: FileContext(location: location, sharedLocation: nil),
+          files: ["nested/file.rb": Data("x\n".utf8), "file.rb": Data("decoy\n".utf8)],
+          failing: failing, resolved: resolved)
+      }
+    }
+
+    sessions.remoteFiles = provider(resolved: ["link/../file.rb": "nested/file.rb"])
+    let resolved = await sessions.remoteFile("link/../file.rb:4", cwd: nil, target: target)
+    XCTAssertEqual(resolved, .init(path: "nested/file.rb", line: 4, column: nil))
+
+    sessions.remoteFiles = provider(failing: [
+      "link/../file.rb": FileServiceError.failed(AgentFileProvider.unknownMethod)
+    ])
+    let older = await sessions.remoteFile("link/../file.rb", cwd: nil, target: target)
+    XCTAssertEqual(older, .init(path: "file.rb", line: nil, column: nil))
+
+    sessions.remoteFiles = provider()
+    let missing = await sessions.remoteFile("link/../file.rb", cwd: nil, target: target)
+    XCTAssertNil(missing, "the decoy beside the link opened after the host found nothing")
+
+    // Busy, or an error resolving (a link into an unreadable directory, a loop), is not an agent
+    // that can't resolve: the decoy stays shut.
+    for failure in ["too many reads in flight", "Permission denied (os error 13)"] {
+      sessions.remoteFiles = provider(failing: [
+        "link/../file.rb": FileServiceError.failed(failure)
+      ])
+      let failed = await sessions.remoteFile("link/../file.rb", cwd: nil, target: target)
+      XCTAssertNil(failed, "the decoy opened after the host failed with \(failure)")
+    }
   }
 
   /// Only what the host's file service can read: nothing outside the workroom's root, no `~` (this
@@ -856,6 +924,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
       if path == "slow.rb" { try await Task.sleep(for: .milliseconds(500)) }
       return try await inner.read(path: path, symlinks: symlinks, maxBytes: maxBytes)
     }
+    func resolve(path: String) async throws -> String { try await inner.resolve(path: path) }
     func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
       -> FileWatchHandle?
     { nil }
@@ -882,17 +951,31 @@ final class TerminalLinkOpenerTests: XCTestCase {
 struct HostFiles: FileProviding {
   let context: FileContext
   let files: [String: Data]
-  /// Paths whose read fails with this error, before `files` is consulted.
+  /// Paths whose read or resolve fails with this error, before `files` is consulted.
   var failing: [String: Error] = [:]
+  /// What `resolve` answers, by the path it is sent. Anything else is not found.
+  var resolved: [String: String] = [:]
 
   func list() async throws -> CommandResult {
     CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
   }
   func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
+    // The real agent refuses these before it opens anything (`vcs::relative`).
+    if path.split(separator: "/", omittingEmptySubsequences: false).contains(where: {
+      $0 == ".." || $0 == "." || $0.isEmpty
+    }) {
+      XCTFail("a read was sent \(path)")
+      throw FileServiceError.failed("invalid relative file path")
+    }
     if let error = failing[path] { throw error }
     guard let data = files[path] else { throw FileServiceError.notFound(path) }
     guard data.count <= maxBytes else { throw FileServiceError.tooLarge }
     return data
+  }
+  func resolve(path: String) async throws -> String {
+    if let error = failing[path] { throw error }
+    guard let resolved = resolved[path] else { throw FileServiceError.notFound(path) }
+    return resolved
   }
   func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
     -> FileWatchHandle?

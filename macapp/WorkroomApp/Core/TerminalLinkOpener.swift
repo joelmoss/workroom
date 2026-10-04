@@ -304,9 +304,11 @@ enum TerminalLinkOpener {
       guard !candidate.path.hasPrefix("~") else { return nil }
       let joined =
         candidate.path.hasPrefix("/") ? parts(candidate.path) : baseParts + parts(candidate.path)
-      // `..` is resolved here, lexically: the agent refuses any path with a `.` or `..`
-      // component before it opens anything (`vcs::relative`). The cost is a symlink before the
-      // `..`: `link/../file.rb` names the file beside the link, not beside its target.
+      // `..` is resolved here, lexically, for the containment check and for an agent that
+      // predates resolving. `link/../file.rb` names the file beside the link's TARGET, which only
+      // the host knows (#327), so a `..` that stays inside the workroom as written also goes to
+      // the host, as `onHost`. `read` itself never gets a `..`: the agent refuses one there
+      // before it opens anything (`vcs::relative`).
       var resolved: [Substring] = []
       for part in joined {
         if part == ".." { _ = resolved.popLast() } else { resolved.append(part) }
@@ -314,7 +316,18 @@ enum TerminalLinkOpener {
       guard resolved.count > rootParts.count, resolved.starts(with: rootParts) else { return nil }
       let relative = resolved.dropFirst(rootParts.count).joined(separator: "/")
       guard !relative.isEmpty, seen.insert(relative).inserted else { return nil }
-      return PathCandidate(path: relative, line: candidate.line, column: candidate.column)
+      var onHost: String?
+      if joined.starts(with: rootParts) {
+        let written = joined.dropFirst(rootParts.count)
+        var depth = 0
+        for part in written {
+          depth += part == ".." ? -1 : 1
+          if depth < 0 { break }
+        }
+        if depth >= 0, written.contains("..") { onHost = written.joined(separator: "/") }
+      }
+      return PathCandidate(
+        path: relative, line: candidate.line, column: candidate.column, onHost: onHost)
     }
   }
 
@@ -384,6 +397,10 @@ enum TerminalLinkOpener {
     let path: String
     let line: Int?
     let column: Int?
+    /// A remote candidate written with a `..` (#327): the workroom-relative path with the `..`
+    /// still in it, for the host to resolve through any symlink before it. `path` is the same
+    /// path resolved here, lexically, for an agent that predates resolving.
+    var onHost: String? = nil
   }
 
   /// Candidate file paths to probe for `path`, in priority order: the literal first, then with the

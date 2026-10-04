@@ -215,6 +215,14 @@ final class RemoteHostIntegrationTests: XCTestCase {
     // A parent traversal reaches the real agent as a path it accepts: it refuses any `..`.
     let parent = await sessions.remoteFile("../file", cwd: "\(path)/lib", target: target)
     XCTAssertEqual(parent, .init(path: "file", line: nil, column: nil))
+    // #327: a symlink before the `..` is followed on the host, so this is the file beside the
+    // link's target, not the decoy beside the link.
+    try onHost(
+      fixture,
+      "mkdir -p \(path)/nested/dir && echo hi > \(path)/nested/target.rb"
+        + " && echo decoy > \(path)/target.rb && ln -s nested/dir \(path)/link")
+    let throughLink = await sessions.remoteFile("link/../target.rb:2", cwd: path, target: target)
+    XCTAssertEqual(throughLink, .init(path: "nested/target.rb", line: 2, column: nil))
   }
 
   /// A failed remote write is classified from the HOST's disk (#229): a leftover `index.lock` there
