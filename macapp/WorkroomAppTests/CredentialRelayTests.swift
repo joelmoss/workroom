@@ -192,9 +192,8 @@ final class CredentialRelayTests: XCTestCase {
       return XCTFail("connect \(errno)")
     }
     defer { Darwin.close(socket) }
-    // The relay may close before it has read all of this: an EPIPE, not a signal that ends the run.
-    var on: Int32 = 1
-    setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+    // The relay may close before it has read all of this: an EPIPE, not a signal that ends the run,
+    // since `LoopbackSocket.connect` sets `SO_NOSIGPIPE`.
     let request =
       "\(secret)\nprotocol=https\nhost=github.com\n"
       + String(repeating: "x", count: CredentialRelay.maxRequest) + "\n\n"
