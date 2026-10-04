@@ -2181,38 +2181,22 @@ final class TerminalSessions: ObservableObject {
 
   // MARK: Remote pane links (#254, C7)
 
-  /// How a remote pane reaches its host's files, connecting the host when `connect` says so: a
-  /// click does, as a deliberate act; a hover never does, as no passive read of a host does
-  /// (`HostConnectionManager.workingDirectory`). Swapped by tests.
-  var remoteFiles: (RepositoryLocation, _ connect: Bool) async throws -> FileProviding = {
-    location, connect in
-    guard connect else {
-      return try await HostConnectionManager.shared.files(
-        context: FileContext(location: location, sharedLocation: nil))
-    }
-    return try await RepositoryRouter.shared.files(for: location)
+  /// How a remote pane reaches its host's files: through the router, which connects the host, since
+  /// only a click asks and a click is a deliberate act. Swapped by tests.
+  var remoteFiles: (RepositoryLocation) async throws -> FileProviding = {
+    try await RepositoryRouter.shared.files(for: $0)
   }
-
-  // ponytail: cleared whole at `remoteHoverLimit` entries; an LRU if hovering ever thrashes it.
-  private static let remoteHoverLimit = 256
-  /// What the host said about a word in a remote pane, keyed by target, host cwd and word: nil
-  /// while its probe is out, and `unanswered` when the probe got no answer. The hover callback is
-  /// synchronous and is also the ⌘-click's gate (`GhosttySurfaceView.mouseDown`), and the probe is
-  /// a round trip, so an answer can't wait.
-  private var remoteHoverAnswers:
-    [String: (found: Bool?, at: ContinuousClock.Instant, unanswered: Bool)] = [:]
-  /// How long a host's answer stands before a hover asks again: a file can appear. Swapped by
-  /// tests.
-  var remoteHoverTTL: Duration = .seconds(3)
-  /// How long a probe that got no answer (no connection, an agent busy with other reads) is held
-  /// as "no": briefly, since it says nothing about the file, but held, so a host that is out of
-  /// reach makes the gate fall through rather than take every ⌘-click.
-  var remoteHoverRetry: Duration = .milliseconds(500)
 
   /// ⌘-click in a remote pane resolves on the HOST (C7): against the shell's directory there, as
   /// its agent reports it (`hostCwd`), and through the host's file service. The file opens in the
   /// in-app viewer, since no editor on this Mac can open a file on another machine. Web URLs still
   /// go to this Mac's browser.
+  ///
+  /// The ⌘-hover cursor is also the ⌘-click's gate (`GhosttySurfaceView.mouseDown`), and it is
+  /// synchronous, so it can't ask the host. It decides from the word alone
+  /// (`TerminalLinkOpener.looksLikeRemotePath`), and the click asks the host. Gating on a cache
+  /// of the host's answers regressed on every review of #254: it lost the click made straight
+  /// after pressing ⌘, took every click during an outage, and let hung probes pile up.
   private func wireRemoteLinks(
     _ view: GhosttySurfaceView, tab tabID: TerminalTab.ID, target: TerminalTarget
   ) {
@@ -2220,7 +2204,8 @@ final class TerminalSessions: ObservableObject {
       self?.openRemoteFile(word, tab: tabID, target: target)
     }
     view.resolveCmdHoverFile = { [weak self] word in
-      self?.remoteFileExists(word, tab: tabID, target: target) ?? false
+      TerminalLinkOpener.looksLikeRemotePath(
+        word, cwd: self?.hostCwd(of: tabID, in: target.id), root: target.path)
     }
     view.onOpenURL = { [weak self] url in
       if TerminalLinkOpener.isSystemHandledURL(url) {
@@ -2251,78 +2236,31 @@ final class TerminalSessions: ObservableObject {
     }
   }
 
-  /// The ⌘-hover cursor and the ⌘-click gate. A word the host has answered for gets that answer
-  /// while it is fresh. Any other word that could name a file in the workroom counts as one while
-  /// its probe is out, so a ⌘-click made before the answer reaches `openRemoteFile`, which asks the
-  /// host again; answering "no" until then lost every click made straight after pressing ⌘. The
-  /// cost: such a click on a word that turns out to be plain text is consumed and opens nothing.
-  /// A URL or a path outside the workroom is never a candidate, so it still reaches libghostty.
-  func remoteFileExists(_ word: String, tab tabID: TerminalTab.ID, target: TerminalTarget) -> Bool {
-    let cwd = hostCwd(of: tabID, in: target.id)
-    guard !TerminalLinkOpener.remoteCandidates(for: word, cwd: cwd, root: target.path).isEmpty
-    else { return false }
-    let key = [target.id, cwd ?? "", word].joined(separator: "\u{0}")
-    if let answer = remoteHoverAnswers[key],
-      ContinuousClock.now - answer.at < (answer.unanswered ? remoteHoverRetry : remoteHoverTTL)
-    {
-      return answer.found ?? true
-    }
-    if remoteHoverAnswers.count >= Self.remoteHoverLimit { remoteHoverAnswers.removeAll() }
-    remoteHoverAnswers[key] = (nil, .now, false)
-    Task { [weak self] in
-      guard let self else { return }
-      let probe = await probeRemote(word, cwd: cwd, target: target, connect: false)
-      switch probe {
-      case .found: remoteHoverAnswers[key] = (true, .now, false)
-      case .absent: remoteHoverAnswers[key] = (false, .now, false)
-      case .unknown: remoteHoverAnswers[key] = (false, .now, true)
-      }
-    }
-    return true
-  }
-
-  /// What a probe of the host found: a file, no file among the candidates, or no answer.
-  enum RemoteProbe: Equatable {
-    case found(TerminalLinkOpener.PathCandidate)
-    case absent
-    case unknown
-  }
-
-  /// The first of `word`'s candidates that is a file on the host, or nil, connecting the host if it
-  /// must: the click's question.
+  /// The first of `word`'s candidates that is a file on the host, or nil. A read capped at one byte
+  /// is the probe: it answers `.tooLarge` for any longer file without sending it, and fails for
+  /// anything missing, refused or outside the workroom.
   func remoteFile(_ word: String, cwd: String?, target: TerminalTarget) async
     -> TerminalLinkOpener.PathCandidate?
   {
-    guard case .found(let file) = await probeRemote(word, cwd: cwd, target: target, connect: true)
-    else { return nil }
-    return file
-  }
-
-  /// A read capped at one byte is the probe: it answers `.tooLarge` for any longer file without
-  /// sending it, and fails for anything missing, refused or outside the workroom.
-  func probeRemote(_ word: String, cwd: String?, target: TerminalTarget, connect: Bool) async
-    -> RemoteProbe
-  {
-    guard let location = target.remoteLocation else { return .absent }
+    guard let location = target.remoteLocation else { return nil }
     let candidates = TerminalLinkOpener.remoteCandidates(for: word, cwd: cwd, root: target.path)
-    guard !candidates.isEmpty else { return .absent }
-    guard let files = try? await remoteFiles(location, connect) else { return .unknown }
+    guard !candidates.isEmpty, let files = try? await remoteFiles(location) else { return nil }
     for candidate in candidates {
       do {
         _ = try await files.read(path: candidate.path, symlinks: .followWithinRoot, maxBytes: 1)
-        return .found(candidate)
+        return candidate
       } catch FileServiceError.tooLarge {
-        return .found(candidate)
+        return candidate
       } catch FileServiceError.notFound, FileServiceError.refused {
         continue
       } catch {
         // The host, not the candidate: the next one would fail the same way. That includes an
         // agent turning the read away as busy (`file.rs`, `MAX_CONCURRENT_READS`).
         NSLog("Workroom: probing the host for %@: %@", candidate.path, "\(error)")
-        return .unknown
+        return nil
       }
     }
-    return .absent
+    return nil
   }
 
   /// Reconstruct a minimal `TerminalTarget` from its id for the `onFocused` callback (which only

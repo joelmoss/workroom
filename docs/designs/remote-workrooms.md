@@ -1724,18 +1724,17 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     opens in the in-app viewer as the workroom's preview tab, since no editor on the Mac can open
     a file on another machine. Web URLs still go to the Mac's browser.
   - **The ⌘-click gate.** `GhosttySurfaceView.mouseDown` passes a ⌘-click on only when the
-    synchronous `resolveCmdHoverFile` says the word is a file, and the host's answer is a round
-    trip. So a word that could name a file in the workroom passes while its probe is out, and the
-    click then asks the host itself. A first version answered "no" until the probe came back,
-    which lost every click made straight after pressing ⌘ (found in review). An answer stands for
-    3 s (`remoteHoverTTL`), so a file made after its word was hovered becomes clickable. The cost:
-    a ⌘-click on a plain word before its answer arrives is consumed and opens nothing. A URL or a
-    path outside the workroom is never a candidate, so it still reaches libghostty. A hover's probe
-    never connects the host, as no passive read of a host does; only the click's probe goes
-    through `RepositoryRouter`, which connects it. A probe that gets no answer (no connection, or
-    the agent turning the read away as busy past `MAX_CONCURRENT_READS`) is held as "no" for only
-    0.5 s (`remoteHoverRetry`): long enough that a host out of reach makes the gate fall through
-    rather than take every ⌘-click, short enough that the next hover soon asks again.
+    synchronous `resolveCmdHoverFile` says the word is a file, and only the host knows, a round
+    trip away. So the gate decides from the word alone (`TerminalLinkOpener.looksLikeRemotePath`):
+    a candidate in the workroom that has a `/`, a `name.ext` or a `:line` passes, and the click
+    asks the host, connecting it if need be (`RepositoryRouter`). A hover never asks the host.
+    The costs: a path-shaped word with no file behind it shows the hand and its click opens nothing
+    (logged), and a bare name with none of the three (`Gemfile`) isn't clickable in a remote pane.
+    A URL or a path outside the workroom never passes, so it still reaches libghostty. This was
+    first built as a cache of the host's answers behind the gate, and each of the three review
+    passes found a new failure in it: a click made straight after pressing ⌘ lost, every click
+    taken during an outage, and probes against a dead link piling up while the gate held "yes".
+    The owner chose the gate that needs no host (decided 2026-10-04).
   - **Ports.** `PortForwardingModel` is one model per host (`model(for:)`), kept for the launch,
     and the inspector's Ports section shows the selected workroom's host. A remote workroom the
     app can't reach shows no Ports section, rather than the Mac's list. A forward never connects a

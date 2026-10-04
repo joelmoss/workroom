@@ -205,7 +205,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let target = TerminalTarget(
       id: "remote", title: "remote", path: path, unavailability: .remote, remoteHost: id)
     let sessions = TerminalSessions()
-    sessions.remoteFiles = { location, _ in
+    sessions.remoteFiles = { location in
       try connection.files(context: FileContext(location: location, sharedLocation: nil))
     }
     let found = await sessions.remoteFile("only-here.rb:1", cwd: "\(path)/lib", target: target)

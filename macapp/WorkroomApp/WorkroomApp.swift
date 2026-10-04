@@ -754,9 +754,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // Stop every window's run commands, not just the focused one's.
       registry.gracefullyStopAllWindows(timeout: 5) { group.leave() }
     }
-    // A "Keep awake" clicked moments before quitting (issue #208): the card cleared on the click,
-    // the request may still be reconnecting. Bounded; a box the user asked to keep awake is worth
-    // two seconds of a quit.
+    // A "Keep awake" clicked moments before quitting (issues #208, #254): the card cleared on the
+    // click, the request may still be reconnecting. Bounded, this Mac's and each remote host's at
+    // once (`WakefulnessModel.drainAllKeeps`): a box the user asked to keep awake is worth a few
+    // seconds of a quit.
     group.enter()
     Task {
       await WakefulnessModel.drainAllKeeps()
