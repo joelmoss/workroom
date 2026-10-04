@@ -371,7 +371,8 @@ final class ReverseForward: @unchecked Sendable {
   }
 
   /// How long one claimed connection waits for the target. A loopback connect is refused at once
-  /// when nothing listens; this bounds only a target whose backlog is full. Under the agent's 5 s
+  /// when nothing listens, and reset at once when the target's accept queue is full
+  /// (`LoopbackSocket.connect`); this bounds a target that never answers. Under the agent's 5 s
   /// `PENDING_TIMEOUT`, so a slow target does not lose the claim to the agent's expiry.
   static let dialTimeout: TimeInterval = 3
 
