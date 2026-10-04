@@ -119,33 +119,59 @@ final class LoopbackListener: @unchecked Sendable {
   /// Waits for `GET /callback?code=…&attempt=…`, answering anything else (a favicon request) with
   /// a 404. Cancelling the task ends the wait within a second. It shuts the socket down rather than
   /// closing it: a descriptor closed under a poll could be reused by another open, and accepted on.
+  ///
+  /// Every connection is read at once, each against its own deadline. One at a time, a burst of
+  /// idle connections queued ahead of the browser's would hold it back 5 s each, and the accept
+  /// queue holds 128: longer than the whole sign-in. One thread polls them all, so a burst takes no
+  /// threads either, and past `maxPending` the oldest is dropped.
   func callback(timeout: TimeInterval) async throws -> LoopbackCallback {
     let socket = self.socket
     let deadline = Date().addingTimeInterval(timeout)
     return try await withTaskCancellationHandler {
       try await runBlocking {
+        var pending: [Request] = []
+        defer { for request in pending { Darwin.close(request.connection) } }
         while true {
           if self.lock.withLock({ self.cancelled }) { throw CancellationError() }
-          let remaining = deadline.timeIntervalSinceNow
-          guard remaining > 0 else {
+          let now = Date()
+          guard deadline > now else {
             throw BrokerError.signIn("Signing in took too long. Start again.")
           }
-          var watched = pollfd(fd: socket, events: Int16(POLLIN), revents: 0)
-          let ready = poll(&watched, 1, Int32(min(remaining, 1) * 1000))
+          pending.removeAll { request in
+            guard request.deadline <= now else { return false }
+            Self.answerNotFound(request.connection)
+            return true
+          }
+          let wait = ([deadline, now.addingTimeInterval(1)] + pending.map(\.deadline)).min()!
+          var watched =
+            [pollfd(fd: socket, events: Int16(POLLIN), revents: 0)]
+            + pending.map { pollfd(fd: $0.connection, events: Int16(POLLIN), revents: 0) }
+          let ready = poll(
+            &watched, nfds_t(watched.count), Int32(max(0, wait.timeIntervalSince(now)) * 1000))
           if ready < 0, errno == EINTR { continue }
-          guard ready >= 0, watched.revents & Int16(POLLNVAL) == 0 else {
+          guard ready >= 0, watched[0].revents & Int16(POLLNVAL) == 0 else {
             throw CancellationError()
           }
-          guard ready > 0 else { continue }
-          let connection = accept(socket, nil, nil)
-          guard connection >= 0 else { continue }
-          guard let callback = Self.read(connection) else { continue }
-          // A request that arrived as Cancel was pressed is not accepted.
-          if self.lock.withLock({ self.cancelled }) {
-            callback.redirect(to: URL(string: "about:blank")!)
-            throw CancellationError()
+          // Backwards, so a removal leaves the indices still to visit in place.
+          for index in pending.indices.reversed() where watched[index + 1].revents != 0 {
+            guard let outcome = pending[index].receive() else { continue }
+            pending.remove(at: index)
+            guard let callback = outcome else { continue }
+            // A request that arrived as Cancel was pressed is not accepted.
+            if self.lock.withLock({ self.cancelled }) {
+              callback.redirect(to: URL(string: "about:blank")!)
+              throw CancellationError()
+            }
+            return callback
           }
-          return callback
+          if watched[0].revents & Int16(POLLIN) != 0 {
+            let connection = accept(socket, nil, nil)
+            guard connection >= 0 else { continue }
+            if pending.count >= Self.maxPending {
+              Darwin.close(pending.removeFirst().connection)
+            }
+            pending.append(Request(connection))
+          }
         }
       }
     } onCancel: {
@@ -154,47 +180,62 @@ final class LoopbackListener: @unchecked Sendable {
     }
   }
 
-  /// Reads one request's head. A `/callback` with both parameters is returned with its connection
-  /// open; anything else is answered 404 and closed.
-  private static func read(_ connection: Int32) -> LoopbackCallback? {
-    var timeout = timeval(tv_sec: 5, tv_usec: 0)
-    setsockopt(
-      connection, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-    var noSignal: Int32 = 1
-    setsockopt(
-      connection, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
-    var head = Data()
-    var buffer = [UInt8](repeating: 0, count: 4096)
-    // 5 s for the whole head, not per read: a client trickling a byte at a time must not hold the
-    // one-at-a-time accept loop while the real redirect waits in the backlog.
+  /// Connections being read at once. A browser's real request completes as it lands, so dropping
+  /// the oldest past this keeps idle ones from crowding it out without spending a descriptor each.
+  static let maxPending = 32
+
+  /// One connection's request head, read as it arrives.
+  private struct Request {
+    let connection: Int32
+    /// 5 s for the whole head, not per read: a client trickling a byte at a time gets no longer.
     let deadline = Date().addingTimeInterval(5)
-    while head.count < 16 * 1024, head.range(of: Data("\r\n\r\n".utf8)) == nil,
-      deadline.timeIntervalSinceNow > 0
-    {
-      let count = recv(connection, &buffer, buffer.count, 0)
-      guard count > 0 else { break }
-      head.append(buffer, count: count)
+    private var head = Data()
+
+    init(_ connection: Int32) {
+      self.connection = connection
+      _ = fcntl(connection, F_SETFL, fcntl(connection, F_GETFL) | O_NONBLOCK)
+      var noSignal: Int32 = 1
+      setsockopt(
+        connection, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
     }
-    // Only a complete request head: one cut off by the deadline is not a request.
-    let complete = head.range(of: Data("\r\n\r\n".utf8)) != nil
-    let line =
-      complete
-      ? String(decoding: head, as: UTF8.self).components(separatedBy: "\r\n").first ?? "" : ""
-    let parts = line.split(separator: " ")
-    if parts.count >= 2, parts[0] == "GET",
-      let url = URLComponents(string: "http://127.0.0.1" + parts[1]), url.path == "/callback"
-    {
+
+    /// What has arrived. nil while the head is still coming; then `.some` of a `/callback` with
+    /// both parameters, its connection open and blocking again, or `.some(nil)` for anything else,
+    /// answered 404 and closed.
+    mutating func receive() -> LoopbackCallback?? {
+      var buffer = [UInt8](repeating: 0, count: 4096)
+      let count = recv(connection, &buffer, buffer.count, 0)
+      if count < 0, errno == EAGAIN || errno == EINTR { return nil }
+      if count > 0 { head.append(buffer, count: count) }
+      // Only a complete request head: one the client stopped short of is not a request.
+      let complete = head.range(of: Data("\r\n\r\n".utf8)) != nil
+      if count > 0, !complete, head.count < 16 * 1024 { return nil }
+      if complete, let callback = Self.callback(in: head, connection: connection) {
+        _ = fcntl(connection, F_SETFL, fcntl(connection, F_GETFL) & ~O_NONBLOCK)
+        return .some(callback)
+      }
+      LoopbackListener.answerNotFound(connection)
+      return .some(nil)
+    }
+
+    private static func callback(in head: Data, connection: Int32) -> LoopbackCallback? {
+      let line = String(decoding: head, as: UTF8.self).components(separatedBy: "\r\n").first ?? ""
+      let parts = line.split(separator: " ")
+      guard parts.count >= 2, parts[0] == "GET",
+        let url = URLComponents(string: "http://127.0.0.1" + parts[1]), url.path == "/callback"
+      else { return nil }
       let items = url.queryItems ?? []
       let value = { (name: String) in items.first { $0.name == name }?.value ?? "" }
       let attempt = value("attempt")
       let safe = attempt.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
-      if !value("code").isEmpty, !attempt.isEmpty, safe {
-        return LoopbackCallback(code: value("code"), attempt: attempt, connection: connection)
-      }
+      guard !value("code").isEmpty, !attempt.isEmpty, safe else { return nil }
+      return LoopbackCallback(code: value("code"), attempt: attempt, connection: connection)
     }
+  }
+
+  private static func answerNotFound(_ connection: Int32) {
     let notFound = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     _ = notFound.withCString { Darwin.send(connection, $0, strlen($0), 0) }
     Darwin.close(connection)
-    return nil
   }
 }
