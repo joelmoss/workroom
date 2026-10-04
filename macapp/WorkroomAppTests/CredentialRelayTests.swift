@@ -141,14 +141,11 @@ final class CredentialRelayTests: XCTestCase {
     let secret = try relay.secret(for: UUID())
     let port = try relay.localPort()
     for _ in 0..<30 {
-      // A burst like this can overrun the listen backlog for a moment, which refuses a connect;
-      // that's the kernel, not the relay, so it is tried again. The request below must still land.
-      var connected: Int32?
-      for _ in 0..<50 where connected == nil {
-        connected = LoopbackSocket.connect(port: port, timeout: 2)
-        if connected == nil { Thread.sleep(forTimeInterval: 0.01) }
+      // Connected once, not retried: the relay's accept queue holds a burst like this (#322). A
+      // retry here hid that queue being too short.
+      guard let socket = LoopbackSocket.connect(port: port, timeout: 2) else {
+        return XCTFail("connect \(errno)")
       }
-      guard let socket = connected else { return XCTFail("connect \(errno)") }
       _ = "x\n\n".withCString { send(socket, $0, 3, 0) }
       var linger = linger(l_onoff: 1, l_linger: 0)
       setsockopt(socket, SOL_SOCKET, SO_LINGER, &linger, socklen_t(MemoryLayout<linger>.size))
