@@ -286,6 +286,14 @@ pub fn hand_off(
     // be running, and none may start: every slot is taken until the exec, or until this returns.
     let _quiet = crate::vcs::Quiet::acquire(QUIET_TIMEOUT)
         .ok_or("a repository command is still running; try again when it finishes")?;
+    // A file lookup left behind at its deadline (#334) holds no permit, so `Quiet` doesn't wait for
+    // it, but the exec would: `execve` waits for every other thread to die, and one stuck in a FUSE
+    // request can't. The exec would then freeze every session on the host. Race-free: with `Quiet`
+    // held no request starts, and a resolve still waiting holds a permit, so the count can only
+    // fall from here. No timeout on this refusal: a timeout is what would let the exec through.
+    if crate::file::walks_left_behind() > 0 {
+        return Err("a file lookup is still stuck on a mount; try again when it returns".into());
+    }
     // A kill on its own thread holds `TERMINATING` until its shell is gone, so `frozen` already
     // keeps the exec out of its SIGHUP grace. What is left is its acknowledgement, written after:
     // an exec there loses it, and the app reads a kill that worked as one that failed (#283). So
