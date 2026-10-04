@@ -664,19 +664,6 @@ final class TerminalLinkOpenerTests: XCTestCase {
       failing: ["link/../file.rb:4": FileServiceError.failed("resolving timed out after 10s")])
     let timedOut = await sessions.remoteFile("link/../file.rb:4", cwd: nil, target: target)
     XCTAssertNil(timedOut, "a click went on to the next candidate after its resolve timed out")
-
-    // A candidate that resolves a DIFFERENT prefix is still probed: `:12` splits this word
-    // before its `..`, so the second candidate is plain `good.rb`, with no link to hang on.
-    sessions.remoteFiles = { location in
-      HostFiles(
-        context: FileContext(location: location, sharedLocation: nil),
-        files: ["good.rb": Data("x\n".utf8)],
-        failing: [
-          "good.rb:12/link/../t.rb": FileServiceError.failed("resolving timed out after 10s")
-        ])
-    }
-    let other = await sessions.remoteFile("good.rb:12/link/../t.rb", cwd: nil, target: target)
-    XCTAssertEqual(other, .init(path: "good.rb", line: 12, column: nil))
   }
 
   /// Only what the host's file service can read: nothing outside the workroom's root, no `~` (this

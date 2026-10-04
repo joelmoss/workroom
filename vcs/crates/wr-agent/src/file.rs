@@ -60,8 +60,8 @@ const MAX_CONCURRENT_READS: usize = 4;
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How a `resolve` answer that hit `RESOLVE_TIMEOUT` begins. The app matches it
-/// (`AgentFileProvider.resolveTimedOut`) and skips that click's other candidates through the same
-/// prefix, since they would hang the same way.
+/// (`AgentFileProvider.resolveTimedOut`) and ends that click: its other candidates resolve the same
+/// prefix, or read through the same link with no deadline (#343), and would hang the same way.
 const RESOLVE_TIMED_OUT: &str = "resolving timed out";
 
 /// Walks still running after their `resolve` gave up on them. A walk through a link onto a hung
@@ -505,8 +505,8 @@ pub(crate) fn walks_left_behind() -> usize {
 }
 
 /// `work`'s answer if it arrives within `timeout`, run on its own thread; otherwise an `Io` timeout
-/// (which the app takes as a hung prefix, `AgentFileProvider.resolveTimedOut`, not as an agent too
-/// old to resolve), with the thread left to finish on its own and counted in
+/// (which the app takes as the end of that click, `AgentFileProvider.resolveTimedOut`, not as an
+/// agent too old to resolve), with the thread left to finish on its own and counted in
 /// `ABANDONED_WALKS` until it does.
 ///
 /// The thread and this caller agree through one state word on which of them saw the deadline
