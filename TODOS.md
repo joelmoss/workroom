@@ -54,6 +54,25 @@ target or at a second listener answering the port.
 
 **Priority:** P0 (chosen at ship time on #327)
 
+### `a_relay_with_no_agent_fails_fast_and_says_so` flaked under load (vcs) — #334 ship follow-up
+
+**What:** The test (`vcs/crates/wr-agent/tests/remote_transport.rs:1236`) failed once with
+`assertion left == right failed: ".../wr-relay-none-<pid>/stale.sock"`, `left: Some(0)`,
+`right: Some(92)`: the relay, pointed at a socket file whose listener had been dropped, connected
+(exit 0) instead of reporting no agent (exit 92). Seen on `fix/334-resolve-deadline` (2026-10-04)
+while the full `make app-test` ran at the same time, starting agents of its own. Run alone it passed
+5 times out of 5, and the whole Rust suite passed straight after. The branch doesn't touch the relay,
+the transport or the test.
+
+**Why:** Either the test is flaky under load or the relay can mistake a stale socket for a live
+agent, and then the "no agent listening" error a supervisor relies on would be missed.
+
+**How to start:** Run the test in a loop while `make app-test` runs, and log what the relay
+connected to (the peer's pid). Check whether `Scratch::new`'s per-pid directory can collide with a
+path another process binds.
+
+**Priority:** P0 (chosen at ship time on #334)
+
 ## P1 — before GA
 
 ## P2 — perf, correctness, and the next VCS phase
