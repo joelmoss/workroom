@@ -762,6 +762,57 @@ final class TerminalLinkOpenerTests: XCTestCase {
         \.path), ["lib/a.rb"])
   }
 
+  /// A host that gives no answer (its connection is down, its agent busy) makes the gate fall
+  /// through rather than take every ⌘-click: the unanswered probe is held as "no", briefly, and
+  /// then the host is asked again. Holding nothing kept the gate at "yes" for a whole outage.
+  @MainActor
+  func testAnUnansweredHoverProbeFallsThroughThenAsksAgain() async throws {
+    let target = TerminalTarget(
+      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
+      remoteHost: UUID())
+    let disk = HostDisk()
+    disk.put("a.rb")
+    let reachable = Flag()
+    let sessions = TerminalSessions()
+    sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    sessions.recordUnrecognizedTool = { _ in }
+    sessions.remoteHoverTTL = .seconds(3600)
+    sessions.remoteHoverRetry = .seconds(3600)
+    sessions.remoteFiles = { location, _ in
+      let files = disk.probe()
+      guard reachable.value else { throw RepositoryRoutingError.unavailable(location.host) }
+      return HostFiles(context: FileContext(location: location, sharedLocation: nil), files: files)
+    }
+    let tab = sessions.addTab(for: target)
+    let view = try XCTUnwrap(sessions.view(forTab: tab.id, inTarget: target.id))
+    let gate = { (word: String) in view.resolveCmdHoverFile?(word) == true }
+
+    XCTAssertTrue(gate("a.rb"), "pending")
+    for _ in 0..<200 where gate("a.rb") { try await Task.sleep(for: .milliseconds(5)) }
+    XCTAssertFalse(gate("a.rb"), "an unreachable host held every ⌘-click")
+    XCTAssertEqual(disk.probes, 1)
+    // Once the short hold is over, the host is asked again; reachable now, it says yes.
+    reachable.value = true
+    sessions.remoteHoverRetry = .zero
+    XCTAssertTrue(gate("a.rb"))
+    sessions.remoteHoverRetry = .seconds(3600)
+    for _ in 0..<200 where disk.probes < 2 { try await Task.sleep(for: .milliseconds(5)) }
+    XCTAssertEqual(disk.probes, 2)
+    for _ in 0..<100 {
+      XCTAssertTrue(gate("a.rb"))
+      try await Task.sleep(for: .milliseconds(5))
+    }
+  }
+
+  private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    var value: Bool {
+      get { lock.withLock { flag } }
+      set { lock.withLock { flag = newValue } }
+    }
+  }
+
   /// What the host holds, changeable mid-test, and how many probes asked it.
   private final class HostDisk: @unchecked Sendable {
     private let lock = NSLock()
