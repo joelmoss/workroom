@@ -314,7 +314,7 @@ enum TerminalLinkOpener {
 
   /// Whether a remote pane's ⌘-hover cursor and ⌘-click gate pass `word` (#254), decided without
   /// the host: it names a candidate in the workroom (`remoteCandidates`) and looks like a path,
-  /// with a `/`, a `name.ext` or a `:line`. The click then asks the host. The costs: a path-shaped
+  /// with a `/`, a `name.ext` (a dotfile such as `.env` counts) or a `:line`. The click then asks the host. The costs: a path-shaped
   /// word with no file behind it shows the hand and its click opens nothing, and a bare name with
   /// none of the three (`Gemfile`) isn't clickable in a remote pane.
   static func looksLikeRemotePath(_ word: String, cwd: String?, root: String) -> Bool {
@@ -322,7 +322,7 @@ enum TerminalLinkOpener {
       !remoteCandidates(for: word, cwd: cwd, root: root).isEmpty
     else { return false }
     return path.contains("/")
-      || path.range(of: "[A-Za-z0-9_-]\\.[A-Za-z0-9]", options: .regularExpression) != nil
+      || path.range(of: "(^|[A-Za-z0-9_-])\\.[A-Za-z0-9]", options: .regularExpression) != nil
       || path.range(of: ":[0-9]", options: .regularExpression) != nil
   }
 
