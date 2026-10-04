@@ -1761,13 +1761,23 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     the Mac, as any `127.0.0.1` forward is; accepted for now, with peer-uid scoping tracked in #323.
   - **Path handling, from the final review.** A remote path is split into components, never run
     through `URL`: Foundation decomposes Unicode filenames (`é`, C3 A9, becomes `e` + U+0301,
-    65 CC 81), which a Linux host reads as another name. `..` is resolved here, lexically, because
-    the agent refuses any path with a `.` or `..` component before it opens anything
-    (`vcs::relative`); sending `..` through, as one review suggested, made every `../file` click
-    open nothing (caught on the PR). The cost: `link/../file.rb` names the file beside the link,
-    not beside its target. A newer click replaces the one before it, and an answer whose pane has
-    closed opens nothing. An error reading one path moves on to the next candidate; only a
-    transport failure stops the probe.
+    65 CC 81), which a Linux host reads as another name. A `read` is never sent a `.` or `..`
+    component: the agent refuses one before it opens anything (`vcs::relative`), and sending `..`
+    to a read, as one review suggested, made every `../file` click open nothing (caught on the PR).
+    A `..` goes to the File service's `resolve` instead (#327), which the agent answers with the
+    path resolved on the host, through any symlink before the last `..`, so `link/../file.rb` is
+    the file beside the link's target; what follows the last `..` is kept as written, so a link
+    there keeps its own name, as a plain click would. `resolve` refuses a path that climbs above
+    the root as written before any lookup; the Mac resolves such a path lexically. So it does any
+    `..` path for an agent that predates `resolve`, recognised by its exact reply to an unknown
+    method; any other failure (busy, unreadable, a loop) opens nothing rather than the lexical
+    path, which is the wrong file whenever the host's answer would differ. A `..` after a link
+    out of the workroom can still tell whether a path
+    beside the link's target exists, which the VCS service's `stat` already does for any path.
+    `resolve` shares `read`'s cap of four in flight, since a link can lead into a slow mount. A
+    newer click replaces the one before it, and an answer whose pane has closed opens nothing. An
+    error reading one path moves on to the next candidate; only a transport failure stops the
+    probe.
 
 ## Phase 0 Results
 

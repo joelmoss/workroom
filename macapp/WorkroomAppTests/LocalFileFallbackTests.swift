@@ -21,6 +21,9 @@ final class LocalFileFallbackTests: XCTestCase {
     func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
       try content.get()
     }
+    func resolve(path: String) async throws -> String {
+      String(decoding: try content.get(), as: UTF8.self)
+    }
     func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
       -> FileWatchHandle?
     { nil }
@@ -46,6 +49,8 @@ final class LocalFileFallbackTests: XCTestCase {
       XCTAssertEqual(listing.stdout, "native", "\(failure)")
       let data = try await files.read(path: "a", symlinks: .refuse, maxBytes: 1)
       XCTAssertEqual(data, Data("native".utf8), "\(failure)")
+      let resolved = try await files.resolve(path: "a/../b")
+      XCTAssertEqual(resolved, "native", "\(failure)")
     }
   }
 
@@ -69,6 +74,10 @@ final class LocalFileFallbackTests: XCTestCase {
       do {
         _ = try await files.read(path: "a", symlinks: .refuse, maxBytes: 1)
         XCTFail("\(answer) must propagate from read")
+      } catch { XCTAssertEqual("\(error)", "\(answer)") }
+      do {
+        _ = try await files.resolve(path: "a/../b")
+        XCTFail("\(answer) must propagate from resolve")
       } catch { XCTAssertEqual("\(error)", "\(answer)") }
     }
   }

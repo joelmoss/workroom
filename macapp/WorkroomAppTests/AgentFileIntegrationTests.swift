@@ -433,6 +433,75 @@ final class AgentFileIntegrationTests: XCTestCase {
     XCTAssertTrue(empty.isEmpty)
   }
 
+  // Value: protects=the app's `resolve` request and the agent's reply agree on the wire, and each
+  // refusal lands as the error the remote cmd-click acts on (#327): a link is followed on the
+  // host; a path out of the root is `.refused`; a missing one is `.notFound`; a path the agent will
+  // not look up is `.failed`, which the app answers by probing the lexical path as before;
+  // fails_when=the method name, the `path` key, or the agent's error tags drift from what
+  // `AgentFileProvider` decodes; why_new=the real-agent round trip in RemoteHostIntegrationTests
+  // skips without the ssh fixture, and no other test sends `resolve` to the shipped agent;
+  // seam=none
+  func testAResolveFollowsALinkOnTheAgentAndItsRefusalsKeepTheirKind() async throws {
+    let (connection, _) = try await connect()
+    let root = try gitRepo()
+    let fm = FileManager.default
+    try fm.createDirectory(
+      at: root.appendingPathComponent("nested/dir"), withIntermediateDirectories: true)
+    try "x\n".write(
+      to: root.appendingPathComponent("nested/file.rb"), atomically: true, encoding: .utf8)
+    try "decoy\n".write(
+      to: root.appendingPathComponent("file.rb"), atomically: true, encoding: .utf8)
+    try fm.createSymbolicLink(
+      atPath: root.appendingPathComponent("link").path, withDestinationPath: "nested/dir")
+    let outside = root.deletingLastPathComponent().appendingPathComponent(
+      "outside-\(UUID().uuidString)")
+    try fm.createDirectory(
+      at: outside.appendingPathComponent("dir"), withIntermediateDirectories: true)
+    roots.append(outside)
+    try "secret".write(
+      to: outside.appendingPathComponent("secret"), atomically: true, encoding: .utf8)
+    try fm.createSymbolicLink(
+      atPath: root.appendingPathComponent("out").path,
+      withDestinationPath: outside.appendingPathComponent("dir").path)
+    let files = try await agentFiles(root, connection: connection)
+
+    let resolved = try await files.resolve(path: "link/../file.rb")
+    XCTAssertEqual(resolved, "nested/file.rb", "the file beside the link's target, not the decoy")
+
+    func failure(_ path: String) async -> FileServiceError? {
+      do {
+        _ = try await files.resolve(path: path)
+        return nil
+      } catch { return error as? FileServiceError }
+    }
+    guard case .refused = await failure("out/../secret") else {
+      return XCTFail("a link out of the root must be refused")
+    }
+    guard case .notFound = await failure("nope/../file.rb") else {
+      return XCTFail("a missing directory before the `..` must be not found")
+    }
+    guard case .failed = await failure("../file.rb") else {
+      return XCTFail("a path climbing the root as written must not be looked up")
+    }
+  }
+
+  // Value: protects=the app tells an agent that predates `resolve` from one that failed, by the
+  // agent's own reply to a method it doesn't know; fails_when=the agent's wording drifts from
+  // `AgentFileProvider.unknownMethod`, so an old agent's clicks stop falling back; why_new=the
+  // unit tests throw the constant itself, so only the real agent can pin it; seam=none
+  func testTheAgentAnswersAnUnknownFileMethodWithTheTextTheAppMatches() async throws {
+    let (connection, _) = try await connect()
+    let root = try gitRepo()
+    let request = AgentFileRequest(method: "no-such-method", root: root.path)
+    do {
+      _ = try AgentFileReply<AgentFileSubscription>.decode(
+        await connection.fileRequest(request))
+      XCTFail("an unknown method was answered")
+    } catch FileServiceError.failed(let message) {
+      XCTAssertEqual(message, AgentFileProvider.unknownMethod)
+    }
+  }
+
   /// One matrix, run against BOTH providers: a check that exists on one path and not the other is the
   /// bug (the native path used to check a path and then open it, and never guarded against a FIFO).
   func testTheContainmentMatrixHoldsOnTheAgentPath() async throws {
