@@ -212,6 +212,9 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertEqual(found, .init(path: "lib/only-here.rb", line: 1, column: nil))
     let missing = await sessions.remoteFile("nowhere.rb", cwd: "\(path)/lib", target: target)
     XCTAssertNil(missing)
+    // A parent traversal reaches the real agent as a path it accepts: it refuses any `..`.
+    let parent = await sessions.remoteFile("../file", cwd: "\(path)/lib", target: target)
+    XCTAssertEqual(parent, .init(path: "file", line: nil, column: nil))
   }
 
   /// A failed remote write is classified from the HOST's disk (#229): a leftover `index.lock` there

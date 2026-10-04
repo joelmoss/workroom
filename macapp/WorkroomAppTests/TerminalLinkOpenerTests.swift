@@ -553,10 +553,9 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(
       TerminalLinkOpener.remoteCandidates(for: "\(root)/a/b.txt", cwd: "/", root: root).map(
         \.path), ["a/b.txt"])
-    // `..` stays in what the host is sent: it resolves it through any symlink on the way.
     XCTAssertEqual(
       TerminalLinkOpener.remoteCandidates(for: "../x.txt", cwd: "\(root)/lib", root: root).map(
-        \.path), ["lib/../x.txt"])
+        \.path), ["x.txt"])
   }
 
   /// A remote path reaches the host with the bytes it was written in. Foundation's URL
@@ -569,14 +568,22 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(Array(found.path.utf8), Array(name.utf8))
   }
 
-  /// `link/../file.rb` names the file beside the link's TARGET, which only the host can resolve,
-  /// so the `..` goes to the host; resolving it here opened `file.rb` at the root. Containment is
-  /// still judged here, on the lexical path, and again by the host on the file it opens.
-  func testARemoteLinkLeavesParentTraversalsToTheHost() {
+  /// What the host is sent never has a `.` or `..` component: the agent refuses such a path
+  /// before it opens anything (`vcs::relative`), so a parent traversal is resolved here. Sent as
+  /// written, every `../file.rb` click opened nothing (found in review).
+  func testARemoteLinkNeverSendsTheHostAParentComponent() {
     let root = "/home/workroom/repo"
-    XCTAssertEqual(
-      TerminalLinkOpener.remoteCandidates(for: "link/../file.rb", cwd: root, root: root).map(
-        \.path), ["link/../file.rb"])
+    for (link, cwd) in [
+      ("../x.txt", "\(root)/lib"), ("link/../file.rb", root), ("./a/./b.rb", root),
+      ("../lib/../y.rb:3", "\(root)/lib/deep"),
+    ] {
+      let candidates = TerminalLinkOpener.remoteCandidates(for: link, cwd: cwd, root: root)
+      XCTAssertFalse(candidates.isEmpty, link)
+      for candidate in candidates {
+        let parts = candidate.path.split(separator: "/", omittingEmptySubsequences: false)
+        XCTAssertFalse(parts.contains { $0 == ".." || $0 == "." || $0.isEmpty }, candidate.path)
+      }
+    }
     XCTAssertEqual(
       TerminalLinkOpener.remoteCandidates(for: "link/../../../out.rb", cwd: root, root: root), [])
   }
@@ -801,10 +808,10 @@ final class TerminalLinkOpenerTests: XCTestCase {
   }
 
   /// A newer remote ⌘-click replaces the one before it (#254): the host can take seconds, and a
-  /// slow answer must not retarget the preview after a faster one. Nor may an answer open a tab in
-  /// a workroom whose panes have all closed meanwhile.
+  /// slow answer must not retarget the preview after a faster one. Nor may an answer open anything
+  /// once the pane that asked has closed, even with other panes still open in the workroom.
   @MainActor
-  func testARemoteClickIsReplacedByTheNextAndDroppedForAClosedWorkroom() async throws {
+  func testARemoteClickIsReplacedByTheNextAndDroppedForAClosedPane() async throws {
     let target = TerminalTarget(
       id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
       remoteHost: UUID())
@@ -830,11 +837,14 @@ final class TerminalLinkOpenerTests: XCTestCase {
     try await Task.sleep(for: .milliseconds(800))
     XCTAssertEqual(opened(), "fast.rb", "a slower, older click retargeted the preview")
 
-    // Every pane closes while the host is still answering: nothing opens.
+    // The pane that asked closes while the host is still answering, with another pane still
+    // open in the workroom: nothing opens there.
+    let other = sessions.addTab(for: target)
     view.onCmdClickFile?("slow.rb")
-    for tab in sessions.tabs(for: target) { sessions.closeTab(tab.id, for: target) }
+    sessions.closeTab(tab.id, for: target)
     try await Task.sleep(for: .milliseconds(800))
-    XCTAssertTrue(sessions.tabs(for: target).isEmpty, "an answer reopened a closed workroom")
+    XCTAssertNotEqual(opened(), "slow.rb", "a closed pane's click opened a preview")
+    XCTAssertNotNil(sessions.tab(other.id, for: target))
   }
 
   /// `HostFiles` whose `slow.rb` takes half a second to answer.
