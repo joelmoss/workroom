@@ -530,4 +530,118 @@ final class TerminalLinkOpenerTests: XCTestCase {
       XCTAssertEqual(resolved?.line, line, "\(link) should carry its line")
     }
   }
+
+  // MARK: Remote panes (#254, C7)
+
+  /// A remote pane's link resolves against the HOST's paths, to a workroom-relative file, in the
+  /// local order: the literal first, then the decoration-stripped forms carrying their line.
+  func testARemoteLinkResolvesAgainstTheHostsDirectory() {
+    let root = "/home/workroom/repo"
+    let candidates = TerminalLinkOpener.remoteCandidates(
+      for: "app/user.rb:5:2", cwd: "\(root)/lib", root: root)
+    XCTAssertEqual(
+      candidates,
+      [
+        .init(path: "lib/app/user.rb:5:2", line: nil, column: nil),
+        .init(path: "lib/app/user.rb", line: 5, column: 2),
+      ])
+    // No cwd yet: the workroom's root.
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(for: "README.md", cwd: nil, root: root).map(\.path),
+      ["README.md"])
+    // An absolute path inside the workroom, and `..` back into it.
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(for: "\(root)/a/b.txt", cwd: "/", root: root).map(
+        \.path), ["a/b.txt"])
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(for: "../x.txt", cwd: "\(root)/lib", root: root).map(
+        \.path), ["x.txt"])
+  }
+
+  /// Only what the host's file service can read: nothing outside the workroom's root, no `~` (this
+  /// Mac's home), and no URL.
+  func testARemoteLinkOutsideTheWorkroomOrNotAPathGivesNothing() {
+    let root = "/home/workroom/repo"
+    for link in [
+      "/etc/passwd", "../../other/file.txt", "~/notes.txt", "https://example.com/a.rb",
+      "javascript:payload.command", "/home/workroom/repository/file",
+    ] {
+      XCTAssertEqual(
+        TerminalLinkOpener.remoteCandidates(for: link, cwd: root, root: root), [], link)
+    }
+  }
+
+  private struct HostFiles: FileProviding {
+    let context: FileContext
+    let files: [String: Data]
+
+    func list() async throws -> CommandResult {
+      CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
+    }
+    func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
+      guard let data = files[path] else { throw FileServiceError.notFound(path) }
+      guard data.count <= maxBytes else { throw FileServiceError.tooLarge }
+      return data
+    }
+    func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
+      -> FileWatchHandle?
+    { nil }
+  }
+
+  /// The acceptance test for C7: the workroom's path exists on THIS Mac too, holding a different
+  /// file. ⌘-click resolves only what the host has, and a file only this Mac has resolves to
+  /// nothing.
+  @MainActor
+  func testARemotePaneOpensTheHostsFileNotTheMacs() async throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: root) }
+    fm.createFile(atPath: root.appendingPathComponent("only-on-mac.txt").path, contents: Data())
+
+    let host = UUID()
+    let target = TerminalTarget(
+      id: "remote", title: "remote", path: root.path, unavailability: .remote, remoteHost: host)
+    let location = try XCTUnwrap(target.remoteLocation)
+    let sessions = TerminalSessions()
+    sessions.remoteFiles = { location in
+      HostFiles(
+        context: FileContext(location: location, sharedLocation: nil),
+        files: ["only-on-host.rb": Data("puts 1\n".utf8)])
+    }
+
+    let found = await sessions.remoteFile("only-on-host.rb:3", cwd: nil, target: target)
+    XCTAssertEqual(found, .init(path: "only-on-host.rb", line: 3, column: nil))
+    let onMac = await sessions.remoteFile("only-on-mac.txt", cwd: nil, target: target)
+    XCTAssertNil(onMac, "a file that is only on this Mac was taken for the host's")
+    XCTAssertEqual(location.host, .remote(host))
+  }
+
+  /// The wiring: a remote target's pane routes ⌘-click to the host and opens the file it finds as
+  /// the workroom's preview tab, in the in-app viewer.
+  @MainActor
+  func testCmdClickInARemotePaneOpensTheHostsFileInTheViewer() async throws {
+    let target = TerminalTarget(
+      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
+      remoteHost: UUID())
+    let sessions = TerminalSessions()
+    sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    sessions.recordUnrecognizedTool = { _ in }
+    sessions.remoteFiles = { location in
+      HostFiles(
+        context: FileContext(location: location, sharedLocation: nil),
+        files: ["lib/user.rb": Data("class User; end\n".utf8)])
+    }
+    let tab = sessions.addTab(for: target)
+    let view = try XCTUnwrap(sessions.view(forTab: tab.id, inTarget: target.id))
+    view.onCmdClickFile?("lib/user.rb:1")
+    func opened() -> FileDescriptor? {
+      for tab in sessions.tabs(for: target) {
+        if case .file(let file) = tab.content { return file }
+      }
+      return nil
+    }
+    for _ in 0..<200 where opened() == nil { try await Task.sleep(for: .milliseconds(10)) }
+    XCTAssertEqual(opened()?.path, "lib/user.rb")
+  }
 }

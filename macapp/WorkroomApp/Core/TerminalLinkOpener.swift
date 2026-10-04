@@ -279,6 +279,41 @@ enum TerminalLinkOpener {
     return true
   }
 
+  // MARK: Remote panes (#254, C7)
+
+  /// The workroom-relative files a remote pane's ⌘-clicked `word` could name, in the order to probe
+  /// them on the host. `cwd` and `root` are paths on the HOST: the pane's working directory as its
+  /// agent reports it, and the workroom's root. Nothing here touches this Mac's filesystem, which is
+  /// the point (C7): on this Mac the same path is another file, or none.
+  ///
+  /// A candidate outside `root` is dropped, because the host's file service reads only under the
+  /// workroom's root. So is a `~` path: `~` is this Mac's home, not the host's. A link that names a
+  /// URL rather than a path gives none, through the same `filePath(from:)` a local pane uses.
+  static func remoteCandidates(for word: String, cwd: String?, root: String) -> [PathCandidate] {
+    guard let path = filePath(from: word), root.hasPrefix("/") else { return [] }
+    let base = cwd.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? root
+    let prefix = root.hasSuffix("/") ? root : root + "/"
+    var seen = Set<String>()
+    return pathCandidates(from: path).compactMap { candidate in
+      guard !candidate.path.hasPrefix("~") else { return nil }
+      let joined = candidate.path.hasPrefix("/") ? candidate.path : base + "/" + candidate.path
+      // Lexical only: `isDirectory: false` keeps `URL` from probing this Mac's disk for the path.
+      let absolute = URL(fileURLWithPath: joined, isDirectory: false).standardized.path
+      guard absolute.hasPrefix(prefix) else { return nil }
+      let relative = String(absolute.dropFirst(prefix.count))
+      guard !relative.isEmpty, seen.insert(relative).inserted else { return nil }
+      return PathCandidate(path: relative, line: candidate.line, column: candidate.column)
+    }
+  }
+
+  /// The text of an open-URL link to resolve as a path in a remote pane: a `file:` URL's path, else
+  /// the link as written. Only after `isSystemHandledURL` has turned it down, as locally.
+  static func remoteLink(from url: URL) -> String {
+    if url.isFileURL { return url.path }
+    let link = url.absoluteString
+    return link.removingPercentEncoding ?? link
+  }
+
   /// Does an installed app actually claim `url`'s scheme (`https:`, `mailto:`, `vscode:`, …)?
   ///
   /// Only then may it reach `NSWorkspace.open`; everything else is a silent no-op. libghostty's link

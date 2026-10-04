@@ -2162,6 +2162,10 @@ final class TerminalSessions: ObservableObject {
       self.onSurfaceFocused?(targetID)
     }
 
+    if target.remoteHost != nil {
+      wireRemoteLinks(view, tab: tabID, target: target)
+      return tab
+    }
     let projectPath = target.path
     view.onCmdClickFile = { [weak view] word in
       TerminalLinkOpener.handleCmdClickFile(word, cwd: view?.lastKnownCwd ?? projectPath)
@@ -2173,6 +2177,95 @@ final class TerminalSessions: ObservableObject {
       TerminalLinkOpener.handleOpenURL(url, cwd: view?.lastKnownCwd ?? projectPath)
     }
     return tab
+  }
+
+  // MARK: Remote pane links (#254, C7)
+
+  /// How a remote pane reaches its host's files. Swapped by tests.
+  var remoteFiles: (RepositoryLocation) async throws -> FileProviding = {
+    try await RepositoryRouter.shared.files(for: $0)
+  }
+
+  /// What ⌘-hover found for a word in a remote pane, keyed by target, host cwd and word. The probe
+  /// is a round trip and the hover callback is synchronous, so the first hover over a word starts
+  /// one and the cursor follows on the next move.
+  // ponytail: cleared whole at 256 entries, and a file made after its word was hovered keeps the
+  // plain cursor until then; the click itself always asks again.
+  private var remoteHoverAnswers: [String: Bool] = [:]
+
+  /// ⌘-click in a remote pane resolves on the HOST (C7): against the shell's directory there, as
+  /// its agent reports it (`hostCwd`), and through the host's file service. The file opens in the
+  /// in-app viewer, since no editor on this Mac can open a file on another machine. Web URLs still
+  /// go to this Mac's browser.
+  private func wireRemoteLinks(
+    _ view: GhosttySurfaceView, tab tabID: TerminalTab.ID, target: TerminalTarget
+  ) {
+    view.onCmdClickFile = { [weak self] word in
+      self?.openRemoteFile(word, tab: tabID, target: target)
+    }
+    view.resolveCmdHoverFile = { [weak self] word in
+      self?.remoteFileExists(word, tab: tabID, target: target) ?? false
+    }
+    view.onOpenURL = { [weak self] url in
+      if TerminalLinkOpener.isSystemHandledURL(url) {
+        NSWorkspace.shared.open(url)
+      } else {
+        self?.openRemoteFile(TerminalLinkOpener.remoteLink(from: url), tab: tabID, target: target)
+      }
+      return true
+    }
+  }
+
+  private func hostCwd(of tabID: TerminalTab.ID, in target: TerminalTarget.ID) -> String? {
+    guard case .terminal(let state) = tabsByTarget[target]?[tabID]?.content else { return nil }
+    return state.hostCwd
+  }
+
+  func openRemoteFile(_ word: String, tab tabID: TerminalTab.ID, target: TerminalTarget) {
+    let cwd = hostCwd(of: tabID, in: target.id)
+    Task { [weak self] in
+      guard let self, let file = await self.remoteFile(word, cwd: cwd, target: target) else {
+        return
+      }
+      self.openFilePreview(FileDescriptor(path: file.path, isPreview: true), for: target)
+    }
+  }
+
+  private func remoteFileExists(
+    _ word: String, tab tabID: TerminalTab.ID, target: TerminalTarget
+  ) -> Bool {
+    let cwd = hostCwd(of: tabID, in: target.id)
+    let key = [target.id, cwd ?? "", word].joined(separator: "\u{0}")
+    if let known = remoteHoverAnswers[key] { return known }
+    if remoteHoverAnswers.count >= 256 { remoteHoverAnswers.removeAll() }
+    remoteHoverAnswers[key] = false
+    Task { [weak self] in
+      let found = await self?.remoteFile(word, cwd: cwd, target: target) != nil
+      self?.remoteHoverAnswers[key] = found
+    }
+    return false
+  }
+
+  /// The first of `word`'s candidates that is a file on the host, or nil. A read capped at one byte
+  /// is the probe: it answers `.tooLarge` for any longer file without sending it, and fails for
+  /// anything missing, refused or outside the workroom.
+  func remoteFile(_ word: String, cwd: String?, target: TerminalTarget) async
+    -> TerminalLinkOpener.PathCandidate?
+  {
+    guard let location = target.remoteLocation else { return nil }
+    let candidates = TerminalLinkOpener.remoteCandidates(for: word, cwd: cwd, root: target.path)
+    guard !candidates.isEmpty, let files = try? await remoteFiles(location) else { return nil }
+    for candidate in candidates {
+      do {
+        _ = try await files.read(path: candidate.path, symlinks: .followWithinRoot, maxBytes: 1)
+        return candidate
+      } catch FileServiceError.tooLarge {
+        return candidate
+      } catch {
+        continue
+      }
+    }
+    return nil
   }
 
   /// Reconstruct a minimal `TerminalTarget` from its id for the `onFocused` callback (which only
