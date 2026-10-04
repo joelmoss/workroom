@@ -2270,6 +2270,13 @@ final class TerminalSessions: ObservableObject {
             // An agent from before `resolve`: probe the lexical path, as every agent did before
             // #327. Any other failure (busy, unreadable, a loop) skips the candidate below, since
             // the lexical path is the wrong file whenever the host's answer would differ.
+          } catch FileServiceError.failed(let message)
+            where message.hasPrefix(AgentFileProvider.resolveTimedOut)
+          {
+            // The walk hung on a mount (#334). The other candidates differ only after the last
+            // `..`, so they would each hang another 10 s and leave another walk behind.
+            NSLog("Workroom: resolving %@ on the host timed out", onHost)
+            return nil
           }
         }
         let found = TerminalLinkOpener.PathCandidate(

@@ -50,14 +50,19 @@ pub const MAX_READ_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Reads in flight at once. Each buffers up to `MAX_READ_BYTES` and then its base64, so this bounds
 /// the agent's worst-case read memory at roughly 4 × (8 + 10.7) MiB rather than 32 ×. A `resolve`
-/// takes a slot too while it waits for its walk, though it buffers nothing; it gives the slot back
-/// at its deadline (`RESOLVE_TIMEOUT`) even if the walk hasn't returned.
+/// takes a slot too, though it buffers nothing; like a read it holds the slot until its reply is
+/// written, and a hung walk can't stretch that past `RESOLVE_TIMEOUT`.
 const MAX_CONCURRENT_READS: usize = 4;
 
 /// How long a `resolve` waits for its walk before answering that it timed out (#334). The same
 /// 10s as a listing, and well under `AgentVCSConnection.fileRequest`'s 45s, so the app hears this
 /// answer rather than its own timeout.
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How a `resolve` answer that hit `RESOLVE_TIMEOUT` begins. The app matches it
+/// (`AgentFileProvider.resolveTimedOut`) and stops that click's probe, since every other candidate
+/// of the same word resolves the same prefix and would hang the same way.
+const RESOLVE_TIMED_OUT: &str = "resolving timed out";
 
 /// Walks still running after their `resolve` gave up on them. A walk through a link onto a hung
 /// mount can block in the kernel for as long as the mount does, and Rust can't stop a thread, so
@@ -216,9 +221,9 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter, subscriptions: &Subs
             // A read holds its slot until its reply has been WRITTEN, not merely built: the
             // base64 value and its serialized copy are the memory the cap exists to bound, and they
             // live until `send` returns (which can block behind a slow reader for a long while).
-            // A resolve holds one while it waits for its walk, at most `RESOLVE_TIMEOUT`, even if
-            // the walk hangs on a mount (see `resolve`); it buffers nothing, so the memory
-            // rationale is a read's alone.
+            // A resolve holds one just as long; a walk hung on a mount can't stretch that past
+            // `RESOLVE_TIMEOUT` (see `resolve`). It buffers nothing, so the memory rationale is a
+            // read's alone.
             let slot = if matches!(request.method.as_str(), "read" | "resolve") {
                 match ReadSlot::acquire() {
                     Ok(slot) => Some(slot),
@@ -456,8 +461,9 @@ fn read(request: &Request) -> Result<Value, FileError> {
 /// The walk runs on its own thread, and this answers after `RESOLVE_TIMEOUT` whether or not it has
 /// returned (#334): a committed link can lead onto a hung network mount, and the app starts a new
 /// click without waiting for the last one. Its request thread holds a `ReadSlot` and a `Permit`
-/// only while it waits, so a hung walk can't keep reads out, or keep the agent from exiting idle. A
-/// walk only reads, so leaving it behind cuts nothing off mid-change.
+/// until its reply is written, and a hung walk holds neither, so it can't keep reads out, or keep
+/// the agent from exiting idle. A walk only reads, so leaving it behind cuts nothing off
+/// mid-change.
 ///
 /// What the deadline doesn't bound is the walk's thread itself (`MAX_ABANDONED_WALKS` caps how
 /// many), and a kill doesn't always end it: an NFS hard mount waits killably, but a FUSE request
@@ -538,7 +544,7 @@ fn with_deadline<T: Send + 'static>(
                 .is_ok();
             if marked {
                 return Err(FileError::Io(format!(
-                    "resolving timed out after {}s",
+                    "{RESOLVE_TIMED_OUT} after {}s",
                     timeout.as_secs()
                 )));
             }
@@ -954,8 +960,8 @@ mod tests {
     }
 
     // Value: protects=a walk that hangs (a link onto a dead mount, #334) is answered at its
-    // deadline, so its request gives back its read slot and permit, and the walk stays counted
-    // until it returns; fails_when=`with_deadline` waits for the walk, or miscounts one left
+    // deadline, with the text the app stops a click on, and the walk stays counted until it
+    // returns; fails_when=`with_deadline` waits for the walk, or miscounts one left
     // behind; why_new=no other test makes a walk outlive its request; seam=none (the closure is
     // the walk itself, as `resolve` passes it)
     #[test]
@@ -974,11 +980,14 @@ mod tests {
             started.elapsed() < Duration::from_secs(2),
             "it waited for the walk"
         );
+        // The literal, not `RESOLVE_TIMED_OUT`: the app matches this text
+        // (`AgentFileProvider.resolveTimedOut`), so changing it has to fail here.
         assert!(
-            matches!(&result, Err(FileError::Io(message)) if message.contains("timed out")),
+            matches!(&result, Err(FileError::Io(message)) if message.starts_with("resolving timed out")),
             "{result:?}"
         );
         assert_eq!(ABANDONED_WALKS.load(Ordering::Acquire), before + 1);
+        assert_eq!(walks_left_behind(), before + 1);
         release.send(()).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while ABANDONED_WALKS.load(Ordering::Acquire) != before
@@ -993,6 +1002,55 @@ mod tests {
         );
         assert_eq!(with_deadline(Duration::from_secs(5), || Ok(7)).unwrap(), 7);
         assert_eq!(ABANDONED_WALKS.load(Ordering::Acquire), before);
+    }
+
+    // Value: protects=a walk that panics is answered as an `Io` error naming the panic, rather than
+    // as a vanished thread or a hung request; fails_when=`with_deadline` stops catching the walk's
+    // panic (the answer becomes "ended without an answer"); why_new=no other test makes a walk
+    // panic; seam=none (the closure is the walk itself)
+    #[test]
+    fn a_walk_that_panics_is_answered_as_an_io_error() {
+        let _walks = walks_lock();
+        let before = ABANDONED_WALKS.load(Ordering::Acquire);
+        let result: Result<u8, FileError> =
+            with_deadline(Duration::from_secs(5), || panic!("walk exploded"));
+        assert!(
+            matches!(&result, Err(FileError::Io(message)) if message.contains("panicked")),
+            "{result:?}"
+        );
+        assert_eq!(ABANDONED_WALKS.load(Ordering::Acquire), before);
+    }
+
+    // Value: protects=a walk that panics AFTER it was left behind still comes off the count, so one
+    // bad walk can't hold a hand-off off, or the resolve cap shut, until the agent restarts;
+    // fails_when=the panic skips the state change that takes the count back; why_new=the
+    // returned-walk test only covers a walk that ends normally; seam=none
+    #[test]
+    fn a_walk_that_panics_after_its_deadline_is_still_taken_off_the_count() {
+        let _walks = walks_lock();
+        let before = ABANDONED_WALKS.load(Ordering::Acquire);
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let result: Result<u8, FileError> = with_deadline(Duration::from_millis(100), move || {
+            let _ = released.recv_timeout(Duration::from_secs(5));
+            panic!("walk exploded late")
+        });
+        assert!(
+            matches!(&result, Err(FileError::Io(message)) if message.starts_with(RESOLVE_TIMED_OUT)),
+            "{result:?}"
+        );
+        assert_eq!(walks_left_behind(), before + 1);
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while ABANDONED_WALKS.load(Ordering::Acquire) != before
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            ABANDONED_WALKS.load(Ordering::Acquire),
+            before,
+            "a panicked walk is still counted"
+        );
     }
 
     // Value: protects=hung walks can't pile up threads one per click: past `MAX_ABANDONED_WALKS`
