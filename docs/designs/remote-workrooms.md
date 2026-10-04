@@ -1785,12 +1785,13 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     session, so the hand-off is refused while any walk is left behind, as it was when the walk held
     its permit. On a remote host that means each connect pushes the update again and is refused,
     and the host stays on its older agent with only a log line until the mount answers or the host
-    reboots. A click stops at the first resolve that times out, since every candidate of the same
-    word resolves the same prefix: one click on a dead mount costs 10 seconds and one walk. `read`
-    itself has no deadline, so a read opened through a link onto a hung mount
-    still holds its slot. A newer click replaces the one before it, and an answer whose pane has
-    closed opens nothing. An error reading one path moves on to the next candidate; only a
-    transport failure stops the probe.
+    reboots. A click stops at the first resolve that times out, since the candidates of one word
+    resolve the same prefix through their `..`: one click on a dead mount costs 10 seconds and one
+    walk, and a mount that is only slow to wake can take a second click. `read` itself has no
+    deadline, so a read opened through a link onto a hung mount still holds its slot. A newer
+    click replaces the one before it, and an answer whose pane has closed opens nothing. An error
+    reading one path moves on to the next candidate; a transport failure or a resolve that timed
+    out stops the probe.
 
 ## Phase 0 Results
 
@@ -3016,8 +3017,9 @@ disagreement passes every test on either side alone while presenting as an empty
     - *Known limits.*
       - The binary is read three times by path (hash, check, exec), so a file swapped in between
         is not caught. Only a same-user process can do that, per the trust model above.
-      - A refused hand-off (a repository command still running, a session being ended or
-        repainted, or a file lookup stuck on a mount) is not retried until the next launch.
+      - A refused hand-off (a repository command still running, or a session being ended or
+        repainted) is not retried until the next launch. (A remote host's is retried on every
+        connect; a file lookup stuck on a mount only happens there, see Remote pane links.)
       - An agent that could not read its own binary at startup hands off on every request, even to
         the same binary.
     - *Tests* (`wr-agent/tests/hand_off.rs`):

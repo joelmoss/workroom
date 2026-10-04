@@ -498,8 +498,9 @@ pub(crate) fn walks_left_behind() -> usize {
 }
 
 /// `work`'s answer if it arrives within `timeout`, run on its own thread; otherwise an `Io` timeout
-/// (which the app treats as "skip this candidate", not "agent too old"), with the thread left to
-/// finish on its own and counted in `ABANDONED_WALKS` until it does.
+/// (which the app takes as the end of that click, `AgentFileProvider.resolveTimedOut`, not as an
+/// agent too old to resolve), with the thread left to finish on its own and counted in
+/// `ABANDONED_WALKS` until it does.
 ///
 /// The thread and this caller agree through one state word on which of them saw the deadline
 /// first, so the count goes up exactly once for a walk that is left behind and down exactly once
