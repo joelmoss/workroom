@@ -1889,7 +1889,7 @@ final class RemotePaneFooterTests: XCTestCase {
     registerRemote(session, on: hostID)
     let connection = HostCwdConnection(directory: "/home/w/lib")
     let s = try await makeSessions(connection, on: .remote(hostID))
-    s.remoteFiles = { location, _ in
+    s.remoteFiles = { location in
       HostFiles(
         context: FileContext(location: location, sharedLocation: nil),
         files: ["lib/user.rb": Data("class User; end\n".utf8)])
