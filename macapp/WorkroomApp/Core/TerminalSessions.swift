@@ -2222,16 +2222,27 @@ final class TerminalSessions: ObservableObject {
     return state.hostCwd
   }
 
+  /// Each workroom's click in flight. The host can take seconds to answer (a reconnect, then a
+  /// probe per candidate), so a newer click replaces the one before it: a slow answer must not
+  /// retarget the preview after a faster one, or open a tab in a workroom that has gone.
+  private var remoteOpens: [TerminalTarget.ID: Task<Void, Never>] = [:]
+
   func openRemoteFile(_ word: String, tab tabID: TerminalTab.ID, target: TerminalTarget) {
     let cwd = hostCwd(of: tabID, in: target.id)
-    Task { [weak self] in
+    remoteOpens[target.id]?.cancel()
+    remoteOpens[target.id] = Task { [weak self] in
       guard let self else { return }
-      guard let file = await self.remoteFile(word, cwd: cwd, target: target) else {
+      let file = await self.remoteFile(word, cwd: cwd, target: target)
+      guard !Task.isCancelled else { return }
+      self.remoteOpens[target.id] = nil
+      guard let file else {
         // As `TerminalLinkOpener.handleOpenURL` does locally: a dropped click is otherwise
         // indistinguishable from a broken app.
         NSLog("Workroom: no file on the host for terminal link %@", word)
         return
       }
+      // The workroom's panes may all have closed while the host answered.
+      guard self.tabsByTarget[target.id]?.isEmpty == false else { return }
       self.openFilePreview(FileDescriptor(path: file.path, isPreview: true), for: target)
     }
   }
@@ -2251,11 +2262,13 @@ final class TerminalSessions: ObservableObject {
         return candidate
       } catch FileServiceError.tooLarge {
         return candidate
-      } catch FileServiceError.notFound, FileServiceError.refused {
+      } catch is FileServiceError {
+        // About this path: missing, refused, or an error reading it (too long, not a directory
+        // on the way). The next candidate, `file.rb` from `file.rb:12`, may still be there. An
+        // agent turning reads away as busy lands here too, and costs only the remaining probes.
         continue
       } catch {
-        // The host, not the candidate: the next one would fail the same way. That includes an
-        // agent turning the read away as busy (`file.rs`, `MAX_CONCURRENT_READS`).
+        // The host or its connection, not the candidate: the next one would fail the same way.
         NSLog("Workroom: probing the host for %@: %@", candidate.path, "\(error)")
         return nil
       }
