@@ -2241,8 +2241,9 @@ final class TerminalSessions: ObservableObject {
         NSLog("Workroom: no file on the host for terminal link %@", word)
         return
       }
-      // The workroom's panes may all have closed while the host answered.
-      guard self.tabsByTarget[target.id]?.isEmpty == false else { return }
+      // The pane that asked may have closed while the host answered. Tab IDs are never reused,
+      // so a reopened workroom doesn't revive it.
+      guard self.tabsByTarget[target.id]?[tabID] != nil else { return }
       self.openFilePreview(FileDescriptor(path: file.path, isPreview: true), for: target)
     }
   }

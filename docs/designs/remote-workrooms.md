@@ -1761,11 +1761,13 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     the Mac, as any `127.0.0.1` forward is; accepted for now, with peer-uid scoping tracked in #323.
   - **Path handling, from the final review.** A remote path is split into components, never run
     through `URL`: Foundation decomposes Unicode filenames (`é`, C3 A9, becomes `e` + U+0301,
-    65 CC 81), which a Linux host reads as another name. Containment is judged on the lexically
-    resolved path, but the host is sent the path with its `..` still in it, so `link/../file.rb`
-    is resolved through the link on the host. A newer click replaces the one before it, so a slow
-    answer can't retarget the preview or open a tab in a workroom that has gone. An error reading
-    one path moves on to the next candidate; only a transport failure stops the probe.
+    65 CC 81), which a Linux host reads as another name. `..` is resolved here, lexically, because
+    the agent refuses any path with a `.` or `..` component before it opens anything
+    (`vcs::relative`); sending `..` through, as one review suggested, made every `../file` click
+    open nothing (caught on the PR). The cost: `link/../file.rb` names the file beside the link,
+    not beside its target. A newer click replaces the one before it, and an answer whose pane has
+    closed opens nothing. An error reading one path moves on to the next candidate; only a
+    transport failure stops the probe.
 
 ## Phase 0 Results
 

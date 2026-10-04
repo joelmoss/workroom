@@ -304,19 +304,15 @@ enum TerminalLinkOpener {
       guard !candidate.path.hasPrefix("~") else { return nil }
       let joined =
         candidate.path.hasPrefix("/") ? parts(candidate.path) : baseParts + parts(candidate.path)
-      // Containment is judged on the lexically resolved path. The host is sent the path with its
-      // `..` still in it, so it resolves them itself, through any symlink on the way (resolving
-      // `link/..` here names a different file), and its file service checks containment on the
-      // file it opens.
+      // `..` is resolved here, lexically: the agent refuses any path with a `.` or `..`
+      // component before it opens anything (`vcs::relative`). The cost is a symlink before the
+      // `..`: `link/../file.rb` names the file beside the link, not beside its target.
       var resolved: [Substring] = []
       for part in joined {
         if part == ".." { _ = resolved.popLast() } else { resolved.append(part) }
       }
       guard resolved.count > rootParts.count, resolved.starts(with: rootParts) else { return nil }
-      let sent =
-        joined.starts(with: rootParts)
-        ? joined.dropFirst(rootParts.count) : resolved.dropFirst(rootParts.count)
-      let relative = sent.joined(separator: "/")
+      let relative = resolved.dropFirst(rootParts.count).joined(separator: "/")
       guard !relative.isEmpty, seen.insert(relative).inserted else { return nil }
       return PathCandidate(path: relative, line: candidate.line, column: candidate.column)
     }
