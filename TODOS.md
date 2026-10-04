@@ -5,6 +5,52 @@
 > **Recently done** at the bottom — including the traps found while doing it, which are the parts worth
 > reading before touching the same code. Full write-ups for finished items live in git history.
 
+## P0 — before the next release
+
+### A test-host process was killed for closing a guarded file descriptor (macapp) — #327 ship follow-up
+
+**What:** One full `make app-test` run lost a test worker to `EXC_GUARD` (`GUARD_TYPE_FD`, "CLOSE
+on file descriptor 25 (guarded with 0x08fd4dbfade2dead)"). The kill landed in
+`VCSProviderConformanceTests.testCommitRenameIsOneRow`, where `-[NSConcreteFileHandle dealloc]`
+closed the `Pipe` of its `sh` helper (`VCSProviderConformanceTests.swift:424`, called from
+`requireTool` at :339). Seen on `workroom/cyan-brush` (2026-10-04, crash report
+`~/Library/Logs/DiagnosticReports/Workroom Dev-2026-10-04-121020.ips`, pid 69069). The #327 diff
+opens and closes no descriptors, and an immediate re-run of the full suite passed.
+
+**Why:** The file handle closed a number it believed it owned, and the kernel found a guarded
+descriptor there. So something earlier in that worker closed descriptor 25 without owning it (a
+double close), and a guarded descriptor reused the number. If the double close is in app code
+rather than a test, the shipping app can intermittently close the wrong file.
+
+**How to start:** List what else ran in the same worker before the crash (the `xcresult`, or the
+log lines tagged with that worker's pid) and grep those tests and their code for raw `close(` and
+`FileHandle(fileDescriptor:closeOnDealloc: true)` on descriptors they also close by hand. Then run
+that worker's sequence alone, repeated.
+
+**Priority:** P0 (chosen at ship time on #327)
+
+### `ReverseForwardTests.testAReconnectWhileTheOldListenerHoldsThePortReopensOnceItLetsGo` is flaky (macapp) — #327 ship follow-up
+
+**What:** The test fails about 1 run in 5. Measured 2026-10-04 with `make app-test
+APP_TEST_FLAGS="-only-testing:WorkroomAppTests/ReverseForwardTests -test-iterations 10"`: 3 of 15
+runs failed on `workroom/cyan-brush`, and 2 of 20 on a clean `origin/master` worktree, so it is not
+the #327 branch. It fails at three places:
+- line 301, `XCTAssertEqual failed: ("0 bytes") is not equal to ("5 bytes")` in `roundTrip`;
+- line 285, "the port was never contended";
+- line 290, "never reopened".
+
+**Why:** It tests that the broker's reverse forward (`BrokerReverseForwards`) reopens after a
+reconnect while the old connection's listener still holds the port. If the race is in the
+registry rather than the test, a real reconnect can leave a workroom's broker forward dead, and a
+remote `git push` loses its credentials.
+
+**How to start:** Pin which step loses the race. The test leans on a fixed 3 s sleep (longer than
+the bind retries) and a 5 s reopen deadline. A `roundTrip` that reads 0 bytes means the port
+reopened but the forward didn't carry data, which points past the listener at the forward's
+target or at a second listener answering the port.
+
+**Priority:** P0 (chosen at ship time on #327)
+
 ## P1 — before GA
 
 ## P2 — perf, correctness, and the next VCS phase
