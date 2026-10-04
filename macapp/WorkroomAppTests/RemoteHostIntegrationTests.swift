@@ -194,6 +194,26 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertTrue(status.running, "the host's classifier is not running")
   }
 
+  /// ⌘-click in a remote pane (#254, C7) finds a file on the host through its file service,
+  /// relative to the shell's directory there, with its line. The path does not exist on this Mac.
+  @MainActor
+  func testACmdClickedPathResolvesOnTheHost() async throws {
+    let fixture = try fixture()
+    let path = try repository(fixture)
+    try onHost(fixture, "mkdir -p \(path)/lib && echo hi > \(path)/lib/only-here.rb")
+    let (connection, id) = try await connect(fixture.host)
+    let target = TerminalTarget(
+      id: "remote", title: "remote", path: path, unavailability: .remote, remoteHost: id)
+    let sessions = TerminalSessions()
+    sessions.remoteFiles = { location in
+      try connection.files(context: FileContext(location: location, sharedLocation: nil))
+    }
+    let found = await sessions.remoteFile("only-here.rb:1", cwd: "\(path)/lib", target: target)
+    XCTAssertEqual(found, .init(path: "lib/only-here.rb", line: 1, column: nil))
+    let missing = await sessions.remoteFile("nowhere.rb", cwd: "\(path)/lib", target: target)
+    XCTAssertNil(missing)
+  }
+
   /// A failed remote write is classified from the HOST's disk (#229): a leftover `index.lock` there
   /// is named by its path on the host. Read from this Mac's disk, that path is not there, and the
   /// failure would name no lock at all.
