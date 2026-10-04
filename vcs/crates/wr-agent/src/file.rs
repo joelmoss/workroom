@@ -197,7 +197,8 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter, subscriptions: &Subs
             // A read holds its slot until its reply has been WRITTEN, not merely built: the
             // base64 value and its serialized copy are the memory the cap exists to bound, and they
             // live until `send` returns (which can block behind a slow reader for a long while).
-            // A resolve holds one for the filesystem walk instead (see `resolve`).
+            // A resolve holds one just as long, for its walk, which can hang on a mount (see
+            // `resolve`); it buffers nothing, so the memory rationale is a read's alone.
             let slot = if matches!(request.method.as_str(), "read" | "resolve") {
                 match ReadSlot::acquire() {
                     Ok(slot) => Some(slot),
@@ -427,9 +428,10 @@ fn read(request: &Request) -> Result<Value, FileError> {
 /// `read`'s path rule (`vcs::relative`) refuses `.` and `..` before any I/O, and this one keeps
 /// that guarantee for every path that climbs out of the root as WRITTEN: one that does is refused
 /// here, before anything is looked up. What is left leaves the root only through a symlink inside
-/// it. A `..` after such a link can name a path beside the link's target, and the answer
-/// (`Refused` when it exists, `NotFound` when not) says whether it does. That is not a new
-/// capability: the VCS service's `stat` reports existence for any absolute path.
+/// it. Only the part through the last `..` is looked up, so a `..` after a link out of the root
+/// can say whether that directory exists (`Refused` when it does, `NotFound` when not), and never
+/// what follows. That is not a new capability: the VCS service's `stat` reports existence for any
+/// absolute path.
 ///
 /// Holds a `ReadSlot`, as `read` does: resolving walks the filesystem through whatever a committed
 /// link points at (a hung network mount included), and the app starts a new click without waiting
@@ -927,9 +929,10 @@ mod tests {
         );
     }
 
-    // Value: protects=a link AFTER the `..` keeps its own name, so a `..` click opens the same tab a
-    // plain click on that file would; fails_when=`resolve_path` canonicalizes the whole path and
-    // answers the link's target; why_new=the other cases have no link after the `..`; seam=none
+    // Value: protects=a link AFTER the last `..` keeps its own name, as a plain click on it would
+    // (links before it come back as their target); fails_when=`resolve_path` canonicalizes the
+    // whole path and answers the link's target; why_new=the other cases have no link after the
+    // `..`; seam=none
     #[test]
     fn resolve_keeps_what_follows_the_last_parent_traversal_as_written() {
         let root = scratch("resolve-leaf-link");
