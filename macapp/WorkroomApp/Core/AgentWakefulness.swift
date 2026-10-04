@@ -460,10 +460,15 @@ final class WakefulnessModel: ObservableObject {
 
   /// Every model's in-flight "Keep awake", this Mac's and each remote host's, for quit. At once, so
   /// the quit waits for the slowest, not their sum. A remote host's badge is its only keep control.
+  ///
+  /// A remote keep may have to reconnect first, over ssh (`ConnectTimeout 10`), so it gets longer
+  /// than this Mac's. Longer still is possible (a relayed workroom's relay install runs on that
+  /// connect), and such a keep can miss the quit; the bound is what a quit is worth.
   static func drainAllKeeps() async {
     await withTaskGroup(of: Void.self) { group in
-      for model in [shared] + Array(hosts.values) {
-        group.addTask { await model.drainKeep() }
+      group.addTask { await shared.drainKeep() }
+      for model in hosts.values {
+        group.addTask { await model.drainKeep(timeout: .seconds(15)) }
       }
     }
   }

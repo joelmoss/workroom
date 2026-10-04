@@ -2193,15 +2193,21 @@ final class TerminalSessions: ObservableObject {
     return try await RepositoryRouter.shared.files(for: location)
   }
 
-  /// What the host said about a word in a remote pane, keyed by target, host cwd and word: nil
-  /// while its probe is out. The hover callback is synchronous and is also the ⌘-click's gate
-  /// (`GhosttySurfaceView.mouseDown`), and the probe is a round trip, so an answer can't wait.
   // ponytail: cleared whole at `remoteHoverLimit` entries; an LRU if hovering ever thrashes it.
   private static let remoteHoverLimit = 256
-  private var remoteHoverAnswers: [String: (found: Bool?, at: ContinuousClock.Instant)] = [:]
-  /// How long a host's answer stands before a hover asks again: a file can appear, and a probe can
-  /// fail on a passing disconnect. Swapped by tests.
+  /// What the host said about a word in a remote pane, keyed by target, host cwd and word: nil
+  /// while its probe is out, and `unanswered` when the probe got no answer. The hover callback is
+  /// synchronous and is also the ⌘-click's gate (`GhosttySurfaceView.mouseDown`), and the probe is
+  /// a round trip, so an answer can't wait.
+  private var remoteHoverAnswers:
+    [String: (found: Bool?, at: ContinuousClock.Instant, unanswered: Bool)] = [:]
+  /// How long a host's answer stands before a hover asks again: a file can appear. Swapped by
+  /// tests.
   var remoteHoverTTL: Duration = .seconds(3)
+  /// How long a probe that got no answer (no connection, an agent busy with other reads) is held
+  /// as "no": briefly, since it says nothing about the file, but held, so a host that is out of
+  /// reach makes the gate fall through rather than take every ⌘-click.
+  var remoteHoverRetry: Duration = .milliseconds(500)
 
   /// ⌘-click in a remote pane resolves on the HOST (C7): against the shell's directory there, as
   /// its agent reports it (`hostCwd`), and through the host's file service. The file opens in the
@@ -2256,21 +2262,20 @@ final class TerminalSessions: ObservableObject {
     guard !TerminalLinkOpener.remoteCandidates(for: word, cwd: cwd, root: target.path).isEmpty
     else { return false }
     let key = [target.id, cwd ?? "", word].joined(separator: "\u{0}")
-    let now = ContinuousClock.now
-    if let answer = remoteHoverAnswers[key], now - answer.at < remoteHoverTTL {
+    if let answer = remoteHoverAnswers[key],
+      ContinuousClock.now - answer.at < (answer.unanswered ? remoteHoverRetry : remoteHoverTTL)
+    {
       return answer.found ?? true
     }
     if remoteHoverAnswers.count >= Self.remoteHoverLimit { remoteHoverAnswers.removeAll() }
-    remoteHoverAnswers[key] = (nil, now)
+    remoteHoverAnswers[key] = (nil, .now, false)
     Task { [weak self] in
-      guard let probe = await self?.probeRemote(word, cwd: cwd, target: target, connect: false)
-      else { return }
+      guard let self else { return }
+      let probe = await probeRemote(word, cwd: cwd, target: target, connect: false)
       switch probe {
-      case .found: self?.remoteHoverAnswers[key] = (true, .now)
-      case .absent: self?.remoteHoverAnswers[key] = (false, .now)
-      // No answer (no connection, an agent busy with other reads) is not "no file": the next
-      // hover asks again rather than holding a wrong "no" for `remoteHoverTTL`.
-      case .unknown: self?.remoteHoverAnswers[key] = nil
+      case .found: remoteHoverAnswers[key] = (true, .now, false)
+      case .absent: remoteHoverAnswers[key] = (false, .now, false)
+      case .unknown: remoteHoverAnswers[key] = (false, .now, true)
       }
     }
     return true

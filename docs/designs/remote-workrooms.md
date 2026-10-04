@@ -1711,7 +1711,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
 - Per-workroom credential: enrol on create, revoke on destroy, and revoke on the failure paths too.
   It is a broker grant, not a deploy key (OQ20).
 - Idle state per remote workroom in the sidebar. **Cost display is deliberately deferred** —
-  it needs per-provider billing APIs and there is no spending policy yet (open question 7).
+  it needs per-provider billing APIs and there is no spending policy yet (open question 7). Idle
+  state done: see "As built (#254)" below.
 - **As built (#254, remote pane parity).** Pane close was done first, in #306 (#283). The rest:
   - **Cmd-click (C7).** A remote pane's links never reach `TerminalLinkOpener`'s local resolver.
     `TerminalSessions.wireRemoteLinks` resolves a clicked path against the shell's directory on the
@@ -1732,8 +1733,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     path outside the workroom is never a candidate, so it still reaches libghostty. A hover's probe
     never connects the host, as no passive read of a host does; only the click's probe goes
     through `RepositoryRouter`, which connects it. A probe that gets no answer (no connection, or
-    the agent turning the read away as busy past `MAX_CONCURRENT_READS`) is not cached as "no
-    file": the next hover asks again.
+    the agent turning the read away as busy past `MAX_CONCURRENT_READS`) is held as "no" for only
+    0.5 s (`remoteHoverRetry`): long enough that a host out of reach makes the gate fall through
+    rather than take every ⌘-click, short enough that the next hover soon asks again.
   - **Ports.** `PortForwardingModel` is one model per host (`model(for:)`), kept for the launch,
     and the inspector's Ports section shows the selected workroom's host. A remote workroom the
     app can't reach shows no Ports section, rather than the Mac's list. A forward never connects a
@@ -1741,10 +1743,12 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **Idle state.** A remote workroom's sidebar row carries the wakefulness badge, backed by one
     `WakefulnessModel` per remote host (`model(forHost:)`). It polls only while the row is shown
     and never connects the host. Its "Keep awake" click does connect it first
-    (`RemoteHosts.ensureConnected`), as the Mac's own spawns an agent, and quitting drains every
-    host's in-flight keep, not only the Mac's (`WakefulnessModel.drainAllKeeps`). The Linux agent runs the classifier unconditionally (`serve.rs`),
-    so neither the agent nor host setup changed. A remote badge's tooltip leaves out the
-    settings-mismatch sentence: that agent was never started with the Mac's settings.
+    (`RemoteHosts.ensureConnected`), as the Mac's own spawns an agent. Quitting drains every host's
+    in-flight keep, not only the Mac's (`WakefulnessModel.drainAllKeeps`), waiting up to 15 s for a
+    remote one, which may have to reconnect over ssh first; a keep slower than that can miss the
+    quit. The Linux agent runs the classifier unconditionally (`serve.rs`), so neither the agent nor
+    host setup changed. A remote badge's tooltip leaves out the settings-mismatch sentence: that
+    agent was never started with the Mac's settings.
   - **Known limits.** The viewer opens a cmd-clicked file at the top: `FileDescriptor` has no line.
     A path outside the workroom (`/etc/hosts`, a sibling checkout) opens nothing. The ceiling prompt
     is still raised only for the Mac's agent: a remote host's "Keep awake" works from its badge, but
