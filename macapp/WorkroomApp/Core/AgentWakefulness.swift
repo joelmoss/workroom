@@ -397,8 +397,9 @@ struct AwakeCeilingPromptState: Equatable {
   }
 }
 
-/// What the UI reads: the local box's wakefulness, polled while it is on screen, plus the ceiling
-/// prompt. One instance, because the verdict is per BOX — every workroom on this machine shares it.
+/// What the UI reads: a box's wakefulness, polled while it is on screen, plus the ceiling prompt.
+/// One instance per BOX, because the verdict is per box: `shared` is this Mac's, which every local
+/// workroom shares, and each remote host has its own (`model(forHost:)`, #254).
 @MainActor
 final class WakefulnessModel: ObservableObject {
   static let shared = WakefulnessModel()
@@ -419,13 +420,20 @@ final class WakefulnessModel: ObservableObject {
       keep: { try await LocalAgentVCS.shared.wakefulness(connecting: .spawn).keep() },
       prompts: { try await LocalAgentVCS.shared.wakefulness(connecting: .reconnect).prompts })
 
-    /// A remote host's service in `manager` (#254). None of the three connects the host: a poll
-    /// never does, and the host's connection is made by selecting its workroom or by the status
-    /// sweep, either of which a remote "keep" or watch can wait for.
-    static func on(_ host: HostID, manager: HostConnectionManager) -> Transport {
+    /// A remote host's service in `manager` (#254). A poll and the prompt watch never connect
+    /// the host: a badge is not a reason to reach it. A "keep" runs `connect` first, as the local
+    /// transport spawns, because a click is the one caller for which a dropped connection is not an
+    /// answer (`keep()`).
+    static func on(
+      _ host: HostID, manager: HostConnectionManager,
+      connect: @escaping @Sendable (HostID) async throws -> Void = { _ in }
+    ) -> Transport {
       Transport(
         status: { try await manager.wakefulness(host: host).status() },
-        keep: { try await manager.wakefulness(host: host).keep() },
+        keep: {
+          try await connect(host)
+          try await manager.wakefulness(host: host).keep()
+        },
         prompts: { try await manager.wakefulness(host: host).prompts })
     }
   }
@@ -442,9 +450,22 @@ final class WakefulnessModel: ObservableObject {
 
   static func model(forHost id: UUID) -> WakefulnessModel {
     if let model = hosts[id] { return model }
-    let model = WakefulnessModel(transport: .on(.remote(id), manager: .shared))
+    let model = WakefulnessModel(
+      transport: .on(.remote(id), manager: .shared) {
+        try await RemoteHosts.shared.ensureConnected($0)
+      })
     hosts[id] = model
     return model
+  }
+
+  /// Every model's in-flight "Keep awake", this Mac's and each remote host's, for quit. At once, so
+  /// the quit waits for the slowest, not their sum. A remote host's badge is its only keep control.
+  static func drainAllKeeps() async {
+    await withTaskGroup(of: Void.self) { group in
+      for model in [shared] + Array(hosts.values) {
+        group.addTask { await model.drainKeep() }
+      }
+    }
   }
 
   /// Nil until a poll succeeds, and again once one fails: no agent, an agent that predates the

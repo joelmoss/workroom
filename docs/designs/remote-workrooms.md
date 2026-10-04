@@ -1729,14 +1729,20 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     which lost every click made straight after pressing ⌘ (found in review). An answer stands for
     3 s (`remoteHoverTTL`), so a file made after its word was hovered becomes clickable. The cost:
     a ⌘-click on a plain word before its answer arrives is consumed and opens nothing. A URL or a
-    path outside the workroom is never a candidate, so it still reaches libghostty.
+    path outside the workroom is never a candidate, so it still reaches libghostty. A hover's probe
+    never connects the host, as no passive read of a host does; only the click's probe goes
+    through `RepositoryRouter`, which connects it. A probe that gets no answer (no connection, or
+    the agent turning the read away as busy past `MAX_CONCURRENT_READS`) is not cached as "no
+    file": the next hover asks again.
   - **Ports.** `PortForwardingModel` is one model per host (`model(for:)`), kept for the launch,
     and the inspector's Ports section shows the selected workroom's host. A remote workroom the
     app can't reach shows no Ports section, rather than the Mac's list. A forward never connects a
     host; selecting the workroom does. This closed #208's last criterion.
   - **Idle state.** A remote workroom's sidebar row carries the wakefulness badge, backed by one
     `WakefulnessModel` per remote host (`model(forHost:)`). It polls only while the row is shown
-    and never connects the host. The Linux agent runs the classifier unconditionally (`serve.rs`),
+    and never connects the host. Its "Keep awake" click does connect it first
+    (`RemoteHosts.ensureConnected`), as the Mac's own spawns an agent, and quitting drains every
+    host's in-flight keep, not only the Mac's (`WakefulnessModel.drainAllKeeps`). The Linux agent runs the classifier unconditionally (`serve.rs`),
     so neither the agent nor host setup changed. A remote badge's tooltip leaves out the
     settings-mismatch sentence: that agent was never started with the Mac's settings.
   - **Known limits.** The viewer opens a cmd-clicked file at the top: `FileDescriptor` has no line.

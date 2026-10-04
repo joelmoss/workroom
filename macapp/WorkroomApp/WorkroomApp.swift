@@ -759,7 +759,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // two seconds of a quit.
     group.enter()
     Task {
-      await WakefulnessModel.shared.drainKeep()
+      await WakefulnessModel.drainAllKeeps()
       group.leave()
     }
     group.notify(queue: .main) { sender.reply(toApplicationShouldTerminate: true) }

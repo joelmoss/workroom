@@ -203,6 +203,38 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertNil(model.status)
   }
 
+  /// A remote host's "Keep awake" connects the host first, as this Mac's spawns an agent: a click
+  /// is the one caller for which a dropped connection is not an answer. The prompt watch never
+  /// connects, as the poll never does.
+  @MainActor
+  func testOnlyARemoteKeepConnectsTheHost() async throws {
+    let manager = HostConnectionManager()
+    let host = HostID.remote(UUID())
+    let connects = Connects()
+    let transport = WakefulnessModel.Transport.on(host, manager: manager) { connects.add($0) }
+    do {
+      _ = try await transport.prompts()
+      XCTFail("a remote host with no connection gave a prompt stream")
+    } catch RepositoryRoutingError.unavailable(let refused) {
+      XCTAssertEqual(refused, host)
+    }
+    XCTAssertEqual(connects.hosts, [], "the prompt watch connected the host")
+    do {
+      try await transport.keep()
+      XCTFail("a keep with no connection after connecting reported success")
+    } catch RepositoryRoutingError.unavailable(let refused) {
+      XCTAssertEqual(refused, host)
+    }
+    XCTAssertEqual(connects.hosts, [host], "a keep did not connect the host first")
+  }
+
+  private final class Connects: @unchecked Sendable {
+    private let lock = NSLock()
+    private var asked: [HostID] = []
+    func add(_ host: HostID) { lock.withLock { asked.append(host) } }
+    var hosts: [HostID] { lock.withLock { asked } }
+  }
+
   func testAnErrorReplyIsAServiceFailure() {
     let json = #"{"version":1,"error":{"unsupported":"status requests are ..."}}"#
     XCTAssertThrowsError(try decode(json)) { error in

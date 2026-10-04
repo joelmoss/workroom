@@ -1877,6 +1877,47 @@ final class RemotePaneFooterTests: XCTestCase {
     XCTAssertEqual(connection.asked, [session], "asked once, when the host connected")
   }
 
+  /// ⌘-click in a remote pane resolves a relative path against the directory the host's agent
+  /// reports for the shell (`hostCwd`), not the workroom's root and not this Mac's directory for
+  /// the pane (#254, C7).
+  // Value: protects=a remote ⌘-click resolves against the shell's directory on the host;
+  //   fails_when=the pane's hostCwd stops reaching the click, so it resolves from the root;
+  //   why_new=other C7 tests pass the cwd to remoteFile directly, never via the pane; seam=none
+  func testACmdClickInARemotePaneResolvesAgainstTheHostsDirectory() async throws {
+    let hostID = UUID()
+    let session = UUID()
+    registerRemote(session, on: hostID)
+    let connection = HostCwdConnection(directory: "/home/w/lib")
+    let s = try await makeSessions(connection, on: .remote(hostID))
+    s.remoteFiles = { location, _ in
+      HostFiles(
+        context: FileContext(location: location, sharedLocation: nil),
+        files: ["lib/user.rb": Data("class User; end\n".utf8)])
+    }
+    let remote = TerminalTarget(
+      id: target.id, title: "r", path: "/home/w", unavailability: .remote, remoteHost: hostID)
+    s.addTab(for: remote, sessionID: session)
+    let view = try XCTUnwrap(s.tabs(for: remote).first?.surface)
+    view.persistentSessionID = session
+    view.onTitleChange?("~")
+    func hostCwd() -> String? {
+      guard case .terminal(let state)? = s.tabs(for: remote).first?.content else { return nil }
+      return state.hostCwd
+    }
+    try await waitFor { hostCwd() == "/home/w/lib" }
+    XCTAssertEqual(hostCwd(), "/home/w/lib")
+
+    view.onCmdClickFile?("user.rb")
+    func opened() -> String? {
+      for tab in s.tabs(for: remote) {
+        if case .file(let file) = tab.content { return file.path }
+      }
+      return nil
+    }
+    try await waitFor { opened() != nil }
+    XCTAssertEqual(opened(), "lib/user.rb")
+  }
+
   func testALocalPaneAndAHostWithNoConnectionAskNothing() async throws {
     let connection = HostCwdConnection(directory: "/home/w")
     let s = try await makeSessions(connection, on: .remote(UUID()))
