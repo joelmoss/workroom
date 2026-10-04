@@ -719,7 +719,10 @@ final class TerminalLinkOpenerTests: XCTestCase {
   /// word, a dotless bare name, a URL, a path outside the workroom.
   func testTheRemoteClickGateTakesPathShapedWordsOnly() {
     let root = "/home/workroom/repo"
-    for word in ["lib/user.rb", "user.rb", "user.rb:5", "Makefile:12", "./bin/dev", "a.b.c"] {
+    for word in [
+      "lib/user.rb", "user.rb", "user.rb:5", "Makefile:12", "./bin/dev", "a.b.c", ".gitignore",
+      ".env",
+    ] {
       XCTAssertTrue(TerminalLinkOpener.looksLikeRemotePath(word, cwd: root, root: root), word)
     }
     for word in [

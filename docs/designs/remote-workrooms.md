@@ -1726,8 +1726,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **The ⌘-click gate.** `GhosttySurfaceView.mouseDown` passes a ⌘-click on only when the
     synchronous `resolveCmdHoverFile` says the word is a file, and only the host knows, a round
     trip away. So the gate decides from the word alone (`TerminalLinkOpener.looksLikeRemotePath`):
-    a candidate in the workroom that has a `/`, a `name.ext` or a `:line` passes, and the click
-    asks the host, connecting it if need be (`RepositoryRouter`). A hover never asks the host.
+    a candidate in the workroom that has a `/`, a `name.ext` (dotfiles included) or a `:line`
+    passes, and the click asks the host, connecting it if need be (`RepositoryRouter`). A hover
+    never asks the host.
     The costs: a path-shaped word with no file behind it shows the hand and its click opens nothing
     (logged), and a bare name with none of the three (`Gemfile`) isn't clickable in a remote pane.
     A URL or a path outside the workroom never passes, so it still reaches libghostty. This was
