@@ -1214,11 +1214,20 @@ mod tests {
         // Disconnect returned with the request still running; it ends only once released.
         assert!(is_busy());
         std::fs::write(&release, b"").unwrap();
+        // Judged from the one reading that saw it idle: another test's permit (a File request
+        // refused busy holds one for microseconds) may land after it, and a second reading would
+        // see that instead.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while is_busy() && std::time::Instant::now() < deadline {
+        let released = loop {
+            if !is_busy() {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
             std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(!is_busy());
+        };
+        assert!(released);
         let _ = std::fs::remove_file(&release);
         std::fs::remove_dir_all(root).unwrap();
     }

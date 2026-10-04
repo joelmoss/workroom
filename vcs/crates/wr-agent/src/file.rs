@@ -15,6 +15,8 @@
 //!   VCS `capabilities` reply, whose `reads` count is compared for equality by an older client.
 //! - `list` — run the fixed git listing command and return its raw result.
 //! - `read` — return one regular file's bytes, base64, under one of two symlink policies.
+//! - `resolve` — resolve a relative path that may hold `..` ON THIS HOST, through any symlink on
+//!   the way, and return the repository-relative path it names (#327).
 //! - `watch` / `unwatch` — subscribe to filesystem changes; see `watch.rs`.
 //!
 //! **Errors are this crate's own [`FileError`]**, not `wr_vcs_model::VcsError`: it is a type only this
@@ -195,7 +197,8 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter, subscriptions: &Subs
             // A read holds its slot until its reply has been WRITTEN, not merely built: the
             // base64 value and its serialized copy are the memory the cap exists to bound, and they
             // live until `send` returns (which can block behind a slow reader for a long while).
-            let slot = if request.method == "read" {
+            // A resolve holds one for the filesystem walk instead (see `resolve`).
+            let slot = if matches!(request.method.as_str(), "read" | "resolve") {
                 match ReadSlot::acquire() {
                     Ok(slot) => Some(slot),
                     Err(error) => {
@@ -254,6 +257,7 @@ fn handle(request: &Request) -> Result<Value, FileError> {
         })),
         "list" => list(request),
         "read" => read(request),
+        "resolve" => resolve(request),
         _ => Err(unsupported("unsupported file method")),
     }
 }
@@ -412,6 +416,86 @@ fn read(request: &Request) -> Result<Value, FileError> {
     }
     let bytes = read_file(&root, relative, mode, max_bytes)?;
     Ok(json!({"size": bytes.len(), "content": base64(&bytes)}))
+}
+
+// MARK: Resolving
+
+/// A remote pane's ⌘-click names `link/../file.rb`, and only this host knows where `link` points
+/// (#327): resolved on the Mac, the `..` lands beside the link instead of beside its target. So the
+/// app sends the path with its `..` and reads whatever this answers.
+///
+/// `read`'s path rule (`vcs::relative`) refuses `.` and `..` before any I/O, and this one keeps
+/// that guarantee for every path that climbs out of the root as WRITTEN: one that does is refused
+/// here, before anything is looked up. What is left leaves the root only through a symlink inside
+/// it. A `..` after such a link can name a path beside the link's target, and the answer
+/// (`Refused` when it exists, `NotFound` when not) says whether it does. That is not a new
+/// capability: the VCS service's `stat` reports existence for any absolute path.
+///
+/// Holds a `ReadSlot`, as `read` does: resolving walks the filesystem through whatever a committed
+/// link points at (a hung network mount included), and the app starts a new click without waiting
+/// for the last one.
+fn resolve(request: &Request) -> Result<Value, FileError> {
+    let root = root_of(request)?;
+    let relative = request
+        .path
+        .as_deref()
+        .ok_or_else(|| unsupported("missing path"))?;
+    if !stays_under_root(relative) {
+        return Err(unsupported("invalid relative file path"));
+    }
+    Ok(json!({"path": resolve_path(&root, relative)?}))
+}
+
+/// Whether `relative` is a relative path that, taken lexically, never climbs above the root it is
+/// joined to. `.`, `..` and empty components are allowed; `..` past the root is not.
+fn stays_under_root(relative: &str) -> bool {
+    if relative.is_empty() || relative.starts_with('/') || relative.contains('\0') {
+        return false;
+    }
+    let mut depth = 0usize;
+    for part in relative.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return false,
+            },
+            _ => depth += 1,
+        }
+    }
+    true
+}
+
+/// `relative` resolved on this host, as a path under the root's real path. A path that leaves the
+/// root through a link is refused, and so is the root itself, which is not a file.
+///
+/// Only the part up to the last `..` is resolved, through any link in it: that is the part only
+/// this host can answer. What follows is kept as written, as `read` keeps it, so a link after the
+/// `..` keeps its own name: `link/../current.rb` stays `current.rb` when that is a link to
+/// `v2.rb`, as a click on `nested/current.rb` would. `read` then judges the rest.
+fn resolve_path(root: &Path, relative: &str) -> Result<String, FileError> {
+    let real_root = std::fs::canonicalize(root)?;
+    let parts: Vec<&str> = relative
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    let rest = parts
+        .iter()
+        .rposition(|part| *part == "..")
+        .map_or(0, |last| last + 1);
+    let mut real_path = std::fs::canonicalize(root.join(parts[..rest].join("/")))?;
+    real_path.extend(&parts[rest..]);
+    // `strip_prefix` compares by component, so `/a/bc` is not inside `/a/b`.
+    let inside = real_path
+        .strip_prefix(&real_root)
+        .map_err(|_| FileError::Refused("outside the repository root".into()))?;
+    if inside.as_os_str().is_empty() {
+        return Err(FileError::Refused("the repository root itself".into()));
+    }
+    inside
+        .to_str()
+        .map(String::from)
+        .ok_or_else(|| FileError::Refused("the resolved path is not UTF-8".into()))
 }
 
 /// The path a descriptor actually refers to, asked of the kernel rather than reconstructed from the
@@ -746,6 +830,170 @@ mod tests {
             let reply = execute(&serde_json::to_vec(&request).unwrap());
             assert!(reply["error"]["Unsupported"].is_string(), "{path:?}");
         }
+    }
+
+    fn resolve_request(root: &Path, path: &str) -> Value {
+        let request = json!({"version": 1, "method": "resolve", "root": root, "path": path});
+        execute(&serde_json::to_vec(&request).unwrap())
+    }
+
+    /// #327: `link/..` is the link TARGET's parent, which only the host can know.
+    #[test]
+    fn resolve_follows_a_link_before_its_parent_traversal() {
+        let root = scratch("resolve-link");
+        std::fs::create_dir_all(root.join("nested/dir")).unwrap();
+        std::fs::write(root.join("nested/file.rb"), b"x").unwrap();
+        std::fs::write(root.join("file.rb"), b"decoy").unwrap();
+        symlink("nested/dir", root.join("link")).unwrap();
+        assert_eq!(
+            resolve_request(&root, "link/../file.rb")["result"]["path"],
+            "nested/file.rb"
+        );
+        assert_eq!(
+            resolve_request(&root, "./nested/./dir/../file.rb")["result"]["path"],
+            "nested/file.rb"
+        );
+    }
+
+    #[test]
+    fn resolve_refuses_a_path_that_climbs_the_root_before_any_io() {
+        // The root does not exist, so any lookup would answer `NotFound`: `Unsupported` means
+        // the path was refused before one.
+        let root = std::env::temp_dir().join("wr-file-test-resolve-no-such-root");
+        for path in [
+            "..",
+            "../x",
+            "a/../../x",
+            "./../x",
+            "/etc/passwd",
+            "",
+            "a\0b",
+        ] {
+            let reply = resolve_request(&root, path);
+            assert!(
+                reply["error"]["Unsupported"].is_string(),
+                "{path:?}: {reply}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_refuses_a_link_out_of_the_root_and_the_root_itself() {
+        let root = scratch("resolve-escape");
+        let outside = scratch("resolve-escape-outside");
+        std::fs::create_dir_all(outside.join("dir")).unwrap();
+        std::fs::write(outside.join("secret"), b"top secret").unwrap();
+        symlink(outside.join("dir"), root.join("out")).unwrap();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        for path in ["out/../secret", "sub/.."] {
+            let reply = resolve_request(&root, path);
+            assert!(reply["error"]["Refused"].is_string(), "{path:?}: {reply}");
+        }
+    }
+
+    // Value: protects=resolving works when the root the app names is itself a link (a symlinked
+    // home or a macOS /tmp), answering the path under the REAL root; fails_when=`resolve_path`
+    // compares against the root as given instead of its real path, refusing every click as
+    // outside the root; why_new=`scratch` canonicalizes every root, so no test names a link;
+    // seam=none
+    #[test]
+    fn resolve_works_when_the_root_is_itself_a_link() {
+        let real = scratch("resolve-real-root");
+        std::fs::create_dir_all(real.join("nested/dir")).unwrap();
+        std::fs::write(real.join("nested/file.rb"), b"x").unwrap();
+        symlink("nested/dir", real.join("link")).unwrap();
+        let alias = real.with_file_name(format!(
+            "{}-alias",
+            real.file_name().unwrap().to_string_lossy()
+        ));
+        let _ = std::fs::remove_file(&alias);
+        symlink(&real, &alias).unwrap();
+        let reply = resolve_request(&alias, "link/../file.rb");
+        std::fs::remove_file(&alias).unwrap();
+        assert_eq!(reply["result"]["path"], "nested/file.rb", "{reply}");
+    }
+
+    /// What comes before the last `..` must exist, since only the host can say where it leads.
+    /// What comes after it is `read`'s to judge, as it is for a path with no `..`.
+    #[test]
+    fn resolve_reports_a_missing_directory_before_the_parent_traversal_as_not_found() {
+        let root = scratch("resolve-missing");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let reply = resolve_request(&root, "nope/../x");
+        assert!(reply["error"]["NotFound"].is_string(), "{reply}");
+        assert_eq!(
+            resolve_request(&root, "sub/../nope")["result"]["path"],
+            "nope"
+        );
+    }
+
+    // Value: protects=a link AFTER the `..` keeps its own name, so a `..` click opens the same tab a
+    // plain click on that file would; fails_when=`resolve_path` canonicalizes the whole path and
+    // answers the link's target; why_new=the other cases have no link after the `..`; seam=none
+    #[test]
+    fn resolve_keeps_what_follows_the_last_parent_traversal_as_written() {
+        let root = scratch("resolve-leaf-link");
+        std::fs::create_dir_all(root.join("nested/dir")).unwrap();
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::fs::write(root.join("nested/v2.rb"), b"x").unwrap();
+        symlink("v2.rb", root.join("nested/current.rb")).unwrap();
+        symlink("nested/dir", root.join("link")).unwrap();
+        symlink("real", root.join("linkdir")).unwrap();
+        assert_eq!(
+            resolve_request(&root, "link/../current.rb")["result"]["path"],
+            "nested/current.rb"
+        );
+        assert!(
+            resolve_request(&root, "a/../linkdir/x.rb")["error"]["NotFound"].is_string(),
+            "`a` is missing, so there is nothing to resolve the `..` against"
+        );
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        assert_eq!(
+            resolve_request(&root, "a/../linkdir/x.rb")["result"]["path"],
+            "linkdir/x.rb"
+        );
+    }
+
+    // Value: protects=a `resolve` request counts against the same MAX_CONCURRENT_READS cap as a
+    // `read`, because it canonicalizes through links that can sit on a hung network mount;
+    // fails_when=`dispatch` stops taking a `ReadSlot` for "resolve", so a resolve is no longer
+    // refused `Busy` while every slot is held; why_new=the other cap test drives `acquire_from` on
+    // its own counter and `execute` skips `dispatch`, so nothing pins which methods take a slot;
+    // seam=none (no other lib test reaches the global `READS`; only this one calls `dispatch`)
+    #[test]
+    fn a_resolve_is_refused_busy_while_every_read_slot_is_held() {
+        #[derive(Clone, Default)]
+        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let capture = Capture::default();
+        let writer: SharedWriter =
+            std::sync::Arc::new(std::sync::Mutex::new(Box::new(capture.clone())));
+        let subscriptions =
+            Subscriptions::new(std::sync::Arc::clone(&writer), std::sync::Arc::new(|| {}));
+        let _held: Vec<_> = (0..MAX_CONCURRENT_READS)
+            .map(|_| ReadSlot::acquire().unwrap())
+            .collect();
+        // The root does not exist: were the resolve admitted it would answer `NotFound`, never `Busy`.
+        let root = std::env::temp_dir().join("wr-file-test-resolve-busy-no-such-root");
+        let request = json!({"version": 1, "method": "resolve", "root": root, "path": "f"});
+        let envelope = Envelope::new(Service::File, 1, serde_json::to_vec(&request).unwrap());
+        dispatch(&envelope, &writer, &subscriptions);
+        let mut decoder = crate::protocol::envelope::EnvelopeDecoder::new();
+        decoder.push(&capture.0.lock().unwrap());
+        let reply = decoder
+            .next_envelope()
+            .unwrap()
+            .expect("the refusal is written before dispatch returns");
+        let reply: Value = serde_json::from_slice(&reply.payload[1..]).unwrap();
+        assert!(reply["error"]["Busy"].is_string(), "{reply}");
     }
 
     #[test]
