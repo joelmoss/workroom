@@ -1788,13 +1788,15 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     reboots. Restarting the agent doesn't clear it either: a process with a thread in such a FUSE
     wait can't finish exiting, so it keeps its lock and listener, and a new agent finds the lock
     taken; only the mount answering, aborting its FUSE connection, or a reboot does. The agent logs
-    each walk it leaves behind, and each one that returns. A click stops at the first resolve that
-    times out: its other candidates resolve the same prefix, or would read through the same link
-    with no deadline, so nothing more in that click reaches the host. One click on a dead mount
+    each filesystem operation it leaves behind, and each one that returns. A click stops at the
+    first resolve that times out: its other candidates resolve the same prefix, or would open
+    through the same link. Resolve and file opening now share the 10-second deadline (#343); the
+    bounded payload read stays on the request thread so a timed-out worker cannot retain its 8 MiB
+    buffer after the read slot is released. One click on a dead mount
     costs 10 seconds and one walk; a mount that is only slow to wake can take a second click, and
     a word whose `:line` comes before its `..` (`good.rb:12/link/../t.rb`) loses its healthy
-    `good.rb` variant (#345). `read` itself has no deadline (#343), so a read opened through a link
-    onto a hung mount still holds its slot. A newer click replaces the one before it, and an
+    `good.rb` variant (#345). A payload read that blocks after a successful open can still hold its
+    slot; the deadline covers path lookup and descriptor validation. A newer click replaces the one before it, and an
     answer whose pane has closed opens nothing. An error reading one path moves on to the next
     candidate; a transport failure, a resolve that timed out, or the agent refusing a resolve
     because too many earlier walks are stuck stops the probe.
@@ -2981,9 +2983,10 @@ disagreement passes every test on either side alone while presenting as an empty
       (they are answered `LockContention`), then waits up to 2 s for running ones to finish, and
       refuses if they do not. Stopping first is what lets the wait end under steady traffic. Every
       app connection closes at the exec, and the next request reconnects.
-    - *No file lookup is stuck on a mount* (#334). A `resolve` left behind at its deadline holds no
-      request slot, so the wait above doesn't see it, but the exec would wait for its thread, which
-      a FUSE request can hold uninterruptibly. The hand-off is refused while any is left behind.
+    - *No file lookup is stuck on a mount* (#334, #343). A `resolve` or file-open worker left
+      behind at its deadline holds no request slot, so the wait above doesn't see it, but the exec
+      would wait for its thread, which a FUSE request can hold uninterruptibly. The hand-off is
+      refused while any filesystem worker is left behind.
     - *The pre-check is the restore without the descriptors.* It runs
       `<binary> handoff-check <table>` on the real table, painting every screen. A binary that
       predates hand-off has no such command. A build without `terminal-state` refuses a table with

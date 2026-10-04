@@ -51,30 +51,31 @@ pub const MAX_READ_BYTES: u64 = 8 * 1024 * 1024;
 /// Reads in flight at once. Each buffers up to `MAX_READ_BYTES` and then its base64, so this bounds
 /// the agent's worst-case read memory at roughly 4 × (8 + 10.7) MiB rather than 32 ×. A `resolve`
 /// takes a slot too, though it buffers nothing; like a read it holds the slot until its reply is
-/// written, and a hung walk can't stretch that past `RESOLVE_TIMEOUT`.
+/// written, and a hung walk can't stretch that past `FILESYSTEM_TIMEOUT`.
 const MAX_CONCURRENT_READS: usize = 4;
 
-/// How long a `resolve` waits for its walk before answering that it timed out (#334). The same
-/// 10s as a listing, and well under `AgentVCSConnection.fileRequest`'s 45s, so the app hears this
-/// answer rather than its own timeout.
-const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long path resolution and file opening wait before answering that they timed out (#334/#343).
+/// The same 10s as a listing, and well under `AgentVCSConnection.fileRequest`'s 45s, so the app
+/// hears this answer rather than its own timeout.
+const FILESYSTEM_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How a `resolve` answer that hit `RESOLVE_TIMEOUT` begins. The app matches it
+/// How a `resolve` answer that hit `FILESYSTEM_TIMEOUT` begins. The app matches it
 /// (`AgentFileProvider.resolveTimedOut`) and ends that click: its other candidates resolve the same
-/// prefix, or read through the same link with no deadline (#343), and would hang the same way.
+/// prefix, or open through the same link (#343), and would hang the same way.
 const RESOLVE_TIMED_OUT: &str = "resolving timed out";
+/// A read whose file cannot be opened and checked before the deadline returns this error.
+const READ_OPEN_TIMED_OUT: &str = "opening file timed out";
 
-/// Walks still running after their `resolve` gave up on them. A walk through a link onto a hung
-/// mount can block in the kernel for as long as the mount does, and Rust can't stop a thread, so
-/// each one left behind is a parked thread. Once this many are counted, `resolve` answers `Busy`
-/// without starting another. The check isn't an atomic admit: walks already waiting when the count
-/// reaches it can still be left behind, so up to `MAX_ABANDONED_WALKS - 1 + MAX_CONCURRENT_READS`
-/// (7) can be parked, and then resolves stay refused until enough return to bring the count back
-/// under this. The cost: while they are parked, a resolve that would have been quick is refused
-/// too. Reads are unaffected, since an abandoned walk holds no read slot and no permit.
-const MAX_ABANDONED_WALKS: usize = 4;
+/// Filesystem operations still running after their request gave up on them. A walk or file open
+/// through a link onto a hung mount can block in the kernel for as long as the mount does, and Rust
+/// can't stop a thread, so each one left behind is a parked thread. Once this many are counted,
+/// `resolve` and `read` answer `Busy` without starting another. The check isn't an atomic admit:
+/// operations already waiting when the count reaches it can still be left behind, so up to
+/// `MAX_ABANDONED_FILESYSTEM_OPERATIONS - 1 + MAX_CONCURRENT_READS` (7) can be parked. While they are parked, a
+/// filesystem request that would have been quick is refused too.
+const MAX_ABANDONED_FILESYSTEM_OPERATIONS: usize = 4;
 
-static ABANDONED_WALKS: AtomicUsize = AtomicUsize::new(0);
+static ABANDONED_FILESYSTEM_OPERATIONS: AtomicUsize = AtomicUsize::new(0);
 
 /// Matches `StatusCommandRunner`'s 10s listing timeout, so a slow tree fails the same way on both
 /// paths.
@@ -221,9 +222,9 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter, subscriptions: &Subs
             // A read holds its slot until its reply has been WRITTEN, not merely built: the
             // base64 value and its serialized copy are the memory the cap exists to bound, and they
             // live until `send` returns (which can block behind a slow reader for a long while).
-            // A resolve holds one just as long; a walk hung on a mount can't stretch that past
-            // `RESOLVE_TIMEOUT` (see `resolve`). It buffers nothing, so the memory rationale is a
-            // read's alone.
+            // A resolve or file open holds one just as long; a filesystem operation hung on a
+            // mount can't stretch that past `FILESYSTEM_TIMEOUT` (see `resolve` and `read_file`).
+            // It buffers nothing, so the memory rationale is a read's alone.
             let slot = if matches!(request.method.as_str(), "read" | "resolve") {
                 match ReadSlot::acquire() {
                     Ok(slot) => Some(slot),
@@ -458,21 +459,30 @@ fn read(request: &Request) -> Result<Value, FileError> {
 /// what follows. That is not a new capability: the VCS service's `stat` reports existence for any
 /// absolute path.
 ///
-/// The walk runs on its own thread, and this answers after `RESOLVE_TIMEOUT` whether or not it has
-/// returned (#334): a committed link can lead onto a hung network mount, and the app starts a new
-/// click without waiting for the last one. Its request thread holds a `ReadSlot` and a `Permit`
+/// The path walk runs on its own thread, and this answers after `FILESYSTEM_TIMEOUT` whether or not
+/// it has returned (#334): a committed link can lead onto a hung network mount, and the app starts a
+/// new click without waiting for the last one. Its request thread holds a `ReadSlot` and a `Permit`
 /// until its reply is written, and a hung walk holds neither, so it can't keep reads out, or keep
 /// the agent from exiting idle. A walk only reads, so leaving it behind cuts nothing off
-/// mid-change.
+/// mid-change. `read_file` uses the same deadline for canonicalization, opening and descriptor
+/// checks. The bounded payload read stays on the request thread so a stalled worker cannot retain
+/// its 8 MiB buffer after the slot is released.
 ///
-/// What the deadline doesn't bound is the walk's thread itself (`MAX_ABANDONED_WALKS` caps how
+/// What the deadline doesn't bound is the walk's thread itself (`MAX_ABANDONED_FILESYSTEM_OPERATIONS` caps how
 /// many), and a kill doesn't always end it: an NFS hard mount waits killably, but a FUSE request
 /// the daemon has already read waits uninterruptibly until the daemon answers (`request_wait_answer`
 /// in Linux's `fs/fuse/dev.c`). A hand-off's `execve` waits for every other thread to die, so it
 /// would freeze every terminal on the host behind such a walk; `crate::handoff` refuses while any
-/// walk is left behind (`walks_left_behind`). Idle exit is unaffected: it lets go of the lock and
+/// walk is left behind (`filesystem_operations_left_behind`). Idle exit is unaffected: it lets go of the lock and
 /// the listener before the process ends.
 fn resolve(request: &Request) -> Result<Value, FileError> {
+    resolve_with_abandoned_operations(request, &ABANDONED_FILESYSTEM_OPERATIONS)
+}
+
+fn resolve_with_abandoned_operations(
+    request: &Request,
+    abandoned: &AtomicUsize,
+) -> Result<Value, FileError> {
     let root = root_of(request)?;
     let relative = request
         .path
@@ -482,40 +492,44 @@ fn resolve(request: &Request) -> Result<Value, FileError> {
         return Err(unsupported("invalid relative file path"));
     }
     // The app matches this text (`AgentFileProvider.resolveWalksBusy`) and ends the click, as on a
-    // timeout: its other candidates could read through the same hung link with no deadline.
-    if ABANDONED_WALKS.load(Ordering::Acquire) >= MAX_ABANDONED_WALKS {
-        return Err(FileError::Busy(
-            "too many earlier resolves are still walking".into(),
-        ));
+    // timeout: its other candidates could open through the same hung link.
+    if let Some(error) = filesystem_capacity_error(
+        abandoned,
+        MAX_ABANDONED_FILESYSTEM_OPERATIONS,
+        "too many earlier resolves are still walking",
+    ) {
+        return Err(error);
     }
     let shown = format!("{relative} under {}", root.display());
     let relative = relative.to_owned();
-    let path = with_deadline(RESOLVE_TIMEOUT, move || resolve_path(&root, &relative)).inspect_err(
-        |error| {
-            if matches!(error, FileError::Io(message) if message.starts_with(RESOLVE_TIMED_OUT)) {
-                crate::note!("resolve of {shown} timed out; its walk is left behind (#334)");
-            }
-        },
-    )?;
+    let path = with_deadline(FILESYSTEM_TIMEOUT, RESOLVE_TIMED_OUT, move || {
+        resolve_path(&root, &relative)
+    })
+    .inspect_err(|error| {
+        if matches!(error, FileError::Io(message) if message.starts_with(RESOLVE_TIMED_OUT)) {
+            crate::note!("resolve of {shown} timed out; its walk is left behind (#334)");
+        }
+    })?;
     Ok(json!({"path": path}))
 }
 
-/// Walks left behind at their deadline and still running. `crate::handoff` refuses while this is
-/// nonzero: see `resolve`.
-pub(crate) fn walks_left_behind() -> usize {
-    ABANDONED_WALKS.load(Ordering::Acquire)
+/// Filesystem workers left behind at their deadline and still running. `crate::handoff` refuses
+/// while this is nonzero: see `resolve` and `read_file`.
+pub(crate) fn filesystem_operations_left_behind() -> usize {
+    ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire)
 }
 
 /// `work`'s answer if it arrives within `timeout`, run on its own thread; otherwise an `Io` timeout
 /// (which the app takes as the end of that click, `AgentFileProvider.resolveTimedOut`, not as an
 /// agent too old to resolve), with the thread left to finish on its own and counted in
-/// `ABANDONED_WALKS` until it does.
+/// `ABANDONED_FILESYSTEM_OPERATIONS` until it does.
 ///
-/// The thread and this caller agree through one state word on which of them saw the deadline
-/// first, so the count goes up exactly once for a walk that is left behind and down exactly once
-/// when it returns, and never goes below zero.
+/// The worker and this caller agree through one state word on which of them saw the deadline
+/// first, so the count goes up exactly once for an operation that is left behind and down exactly
+/// once when it returns, and never goes below zero.
 fn with_deadline<T: Send + 'static>(
     timeout: Duration,
+    timeout_message: &'static str,
     work: impl FnOnce() -> Result<T, FileError> + Send + 'static,
 ) -> Result<T, FileError> {
     const RUNNING: u8 = 0;
@@ -523,47 +537,51 @@ fn with_deadline<T: Send + 'static>(
     const ABANDONED: u8 = 2;
     let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(RUNNING));
     let (answer, answered) = std::sync::mpsc::sync_channel(1);
-    let walker_state = std::sync::Arc::clone(&state);
+    let worker_state = std::sync::Arc::clone(&state);
     // `Builder`, not `thread::spawn`: a thread the OS refuses would panic here, on the request's
     // thread, and the app would wait out its own 45s for an answer that never comes.
     let spawned = std::thread::Builder::new().spawn(move || {
-        // A panic still ends in the state change below, or a walk left behind would stay counted.
+        // A panic still ends in the state change below, or a worker left behind would stay counted.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
-            .unwrap_or_else(|_| Err(FileError::Io("the walk panicked".into())));
+            .unwrap_or_else(|_| Err(FileError::Io("the filesystem worker panicked".into())));
         let _ = answer.send(result);
-        let left_behind = walker_state
+        let left_behind = worker_state
             .compare_exchange(RUNNING, FINISHED, Ordering::AcqRel, Ordering::Acquire)
             .is_err();
         if left_behind {
-            ABANDONED_WALKS.fetch_sub(1, Ordering::AcqRel);
-            crate::note!("a resolve walk left behind at its deadline has returned");
+            ABANDONED_FILESYSTEM_OPERATIONS.fetch_sub(1, Ordering::AcqRel);
+            crate::note!("a filesystem operation left behind at its deadline has returned");
         }
     });
     if let Err(error) = spawned {
-        return Err(FileError::Busy(format!("cannot start a walk: {error}")));
+        return Err(FileError::Busy(format!(
+            "cannot start a filesystem worker: {error}"
+        )));
     }
     match answered.recv_timeout(timeout) {
         Ok(result) => result,
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            Err(FileError::Io("the walk ended without an answer".into()))
-        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(FileError::Io(
+            "the filesystem worker ended without an answer".into(),
+        )),
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             // Counted before it is marked, so the walk can only take back a count already there.
-            ABANDONED_WALKS.fetch_add(1, Ordering::AcqRel);
+            ABANDONED_FILESYSTEM_OPERATIONS.fetch_add(1, Ordering::AcqRel);
             let marked = state
                 .compare_exchange(RUNNING, ABANDONED, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok();
             if marked {
                 return Err(FileError::Io(format!(
-                    "{RESOLVE_TIMED_OUT} after {}s",
+                    "{timeout_message} after {}s",
                     timeout.as_secs()
                 )));
             }
             // It finished in the meantime, so it isn't left behind, and its answer is waiting.
-            ABANDONED_WALKS.fetch_sub(1, Ordering::AcqRel);
-            answered
-                .try_recv()
-                .unwrap_or_else(|_| Err(FileError::Io("the walk ended without an answer".into())))
+            ABANDONED_FILESYSTEM_OPERATIONS.fetch_sub(1, Ordering::AcqRel);
+            answered.try_recv().unwrap_or_else(|_| {
+                Err(FileError::Io(
+                    "the filesystem worker ended without an answer".into(),
+                ))
+            })
         }
     }
 }
@@ -662,6 +680,69 @@ pub(crate) fn read_file(
     mode: Symlinks,
     max_bytes: u64,
 ) -> Result<Vec<u8>, FileError> {
+    let root = root.to_path_buf();
+    let relative = relative.to_owned();
+    let OpenedRead { mut file, size } = with_read_open_deadline(FILESYSTEM_TIMEOUT, move || {
+        open_read_file(&root, &relative, mode, max_bytes)
+    })?;
+    let mut bytes = Vec::with_capacity(size as usize);
+    (&mut file).take(max_bytes + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(FileError::TooLarge(format!("more than {max_bytes} bytes")));
+    }
+    Ok(bytes)
+}
+
+/// Apply the same abandoned-worker cap to reads as resolves. The generic closure also makes the
+/// deadline path testable without relying on an actual network filesystem.
+fn with_read_open_deadline<T: Send + 'static>(
+    timeout: Duration,
+    work: impl FnOnce() -> Result<T, FileError> + Send + 'static,
+) -> Result<T, FileError> {
+    with_read_open_deadline_with_abandoned_operations(
+        timeout,
+        &ABANDONED_FILESYSTEM_OPERATIONS,
+        work,
+    )
+}
+
+fn with_read_open_deadline_with_abandoned_operations<T: Send + 'static>(
+    timeout: Duration,
+    abandoned: &AtomicUsize,
+    work: impl FnOnce() -> Result<T, FileError> + Send + 'static,
+) -> Result<T, FileError> {
+    if let Some(error) = filesystem_capacity_error(
+        abandoned,
+        MAX_ABANDONED_FILESYSTEM_OPERATIONS,
+        "too many earlier filesystem operations are still pending",
+    ) {
+        return Err(error);
+    }
+    with_deadline(timeout, READ_OPEN_TIMED_OUT, work)
+}
+
+fn filesystem_capacity_error(
+    abandoned: &AtomicUsize,
+    maximum: usize,
+    message: &'static str,
+) -> Option<FileError> {
+    (abandoned.load(Ordering::Acquire) >= maximum).then(|| FileError::Busy(message.into()))
+}
+
+/// Open and validate the descriptor before returning it to the request thread. The deadline
+/// bounds the mount operations in canonicalize, open and descriptor lookup; the size-limited byte
+/// read stays on the request thread so the per-read memory budget remains tied to its slot.
+struct OpenedRead {
+    file: std::fs::File,
+    size: u64,
+}
+
+fn open_read_file(
+    root: &Path,
+    relative: &str,
+    mode: Symlinks,
+    max_bytes: u64,
+) -> Result<OpenedRead, FileError> {
     let real_root = std::fs::canonicalize(root)?;
     let mut options = std::fs::OpenOptions::new();
     // `O_NOCTTY`: a committed link can point at a tty, and opening one without it can make it the
@@ -675,7 +756,7 @@ pub(crate) fn read_file(
                 Symlinks::FollowWithinRoot => 0,
             },
     );
-    let mut file = options.open(root.join(relative)).map_err(|error| {
+    let file = options.open(root.join(relative)).map_err(|error| {
         if error.raw_os_error() == Some(libc::ELOOP) && mode == Symlinks::Refuse {
             FileError::Refused("symbolic link".into())
         } else {
@@ -696,12 +777,10 @@ pub(crate) fn read_file(
             metadata.len()
         )));
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    (&mut file).take(max_bytes + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > max_bytes {
-        return Err(FileError::TooLarge(format!("more than {max_bytes} bytes")));
-    }
-    Ok(bytes)
+    Ok(OpenedRead {
+        file,
+        size: metadata.len(),
+    })
 }
 
 /// Standard base64 with padding. Hand-rolled because it is fifteen lines and the crate has no other
@@ -954,7 +1033,7 @@ mod tests {
         }
     }
 
-    /// Every test that resolves, or moves `ABANDONED_WALKS`, takes this: `resolve` reads the count,
+    /// Every test that resolves, or moves `ABANDONED_FILESYSTEM_OPERATIONS`, takes this: `resolve` reads the count,
     /// so one test holding it at the cap would refuse the others' resolves.
     static WALKS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -978,12 +1057,12 @@ mod tests {
     #[test]
     fn a_walk_past_its_deadline_is_answered_then_and_counted_until_it_returns() {
         let _walks = walks_lock();
-        let before = ABANDONED_WALKS.load(Ordering::Acquire);
+        let before = ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire);
         let (release, released) = std::sync::mpsc::channel::<()>();
         let started = std::time::Instant::now();
         // The walk waits for the release, but not forever: if `with_deadline` waited for it, the
         // test would fail on its elapsed time instead of hanging.
-        let result = with_deadline(Duration::from_millis(100), move || {
+        let result = with_deadline(Duration::from_millis(100), RESOLVE_TIMED_OUT, move || {
             let _ = released.recv_timeout(Duration::from_secs(5));
             Ok("late")
         });
@@ -997,22 +1076,31 @@ mod tests {
             matches!(&result, Err(FileError::Io(message)) if message.starts_with("resolving timed out")),
             "{result:?}"
         );
-        assert_eq!(ABANDONED_WALKS.load(Ordering::Acquire), before + 1);
-        assert_eq!(walks_left_behind(), before + 1);
+        assert_eq!(
+            ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire),
+            before + 1
+        );
+        assert_eq!(filesystem_operations_left_behind(), before + 1);
         release.send(()).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while ABANDONED_WALKS.load(Ordering::Acquire) != before
+        while ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire) != before
             && std::time::Instant::now() < deadline
         {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(
-            ABANDONED_WALKS.load(Ordering::Acquire),
+            ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire),
             before,
             "a returned walk is still counted"
         );
-        assert_eq!(with_deadline(Duration::from_secs(5), || Ok(7)).unwrap(), 7);
-        assert_eq!(ABANDONED_WALKS.load(Ordering::Acquire), before);
+        assert_eq!(
+            with_deadline(Duration::from_secs(5), RESOLVE_TIMED_OUT, || Ok(7)).unwrap(),
+            7
+        );
+        assert_eq!(
+            ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire),
+            before
+        );
     }
 
     // Value: protects=a walk that panics is answered as an `Io` error naming the panic, rather than
@@ -1022,14 +1110,19 @@ mod tests {
     #[test]
     fn a_walk_that_panics_is_answered_as_an_io_error() {
         let _walks = walks_lock();
-        let before = ABANDONED_WALKS.load(Ordering::Acquire);
+        let before = ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire);
         let result: Result<u8, FileError> =
-            with_deadline(Duration::from_secs(5), || panic!("walk exploded"));
+            with_deadline(Duration::from_secs(5), RESOLVE_TIMED_OUT, || {
+                panic!("walk exploded")
+            });
         assert!(
             matches!(&result, Err(FileError::Io(message)) if message.contains("panicked")),
             "{result:?}"
         );
-        assert_eq!(ABANDONED_WALKS.load(Ordering::Acquire), before);
+        assert_eq!(
+            ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire),
+            before
+        );
     }
 
     // Value: protects=a walk that panics AFTER it was left behind still comes off the count, so one
@@ -1039,59 +1132,132 @@ mod tests {
     #[test]
     fn a_walk_that_panics_after_its_deadline_is_still_taken_off_the_count() {
         let _walks = walks_lock();
-        let before = ABANDONED_WALKS.load(Ordering::Acquire);
+        let before = ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire);
         let (release, released) = std::sync::mpsc::channel::<()>();
-        let result: Result<u8, FileError> = with_deadline(Duration::from_millis(100), move || {
-            let _ = released.recv_timeout(Duration::from_secs(5));
-            panic!("walk exploded late")
-        });
+        let result: Result<u8, FileError> =
+            with_deadline(Duration::from_millis(100), RESOLVE_TIMED_OUT, move || {
+                let _ = released.recv_timeout(Duration::from_secs(5));
+                panic!("walk exploded late")
+            });
         assert!(
             matches!(&result, Err(FileError::Io(message)) if message.starts_with(RESOLVE_TIMED_OUT)),
             "{result:?}"
         );
-        assert_eq!(walks_left_behind(), before + 1);
+        assert_eq!(filesystem_operations_left_behind(), before + 1);
         release.send(()).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while ABANDONED_WALKS.load(Ordering::Acquire) != before
+        while ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire) != before
             && std::time::Instant::now() < deadline
         {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(
-            ABANDONED_WALKS.load(Ordering::Acquire),
+            ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire),
             before,
             "a panicked walk is still counted"
         );
     }
 
-    // Value: protects=hung walks can't pile up threads one per click: past `MAX_ABANDONED_WALKS`
-    // left behind, `resolve` answers `Busy` without starting another; fails_when=`resolve` stops
-    // checking the count before it walks; why_new=nothing else reaches the cap; seam=none
+    // Value: protects=a read whose open stalls on a mount returns before retaining its request
+    // permit/read slot, and the abandoned worker is bounded and accounted for; fails_when=read
+    // calls the filesystem open directly on its request thread; seam=the open closure blocks on a
+    // channel, so this is deterministic and does not require a network mount.
     #[test]
-    fn a_resolve_is_refused_busy_while_too_many_earlier_walks_are_still_out() {
-        struct Restore;
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                ABANDONED_WALKS.fetch_sub(MAX_ABANDONED_WALKS, Ordering::AcqRel);
-            }
-        }
-        let _walks = walks_lock();
-        let root = scratch("resolve-abandoned");
-        std::fs::create_dir_all(root.join("sub")).unwrap();
-        std::fs::write(root.join("f"), b"x").unwrap();
-        let request = json!({"version": 1, "method": "resolve", "root": root, "path": "sub/../f"});
-        let request = serde_json::to_vec(&request).unwrap();
+    fn a_stalled_read_open_is_timed_out_and_releases_request_capacity() {
+        static TEST_READS: AtomicUsize = AtomicUsize::new(0);
+        let _operations = walks_lock();
+        let before = ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire);
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (started, did_start) = std::sync::mpsc::channel::<()>();
+        let result;
         {
-            ABANDONED_WALKS.fetch_add(MAX_ABANDONED_WALKS, Ordering::AcqRel);
-            let _restore = Restore;
-            let reply = execute(&request);
-            // The literal: the app matches this text (`AgentFileProvider.resolveWalksBusy`).
-            assert_eq!(
-                reply["error"]["Busy"], "too many earlier resolves are still walking",
-                "{reply}"
-            );
+            let _permit = Permit::acquire().expect("test request should acquire a permit");
+            let _slot = ReadSlot::acquire_from(&TEST_READS, 1).unwrap();
+            result = with_read_open_deadline(Duration::from_millis(100), move || {
+                let _ = started.send(());
+                let _ = released.recv_timeout(Duration::from_secs(5));
+                Ok(())
+            });
+            did_start
+                .recv_timeout(Duration::from_secs(1))
+                .expect("open worker did not start");
         }
-        assert_eq!(execute(&request)["result"]["path"], "f");
+        assert!(
+            matches!(&result, Err(FileError::Io(message)) if message.starts_with(READ_OPEN_TIMED_OUT)),
+            "{result:?}"
+        );
+        assert_eq!(TEST_READS.load(Ordering::Acquire), 0, "read slot leaked");
+        assert!(Permit::acquire().is_some(), "request permit leaked");
+        assert!(ReadSlot::acquire_from(&TEST_READS, 1).is_ok());
+        assert_eq!(
+            ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire),
+            before + 1
+        );
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire) != before
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            ABANDONED_FILESYSTEM_OPERATIONS.load(Ordering::Acquire),
+            before,
+            "returned open worker is still counted"
+        );
+    }
+
+    #[test]
+    fn filesystem_worker_cap_refuses_reads_and_resolves_without_shared_test_state() {
+        static TEST_OPERATIONS: AtomicUsize = AtomicUsize::new(0);
+        TEST_OPERATIONS.store(MAX_ABANDONED_FILESYSTEM_OPERATIONS, Ordering::Release);
+        let request = parse(
+            &serde_json::to_vec(&json!({
+                "version": 1,
+                "method": "resolve",
+                "root": "/tmp/repo",
+                "path": "sub/../f"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_with_abandoned_operations(&request, &TEST_OPERATIONS),
+            Err(FileError::Busy(
+                "too many earlier resolves are still walking".into()
+            ))
+        );
+
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed_start = std::sync::Arc::clone(&started);
+        assert_eq!(
+            with_read_open_deadline_with_abandoned_operations(
+                Duration::from_millis(100),
+                &TEST_OPERATIONS,
+                move || {
+                    observed_start.store(true, Ordering::Release);
+                    Ok(())
+                },
+            ),
+            Err(FileError::Busy(
+                "too many earlier filesystem operations are still pending".into()
+            ))
+        );
+        assert!(
+            !started.load(Ordering::Acquire),
+            "read worker started past cap"
+        );
+
+        TEST_OPERATIONS.store(MAX_ABANDONED_FILESYSTEM_OPERATIONS - 1, Ordering::Release);
+        assert_eq!(
+            with_read_open_deadline_with_abandoned_operations(
+                Duration::from_secs(1),
+                &TEST_OPERATIONS,
+                || Ok(7),
+            )
+            .unwrap(),
+            7
+        );
     }
 
     /// #327: `link/..` is the link TARGET's parent, which only the host can know.
@@ -1220,7 +1386,7 @@ mod tests {
     // seam=none (no other lib test reaches the global `READS`; only this one calls `dispatch`)
     #[test]
     fn a_resolve_is_refused_busy_while_every_read_slot_is_held() {
-        // A resolve admitted here would read `ABANDONED_WALKS`, and the cap test's `Busy` must not
+        // A resolve admitted here would read `ABANDONED_FILESYSTEM_OPERATIONS`, and the cap test's `Busy` must not
         // stand in for this one's.
         let _walks = walks_lock();
         #[derive(Clone, Default)]

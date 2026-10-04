@@ -13,11 +13,16 @@ struct AgentFileProvider: FileProviding {
   /// onto a hung mount. Every candidate of the same click resolves the same prefix, so the click
   /// stops there. `RESOLVE_TIMED_OUT` in `file.rs`, whose tests pin the prefix.
   static let resolveTimedOut = "resolving timed out"
+  /// The agent timed out while opening and checking a file on a remote mount (#343).
+  static let readOpenTimedOut = "opening file timed out"
 
   /// The agent's `Busy` answer to a `resolve` while too many earlier walks are still stuck (#334).
-  /// A click ends on it as on a timeout: its other candidates could read through the same hung
-  /// link, and a read has no deadline (#343). Pinned by the cap test in `file.rs`.
+  /// A click ends on it as on a timeout: its other candidates could open through the same hung
+  /// link. Pinned by the cap test in `file.rs`.
   static let resolveWalksBusy = "too many earlier resolves are still walking"
+
+  /// A read refused because too many earlier opens are still stuck on mounts (#343).
+  static let filesystemOperationsBusy = "too many earlier filesystem operations are still pending"
 
   let context: FileContext
   let connection: AgentVCSConnection
