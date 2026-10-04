@@ -867,8 +867,8 @@ final class TerminalLinkOpenerTests: XCTestCase {
 
 }
 
-/// A remote host's file service for the remote-pane tests (#254): `files` by workroom-relative path,
-/// reads capped as the agent caps them. Shared with `RemotePaneFooterTests`.
+/// A remote host's file service for the remote-pane tests (#254): `files` by workroom-relative
+/// path, reads capped as the agent caps them. Shared with `RemotePaneFooterTests`.
 struct HostFiles: FileProviding {
   let context: FileContext
   let files: [String: Data]

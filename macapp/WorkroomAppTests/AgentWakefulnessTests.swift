@@ -187,7 +187,8 @@ final class AgentWakefulnessTests: XCTestCase {
   }
 
   /// A remote host's poll reads that host's connection and never connects one: with only this Mac
-  /// connected, it is refused as the host's, so the row shows nothing rather than this Mac's verdict.
+  /// connected, it is refused as the host's, so the row shows nothing rather than this Mac's
+  /// verdict.
   @MainActor
   func testARemoteHostsPollAsksForThatHostsConnection() async throws {
     let manager = HostConnectionManager()

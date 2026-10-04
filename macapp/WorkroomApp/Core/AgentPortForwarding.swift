@@ -933,8 +933,9 @@ final class PortForwardingModel: ObservableObject {
 
     /// `host`'s connection in `manager`. A remote host's connection is made by selecting its
     /// workroom (`RemoteHosts.ensureConnected`, through the inspector's reads), so a forward asks
-    /// for the one there is and never makes one: the local reasoning in `LocalAgentVCS.forwarding()`
-    /// holds for a host too, and connecting one could start a container the user stopped.
+    /// for the one there is and never makes one: the local reasoning in
+    /// `LocalAgentVCS.forwarding()` holds for a host too, and connecting one could start a
+    /// container the user stopped.
     static func on(_ host: HostID, manager: HostConnectionManager) -> Transport {
       Transport(
         forwarding: { try await manager.forwarding(host: host) },
