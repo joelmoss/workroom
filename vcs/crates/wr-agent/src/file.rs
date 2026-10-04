@@ -49,7 +49,8 @@ pub const FILE_SERVICE_VERSION: u32 = 1;
 pub const MAX_READ_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Reads in flight at once. Each buffers up to `MAX_READ_BYTES` and then its base64, so this bounds
-/// the agent's worst-case read memory at roughly 4 × (8 + 10.7) MiB rather than 32 ×.
+/// the agent's worst-case read memory at roughly 4 × (8 + 10.7) MiB rather than 32 ×. A `resolve`
+/// takes a slot too, for its filesystem walk, though it buffers nothing.
 const MAX_CONCURRENT_READS: usize = 4;
 
 /// Matches `StatusCommandRunner`'s 10s listing timeout, so a slow tree fails the same way on both
