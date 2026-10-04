@@ -131,7 +131,7 @@ final class LoopbackListener: @unchecked Sendable {
   /// Every connection is read at once, each against its own deadline. One at a time, a burst of
   /// idle connections queued ahead of the browser's would hold it back 5 s each, and the accept
   /// queue holds 128: longer than the whole sign-in. One thread polls them all, so a burst takes no
-  /// threads either, and past `maxPending` the oldest is dropped.
+  /// threads either, and past `maxPending` the oldest is dropped, after one last read.
   func callback(timeout: TimeInterval) async throws -> LoopbackCallback {
     let socket = self.socket
     let deadline = Date().addingTimeInterval(timeout)
@@ -139,6 +139,14 @@ final class LoopbackListener: @unchecked Sendable {
       try await runBlocking {
         var pending: [Request] = []
         defer { for request in pending { Darwin.close(request.connection) } }
+        // A request that arrived as Cancel was pressed is not accepted.
+        let accepted = { (callback: LoopbackCallback) throws -> LoopbackCallback in
+          guard !self.lock.withLock({ self.cancelled }) else {
+            callback.redirect(to: URL(string: "about:blank")!)
+            throw CancellationError()
+          }
+          return callback
+        }
         while true {
           if self.lock.withLock({ self.cancelled }) { throw CancellationError() }
           let now = Date()
@@ -154,8 +162,10 @@ final class LoopbackListener: @unchecked Sendable {
           var watched =
             [pollfd(fd: socket, events: Int16(POLLIN), revents: 0)]
             + pending.map { pollfd(fd: $0.connection, events: Int16(POLLIN), revents: 0) }
+          // Rounded up: a poll that woke short of a deadline would spin until it passed.
           let ready = poll(
-            &watched, nfds_t(watched.count), Int32(max(0, wait.timeIntervalSince(now)) * 1000))
+            &watched, nfds_t(watched.count),
+            Int32((max(0, wait.timeIntervalSince(now)) * 1000).rounded(.up)))
           if ready < 0, errno == EINTR { continue }
           guard ready >= 0, watched[0].revents & Int16(POLLNVAL) == 0 else {
             throw CancellationError()
@@ -165,20 +175,37 @@ final class LoopbackListener: @unchecked Sendable {
             guard let outcome = pending[index].receive() else { continue }
             pending.remove(at: index)
             guard let callback = outcome else { continue }
-            // A request that arrived as Cancel was pressed is not accepted.
-            if self.lock.withLock({ self.cancelled }) {
-              callback.redirect(to: URL(string: "about:blank")!)
-              throw CancellationError()
-            }
-            return callback
+            return try accepted(callback)
           }
-          if watched[0].revents & Int16(POLLIN) != 0 {
-            let connection = accept(socket, nil, nil)
-            guard connection >= 0 else { continue }
-            if pending.count >= Self.maxPending {
-              Darwin.close(pending.removeFirst().connection)
+          guard watched[0].revents & Int16(POLLIN) != 0 else { continue }
+          // Up to `maxPending` per wake, not one: a local flood outpacing one accept per pass would
+          // overflow the queue, and macOS resets what waits in an overflowing queue.
+          accepting: for _ in 0..<Self.maxPending {
+            // Room first, so the loop's own connections never use the descriptor an accept needs.
+            if pending.count >= Self.maxPending, let callback = Self.evictOldest(&pending) {
+              return try accepted(callback)
             }
-            pending.append(Request(connection))
+            let connection = accept(socket, nil, nil)
+            if connection >= 0 {
+              pending.append(Request(connection))
+              continue
+            }
+            switch errno {
+            case EINTR, ECONNABORTED: continue
+            case EMFILE, ENFILE:
+              // XNU has already taken the connection off the queue and closed it (measured, see
+              // `PortForward.acceptPending`): it is lost. Free a descriptor for the next one, or,
+              // with none of ours to free, pause rather than lose the queue one per pass.
+              if pending.isEmpty {
+                Thread.sleep(forTimeInterval: 0.1)
+              } else if let callback = Self.evictOldest(&pending) {
+                return try accepted(callback)
+              }
+              break accepting
+            default:
+              // `EWOULDBLOCK`: the queue is empty.
+              break accepting
+            }
           }
         }
       }
@@ -191,6 +218,19 @@ final class LoopbackListener: @unchecked Sendable {
   /// Connections being read at once. A browser's real request completes as it lands, so dropping
   /// the oldest past this keeps idle ones from crowding it out without spending a descriptor each.
   static let maxPending = 32
+
+  /// Drops the oldest waiting connection, after one last read: a browser's request is already there
+  /// when its connection is, so a flood behind it can't push it out unread. Its callback, if that
+  /// read completed one.
+  private static func evictOldest(_ pending: inout [Request]) -> LoopbackCallback? {
+    var oldest = pending.removeFirst()
+    switch oldest.receive() {
+    case .some(let callback): return callback
+    case .none:
+      Darwin.close(oldest.connection)
+      return nil
+    }
+  }
 
   /// One connection's request head, read as it arrives.
   private struct Request {

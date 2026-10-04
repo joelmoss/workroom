@@ -139,6 +139,25 @@ final class BrokerSignInTests: XCTestCase {
     XCTAssertEqual(browser.redirectedTo, "https://codaset.localhost/workroom/sign-in/att-1")
   }
 
+  /// More idle connections ahead of the redirect than the listener reads at once
+  /// (`LoopbackListener.maxPending`) don't crowd it out: the oldest are dropped, not the browser's.
+  func testAFloodLargerThanTheReadingCapAheadOfTheRedirectDoesNotCrowdItOut() async throws {
+    BrokerStub.reset([
+      .init(status: 201, body: #"{"device_id":"d","login":"l","email":"e"}"#),
+      .init(body: #"{"state":"completed"}"#),
+    ])
+    let browser = Browser()
+    browser.idleAhead = LoopbackListener.maxPending + 8
+    let flow = signIn(browser)
+    let started = ContinuousClock.now
+
+    _ = try await flow.run(deviceName: "Mac")
+    await fulfillment(of: [browser.done], timeout: 10)
+
+    XCTAssertLessThan(ContinuousClock.now - started, .seconds(4))
+    XCTAssertEqual(browser.redirectedTo, "https://codaset.localhost/workroom/sign-in/att-1")
+  }
+
   /// An accept on the sign-in listener with nothing queued returns at once: the case of a `poll`
   /// that saw a connection which is gone by the `accept`. Blocking there would hold the loop that
   /// reads every waiting connection and watches the deadline.
