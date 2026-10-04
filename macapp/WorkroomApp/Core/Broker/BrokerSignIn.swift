@@ -195,7 +195,8 @@ final class LoopbackListener: @unchecked Sendable {
             case EMFILE, ENFILE:
               // XNU has already taken the connection off the queue and closed it (measured, see
               // `PortForward.acceptPending`): it is lost. Free a descriptor for the next one, or,
-              // with none of ours to free, pause rather than lose the queue one per pass.
+              // with none of ours to free, pause: the queue is still lost one per pass while the
+              // process stays out of descriptors, but at 10 a second, not as fast as the CPU goes.
               if pending.isEmpty {
                 Thread.sleep(forTimeInterval: 0.1)
               } else if let callback = Self.evictOldest(&pending) {
