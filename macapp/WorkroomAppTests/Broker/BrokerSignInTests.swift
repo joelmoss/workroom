@@ -42,6 +42,8 @@ final class BrokerSignInTests: XCTestCase {
     var opened: URL?
     var redirectedTo: String?
     let done = XCTestExpectation(description: "the browser was answered")
+    /// Connections opened and left idle ahead of the redirect, as a local process could.
+    var idleAhead = 0
 
     /// Plays Codaset's redirect back to the loopback, after a stray favicon request.
     func open(_ url: URL, code: String, attempt: String) {
@@ -51,7 +53,11 @@ final class BrokerSignInTests: XCTestCase {
         .first { $0.name == "port" }?.value ?? ""
       let session = URLSession(
         configuration: .ephemeral, delegate: NoRedirects(), delegateQueue: nil)
+      let idle = (0..<idleAhead).compactMap { _ in
+        LoopbackSocket.connect(port: UInt16(port) ?? 0, timeout: 2)
+      }
       Task {
+        defer { for socket in idle { Darwin.close(socket) } }
         _ = try? await session.data(from: URL(string: "http://127.0.0.1:\(port)/favicon.ico")!)
         let callback = URL(
           string: "http://127.0.0.1:\(port)/callback?code=\(code)&attempt=\(attempt)")!
@@ -111,6 +117,26 @@ final class BrokerSignInTests: XCTestCase {
 
     XCTAssertEqual(browser.redirectedTo, "https://codaset.localhost/workroom/sign-in/att-1")
     XCTAssertEqual(flow.credentials.load()?.account, account)
+  }
+
+  /// Idle connections queued ahead of the browser's don't hold the redirect back. Read one at a
+  /// time, each cost up to 5 s, so the 128 the accept queue holds outlasted the whole sign-in; here
+  /// 8 of them outlast its 20 s.
+  func testIdleConnectionsAheadOfTheRedirectDoNotHoldItBack() async throws {
+    BrokerStub.reset([
+      .init(status: 201, body: #"{"device_id":"d","login":"l","email":"e"}"#),
+      .init(body: #"{"state":"completed"}"#),
+    ])
+    let browser = Browser()
+    browser.idleAhead = 8
+    let flow = signIn(browser)
+    let started = ContinuousClock.now
+
+    _ = try await flow.run(deviceName: "Mac")
+    await fulfillment(of: [browser.done], timeout: 10)
+
+    XCTAssertLessThan(ContinuousClock.now - started, .seconds(4))
+    XCTAssertEqual(browser.redirectedTo, "https://codaset.localhost/workroom/sign-in/att-1")
   }
 
   func testAFailedRedemptionStillSendsTheBrowserToTheResultPageAndStoresNothing() async throws {

@@ -276,7 +276,7 @@ final class CredentialRelayTests: XCTestCase {
   /// redirect's) holds a burst while its accept loop is behind, as it is on a busy Mac. On loopback
   /// macOS resets connections once the queue overflows, both new ones and ones already waiting, so
   /// a short queue turned a real workroom's request away at 8 (#322) and part of a browser's burst
-  /// at 16 (#328): at 16, connection 18 here was reset. Nothing accepts here, standing in for a
+  /// at 16 (#328): at 16, connection 17 or 18 here was reset. Nothing accepts here, standing in for a
   /// loop that is behind.
   func testALoopbackListenersAcceptQueueHoldsABurstWhileNothingIsAccepted() throws {
     let made = try XCTUnwrap(LoopbackSocket.listen())

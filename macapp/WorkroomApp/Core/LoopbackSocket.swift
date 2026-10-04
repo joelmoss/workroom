@@ -2,7 +2,8 @@ import Darwin
 import Foundation
 
 /// An ephemeral TCP listener on 127.0.0.1, close-on-exec: nothing off this Mac can reach it, and no
-/// process this app spawns inherits it. Shared by the port forwards and the broker sign-in.
+/// process this app spawns inherits it. Shared by the port forwards, the credential relay, the
+/// broker sign-in and the container port probe.
 enum LoopbackSocket {
   /// The listening descriptor and the port it was given, or nil with `errno` set (nothing left
   /// open).
@@ -11,10 +12,11 @@ enum LoopbackSocket {
   /// effect). Connections wait there while the owner's accept loop is behind, and on loopback macOS
   /// resets connections once the queue overflows (`ECONNRESET`), measured: new ones and ones
   /// already waiting in it. Short queues reset real clients: the credential relay's 8 (#322) and the
-  /// port forwards' 16 under a browser's burst (#328); the sign-in redirect's 4, behind its
-  /// one-at-a-time loop, could the same way. A connection waiting in the queue holds kernel socket
-  /// state only, no descriptor of this process and no owner's slot: each owner still caps what it
-  /// takes. A burst past the cap is still reset.
+  /// port forwards' 16 under a browser's burst (#328); the sign-in redirect's 4 could the same way.
+  /// A connection waiting in the queue holds kernel socket state only, no descriptor of this
+  /// process and no owner's slot: each owner still caps what it takes. A burst past the cap is still
+  /// reset. A deep queue is also a long line: an owner must not serve it one slow client at a time
+  /// (`LoopbackListener.callback` reads them all at once).
   static func listen() -> (descriptor: Int32, port: UInt16)? {
     let descriptor = socket(AF_INET, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return nil }
