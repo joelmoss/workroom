@@ -234,24 +234,42 @@ final class CredentialRelayTests: XCTestCase {
     let relay = CredentialRelay(answer: { _ in "username=u\npassword=p\n" })
     let secret = try relay.secret(for: UUID())
     let port = try relay.localPort()
-    let side = try XCTUnwrap(LoopbackSocket.listen(backlog: 128))
+    let side = try XCTUnwrap(LoopbackSocket.listen(backlog: CredentialRelay.backlog))
     defer { Darwin.close(side.descriptor) }
-    for _ in 0..<(CredentialRelay.maxReading * 2) {
+    for index in 0..<(CredentialRelay.maxReading * 2) {
       let client = try XCTUnwrap(LoopbackSocket.connect(port: side.port, timeout: 2))
       let accepted = Darwin.accept(side.descriptor, nil, nil)
       XCTAssertGreaterThanOrEqual(accepted, 0)
       var linger = linger(l_onoff: 1, l_linger: 0)
       setsockopt(client, SOL_SOCKET, SO_LINGER, &linger, socklen_t(MemoryLayout<linger>.size))
       Darwin.close(client)
-      Thread.sleep(forTimeInterval: 0.005)
+      // The premise, checked rather than slept on: once the reset has arrived, setting
+      // SO_NOSIGPIPE on the accepted side fails. Without it this test would pass untested.
+      var on: Int32 = 1
+      var refused = false
+      for _ in 0..<400 where !refused {
+        refused =
+          setsockopt(accepted, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+          != 0
+        if !refused { Thread.sleep(forTimeInterval: 0.005) }
+      }
+      XCTAssertTrue(refused, "the reset never reached accepted socket \(index)")
       relay.take(accepted)
     }
-    Thread.sleep(forTimeInterval: 0.2)
-    let socket = try XCTUnwrap(LoopbackSocket.connect(port: port, timeout: 2))
-    defer { Darwin.close(socket) }
+    // Asked until answered, within a deadline, rather than after a fixed wait: the permits come
+    // back as the relay's queue gets to each reset peer, later on a loaded host. A leak never
+    // answers.
     let request = "\(secret)\nprotocol=https\nhost=github.com\n\n"
-    _ = request.withCString { send(socket, $0, strlen($0), 0) }
-    XCTAssertEqual(reply(socket), "username=u\npassword=p\n", "the reading permits leaked")
+    var answered = ""
+    let deadline = Date().addingTimeInterval(10)
+    while answered.isEmpty, Date() < deadline {
+      let socket = try XCTUnwrap(LoopbackSocket.connect(port: port, timeout: 2))
+      _ = request.withCString { send(socket, $0, strlen($0), 0) }
+      answered = reply(socket)
+      Darwin.close(socket)
+      if answered.isEmpty { Thread.sleep(forTimeInterval: 0.05) }
+    }
+    XCTAssertEqual(answered, "username=u\npassword=p\n", "the reading permits leaked")
   }
 
   /// The relay's accept queue holds a burst while its accept thread is behind, as it is on a busy
