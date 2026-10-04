@@ -2258,14 +2258,10 @@ final class TerminalSessions: ObservableObject {
     guard let location = target.remoteLocation else { return nil }
     let candidates = TerminalLinkOpener.remoteCandidates(for: word, cwd: cwd, root: target.path)
     guard !candidates.isEmpty, let files = try? await remoteFiles(location) else { return nil }
-    // Prefixes through the last `..` whose resolve timed out on this click (#334).
-    var hung = Set<String>()
     for candidate in candidates {
       var path = candidate.path
       do {
         if let onHost = candidate.onHost {
-          let prefix = Self.resolvedPrefix(of: onHost)
-          guard !hung.contains(prefix) else { continue }
           do {
             path = try await files.resolve(path: onHost)
           } catch FileServiceError.failed(let message)
@@ -2277,12 +2273,10 @@ final class TerminalSessions: ObservableObject {
           } catch FileServiceError.failed(let message)
             where message.hasPrefix(AgentFileProvider.resolveTimedOut)
           {
-            // The walk hung on a mount (#334). Another candidate through the same prefix would
-            // hang another 10 s and leave another walk behind, so those are skipped; one through a
-            // different prefix (`good.rb` from `good.rb:12/link/../t.rb`) is still probed.
+            // The walk hung on a mount (#334). The other candidates differ only after the last
+            // `..`, so they would each hang another 10 s and leave another walk behind.
             NSLog("Workroom: resolving %@ on the host timed out", onHost)
-            hung.insert(prefix)
-            continue
+            return nil
           }
         }
         let found = TerminalLinkOpener.PathCandidate(
@@ -2303,14 +2297,6 @@ final class TerminalSessions: ObservableObject {
       }
     }
     return nil
-  }
-
-  /// The part of an `onHost` path the host resolves: through its last `..` (`resolve_path` in
-  /// `file.rs`). Two candidates with the same one walk the same links.
-  static func resolvedPrefix(of onHost: String) -> String {
-    let parts = onHost.split(separator: "/", omittingEmptySubsequences: false)
-    guard let last = parts.lastIndex(of: "..") else { return onHost }
-    return parts[...last].joined(separator: "/")
   }
 
   /// Reconstruct a minimal `TerminalTarget` from its id for the `onFocused` callback (which only
