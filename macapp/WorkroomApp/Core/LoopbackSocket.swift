@@ -31,14 +31,21 @@ enum LoopbackSocket {
     return (descriptor, UInt16(bigEndian: address.sin_port))
   }
 
-  /// A blocking TCP connection to `127.0.0.1:<port>`, close-on-exec, or nil with `errno` set.
-  /// Bounded by `timeout`: a closed port is refused at once on loopback, but a listener whose
-  /// backlog is full leaves the SYN unanswered, and a plain `connect` would wait for the kernel's
-  /// own minute and more.
+  /// A blocking TCP connection to `127.0.0.1:<port>`, close-on-exec and `SO_NOSIGPIPE`, or nil
+  /// with `errno` set. Bounded by `timeout`, for a listener that never answers. A closed port is
+  /// refused at once on loopback, and so, measured, is a listener whose accept queue is full: macOS
+  /// resets the connection (`ECONNRESET`) rather than leave the SYN unanswered.
+  ///
+  /// `SO_NOSIGPIPE` from the start: a write to a peer that has reset would otherwise raise SIGPIPE
+  /// and end the process. Set before `connect`, so it holds even for a peer that resets at once,
+  /// when setting it afterwards fails (`PortForward.prepare`).
   static func connect(port: UInt16, timeout: TimeInterval) -> Int32? {
     let descriptor = socket(AF_INET, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return nil }
     _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
+    var noSignal: Int32 = 1
+    setsockopt(
+      descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
     let flags = fcntl(descriptor, F_GETFL)
     var address = sockaddr_in()
     address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)

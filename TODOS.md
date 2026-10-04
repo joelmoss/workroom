@@ -5,27 +5,6 @@
 > **Recently done** at the bottom — including the traps found while doing it, which are the parts worth
 > reading before touching the same code. Full write-ups for finished items live in git history.
 
-## P0 — before the next release
-
-### `CredentialRelayTests.testIdleStrangersDoNotBlockAKnownWorkroom` fails under full-suite load (macapp) — #309 follow-up, issue #322
-
-**What:** The test failed once in a full `make app-test` run with `failed - connect 54`
-(`ECONNRESET`): one of its `maxConcurrent + 4` idle "stranger" connects to the relay's loopback
-listener, or the final real request's connect, was reset rather than accepted. Seen on
-`feat/254-remote-pane-parity` (2026-10-04, xcresult `Test-WorkroomApp-2026.10.04_08-52-46`). The
-branch doesn't touch `CredentialRelay`.
-
-**Why:** It passed 5 times out of 5 run alone, and in two other full runs the same day, so it looks
-load-dependent. That is either a flaky test or a real limit: a listen backlog that the parallel
-test workers' load overflows would also turn real git credential requests away while a box is
-busy.
-
-**How to start:** Find which connect fails (the strangers' or the real one) and the listener's
-`listen` backlog in `CredentialRelay`. Then reproduce under load, for example with the suite's
-parallel workers, or with many more strangers than `maxConcurrent`.
-
-**Priority:** P0 (chosen at ship time on #254)
-
 ## P1 — before GA
 
 ## P2 — perf, correctness, and the next VCS phase
