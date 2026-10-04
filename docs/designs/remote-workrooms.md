@@ -1775,10 +1775,18 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     `..` come back as their target. A `..` after a link out of the workroom can still tell
     whether the directory it names exists, which the VCS service's `stat` already does for any
     path; what follows the `..` is never looked up.
-    `resolve` shares `read`'s cap of four in flight, since a link can lead into a slow mount. A
-    newer click replaces the one before it, and an answer whose pane has closed opens nothing. An
-    error reading one path moves on to the next candidate; only a transport failure stops the
-    probe.
+    `resolve` shares `read`'s cap of four in flight, since a link can lead into a slow mount, and
+    answers within 10 seconds whether or not its walk has returned (#334): a walk hung on a dead
+    mount is left behind, holding no read slot and no permit, so reads and idle exit carry on.
+    Once four such walks are counted, `resolve` answers busy without starting another (up to seven
+    can be parked, since walks already waiting can still be left behind). The walks' threads are
+    not bounded in time, and a kill doesn't always end one: a FUSE request the daemon has already
+    read waits uninterruptibly. A hand-off's `execve` would wait on such a thread and freeze every
+    session, so the hand-off is refused while any walk is left behind, as it was when the walk held
+    its permit. `read` itself has no deadline, so a read opened through a link onto a hung mount
+    still holds its slot. A newer click replaces the one before it, and an answer whose pane has
+    closed opens nothing. An error reading one path moves on to the next candidate; only a
+    transport failure stops the probe.
 
 ## Phase 0 Results
 

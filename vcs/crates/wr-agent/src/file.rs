@@ -50,8 +50,26 @@ pub const MAX_READ_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Reads in flight at once. Each buffers up to `MAX_READ_BYTES` and then its base64, so this bounds
 /// the agent's worst-case read memory at roughly 4 × (8 + 10.7) MiB rather than 32 ×. A `resolve`
-/// takes a slot too, for its filesystem walk, though it buffers nothing.
+/// takes a slot too while it waits for its walk, though it buffers nothing; it gives the slot back
+/// at its deadline (`RESOLVE_TIMEOUT`) even if the walk hasn't returned.
 const MAX_CONCURRENT_READS: usize = 4;
+
+/// How long a `resolve` waits for its walk before answering that it timed out (#334). The same
+/// 10s as a listing, and well under `AgentVCSConnection.fileRequest`'s 45s, so the app hears this
+/// answer rather than its own timeout.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Walks still running after their `resolve` gave up on them. A walk through a link onto a hung
+/// mount can block in the kernel for as long as the mount does, and Rust can't stop a thread, so
+/// each one left behind is a parked thread. Once this many are counted, `resolve` answers `Busy`
+/// without starting another. The check isn't an atomic admit: walks already waiting when the count
+/// reaches it can still be left behind, so up to `MAX_ABANDONED_WALKS - 1 + MAX_CONCURRENT_READS`
+/// (7) can be parked, and then resolves stay refused until enough return to bring the count back
+/// under this. The cost: while they are parked, a resolve that would have been quick is refused
+/// too. Reads are unaffected, since an abandoned walk holds no read slot and no permit.
+const MAX_ABANDONED_WALKS: usize = 4;
+
+static ABANDONED_WALKS: AtomicUsize = AtomicUsize::new(0);
 
 /// Matches `StatusCommandRunner`'s 10s listing timeout, so a slow tree fails the same way on both
 /// paths.
@@ -198,8 +216,9 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter, subscriptions: &Subs
             // A read holds its slot until its reply has been WRITTEN, not merely built: the
             // base64 value and its serialized copy are the memory the cap exists to bound, and they
             // live until `send` returns (which can block behind a slow reader for a long while).
-            // A resolve holds one just as long, for its walk, which can hang on a mount (see
-            // `resolve`); it buffers nothing, so the memory rationale is a read's alone.
+            // A resolve holds one while it waits for its walk, at most `RESOLVE_TIMEOUT`, even if
+            // the walk hangs on a mount (see `resolve`); it buffers nothing, so the memory
+            // rationale is a read's alone.
             let slot = if matches!(request.method.as_str(), "read" | "resolve") {
                 match ReadSlot::acquire() {
                     Ok(slot) => Some(slot),
@@ -434,9 +453,19 @@ fn read(request: &Request) -> Result<Value, FileError> {
 /// what follows. That is not a new capability: the VCS service's `stat` reports existence for any
 /// absolute path.
 ///
-/// Holds a `ReadSlot`, as `read` does: resolving walks the filesystem through whatever a committed
-/// link points at (a hung network mount included), and the app starts a new click without waiting
-/// for the last one.
+/// The walk runs on its own thread, and this answers after `RESOLVE_TIMEOUT` whether or not it has
+/// returned (#334): a committed link can lead onto a hung network mount, and the app starts a new
+/// click without waiting for the last one. Its request thread holds a `ReadSlot` and a `Permit`
+/// only while it waits, so a hung walk can't keep reads out, or keep the agent from exiting idle. A
+/// walk only reads, so leaving it behind cuts nothing off mid-change.
+///
+/// What the deadline doesn't bound is the walk's thread itself (`MAX_ABANDONED_WALKS` caps how
+/// many), and a kill doesn't always end it: an NFS hard mount waits killably, but a FUSE request
+/// the daemon has already read waits uninterruptibly until the daemon answers (`request_wait_answer`
+/// in Linux's `fs/fuse/dev.c`). A hand-off's `execve` waits for every other thread to die, so it
+/// would freeze every terminal on the host behind such a walk; `crate::handoff` refuses while any
+/// walk is left behind (`walks_left_behind`). Idle exit is unaffected: it lets go of the lock and
+/// the listener before the process ends.
 fn resolve(request: &Request) -> Result<Value, FileError> {
     let root = root_of(request)?;
     let relative = request
@@ -446,7 +475,80 @@ fn resolve(request: &Request) -> Result<Value, FileError> {
     if !stays_under_root(relative) {
         return Err(unsupported("invalid relative file path"));
     }
-    Ok(json!({"path": resolve_path(&root, relative)?}))
+    if ABANDONED_WALKS.load(Ordering::Acquire) >= MAX_ABANDONED_WALKS {
+        return Err(FileError::Busy(
+            "too many earlier resolves are still walking".into(),
+        ));
+    }
+    let relative = relative.to_owned();
+    let path = with_deadline(RESOLVE_TIMEOUT, move || resolve_path(&root, &relative))?;
+    Ok(json!({"path": path}))
+}
+
+/// Walks left behind at their deadline and still running. `crate::handoff` refuses while this is
+/// nonzero: see `resolve`.
+pub(crate) fn walks_left_behind() -> usize {
+    ABANDONED_WALKS.load(Ordering::Acquire)
+}
+
+/// `work`'s answer if it arrives within `timeout`, run on its own thread; otherwise an `Io` timeout
+/// (which the app treats as "skip this candidate", not "agent too old"), with the thread left to
+/// finish on its own and counted in `ABANDONED_WALKS` until it does.
+///
+/// The thread and this caller agree through one state word on which of them saw the deadline
+/// first, so the count goes up exactly once for a walk that is left behind and down exactly once
+/// when it returns, and never goes below zero.
+fn with_deadline<T: Send + 'static>(
+    timeout: Duration,
+    work: impl FnOnce() -> Result<T, FileError> + Send + 'static,
+) -> Result<T, FileError> {
+    const RUNNING: u8 = 0;
+    const FINISHED: u8 = 1;
+    const ABANDONED: u8 = 2;
+    let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(RUNNING));
+    let (answer, answered) = std::sync::mpsc::sync_channel(1);
+    let walker_state = std::sync::Arc::clone(&state);
+    // `Builder`, not `thread::spawn`: a thread the OS refuses would panic here, on the request's
+    // thread, and the app would wait out its own 45s for an answer that never comes.
+    let spawned = std::thread::Builder::new().spawn(move || {
+        // A panic still ends in the state change below, or a walk left behind would stay counted.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+            .unwrap_or_else(|_| Err(FileError::Io("the walk panicked".into())));
+        let _ = answer.send(result);
+        let left_behind = walker_state
+            .compare_exchange(RUNNING, FINISHED, Ordering::AcqRel, Ordering::Acquire)
+            .is_err();
+        if left_behind {
+            ABANDONED_WALKS.fetch_sub(1, Ordering::AcqRel);
+        }
+    });
+    if let Err(error) = spawned {
+        return Err(FileError::Busy(format!("cannot start a walk: {error}")));
+    }
+    match answered.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(FileError::Io("the walk ended without an answer".into()))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // Counted before it is marked, so the walk can only take back a count already there.
+            ABANDONED_WALKS.fetch_add(1, Ordering::AcqRel);
+            let marked = state
+                .compare_exchange(RUNNING, ABANDONED, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok();
+            if marked {
+                return Err(FileError::Io(format!(
+                    "resolving timed out after {}s",
+                    timeout.as_secs()
+                )));
+            }
+            // It finished in the meantime, so it isn't left behind, and its answer is waiting.
+            ABANDONED_WALKS.fetch_sub(1, Ordering::AcqRel);
+            answered
+                .try_recv()
+                .unwrap_or_else(|_| Err(FileError::Io("the walk ended without an answer".into())))
+        }
+    }
 }
 
 /// Whether `relative` is a relative path that, taken lexically, never climbs above the root it is
@@ -835,9 +937,88 @@ mod tests {
         }
     }
 
+    /// Every test that resolves, or moves `ABANDONED_WALKS`, takes this: `resolve` reads the count,
+    /// so one test holding it at the cap would refuse the others' resolves.
+    static WALKS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn walks_lock() -> std::sync::MutexGuard<'static, ()> {
+        WALKS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn resolve_request(root: &Path, path: &str) -> Value {
+        let _walks = walks_lock();
         let request = json!({"version": 1, "method": "resolve", "root": root, "path": path});
         execute(&serde_json::to_vec(&request).unwrap())
+    }
+
+    // Value: protects=a walk that hangs (a link onto a dead mount, #334) is answered at its
+    // deadline, so its request gives back its read slot and permit, and the walk stays counted
+    // until it returns; fails_when=`with_deadline` waits for the walk, or miscounts one left
+    // behind; why_new=no other test makes a walk outlive its request; seam=none (the closure is
+    // the walk itself, as `resolve` passes it)
+    #[test]
+    fn a_walk_past_its_deadline_is_answered_then_and_counted_until_it_returns() {
+        let _walks = walks_lock();
+        let before = ABANDONED_WALKS.load(Ordering::Acquire);
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let started = std::time::Instant::now();
+        // The walk waits for the release, but not forever: if `with_deadline` waited for it, the
+        // test would fail on its elapsed time instead of hanging.
+        let result = with_deadline(Duration::from_millis(100), move || {
+            let _ = released.recv_timeout(Duration::from_secs(5));
+            Ok("late")
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "it waited for the walk"
+        );
+        assert!(
+            matches!(&result, Err(FileError::Io(message)) if message.contains("timed out")),
+            "{result:?}"
+        );
+        assert_eq!(ABANDONED_WALKS.load(Ordering::Acquire), before + 1);
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while ABANDONED_WALKS.load(Ordering::Acquire) != before
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            ABANDONED_WALKS.load(Ordering::Acquire),
+            before,
+            "a returned walk is still counted"
+        );
+        assert_eq!(with_deadline(Duration::from_secs(5), || Ok(7)).unwrap(), 7);
+        assert_eq!(ABANDONED_WALKS.load(Ordering::Acquire), before);
+    }
+
+    // Value: protects=hung walks can't pile up threads one per click: past `MAX_ABANDONED_WALKS`
+    // left behind, `resolve` answers `Busy` without starting another; fails_when=`resolve` stops
+    // checking the count before it walks; why_new=nothing else reaches the cap; seam=none
+    #[test]
+    fn a_resolve_is_refused_busy_while_too_many_earlier_walks_are_still_out() {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ABANDONED_WALKS.fetch_sub(MAX_ABANDONED_WALKS, Ordering::AcqRel);
+            }
+        }
+        let _walks = walks_lock();
+        let root = scratch("resolve-abandoned");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("f"), b"x").unwrap();
+        let request = json!({"version": 1, "method": "resolve", "root": root, "path": "sub/../f"});
+        let request = serde_json::to_vec(&request).unwrap();
+        {
+            ABANDONED_WALKS.fetch_add(MAX_ABANDONED_WALKS, Ordering::AcqRel);
+            let _restore = Restore;
+            let reply = execute(&request);
+            assert!(reply["error"]["Busy"].is_string(), "{reply}");
+        }
+        assert_eq!(execute(&request)["result"]["path"], "f");
     }
 
     /// #327: `link/..` is the link TARGET's parent, which only the host can know.
@@ -966,6 +1147,9 @@ mod tests {
     // seam=none (no other lib test reaches the global `READS`; only this one calls `dispatch`)
     #[test]
     fn a_resolve_is_refused_busy_while_every_read_slot_is_held() {
+        // A resolve admitted here would read `ABANDONED_WALKS`, and the cap test's `Busy` must not
+        // stand in for this one's.
+        let _walks = walks_lock();
         #[derive(Clone, Default)]
         struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
         impl std::io::Write for Capture {
