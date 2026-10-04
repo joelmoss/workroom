@@ -3019,7 +3019,8 @@ disagreement passes every test on either side alone while presenting as an empty
         is not caught. Only a same-user process can do that, per the trust model above.
       - A refused hand-off (a repository command still running, or a session being ended or
         repainted) is not retried until the next launch. (A remote host's is retried on every
-        connect; a file lookup stuck on a mount only happens there, see Remote pane links.)
+        connect; a file lookup stuck on a mount only happens there, see Path handling under
+        As built (#254, remote pane parity).)
       - An agent that could not read its own binary at startup hands off on every request, even to
         the same binary.
     - *Tests* (`wr-agent/tests/hand_off.rs`):
