@@ -212,7 +212,8 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertEqual(found, .init(path: "lib/only-here.rb", line: 1, column: nil))
     let missing = await sessions.remoteFile("nowhere.rb", cwd: "\(path)/lib", target: target)
     XCTAssertNil(missing)
-    // A parent traversal reaches the real agent as a path it accepts: it refuses any `..`.
+    // A parent traversal goes to the agent's `resolve`, which takes `..`; `read`, which refuses
+    // any `..`, is only ever sent the path that answer names.
     let parent = await sessions.remoteFile("../file", cwd: "\(path)/lib", target: target)
     XCTAssertEqual(parent, .init(path: "file", line: nil, column: nil))
     // #327: a symlink before the `..` is followed on the host, so this is the file beside the

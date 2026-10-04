@@ -1771,9 +1771,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     the root as written before any lookup; the Mac resolves such a path lexically. So it does any
     `..` path for an agent that predates `resolve`, recognised by its exact reply to an unknown
     method; any other failure (busy, unreadable, a loop) opens nothing rather than the lexical
-    path, which is the wrong file whenever the host's answer would differ. A `..` after a link
-    out of the workroom can still tell whether a path
-    beside the link's target exists, which the VCS service's `stat` already does for any path.
+    path, which is the wrong file whenever the host's answer would differ. Links before the last
+    `..` come back as their target. A `..` after a link out of the workroom can still tell
+    whether the directory it names exists, which the VCS service's `stat` already does for any
+    path; what follows the `..` is never looked up.
     `resolve` shares `read`'s cap of four in flight, since a link can lead into a slow mount. A
     newer click replaces the one before it, and an answer whose pane has closed opens nothing. An
     error reading one path moves on to the next candidate; only a transport failure stops the
