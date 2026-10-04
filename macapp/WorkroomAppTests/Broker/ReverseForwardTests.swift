@@ -472,7 +472,7 @@ final class StubBroker: @unchecked Sendable {
   var requests: [Request] { lock.withLock { seen } }
 
   init() throws {
-    guard let (listener, port) = LoopbackSocket.listen(backlog: 8) else {
+    guard let (listener, port) = LoopbackSocket.listen() else {
       throw NSError(domain: "StubBroker", code: Int(errno))
     }
     self.listener = listener

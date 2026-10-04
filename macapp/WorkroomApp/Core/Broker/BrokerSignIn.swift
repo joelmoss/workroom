@@ -99,7 +99,7 @@ final class LoopbackListener: @unchecked Sendable {
   private var cancelled = false
 
   init() throws {
-    guard let (socket, port) = LoopbackSocket.listen(backlog: 4) else {
+    guard let (socket, port) = LoopbackSocket.listen() else {
       throw BrokerError.signIn("Couldn't listen on a local port (\(errno)).")
     }
     self.socket = socket
