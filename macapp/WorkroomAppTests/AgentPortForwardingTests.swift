@@ -445,6 +445,33 @@ final class AgentPortForwardingTests: XCTestCase {
     XCTAssertNoThrow(try AgentVCSReply<AgentVCSCapabilities>.decode(reply))
   }
 
+  /// A forward's accept queue holds a burst while its accept source is behind, as it is on a busy
+  /// Mac (#328). On loopback macOS resets connections once the queue overflows, both new ones and
+  /// ones already waiting, so at the old 16 a browser's burst of asset and HMR connections could
+  /// be partly reset. Nothing accepts here, standing in for a source that is behind.
+  func testAForwardsAcceptQueueHoldsABurstWhileNothingIsAccepted() throws {
+    let made = try XCTUnwrap(LoopbackSocket.listen(backlog: PortForward.backlog))
+    defer { Darwin.close(made.descriptor) }
+    let burst = 40
+    var held: [Int32] = []
+    defer { for socket in held { Darwin.close(socket) } }
+    for index in 0..<burst {
+      guard let socket = LoopbackSocket.connect(port: made.port, timeout: 2) else {
+        return XCTFail("connection \(index) of \(burst): errno \(errno)")
+      }
+      held.append(socket)
+    }
+    // A connection already waiting can be reset after its connect returned: none may have been.
+    Thread.sleep(forTimeInterval: 0.2)
+    for (index, socket) in held.enumerated() {
+      var byte: UInt8 = 0
+      let peeked = recv(socket, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
+      XCTAssertTrue(
+        peeked < 0 && (errno == EAGAIN || errno == EWOULDBLOCK),
+        "connection \(index) was reset while waiting (errno \(errno))")
+    }
+  }
+
   /// Losing the host connection closes every accepted socket, and the listener stops carrying: the
   /// agent drops every socket a departing client opened, so a forward that kept accepting would be
   /// promising an address that answers nothing.

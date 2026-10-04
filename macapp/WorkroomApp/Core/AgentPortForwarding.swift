@@ -188,6 +188,14 @@ final class PortForward: @unchecked Sendable {
   static let maxConnections = 64
   /// Out of descriptors: how long the accept queue pauses before the backlog is tried again.
   private static let acceptBackoff: TimeInterval = 0.1
+  /// The listener's accept queue: `SOMAXCONN` (128; the `kern.ipc.somaxconn` sysctl caps what
+  /// takes effect). Connections wait there while `acceptPending` is behind, and on loopback macOS
+  /// resets connections once the queue overflows (`ECONNRESET`), measured: new ones and ones
+  /// already waiting in it. A browser loading a dev server opens a burst at once, and at 16 some of
+  /// it was reset (#328), as the credential relay's was at 8 (#322). A long queue adds nothing a
+  /// flood can hold: `acceptPending` still takes each connection and refuses what
+  /// `maxConnections` won't carry.
+  static let backlog = SOMAXCONN
 
   let remotePort: UInt16
   /// The ephemeral port the kernel bound. This is the address the user connects to.
@@ -219,7 +227,7 @@ final class PortForward: @unchecked Sendable {
     self.onEvent = onEvent
     // Loopback, so nothing off this Mac can reach a forward: the agent's own allowlist is
     // loopback-only and this is its mirror.
-    guard let (listener, port) = LoopbackSocket.listen(backlog: 16) else {
+    guard let (listener, port) = LoopbackSocket.listen(backlog: Self.backlog) else {
       throw HostConnectionError.serviceUnavailable(
         "Could not listen on a loopback port: \(String(cString: strerror(errno)))")
     }
