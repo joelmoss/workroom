@@ -418,12 +418,33 @@ final class WakefulnessModel: ObservableObject {
       status: { try await LocalAgentVCS.shared.wakefulness(connecting: .never).status() },
       keep: { try await LocalAgentVCS.shared.wakefulness(connecting: .spawn).keep() },
       prompts: { try await LocalAgentVCS.shared.wakefulness(connecting: .reconnect).prompts })
+
+    /// A remote host's service in `manager` (#254). None of the three connects the host: a poll
+    /// never does, and the host's connection is made by selecting its workroom or by the status
+    /// sweep, either of which a remote "keep" or watch can wait for.
+    static func on(_ host: HostID, manager: HostConnectionManager) -> Transport {
+      Transport(
+        status: { try await manager.wakefulness(host: host).status() },
+        keep: { try await manager.wakefulness(host: host).keep() },
+        prompts: { try await manager.wakefulness(host: host).prompts })
+    }
   }
 
   private let transport: Transport
 
   init(transport: Transport = .live) {
     self.transport = transport
+  }
+
+  /// Each remote host's model, made on first use and kept for the launch, as `PortForwardingModel`'s
+  /// are. This Mac's is `shared`, whose transport may start an agent.
+  private static var hosts: [UUID: WakefulnessModel] = [:]
+
+  static func model(forHost id: UUID) -> WakefulnessModel {
+    if let model = hosts[id] { return model }
+    let model = WakefulnessModel(transport: .on(.remote(id), manager: .shared))
+    hosts[id] = model
+    return model
   }
 
   /// Nil until a poll succeeds, and again once one fails: no agent, an agent that predates the

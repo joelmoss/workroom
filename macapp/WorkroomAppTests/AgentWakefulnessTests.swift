@@ -166,6 +166,43 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertNil(older.settingsMismatch(against: AgentWakefulnessSettings(ceiling: 1, ask: false)))
   }
 
+  /// A remote host's agent was never started with this Mac's settings, so its badge names no
+  /// mismatch with them (#254); this Mac's badge still does.
+  func testOnlyThisMacsBadgeComparesThisMacsSettings() throws {
+    let status = try status()
+    let settings = AgentWakefulnessSettings(ceiling: 7200, ask: false)
+    XCTAssertTrue(
+      WakefulnessBadge.help(for: status, settings: settings).contains("when it next starts"))
+    XCTAssertFalse(
+      WakefulnessBadge.help(for: status, settings: nil).contains("when it next starts"))
+  }
+
+  /// One model per remote host, kept for the launch, and never this Mac's (#254).
+  @MainActor
+  func testEachRemoteHostHasItsOwnWakefulnessModel() {
+    let id = UUID()
+    XCTAssertTrue(WakefulnessModel.model(forHost: id) === WakefulnessModel.model(forHost: id))
+    XCTAssertFalse(WakefulnessModel.model(forHost: id) === WakefulnessModel.model(forHost: UUID()))
+    XCTAssertFalse(WakefulnessModel.model(forHost: id) === WakefulnessModel.shared)
+  }
+
+  /// A remote host's poll reads that host's connection and never connects one: with only this Mac
+  /// connected, it is refused as the host's, so the row shows nothing rather than this Mac's verdict.
+  @MainActor
+  func testARemoteHostsPollAsksForThatHostsConnection() async throws {
+    let manager = HostConnectionManager()
+    let host = HostID.remote(UUID())
+    do {
+      _ = try await WakefulnessModel.Transport.on(host, manager: manager).status()
+      XCTFail("a remote host with no connection answered")
+    } catch RepositoryRoutingError.unavailable(let refused) {
+      XCTAssertEqual(refused, host)
+    }
+    let model = WakefulnessModel(transport: .on(host, manager: manager))
+    await model.refresh()
+    XCTAssertNil(model.status)
+  }
+
   func testAnErrorReplyIsAServiceFailure() {
     let json = #"{"version":1,"error":{"unsupported":"status requests are ..."}}"#
     XCTAssertThrowsError(try decode(json)) { error in

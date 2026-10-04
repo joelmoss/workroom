@@ -179,6 +179,21 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertEqual(banner, "SSH-2.0-")
   }
 
+  /// A remote workroom's sidebar badge (#254): the host's agent runs its classifier (Linux always
+  /// does), and the model reads its verdict through that host's connection.
+  @MainActor
+  func testTheWakefulnessModelReadsARemoteHostsVerdict() async throws {
+    let fixture = try fixture()
+    let (connection, id) = try await connect(fixture.host)
+    let host = HostID.remote(id)
+    let manager = HostConnectionManager()
+    _ = try await manager.connect(host: host) { connection }
+    let model = WakefulnessModel(transport: .on(host, manager: manager))
+    await model.refresh()
+    let status = try XCTUnwrap(model.status, "no verdict from the host")
+    XCTAssertTrue(status.running, "the host's classifier is not running")
+  }
+
   /// A failed remote write is classified from the HOST's disk (#229): a leftover `index.lock` there
   /// is named by its path on the host. Read from this Mac's disk, that path is not there, and the
   /// failure would name no lock at all.
