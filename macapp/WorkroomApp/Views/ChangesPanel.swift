@@ -477,15 +477,18 @@ struct WakefulnessBadge: View {
   }
 }
 
-/// Ports forwarded from the agent's box to this Mac (issue #208).
+/// Ports forwarded from a host's agent to this Mac (issues #208, #254).
 ///
-/// Per HOST, not per workroom — two workrooms on the same box share this list, which is why it sits
-/// above the change list rather than inside the workroom-dependent part of it. Nothing is persisted
-/// across launches: the agent closes every forwarded socket when the client detaches, so a list
-/// restored at launch would name addresses that no longer answer.
+/// Per HOST, not per workroom — two local workrooms share this Mac's list, which is why it sits
+/// above the change list rather than inside the workroom-dependent part of it; a remote workroom is
+/// its own host and shows its own. Nothing is persisted across launches: the agent closes every
+/// forwarded socket when the client detaches, so a list restored at launch would name addresses
+/// that no longer answer.
 private struct PortsSection: View {
-  @ObservedObject private var model = PortForwardingModel.shared
+  @ObservedObject var model: PortForwardingModel
   private let theme = ThemeService.shared
+
+  private var machine: String { model.host == .local ? "this Mac" : "this workroom's host" }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -500,8 +503,7 @@ private struct PortsSection: View {
           .frame(width: 48)
           .onSubmit { Task { await model.add() } }
           .accessibilityIdentifier("ports.field")
-        InspectorHeaderButton(systemImage: "plus", help: "Forward a port from this machine's agent")
-        {
+        InspectorHeaderButton(systemImage: "plus", help: "Forward a port from \(machine)") {
           Task { await model.add() }
         }
         .accessibilityIdentifier("ports.add")
@@ -519,7 +521,9 @@ private struct PortsSection: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
-    .task { model.watch() }
+    // Keyed by host: the section is the same view across workrooms, and each host's model is
+    // watched from the first time it is shown.
+    .task(id: model.host) { model.watch() }
   }
 
   @ViewBuilder
@@ -884,9 +888,11 @@ struct ChangesPanel: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      // Per box, so it must not vanish when no workroom is selected; see `PortsSection`.
-      PortsSection()
-      Divider()
+      // Per host, so it must not vanish when no workroom is selected; see `PortsSection`.
+      if let host = portsHost {
+        PortsSection(model: .model(for: host))
+        Divider()
+      }
       Group {
         if let sid = store.inspectorTargetID, sid.isStatusable {
           content(for: sid)
@@ -896,6 +902,14 @@ struct ChangesPanel: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// The host whose ports the section forwards: a remote workroom's own host (#254), else this
+  /// Mac's. Nil for a remote workroom this app can't reach, whose ports this Mac's list would only
+  /// misname.
+  private var portsHost: HostID? {
+    guard let workroom = store.selectedWorkroom, workroom.isRemote else { return .local }
+    return workroom.reachableHost.map(HostID.remote)
   }
 
   @ViewBuilder
