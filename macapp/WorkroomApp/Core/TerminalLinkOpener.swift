@@ -283,8 +283,8 @@ enum TerminalLinkOpener {
 
   /// The workroom-relative files a remote pane's ⌘-clicked `word` could name, in the order to probe
   /// them on the host. `cwd` and `root` are paths on the HOST: the pane's working directory as its
-  /// agent reports it, and the workroom's root. Nothing here touches this Mac's filesystem, which is
-  /// the point (C7): on this Mac the same path is another file, or none.
+  /// agent reports it, and the workroom's root. Nothing here touches this Mac's filesystem, which
+  /// is the point (C7): on this Mac the same path is another file, or none.
   ///
   /// A candidate outside `root` is dropped, because the host's file service reads only under the
   /// workroom's root. So is a `~` path: `~` is this Mac's home, not the host's. A link that names a
@@ -324,9 +324,10 @@ enum TerminalLinkOpener {
 
   /// Whether a remote pane's ⌘-hover cursor and ⌘-click gate pass `word` (#254), decided without
   /// the host: it names a candidate in the workroom (`remoteCandidates`) and looks like a path,
-  /// with a `/`, a `name.ext` (a dotfile such as `.env` counts) or a `:line`. The click then asks the host. The costs: a path-shaped
-  /// word with no file behind it shows the hand and its click opens nothing, and a bare name with
-  /// none of the three (`Gemfile`) isn't clickable in a remote pane.
+  /// with a `/`, a `name.ext` (a dotfile such as `.env` counts) or a `:line`. The click then asks
+  /// the host. The costs: a path-shaped word with no file behind it shows the hand and its click
+  /// opens nothing, and a bare name with none of the three (`Gemfile`) isn't clickable in a remote
+  /// pane.
   static func looksLikeRemotePath(_ word: String, cwd: String?, root: String) -> Bool {
     guard let path = filePath(from: word),
       !remoteCandidates(for: word, cwd: cwd, root: root).isEmpty
