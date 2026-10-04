@@ -569,23 +569,16 @@ final class TerminalLinkOpenerTests: XCTestCase {
       XCTAssertEqual(
         TerminalLinkOpener.remoteCandidates(for: link, cwd: root, root: root), [], link)
     }
-  }
-
-  private struct HostFiles: FileProviding {
-    let context: FileContext
-    let files: [String: Data]
-
-    func list() async throws -> CommandResult {
-      CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
-    }
-    func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
-      guard let data = files[path] else { throw FileServiceError.notFound(path) }
-      guard data.count <= maxBytes else { throw FileServiceError.tooLarge }
-      return data
-    }
-    func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
-      -> FileWatchHandle?
-    { nil }
+    // Value: protects=a remote link never resolves against this Mac's cwd;
+    //   fails_when=the absolute-cwd or absolute-root guard is dropped;
+    //   why_new=rows above only use absolute roots and cwds; seam=none
+    // A cwd that is not absolute is ignored for the root, and a root that is not absolute gives
+    // nothing: `URL` would otherwise resolve either one against THIS Mac's working directory.
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(for: "a.rb", cwd: "lib", root: root).map(\.path), ["a.rb"]
+    )
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(for: "a.rb", cwd: nil, root: "relative/repo"), [])
   }
 
   /// The acceptance test for C7: the workroom's path exists on THIS Mac too, holding a different
@@ -604,7 +597,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
       id: "remote", title: "remote", path: root.path, unavailability: .remote, remoteHost: host)
     let location = try XCTUnwrap(target.remoteLocation)
     let sessions = TerminalSessions()
-    sessions.remoteFiles = { location in
+    sessions.remoteFiles = { location, _ in
       HostFiles(
         context: FileContext(location: location, sharedLocation: nil),
         files: ["only-on-host.rb": Data("puts 1\n".utf8)])
@@ -627,7 +620,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
     let sessions = TerminalSessions()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
-    sessions.remoteFiles = { location in
+    sessions.remoteFiles = { location, _ in
       HostFiles(
         context: FileContext(location: location, sharedLocation: nil),
         files: ["lib/user.rb": Data("class User; end\n".utf8)])
@@ -645,6 +638,116 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(opened()?.path, "lib/user.rb")
   }
 
+  /// What the probe makes of the host's answers, one candidate at a time. A refused candidate (a
+  /// link out of the root, a directory) is skipped for the next, as a missing one is. Any other
+  /// failure is the HOST's (it dropped, the agent errored), so the next candidate would fail the
+  /// same way and the probe gives up with nothing, rather than reporting a file it never read.
+  // Value: protects=the host probe skips refused candidates but stops on a host failure;
+  //   fails_when=refused stops the probe, or a host failure continues to a later candidate;
+  //   why_new=existing tests only reach found, tooLarge and notFound; seam=none
+  @MainActor
+  func testTheRemoteProbeSkipsRefusedCandidatesAndStopsOnAHostFailure() async throws {
+    let target = TerminalTarget(
+      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
+      remoteHost: UUID())
+    let sessions = TerminalSessions()
+    let files: [String: Data] = ["a.rb": Data("x\n".utf8)]
+    func provider(failing: [String: FileServiceError]) -> (RepositoryLocation, Bool) async throws
+      -> FileProviding
+    {
+      { location, _ in
+        HostFiles(
+          context: FileContext(location: location, sharedLocation: nil), files: files,
+          failing: failing)
+      }
+    }
+
+    // `a.rb:3` probes the literal first, then `a.rb` carrying line 3.
+    sessions.remoteFiles = provider(failing: ["a.rb:3": .refused("not a regular file")])
+    let skipped = await sessions.remoteFile("a.rb:3", cwd: nil, target: target)
+    XCTAssertEqual(skipped, .init(path: "a.rb", line: 3, column: nil))
+
+    sessions.remoteFiles = provider(failing: ["a.rb:3": .failed("agent dropped")])
+    let stopped = await sessions.remoteFile("a.rb:3", cwd: nil, target: target)
+    XCTAssertNil(stopped, "a host failure went on to probe a later candidate")
+    // ...and it is no answer, not "no file", so a hover asks again rather than caching a "no".
+    let busy = await sessions.probeRemote("a.rb:3", cwd: nil, target: target, connect: false)
+    XCTAssertEqual(busy, .unknown)
+    let missing = await sessions.probeRemote("b.rb", cwd: nil, target: target, connect: false)
+    XCTAssertEqual(missing, .absent)
+
+    // The host's service itself unreachable: nothing to probe, nothing found, and no answer.
+    sessions.remoteFiles = { _, _ in throw RepositoryRoutingError.unavailable(.remote(UUID())) }
+    let unreachable = await sessions.remoteFile("a.rb", cwd: nil, target: target)
+    XCTAssertNil(unreachable)
+    let unanswered = await sessions.probeRemote("a.rb", cwd: nil, target: target, connect: false)
+    XCTAssertEqual(unanswered, .unknown)
+  }
+
+  /// A hover never connects the host and a click does (#254): a cursor shape is not a reason to
+  /// reach a host, and a ⌘-click is a deliberate act, like opening the workroom.
+  @MainActor
+  func testOnlyAClickMayConnectARemotePanesHost() async throws {
+    let target = TerminalTarget(
+      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
+      remoteHost: UUID())
+    let asked = ConnectRequests()
+    let sessions = TerminalSessions()
+    sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    sessions.recordUnrecognizedTool = { _ in }
+    sessions.remoteFiles = { location, connect in
+      asked.record(connect)
+      return HostFiles(
+        context: FileContext(location: location, sharedLocation: nil),
+        files: ["a.rb": Data("x\n".utf8)])
+    }
+    let tab = sessions.addTab(for: target)
+    let view = try XCTUnwrap(sessions.view(forTab: tab.id, inTarget: target.id))
+    _ = view.resolveCmdHoverFile?("a.rb")
+    for _ in 0..<200 where asked.all.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+    XCTAssertEqual(asked.all, [false], "a hover connected the host")
+    view.onCmdClickFile?("a.rb")
+    for _ in 0..<200 where asked.all.count < 2 { try await Task.sleep(for: .milliseconds(5)) }
+    XCTAssertEqual(asked.all, [false, true], "a click did not connect the host")
+  }
+
+  /// A link libghostty hands over as a URL (OSC 8, or a printed `file:` URL) reaches the host's
+  /// file in a remote pane, whether it is a `file:` URL or a bare path: through `remoteLink`, which
+  /// decodes percent-escapes and takes a `file:` URL's path.
+  // Value: protects=a remote pane's URL links open the host's file, decoded;
+  //   fails_when=onOpenURL stops routing to the host or remoteLink stops decoding;
+  //   why_new=only the word-based click path is tested; seam=none
+  @MainActor
+  func testAnOpenURLLinkInARemotePaneOpensTheHostsFile() async throws {
+    let target = TerminalTarget(
+      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
+      remoteHost: UUID())
+    let sessions = TerminalSessions()
+    sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    sessions.recordUnrecognizedTool = { _ in }
+    sessions.remoteFiles = { location, _ in
+      HostFiles(
+        context: FileContext(location: location, sharedLocation: nil),
+        files: ["lib/user.rb": Data("class User; end\n".utf8), "my file.rb": Data("x\n".utf8)])
+    }
+    let tab = sessions.addTab(for: target)
+    let view = try XCTUnwrap(sessions.view(forTab: tab.id, inTarget: target.id))
+    func opened() -> String? {
+      for tab in sessions.tabs(for: target) {
+        if case .file(let file) = tab.content { return file.path }
+      }
+      return nil
+    }
+    func click(_ link: String, opens path: String) async throws {
+      let url = try XCTUnwrap(URL(string: link), link)
+      XCTAssertEqual(view.onOpenURL?(url), true, "the click was not consumed: \(link)")
+      for _ in 0..<200 where opened() != path { try await Task.sleep(for: .milliseconds(10)) }
+      XCTAssertEqual(opened(), path, link)
+    }
+    try await click("file:///home/workroom/repo/lib/user.rb", opens: "lib/user.rb")
+    try await click("my%20file.rb", opens: "my file.rb")
+  }
+
   /// A root recorded with a trailing slash, or a link with a doubled one, still resolves inside
   /// the workroom: `standardized` keeps `//`, and the host reads `/src/a.rb` as an absolute path.
   func testARemoteLinkSurvivesDoubledAndTrailingSlashes() {
@@ -659,12 +762,28 @@ final class TerminalLinkOpenerTests: XCTestCase {
         \.path), ["lib/a.rb"])
   }
 
-  /// What the host holds, changeable mid-test.
+  /// What the host holds, changeable mid-test, and how many probes asked it.
   private final class HostDisk: @unchecked Sendable {
     private let lock = NSLock()
     private var files: [String: Data] = [:]
+    private var asked = 0
     func put(_ path: String) { lock.withLock { files[path] = Data("x".utf8) } }
-    var snapshot: [String: Data] { lock.withLock { files } }
+    /// The files as one probe sees them, counted as that probe.
+    func probe() -> [String: Data] {
+      lock.withLock {
+        asked += 1
+        return files
+      }
+    }
+    var probes: Int { lock.withLock { asked } }
+  }
+
+  /// Each `remoteFiles` call's `connect` flag, in order.
+  private final class ConnectRequests: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flags: [Bool] = []
+    func record(_ connect: Bool) { lock.withLock { flags.append(connect) } }
+    var all: [Bool] { lock.withLock { flags } }
   }
 
   /// The ⌘-click gate (`GhosttySurfaceView.mouseDown` asks `resolveCmdHoverFile` synchronously):
@@ -680,10 +799,11 @@ final class TerminalLinkOpenerTests: XCTestCase {
     let sessions = TerminalSessions()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
-    sessions.remoteHoverTTL = .milliseconds(200)
-    sessions.remoteFiles = { location in
+    // Long enough that no answer goes stale mid-test, so nothing here races a clock.
+    sessions.remoteHoverTTL = .seconds(3600)
+    sessions.remoteFiles = { location, _ in
       HostFiles(
-        context: FileContext(location: location, sharedLocation: nil), files: disk.snapshot)
+        context: FileContext(location: location, sharedLocation: nil), files: disk.probe())
     }
     let tab = sessions.addTab(for: target)
     // Through the view's own closure, which is what the real gate reads.
@@ -693,17 +813,45 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertFalse(gate("https://example.com/a.rb"))
     XCTAssertFalse(gate("/etc/passwd"))
     XCTAssertTrue(gate("later.rb"), "a click before the host answered would be lost")
-    // The host says no: the gate follows once the answer is in.
+    // The host says no: the gate follows once the answer is in, and holds it while it is fresh.
     for _ in 0..<200 where gate("later.rb") { try await Task.sleep(for: .milliseconds(5)) }
     XCTAssertFalse(gate("later.rb"))
-    // The file appears; once the "no" is stale, the host is asked again and says yes.
+    XCTAssertEqual(disk.probes, 1)
+    // The file appears. Once the "no" is stale the host is asked again: exactly one more probe,
+    // whose "yes" must then hold. A pending answer also reads true, so the test waits for the
+    // probe and then requires the gate never to read false.
     disk.put("later.rb")
-    try await Task.sleep(for: .milliseconds(250))
+    sessions.remoteHoverTTL = .zero
     XCTAssertTrue(gate("later.rb"))
+    sessions.remoteHoverTTL = .seconds(3600)
+    for _ in 0..<200 where disk.probes < 2 { try await Task.sleep(for: .milliseconds(5)) }
+    XCTAssertEqual(disk.probes, 2)
     for _ in 0..<100 {
-      _ = gate("later.rb")
+      XCTAssertTrue(gate("later.rb"), "a file made after its word was hovered stayed unclickable")
       try await Task.sleep(for: .milliseconds(5))
     }
-    XCTAssertTrue(gate("later.rb"), "a file made after its word was hovered stayed unclickable")
+    XCTAssertEqual(disk.probes, 2, "a fresh answer was asked again")
   }
+}
+
+/// A remote host's file service for the remote-pane tests (#254): `files` by workroom-relative path,
+/// reads capped as the agent caps them. Shared with `RemotePaneFooterTests`.
+struct HostFiles: FileProviding {
+  let context: FileContext
+  let files: [String: Data]
+  /// Paths whose read fails with this error, before `files` is consulted.
+  var failing: [String: FileServiceError] = [:]
+
+  func list() async throws -> CommandResult {
+    CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
+  }
+  func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
+    if let error = failing[path] { throw error }
+    guard let data = files[path] else { throw FileServiceError.notFound(path) }
+    guard data.count <= maxBytes else { throw FileServiceError.tooLarge }
+    return data
+  }
+  func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
+    -> FileWatchHandle?
+  { nil }
 }

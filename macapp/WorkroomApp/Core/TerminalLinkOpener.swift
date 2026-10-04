@@ -296,9 +296,8 @@ enum TerminalLinkOpener {
     func collapsed(_ path: String) -> String {
       path.replacingOccurrences(of: "/+", with: "/", options: .regularExpression)
     }
-    let root = collapsed(root + "/")
-    let base = cwd.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? root
-    let prefix = root
+    let prefix = collapsed(root + "/")
+    let base = cwd.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? prefix
     var seen = Set<String>()
     return pathCandidates(from: path).compactMap { candidate in
       guard !candidate.path.hasPrefix("~") else { return nil }
