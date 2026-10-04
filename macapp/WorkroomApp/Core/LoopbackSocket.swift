@@ -6,7 +6,16 @@ import Foundation
 enum LoopbackSocket {
   /// The listening descriptor and the port it was given, or nil with `errno` set (nothing left
   /// open).
-  static func listen(backlog: Int32) -> (descriptor: Int32, port: UInt16)? {
+  ///
+  /// The accept queue is always `SOMAXCONN` (128; the `kern.ipc.somaxconn` sysctl caps what takes
+  /// effect). Connections wait there while the owner's accept loop is behind, and on loopback macOS
+  /// resets connections once the queue overflows (`ECONNRESET`), measured: new ones and ones
+  /// already waiting in it. Short queues reset real clients: the credential relay's 8 (#322), the
+  /// port forwards' 16 under a browser's burst (#328), and the sign-in redirect's 4 behind its
+  /// one-at-a-time loop. A connection waiting in the queue holds kernel socket state only, no
+  /// descriptor of this process and no owner's slot: each owner still caps what it takes. A burst
+  /// past the cap is still reset.
+  static func listen() -> (descriptor: Int32, port: UInt16)? {
     let descriptor = socket(AF_INET, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return nil }
     _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
@@ -18,7 +27,7 @@ enum LoopbackSocket {
     var length = socklen_t(MemoryLayout<sockaddr_in>.size)
     let bound = withUnsafeMutablePointer(to: &address) {
       $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-        bind(descriptor, $0, length) == 0 && Darwin.listen(descriptor, backlog) == 0
+        bind(descriptor, $0, length) == 0 && Darwin.listen(descriptor, SOMAXCONN) == 0
           && getsockname(descriptor, $0, &length) == 0
       }
     }

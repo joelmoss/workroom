@@ -621,7 +621,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     // host's address outlives a reboot, as a provider's box keeps its address.
     // ponytail: the port is free when chosen, not when the runtime binds it; a run that loses
     // that race fails and is rolled back like any other.
-    guard let (probe, port) = LoopbackSocket.listen(backlog: 1) else {
+    guard let (probe, port) = LoopbackSocket.listen() else {
       throw HostDriverError.provisioning("no free loopback port: errno \(errno)")
     }
     Darwin.close(probe)

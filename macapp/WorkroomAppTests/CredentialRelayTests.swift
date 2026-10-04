@@ -234,7 +234,7 @@ final class CredentialRelayTests: XCTestCase {
     let relay = CredentialRelay(answer: { _ in "username=u\npassword=p\n" })
     let secret = try relay.secret(for: UUID())
     let port = try relay.localPort()
-    let side = try XCTUnwrap(LoopbackSocket.listen(backlog: CredentialRelay.backlog))
+    let side = try XCTUnwrap(LoopbackSocket.listen())
     defer { Darwin.close(side.descriptor) }
     for index in 0..<(CredentialRelay.maxReading * 2) {
       let client = try XCTUnwrap(LoopbackSocket.connect(port: side.port, timeout: 2))
@@ -272,20 +272,32 @@ final class CredentialRelayTests: XCTestCase {
     XCTAssertEqual(answered, "username=u\npassword=p\n", "the reading permits leaked")
   }
 
-  /// The relay's accept queue holds a burst while its accept thread is behind, as it is on a busy
-  /// Mac (#322). On loopback macOS resets a connection once the queue is full, so a short queue
-  /// turned a real workroom's request away; at the old 8, the burst here was reset about halfway
-  /// (`ECONNRESET`). Nothing accepts here, standing in for a thread that is behind.
-  func testTheRelaysAcceptQueueHoldsABurstWhileNothingIsAccepted() throws {
-    let made = try XCTUnwrap(LoopbackSocket.listen(backlog: CredentialRelay.backlog))
+  /// Every loopback listener's accept queue (the relay's, the port forwards', the sign-in
+  /// redirect's) holds a burst while its accept loop is behind, as it is on a busy Mac. On loopback
+  /// macOS resets connections once the queue overflows, both new ones and ones already waiting, so
+  /// a short queue turned a real workroom's request away at 8 (#322) and part of a browser's burst
+  /// at 16 (#328): at 16, connection 18 here was reset. Nothing accepts here, standing in for a
+  /// loop that is behind.
+  func testALoopbackListenersAcceptQueueHoldsABurstWhileNothingIsAccepted() throws {
+    let made = try XCTUnwrap(LoopbackSocket.listen())
     defer { Darwin.close(made.descriptor) }
+    let burst = 40
     var held: [Int32] = []
     defer { for socket in held { Darwin.close(socket) } }
-    for index in 0..<40 {
+    for index in 0..<burst {
       guard let socket = LoopbackSocket.connect(port: made.port, timeout: 2) else {
-        return XCTFail("connection \(index) of 40: errno \(errno)")
+        return XCTFail("connection \(index) of \(burst): errno \(errno)")
       }
       held.append(socket)
+    }
+    // A connection already waiting can be reset after its connect returned: none may have been.
+    Thread.sleep(forTimeInterval: 0.2)
+    for (index, socket) in held.enumerated() {
+      var byte: UInt8 = 0
+      let peeked = recv(socket, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
+      XCTAssertTrue(
+        peeked < 0 && (errno == EAGAIN || errno == EWOULDBLOCK),
+        "connection \(index) was reset while waiting (errno \(errno))")
     }
   }
 
@@ -293,7 +305,7 @@ final class CredentialRelayTests: XCTestCase {
   /// `SO_NOSIGPIPE`. Without it, a test writing to a relay that had reset it crashed the whole
   /// test run with SIGPIPE (#322).
   func testALoopbackClientNeverRaisesSIGPIPE() throws {
-    let made = try XCTUnwrap(LoopbackSocket.listen(backlog: 1))
+    let made = try XCTUnwrap(LoopbackSocket.listen())
     defer { Darwin.close(made.descriptor) }
     let socket = try XCTUnwrap(LoopbackSocket.connect(port: made.port, timeout: 2))
     defer { Darwin.close(socket) }

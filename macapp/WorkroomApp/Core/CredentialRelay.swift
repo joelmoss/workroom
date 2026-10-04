@@ -77,13 +77,6 @@ final class CredentialRelay: @unchecked Sendable {
   /// The most one request may take to arrive, whatever pace its bytes come at. The agent writes it
   /// whole, at once (`relay` in `broker.rs`), so a second is plenty.
   static let requestDeadline: TimeInterval = 2
-  /// The listener's accept queue: `SOMAXCONN` (128; the `kern.ipc.somaxconn` sysctl caps what
-  /// takes effect). Connections wait there while the accept thread is behind, and on loopback macOS
-  /// resets connections once the queue overflows (`ECONNRESET`), measured: new ones, and ones
-  /// already waiting in it. At 8, a burst of idle connections on a busy Mac overflowed it and a
-  /// real workroom's request was reset (#322). A long queue adds nothing a flood can hold: the
-  /// accept loop still takes each connection and closes what `maxReading` won't read.
-  static let backlog = SOMAXCONN
   private let reading = DispatchSemaphore(value: maxReading)
   private let serving = DispatchSemaphore(value: maxConcurrent)
   private let queue = DispatchQueue(
@@ -94,7 +87,7 @@ final class CredentialRelay: @unchecked Sendable {
   func localPort() throws -> UInt16 {
     try lock.withLock {
       if let listener { return listener.port }
-      guard let made = LoopbackSocket.listen(backlog: Self.backlog) else {
+      guard let made = LoopbackSocket.listen() else {
         throw HostDriverError.provisioning("couldn't listen for git credentials (errno \(errno))")
       }
       listener = made
