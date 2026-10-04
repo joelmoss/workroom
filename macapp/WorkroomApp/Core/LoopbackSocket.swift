@@ -10,11 +10,11 @@ enum LoopbackSocket {
   /// The accept queue is always `SOMAXCONN` (128; the `kern.ipc.somaxconn` sysctl caps what takes
   /// effect). Connections wait there while the owner's accept loop is behind, and on loopback macOS
   /// resets connections once the queue overflows (`ECONNRESET`), measured: new ones and ones
-  /// already waiting in it. Short queues reset real clients: the credential relay's 8 (#322), the
-  /// port forwards' 16 under a browser's burst (#328), and the sign-in redirect's 4 behind its
-  /// one-at-a-time loop. A connection waiting in the queue holds kernel socket state only, no
-  /// descriptor of this process and no owner's slot: each owner still caps what it takes. A burst
-  /// past the cap is still reset.
+  /// already waiting in it. Short queues reset real clients: the credential relay's 8 (#322) and the
+  /// port forwards' 16 under a browser's burst (#328); the sign-in redirect's 4, behind its
+  /// one-at-a-time loop, could the same way. A connection waiting in the queue holds kernel socket
+  /// state only, no descriptor of this process and no owner's slot: each owner still caps what it
+  /// takes. A burst past the cap is still reset.
   static func listen() -> (descriptor: Int32, port: UInt16)? {
     let descriptor = socket(AF_INET, SOCK_STREAM, 0)
     guard descriptor >= 0 else { return nil }
