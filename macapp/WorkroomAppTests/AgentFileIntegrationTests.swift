@@ -436,7 +436,7 @@ final class AgentFileIntegrationTests: XCTestCase {
   // Value: protects=the app's `resolve` request and the agent's reply agree on the wire, and each
   // refusal lands as the error the remote cmd-click acts on (#327): a link is followed on the
   // host; a path out of the root is `.refused`; a missing one is `.notFound`; a path the agent will
-  // not look up is `.failed`, which the app answers by probing the lexical path as before;
+  // not look up is `.failed`, which isn't the unknown-method reply, so the app skips it;
   // fails_when=the method name, the `path` key, or the agent's error tags drift from what
   // `AgentFileProvider` decodes; why_new=the real-agent round trip in RemoteHostIntegrationTests
   // skips without the ssh fixture, and no other test sends `resolve` to the shipped agent;
