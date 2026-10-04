@@ -644,4 +644,64 @@ final class TerminalLinkOpenerTests: XCTestCase {
     for _ in 0..<200 where opened() == nil { try await Task.sleep(for: .milliseconds(10)) }
     XCTAssertEqual(opened()?.path, "lib/user.rb")
   }
+
+  /// A root recorded with a trailing slash, or a link with a doubled one, still resolves inside
+  /// the workroom: `standardized` keeps `//`, and the host reads `/src/a.rb` as an absolute path.
+  func testARemoteLinkSurvivesDoubledAndTrailingSlashes() {
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(for: "src/a.rb", cwd: nil, root: "/repo/").map(\.path),
+      ["src/a.rb"])
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(for: "/repo//src/a.rb", cwd: nil, root: "/repo").map(
+        \.path), ["src/a.rb"])
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(for: "a.rb", cwd: "/repo//lib/", root: "/repo").map(
+        \.path), ["lib/a.rb"])
+  }
+
+  /// What the host holds, changeable mid-test.
+  private final class HostDisk: @unchecked Sendable {
+    private let lock = NSLock()
+    private var files: [String: Data] = [:]
+    func put(_ path: String) { lock.withLock { files[path] = Data("x".utf8) } }
+    var snapshot: [String: Data] { lock.withLock { files } }
+  }
+
+  /// The ⌘-click gate (`GhosttySurfaceView.mouseDown` asks `resolveCmdHoverFile` synchronously):
+  /// a word that could be a file in the workroom passes while its probe is out, so a click made
+  /// straight after pressing ⌘ is not lost. A "no" stands only while it is fresh, so a file made
+  /// after its word was hovered is found. URLs and paths outside the workroom never pass.
+  @MainActor
+  func testTheRemoteClickGatePassesAWordWhileTheHostIsAskedAndForgetsAStaleNo() async throws {
+    let target = TerminalTarget(
+      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
+      remoteHost: UUID())
+    let disk = HostDisk()
+    let sessions = TerminalSessions()
+    sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    sessions.recordUnrecognizedTool = { _ in }
+    sessions.remoteHoverTTL = .milliseconds(200)
+    sessions.remoteFiles = { location in
+      HostFiles(
+        context: FileContext(location: location, sharedLocation: nil), files: disk.snapshot)
+    }
+    let tab = sessions.addTab(for: target)
+    let gate = { (word: String) in sessions.remoteFileExists(word, tab: tab.id, target: target) }
+
+    XCTAssertFalse(gate("https://example.com/a.rb"))
+    XCTAssertFalse(gate("/etc/passwd"))
+    XCTAssertTrue(gate("later.rb"), "a click before the host answered would be lost")
+    // The host says no: the gate follows once the answer is in.
+    for _ in 0..<200 where gate("later.rb") { try await Task.sleep(for: .milliseconds(5)) }
+    XCTAssertFalse(gate("later.rb"))
+    // The file appears; once the "no" is stale, the host is asked again and says yes.
+    disk.put("later.rb")
+    try await Task.sleep(for: .milliseconds(250))
+    XCTAssertTrue(gate("later.rb"))
+    for _ in 0..<100 {
+      _ = gate("later.rb")
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    XCTAssertTrue(gate("later.rb"), "a file made after its word was hovered stayed unclickable")
+  }
 }
