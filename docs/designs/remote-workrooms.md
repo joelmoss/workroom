@@ -1785,13 +1785,16 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     session, so the hand-off is refused while any walk is left behind, as it was when the walk held
     its permit. On a remote host that means each connect pushes the update again and is refused,
     and the host stays on its older agent with only a log line until the mount answers or the host
-    reboots. A click stops at the first resolve that times out, since the candidates of one word
-    resolve the same prefix through their `..`: one click on a dead mount costs 10 seconds and one
-    walk, and a mount that is only slow to wake can take a second click. `read` itself has no
-    deadline, so a read opened through a link onto a hung mount still holds its slot. A newer
-    click replaces the one before it, and an answer whose pane has closed opens nothing. An error
-    reading one path moves on to the next candidate; a transport failure or a resolve that timed
-    out stops the probe.
+    reboots. Restarting the agent doesn't clear it either: a process with a thread in such a FUSE
+    wait can't finish exiting, so it keeps its lock and listener, and a new agent finds the lock
+    taken; only the mount answering, aborting its FUSE connection, or a reboot does. The agent logs
+    each walk it leaves behind, and each one that returns. When a resolve times out, a click skips
+    its other candidates through the same prefix (they would hang the same way) and still probes
+    any through a different one: one click on a dead mount costs 10 seconds and one walk, and a
+    mount that is only slow to wake can take a second click. `read` itself has no deadline, so a
+    read opened through a link onto a hung mount still holds its slot. A newer click replaces the
+    one before it, and an answer whose pane has closed opens nothing. An error reading one path
+    moves on to the next candidate; only a transport failure stops the probe.
 
 ## Phase 0 Results
 

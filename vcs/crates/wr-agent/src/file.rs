@@ -60,8 +60,8 @@ const MAX_CONCURRENT_READS: usize = 4;
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How a `resolve` answer that hit `RESOLVE_TIMEOUT` begins. The app matches it
-/// (`AgentFileProvider.resolveTimedOut`) and stops that click's probe, since every other candidate
-/// of the same word resolves the same prefix and would hang the same way.
+/// (`AgentFileProvider.resolveTimedOut`) and skips that click's other candidates through the same
+/// prefix, since they would hang the same way.
 const RESOLVE_TIMED_OUT: &str = "resolving timed out";
 
 /// Walks still running after their `resolve` gave up on them. A walk through a link onto a hung
@@ -486,8 +486,15 @@ fn resolve(request: &Request) -> Result<Value, FileError> {
             "too many earlier resolves are still walking".into(),
         ));
     }
+    let shown = format!("{relative} under {}", root.display());
     let relative = relative.to_owned();
-    let path = with_deadline(RESOLVE_TIMEOUT, move || resolve_path(&root, &relative))?;
+    let path = with_deadline(RESOLVE_TIMEOUT, move || resolve_path(&root, &relative)).inspect_err(
+        |error| {
+            if matches!(error, FileError::Io(message) if message.starts_with(RESOLVE_TIMED_OUT)) {
+                crate::note!("resolve of {shown} timed out; its walk is left behind (#334)");
+            }
+        },
+    )?;
     Ok(json!({"path": path}))
 }
 
@@ -498,8 +505,8 @@ pub(crate) fn walks_left_behind() -> usize {
 }
 
 /// `work`'s answer if it arrives within `timeout`, run on its own thread; otherwise an `Io` timeout
-/// (which the app takes as the end of that click, `AgentFileProvider.resolveTimedOut`, not as an
-/// agent too old to resolve), with the thread left to finish on its own and counted in
+/// (which the app takes as a hung prefix, `AgentFileProvider.resolveTimedOut`, not as an agent too
+/// old to resolve), with the thread left to finish on its own and counted in
 /// `ABANDONED_WALKS` until it does.
 ///
 /// The thread and this caller agree through one state word on which of them saw the deadline
@@ -527,6 +534,7 @@ fn with_deadline<T: Send + 'static>(
             .is_err();
         if left_behind {
             ABANDONED_WALKS.fetch_sub(1, Ordering::AcqRel);
+            crate::note!("a resolve walk left behind at its deadline has returned");
         }
     });
     if let Err(error) = spawned {
