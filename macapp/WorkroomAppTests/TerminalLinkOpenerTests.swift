@@ -665,6 +665,23 @@ final class TerminalLinkOpenerTests: XCTestCase {
     let timedOut = await sessions.remoteFile("link/../file.rb:4", cwd: nil, target: target)
     XCTAssertNil(timedOut, "a click went on to the next candidate after its resolve timed out")
 
+    // Value: protects=a read-open timeout on one candidate ends the click rather than spending
+    // another 10 seconds opening the same mount through the next candidate; fails_when=`remoteFile`
+    // treats the read timeout as a missing path; why_new=the prior test covers only resolve
+    // timeouts; seam=the fake host fails the first candidate while a fallback file exists.
+    sessions.remoteFiles = provider(
+      failing: ["file.rb:4": FileServiceError.failed("opening file timed out after 10s")])
+    let timedOutRead = await sessions.remoteFile("file.rb:4", cwd: nil, target: target)
+    XCTAssertNil(timedOutRead, "a click probed another candidate after its read open timed out")
+
+    sessions.remoteFiles = provider(
+      failing: [
+        "file.rb:4": FileServiceError.failed(
+          AgentFileProvider.filesystemOperationsBusy)
+      ])
+    let busyRead = await sessions.remoteFile("file.rb:4", cwd: nil, target: target)
+    XCTAssertNil(busyRead, "a click probed another candidate after file opens reached their cap")
+
     // So does the agent's refusal while too many earlier walks are stuck: the next candidate of
     // `link/file.rb:12/../t.rb` is plain `link/file.rb`, a read through the same hung link with no
     // deadline (#343). It exists here, so reading it would return it.

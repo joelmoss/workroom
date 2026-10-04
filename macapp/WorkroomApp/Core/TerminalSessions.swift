@@ -2278,9 +2278,9 @@ final class TerminalSessions: ObservableObject {
             where message.hasPrefix(AgentFileProvider.resolveTimedOut)
             || message == AgentFileProvider.resolveWalksBusy
           {
-            // The walk hung on a mount, or earlier ones still are (#334). The other candidates
-            // would resolve the same prefix or read through the same link, and a read has no
-            // deadline (#343), so nothing more in this click goes to the host.
+            // The path walk hung on a mount, or earlier ones still are (#334). The other
+            // candidates would resolve the same prefix or open through the same link, so nothing
+            // more in this click goes to the host.
             NSLog("Workroom: resolving %@ on the host: %@", onHost, message)
             return nil
           }
@@ -2289,7 +2289,15 @@ final class TerminalSessions: ObservableObject {
           path: path, line: candidate.line, column: candidate.column)
         do {
           _ = try await files.read(path: path, symlinks: .followWithinRoot, maxBytes: 1)
-        } catch FileServiceError.tooLarge {}
+        } catch FileServiceError.tooLarge {} catch FileServiceError.failed(let message)
+          where message.hasPrefix(AgentFileProvider.readOpenTimedOut)
+          || message == AgentFileProvider.filesystemOperationsBusy
+        {
+          // Another candidate could open through the same hung mount, so don't spend another
+          // deadline or leave another filesystem worker behind for this click.
+          NSLog("Workroom: opening %@ on the host: %@", path, message)
+          return nil
+        }
         return found
       } catch is FileServiceError {
         // About this path: missing, refused, or an error reading it (too long, not a directory
