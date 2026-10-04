@@ -385,11 +385,11 @@ private struct ChangedFileCountBadge: View {
   }
 }
 
-/// Whether this box is busy, as the agent's wakefulness service reports it (issue #208).
+/// Whether a box is busy, as its agent's wakefulness service reports it (issues #208, #254).
 ///
-/// In the Changes header rather than in the sidebar row, matching the PR badge it sits beside: the
-/// verdict is per BOX, not per workroom, so every sidebar row would carry the same glyph — the
-/// inspector shows it once, for whatever is selected.
+/// This Mac's is in the Changes header rather than in the sidebar rows, matching the PR badge it
+/// sits beside: the verdict is per BOX, not per workroom, so every local row would carry the same
+/// glyph. A remote workroom is its own box, so its row carries its own (`ProjectSidebar`).
 ///
 /// It owns its polling through `.task`, which is what makes "no polling while hidden" true rather
 /// than merely intended: closing the inspector or the window unmounts this view and cancels the poll.
@@ -397,6 +397,9 @@ private struct ChangedFileCountBadge: View {
 /// classifier does not run), so this is invisible on a local-only setup.
 struct WakefulnessBadge: View {
   @ObservedObject var model: WakefulnessModel = .shared
+  /// False for a remote host's badge, whose agent was not started with this Mac's settings.
+  var isLocal = true
+  var identifier = "changes.wakefulness"
   private let theme = ThemeService.shared
 
   var body: some View {
@@ -425,9 +428,9 @@ struct WakefulnessBadge: View {
             image
           }
         }
-        .help(Self.help(for: status, settings: .current))
+        .help(Self.help(for: status, settings: isLocal ? .current : nil))
         .accessibilityLabel(glyph.label)
-        .accessibilityIdentifier("changes.wakefulness")
+        .accessibilityIdentifier(identifier)
       }
     }
     .task { await model.poll() }
@@ -453,7 +456,9 @@ struct WakefulnessBadge: View {
     }
   }
 
-  static func help(for status: AgentWakefulness, settings: AgentWakefulnessSettings) -> String {
+  /// `settings` is this Mac's, to name a running agent's that differ; nil for a remote host's
+  /// agent, which this Mac's settings never started.
+  static func help(for status: AgentWakefulness, settings: AgentWakefulnessSettings?) -> String {
     let awake = wakefulnessDuration(status.awakeSeconds).formatted(
       .units(allowed: [.hours, .minutes], width: .narrow))
     var text: String
@@ -472,7 +477,9 @@ struct WakefulnessBadge: View {
         : "This machine is busy, but the agent could not write its verdict, so nothing is keeping "
           + "it awake. Click to keep it awake."
     }
-    if let mismatch = status.settingsMismatch(against: settings) { text += " " + mismatch }
+    if let settings, let mismatch = status.settingsMismatch(against: settings) {
+      text += " " + mismatch
+    }
     return text
   }
 }

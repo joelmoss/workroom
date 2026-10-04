@@ -431,6 +431,13 @@ struct ProjectSidebar: View {
           .foregroundStyle(.yellow)
           .help(warning.message)
       }
+      // A remote workroom is its own box, so its busy or idle verdict is its own (#254). Nothing
+      // shows while its host isn't connected: the poll never connects one.
+      if let host = workroom.reachableHost {
+        WakefulnessBadge(
+          model: .model(forHost: host), isLocal: false,
+          identifier: "sidebar.workroom.\(workroom.name).wakefulness")
+      }
       // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
       // command runs (issue #28), swapped for the delete button on hover — so a workroom stays
       // deletable even mid-run. The delete button is always laid out (it reveals via opacity), so it
