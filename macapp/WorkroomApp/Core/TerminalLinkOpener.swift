@@ -291,22 +291,32 @@ enum TerminalLinkOpener {
   /// URL rather than a path gives none, through the same `filePath(from:)` a local pane uses.
   static func remoteCandidates(for word: String, cwd: String?, root: String) -> [PathCandidate] {
     guard let path = filePath(from: word), root.hasPrefix("/") else { return [] }
-    // `standardized` keeps `//`, and the host joins a relative path whose first character is `/`
-    // as an absolute one, so slashes are collapsed first, the root's trailing one with them.
-    func collapsed(_ path: String) -> String {
-      path.replacingOccurrences(of: "/+", with: "/", options: .regularExpression)
+    // Split into components, never through `URL`: Foundation decomposes Unicode filenames
+    // (`é` → `e` + U+0301), which a Linux host reads as another name. Empty and `.` components
+    // go, which also absorbs a trailing or doubled slash.
+    func parts(_ path: String) -> [Substring] {
+      path.split(separator: "/").filter { $0 != "." }
     }
-    let prefix = collapsed(root + "/")
-    let base = cwd.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? prefix
+    let rootParts = parts(root)
+    let baseParts = cwd.flatMap { $0.hasPrefix("/") ? parts($0) : nil } ?? rootParts
     var seen = Set<String>()
     return pathCandidates(from: path).compactMap { candidate in
       guard !candidate.path.hasPrefix("~") else { return nil }
-      let joined = collapsed(
-        candidate.path.hasPrefix("/") ? candidate.path : base + "/" + candidate.path)
-      // Lexical only: `isDirectory: false` keeps `URL` from probing this Mac's disk for the path.
-      let absolute = URL(fileURLWithPath: joined, isDirectory: false).standardized.path
-      guard absolute.hasPrefix(prefix) else { return nil }
-      let relative = String(absolute.dropFirst(prefix.count))
+      let joined =
+        candidate.path.hasPrefix("/") ? parts(candidate.path) : baseParts + parts(candidate.path)
+      // Containment is judged on the lexically resolved path. The host is sent the path with its
+      // `..` still in it, so it resolves them itself, through any symlink on the way (resolving
+      // `link/..` here names a different file), and its file service checks containment on the
+      // file it opens.
+      var resolved: [Substring] = []
+      for part in joined {
+        if part == ".." { _ = resolved.popLast() } else { resolved.append(part) }
+      }
+      guard resolved.count > rootParts.count, resolved.starts(with: rootParts) else { return nil }
+      let sent =
+        joined.starts(with: rootParts)
+        ? joined.dropFirst(rootParts.count) : resolved.dropFirst(rootParts.count)
+      let relative = sent.joined(separator: "/")
       guard !relative.isEmpty, seen.insert(relative).inserted else { return nil }
       return PathCandidate(path: relative, line: candidate.line, column: candidate.column)
     }

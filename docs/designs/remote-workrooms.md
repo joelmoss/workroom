@@ -1752,9 +1752,20 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **Known limits.** The viewer opens a cmd-clicked file at the top: `FileDescriptor` has no line.
     A path outside the workroom (`/etc/hosts`, a sibling checkout) opens nothing. The ceiling prompt
     is still raised only for the Mac's agent: a remote host's "Keep awake" works from its badge, but
-    no prompt card is shown for it. `hostCwd` is asked for again each time a command finishes, one
-    round trip later, so a click inside that round trip after a `cd` resolves against the previous
-    directory.
+    no prompt card is shown for it, and a remote keep that fails shows nothing either (#324).
+    `hostCwd` is asked for again each time a command finishes, one round trip later, so a click
+    inside that round trip after a `cd` resolves against the previous directory. `hostCwd` is the
+    host's resolved path while the workroom root is the recorded one, so where the root goes
+    through a symlink (`/home` → `/var/home`) relative cmd-clicks open nothing (#325; the
+    first-party container image is not affected). A remote forward is reachable by every account on
+    the Mac, as any `127.0.0.1` forward is; accepted for now, with peer-uid scoping tracked in #323.
+  - **Path handling, from the final review.** A remote path is split into components, never run
+    through `URL`: Foundation decomposes Unicode filenames (`é`, C3 A9, becomes `e` + U+0301,
+    65 CC 81), which a Linux host reads as another name. Containment is judged on the lexically
+    resolved path, but the host is sent the path with its `..` still in it, so `link/../file.rb`
+    is resolved through the link on the host. A newer click replaces the one before it, so a slow
+    answer can't retarget the preview or open a tab in a workroom that has gone. An error reading
+    one path moves on to the next candidate; only a transport failure stops the probe.
 
 ## Phase 0 Results
 

@@ -553,9 +553,32 @@ final class TerminalLinkOpenerTests: XCTestCase {
     XCTAssertEqual(
       TerminalLinkOpener.remoteCandidates(for: "\(root)/a/b.txt", cwd: "/", root: root).map(
         \.path), ["a/b.txt"])
+    // `..` stays in what the host is sent: it resolves it through any symlink on the way.
     XCTAssertEqual(
       TerminalLinkOpener.remoteCandidates(for: "../x.txt", cwd: "\(root)/lib", root: root).map(
-        \.path), ["x.txt"])
+        \.path), ["lib/../x.txt"])
+  }
+
+  /// A remote path reaches the host with the bytes it was written in. Foundation's URL
+  /// normalisation decomposes `é` (C3 A9) into `e` + U+0301 (65 CC 81), which a Linux host reads as
+  /// another filename; Swift's `==` calls the two equal, so the bytes are compared.
+  func testARemoteLinkKeepsItsFilenameBytes() throws {
+    let name = "caf\u{e9}.txt"
+    let found = try XCTUnwrap(
+      TerminalLinkOpener.remoteCandidates(for: name, cwd: nil, root: "/home/workroom/repo").first)
+    XCTAssertEqual(Array(found.path.utf8), Array(name.utf8))
+  }
+
+  /// `link/../file.rb` names the file beside the link's TARGET, which only the host can resolve,
+  /// so the `..` goes to the host; resolving it here opened `file.rb` at the root. Containment is
+  /// still judged here, on the lexical path, and again by the host on the file it opens.
+  func testARemoteLinkLeavesParentTraversalsToTheHost() {
+    let root = "/home/workroom/repo"
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(for: "link/../file.rb", cwd: root, root: root).map(
+        \.path), ["link/../file.rb"])
+    XCTAssertEqual(
+      TerminalLinkOpener.remoteCandidates(for: "link/../../../out.rb", cwd: root, root: root), [])
   }
 
   /// Only what the host's file service can read: nothing outside the workroom's root, no `~` (this
@@ -652,7 +675,7 @@ final class TerminalLinkOpenerTests: XCTestCase {
       remoteHost: UUID())
     let sessions = TerminalSessions()
     let files: [String: Data] = ["a.rb": Data("x\n".utf8)]
-    func provider(failing: [String: FileServiceError]) -> (RepositoryLocation) async throws
+    func provider(failing: [String: Error]) -> (RepositoryLocation) async throws
       -> FileProviding
     {
       { location in
@@ -663,11 +686,20 @@ final class TerminalLinkOpenerTests: XCTestCase {
     }
 
     // `a.rb:3` probes the literal first, then `a.rb` carrying line 3.
-    sessions.remoteFiles = provider(failing: ["a.rb:3": .refused("not a regular file")])
+    sessions.remoteFiles = provider(failing: [
+      "a.rb:3": FileServiceError.refused("not a regular file")
+    ])
     let skipped = await sessions.remoteFile("a.rb:3", cwd: nil, target: target)
     XCTAssertEqual(skipped, .init(path: "a.rb", line: 3, column: nil))
 
-    sessions.remoteFiles = provider(failing: ["a.rb:3": .failed("agent dropped")])
+    // An error reading one path (too long, unreadable) moves on to the next candidate.
+    sessions.remoteFiles = provider(failing: [
+      "a.rb:3": FileServiceError.failed("File name too long (os error 63)")
+    ])
+    let pathError = await sessions.remoteFile("a.rb:3", cwd: nil, target: target)
+    XCTAssertEqual(pathError, .init(path: "a.rb", line: 3, column: nil))
+
+    sessions.remoteFiles = provider(failing: ["a.rb:3": HostConnectionError.connectionLost])
     let stopped = await sessions.remoteFile("a.rb:3", cwd: nil, target: target)
     XCTAssertNil(stopped, "a host failure went on to probe a later candidate")
 
@@ -768,6 +800,57 @@ final class TerminalLinkOpenerTests: XCTestCase {
     var count: Int { lock.withLock { value } }
   }
 
+  /// A newer remote ⌘-click replaces the one before it (#254): the host can take seconds, and a
+  /// slow answer must not retarget the preview after a faster one. Nor may an answer open a tab in
+  /// a workroom whose panes have all closed meanwhile.
+  @MainActor
+  func testARemoteClickIsReplacedByTheNextAndDroppedForAClosedWorkroom() async throws {
+    let target = TerminalTarget(
+      id: "remote", title: "remote", path: "/home/workroom/repo", unavailability: .remote,
+      remoteHost: UUID())
+    let sessions = TerminalSessions()
+    sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    sessions.recordUnrecognizedTool = { _ in }
+    sessions.remoteFiles = { location in
+      SlowHostFiles(
+        inner: HostFiles(
+          context: FileContext(location: location, sharedLocation: nil),
+          files: ["slow.rb": Data("x\n".utf8), "fast.rb": Data("x\n".utf8)]))
+    }
+    let tab = sessions.addTab(for: target)
+    let view = try XCTUnwrap(sessions.view(forTab: tab.id, inTarget: target.id))
+    func opened() -> String? {
+      for tab in sessions.tabs(for: target) {
+        if case .file(let file) = tab.content { return file.path }
+      }
+      return nil
+    }
+    view.onCmdClickFile?("slow.rb")
+    view.onCmdClickFile?("fast.rb")
+    try await Task.sleep(for: .milliseconds(800))
+    XCTAssertEqual(opened(), "fast.rb", "a slower, older click retargeted the preview")
+
+    // Every pane closes while the host is still answering: nothing opens.
+    view.onCmdClickFile?("slow.rb")
+    for tab in sessions.tabs(for: target) { sessions.closeTab(tab.id, for: target) }
+    try await Task.sleep(for: .milliseconds(800))
+    XCTAssertTrue(sessions.tabs(for: target).isEmpty, "an answer reopened a closed workroom")
+  }
+
+  /// `HostFiles` whose `slow.rb` takes half a second to answer.
+  private struct SlowHostFiles: FileProviding {
+    let inner: HostFiles
+    var context: FileContext { inner.context }
+    func list() async throws -> CommandResult { try await inner.list() }
+    func read(path: String, symlinks: FileSymlinkPolicy, maxBytes: Int) async throws -> Data {
+      if path == "slow.rb" { try await Task.sleep(for: .milliseconds(500)) }
+      return try await inner.read(path: path, symlinks: symlinks, maxBytes: maxBytes)
+    }
+    func watch(root: String, onEvent: @escaping @Sendable (FileWatchEvent) -> Void) async throws
+      -> FileWatchHandle?
+    { nil }
+  }
+
   /// A root recorded with a trailing slash, or a link with a doubled one, still resolves inside
   /// the workroom: `standardized` keeps `//`, and the host reads `/src/a.rb` as an absolute path.
   func testARemoteLinkSurvivesDoubledAndTrailingSlashes() {
@@ -790,7 +873,7 @@ struct HostFiles: FileProviding {
   let context: FileContext
   let files: [String: Data]
   /// Paths whose read fails with this error, before `files` is consulted.
-  var failing: [String: FileServiceError] = [:]
+  var failing: [String: Error] = [:]
 
   func list() async throws -> CommandResult {
     CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
