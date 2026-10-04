@@ -654,6 +654,16 @@ final class TerminalLinkOpenerTests: XCTestCase {
       let failed = await sessions.remoteFile("link/../file.rb", cwd: nil, target: target)
       XCTAssertNil(failed, "the decoy opened after the host failed with \(failure)")
     }
+
+    // Value: protects=a resolve that hit its deadline (a link onto a hung mount, #334) ends the
+    // click, so its other candidates don't each wait out another deadline and leave another walk
+    // behind; fails_when=`remoteFile` treats the timeout like any other failure and goes on to the
+    // next candidate; why_new=every other failure here skips one candidate only; seam=none
+    sessions.remoteFiles = provider(
+      resolved: ["link/../file.rb": "nested/file.rb"],
+      failing: ["link/../file.rb:4": FileServiceError.failed("resolving timed out after 10s")])
+    let timedOut = await sessions.remoteFile("link/../file.rb:4", cwd: nil, target: target)
+    XCTAssertNil(timedOut, "a click went on to the next candidate after its resolve timed out")
   }
 
   /// Only what the host's file service can read: nothing outside the workroom's root, no `~` (this

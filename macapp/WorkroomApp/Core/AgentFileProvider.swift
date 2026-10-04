@@ -9,6 +9,11 @@ struct AgentFileProvider: FileProviding {
   /// predates `resolve` (#327) from one that answered.
   static let unknownMethod = "unsupported file method"
 
+  /// How the agent's answer begins when a `resolve` hit its deadline (#334): a walk through a link
+  /// onto a hung mount. Every candidate of the same click resolves the same prefix, so the click
+  /// stops there. `RESOLVE_TIMED_OUT` in `file.rs`, whose tests pin the prefix.
+  static let resolveTimedOut = "resolving timed out"
+
   let context: FileContext
   let connection: AgentVCSConnection
 
