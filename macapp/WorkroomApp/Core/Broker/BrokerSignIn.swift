@@ -102,6 +102,14 @@ final class LoopbackListener: @unchecked Sendable {
     guard let (socket, port) = LoopbackSocket.listen() else {
       throw BrokerError.signIn("Couldn't listen on a local port (\(errno)).")
     }
+    // Non-blocking: `callback` accepts only after `poll` said a connection is waiting, but if it is
+    // gone by then, a blocking `accept` would hold the loop that reads every other connection and
+    // watches the deadline, until some other connection arrived.
+    guard fcntl(socket, F_SETFL, fcntl(socket, F_GETFL) | O_NONBLOCK) == 0 else {
+      let saved = errno
+      Darwin.close(socket)
+      throw BrokerError.signIn("Couldn't listen on a local port (\(saved)).")
+    }
     self.socket = socket
     self.port = port
   }

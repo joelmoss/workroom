@@ -139,6 +139,65 @@ final class BrokerSignInTests: XCTestCase {
     XCTAssertEqual(browser.redirectedTo, "https://codaset.localhost/workroom/sign-in/att-1")
   }
 
+  /// An accept on the sign-in listener with nothing queued returns at once: the case of a `poll`
+  /// that saw a connection which is gone by the `accept`. Blocking there would hold the loop that
+  /// reads every waiting connection and watches the deadline.
+  func testAnAcceptWithNothingQueuedReturnsAtOnce() throws {
+    let listener = try LoopbackListener()
+    defer { listener.close() }
+    let descriptor = try XCTUnwrap(Self.listeningDescriptor(port: listener.port))
+    final class Outcome: @unchecked Sendable {
+      var accepted: Int32 = 0
+      var error: Int32 = 0
+    }
+    let outcome = Outcome()
+    let returned = DispatchSemaphore(value: 0)
+    let thread = Thread {
+      outcome.accepted = accept(descriptor, nil, nil)
+      outcome.error = errno
+      returned.signal()
+    }
+    // The test's own class, so waiting on it is no priority inversion.
+    thread.qualityOfService = .userInteractive
+    thread.start()
+    guard returned.wait(timeout: .now() + 1) == .success else {
+      // Blocked. A connection lets it go, so the listener is not closed under a blocked accept.
+      let socket = LoopbackSocket.connect(port: listener.port, timeout: 2)
+      if returned.wait(timeout: .now() + 2) == .success { Darwin.close(outcome.accepted) }
+      if let socket { Darwin.close(socket) }
+      return XCTFail("accept blocked with nothing queued")
+    }
+    XCTAssertEqual(outcome.accepted, -1)
+    XCTAssertEqual(outcome.error, EWOULDBLOCK)
+  }
+
+  /// The descriptor in this process listening on `port`, found as `lsof` would: the listener keeps
+  /// its own private. A socket bound to that port with no peer is the listener (macOS has no
+  /// `SO_ACCEPTCONN` to ask).
+  private static func listeningDescriptor(port: UInt16) -> Int32? {
+    for descriptor in Int32(0)..<Int32(getdtablesize()) {
+      var address = sockaddr_in()
+      var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+      let named = withUnsafeMutablePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+          getsockname(descriptor, $0, &length)
+        }
+      }
+      guard named == 0, address.sin_family == sa_family_t(AF_INET),
+        UInt16(bigEndian: address.sin_port) == port
+      else { continue }
+      var peer = sockaddr_in()
+      var peerLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+      let connected = withUnsafeMutablePointer(to: &peer) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+          getpeername(descriptor, $0, &peerLength)
+        }
+      }
+      if connected != 0, errno == ENOTCONN { return descriptor }
+    }
+    return nil
+  }
+
   func testAFailedRedemptionStillSendsTheBrowserToTheResultPageAndStoresNothing() async throws {
     BrokerStub.reset([
       .init(
