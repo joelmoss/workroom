@@ -1712,6 +1712,32 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   It is a broker grant, not a deploy key (OQ20).
 - Idle state per remote workroom in the sidebar. **Cost display is deliberately deferred** —
   it needs per-provider billing APIs and there is no spending policy yet (open question 7).
+- **As built (#254, remote pane parity).** Pane close was done first, in #306 (#283). The rest:
+  - **Cmd-click (C7).** A remote pane's links never reach `TerminalLinkOpener`'s local resolver.
+    `TerminalSessions.wireRemoteLinks` resolves a clicked path against the shell's directory on the
+    host, as its agent reports it (`hostCwd`, #245), or the workroom root before the first report.
+    `TerminalLinkOpener.remoteCandidates` keeps the local parsing (`:line[:col]`, trailing dots)
+    and drops what the host's file service can't read: anything outside the workroom root, and
+    `~`, which is this Mac's home. Each candidate is probed with a one-byte read, which the agent
+    answers from the file's size without sending it (`file.rs`, `read_file`). The first that exists
+    opens in the in-app viewer as the workroom's preview tab, since no editor on the Mac can open
+    a file on another machine. The hand cursor on cmd-hover comes from a cache that the first hover
+    over a word fills, so it shows from the second move on. Web URLs still go to the Mac's browser.
+  - **Ports.** `PortForwardingModel` is one model per host (`model(for:)`), kept for the launch,
+    and the inspector's Ports section shows the selected workroom's host. A remote workroom the
+    app can't reach shows no Ports section, rather than the Mac's list. A forward never connects a
+    host; selecting the workroom does. This closed #208's last criterion.
+  - **Idle state.** A remote workroom's sidebar row carries the wakefulness badge, backed by one
+    `WakefulnessModel` per remote host (`model(forHost:)`). It polls only while the row is shown
+    and never connects the host. The Linux agent runs the classifier unconditionally (`serve.rs`),
+    so neither the agent nor host setup changed. A remote badge's tooltip leaves out the
+    settings-mismatch sentence: that agent was never started with the Mac's settings.
+  - **Known limits.** The viewer opens a cmd-clicked file at the top: `FileDescriptor` has no line.
+    A path outside the workroom (`/etc/hosts`, a sibling checkout) opens nothing. The ceiling prompt
+    is still raised only for the Mac's agent: a remote host's "Keep awake" works from its badge, but
+    no prompt card is shown for it. `hostCwd` is asked for again each time a command finishes, one
+    round trip later, so a click inside that round trip after a `cd` resolves against the previous
+    directory.
 
 ## Phase 0 Results
 
