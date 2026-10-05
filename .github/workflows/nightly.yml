@@ -116,6 +116,14 @@ jobs:
             gh release create nightly --prerelease --title "nightly" \
               --notes "Rolling nightly build from the tip of main. Not a stable release; expect rough edges."
 
+      # Read the counts the clobber below is about to reset (download-stats.yml). Never blocks the
+      # nightly: a missed snapshot costs a day of stats, not a build.
+      - name: Snapshot download counts before the clobber
+        continue-on-error: true
+        env:
+          REPO: ${{ github.repository }}
+        run: scripts/ci/download-stats.sh nightly-cli
+
       - name: Upload nightly CLI archives
         run: gh release upload nightly dist/* --clobber
 
@@ -293,6 +301,14 @@ jobs:
         with:
           name: nightly-macapp
           path: macapp/build/release
+
+      # The DMG and both appcast feeds are clobbered below; read their counts first. Non-blocking,
+      # as in the cli job.
+      - name: Snapshot download counts before the clobber
+        continue-on-error: true
+        env:
+          REPO: ${{ github.repository }}
+        run: scripts/ci/download-stats.sh nightly-publish
 
       - name: Upload nightly DMG
         run: |

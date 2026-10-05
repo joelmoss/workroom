@@ -168,6 +168,14 @@ jobs:
           name: release-macapp
           path: macapp/build/release
 
+      # appcast.sh clobbers appcast.xml below, resetting its poll count; read it first
+      # (download-stats.yml). Never blocks the release: a missed snapshot costs stats, not a ship.
+      - name: Snapshot download counts before the clobber
+        continue-on-error: true
+        env:
+          REPO: ${{ github.repository }}
+        run: scripts/ci/download-stats.sh release
+
       - name: Upload installer to the release
         run: |
           # Name matches the CLI archives' scheme; ${GITHUB_REF_NAME#v} drops the tag's leading

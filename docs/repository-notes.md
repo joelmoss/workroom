@@ -43,6 +43,10 @@ The macOS app targets (`app-build`, `app-run`, `app-test`, `app-test-scripts`, `
 See `CONTRIBUTING.md` for the release process. Use the `curate-release` skill for
 channel architecture and note curation when it is available in your agent environment.
 
+Release download counts are snapshotted daily, and before every `--clobber` upload, onto the
+`download-stats` branch (`.github/workflows/download-stats.yml`). Daily numbers per asset:
+`git fetch origin download-stats && python3 scripts/ci/download_stats.py`.
+
 ## Architecture
 
 ### Subcommands

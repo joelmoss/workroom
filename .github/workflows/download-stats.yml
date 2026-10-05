@@ -1,0 +1,31 @@
+name: Download stats
+
+# Daily snapshot of every release asset's download_count onto the `download-stats` branch
+# (scripts/ci/download-stats.sh). GitHub keeps only running totals, so daily numbers come from the
+# difference between snapshots: `python3 scripts/ci/download_stats.py`. The nightly, release and
+# appcast-notes workflows also snapshot right before each `--clobber` upload, which would otherwise
+# reset the replaced asset's count to 0 unread.
+#
+# Deliberately NOT in the `appcast-feed` concurrency group: a newly queued run cancels any run
+# already PENDING in its group, so a stats run could cancel a queued release. Snapshots are one file
+# each and the script retries a rejected push, so concurrent writers need no serializing.
+on:
+  schedule:
+    - cron: "5 0 * * *" # just after 00:00 UTC, so each interval starts on the day it covers
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Snapshot release download counts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: scripts/ci/download-stats.sh daily

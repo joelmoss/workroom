@@ -26,6 +26,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # appcast-notes.sh may clobber appcast.xml, resetting its poll count; read it first
+      # (download-stats.yml). Never blocks the refresh.
+      - name: Snapshot download counts before the clobber
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: scripts/ci/download-stats.sh appcast-notes
       - name: Refresh appcast description from release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

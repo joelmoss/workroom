@@ -84,6 +84,10 @@ jobs:
           tar -xzf "$archive" actionlint
           ./actionlint -color
 
+      # Named file for the same reason as the change-selection test above.
+      - name: Test the download stats report
+        run: python3 scripts/ci/test_download_stats.py
+
   cli:
     needs: changes
     if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
