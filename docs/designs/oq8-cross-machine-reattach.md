@@ -431,8 +431,28 @@ Where the build departed from the text above, and why. The decisions below them 
 - **T2, creation order is a `created` metadata entry** (milliseconds since the epoch), added by the
   agent at creation and carried by the hand-off table, so it never resets.
 - **T2, screen records do not carry metadata yet.** Nothing reads a record by workroom, and the plan
-  has no request that lists recorded sessions for the append rule. That request belongs with T7;
-  the record format changes then, with D6's version-1 fixture.
+  has no request that lists recorded sessions for the append rule. **Still open after T7:** the
+  append rule covers live sessions only. A session that ended with its host and is named by no
+  layout (a recorded pane a stale write dropped) is not brought back; one a layout names still is.
+  Recorded sessions need a listing request before the record format changes, with D6's fixture.
+- **T3, Layout requests are chunked.** A single request envelope is capped at 1 MiB
+  (`MAX_ENVELOPE_PAYLOAD`), under D3's 4 MiB, so Layout requests reuse the VCS service's chunk
+  reassembly on both sides.
+- **T4, the remote ended pane holds rather than exits.** It prints the notice and drains its input
+  until the pane is closed, as a pane shown a record does, and exits 0: 255 would read as a dropped
+  link and be attached again.
+- **T5, the build number is the commit time** (`git log -1 --format=%ct`, seconds), embedded by
+  `build.rs`, stated by `wr-agent protocol` as `build-number`, and kept in the binary as
+  `WR-AGENT-BUILD:<n>;`, which the app reads out of the bundled Linux agents it cannot run. The
+  agent's own downgrade refusal runs after the candidate's check, so a program that cannot restore
+  the sessions still says so first.
+- **T6, remote sessions tell their host their workroom and title**, which they did not before:
+  the remote attach command carried only the session id, socket and directory.
+- **T7, "open" is the first time a window shows the workroom, or its restore at launch.** A Mac
+  that already has the workroom open does not see another Mac's changes until its next launch.
+- **Open question 2 (keep-awake across Macs), answered by the code.** `keep` restarts one timer for
+  the whole host (`busy_since`) and records nothing about which connection asked, so no Mac
+  quitting can revoke another's; there is nothing per client for a test to catch.
 
 ## Eng Review (/plan-eng-review, 2026-10-04)
 
