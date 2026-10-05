@@ -95,9 +95,12 @@ enum HostLayoutSync {
   /// Writes `held` over the host's layout at `expected`, once more at the current revision if
   /// another Mac wrote in between (its whole snapshot wins, D9), and says whether it got there.
   /// With one attempt a refusal is final: for a Mac that has not read the host's layout this
-  /// launch, which must not replace one it never saw.
+  /// launch, which must not replace one it never saw. Unless the host holds exactly `ownWrite`, a
+  /// write of this Mac's own whose answer came too late to count: then it has seen that layout,
+  /// and writes once more at its revision.
   static func write(
-    _ held: TargetSession, key: String, expected: UInt64, store: HostLayoutStore, attempts: Int = 3
+    _ held: TargetSession, key: String, expected: UInt64, store: HostLayoutStore, attempts: Int = 3,
+    ownWrite: String? = nil
   ) async -> HostLayoutResolution {
     guard let blob = try? HostLayout.encode(held, key: key) else {
       return HostLayoutResolution(session: held, revision: expected, stale: true)
@@ -120,6 +123,11 @@ enum HostLayoutSync {
         logger.error("Host refused workroom \(key, privacy: .public)'s layout: \(error)")
         return HostLayoutResolution(session: held, revision: expected, stale: true)
       }
+    }
+    if let ownWrite, let answer = try? await store.get(key), answer.blob == ownWrite,
+      let revision = try? await store.put(key, expected: answer.revision, blob: blob)
+    {
+      return HostLayoutResolution(session: held, revision: revision)
     }
     logger.notice("Workroom \(key, privacy: .public)'s layout lost \(attempts) races on its host")
     return HostLayoutResolution(session: held, revision: expected, stale: true, refused: true)
