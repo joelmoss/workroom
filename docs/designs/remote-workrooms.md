@@ -268,6 +268,11 @@ datagrams; the portable path has no such constraint. Two reasons the distinction
 - **The agent is Rust, extending `vcs/`.** `wr-vcs-core` already hosts jj-lib and Rust
   cross-compiles to Linux cleanly. Accepted cost: porting the Swift pty daemon and replay buffer,
   the highest-risk work here. Rejected Swift-on-Linux and Go (a third rewrite, no in-process VCS).
+  *Since then (2026-10-05):* `wr-vcs-core` and jj-lib are gone. #266 removed Jujutsu, and with it
+  that crate. The `vcs/` workspace is now `wr-agent`, `wr-vcs-git` (Git reads through gix and the
+  host's own `git`) and `wr-vcs-model`. So "no in-process VCS" no longer separates Go from Rust: Go
+  has Git libraries too. Linux cross-compiling and "a third rewrite" still apply, the second more
+  heavily now that the pty and replay port is done.
 - **The driver contract is four methods: `create`, `openStream`, `destroy`, `deriveFromBase`.**
   `openStream` is "give me a bidirectional stream to a process running the agent on the far side" —
   `ssh host wr-agent serve --stdio` proved the stream shape in the spike, but currently kills its
