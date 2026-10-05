@@ -263,7 +263,8 @@ struct TerminalTabStrip: View {
   /// its width measurement, so that width stays a pure intrinsic measurement.
   private var addTerminalButton: some View {
     Button {
-      sessions.addTab(for: target)
+      // Held while the host is asked for its layout (#255), as ⌘T is.
+      store.whenHostLayoutRestored(target.id) { _ = sessions.addTab(for: target) }
     } label: {
       Image(systemName: "plus")
         .font(.system(size: 11))

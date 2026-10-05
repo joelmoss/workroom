@@ -40,7 +40,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -406,9 +406,14 @@ fn replace(
         .open(&path)
         .and_then(|mut file| std::io::Write::write_all(&mut file, &table.encode()))
         .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    // After the check, so a program that cannot restore these sessions says so first.
-    let result = check(binary, &path)
-        .and_then(|()| no_downgrade(binary, crate::serve::build_number()))
+    // The build is asked for before the check and read after it: both within one `CHECK_TIMEOUT`,
+    // since every session's output is stopped until they are done, and a program that cannot
+    // restore these sessions still says so first.
+    let deadline = Instant::now() + CHECK_TIMEOUT;
+    let probe = BuildProbe::start(binary);
+    let result = check(binary, &path, deadline)
+        .and(probe)
+        .and_then(|probe| probe.no_downgrade(binary, crate::serve::build_number(), deadline))
         .and_then(|()| {
             let ids: Vec<String> = frozen.iter().map(|s| s.id.to_hyphenated()).collect();
             crate::note!(
@@ -423,28 +428,72 @@ fn replace(
     result
 }
 
-/// Refuses a program built before this one (#255, D13): two Macs on different builds would
-/// otherwise each hand the host's agent to their own, older or newer, in turn. A program says its
-/// build in `protocol` (`build-number`); one that predates the line is older than any that has it.
-/// A build of this program with no number (0) refuses nothing, having nothing to compare.
-fn no_downgrade(binary: &Path, ours: u64) -> Result<(), String> {
-    if ours == 0 {
-        return Ok(());
+/// A program's `protocol` report, asked for alongside its table check so that the two share one
+/// `CHECK_TIMEOUT` (every session's output is stopped meanwhile) without a slow check using up the
+/// report's time. Killed if dropped unread.
+struct BuildProbe {
+    child: std::process::Child,
+    report: Option<std::thread::JoinHandle<String>>,
+}
+
+impl BuildProbe {
+    fn start(binary: &Path) -> Result<Self, String> {
+        let mut child = Command::new(binary)
+            .arg("protocol")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("{} could not start: {e}", binary.display()))?;
+        // Read while it runs, so a report bigger than a pipe cannot block it into the deadline.
+        let report = child.stdout.take().map(|mut pipe| {
+            std::thread::spawn(move || {
+                let mut kept = Vec::new();
+                let _ = (&mut pipe).take(MAX_CHECK_STDERR).read_to_end(&mut kept);
+                let _ = std::io::copy(&mut pipe, &mut std::io::sink());
+                String::from_utf8_lossy(&kept).into_owned()
+            })
+        });
+        Ok(BuildProbe { child, report })
     }
-    let output = Command::new(binary)
-        .arg("protocol")
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|e| format!("{} could not start: {e}", binary.display()))?;
-    let theirs = build_number_in(&String::from_utf8_lossy(&output.stdout));
-    if theirs < ours {
-        return Err(format!(
-            "{} is build {theirs}, older than this agent's build {ours}",
-            binary.display()
-        ));
+
+    /// Refuses a program built before this one (#255, D13): two Macs on different builds would
+    /// otherwise each hand the host's agent to their own, older or newer, in turn. A program says
+    /// its build in `protocol` (`build-number`); one that predates the line is older than any that
+    /// has it. A build of this program with no number (0) refuses nothing, having nothing to
+    /// compare. A program that has not said by `deadline` is refused.
+    fn no_downgrade(mut self, binary: &Path, ours: u64, deadline: Instant) -> Result<(), String> {
+        if ours == 0 {
+            return Ok(());
+        }
+        if wait_until(&mut self.child, deadline).is_none() {
+            return Err(format!(
+                "{} did not say its build within {}s",
+                binary.display(),
+                CHECK_TIMEOUT.as_secs()
+            ));
+        }
+        let report = self
+            .report
+            .take()
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default();
+        let theirs = build_number_in(&report);
+        if theirs < ours {
+            return Err(format!(
+                "{} is build {theirs}, older than this agent's build {ours}",
+                binary.display()
+            ));
+        }
+        Ok(())
     }
-    Ok(())
+}
+
+impl Drop for BuildProbe {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 /// The `build-number` a `protocol` report states, or 0 if it states none.
@@ -458,7 +507,7 @@ fn build_number_in(report: &str) -> u64 {
 
 /// Runs `binary handoff-check <table>`: the new program reads the real table and paints every
 /// screen, without taking anything over.
-fn check(binary: &Path, table: &Path) -> Result<(), String> {
+fn check(binary: &Path, table: &Path, deadline: Instant) -> Result<(), String> {
     let mut child = Command::new(binary)
         .arg("handoff-check")
         .arg(table)
@@ -477,21 +526,12 @@ fn check(binary: &Path, table: &Path) -> Result<(), String> {
             String::from_utf8_lossy(&kept).into_owned()
         })
     });
-    let deadline = Instant::now() + CHECK_TIMEOUT;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!(
-                    "{} did not check the sessions within {}s",
-                    binary.display(),
-                    CHECK_TIMEOUT.as_secs()
-                ));
-            }
-        }
+    let Some(status) = wait_until(&mut child, deadline) else {
+        return Err(format!(
+            "{} did not check the sessions within {}s",
+            binary.display(),
+            CHECK_TIMEOUT.as_secs()
+        ));
     };
     if status.success() {
         return Ok(());
@@ -504,6 +544,21 @@ fn check(binary: &Path, table: &Path) -> Result<(), String> {
         binary.display(),
         stderr.trim()
     ))
+}
+
+/// `child`'s exit status, or None, with it killed, if it is still running at `deadline`.
+fn wait_until(child: &mut std::process::Child, deadline: Instant) -> Option<ExitStatus> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
 }
 
 fn exec(
@@ -664,8 +719,9 @@ mod tests {
         assert_eq!(build_number_in("protocol 6\nbuild wr-agent 0.1.0\n"), 0);
     }
 
-    /// A program with a lower build number is refused before anything is written or checked; one
-    /// at least as high, or any when this build has no number, is let through (D13).
+    /// A program with a lower build number is refused, after the table check and before the exec;
+    /// one at least as high, or any when this build has no number, is let through (D13). One that
+    /// does not say in time is refused too: every session's output is stopped meanwhile.
     #[test]
     fn a_hand_off_to_an_older_build_is_refused() {
         let dir = std::env::temp_dir().join(format!("wr-agent-downgrade-{}", std::process::id()));
@@ -683,13 +739,35 @@ mod tests {
         let same = program("same", Some(200));
         let newer = program("newer", Some(300));
         let unnumbered = program("unnumbered", None);
-        assert!(no_downgrade(&older, 200)
+        let soon = || Instant::now() + CHECK_TIMEOUT;
+        let no_downgrade = |binary: &Path, ours: u64, deadline: Instant| {
+            BuildProbe::start(binary)?.no_downgrade(binary, ours, deadline)
+        };
+        assert!(no_downgrade(&older, 200, soon())
             .unwrap_err()
             .contains("older than this agent's build 200"));
-        assert!(no_downgrade(&unnumbered, 200).is_err());
-        assert_eq!(no_downgrade(&same, 200), Ok(()));
-        assert_eq!(no_downgrade(&newer, 200), Ok(()));
-        assert_eq!(no_downgrade(&older, 0), Ok(()));
+        assert!(no_downgrade(&unnumbered, 200, soon()).is_err());
+        assert_eq!(no_downgrade(&same, 200, soon()), Ok(()));
+        assert_eq!(no_downgrade(&newer, 200, soon()), Ok(()));
+        assert_eq!(no_downgrade(&older, 0, soon()), Ok(()));
+        let slow = dir.join("slow");
+        std::fs::write(&slow, "#!/bin/sh\nsleep 30\necho build-number 300\n").unwrap();
+        std::fs::set_permissions(&slow, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let started = Instant::now();
+        assert!(
+            no_downgrade(&slow, 200, Instant::now() + Duration::from_millis(300))
+                .unwrap_err()
+                .contains("did not say its build")
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // Asked for while the table is checked: a check that takes all the time leaves a report
+        // already given to be read, not refused.
+        let mut probe = BuildProbe::start(&newer).unwrap();
+        while probe.child.try_wait().unwrap().is_none() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(probe.no_downgrade(&newer, 200, Instant::now()), Ok(()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

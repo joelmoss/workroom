@@ -89,6 +89,27 @@ final class HostLayoutTests: XCTestCase {
       return XCTFail("not a layout")
     }
     XCTAssertEqual(read.tabs.map(\.kind), [TabSession.terminalKind])
+
+    // Only malformed tabs: nothing readable, not a workroom whose last tab was closed (D11).
+    let broken = """
+      {"schemaVersion": 1, "target": {"targetID": "k", "tabs": [{"key": "t2", "kind": "hologram"}]}}
+      """
+    XCTAssertEqual(HostLayout.decode(broken, targetID: "mine"), .unreadable)
+  }
+
+  /// A popped-out frame is this Mac's: one in the host's copy, which any client of the host can
+  /// write, is dropped rather than opened as a window wherever it says.
+  func testAFrameInTheHostsCopyIsDropped() {
+    let blob = """
+      {"schemaVersion": 1, "target": {"targetID": "k", "tabs": [
+        {"key": "t1", "kind": "terminal", "terminal": {"defaultTitle": "Terminal 1"},
+         "detachedFrame": "{{-90000, -90000}, {99999, 99999}}"}
+      ]}}
+      """
+    guard case .layout(let read) = HostLayout.decode(blob, targetID: "mine") else {
+      return XCTFail("not a layout")
+    }
+    XCTAssertNil(read.tabs.first?.detachedFrame)
   }
 
   /// Keys are re-minted on every restore, so this Mac finds its focus and its popped-out frame

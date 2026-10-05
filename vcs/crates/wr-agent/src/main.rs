@@ -474,27 +474,6 @@ fn run_relay(args: &[String]) -> ExitCode {
 /// Exit code the app already knows: `SessionAttachClient.daemonUnavailable`.
 const DAEMON_UNAVAILABLE: u8 = 92;
 
-/// Become an ordinary shell, because this relay could not deliver a persistent session.
-///
-/// **Why the relay and not the app.** The app decides whether a pane gets a session before it
-/// forks anything: `applyPersistentSession` either hands libghostty `wr-agent attach` as its
-/// `config.command` or lets it open a plain shell, and by the time this process exists that choice
-/// is spent. `config.wait_after_command` is false, so a relay that exits leaves a dead pane — no
-/// shell, no prompt, nothing the user can type into. The only place left that can still turn a
-/// failed attach into a working terminal is this process, by replacing itself with the shell the
-/// pane would have run anyway.
-///
-/// The app's own health check cannot prevent this. `SessionBackendProbe` runs `wr-agent protocol`
-/// and parses a version; an agent that answers that and then fails to serve — a stale socket it
-/// cannot bind, a version it cannot negotiate, a crash between the two — passes the probe and dies
-/// here. "A broken agent still leaves you a working terminal" is only true if this function exists.
-///
-/// **Persistence is lost, and that is said out loud.** The notice goes to stderr, which is the pane,
-/// because a terminal that silently stopped surviving quit is worse than one that says so: the user
-/// would find out by losing work. It is one line, printed once.
-///
-/// Never returns on success — `exec` replaces this process, so the shell inherits the pty, the
-/// window title, the exit status, everything. Returns only when `exec` itself fails.
 /// What a restored pane (`--no-create`) shows when its session has ended and the agent kept no
 /// record of it (`wr_agent::screens`).
 ///
@@ -521,6 +500,27 @@ fn ended(request: &serve::AttachRequest, no_spawn: bool) -> ExitCode {
 /// What a remote pane says when its session has ended and no record of it was kept.
 const ENDED_NOTICE: &str = "This terminal has ended. Close it to start again.";
 
+/// Become an ordinary shell, because this relay could not deliver a persistent session.
+///
+/// **Why the relay and not the app.** The app decides whether a pane gets a session before it
+/// forks anything: `applyPersistentSession` either hands libghostty `wr-agent attach` as its
+/// `config.command` or lets it open a plain shell, and by the time this process exists that choice
+/// is spent. `config.wait_after_command` is false, so a relay that exits leaves a dead pane — no
+/// shell, no prompt, nothing the user can type into. The only place left that can still turn a
+/// failed attach into a working terminal is this process, by replacing itself with the shell the
+/// pane would have run anyway.
+///
+/// The app's own health check cannot prevent this. `SessionBackendProbe` runs `wr-agent protocol`
+/// and parses a version; an agent that answers that and then fails to serve — a stale socket it
+/// cannot bind, a version it cannot negotiate, a crash between the two — passes the probe and dies
+/// here. "A broken agent still leaves you a working terminal" is only true if this function exists.
+///
+/// **Persistence is lost, and that is said out loud.** The notice goes to stderr, which is the pane,
+/// because a terminal that silently stopped surviving quit is worse than one that says so: the user
+/// would find out by losing work. It is one line, printed once.
+///
+/// Never returns on success — `exec` replaces this process, so the shell inherits the pty, the
+/// window title, the exit status, everything. Returns only when `exec` itself fails.
 fn fall_back_to_shell(request: &serve::AttachRequest, reason: &str) -> ExitCode {
     use std::os::unix::process::CommandExt;
 

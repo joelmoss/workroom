@@ -68,11 +68,21 @@ enum HostLayout {
     target.focusedKey = nil
     target.hostRevision = nil
     target.hostLayoutStale = nil
+    // Frames are this Mac's (`refilled` puts its own back); one from the host would open a window
+    // wherever another client of the host said.
+    target.tabs = target.tabs.map { tab in
+      var tab = tab
+      tab.detachedFrame = nil
+      return tab
+    }
     if target.tabs.isEmpty { return .empty }
     // Through the same checks a session.json gets: caps, duplicate keys, malformed tabs, splits.
+    // Tabs that are all malformed are not a closed workroom (D11): nothing here is readable.
     let file = SessionFile(
       savedAt: Date(), windows: [WindowSession(windowKey: "host", targets: [target])])
-    guard let sanitized = file.sanitized().file.windows.first?.targets.first else { return .empty }
+    guard let sanitized = file.sanitized().file.windows.first?.targets.first,
+      !sanitized.tabs.isEmpty
+    else { return .unreadable }
     return .layout(sanitized)
   }
 

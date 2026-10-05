@@ -1935,6 +1935,17 @@ mod tests {
         let listed = store.list();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, id(1));
+        // Stamped with when it was made, which orders the sessions a layout does not name (#255).
+        let created: u128 = listed[0]
+            .metadata
+            .iter()
+            .find(|(key, _)| key == CREATED_KEY)
+            .and_then(|(_, value)| value.parse().ok())
+            .expect("a created stamp");
+        assert!(
+            created.abs_diff(wall_now().as_millis()) < 60_000,
+            "{created}"
+        );
         // Created, but nobody is holding it yet: the session exists and its pty is already being
         // drained, and a client becomes attached only by attaching.
         assert!(!listed[0].attached);

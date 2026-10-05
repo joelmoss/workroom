@@ -520,7 +520,7 @@ final class SessionRestoreTests: XCTestCase {
   /// A remote workroom whose host keeps its layout (#255, D4) waits for the host's copy instead of
   /// restoring its own at once or opening a fresh shell; a host that cannot answer in time gets this
   /// Mac's own copy, whole. A second window showing the same workroom does not ask (D10).
-  func testARemoteWorkroomWaitsForItsHostsLayoutThenFallsBackToItsOwn() throws {
+  func testARemoteWorkroomWaitsForItsHostsLayoutThenFallsBackToItsOwn() async throws {
     RemoteWorkrooms.enabledForTesting = true
     defer { RemoteWorkrooms.enabledForTesting = nil }
     let workroom = Workroom(
@@ -549,6 +549,10 @@ final class SessionRestoreTests: XCTestCase {
     first.ensureInitialTerminal(for: target)
     XCTAssertEqual(
       first.terminals.tabCount(forTargetID: id), 0, "a fresh shell opened while waiting")
+    // A tab asked for meanwhile is held, so it cannot stop the restore (and have the next save
+    // write it alone over the host's layout); it opens after it.
+    first.openFilePreview(path: "/home/workroom/h/README.md", for: target)
+    XCTAssertEqual(first.terminals.tabCount(forTargetID: id), 0, "a tab opened while waiting")
 
     // A second window showing the workroom meanwhile restores from this Mac alone.
     let second = store()
@@ -561,11 +565,27 @@ final class SessionRestoreTests: XCTestCase {
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: poll)
     }
     poll()
-    wait(for: [restored], timeout: AppStore.hostLayoutTimeout + 3)
-    XCTAssertEqual(first.terminals.tabCount(forTargetID: id), 2)
+    await fulfillment(of: [restored], timeout: AppStore.hostLayoutTimeout + 3)
+    XCTAssertEqual(first.terminals.tabCount(forTargetID: id), 3, "the copy, then the held tab")
     XCTAssertTrue(first.deferredTargetSessions.isEmpty)
     XCTAssertTrue(first.hostLayouts.fetched.contains(id))
     XCTAssertFalse(first.fetchHostLayoutIfNeeded(for: target), "asked twice in one launch")
+
+    // The host never answered, so its layout was never read: a change goes up only at the
+    // revision this Mac last saw, and one that does not get there is not marked stale, which would
+    // make it win over the host's at the next open.
+    XCTAssertTrue(first.hostLayouts.unanswered.contains(id))
+    XCTAssertFalse(first.hostLayouts.readOnly.contains(id))
+    let writes = first.writeHostLayouts()
+    XCTAssertEqual(writes.count, 1, "the held tab is a change")
+    for write in writes { await write.value }
+    XCTAssertFalse(first.hostLayouts.stale.contains(id))
+    XCTAssertNil(first.hostLayouts.revisions[id])
+    XCTAssertNil(first.captureWindowSession().targets.first?.hostLayoutStale)
+    // It never reached the host, so the next save tries again.
+    let again = first.writeHostLayouts()
+    XCTAssertEqual(again.count, 1, "a write that never reached the host is not tried again")
+    for write in again { await write.value }
   }
 
   /// What a window writes to a remote workroom's host after a save (#255): nothing before the host
@@ -623,7 +643,104 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertTrue(store.writeHostLayouts().isEmpty)
     // No tabs over a layout the host had: the empty layout goes up.
     store.hostLayouts.written[id] = "a layout with tabs"
-    XCTAssertEqual(store.writeHostLayouts().count, 1)
+    let empty = store.writeHostLayouts()
+    XCTAssertEqual(empty.count, 1)
+    for write in empty { await write.value }
+
+    // At quit, a write already in flight, which starts nothing new, is waited on for the budget
+    // and then marked stale, so the session written next keeps this Mac's copy as the newer (D14).
+    store.hostLayouts.stale.remove(id)
+    let inFlight = Task<Void, Never> { try? await Task.sleep(nanoseconds: 5_000_000_000) }
+    store.hostLayouts.writing[id] = inFlight
+    await AppStore.flushHostLayouts(budget: 0.2, stores: [store])
+    XCTAssertTrue(store.hostLayouts.stale.contains(id))
+    inFlight.cancel()
+  }
+
+  /// A copy restored because its host did not answer is what the host had, as far as this Mac
+  /// knows, so it is not written back until something changes, although the restore re-minted
+  /// every tab's key.
+  func testAnUnansweredWorkroomsUnchangedCopyIsNotWrittenBack() async throws {
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
+    let workroom = Workroom(
+      name: "u", path: "/home/workroom/u", vcsName: "workroom/u", warnings: [],
+      host: HostDescriptor(
+        provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: UUID()))
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    store.projects = [Project(path: "/proj", vcs: "git", workrooms: [workroom])]
+    let id = TerminalTarget.workroomID(project: "/proj", name: "u")
+    var saved = TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")])
+    saved.hostRevision = 4
+    store.pendingSessionRestore = WindowSession(windowKey: UUID().uuidString, targets: [saved])
+    store.restorePersistedSessionIfPending(in: store.projects)
+    XCTAssertTrue(store.hostLayouts.fetching.contains(id))
+    let restored = expectation(description: "restored")
+    func poll() {
+      if store.terminals.tabCount(forTargetID: id) > 0 { return restored.fulfill() }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: poll)
+    }
+    poll()
+    await fulfillment(of: [restored], timeout: AppStore.hostLayoutTimeout + 3)
+    XCTAssertTrue(store.hostLayouts.unanswered.contains(id))
+    XCTAssertFalse(store.hostLayouts.readOnly.contains(id), "restored, not skipped")
+    XCTAssertNotNil(store.hostLayouts.written[id])
+    XCTAssertEqual(store.hostLayouts.revisions[id], 4)
+    XCTAssertTrue(store.writeHostLayouts().isEmpty, "an unchanged copy written back")
+  }
+
+  /// A workroom whose host never answered this launch writes at the revision this Mac last saw,
+  /// once: a host that has moved on refuses it, and that refusal is final, not retried at the
+  /// host's revision over a layout this Mac never read, and not marked stale (review D1).
+  func testAnUnansweredWorkroomNeverWritesOverALayoutItNeverRead() async throws {
+    final class MovedHost: HostLayoutStore, @unchecked Sendable {
+      var puts = 0
+      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 5, blob: nil) }
+      func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
+        puts += 1
+        guard expected == 5 else { throw AgentLayoutError.stale(revision: 5) }
+        return 6
+      }
+    }
+    let host = MovedHost()
+    let saved = AppStore.hostLayoutStore
+    AppStore.hostLayoutStore = { _ in host }
+    defer { AppStore.hostLayoutStore = saved }
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
+    let workroomID = UUID()
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    store.projects = [
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "w", path: "/home/workroom/w", vcsName: "workroom/w", warnings: [],
+            host: HostDescriptor(
+              provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: workroomID))
+        ])
+    ]
+    let id = TerminalTarget.workroomID(project: "/proj", name: "w")
+    let target = try XCTUnwrap(store.terminalTarget(forID: id))
+    XCTAssertTrue(HostLayoutOwners.shared.claim(workroomID, targetID: id, by: store))
+    store.terminals.restore(
+      TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+    store.hostLayouts.fetched.insert(id)
+    store.hostLayouts.unanswered.insert(id)
+    store.hostLayouts.revisions[id] = 3
+    store.hostLayouts.written[id] = "what this Mac last saw"
+
+    for write in store.writeHostLayouts() { await write.value }
+    XCTAssertEqual(host.puts, 1, "retried past the refusal")
+    XCTAssertFalse(store.hostLayouts.stale.contains(id))
+    XCTAssertEqual(store.hostLayouts.revisions[id], 3)
+    XCTAssertTrue(store.writeHostLayouts().isEmpty, "the refused layout sent again unchanged")
   }
 
   /// Recovery reattaches only the targets it is told may: a pane of any other is left alone, its

@@ -134,6 +134,7 @@ final class HostLayoutSyncTests: XCTestCase {
       held: layout("mine", revision: 6, stale: true), key: key, targetID: "mine", store: full)
     XCTAssertEqual(titles(kept), ["mine"])
     XCTAssertTrue(kept.stale)
+    XCTAssertFalse(kept.refused, "a size refusal is not another Mac's write")
   }
 
   /// A refused write retries at the revision it was told, at most three times, then gives up stale.
@@ -155,7 +156,60 @@ final class HostLayoutSyncTests: XCTestCase {
     let busy = AlwaysMoves()
     let gaveUp = await HostLayoutSync.write(layout("mine"), key: key, expected: 0, store: busy)
     XCTAssertTrue(gaveUp.stale)
+    XCTAssertTrue(gaveUp.refused)
     XCTAssertEqual(busy.puts, 3)
+  }
+
+  /// A layout from a newer build is never written over (D5), however this Mac's copy stands: when
+  /// its copy is stale, and on a later launch that holds the newer layout's own revision.
+  func testANewerBuildsLayoutIsNeverWrittenOver() async throws {
+    let host = FakeHost()
+    host.seed(key, revision: 9, blob: #"{"schemaVersion": 99, "target": {}}"#)
+    let stale = try await HostLayoutSync.resolve(
+      held: layout("mine", revision: 8, stale: true), key: key, targetID: "mine", store: host)
+    XCTAssertTrue(stale.readOnly)
+    XCTAssertEqual(titles(stale), ["mine"])
+    let later = try await HostLayoutSync.resolve(
+      held: layout("mine", revision: 9), key: key, targetID: "mine", store: host)
+    XCTAssertTrue(later.readOnly, "read-only only on the launch that first saw it")
+    XCTAssertEqual(host.puts, 0)
+  }
+
+  /// A host whose layouts were reset holds an older revision than this Mac last saw: the host's is
+  /// still the one restored, not this Mac's copy written over it.
+  func testAHostBelowThisMacsRevisionIsStillTheHosts() async throws {
+    let host = FakeHost()
+    host.seed(key, revision: 2, blob: try HostLayout.encode(layout("theirs"), key: key))
+    let resolution = try await HostLayoutSync.resolve(
+      held: layout("mine", revision: 6), key: key, targetID: "mine", store: host)
+    XCTAssertEqual(titles(resolution), ["theirs"])
+    XCTAssertEqual(resolution.revision, 2)
+    XCTAssertEqual(host.puts, 0)
+  }
+
+  /// One attempt: a refusal is final, at the revision this Mac had, not retried past (a Mac that
+  /// never read the host's layout this launch).
+  func testASingleAttemptWriteIsNeverRetriedPastARefusal() async {
+    let host = FakeHost()
+    host.seed(key, revision: 3, blob: "{}")
+    let written = await HostLayoutSync.write(
+      layout("mine"), key: key, expected: 1, store: host, attempts: 1)
+    XCTAssertTrue(written.stale)
+    XCTAssertEqual(host.puts, 1)
+    let kept = try? await host.get(key)
+    XCTAssertEqual(kept?.revision, 3)
+  }
+
+  /// A host layout this build cannot read at all is replaced: this Mac's copy is restored and,
+  /// marked as not on the host, written at the next save.
+  func testAnUnreadableHostLayoutIsReplaced() async throws {
+    let host = FakeHost()
+    host.seed(key, revision: 5, blob: "not a layout")
+    let resolution = try await HostLayoutSync.resolve(
+      held: layout("mine", revision: 4), key: key, targetID: "mine", store: host)
+    XCTAssertEqual(titles(resolution), ["mine"])
+    XCTAssertTrue(resolution.stale)
+    XCTAssertEqual(resolution.revision, 5)
   }
 
   /// A layout from a newer build is restored from nothing and never written over (D5); an empty one

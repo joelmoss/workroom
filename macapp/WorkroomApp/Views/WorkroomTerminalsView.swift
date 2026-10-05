@@ -61,11 +61,14 @@ struct WorkroomTerminalsView: View {
         } description: {
           Text("Open one with ⌘T.")
         } actions: {
-          Button("New Terminal") { sessions.addTab(for: target) }
-            .buttonStyle(.borderedProminent)
-            // Use the active theme accent rather than the system blue (issue #36).
-            .tint(ThemeService.shared.tokens.accent)
-            .accessibilityIdentifier("NewTerminal")
+          // Held while the host is asked for its layout (#255), as ⌘T is.
+          Button("New Terminal") {
+            store.whenHostLayoutRestored(target.id) { _ = sessions.addTab(for: target) }
+          }
+          .buttonStyle(.borderedProminent)
+          // Use the active theme accent rather than the system blue (issue #36).
+          .tint(ThemeService.shared.tokens.accent)
+          .accessibilityIdentifier("NewTerminal")
         }
       }
     }

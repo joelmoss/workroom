@@ -609,6 +609,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Task {
           await AppStore.flushHostLayouts(budget: 1)
           SessionCoordinator.shared.flushAndFreeze()
+          // Only once frozen: stopping a run command removes its tab, and the document is built
+          // from the live windows.
+          group.enter()
+          WindowRegistry.shared.gracefullyStopAllWindows(timeout: 4) { group.leave() }
           group.leave()
         }
         // A tab closed moments before this signal fires an unstructured kill Task; without
@@ -620,8 +624,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             until: ContinuousClock.now + PersistentSessionService.closeKillQuitBudget)
           group.leave()
         }
-        group.enter()
-        WindowRegistry.shared.gracefullyStopAllWindows(timeout: 4) { group.leave() }
         group.notify(queue: .main) { exit(EXIT_SUCCESS) }
       }
     }
@@ -752,6 +754,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     Task {
       await AppStore.flushHostLayouts(budget: 1)
       SessionCoordinator.shared.flushAndFreeze()
+      // Only once frozen: stopping a run command removes its tab, and the document is built from
+      // the live windows.
+      if registry.hasAnyLiveRunCommand {
+        group.enter()
+        // Stop every window's run commands, not just the focused one's.
+        registry.gracefullyStopAllWindows(timeout: 5) { group.leave() }
+      }
       group.leave()
     }
     // A tab closed moments before quitting fires an unstructured kill Task (`closeTab`); wait for
@@ -762,11 +771,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       await PersistentSessionService.shared.awaitPendingCloseKills(
         until: ContinuousClock.now + PersistentSessionService.closeKillQuitBudget)
       group.leave()
-    }
-    if registry.hasAnyLiveRunCommand {
-      group.enter()
-      // Stop every window's run commands, not just the focused one's.
-      registry.gracefullyStopAllWindows(timeout: 5) { group.leave() }
     }
     // A "Keep awake" clicked moments before quitting (issues #208, #254): the card cleared on the
     // click, the request may still be reconnecting. Bounded, this Mac's and each remote host's at

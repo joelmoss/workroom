@@ -154,13 +154,15 @@ final class HostStreamTests: XCTestCase {
     XCTAssertTrue(restored.hasSuffix("'--no-spawn' '--no-create'"), restored)
 
     // The session's workroom and title go with it, under the variables a local pane's attach gets,
-    // so the host's agent can tag the session for any Mac to find (#255). An empty one is left out.
+    // so the host's agent can tag the session for any Mac to find (#255). The project, a path on
+    // this Mac, is not: an ssh command line is visible to everything on the host.
     let tagged = ContainerHostDriver.remoteAttachCommand(
       binary: "/b", session: session, socket: "/s", resources: "/r", workingDirectory: "/w",
       restored: false,
       metadata: [
         (SessionMetadataKey.workroom, "4C0F5F2E-2B49-4C4D-9C1E-6A1B2B3C4D5E"),
-        (SessionMetadataKey.title, "Terminal 2"), (SessionMetadataKey.project, ""),
+        (SessionMetadataKey.title, "Terminal 2"),
+        (SessionMetadataKey.project, "/Users/someone/dev/app"),
       ])
     XCTAssertTrue(
       tagged.contains(
