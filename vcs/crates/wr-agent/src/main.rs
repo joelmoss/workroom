@@ -493,6 +493,32 @@ const DAEMON_UNAVAILABLE: u8 = 92;
 ///
 /// Never returns on success — `exec` replaces this process, so the shell inherits the pty, the
 /// window title, the exit status, everything. Returns only when `exec` itself fails.
+/// What a restored pane (`--no-create`) shows when its session has ended and the agent kept no
+/// record of it (`wr_agent::screens`).
+///
+/// On this Mac, a new shell in its place, as the app has always shown. On a remote host
+/// (`--no-spawn`), never a shell (#255, D7): one started here would be this process's child, not an
+/// agent session, so no other Mac could see it and it would die with the ssh link. The pane is told
+/// the terminal ended, then holds with input going nowhere until its user closes it, as a pane
+/// shown a record does.
+fn ended(request: &serve::AttachRequest, no_spawn: bool) -> ExitCode {
+    if !no_spawn {
+        return fall_back_to_shell(
+            request,
+            "the terminal that was running here has ended, so this is a new shell",
+        );
+    }
+    let mut stdout = std::io::stdout();
+    let _ = write!(stdout, "\r\nworkroom: {ENDED_NOTICE}\r\n");
+    let _ = stdout.flush();
+    let _raw = RawMode::enter();
+    let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
+    ExitCode::SUCCESS
+}
+
+/// What a remote pane says when its session has ended and no record of it was kept.
+const ENDED_NOTICE: &str = "This terminal has ended. Close it to start again.";
+
 fn fall_back_to_shell(request: &serve::AttachRequest, reason: &str) -> ExitCode {
     use std::os::unix::process::CommandExt;
 
@@ -752,10 +778,7 @@ fn run_attach(args: &[String]) -> ExitCode {
         match answer {
             Answer::Attached => break (stream, decoder),
             Answer::Refused(_) if request.existing_only => {
-                return fall_back_to_shell(
-                    &request,
-                    "the terminal that was running here has ended, so this is a new shell",
-                );
+                return ended(&request, no_spawn);
             }
             // A session that could not be created or attached. See the main loop's `Failure` arm
             // for why this is an error and not a shell.
@@ -856,10 +879,7 @@ fn run_attach(args: &[String]) -> ExitCode {
                                     && frame.payload.starts_with(b"no session ") =>
                             {
                                 drop(_raw);
-                                return fall_back_to_shell(
-                                    &request,
-                                    "the terminal that was running here has ended, so this is a new shell",
-                                );
+                                return ended(&request, no_spawn);
                             }
                             FrameKind::Failure => {
                                 eprintln!("wr-agent: {}", String::from_utf8_lossy(&frame.payload));

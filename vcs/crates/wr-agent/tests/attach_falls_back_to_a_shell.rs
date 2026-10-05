@@ -882,6 +882,55 @@ fn no_create_turns_an_ended_session_into_a_shell_with_a_notice() {
     );
 }
 
+/// On a remote host (`--no-spawn`) a restored pane whose session has ended gets no shell (#255,
+/// D7): one started by the attach client would be no agent session, invisible to every other Mac
+/// and gone with the ssh link. The pane says the terminal ended and holds until it is closed, here
+/// at once, since stdin is already at its end.
+#[test]
+fn a_restored_remote_pane_whose_session_ended_says_so_and_starts_no_shell() {
+    let dir = scratch("no-create-remote-ended");
+    let socket = dir.join("a.sock");
+    let _agent = start_agent(&socket);
+    let (output, status) = attach_with_args(
+        &["--no-spawn", "--no-create"],
+        &[
+            (
+                "WORKROOM_SESSION_ID",
+                "6B9B968D-0BD7-4172-850A-A373DA73BC79",
+            ),
+            ("WORKROOM_SESSION_SOCKET", socket.to_str().unwrap()),
+            ("WORKROOM_SESSION_SHELL", "/bin/sh"),
+            ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
+            (
+                "WORKROOM_SESSION_COMMAND",
+                "echo NEW-SHELL fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
+            ),
+        ],
+        None,
+    );
+    let listed = Command::new(agent_binary())
+        .args(["list", "--socket"])
+        .arg(&socket)
+        .output()
+        .expect("list");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        output.contains("This terminal has ended. Close it to start again."),
+        "expected the ended notice. got: {output:?}"
+    );
+    assert!(
+        !output.contains("NEW-SHELL"),
+        "a shell was started: {output:?}"
+    );
+    // Not 255, which the app reads as a dropped link and attaches again.
+    assert_eq!(status, Some(0), "got: {output:?}");
+    assert!(
+        !String::from_utf8_lossy(&listed.stdout).contains("6b9b968d"),
+        "the agent created the session anyway: {:?}",
+        String::from_utf8_lossy(&listed.stdout)
+    );
+}
+
 /// And a session that exists is reattached as usual: `--no-create` only refuses to make one.
 #[test]
 fn no_create_reattaches_a_session_that_exists() {
