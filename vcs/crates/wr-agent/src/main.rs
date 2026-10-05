@@ -331,6 +331,7 @@ fn adopt(
             session.columns,
             session.rows,
             &session.screen,
+            session.metadata,
         ) {
             wr_agent::note!(
                 "error: session {} could not be adopted, so its shell is hung up: {e}",

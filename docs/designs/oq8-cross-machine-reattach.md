@@ -414,6 +414,26 @@ Stop: MAX_ITERATIONS
 > Verify in the agent that kill of a recorded session deletes the record, cite the exact test or line, or add a new agent test for it to Next Steps 1/2. State the app path that issues the kill for a recorded or ended pane and how it treats a 'no such session' answer.
 <!-- gstack:office-hours:concerns:end -->
 
+## Implementation notes
+
+Where the build departed from the text above, and why. The decisions below them still hold.
+
+- **T2, metadata travels as the attach client's existing `ENV:` entries, not new `META:` entries.**
+  The attach client already forwards its whole environment (`AttachRequest::from_vars`), so the
+  app's `WORKROOM_SESSION_WORKROOM` and `WORKROOM_SESSION_TITLE` already reached the agent, which
+  dropped them. `serve::session_metadata` now reads them; no wire change, and attach clients that
+  predate #255 send them too.
+- **T2, `project` is not kept.** The app writes it (`TerminalSessions.swift`) but nothing reads it,
+  and keeping it doubled the list's worst case. Worst case per session is then the workroom id
+  (2048 bytes), title (256), working directory and `created`: about 3.4 KB, so roughly 300
+  sessions fit one list reply, not the 400 D8 estimated. `many_sessions_at_the_metadata_bounds_still_list`
+  pins 250.
+- **T2, creation order is a `created` metadata entry** (milliseconds since the epoch), added by the
+  agent at creation and carried by the hand-off table, so it never resets.
+- **T2, screen records do not carry metadata yet.** Nothing reads a record by workroom, and the plan
+  has no request that lists recorded sessions for the append rule. That request belongs with T7;
+  the record format changes then, with D6's version-1 fixture.
+
 ## Eng Review (/plan-eng-review, 2026-10-04)
 
 Target: `docs/designs/oq8-cross-machine-reattach.md` (this document, reviewed in place; the plan

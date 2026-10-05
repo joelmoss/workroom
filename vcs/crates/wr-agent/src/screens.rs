@@ -415,6 +415,7 @@ mod tests {
             cwd: None,
             columns: 80,
             rows: 24,
+            metadata: &[],
         };
         sessions.create(spec()).expect("create");
         assert!(
@@ -623,6 +624,7 @@ mod tests {
                 cwd: None,
                 columns: 80,
                 rows: 24,
+                metadata: &[],
             })
             .expect("create");
         std::thread::sleep(Duration::from_millis(400));

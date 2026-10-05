@@ -129,6 +129,13 @@ static TERMINATING: std::sync::RwLock<()> = std::sync::RwLock::new(());
 /// out of the store so no store lock is held while any of them is touched.
 type SessionParts = (Arc<Pty>, Arc<Mutex<Shadow>>, Arc<Mutex<Attached>>);
 
+/// What a client said about a session (`Session::metadata`), as key and value pairs.
+type Metadata = Vec<(String, String)>;
+
+/// The metadata key for when a session was created, in milliseconds since the epoch, which orders
+/// sessions the app's layout does not name (#255). A hand-off carries it, so it never resets.
+pub const CREATED_KEY: &str = "created";
+
 /// The client-minted session id: 16 bytes, matching `SessionIdentifier`'s UUID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(pub [u8; 16]);
@@ -168,6 +175,8 @@ pub struct FrozenSession {
     /// The screen as VT bytes (`Shadow::replay`), never a snapshot: two agent revisions share no
     /// snapshot format, and they do share VT.
     pub screen: Vec<u8>,
+    /// The session's metadata (`Session::metadata`), so its workroom survives the hand-off.
+    pub metadata: Vec<(String, String)>,
 }
 
 /// What a client needs to know about a session it is not attached to, for the session list.
@@ -183,6 +192,8 @@ pub struct SessionInfo {
     /// it is right.
     pub foreground: Option<String>,
     pub cwd: Option<String>,
+    /// What the client said about the session when it created it (`Session::metadata`).
+    pub metadata: Vec<(String, String)>,
 }
 
 pub struct Session {
@@ -201,6 +212,10 @@ pub struct Session {
     attached: Arc<Mutex<Attached>>,
     /// This session's number, from `NEXT_SESSION`.
     number: u64,
+    /// Which workroom the session belongs to, its first title, and when it was created, as the
+    /// client that created it said (`serve::session_metadata`), plus `created` from here. Fixed for
+    /// the session's life: the app's own layout is what follows a renamed tab (#255).
+    metadata: Vec<(String, String)>,
 }
 
 impl Session {
@@ -220,6 +235,7 @@ impl Session {
                 .unwrap_or(false),
             foreground: foreground.and_then(crate::process::executable_name),
             cwd: foreground.and_then(crate::process::working_directory),
+            metadata: self.metadata.clone(),
         }
     }
 }
@@ -417,6 +433,8 @@ pub struct SessionSpec<'a> {
     pub cwd: Option<&'a OsStr>,
     pub columns: u16,
     pub rows: u16,
+    /// The client's metadata for the session (`Session::metadata`); `created` is added here.
+    pub metadata: &'a [(String, String)],
 }
 
 impl SessionStore {
@@ -580,12 +598,15 @@ impl SessionStore {
             .screens
             .get()
             .is_some_and(|screens| screens.remove_unsynced(spec.id));
+        let mut metadata = spec.metadata.to_vec();
+        metadata.push((CREATED_KEY.to_string(), wall_now().as_millis().to_string()));
         let session = Session {
             id: spec.id,
             pty: Arc::new(pty),
             shadow: Arc::new(Mutex::new(Shadow::new(columns, rows))),
             attached: Arc::new(Mutex::new(Attached::unrecorded())),
             number: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
+            metadata,
         };
         let info = session.info();
         let number = session.number;
@@ -978,7 +999,7 @@ impl SessionStore {
             Err(TryLockError::Poisoned(_)) => panic!("session store poisoned"),
             Err(TryLockError::WouldBlock) => None,
         })?;
-        let parts: Vec<(SessionId, SessionParts)> = store
+        let parts: Vec<(SessionId, SessionParts, Metadata)> = store
             .values()
             .map(|session| {
                 (
@@ -988,11 +1009,12 @@ impl SessionStore {
                         Arc::clone(&session.shadow),
                         Arc::clone(&session.attached),
                     ),
+                    session.metadata.clone(),
                 )
             })
             .collect();
         let mut held = Vec::with_capacity(parts.len());
-        for (_, (_, _, attached)) in &parts {
+        for (_, (_, _, attached), _) in &parts {
             held.push(until(deadline, || match attached.try_lock() {
                 Ok(guard) => Some(guard),
                 Err(TryLockError::Poisoned(_)) => panic!("attachment lock poisoned"),
@@ -1001,7 +1023,7 @@ impl SessionStore {
         }
         let sessions: Vec<FrozenSession> = parts
             .iter()
-            .map(|(id, (pty, shadow, _))| {
+            .map(|(id, (pty, shadow, _), metadata)| {
                 // The kernel's size, which is what the shell was last told.
                 let (columns, rows) = pty
                     .size()
@@ -1013,6 +1035,7 @@ impl SessionStore {
                     columns,
                     rows,
                     screen: shadow.lock().map(|s| s.replay()).unwrap_or_default(),
+                    metadata: metadata.clone(),
                 }
             })
             .collect();
@@ -1034,6 +1057,7 @@ impl SessionStore {
         columns: u16,
         rows: u16,
         screen: &[u8],
+        metadata: Vec<(String, String)>,
     ) -> Result<(), SessionError> {
         let mut shadow = Shadow::new(columns, rows);
         shadow.write(screen);
@@ -1043,6 +1067,7 @@ impl SessionStore {
             shadow: Arc::new(Mutex::new(shadow)),
             attached: Arc::new(Mutex::new(Attached::unrecorded())),
             number: NEXT_SESSION.fetch_add(1, Ordering::Relaxed),
+            metadata,
         };
         let number = session.number;
         let pty = Arc::clone(&session.pty);
@@ -1771,6 +1796,7 @@ mod tests {
             cwd: None,
             columns: 80,
             rows: 24,
+            metadata: &[],
         }
     }
 
@@ -2028,7 +2054,7 @@ mod tests {
         let pty = Pty::spawn(OsStr::new("/bin/sh"), None, &args, &e, None, 80, 24).expect("pty");
         let pid = pty.child_pid();
         assert!(matches!(
-            store.adopt(id(9), pty, 80, 24, b""),
+            store.adopt(id(9), pty, 80, 24, b"", Vec::new()),
             Err(SessionError::AlreadyExists(_))
         ));
         // The refused pty was dropped, which hangs its shell up; reap it so no zombie is left.
@@ -2324,6 +2350,7 @@ mod tests {
                 cwd: None,
                 columns: 0,
                 rows: 0,
+                metadata: &[],
             })
             .expect("create");
 
@@ -2436,6 +2463,7 @@ mod tests {
                 cwd: None,
                 columns: 80,
                 rows: 24,
+                metadata: &[],
             })
             .expect("create");
     }
