@@ -2296,6 +2296,11 @@ final class AppStore: ObservableObject {
   /// created workroom where the run would be the sole tab (Arch #5) — there we DO show it.
   func startRunCommand(for target: TerminalTarget, focus: Bool = false) {
     guard !target.isMissing, let project = project(forTarget: target) else { return }
+    if hostLayouts.fetching.contains(target.id) {
+      return whenHostLayoutRestored(target.id) { [weak self] in
+        self?.startRunCommand(for: target, focus: focus)
+      }
+    }
     // Never launch the project command against a worktree that is still being built (issue #167),
     // and never over a create's own dialog (issue #171). Auto-run already waits — it fires from
     // `ensureInitialTerminal` once the pane mounts, which withholding defers — and a build or dev
@@ -4304,7 +4309,7 @@ final class AppStore: ObservableObject {
     // but that is a display rule — this is the chokepoint every caller routes through, the way
     // `startRunCommand` guards the run path rather than trusting its buttons.
     guard !isCreationBlocking(target.id) else { return }
-    terminals.addTab(for: target)
+    whenHostLayoutRestored(target.id) { [terminals] in _ = terminals.addTab(for: target) }
   }
 
   /// Close the active terminal tab in the selected target (⌘W).
@@ -4553,18 +4558,21 @@ final class AppStore: ObservableObject {
   /// resolves against the right revision. No-op if nothing's selected.
   func openDiffPreview(_ file: ChangedFile, source: DiffSource) {
     guard let target = selectedTarget else { return }
-    terminals.openDiffPreview(
-      DiffDescriptor(path: file.path, change: file.change, source: source, isPreview: true),
-      for: target)
+    let diff = DiffDescriptor(
+      path: file.path, change: file.change, source: source, isPreview: true)
+    whenHostLayoutRestored(target.id) { [terminals] in terminals.openDiffPreview(diff, for: target)
+    }
   }
 
   /// Open a changed file as a *persisted* diff tab (double-click in the Changes panel) — skips
   /// preview mode. No-op if nothing's selected.
   func openDiffPersistent(_ file: ChangedFile, source: DiffSource) {
     guard let target = selectedTarget else { return }
-    terminals.openDiffPersistent(
-      DiffDescriptor(path: file.path, change: file.change, source: source, isPreview: false),
-      for: target)
+    let diff = DiffDescriptor(
+      path: file.path, change: file.change, source: source, isPreview: false)
+    whenHostLayoutRestored(target.id) { [terminals] in
+      terminals.openDiffPersistent(diff, for: target)
+    }
   }
 
   /// Open a repo file as the selected target's single PREVIEW content tab (single-click in the Files
@@ -4586,14 +4594,18 @@ final class AppStore: ObservableObject {
   /// non-focused workroom's diff pane opened the file into the *other* workroom's tab strip. A pane's
   /// own controls must act on that pane's target, which is the whole point of moving them there.
   func openFilePreview(path: String, for target: TerminalTarget) {
-    terminals.openFilePreview(FileDescriptor(path: path, isPreview: true), for: target)
+    whenHostLayoutRestored(target.id) { [terminals] in
+      terminals.openFilePreview(FileDescriptor(path: path, isPreview: true), for: target)
+    }
   }
 
   /// Open a repo file as a *persisted* content tab (double-click in the Files section). No-op if
   /// nothing's selected.
   func openFilePersistent(path: String) {
     guard let target = selectedTarget else { return }
-    terminals.openFilePersistent(FileDescriptor(path: path, isPreview: false), for: target)
+    whenHostLayoutRestored(target.id) { [terminals] in
+      terminals.openFilePersistent(FileDescriptor(path: path, isPreview: false), for: target)
+    }
   }
 
   /// Open a commit's changeset detail as the selected target's single PREVIEW content tab
@@ -4601,16 +4613,20 @@ final class AppStore: ObservableObject {
   /// nothing's selected.
   func openChangesetPreview(commitID: String, title: String) {
     guard let target = selectedTarget else { return }
-    terminals.openContentPreview(
-      ChangesetDescriptor(commitID: commitID, title: title, isPreview: true), for: target)
+    let changeset = ChangesetDescriptor(commitID: commitID, title: title, isPreview: true)
+    whenHostLayoutRestored(target.id) { [terminals] in
+      terminals.openContentPreview(changeset, for: target)
+    }
   }
 
   /// Open a commit's changeset detail as a *persisted* content tab (double-click a History row).
   /// No-op if nothing's selected.
   func openChangesetPersistent(commitID: String, title: String) {
     guard let target = selectedTarget else { return }
-    terminals.openContentPersistent(
-      ChangesetDescriptor(commitID: commitID, title: title, isPreview: false), for: target)
+    let changeset = ChangesetDescriptor(commitID: commitID, title: title, isPreview: false)
+    whenHostLayoutRestored(target.id) { [terminals] in
+      terminals.openContentPersistent(changeset, for: target)
+    }
   }
 
   /// Select a file within a changeset tab (a tap in the History detail's file list). Updates the tab

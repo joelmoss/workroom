@@ -8,24 +8,34 @@ struct HostLayoutState {
   var fetching: Set<TerminalTarget.ID> = []
   /// Answered, or given up on, this launch: never asked again until the next.
   var fetched: Set<TerminalTarget.ID> = []
+  /// Given up on: the host did not answer in time. Its layout was never read this launch, so a
+  /// write goes in only if the host still holds the revision this Mac last saw, and is never
+  /// retried past a refusal or marked stale: it must not replace a layout this Mac never saw.
+  var unanswered: Set<TerminalTarget.ID> = []
+  /// Opened while the host was being asked (a tab, a file, a diff), run once its layout is
+  /// restored: a tab there first would stop the restore, and its write replace the host's layout.
+  var heldOpens: [TerminalTarget.ID: [() -> Void]] = [:]
   /// Showing on screen while its host was asked: opens its first pane once it has answered.
   var waitingForFirstTab: Set<TerminalTarget.ID> = []
   /// The host revision this window last read or wrote.
   var revisions: [TerminalTarget.ID: UInt64] = [:]
   /// This window's layout has not reached the host (`TargetSession.hostLayoutStale`).
   var stale: Set<TerminalTarget.ID> = []
-  /// The host's layout is from a newer build: never written over (D5).
+  /// Never written this launch: the host's layout is from a newer build (D5), or the host keeps no
+  /// layouts.
   var readOnly: Set<TerminalTarget.ID> = []
   /// The layout as the host last had it, encoded, so an unchanged one is never written again.
   var written: [TerminalTarget.ID: String] = [:]
-  /// A write to the host is in flight: the next waits for it rather than race it.
-  var writing: Set<TerminalTarget.ID> = []
+  /// A write to the host is in flight: the next waits for it rather than race it, and a quit waits
+  /// for it (D14).
+  var writing: [TerminalTarget.ID: Task<Void, Never>] = [:]
 }
 
 /// Which window on this Mac keeps each remote workroom's layout on its host (D10). Two windows can
 /// show one workroom; only the first to show it this launch restores the host's layout and writes
-/// it, so they never take turns overwriting it. Ownership passes on when that window closes or has
-/// no tabs left for the workroom.
+/// it, so they never take turns overwriting it. Once that window closes or has no tabs left for the
+/// workroom, the next window to open the workroom afresh takes over; one already showing it does
+/// not (TODOS).
 @MainActor
 final class HostLayoutOwners {
   static let shared = HostLayoutOwners()
@@ -56,6 +66,11 @@ extension AppStore {
   /// (D4). The connect is inside it, so a host that is slow to answer never blanks the workroom.
   static let hostLayoutTimeout: TimeInterval = 5
 
+  /// Where a host's layouts are read and written: its agent, or a fake in a test.
+  nonisolated(unsafe) static var hostLayoutStore:
+    @Sendable (HostID) async throws -> HostLayoutStore =
+      { try await HostConnectionManager.shared.layouts(host: $0) }
+
   /// Asks `target`'s host for its layout and sessions, unless this launch has already asked or
   /// another window keeps the workroom's layout, and says whether `target` is now waiting on that
   /// answer: if so, the caller opens no pane, and `applyHostLayout` restores what was chosen.
@@ -75,14 +90,20 @@ extension AppStore {
     let key = workroom.uuidString
     let targetID = target.id
     Task { [weak self] in
-      let outcome = try? await withTimeout(seconds: Self.hostLayoutTimeout) {
-        () -> (HostLayoutResolution, [SessionDescriptor]) in
-        try await RemoteHosts.shared.ensureConnected(.remote(host))
-        let store = try await HostConnectionManager.shared.layouts(host: .remote(host))
-        let resolution = try await HostLayoutSync.resolve(
-          held: held, key: key, targetID: targetID, store: store)
-        let sessions = (try? await HostConnectionManager.shared.sessions(on: .remote(host))) ?? []
-        return (resolution, sessions)
+      let outcome: Result<(HostLayoutResolution, [SessionDescriptor]), Error>
+      do {
+        outcome = .success(
+          try await withTimeout(seconds: Self.hostLayoutTimeout) {
+            try await RemoteHosts.shared.ensureConnected(.remote(host))
+            let store = try await Self.hostLayoutStore(.remote(host))
+            let resolution = try await HostLayoutSync.resolve(
+              held: held, key: key, targetID: targetID, store: store)
+            let sessions =
+              (try? await HostConnectionManager.shared.sessions(on: .remote(host))) ?? []
+            return (resolution, sessions)
+          })
+      } catch {
+        outcome = .failure(error)
       }
       self?.applyHostLayout(outcome, for: targetID, held: held, key: key)
     }
@@ -90,17 +111,22 @@ extension AppStore {
   }
 
   /// Restores what `fetchHostLayoutIfNeeded` chose, or this Mac's own copy when the host did not
-  /// answer in time, has no Layout service, or keeps no layouts.
+  /// answer in time, has no Layout service, or keeps no layouts, then opens what was held meanwhile.
   private func applyHostLayout(
-    _ outcome: (HostLayoutResolution, [SessionDescriptor])?, for targetID: TerminalTarget.ID,
-    held: TargetSession?, key: String
+    _ outcome: Result<(HostLayoutResolution, [SessionDescriptor]), Error>,
+    for targetID: TerminalTarget.ID, held: TargetSession?, key: String
   ) {
     hostLayouts.fetching.remove(targetID)
     hostLayouts.fetched.insert(targetID)
+    let heldOpens = hostLayouts.heldOpens.removeValue(forKey: targetID) ?? []
     guard let target = terminalTarget(forID: targetID) else { return }
     deferredTargetSessions.removeValue(forKey: targetID)
     var session = held
-    if let (resolution, sessions) = outcome {
+    // What is restored is what the host holds: once it is on screen, that is what `written` is,
+    // since a restore mints new tab keys and an earlier encoding would never match a capture.
+    var hostHasIt = false
+    switch outcome {
+    case .success((let resolution, let sessions)):
       hostLayouts.revisions[targetID] = resolution.revision
       if resolution.stale {
         hostLayouts.stale.insert(targetID)
@@ -118,14 +144,42 @@ extension AppStore {
       // ordinary change, written through with the next save.
       session = HostLayoutSync.appending(
         sessions, key: key, to: resolution.session, targetID: targetID)
-    } else {
+      hostHasIt = !resolution.stale && session == resolution.session
+    case .failure(let error):
+      // Kept as this Mac had them, for the next launch, whatever this one can do.
       hostLayouts.revisions[targetID] = held?.hostRevision
-      if held?.hostLayoutStale == true { hostLayouts.stale.insert(targetID) }
+      let keepsNoLayouts: Bool
+      switch error {
+      case AgentLayoutError.unsupported, VCSError.backendVersion: keepsNoLayouts = true
+      default: keepsNoLayouts = false
+      }
+      if keepsNoLayouts {
+        // The host keeps no layouts, or its agent predates them: nothing to write to.
+        hostLayouts.readOnly.insert(targetID)
+      }
+      if held?.hostLayoutStale == true {
+        // This Mac's copy is newer than the host's, as far as it knows: it is written as usual.
+        hostLayouts.stale.insert(targetID)
+      } else if !keepsNoLayouts {
+        // The host had this copy when this Mac last saw it.
+        hostLayouts.unanswered.insert(targetID)
+        hostHasIt = true
+      }
     }
-    if let session, terminals.tabCount(forTargetID: targetID) == 0 {
+    if terminals.tabCount(forTargetID: targetID) > 0 {
+      // Something opened a tab without being held: the host's layout is not on screen, so this
+      // window must not write over it this launch.
+      hostLayouts.readOnly.insert(targetID)
+    } else if let session {
       terminals.restore(session, for: target)
       refreshSelectionHasTabs()
+      if hostHasIt,
+        let shown = captureWindowSession().targets.first(where: { $0.targetID == targetID })
+      {
+        hostLayouts.written[targetID] = try? HostLayout.encode(shown, key: key)
+      }
     }
+    for open in heldOpens { open() }
     markSessionDirty()
     if hostLayouts.waitingForFirstTab.remove(targetID) != nil {
       ensureInitialTerminal(for: target)
@@ -143,12 +197,13 @@ extension AppStore {
   /// layout is never written over (D5), and nothing is written before the host has answered.
   @discardableResult
   func writeHostLayouts() -> [Task<Void, Never>] {
+    guard !hostLayouts.fetched.isEmpty else { return [] }
     let captured = Dictionary(
       captureWindowSession().targets.map { ($0.targetID, $0) },
       uniquingKeysWith: { first, _ in first })
     var started: [Task<Void, Never>] = []
     for targetID in hostLayouts.fetched
-    where !hostLayouts.readOnly.contains(targetID) && !hostLayouts.writing.contains(targetID) {
+    where !hostLayouts.readOnly.contains(targetID) && hostLayouts.writing[targetID] == nil {
       guard let target = terminalTarget(forID: targetID), let host = target.remoteHost,
         let workroom = target.remoteWorkroomID,
         HostLayoutOwners.shared.owns(workroom, self)
@@ -165,18 +220,22 @@ extension AppStore {
       guard let blob = try? HostLayout.encode(layout, key: key),
         blob != hostLayouts.written[targetID]
       else { continue }
-      hostLayouts.writing.insert(targetID)
       let expected = hostLayouts.revisions[targetID] ?? 0
-      started.append(
-        Task { [weak self] in
-          let result: HostLayoutResolution
-          if let store = try? await HostConnectionManager.shared.layouts(host: .remote(host)) {
-            result = await HostLayoutSync.write(layout, key: key, expected: expected, store: store)
-          } else {
-            result = HostLayoutResolution(session: layout, revision: expected, stale: true)
-          }
-          self?.finishHostWrite(result, targetID: targetID, blob: blob)
-        })
+      let attempts = hostLayouts.unanswered.contains(targetID) ? 1 : 3
+      let write = Task { [weak self] in
+        let result: HostLayoutResolution
+        // The service connection can drop while the panes' own links stay up: bring it back.
+        try? await RemoteHosts.shared.ensureConnected(.remote(host))
+        if let store = try? await Self.hostLayoutStore(.remote(host)) {
+          result = await HostLayoutSync.write(
+            layout, key: key, expected: expected, store: store, attempts: attempts)
+        } else {
+          result = HostLayoutResolution(session: layout, revision: expected, stale: true)
+        }
+        self?.finishHostWrite(result, targetID: targetID, blob: blob)
+      }
+      hostLayouts.writing[targetID] = write
+      started.append(write)
     }
     return started
   }
@@ -184,7 +243,17 @@ extension AppStore {
   private func finishHostWrite(
     _ result: HostLayoutResolution, targetID: TerminalTarget.ID, blob: String
   ) {
-    hostLayouts.writing.remove(targetID)
+    hostLayouts.writing.removeValue(forKey: targetID)
+    if hostLayouts.unanswered.contains(targetID) {
+      // Not written: the host moved past what this Mac saw, or could not be reached. Its layout is
+      // left alone, and this Mac's copy is not marked as winning. A refused layout is not sent
+      // again until it changes; one that did not reach the host is tried again at the next save.
+      guard !result.stale else {
+        if result.refused { hostLayouts.written[targetID] = blob }
+        return
+      }
+      hostLayouts.unanswered.remove(targetID)
+    }
     hostLayouts.revisions[targetID] = result.revision
     if result.stale {
       hostLayouts.stale.insert(targetID)
@@ -197,16 +266,32 @@ extension AppStore {
   }
 
   /// At quit (D14): every window's changed layouts go to their hosts, waited on for at most
-  /// `budget`. A write still in flight then is marked stale, so the session written next keeps it
-  /// as this Mac's newer copy, which wins at the next open and is written then.
-  static func flushHostLayouts(budget: TimeInterval) async {
-    let stores = WindowRegistry.shared.allStores
-    let writes = stores.flatMap { $0.writeHostLayouts() }
-    guard !writes.isEmpty else { return }
-    _ = try? await withTimeout(seconds: budget) {
-      for write in writes { await write.value }
+  /// `budget`, writes already in flight included, and then whatever changed while those were in
+  /// flight. A write still in flight then is marked stale, so the session written next keeps it as
+  /// this Mac's newer copy, which wins at the next open and is written then.
+  static func flushHostLayouts(
+    budget: TimeInterval, stores: [AppStore]? = nil
+  ) async {
+    let stores = stores ?? WindowRegistry.shared.allStores
+    guard stores.contains(where: { !$0.hostLayouts.fetched.isEmpty }) else { return }
+    _ = try? await withTimeout(seconds: budget) { @MainActor in
+      // Every write starts at once; then a workroom whose earlier write was in flight goes again.
+      _ = stores.flatMap { $0.writeHostLayouts() }
+      for write in stores.flatMap({ $0.hostLayouts.writing.values }) { await write.value }
+      guard !Task.isCancelled else { return }
+      for write in stores.flatMap({ $0.writeHostLayouts() }) { await write.value }
     }
-    for store in stores { store.hostLayouts.stale.formUnion(store.hostLayouts.writing) }
+    for store in stores {
+      store.hostLayouts.stale.formUnion(
+        store.hostLayouts.writing.keys.filter { !store.hostLayouts.unanswered.contains($0) })
+    }
+  }
+
+  /// Runs `open` now, or, while `targetID`'s host is being asked for its layout, once that layout
+  /// is restored (D4).
+  func whenHostLayoutRestored(_ targetID: TerminalTarget.ID, _ open: @escaping () -> Void) {
+    guard hostLayouts.fetching.contains(targetID) else { return open() }
+    hostLayouts.heldOpens[targetID, default: []].append(open)
   }
 
   /// `captured` with this window's record of its host's copy, for `session.json`.

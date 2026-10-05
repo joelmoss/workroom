@@ -197,7 +197,7 @@ fn read(path: &Path) -> Option<(u64, Vec<u8>)> {
 /// This agent's layouts, when it keeps them: set once, by `serve`, from `--screens`.
 static LAYOUTS: OnceLock<Layouts> = OnceLock::new();
 
-/// Keeps layouts in `dir` for the life of this program. A second call is ignored.
+/// Keeps `layouts` for the life of this program. A second call is ignored.
 pub fn keep(layouts: Layouts) {
     let _ = LAYOUTS.set(layouts);
 }
@@ -466,6 +466,35 @@ mod tests {
             handle(None, &request(json!({"method": "get", "key": "wr"}))),
             Err(LayoutError::Unsupported(_))
         ));
+    }
+
+    /// Anything can reach the socket, so a malformed request is refused as unsupported, and none
+    /// of them writes a layout.
+    #[test]
+    fn malformed_requests_are_refused_and_write_nothing() {
+        let dir = scratch("malformed");
+        let layouts = Layouts::open(&dir).unwrap();
+        for bad in [
+            json!({"method": "get"}),
+            json!({"method": "get", "key": ""}),
+            json!({"method": "put", "key": "k", "blob": "x"}),
+            json!({"method": "put", "key": "k", "expected": 0, "blob": 5}),
+            json!({"method": "nope", "key": "k"}),
+        ] {
+            assert!(
+                matches!(
+                    handle(Some(&layouts), &request(bad.clone())),
+                    Err(LayoutError::Unsupported(_))
+                ),
+                "{bad}"
+            );
+        }
+        assert!(matches!(
+            handle(Some(&layouts), b"not json"),
+            Err(LayoutError::Unsupported(_))
+        ));
+        assert_eq!(layouts.get("k"), (0, None));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

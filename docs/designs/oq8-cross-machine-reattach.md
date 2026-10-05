@@ -445,9 +445,23 @@ Where the build departed from the text above, and why. The decisions below them 
   `build.rs`, stated by `wr-agent protocol` as `build-number`, and kept in the binary as
   `WR-AGENT-BUILD:<n>;`, which the app reads out of the bundled Linux agents it cannot run. The
   agent's own downgrade refusal runs after the candidate's check, so a program that cannot restore
-  the sessions still says so first.
+  the sessions still says so first. Both share one `CHECK_TIMEOUT`, since every session's output is
+  stopped meanwhile. It is the commit time, where D13 named the commit count. Neither orders
+  builds across branches (TODOS).
 - **T6, remote sessions tell their host their workroom and title**, which they did not before:
-  the remote attach command carried only the session id, socket and directory.
+  the remote attach command carried only the session id, socket and directory. Only those two: the
+  project is this Mac's path, and an ssh command line is visible to everything on the host.
+- **T7, after the pre-landing review (2026-10-05).**
+  - **A host that misses the 5 s wait** (D4) leaves this Mac's copy on screen, and its layout
+    unread. A write then goes up only at the revision this Mac last saw. A refused one is not
+    retried and not marked stale, so it never replaces a layout this Mac never saw (review D1).
+  - **A tab opened during the wait** (⌘T, a file, a diff, a run command) is held until the
+    restore. Opened first, it would stop the restore, and its write would replace the host's
+    layout (review D2).
+  - **A newer build's layout is checked first**, on every open, before the stale and revision
+    shortcuts (D5).
+  - **A quit's flush waits for writes already in flight** (D14).
+  - **The session is frozen before run commands stop**, as it was before #255.
 - **T7, "open" is the first time a window shows the workroom, or its restore at launch.** A Mac
   that already has the workroom open does not see another Mac's changes until its next launch.
 - **Open question 2 (keep-awake across Macs), answered by the code.** `keep` restarts one timer for

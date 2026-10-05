@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomSessionProtocol
+import os
 
 /// Where a remote workroom's layout is kept: its host's agent (`AgentLayoutService`), or a fake.
 protocol HostLayoutStore: Sendable {
@@ -18,27 +19,43 @@ struct HostLayoutResolution: Equatable {
   var revision: UInt64
   /// This Mac's copy has not reached the host: it wins at the next open, and is written then.
   var stale = false
-  /// The host's layout is from a newer build: restored from nothing, and never written over (D5).
+  /// A write the host refused because another Mac wrote first, as opposed to one that could not
+  /// reach it.
+  var refused = false
+  /// The host's layout is from a newer build: this Mac restores its own copy, and never writes
+  /// over the host's (D5).
   var readOnly = false
 }
 
 /// Deciding between this Mac's copy of a remote workroom's layout and its host's, and the host's
 /// sessions the layout does not name. Pure apart from `store`, so it is tested against a fake.
 enum HostLayoutSync {
+  private static let logger = Logger(
+    subsystem: "com.developwithstyle.workroom", category: "HostLayout")
+
   /// What to restore for workroom `key` (this Mac's target `targetID`), from `held`, this Mac's own
   /// copy, if it has one, and the host's.
   ///
+  /// - The host's is from a newer build: this Mac's copy is restored and nothing is written, even
+  ///   over a stale mark, and on every open, not only the one that first saw it (D5).
   /// - This Mac's copy is newer (stale): it wins and is written, with the host's current revision
   ///   as the one it read, so the last Mac to change the layout wins (D9).
   /// - The host has none: this Mac's copy seeds it. A seed another Mac got in first is refused, and
   ///   that Mac's layout is adopted instead of being overwritten (R3-3).
-  /// - The host's is newer than the one this Mac last saw: it wins, with this Mac's focus and
-  ///   popped-out frames put back (D12).
+  /// - The host's is another revision than the one this Mac last saw: it wins, with this Mac's
+  ///   focus and popped-out frames put back (D12). Usually a newer one; an older one only when the
+  ///   host's layouts were reset, and it is still the host's.
   /// - Otherwise this Mac's copy is the host's already.
   static func resolve(
     held: TargetSession?, key: String, targetID: String, store: HostLayoutStore
   ) async throws -> HostLayoutResolution {
     var answer = try await store.get(key)
+    let newer = { (answer: AgentLayout) in
+      answer.blob.map { HostLayout.decode($0, targetID: targetID) } == .newer
+    }
+    if newer(answer) {
+      return HostLayoutResolution(session: held, revision: answer.revision, readOnly: true)
+    }
     if let held, held.hostLayoutStale == true {
       return await write(held, key: key, expected: answer.revision, store: store)
     }
@@ -50,11 +67,14 @@ enum HostLayoutSync {
         return HostLayoutResolution(session: held, revision: revision)
       } catch AgentLayoutError.stale {
         answer = try await store.get(key)
+        if newer(answer) {
+          return HostLayoutResolution(session: held, revision: answer.revision, readOnly: true)
+        }
       } catch {
         return HostLayoutResolution(session: held, revision: 0, stale: true)
       }
     }
-    if let blob = answer.blob, held == nil || answer.revision > (held?.hostRevision ?? 0) {
+    if let blob = answer.blob, held == nil || answer.revision != held?.hostRevision {
       switch HostLayout.decode(blob, targetID: targetID) {
       case .layout(let layout):
         return HostLayoutResolution(
@@ -64,8 +84,9 @@ enum HostLayoutSync {
       case .newer:
         return HostLayoutResolution(session: held, revision: answer.revision, readOnly: true)
       case .unreadable:
-        // Nothing to restore from it; this Mac's copy replaces it on the next write.
-        return HostLayoutResolution(session: held, revision: answer.revision)
+        // Nothing to restore from it; this Mac's copy replaces it on the next write, as a copy
+        // that has not reached the host.
+        return HostLayoutResolution(session: held, revision: answer.revision, stale: held != nil)
       }
     }
     return HostLayoutResolution(session: held, revision: answer.revision)
@@ -73,6 +94,8 @@ enum HostLayoutSync {
 
   /// Writes `held` over the host's layout at `expected`, once more at the current revision if
   /// another Mac wrote in between (its whole snapshot wins, D9), and says whether it got there.
+  /// With one attempt a refusal is final: for a Mac that has not read the host's layout this
+  /// launch, which must not replace one it never saw.
   static func write(
     _ held: TargetSession, key: String, expected: UInt64, store: HostLayoutStore, attempts: Int = 3
   ) async -> HostLayoutResolution {
@@ -87,10 +110,12 @@ enum HostLayoutSync {
       } catch AgentLayoutError.stale(let current) {
         expected = current
       } catch {
-        break
+        logger.error("Host refused workroom \(key, privacy: .public)'s layout: \(error)")
+        return HostLayoutResolution(session: held, revision: expected, stale: true)
       }
     }
-    return HostLayoutResolution(session: held, revision: expected, stale: true)
+    logger.notice("Workroom \(key, privacy: .public)'s layout lost \(attempts) races on its host")
+    return HostLayoutResolution(session: held, revision: expected, stale: true, refused: true)
   }
 
   /// `session` with a tab added, at the end of the strip, for each of the host's `sessions` tagged
@@ -127,6 +152,6 @@ enum HostLayoutSync {
   }
 
   private static func created(_ descriptor: SessionDescriptor) -> UInt64 {
-    descriptor.value(forMetadataKey: "created").flatMap(UInt64.init) ?? 0
+    descriptor.value(forMetadataKey: SessionMetadataKey.created).flatMap(UInt64.init) ?? 0
   }
 }

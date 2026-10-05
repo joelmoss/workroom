@@ -891,9 +891,10 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// binary to run, and the shell's 127 for that would read as the session's own exit. It exits
   /// 255 instead, ssh's own status for a lost link, which the app answers by attaching again with
   /// backoff: by then the bootstrap, which nothing orders panes after, has installed it.
-  /// `metadata` goes in under the same variables a local pane's attach gets
-  /// (`SessionMetadataKey.environmentVariables`), which the host's agent keeps as the session's
-  /// workroom and title (#255).
+  /// `metadata`'s workroom and title go in under the same variables a local pane's attach gets
+  /// (`SessionMetadataKey.environmentVariables`), which the host's agent keeps (#255). Nothing
+  /// else does: the project is this Mac's path, which the host neither keeps nor needs, and an ssh
+  /// command line is visible to everything on the host.
   static func remoteAttachCommand(
     binary: String, session: UUID, socket: String, resources: String, workingDirectory: String,
     restored: Bool, metadata: [(key: String, value: String)] = []
@@ -903,6 +904,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       "WORKROOM_SESSION_RESOURCES=\(resources)", "GHOSTTY_SHELL_FEATURES=cursor,sudo,title",
     ]
     let names = Dictionary(uniqueKeysWithValues: SessionMetadataKey.environmentVariables)
+      .filter { [SessionMetadataKey.workroom, SessionMetadataKey.title].contains($0.key) }
     let variables =
       [
         "WORKROOM_SESSION_ID=\(session.uuidString)",

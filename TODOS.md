@@ -96,6 +96,38 @@ the owner; have the pane show the marker while it is not the owner. Design follo
 
 **Priority:** P2 (chosen in the #255 eng review, 2026-10-05)
 
+### Remote workroom layouts: the review's deferred edge cases (macapp, wr-agent) — #255 review follow-up
+
+**What:** Four cases the pre-landing `/review` of `feat/255-cross-machine-reattach` found and
+deferred (2026-10-05). None loses data from a single window.
+
+1. **A sibling window never takes over writing.** When two windows on this Mac show one remote
+   workroom and the window that owns its layout (`HostLayoutOwners`, D10) closes, the other one
+   keeps its tabs but never claims the workroom: `fetchHostLayoutIfNeeded` claims only for a window
+   opening the workroom with no tabs. Its changes stop reaching the host for the rest of the launch.
+   Fix: on the owner's close or emptying, let a window already showing the workroom claim it and
+   write with no retry past `stale`, as an unanswered fetch does.
+2. **One session as a pane in two windows.** In that same case the second window restores its own
+   `session.json` copy while the owner's `HostLayoutSync.appending` adds the second window's
+   sessions (same `sessionWorkroomKey`) as tabs, so one agent session is attached twice on one Mac
+   and the two panes fight over its size. Fix: append only sessions no window on this Mac shows.
+3. **An empty layout that fails to write is forgotten.** Closing a remote workroom's last tab while
+   its host is unreachable writes an empty layout, which fails and is marked stale, but
+   `captureTargetSessions()` drops targets with no tabs, so neither the empty layout nor its stale
+   mark reaches `session.json`. Next launch the host's old layout comes back, its panes showing
+   "This terminal has ended". Fix: keep an empty, stale target (a tombstone) until the host takes it.
+4. **A dev build can pin a host to a dev agent.** The build number is the commit time (T5, not the
+   commit count D13 named; neither orders across branches). A dev build committed after a release
+   makes `AgentBootstrap` keep that dev agent on a host (`.keptNewer`) and hand-off refuse the
+   release until a later release ships. Fix: decide whether release and dev builds number apart.
+
+**Why:** Each is rare (two windows on one remote workroom, an offline close, a dev build on a
+shared host), and the PR was already 4.2k lines.
+
+**Depends on:** #255.
+
+**Priority:** P2 (deferred in the #255 `/review`, D3, 2026-10-05)
+
 ### Credential broker clients: the review's deferred items (macapp, wr-agent) — #251 review follow-up
 
 **What:** Five things the #251 review left open (PR #263):
