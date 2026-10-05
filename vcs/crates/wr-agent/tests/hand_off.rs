@@ -476,7 +476,7 @@ fn a_binary_that_dies_while_restoring_loses_every_session() {
     std::fs::write(
         &dying,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = handoff-check ]; then exec '{}' \"$@\"; fi\nexit 70\n",
+            "#!/bin/sh\nif [ \"$1\" = handoff-check ] || [ \"$1\" = protocol ]; then exec '{}' \"$@\"; fi\nexit 70\n",
             agent_binary().display()
         ),
     )
@@ -545,7 +545,7 @@ fn a_hand_off_nobody_is_waiting_for_is_called_off() {
     std::fs::write(
         &slow,
         format!(
-            "#!/bin/sh\nif [ \"$1\" = handoff-check ]; then sleep 1; exec '{}' \"$@\"; fi\nexit 70\n",
+            "#!/bin/sh\nif [ \"$1\" = protocol ]; then exec '{0}' \"$@\"; fi\nif [ \"$1\" = handoff-check ]; then sleep 1; exec '{0}' \"$@\"; fi\nexit 70\n",
             agent_binary().display()
         ),
     )

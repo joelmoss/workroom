@@ -8,11 +8,13 @@
 # A sha256 is `-` for an architecture the app bundles no agent for (it never equals a hash).
 # <resources> is where Ghostty's terminfo and shell integration go (resources.sh, issue #239).
 #
-# It answers four questions, one line each on stdout, every line prefixed `WRB ` so the app can
+# It answers five questions, one line each on stdout, every line prefixed `WRB ` so the app can
 # tell them from whatever a shell startup file on the host prints ahead of them:
 #
 #   WRB host <uname -s> <uname -m>
 #   WRB installed <sha256 of the binary beside the socket> | unknown (no sha256sum) | none
+#   WRB build <the installed agent's build-number> | unknown (it states none, or would not run)
+#             | none
 #   WRB resources <sha256 of <resources>/CHECKSUMS> | unknown (no sha256sum) | none
 #   WRB hand-off <exit status of `wr-agent hand-off`> <its first line>
 #                | off (hand-off is off) | no-socket | none (the installed binary is not this build)
@@ -47,6 +49,15 @@ if [ -x "$binary" ]; then
   installed=${installed:-unknown}
 fi
 echo "WRB installed $installed"
+
+# The installed agent's build number (#255), so the app never replaces a newer agent with its own
+# older one. An agent from before build numbers states none, and the app replaces it.
+build=none
+if [ -x "$binary" ]; then
+  build=$("$binary" protocol 2> /dev/null | sed -n 's/^build-number \([0-9][0-9]*\)$/\1/p' | head -n 1)
+  build=${build:-unknown}
+fi
+echo "WRB build $build"
 
 # The resource set's manifest stands for the set: resources.sh checks every file against it before
 # the set goes into place, and the app keys the set by the same hash of it. `unknown` for a host

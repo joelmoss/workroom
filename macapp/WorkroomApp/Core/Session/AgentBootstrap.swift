@@ -44,6 +44,10 @@ enum AgentBootstrap {
       /// has no agent for the host, or the host cannot hash, or the install did not go through.
       /// The app connects to whatever runs, over the versioned envelope.
       case keptOlder(String)
+      /// The host runs an agent built after this app's, which is never replaced with an older one
+      /// (#255, D13): two Macs on different builds would otherwise swap the host's agent on every
+      /// connect. The app connects to it over the versioned envelope.
+      case keptNewer(String)
     }
     /// Ghostty's terminfo and shell integration beside the agent (#239), for the host's panes.
     enum Resources: Equatable, Sendable {
@@ -139,8 +143,12 @@ enum AgentBootstrap {
       agent(architecture).map { (architecture, $0) }
     }
     // Reading and hashing two 11 MB files is blocking work, off the cooperative pool.
-    let bundled: [String: (url: URL, digest: String)] = try await runBlocking {
-      try Dictionary(uniqueKeysWithValues: urls.map { ($0, ($1, try digest(of: $1))) })
+    let bundled: [String: (url: URL, digest: String, build: UInt64)] = try await runBlocking {
+      try Dictionary(
+        uniqueKeysWithValues: urls.map { architecture, url in
+          let data = try Data(contentsOf: url)
+          return (architecture, (url, digest(of: data), buildNumber(in: data)))
+        })
     }
     let probe = try await run(
       script: "probe", on: host, driver: driver, input: nil,
@@ -158,7 +166,9 @@ enum AgentBootstrap {
     let set = await ensureResources(
       resources, installed: report.resources, directory: Self.resources(besideSocket: socket),
       on: host, driver: driver)
-    guard let (url, digest) = bundled[architecture].map({ ($0.url, $0.digest) }) else {
+    guard
+      let (url, digest, build) = bundled[architecture].map({ ($0.url, $0.digest, $0.build) })
+    else {
       guard report.installed != nil else { throw Error.noBundledAgent(architecture) }
       return Outcome(
         architecture: architecture, pushed: false,
@@ -186,6 +196,15 @@ enum AgentBootstrap {
         agent = .keptOlder(said.isEmpty ? "the hand-off was refused" : said)
       }
       return Outcome(architecture: architecture, pushed: false, agent: agent, resources: set)
+    }
+
+    // Never an older agent over a newer one (#255, D13). A host agent that predates build numbers
+    // reports none, and is replaced; so is everything when this build has no number (0).
+    if let theirs = report.build, build > 0, theirs > build {
+      return Outcome(
+        architecture: architecture, pushed: false,
+        agent: .keptNewer("the host runs build \(theirs), newer than this app's \(build)"),
+        resources: set)
     }
 
     let elf = try await runBlocking { try Data(contentsOf: url) }
@@ -306,9 +325,12 @@ enum AgentBootstrap {
     /// The hash of the Ghostty resource set there, `unknown`, or nil for none (#239).
     var resources: String? = nil
     let handOff: HandOff
+    /// The installed agent's build number (`wr-agent protocol`'s `build-number`), or nil when there
+    /// is none, it predates build numbers, or it would not run (#255).
+    var build: UInt64? = nil
   }
 
-  /// The probe's four lines. Anything not prefixed `WRB ` is whatever the host's shell startup
+  /// The probe's five lines. Anything not prefixed `WRB ` is whatever the host's shell startup
   /// printed, and skipped.
   static func parseProbe(_ output: String) throws -> ProbeReport {
     let fields = reports(in: output)
@@ -335,7 +357,8 @@ enum AgentBootstrap {
     return ProbeReport(
       system: host[0], architecture: host[1],
       installed: installed == nil || installed == "none" ? nil : installed,
-      resources: resources == "none" ? nil : resources, handOff: handOff)
+      resources: resources == "none" ? nil : resources, handOff: handOff,
+      build: fields["build"]?.first.flatMap { UInt64($0) })
   }
 
   /// The install's outcome words, and whether the supervisor started the agent (nil when that was
@@ -392,6 +415,24 @@ enum AgentBootstrap {
   /// SHA-256 of a bundled binary, as the host's `sha256sum` prints it. Not cached: an update
   /// swaps the bundle under a running app, and 11 MB hashes in a few milliseconds.
   static func digest(of url: URL) throws -> String {
-    SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
+    digest(of: try Data(contentsOf: url))
+  }
+
+  static func digest(of data: Data) -> String {
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+  }
+
+  /// The build number a bundled agent was built with, read out of its bytes rather than by running
+  /// it: the bundled agents are Linux binaries the Mac cannot run. The agent keeps it as the
+  /// marker `WR-AGENT-BUILD:<number>;` (`serve::BUILD_MARKER`). 0 when there is none, which orders
+  /// below every numbered build.
+  static func buildNumber(in data: Data) -> UInt64 {
+    let marker = Data("WR-AGENT-BUILD:".utf8)
+    guard let start = data.range(of: marker)?.upperBound else { return 0 }
+    let digits = data[start...].prefix { (0x30...0x39).contains($0) }
+    guard data.index(start, offsetBy: digits.count) < data.endIndex,
+      data[data.index(start, offsetBy: digits.count)] == UInt8(ascii: ";")
+    else { return 0 }
+    return UInt64(String(decoding: digits, as: UTF8.self)) ?? 0
   }
 }

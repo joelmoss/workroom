@@ -207,6 +207,60 @@ final class AgentBootstrapTests: XCTestCase {
     XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: true, agent: .handedOff))
   }
 
+  /// A bundled agent with build number `build`, as `serve::BUILD_MARKER` keeps it in the binary.
+  private func numberedAgent(_ build: UInt64) throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-agent-linux-\(UUID().uuidString.prefix(8))")
+    try Data("ELF bytes\0WR-AGENT-BUILD:\(build);\0more bytes\n".utf8).write(to: url)
+    addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+    return url
+  }
+
+  private func probe(installed: String, build: UInt64) -> StubDriver.Answer {
+    .init(
+      output:
+        "WRB host Linux aarch64\nWRB installed \(installed)\nWRB build \(build)\nWRB hand-off none\n"
+    )
+  }
+
+  /// Two Macs on different builds would otherwise each replace the host's agent with their own on
+  /// every connect, and the older one would take the newer agent's services away (#255, D13).
+  func testAHostRunningANewerBuildIsKeptAndNotPushedTo() async throws {
+    let agent = try numberedAgent(100)
+    let driver = StubDriver([probe(installed: String(repeating: "0", count: 64), build: 200)])
+    let outcome = try await ensure(driver, agent: { $0 == "aarch64" ? agent : nil })
+    XCTAssertEqual(
+      outcome,
+      .init(
+        architecture: "aarch64", pushed: false,
+        agent: .keptNewer("the host runs build 200, newer than this app's 100")))
+    XCTAssertEqual(driver.commands.count, 1, "nothing was pushed")
+  }
+
+  /// An older build, the same build under another hash (a dev build), or an agent that predates
+  /// build numbers is replaced as before.
+  func testAHostRunningAnOlderOrUnnumberedBuildIsPushedTo() async throws {
+    let agent = try numberedAgent(200)
+    for answer in [
+      probe(installed: String(repeating: "0", count: 64), build: 100),
+      probe(installed: String(repeating: "0", count: 64), build: 200),
+      probe(installed: String(repeating: "0", count: 64), handOff: "none"),
+    ] {
+      let driver = StubDriver([answer, .init(output: "WRB outcome handed-off\n")])
+      let outcome = try await ensure(driver, agent: { $0 == "aarch64" ? agent : nil })
+      XCTAssertEqual(outcome.agent, .handedOff, answer.output)
+      XCTAssertTrue(outcome.pushed, answer.output)
+    }
+  }
+
+  func testTheBuildNumberIsReadFromTheBundledAgentsMarker() {
+    XCTAssertEqual(
+      AgentBootstrap.buildNumber(in: Data("x\0WR-AGENT-BUILD:1791188654;\0y".utf8)), 1_791_188_654)
+    XCTAssertEqual(AgentBootstrap.buildNumber(in: Data("no marker here".utf8)), 0)
+    XCTAssertEqual(AgentBootstrap.buildNumber(in: Data("WR-AGENT-BUILD:12".utf8)), 0, "cut short")
+    XCTAssertEqual(AgentBootstrap.buildNumber(in: Data("WR-AGENT-BUILD:;".utf8)), 0, "empty")
+  }
+
   /// Refuse rather than kill: an agent that predates hand-off, or one that refused the new
   /// binary, keeps running, and the outcome says so rather than failing the connect.
   func testAnOlderAgentThatIsNotReplacedIsReportedNotFailed() async throws {
