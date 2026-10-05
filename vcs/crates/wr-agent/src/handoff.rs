@@ -13,7 +13,7 @@
 //!   open file description, so it is never released). Everything else closes, which is every
 //!   client connection: a client reattaches to the new program.
 //! - **A table** in a file beside the socket, named by `--handoff`: the descriptor numbers, and per
-//!   session its id, pid, size and screen. A file, not a pipe: this process is the pipe's only
+//!   session its id, pid, size, screen and metadata. A file, not a pipe: this process is the pipe's only
 //!   reader, and a table bigger than the pipe's buffer (16 KiB on macOS; a few screens) would block
 //!   the write forever.
 //! - **The screen as VT bytes** (`Shadow::replay`), never a snapshot. Two agent revisions share no
@@ -48,8 +48,12 @@ use crate::session::{FrozenSession, SessionId, SessionStore};
 
 const MAGIC: [u8; 4] = *b"WRHO";
 /// The table's format. The new program must read the old one's table, so a change here needs the
-/// reader to keep accepting every version a shipped agent writes.
-const TABLE_VERSION: u16 = 1;
+/// reader to keep accepting every version a shipped agent writes: version 1 had no metadata, and its
+/// sessions are adopted with none (#255). An older program refuses a newer table in its check, so a
+/// hand-off never goes to a program that would drop what this one carries.
+const TABLE_VERSION: u16 = 2;
+/// The oldest table this program still reads.
+const OLDEST_TABLE_VERSION: u16 = 1;
 /// How long the new binary gets to check the table. Every session's output is stopped meanwhile
 /// (a shell blocks once its pty buffer fills), so it is short; a healthy check takes milliseconds.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
@@ -112,7 +116,8 @@ pub struct Table {
 
 impl Table {
     /// Big-endian, like the rest of the wire: magic, version, listener, lock, count, then per
-    /// session id, pid, master, columns, rows, screen length and screen.
+    /// session id, pid, master, columns, rows, screen length and screen, and (from version 2) its
+    /// metadata as a count of length-prefixed key and value pairs.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = MAGIC.to_vec();
         out.extend_from_slice(&TABLE_VERSION.to_be_bytes());
@@ -127,6 +132,13 @@ impl Table {
             out.extend_from_slice(&session.rows.to_be_bytes());
             out.extend_from_slice(&(session.screen.len() as u32).to_be_bytes());
             out.extend_from_slice(&session.screen);
+            out.extend_from_slice(&(session.metadata.len() as u32).to_be_bytes());
+            for (key, value) in &session.metadata {
+                for text in [key, value] {
+                    out.extend_from_slice(&(text.len() as u32).to_be_bytes());
+                    out.extend_from_slice(text.as_bytes());
+                }
+            }
         }
         out
     }
@@ -137,7 +149,7 @@ impl Table {
             return Err("not a hand-off table".into());
         }
         let version = u16::from_be_bytes(reader.array()?);
-        if version != TABLE_VERSION {
+        if !(OLDEST_TABLE_VERSION..=TABLE_VERSION).contains(&version) {
             return Err(format!("hand-off table version {version} is not supported"));
         }
         let listener = i32::from_be_bytes(reader.array()?);
@@ -152,6 +164,20 @@ impl Table {
             let rows = u16::from_be_bytes(reader.array()?);
             let length = u32::from_be_bytes(reader.array()?) as usize;
             let screen = reader.take(length)?.to_vec();
+            let mut metadata = Vec::new();
+            if version >= 2 {
+                let entries = u32::from_be_bytes(reader.array()?);
+                for _ in 0..entries {
+                    let mut text = || -> Result<String, String> {
+                        let length = u32::from_be_bytes(reader.array()?) as usize;
+                        String::from_utf8(reader.take(length)?.to_vec())
+                            .map_err(|_| "hand-off table metadata is not UTF-8".to_string())
+                    };
+                    let key = text()?;
+                    let value = text()?;
+                    metadata.push((key, value));
+                }
+            }
             sessions.push(FrozenSession {
                 id,
                 pid,
@@ -159,6 +185,7 @@ impl Table {
                 columns,
                 rows,
                 screen,
+                metadata,
             });
         }
         if !reader.0.is_empty() {
@@ -537,6 +564,10 @@ mod tests {
                     columns: 120,
                     rows: 40,
                     screen: b"\x1b[2Jhello".to_vec(),
+                    metadata: vec![
+                        ("workroom".into(), "wr|/p|cyan".into()),
+                        ("created".into(), "1791130740000".into()),
+                    ],
                 },
                 FrozenSession {
                     id: SessionId([8; 16]),
@@ -545,6 +576,7 @@ mod tests {
                     columns: 80,
                     rows: 24,
                     screen: Vec::new(),
+                    metadata: Vec::new(),
                 },
             ],
         };
@@ -565,6 +597,7 @@ mod tests {
                 columns: 80,
                 rows: 24,
                 screen: b"on screen".to_vec(),
+                metadata: Vec::new(),
             }],
         };
         std::fs::write(&path, table.encode()).expect("table");
@@ -590,6 +623,7 @@ mod tests {
                 columns: 80,
                 rows: 24,
                 screen: b"screen".to_vec(),
+                metadata: Vec::new(),
             }],
         };
         let bytes = table.encode();
@@ -598,7 +632,44 @@ mod tests {
         longer.push(0);
         assert!(Table::decode(&longer).is_err());
         let mut newer = bytes;
-        newer[5] = 2;
+        newer[5] = 3;
         assert!(Table::decode(&newer).is_err());
+    }
+
+    /// A table written by an agent from before #255 (version 1, no metadata) is still adopted, so
+    /// upgrading a host keeps every shell; its sessions come over with no metadata (D6).
+    ///
+    /// The bytes are written out by hand, not by `encode`, which now writes version 2: a fixture an
+    /// encoder produces would move with the encoder and stop proving anything about old tables.
+    #[test]
+    fn a_version_1_table_from_an_older_agent_is_adopted_without_metadata() {
+        #[rustfmt::skip]
+        let version_1: &[u8] = &[
+            b'W', b'R', b'H', b'O', 0, 1,      // magic, version 1
+            0, 0, 0, 3, 0, 0, 0, 4,            // listener 3, lock 4
+            0, 0, 0, 1,                        // one session
+            7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, // id
+            0, 0, 0x10, 0x92,                  // pid 4242
+            0, 0, 0, 9,                        // master 9
+            0, 120, 0, 40,                     // 120 x 40
+            0, 0, 0, 5, b'h', b'e', b'l', b'l', b'o', // screen
+        ];
+        let table = Table::decode(version_1).expect("a version 1 table is read");
+        assert_eq!(
+            table,
+            Table {
+                listener: 3,
+                lock: 4,
+                sessions: vec![FrozenSession {
+                    id: SessionId([7; 16]),
+                    pid: 4242,
+                    master: 9,
+                    columns: 120,
+                    rows: 40,
+                    screen: b"hello".to_vec(),
+                    metadata: Vec::new(),
+                }],
+            }
+        );
     }
 }

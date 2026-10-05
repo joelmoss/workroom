@@ -507,6 +507,7 @@ fn dispatch(
                         cwd: request.cwd.as_deref(),
                         columns: request.columns,
                         rows: request.rows,
+                        metadata: &session_metadata(&request.env),
                     },
                     |_| attach(),
                 )
@@ -719,14 +720,17 @@ pub fn encode_descriptor_list(sessions: &[crate::session::SessionInfo]) -> Vec<u
         put_string(&mut out, info.cwd.as_deref().unwrap_or(""));
         out.push(u8::from(info.attached));
         // Metadata: the foreground command, under the key the app's own daemon uses for it, so a
-        // pane title resolves identically on either backend.
-        match &info.foreground {
-            Some(command) => {
-                out.extend_from_slice(&1u32.to_be_bytes());
-                put_string(&mut out, "command");
-                put_string(&mut out, command);
-            }
-            None => out.extend_from_slice(&0u32.to_be_bytes()),
+        // pane title resolves identically on either backend; then what the client said about the
+        // session, which is how the app finds a workroom's sessions (#255).
+        let entries = u32::from(info.foreground.is_some()) + info.metadata.len() as u32;
+        out.extend_from_slice(&entries.to_be_bytes());
+        if let Some(command) = &info.foreground {
+            put_string(&mut out, "command");
+            put_string(&mut out, command);
+        }
+        for (key, value) in &info.metadata {
+            put_string(&mut out, key);
+            put_string(&mut out, value);
         }
     }
     out
@@ -818,6 +822,49 @@ pub fn spawn_agent(binary: &Path, socket: &Path) -> std::io::Result<()> {
         });
     }
     command.spawn().map(|_| ())
+}
+
+/// The longest workroom id a session keeps (#255). A local workroom's id is `wr|<project>|<name>`,
+/// and a macOS path is at most 1024 bytes, so every real one fits. One past it drops the session's
+/// metadata rather than cutting an id that would then match the wrong workroom, or none.
+pub const MAX_WORKROOM_BYTES: usize = 2048;
+/// The longest title a session keeps, cut at a character boundary. Every session's metadata goes
+/// out in one list reply (`list_reply`), so one long title must not be able to fill it.
+pub const MAX_TITLE_BYTES: usize = 256;
+
+/// What the app said about a session it creates: its workroom and title, from the
+/// variables it puts in the attach command's environment (`PersistentSessionService.launchEnvironment`,
+/// mapped through `SessionMetadataKey.environmentVariables`), which the attach client forwards with
+/// the rest of its environment. Under the keys the app reads them back by (`SessionMetadataKey`).
+/// The app's `project` is not kept: nothing reads it, and it would double the list's worst case.
+///
+/// The shell never sees these (the create path drops `WORKROOM_SESSION_*` from its environment);
+/// before #255 they were dropped here too, so a deleted workroom's sessions were never found.
+pub fn session_metadata(env: &[(OsString, OsString)]) -> Vec<(String, String)> {
+    let get = |name: &str| {
+        env.iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.to_string_lossy().into_owned())
+            .filter(|value| !value.is_empty())
+    };
+    let mut metadata = Vec::new();
+    if let Some(workroom) = get("WORKROOM_SESSION_WORKROOM") {
+        if workroom.len() > MAX_WORKROOM_BYTES {
+            return Vec::new();
+        }
+        metadata.push(("workroom".to_string(), workroom));
+    }
+    if let Some(mut title) = get("WORKROOM_SESSION_TITLE") {
+        if title.len() > MAX_TITLE_BYTES {
+            let mut end = MAX_TITLE_BYTES;
+            while !title.is_char_boundary(end) {
+                end -= 1;
+            }
+            title.truncate(end);
+        }
+        metadata.push(("title".to_string(), title));
+    }
+    metadata
 }
 
 /// How a client asks for a session to exist: the id, plus what to run if it does not yet.
@@ -1031,6 +1078,7 @@ mod tests {
                 attached: true,
                 foreground: Some("nvim".into()),
                 cwd: Some("/work/room".into()),
+                metadata: Vec::new(),
             },
             SessionInfo {
                 id: SessionId([9u8; 16]),
@@ -1038,6 +1086,7 @@ mod tests {
                 attached: false,
                 foreground: None,
                 cwd: None,
+                metadata: Vec::new(),
             },
         ];
         let decoded = decode_descriptor_list(&encode_descriptor_list(&sessions));
@@ -1062,6 +1111,7 @@ mod tests {
             attached: true,
             foreground: None,
             cwd: None,
+            metadata: Vec::new(),
         }]);
         assert_eq!(&bytes[..4], &[0, 0, 0, 1], "count is a big-endian u32");
         assert_eq!(&bytes[4..20], &[1u8; 16], "then the 16-byte identifier");
@@ -1119,6 +1169,99 @@ mod tests {
         assert_eq!(sent(vec![0u8; MAX_PAYLOAD_SIZE + 1]), FrameKind::Failure);
     }
 
+    fn env(entries: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        entries
+            .iter()
+            .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+            .collect()
+    }
+
+    /// The app's metadata variables become the session's metadata, under the keys the app reads
+    /// them back by (`SessionMetadataKey`); everything else in the client's environment, the app's
+    /// unread `project` included, is not metadata (#255).
+    #[test]
+    fn a_sessions_metadata_comes_from_the_apps_variables() {
+        let metadata = session_metadata(&env(&[
+            ("PATH", "/bin"),
+            ("WORKROOM_SESSION_ID", "ignored"),
+            ("WORKROOM_SESSION_PROJECT", "/Users/me/dev/app"),
+            (
+                "WORKROOM_SESSION_WORKROOM",
+                "wr|/Users/me/dev/app|cyan-brush",
+            ),
+            ("WORKROOM_SESSION_TITLE", "Terminal 2"),
+            ("WORKROOM_SESSION_TAB", "dead"),
+        ]));
+        assert_eq!(
+            metadata,
+            vec![
+                (
+                    "workroom".to_string(),
+                    "wr|/Users/me/dev/app|cyan-brush".to_string()
+                ),
+                ("title".to_string(), "Terminal 2".to_string()),
+            ]
+        );
+        assert!(session_metadata(&env(&[("WORKROOM_SESSION_WORKROOM", "")])).is_empty());
+    }
+
+    /// A local workroom id holds the whole project path, so it can be long and must still be kept;
+    /// one past the bound drops the metadata whole rather than keep a cut id (D8).
+    #[test]
+    fn a_long_workroom_id_is_kept_and_one_past_the_bound_drops_the_metadata() {
+        let long = format!("wr|/{}|cyan", "p".repeat(1100));
+        let kept = session_metadata(&env(&[
+            ("WORKROOM_SESSION_WORKROOM", &long),
+            ("WORKROOM_SESSION_TITLE", "Terminal 1"),
+        ]));
+        assert_eq!(kept[0], ("workroom".to_string(), long));
+
+        let over = "w".repeat(MAX_WORKROOM_BYTES + 1);
+        assert!(session_metadata(&env(&[
+            ("WORKROOM_SESSION_WORKROOM", &over),
+            ("WORKROOM_SESSION_TITLE", "Terminal 1"),
+        ]))
+        .is_empty());
+    }
+
+    /// A title is cut to `MAX_TITLE_BYTES` at a character boundary, never mid-character.
+    #[test]
+    fn a_long_title_is_cut_at_a_character_boundary() {
+        // Three bytes each, so 256 falls inside one.
+        let title = "€".repeat(10 * 1024);
+        let metadata = session_metadata(&env(&[("WORKROOM_SESSION_TITLE", &title)]));
+        let (key, cut) = &metadata[0];
+        assert_eq!(key, "title");
+        assert!(cut.len() <= MAX_TITLE_BYTES && cut.len() > MAX_TITLE_BYTES - 3);
+        assert!(cut.chars().all(|c| c == '€'));
+    }
+
+    /// With every field at its bound, hundreds of sessions still fit one list reply, so no title or
+    /// workroom id can turn the whole list into a `Failure` (D8).
+    #[test]
+    fn many_sessions_at_the_metadata_bounds_still_list() {
+        use crate::session::SessionInfo;
+        let metadata = vec![
+            ("workroom".to_string(), "w".repeat(MAX_WORKROOM_BYTES)),
+            ("title".to_string(), "t".repeat(MAX_TITLE_BYTES)),
+            ("created".to_string(), u64::MAX.to_string()),
+        ];
+        let sessions: Vec<SessionInfo> = (0..250u8)
+            .map(|n| SessionInfo {
+                id: SessionId([n; 16]),
+                pid: 1,
+                attached: false,
+                foreground: Some("nvim".into()),
+                cwd: Some("c".repeat(1024)),
+                metadata: metadata.clone(),
+            })
+            .collect();
+        assert_eq!(
+            list_reply(encode_descriptor_list(&sessions)).kind,
+            FrameKind::Sessions
+        );
+    }
+
     #[test]
     fn an_empty_descriptor_list_is_just_a_zero_count() {
         assert_eq!(encode_descriptor_list(&[]), vec![0, 0, 0, 0]);
@@ -1134,6 +1277,7 @@ mod tests {
             attached: true,
             foreground: None,
             cwd: None,
+            metadata: Vec::new(),
         }]);
         // Cut mid-descriptor: no panic, no phantom entry.
         assert!(decode_descriptor_list(&full[..20]).is_empty());
