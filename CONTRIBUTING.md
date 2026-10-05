@@ -467,6 +467,11 @@ and every PR against either:
   CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM=
   ```
 
+  It also runs the few Rust tests that only mean something on macOS: `wr-agent`'s `pty::tests`
+  and its stale-socket relay tests. macOS sets a new socket's close-on-exec flag in a second call,
+  and those tests cover what a child spawned in between inherits. Everything else in Rust stays on
+  the `rust` job.
+
 ### Cutting a release
 
 Releases are **tag-driven**. Push a `v*` tag and `.github/workflows/release.yml` does the rest:
