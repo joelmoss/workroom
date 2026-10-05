@@ -138,7 +138,11 @@ deferred (2026-10-05). None loses data from a single window.
 4. **A dev build can pin a host to a dev agent.** The build number is the commit time (T5, not the
    commit count D13 named; neither orders across branches). A dev build committed after a release
    makes `AgentBootstrap` keep that dev agent on a host (`.keptNewer`) and hand-off refuse the
-   release until a later release ships. Fix: decide whether release and dev builds number apart.
+   release until a later release ships. Equal numbers are common between dev builds: 500 of 1225
+   master commits share a commit second with another (a rebase stamps one time), though none of
+   the 35 release tags do. Equal numbers push as before #255 (D13), so two Macs on two commits of
+   one rebased stack can still swap a host's agent (Codex on #349). Fix: decide whether release
+   and dev builds number apart, and whether equal numbers need a tie-break.
 
 **Why:** Each is rare (two windows on one remote workroom, an offline close, a dev build on a
 shared host), and the PR was already 4.2k lines.
