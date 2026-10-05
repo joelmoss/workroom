@@ -2300,7 +2300,7 @@ final class AppStore: ObservableObject {
   func startRunCommand(for target: TerminalTarget, focus: Bool = false) {
     guard !target.isMissing, let project = project(forTarget: target) else { return }
     if hostLayouts.fetching.contains(target.id) {
-      return whenHostLayoutRestored(target.id) { [weak self] in
+      return whenHostLayoutRestored(target) { [weak self] target in
         self?.startRunCommand(for: target, focus: focus)
       }
     }
@@ -4563,7 +4563,8 @@ final class AppStore: ObservableObject {
     guard let target = selectedTarget else { return }
     let diff = DiffDescriptor(
       path: file.path, change: file.change, source: source, isPreview: true)
-    whenHostLayoutRestored(target.id) { [terminals] in terminals.openDiffPreview(diff, for: target)
+    whenHostLayoutRestored(target) { [terminals] target in
+      terminals.openDiffPreview(diff, for: target)
     }
   }
 
@@ -4573,7 +4574,7 @@ final class AppStore: ObservableObject {
     guard let target = selectedTarget else { return }
     let diff = DiffDescriptor(
       path: file.path, change: file.change, source: source, isPreview: false)
-    whenHostLayoutRestored(target.id) { [terminals] in
+    whenHostLayoutRestored(target) { [terminals] target in
       terminals.openDiffPersistent(diff, for: target)
     }
   }
@@ -4597,7 +4598,7 @@ final class AppStore: ObservableObject {
   /// non-focused workroom's diff pane opened the file into the *other* workroom's tab strip. A pane's
   /// own controls must act on that pane's target, which is the whole point of moving them there.
   func openFilePreview(path: String, for target: TerminalTarget) {
-    whenHostLayoutRestored(target.id) { [terminals] in
+    whenHostLayoutRestored(target) { [terminals] target in
       terminals.openFilePreview(FileDescriptor(path: path, isPreview: true), for: target)
     }
   }
@@ -4606,7 +4607,7 @@ final class AppStore: ObservableObject {
   /// nothing's selected.
   func openFilePersistent(path: String) {
     guard let target = selectedTarget else { return }
-    whenHostLayoutRestored(target.id) { [terminals] in
+    whenHostLayoutRestored(target) { [terminals] target in
       terminals.openFilePersistent(FileDescriptor(path: path, isPreview: false), for: target)
     }
   }
@@ -4617,7 +4618,7 @@ final class AppStore: ObservableObject {
   func openChangesetPreview(commitID: String, title: String) {
     guard let target = selectedTarget else { return }
     let changeset = ChangesetDescriptor(commitID: commitID, title: title, isPreview: true)
-    whenHostLayoutRestored(target.id) { [terminals] in
+    whenHostLayoutRestored(target) { [terminals] target in
       terminals.openContentPreview(changeset, for: target)
     }
   }
@@ -4627,7 +4628,7 @@ final class AppStore: ObservableObject {
   func openChangesetPersistent(commitID: String, title: String) {
     guard let target = selectedTarget else { return }
     let changeset = ChangesetDescriptor(commitID: commitID, title: title, isPreview: false)
-    whenHostLayoutRestored(target.id) { [terminals] in
+    whenHostLayoutRestored(target) { [terminals] target in
       terminals.openContentPersistent(changeset, for: target)
     }
   }

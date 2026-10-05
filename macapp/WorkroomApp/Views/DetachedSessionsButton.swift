@@ -77,7 +77,7 @@ struct DetachedSessionsButton: View {
 
   private func openNew(_ session: SessionDescriptor) {
     guard let id = session.identifier.uuid else { return }
-    store.whenHostLayoutRestored(target.id) { [terminals = store.terminals] in
+    store.whenHostLayoutRestored(target) { [terminals = store.terminals] target in
       _ = terminals.addTab(for: target, sessionID: id)
     }
     showing = false
