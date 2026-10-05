@@ -187,6 +187,21 @@ final class HostLayoutSyncTests: XCTestCase {
     XCTAssertEqual(host.puts, 0)
   }
 
+  /// A write refused because another Mac wrote first never retries over a newer build's layout
+  /// (D5): the layout that beat it is read before the retry.
+  func testARetryNeverOverwritesANewerBuildsLayout() async {
+    let host = FakeHost()
+    host.seed(key, revision: 1, blob: try! HostLayout.encode(layout("theirs"), key: key))
+    host.beforePut = {
+      $0.seed(self.key, revision: 2, blob: #"{"schemaVersion": 99, "target": {}}"#)
+    }
+    let written = await HostLayoutSync.write(layout("mine"), key: key, expected: 1, store: host)
+    XCTAssertTrue(written.readOnly)
+    XCTAssertEqual(host.puts, 1)
+    let kept = try? await host.get(key)
+    XCTAssertEqual(kept?.revision, 2)
+  }
+
   /// One attempt: a refusal is final, at the revision this Mac had, not retried past (a Mac that
   /// never read the host's layout this launch).
   func testASingleAttemptWriteIsNeverRetriedPastARefusal() async {

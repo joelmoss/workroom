@@ -661,6 +661,22 @@ final class SessionRestoreTests: XCTestCase {
     await AppStore.flushHostLayouts(budget: 0.2, stores: [store])
     XCTAssertTrue(store.hostLayouts.stale.contains(id))
     inFlight.cancel()
+    store.hostLayouts.writing[id] = nil
+
+    // One that finished, with a newer change behind it that the budget ran out before sending, is
+    // marked stale too: its revision is the host's, so unmarked it would read as already there.
+    store.hostLayouts.stale.remove(id)
+    store.hostLayouts.written[id] = "the snapshot that just landed"
+    store.hostLayouts.writing[id] = Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 50_000_000)
+      store.hostLayouts.writing[id] = nil
+    }
+    let elsewhere = Task<Void, Never> { try? await Task.sleep(nanoseconds: 5_000_000_000) }
+    store.hostLayouts.writing["another workroom"] = elsewhere
+    await AppStore.flushHostLayouts(budget: 0.2, stores: [store])
+    XCTAssertNil(store.hostLayouts.writing[id])
+    XCTAssertTrue(store.hostLayouts.stale.contains(id))
+    elsewhere.cancel()
   }
 
   /// A copy restored because its host did not answer is what the host had, as far as this Mac
@@ -696,6 +712,55 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertNotNil(store.hostLayouts.written[id])
     XCTAssertEqual(store.hostLayouts.revisions[id], 4)
     XCTAssertTrue(store.writeHostLayouts().isEmpty, "an unchanged copy written back")
+  }
+
+  /// A stale copy whose host did not answer stays marked stale, to win at the next open where the
+  /// host's layout is read first, but meanwhile it too writes only once, at the revision this Mac
+  /// last saw: the host's layout was not read, and could be a newer build's.
+  func testAStaleCopyWhoseHostDidNotAnswerNeverRetriesOverIt() async throws {
+    final class MovedHost: HostLayoutStore, @unchecked Sendable {
+      var puts = 0
+      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 9, blob: nil) }
+      func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
+        puts += 1
+        guard expected == 9 else { throw AgentLayoutError.stale(revision: 9) }
+        return 10
+      }
+    }
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
+    let workroom = Workroom(
+      name: "s", path: "/home/workroom/s", vcsName: "workroom/s", warnings: [],
+      host: HostDescriptor(
+        provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: UUID()))
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    store.projects = [Project(path: "/proj", vcs: "git", workrooms: [workroom])]
+    let id = TerminalTarget.workroomID(project: "/proj", name: "s")
+    var saved = TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")])
+    saved.hostRevision = 4
+    saved.hostLayoutStale = true
+    store.pendingSessionRestore = WindowSession(windowKey: UUID().uuidString, targets: [saved])
+    store.restorePersistedSessionIfPending(in: store.projects)
+    let restored = expectation(description: "restored")
+    func poll() {
+      if store.terminals.tabCount(forTargetID: id) > 0 { return restored.fulfill() }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: poll)
+    }
+    poll()
+    await fulfillment(of: [restored], timeout: AppStore.hostLayoutTimeout + 3)
+    XCTAssertTrue(store.hostLayouts.unanswered.contains(id))
+    XCTAssertTrue(store.hostLayouts.stale.contains(id))
+
+    let host = MovedHost()
+    let saved2 = AppStore.hostLayoutStore
+    AppStore.hostLayoutStore = { _ in host }
+    defer { AppStore.hostLayoutStore = saved2 }
+    for write in store.writeHostLayouts() { await write.value }
+    XCTAssertEqual(host.puts, 1, "retried past the refusal")
+    XCTAssertTrue(store.hostLayouts.stale.contains(id), "no longer wins at the next open")
   }
 
   /// A workroom whose host never answered this launch writes at the revision this Mac last saw,

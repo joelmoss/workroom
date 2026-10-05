@@ -108,6 +108,13 @@ enum HostLayoutSync {
         let revision = try await store.put(key, expected: expected, blob: blob)
         return HostLayoutResolution(session: held, revision: revision)
       } catch AgentLayoutError.stale(let current) {
+        // Another Mac wrote first. A newer build's layout is never written over (D5), whoever
+        // reads it first.
+        if let answer = try? await store.get(key), let blob = answer.blob,
+          HostLayout.decode(blob, targetID: held.targetID) == .newer
+        {
+          return HostLayoutResolution(session: held, revision: answer.revision, readOnly: true)
+        }
         expected = current
       } catch {
         logger.error("Host refused workroom \(key, privacy: .public)'s layout: \(error)")
