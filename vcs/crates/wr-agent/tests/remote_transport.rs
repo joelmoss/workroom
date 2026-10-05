@@ -1290,25 +1290,7 @@ fn a_relay_with_no_agent_fails_fast_and_says_so() {
 #[test]
 fn a_stale_socket_stays_stale_while_children_are_spawned() {
     let scratch = Scratch::new("stale-fixture");
-    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let spawner = {
-        let stop = stop.clone();
-        std::thread::spawn(move || {
-            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let child = Command::new("/bin/sleep")
-                    .arg("0.05")
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn();
-                if let Ok(mut child) = child {
-                    std::thread::spawn(move || {
-                        let _ = child.wait();
-                    });
-                }
-            }
-        })
-    };
+    let load = SpawnLoad::start();
     let socket = scratch.0.join("stale.sock");
     let mut connected = 0;
     for _ in 0..1000 {
@@ -1318,12 +1300,69 @@ fn a_stale_socket_stays_stale_while_children_are_spawned() {
             connected += 1;
         }
     }
-    stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    spawner.join().expect("spawner");
+    let spawned = load.finish();
+    assert!(spawned > 0, "no child was spawned, so nothing was tested");
     assert_eq!(
         connected, 0,
         "connected to a stale socket {connected} times in 1000"
     );
+}
+
+/// Short-lived children spawned in a loop on another thread, for as long as a test needs that load.
+/// Dropping it, panic or not, stops the loop and waits for every child, so none outlives the test
+/// holding descriptors it inherited from another one.
+struct SpawnLoad {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<usize>>,
+}
+
+impl SpawnLoad {
+    fn start() -> SpawnLoad {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut running: Vec<Child> = Vec::new();
+                let mut spawned = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let child = Command::new("/bin/sleep")
+                        .arg("0.05")
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .expect("spawn sleep");
+                    spawned += 1;
+                    running.push(child);
+                    running.retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
+                }
+                for mut child in running {
+                    let _ = child.wait();
+                }
+                spawned
+            })
+        };
+        SpawnLoad {
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    /// Stops the load, waits for its children, and says how many it spawned.
+    fn finish(mut self) -> usize {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let thread = self.thread.take().expect("finished once");
+        thread.join().expect("the spawning thread panicked")
+    }
+}
+
+impl Drop for SpawnLoad {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// A tty, or an exec channel that is one socket, hands the relay ONE open file as both stdin and
