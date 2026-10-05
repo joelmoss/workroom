@@ -601,6 +601,21 @@ final class AgentPortForwardingTests: XCTestCase {
     XCTAssertTrue(
       detail.lowercased().contains("refused"), "expected a connect refusal, got \(detail)")
   }
+
+  /// The fixture, not the app: a test that stops an `EchoServer` by hand is stopped again by
+  /// `tearDown`, and that second stop must not close the descriptor that has reused the number.
+  func testStoppingAnEchoServerTwiceLeavesTheNumberToItsNewOwner() throws {
+    let echo = try EchoServer()
+    let number = echo.listener
+    echo.stop()
+    // The lowest free number, which is almost always the one just released.
+    let reused = open("/dev/null", O_RDONLY)
+    defer { Darwin.close(reused) }
+    try XCTSkipUnless(reused == number, "another thread took descriptor \(number) first")
+
+    echo.stop()
+    XCTAssertNotEqual(fcntl(reused, F_GETFD), -1, "the second stop closed descriptor \(reused)")
+  }
 }
 
 /// The model behind the Ports row, against a scripted agent and a connection stream the test
@@ -1079,7 +1094,9 @@ final class Failures: @unchecked Sendable {
 /// A loopback TCP echo server: echoes until its peer half-closes, then half-closes back.
 final class EchoServer: @unchecked Sendable {
   let port: UInt16
-  private let listener: Int32
+  let listener: Int32
+  private let lock = NSLock()
+  private var stopped = false
 
   init() throws {
     let listener = socket(AF_INET, SOCK_STREAM, 0)
@@ -1136,7 +1153,20 @@ final class EchoServer: @unchecked Sendable {
     }
   }
 
-  func stop() { Darwin.close(listener) }
+  /// Idempotent, like `TCPClient.close()`. A test that stops its server by hand is stopped again by
+  /// `tearDown`, and a second `close` lands on whatever reused the number since. In
+  /// `ReverseForwardTests` that was `AgentHarness`'s `agent.err` file handle (measured), which
+  /// closes the number again when it deallocates, whoever holds it by then. Stray closes like that
+  /// are the suspected cause of the guarded-descriptor `EXC_GUARD` kills in later tests.
+  func stop() {
+    let already = lock.withLock { () -> Bool in
+      if stopped { return true }
+      stopped = true
+      return false
+    }
+    guard !already else { return }
+    Darwin.close(listener)
+  }
 }
 
 /// A loopback TCP client for the tests, with timeouts so a broken forward fails rather than hangs.
