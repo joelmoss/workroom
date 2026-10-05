@@ -289,8 +289,9 @@ pub fn hand_off(
     // A file lookup left behind at its deadline (#334) holds no permit, so `Quiet` doesn't wait for
     // it, but the exec would: `execve` waits for every other thread to die, and one stuck in a FUSE
     // request can't. The exec would then freeze every session on the host. Race-free: with `Quiet`
-    // held no request starts, and a resolve or read still waiting holds a permit, so the count can only
-    // fall from here. No timeout on this refusal: a timeout is what would let the exec through.
+    // held no request starts, and a resolve or read still waiting holds a permit, so the count can
+    // only fall from here. No timeout on this refusal: a timeout is what would let the exec
+    // through.
     if crate::file::filesystem_operations_left_behind() > 0 {
         return Err(
             "a filesystem operation is still stuck on a mount; try again when it returns".into(),
