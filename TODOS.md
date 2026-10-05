@@ -7,68 +7,6 @@
 
 ## P0 — before the next release
 
-### A test-host process was killed for closing a guarded file descriptor (macapp) — #327 ship follow-up
-
-**Status (2026-10-05):** a cause is found and fixed in the test fixture `EchoServer`. The fix does not yet prove
-that this was the only cause, so the entry stays open until another double close is ruled out (see Left to do).
-
-**What:** Test workers were killed by `EXC_GUARD` (`GUARD_TYPE_FD`): a `FileHandle` closed a number it
-believed it owned and found a guarded descriptor there. Two confirmed kills, one local and one on CI,
-and two CI failures with no `EXC_GUARD` that are suspected to be related:
-- **Local, 2026-10-04.** On `workroom/cyan-brush`, pid 69069, "CLOSE on file descriptor 25 (guarded with
-  0x08fd4dbfade2dead)". The kill landed in `VCSProviderConformanceTests.testCommitRenameIsOneRow`, in
-  `-[NSConcreteFileHandle dealloc]` for the `Pipe` of its `sh` helper (`VCSProviderConformanceTests.swift:424`).
-- **CI, confirmed.** Run 37334065057 (`882f26da`, PR #349), worker pid 11367, killed at the start of
-  `VCSRemoteIntegrationTests.testBehindIsCountedAfterTheRemoteMovesOn`. That test's `sh` helper also
-  uses a `Pipe`. The run's system log has ReportCrash's `EXC_GUARD code zero: 0x8` just after the kill.
-- **CI, suspected (no `EXC_GUARD`).** Runs 37305530197 (`352e64df`) and 37315259406 (`a14a416e`):
-  `PortForwardingModelTests.testAForwardIsDroppedWhenItsLeaseIsNoLongerTheConnectedOne` failed during
-  setup with "Host connection lost". There was no `EXC_GUARD`, but a connection whose descriptor was
-  closed under it fails exactly this way.
-
-**Cause found:** `EchoServer.stop()` (`AgentPortForwardingTests.swift`) was a bare `close(listener)`, and
-`ReverseForwardTests` called it twice: once by hand, and again from `tearDown`. This happened in
-`testAnUnreachableTargetEndsTheConnectionAtOnce` and `testAnOpenAfterTheTargetMovesCarriesToTheNewTarget`.
-The second close landed on whatever had reused the number. Measured by logging the descriptor before the
-second close: it was `/private/tmp/wra-*/agent.err`, the stderr `FileHandle` of `AgentHarness`'s agent
-process, a regular file that was not the echo listener. The close succeeded. That file handle closes its
-number again when it deallocates, whoever holds the number by then. Each owner it robs does the same
-when it closes, so one extra close moves from owner to owner. It ends when it lands on a free number
-(a harmless `EBADF`) or on a guarded one (`EXC_GUARD`). In all three CI runs, `ReverseForwardTests` ran
-earlier in the same worker as the failing test (`scheduling.log` in the xcresult diagnostics). The chain
-from the first stray close to the crash 20 classes later is inferred, not traced.
-
-**Fix (2026-10-05):** `EchoServer.stop()` is idempotent under a lock, like
-`TCPClient.close()`. `testStoppingAnEchoServerTwiceLeavesTheNumberToItsNewOwner` stops one twice
-with a descriptor parked on the freed number. It fails without the guard ("the second stop closed
-descriptor 13") and passes with it.
-
-**Ruled out:** `FakeAgent.stop()` (`AgentFileIntegrationTests.swift`) closes its listener and clients
-while its threads may still use them. A C probe shows that on macOS, closing a descriptor wakes a thread
-blocked on it: `accept` fails `EINVAL` and `recv` fails `EBADF`. So it can only misbehave in the short
-window when a thread is between calls, and no test stops a `FakeAgent` twice. The app's own descriptor
-owners (`AgentVCSConnection`, `HostStream`, `PortForward`, `ForwardedConnection`) close once, by
-documented design.
-
-**Left to do:** prove there is no other double close in the suite. A full-suite `close()` trace was tried
-on 2026-10-05 and could not run. A dylib interposing `close` (`__DATA,__interpose`, logging any close
-that fails `EBADF`) was injected with
-`TEST_RUNNER_DYLD_INSERT_LIBRARIES=<dylib> make app-test APP_SIGN_FLAGS="ENABLE_HARDENED_RUNTIME=NO"`.
-Hardened runtime makes dyld ignore the variable, hence the flag. With the dylib, the test host hangs
-before connecting ("The test runner hung before establishing connection"), even for one class and even
-with a lock-free variant that only formats raw addresses. The same build without the dylib runs. The
-cause of the hang is not known. Other routes: interpose inside the test bundle with a fishhook-style
-rebind, or run the suite repeatedly in one worker (`-parallel-testing-enabled NO`) and watch for any
-`EXC_GUARD`. Close this entry once one of them comes back clean.
-
-**How to measure it again:**
-- *CI crash evidence:* `gh run download <run> -n xcresult-ci`, then
-  `xcrun xcresulttool export diagnostics --path <xcresult> --output-path <dir>`, then
-  `/usr/bin/log show --archive <dir>/**/*.logarchive --predicate 'eventMessage CONTAINS[c] "EXC_GUARD"'`.
-  The diagnostics' `scheduling.log` lists which classes each worker pid ran, in order.
-
-**Priority:** P0 (chosen at ship time on #327)
-
 ### `ReverseForwardTests.testAReconnectWhileTheOldListenerHoldsThePortReopensOnceItLetsGo` is flaky (macapp) — #327 ship follow-up
 
 **What:** The test fails about 1 run in 5. Measured 2026-10-04 with `make app-test
@@ -4112,6 +4050,36 @@ error) is one of the hardest to diagnose from a bug report.
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-10-05 — the guarded-descriptor `EXC_GUARD` kills of test workers: a test fixture closed a
+descriptor twice (#350).** Test workers were killed by `EXC_GUARD` (`GUARD_TYPE_FD`): once locally in
+`VCSProviderConformanceTests` (2026-10-04) and once on CI in `VCSRemoteIntegrationTests` (run 37334065057,
+PR #349). Each time, a `Pipe`'s `FileHandle` closed a number it believed it owned and found a guarded
+descriptor there. Two `PortForwardingModelTests` "Host connection lost" failures on #349's CI had no
+`EXC_GUARD` and are only suspected to be related. The cause: `ReverseForwardTests` stopped an
+`EchoServer` by hand, and `tearDown` stopped it again. `EchoServer.stop()` was a bare `close(listener)`,
+so the second call closed whatever had reused the number. Measured with `fcntl(F_GETPATH)` just before
+the second close: it was `AgentHarness`'s `agent.err` file handle. That handle closes the number again
+when it deallocates, so one extra close passes from owner to owner until it lands on a free number or
+a guarded one. In all three failing CI runs, `ReverseForwardTests` ran earlier in the same worker. The
+chain to each crash is inferred, not traced. `stop()` is now idempotent, like `TCPClient.close()`.
+Closed after three clean serial `make app-test` runs (`-parallel-testing-enabled NO`, 3257 tests each),
+with no Workroom crash report and no descriptor `EXC_GUARD` in the system log. That cannot rule out a
+second, rarer double close, so reopen this if the kill comes back. **Traps.**
+- A second `close` of a raw descriptor is not a harmless `EBADF`: the number is usually reused at once,
+  so it closes someone else's file. Any fixture whose `stop()` is a raw `close` must be idempotent.
+- On macOS, closing a descriptor wakes a thread blocked on it: `accept` fails `EINVAL` and `recv` fails
+  `EBADF` (C probe). So `FakeAgent.stop()`, which closes while its threads may use the sockets, can only
+  misbehave in the gap when a thread is between calls. It was not the cause.
+- A `close()` interposer injected with `TEST_RUNNER_DYLD_INSERT_LIBRARIES` (and
+  `ENABLE_HARDENED_RUNTIME=NO`, without which dyld ignores it) hangs the test host before it connects,
+  even for one class. The same build without it runs. Cause unknown.
+- To find what ran before a CI crash: `gh run download <run> -n xcresult-ci`, then
+  `xcrun xcresulttool export diagnostics`. The diagnostics' `scheduling.log` lists each worker pid's
+  classes in order, and its `.logarchive` holds ReportCrash's `EXC_GUARD` line.
+- The system log is full of unrelated `EXC_GUARD`s: menu-bar apps, and WebKit's GPU and Networking
+  helpers once per run. Those are `type=0x1` (Mach port). A descriptor guard is `GUARD_TYPE_FD`, `0x2`;
+  filter for the test host's process.
 
 **2026-09-22 — the wakefulness net signal no longer counts container bridges.** `parse_net_dev` took
 every interface but `lo`, so a container's traffic was counted on its veth, its bridge, and again on the
