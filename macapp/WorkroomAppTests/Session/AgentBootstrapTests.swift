@@ -235,6 +235,15 @@ final class AgentBootstrapTests: XCTestCase {
         architecture: "aarch64", pushed: false,
         agent: .keptNewer("the host runs build 200, newer than this app's 100")))
     XCTAssertEqual(driver.commands.count, 1, "nothing was pushed")
+
+    // Nor its terminfo and shell integration, which the newer agent's panes share.
+    let withResources = StubDriver([probe(installed: String(repeating: "0", count: 64), build: 200)]
+    )
+    let kept = try await ensure(
+      withResources, agent: { $0 == "aarch64" ? agent : nil },
+      resources: try XCTUnwrap(GhosttyResources.bundledURL))
+    XCTAssertEqual(kept.resources, .notPushed("the host runs a newer build"))
+    XCTAssertEqual(withResources.commands.count, 1, "the resource set was pushed")
   }
 
   /// An older build, the same build under another hash (a dev build), or an agent that predates
