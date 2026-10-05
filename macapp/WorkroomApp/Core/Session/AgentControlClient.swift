@@ -40,7 +40,7 @@ struct AgentControlClient: SessionControlPlane {
   /// Matches `PROTOCOL_VERSION` in the agent's `protocol::envelope`. Bumped together. `negotiate`
   /// on the agent side takes the lower of the two sides' versions for Terminal/Control, so
   /// advertising a newer version here never breaks talking to an older agent left running.
-  static let protocolVersion: UInt16 = 6
+  static let protocolVersion: UInt16 = 7
   /// `MIN_VCS_VERSION` and `MIN_FILE_VERSION` in the agent's `protocol::envelope`: the first peer
   /// versions that understand `Service::Vcs` and `Service::File`. Each is checked against a peer's RAW
   /// greeting version before that service's first envelope — never folded into the negotiated minimum,
@@ -53,6 +53,9 @@ struct AgentControlClient: SessionControlPlane {
   /// `MIN_FORWARD_VERSION`: the first peer version that answers `Service::Forward` (issue #208). A
   /// protocol-4 agent drops a Forward envelope without answering, so it is never sent one.
   static let minForwardVersion: UInt16 = 5
+  /// `MIN_LAYOUT_VERSION`: the first peer version that answers `Service::Layout` (#255). A
+  /// protocol-6 agent drops a Layout envelope without answering, so it is never sent one.
+  static let minLayoutVersion: UInt16 = 7
   static let magic: [UInt8] = Array("WRA1".utf8)
 
   enum Service: UInt8 {

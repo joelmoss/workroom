@@ -364,11 +364,12 @@ final class AgentVCSProtocolTests: XCTestCase {
   /// second language. Checked against the shipped binary's own report so a bump on one side alone
   /// fails here rather than as a dead File, Status or Forward service.
   func testTheClientsProtocolConstantsMatchTheShippedAgent() throws {
-    XCTAssertEqual(AgentControlClient.protocolVersion, 6)
+    XCTAssertEqual(AgentControlClient.protocolVersion, 7)
     XCTAssertEqual(AgentControlClient.minVCSVersion, 2)
     XCTAssertEqual(AgentControlClient.minFileVersion, 3)
     XCTAssertEqual(AgentControlClient.minStatusVersion, 4)
     XCTAssertEqual(AgentControlClient.minForwardVersion, 5)
+    XCTAssertEqual(AgentControlClient.minLayoutVersion, 7)
     let process = Process()
     process.executableURL = try AgentHarness.binaryURL()
     process.arguments = ["protocol"]
@@ -393,6 +394,7 @@ final class AgentVCSProtocolTests: XCTestCase {
     XCTAssertEqual(reported("min-file"), AgentControlClient.minFileVersion, output)
     XCTAssertEqual(reported("min-status"), AgentControlClient.minStatusVersion, output)
     XCTAssertEqual(reported("min-forward"), AgentControlClient.minForwardVersion, output)
+    XCTAssertEqual(reported("min-layout"), AgentControlClient.minLayoutVersion, output)
   }
 
   /// Every failure the agent's `FileError` can produce keeps its meaning across the wire.
