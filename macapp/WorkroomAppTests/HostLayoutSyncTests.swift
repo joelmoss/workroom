@@ -223,6 +223,26 @@ final class HostLayoutSyncTests: XCTestCase {
     XCTAssertEqual(other.puts, 1)
   }
 
+  /// A retry whose read of the layout that beat it fails is not made: that layout could be a newer
+  /// build's.
+  func testARetryIsNotMadeWhenTheLayoutThatBeatItCannotBeRead() async {
+    final class Unreadable: HostLayoutStore, @unchecked Sendable {
+      var puts = 0
+      func get(_ key: String) async throws -> AgentLayout {
+        throw AgentLayoutError.failed("no request slot")
+      }
+      func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
+        puts += 1
+        guard expected == 2 else { throw AgentLayoutError.stale(revision: 2) }
+        return 3
+      }
+    }
+    let host = Unreadable()
+    let written = await HostLayoutSync.write(layout("mine"), key: key, expected: 1, store: host)
+    XCTAssertTrue(written.stale)
+    XCTAssertEqual(host.puts, 1)
+  }
+
   /// One attempt: a refusal is final, at the revision this Mac had, not retried past (a Mac that
   /// never read the host's layout this launch).
   func testASingleAttemptWriteIsNeverRetriedPastARefusal() async {
