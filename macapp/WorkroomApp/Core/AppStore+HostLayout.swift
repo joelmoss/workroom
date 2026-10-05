@@ -108,7 +108,8 @@ extension AppStore {
       } catch {
         outcome = .failure(error)
       }
-      self?.applyHostLayout(outcome, for: targetID, held: held, key: key)
+      self?.applyHostLayout(
+        outcome, for: targetID, host: host, workroom: workroom, held: held, key: key)
     }
     return true
   }
@@ -117,14 +118,23 @@ extension AppStore {
   /// answer in time, has no Layout service, or keeps no layouts, then opens what was held meanwhile.
   private func applyHostLayout(
     _ outcome: Result<(HostLayoutResolution, [SessionDescriptor]), Error>,
-    for targetID: TerminalTarget.ID, held: TargetSession?, key: String
+    for targetID: TerminalTarget.ID, host: UUID, workroom: UUID, held: TargetSession?, key: String
   ) {
     hostLayouts.fetching.remove(targetID)
     waitingForHostLayout.remove(targetID)
-    hostLayouts.fetched.insert(targetID)
     let heldOpens = hostLayouts.heldOpens.removeValue(forKey: targetID) ?? []
     hostLayouts.heldNewTerminal.remove(targetID)
-    guard let target = terminalTarget(forID: targetID) else { return }
+    // A reload while the host was asked can destroy the workroom's host (`remoteHost` is then
+    // nil) or give it another: an answer from the one asked is not the workroom's now. Nothing of
+    // it is applied, what was opened meanwhile was for a workroom that has gone, and this Mac's
+    // copy stays held, to be restored or asked for again as the workroom now is.
+    guard let target = terminalTarget(forID: targetID), target.remoteHost == host,
+      target.remoteWorkroomID == workroom
+    else {
+      hostLayouts.waitingForFirstTab.remove(targetID)
+      return
+    }
+    hostLayouts.fetched.insert(targetID)
     deferredTargetSessions.removeValue(forKey: targetID)
     var session = held
     // What is restored is what the host holds: once it is on screen, that is what `written` is,
