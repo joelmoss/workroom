@@ -7,30 +7,6 @@
 
 ## P0 — before the next release
 
-### `ReverseForwardTests.testAReconnectWhileTheOldListenerHoldsThePortReopensOnceItLetsGo` is flaky (macapp) — #327 ship follow-up
-
-**What:** The test fails about 1 run in 5. Measured 2026-10-04 with `make app-test
-APP_TEST_FLAGS="-only-testing:WorkroomAppTests/ReverseForwardTests -test-iterations 10"`: 3 of 15
-runs failed on `workroom/cyan-brush`, and 2 of 20 on a clean `origin/master` worktree, so it is not
-the #327 branch. It fails at three places:
-- line 301, `XCTAssertEqual failed: ("0 bytes") is not equal to ("5 bytes")` in `roundTrip`;
-- line 285, "the port was never contended";
-- line 290, "never reopened".
-
-**Why:** It tests that the broker's reverse forward (`BrokerReverseForwards`) reopens after a
-reconnect while the old connection's listener still holds the port. If the race is in the
-registry rather than the test, a real reconnect can leave a workroom's broker forward dead. In a
-Debug build that forward is how the remote agent reaches the development Codaset
-(`BrokerReverseForwards`), so once the token it holds expires (up to an hour) it can't mint a new
-git credential. Release and Nightly agents reach codaset.dev directly and don't use it.
-
-**How to start:** Pin which step loses the race. The test leans on a fixed 3 s sleep (longer than
-the bind retries) and a 5 s reopen deadline. A `roundTrip` that reads 0 bytes means the port
-reopened but the forward didn't carry data, which points past the listener at the forward's
-target or at a second listener answering the port.
-
-**Priority:** P0 (chosen at ship time on #327)
-
 ### `a_relay_with_no_agent_fails_fast_and_says_so` flaked under load (vcs) — #334 ship follow-up
 
 **What:** The test (`vcs/crates/wr-agent/tests/remote_transport.rs:1236`) failed once with
@@ -4050,6 +4026,20 @@ error) is one of the hardest to diagnose from a bug report.
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-10-05 — `ReverseForwardTests.testAReconnectWhileTheOldListenerHoldsThePortReopensOnceItLetsGo` is no
+longer flaky, most likely fixed by the `EchoServer` double close (#350, entry below).** Before the fix it
+failed 5 runs in 35 (3 of 15 on `workroom/cyan-brush` and 2 of 20 on a clean `origin/master`, 2026-10-04,
+`-only-testing:WorkroomAppTests/ReverseForwardTests -test-iterations 10`), at three places: `roundTrip`
+reading 0 bytes of 5, "the port was never contended", and "never reopened". After the fix it passed 40
+of 40 with the same command (10, then 30 iterations). At the old rate, 40 straight passes would happen
+about 1 time in 500 by chance. Why the double close fits: XCTest orders this class case-insensitively,
+so the two tests that stopped an `EchoServer` twice (`testAnOpenAfterTheTargetMovesCarriesToTheNewTarget`,
+`testAnUnreachableTargetEndsTheConnectionAtOnce`) run just before this one in every iteration. Their
+stray close can land on a socket this test's forward or agent connection is using, and every failure
+mode above is a socket that stops answering. The chain is inferred, not traced. The registry itself
+(`BrokerReverseForwards`) was not changed. If the test fails again, reopen this, and start where the old
+entry did: pin which step loses the race, the fixed 3 s sleep or the 5 s reopen deadline.
 
 **2026-10-05 — the guarded-descriptor `EXC_GUARD` kills of test workers: a test fixture closed a
 descriptor twice (#350).** Test workers were killed by `EXC_GUARD` (`GUARD_TYPE_FD`): once locally in
