@@ -814,6 +814,48 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertTrue(store.writeHostLayouts().isEmpty, "the refused layout sent again unchanged")
   }
 
+  /// A reload that gives a remote workroom another host while its first host is asked drops that
+  /// answer: nothing is restored through it, and this Mac's copy stays held for the workroom as it
+  /// now is.
+  func testAnAnswerFromAHostTheWorkroomNoLongerHasIsDropped() async throws {
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
+    let workroomID = UUID()
+    func project(host: UUID) -> Project {
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "m", path: "/home/workroom/m", vcsName: "workroom/m", warnings: [],
+            host: HostDescriptor(
+              provisioner: RemoteWorkrooms.provisioner, id: host, workroomID: workroomID))
+        ])
+    }
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    store.projects = [project(host: UUID())]
+    let id = TerminalTarget.workroomID(project: "/proj", name: "m")
+    let saved = TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")])
+    store.pendingSessionRestore = WindowSession(windowKey: UUID().uuidString, targets: [saved])
+    store.restorePersistedSessionIfPending(in: store.projects)
+    XCTAssertTrue(store.hostLayouts.fetching.contains(id))
+    store.projects = [project(host: UUID())]
+
+    let answered = expectation(description: "answered")
+    func poll() {
+      if !store.hostLayouts.fetching.contains(id) { return answered.fulfill() }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: poll)
+    }
+    poll()
+    await fulfillment(of: [answered], timeout: AppStore.hostLayoutTimeout + 3)
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 0, "restored through the old host")
+    XCTAssertNotNil(store.deferredTargetSessions[id], "this Mac's copy was dropped")
+    XCTAssertFalse(store.hostLayouts.fetched.contains(id), "never asked of the new host")
+    XCTAssertFalse(store.waitingForHostLayout.contains(id))
+  }
+
   /// A change saved while an unanswered workroom's write is in flight is sent once that write is
   /// refused, not left until some later change; and only once, however that one goes.
   func testAChangeBehindAnUnansweredWriteIsSentAfterIt() async throws {
