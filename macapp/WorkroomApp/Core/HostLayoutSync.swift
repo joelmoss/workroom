@@ -112,10 +112,11 @@ enum HostLayoutSync {
         return HostLayoutResolution(session: held, revision: revision)
       } catch AgentLayoutError.stale(let current) {
         // Another Mac wrote first. A newer build's layout is never written over (D5), whoever
-        // reads it first.
-        if let answer = try? await store.get(key), let blob = answer.blob,
-          HostLayout.decode(blob, targetID: held.targetID) == .newer
-        {
+        // reads it first, and a layout that could not be read is not taken to be an older one.
+        guard let answer = try? await store.get(key) else {
+          return HostLayoutResolution(session: held, revision: expected, stale: true)
+        }
+        if let blob = answer.blob, HostLayout.decode(blob, targetID: held.targetID) == .newer {
           return HostLayoutResolution(session: held, revision: answer.revision, readOnly: true)
         }
         expected = current
