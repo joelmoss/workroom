@@ -274,6 +274,12 @@ extension AppStore {
       // again until it changes; one that did not reach the host is tried again at the next save.
       guard !result.stale else {
         if result.refused { hostLayouts.written[targetID] = blob }
+        // A change saved while this one was in flight was skipped for it, and nothing here marks
+        // the session dirty to send it later: send it now. Only one that differs from what was
+        // just tried, so a host that cannot be reached is not asked again in a loop.
+        if changedHostLayouts().contains(where: { $0.targetID == targetID && $0.blob != blob }) {
+          writeHostLayouts()
+        }
         return
       }
       hostLayouts.unanswered.remove(targetID)
