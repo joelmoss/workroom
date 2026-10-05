@@ -1494,10 +1494,16 @@ struct Pane {
 
 impl Pane {
     fn attach(fixture: &Fixture, session: &str, restored: bool) -> Pane {
+        Pane::attach_with(fixture, session, restored, "")
+    }
+
+    /// `env` is more `NAME=value` words for the attach's environment, as the app's remote command
+    /// adds the session's workroom and title (#255).
+    fn attach_with(fixture: &Fixture, session: &str, restored: bool, env: &str) -> Pane {
         let mut command = fixture.ssh();
         command.arg(format!(
             "env WORKROOM_SESSION_ID={session} WORKROOM_SESSION_SOCKET={} \
-             WORKROOM_SESSION_CWD=/home/workroom TERM=xterm-256color {INSTALLED_AGENT} attach \
+             WORKROOM_SESSION_CWD=/home/workroom TERM=xterm-256color {env} {INSTALLED_AGENT} attach \
              --no-spawn{}",
             fixture.socket,
             if restored { " --no-create" } else { "" }
@@ -2081,6 +2087,106 @@ fn over_ssh_every_service_answers_through_the_relay() {
         1,
         Frame::new(FrameKind::Kill, id.to_vec()),
     );
+}
+
+/// Two Macs on one remote workroom (#255): Mac A's session carries its workroom and title to the
+/// host, Mac B finds it in the host's list and A's layout in the Layout service, and reattaches to
+/// the same shell; A dropping its link leaves B attached; a close on A ends the session for B too;
+/// and the layout outlives a reboot of the host, beside the screens on its disk.
+#[test]
+#[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
+fn over_ssh_two_clients_share_a_workroom_its_sessions_and_its_layout() {
+    let fixture = fixture();
+    let session = "7E0E7E0E-0000-4000-8000-000000000255";
+    let workroom = "4C0F5F2E-2B49-4C4D-9C1E-6A1B2B3C0255";
+    let mut mac_a = Pane::attach_with(
+        &fixture,
+        session,
+        false,
+        &format!("WORKROOM_SESSION_WORKROOM={workroom} 'WORKROOM_SESSION_TITLE=Terminal 7'"),
+    );
+    mac_a.type_line("echo A-WAS-HERE");
+    assert!(mac_a
+        .read_until("A-WAS-HERE", Duration::from_secs(20))
+        .contains("A-WAS-HERE"));
+
+    // Mac B's view of the host: the session, tagged, and A's layout.
+    let mut relay = fixture.relay();
+    let client = &mut relay.client;
+    client.handshake();
+    client.send(Service::Control, 2, Frame::control(FrameKind::List));
+    let list = client.envelope(Service::Control, 2, Duration::from_secs(10));
+    let listed = String::from_utf8_lossy(&list.payload).into_owned();
+    assert!(
+        listed.contains(workroom),
+        "the session's workroom: {listed:?}"
+    );
+    assert!(
+        listed.contains("Terminal 7"),
+        "the session's title: {listed:?}"
+    );
+
+    let layout =
+        json!({"schemaVersion": 1, "target": {"targetID": workroom, "tabs": []}}).to_string();
+    let put = client.request(
+        Service::Layout,
+        3,
+        &json!({"version": 1, "method": "put", "key": workroom, "expected": 0, "blob": layout}),
+    );
+    assert_eq!(put["result"]["revision"], 1, "{put}");
+    let mut other = fixture.relay();
+    other.client.handshake();
+    let got = other.client.request(
+        Service::Layout,
+        2,
+        &json!({"version": 1, "method": "get", "key": workroom}),
+    );
+    assert_eq!(
+        got["result"],
+        json!({"revision": 1, "blob": layout}),
+        "{got}"
+    );
+
+    // Mac B reattaches to the same shell and is shown what A left on it.
+    let mut mac_b = Pane::attach(&fixture, session, true);
+    assert!(mac_b
+        .read_until("A-WAS-HERE", Duration::from_secs(20))
+        .contains("A-WAS-HERE"));
+
+    // Mac A quits: its link drops, and B carries on in the same shell.
+    drop(mac_a);
+    mac_b.type_line("echo B-STILL-HERE");
+    assert!(mac_b
+        .read_until("B-STILL-HERE", Duration::from_secs(20))
+        .contains("B-STILL-HERE"));
+
+    // A close on either Mac ends the session for both: B's pane exits with the shell.
+    let mut id = [0u8; 16];
+    for (index, byte) in session.replace('-', "").as_bytes().chunks(2).enumerate() {
+        id[index] = u8::from_str_radix(std::str::from_utf8(byte).unwrap(), 16).unwrap();
+    }
+    client.send(
+        Service::Control,
+        4,
+        Frame::new(FrameKind::Kill, id.to_vec()),
+    );
+    assert!(
+        mac_b.exit_code(Duration::from_secs(20)).is_some(),
+        "B's pane outlived a session closed elsewhere"
+    );
+    drop(relay);
+    drop(other);
+
+    // The layout is on the host's disk: a reboot keeps it.
+    fixture.reboot();
+    let mut after = fixture.relay();
+    after.client.handshake();
+    let kept = after.client.request(
+        Service::Layout,
+        2,
+        &json!({"version": 1, "method": "get", "key": workroom}),
+    );
+    assert_eq!(kept["result"]["revision"], 1, "{kept}");
 }
 
 /// The fixture's supervisor is what makes the remote agent persistent: it must bring a killed

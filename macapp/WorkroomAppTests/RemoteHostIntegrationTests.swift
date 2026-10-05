@@ -1,4 +1,5 @@
 import Darwin
+import WorkroomSessionProtocol
 import XCTest
 
 @testable import Workroom
@@ -444,6 +445,49 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertNil(unknown)
   }
 
+  /// Two Macs, one remote workroom (#255): Mac A's pane tells the host its workroom and title, and
+  /// A's layout seeds the host. Mac B, with no copy of its own, gets A's layout as its own target,
+  /// and the session A's layout does not name, appended as a tab with its title.
+  func testASecondMacGetsTheFirstMacsLayoutAndSessions() async throws {
+    let fixture = try fixture()
+    let (macA, id) = try await connect(fixture.host)
+    let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
+    let key = UUID().uuidString
+    let live = UUID()
+    let pane = try Pane(
+      command: driver.attachCommand(
+        to: .remote(id), session: live, workingDirectory: "/home/workroom", restored: false,
+        metadata: [(SessionMetadataKey.workroom, key), (SessionMetadataKey.title, "Terminal 7")]))
+    defer { pane.dropLink() }
+    pane.type("echo RE\"\"ADY\n")
+    _ = pane.read(until: "READY")
+
+    let layout = TargetSession(
+      targetID: "wr|/Users/a/app|w",
+      tabs: [
+        TabSession(
+          key: "f", kind: TabSession.fileKind,
+          file: FilePayload(path: "README.md", isPreview: false))
+      ])
+    let seeded = try await HostLayoutSync.resolve(
+      held: layout, key: key, targetID: "wr|/Users/a/app|w", store: try macA.layouts())
+    XCTAssertEqual(seeded.revision, 1)
+
+    let macB = try await AgentVCSConnection.connect(
+      host: .remote(id), stream: try await driver.openStream(to: .remote(id)))
+    connections.append(macB)
+    let resolved = try await HostLayoutSync.resolve(
+      held: nil, key: key, targetID: "wr|/Volumes/b/app|w", store: try macB.layouts())
+    let sessions = try await macB.sessions()
+    let restored = try XCTUnwrap(
+      HostLayoutSync.appending(
+        sessions, key: key, to: resolved.session, targetID: "wr|/Volumes/b/app|w"))
+    XCTAssertEqual(restored.targetID, "wr|/Volumes/b/app|w")
+    XCTAssertEqual(restored.tabs.first?.file?.path, "README.md")
+    XCTAssertEqual(restored.tabs.last?.terminal?.sessionID, live.uuidString)
+    XCTAssertEqual(restored.tabs.last?.terminal?.defaultTitle, "Terminal 7")
+  }
+
   /// Closing a remote pane ends its session on the host (#283): the kill goes over the service
   /// connection, not the pane's own link, and the shell it held is gone from the host, not just
   /// detached from.
@@ -632,9 +676,11 @@ final class RemoteHostIntegrationTests: XCTestCase {
     XCTAssertTrue(driver.hostRefusedLastAttach(of: session, on: .remote(id)))
   }
 
-  /// A restored pane whose session ended on the host gets a shell that says so, never a fresh
-  /// session passed off as the old one: the host's agent refuses to create it (`--no-create`).
-  func testARestoredPaneWhoseSessionEndedGetsAShellThatSaysSo() throws {
+  /// A restored pane whose session ended on the host says so, and is never a fresh session passed
+  /// off as the old one: the host's agent refuses to create it (`--no-create`). Nor is it a shell
+  /// of the attach client's own (#255, D7): one would be no agent session, invisible to any other
+  /// Mac and gone with the link, so what is typed into the pane reaches nothing.
+  func testARestoredPaneWhoseSessionEndedSaysSoAndStartsNoShell() throws {
     let fixture = try fixture()
     let id = UUID()
     let driver = ContainerHostDriver(hosts: [id: fixture.host], directory: directory)
@@ -642,8 +688,10 @@ final class RemoteHostIntegrationTests: XCTestCase {
       command: driver.attachCommand(
         to: .remote(id), session: UUID(), workingDirectory: "/home/workroom", restored: true))
     defer { pane.dropLink() }
-    let seen = pane.read(until: "has ended")
-    XCTAssertTrue(seen.contains("has ended"), seen)
+    let seen = pane.read(until: "Close it to start again.")
+    XCTAssertTrue(seen.contains("This terminal has ended. Close it to start again."), seen)
+    pane.type("echo NO\"\"SHELL\n")
+    XCTAssertFalse(pane.read(until: "NOSHELL", within: 2).contains("NOSHELL"), "a shell answered")
   }
 
   /// Nothing from the Mac's environment reaches a remote git (#229): the child runs with the
