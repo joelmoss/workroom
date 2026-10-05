@@ -896,6 +896,106 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertFalse(store.waitingForHostLayout.contains(id))
   }
 
+  /// A workroom a reload moves to another host after its layout was read writes nothing over the
+  /// new host's layout: what this window knew was the old host's, so the new host is written once,
+  /// at revision 0, and a layout there refuses it.
+  func testAWorkroomMovedToAnotherHostNeverWritesOverItsLayout() async throws {
+    final class FullHost: HostLayoutStore, @unchecked Sendable {
+      var puts: [UInt64] = []
+      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 9, blob: nil) }
+      func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
+        puts.append(expected)
+        guard expected == 9 else { throw AgentLayoutError.stale(revision: 9) }
+        return 10
+      }
+    }
+    let host = FullHost()
+    let saved = AppStore.hostLayoutStore
+    AppStore.hostLayoutStore = { _ in host }
+    defer { AppStore.hostLayoutStore = saved }
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
+    let workroomID = UUID()
+    let first = UUID()
+    func project(host: UUID) -> Project {
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "v", path: "/home/workroom/v", vcsName: "workroom/v", warnings: [],
+            host: HostDescriptor(
+              provisioner: RemoteWorkrooms.provisioner, id: host, workroomID: workroomID))
+        ])
+    }
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    store.projects = [project(host: first)]
+    let id = TerminalTarget.workroomID(project: "/proj", name: "v")
+    let target = try XCTUnwrap(store.terminalTarget(forID: id))
+    XCTAssertTrue(HostLayoutOwners.shared.claim(workroomID, targetID: id, by: store))
+    store.terminals.restore(
+      TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+    store.hostLayouts.fetched.insert(id)
+    store.hostLayouts.hosts[id] = (first, workroomID)
+    store.hostLayouts.revisions[id] = 3
+    store.hostLayouts.written[id] = "the first host's layout"
+
+    store.projects = [project(host: UUID())]
+    for write in store.writeHostLayouts() { await write.value }
+    XCTAssertEqual(host.puts, [0], "written over the new host's layout")
+    XCTAssertFalse(store.hostLayouts.stale.contains(id))
+    XCTAssertTrue(store.hostLayouts.unanswered.contains(id))
+  }
+
+  /// A host whose layout resolves in time but whose session list is late keeps the resolution:
+  /// the layout may already have been written there, so the workroom is not treated as unanswered.
+  func testALateSessionListKeepsTheResolvedLayout() async throws {
+    final class EmptyHost: HostLayoutStore, @unchecked Sendable {
+      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 0, blob: nil) }
+      func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
+        expected + 1
+      }
+    }
+    let savedStore = AppStore.hostLayoutStore
+    let savedSessions = AppStore.hostSessions
+    AppStore.hostLayoutStore = { _ in EmptyHost() }
+    AppStore.hostSessions = { _ in
+      try await Task.sleep(nanoseconds: 30_000_000_000)
+      return []
+    }
+    defer {
+      AppStore.hostLayoutStore = savedStore
+      AppStore.hostSessions = savedSessions
+    }
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
+    let workroom = Workroom(
+      name: "l", path: "/home/workroom/l", vcsName: "workroom/l", warnings: [],
+      host: HostDescriptor(
+        provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: UUID()))
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    store.projects = [Project(path: "/proj", vcs: "git", workrooms: [workroom])]
+    let id = TerminalTarget.workroomID(project: "/proj", name: "l")
+    store.pendingSessionRestore = WindowSession(
+      windowKey: UUID().uuidString,
+      targets: [TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")])])
+    store.restorePersistedSessionIfPending(in: store.projects)
+    let restored = expectation(description: "restored")
+    func poll() {
+      if store.terminals.tabCount(forTargetID: id) > 0 { return restored.fulfill() }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: poll)
+    }
+    poll()
+    await fulfillment(of: [restored], timeout: AppStore.hostLayoutTimeout + 3)
+    XCTAssertEqual(store.hostLayouts.revisions[id], 1, "the seed this Mac wrote was forgotten")
+    XCTAssertFalse(store.hostLayouts.unanswered.contains(id))
+  }
+
   /// A change saved while an unanswered workroom's write is in flight is sent once that write is
   /// refused, not left until some later change; and only once, however that one goes.
   func testAChangeBehindAnUnansweredWriteIsSentAfterIt() async throws {

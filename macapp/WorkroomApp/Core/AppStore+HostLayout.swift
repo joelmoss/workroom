@@ -28,6 +28,9 @@ struct HostLayoutState {
   var readOnly: Set<TerminalTarget.ID> = []
   /// The layout as the host last had it, encoded, so an unchanged one is never written again.
   var written: [TerminalTarget.ID: String] = [:]
+  /// The host and workroom this window's state for a target came from. A reload can give the
+  /// workroom another: none of that state is about the new one.
+  var hosts: [TerminalTarget.ID: (host: UUID, workroom: UUID)] = [:]
   /// A write to the host is in flight: the next waits for it rather than race it, and a quit waits
   /// for it (D14).
   var writing: [TerminalTarget.ID: Task<Void, Never>] = [:]
@@ -76,6 +79,12 @@ extension AppStore {
       return try await HostConnectionManager.shared.layouts(host: host)
     }
 
+  /// A host's live sessions, for the append rule: its agent, or a fake in a test.
+  nonisolated(unsafe) static var hostSessions:
+    @Sendable (HostID) async throws -> [SessionDescriptor] = {
+      try await HostConnectionManager.shared.sessions(on: $0)
+    }
+
   /// Asks `target`'s host for its layout and sessions, unless this launch has already asked or
   /// another window keeps the workroom's layout, and says whether `target` is now waiting on that
   /// answer: if so, the caller opens no pane, and `applyHostLayout` restores what was chosen.
@@ -97,16 +106,20 @@ extension AppStore {
     let targetID = target.id
     Task { [weak self] in
       let outcome: Result<(HostLayoutResolution, [SessionDescriptor]), Error>
+      let deadline = Date().addingTimeInterval(Self.hostLayoutTimeout)
       do {
-        outcome = .success(
-          try await withTimeout(seconds: Self.hostLayoutTimeout) {
-            let store = try await Self.hostLayoutStore(.remote(host))
-            let resolution = try await HostLayoutSync.resolve(
-              held: held, key: key, targetID: targetID, store: store)
-            let sessions =
-              (try? await HostConnectionManager.shared.sessions(on: .remote(host))) ?? []
-            return (resolution, sessions)
-          })
+        let resolution = try await withTimeout(seconds: Self.hostLayoutTimeout) {
+          let store = try await Self.hostLayoutStore(.remote(host))
+          return try await HostLayoutSync.resolve(
+            held: held, key: key, targetID: targetID, store: store)
+        }
+        // Best effort, in what is left of the wait: a resolution, which may already have written
+        // the host's layout, is kept even when the list is late.
+        let sessions =
+          (try? await withTimeout(seconds: max(0.5, deadline.timeIntervalSinceNow)) {
+            try await Self.hostSessions(.remote(host))
+          }) ?? []
+        outcome = .success((resolution, sessions))
       } catch {
         outcome = .failure(error)
       }
@@ -147,6 +160,7 @@ extension AppStore {
       return
     }
     hostLayouts.fetched.insert(targetID)
+    hostLayouts.hosts[targetID] = (host, workroom)
     deferredTargetSessions.removeValue(forKey: targetID)
     var session = held
     // What is restored is what the host holds: once it is on screen, that is what `written` is,
@@ -254,6 +268,7 @@ extension AppStore {
     targetID: TerminalTarget.ID, host: UUID, key: String, layout: TargetSession, blob: String
   )] {
     guard !hostLayouts.fetched.isEmpty else { return [] }
+    rebindMovedWorkrooms()
     let captured = Dictionary(
       captureWindowSession().targets.map { ($0.targetID, $0) },
       uniquingKeysWith: { first, _ in first })
@@ -276,6 +291,27 @@ extension AppStore {
         blob != hostLayouts.written[targetID]
       else { return nil }
       return (targetID, host, key, layout, blob)
+    }
+  }
+
+  /// A workroom a reload gave another host (or another workroom id) since its state here was
+  /// read: what this window knew was the old host's, so the new one's layout is unread. It starts
+  /// over as an unanswered fetch of the new host at revision 0: its first write seeds an empty host
+  /// and is refused by one with a layout, never retried over it.
+  private func rebindMovedWorkrooms() {
+    for targetID in hostLayouts.fetched {
+      guard let bound = hostLayouts.hosts[targetID],
+        let target = terminalTarget(forID: targetID), let host = target.remoteHost,
+        let workroom = target.remoteWorkroomID,
+        bound.host != host || bound.workroom != workroom
+      else { continue }
+      hostLayouts.hosts[targetID] = (host, workroom)
+      hostLayouts.revisions[targetID] = nil
+      hostLayouts.written[targetID] = nil
+      hostLayouts.stale.remove(targetID)
+      hostLayouts.readOnly.remove(targetID)
+      hostLayouts.unanswered.insert(targetID)
+      _ = HostLayoutOwners.shared.claim(workroom, targetID: targetID, by: self)
     }
   }
 
