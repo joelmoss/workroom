@@ -423,12 +423,13 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   func attachCommand(
-    to host: HostID, session: UUID, workingDirectory: String, restored: Bool
+    to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
+    metadata: [(key: String, value: String)]
   ) throws -> String {
     let id = try id(of: host)
     return try ContainerHostDriver.attachCommand(
       to: try ssh(id), in: hostDirectory(id), session: session,
-      workingDirectory: workingDirectory, restored: restored)
+      workingDirectory: workingDirectory, restored: restored, metadata: metadata)
   }
 
   func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {

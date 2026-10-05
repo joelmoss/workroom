@@ -108,6 +108,8 @@ final class PersistentSessionService {
     let host: HostID
     let driver: any HostTerminalDriver
     let workingDirectory: String
+    /// What its attach tells the host's agent about it (#255).
+    var metadata: [(key: String, value: String)] = []
   }
 
   /// How the agent's health is measured. Injected so a test can drive the unhealthy path without
@@ -426,10 +428,10 @@ final class PersistentSessionService {
   /// `workingDirectory` (a path on that host) if the session is new.
   func registerRemoteSession(
     _ sessionID: UUID, on host: HostID, via driver: any HostTerminalDriver,
-    workingDirectory: String
+    workingDirectory: String, metadata: [(key: String, value: String)] = []
   ) {
     remoteSessions[sessionID] = RemoteSession(
-      host: host, driver: driver, workingDirectory: workingDirectory)
+      host: host, driver: driver, workingDirectory: workingDirectory, metadata: metadata)
   }
 
   func isRemote(_ sessionID: UUID) -> Bool { remoteSessions[sessionID] != nil }
@@ -452,7 +454,7 @@ final class PersistentSessionService {
       do {
         return try remote.driver.attachCommand(
           to: remote.host, session: sessionID, workingDirectory: remote.workingDirectory,
-          restored: restored)
+          restored: restored, metadata: remote.metadata)
       } catch {
         logger.error(
           "no attach command for remote session \(sessionID.uuidString, privacy: .public): \(error)"

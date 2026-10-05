@@ -263,11 +263,13 @@ final class BoxdIntegrationTests: XCTestCase {
     func exec(_ command: String, on host: HostID) async throws -> HostStream {
       try await driver.exec(command, on: host)
     }
-    func attachCommand(to host: HostID, session: UUID, workingDirectory: String, restored: Bool)
-      throws -> String
-    {
+    func attachCommand(
+      to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
+      metadata: [(key: String, value: String)]
+    ) throws -> String {
       try driver.attachCommand(
-        to: host, session: session, workingDirectory: workingDirectory, restored: restored)
+        to: host, session: session, workingDirectory: workingDirectory, restored: restored,
+        metadata: metadata)
     }
     func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
       driver.hostRefusedLastAttach(of: session, on: host)

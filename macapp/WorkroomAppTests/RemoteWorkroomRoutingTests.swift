@@ -159,6 +159,25 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     XCTAssertNil(creating.remoteLocation)
   }
 
+  /// A session is tagged with what every Mac calls its workroom: a remote workroom's own id, never
+  /// `target.id`, which holds this Mac's project path; a local one keeps `target.id`, which its
+  /// own Mac's sweep and delete match against (#255).
+  func testASessionsWorkroomTagIsTheRemoteWorkroomsOwnIdAndTheTargetIdLocally() {
+    let workroomID = UUID()
+    let tagged = Workroom(
+      name: "a", path: path, vcsName: "workroom/a", warnings: [],
+      host: HostDescriptor(
+        provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: workroomID)
+    ).target(inProject: "/proj")
+    XCTAssertEqual(tagged.sessionWorkroomKey, workroomID.uuidString)
+
+    let local = TerminalTarget(id: "wr|/proj|b", title: "b", path: "/proj/b", isMissing: false)
+    XCTAssertEqual(local.sessionWorkroomKey, "wr|/proj|b")
+    // A remote workroom recorded before workroom ids (#251) has none, and keeps its target id.
+    XCTAssertEqual(
+      remote("c", host: UUID()).target(inProject: "/proj").sessionWorkroomKey, "wr|/proj|c")
+  }
+
   /// A reachable remote workroom has a status item on its host, read as git, which may read its
   /// GitHub status once registered; one this app can't reach has none.
   @MainActor
