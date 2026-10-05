@@ -437,6 +437,13 @@ struct TargetSession: Codable, Hashable, Sendable {
   var focusedKey: String?
   /// `TerminalSessions.counts` — so the next ⌘T after restoring "Terminal 3" is "Terminal 4".
   var terminalCounter: Int?
+  /// For a remote workroom whose layout its host keeps (#255): the host's revision this Mac last
+  /// read or wrote. Additive and per Mac; never part of the layout a host keeps (`HostLayout`).
+  var hostRevision: UInt64? = nil
+  /// For a remote workroom: this Mac's layout is newer than the host's, because a write did not
+  /// reach it (too large, the host refused, or quit came first), so this copy wins at the next
+  /// open and is written then (#255).
+  var hostLayoutStale: Bool? = nil
 
   init(
     targetID: String, tabs: [TabSession], splits: [LayoutNode<String>] = [],
