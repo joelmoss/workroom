@@ -75,7 +75,45 @@ path another process binds.
 
 ## P1 — before GA
 
+### A second Mac can find a remote workroom and reach its host (macapp, Codaset) — #255 blocker
+
+**What:** Let a Mac that did not create a remote workroom discover it and get an ssh key its host
+accepts.
+
+**Why:** #255 (cross-machine reattach) cannot be tested on a real host until this exists. Today a
+remote workroom is listed only in the creating Mac's CLI config, and its host accepts only that
+Mac's key (`RemoteWorkrooms.swift` mints its `id_ed25519` once per Mac per build). Container
+workrooms on one Mac's Docker are unreachable from another Mac at all, so the live test runs on
+boxd. Design: `docs/designs/oq8-cross-machine-reattach.md`, premise 10.
+
+**How to start:** The Codaset broker already keys grants by `workroomID` per user (#250, #251).
+List the signed-in user's grants to discover workrooms, and enrol this Mac's public key on the host
+through the broker rather than by hand.
+
+**Depends on:** #250 and #251 (done). Blocks #255's live acceptance test.
+
+**Priority:** P1 (chosen in the #255 eng review, 2026-10-05)
+
 ## P2 — perf, correctness, and the next VCS phase
+
+### Tell a Mac its pane is sized for another Mac (wr-agent, macapp) — #255 follow-up
+
+**What:** When another client owns a session's size, tell every attached client who owns it, and
+show a quiet "sized for another Mac, type to take over" marker on the non-owner's pane (or
+letterbox it to the owner's grid).
+
+**Why:** Two Macs on one session share one pty size, owned by whichever Mac the user last typed or
+clicked in (`session.rs` `Attached::claim`, gated on `InputClassifier::is_user_input`). The other
+Mac's pane gets output drawn for the owner's grid, so Vim or htop look broken there with no hint
+why until the user types.
+
+**How to start:** Send a control frame to every attached client when `Attached::claim` changes
+the owner; have the pane show the marker while it is not the owner. Design follow-up in
+`docs/designs/oq8-cross-machine-reattach.md`.
+
+**Depends on:** #255 (cross-machine reattach).
+
+**Priority:** P2 (chosen in the #255 eng review, 2026-10-05)
 
 ### Credential broker clients: the review's deferred items (macapp, wr-agent) — #251 review follow-up
 
@@ -2053,6 +2091,23 @@ make syntax-highlight state testable without reading pixels).
 boundary today).
 
 ## P3 — Terminal, panes, and focus
+
+### Local workrooms' layouts on the local agent (macapp, wr-agent) — #255 follow-up
+
+**What:** Store local workrooms' pane layouts on the local agent through the Layout service that
+#255 adds for remote workrooms, leaving `session.json` with window-level state only.
+
+**Why:** One restore path instead of two. `docs/designs/remote-workrooms.md` (lines 225-230)
+names agent-side layout as parity work for local workrooms too; #255 deliberately did remote only
+(`docs/designs/oq8-cross-machine-reattach.md`, premise 8).
+
+**How to start:** Pick a portable local key first: `target.id` embeds the project path
+(`TerminalTarget.workroomID`). Then reuse #255's seed, read-on-open and write-through path, and
+keep `session.json`'s bundle-id scoping.
+
+**Depends on:** #255.
+
+**Priority:** P3 (chosen in the #255 eng review, 2026-10-05)
 
 ### Agent bootstrap (#231): the review findings the /ship pass deferred (macapp, wr-agent)
 
