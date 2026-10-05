@@ -15,8 +15,8 @@ use std::time::Duration;
 use wr_agent::handoff;
 use wr_agent::protocol::envelope::{
     negotiate, Envelope, EnvelopeDecoder, Hello, Service, MIN_FILE_VERSION, MIN_FORWARD_VERSION,
-    MIN_HANDOFF_VERSION, MIN_STATUS_VERSION, MIN_SUPPORTED_VERSION, MIN_VCS_VERSION,
-    PROTOCOL_VERSION,
+    MIN_HANDOFF_VERSION, MIN_LAYOUT_VERSION, MIN_STATUS_VERSION, MIN_SUPPORTED_VERSION,
+    MIN_VCS_VERSION, PROTOCOL_VERSION,
 };
 use wr_agent::protocol::frame::{Frame, FrameDecoder, FrameKind};
 use wr_agent::serve::{self, Agent, BUILD, DEFAULT_IDLE_TIMEOUT};
@@ -90,9 +90,11 @@ fn main() -> ExitCode {
                 "protocol {PROTOCOL_VERSION} (minimum supported {MIN_SUPPORTED_VERSION}) \
                  min-vcs {MIN_VCS_VERSION} min-file {MIN_FILE_VERSION} \
                  min-status {MIN_STATUS_VERSION} min-forward {MIN_FORWARD_VERSION} \
-                 min-handoff {MIN_HANDOFF_VERSION}"
+                 min-handoff {MIN_HANDOFF_VERSION} min-layout {MIN_LAYOUT_VERSION}"
             );
             println!("build {BUILD}");
+            // The order between builds (#255): the app's probe reads it to decide whether to push.
+            println!("build-number {}", serve::build_number());
             // Whether this build can repaint a reattaching client. A build without it serves
             // sessions perfectly well and then hands a reconnecting pane a blank screen, which is
             // invisible until someone quits the app and comes back — so it is stated here and

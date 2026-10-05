@@ -35,6 +35,19 @@ use crate::transport::Transport;
 
 pub const BUILD: &str = concat!("wr-agent ", env!("CARGO_PKG_VERSION"));
 
+/// This build's number (`build.rs`): the commit time it was built from. Agents are ordered by it, so
+/// the app never replaces a newer agent with an older one, and an agent never hands off to an older
+/// program (#255, D13). 0 for a build with no git and no `WR_AGENT_BUILD`.
+pub fn build_number() -> u64 {
+    env!("WR_AGENT_BUILD").parse().unwrap_or(0)
+}
+
+/// The build number as the app finds it in a binary it has not run: the bundled Linux agents are
+/// never run on the Mac, so the app reads this marker out of their bytes instead
+/// (`AgentBootstrap.buildNumber(in:)`). Kept by `#[used]`, so the linker never drops it.
+#[used]
+pub static BUILD_MARKER: &str = concat!("WR-AGENT-BUILD:", env!("WR_AGENT_BUILD"), ";");
+
 /// How long an agent with no sessions and no clients waits before exiting.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 

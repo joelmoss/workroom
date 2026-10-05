@@ -398,18 +398,54 @@ fn replace(
         .open(&path)
         .and_then(|mut file| std::io::Write::write_all(&mut file, &table.encode()))
         .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    let result = check(binary, &path).and_then(|()| {
-        let ids: Vec<String> = frozen.iter().map(|s| s.id.to_hyphenated()).collect();
-        crate::note!(
-            "{} checked {} sessions; replacing this program with it, carrying {}",
-            binary.display(),
-            ids.len(),
-            ids.join(", ")
-        );
-        exec(context, binary, &path, &carried, before_exec)
-    });
+    // After the check, so a program that cannot restore these sessions says so first.
+    let result = check(binary, &path)
+        .and_then(|()| no_downgrade(binary, crate::serve::build_number()))
+        .and_then(|()| {
+            let ids: Vec<String> = frozen.iter().map(|s| s.id.to_hyphenated()).collect();
+            crate::note!(
+                "{} checked {} sessions; replacing this program with it, carrying {}",
+                binary.display(),
+                ids.len(),
+                ids.join(", ")
+            );
+            exec(context, binary, &path, &carried, before_exec)
+        });
     let _ = std::fs::remove_file(&path);
     result
+}
+
+/// Refuses a program built before this one (#255, D13): two Macs on different builds would
+/// otherwise each hand the host's agent to their own, older or newer, in turn. A program says its
+/// build in `protocol` (`build-number`); one that predates the line is older than any that has it.
+/// A build of this program with no number (0) refuses nothing, having nothing to compare.
+fn no_downgrade(binary: &Path, ours: u64) -> Result<(), String> {
+    if ours == 0 {
+        return Ok(());
+    }
+    let output = Command::new(binary)
+        .arg("protocol")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("{} could not start: {e}", binary.display()))?;
+    let theirs = build_number_in(&String::from_utf8_lossy(&output.stdout));
+    if theirs < ours {
+        return Err(format!(
+            "{} is build {theirs}, older than this agent's build {ours}",
+            binary.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The `build-number` a `protocol` report states, or 0 if it states none.
+fn build_number_in(report: &str) -> u64 {
+    report
+        .lines()
+        .find_map(|line| line.strip_prefix("build-number "))
+        .and_then(|number| number.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 /// Runs `binary handoff-check <table>`: the new program reads the real table and paints every
@@ -608,6 +644,45 @@ mod tests {
             cfg!(feature = "terminal-state"),
             "{checked:?}"
         );
+    }
+
+    #[test]
+    fn a_protocol_report_states_its_build_number() {
+        assert_eq!(
+            build_number_in("protocol 7\nbuild wr-agent 0.1.0\nbuild-number 1791130740\n"),
+            1791130740
+        );
+        // An agent from before #255 states none, and orders below every build that does.
+        assert_eq!(build_number_in("protocol 6\nbuild wr-agent 0.1.0\n"), 0);
+    }
+
+    /// A program with a lower build number is refused before anything is written or checked; one
+    /// at least as high, or any when this build has no number, is let through (D13).
+    #[test]
+    fn a_hand_off_to_an_older_build_is_refused() {
+        let dir = std::env::temp_dir().join(format!("wr-agent-downgrade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = |name: &str, number: Option<u64>| {
+            let path = dir.join(name);
+            let line = number.map_or(String::new(), |n| format!("echo build-number {n}; "));
+            std::fs::write(&path, format!("#!/bin/sh\necho protocol 7; {line}exit 0\n")).unwrap();
+            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
+            path
+        };
+        let older = program("older", Some(100));
+        let same = program("same", Some(200));
+        let newer = program("newer", Some(300));
+        let unnumbered = program("unnumbered", None);
+        assert!(no_downgrade(&older, 200)
+            .unwrap_err()
+            .contains("older than this agent's build 200"));
+        assert!(no_downgrade(&unnumbered, 200).is_err());
+        assert_eq!(no_downgrade(&same, 200), Ok(()));
+        assert_eq!(no_downgrade(&newer, 200), Ok(()));
+        assert_eq!(no_downgrade(&older, 0), Ok(()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A table that is cut short or carries more than it declares is refused, not half-restored.
