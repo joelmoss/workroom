@@ -4045,7 +4045,8 @@ while another thread spawns. It fails with an in-process bind (135 of 1,000 conn
 the helper in 1.9 s. Linux is unaffected: std uses `SOCK_CLOEXEC` there. **Trap: the agent has the same
 gap.** `pty.rs`'s `forkpty` child calls `execve` without closing stray descriptors, so a session shell
 spawned while the agent is mid-way through creating a socket (an accepted client, a forward's listener)
-inherits it for the shell's lifetime. Not fixed here.
+inherits it for the shell's lifetime. Fixed in #352: the child closes every descriptor but its terminal
+and the exec-error pipe before `execve`.
 
 **2026-10-05 — `ReverseForwardTests.testAReconnectWhileTheOldListenerHoldsThePortReopensOnceItLetsGo` is no
 longer flaky, most likely fixed by the `EchoServer` double close (#350, entry below).** Before the fix it
