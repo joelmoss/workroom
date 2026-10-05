@@ -412,15 +412,23 @@ fn set_nonblocking(fd: libc::c_int) {
 unsafe fn close_inherited(keep: libc::c_int, limit: libc::c_int) {
     #[cfg(target_os = "linux")]
     {
-        // One call per range where the kernel has it (5.9+); the loop below otherwise.
-        let below = if keep > 3 {
-            libc::syscall(libc::SYS_close_range, 3u32, (keep - 1) as u32, 0u32)
-        } else {
-            0
-        };
-        let above = libc::syscall(libc::SYS_close_range, (keep + 1) as u32, u32::MAX, 0u32);
-        if below == 0 && above == 0 {
-            return;
+        // One call per range where the kernel has it (5.9+); the loop below otherwise. `syscall`
+        // is variadic and reads every argument back as a `long`, so each is passed as one; the
+        // kernel takes the low 32 bits.
+        let (first, all, flags): (libc::c_ulong, libc::c_ulong, libc::c_ulong) =
+            (3, u32::MAX.into(), 0);
+        if let Ok(keep) = libc::c_ulong::try_from(keep) {
+            if keep >= first {
+                let below = if keep > first {
+                    libc::syscall(libc::SYS_close_range, first, keep - 1, flags)
+                } else {
+                    0
+                };
+                let above = libc::syscall(libc::SYS_close_range, keep + 1, all, flags);
+                if below == 0 && above == 0 {
+                    return;
+                }
+            }
         }
     }
     // ponytail: up to the soft descriptor limit, so a descriptor opened above a since-lowered limit
