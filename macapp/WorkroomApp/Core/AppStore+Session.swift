@@ -76,10 +76,11 @@ extension AppStore {
       let splits = captured.splits.compactMap { layout in
         LayoutNode<String>.capture(layout) { keysByTabID[$0] }
       }
-      return TargetSession(
-        targetID: targetID, tabs: tabs, splits: splits,
-        focusedKey: captured.focused.flatMap { keysByTabID[$0] },
-        terminalCounter: captured.counter)
+      return withHostLayoutState(
+        TargetSession(
+          targetID: targetID, tabs: tabs, splits: splits,
+          focusedKey: captured.focused.flatMap { keysByTabID[$0] },
+          terminalCounter: captured.counter))
     }
   }
 
@@ -143,6 +144,13 @@ extension AppStore {
       // shells on this Mac, which would read as the workroom's once it is reachable.
       if target.remoteHost == nil, target.isRemoteWorkroom {
         deferredTargetSessions[target.id] = saved
+        continue
+      }
+      // A remote workroom whose host keeps its layout waits for the host's copy, which may be
+      // newer than this one (#255, D4).
+      if target.remoteWorkroomID != nil, target.remoteHost != nil {
+        deferredTargetSessions[target.id] = saved
+        fetchHostLayoutIfNeeded(for: target)
         continue
       }
       let result = terminals.restore(saved, for: target)

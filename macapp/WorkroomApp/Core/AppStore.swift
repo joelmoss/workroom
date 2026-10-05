@@ -941,6 +941,9 @@ final class AppStore: ObservableObject {
   /// then. Each is written back with every save, and restored whole once its workroom is
   /// reachable and opens its first pane (`restoreDeferredSession`).
   var deferredTargetSessions: [TerminalTarget.ID: TargetSession] = [:]
+  /// Each remote workroom's layout as its host keeps it, from this window (#255): see
+  /// `AppStore+HostLayout`.
+  var hostLayouts = HostLayoutState()
   /// Set once `endOrphanedSessionsOnce` has run: it is per process, not per window.
   static var sweptOrphanedSessions = false
   /// One-shot guard: `WindowAccessor` can resolve the same window more than once, and a claim must
@@ -2785,6 +2788,12 @@ final class AppStore: ObservableObject {
   /// Falls back to a plain shell if the armed command can't start (e.g. config cleared between arming
   /// and mount) — the shell below opens regardless.
   func ensureInitialTerminal(for target: TerminalTarget) {
+    // A remote workroom whose host keeps its layout waits for it rather than open a fresh pane
+    // (#255, D4): `applyHostLayout` comes back here once the host has answered, or not in time.
+    if fetchHostLayoutIfNeeded(for: target) {
+      hostLayouts.waitingForFirstTab.insert(target.id)
+      return
+    }
     restoreDeferredSession(for: target)
     // Consume the armed intent up front so a later re-mount can't re-fire it, then let startRunCommand
     // (re-)derive the state: it becomes `.running` as a backgrounded tab #1, or a no-op if the config

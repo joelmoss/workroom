@@ -517,6 +517,57 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertTrue(store.selectionHasTabs, "the inspector was not told the workroom has tabs")
   }
 
+  /// A remote workroom whose host keeps its layout (#255, D4) waits for the host's copy instead of
+  /// restoring its own at once or opening a fresh shell; a host that cannot answer in time gets this
+  /// Mac's own copy, whole. A second window showing the same workroom does not ask (D10).
+  func testARemoteWorkroomWaitsForItsHostsLayoutThenFallsBackToItsOwn() throws {
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
+    let workroom = Workroom(
+      name: "h", path: "/home/workroom/h", vcsName: "workroom/h", warnings: [],
+      host: HostDescriptor(
+        provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: UUID()))
+    func store() -> AppStore {
+      let store = AppStore()
+      store.terminals.makeView = { _, cwd, _ in
+        GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+      }
+      store.projects = [Project(path: "/proj", vcs: "git", workrooms: [workroom])]
+      return store
+    }
+    let id = TerminalTarget.workroomID(project: "/proj", name: "h")
+    let saved = TargetSession(
+      targetID: id, tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")])
+
+    let first = store()
+    first.pendingSessionRestore = WindowSession(windowKey: UUID().uuidString, targets: [saved])
+    first.restorePersistedSessionIfPending(in: first.projects)
+    XCTAssertEqual(
+      first.terminals.tabCount(forTargetID: id), 0, "restored before the host answered")
+    XCTAssertTrue(first.hostLayouts.fetching.contains(id))
+    let target = try XCTUnwrap(first.terminalTarget(forID: id))
+    first.ensureInitialTerminal(for: target)
+    XCTAssertEqual(
+      first.terminals.tabCount(forTargetID: id), 0, "a fresh shell opened while waiting")
+
+    // A second window showing the workroom meanwhile restores from this Mac alone.
+    let second = store()
+    XCTAssertFalse(second.fetchHostLayoutIfNeeded(for: target), "two windows asked one host")
+
+    // No host is reachable here, so the fetch gives up and this Mac's copy comes back whole.
+    let restored = expectation(description: "restored")
+    func poll() {
+      if first.terminals.tabCount(forTargetID: id) > 0 { return restored.fulfill() }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: poll)
+    }
+    poll()
+    wait(for: [restored], timeout: AppStore.hostLayoutTimeout + 3)
+    XCTAssertEqual(first.terminals.tabCount(forTargetID: id), 2)
+    XCTAssertTrue(first.deferredTargetSessions.isEmpty)
+    XCTAssertTrue(first.hostLayouts.fetched.contains(id))
+    XCTAssertFalse(first.fetchHostLayoutIfNeeded(for: target), "asked twice in one launch")
+  }
+
   /// Recovery reattaches only the targets it is told may: a pane of any other is left alone, its
   /// agent not recovered and no surface made for it.
   func testRecoveryLeavesATargetThatMayNotReattach() async {
