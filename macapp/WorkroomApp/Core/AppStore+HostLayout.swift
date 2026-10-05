@@ -18,6 +18,8 @@ struct HostLayoutState {
   var readOnly: Set<TerminalTarget.ID> = []
   /// The layout as the host last had it, encoded, so an unchanged one is never written again.
   var written: [TerminalTarget.ID: String] = [:]
+  /// A write to the host is in flight: the next waits for it rather than race it.
+  var writing: Set<TerminalTarget.ID> = []
 }
 
 /// Which window on this Mac keeps each remote workroom's layout on its host (D10). Two windows can
@@ -129,6 +131,82 @@ extension AppStore {
       ensureInitialTerminal(for: target)
       terminals.reconcileOcclusion(for: target)
     }
+  }
+
+  /// Writes each remote workroom whose layout this window keeps, and that has changed since its host
+  /// last had it, through to the host: the whole snapshot, the last Mac to write winning (D9). Called
+  /// after each save. Returns the writes started, for a quit to wait on.
+  ///
+  /// A workroom whose last tab was closed is written as an empty layout (D11), but only over a
+  /// layout the host had: a workroom this Mac opened with nothing, and nothing on the host, is not
+  /// "closed", it is about to get its first pane. One whose host answered with a newer build's
+  /// layout is never written over (D5), and nothing is written before the host has answered.
+  @discardableResult
+  func writeHostLayouts() -> [Task<Void, Never>] {
+    let captured = Dictionary(
+      captureWindowSession().targets.map { ($0.targetID, $0) },
+      uniquingKeysWith: { first, _ in first })
+    var started: [Task<Void, Never>] = []
+    for targetID in hostLayouts.fetched
+    where !hostLayouts.readOnly.contains(targetID) && !hostLayouts.writing.contains(targetID) {
+      guard let target = terminalTarget(forID: targetID), let host = target.remoteHost,
+        let workroom = target.remoteWorkroomID,
+        HostLayoutOwners.shared.owns(workroom, self)
+      else { continue }
+      let key = workroom.uuidString
+      let layout: TargetSession
+      if let current = captured[targetID] {
+        layout = current
+      } else if hostLayouts.written[targetID] != nil {
+        layout = TargetSession(targetID: targetID, tabs: [])
+      } else {
+        continue
+      }
+      guard let blob = try? HostLayout.encode(layout, key: key),
+        blob != hostLayouts.written[targetID]
+      else { continue }
+      hostLayouts.writing.insert(targetID)
+      let expected = hostLayouts.revisions[targetID] ?? 0
+      started.append(
+        Task { [weak self] in
+          let result: HostLayoutResolution
+          if let store = try? await HostConnectionManager.shared.layouts(host: .remote(host)) {
+            result = await HostLayoutSync.write(layout, key: key, expected: expected, store: store)
+          } else {
+            result = HostLayoutResolution(session: layout, revision: expected, stale: true)
+          }
+          self?.finishHostWrite(result, targetID: targetID, blob: blob)
+        })
+    }
+    return started
+  }
+
+  private func finishHostWrite(
+    _ result: HostLayoutResolution, targetID: TerminalTarget.ID, blob: String
+  ) {
+    hostLayouts.writing.remove(targetID)
+    hostLayouts.revisions[targetID] = result.revision
+    if result.stale {
+      hostLayouts.stale.insert(targetID)
+    } else {
+      hostLayouts.stale.remove(targetID)
+      hostLayouts.written[targetID] = blob
+    }
+    // The revision and stale mark are this Mac's to remember, in session.json.
+    markSessionDirty()
+  }
+
+  /// At quit (D14): every window's changed layouts go to their hosts, waited on for at most
+  /// `budget`. A write still in flight then is marked stale, so the session written next keeps it
+  /// as this Mac's newer copy, which wins at the next open and is written then.
+  static func flushHostLayouts(budget: TimeInterval) async {
+    let stores = WindowRegistry.shared.allStores
+    let writes = stores.flatMap { $0.writeHostLayouts() }
+    guard !writes.isEmpty else { return }
+    _ = try? await withTimeout(seconds: budget) {
+      for write in writes { await write.value }
+    }
+    for store in stores { store.hostLayouts.stale.formUnion(store.hostLayouts.writing) }
   }
 
   /// `captured` with this window's record of its host's copy, for `session.json`.

@@ -32,6 +32,8 @@ final class SessionCoordinator {
   private let debounce: TimeInterval
   private let ceiling: TimeInterval
   private let capture: () -> [WindowSession]
+  /// Run after each save that wrote something: remote workrooms' layouts to their hosts.
+  private let afterSave: () -> Void
   private let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "session")
 
@@ -56,12 +58,21 @@ final class SessionCoordinator {
     store: SessionStore = SessionStore(),
     debounce: TimeInterval = SessionCoordinator.defaultDebounce,
     ceiling: TimeInterval = SessionCoordinator.defaultCeiling,
-    capture: (() -> [WindowSession])? = nil
+    capture: (() -> [WindowSession])? = nil,
+    afterSave: (() -> Void)? = nil
   ) {
     self.store = store
     self.debounce = debounce
     self.ceiling = ceiling
     self.capture = capture ?? { WindowRegistry.shared.captureSessionWindows() }
+    // A coordinator built with its own capture (a test's) writes no hosts unless told to.
+    self.afterSave =
+      afterSave
+      ?? (capture == nil ? Self.writeEveryWindowsHostLayouts : {})
+  }
+
+  private static func writeEveryWindowsHostLayouts() {
+    for store in WindowRegistry.shared.allStores { store.writeHostLayouts() }
   }
 
   /// Exposed so a caller can tell "no session" from "a session this build must not touch".
@@ -141,6 +152,8 @@ final class SessionCoordinator {
       guard let self, !didWrite, self.lastWritten == windows else { return }
       self.lastWritten = nil
     }
+    // Each remote workroom's layout goes to its host with the same save (#255, D9).
+    afterSave()
   }
 
   // MARK: Quit

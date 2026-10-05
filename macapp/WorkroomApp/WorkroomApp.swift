@@ -602,9 +602,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       MainActor.assumeIsolated {
         // SIGTERM is the path `XCUIApplication.terminate()`, `make app-run` and `pkill` take —
         // `applicationShouldTerminate` never runs for a signal, so the session flush has to happen
-        // here too or none of those exits save anything (issue #46).
-        SessionCoordinator.shared.flushAndFreeze()
+        // here too or none of those exits save anything (issue #46). Remote workrooms' layouts go
+        // to their hosts first, for at most a second (#255, D14).
         let group = DispatchGroup()
+        group.enter()
+        Task {
+          await AppStore.flushHostLayouts(budget: 1)
+          SessionCoordinator.shared.flushAndFreeze()
+          group.leave()
+        }
         // A tab closed moments before this signal fires an unstructured kill Task; without
         // waiting for it here too, quitting fast enough after a close leaves that one session
         // running despite the explicit close.
@@ -737,9 +743,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // dialog, and freezing above that guard would silently kill session saving for the rest of the
     // app's life after one cancelled ⌘Q. This point is past the guard and still before any window
     // closes — which is exactly what the freeze protects, since the document is rebuilt from the
-    // live windows.
-    SessionCoordinator.shared.flushAndFreeze()
+    // live windows: the reply below, which closes them, waits on the group.
+    //
+    // Remote workrooms' layouts go to their hosts first, for at most a second (#255, D14), so the
+    // session written next marks only what did not get there as stale.
     let group = DispatchGroup()
+    group.enter()
+    Task {
+      await AppStore.flushHostLayouts(budget: 1)
+      SessionCoordinator.shared.flushAndFreeze()
+      group.leave()
+    }
     // A tab closed moments before quitting fires an unstructured kill Task (`closeTab`); wait for
     // it unconditionally — skipping this (the old early-return did, with no run command live) let
     // that one session outlive the quit despite the user having explicitly closed it.
