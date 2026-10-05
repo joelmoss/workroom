@@ -944,6 +944,9 @@ final class AppStore: ObservableObject {
   /// Each remote workroom's layout as its host keeps it, from this window (#255): see
   /// `AppStore+HostLayout`.
   var hostLayouts = HostLayoutState()
+  /// The remote workrooms waiting on their host for their layout (`hostLayouts.fetching`),
+  /// published so their empty pane says so rather than offer a terminal that opens only later.
+  @Published var waitingForHostLayout: Set<TerminalTarget.ID> = []
   /// Set once `endOrphanedSessionsOnce` has run: it is per process, not per window.
   static var sweptOrphanedSessions = false
   /// One-shot guard: `WindowAccessor` can resolve the same window more than once, and a claim must
@@ -4309,7 +4312,7 @@ final class AppStore: ObservableObject {
     // but that is a display rule — this is the chokepoint every caller routes through, the way
     // `startRunCommand` guards the run path rather than trusting its buttons.
     guard !isCreationBlocking(target.id) else { return }
-    whenHostLayoutRestored(target.id) { [terminals] in _ = terminals.addTab(for: target) }
+    newTerminal(in: target)
   }
 
   /// Close the active terminal tab in the selected target (⌘W).

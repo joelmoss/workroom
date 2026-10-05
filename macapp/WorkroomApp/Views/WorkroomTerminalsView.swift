@@ -55,20 +55,28 @@ struct WorkroomTerminalsView: View {
             Color.clear.preference(key: ContentFrameKey.self, value: geo.frame(in: .global))
           }
         )
+      } else if store.waitingForHostLayout.contains(target.id) {
+        // A remote workroom asking its host for its layout (#255, D4): its tabs come from there,
+        // within seconds, so nothing is offered meanwhile.
+        ContentUnavailableView {
+          Label("Waiting for the host", systemImage: "network")
+        } description: {
+          Text("Restoring this workroom's tabs from its host.")
+        } actions: {
+          ProgressView().controlSize(.small)
+        }
+        .accessibilityIdentifier("WaitingForHostLayout")
       } else {
         ContentUnavailableView {
           Label("No terminal", systemImage: "terminal")
         } description: {
           Text("Open one with ⌘T.")
         } actions: {
-          // Held while the host is asked for its layout (#255), as ⌘T is.
-          Button("New Terminal") {
-            store.whenHostLayoutRestored(target.id) { _ = sessions.addTab(for: target) }
-          }
-          .buttonStyle(.borderedProminent)
-          // Use the active theme accent rather than the system blue (issue #36).
-          .tint(ThemeService.shared.tokens.accent)
-          .accessibilityIdentifier("NewTerminal")
+          Button("New Terminal") { store.newTerminal(in: target) }
+            .buttonStyle(.borderedProminent)
+            // Use the active theme accent rather than the system blue (issue #36).
+            .tint(ThemeService.shared.tokens.accent)
+            .accessibilityIdentifier("NewTerminal")
         }
       }
     }
