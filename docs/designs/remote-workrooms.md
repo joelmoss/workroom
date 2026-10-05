@@ -1801,10 +1801,14 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     costs 10 seconds and one walk; a mount that is only slow to wake can take a second click, and
     a word whose `:line` comes before its `..` (`good.rb:12/link/../t.rb`) loses its healthy
     `good.rb` variant (#345). A payload read that blocks after a successful open can still hold its
-    slot; the deadline covers path lookup and descriptor validation. A newer click replaces the one before it, and an
-    answer whose pane has closed opens nothing. An error reading one path moves on to the next
-    candidate; a transport failure, a resolve that timed out, or the agent refusing a resolve
-    because too many earlier walks are stuck stops the probe.
+    slot; the deadline covers path lookup and descriptor validation. Resolves and file opens share
+    one count of workers left behind and one cap of four: at the cap the agent refuses both, a
+    resolve with "too many earlier resolves are still walking" (its #334 text, which older apps
+    match) and a read with "too many earlier filesystem operations are still pending". So four stuck
+    resolves now refuse reads too, until one of them returns. A newer click replaces the one before
+    it, and an answer whose pane has closed opens nothing. An error reading one path moves on to the
+    next candidate. A transport failure stops the probe, and so does a resolve or file open that
+    timed out, or either one refused at the cap.
 
 ## Phase 0 Results
 
