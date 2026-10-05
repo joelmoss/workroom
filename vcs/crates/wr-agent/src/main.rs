@@ -282,6 +282,15 @@ fn run_serve(
             Ok(screens) => {
                 agent.sessions.keep_screens(screens);
                 wr_agent::screens::spawn(agent.sessions.clone());
+                // Each workroom's layout (#255), on the same disk as the screens.
+                let layouts = wr_agent::layout::dir_beside(&dir);
+                match wr_agent::layout::Layouts::open(&layouts) {
+                    Ok(layouts) => wr_agent::layout::keep(layouts),
+                    Err(e) => eprintln!(
+                        "wr-agent: not keeping layouts in {}: {e}",
+                        layouts.display()
+                    ),
+                }
             }
             Err(e) => eprintln!(
                 "wr-agent: not keeping screens in {}: {e}",

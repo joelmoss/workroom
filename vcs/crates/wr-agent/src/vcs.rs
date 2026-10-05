@@ -998,7 +998,7 @@ pub(crate) fn send(writer: &SharedWriter, service: Service, stream: u32, value: 
 /// Take the complete request bytes for this envelope, or `None` when more chunks are still coming.
 ///
 /// `Err` is a request that broke the framing contract and gets a typed reply rather than silence.
-fn reassemble(
+pub(crate) fn reassemble(
     partial: &mut PartialRequests,
     envelope: &Envelope,
 ) -> Result<Option<Vec<u8>>, VcsError> {
