@@ -568,6 +568,64 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertFalse(first.fetchHostLayoutIfNeeded(for: target), "asked twice in one launch")
   }
 
+  /// What a window writes to a remote workroom's host after a save (#255): nothing before the host
+  /// has answered, nothing unchanged, an empty layout only over one the host had (D11), and a
+  /// write that cannot reach the host leaves this Mac's copy stale, to win at the next open.
+  func testWhatAWindowWritesToItsHosts() async throws {
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
+    let workroomID = UUID()
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    store.projects = [
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "w", path: "/home/workroom/w", vcsName: "workroom/w", warnings: [],
+            host: HostDescriptor(
+              provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: workroomID))
+        ])
+    ]
+    let id = TerminalTarget.workroomID(project: "/proj", name: "w")
+    let target = try XCTUnwrap(store.terminalTarget(forID: id))
+    XCTAssertTrue(HostLayoutOwners.shared.claim(workroomID, targetID: id, by: store))
+
+    // Not answered yet: nothing is written, whatever the window shows.
+    store.terminals.restore(
+      TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+    XCTAssertTrue(store.writeHostLayouts().isEmpty)
+
+    // Answered, and the host already has exactly this: nothing is written.
+    store.hostLayouts.fetched.insert(id)
+    let current = try XCTUnwrap(store.captureWindowSession().targets.first)
+    store.hostLayouts.written[id] = try HostLayout.encode(current, key: workroomID.uuidString)
+    XCTAssertTrue(store.writeHostLayouts().isEmpty)
+
+    // Changed: written, and with no host to reach, left stale.
+    store.hostLayouts.written[id] = "something older"
+    store.hostLayouts.revisions[id] = 3
+    let writes = store.writeHostLayouts()
+    XCTAssertEqual(writes.count, 1)
+    for write in writes { await write.value }
+    XCTAssertTrue(store.hostLayouts.stale.contains(id))
+    XCTAssertEqual(store.hostLayouts.revisions[id], 3)
+    XCTAssertEqual(store.captureWindowSession().targets.first?.hostLayoutStale, true)
+
+    // No tabs, and the host never had a layout: not "closed", nothing to write.
+    for tab in store.terminals.allTabs(for: target) {
+      store.terminals.closeTab(tab.id, for: target)
+    }
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 0)
+    store.hostLayouts.written[id] = nil
+    XCTAssertTrue(store.writeHostLayouts().isEmpty)
+    // No tabs over a layout the host had: the empty layout goes up.
+    store.hostLayouts.written[id] = "a layout with tabs"
+    XCTAssertEqual(store.writeHostLayouts().count, 1)
+  }
+
   /// Recovery reattaches only the targets it is told may: a pane of any other is left alone, its
   /// agent not recovered and no surface made for it.
   func testRecoveryLeavesATargetThatMayNotReattach() async {
