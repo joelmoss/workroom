@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomSessionProtocol
 
 /// A negotiated service connection, separate from the terminal attach relays. Factories must
 /// return a fresh connection for each attempt. Blocking transport work belongs off the actor.
@@ -24,6 +25,11 @@ protocol HostServiceConnection: Sendable {
   /// Ends terminal `session` on this host (#283): true once the host's agent acknowledges the kill,
   /// which it also does for a session it no longer holds.
   func endSession(_ session: UUID) async throws -> Bool
+  /// Every terminal session the host's agent holds, with what the app said about each (#255).
+  func sessions() async throws -> [SessionDescriptor]
+  /// Each remote workroom's pane layout, kept on its host (#255). Throws `VCSError.backendVersion`
+  /// when the peer predates the service.
+  func layouts() throws -> AgentLayoutService
   func close() async
 }
 
@@ -48,6 +54,14 @@ extension HostServiceConnection {
 
   func endSession(_ session: UUID) async throws -> Bool {
     throw HostConnectionError.serviceUnavailable("Host has no terminal sessions.")
+  }
+
+  func sessions() async throws -> [SessionDescriptor] {
+    throw HostConnectionError.serviceUnavailable("Host has no terminal sessions.")
+  }
+
+  func layouts() throws -> AgentLayoutService {
+    throw VCSError.backendVersion("Host has no layout service.")
   }
 }
 
@@ -287,6 +301,17 @@ actor HostConnectionManager {
   /// never connects; a caller that must reach the host connects first.
   func endSession(_ session: UUID, on host: HostID) async throws -> Bool {
     try await connected(host).1.endSession(session)
+  }
+
+  /// Not lease-tracked either, and never connects, like `endSession`.
+  func sessions(on host: HostID) async throws -> [SessionDescriptor] {
+    try await connected(host).1.sessions()
+  }
+
+  /// Not lease-tracked either: a layout is read once, and a write names the revision it read, so a
+  /// later connection cannot apply a stale one. Never connects.
+  func layouts(host: HostID) throws -> AgentLayoutService {
+    try connected(host).1.layouts()
   }
 
   private func connected(_ host: HostID) throws -> (Lease, any HostServiceConnection) {

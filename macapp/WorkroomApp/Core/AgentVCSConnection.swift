@@ -85,6 +85,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   private static let fileService: UInt8 = 3
   private static let statusService: UInt8 = 4
   private static let forwardService: UInt8 = 5
+  /// `Service::Layout` (#255): JSON like the others, and chunked like VCS, since a layout can be
+  /// larger than one envelope.
+  private static let layoutService: UInt8 = 6
   /// `Service::Control`: the session list a terminal helper answers (#239). Its payloads are
   /// `SessionFrame`s, not a chunk flag and JSON.
   private static let controlService: UInt8 = 0
@@ -411,6 +414,13 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// up the connection's other requests for up to that repaint. A per-session cwd request would not;
   /// add one if footer queries are ever seen to stall VCS.
   func workingDirectory(of session: UUID) async throws -> String? {
+    let identifier = SessionIdentifier(uuidString: session.uuidString)
+    let directory = try await sessions().first { $0.identifier == identifier }?.workingDirectory
+    return directory?.isEmpty == false ? directory : nil
+  }
+
+  /// The host's session list: the same `List` frame the local control client sends.
+  func sessions() async throws -> [SessionDescriptor] {
     let reply = try await request(
       bytes: Data(SessionFrame(kind: .list).encoded()), timeout: 30,
       service: Self.controlService)
@@ -424,10 +434,24 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
       let reason = String(decoding: frame.payload, as: UTF8.self)
       throw HostConnectionError.serviceUnavailable("No session list: \(reason)")
     }
-    let identifier = SessionIdentifier(uuidString: session.uuidString)
-    let directory = try SessionDescriptor.decodeList(frame.payload)
-      .first { $0.identifier == identifier }?.workingDirectory
-    return directory?.isEmpty == false ? directory : nil
+    return try SessionDescriptor.decodeList(frame.payload)
+  }
+
+  /// The layout service on this connection, or `VCSError.backendVersion` when the peer predates it
+  /// (#255), checked against the peer's greeting as File and Status are.
+  func layouts() throws -> AgentLayoutService {
+    try lock.withLock {
+      guard !closed else { throw HostConnectionError.connectionLost }
+      guard helloVersion >= AgentControlClient.minLayoutVersion else {
+        throw VCSError.backendVersion("Agent does not support the layout service.")
+      }
+    }
+    return AgentLayoutService(connection: self)
+  }
+
+  /// A Layout request. 15s: a `put` syncs a file and its directory, and a `get` reads one.
+  func layoutRequest(_ request: AgentLayoutRequest) async throws -> Data {
+    try await self.request(request, timeout: 15, service: Self.layoutService)
   }
 
   /// The same `Kill` frame the local control client sends, on this connection's Control service.
@@ -639,13 +663,17 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     // agent would read the marker byte as the start of a JSON document and answer with a parse
     // error. Below the ceiling nothing changes — the envelope is byte-identical to what shipped
     // before, so the common path pays nothing for this.
-    let chunked = service == Self.vcsService && bytes.count > Self.maxEnvelopePayload
-    if service != Self.vcsService && bytes.count > Self.maxEnvelopePayload {
+    // Layout requests chunk too: every agent with the service reassembles them (`layout.rs`).
+    let chunkable = service == Self.vcsService || service == Self.layoutService
+    let chunked = chunkable && bytes.count > Self.maxEnvelopePayload
+    if !chunkable && bytes.count > Self.maxEnvelopePayload {
       throw FileServiceError.failed("Agent request is too large.")
     }
     if chunked {
-      guard let exec = capabilities?.exec, exec >= Self.chunkedRequestVersion else {
-        throw VCSError.partialData("VCS request is too large for this agent.")
+      if service == Self.vcsService {
+        guard let exec = capabilities?.exec, exec >= Self.chunkedRequestVersion else {
+          throw VCSError.partialData("VCS request is too large for this agent.")
+        }
       }
       guard bytes.count <= Self.maxRequest else {
         throw VCSError.partialData("VCS request is too large.")
@@ -802,10 +830,11 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           let streamIsValid =
             stream > 0 || service == Self.fileService || service == Self.statusService
             || service == Self.forwardService || service == Self.controlService
+          // Layout replies are JSON chunks like VCS's, never on stream 0 (#255).
           guard
             service == Self.vcsService || service == Self.fileService
               || service == Self.statusService || service == Self.forwardService
-              || service == Self.controlService, streamIsValid,
+              || service == Self.controlService || service == Self.layoutService, streamIsValid,
             length > 0, length <= 1 << 20
           else {
             throw HostConnectionError.serviceUnavailable("Invalid agent envelope.")

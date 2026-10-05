@@ -14,7 +14,11 @@ final class AgentHarness {
   private let directory: URL
   private var attachments: [Process] = []
 
-  static func start(environment: [String: String]? = nil) throws -> AgentHarness {
+  /// `screens` starts it as a real host's supervisor does (`--screens`), which is also what gives it
+  /// a Layout service (#255): `layouts` beside the screens.
+  static func start(
+    environment: [String: String]? = nil, screens: Bool = false
+  ) throws -> AgentHarness {
     // sun_path is 104 bytes; NSTemporaryDirectory() + a UUID overflows it.
     let directory = URL(
       fileURLWithPath: "/tmp/wra-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -27,7 +31,9 @@ final class AgentHarness {
     process.environment = environment
     // The idle timeout has to outlast the whole test: an agent with no sessions and no clients
     // exits on purpose, and between two assertions it is briefly both.
-    process.arguments = ["serve", "--socket", socketPath, "--idle-timeout", "120"]
+    process.arguments =
+      ["serve", "--socket", socketPath, "--idle-timeout", "120"]
+      + (screens ? ["--screens", directory.appendingPathComponent("screens").path] : [])
     process.standardOutput = FileHandle.nullDevice
     let errorURL = directory.appendingPathComponent("agent.err")
     FileManager.default.createFile(atPath: errorURL.path, contents: nil)
