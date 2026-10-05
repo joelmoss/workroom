@@ -66,12 +66,28 @@ protocol HostTerminalDriver: HostDriver {
   /// the session is new. `restored` for a pane reattaching after a relaunch or a lost link: the
   /// session must already exist there, and if it has ended the pane gets a shell that says so
   /// rather than a fresh one that looks like it (`wr-agent attach --no-create`).
-  func attachCommand(to host: HostID, session: UUID, workingDirectory: String, restored: Bool)
-    throws -> String
+  ///
+  /// `metadata` is what the app says about the session (`SessionMetadataKey`): its workroom and
+  /// title travel to the host's agent with the attach, so any Mac can find the session (#255).
+  func attachCommand(
+    to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
+    metadata: [(key: String, value: String)]
+  ) throws -> String
   /// Whether the last attach of `session` was refused by `host` in a way that does not heal, for
   /// a pane deciding whether to keep trying: a host that is rebooting comes back, one that
   /// answers with another host key does not (#241).
   func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool
+}
+
+extension HostTerminalDriver {
+  /// An attach that says nothing about its session.
+  func attachCommand(to host: HostID, session: UUID, workingDirectory: String, restored: Bool)
+    throws -> String
+  {
+    try attachCommand(
+      to: host, session: session, workingDirectory: workingDirectory, restored: restored,
+      metadata: [])
+  }
 }
 
 enum HostDriverError: Error, Equatable, Sendable, LocalizedError {

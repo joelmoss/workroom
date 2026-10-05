@@ -218,6 +218,9 @@ struct TerminalTarget: Identifiable, Hashable {
   /// What kind of host a remote workroom is on (`HostDescriptor.kindDescription`), for its icon's
   /// tooltip (#309).
   var hostKind: String? = nil
+  /// A remote workroom's own id (`HostDescriptor.workroomID`): the same on every Mac, where `id`
+  /// holds this Mac's project path (#255).
+  var remoteWorkroomID: UUID? = nil
 
   var isMissing: Bool { unavailability != nil }
 
@@ -229,6 +232,11 @@ struct TerminalTarget: Identifiable, Hashable {
   var isRemoteWorkroom: Bool {
     remoteHost != nil || unavailability == .remote || unavailability == .hostDestroyed
   }
+
+  /// What a session in this target is tagged with (`SessionMetadataKey.workroom`), and what the
+  /// app matches a session's tag against: the workroom's own id for a remote workroom that has
+  /// one, `id` otherwise (#255).
+  var sessionWorkroomKey: String { remoteWorkroomID?.uuidString ?? id }
 
   /// Why no pane can mount here, or nil when one can: `unavailability`, except for a remote
   /// workroom whose host this app reaches.
@@ -306,7 +314,8 @@ extension Workroom {
     TerminalTarget(
       id: TerminalTarget.workroomID(project: projectPath, name: name),
       title: displayName, path: path, unavailability: unavailability,
-      remoteHost: reachableHost, remoteNote: remoteNote, hostKind: host?.kindDescription)
+      remoteHost: reachableHost, remoteNote: remoteNote, hostKind: host?.kindDescription,
+      remoteWorkroomID: host?.workroomID)
   }
 
   /// Why this remote workroom's panes don't open here, for one this build could otherwise reach:

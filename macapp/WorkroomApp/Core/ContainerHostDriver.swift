@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomSessionProtocol
 
 /// The first `HostDriver`: a Linux container running sshd and a supervised `wr-agent`
 /// (`vcs/scripts/ssh-fixture`, #228), reached over plain ssh-stdio. It is the test fixture for
@@ -761,12 +762,13 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   func attachCommand(
-    to host: HostID, session: UUID, workingDirectory: String, restored: Bool
+    to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
+    metadata: [(key: String, value: String)]
   ) throws -> String {
     let (id, target) = try target(host)
     return try Self.attachCommand(
       to: target, in: directory.appendingPathComponent(id.uuidString), session: session,
-      workingDirectory: workingDirectory, restored: restored)
+      workingDirectory: workingDirectory, restored: restored, metadata: metadata)
   }
 
   /// Whether the last attach of `session` was refused by `host` in a way that does not heal: a
@@ -801,7 +803,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// The command a pane runs to attach to `session` on `host` over ssh, with the host's
   /// configuration written to `hostDirectory`.
   static func attachCommand(
-    to host: Host, in hostDirectory: URL, session: UUID, workingDirectory: String, restored: Bool
+    to host: Host, in hostDirectory: URL, session: UUID, workingDirectory: String, restored: Bool,
+    metadata: [(key: String, value: String)] = []
   ) throws -> String {
     let config = try writeConfiguration(for: host, in: hostDirectory)
     // `-t`: the attach client on the far side wants a terminal, for raw mode and the pane's size,
@@ -813,7 +816,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       "LocalCommand=printf '\\0338\\033[J'", "-t", alias,
       remoteAttachCommand(
         binary: host.agentBinary, session: session, socket: host.agentSocket,
-        resources: host.resources, workingDirectory: workingDirectory, restored: restored),
+        resources: host.resources, workingDirectory: workingDirectory, restored: restored,
+        metadata: metadata),
     ]
     return (["/bin/sh", "-c", attachWrapper, "workroom-attach", log] + ssh)
       .map(shellQuoted).joined(separator: " ")
@@ -887,19 +891,27 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// binary to run, and the shell's 127 for that would read as the session's own exit. It exits
   /// 255 instead, ssh's own status for a lost link, which the app answers by attaching again with
   /// backoff: by then the bootstrap, which nothing orders panes after, has installed it.
+  /// `metadata` goes in under the same variables a local pane's attach gets
+  /// (`SessionMetadataKey.environmentVariables`), which the host's agent keeps as the session's
+  /// workroom and title (#255).
   static func remoteAttachCommand(
     binary: String, session: UUID, socket: String, resources: String, workingDirectory: String,
-    restored: Bool
+    restored: Bool, metadata: [(key: String, value: String)] = []
   ) -> String {
     let integrated = [
       "TERM=xterm-ghostty", "TERMINFO=\(resources)/terminfo",
       "WORKROOM_SESSION_RESOURCES=\(resources)", "GHOSTTY_SHELL_FEATURES=cursor,sudo,title",
     ]
-    let variables = [
-      "WORKROOM_SESSION_ID=\(session.uuidString)",
-      "WORKROOM_SESSION_SOCKET=\(socket)",
-      "WORKROOM_SESSION_CWD=\(workingDirectory)",
-    ]
+    let names = Dictionary(uniqueKeysWithValues: SessionMetadataKey.environmentVariables)
+    let variables =
+      [
+        "WORKROOM_SESSION_ID=\(session.uuidString)",
+        "WORKROOM_SESSION_SOCKET=\(socket)",
+        "WORKROOM_SESSION_CWD=\(workingDirectory)",
+      ]
+      + metadata.compactMap { entry in
+        names[entry.key].flatMap { entry.value.isEmpty ? nil : "\($0)=\(entry.value)" }
+      }
     return "test -x \(shellQuoted(binary)) || { echo "
       + shellQuoted("workroom: no agent is installed at \(binary) yet") + " >&2; exit 255; }; "
       + "if test -r \(shellQuoted(resources + "/terminfo/x/xterm-ghostty")); then set -- "

@@ -2111,19 +2111,23 @@ final class TerminalSessions: ObservableObject {
       target.remoteHost != nil && command == nil
       ? sessionID ?? UUID()
       : assignedSessionID(persisted: sessionID, isRunCommand: command != nil)
+    // The workroom a session is tagged with is how its agent's list finds it again: `target.id`
+    // for a workroom on this Mac, whose agent no other Mac reads, and the workroom's own id for a
+    // remote one, since `target.id` holds this Mac's project path and another Mac's differs (#255).
+    let metadata: [(key: String, value: String)] = [
+      (SessionMetadataKey.project, projectPath(from: target.id) ?? target.path),
+      (SessionMetadataKey.workroom, target.sessionWorkroomKey),
+      (SessionMetadataKey.title, title ?? "Terminal \(count)"),
+    ]
     if let host = target.remoteHost, let assignedSessionID {
       // `cwd` is a path on the host here: the target's, or a split's anchor pane's.
-      registerRemote(assignedSessionID, on: host, workingDirectory: cwd)
+      registerRemote(assignedSessionID, on: host, workingDirectory: cwd, metadata: metadata)
     }
     view.persistentSessionID = assignedSessionID
     // `sessionID` non-nil means this pane is being rebuilt from a restore payload, so its id names
     // a session that may no longer exist. A fresh pane's id was minted a line ago.
     view.persistentSessionIsRestored = sessionID != nil
-    view.sessionMetadata = [
-      (SessionMetadataKey.project, projectPath(from: target.id) ?? target.path),
-      (SessionMetadataKey.workroom, target.id),
-      (SessionMetadataKey.title, title ?? "Terminal \(count)"),
-    ]
+    view.sessionMetadata = metadata
     var tab = TerminalTab.terminal(view: view, defaultTitle: title ?? "Terminal \(count)")
     if case .terminal(var state) = tab.content {
       state.sessionID = assignedSessionID
@@ -2378,12 +2382,16 @@ final class TerminalSessions: ObservableObject {
   /// that reads as the remote workroom's. With no driver to reach the host (no Docker), the
   /// session is still registered against a driver that knows no host, so the pane says why
   /// rather than opening that shell (`PersistentSessionService.attachCommand`).
-  private func registerRemote(_ session: UUID, on host: UUID, workingDirectory: String) {
+  private func registerRemote(
+    _ session: UUID, on host: UUID, workingDirectory: String,
+    metadata: [(key: String, value: String)]
+  ) {
     let driver =
       RemoteHosts.shared.existingDriver(holding: host)
       ?? ContainerHostDriver(hosts: [:], directory: RemoteHosts.directory)
     sessionService.registerRemoteSession(
-      session, on: .remote(host), via: driver, workingDirectory: workingDirectory)
+      session, on: .remote(host), via: driver, workingDirectory: workingDirectory,
+      metadata: metadata)
   }
 
   private func assignedSessionID(persisted: UUID?, isRunCommand: Bool) -> UUID? {
