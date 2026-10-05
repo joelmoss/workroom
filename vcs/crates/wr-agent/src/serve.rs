@@ -233,6 +233,8 @@ struct ConnectionServices {
     /// `Transport::peer`, for the log lines a kill or a hand-off writes.
     peer: String,
     partial: crate::vcs::PartialRequests,
+    /// The Layout service's own, so its chunked requests never share a buffer with the VCS one's.
+    layout_partial: crate::vcs::PartialRequests,
     subscriptions: crate::watch::Subscriptions,
     forwards: crate::forward::Forwards,
 }
@@ -296,6 +298,7 @@ pub fn handle_connection<T: Transport>(
     let mut services = ConnectionServices {
         peer,
         partial: crate::vcs::PartialRequests::default(),
+        layout_partial: crate::vcs::PartialRequests::default(),
         subscriptions: crate::watch::Subscriptions::new(Arc::clone(&writer), closer),
         forwards: crate::forward::Forwards::new(),
     };
@@ -375,6 +378,10 @@ fn dispatch(
     }
     if envelope.service == Service::File {
         crate::file::dispatch(envelope, writer, &services.subscriptions);
+        return None;
+    }
+    if envelope.service == Service::Layout {
+        crate::layout::dispatch(&mut services.layout_partial, envelope, writer);
         return None;
     }
     if envelope.service == Service::Status {

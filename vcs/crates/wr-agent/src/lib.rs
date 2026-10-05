@@ -13,6 +13,7 @@ pub mod file;
 pub mod forward;
 pub mod handoff;
 pub mod input;
+pub mod layout;
 pub mod log;
 pub mod process;
 pub mod protocol;
