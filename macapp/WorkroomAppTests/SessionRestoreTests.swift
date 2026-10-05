@@ -954,6 +954,64 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertTrue(store.hostLayouts.unanswered.contains(id))
   }
 
+  /// A write still on its way to a workroom's old host when a reload moves the workroom is not
+  /// taken as the new host's: its revision is not kept, and the workroom stays unanswered for the
+  /// new host, so no later write retries over a layout it never read.
+  func testAWriteToAWorkroomsOldHostIsNotTakenAsTheNewOnes() async throws {
+    final class SlowHost: HostLayoutStore, @unchecked Sendable {
+      var puts: [UInt64] = []
+      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 9, blob: nil) }
+      func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
+        puts.append(expected)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        guard expected == 3 else { throw AgentLayoutError.stale(revision: 9) }
+        return 4
+      }
+    }
+    let host = SlowHost()
+    let saved = AppStore.hostLayoutStore
+    AppStore.hostLayoutStore = { _ in host }
+    defer { AppStore.hostLayoutStore = saved }
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
+    let workroomID = UUID()
+    let first = UUID()
+    func project(host: UUID) -> Project {
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "o", path: "/home/workroom/o", vcsName: "workroom/o", warnings: [],
+            host: HostDescriptor(
+              provisioner: RemoteWorkrooms.provisioner, id: host, workroomID: workroomID))
+        ])
+    }
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    store.projects = [project(host: first)]
+    let id = TerminalTarget.workroomID(project: "/proj", name: "o")
+    let target = try XCTUnwrap(store.terminalTarget(forID: id))
+    XCTAssertTrue(HostLayoutOwners.shared.claim(workroomID, targetID: id, by: store))
+    store.terminals.restore(
+      TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+    store.hostLayouts.fetched.insert(id)
+    store.hostLayouts.hosts[id] = (first, workroomID)
+    store.hostLayouts.revisions[id] = 3
+    store.hostLayouts.written[id] = "the first host's layout"
+
+    let toOldHost = store.writeHostLayouts()
+    XCTAssertEqual(toOldHost.count, 1)
+    store.projects = [project(host: UUID())]
+    XCTAssertTrue(store.writeHostLayouts().isEmpty, "raced the write in flight")
+    for write in toOldHost { await write.value }
+    if let next = store.hostLayouts.writing[id] { await next.value }
+    XCTAssertNotEqual(store.hostLayouts.revisions[id], 4, "the old host's revision was kept")
+    XCTAssertTrue(store.hostLayouts.unanswered.contains(id))
+    XCTAssertEqual(host.puts, [3, 0], "the new host was not written as unanswered")
+  }
+
   /// A host whose layout resolves in time but whose session list is late keeps the resolution:
   /// the layout may already have been written there, so the workroom is not treated as unanswered.
   func testALateSessionListKeepsTheResolvedLayout() async throws {

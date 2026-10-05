@@ -266,7 +266,7 @@ extension AppStore {
         } else {
           result = HostLayoutResolution(session: layout, revision: expected, stale: true)
         }
-        self?.finishHostWrite(result, targetID: targetID, blob: blob)
+        self?.finishHostWrite(result, targetID: targetID, host: host, key: key, blob: blob)
       }
       hostLayouts.writing[targetID] = write
       started.append(write)
@@ -328,9 +328,19 @@ extension AppStore {
   }
 
   private func finishHostWrite(
-    _ result: HostLayoutResolution, targetID: TerminalTarget.ID, blob: String
+    _ result: HostLayoutResolution, targetID: TerminalTarget.ID, host: UUID, key: String,
+    blob: String
   ) {
     hostLayouts.writing.removeValue(forKey: targetID)
+    // A reload moved the workroom to another host while this write was on its way to the old one
+    // (`rebindMovedWorkrooms`): its revision and copy are the old host's, so nothing of it is kept,
+    // and the layout goes to the new host as an unanswered workroom's first write.
+    if let bound = hostLayouts.hosts[targetID],
+      bound.host != host || bound.workroom.uuidString != key
+    {
+      writeHostLayouts()
+      return
+    }
     if result.readOnly {
       // Another Mac wrote a newer build's layout first: never written over (D5).
       hostLayouts.readOnly.insert(targetID)
