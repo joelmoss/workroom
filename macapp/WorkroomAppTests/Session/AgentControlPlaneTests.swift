@@ -72,6 +72,48 @@ final class AgentControlPlaneTests: XCTestCase {
     XCTAssertEqual(client.list().first?.identifier.uuid, second)
   }
 
+  /// Deleting a workroom ends its sessions (`endSessions(matchingWorkroom:)`), and the launch sweep
+  /// ends sessions whose workroom is gone (`orphanedSessionIDs`). Both find a session by its
+  /// `workroom` metadata, which the app puts in the attach command's environment
+  /// (`launchEnvironment`). This starts a session that way and asks the app's own matching whether
+  /// it is found: if the tag does not reach the agent's list, a deleted workroom's shell runs on.
+  func testAnAgentSessionCarriesItsWorkroomSoDeleteAndTheSweepFindIt() throws {
+    let harness = try AgentHarness.start()
+    defer { harness.stop() }
+
+    let client = AgentControlClient(socketPath: harness.socketPath)
+    let identifier = UUID()
+    let workroom = TerminalTarget.workroomID(project: "/Users/me/dev/app", name: "cyan-brush")
+    try harness.startSession(
+      identifier: identifier,
+      metadata: [
+        (SessionMetadataKey.project, "/Users/me/dev/app"),
+        (SessionMetadataKey.workroom, workroom),
+        (SessionMetadataKey.title, "Terminal 2"),
+      ])
+    XCTAssertTrue(
+      harness.wait { client.list().count == 1 },
+      "the attach never produced a session the app could see")
+    let listed = try XCTUnwrap(client.list().first)
+
+    XCTAssertEqual(
+      listed.value(forMetadataKey: SessionMetadataKey.workroom), workroom,
+      "the session's workroom never reached the agent's list, so deleting it ends nothing")
+    XCTAssertEqual(
+      listed.value(forMetadataKey: SessionMetadataKey.title), "Terminal 2",
+      "Detached Terminals names a session by its title")
+
+    // The sweep skips attached sessions, so ask it about the same session once detached.
+    let detached = SessionDescriptor(
+      identifier: listed.identifier, shellProcessID: listed.shellProcessID,
+      ttyDevice: listed.ttyDevice, workingDirectory: listed.workingDirectory, isAttached: false,
+      metadata: listed.metadata)
+    XCTAssertEqual(
+      PersistentSessionService.orphanedSessionIDs([detached], resolves: { _ in false }),
+      [identifier],
+      "a detached session whose workroom is gone is not swept")
+  }
+
   /// `decodeHello` throws `notAnAgent` rather than returning nil specifically so that a peer which
   /// is not an agent fails at its second byte instead of waiting out the two-second timeout. A
   /// login banner or an MOTD on a remote stream is the case that motivates it, and it is reachable
