@@ -1001,6 +1001,58 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertFalse(store.hostLayouts.unanswered.contains(id))
   }
 
+  /// An unanswered workroom whose own seed landed after the wait gave up finds it on the host when
+  /// its first write is refused, and writes again at that seed's revision rather than leave the
+  /// seed to win at the next launch.
+  func testAnUnansweredWorkroomFindingItsOwnLateSeedWritesOverIt() async throws {
+    final class SeededHost: HostLayoutStore, @unchecked Sendable {
+      let seed: String
+      var puts: [UInt64] = []
+      init(seed: String) { self.seed = seed }
+      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 1, blob: seed) }
+      func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
+        puts.append(expected)
+        guard expected == 1 else { throw AgentLayoutError.stale(revision: 1) }
+        return 2
+      }
+    }
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
+    let workroomID = UUID()
+    let host = SeededHost(seed: "the seed this Mac wrote")
+    let saved = AppStore.hostLayoutStore
+    AppStore.hostLayoutStore = { _ in host }
+    defer { AppStore.hostLayoutStore = saved }
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    store.projects = [
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "z", path: "/home/workroom/z", vcsName: "workroom/z", warnings: [],
+            host: HostDescriptor(
+              provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: workroomID))
+        ])
+    ]
+    let id = TerminalTarget.workroomID(project: "/proj", name: "z")
+    let target = try XCTUnwrap(store.terminalTarget(forID: id))
+    XCTAssertTrue(HostLayoutOwners.shared.claim(workroomID, targetID: id, by: store))
+    store.terminals.restore(
+      TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+    store.hostLayouts.fetched.insert(id)
+    store.hostLayouts.unanswered.insert(id)
+    store.hostLayouts.unansweredWrite[id] = "the seed this Mac wrote"
+    store.hostLayouts.written[id] = "the seed this Mac wrote"
+
+    for write in store.writeHostLayouts() { await write.value }
+    XCTAssertEqual(host.puts, [0, 1])
+    XCTAssertEqual(store.hostLayouts.revisions[id], 2)
+    XCTAssertFalse(store.hostLayouts.unanswered.contains(id))
+  }
+
   /// A change saved while an unanswered workroom's write is in flight is sent once that write is
   /// refused, not left until some later change; and only once, however that one goes.
   func testAChangeBehindAnUnansweredWriteIsSentAfterIt() async throws {

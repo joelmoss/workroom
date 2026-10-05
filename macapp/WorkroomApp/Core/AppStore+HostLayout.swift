@@ -12,6 +12,9 @@ struct HostLayoutState {
   /// write goes in only if the host still holds the revision this Mac last saw, and is never
   /// retried past a refusal or marked stale: it must not replace a layout this Mac never saw.
   var unanswered: Set<TerminalTarget.ID> = []
+  /// What an unanswered workroom's fetch may have written before its answer was given up on (its
+  /// seed, or its stale copy), encoded: a host found holding exactly that has been read after all.
+  var unansweredWrite: [TerminalTarget.ID: String] = [:]
   /// Opened while the host was being asked (a tab, a file, a diff), run once its layout is
   /// restored: a tab there first would stop the restore, and its write replace the host's layout.
   /// Each is given the target as it is when it runs: a reload meanwhile can give the workroom
@@ -208,6 +211,9 @@ extension AppStore {
       if !keepsNoLayouts {
         // Either way the host's layout was not read: no write may replace it unseen.
         hostLayouts.unanswered.insert(targetID)
+        hostLayouts.unansweredWrite[targetID] = held.flatMap {
+          try? HostLayout.encode($0, key: key)
+        }
         // The host had this copy when this Mac last saw it, unless this Mac's is newer.
         hostHasIt = held?.hostLayoutStale != true
       }
@@ -248,11 +254,15 @@ extension AppStore {
     where hostLayouts.writing[targetID] == nil {
       let expected = hostLayouts.revisions[targetID] ?? 0
       let attempts = hostLayouts.unanswered.contains(targetID) ? 1 : 3
+      let ownWrite =
+        hostLayouts.unanswered.contains(targetID)
+        ? hostLayouts.unansweredWrite[targetID] : nil
       let write = Task { [weak self] in
         let result: HostLayoutResolution
         if let store = try? await Self.hostLayoutStore(.remote(host)) {
           result = await HostLayoutSync.write(
-            layout, key: key, expected: expected, store: store, attempts: attempts)
+            layout, key: key, expected: expected, store: store, attempts: attempts,
+            ownWrite: ownWrite)
         } else {
           result = HostLayoutResolution(session: layout, revision: expected, stale: true)
         }
@@ -341,6 +351,7 @@ extension AppStore {
         return
       }
       hostLayouts.unanswered.remove(targetID)
+      hostLayouts.unansweredWrite[targetID] = nil
     }
     hostLayouts.revisions[targetID] = result.revision
     if result.stale {

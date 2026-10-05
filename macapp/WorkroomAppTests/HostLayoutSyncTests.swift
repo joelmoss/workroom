@@ -202,6 +202,27 @@ final class HostLayoutSyncTests: XCTestCase {
     XCTAssertEqual(kept?.revision, 2)
   }
 
+  /// A write of this Mac's own that landed after its answer was given up on (a seed) is the
+  /// host's layout: one refused write finds it there and goes in at its revision, once; a host
+  /// holding anything else still refuses it for good.
+  func testAWriteFindingItsOwnLateSeedGoesInOnceAtItsRevision() async throws {
+    let seed = try HostLayout.encode(layout("mine"), key: key)
+    let host = FakeHost()
+    host.seed(key, revision: 1, blob: seed)
+    let written = await HostLayoutSync.write(
+      layout("edited"), key: key, expected: 0, store: host, attempts: 1, ownWrite: seed)
+    XCTAssertFalse(written.stale)
+    XCTAssertEqual(written.revision, 2)
+    XCTAssertEqual(host.puts, 2)
+
+    let other = FakeHost()
+    other.seed(key, revision: 1, blob: try HostLayout.encode(layout("theirs"), key: key))
+    let refused = await HostLayoutSync.write(
+      layout("edited"), key: key, expected: 0, store: other, attempts: 1, ownWrite: seed)
+    XCTAssertTrue(refused.stale)
+    XCTAssertEqual(other.puts, 1)
+  }
+
   /// One attempt: a refusal is final, at the revision this Mac had, not retried past (a Mac that
   /// never read the host's layout this launch).
   func testASingleAttemptWriteIsNeverRetriedPastARefusal() async {
