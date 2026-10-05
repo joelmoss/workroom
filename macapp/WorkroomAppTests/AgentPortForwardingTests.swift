@@ -605,16 +605,33 @@ final class AgentPortForwardingTests: XCTestCase {
   /// The fixture, not the app: a test that stops an `EchoServer` by hand is stopped again by
   /// `tearDown`, and that second stop must not close the descriptor that has reused the number.
   func testStoppingAnEchoServerTwiceLeavesTheNumberToItsNewOwner() throws {
+    // A file of this test's own, so the descriptor parked on the freed number can be told apart from
+    // anything another thread opens there.
+    let marker = FileManager.default.temporaryDirectory.appendingPathComponent("echo-\(UUID())")
+    XCTAssertTrue(FileManager.default.createFile(atPath: marker.path, contents: nil))
+    defer { try? FileManager.default.removeItem(at: marker) }
+    var expected = stat()
+    XCTAssertEqual(stat(marker.path, &expected), 0)
+
     let echo = try EchoServer()
     let number = echo.listener
     echo.stop()
     // The lowest free number, which is almost always the one just released.
-    let reused = open("/dev/null", O_RDONLY)
-    defer { Darwin.close(reused) }
-    try XCTSkipUnless(reused == number, "another thread took descriptor \(number) first")
+    let reused = open(marker.path, O_RDONLY)
+    guard reused == number else {
+      if reused >= 0 { Darwin.close(reused) }
+      throw XCTSkip("another thread took descriptor \(number) first")
+    }
 
     echo.stop()
-    XCTAssertNotEqual(fcntl(reused, F_GETFD), -1, "the second stop closed descriptor \(reused)")
+    var actual = stat()
+    let stillOurs =
+      fstat(reused, &actual) == 0 && actual.st_dev == expected.st_dev
+      && actual.st_ino == expected.st_ino
+    // Closed only while it is provably still this test's file. If the second stop closed it, the
+    // number may already be another thread's, and closing it here would be the very bug under test.
+    if stillOurs { Darwin.close(reused) }
+    XCTAssertTrue(stillOurs, "the second stop closed descriptor \(reused)")
   }
 }
 
