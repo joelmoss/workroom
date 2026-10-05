@@ -129,6 +129,8 @@ impl Pty {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
+        // Before the fork: the child may not ask anything that could allocate or take a lock.
+        let descriptor_limit = unsafe { libc::getdtablesize() };
         let mut master: libc::c_int = -1;
         let pid = unsafe { forkpty(&mut master, std::ptr::null_mut(), std::ptr::null(), &size) };
 
@@ -147,6 +149,7 @@ impl Pty {
             // an error. All the CStrings were built before the fork for exactly that reason.
             unsafe {
                 libc::close(err_read);
+                close_inherited(err_write, descriptor_limit);
 
                 let mut empty: libc::sigset_t = std::mem::zeroed();
                 libc::sigemptyset(&mut empty);
@@ -396,6 +399,39 @@ fn set_nonblocking(fd: libc::c_int) {
     }
 }
 
+/// Closes every descriptor from 3 up but `keep`, in a forked child before `execve`, so the shell
+/// gets its terminal and nothing else of the agent's.
+///
+/// Close-on-exec alone does not cover it. On macOS, std creates a socket or a pipe and only then
+/// marks it close-on-exec, so one that another thread is creating as this child forks (an accepted
+/// client, a forward's listener) arrives here without the flag, and would live as long as the
+/// shell: a client the agent hung up on would never see EOF. Measured: 18 shells in 300 held a
+/// stray socket while another thread made sockets.
+///
+/// Async-signal-safe: syscalls only, and `limit` was read before the fork.
+unsafe fn close_inherited(keep: libc::c_int, limit: libc::c_int) {
+    #[cfg(target_os = "linux")]
+    {
+        // One call per range where the kernel has it (5.9+); the loop below otherwise.
+        let below = if keep > 3 {
+            libc::syscall(libc::SYS_close_range, 3u32, (keep - 1) as u32, 0u32)
+        } else {
+            0
+        };
+        let above = libc::syscall(libc::SYS_close_range, (keep + 1) as u32, u32::MAX, 0u32);
+        if below == 0 && above == 0 {
+            return;
+        }
+    }
+    // ponytail: up to the soft descriptor limit, so a descriptor opened above a since-lowered limit
+    // survives. Nothing here lowers it.
+    for fd in 3..limit {
+        if fd != keep {
+            libc::close(fd);
+        }
+    }
+}
+
 // glibc puts forkpty in libutil; musl and Darwin put it in libc.
 #[cfg_attr(target_env = "gnu", link(name = "util"))]
 extern "C" {
@@ -519,6 +555,40 @@ mod tests {
         assert_eq!(
             read_until(&pty, "-sh", Duration::from_secs(5)).trim(),
             "-sh"
+        );
+    }
+
+    /// A descriptor this process holds without close-on-exec when a shell starts must not reach
+    /// the shell. That is the state of every socket and pipe another thread is creating at that
+    /// moment: on macOS, std opens it and only then marks it close-on-exec, so an accepted client
+    /// or a forward's listener could otherwise live on in a session's shell.
+    #[test]
+    fn the_shell_inherits_no_descriptor_but_its_terminal() {
+        let mut fds = [-1; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
+        // Well above anything the shell opens for itself, and left without close-on-exec.
+        let stray = unsafe { libc::fcntl(fds[1], libc::F_DUPFD, 60) };
+        assert!(stray >= 60, "dup: {}", std::io::Error::last_os_error());
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+
+        let check = format!("if [ -e /dev/fd/{stray} ]; then echo LEAKED; else echo CLEAN; fi");
+        let pty = spawn(
+            OsStr::new("/bin/sh"),
+            &[OsString::from("-c"), OsString::from(check)],
+            &env(),
+            None,
+            80,
+            24,
+        )
+        .expect("spawn");
+        unsafe { libc::close(stray) };
+        let output = read_until(&pty, "\n", Duration::from_secs(5));
+        assert!(
+            output.contains("CLEAN"),
+            "the shell held descriptor {stray}: {output:?}"
         );
     }
 
