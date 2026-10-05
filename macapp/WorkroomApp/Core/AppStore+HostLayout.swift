@@ -15,6 +15,8 @@ struct HostLayoutState {
   /// Opened while the host was being asked (a tab, a file, a diff), run once its layout is
   /// restored: a tab there first would stop the restore, and its write replace the host's layout.
   var heldOpens: [TerminalTarget.ID: [() -> Void]] = [:]
+  /// A new terminal is among `heldOpens`: asking again while waiting opens no second one.
+  var heldNewTerminal: Set<TerminalTarget.ID> = []
   /// Showing on screen while its host was asked: opens its first pane once it has answered.
   var waitingForFirstTab: Set<TerminalTarget.ID> = []
   /// The host revision this window last read or wrote.
@@ -86,6 +88,7 @@ extension AppStore {
       HostLayoutOwners.shared.claim(workroom, targetID: target.id, by: self)
     else { return false }
     hostLayouts.fetching.insert(target.id)
+    waitingForHostLayout.insert(target.id)
     let held = deferredTargetSessions[target.id]
     let key = workroom.uuidString
     let targetID = target.id
@@ -117,8 +120,10 @@ extension AppStore {
     for targetID: TerminalTarget.ID, held: TargetSession?, key: String
   ) {
     hostLayouts.fetching.remove(targetID)
+    waitingForHostLayout.remove(targetID)
     hostLayouts.fetched.insert(targetID)
     let heldOpens = hostLayouts.heldOpens.removeValue(forKey: targetID) ?? []
+    hostLayouts.heldNewTerminal.remove(targetID)
     guard let target = terminalTarget(forID: targetID) else { return }
     deferredTargetSessions.removeValue(forKey: targetID)
     var session = held
@@ -292,6 +297,16 @@ extension AppStore {
   func whenHostLayoutRestored(_ targetID: TerminalTarget.ID, _ open: @escaping () -> Void) {
     guard hostLayouts.fetching.contains(targetID) else { return open() }
     hostLayouts.heldOpens[targetID, default: []].append(open)
+  }
+
+  /// A new terminal in `target` (⌘T, New Terminal, +). While its host is asked for its layout, one
+  /// is held however often it is asked for: a user clicking again on a pane that has not opened yet
+  /// wants that one terminal, not one per click once the host answers.
+  func newTerminal(in target: TerminalTarget) {
+    if hostLayouts.fetching.contains(target.id) {
+      guard hostLayouts.heldNewTerminal.insert(target.id).inserted else { return }
+    }
+    whenHostLayoutRestored(target.id) { [terminals] in _ = terminals.addTab(for: target) }
   }
 
   /// `captured` with this window's record of its host's copy, for `session.json`.

@@ -264,7 +264,7 @@ struct TerminalTabStrip: View {
   private var addTerminalButton: some View {
     Button {
       // Held while the host is asked for its layout (#255), as ⌘T is.
-      store.whenHostLayoutRestored(target.id) { _ = sessions.addTab(for: target) }
+      store.newTerminal(in: target)
     } label: {
       Image(systemName: "plus")
         .font(.system(size: 11))

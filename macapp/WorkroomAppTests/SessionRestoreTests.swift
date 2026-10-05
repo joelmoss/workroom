@@ -553,6 +553,10 @@ final class SessionRestoreTests: XCTestCase {
     // write it alone over the host's layout); it opens after it.
     first.openFilePreview(path: "/home/workroom/h/README.md", for: target)
     XCTAssertEqual(first.terminals.tabCount(forTargetID: id), 0, "a tab opened while waiting")
+    // The pane says it is waiting, and a new terminal asked for three times meanwhile is one.
+    XCTAssertTrue(first.waitingForHostLayout.contains(id))
+    for _ in 0..<3 { first.newTerminal(in: target) }
+    XCTAssertEqual(first.terminals.tabCount(forTargetID: id), 0, "a terminal opened while waiting")
 
     // A second window showing the workroom meanwhile restores from this Mac alone.
     let second = store()
@@ -566,7 +570,9 @@ final class SessionRestoreTests: XCTestCase {
     }
     poll()
     await fulfillment(of: [restored], timeout: AppStore.hostLayoutTimeout + 3)
-    XCTAssertEqual(first.terminals.tabCount(forTargetID: id), 3, "the copy, then the held tab")
+    XCTAssertEqual(
+      first.terminals.tabCount(forTargetID: id), 4, "the copy, then the held file and one terminal")
+    XCTAssertFalse(first.waitingForHostLayout.contains(id))
     XCTAssertTrue(first.deferredTargetSessions.isEmpty)
     XCTAssertTrue(first.hostLayouts.fetched.contains(id))
     XCTAssertFalse(first.fetchHostLayoutIfNeeded(for: target), "asked twice in one launch")
@@ -577,7 +583,7 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertTrue(first.hostLayouts.unanswered.contains(id))
     XCTAssertFalse(first.hostLayouts.readOnly.contains(id))
     let writes = first.writeHostLayouts()
-    XCTAssertEqual(writes.count, 1, "the held tab is a change")
+    XCTAssertEqual(writes.count, 1, "the held tabs are a change")
     for write in writes { await write.value }
     XCTAssertFalse(first.hostLayouts.stale.contains(id))
     XCTAssertNil(first.hostLayouts.revisions[id])
