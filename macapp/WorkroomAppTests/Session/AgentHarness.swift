@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomSessionProtocol
 
 /// Launches a throwaway `wr-agent serve` against a temp socket, and can put real sessions on it.
 ///
@@ -88,15 +89,20 @@ final class AgentHarness {
   /// Deliberately not by sending an `Attach` frame. The app never does that — it hands libghostty
   /// an attach command to run as the pane's shell — so driving the socket directly would be testing
   /// a path nothing uses and skipping the one that ships.
+  ///
+  /// `metadata` goes into the environment through `SessionMetadataKey.environmentVariables`, the
+  /// table `PersistentSessionService.launchEnvironment` uses, so a session carries what a pane's does.
   @discardableResult
-  func startSession(identifier: UUID, command: String = "cat") throws -> Process {
+  func startSession(
+    identifier: UUID, command: String = "cat", metadata: [(key: String, value: String)] = []
+  ) throws -> Process {
     let process = Process()
     process.executableURL = try Self.binaryURL()
     process.arguments = ["attach"]
     // No flags, exactly as `PersistentSessionService.attachCommand()` builds it: the environment
     // is the whole contract on the app's side, so passing `--socket` here would test a path the
     // app never takes.
-    process.environment = [
+    var environment = [
       "WORKROOM_SESSION_SOCKET": socketPath,
       "WORKROOM_SESSION_ID": identifier.uuidString,
       "WORKROOM_SESSION_COMMAND": command,
@@ -105,6 +111,11 @@ final class AgentHarness {
       "TERM": "dumb",
       "PATH": "/bin:/usr/bin",
     ]
+    let variables = Dictionary(uniqueKeysWithValues: SessionMetadataKey.environmentVariables)
+    for entry in metadata {
+      if let variable = variables[entry.key] { environment[variable] = entry.value }
+    }
+    process.environment = environment
     process.standardInput = Pipe()
     process.standardOutput = Pipe()
     process.standardError = FileHandle.nullDevice
