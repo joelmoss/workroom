@@ -2460,9 +2460,29 @@ disagreement passes every test on either side alone while presenting as an empty
 7. **Provider-side destruction and cost runaway.** No idle-timeout policy, no spending ceiling, and
    no answer for unpushed commits on a box about to be reclaimed. Unpushed work on a destroyed VM
    is unrecoverable — a worse failure than anything a local workroom can produce.
-8. **How much workroom UI state moves to the agent?** Cross-machine reattach needs pane→tab
-   mapping, titles, and split geometry to live with the workroom. Where the line falls between
-   "session state" and "client layout" is undecided.
+8. **How much workroom UI state moves to the agent?** **ANSWERED — 2026-10-05 (#255): a remote
+   workroom's pane layout moves to its host; windows, focus and popped-out frames stay per Mac.**
+   The design, its reviews and every decision are in
+   [`oq8-cross-machine-reattach.md`](oq8-cross-machine-reattach.md).
+
+   | State | Where it lives |
+   | --- | --- |
+   | Terminal sessions (pty, screen, size owner) | The agent, as before |
+   | Each session's workroom (`HostDescriptor.workroomID`), first title and creation time | The agent, as session metadata, in its list and across a hand-off |
+   | The workroom's layout: tab order, split groups and ratios, the terminal counter, and every terminal, diff, file and changeset tab | The agent's `Service::Layout`, as an opaque `TargetSession` blob behind a revision, on the host's disk beside `--screens` |
+   | Focus, popped-out pane frames, the revision this Mac last saw, a stale mark | Each Mac's `session.json` |
+   | Windows, the selected workroom, sidebar expansion, workroom splits | Each Mac's `session.json` |
+
+   *How it behaves.* A Mac opening a remote workroom waits up to 5 s for its host's layout and
+   restores the newer of it and its own copy; sessions the layout does not name are added as tabs.
+   Changes are written through with each save, the whole snapshot, the last Mac to write winning.
+   Two Macs on one session share it as two tmux clients do, the Mac last typed in owning the size;
+   closing a tab ends its session everywhere, and quitting only detaches. Live mirroring between
+   two open Macs is not built.
+
+   *Not covered.* Local workrooms keep their layouts in `session.json` (TODOS, P3). A second Mac
+   still has to find the workroom and hold a key its host accepts (TODOS, P1), so the live
+   two-Mac test runs on the ssh fixture for now.
 9. **What machine identity does a fork need re-minted?** **ANSWERED — Phase 0 item 6.** Measured duplicated across two live forks: `/etc/machine-id`, **`/proc/sys/kernel/random/boot_id`** (not on the list below, and it should be), both ssh host keys, and any on-disk secret. Re-minted by boxd: hostname and IP. Live processes carry across with their original pids. Not session UUIDs — those are client-minted
    and a template base has no sessions. The real list is ssh host key, machine-id, the agent's
    instance/socket identity, and any base-resident pty. Phase 0 item 6 measures which of these
@@ -2801,8 +2821,10 @@ disagreement passes every test on either side alone while presenting as an empty
   idle policy would otherwise have stopped it. That is the wakefulness service doing its job.
 - Start a long-running agent in it, quit Workroom entirely, reopen hours later, and land in the
   same session with the alternate-screen program correctly repainted.
-- Do the same from a **different Mac** — gated on open question 8; this criterion is *not*
-  satisfied by the current session-identity model and requires the Phase 4 enumeration work.
+- Do the same from a **different Mac**. Open question 8 is answered and built (#255): the
+  layout and the sessions' workrooms live on the host, proven with two clients on the ssh fixture.
+  What still gates it on a real host is a second Mac finding the workroom and holding a key the
+  host accepts (TODOS, P1).
 - Close the laptop; the remote agent completes a `git fetch` and a `git push` with no client
   attached. (The concrete test that premise 6's revision was necessary.)
 - Changes, History, the diff viewer and the Files tree all work against a remote workroom and agree
