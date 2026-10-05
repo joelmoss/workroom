@@ -68,10 +68,13 @@ extension AppStore {
   /// (D4). The connect is inside it, so a host that is slow to answer never blanks the workroom.
   static let hostLayoutTimeout: TimeInterval = 5
 
-  /// Where a host's layouts are read and written: its agent, or a fake in a test.
+  /// Where a host's layouts are read and written: its agent, its service connection brought up
+  /// first (it can drop while the panes' own links stay up), or a fake in a test.
   nonisolated(unsafe) static var hostLayoutStore:
-    @Sendable (HostID) async throws -> HostLayoutStore =
-      { try await HostConnectionManager.shared.layouts(host: $0) }
+    @Sendable (HostID) async throws -> HostLayoutStore = { host in
+      try await RemoteHosts.shared.ensureConnected(host)
+      return try await HostConnectionManager.shared.layouts(host: host)
+    }
 
   /// Asks `target`'s host for its layout and sessions, unless this launch has already asked or
   /// another window keeps the workroom's layout, and says whether `target` is now waiting on that
@@ -97,7 +100,6 @@ extension AppStore {
       do {
         outcome = .success(
           try await withTimeout(seconds: Self.hostLayoutTimeout) {
-            try await RemoteHosts.shared.ensureConnected(.remote(host))
             let store = try await Self.hostLayoutStore(.remote(host))
             let resolution = try await HostLayoutSync.resolve(
               held: held, key: key, targetID: targetID, store: store)
@@ -123,15 +125,25 @@ extension AppStore {
     hostLayouts.fetching.remove(targetID)
     waitingForHostLayout.remove(targetID)
     let heldOpens = hostLayouts.heldOpens.removeValue(forKey: targetID) ?? []
-    hostLayouts.heldNewTerminal.remove(targetID)
+    let heldNewTerminal = hostLayouts.heldNewTerminal.remove(targetID) != nil
+    let wasWaiting = hostLayouts.waitingForFirstTab.remove(targetID) != nil
+    guard let target = terminalTarget(forID: targetID) else { return }
     // A reload while the host was asked can destroy the workroom's host (`remoteHost` is then
     // nil) or give it another: an answer from the one asked is not the workroom's now. Nothing of
-    // it is applied, what was opened meanwhile was for a workroom that has gone, and this Mac's
-    // copy stays held, to be restored or asked for again as the workroom now is.
-    guard let target = terminalTarget(forID: targetID), target.remoteHost == host,
-      target.remoteWorkroomID == workroom
-    else {
-      hostLayouts.waitingForFirstTab.remove(targetID)
+    // it is applied and this Mac's copy stays held. The workroom's host as it now is is asked at
+    // once, with what was opened meanwhile held for that answer: the pane's own first-terminal
+    // task is keyed on the target, which a new host does not change, so it would not ask again.
+    guard target.remoteHost == host, target.remoteWorkroomID == workroom else {
+      if fetchHostLayoutIfNeeded(for: target) {
+        if wasWaiting { hostLayouts.waitingForFirstTab.insert(targetID) }
+        hostLayouts.heldOpens[targetID, default: []].append(contentsOf: heldOpens)
+        if heldNewTerminal { hostLayouts.heldNewTerminal.insert(targetID) }
+      } else if target.terminalUnavailability == nil {
+        // No host to ask now (the workroom is local), but its panes open: as if never held.
+        if wasWaiting { ensureInitialTerminal(for: target) }
+        for open in heldOpens { open() }
+      }
+      // Otherwise its host is gone and nothing opens: what was asked for meanwhile goes with it.
       return
     }
     hostLayouts.fetched.insert(targetID)
@@ -199,7 +211,7 @@ extension AppStore {
     }
     for open in heldOpens { open() }
     markSessionDirty()
-    if hostLayouts.waitingForFirstTab.remove(targetID) != nil {
+    if wasWaiting {
       ensureInitialTerminal(for: target)
       terminals.reconcileOcclusion(for: target)
     }
@@ -222,8 +234,6 @@ extension AppStore {
       let attempts = hostLayouts.unanswered.contains(targetID) ? 1 : 3
       let write = Task { [weak self] in
         let result: HostLayoutResolution
-        // The service connection can drop while the panes' own links stay up: bring it back.
-        try? await RemoteHosts.shared.ensureConnected(.remote(host))
         if let store = try? await Self.hostLayoutStore(.remote(host)) {
           result = await HostLayoutSync.write(
             layout, key: key, expected: expected, store: store, attempts: attempts)

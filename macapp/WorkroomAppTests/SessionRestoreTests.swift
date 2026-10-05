@@ -815,9 +815,46 @@ final class SessionRestoreTests: XCTestCase {
   }
 
   /// A reload that gives a remote workroom another host while its first host is asked drops that
-  /// answer: nothing is restored through it, and this Mac's copy stays held for the workroom as it
-  /// now is.
+  /// answer: nothing is restored through it, and the new host is asked at once, with what was
+  /// opened meanwhile held for its answer.
   func testAnAnswerFromAHostTheWorkroomNoLongerHasIsDropped() async throws {
+    final class OneLayout: HostLayoutStore, @unchecked Sendable {
+      let blob: String
+      let delay: UInt64
+      init(_ title: String, delay: UInt64 = 0) throws {
+        blob = try HostLayout.encode(
+          TargetSession(
+            targetID: "x",
+            tabs: [
+              TabSession(
+                key: "k", kind: TabSession.terminalKind,
+                terminal: TerminalPayload(defaultTitle: title))
+            ]),
+          key: "x")
+        self.delay = delay
+      }
+      func get(_ key: String) async throws -> AgentLayout {
+        try await Task.sleep(nanoseconds: delay)
+        return AgentLayout(revision: 3, blob: blob)
+      }
+      func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
+        expected + 1
+      }
+    }
+    let first = UUID()
+    let second = UUID()
+    let stores: [UUID: OneLayout] = [
+      first: try OneLayout("from the first host", delay: 300_000_000),
+      second: try OneLayout("from the second host"),
+    ]
+    let saved = AppStore.hostLayoutStore
+    AppStore.hostLayoutStore = { host in
+      guard case .remote(let id) = host, let store = stores[id] else {
+        throw RepositoryRoutingError.unavailable(host)
+      }
+      return store
+    }
+    defer { AppStore.hostLayoutStore = saved }
     RemoteWorkrooms.enabledForTesting = true
     defer { RemoteWorkrooms.enabledForTesting = nil }
     let workroomID = UUID()
@@ -835,24 +872,27 @@ final class SessionRestoreTests: XCTestCase {
     store.terminals.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
-    store.projects = [project(host: UUID())]
+    store.projects = [project(host: first)]
     let id = TerminalTarget.workroomID(project: "/proj", name: "m")
-    let saved = TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")])
-    store.pendingSessionRestore = WindowSession(windowKey: UUID().uuidString, targets: [saved])
+    store.pendingSessionRestore = WindowSession(
+      windowKey: UUID().uuidString,
+      targets: [TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")])])
     store.restorePersistedSessionIfPending(in: store.projects)
     XCTAssertTrue(store.hostLayouts.fetching.contains(id))
-    store.projects = [project(host: UUID())]
+    store.newTerminal(in: try XCTUnwrap(store.terminalTarget(forID: id)))
+    store.projects = [project(host: second)]
 
-    let answered = expectation(description: "answered")
+    let restored = expectation(description: "restored")
     func poll() {
-      if !store.hostLayouts.fetching.contains(id) { return answered.fulfill() }
+      if store.terminals.tabCount(forTargetID: id) > 0 { return restored.fulfill() }
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: poll)
     }
     poll()
-    await fulfillment(of: [answered], timeout: AppStore.hostLayoutTimeout + 3)
-    XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 0, "restored through the old host")
-    XCTAssertNotNil(store.deferredTargetSessions[id], "this Mac's copy was dropped")
-    XCTAssertFalse(store.hostLayouts.fetched.contains(id), "never asked of the new host")
+    await fulfillment(of: [restored], timeout: AppStore.hostLayoutTimeout + 3)
+    let titles = store.captureWindowSession().targets.first { $0.targetID == id }?.tabs
+      .compactMap { $0.terminal?.defaultTitle }
+    XCTAssertEqual(titles?.first, "from the second host", "restored through the old host")
+    XCTAssertEqual(titles?.count, 2, "the terminal asked for meanwhile was lost")
     XCTAssertFalse(store.waitingForHostLayout.contains(id))
   }
 
