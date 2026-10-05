@@ -1028,6 +1028,50 @@ impl Drop for Scratch {
     }
 }
 
+/// A socket file at `path` with nothing listening on it: what an agent that died leaves behind.
+///
+/// Bound in a forked child that exits at once, not here. On macOS, std creates a socket and only
+/// then marks it close-on-exec, so a child another test thread spawns in between inherits the
+/// listener and keeps it listening after this process drops its copy. A relay then connects to a
+/// "stale" socket (measured: about 2 binds in 100 while another thread spawns). The forked child
+/// inherits copies of this process's descriptors too, but holds them only until its `_exit`.
+fn stale_socket(path: &Path) {
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    let bytes = std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str());
+    assert!(
+        bytes.len() < address.sun_path.len(),
+        "socket path too long: {path:?}"
+    );
+    for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
+        *slot = *byte as libc::c_char;
+    }
+    let length = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    // Between `fork` and `_exit` the child calls only async-signal-safe functions, and allocates
+    // nothing: the address was built above.
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork: {}", std::io::Error::last_os_error());
+    if pid == 0 {
+        unsafe {
+            let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+            let bound = fd >= 0
+                && libc::bind(fd, (&raw const address).cast::<libc::sockaddr>(), length) == 0
+                && libc::listen(fd, 1) == 0;
+            libc::_exit(if bound { 0 } else { 1 });
+        }
+    }
+    let mut status = 0;
+    assert_eq!(
+        unsafe { libc::waitpid(pid, &mut status, 0) },
+        pid,
+        "waitpid"
+    );
+    assert!(
+        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+        "the child could not bind {path:?}"
+    );
+}
+
 /// An agent killed when the test ends, panic or not. It runs with `--idle-timeout never`, so a
 /// leaked one would hold its session's shell forever.
 struct Agent(Child);
@@ -1223,7 +1267,7 @@ fn a_relay_with_no_agent_fails_fast_and_says_so() {
     let scratch = Scratch::new("none");
     let missing = scratch.0.join("missing.sock");
     let stale = scratch.0.join("stale.sock");
-    drop(std::os::unix::net::UnixListener::bind(&stale).expect("bind"));
+    stale_socket(&stale);
     assert!(stale.exists(), "the stale socket file stays behind");
 
     for socket in [missing, stale] {
@@ -1238,6 +1282,48 @@ fn a_relay_with_no_agent_fails_fast_and_says_so() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("no agent listening on"), "{stderr}");
     }
+}
+
+/// The fixture above, not the relay: a stale socket must stay stale while other threads spawn
+/// children, as every other test in this file does. A listener bound in this process fails this
+/// within a few hundred tries on macOS.
+#[test]
+fn a_stale_socket_stays_stale_while_children_are_spawned() {
+    let scratch = Scratch::new("stale-fixture");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let spawner = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let child = Command::new("/bin/sleep")
+                    .arg("0.05")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn();
+                if let Ok(mut child) = child {
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                }
+            }
+        })
+    };
+    let socket = scratch.0.join("stale.sock");
+    let mut connected = 0;
+    for _ in 0..1000 {
+        let _ = std::fs::remove_file(&socket);
+        stale_socket(&socket);
+        if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            connected += 1;
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    spawner.join().expect("spawner");
+    assert_eq!(
+        connected, 0,
+        "connected to a stale socket {connected} times in 1000"
+    );
 }
 
 /// A tty, or an exec channel that is one socket, hands the relay ONE open file as both stdin and

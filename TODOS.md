@@ -7,25 +7,6 @@
 
 ## P0 — before the next release
 
-### `a_relay_with_no_agent_fails_fast_and_says_so` flaked under load (vcs) — #334 ship follow-up
-
-**What:** The test (`vcs/crates/wr-agent/tests/remote_transport.rs:1236`) failed once with
-`assertion left == right failed: ".../wr-relay-none-<pid>/stale.sock"`, `left: Some(0)`,
-`right: Some(92)`: the relay, pointed at a socket file whose listener had been dropped, connected
-(exit 0) instead of reporting no agent (exit 92). Seen on `fix/334-resolve-deadline` (2026-10-04)
-while the full `make app-test` ran at the same time, starting agents of its own. Run alone it passed
-5 times out of 5, and the whole Rust suite passed straight after. The branch doesn't touch the relay,
-the transport or the test.
-
-**Why:** Either the test is flaky under load or the relay can mistake a stale socket for a live
-agent, and then the "no agent listening" error a supervisor relies on would be missed.
-
-**How to start:** Run the test in a loop while `make app-test` runs, and log what the relay
-connected to (the peer's pid). Check whether `Scratch::new`'s per-pid directory can collide with a
-path another process binds.
-
-**Priority:** P0 (chosen at ship time on #334)
-
 ## P1 — before GA
 
 ### A second Mac can find a remote workroom and reach its host (macapp, Codaset) — #255 blocker
@@ -4026,6 +4007,24 @@ error) is one of the hardest to diagnose from a bug report.
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-10-05 — `a_relay_with_no_agent_fails_fast_and_says_so` flaked because another test's child held its
+"stale" socket open (#334 ship follow-up).** It once failed with the relay exiting 0 instead of 92 on
+`stale.sock`, while `make app-test` loaded the machine. The relay was right: the socket was still
+listening. On macOS, Rust std creates a socket with a plain `socket()` and marks it close-on-exec in a
+separate call (`std/src/sys/net/connection/socket/unix.rs`, the non-`SOCK_CLOEXEC` arm), and its
+`posix_spawn` path sets no `POSIX_SPAWN_CLOEXEC_DEFAULT`. A child that another test thread spawns in that
+gap inherits the listener and keeps it listening after the test drops its copy. The relay connects,
+the child exits, the queued connection is dropped, and the relay's read loop ends with exit 0. Load
+widens the gap. Measured with a standalone probe that binds, drops and connects 20,000 times: 0
+connects with no spawning, 396 and 371 with another thread spawning short-lived children. The test now
+binds the stale socket in a forked child that `_exit`s at once (`stale_socket` in
+`remote_transport.rs`). `a_stale_socket_stays_stale_while_children_are_spawned` makes 1,000 of them
+while another thread spawns. It fails with an in-process bind (135 of 1,000 connected) and passes with
+the helper in 1.9 s. Linux is unaffected: std uses `SOCK_CLOEXEC` there. **Trap: the agent has the same
+gap.** `pty.rs`'s `forkpty` child calls `execve` without closing stray descriptors, so a session shell
+spawned while the agent is mid-way through creating a socket (an accepted client, a forward's listener)
+inherits it for the shell's lifetime. Not fixed here.
 
 **2026-10-05 — `ReverseForwardTests.testAReconnectWhileTheOldListenerHoldsThePortReopensOnceItLetsGo` is no
 longer flaky, most likely fixed by the `EchoServer` double close (#350, entry below).** Before the fix it
