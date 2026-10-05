@@ -17,6 +17,23 @@ closed the `Pipe` of its `sh` helper (`VCSProviderConformanceTests.swift:424`, c
 `~/Library/Logs/DiagnosticReports/Workroom Dev-2026-10-04-121020.ips`, pid 69069). The #327 diff
 opens and closes no descriptors, and an immediate re-run of the full suite passed.
 
+**Seen again on CI (2026-10-05, PR #349):**
+- **Confirmed.** CI run 37334065057 (commit `882f26da`), `app` job: a test worker (pid 11367) was
+  killed with "Test crashed with signal kill" at the start of
+  `VCSRemoteIntegrationTests.testBehindIsCountedAfterTheRemoteMovesOn`, a local-git test whose `sh`
+  helper also uses a `Pipe`. The run's system log has ReportCrash's `EXC_GUARD code zero: 0x8`
+  (`GUARD_TYPE_FD`) just after the kill. A re-run of the failed job passed.
+- **Suspected, not confirmed.** In runs 37305530197 (`352e64df`) and 37315259406 (`a14a416e`),
+  `PortForwardingModelTests.testAForwardIsDroppedWhenItsLeaseIsNoLongerTheConnectedOne` failed
+  during setup with "Host connection lost". Neither run's system log has an `EXC_GUARD`, so a
+  closed-and-reused descriptor there is only a suspicion. One candidate: `FakeAgent.stop()`
+  (`AgentFileIntegrationTests.swift`) closes its listener and client descriptors while its accept
+  and serve threads may still be using those numbers.
+
+To read a CI run's crash evidence: `gh run download <run> -n xcresult-ci`, then
+`xcrun xcresulttool export diagnostics --path <xcresult> --output-path <dir>`, then
+`/usr/bin/log show --archive <dir>/**/*.logarchive --predicate 'eventMessage CONTAINS[c] "EXC_GUARD"'`.
+
 **Why:** The file handle closed a number it believed it owned, and the kernel found a guarded
 descriptor there. The suspected cause, not yet confirmed by the worker's trace: something earlier
 in that worker closed descriptor 25 without owning it (a double close), and a guarded descriptor
