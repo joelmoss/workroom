@@ -228,7 +228,26 @@ pub fn dispatch(
             return;
         }
     };
-    send(reply(handle(LAYOUTS.get(), &bytes)));
+    // On its own thread, as a File request is: a put syncs a file and its directory, and the
+    // connection's other services must not wait behind that. The permit is held until the reply is
+    // written, so a hand-off drains layout writes before it replaces the program.
+    let Some(permit) = crate::vcs::Permit::acquire() else {
+        send(reply(Err(LayoutError::Failed(
+            "too many requests in flight".into(),
+        ))));
+        return;
+    };
+    let writer = std::sync::Arc::clone(writer);
+    let stream = envelope.stream;
+    std::thread::spawn(move || {
+        let _permit = permit;
+        crate::vcs::send(
+            &writer,
+            Service::Layout,
+            stream,
+            reply(handle(LAYOUTS.get(), &bytes)),
+        );
+    });
 }
 
 fn reply(result: Result<Value, LayoutError>) -> Value {

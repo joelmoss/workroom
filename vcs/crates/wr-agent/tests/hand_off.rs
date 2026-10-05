@@ -989,3 +989,30 @@ fn a_kill_before_an_idle_exit_still_refuses_the_late_attach() {
     );
     assert!(!list_sessions(&socket).contains(session));
 }
+
+/// The build number the app reads out of a binary it never runs (`AgentBootstrap.buildNumber(in:)`)
+/// is in the linked program, not only in its object files, and it is the one `protocol` states.
+#[test]
+fn the_linked_program_carries_its_build_marker() {
+    let binary = agent_binary();
+    let bytes = std::fs::read(&binary).expect("read the agent");
+    let marker = b"WR-AGENT-BUILD:";
+    let at = bytes
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .expect("no build marker in the linked program");
+    let rest = &bytes[at + marker.len()..];
+    let end = rest
+        .iter()
+        .position(|&byte| byte == b';')
+        .expect("an unterminated marker");
+    let number = std::str::from_utf8(&rest[..end]).expect("a numeric marker");
+    let report = Command::new(&binary)
+        .arg("protocol")
+        .output()
+        .expect("protocol");
+    assert!(
+        String::from_utf8_lossy(&report.stdout).contains(&format!("build-number {number}\n")),
+        "marker {number} is not the build protocol states"
+    );
+}

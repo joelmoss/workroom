@@ -433,7 +433,7 @@ fn replace(
 /// report's time. Killed if dropped unread.
 struct BuildProbe {
     child: std::process::Child,
-    report: Option<std::thread::JoinHandle<String>>,
+    report: Option<std::sync::mpsc::Receiver<String>>,
 }
 
 impl BuildProbe {
@@ -445,14 +445,18 @@ impl BuildProbe {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("{} could not start: {e}", binary.display()))?;
-        // Read while it runs, so a report bigger than a pipe cannot block it into the deadline.
+        // Read while it runs, so a report bigger than a pipe cannot block it into the deadline,
+        // and handed over through a channel waited on until the deadline only: a process the
+        // program left behind can hold the pipe open long after the program itself has exited.
         let report = child.stdout.take().map(|mut pipe| {
+            let (sender, receiver) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 let mut kept = Vec::new();
                 let _ = (&mut pipe).take(MAX_CHECK_STDERR).read_to_end(&mut kept);
+                let _ = sender.send(String::from_utf8_lossy(&kept).into_owned());
                 let _ = std::io::copy(&mut pipe, &mut std::io::sink());
-                String::from_utf8_lossy(&kept).into_owned()
-            })
+            });
+            receiver
         });
         Ok(BuildProbe { child, report })
     }
@@ -466,18 +470,22 @@ impl BuildProbe {
         if ours == 0 {
             return Ok(());
         }
-        if wait_until(&mut self.child, deadline).is_none() {
-            return Err(format!(
+        let late = || {
+            format!(
                 "{} did not say its build within {}s",
                 binary.display(),
                 CHECK_TIMEOUT.as_secs()
-            ));
+            )
+        };
+        if wait_until(&mut self.child, deadline).is_none() {
+            return Err(late());
         }
-        let report = self
-            .report
-            .take()
-            .and_then(|reader| reader.join().ok())
-            .unwrap_or_default();
+        let report = match self.report.take() {
+            Some(report) => report
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .map_err(|_| late())?,
+            None => String::new(),
+        };
         let theirs = build_number_in(&report);
         if theirs < ours {
             return Err(format!(
@@ -757,6 +765,26 @@ mod tests {
         let started = Instant::now();
         assert!(
             no_downgrade(&slow, 200, Instant::now() + Duration::from_millis(300))
+                .unwrap_err()
+                .contains("did not say its build")
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // One that exits but leaves a process holding its output open is refused at the deadline,
+        // not waited on.
+        let lingering = dir.join("lingering");
+        std::fs::write(
+            &lingering,
+            "#!/bin/sh\n(sleep 30 &)\necho build-number 300\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &lingering,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let started = Instant::now();
+        assert!(
+            no_downgrade(&lingering, 200, Instant::now() + Duration::from_millis(300))
                 .unwrap_err()
                 .contains("did not say its build")
         );

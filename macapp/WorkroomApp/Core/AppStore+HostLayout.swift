@@ -163,12 +163,15 @@ extension AppStore {
         hostLayouts.readOnly.insert(targetID)
       }
       if held?.hostLayoutStale == true {
-        // This Mac's copy is newer than the host's, as far as it knows: it is written as usual.
+        // This Mac's copy is newer than the host's, as far as it knows: it stays marked so, and
+        // wins at the next open, where the host's layout is read first.
         hostLayouts.stale.insert(targetID)
-      } else if !keepsNoLayouts {
-        // The host had this copy when this Mac last saw it.
+      }
+      if !keepsNoLayouts {
+        // Either way the host's layout was not read: no write may replace it unseen.
         hostLayouts.unanswered.insert(targetID)
-        hostHasIt = true
+        // The host had this copy when this Mac last saw it, unless this Mac's is newer.
+        hostHasIt = held?.hostLayoutStale != true
       }
     }
     if terminals.tabCount(forTargetID: targetID) > 0 {
@@ -202,29 +205,9 @@ extension AppStore {
   /// layout is never written over (D5), and nothing is written before the host has answered.
   @discardableResult
   func writeHostLayouts() -> [Task<Void, Never>] {
-    guard !hostLayouts.fetched.isEmpty else { return [] }
-    let captured = Dictionary(
-      captureWindowSession().targets.map { ($0.targetID, $0) },
-      uniquingKeysWith: { first, _ in first })
     var started: [Task<Void, Never>] = []
-    for targetID in hostLayouts.fetched
-    where !hostLayouts.readOnly.contains(targetID) && hostLayouts.writing[targetID] == nil {
-      guard let target = terminalTarget(forID: targetID), let host = target.remoteHost,
-        let workroom = target.remoteWorkroomID,
-        HostLayoutOwners.shared.owns(workroom, self)
-      else { continue }
-      let key = workroom.uuidString
-      let layout: TargetSession
-      if let current = captured[targetID] {
-        layout = current
-      } else if hostLayouts.written[targetID] != nil {
-        layout = TargetSession(targetID: targetID, tabs: [])
-      } else {
-        continue
-      }
-      guard let blob = try? HostLayout.encode(layout, key: key),
-        blob != hostLayouts.written[targetID]
-      else { continue }
+    for (targetID, host, key, layout, blob) in changedHostLayouts()
+    where hostLayouts.writing[targetID] == nil {
       let expected = hostLayouts.revisions[targetID] ?? 0
       let attempts = hostLayouts.unanswered.contains(targetID) ? 1 : 3
       let write = Task { [weak self] in
@@ -245,10 +228,46 @@ extension AppStore {
     return started
   }
 
+  /// Each remote workroom whose layout this window keeps and may write, and that has changed since
+  /// its host last had it, with what would be written.
+  private func changedHostLayouts() -> [(
+    targetID: TerminalTarget.ID, host: UUID, key: String, layout: TargetSession, blob: String
+  )] {
+    guard !hostLayouts.fetched.isEmpty else { return [] }
+    let captured = Dictionary(
+      captureWindowSession().targets.map { ($0.targetID, $0) },
+      uniquingKeysWith: { first, _ in first })
+    return hostLayouts.fetched.filter { !hostLayouts.readOnly.contains($0) }.compactMap {
+      targetID in
+      guard let target = terminalTarget(forID: targetID), let host = target.remoteHost,
+        let workroom = target.remoteWorkroomID,
+        HostLayoutOwners.shared.owns(workroom, self)
+      else { return nil }
+      let key = workroom.uuidString
+      let layout: TargetSession
+      if let current = captured[targetID] {
+        layout = current
+      } else if hostLayouts.written[targetID] != nil {
+        layout = TargetSession(targetID: targetID, tabs: [])
+      } else {
+        return nil
+      }
+      guard let blob = try? HostLayout.encode(layout, key: key),
+        blob != hostLayouts.written[targetID]
+      else { return nil }
+      return (targetID, host, key, layout, blob)
+    }
+  }
+
   private func finishHostWrite(
     _ result: HostLayoutResolution, targetID: TerminalTarget.ID, blob: String
   ) {
     hostLayouts.writing.removeValue(forKey: targetID)
+    if result.readOnly {
+      // Another Mac wrote a newer build's layout first: never written over (D5).
+      hostLayouts.readOnly.insert(targetID)
+      return
+    }
     if hostLayouts.unanswered.contains(targetID) {
       // Not written: the host moved past what this Mac saw, or could not be reached. Its layout is
       // left alone, and this Mac's copy is not marked as winning. A refused layout is not sent
@@ -286,9 +305,11 @@ extension AppStore {
       guard !Task.isCancelled else { return }
       for write in stores.flatMap({ $0.writeHostLayouts() }) { await write.value }
     }
+    // Still in flight, or changed behind one that was and never sent: either way not on the host.
     for store in stores {
-      store.hostLayouts.stale.formUnion(
-        store.hostLayouts.writing.keys.filter { !store.hostLayouts.unanswered.contains($0) })
+      let unsent = Set(store.hostLayouts.writing.keys)
+        .union(store.changedHostLayouts().map(\.targetID))
+      store.hostLayouts.stale.formUnion(unsent.subtracting(store.hostLayouts.unanswered))
     }
   }
 
