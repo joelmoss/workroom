@@ -513,6 +513,18 @@ jobs:
       - name: Test (run-command supervisor)
         run: make app-test-supervisor
 
+      # The Rust tests run on Linux (`rust` above), where std creates a socket close-on-exec in one
+      # call. macOS sets the flag in a second call, and a child spawned in between inherits the
+      # socket: the race behind the stale-socket fixture and the stray descriptors a session's shell
+      # could inherit. Their tests prove nothing on Linux, so these alone run here; the rest of the
+      # crate stays on the cheaper Linux runner.
+      - name: Test (agent descriptor inheritance, macOS)
+        run: |
+          cargo test --manifest-path vcs/Cargo.toml -p wr-agent --lib -- pty::tests
+          cargo test --manifest-path vcs/Cargo.toml -p wr-agent --test remote_transport -- --exact \
+            a_stale_socket_stays_stale_while_children_are_spawned \
+            a_relay_with_no_agent_fails_fast_and_says_so
+
   # The script tests run beside `app` rather than at the end of it: they were 920-1060s of a ~2400s
   # job and need none of its Xcode build, so on a separate runner the two chains overlap and the
   # slower one sets the wall time. `app` still runs `make app-test-supervisor` and the unit tests.
