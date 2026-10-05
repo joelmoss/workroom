@@ -163,9 +163,20 @@ enum AgentBootstrap {
       throw Error.unsupportedHost("\(report.system) \(report.architecture)")
     }
     let architecture = report.architecture
-    let set = await ensureResources(
-      resources, installed: report.resources, directory: Self.resources(besideSocket: socket),
-      on: host, driver: driver)
+    // Never an older agent over a newer one (#255, D13), nor its terminfo and shell integration:
+    // one set serves every pane on the host, and the newer agent's clients expect their own.
+    let hostIsNewer: Bool = {
+      guard let theirs = report.build, let ours = bundled[architecture]?.build, ours > 0 else {
+        return false
+      }
+      return theirs > ours
+    }()
+    let set =
+      hostIsNewer
+      ? resources.map { _ in .notPushed("the host runs a newer build") }
+      : await ensureResources(
+        resources, installed: report.resources, directory: Self.resources(besideSocket: socket),
+        on: host, driver: driver)
     guard
       let (url, digest, build) = bundled[architecture].map({ ($0.url, $0.digest, $0.build) })
     else {
