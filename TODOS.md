@@ -13,14 +13,15 @@
 that this was the only cause, so the entry stays open until another double close is ruled out (see Left to do).
 
 **What:** Test workers were killed by `EXC_GUARD` (`GUARD_TYPE_FD`): a `FileHandle` closed a number it
-believed it owned and found a guarded descriptor there. Seen three times:
+believed it owned and found a guarded descriptor there. Two confirmed kills, one local and one on CI,
+and two CI failures with no `EXC_GUARD` that are suspected to be related:
 - **Local, 2026-10-04.** On `workroom/cyan-brush`, pid 69069, "CLOSE on file descriptor 25 (guarded with
   0x08fd4dbfade2dead)". The kill landed in `VCSProviderConformanceTests.testCommitRenameIsOneRow`, in
   `-[NSConcreteFileHandle dealloc]` for the `Pipe` of its `sh` helper (`VCSProviderConformanceTests.swift:424`).
 - **CI, confirmed.** Run 37334065057 (`882f26da`, PR #349), worker pid 11367, killed at the start of
   `VCSRemoteIntegrationTests.testBehindIsCountedAfterTheRemoteMovesOn`. That test's `sh` helper also
   uses a `Pipe`. The run's system log has ReportCrash's `EXC_GUARD code zero: 0x8` just after the kill.
-- **CI, suspected.** Runs 37305530197 (`352e64df`) and 37315259406 (`a14a416e`):
+- **CI, suspected (no `EXC_GUARD`).** Runs 37305530197 (`352e64df`) and 37315259406 (`a14a416e`):
   `PortForwardingModelTests.testAForwardIsDroppedWhenItsLeaseIsNoLongerTheConnectedOne` failed during
   setup with "Host connection lost". There was no `EXC_GUARD`, but a connection whose descriptor was
   closed under it fails exactly this way.
