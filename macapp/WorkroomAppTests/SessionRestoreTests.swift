@@ -894,6 +894,11 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertEqual(titles?.first, "from the second host", "restored through the old host")
     XCTAssertEqual(titles?.count, 2, "the terminal asked for meanwhile was lost")
     XCTAssertFalse(store.waitingForHostLayout.contains(id))
+    // And it opened on the workroom's host as it is now, not the one it was asked for under.
+    let held = try XCTUnwrap(
+      store.captureWindowSession().targets.first { $0.targetID == id }?.tabs.last?.terminal?
+        .sessionID.flatMap(UUID.init(uuidString:)))
+    XCTAssertEqual(store.terminals.sessionService.remoteHost(of: held), .remote(second))
   }
 
   /// A workroom a reload moves to another host after its layout was read writes nothing over the

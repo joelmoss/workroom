@@ -14,7 +14,9 @@ struct HostLayoutState {
   var unanswered: Set<TerminalTarget.ID> = []
   /// Opened while the host was being asked (a tab, a file, a diff), run once its layout is
   /// restored: a tab there first would stop the restore, and its write replace the host's layout.
-  var heldOpens: [TerminalTarget.ID: [() -> Void]] = [:]
+  /// Each is given the target as it is when it runs: a reload meanwhile can give the workroom
+  /// another host, and what is opened must go to that one.
+  var heldOpens: [TerminalTarget.ID: [(TerminalTarget) -> Void]] = [:]
   /// A new terminal is among `heldOpens`: asking again while waiting opens no second one.
   var heldNewTerminal: Set<TerminalTarget.ID> = []
   /// Showing on screen while its host was asked: opens its first pane once it has answered.
@@ -154,7 +156,7 @@ extension AppStore {
       } else if target.terminalUnavailability == nil {
         // No host to ask now (the workroom is local), but its panes open: as if never held.
         if wasWaiting { ensureInitialTerminal(for: target) }
-        for open in heldOpens { open() }
+        for open in heldOpens { open(target) }
       }
       // Otherwise its host is gone and nothing opens: what was asked for meanwhile goes with it.
       return
@@ -223,7 +225,7 @@ extension AppStore {
         hostLayouts.written[targetID] = try? HostLayout.encode(shown, key: key)
       }
     }
-    for open in heldOpens { open() }
+    for open in heldOpens { open(target) }
     markSessionDirty()
     if wasWaiting {
       ensureInitialTerminal(for: target)
@@ -375,11 +377,13 @@ extension AppStore {
     }
   }
 
-  /// Runs `open` now, or, while `targetID`'s host is being asked for its layout, once that layout
-  /// is restored (D4).
-  func whenHostLayoutRestored(_ targetID: TerminalTarget.ID, _ open: @escaping () -> Void) {
-    guard hostLayouts.fetching.contains(targetID) else { return open() }
-    hostLayouts.heldOpens[targetID, default: []].append(open)
+  /// Runs `open` now, or, while `target`'s host is being asked for its layout, once that layout is
+  /// restored (D4), given the target as it is then.
+  func whenHostLayoutRestored(
+    _ target: TerminalTarget, _ open: @escaping (TerminalTarget) -> Void
+  ) {
+    guard hostLayouts.fetching.contains(target.id) else { return open(target) }
+    hostLayouts.heldOpens[target.id, default: []].append(open)
   }
 
   /// A new terminal in `target` (⌘T, New Terminal, +). While its host is asked for its layout, one
@@ -389,7 +393,7 @@ extension AppStore {
     if hostLayouts.fetching.contains(target.id) {
       guard hostLayouts.heldNewTerminal.insert(target.id).inserted else { return }
     }
-    whenHostLayoutRestored(target.id) { [terminals] in _ = terminals.addTab(for: target) }
+    whenHostLayoutRestored(target) { [terminals] target in _ = terminals.addTab(for: target) }
   }
 
   /// `captured` with this window's record of its host's copy, for `session.json`.
