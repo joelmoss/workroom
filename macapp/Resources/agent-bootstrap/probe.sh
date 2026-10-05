@@ -51,10 +51,21 @@ fi
 echo "WRB installed $installed"
 
 # The installed agent's build number (#255), so the app never replaces a newer agent with its own
-# older one. An agent from before build numbers states none, and the app replaces it.
+# older one. An agent from before build numbers states none, and the app replaces it. Given 5
+# seconds, by a watchdog rather than `timeout`, which a host need not have: a damaged install that
+# hangs reads as `unknown`, and is replaced, rather than holding up every connect. Its report goes
+# to a file, not a pipe: a process the agent leaves behind would hold a pipe open past the kill.
 build=none
 if [ -x "$binary" ]; then
-  build=$("$binary" protocol 2> /dev/null | sed -n 's/^build-number \([0-9][0-9]*\)$/\1/p' | head -n 1)
+  report=$(mktemp 2> /dev/null || echo "${TMPDIR:-/tmp}/wr-agent-build.$$")
+  "$binary" protocol > "$report" 2> /dev/null &
+  agent=$!
+  (sleep 5 && kill -9 "$agent") > /dev/null 2>&1 &
+  watchdog=$!
+  wait "$agent" 2> /dev/null
+  kill "$watchdog" 2> /dev/null
+  build=$(sed -n 's/^build-number \([0-9][0-9]*\)$/\1/p' "$report" 2> /dev/null | head -n 1)
+  rm -f "$report"
   build=${build:-unknown}
 fi
 echo "WRB build $build"

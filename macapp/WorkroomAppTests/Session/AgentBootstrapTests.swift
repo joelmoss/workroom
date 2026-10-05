@@ -780,12 +780,14 @@ final class AgentBootstrapTests: XCTestCase {
   /// (`protocol`, `hand-off`, `list`). Its content is its build, so two stand-ins that answer
   /// differently have different digests.
   private func standIn(
-    protocol status: Int = 0, handOff: String = "echo current", list: Int = 0
+    protocol status: Int = 0, protocolFirst: String = ":", handOff: String = "echo current",
+    list: Int = 0
   ) throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(
       "wr-agent-standin-\(UUID().uuidString.prefix(8))")
     try Data(
-      ("#!/bin/sh\ncase $1 in protocol) exit \(status) ;; hand-off) \(handOff); exit ;; "
+      ("#!/bin/sh\ncase $1 in protocol) \(protocolFirst); exit \(status) ;; "
+        + "hand-off) \(handOff); exit ;; "
         + "list) exit \(list) ;; esac\nexit 1\n").utf8
     ).write(to: url)
     addTeardownBlock { try? FileManager.default.removeItem(at: url) }
@@ -838,6 +840,19 @@ final class AgentBootstrapTests: XCTestCase {
     let outcome = try await ensure(host, bundling: newer)
     XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: true, agent: .handedOff))
     XCTAssertEqual(try installed(on: host), try AgentBootstrap.digest(of: newer))
+  }
+
+  /// An installed agent that hangs when asked its build reads as `unknown` within the probe's 5
+  /// seconds, and is replaced, rather than holding the connect until the bootstrap gives up.
+  func testTheRealProbeGivesUpOnAnInstalledAgentThatHangs() async throws {
+    let host = try localHost()
+    try preinstall(try standIn(protocolFirst: "sleep 60"), on: host)
+    let build = try standIn()
+    let started = Date()
+    let outcome = try await ensure(host, bundling: build)
+    XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: true, agent: .installed))
+    XCTAssertLessThan(Date().timeIntervalSince(started), 20)
+    XCTAssertEqual(try installed(on: host), try AgentBootstrap.digest(of: build))
   }
 
   /// A host without `sha256sum` says its installed file is `unknown`, not `none`: the app keeps

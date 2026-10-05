@@ -814,6 +814,60 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertTrue(store.writeHostLayouts().isEmpty, "the refused layout sent again unchanged")
   }
 
+  /// A change saved while an unanswered workroom's write is in flight is sent once that write is
+  /// refused, not left until some later change; and only once, however that one goes.
+  func testAChangeBehindAnUnansweredWriteIsSentAfterIt() async throws {
+    final class SlowMovedHost: HostLayoutStore, @unchecked Sendable {
+      var puts = 0
+      func get(_ key: String) async throws -> AgentLayout { AgentLayout(revision: 5, blob: nil) }
+      func put(_ key: String, expected: UInt64, blob: String) async throws -> UInt64 {
+        puts += 1
+        try await Task.sleep(nanoseconds: 100_000_000)
+        throw AgentLayoutError.stale(revision: 5)
+      }
+    }
+    let host = SlowMovedHost()
+    let saved = AppStore.hostLayoutStore
+    AppStore.hostLayoutStore = { _ in host }
+    defer { AppStore.hostLayoutStore = saved }
+    RemoteWorkrooms.enabledForTesting = true
+    defer { RemoteWorkrooms.enabledForTesting = nil }
+    let workroomID = UUID()
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, _ in
+      GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+    }
+    store.projects = [
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "q", path: "/home/workroom/q", vcsName: "workroom/q", warnings: [],
+            host: HostDescriptor(
+              provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: workroomID))
+        ])
+    ]
+    let id = TerminalTarget.workroomID(project: "/proj", name: "q")
+    let target = try XCTUnwrap(store.terminalTarget(forID: id))
+    XCTAssertTrue(HostLayoutOwners.shared.claim(workroomID, targetID: id, by: store))
+    store.terminals.restore(
+      TargetSession(targetID: id, tabs: [terminal("a", title: "Terminal 1")]), for: target)
+    store.hostLayouts.fetched.insert(id)
+    store.hostLayouts.unanswered.insert(id)
+    store.hostLayouts.revisions[id] = 3
+    store.hostLayouts.written[id] = "what this Mac last saw"
+
+    let first = store.writeHostLayouts()
+    XCTAssertEqual(first.count, 1)
+    _ = store.terminals.addTab(for: target)
+    XCTAssertTrue(store.writeHostLayouts().isEmpty, "raced the write in flight")
+    for write in first { await write.value }
+    let next = try XCTUnwrap(store.hostLayouts.writing[id], "the change behind it never sent")
+    await next.value
+    XCTAssertEqual(host.puts, 2)
+    XCTAssertNil(store.hostLayouts.writing[id], "sent again in a loop")
+  }
+
   /// Recovery reattaches only the targets it is told may: a pane of any other is left alone, its
   /// agent not recovered and no surface made for it.
   func testRecoveryLeavesATargetThatMayNotReattach() async {
