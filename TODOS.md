@@ -28,7 +28,130 @@ through the broker rather than by hand.
 
 **Priority:** P1 (chosen in the #255 eng review, 2026-10-05)
 
+### Put the keep-awake acceptance run in `BoxdIntegrationTests` (macapp) — #257 deferral
+
+**What:** Encode #257's live acceptance as a gated case in
+`macapp/WorkroomAppTests/BoxdIntegrationTests.swift`, so one command reruns it.
+
+**Why:** It ran once by hand on 2026-10-06 and passed (results in "As built (#257)" in
+`docs/designs/remote-workrooms.md`). Nothing reruns it, so a boxd change to how it counts idle
+network time, or a provider whose meter ignores the datagram, goes unseen. exe.dev (#259) needs the
+same proof.
+
+**How to start:** Three throwaway machines with 120 s suspend and hibernate timers. Run the same
+6-minute job, with no network use, on each: a control with no agent; this branch's agent; and the
+agent in ask mode, with a saved `<socket>.settings` of 60 s ceiling and 30 s prompt that nobody
+answers. Poll each machine's status every ~20 s from the Mac. Pass: the control and ask-mode
+machines hibernate mid-job, and the agent's machine keeps every job tick and hibernates within the
+idle window after the job ends. Destroy all three, whatever the outcome. About 15 minutes per run.
+
+**Depends on:** nothing. Runs only with `TEST_RUNNER_WR_BOXD_TESTS=1`, a `WR_AGENT_LINUX=1` build
+and the sandbox off, like the other cases there.
+
+**Priority:** P1. Deferred from plan:
+`~/.gstack/projects/joelmoss-workroom/master-eng-review-20261005-233111.md` (T6), at /ship,
+2026-10-06.
+
+### Remove what the never-built lifecycle shim left in the agent (wr-agent, macapp) — #257 review
+
+**What:** Delete the agent's `<socket>.wake` verdict file (`write_verdict`, `retire_verdict`,
+`VERDICT_STOPPED`, `verdict_path`), the `verdict_written` status field and the app's
+`verdictWritten`, the classifier's `net_masked` input with its two self-call-mask tests, and
+`wr-wakeshim` from `EXCLUDED_WITH_DESCENDANTS`.
+
+**Why:** All of it was built for the far-side shim, and #257 replaced the shim with the agent's own
+heartbeat. Nothing reads the file, production always passes `net_masked` false, and the comments
+had to be patched to say so (`wakefulness.rs` module doc). Worse, the verdict file is written and
+renamed synchronously on the service thread every tick: the heartbeat goes out first, but a write
+blocked on a stalled volume stops the NEXT tick's heartbeat, so a busy box on boxd (its socket
+directory is on the home disk) can be slept with a healthy network (Codex adversarial, /ship of
+#257). `status` reports `stalled` after 30 s, but the provider's timer does not wait for anyone to
+look. Deleting the write removes it; also consider giving the heartbeat its own thread fed from the
+published verdict, since a `/proc` read blocked behind a wedged process stalls it the same way.
+
+**How to start:** Remove `net_masked` first and rerun
+`golden_fixtures_replay_to_their_expected_change_points`: the replay passes false already, so it
+must stay EXACT. `wr-wakeshim` mirrors `vcs/scripts/oq19/analyze.py`'s list, so drop it from both
+or note the divergence. `verdict_written` is a status field: the app already decodes it as
+optional, so removing it needs no protocol bump.
+
+**Depends on:** nothing.
+
+**Priority:** P1 (raised from P2 by /ship's adversarial review of #257, 2026-10-06)
+
+### Before wiring boxd into the app: a wake-on-connect resets the awake ceiling (wr-agent) — #257 review
+
+**What:** Decide what a resume does to the awake ceiling once a remote host can sleep, before
+`BoxdHostDriver` is wired into `RemoteHosts`.
+
+**Why:** `Ceiling::resumed()` resets `busy_since` and the state to Below on every resume, which was
+harmless while nothing held a box awake. With the #257 heartbeat it is not: a box whose ceiling
+prompt went unanswered sleeps with its job still running; the next connect wakes it (the status
+sweep connects to every remote workroom); the ceiling restarts; the box reads BUSY again; and the
+heartbeat holds it for another full ceiling. So "ask, then sleep" becomes "awake in 4 h chunks" on
+a paid box. Today no host that sleeps is wired in (containers never sleep), so nothing is exposed.
+
+Three more things the same reviews found, all moot until a host that sleeps is wired in:
+
+- **A base gets ask mode with nobody watching.** Every `AgentBootstrap.connect` sends
+  `ask && sleepsWhenIdle`, including provisioning's base connects, but only `RemoteHosts.connect`
+  starts a prompt watch. A long base job past the ceiling would sleep unasked. Send `ask: false`
+  from connects that start no watch.
+- **An idle window under 60 s defeats the heartbeat silently.** boxd's auto-suspend is
+  user-configurable; read the machine's timers at connect and warn below ~90 s.
+- **Prompt cards and stale verdicts.** Many hosts asking at once stack cards with no scroll, so one
+  can be pushed off-screen while its deadline runs; and a service that stalls after publishing IDLE
+  shows "idle", not unprotected (the badge's stall rule needs `busy`). On a sleeping host treat a
+  stalled reading as unknown, and bound the stack.
+
+**How to start:** Keep the ceiling's awake time across a resume when the box was `Suppressed`, or
+make a resume after `Suppressed` stay suppressed until the user answers. Pin it with a
+`new_settings_apply_from_the_next_tick`-style table in `wakefulness/tests.rs`.
+
+**Depends on:** wiring `BoxdHostDriver` into `RemoteHosts` (#258, #260).
+
+**Priority:** P1, gating boxd in the app (chosen in /ship's adversarial review of #257, 2026-10-06)
+
 ## P2 — perf, correctness, and the next VCS phase
+
+### Harden the agent's kept settings (wr-agent) — #257 review
+
+**What:** Four small fixes the final reviews of #257 left, plus one known boundary:
+
+- Coalesce the saver's queue (`settings_saver`): it is unbounded, and a buggy client flooding
+  `settings` grows it while a stalled disk holds the saver. Keep only the latest pending settings.
+- Publish the starting settings with `running = true` (`run`, next to `state.t = start`), so a
+  `status` before the first tick does not report the defaults.
+- Make a failed saver thread spawn non-fatal (`settings_saver`'s `.expect`): leave the saver
+  `None`, as a failed write already is.
+- `heartbeat.rs`'s status test runs its clock backwards (131.0, then 122.0 for the IDLE tick); use
+  132.0.
+- Known, no privilege gained: any process of the agent's user can send `settings`, and it persists
+  until the next app connect. Same uid can already kill the agent.
+
+**Priority:** P2 (chosen in /ship's adversarial review of #257, 2026-10-06)
+
+### Remote ceiling settings: several Macs, and a crashed wakefulness thread (macapp, wr-agent) — #257 review
+
+**What:** Two gaps the #257 red-team pass found, left for when cross-machine reattach (#255) makes
+them reachable.
+
+1. **Last writer wins across Macs.** Every Mac that connects to a box pushes its own ceiling
+   settings, and the agent keeps them for its restarts. A Mac with ask mode on connecting briefly
+   switches the box to ask mode, and a long job left by an advisory-mode Mac can be slept when the
+   prompt goes unanswered. The other Mac is never told: a remote badge passes `settings: nil`, so no
+   mismatch line shows. Options: show the box's effective settings (and which Mac set them) in the
+   remote badge, or have the agent refuse to lower protection from a different client.
+2. **A crashed wakefulness thread hides the badge.** (A thread that is blocked rather than crashed
+   is covered: `status` reports `stalled` and the badge shows the box unprotected.) `catch_unwind`
+   retires the verdict and sets `running` false; the heartbeat stops, and the badge (gated on
+   `status.running`) disappears rather than showing "busy but not kept awake". A remote agent is
+   always Linux, so a remote badge could treat `running == false` with live sessions as unprotected.
+   The `settings` request is then saved for the next start but not applied.
+
+**Depends on:** #255 for (1).
+
+**Priority:** P2 (chosen in /ship's review of #257, 2026-10-06)
 
 ### A hand-off can refuse a build that did report, when the check uses its whole time (wr-agent) — #352 finding
 
@@ -208,29 +331,6 @@ Either find one (probe `shutdown` on the listener and read what `accept` returns
 **Depends on / blocked by:** nothing. Also known and accepted: a local client that fully closes while
 the target never responds and never closes holds its stream until the connection ends (the same in
 `ssh -L`; the agent has no idle reaping either).
-
-**Priority:** P3, effort S.
-
-### Confirm the wakefulness net filter on the real box (vcs) — #215 review follow-up
-
-**What:** The net signal now skips internal bridges and their virtual ports (`sample.rs`
-`crosses_the_box`, mirrored in `procfs.py`; see Recently done, 2026-09-22). It was verified in Docker's VM and in the OQ19
-image, not on boxd. Check `/sys/class/net/*/{bridge,brport,device}` on a boxd VM, with and without a
-container running, and decide whether the boxd confirmation run needs repeating.
-
-**Why:** The golden fixtures carry pre-summed bytes, so they cannot see the filter; only a live box can.
-The rule fails awake on anything it cannot classify, and with no default route at all it counts
-every interface. Accepted false-idle gaps, all needing a bridged uplink whose ports have no `device`:
-the default leaves by a VLAN or macvlan on top of the bridge (`br0.100`), so the bridge under it is
-treated as internal; the only IPv4 default sits in a policy table (IPv6 lists every table); the box's
-egress uses a specific gatewayed route on the bridge while the default leaves elsewhere. And when a
-default route is deleted and re-added between ticks, the net rate reads 0 for up to 3 s; the 30 s
-BUSY hold covers that when the box was already busy on the network.
-
-**How to start:** `boxd machine exec <vm> -- sh -c 'for i in /sys/class/net/*; do ls $i; done'`.
-Expect a plain `eth0` with a `device` entry and no `brport`, in which case nothing changed there.
-
-**Depends on / blocked by:** a boxd VM (owner's call, it costs a machine).
 
 **Priority:** P3, effort S.
 
@@ -4028,6 +4128,14 @@ error) is one of the hardest to diagnose from a bug report.
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-10-05 — the wakefulness net filter holds on a real boxd box (#215 follow-up, checked during
+#257).** A default-created boxd machine lists `eth0` with a `device` entry and no `brport`,
+`docker0` as a `bridge` (link down, no container running) and `lo`, which is exactly the shape
+`crosses_the_box` expects: eth0 counts, the bridge is internal. The boxd confirmation run did not
+need repeating. The same probe found that boxd's idle meter ignores the box's own background chatter
+(40-140 bytes per 10 s on eth0) but counts one UDP datagram to the default gateway, which is how
+#257 keeps a busy box awake.
 
 **2026-10-05 — `a_relay_with_no_agent_fails_fast_and_says_so` flaked because another test's child held its
 "stale" socket open (#334 ship follow-up).** It once failed with the relay exiting 0 instead of 92 on
