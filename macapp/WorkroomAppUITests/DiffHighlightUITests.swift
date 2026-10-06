@@ -4,8 +4,9 @@ import XCTest
 /// so each diff line exposes an accessibility *value* — `highlighted` once a coloured
 /// `AttributedString` was applied, else `plain`. In fixture mode `UITestFixture` serves a canned Ruby
 /// file (parsed by the real bundled grammar) for `.rb` paths and no content for others, so we can
-/// assert: highlight applies for a known language, deletions stay plain, and an unknown language
-/// still renders (plain) rather than breaking.
+/// assert: highlight applies for a known language, and an unknown language still renders (plain)
+/// rather than breaking. Deletions are highlighted from the old side, which fixture mode can't serve;
+/// `DiffHighlightMapperTests` covers that.
 ///
 /// Run with `make app-uitest` on a real GUI login session (excluded from the headless unit gate).
 final class DiffHighlightUITests: XCTestCase {
@@ -49,19 +50,6 @@ final class DiffHighlightUITests: XCTestCase {
     row.scrollIntoView(in: app)
     row.click()
     XCTAssertTrue(element(app, id: "terminal.tab.\(basename)").waitForExistence(timeout: 6))
-  }
-
-  /// Deletions are never highlighted — the removed line renders plain even in a highlighted diff.
-  func testDeletionLineRendersPlain() throws {
-    let app = launchedApp()
-    openDiff(app, "app/models/user.rb", tab: "user.rb")
-    // Let highlighting settle (a highlighted line appears first).
-    _ = diffLine(app, "identifier == %@ AND value == %@", "diff.line", "highlighted")
-      .waitForExistence(timeout: 8)
-    let highlightedDeletion = diffLine(
-      app, "identifier == %@ AND label CONTAINS %@ AND value == %@", "diff.line", "removed",
-      "highlighted")
-    XCTAssertFalse(highlightedDeletion.exists, "a deletion line must never be highlighted")
   }
 
   /// An unknown-language file still renders its diff (plain) — highlighting failure never breaks it.
