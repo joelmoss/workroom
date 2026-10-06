@@ -62,99 +62,124 @@ final class CommitSheetUITests: XCTestCase {
 
   // MARK: - git
 
-  /// The whole point of the dialog: it names what it is about to record, per file, before you commit.
-  func testGitSheetListsFilesWithCheckboxes() throws {
+  /// One launch walks the git sheet in the order its state allows: the read-only checks on the fresh
+  /// sheet first, then the summary, the checkboxes, select-all, Cancel, and last a reopened sheet
+  /// that commits (a successful commit closes the dialog, so it has to be the final step).
+  func testGitSheetListsFilesGatesCommitAndClosesOnCancelAndCommit() throws {
     let app = launchedApp()
     openSheet(app)
+    let commit = button(app, id: "commit.commit")
+    let amend = button(app, id: "commit.amend")
+    let blocked = element(app, id: "commit.blocked")
 
+    // 1. The whole point of the dialog: it names what it is about to record, per file, before you
+    // commit.
     XCTAssertTrue(
       button(app, id: "commit.file.check.Gemfile").waitForExistence(timeout: 5),
       "a git file row should carry an inclusion checkbox")
     XCTAssertTrue(
       button(app, id: "commit.selectAll").exists, "and a bulk select-all affordance")
-  }
 
-  /// A blocked state must be readable, not hidden in a tooltip nobody hovers on a dead-looking
-  /// button — so the reason renders as its own element and Commit is genuinely disabled.
-  func testCommitIsBlockedUntilThereIsASummary() throws {
-    let app = launchedApp()
-    openSheet(app)
+    // 2. Amend replaces HEAD's message with whatever is typed for a NEW commit, so which message it
+    // destroys has to be on screen before the click — not recoverable only from the reflog after it.
+    let target = element(app, id: "commit.amendTarget")
+    XCTAssertTrue(
+      target.waitForExistence(timeout: 10), "the commit Amend would rewrite must be named")
+    XCTAssertTrue(
+      (target.label + target.value.debugDescription).lowercased().contains("amend"),
+      "and the line must say what it is about to replace, got: \(target.label)")
 
-    let blocked = element(app, id: "commit.blocked")
+    // 3. A blocked state must be readable, not hidden in a tooltip nobody hovers on a dead-looking
+    // button — so the reason renders as its own element and Commit is genuinely disabled.
     XCTAssertTrue(blocked.waitForExistence(timeout: 5), "the reason should be stated on screen")
     XCTAssertTrue(
       (blocked.label + blocked.value.debugDescription).contains("summary"),
       "and should name the missing summary, got: \(blocked.label)")
-
-    let commit = button(app, id: "commit.commit")
     XCTAssertTrue(commit.exists)
     XCTAssertFalse(commit.isEnabled, "Commit stays disabled with no summary")
 
+    // The second verb is its own named button, not a menu item. A menu holding exactly one
+    // entry costs a click and leaves the control unnamed until it's opened.
+    XCTAssertTrue(amend.waitForExistence(timeout: 5), "git should offer Amend directly")
+    XCTAssertEqual(amend.label, "Amend last commit")
+    // Amend rewords the last commit, so it needs a message just as Commit does.
+    XCTAssertFalse(amend.isEnabled, "no summary yet")
+
+    // 4. Typing a summary enables both verbs and clears the reason. The reason's absence is only
+    // meaningful because step 3 proved it renders, and it matters below: the select-all step waits
+    // for the reason to appear, which a stale element would satisfy.
     typeSummary(app, "Add session login")
     let enabled = NSPredicate(format: "isEnabled == true")
     XCTAssertEqual(
       XCTWaiter().wait(
         for: [XCTNSPredicateExpectation(predicate: enabled, object: commit)], timeout: 5),
       .completed, "typing a summary should enable Commit")
-  }
+    XCTAssertEqual(
+      XCTWaiter().wait(
+        for: [XCTNSPredicateExpectation(predicate: enabled, object: amend)], timeout: 5),
+      .completed, "and Amend, which needs a message just as Commit does")
+    XCTAssertTrue(blocked.waitForNonExistence(timeout: 5), "a summary lifts the blocked reason")
 
-  /// The count is the honest claim about what will be recorded, so it has to track the checkboxes —
-  /// once the list scrolls, the label is the only thing the user can verify against.
-  func testDeselectingAFileChangesTheCommitCount() throws {
-    let app = launchedApp()
-    openSheet(app)
-    typeSummary(app, "Add session login")
-
-    let commit = button(app, id: "commit.commit")
-    XCTAssertTrue(commit.waitForExistence(timeout: 5))
+    // 5. The count is the honest claim about what will be recorded, so it has to track the
+    // checkboxes — once the list scrolls, the label is the only thing the user can verify against.
     let before = commit.label
     XCTAssertTrue(before.contains("file"), "the label should name a count, got: \(before)")
-
     button(app, id: "commit.file.check.Gemfile").click()
-
     let changed = NSPredicate(format: "label != %@", before)
     XCTAssertEqual(
       XCTWaiter().wait(
         for: [XCTNSPredicateExpectation(predicate: changed, object: commit)], timeout: 5),
       .completed, "excluding a file should change the count, still read: \(commit.label)")
-  }
 
-  /// Select-all is what makes "commit only this file" cheap; without it that intent costs one click
-  /// per unwanted file.
-  func testSelectAllTogglesEveryFile() throws {
-    let app = launchedApp()
-    openSheet(app)
-    typeSummary(app, "Add session login")
-
-    let commit = button(app, id: "commit.commit")
-    XCTAssertTrue(commit.waitForExistence(timeout: 5))
+    // 6. Select-all is what makes "commit only this file" cheap; without it that intent costs one
+    // click per unwanted file. One file is excluded now, so the first click re-includes everything
+    // (the count returns to `before`) and the second excludes everything.
     button(app, id: "commit.selectAll").click()
-
-    // Everything excluded ⇒ nothing to commit, which is a blocked state with its own message.
-    let blocked = element(app, id: "commit.blocked")
-    XCTAssertTrue(
-      blocked.waitForExistence(timeout: 5), "deselecting everything should block the commit")
-    XCTAssertFalse(commit.isEnabled, "and Commit should not be live with nothing selected")
-  }
-
-  /// The second verb is its own named button, not a menu item. A menu holding exactly one
-  /// entry costs a click and leaves the control unnamed until it's opened.
-  func testGitOffersAmendAsItsOwnButton() throws {
-    let app = launchedApp()
-    openSheet(app)
-
-    let amend = button(app, id: "commit.amend")
-    XCTAssertTrue(amend.waitForExistence(timeout: 5), "git should offer Amend directly")
-    XCTAssertEqual(amend.label, "Amend last commit")
-
-    // Amend rewords the last commit, so it needs a message just as Commit does.
-    XCTAssertFalse(amend.isEnabled, "no summary yet")
-    typeSummary(app, "Reworded")
-    let enabled = NSPredicate(format: "isEnabled == true")
+    let restored = NSPredicate(format: "label == %@", before)
     XCTAssertEqual(
       XCTWaiter().wait(
-        for: [XCTNSPredicateExpectation(predicate: enabled, object: amend)], timeout: 5),
-      .completed)
+        for: [XCTNSPredicateExpectation(predicate: restored, object: commit)], timeout: 5),
+      .completed, "select-all with a file excluded should include every file again")
+    XCTAssertFalse(blocked.exists, "with every file selected nothing blocks the commit")
+    button(app, id: "commit.selectAll").click()
+    // Everything excluded ⇒ nothing to commit, which is a blocked state with its own message.
+    XCTAssertTrue(
+      blocked.waitForExistence(timeout: 5), "deselecting everything should block the commit")
+    XCTAssertTrue(
+      (blocked.label + blocked.value.debugDescription).contains("Select at least one file"),
+      "with the reason for an empty selection, got: \(blocked.label)")
+    XCTAssertFalse(commit.isEnabled, "and Commit should not be live with nothing selected")
+
+    // 7. Cancel dismisses the dialog. The sheet is proven open by the steps above, so its absence
+    // is real.
+    let sheet = element(app, id: "commit.sheet")
+    XCTAssertTrue(sheet.exists, "the dialog is still open before Cancel")
+    button(app, id: "commit.cancel").click()
+    let gone = NSPredicate(format: "exists == false")
+    XCTAssertEqual(
+      XCTWaiter().wait(
+        for: [XCTNSPredicateExpectation(predicate: gone, object: sheet)], timeout: 5),
+      .completed, "Cancel should dismiss the dialog")
+
+    // 8. A reopened dialog starts clean: no summary and the full selection, so the reason is the
+    // summary one (not the empty-selection one left over from step 6) and Commit is dead again.
+    // That makes typing the summary below meaningful.
+    openSheet(app)
+    XCTAssertTrue(
+      blocked.waitForExistence(timeout: 5), "a reopened dialog states its reason again")
+    XCTAssertTrue(
+      (blocked.label + blocked.value.debugDescription).contains("summary"),
+      "the draft starts fresh, with a summary missing, got: \(blocked.label)")
+    XCTAssertFalse(commit.isEnabled, "Commit starts disabled on a reopened dialog")
+
+    // 9. A successful commit closes the dialog — the Changes list becoming clean is the
+    // confirmation. Last, because it ends the sheet.
+    typeSummary(app, "Add session login")
+    commit.click()
+    XCTAssertEqual(
+      XCTWaiter().wait(
+        for: [XCTNSPredicateExpectation(predicate: gone, object: sheet)], timeout: 20),
+      .completed, "the dialog should close once the commit lands")
   }
 
   // MARK: - Render cap
@@ -182,22 +207,6 @@ final class CommitSheetUITests: XCTestCase {
       "the count must be the real total, not the drawn one, got: \(commit.label)")
   }
 
-  // MARK: - Amend target
-
-  /// Amend replaces HEAD's message with whatever is typed for a NEW commit, so which message it
-  /// destroys has to be on screen before the click — not recoverable only from the reflog after it.
-  func testTheAmendTargetIsNamedOnScreen() throws {
-    let app = launchedApp()
-    openSheet(app)
-
-    let notice = element(app, id: "commit.amendTarget")
-    XCTAssertTrue(
-      notice.waitForExistence(timeout: 10), "the commit Amend would rewrite must be named")
-    XCTAssertTrue(
-      (notice.label + notice.value.debugDescription).lowercased().contains("amend"),
-      "and the line must say what it is about to replace, got: \(notice.label)")
-  }
-
   // MARK: - Failure
 
   /// The defining moment. A hook's output is the most useful text in the whole taxonomy, so a
@@ -222,37 +231,5 @@ final class CommitSheetUITests: XCTestCase {
     XCTAssertTrue(
       element(app, id: "commit.failure.detailsToggle").exists,
       "the hook's own output must be reachable, not flattened to one line")
-  }
-
-  // MARK: - Success and dismissal
-
-  /// A successful commit closes the dialog — the Changes list becoming clean is the confirmation.
-  func testASuccessfulCommitClosesTheSheet() throws {
-    let app = launchedApp()
-    openSheet(app)
-    typeSummary(app, "Add session login")
-
-    button(app, id: "commit.commit").click()
-
-    let sheet = element(app, id: "commit.sheet")
-    let gone = NSPredicate(format: "exists == false")
-    XCTAssertEqual(
-      XCTWaiter().wait(
-        for: [XCTNSPredicateExpectation(predicate: gone, object: sheet)], timeout: 20),
-      .completed, "the dialog should close once the commit lands")
-  }
-
-  func testCancelClosesTheSheetWithoutCommitting() throws {
-    let app = launchedApp()
-    openSheet(app)
-
-    button(app, id: "commit.cancel").click()
-
-    let sheet = element(app, id: "commit.sheet")
-    let gone = NSPredicate(format: "exists == false")
-    XCTAssertEqual(
-      XCTWaiter().wait(
-        for: [XCTNSPredicateExpectation(predicate: gone, object: sheet)], timeout: 5),
-      .completed, "Cancel should dismiss the dialog")
   }
 }

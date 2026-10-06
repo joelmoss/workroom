@@ -80,16 +80,31 @@ final class ChangesetDetailUITests: XCTestCase {
       "fixture history rows render")
   }
 
-  /// Single-clicking a History row opens the commit's changeset detail: the detail view, its
-  /// changed-file list (≥1 row), and a rendered diff (unified `diff.line` or side-by-side
-  /// `diff.side.left`).
-  func testHistoryRowOpensChangesetDetail() throws {
+  /// One launch, one ordered chain (each commit returns the SAME fixture changeset — three files,
+  /// the renamed `src/moved.rb → lib/moved.rb`, 24 insertions / 8 deletions — so any History row can
+  /// serve any assertion):
+  ///
+  /// 1. A double-click on the newest row PERSISTS its changeset tab (the chip appears) and opens the
+  ///    commit's changeset detail: the detail view, its +/- summary, changed-file list (≥1 row), a
+  ///    rendered diff (unified `diff.line` or side-by-side `diff.side.left`), and the moved file's
+  ///    row reading `old → new`. Done first, so the persisted chip can't be a leftover preview (a
+  ///    single click would give the preview chip the same title) and `ChangesetDetail` can't already
+  ///    be on screen. (Single-click-then-double-click on the same row does NOT persist today —
+  ///    measured — so the double-click has to land on a row with no preview open.)
+  /// 2. Single-clicking the next row previews "Fixture commit 2". If the first were a preview it
+  ///    would be retargeted; because it was persisted, both chips coexist.
+  /// 3. Regression, LAST because it destroys every tab: closing ALL tabs of the selected workroom
+  ///    empties the History inspector. History keys on the *active* target, which is nil once no
+  ///    tabs remain. (Changes + PR use the same `inspectorTargetID` gate.)
+  func testChangesetDetailOpensPersistsAndHistoryEmptiesWhenAllTabsClosed() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    openHistory(app)
+    openHistory(app)  // History active + fixture rows rendered (asserts a HistoryRow exists)
 
-    els(app, "HistoryRow").element(boundBy: 0).click()
-
+    // 1. Double-click the newest row → persist "Fixture commit 1" and open its detail.
+    els(app, "HistoryRow").element(boundBy: 0).doubleClick()
+    XCTAssertTrue(
+      waitExists(el(app, "terminal.tab.Fixture commit 1")), "the persisted chip appears")
     XCTAssertTrue(waitExists(el(app, "ChangesetDetail")), "the changeset detail opens as a tab")
 
     // The header shows the changeset's +/- line-count summary (fixture: 24 insertions, 8 deletions).
@@ -110,43 +125,32 @@ final class ChangesetDetailUITests: XCTestCase {
     XCTAssertTrue(
       waitExists(diffLine) || sideLine.exists,
       "the selected file's diff renders (unified or side-by-side)")
-  }
 
-  /// A double-click on a History row PERSISTS its changeset tab: opening a different commit's preview
-  /// afterward adds a second tab rather than retargeting the first (which a preview would). Asserted
-  /// via the two tab chips (`terminal.tab.<title>`) coexisting.
-  func testDoubleClickPersistsChangesetTab() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    openHistory(app)
+    // A moved file's row reads `old → new`. The rename is ONE row (the delete is paired with the
+    // add), so this dimmed path line is the only place the old path appears — if it regressed to
+    // the bare path, the row would look like a plain add at a path the user never created.
+    // Matched on the row's spoken content rather than its `Text`: `ChangesetFileRow` combines its
+    // children, so the name + path line surface as the row element's own label/value. The fixture's
+    // renamed entry is src/moved.rb → lib/moved.rb; scoped to the file rows (an unscoped predicate
+    // query over every element times out now).
+    let moved = els(app, "ChangesetFileRow").matching(
+      NSPredicate(
+        format: "label CONTAINS %@ OR value CONTAINS %@", "src/moved.rb \u{2192} lib/moved.rb",
+        "src/moved.rb \u{2192} lib/moved.rb")
+    ).firstMatch
+    XCTAssertTrue(waitExists(moved), "the renamed row shows `old → new`, not just the new path")
 
-    // Double-click the newest row → persist "Fixture commit 1".
-    els(app, "HistoryRow").element(boundBy: 0).doubleClick()
-    XCTAssertTrue(
-      waitExists(el(app, "terminal.tab.Fixture commit 1")), "the persisted chip appears")
-
-    // Single-click the next row → preview "Fixture commit 2". If the first were a preview it would be
-    // retargeted; because it was persisted, both chips coexist.
+    // 2. Single-click the next row → preview "Fixture commit 2"; both chips coexist.
     els(app, "HistoryRow").element(boundBy: 1).click()
     XCTAssertTrue(waitExists(el(app, "terminal.tab.Fixture commit 2")), "the preview chip appears")
     XCTAssertTrue(
       el(app, "terminal.tab.Fixture commit 1").exists,
       "the persisted changeset tab survives opening another commit's preview")
-  }
 
-  /// Regression: closing ALL tabs of the selected workroom empties the History inspector. The sidebar
-  /// row stays selected (the detail drops to its "No terminal" placeholder), so the inspector must
-  /// follow — History keys on the *active* target, which is nil once no tabs remain. (Changes + PR
-  /// use the same `inspectorTargetID` gate.)
-  func testHistoryEmptiesWhenAllTabsClosed() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    openHistory(app)  // History active + fixture rows rendered (asserts a HistoryRow exists)
-
+    // 3. Close every tab (the fixture opens one terminal on launch, plus the two changeset tabs
+    // above; idle shells close w/o a confirm). Last: it destroys all tabs.
     XCTAssertTrue(
       els(app, "HistoryRow").element(boundBy: 0).exists, "history has rows while a tab is open")
-
-    // Close every terminal tab (the fixture opens one on launch; idle shells close w/o a confirm).
     let chips = app.staticTexts.matching(
       NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab."))
     let initial = chips.count
@@ -157,32 +161,5 @@ final class ChangesetDetailUITests: XCTestCase {
     XCTAssertTrue(
       waitExists(els(app, "HistoryRow").element(boundBy: 0), false),
       "History empties once the selected workroom has no open tabs")
-  }
-
-  /// A moved file's row reads `old → new`. The rename is ONE row (the delete is paired with the
-  /// add), so this dimmed path line is the only place the old path appears — if it regressed to
-  /// the bare path, the row would look like a plain add at a path the user never created.
-  ///
-  /// Matched on the row's spoken content rather than its `Text`: `ChangesetFileRow` combines its
-  /// children, so the name + path line surface as the row element's own label/value.
-  func testRenamedFileRowShowsWhereItMovedFrom() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    openHistory(app)
-
-    els(app, "HistoryRow").element(boundBy: 0).click()
-    XCTAssertTrue(waitExists(el(app, "ChangesetDetail")), "the changeset detail opens as a tab")
-    XCTAssertTrue(
-      els(app, "ChangesetFileRow").element(boundBy: 0).waitForExistence(timeout: 8),
-      "the changed-file list renders")
-
-    // The fixture's renamed entry: src/moved.rb → lib/moved.rb. Scoped to the file rows (which carry it
-    // as their own spoken content) — an unscoped predicate query over every element times out now.
-    let moved = els(app, "ChangesetFileRow").matching(
-      NSPredicate(
-        format: "label CONTAINS %@ OR value CONTAINS %@", "src/moved.rb \u{2192} lib/moved.rb",
-        "src/moved.rb \u{2192} lib/moved.rb")
-    ).firstMatch
-    XCTAssertTrue(waitExists(moved), "the renamed row shows `old → new`, not just the new path")
   }
 }

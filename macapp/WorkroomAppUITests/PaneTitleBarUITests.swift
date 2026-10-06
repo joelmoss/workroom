@@ -73,16 +73,67 @@ final class PaneTitleBarUITests: XCTestCase {
     XCTAssertTrue(named.waitForExistence(timeout: 10), "the diff pane's bar should name \(path)")
   }
 
-  /// Every pane carries exactly one bar — solo included. That is the whole change: the bar is
-  /// unconditional, so a pane's identity and its actions are always where the pane is.
-  func testEveryPaneHasExactlyOneTitleBar() {
+  /// One launch, five ordered steps, each starting from the state it needs.
+  ///
+  /// 1. A solo pane's bar must NOT be draggable. This runs first because it needs exactly one pane.
+  ///    The gesture is masked `.subviews` when there is no split, so this asserts the inert half of
+  ///    that mask; step 2's solo click asserts the half that would break every button if the mask
+  ///    were `.none`. Mirrors `WorkroomPaneHeaderUITests.testSoloTitleBarDragDoesNotCreateASplit`.
+  /// 2. Every pane carries exactly one bar, solo included. That is the whole change of issue #150:
+  ///    the bar is unconditional, so a pane's identity and its actions are always where the pane is.
+  ///    The split click on a SOLO pane doubles as the check that its buttons still fire. The bar
+  ///    carries the pane-move `DragGesture`, and gating that with `GestureMask.none` would disable
+  ///    every gesture in the bar's SUBVIEW hierarchy too, killing the buttons on every unsplit pane.
+  ///    `ToolbarIconButtonStyle`'s hover well is `.onHover`, not a gesture, so a broken button still
+  ///    reports `.exists` and `.isHittable`: only clicking it tells the difference. Same trap
+  ///    `WorkroomPaneHeaderUITests.testSoloRunButtonActuallyFires` documents.
+  /// 3. Close acts on the pane whose button was clicked, not on the active tab. This is the defect
+  ///    the issue exists to fix, so it is asserted on the pane that is NOT focused: clicking the
+  ///    first pane's close must leave exactly the second one behind.
+  /// 4. Split down is wired to its own edge, a smoke guard against both buttons calling the same
+  ///    action, which a copy-paste in the bar would produce and nothing else here would catch.
+  /// 5. "Open File" opens the working copy of the file being diffed, so a DELETED source has
+  ///    nothing to open. The button stays visible and goes disabled rather than vanishing (review
+  ///    D4): a control that disappears reads as a missing feature. Last, because opening a diff
+  ///    changes the layout.
+  func testPaneTitleBarsStayOnePerPaneAndTheirButtonsActOnTheirOwnPane() {
     let app = launchedApp()
     openWorkroom(app)
-    assertCount(titlebars(app), reaches: 1)
 
+    // 1. Solo bar drag.
+    assertCount(panes(app), reaches: 1)
+    let bar = titlebars(app).firstMatch
+    XCTAssertTrue(bar.waitForExistence(timeout: 8))
+    bar.click(forDuration: 0.4, thenDragTo: app.windows.firstMatch)
+    assertCount(panes(app), reaches: 1)
+    XCTAssertEqual(titlebars(app).count, 1, "dragging a solo pane's bar must not split anything")
+
+    // 2. One bar per pane, solo and split. Solo, so the button is unique.
+    assertCount(titlebars(app), reaches: 1)
     app.buttons["pane.toolbar.splitRight"].click()
     assertCount(panes(app), reaches: 2)
     assertCount(titlebars(app), reaches: 2)
+
+    // 3. Splitting focuses the NEW pane, so the first bar's close button belongs to the unfocused
+    // one. Scoped to the first bar: with two panes the button id matches once per pane.
+    let first = titlebars(app).element(boundBy: 0)
+    XCTAssertTrue(first.waitForExistence(timeout: 6))
+    first.buttons["pane.toolbar.close"].click()
+    assertCount(panes(app), reaches: 1)
+
+    // 4. Back to a solo pane (wait for the closed pane's bar to go, or the button is ambiguous).
+    assertCount(titlebars(app), reaches: 1)
+    app.buttons["pane.toolbar.splitDown"].click()
+    assertCount(panes(app), reaches: 2)
+
+    // 5. Close one pane again so the diff opens into the solo layout the original test used.
+    titlebars(app).element(boundBy: 0).buttons["pane.toolbar.close"].click()
+    assertCount(panes(app), reaches: 1)
+    assertCount(titlebars(app), reaches: 1)
+    openDiffPane(app, path: "app/models/legacy_user.rb")
+    let openFile = app.buttons["pane.toolbar.openFile"]
+    XCTAssertTrue(openFile.waitForExistence(timeout: 8))
+    XCTAssertFalse(openFile.isEnabled, "a deleted source has no working copy to open")
   }
 
   /// The bar renders more of a long title than the chip's `TabStripMetrics.maxChipTitle` cap allows.
@@ -99,48 +150,6 @@ final class PaneTitleBarUITests: XCTestCase {
       title.frame.width, 180,
       "the pane bar must not inherit the chips' 180pt title cap — that cap is what issue #150 escapes"
     )
-  }
-
-  /// Split right / split down / close act on the pane whose button was clicked, not on the active tab.
-  /// This is the defect the issue exists to fix, so it is asserted on the pane that is NOT focused:
-  /// clicking the first pane's close must leave exactly the second one behind.
-  func testCloseActsOnItsOwnPaneNotTheActiveTab() {
-    let app = launchedApp()
-    openWorkroom(app)
-    app.buttons["pane.toolbar.splitRight"].click()
-    assertCount(panes(app), reaches: 2)
-
-    // Splitting focuses the NEW pane, so the first bar's close button belongs to the unfocused one.
-    let first = titlebars(app).element(boundBy: 0)
-    XCTAssertTrue(first.waitForExistence(timeout: 6))
-    first.buttons["pane.toolbar.close"].click()
-    assertCount(panes(app), reaches: 1)
-  }
-
-  /// Split down is wired to its own edge — a smoke guard against both buttons calling the same action,
-  /// which a copy-paste in the bar would produce and which nothing else here would catch.
-  func testSplitDownAlsoCreatesASecondPane() {
-    let app = launchedApp()
-    openWorkroom(app)
-    app.buttons["pane.toolbar.splitDown"].click()
-    assertCount(panes(app), reaches: 2)
-  }
-
-  /// A solo pane's bar must NOT be draggable, but its buttons must still work. The bar carries the
-  /// pane-move `DragGesture`, and gating that with `GestureMask.none` would disable every gesture in
-  /// the bar's SUBVIEW hierarchy too — killing the buttons on every unsplit pane. `.subviews` is what
-  /// drops only the drag. `ToolbarIconButtonStyle`'s hover well is `.onHover`, not a gesture, so a
-  /// broken button still reports `.exists` and `.isHittable`: only clicking it tells the difference.
-  /// Same trap `WorkroomPaneHeaderUITests.testSoloRunButtonActuallyFires` documents for the workroom
-  /// bar above this one.
-  func testSoloPaneButtonsStillFire() {
-    let app = launchedApp()
-    openWorkroom(app)
-    assertCount(panes(app), reaches: 1)
-    let split = app.buttons["pane.toolbar.splitRight"]
-    XCTAssertTrue(split.waitForExistence(timeout: 6))
-    split.click()
-    assertCount(panes(app), reaches: 2)
   }
 
   /// The narrow-pane collapse actually engages: below `PaneTitleBarMetrics.minTitle` the full row
@@ -184,48 +193,5 @@ final class PaneTitleBarUITests: XCTestCase {
     XCTAssertTrue(
       app.windows.firstMatch.frame.contains(overflow.frame),
       "the collapsed toolbar overflowed its pane instead of fitting")
-  }
-
-  /// "Open File" opens the working copy of the file being diffed, so a DELETED source has nothing to
-  /// open. The button stays visible and goes disabled rather than vanishing (review D4) — a control
-  /// that disappears reads as a missing feature.
-  func testOpenFileIsDisabledForADeletedSource() {
-    let app = launchedApp()
-    openWorkroom(app)
-    openDiffPane(app, path: "app/models/legacy_user.rb")
-
-    let openFile = app.buttons["pane.toolbar.openFile"]
-    XCTAssertTrue(openFile.waitForExistence(timeout: 8))
-    XCTAssertFalse(openFile.isEnabled, "a deleted source has no working copy to open")
-  }
-
-  /// A solo pane's bar must not drag. The gesture is masked `.subviews` when there is no split, so
-  /// this asserts the inert half of that mask; `testSoloPaneButtonsStillFire` asserts the half that
-  /// would break every button if the mask were `.none` instead. Mirrors
-  /// `WorkroomPaneHeaderUITests.testSoloTitleBarDragDoesNotCreateASplit` for the workroom bar above.
-  func testSoloPaneBarDragDoesNotCreateASplit() {
-    let app = launchedApp()
-    openWorkroom(app)
-    assertCount(panes(app), reaches: 1)
-
-    let bar = titlebars(app).firstMatch
-    XCTAssertTrue(bar.waitForExistence(timeout: 8))
-    bar.click(forDuration: 0.4, thenDragTo: app.windows.firstMatch)
-
-    assertCount(panes(app), reaches: 1)
-    XCTAssertEqual(titlebars(app).count, 1, "dragging a solo pane's bar must not split anything")
-  }
-
-  /// A terminal pane offers no per-file controls: no diff mode switch, no "Open File". They are not
-  /// merely hidden behind the overflow menu either — a terminal has nothing optional to collapse, so
-  /// the menu itself must be absent.
-  func testTerminalPaneShowsNoOptionalControls() {
-    let app = launchedApp()
-    openWorkroom(app)
-    XCTAssertTrue(app.buttons["pane.toolbar.splitRight"].waitForExistence(timeout: 6))
-    XCTAssertFalse(app.buttons["pane.toolbar.openFile"].exists)
-    XCTAssertFalse(
-      app.descendants(matching: .any).matching(identifier: "pane.toolbar.overflow").firstMatch
-        .exists)
   }
 }

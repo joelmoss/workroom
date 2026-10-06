@@ -16,8 +16,8 @@ final class NewWorkroomDialogUITests: XCTestCase {
   /// The File-menu item's exact title. **The ellipsis is load-bearing** — XCUITest matches menu
   /// items by exact title, so the plain "New Workroom" these tests used to query matched nothing
   /// once `8e34748a` renamed the item to "New Workroom…" (the standard macOS marker for an action
-  /// that opens a dialog). All three tests here failed on it for a month. Held in one constant so a
-  /// future rename is a one-line fix rather than three, and named so the reason survives.
+  /// that opens a dialog). All the tests here failed on it for a month. Held in one constant so a
+  /// future rename is a one-line fix rather than several, and named so the reason survives.
   private static let newWorkroomTitle = "New Workroom…"
 
   override func setUpWithError() throws {
@@ -48,25 +48,29 @@ final class NewWorkroomDialogUITests: XCTestCase {
     app.menuBars.menuBarItems["File"].menuItems[Self.newWorkroomTitle]
   }
 
-  /// The File menu carries an enabled "New Workroom" item (the fixture has one project).
-  func testNewWorkroomMenuItemPresentAndEnabled() throws {
-    let app = launchedApp()
-    waitForLaunchWindow(app)
-    let file = app.menuBars.menuBarItems["File"]
-    file.click()
-    let item = file.menuItems[Self.newWorkroomTitle]
-    XCTAssertTrue(item.waitForExistence(timeout: 4), "File ▸ New Workroom should exist")
-    XCTAssertTrue(item.isEnabled, "New Workroom is enabled when ≥1 project exists")
-    app.typeKey(.escape, modifierFlags: [])
-  }
-
   /// With no projects (issue #81 D3), the File ▸ New Workroom item still exists but is DISABLED —
   /// ⌘N is then a silent no-op instead of opening an empty dialog. Launched with an empty fixture.
-  func testNewWorkroomMenuItemDisabledWithNoProjects() throws {
+  ///
+  /// Also: the title-bar Open / New Workroom buttons render even with NO tabs in the bar — they're
+  /// the mouse route to a first workroom, so gating them on a tab already existing left a fresh
+  /// window with nothing to click. The empty fixture has no workroom targets and so an empty chip
+  /// run. The button checks run BEFORE the File menu opens, so an open menu cannot hide or satisfy
+  /// them.
+  func testNoProjectsDisablesNewWorkroomAndTitleBarButtonsStillRender() throws {
     let app = launchedApp(extraArgs: ["-WorkroomUITestNoProjects", "1"])
     XCTAssertTrue(
       app.windows.firstMatch.waitForExistence(timeout: 15),
       "a window should appear even with no projects")
+
+    // Title-bar buttons, menu still closed.
+    XCTAssertTrue(
+      el(app, "OpenWorkroom").waitForExistence(timeout: 6),
+      "the Open Workroom button should render with an empty tab bar")
+    XCTAssertTrue(
+      el(app, "NewWorkroom").exists,
+      "…and so should the New Workroom button")
+
+    // The menu item, present but disabled.
     let file = app.menuBars.menuBarItems["File"]
     XCTAssertTrue(file.waitForExistence(timeout: 4), "File menu should exist")
     file.click()
@@ -76,29 +80,34 @@ final class NewWorkroomDialogUITests: XCTestCase {
     app.typeKey(.escape, modifierFlags: [])
   }
 
-  /// The title-bar Open / New Workroom buttons render even with NO tabs in the bar — they're the
-  /// mouse route to a first workroom, so gating them on a tab already existing left a fresh window
-  /// with nothing to click. Launched with the empty fixture, which has no workroom targets and so an
-  /// empty chip run.
-  func testTitleBarWorkroomButtonsRenderWithNoTabs() throws {
-    let app = launchedApp(extraArgs: ["-WorkroomUITestNoProjects", "1"])
-    XCTAssertTrue(
-      app.windows.firstMatch.waitForExistence(timeout: 15),
-      "a window should appear even with no projects")
-    XCTAssertTrue(
-      el(app, "OpenWorkroom").waitForExistence(timeout: 6),
-      "the Open Workroom button should render with an empty tab bar")
-    XCTAssertTrue(
-      el(app, "NewWorkroom").exists,
-      "…and so should the New Workroom button")
-  }
-
-  /// Opening New Workroom shows the picker (filter field + the fixture project row); typing a
-  /// non-matching query hides the row, and clearing the query brings it back.
-  func testDialogOpensListsAndFiltersProjects() throws {
+  /// One launch, one ordered chain over the New Workroom dialog:
+  ///
+  /// 1. The File menu carries an ENABLED "New Workroom" item (the fixture has one project); clicking
+  ///    it opens the picker (filter field + the fixture project row).
+  /// 2. The terminal gives up keyboard focus to the dialog: typing goes into the filter field
+  ///    without anyone clicking it first. This must be the first typing step in a freshly opened
+  ///    dialog — once the field has been clicked the "no click needed" claim is vacuous. Asserted
+  ///    via where the characters LAND, not via the pane's `.isSelected` trait. That trait reflects
+  ///    `PaneTreeView`'s model focus (which the fix deliberately leaves alone, so the focus ring
+  ///    doesn't drop), not the AppKit first responder — so it stays true here and cannot answer
+  ///    this question. Where a keystroke goes is also the thing the user actually experiences.
+  /// 3. A reopened (fresh) dialog filters: a non-matching query hides the row, clearing restores it.
+  /// 4. Text editing inside the filter keeps working. There is no key allowlist any more (the fix
+  ///    routes shortcuts instead of swallowing events), so this is the regression guard for ever
+  ///    reintroducing one: an allowlist is exactly what broke ⌘⌫ and non-Latin-layout ⌘V last time.
+  /// 5. The title-bar accessory is a separate window-level hosting tree the dialog's backdrop can
+  ///    never cover, so its buttons stay clickable unless explicitly disabled.
+  func testNewWorkroomDialogOpensFiltersAndOwnsTheKeyboard() throws {
     let app = launchedApp()
     waitForLaunchWindow(app)
-    newWorkroomMenuItem(app).click()
+
+    // 1. Menu item present and enabled; clicking it opens the dialog.
+    let file = app.menuBars.menuBarItems["File"]
+    file.click()
+    let menuItem = file.menuItems[Self.newWorkroomTitle]
+    XCTAssertTrue(menuItem.waitForExistence(timeout: 4), "File ▸ New Workroom should exist")
+    XCTAssertTrue(menuItem.isEnabled, "New Workroom is enabled when ≥1 project exists")
+    menuItem.click()
 
     let filter = app.textFields["newWorkroom.filter"]
     XCTAssertTrue(filter.waitForExistence(timeout: 4), "the filter field should appear")
@@ -107,6 +116,27 @@ final class NewWorkroomDialogUITests: XCTestCase {
       identifier: "newWorkroom.project.UITestProject")
     XCTAssertTrue(
       row.firstMatch.waitForExistence(timeout: 4), "the fixture project row should list")
+
+    // 2. Deliberately NOT clicking the field first — the dialog must already own the keyboard.
+    app.typeText("zzzznomatch")
+    XCTAssertTrue(
+      row.firstMatch.waitForNonExistence(timeout: 4),
+      "keystrokes must reach the filter field, not the terminal surface behind it")
+    XCTAssertEqual(
+      filter.value as? String, "zzzznomatch",
+      "…and land in the field verbatim")
+
+    app.typeKey(.escape, modifierFlags: [])
+    XCTAssertTrue(
+      filter.waitForNonExistence(timeout: 4),
+      "Esc closes the dialog — which also proves Esc reached it rather than the terminal")
+
+    // 3. Reopen. The row listing again proves the dialog is fresh (an empty query), so the
+    // "row disappears" check below cannot pass on leftover text from step 2.
+    _ = openNewWorkroomDialog(app)
+    XCTAssertTrue(
+      row.firstMatch.waitForExistence(timeout: 4),
+      "the reopened dialog lists the project row again")
 
     // A non-matching filter removes the row.
     filter.click()
@@ -121,13 +151,43 @@ final class NewWorkroomDialogUITests: XCTestCase {
     XCTAssertTrue(
       row.firstMatch.waitForExistence(timeout: 4),
       "clearing the filter restores the project row")
+
+    // 4. The row exists again, so the next "row disappears" check is not vacuous.
+    filter.typeText("zzzznomatch")
+    XCTAssertTrue(row.firstMatch.waitForNonExistence(timeout: 4), "baseline: the filter filters")
+
+    // ⌘⌫ = deleteToBeginningOfLine. An allowlist-based gate missed this one entirely.
+    filter.typeKey(.delete, modifierFlags: .command)
+    XCTAssertTrue(
+      row.firstMatch.waitForExistence(timeout: 4), "⌘⌫ should clear the filter, restoring the row")
+
+    // ⌘A then retype replaces the selection — proves ⌘A reached the field rather than being eaten.
+    filter.typeText("zzzznomatch")
+    XCTAssertTrue(row.firstMatch.waitForNonExistence(timeout: 4))
+    filter.typeKey("a", modifierFlags: .command)
+    filter.typeText("UITest")
+    XCTAssertTrue(
+      row.firstMatch.waitForExistence(timeout: 4), "⌘A + retype should replace the whole query")
+
+    // 5. The dialog is still up (its field exists), so the "New dialog stays up" check at the end
+    // is meaningful. Asserted, not `if`-guarded: a missing button would otherwise make this pass
+    // vacuously.
+    XCTAssertTrue(filter.exists, "the New dialog is up before the title-bar click")
+    let openButton = el(app, "OpenWorkroom")
+    XCTAssertTrue(
+      openButton.waitForExistence(timeout: 6), "the title-bar Open Workroom button should render")
+    openButton.click()
+    XCTAssertFalse(
+      app.textFields["openWorkroom.filter"].waitForExistence(timeout: 3),
+      "the title-bar Open button must not raise the Open dialog through the New dialog")
+    XCTAssertTrue(app.textFields["newWorkroom.filter"].exists, "…and the New dialog stays up")
   }
 
   // MARK: - The dialog blocks (issue: it looked modal but wasn't)
 
-  /// Every test below pairs "the shortcut did nothing while the dialog was up" with "…and it works
-  /// once the dialog closes". Without the second half they'd pass on a shortcut that was simply
-  /// broken — and, worse, an assertion that only checks the dialog is *still open* passes on
+  /// Each shortcut check below pairs "the shortcut did nothing while the dialog was up" with "…and
+  /// it works once the dialog closes". Without the second half they'd pass on a shortcut that was
+  /// simply broken — and, worse, an assertion that only checks the dialog is *still open* passes on
   /// completely unfixed code, since nothing in `focusTerminalTab` or `newTerminalInSelectedTarget`
   /// touches `activePicker`. That was the flaw in the first draft of this test plan.
 
@@ -151,22 +211,32 @@ final class NewWorkroomDialogUITests: XCTestCase {
     return filter
   }
 
-  /// Open a second terminal tab so "which tab is selected" is observable at all — with the fixture's
-  /// single tab, ⌘1 is a no-op even on broken code.
-  private func openSecondTerminal(_ app: XCUIApplication) {
-    app.typeKey("t", modifierFlags: .command)
-    XCTAssertTrue(
-      el(app, "terminal.tab.Terminal 2").waitForExistence(timeout: 8),
-      "⌘T should open a second terminal tab (baseline, no dialog up)")
-    XCTAssertTrue(
-      pane(app, titled: "Terminal 2").waitForExistence(timeout: 8),
-      "…and it should become the visible pane")
-  }
-
-  /// ⌘T behind the dialog must not open a tab — then must open one the moment the dialog closes.
-  func testNewTerminalShortcutIsInertWhileTheDialogIsUp() throws {
+  /// One launch, one ordered chain over the shortcuts that must be inert behind the dialog:
+  ///
+  /// 1. ⌘T behind the dialog must not open a tab — then must open one the moment the dialog closes.
+  ///    That tab also makes "which tab is selected" observable for the rest of the chain; with the
+  ///    fixture's single tab, ⌘1 is a no-op even on broken code.
+  /// 2. ⌘1 behind the dialog must not switch tabs. Goes through the AppDelegate key monitor rather
+  ///    than a menu item, so it covers the `shortcutStore` routing rather than menu enablement.
+  /// 3. The root-cause regression guard: a shortcut must never act on a workroom window that ISN'T
+  ///    key. Replaces the two-window case this test plan originally called for, which could not
+  ///    have caught the defect: `WindowRegistry.keyStore` only falls back when the key window is
+  ///    **unregistered**, and two workroom windows are both registered, so the fallback never
+  ///    fires. A foreign key window is the case that triggers it — with `keyStore`, ⌘1 pressed
+  ///    while Settings is frontmost resolves `store(for:) ?? lastActiveStore` and switches tabs in
+  ///    the workroom window behind it. It runs LAST because it throws `XCTSkip` when Settings does
+  ///    not open.
+  func testShortcutsAreInertBehindTheDialogAndAWindowThatIsNotKey() throws {
     let app = launchedApp()
     waitForLaunchWindow(app)
+
+    // Baseline: the item exists and is enabled before any dialog is up, so the "disabled" check
+    // below cannot pass on an item the query never finds.
+    XCTAssertTrue(
+      waitForFileMenuItemEnabled(app, Self.newTerminalTitle),
+      "File ▸ New Terminal should be enabled with no dialog up (baseline)")
+
+    // 1. ⌘T.
     _ = openNewWorkroomDialog(app)
 
     app.typeKey("t", modifierFlags: .command)
@@ -194,14 +264,12 @@ final class NewWorkroomDialogUITests: XCTestCase {
     XCTAssertTrue(
       el(app, "terminal.tab.Terminal 2").waitForExistence(timeout: 8),
       "…and ⌘T works again afterwards — so it was blocked, not broken")
-  }
 
-  /// ⌘1 behind the dialog must not switch tabs. Goes through the AppDelegate key monitor rather than
-  /// a menu item, so it covers the `shortcutStore` routing rather than menu enablement.
-  func testTabSwitchShortcutIsInertWhileTheDialogIsUp() throws {
-    let app = launchedApp()
-    waitForLaunchWindow(app)
-    openSecondTerminal(app)
+    // 2. ⌘1. Terminal 2 must be the visible pane BEFORE the dialog opens, or "stays visible" below
+    // passes vacuously.
+    XCTAssertTrue(
+      pane(app, titled: "Terminal 2").waitForExistence(timeout: 8),
+      "the new tab should become the visible pane (baseline, no dialog up)")
     _ = openNewWorkroomDialog(app)
 
     app.typeKey("1", modifierFlags: .command)
@@ -216,96 +284,12 @@ final class NewWorkroomDialogUITests: XCTestCase {
     XCTAssertTrue(
       pane(app, titled: "Terminal 1").waitForExistence(timeout: 6),
       "…and ⌘1 switches again afterwards — so it was blocked, not broken")
-  }
 
-  /// Text editing inside the filter keeps working. There is no key allowlist any more (the fix routes
-  /// shortcuts instead of swallowing events), so this is the regression guard for ever reintroducing
-  /// one: an allowlist is exactly what broke ⌘⌫ and non-Latin-layout ⌘V last time.
-  func testTextEditingKeysStillWorkInsideTheDialog() throws {
-    let app = launchedApp()
-    waitForLaunchWindow(app)
-    let filter = openNewWorkroomDialog(app)
-    let row = app.descendants(matching: .any).matching(
-      identifier: "newWorkroom.project.UITestProject")
-
-    filter.click()
-    filter.typeText("zzzznomatch")
-    XCTAssertTrue(row.firstMatch.waitForNonExistence(timeout: 4), "baseline: the filter filters")
-
-    // ⌘⌫ = deleteToBeginningOfLine. An allowlist-based gate missed this one entirely.
-    filter.typeKey(.delete, modifierFlags: .command)
+    // 3. Back on Terminal 2, so "stays Terminal 2" below is a real observation, not a leftover.
+    app.typeKey("2", modifierFlags: .command)
     XCTAssertTrue(
-      row.firstMatch.waitForExistence(timeout: 4), "⌘⌫ should clear the filter, restoring the row")
-
-    // ⌘A then retype replaces the selection — proves ⌘A reached the field rather than being eaten.
-    filter.typeText("zzzznomatch")
-    XCTAssertTrue(row.firstMatch.waitForNonExistence(timeout: 4))
-    filter.typeKey("a", modifierFlags: .command)
-    filter.typeText("UITest")
-    XCTAssertTrue(
-      row.firstMatch.waitForExistence(timeout: 4), "⌘A + retype should replace the whole query")
-  }
-
-  /// The terminal gives up keyboard focus to the dialog: typing goes into the filter field without
-  /// anyone clicking it first.
-  ///
-  /// Asserted via where the characters LAND, not via the pane's `.isSelected` trait. That trait
-  /// reflects `PaneTreeView`'s model focus (which the fix deliberately leaves alone, so the focus ring
-  /// doesn't drop), not the AppKit first responder — so it stays true here and cannot answer this
-  /// question. Where a keystroke goes is also the thing the user actually experiences.
-  func testTypingGoesToTheDialogNotTheTerminal() throws {
-    let app = launchedApp()
-    waitForLaunchWindow(app)
-    let filter = openNewWorkroomDialog(app)
-    let row = app.descendants(matching: .any).matching(
-      identifier: "newWorkroom.project.UITestProject")
-    XCTAssertTrue(
-      row.firstMatch.waitForExistence(timeout: 4), "the project row lists to begin with")
-
-    // Deliberately NOT clicking the field first — the dialog must already own the keyboard.
-    app.typeText("zzzznomatch")
-    XCTAssertTrue(
-      row.firstMatch.waitForNonExistence(timeout: 4),
-      "keystrokes must reach the filter field, not the terminal surface behind it")
-    XCTAssertEqual(
-      filter.value as? String, "zzzznomatch",
-      "…and land in the field verbatim")
-
-    app.typeKey(.escape, modifierFlags: [])
-    XCTAssertTrue(
-      app.textFields["newWorkroom.filter"].waitForNonExistence(timeout: 4),
-      "Esc closes the dialog — which also proves Esc reached it rather than the terminal")
-  }
-
-  /// The title-bar accessory is a separate window-level hosting tree the dialog's backdrop can never
-  /// cover, so its buttons stay clickable unless explicitly disabled.
-  func testTitleBarOpenButtonIsInertWhileTheNewDialogIsUp() throws {
-    let app = launchedApp()
-    waitForLaunchWindow(app)
-    _ = openNewWorkroomDialog(app)
-
-    // Asserted, not `if`-guarded: a missing button would otherwise make this test pass vacuously.
-    let openButton = el(app, "OpenWorkroom")
-    XCTAssertTrue(
-      openButton.waitForExistence(timeout: 6), "the title-bar Open Workroom button should render")
-    openButton.click()
-    XCTAssertFalse(
-      app.textFields["openWorkroom.filter"].waitForExistence(timeout: 3),
-      "the title-bar Open button must not raise the Open dialog through the New dialog")
-    XCTAssertTrue(app.textFields["newWorkroom.filter"].exists, "…and the New dialog stays up")
-  }
-
-  /// The root-cause regression guard: a shortcut must never act on a workroom window that ISN'T key.
-  ///
-  /// Replaces the two-window case this test plan originally called for, which could not have caught
-  /// the defect: `WindowRegistry.keyStore` only falls back when the key window is **unregistered**, and
-  /// two workroom windows are both registered, so the fallback never fires. A foreign key window is
-  /// the case that triggers it — with `keyStore`, ⌘1 pressed while Settings is frontmost resolves
-  /// `store(for:) ?? lastActiveStore` and switches tabs in the workroom window behind it.
-  func testShortcutDoesNotReachAWorkroomWindowThatIsNotKey() throws {
-    let app = launchedApp()
-    waitForLaunchWindow(app)
-    openSecondTerminal(app)
+      pane(app, titled: "Terminal 2").waitForExistence(timeout: 6),
+      "⌘2 re-selects Terminal 2 (baseline, no Settings window yet)")
 
     app.typeKey(",", modifierFlags: .command)  // Settings — its own window, never registered
     let settings = app.windows.matching(NSPredicate(format: "title CONTAINS %@", "Settings"))
