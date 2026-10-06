@@ -90,21 +90,6 @@ final class HistoryPushStateUITests: XCTestCase {
       .firstMatch
   }
 
-  /// Exactly one row badges, and it isn't every row: pushed and unknown rows must stay clean.
-  func testExactlyOneRowShowsTheUnpushedBadge() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    openHistory(app)
-
-    XCTAssertTrue(
-      els(app, "HistoryRowUnpushed").element(boundBy: 0).waitForExistence(timeout: 8),
-      "the unpushed row badges")
-    let badges = els(app, "HistoryRowUnpushed").count
-    let rows = els(app, "HistoryRow").count
-    XCTAssertEqual(badges, 1, "only the one genuinely-unpushed commit badges")
-    XCTAssertLessThan(badges, rows, "the badge is per-commit, not decoration on the whole list")
-  }
-
   /// Matched app-wide on `value`, not by identifier and not scoped to the detail element.
   ///
   /// Two facts about how SwiftUI exposes this header, both verified by dumping the tree: the element
@@ -127,37 +112,57 @@ final class HistoryPushStateUITests: XCTestCase {
     app.staticTexts.matching(NSPredicate(format: "value CONTAINS %@", "Not pushed")).firstMatch
   }
 
-  /// Opening the badged commit states the same fact in the detail header — a badge that vanishes when
-  /// you click the row would read as a bug.
-  func testChangesetHeaderShowsTheUnpushedMarker() throws {
+  /// One launch, three steps in this order (the row check is read-only so it goes first; each header
+  /// step opens its commit fresh, so a previous detail can't satisfy the next check):
+  ///
+  /// 1. Exactly one row badges, and it isn't every row: pushed and unknown rows must stay clean.
+  /// 2. The pushed commit's detail says nothing: the marker is a claim about this commit, not a
+  ///    permanent header fixture. It is an ABSENCE check, so it first waits for the loaded header (its
+  ///    `+N −M` summary — the same combined metadata line that would carry "Not pushed", and the same
+  ///    `value CONTAINS` match `ChangesetDetailUITests` relies on) and for this commit's own preview
+  ///    chip, otherwise `ChangesetDetail` (a leaf that can appear before the metadata line) would let
+  ///    it pass vacuously. It runs BEFORE the unpushed step so no stale "Not pushed" can race it.
+  /// 3. Opening the badged commit states the same fact in the detail header — a badge that vanishes
+  ///    when you click the row would read as a bug. Waits for the new commit's own chip first, so the
+  ///    pushed commit's detail left open by step 2 isn't what is being read.
+  func testUnpushedBadgeIsOnExactlyOneRowAndTheDetailHeaderMarksOnlyThatCommit() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     openHistory(app)
 
-    // Fixture commit 2 is the badged one — named by its short id, not by row position.
-    let badged = historyRow(app, shortID: "fixc0002")
+    // 1. Row badges.
     XCTAssertTrue(
-      badged.waitForExistence(timeout: 8), "the badged fixture commit's row is on screen")
-    badged.click()
-    XCTAssertTrue(waitExists(el(app, "ChangesetDetail")), "the changeset detail opens")
-    XCTAssertTrue(
-      waitExists(headerSaysNotPushed(app)), "the detail header states the commit isn't pushed")
-  }
+      els(app, "HistoryRowUnpushed").element(boundBy: 0).waitForExistence(timeout: 8),
+      "the unpushed row badges")
+    let badges = els(app, "HistoryRowUnpushed").count
+    let rows = els(app, "HistoryRow").count
+    XCTAssertEqual(badges, 1, "only the one genuinely-unpushed commit badges")
+    XCTAssertLessThan(badges, rows, "the badge is per-commit, not decoration on the whole list")
 
-  /// And the pushed commit's detail says nothing: the marker is a claim about this commit, not a
-  /// permanent header fixture.
-  func testChangesetHeaderOmitsTheMarkerForAPushedCommit() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    openHistory(app)
-
-    // Fixture commit 3 is `.pushed`.
+    // 2. Fixture commit 3 is `.pushed`.
     let pushed = historyRow(app, shortID: "fixc0003")
     XCTAssertTrue(
       pushed.waitForExistence(timeout: 8), "the pushed fixture commit's row is on screen")
     pushed.click()
     XCTAssertTrue(waitExists(el(app, "ChangesetDetail")), "the changeset detail opens")
+    XCTAssertTrue(
+      waitExists(el(app, "terminal.tab.Fixture commit 3")), "the pushed commit's own detail opened")
+    let summary = app.staticTexts.matching(
+      NSPredicate(format: "value CONTAINS %@", "24 insertions, 8 deletions")
+    ).firstMatch
+    XCTAssertTrue(waitExists(summary), "the pushed commit's header metadata line has rendered")
     XCTAssertFalse(
       headerSaysNotPushed(app).exists, "a pushed commit's header carries no unpushed marker")
+
+    // 3. Fixture commit 2 is the badged one — named by its short id, not by row position.
+    let badged = historyRow(app, shortID: "fixc0002")
+    XCTAssertTrue(
+      badged.waitForExistence(timeout: 8), "the badged fixture commit's row is on screen")
+    badged.click()
+    XCTAssertTrue(
+      waitExists(el(app, "terminal.tab.Fixture commit 2")), "the badged commit's own detail opened")
+    XCTAssertTrue(waitExists(el(app, "ChangesetDetail")), "the changeset detail opens")
+    XCTAssertTrue(
+      waitExists(headerSaysNotPushed(app)), "the detail header states the commit isn't pushed")
   }
 }

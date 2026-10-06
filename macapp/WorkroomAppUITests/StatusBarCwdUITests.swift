@@ -39,27 +39,14 @@ final class StatusBarCwdUITests: XCTestCase {
     return String(element.label.dropFirst(prefix.count))
   }
 
-  /// Clicking the cwd opens the menu with both actions.
-  func testClickingCwdOpensActionsMenu() {
+  /// Clicking the cwd opens the menu with both actions (one open: both are asserted before Copy is
+  /// clicked, so no menu is left behind), and Copy puts the FULL absolute path on the pasteboard —
+  /// not the `~`-abbreviated, middle-truncated string the label draws.
+  func testCwdMenuOffersActionsAndCopyWritesTheAbsolutePath() {
     let app = launchedApp()
     let cwd = cwdSegment(app)
     XCTAssertTrue(
       cwd.waitForExistence(timeout: 20), "a terminal pane's status bar shows its working directory")
-
-    cwd.click()
-    XCTAssertTrue(
-      app.menuItems["Copy to Clipboard"].waitForExistence(timeout: 5),
-      "the cwd menu offers Copy to Clipboard")
-    XCTAssertTrue(app.menuItems["Reveal in Finder"].exists, "the cwd menu offers Reveal in Finder")
-    app.typeKey(.escape, modifierFlags: [])
-  }
-
-  /// Copy puts the FULL absolute path on the pasteboard — not the `~`-abbreviated, middle-truncated
-  /// string the label draws.
-  func testCopyToClipboardCopiesTheAbsolutePath() {
-    let app = launchedApp()
-    let cwd = cwdSegment(app)
-    XCTAssertTrue(cwd.waitForExistence(timeout: 20))
     let path = cwdPath(from: cwd)
     XCTAssertTrue(path.hasPrefix("/"), "the label carries the absolute path, got \(path)")
 
@@ -69,7 +56,8 @@ final class StatusBarCwdUITests: XCTestCase {
 
     cwd.click()
     let copy = app.menuItems["Copy to Clipboard"]
-    XCTAssertTrue(copy.waitForExistence(timeout: 5))
+    XCTAssertTrue(copy.waitForExistence(timeout: 5), "the cwd menu offers Copy to Clipboard")
+    XCTAssertTrue(app.menuItems["Reveal in Finder"].exists, "the cwd menu offers Reveal in Finder")
     copy.click()
 
     var copied = NSPasteboard.general.string(forType: .string)

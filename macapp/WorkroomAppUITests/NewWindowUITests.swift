@@ -53,39 +53,32 @@ final class NewWindowUITests: XCTestCase {
 
   /// New Window opens a second window, and it's BLANK: the app-wide terminal-pane count stays at the
   /// launch window's one — the new window has no open workroom or terminal (issue #70).
-  func testNewWindowOpensBlankSecondWindow() throws {
+  ///
+  /// It also opens at the same size as the existing window, not the minimum (issue #70). The launch
+  /// window opens larger than the 900 minimum (it restores its saved frame, else a default), so a
+  /// "new window opens at the minimum" bug would make the two windows differ and fail; the fix makes
+  /// every window match the existing one. Both claims share the one New Window click, so the existing
+  /// window's width is captured BEFORE it.
+  func testNewWindowOpensBlankSecondWindowAtTheExistingWindowsSize() throws {
     let app = launchedApp()
     waitForLaunchWindow(app)
     let windowsBefore = app.windows.count
     let panesBefore = terminalPanes(app).count
+    let existing = app.windows.firstMatch.frame.size
+    XCTAssertGreaterThan(
+      existing.width, 900, "the launch window opens larger than the bare minimum")
 
     newWindowMenuItem(app).click()
 
     XCTAssertTrue(
       waitForWindowCount(app, windowsBefore + 1),
       "New Window should add exactly one window (had \(windowsBefore))")
-    // Let the new window's bootstrap run, then confirm it added no terminal — it's blank.
+    // Let the new window's bootstrap run and its sizing settle, then confirm it added no terminal —
+    // it's blank.
     Thread.sleep(forTimeInterval: 1.5)
     XCTAssertEqual(
       terminalPanes(app).count, panesBefore,
       "the new window is blank — it adds no terminal, so the app-wide pane count is unchanged")
-  }
-
-  /// A new window opens at the same size as the existing window, not the minimum (issue #70). The
-  /// launch window opens larger than the 900 minimum (it restores its saved frame, else a default),
-  /// so a "new window opens at the minimum" bug would make the two windows differ and fail; the fix
-  /// makes every window match the existing one.
-  func testNewWindowMatchesExistingWindowSize() throws {
-    let app = launchedApp()
-    waitForLaunchWindow(app)
-    let windowsBefore = app.windows.count
-    let existing = app.windows.firstMatch.frame.size
-    XCTAssertGreaterThan(
-      existing.width, 900, "the launch window opens larger than the bare minimum")
-
-    newWindowMenuItem(app).click()
-    XCTAssertTrue(waitForWindowCount(app, windowsBefore + 1), "second window opened")
-    Thread.sleep(forTimeInterval: 1.0)  // let sizing settle
 
     // Assert WIDTH only: it cleanly reflects "opens small" (a min-sized new window is 900 wide vs the
     // existing window's larger width). Height is excluded because XCUITest reports a content window's

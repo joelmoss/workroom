@@ -54,13 +54,39 @@ final class WorkroomWorkflowUITests: XCTestCase {
     return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
   }
 
-  /// Regression: expanding/collapsing a project must commit on the click itself, not only after the
-  /// pointer leaves the row. The collapse state lived in a `@Default`, which didn't re-evaluate the
-  /// sidebar until some other state changed (e.g. `hovered` on mouse-move) — so the tree appeared to
-  /// "stick" until you moved the mouse. Moving it to the store's `@Published` fixed it. This test
-  /// keeps the cursor parked on the project row across the toggle (never moving it) and asserts the
-  /// child rows appear/disappear anyway.
-  func testExpandCollapseCommitsWithoutMouseMove() throws {
+  /// Wait for an element's accessibility label to settle on `label` (the bell's label carries the live
+  /// unread total, so opening a notification drops the count it reports).
+  private func assertLabel(
+    _ element: XCUIElement, equals label: String, timeout: TimeInterval = 4
+  ) {
+    let exp = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "label == %@", label), object: element)
+    XCTAssertEqual(
+      XCTWaiter().wait(for: [exp], timeout: timeout), .completed,
+      "element label did not reach \"\(label)\" within \(timeout)s")
+  }
+
+  /// One launch, five ordered steps (each used to be its own test and its own app launch). The
+  /// order is load-bearing:
+  ///
+  /// 1. Expand/collapse (regression): expanding/collapsing a project must commit on the click
+  ///    itself, not only after the pointer leaves the row. The collapse state lived in a `@Default`,
+  ///    which didn't re-evaluate the sidebar until some other state changed (e.g. `hovered` on
+  ///    mouse-move) — so the tree appeared to "stick" until you moved the mouse. Moving it to the
+  ///    store's `@Published` fixed it. The cursor stays parked on the project row across the toggle
+  ///    (never moving it) and the child rows must appear/disappear anyway. It ends expanded, which
+  ///    restores the state every later step needs.
+  /// 2. Tabs: the fixture workroom is auto-selected, so a terminal tab is already open; ⌘T / ⌘W add
+  ///    and close tabs. Measures deltas from `initial`, so it ends where it started.
+  /// 3. Sidebar notification strip (issue #118) — BEFORE the bell step: the "+4" label needs the 5
+  ///    pristine seeded entries, and the bell step mutates the backlog.
+  /// 4. Notifications bell — needs the pristine 7-unread backlog; ⇧⌘N then drops it to 4, so it
+  ///    runs after step 3.
+  /// 5. Run command lifecycle (issue #7) — LAST: it leaves the command running and starts from
+  ///    `XCTAssertFalse(stop.exists)`. ⇧⌘N in step 4 opened another terminal, so the fixture workroom
+  ///    is re-selected first, because the unscoped `runCommand.run` lookup depends on the selected
+  ///    pane.
+  func testSidebarTabsNotificationsAndRunCommandWorkflow() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     let project = app.descendants(matching: .any)
@@ -69,8 +95,9 @@ final class WorkroomWorkflowUITests: XCTestCase {
       .matching(identifier: "sidebar.workroom.uitest-room").firstMatch
     XCTAssertTrue(workroom.waitForExistence(timeout: 10), "fixture project starts expanded")
 
-    // Wait for an existence state by re-snapshotting (which never moves the cursor), so the assertion
-    // tolerates the reveal animation while still failing if the change waits for a pointer move.
+    // Step 1 — expand/collapse. Wait for an existence state by re-snapshotting (which never moves
+    // the cursor), so the assertion tolerates the reveal animation while still failing if the
+    // change waits for a pointer move.
     func waitExists(_ want: Bool) -> Bool {
       let p = NSPredicate(format: "exists == %@", NSNumber(value: want))
       return XCTWaiter().wait(
@@ -89,6 +116,123 @@ final class WorkroomWorkflowUITests: XCTestCase {
     XCTAssertTrue(
       waitExists(true),
       "expand should commit on click, not wait for the pointer to leave the row")
+
+    // Step 2 — tabs. Count title StaticTexts only — a chip's title and its close button both carry
+    // the `terminal.tab.<title>` identifier, so matching `.any` would double-count each tab.
+    let tabs = app.staticTexts.matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab."))
+    XCTAssertTrue(
+      tabs.firstMatch.waitForExistence(timeout: 10),
+      "the fixture workroom should open a terminal tab on launch")
+    let initial = tabs.count
+
+    app.typeKey("t", modifierFlags: .command)  // ⌘T → New Terminal
+    assertCount(tabs, reaches: initial + 1)
+
+    app.typeKey("w", modifierFlags: .command)  // ⌘W → Close Terminal
+    assertCount(tabs, reaches: initial)
+
+    // Step 3 — sidebar notification strip. The oldest seeded entry ("Tests passed", ×3) surfaces as
+    // a row at the sidebar bottom with a +N badge for the rest (five seeded ⇒ "+4").
+    let plus = app.buttons["sidebar.notifications.plus"]
+    XCTAssertTrue(
+      plus.waitForExistence(timeout: 10),
+      "the oldest notification should surface as a strip with a +N badge for the rest")
+    assertLabel(plus, equals: "4 more notifications")
+
+    // Clicking the badge opens the popover of the other notifications.
+    plus.click()
+    let plusPopover = app.descendants(matching: .any)
+      .matching(identifier: "notifications.popover").firstMatch
+    XCTAssertTrue(
+      plusPopover.waitForExistence(timeout: 4),
+      "clicking the +N badge opens the extra-notifications popover")
+
+    // Close it, and wait until NO popover remains: otherwise it would satisfy the bell step's
+    // `app.popovers.firstMatch` before the bell opened anything. A click away, not Escape: Escape
+    // left this popover open in three of three runs (measured 2026-10-06).
+    app.descendants(matching: .any).matching(identifier: "terminal.pane").firstMatch.click()
+    XCTAssertTrue(
+      waitForDisappearance(plusPopover), "a click away should close the +N popover")
+    XCTAssertTrue(
+      waitForDisappearance(app.popovers.firstMatch), "no popover should remain open")
+
+    // Step 4 — the notifications bell. The trailing title-bar controls (notifications bell +
+    // inspector toggle) live in an `NSTitlebarAccessoryViewController` bar, not `.toolbar` —
+    // `.primaryAction` is column-scoped in a NavigationSplitView, so they couldn't both sit at the
+    // window's trailing edge as toolbar items. The bell lives at the bottom of the activity bar
+    // (issue #118 → moved off the title bar). A plain click opens the all-notifications popover
+    // WITHOUT dismissing anything; ⇧⌘N (the "walk the backlog" path a ⌘-click on the bell also
+    // drives) opens the oldest and drops the unread total.
+    let bell = app.buttons["activityBar.notifications"]
+    XCTAssertTrue(
+      bell.waitForExistence(timeout: 10), "the notifications bell should be in the activity bar")
+
+    // The fixture seeds a backlog (5 entries totalling 7 unread; the oldest is a ×3 coalesced
+    // "Tests passed"). A plain bell click opens the all-notifications popover and does NOT dismiss
+    // anything — the unread total stays 7.
+    XCTAssertTrue(bell.isEnabled, "the bell is enabled while notifications are pending")
+    assertLabel(bell, equals: "Notifications, 7 unread")
+    bell.click()
+    let popover = app.popovers.firstMatch
+    XCTAssertTrue(
+      popover.waitForExistence(timeout: 4), "a bell click opens the notifications popover")
+    assertLabel(bell, equals: "Notifications, 7 unread")
+    // Dismiss the transient popover before the next step. A click away, not Escape: Escape left it
+    // open in three of three runs (measured 2026-10-06; the original test pressed Escape but never
+    // checked).
+    app.descendants(matching: .any).matching(identifier: "terminal.pane").firstMatch.click()
+    XCTAssertTrue(
+      waitForDisappearance(popover), "a click away should close the bell popover")
+
+    // ⇧⌘N (Next Notification) opens the oldest pending notification's terminal and dismisses it — the
+    // same `openOldestNotification` path a ⌘-click on the bell drives. The oldest is the ×3 "Tests
+    // passed", so the unread total the bell reports drops from 7 to 4.
+    app.typeKey("n", modifierFlags: [.command, .shift])
+    assertLabel(bell, equals: "Notifications, 4 unread")
+
+    // Step 5 — run command lifecycle. The fixture seeds a run command on its project, so the
+    // toolbar shows Run for the selected workroom. Triggering Run launches the command in a real
+    // surface and the toolbar flips to Stop + Restart — proving end-to-end that libghostty's
+    // `config.command` parses the shell-wrapped command and that run-state lights up through a live
+    // surface (something the unit tests can't reach).
+    //
+    // The Stop→revert half is intentionally NOT asserted here: the Stop menu item is gated by a
+    // `@FocusedValue`, and clicking it once the menu is open is flaky under XCUITest's automation
+    // (focused-value timing) — a harness limitation, not a product bug. That path is covered
+    // deterministically by `RunCommandTests.testChildExitFlipsToStoppedButKeepsPane` and was
+    // verified live (the toolbar reverts and the pane stays open after Stop). Likewise the sidebar
+    // run dot is the same state in a selectable List row (flattened a11y), verified visually not
+    // here.
+    //
+    // ⇧⌘N above opened another terminal, so put the selection back on the fixture workroom's own
+    // pane first.
+    workroom.click()
+
+    // Assert run-state via the run buttons, and drive Run via the always-hittable menu item. Since
+    // issue #139 those buttons live in the workroom PANE's title bar rather than the window title
+    // bar, one set per visible workroom — so these unscoped lookups hold only because this fixture
+    // shows a single workroom. A future split fixture here would need scoping to a `workroom.pane`
+    // element (see `WorkroomPaneHeaderUITests`), or `XCTAssertFalse(run.exists)` below would match
+    // the other member.
+    let run = app.buttons["runCommand.run"]
+    let stop = app.buttons["runCommand.stop"]
+    let restart = app.buttons["runCommand.restart"]
+
+    XCTAssertTrue(
+      run.waitForExistence(timeout: 10),
+      "Run should show for a workroom whose project has a run command")
+    // The unscoped lookups above need exactly one Run button on screen.
+    assertCount(app.buttons.matching(identifier: "runCommand.run"), reaches: 1)
+    XCTAssertFalse(stop.exists, "nothing running yet")
+
+    // Scope to the Run menu's Run item (not a bare menuItems["Run"], which would also match other
+    // "Run"-titled items) so this unambiguously starts the command.
+    app.menuBars.menuBarItems["Run"].menuItems["Run"].click()
+
+    XCTAssertTrue(stop.waitForExistence(timeout: 8), "Run should become Stop once the command runs")
+    XCTAssertTrue(restart.exists, "Restart should appear alongside Stop")
+    XCTAssertFalse(run.exists, "Run should be replaced while running")
   }
 
   /// Deterministic smoke: the *real* bootstrap path (no fixture) launches and the shell chrome is
@@ -104,137 +248,6 @@ final class WorkroomWorkflowUITests: XCTestCase {
     XCTAssertTrue(
       app.descendants(matching: .any)["AddProject"].waitForExistence(timeout: 5),
       "the Add Project control should always be present in the sidebar")
-  }
-
-  /// The fixture workroom is auto-selected on launch, so a terminal tab is already open; ⌘T / ⌘W add
-  /// and close tabs. Deterministic via the fixture — no sidebar navigation, no skip.
-  func testAddAndCloseTerminalTabs() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-
-    // Count title StaticTexts only — a chip's title and its close button both carry the
-    // `terminal.tab.<title>` identifier, so matching `.any` would double-count each tab.
-    let tabs = app.staticTexts.matching(
-      NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab."))
-    XCTAssertTrue(
-      tabs.firstMatch.waitForExistence(timeout: 10),
-      "the fixture workroom should open a terminal tab on launch")
-    let initial = tabs.count
-
-    app.typeKey("t", modifierFlags: .command)  // ⌘T → New Terminal
-    assertCount(tabs, reaches: initial + 1)
-
-    app.typeKey("w", modifierFlags: .command)  // ⌘W → Close Terminal
-    assertCount(tabs, reaches: initial)
-  }
-
-  /// Run command lifecycle (issue #7): the fixture seeds a run command on its project, so the
-  /// toolbar shows Run for the auto-selected workroom. Triggering Run launches the command in a real
-  /// surface and the toolbar flips to Stop + Restart — proving end-to-end that libghostty's
-  /// `config.command` parses the shell-wrapped command and that run-state lights up through a live
-  /// surface (something the unit tests can't reach).
-  ///
-  /// The Stop→revert half is intentionally NOT asserted here: the Stop menu item is gated by a
-  /// `@FocusedValue`, and clicking it once the menu is open is flaky under XCUITest's automation
-  /// (focused-value timing) — a harness limitation, not a product bug. That path is covered
-  /// deterministically by `RunCommandTests.testChildExitFlipsToStoppedButKeepsPane` and was verified
-  /// live (the toolbar reverts and the pane stays open after Stop). Likewise the sidebar run dot is
-  /// the same state in a selectable List row (flattened a11y), verified visually not here.
-  func testRunCommandLifecycle() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-
-    // Assert run-state via the run buttons, and drive Run via the always-hittable menu item. Since
-    // issue #139 those buttons live in the workroom PANE's title bar rather than the window title bar,
-    // one set per visible workroom — so these unscoped lookups hold only because this fixture shows a
-    // single workroom. A future split fixture here would need scoping to a `workroom.pane` element (see
-    // `WorkroomPaneHeaderUITests`), or `XCTAssertFalse(run.exists)` below would match the other member.
-    let run = app.buttons["runCommand.run"]
-    let stop = app.buttons["runCommand.stop"]
-    let restart = app.buttons["runCommand.restart"]
-
-    XCTAssertTrue(
-      run.waitForExistence(timeout: 10),
-      "Run should show for a workroom whose project has a run command")
-    XCTAssertFalse(stop.exists, "nothing running yet")
-
-    // Scope to the Run menu's Run item (not a bare menuItems["Run"], which would also match other
-    // "Run"-titled items) so this unambiguously starts the command.
-    app.menuBars.menuBarItems["Run"].menuItems["Run"].click()
-
-    XCTAssertTrue(stop.waitForExistence(timeout: 8), "Run should become Stop once the command runs")
-    XCTAssertTrue(restart.exists, "Restart should appear alongside Stop")
-    XCTAssertFalse(run.exists, "Run should be replaced while running")
-  }
-
-  /// Wait for an element's accessibility label to settle on `label` (the bell's label carries the live
-  /// unread total, so opening a notification drops the count it reports).
-  private func assertLabel(
-    _ element: XCUIElement, equals label: String, timeout: TimeInterval = 4
-  ) {
-    let exp = XCTNSPredicateExpectation(
-      predicate: NSPredicate(format: "label == %@", label), object: element)
-    XCTAssertEqual(
-      XCTWaiter().wait(for: [exp], timeout: timeout), .completed,
-      "element label did not reach \"\(label)\" within \(timeout)s")
-  }
-
-  /// The trailing title-bar controls (notifications bell + inspector toggle) live in an
-  /// `NSTitlebarAccessoryViewController` bar, not `.toolbar` — `.primaryAction` is column-scoped in a
-  /// NavigationSplitView, so they couldn't both sit at the window's trailing edge as toolbar items.
-  /// The notifications bell lives at the bottom of the activity bar (issue #118 → moved off the title
-  /// bar). A plain click opens the all-notifications popover WITHOUT dismissing anything; ⇧⌘N (the
-  /// "walk the backlog" path a ⌘-click on the bell also drives) opens the oldest and drops the unread
-  /// total.
-  func testNotificationsBellOpensPopoverAndWalksBacklog() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-
-    let bell = app.buttons["activityBar.notifications"]
-    XCTAssertTrue(
-      bell.waitForExistence(timeout: 10), "the notifications bell should be in the activity bar")
-
-    // The fixture seeds a backlog (5 entries totalling 7 unread; the oldest is a ×3 coalesced
-    // "Tests passed"). A plain bell click opens the all-notifications popover and does NOT dismiss
-    // anything — the unread total stays 7.
-    XCTAssertTrue(bell.isEnabled, "the bell is enabled while notifications are pending")
-    assertLabel(bell, equals: "Notifications, 7 unread")
-    bell.click()
-    let popover = app.popovers.firstMatch
-    XCTAssertTrue(
-      popover.waitForExistence(timeout: 4), "a bell click opens the notifications popover")
-    assertLabel(bell, equals: "Notifications, 7 unread")
-    app.typeKey(.escape, modifierFlags: [])  // dismiss the transient popover before the next step
-
-    // ⇧⌘N (Next Notification) opens the oldest pending notification's terminal and dismisses it — the
-    // same `openOldestNotification` path a ⌘-click on the bell drives. The oldest is the ×3 "Tests
-    // passed", so the unread total the bell reports drops from 7 to 4.
-    app.typeKey("n", modifierFlags: [.command, .shift])
-    assertLabel(bell, equals: "Notifications, 4 unread")
-  }
-
-  /// The left-sidebar notification band (issue #118): the fixture's 5-entry backlog surfaces the
-  /// oldest entry as a strip at the bottom of the sidebar with a `+4` badge for the rest; clicking the
-  /// badge opens a popover listing those others.
-  func testSidebarNotificationStripAndPlusPopover() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-
-    // The oldest seeded entry ("Tests passed", ×3) surfaces as a row at the sidebar bottom with a +N
-    // badge for the rest (five seeded ⇒ "+4").
-    let plus = app.buttons["sidebar.notifications.plus"]
-    XCTAssertTrue(
-      plus.waitForExistence(timeout: 10),
-      "the oldest notification should surface as a strip with a +N badge for the rest")
-    assertLabel(plus, equals: "4 more notifications")
-
-    // Clicking the badge opens the popover of the other notifications.
-    plus.click()
-    let popover = app.descendants(matching: .any)
-      .matching(identifier: "notifications.popover").firstMatch
-    XCTAssertTrue(
-      popover.waitForExistence(timeout: 4),
-      "clicking the +N badge opens the extra-notifications popover")
   }
 
   /// The workroom tab-bar chips (title bar), for tests exercising more than one workroom.

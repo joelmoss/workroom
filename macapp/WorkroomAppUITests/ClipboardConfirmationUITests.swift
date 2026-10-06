@@ -60,17 +60,64 @@ final class ClipboardConfirmationUITests: XCTestCase {
     return (false, screen)
   }
 
-  /// **The regression this suite exists for.** An application asking to read the clipboard over
-  /// OSC 52 must produce a prompt. `clipboard-read` defaults to `ask`, so before the fix the engine
-  /// asked us to confirm, the stub said nothing, and the request was dropped in silence.
+  /// **The regression this suite exists for**, both halves of the one stub bug, in a single launch.
   ///
-  /// Also pins the security property that makes the prompt worth having: it drops in front of
-  /// someone who is TYPING, so Return must not approve it.
-  func testOSC52ReadPromptsAndReturnDoesNotApproveIt() {
+  /// Order matters. The paste half runs FIRST: it ends with the shell back at a prompt and no sheet,
+  /// so the OSC 52 half starts clean. The OSC 52 half runs LAST because refusing a read may write a
+  /// reply into the pty, which would garble anything typed after it.
+  ///
+  /// 1. Paste protection (`clipboard-paste-protection`, on by default) flags a multi-line paste into
+  ///    a program with no bracketed-paste mode. Before the fix the paste was silently swallowed —
+  ///    nothing arrived and nothing said why. Allowing it must actually deliver the text.
+  /// 2. An application asking to read the clipboard over OSC 52 must produce a prompt.
+  ///    `clipboard-read` defaults to `ask`, so before the fix the engine asked us to confirm, the
+  ///    stub said nothing, and the request was dropped in silence. Also pins the security property
+  ///    that makes the prompt worth having: it drops in front of someone who is TYPING, so Return
+  ///    must not approve it.
+  func testUnsafePasteDeliversWhenAllowedAndOSC52ReadPromptsWithoutReturnApproving() {
     let app = launchedApp()
     focusTerminal(app)
-    _ = surface(app)
+    let surface = surface(app)
 
+    // --- Paste half ---
+    // `cat` echoes what it receives and — unlike the shell's line editor — never turns bracketed
+    // paste on, which is what makes a multi-line paste "unsafe" to the engine.
+    app.typeText("cat\r")
+    RunLoop.current.run(until: Date().addingTimeInterval(1))
+
+    let marker = "WRPASTE7c1e"
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString("\(marker)\nsecond line\n", forType: .string)
+
+    app.typeKey("v", modifierFlags: .command)
+
+    let pasteSheet = app.sheets.firstMatch
+    XCTAssertTrue(
+      pasteSheet.waitForExistence(timeout: 15),
+      "a multi-line paste into `cat` produced no confirmation — paste protection is dropping it")
+
+    pasteSheet.buttons["Paste"].click()
+    XCTAssertTrue(waitForSheetToGoAway(pasteSheet), "the prompt stayed up after Paste")
+
+    let landed = waitForScreen(surface, containing: marker)
+    XCTAssertTrue(
+      landed.found,
+      """
+      the paste was confirmed but never reached the terminal — allowing the prompt must complete \
+      the engine's request, not just dismiss the sheet. Screen was:
+      \(landed.screen)
+      """)
+
+    // Leave `cat` so the shell is back at a prompt, then prove it: the typed text holds
+    // `$((1+1))` and the output `2`, so only a shell that ran the line produces "WRREADY2".
+    app.typeKey("d", modifierFlags: .control)
+    app.typeText("echo WRREADY$((1+1))\r")
+    XCTAssertTrue(
+      waitForScreen(surface, containing: "WRREADY2").found,
+      "the shell did not come back to a prompt after leaving `cat`")
+    XCTAssertFalse(app.sheets.firstMatch.exists, "a sheet is still up before the OSC 52 half")
+
+    // --- OSC 52 half ---
     // OSC 52, clipboard "c", payload "?" — the read request.
     app.typeText("printf '\\033]52;c;?\\007'\r")
 
@@ -100,47 +147,6 @@ final class ClipboardConfirmationUITests: XCTestCase {
     XCTAssertTrue(
       waitForSheetToGoAway(sheet),
       "Escape did not dismiss the clipboard prompt — refusing must not require the mouse")
-  }
-
-  /// The other half of the same stub bug, and the one a user would actually hit: paste protection
-  /// (`clipboard-paste-protection`, on by default) flags a multi-line paste into a program with no
-  /// bracketed-paste mode. Before the fix the paste was silently swallowed — nothing arrived and
-  /// nothing said why. Allowing it must actually deliver the text.
-  func testUnsafePastePromptsAndAllowingItDeliversTheText() {
-    let app = launchedApp()
-    focusTerminal(app)
-    let surface = surface(app)
-
-    // `cat` echoes what it receives and — unlike the shell's line editor — never turns bracketed
-    // paste on, which is what makes a multi-line paste "unsafe" to the engine.
-    app.typeText("cat\r")
-    RunLoop.current.run(until: Date().addingTimeInterval(1))
-
-    let marker = "WRPASTE7c1e"
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString("\(marker)\nsecond line\n", forType: .string)
-
-    app.typeKey("v", modifierFlags: .command)
-
-    let sheet = app.sheets.firstMatch
-    XCTAssertTrue(
-      sheet.waitForExistence(timeout: 15),
-      "a multi-line paste into `cat` produced no confirmation — paste protection is dropping it")
-
-    sheet.buttons["Paste"].click()
-    XCTAssertTrue(waitForSheetToGoAway(sheet), "the prompt stayed up after Paste")
-
-    let landed = waitForScreen(surface, containing: marker)
-    XCTAssertTrue(
-      landed.found,
-      """
-      the paste was confirmed but never reached the terminal — allowing the prompt must complete \
-      the engine's request, not just dismiss the sheet. Screen was:
-      \(landed.screen)
-      """)
-
-    // Leave `cat` so the fixture terminal isn't left holding the PTY.
-    app.typeKey("d", modifierFlags: .control)
   }
 
   private func waitForSheetToGoAway(_ sheet: XCUIElement, timeout: TimeInterval = 10) -> Bool {
