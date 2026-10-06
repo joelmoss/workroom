@@ -90,26 +90,18 @@ final class HistoryPushStateUITests: XCTestCase {
       .firstMatch
   }
 
-  /// Matched app-wide on `value`, not by identifier and not scoped to the detail element.
+  /// The detail header's own "Not pushed" marker: an element (not a static text) labelled "Not
+  /// pushed" that carries the header's `ChangesetDetail` id, which propagates onto every header leaf
+  /// (tree dumped 2026-10-06; see `ChangesetDetailView`'s comment on the marker).
   ///
-  /// Two facts about how SwiftUI exposes this header, both verified by dumping the tree: the element
-  /// carrying `identifier: 'ChangesetDetail'` is a LEAF `StaticText` whose value is just the commit
-  /// summary — the metadata line is a sibling, not a descendant — and that metadata line is one combined
-  /// `StaticText` whose VALUE concatenates its children ("…, Not pushed, …"). So a scoped or
-  /// identifier-based query finds nothing (the same reason `ChangesetDetailUITests` matches the `+N −M`
-  /// summary on `value CONTAINS`).
-  ///
-  /// Matching on `value` and not `label` is what keeps this honest: the History row's badge carries
-  /// "Not pushed" as its accessibility LABEL, so a label match would find the row and pass regardless of
-  /// what the header shows.
-  ///
-  /// Scoped to `staticTexts`, not `descendants(matching: .any)`: a predicate query over EVERY element
-  /// has to evaluate the whole snapshot, and since History joined the Changes stack the inspector holds
-  /// three sections' worth of rows at once — the unscoped version started failing with "Timed out while
-  /// evaluating UI query" (identifier queries are indexed and stayed fast, which is why only the
-  /// predicate ones broke).
+  /// Scoped by that id on purpose. Two other things on screen say "Not pushed": the History row's
+  /// badge (`HistoryRowUnpushed`) and the row's hover card. The old app-wide `value CONTAINS` match
+  /// never reached this marker at all and passed on the hover card, which shows up a beat after a
+  /// click on the row. The identifier query runs first (indexed, fast), so the label predicate only
+  /// filters the header's few leaves.
   private func headerSaysNotPushed(_ app: XCUIApplication) -> XCUIElement {
-    app.staticTexts.matching(NSPredicate(format: "value CONTAINS %@", "Not pushed")).firstMatch
+    app.descendants(matching: .any).matching(identifier: "ChangesetDetail")
+      .matching(NSPredicate(format: "label == %@", "Not pushed")).firstMatch
   }
 
   /// One launch, three steps in this order (the row check is read-only so it goes first; each header
