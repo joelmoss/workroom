@@ -82,36 +82,33 @@ final class SessionRestoreUITests: XCTestCase {
 
   // MARK: Restore
 
-  /// The headline: a split survives a relaunch with no ⌘D.
-  func testSplitSurvivesRelaunch() throws {
+  /// The headline: a split survives a relaunch with no ⌘D, and the restored strip holds exactly what
+  /// was saved. One quit/relaunch pair covers both.
+  ///
+  /// The stray-terminal regression: nothing may be added by `ensureInitialTerminal` racing the
+  /// restore, so the tab count is asserted after the relaunch as well as the pane count. A split adds
+  /// a tab (⌘D opens a new terminal beside the focused one), so the saved layout is three tabs, the
+  /// third split in two. Only the focused group's panes are mounted, so the pane count is the split
+  /// group's two. The fresh-install path is unchanged too: one workroom, one terminal, one tab.
+  func testSplitAndTabCountSurviveRelaunchWithNoStrayTerminal() throws {
     let app = launchedApp()
     waitForFirstPane(app)
     assertCount(panes(app), reaches: 1)
-
-    app.typeKey("d", modifierFlags: .command)
-    assertCount(panes(app), reaches: 2)
-    quitAndWaitForSave(app)
-
-    let relaunched = launchedApp()
-    XCTAssertTrue(relaunched.wait(for: .runningForeground, timeout: 10))
-    assertCount(panes(relaunched), reaches: 2)
-  }
-
-  /// The stray-terminal regression: the restored strip must hold exactly what was saved, with nothing
-  /// added by `ensureInitialTerminal` racing the restore.
-  func testTabCountSurvivesRelaunchWithNoStrayTerminal() throws {
-    let app = launchedApp()
-    waitForFirstPane(app)
     assertCount(tabs(app), reaches: 1)
 
     app.typeKey("t", modifierFlags: .command)
     app.typeKey("t", modifierFlags: .command)
     assertCount(tabs(app), reaches: 3)
+
+    app.typeKey("d", modifierFlags: .command)
+    assertCount(panes(app), reaches: 2)
+    assertCount(tabs(app), reaches: 4)
     quitAndWaitForSave(app)
 
     let relaunched = launchedApp()
     XCTAssertTrue(relaunched.wait(for: .runningForeground, timeout: 10))
-    assertCount(tabs(relaunched), reaches: 3)
+    assertCount(panes(relaunched), reaches: 2)
+    assertCount(tabs(relaunched), reaches: 4)
   }
 
   // MARK: Multi-window
@@ -205,14 +202,6 @@ final class SessionRestoreUITests: XCTestCase {
         atPath: sessionFile.deletingLastPathComponent()
           .appendingPathComponent("session.corrupt.json").path),
       "the unreadable file should be quarantined, not silently deleted")
-  }
-
-  /// The fresh-install path is unchanged: one workroom, one terminal.
-  func testNoSessionFileOpensExactlyOneTerminal() throws {
-    let app = launchedApp()
-    waitForFirstPane(app)
-    assertCount(panes(app), reaches: 1)
-    assertCount(tabs(app), reaches: 1)
   }
 
   // `testWithoutASessionPathNothingIsWritten` is now a unit test: the fixture-mode no-op rule is

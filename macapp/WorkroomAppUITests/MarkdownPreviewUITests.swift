@@ -113,30 +113,30 @@ final class MarkdownPreviewUITests: XCTestCase {
       "the Markdown preview should show a loader while it boots, not a blank panel")
   }
 
-  /// The loader is transient: without the hold flag it goes away on its own once the render paints,
-  /// and it must not be left spinning over content.
-  func testLoaderDisappearsOnceRendered() throws {
+  /// The seeded file rendered end to end, in one launch. In order:
+  ///
+  /// 1. The head renders. This comes first so the loader check below cannot pass vacuously on a
+  ///    loader that was never shown.
+  /// 2. The loader is transient: without the hold flag it goes away on its own once the render
+  ///    paints, and it must not be left spinning over content.
+  /// 3. End-to-end cover for the truncation fix: the seeded file mentions a raw `<title>` in prose,
+  ///    and everything after it used to vanish from the preview. The tail must render.
+  /// 4. The raw `<title>` must reach the preview as visible text, not as markup. This is the
+  ///    positive half of the escaping fix — the tail surviving proves nothing was eaten, this proves
+  ///    the mention itself is shown rather than silently swallowed.
+  func testPreviewRendersWholeFilePastRawHTMLMentionAndDropsItsLoader() throws {
     let app = launchedApp()
     openSeededMarkdown(app)
 
     XCTAssertTrue(
-      previewText(app, contains: headMarker), "the preview should render the file's content")
+      previewText(app, contains: headMarker), "the preview should render the head of the file")
 
     let loader = element(app, id: "file.preview.loading")
     let gone = NSPredicate(format: "exists == false")
     let result = XCTWaiter().wait(
       for: [XCTNSPredicateExpectation(predicate: gone, object: loader)], timeout: 10)
     XCTAssertEqual(result, .completed, "the loader should be gone once the preview has rendered")
-  }
 
-  /// End-to-end cover for the truncation fix: the seeded file mentions a raw `<title>` in prose, and
-  /// everything after it used to vanish from the preview. Both markers must render.
-  func testPreviewRendersWholeFilePastRawHTMLMention() throws {
-    let app = launchedApp()
-    openSeededMarkdown(app)
-
-    XCTAssertTrue(
-      previewText(app, contains: headMarker), "the preview should render the head of the file")
     XCTAssertTrue(
       previewText(app, contains: tailMarker),
       """
@@ -144,14 +144,6 @@ final class MarkdownPreviewUITests: XCTestCase {
       Preview accessibility tree:
       \(previewTreeDump(app))
       """)
-  }
-
-  /// The seeded file's raw `<title>` must reach the preview as visible text, not as markup. This is
-  /// the positive half of the escaping fix — the tail surviving proves nothing was eaten, this proves
-  /// the mention itself is shown rather than silently swallowed.
-  func testRawTitleMentionRendersAsVisibleText() throws {
-    let app = launchedApp()
-    openSeededMarkdown(app)
 
     XCTAssertTrue(
       previewText(app, contains: "<title>"),

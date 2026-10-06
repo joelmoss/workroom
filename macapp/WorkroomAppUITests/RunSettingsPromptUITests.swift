@@ -36,9 +36,36 @@ final class RunSettingsPromptUITests: XCTestCase {
     return app
   }
 
-  func testCommandRPresentsRunSettingsWithWarningWhenNoCommandConfigured() {
+  private func waitGone(_ el: XCUIElement, _ message: String) {
+    let exp = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "exists == false"), object: el)
+    XCTAssertEqual(XCTWaiter().wait(for: [exp], timeout: 5), .completed, message)
+  }
+
+  /// Closes the Project Settings sheet via its Cancel button and proves it is gone. Escape is not
+  /// relied on, and the next step's `runWarning`/`runCommand` waits would be vacuous against a sheet
+  /// that is still open.
+  private func cancelProjectSettings(_ app: XCUIApplication) {
+    app.buttons["Cancel"].click()
+    waitGone(app.textFields["projectSettings.runCommand"], "Cancel should close the sheet")
+    waitGone(app.staticTexts["projectSettings.runWarning"], "the warning should go with the sheet")
+  }
+
+  /// Three doors into Project Settings on one launch, in order:
+  ///
+  /// 1. ⌘R. The shortcut goes through the selection-scoped overload of `runOrFocusRunCommand`.
+  /// 2. The header Run button, i.e. the same branch reached by CLICK. Since issue #139's follow-up the
+  ///    workroom pane header's Run button is shown even with no command configured — it exists
+  ///    precisely to lead you here, so a button that silently did nothing (or wasn't there at all)
+  ///    would be the regression. It takes a different door than the keyboard: the per-target overload.
+  /// 3. Regression check for unifying to one sheet presenter (issue #127-eng-1): the pre-existing
+  ///    "Project Settings…" context-menu entry must keep opening with NO warning banner. LAST, and
+  ///    only after the previous sheet is confirmed closed, since a lingering warned sheet would
+  ///    make its `runWarning` absence check fail (or the wait pass vacuously).
+  func testRunSettingsOpensFromShortcutAndRunButtonWithWarningAndFromContextMenuWithout() {
     let app = launchedApp()
 
+    // 1. ⌘R.
     app.typeKey("r", modifierFlags: .command)
 
     XCTAssertTrue(
@@ -47,17 +74,9 @@ final class RunSettingsPromptUITests: XCTestCase {
     XCTAssertTrue(
       app.textFields["projectSettings.runCommand"].waitForExistence(timeout: 5),
       "the run-command field should be present so the user can define one")
-  }
+    cancelProjectSettings(app)
 
-  /// The same branch, reached by CLICK. Since issue #139's follow-up the workroom pane header's Run button
-  /// is shown even with no command configured — it exists precisely to lead you here, so a button that
-  /// silently did nothing (or wasn't there at all) would be the regression. Written as its own test rather
-  /// than folded into the ⌘R one because the keyboard and the click take different doors into
-  /// `runOrFocusRunCommand`: the shortcut goes through the selection-scoped overload, the button through
-  /// the per-target one.
-  func testHeaderRunButtonPresentsRunSettingsWhenNoCommandConfigured() {
-    let app = launchedApp()
-
+    // 2. The header Run button.
     let pane = app.descendants(matching: .any).matching(identifier: "workroom.pane").firstMatch
     XCTAssertTrue(pane.waitForExistence(timeout: 10))
     let run = pane.buttons["runCommand.run"]
@@ -69,15 +88,10 @@ final class RunSettingsPromptUITests: XCTestCase {
     XCTAssertTrue(
       app.staticTexts["projectSettings.runWarning"].waitForExistence(timeout: 10),
       "clicking Run with nothing configured should open Project Settings, warned")
-  }
+    cancelProjectSettings(app)
 
-  /// Regression check for unifying to one sheet presenter (issue #127-eng-1): the pre-existing
-  /// "Project Settings…" context-menu entry must keep opening with NO warning banner.
-  func testProjectSettingsContextMenuShowsNoWarningBanner() {
-    let app = launchedApp()
-
-    // "Project Settings…" lives on the PROJECT row's context menu (ProjectSidebar.swift), not the
-    // workroom row's — unlike the ⌘R test above, which acts on the selected workroom.
+    // 3. The context menu. "Project Settings…" lives on the PROJECT row's context menu
+    // (ProjectSidebar.swift), not the workroom row's — unlike ⌘R, which acts on the selected workroom.
     app.otherElements["sidebar.project.UITestProject"].rightClick()
     app.menuItems["Project Settings…"].click()
 

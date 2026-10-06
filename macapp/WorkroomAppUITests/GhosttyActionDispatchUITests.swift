@@ -85,16 +85,29 @@ final class GhosttyActionDispatchUITests: XCTestCase {
     app.typeText(line + "\r")
   }
 
-  // MARK: GHOSTTY_ACTION_SET_TITLE
+  // MARK: GHOSTTY_ACTION_SET_TITLE, then GHOSTTY_ACTION_PROGRESS_REPORT
 
-  /// A running command retitles the tab (issue #2). Proves `SET_TITLE` → `handleTitleChange` →
-  /// `TerminalSessions.updateTitle` → `tab.liveTitle` → the chip identifier.
+  /// One launch, two commands run strictly one after the other in the same shell.
   ///
-  /// Driven through shell integration (which emits OSC 0/2 per command) rather than a hand-written
-  /// `printf '\033]0;…'`: a hand-set title IS delivered, but the shell's own prompt sequence
-  /// overwrites it a few milliseconds later, so asserting on it tests the race, not the dispatch.
-  /// Measured, not assumed — an earlier version of this test failed for exactly that reason.
-  func testRunningCommandRetitlesTheTabChip() {
+  /// 1. **A running command retitles the tab (issue #2).** Proves `SET_TITLE` → `handleTitleChange`
+  ///    → `TerminalSessions.updateTitle` → `tab.liveTitle` → the chip identifier.
+  ///
+  ///    Driven through shell integration (which emits OSC 0/2 per command) rather than a
+  ///    hand-written `printf '\033]0;…'`: a hand-set title IS delivered, but the shell's own prompt
+  ///    sequence overwrites it a few milliseconds later, so asserting on it tests the race, not the
+  ///    dispatch. Measured, not assumed — an earlier version of this test failed for exactly that
+  ///    reason.
+  ///
+  /// 2. **OSC 9;4 drives the tab's busy state (issue #28).** The chip's accessibility VALUE is the
+  ///    only non-visual carrier of it — the underline is drawn, not announced. Asserts both edges:
+  ///    state 1 (set) marks it busy, state 0 (remove) clears it. The clear half matters more — a
+  ///    spinner that never stops is the symptom users actually report. The chip is queried by
+  ///    identifier PREFIX because the title moves under us as commands run.
+  ///
+  /// The second command is typed only once the first has exited (its `sleep` chip is gone). Typed
+  /// earlier it would queue behind `sleep 6` and run later, and `handleCommandFinished` of the
+  /// first would also clear `progressActive` under the OSC assertions.
+  func testRunningCommandRetitlesTheTabChipAndOSCProgressReportMarksItBusyThenIdle() {
     let app = launchedApp()
     focusTerminal(app)
     run(app, "sleep 6")
@@ -105,19 +118,12 @@ final class GhosttyActionDispatchUITests: XCTestCase {
     XCTAssertTrue(
       titled.waitForExistence(timeout: 20),
       "the running command reached GHOSTTY_ACTION_SET_TITLE and renamed the tab")
-  }
 
-  // MARK: GHOSTTY_ACTION_PROGRESS_REPORT
+    // The command has exited once the shell retitles the tab away from `sleep`.
+    XCTAssertTrue(
+      poll(timeout: 20) { !titled.exists },
+      "the first command finished and the tab was retitled before the OSC command is typed")
 
-  /// OSC 9;4 drives the tab's busy state (issue #28). The chip's accessibility VALUE is the only
-  /// non-visual carrier of it — the underline is drawn, not announced.
-  ///
-  /// Asserts both edges: state 1 (set) marks it busy, state 0 (remove) clears it. The clear half
-  /// matters more — a spinner that never stops is the symptom users actually report. The chip is
-  /// queried by identifier PREFIX because the title moves under us as commands run.
-  func testOSCProgressReportMarksTheTabBusyThenIdle() {
-    let app = launchedApp()
-    focusTerminal(app)
     let chip = anyTabChip(app)
     XCTAssertTrue(chip.waitForExistence(timeout: 20), "the tab is addressable")
 

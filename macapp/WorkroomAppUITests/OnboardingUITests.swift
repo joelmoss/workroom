@@ -114,9 +114,13 @@ final class OnboardingUITests: XCTestCase {
     launchedApp(extraArgs: ["-WorkroomUITestOnboardingRealGate", "1"])
   }
 
-  /// Closing the wizard before it reaches Done leaves the completion flag unset, so it reopens on
-  /// the next launch — the "still show again if not finished" half of the contract.
-  func testClosingEarlyReopensOnNextLaunch() throws {
+  /// The whole persistence contract as one chain of three launches. Launch 1 seeds the flag `false`:
+  /// closing the wizard before it reaches Done leaves the completion flag unset, so it reopens on the
+  /// next launch — the "still show again if not finished" half. Launch 2 (real gate) proves that,
+  /// then reaches Done (by any path) which sets the flag on entry, so launch 3 does NOT reopen — the
+  /// "never shows again once finished" half. The chain ends with the flag set, which the NEXT run's
+  /// launch 1 resets by seeding `false` again.
+  func testClosingEarlyReopensAndReachingDoneNeverReopens() throws {
     let app = launchedFreshRealGateApp()
     let window = app.windows["onboarding.window"]
     XCTAssertTrue(
@@ -125,27 +129,21 @@ final class OnboardingUITests: XCTestCase {
     app.terminate()
 
     let relaunched = relaunchedRealGateApp()
+    let reopened = relaunched.windows["onboarding.window"]
     XCTAssertTrue(
-      relaunched.windows["onboarding.window"].waitForExistence(timeout: 10),
+      reopened.waitForExistence(timeout: 10),
       "closing before Done should leave the wizard showing again next launch")
-  }
+    reopened.buttons["Next"].click()  // welcome -> tour
+    reopened.buttons["Next"].click()  // tour -> addProject
+    reopened.buttons["Skip"].click()  // addProject -> done (sets the flag on entry)
+    XCTAssertTrue(reopened.buttons["Get Started"].waitForExistence(timeout: 4))
+    // Closed via terminate, NOT the Get Started button — the flag must already be set.
+    relaunched.terminate()
 
-  /// Reaching Done (by any path) sets the flag on entry, so it does NOT reopen on the next launch —
-  /// the "never shows again once finished" half of the contract.
-  func testReachingDoneNeverReopens() throws {
-    let app = launchedFreshRealGateApp()
-    let window = app.windows["onboarding.window"]
-    XCTAssertTrue(window.waitForExistence(timeout: 10))
-    window.buttons["Next"].click()  // welcome -> tour
-    window.buttons["Next"].click()  // tour -> addProject
-    window.buttons["Skip"].click()  // addProject -> done (sets the flag on entry)
-    XCTAssertTrue(window.buttons["Get Started"].waitForExistence(timeout: 4))
-    app.terminate()  // closed via terminate, NOT the Get Started button — flag must already be set
-
-    let relaunched = relaunchedRealGateApp()
-    XCTAssertTrue(relaunched.wait(for: .runningForeground, timeout: 10))
+    let final = relaunchedRealGateApp()
+    XCTAssertTrue(final.wait(for: .runningForeground, timeout: 10))
     XCTAssertFalse(
-      relaunched.windows["onboarding.window"].waitForExistence(timeout: 4),
+      final.windows["onboarding.window"].waitForExistence(timeout: 4),
       "reaching Done should mark onboarding complete regardless of how the window was later closed")
   }
 }
