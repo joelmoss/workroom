@@ -103,9 +103,9 @@ APP_TEST_FLAGS ?= -parallel-testing-enabled YES
 # does a real quit+relaunch or a hard timing budget), since XCUITest never runs in CI and a routine
 # `make app-uitest` was paying ~4-5 min for tests that are only load-bearing right before a release.
 # The isolation guard the REST of this suite depends on (no session read or write without a seeded
-# path) is pinned by unit tests instead, in `SessionStoreTests` (`forEnvironment`), so skipping
-# these classes drops no safety net. Run the full suite (pre-release, or after touching any of
-# these) with `make app-uitest APP_UITEST_FLAGS=`.
+# path) has its decision logic pinned by unit tests, in `SessionStoreTests` (`forEnvironment`); the
+# launch wiring that feeds it is covered only by these skipped classes. Run the full suite
+# (pre-release, or after touching any of these) with `make app-uitest APP_UITEST_FLAGS=`.
 APP_UITEST_FLAGS ?= -skip-testing:WorkroomAppUITests/AgentResumeUITests -skip-testing:WorkroomAppUITests/SessionRestoreUITests -skip-testing:WorkroomAppUITests/HistoryStressUITests/testLargeHistoryStaysInteractive -skip-testing:WorkroomAppUITests/WindowDragUITests/testDraggingWorkroomTabReordersTwoChips
 
 # Stops every running copy of THIS build's identity first (Scripts/stop-dev-app.sh), and its

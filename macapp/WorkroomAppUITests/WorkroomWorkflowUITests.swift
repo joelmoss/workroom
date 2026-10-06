@@ -1,9 +1,8 @@
 import XCTest
 
 /// App-shell workflow UI tests (XCUITest). These drive Workroom through the accessibility tree —
-/// sidebar, tabs, menus, badges. They do NOT assert on terminal *content*: the libghostty surface
-/// is Metal-rendered and its text isn't in the a11y tree until CMT-3 lands (then content-level
-/// assertions become possible — see TODOS.md).
+/// sidebar, tabs, menus, badges. The libghostty surface is Metal-rendered, so terminal *content* is
+/// read only through the fixture-only `terminal.surface` accessibility value (`waitForScreen`).
 ///
 /// Run with `make app-uitest` on a real GUI login session — XCUITest can't drive a headless run,
 /// so these are intentionally excluded from `make app-test` (the unit gate) via a separate scheme.
@@ -198,7 +197,11 @@ final class WorkroomWorkflowUITests: XCTestCase {
     // The popover claims keyboard focus so Escape can reach it, so check that focus comes back once
     // it closes. Typed text must reach the terminal with no click first; the arithmetic means only a
     // shell that ran the line prints the sentinel.
-    app.typeText("echo WRFOCUS$((2+3))\r")
+    // Return goes in its own call: folded into a line with shifted punctuation it gets dropped
+    // (measured, see `GhosttyOrphanShellUITests.run`).
+    app.typeText("echo WRFOCUS$((2+3))")
+    RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    app.typeText("\r")
     XCTAssertTrue(
       waitForScreen(containing: "WRFOCUS5", in: app),
       "after the popover closes, typing reaches the terminal without a click")

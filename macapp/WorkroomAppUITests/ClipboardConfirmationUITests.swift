@@ -111,7 +111,10 @@ final class ClipboardConfirmationUITests: XCTestCase {
     // Leave `cat` so the shell is back at a prompt, then prove it: the typed text holds
     // `$((1+1))` and the output `2`, so only a shell that ran the line produces "WRREADY2".
     app.typeKey("d", modifierFlags: .control)
-    app.typeText("echo WRREADY$((1+1))\r")
+    // Return in its own call (see `GhosttyOrphanShellUITests.run`).
+    app.typeText("echo WRREADY$((1+1))")
+    RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    app.typeText("\r")
     XCTAssertTrue(
       waitForScreen(surface, containing: "WRREADY2").found,
       "the shell did not come back to a prompt after leaving `cat`")

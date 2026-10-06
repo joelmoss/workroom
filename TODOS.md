@@ -120,6 +120,31 @@ verdict as input.
 
 **Priority:** P2 (left over from the P1 shim-leftover removal, 2026-10-06)
 
+### Share the duplicated UI test helpers (macapp) — UI-test-merge review follow-up
+
+**What:** Move the helpers that UI test classes copy from each other into shared extensions, the
+way `XCUIApplication+Menus.swift` already holds the menu helpers.
+
+**Why:** The pre-landing review of the UI-test merge branch found four copies:
+- a terminal `waitForScreen` poll (about 45 lines) in several classes;
+- `waitForDisappearance` and `waitForSheetToGoAway`, which XCTest's own `waitForNonExistence(timeout:)`
+  replaces;
+- `assertCount`, which is in about 14 files.
+
+They are not bugs. They were deferred so that the branch did not have to re-run UI tests across
+every class.
+
+**Also on the table, same review:** a fixture-launch UI check that pins the session-isolation launch
+wiring in the routine run. Today only `AgentResumeUITests` and `SessionRestoreUITests` exercise that
+wiring, and the Makefile skips both by default. The `APP_UITEST_FLAGS` comment states that gap.
+
+**How to start:** `grep -l "func assertCount\|func waitForScreen\|func waitForDisappearance\|func waitForSheetToGoAway" macapp/WorkroomAppUITests`.
+Each file you touch needs its class re-run with `make app-uitest APP_UITEST_FLAGS="-only-testing:…"`.
+
+**Depends on:** nothing.
+
+**Priority:** P2 (deferred in /ship review, 2026-10-06)
+
 ### Harden the agent's kept settings (wr-agent) — #257 review
 
 **What:** Three small fixes the final reviews of #257 left, plus one known boundary:
