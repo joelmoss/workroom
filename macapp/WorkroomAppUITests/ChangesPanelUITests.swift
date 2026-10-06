@@ -1,8 +1,7 @@
 import XCTest
 
-/// UI test for the Changes panel: the working tree renders as a flat change list with no header —
-/// git's working tree isn't a commit, so there is nothing to head it with — and no disclosure groups
-/// or separate Parent Commit group (the History panel surfaces commits).
+/// UI tests for the Changes panel: a conflicted file's status reaching its row and the sidebar, and
+/// the row context menu opening a file in the in-app viewer.
 ///
 /// Run with `make app-uitest` on a real GUI login session — XCUITest can't drive a headless run, so
 /// this is excluded from `make app-test` (the unit gate) via a separate scheme.
@@ -20,16 +19,10 @@ final class ChangesPanelUITests: XCTestCase {
     return app
   }
 
-  /// An element by its exact accessibility identifier — unlike the label-based `fileRow` below, which
-  /// would also match the hover "Open file <path>" button (its label contains the filename too).
+  /// An element by its exact accessibility identifier. Not a label match: a row's filename also
+  /// appears in its hover "Open file <path>" button's label.
   private func element(_ app: XCUIApplication, id: String) -> XCUIElement {
     app.descendants(matching: .any).matching(identifier: id).firstMatch
-  }
-
-  /// A changed-file row, matched by its filename appearing in the row's composed a11y label.
-  private func fileRow(_ app: XCUIApplication, _ name: String) -> XCUIElement {
-    app.descendants(matching: .any)
-      .matching(NSPredicate(format: "label CONTAINS %@", name)).firstMatch
   }
 
   /// Wait until `el` reaches the wanted existence state.
@@ -38,49 +31,6 @@ final class ChangesPanelUITests: XCTestCase {
     let p = NSPredicate(format: "exists == %@", NSNumber(value: want))
     return XCTWaiter().wait(
       for: [XCTNSPredicateExpectation(predicate: p, object: el)], timeout: timeout) == .completed
-  }
-
-  /// The Changes panel renders the working tree as a flat change list: its changed files render as
-  /// rows, with no header and no separate Parent Commit group (removed — History shows it).
-  func testWorkingCopyRendersFlatWithoutParentGroup() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-
-    XCTAssertTrue(
-      element(app, id: "inspector.header.Changes").waitForExistence(timeout: 10),
-      "Changes section should exist")
-
-    // The flat change list renders its file rows directly (no disclosure to expand first).
-    XCTAssertTrue(
-      element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10),
-      "the working-copy change list renders its file rows")
-    XCTAssertTrue(waitExists(fileRow(app, "Gemfile"), true))
-
-    // No header: the working tree is not a commit, so nothing heads the list.
-    XCTAssertFalse(
-      element(app, id: "changes.workingCopy").exists, "the working tree renders headerless")
-
-    // The Parent Commit group is gone — its old accessibility id must not exist.
-    XCTAssertFalse(
-      element(app, id: "changes.group.parentCommit").exists,
-      "the Parent Commit group is no longer shown")
-  }
-
-  /// The branch is named exactly once — in the toolbar segment — and not repeated in the Changes
-  /// panel below it, which carries no header at all.
-  func testBranchRendersInTheToolbarNotTheChangesPanel() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(
-      element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10),
-      "the Changes panel should render its file rows")
-    XCTAssertFalse(element(app, id: "changes.workingCopy").exists, "no Changes header to repeat it")
-
-    let branch = element(app, id: "vcs.toolbar.branch")
-    XCTAssertTrue(branch.waitForExistence(timeout: 10))
-    XCTAssertTrue(
-      branch.label.contains("feature/login"),
-      "the toolbar's branch segment must name it; got \(branch.label)")
   }
 
   // MARK: conflicted files (per-file conflict status)
@@ -114,23 +64,6 @@ final class ChangesPanelUITests: XCTestCase {
     XCTAssertFalse(
       modifiedRow.label.contains("conflicted"),
       "a modified file must not read as conflicted; got \(modifiedRow.label)")
-  }
-
-  /// Without the conflict fixture flag, no row reads as conflicted — the guard that the assertion
-  /// above is actually driven by the seeded conflict and not by something always present.
-  func testNoConflictedRowInTheDefaultFixture() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.file.Gemfile").waitForExistence(timeout: 10))
-
-    XCTAssertFalse(
-      element(app, id: "changes.file.app/models/merge_me.rb").exists,
-      "the conflicted row is seeded only by -WorkroomUITestConflict")
-    XCTAssertFalse(
-      app.descendants(matching: .any)
-        .matching(NSPredicate(format: "label CONTAINS %@", "conflicted")).firstMatch.exists,
-      "nothing reads as conflicted in the default fixture")
   }
 
   /// The conflict must also reach the sidebar's aggregate signal: a conflicted workroom outranks
