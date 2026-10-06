@@ -120,7 +120,7 @@ verdict as input.
 
 **Priority:** P2 (left over from the P1 shim-leftover removal, 2026-10-06)
 
-### Share the duplicated UI test helpers (macapp) — UI-test-merge review follow-up
+### UI tests: share the duplicated helpers, tighten loose assertions (macapp) — UI-test-merge review follow-up
 
 **What:** Move the helpers that UI test classes copy from each other into shared extensions, the
 way `XCUIApplication+Menus.swift` already holds the menu helpers.
@@ -138,6 +138,17 @@ every class.
 wiring in the routine run. Today only `SessionRestoreUITests` exercises that wiring, and the
 Makefile skips it by default. (The skip list also still names `AgentResumeUITests`, which was
 deleted with the Resume feature in `67cb53ed`; drop it there and in `test-invariants_test.sh`.) The `APP_UITEST_FLAGS` comment states that gap.
+
+**Also, assertions that pass on wrong behaviour** (Codex adversarial review, same branch; they came
+from the original tests, the merges did not add them):
+- `HistoryStressUITests` scrolls the app's first scroll view, not History's. Its "back at the top"
+  check matches `s000`, which every one of the 800 fixture ids starts with.
+- `PaneTitleBarUITests` closes a pane and checks only that the count drops, so closing the wrong pane
+  passes. Split Down is checked by count only.
+- `GhosttyActionDispatchUITests`: the OSC `9;4;0` Idle check can pass because the ~10s command ends
+  within the 15s wait (`TerminalSessions.swift` clears `progressActive` on completion).
+- `CommitSheetUITests` takes the sheet closing as a commit and never inspects the request the writer
+  got. The render-cap case checks only the button's `258`. The Amend warning matches any "amend".
 
 **How to start:** `grep -l "func assertCount\|func waitForScreen\|func waitForDisappearance\|func waitForSheetToGoAway" macapp/WorkroomAppUITests`.
 Each file you touch needs its class re-run with `make app-uitest APP_UITEST_FLAGS="-only-testing:…"`.
