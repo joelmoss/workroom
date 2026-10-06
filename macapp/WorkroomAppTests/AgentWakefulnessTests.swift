@@ -218,6 +218,19 @@ final class AgentWakefulnessTests: XCTestCase {
       WakefulnessBadge.help(for: idle, settings: nil, idleWindow: 60).contains("auto-suspend"))
     XCTAssertFalse(
       WakefulnessBadge.help(for: healthy, settings: nil, idleWindow: 120).contains("auto-suspend"))
+    // Beside a failing heartbeat both are said, the window once; a host that never sleeps hears
+    // nothing about a window.
+    let failing = try status(
+      Self.notPending + [
+        (#""awake_ceiling_exceeded":true"#, #""awake_ceiling_exceeded":false"#),
+        (#""error":null"#, #""error":"no IPv4 default route""#),
+      ])
+    let both = WakefulnessBadge.help(for: failing, settings: nil, idleWindow: 60)
+    XCTAssertTrue(both.contains("heartbeat is failing"), both)
+    XCTAssertEqual(both.components(separatedBy: "auto-suspend").count - 1, 1, both)
+    XCTAssertFalse(
+      WakefulnessBadge.help(for: failing, settings: nil, hostSleeps: false, idleWindow: 60)
+        .contains("auto-suspend"))
   }
 
   /// "Keep awake" restarts the ceiling, so the badge offers it only past the ceiling, an unanswered
@@ -312,6 +325,44 @@ final class AgentWakefulnessTests: XCTestCase {
       WakefulnessBadge.help(for: status, settings: settings).contains("when it next starts"))
     XCTAssertFalse(
       WakefulnessBadge.help(for: status, settings: nil).contains("when it next starts"))
+  }
+
+  // Value: protects=a boxd host whose agent reports IDLE is let go of, so the app stops holding it awake;
+  // fails_when=WakefulnessModel stops reporting its verdicts to RemoteHosts.observed, or reports busy as idle;
+  // why_new=RemoteHostsTests call observed() directly and the live test re-implements the poll; seam=none
+  /// The model is what feeds `RemoteHosts.observed` (#356): each applied reading of a remote host
+  /// reports whether it is busy, so an idle boxd box is let go of and a busy one is kept.
+  @MainActor
+  func testAnIdleReadingOfABoxdHostIsReportedSoItIsLetGo() async throws {
+    let (idle, busy) = (UUID(), UUID())
+    let workroom = { (id: UUID) in
+      Workroom(
+        name: id.uuidString, path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
+        host: HostDescriptor(
+          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id))
+    }
+    RemoteHosts.shared.adopt(
+      [Project(path: "/proj", vcs: "git", workrooms: [workroom(idle), workroom(busy)])],
+      sweep: false)
+    let quiet = try status([(#""busy":true"#, #""busy":false"#)])
+    let working = try status()
+    XCTAssertTrue(working.busy)
+    let idleScript = Script(quiet)
+    let busyScript = Script(working)
+    let idleModel = WakefulnessModel(
+      transport: .init(status: idleScript.status, keep: {}, prompts: { throw Unavailable() }),
+      host: idle)
+    let busyModel = WakefulnessModel(
+      transport: .init(status: busyScript.status, keep: {}, prompts: { throw Unavailable() }),
+      host: busy)
+
+    await busyModel.refresh()
+    await idleModel.refresh()
+
+    await eventually("an idle boxd host was never let go of") {
+      RemoteHosts.shared.isParked(.remote(idle))
+    }
+    XCTAssertFalse(RemoteHosts.shared.isParked(.remote(busy)), "a busy box was let go of")
   }
 
   /// One model per remote host, kept for the launch, and never this Mac's (#254).

@@ -189,6 +189,56 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
     } catch RemoteWorkrooms.Failure.signedOut {}
     XCTAssertEqual(driver.derives, 0, "the base was copied first")
   }
+
+  // Value: protects=a boxd create's row says it is cloning, then enrolling, then checking out, per path taken;
+  // fails_when=buildBase or derive stops reporting its step, or a relayed workroom reports an enrol it skips;
+  // why_new=BoxdHostDriverTests stop at the driver's machine/setup steps; nothing reaches these three; seam=none
+  /// The steps a create's project row shows come from the sequence itself (#356): a base is
+  /// cloned, a broker workroom enrols and then checks out, and a relayed one only checks out.
+  func testTheSequenceReportsItsCloneEnrolAndCheckoutSteps() async throws {
+    BrokerStub.reset([])
+    // A connection the sequence reaches and then loses, so the git it runs fails at once.
+    let connect: @Sendable (HostID) async throws -> AgentVCSConnection = { host in
+      let fake = try FakeAgent(version: 4, status: true)
+      defer { fake.stop() }
+      return try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
+    }
+    let steps = StepLog()
+    let report: @Sendable (RemoteProvisioning.Step) -> Void = { steps.add($0) }
+    let repository = repository
+    func environment(client: Bool) -> RemoteProvisioning.Environment {
+      RemoteProvisioning.Environment(
+        driver: MakingDriver(), agentSocket: RemoteWorkrooms.agentSocket,
+        client: client
+          ? BrokerClient(
+            baseURL: URL(string: "https://codaset.localhost")!,
+            key: .software(P256.Signing.PrivateKey()), session: BrokerStub.session)
+          : nil,
+        gitHubToken: { "gho_mac" }, connect: connect, revoke: { _ in })
+    }
+    func base(relayed: Bool) -> RemoteProvisioning.Base {
+      .init(host: UUID(), repository: repository, cloneURL: "u", path: "/p", relayed: relayed)
+    }
+
+    await RemoteProvisioning.$reportStep.withValue(report) {
+      _ = try? await RemoteProvisioning.buildBase(
+        repository: repository, cloneURL: "u", path: "/p", in: environment(client: false),
+        record: { _ in })
+    }
+    XCTAssertEqual(steps.take(), [.clone])
+
+    await RemoteProvisioning.$reportStep.withValue(report) {
+      _ = try? await RemoteProvisioning.derive(
+        from: base(relayed: false), workroom: UUID(), branch: "b", in: environment(client: true))
+    }
+    XCTAssertEqual(steps.take(), [.enrol])
+
+    await RemoteProvisioning.$reportStep.withValue(report) {
+      _ = try? await RemoteProvisioning.derive(
+        from: base(relayed: true), workroom: UUID(), branch: "b", in: environment(client: true))
+    }
+    XCTAssertEqual(steps.take(), [.checkout])
+  }
 }
 
 extension RemoteProvisioningCredentialsTests {
@@ -234,6 +284,36 @@ private final class RefusingDriver: HostDriver, @unchecked Sendable {
     throw HostDriverError.notImplemented("derive")
   }
   func destroy(_ host: HostID) async throws { throw HostDriverError.notImplemented("destroy") }
+  func openStream(to host: HostID) async throws -> HostStream {
+    throw HostDriverError.notImplemented("openStream")
+  }
+  func exec(_ command: String, on host: HostID) async throws -> HostStream {
+    throw HostDriverError.notImplemented("exec")
+  }
+}
+
+private final class StepLog: @unchecked Sendable {
+  private let lock = NSLock()
+  private var seen: [RemoteProvisioning.Step] = []
+  func add(_ step: RemoteProvisioning.Step) { lock.withLock { seen.append(step) } }
+  func take() -> [RemoteProvisioning.Step] {
+    lock.withLock {
+      defer { seen = [] }
+      return seen
+    }
+  }
+}
+
+/// Makes a host for every create and derive, and takes it down again.
+private struct MakingDriver: HostDriver {
+  let traits = HostDriverTraits(
+    transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
+    durableDisk: false, maxLifetime: nil, keepAwakeHoldsCredential: false,
+    sleepsWhenIdle: false)
+
+  func create() async throws -> HostID { .remote(UUID()) }
+  func deriveFromBase(_ base: HostID) async throws -> HostID { .remote(UUID()) }
+  func destroy(_ host: HostID) async throws {}
   func openStream(to host: HostID) async throws -> HostStream {
     throw HostDriverError.notImplemented("openStream")
   }

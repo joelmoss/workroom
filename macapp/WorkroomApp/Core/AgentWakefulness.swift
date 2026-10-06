@@ -554,7 +554,8 @@ final class WakefulnessModel: ObservableObject {
     if let model = Hosts.shared.models[id] { return model }
     let model = WakefulnessModel(
       transport: .on(.remote(id), manager: .shared) {
-        try await RemoteHosts.shared.ensureConnected($0)
+        // Only "Keep awake" connects: a click, which wakes a box let go of or asleep (#356).
+        try await RemoteHosts.shared.ensureConnected($0, wake: true)
       },
       host: id)
     Hosts.shared.models[id] = model

@@ -358,6 +358,9 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   private struct CLIFailure: Error, LocalizedError {
     let command: String
     let said: String
+    /// The CLI ran and answered with its own `error:` line, as opposed to timing out or failing to
+    /// run at all.
+    var answered = false
     var notFound: Bool { BoxdHostDriver.isNotFound(said) }
     var errorDescription: String? { "boxd \(command): \(said)" }
   }
@@ -384,18 +387,29 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Whether `host` is asleep, from boxd's own record, without reaching the machine: an ssh login
   /// would wake it (#356). Nil when boxd can't say (no CLI, signed out, offline), which a caller
   /// must not take for either answer.
+  ///
+  /// A CLI that ran and answered with an error (signed out, another account or org, not found)
+  /// counts as asleep: the read can't tell, and connecting would wake a box the user may be paying
+  /// for, so a background read leaves it alone; opening the workroom still connects. Only a CLI
+  /// that couldn't answer (missing, timed out, unreadable output) says nothing.
   func isAsleep(_ host: HostID) async -> Bool? {
-    guard case .remote(let id) = host,
-      let machine = try? decode(Machine.self, await cli(["machine", "get", name(of: id)]), "")
-    else { return nil }
-    return Self.asleepStatuses.contains(machine.status ?? "")
+    guard case .remote(let id) = host else { return nil }
+    do {
+      let output = try await cli(
+        ["machine", "get", name(of: id)], timeout: Self.statusTimeout)
+      let machine = try decode(Machine.self, output, name(of: id))
+      return Self.asleepStatuses.contains(machine.status ?? "")
+    } catch let failure as CLIFailure {
+      return failure.answered ? true : nil
+    } catch { return nil }
   }
 
   /// How long boxd lets `host` sit idle on the network before suspending or hibernating it, in
   /// seconds: the shorter of the two that are set, or nil when neither is or boxd can't say (#356).
   func idleWindow(_ host: HostID) async -> TimeInterval? {
     guard case .remote(let id) = host,
-      let timers = try? decode(Timers.self, await cli(["machine", "get", name(of: id)]), "")
+      let timers = try? decode(
+        Timers.self, await cli(["machine", "get", name(of: id)], timeout: Self.statusTimeout), "")
     else { return nil }
     return [timers.autoSuspend, timers.autoHibernate].compactMap { $0?.seconds }.filter { $0 > 0 }
       .min()
@@ -441,6 +455,10 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     }
   }
 
+  /// How long a status read (`isAsleep`, `idleWindow`) waits for the CLI: a status sweep and a
+  /// connect wait on it, so a hung CLI must not hold them for the CLI's usual 120 s.
+  static let statusTimeout: TimeInterval = 10
+
   /// The statuses a connection would wake from: suspended and hibernated.
   static let asleepStatuses: Set<String> = ["standby", "hibernated"]
 
@@ -463,7 +481,9 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       let said =
         Self.errorLine(result.stderr)
         ?? (result.timedOut ? "timed out after \(Int(timeout))s" : "exited \(result.exitCode)")
-      throw CLIFailure(command: arguments.prefix(2).joined(separator: " "), said: said)
+      throw CLIFailure(
+        command: arguments.prefix(2).joined(separator: " "), said: said,
+        answered: Self.errorLine(result.stderr) != nil)
     }
     return result.stdout
   }

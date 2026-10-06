@@ -138,7 +138,8 @@ final class PersistentSessionService {
       // would defeat. Off the main actor: it looks at the file system.
       let noRuntime = await Task.detached { RemoteHosts.shared.runtimeIsMissing(for: host) }.value
       if noRuntime { return true }
-      try await RemoteHosts.shared.ensureConnected(host)
+      // A click: a box let go of as idle, or asleep, is woken to end the session (#356).
+      try await RemoteHosts.shared.ensureConnected(host, wake: true)
       return try await HostConnectionManager.shared.endSession(session, on: host)
     }
   }

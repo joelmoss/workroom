@@ -452,15 +452,27 @@ final class AgentBootstrapTests: XCTestCase {
   func testAnUnwatchedConnectSendsNoSettings() async throws {
     let fake = try FakeAgent(version: 4, status: true)
     defer { fake.stop() }
-    let driver = StubDriver([probe(installed: digest, handOff: "0 current")])
+    let driver = StubDriver([
+      probe(installed: digest, handOff: "0 current"),
+      probe(installed: digest, handOff: "0 current"),
+    ])
     driver.streamSocket = fake.socketPath
-    let connection = try await AgentBootstrap.connect(
+    let unwatched = try await AgentBootstrap.connect(
       host: host, driver: driver, socket: socket, agent: bundled(_:), handOff: true,
       resources: nil, watched: false)
-    // A watched connect's request lands within milliseconds (the test above waits for it).
-    try await Task.sleep(for: .milliseconds(500))
-    await connection.close()
-    XCTAssertEqual(fake.receivedStatusRequests, [], "an unwatched connect sent settings")
+    // A watched connect to the same agent, after it: once its request has landed, anything the
+    // unwatched one sent would have landed first, so the count is exact, not a timed wait.
+    let watched = try await AgentBootstrap.connect(
+      host: host, driver: driver, socket: socket, agent: bundled(_:), handOff: true,
+      resources: nil)
+    let deadline = ContinuousClock.now + .seconds(5)
+    while fake.receivedStatusRequests.isEmpty && ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    await unwatched.close()
+    await watched.close()
+    XCTAssertEqual(
+      fake.receivedStatusRequests.count, 1, "an unwatched connect sent settings, or none landed")
   }
 
   /// A host its provider never sleeps (a container) is not handed ask-at-ceiling (#257): its prompt
