@@ -1150,8 +1150,8 @@ final class AgentWakefulnessTests: XCTestCase {
 
   /// Two replies from inside one 1 s agent tick carry the same `monotonic` — the watch's first reply
   /// and the poll's do on every connection. Both are taken: there is no staleness rule here (the
-  /// shim's is the one that matters, and it fails awake), and one that hid the second reply blanked
-  /// the badge and its "Keep awake" for a whole poll interval.
+  /// one it would have mirrored was the never-built shim's, #257), and one that hid the second
+  /// reply blanked the badge and its "Keep awake" for a whole poll interval.
   @MainActor
   func testTwoRepliesFromOneAgentTickAreBothTaken() async throws {
     let script = Script(try status(Self.notPending))
