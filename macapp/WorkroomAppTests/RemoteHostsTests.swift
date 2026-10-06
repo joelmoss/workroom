@@ -807,6 +807,11 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(key, .boxd(org: "acme", account: "usr_1"))
     XCTAssertNil(key?.runtime)
     XCTAssertEqual(key?.agentSocket, BoxdHostDriver.Configuration.defaultAgentSocket)
+    // A boxd machine logs in as `boxd`, so the clone goes in its home, not the container user's.
+    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
+    XCTAssertEqual(
+      RemoteWorkrooms.clonePath(for: repository, on: try XCTUnwrap(key)), "/home/boxd/r")
+    XCTAssertEqual(RemoteWorkrooms.clonePath(for: repository), "/home/workroom/r")
     XCTAssertEqual(try RemoteHosts.deletionKey(boxd), .boxd(org: "acme", account: "usr_1"))
     // A descriptor from before the `driver` field is Docker's, as it always was.
     XCTAssertEqual(try RemoteHosts.deletionKey(HostDescriptor(id: UUID())), RemoteHosts.DriverKey())
