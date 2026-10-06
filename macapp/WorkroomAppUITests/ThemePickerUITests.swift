@@ -103,46 +103,53 @@ final class ThemePickerUITests: XCTestCase {
       .matching(identifier: "theme-family-\(name)").firstMatch
   }
 
-  /// The whole chain: a newly-bundled family is findable by search, its row renders, clicking it
-  /// applies, and the generated conf names the variant file for the current appearance.
-  func testANewlyBundledFamilyIsFindableAndReachesTheEngine() throws {
-    let app = launchedApp()
-    openPicker(app)
-
-    // Search rather than scroll: with 58 rows the target may be far down the list, and searching is
-    // also what a user does. The search field takes focus on open.
-    app.typeText(family)
-
-    let target = row(app, family)
-    XCTAssertTrue(
-      target.waitForExistence(timeout: 5),
-      "'\(family)' did not appear in the picker — either its files are missing from the built bundle "
-        + "or it is not registered in ThemeService.families")
-
-    target.click()
-
-    let applied = waitForConfTheme(oneOf: [darkVariantFile, lightVariantFile])
-    XCTAssertNotNil(
-      applied, "no theme line in the generated ghostty.conf after picking '\(family)'")
-    XCTAssertTrue(
-      [darkVariantFile, lightVariantFile].contains(applied),
-      "the engine was handed '\(applied ?? "nil")' — expected '\(darkVariantFile)' (dark appearance) "
-        + "or '\(lightVariantFile)' (light appearance) for the '\(family)' family")
-  }
-
-  /// The dropdown hangs off its own toolbar button, and clicking away closes it — the shape that makes
-  /// a live preview possible at all. It used to be a `.sheet`, which was document-modal: AppKit rendered
-  /// the whole window inactive behind it (traffic lights greyed, the sidebar's VCS dot badges orange →
-  /// dull brown), and being anchored under the title bar it covered the content whose colours you were
-  /// choosing.
+  /// The whole picker lifecycle in ONE launch (each launch costs a full app start), as an ordered
+  /// chain. Every step ends with the popover proven gone before the next one opens it, so no
+  /// `waitForExistence` can be satisfied by the previous step's popover. The applying step is LAST:
+  /// it changes the selected family, and the first step needs the fixture's `Workroom` row to be the
+  /// one materialised.
   ///
-  /// What this can and cannot see: XCUITest exposes no window key/main state and no pixels, so the
-  /// *inactive rendering* itself isn't assertable here. What is assertable — and is what rules it out —
-  /// is that the picker is a transient popover rather than a sheet: `app.sheets` stays empty, and a
-  /// click elsewhere dismisses it, which no modal presentation does.
-  func testTheDropdownHangsOffTheToolbarAndClosesOnAClickAway() throws {
+  /// 1. **Hangs off the toolbar button; a click away closes it.** The shape that makes a live preview
+  ///    possible at all. It used to be a `.sheet`, which was document-modal: AppKit rendered the whole
+  ///    window inactive behind it (traffic lights greyed, the sidebar's VCS dot badges orange → dull
+  ///    brown), and being anchored under the title bar it covered the content whose colours you were
+  ///    choosing. XCUITest exposes no window key/main state and no pixels, so the *inactive rendering*
+  ///    itself isn't assertable. What is — and rules it out — is that the picker is a transient popover
+  ///    rather than a sheet: `app.sheets` stays empty, and a click elsewhere dismisses it, which no
+  ///    modal presentation does.
+  /// 2. **⌘⇧K opens it AND closes it again.** The second press is the load-bearing half. The command
+  ///    is a broadcast notification, and the handler toggles only if `store.hostWindow?.isKeyWindow`
+  ///    — so the shortcut can close an OPEN dropdown only because a popover doesn't take key from the
+  ///    window it hangs off. That is measured behaviour, not a documented guarantee, and an
+  ///    independent reviewer flagged the opposite as a P1 wedge (open it, then never able to close it
+  ///    by keyboard). This is the assertion that would catch it if AppKit ever changed its mind.
+  /// 3. **Esc closes it.** `ThemePicker` handles this itself (`.onExitCommand`) rather than trusting
+  ///    the host, because a popover's own cancel handling depends on a behaviour mode SwiftUI doesn't
+  ///    expose.
+  /// 4. **A dialog raised by KEYBOARD closes it** — the `hasModalPresentation` path in
+  ///    `TrailingTitlebarBar`. Driven with ⌘N rather than a menu click on purpose: a click anywhere
+  ///    outside would dismiss the popover natively, so a mouse-driven version would pass without the
+  ///    handler existing. A keystroke sends no outside click, which is exactly why the handler has to
+  ///    exist — a dropdown left hanging over a modal is both confusing and unreachable past.
+  /// 5. **Both of a new family's swatches render a resolved theme.** A variant whose file doesn't
+  ///    resolve renders the grey fallback swatch, the visible symptom of a registry typo — and the one
+  ///    failure a bundle-reading unit test cannot see, because it happens in the view. Each swatch
+  ///    reports its own variant file name and resolution state through accessibility, so this names
+  ///    the two files rather than counting anonymous elements. Scoped to the family under test rather
+  ///    than all 58 rows: applying a theme rewrites the conf and force-reloads the engine, so walking
+  ///    the whole list would mean 58 of those round-trips. Per-theme colour correctness is already
+  ///    asserted 116 times over by `SwitcherThemeSweepTests`.
+  /// 6. **A newly-bundled family is findable by search, reaches the engine, and the generated conf
+  ///    names the variant file for the current appearance.** Deliberately one of the 31 added, so it
+  ///    fails if the new files didn't make it into the built bundle. `Night Owl` also exercises the
+  ///    awkward shape: its variants are `Night Owl` / `Light Owl`, which share no common prefix, so a
+  ///    name-suffix assumption anywhere in the chain would break on it.
+  func testThePickerDropdownLifecycleAndApplyingANewFamilyReachesTheEngine() throws {
     let app = launchedApp()
+    let popover = app.popovers.firstMatch
+    XCTAssertFalse(popover.exists, "a popover was already open at launch")
 
+    // 1. Toolbar button → popover (not a sheet) → click away closes it.
     let button = app.descendants(matching: .any)
       .matching(identifier: "toolbar.theme").firstMatch
     XCTAssertTrue(
@@ -156,7 +163,6 @@ final class ThemePickerUITests: XCTestCase {
     // The presentation KIND is the assertion, not any particular row: a popover registers in
     // `app.popovers`, a sheet in `app.sheets`. That distinction IS the fix — a sheet is modal, which is
     // what had AppKit render the window inactive behind the picker.
-    let popover = app.popovers.firstMatch
     XCTAssertTrue(
       popover.waitForExistence(timeout: 5),
       "the button did not open the theme dropdown — button frame \(button.frame), hittable "
@@ -165,7 +171,7 @@ final class ThemePickerUITests: XCTestCase {
 
     // Content really rendered, not just an empty popover. `Workroom` is the family the fixture starts on
     // and the list scrolls the selected family into view, so that row is materialised. The family used by
-    // the other cases is row 33 of 58, and a `LazyVStack` never builds it until the search filters it in
+    // the later steps is row 33 of 58, and a `LazyVStack` never builds it until the search filters it in
     // — which is exactly what failed an earlier version of this test against working code.
     XCTAssertTrue(
       row(app, "Workroom").waitForExistence(timeout: 3), "the dropdown rendered no rows")
@@ -179,20 +185,8 @@ final class ThemePickerUITests: XCTestCase {
       popover.waitForNonExistence(timeout: 5),
       "the dropdown survived a click elsewhere — it is not transient, so any other action leaves it "
         + "hanging over the app")
-  }
 
-  /// ⌘⇧K opens the dropdown AND closes it again.
-  ///
-  /// The second press is the load-bearing half. The command is a broadcast notification, and the handler
-  /// toggles only if `store.hostWindow?.isKeyWindow` — so the shortcut can close an OPEN dropdown only
-  /// because a popover doesn't take key from the window it hangs off. That is measured behaviour, not a
-  /// documented guarantee, and an independent reviewer flagged the opposite as a P1 wedge (open it, then
-  /// never able to close it by keyboard). This is the assertion that would catch it if AppKit ever
-  /// changed its mind.
-  func testTheShortcutOpensAndClosesTheDropdown() throws {
-    let app = launchedApp()
-    let popover = app.popovers.firstMatch
-
+    // 2. ⌘⇧K opens, ⌘⇧K closes.
     openPicker(app)
     XCTAssertTrue(popover.waitForExistence(timeout: 5), "⌘⇧K did not open the dropdown")
 
@@ -202,34 +196,17 @@ final class ThemePickerUITests: XCTestCase {
       "⌘⇧K did not close the dropdown it had just opened — if the popover now takes key focus from its "
         + "window, the isKeyWindow guard in TrailingTitlebarBar rejects the toggle and the shortcut can "
         + "only ever open it")
-  }
 
-  /// Esc closes it. `ThemePicker` handles this itself (`.onExitCommand`) rather than trusting the host,
-  /// because a popover's own cancel handling depends on a behaviour mode SwiftUI doesn't expose.
-  func testEscapeClosesTheDropdown() throws {
-    let app = launchedApp()
-    let popover = app.popovers.firstMatch
-
+    // 3. Esc closes it.
     openPicker(app)
-    XCTAssertTrue(popover.waitForExistence(timeout: 5))
+    XCTAssertTrue(popover.waitForExistence(timeout: 5), "⌘⇧K did not reopen the dropdown")
 
     app.typeKey(.escape, modifierFlags: [])
     XCTAssertTrue(popover.waitForNonExistence(timeout: 5), "Esc must dismiss the dropdown")
-  }
 
-  /// A dialog raised by KEYBOARD closes the dropdown — the `hasModalPresentation` path in
-  /// `TrailingTitlebarBar`.
-  ///
-  /// Driven with ⌘N rather than a menu click on purpose: a click anywhere outside would dismiss the
-  /// popover natively, so a mouse-driven version of this test would pass without the handler existing.
-  /// A keystroke sends no outside click, which is exactly why the handler has to exist — a dropdown left
-  /// hanging over a modal is both confusing and unreachable past.
-  func testAKeyboardRaisedDialogClosesTheDropdown() throws {
-    let app = launchedApp()
-    let popover = app.popovers.firstMatch
-
+    // 4. A keyboard-raised dialog closes it.
     openPicker(app)
-    XCTAssertTrue(popover.waitForExistence(timeout: 5))
+    XCTAssertTrue(popover.waitForExistence(timeout: 5), "⌘⇧K did not reopen the dropdown")
 
     app.typeKey("n", modifierFlags: [.command])  // New Workroom — sets store.activePicker
     XCTAssertTrue(
@@ -237,25 +214,28 @@ final class ThemePickerUITests: XCTestCase {
       "a modal presentation must close the dropdown; without the hasModalPresentation handler a "
         + "keyboard-raised dialog leaves it hanging over the modal")
 
-    app.typeKey(.escape, modifierFlags: [])  // leave no dialog up for the next case
-  }
+    // The dialog really is up (it is an overlay, not a sheet), then leave none up for the next step.
+    let dialogFilter = app.textFields["newWorkroom.filter"]
+    XCTAssertTrue(
+      dialogFilter.waitForExistence(timeout: 5), "⌘N did not raise the New Workroom dialog")
+    app.typeKey(.escape, modifierFlags: [])
+    XCTAssertTrue(
+      dialogFilter.waitForNonExistence(timeout: 5), "Esc did not dismiss the New Workroom dialog")
 
-  /// Both of a new family's swatches render a **resolved** theme. A variant whose file doesn't resolve
-  /// renders the grey fallback swatch, which is the visible symptom of a registry typo — and the one
-  /// failure a bundle-reading unit test cannot see, because it happens in the view.
-  ///
-  /// Each swatch reports its own variant file name and resolution state through accessibility, so this
-  /// names the two files rather than counting anonymous elements.
-  ///
-  /// Scoped to the family under test rather than all 58 rows: applying a theme rewrites the conf and
-  /// force-reloads the engine, so walking the whole list would mean 58 of those round-trips in one
-  /// test. Per-theme colour correctness is already asserted 116 times over by `SwitcherThemeSweepTests`.
-  func testBothSwatchesOfANewFamilyResolve() throws {
-    let app = launchedApp()
+    // 5. Both swatches of the new family resolve.
     openPicker(app)
+    XCTAssertTrue(
+      popover.waitForExistence(timeout: 5), "⌘⇧K did not open the dropdown after the dialog closed")
+
+    // Search rather than scroll: with 58 rows the target may be far down the list, and searching is
+    // also what a user does. The search field takes focus on open.
     app.typeText(family)
 
-    XCTAssertTrue(row(app, family).waitForExistence(timeout: 5))
+    let target = row(app, family)
+    XCTAssertTrue(
+      target.waitForExistence(timeout: 5),
+      "'\(family)' did not appear in the picker — either its files are missing from the built bundle "
+        + "or it is not registered in ThemeService.families")
 
     for variant in [darkVariantFile, lightVariantFile] {
       let resolved = app.descendants(matching: .any)
@@ -269,5 +249,17 @@ final class ThemePickerUITests: XCTestCase {
         .matching(identifier: "theme-swatch-\(variant)-unresolved").firstMatch
       XCTAssertFalse(unresolved.exists, "the '\(variant)' swatch rendered the fallback")
     }
+
+    // 6. LAST: apply it. Clicking changes the persisted family, so nothing may follow that reads the
+    // picker's starting state; the next launch re-seeds `Workroom` through the fixture.
+    target.click()
+
+    let applied = waitForConfTheme(oneOf: [darkVariantFile, lightVariantFile])
+    XCTAssertNotNil(
+      applied, "no theme line in the generated ghostty.conf after picking '\(family)'")
+    XCTAssertTrue(
+      [darkVariantFile, lightVariantFile].contains(applied),
+      "the engine was handed '\(applied ?? "nil")' — expected '\(darkVariantFile)' (dark appearance) "
+        + "or '\(lightVariantFile)' (light appearance) for the '\(family)' family")
   }
 }

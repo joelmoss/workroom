@@ -6,6 +6,9 @@ import XCTest
 /// renders on launch, and clicking a Changes-panel row opens a canned diff tab. Panes are counted via
 /// the per-leaf `terminal.pane` accessibility element (one per rendered pane, diff or terminal).
 ///
+/// Two launches cover the class. Each test is a chain of what used to be separate tests, ordered so
+/// every step starts from the state it needs; a step that ends the panes (Close All) runs last.
+///
 /// Run with `make app-uitest` on a real GUI login session (XCUITest can't drive a headless run).
 final class TabActionsUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
@@ -92,16 +95,39 @@ final class TabActionsUITests: XCTestCase {
     XCTAssertTrue(tab.waitForExistence(timeout: 10), "diff tab should open")
   }
 
-  /// A right-click menu item, by exact title.
-  private func menuItem(_ app: XCUIApplication, _ title: String) -> XCUIElement {
-    app.menuItems.matching(NSPredicate(format: "title == %@", title)).firstMatch
+  /// The ON-SCREEN right-click menu item with this exact title, or nil. Hittable only, because
+  /// "Split Right" also lives in the menu bar (`WorkroomApp.swift`), whose collapsed items are in the
+  /// tree with a zero frame: a plain title match can be satisfied, or clicked, there instead.
+  private func menuItem(_ app: XCUIApplication, _ title: String) -> XCUIElement? {
+    app.menuItems.matching(NSPredicate(format: "title == %@", title))
+      .allElementsBoundByIndex.first { $0.isHittable }
   }
 
-  // MARK: Toolbar — terminal tab
+  /// Wait for an on-screen menu item to appear (a menu opens a beat after the right-click).
+  private func waitForMenuItem(_ app: XCUIApplication, _ title: String) -> XCUIElement? {
+    let shown = NSPredicate { _, _ in self.menuItem(app, title) != nil }
+    _ = XCTWaiter().wait(
+      for: [XCTNSPredicateExpectation(predicate: shown, object: nil)], timeout: 3)
+    return menuItem(app, title)
+  }
 
-  /// A terminal tab's toolbar offers Split-right + Split-down + Close-all, but NOT Open-file-in
-  /// (that's diff-only).
-  func testTerminalToolbarHasSplitAndCloseAllNotOpenFile() {
+  /// Escape the open diff menu and wait until it is really gone, so the next menu's checks can't be
+  /// satisfied by this one. "Keep Open" is the witness: only a preview diff's chip/panel menu has it.
+  private func dismissDiffMenu(_ app: XCUIApplication) {
+    app.typeKey(.escape, modifierFlags: [])
+    let closed = NSPredicate { _, _ in self.menuItem(app, "Keep Open") == nil }
+    XCTAssertEqual(
+      XCTWaiter().wait(
+        for: [XCTNSPredicateExpectation(predicate: closed, object: nil)], timeout: 4),
+      .completed, "the menu should close on Escape")
+  }
+
+  // MARK: Terminal tab — toolbar, then File ▸ Close All Tabs
+
+  /// A terminal tab's toolbar offers Split-right + Split-down + Close-all, but NOT Open-file-in (that's
+  /// diff-only); both split buttons add a pane; then File ▸ Close All Tabs closes every tab, with
+  /// Close Other Tabs offered too (enabled with ≥2 tabs).
+  func testTerminalToolbarSplitsThenFileMenuClosesAll() {
     let app = launchedApp()
     openWorkroom(app)
     XCTAssertTrue(app.buttons["pane.toolbar.splitRight"].waitForExistence(timeout: 6))
@@ -109,143 +135,17 @@ final class TabActionsUITests: XCTestCase {
     XCTAssertTrue(app.buttons["workroom.pane.closeAll"].exists)
     XCTAssertFalse(
       app.buttons["pane.toolbar.openFile"].exists, "a terminal tab has no Open-file action")
-  }
-
-  func testTerminalToolbarSplitRightCreatesTwoPanes() {
-    let app = launchedApp()
-    openWorkroom(app)
-    assertCount(panes(app), reaches: 1)
-    app.buttons["pane.toolbar.splitRight"].click()
-    assertCount(panes(app), reaches: 2)
-  }
-
-  func testTerminalToolbarSplitDownCreatesTwoPanes() {
-    let app = launchedApp()
-    openWorkroom(app)
-    assertCount(panes(app), reaches: 1)
-    app.buttons["pane.toolbar.splitDown"].click()
-    assertCount(panes(app), reaches: 2)
-  }
-
-  // MARK: Toolbar — diff tab
-
-  /// A diff tab's toolbar adds Open-file-in alongside Split-right + Close-all.
-  func testDiffTabToolbarHasOpenFileSplitCloseAll() {
-    let app = launchedApp()
-    openWorkroom(app)
-    openDiffPreview(app)
-    XCTAssertTrue(app.buttons["pane.toolbar.openFile"].waitForExistence(timeout: 6))
-    XCTAssertTrue(app.buttons["pane.toolbar.splitRight"].exists)
-    XCTAssertTrue(app.buttons["pane.toolbar.splitDown"].exists)
-    XCTAssertTrue(app.buttons["workroom.pane.closeAll"].exists)
-  }
-
-  /// Splitting a diff from the toolbar opens a second pane (a diff pane of the same file, #72).
-  func testDiffToolbarSplitRightCreatesTwoPanes() {
-    let app = launchedApp()
-    openWorkroom(app)
-    openDiffPreview(app)
-    assertCount(panes(app), reaches: 1)  // the diff is shown solo
-    app.buttons["pane.toolbar.splitRight"].click()
-    assertCount(panes(app), reaches: 2)
-  }
-
-  /// "Close all" from the toolbar closes every tab in the workroom (here: a split of two panes → none).
-  func testToolbarCloseAllClosesEveryPane() {
-    let app = launchedApp()
-    openWorkroom(app)
-    app.buttons["pane.toolbar.splitRight"].click()
-    assertCount(panes(app), reaches: 2)
-    app.buttons["workroom.pane.closeAll"].click()
-    assertCount(panes(app), reaches: 0)
-  }
-
-  // MARK: Context menu — tab chip
-
-  /// A diff tab's right-click menu carries the diff actions (Open File in…, Keep Open for a preview)
-  /// plus the split + close group.
-  func testDiffTabContextMenuHasExpectedItems() {
-    let app = launchedApp()
-    openWorkroom(app)
-    openDiffPreview(app)
-    diffTab(app, "user.rb").rightClick()
-    XCTAssertTrue(menuItem(app, "Open File in…").waitForExistence(timeout: 3))
-    XCTAssertTrue(menuItem(app, "Keep Open").exists, "a preview diff tab offers Keep Open")
-    XCTAssertTrue(menuItem(app, "Split Right").exists)
-    XCTAssertTrue(menuItem(app, "Close Others").exists)
-    XCTAssertTrue(menuItem(app, "Close All").exists)
-    app.typeKey(.escape, modifierFlags: [])  // dismiss the menu
-  }
-
-  /// Splitting from the tab chip's context menu opens a second pane.
-  func testContextMenuSplitRightCreatesTwoPanes() {
-    let app = launchedApp()
-    openWorkroom(app)
-    openDiffPreview(app)
-    assertCount(panes(app), reaches: 1)
-    diffTab(app, "user.rb").rightClick()
-    let split = menuItem(app, "Split Right")
-    XCTAssertTrue(split.waitForExistence(timeout: 3))
-    split.click()
-    assertCount(panes(app), reaches: 2)
-  }
-
-  /// "Remove from Split" is hidden on a solo (unsplit) tab — it only renders for a real split
-  /// member (issue #122). The split-creating items stay visible either way.
-  func testRemoveFromSplitAbsentOnSoloTab() {
-    let app = launchedApp()
-    openWorkroom(app)
-    openDiffPreview(app)  // one solo diff tab, no split
-    diffTab(app, "user.rb").rightClick()
-    XCTAssertTrue(menuItem(app, "Split Right").waitForExistence(timeout: 3), "menu should be open")
+    // …and no optional controls at all, so no overflow menu (the rendered half of
+    // `PaneToolbarPresentationTests.testTerminalAndChangesetShowNoOptionalControls`).
     XCTAssertFalse(
-      menuItem(app, "Remove from Split").exists,
-      "a solo tab is in no split, so Remove from Split must not appear")
-    app.typeKey(.escape, modifierFlags: [])  // dismiss the menu
-  }
+      element(app, id: "pane.toolbar.overflow").exists, "a terminal tab has no overflow menu")
 
-  // MARK: Context menu — diff PANEL (issue #72: same menu as the tab)
-
-  /// Right-clicking the diff PANEL body shows the same context menu as its tab chip.
-  func testDiffPanelHasSameContextMenuAsTab() {
-    let app = launchedApp()
-    openWorkroom(app)
-    openDiffPreview(app)
-    panes(app).firstMatch.rightClick()
-    XCTAssertTrue(
-      menuItem(app, "Open File in…").waitForExistence(timeout: 3),
-      "the diff panel offers the same Open File in… as its tab")
-    XCTAssertTrue(menuItem(app, "Split Right").exists)
-    XCTAssertTrue(menuItem(app, "Close All").exists)
-    app.typeKey(.escape, modifierFlags: [])
-  }
-
-  /// Removing a pane from the split via its PANEL body (issue #122): the shared menu offers "Remove
-  /// from Split" for a real split member, and invoking it pulls that pane out. Split of two diff
-  /// panes → remove one → collapses to the extracted tab shown solo (one pane). The pane body is
-  /// targeted by position (`boundBy`) since a same-file split makes the two chips share a title.
-  func testRemoveFromSplitViaPaneBodyCollapses() {
-    let app = launchedApp()
-    openWorkroom(app)
-    openDiffPreview(app)
+    assertCount(panes(app), reaches: 1)
     app.buttons["pane.toolbar.splitRight"].click()
     assertCount(panes(app), reaches: 2)
-    panes(app).element(boundBy: 1).rightClick()  // the second pane's body
-    let remove = menuItem(app, "Remove from Split")
-    XCTAssertTrue(
-      remove.waitForExistence(timeout: 3), "a split member's menu offers Remove from Split")
-    remove.click()
-    assertCount(panes(app), reaches: 1)  // extracted tab shown solo; split dissolved
-  }
-
-  // MARK: File menu — bulk close
-
-  /// File ▸ Close All Tabs closes every tab; Close Other Tabs is offered too (enabled with ≥2 tabs).
-  func testFileMenuCloseAllTabsClosesEverything() {
-    let app = launchedApp()
-    openWorkroom(app)
-    app.buttons["pane.toolbar.splitRight"].click()
-    assertCount(panes(app), reaches: 2)
+    // Every pane has its own bar now, so the split buttons are no longer unique: take the first.
+    app.buttons.matching(identifier: "pane.toolbar.splitDown").firstMatch.click()
+    assertCount(panes(app), reaches: 3)
 
     let fileMenu = app.menuBars.menuBarItems["File"]
     XCTAssertTrue(fileMenu.waitForExistence(timeout: 5))
@@ -254,6 +154,76 @@ final class TabActionsUITests: XCTestCase {
     XCTAssertTrue(closeAll.waitForExistence(timeout: 3))
     XCTAssertTrue(app.menuItems["Close Other Tabs"].isEnabled, "≥2 tabs → Close Other Tabs enabled")
     closeAll.click()
+    assertCount(panes(app), reaches: 0)
+  }
+
+  // MARK: Diff tab — toolbar, chip menu, panel menu (issue #72), Remove from Split (issue #122)
+
+  /// One preview diff, walked through every surface:
+  /// 1. its toolbar adds Open-file-in alongside Split-right/down + Close-all;
+  /// 2. its chip menu carries the diff actions (Open File in…, Keep Open for a preview) and the split
+  ///    + close group, but no "Remove from Split" while the tab is solo;
+  /// 3. right-clicking the diff PANEL body shows the same menu as its chip;
+  /// 4. Split Right from the chip menu opens a second pane;
+  /// 5. "Remove from Split" on the second pane's body pulls it out, back to one pane (targeted by
+  ///    position, since a same-file split makes the two chips share a title);
+  /// 6. Split-right from the toolbar opens a second pane again;
+  /// 7. the toolbar's Close-all closes every tab in the workroom.
+  func testDiffTabToolbarMenusAndSplits() {
+    let app = launchedApp()
+    openWorkroom(app)
+    openDiffPreview(app)
+    assertCount(panes(app), reaches: 1)  // the diff is shown solo
+
+    // 1. Toolbar.
+    XCTAssertTrue(app.buttons["pane.toolbar.openFile"].waitForExistence(timeout: 6))
+    XCTAssertTrue(app.buttons["pane.toolbar.splitRight"].exists)
+    XCTAssertTrue(app.buttons["pane.toolbar.splitDown"].exists)
+    XCTAssertTrue(app.buttons["workroom.pane.closeAll"].exists)
+
+    // 2. Chip menu. "Keep Open" first: it proves THIS menu opened, so the absence check below can't
+    // pass on a menu that never appeared.
+    diffTab(app, "user.rb").rightClick()
+    XCTAssertNotNil(waitForMenuItem(app, "Keep Open"), "a preview diff tab offers Keep Open")
+    XCTAssertNotNil(menuItem(app, "Open File in…"))
+    XCTAssertNotNil(menuItem(app, "Split Right"))
+    XCTAssertNotNil(menuItem(app, "Close Others"))
+    XCTAssertNotNil(menuItem(app, "Close All"))
+    XCTAssertNil(
+      menuItem(app, "Remove from Split"),
+      "a solo tab is in no split, so Remove from Split must not appear")
+    dismissDiffMenu(app)
+
+    // 3. Panel menu.
+    panes(app).firstMatch.rightClick()
+    XCTAssertNotNil(
+      waitForMenuItem(app, "Open File in…"),
+      "the diff panel offers the same Open File in… as its tab")
+    XCTAssertNotNil(menuItem(app, "Keep Open"))
+    XCTAssertNotNil(menuItem(app, "Split Right"))
+    XCTAssertNotNil(menuItem(app, "Close All"))
+    dismissDiffMenu(app)
+
+    // 4. Split from the chip menu.
+    diffTab(app, "user.rb").rightClick()
+    let split = waitForMenuItem(app, "Split Right")
+    XCTAssertNotNil(split)
+    split?.click()
+    assertCount(panes(app), reaches: 2)
+
+    // 5. Remove the second pane from the split via its body.
+    panes(app).element(boundBy: 1).rightClick()
+    let remove = waitForMenuItem(app, "Remove from Split")
+    XCTAssertNotNil(remove, "a split member's menu offers Remove from Split")
+    remove?.click()
+    assertCount(panes(app), reaches: 1)  // extracted tab shown solo; split dissolved
+
+    // 6. Split from the toolbar (one pane, so the button is unique again).
+    app.buttons["pane.toolbar.splitRight"].click()
+    assertCount(panes(app), reaches: 2)
+
+    // 7. Close all from the toolbar.
+    app.buttons["workroom.pane.closeAll"].click()
     assertCount(panes(app), reaches: 0)
   }
 }

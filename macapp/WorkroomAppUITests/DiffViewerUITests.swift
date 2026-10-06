@@ -90,44 +90,52 @@ final class DiffViewerUITests: XCTestCase {
       for: [XCTNSPredicateExpectation(predicate: p, object: el)], timeout: timeout) == .completed
   }
 
-  // MARK: git
+  // MARK: git, preview semantics, selection, double-click, per-tab toggle
 
-  /// The Changes panel is a flat list; clicking a file opens the git worktree diff.
-  func testGitWorktreeFileOpensDiff() throws {
-    let app = launchedApp()
+  /// One launch walks the Changes → diff flow in order. Steps share the preview slot
+  /// (`TerminalSessions.openContentPreview`), so the order is load-bearing:
+  ///
+  /// 1. The Changes panel is a flat list; clicking a file opens the git worktree diff.
+  /// 2. A single click opens a PREVIEW tab; clicking a second file replaces it in place (≤1
+  ///    preview): the first file's tab is gone, the second's is present. Doubles as the coverage
+  ///    for the pane title bar's path (issue #136), because retarget is the hard case:
+  ///    `openContentPreview` mutates `tab.content` and keeps the tab id, so the pane view is NOT
+  ///    rebuilt — the same stale-content-on-a-stable-view shape as the DiffViewer `.task` re-fire
+  ///    loop. Both files are nested, so these also prove a DIRECTORY reaches the title bar, which
+  ///    the basename-only chip id can't show.
+  /// 3. The changed-file row whose diff is focused reads as selected, and selection follows focus.
+  /// 4. A double click PERSISTS the tab: it survives the next single-click preview (the two
+  ///    coexist), proving double-click skipped preview mode.
+  /// 5. LAST: the tab toolbar's diff view-mode toggle starts on the global default (unified) and
+  ///    flips THIS tab to side-by-side — without changing the global setting. It goes last because
+  ///    the per-tab `diffViewModeOverride` persists across a preview retarget
+  ///    (`TerminalSessions`), so any `diff.line` assertion after it would go dark.
+  func testChangedFileClicksOpenPreviewPersistAndToggleDiffMode() throws {
+    let app = launchedApp(diffViewMode: "unified")  // the global default the toggle overrides
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
 
-    let row = fileRow(app, "config/routes.rb")
-    XCTAssertTrue(row.waitForExistence(timeout: 10), "git changed-file row should render")
-    row.click()
-
+    // Step 1: a git file opens the `git diff HEAD` diff.
+    let routesRow = fileRow(app, "config/routes.rb")
+    XCTAssertTrue(routesRow.waitForExistence(timeout: 10), "git changed-file row should render")
+    routesRow.click()
     XCTAssertTrue(diffTab(app, "routes.rb").waitForExistence(timeout: 6))
     XCTAssertTrue(
       diffLineExists(app, contains: "git-worktree"), "a git file opens the `git diff HEAD` diff")
-  }
 
-  // MARK: preview semantics
-
-  /// A single click opens a PREVIEW tab; clicking a second file replaces it in place (≤1 preview):
-  /// the first file's tab is gone, the second's is present.
-  ///
-  /// Doubles as the coverage for the pane title bar's path (issue #136), because retarget is the
-  /// hard case: `openContentPreview` mutates `tab.content` and keeps the tab id, so the pane view is
-  /// NOT rebuilt — the same stale-content-on-a-stable-view shape as the DiffViewer `.task` re-fire
-  /// loop. Both files are nested, so these also prove a DIRECTORY reaches the title bar, which the
-  /// basename-only chip id can't show.
-  func testSingleClickPreviewIsReplacedInPlace() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
-
-    fileRow(app, "app/models/user.rb").click()
+    // Steps 2 and 3: retarget the preview (routes.rb → user.rb → routes.rb) and follow selection.
+    let userRow = fileRow(app, "app/models/user.rb")
+    XCTAssertTrue(userRow.waitForExistence(timeout: 10))
+    userRow.click()
     XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6))
+    XCTAssertTrue(
+      waitExists(diffTab(app, "routes.rb"), false),
+      "the preview tab retargets in place — the first file's tab is replaced, not kept")
     XCTAssertTrue(
       paneTitleShowsPath(app, "app/models/user.rb"),
       "the pane title bar names the whole path, not just the chip's `user.rb`")
+    XCTAssertTrue(waitSelected(userRow, true), "the row whose diff is focused should be selected")
 
-    fileRow(app, "config/routes.rb").click()
+    routesRow.click()
     XCTAssertTrue(diffTab(app, "routes.rb").waitForExistence(timeout: 6))
     XCTAssertTrue(
       waitExists(diffTab(app, "user.rb"), false),
@@ -137,28 +145,46 @@ final class DiffViewerUITests: XCTestCase {
     XCTAssertTrue(
       waitExists(paneTitlePath(app, "app/models/user.rb"), false),
       "and stops naming the file the pane no longer shows")
-  }
-
-  /// The changed-file row whose diff is focused reads as selected, and selection follows focus:
-  /// opening a second file's diff deselects the first.
-  func testFocusedFileRowIsSelectedAndFollowsFocus() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
-
-    let userRow = fileRow(app, "app/models/user.rb")
-    XCTAssertTrue(userRow.waitForExistence(timeout: 10))
-    userRow.click()
-    XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6))
-    XCTAssertTrue(
-      waitSelected(userRow, true), "the row whose diff is focused should be selected")
-
-    let routesRow = fileRow(app, "config/routes.rb")
-    routesRow.click()
-    XCTAssertTrue(diffTab(app, "routes.rb").waitForExistence(timeout: 6))
     XCTAssertTrue(waitSelected(routesRow, true), "the newly focused file's row becomes selected")
     XCTAssertTrue(
       waitSelected(userRow, false), "selection follows focus — the previous row deselects")
+
+    // Step 4: the double click's first click retargets the routes.rb preview to user.rb, so
+    // routes.rb is absent before the next single click re-opens it (not a leftover tab).
+    userRow.doubleClick()
+    XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6))
+    XCTAssertTrue(
+      waitExists(diffTab(app, "routes.rb"), false),
+      "the double click retargets the routes.rb preview, so it is gone before the next click")
+
+    routesRow.click()
+    XCTAssertTrue(diffTab(app, "routes.rb").waitForExistence(timeout: 6))
+    XCTAssertTrue(
+      diffTab(app, "user.rb").exists,
+      "the persisted (double-clicked) tab survives the next preview — both coexist")
+
+    // Step 5: re-focus the persisted user.rb tab (its override is still unset, so unified), and
+    // wait for something specific to ITS diff — routes.rb's diff also has a `removed` line.
+    userRow.click()
+    XCTAssertTrue(paneTitleShowsPath(app, "app/models/user.rb"), "focus is back on user.rb")
+    XCTAssertTrue(
+      diffLineExists(app, contains: "marker app/models/user.rb"),
+      "the focused tab shows user.rb's diff")
+    XCTAssertTrue(diffLineExists(app, contains: "removed"), "opens unified (the global default)")
+    XCTAssertFalse(
+      element(app, id: "diff.side.right").exists, "no side-by-side column before the toggle")
+
+    let sideBySideButton = element(app, id: "tab.toolbar.diffSideBySide")
+    XCTAssertTrue(
+      sideBySideButton.waitForExistence(timeout: 6), "the tab toolbar shows the diff-mode toggle")
+    sideBySideButton.click()
+
+    XCTAssertTrue(
+      sideCellExists(app, id: "diff.side.left", contains: "removed"),
+      "toggling renders the old (left) column's deletion cell for this tab")
+    XCTAssertTrue(
+      sideCellExists(app, id: "diff.side.right", contains: "added"),
+      "toggling renders side-by-side for this tab")
   }
 
   /// Wait for an element's `isSelected` to reach `want`.
@@ -167,23 +193,6 @@ final class DiffViewerUITests: XCTestCase {
     let p = NSPredicate(format: "isSelected == %@", NSNumber(value: want))
     return XCTWaiter().wait(
       for: [XCTNSPredicateExpectation(predicate: p, object: el)], timeout: timeout) == .completed
-  }
-
-  /// A double click PERSISTS the tab: it survives the next single-click preview (the two coexist),
-  /// proving double-click skipped preview mode.
-  func testDoubleClickPersistsAndCoexistsWithNextPreview() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
-
-    fileRow(app, "app/models/user.rb").doubleClick()
-    XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6))
-
-    fileRow(app, "config/routes.rb").click()
-    XCTAssertTrue(diffTab(app, "routes.rb").waitForExistence(timeout: 6))
-    XCTAssertTrue(
-      diffTab(app, "user.rb").exists,
-      "the persisted (double-clicked) tab survives the next preview — both coexist")
   }
 
   // MARK: side-by-side (issue #66)
@@ -218,28 +227,5 @@ final class DiffViewerUITests: XCTestCase {
       .matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@", id, marker))
       .firstMatch
     return cell.waitForExistence(timeout: timeout)
-  }
-
-  /// The tab toolbar's diff view-mode toggle starts on the global default (unified) and flips THIS
-  /// tab to side-by-side when its side-by-side button is clicked — without changing the global setting.
-  func testTabToolbarToggleSwitchesThisFileToSideBySide() throws {
-    let app = launchedApp(diffViewMode: "unified")  // the global default this toggle overrides
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.file.app/models/user.rb").waitForExistence(timeout: 10))
-
-    let row = fileRow(app, "app/models/user.rb")
-    XCTAssertTrue(row.waitForExistence(timeout: 10))
-    row.click()
-    XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6))
-    XCTAssertTrue(diffLineExists(app, contains: "removed"), "opens unified (the global default)")
-
-    let sideBySideButton = element(app, id: "tab.toolbar.diffSideBySide")
-    XCTAssertTrue(
-      sideBySideButton.waitForExistence(timeout: 6), "the tab toolbar shows the diff-mode toggle")
-    sideBySideButton.click()
-
-    XCTAssertTrue(
-      sideCellExists(app, id: "diff.side.right", contains: "added"),
-      "toggling renders side-by-side for this tab")
   }
 }
