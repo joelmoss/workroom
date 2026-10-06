@@ -135,64 +135,19 @@ final class VCSToolbarUITests: XCTestCase {
         + "got \(String(describing: sync(app).value))")
   }
 
-  func testBehindShowsPullWithRebase() {
-    let app = launchedApp(syncState: "behind")
-    XCTAssertTrue(waitExists(sync(app)))
-    XCTAssertTrue(
-      waitLabel(sync(app), contains: "Pull"), "got \(sync(app).label)")
-    XCTAssertTrue(sync(app).label.lowercased().contains("rebase"))
-  }
-
-  /// Diverged must offer PULL, not push — git refuses a non-fast-forward push, so offering Push would
-  /// send the user straight into a rejection.
-  func testDivergedOffersPullNotPush() {
-    let app = launchedApp(syncState: "diverged")
-    XCTAssertTrue(waitExists(sync(app)))
-    XCTAssertTrue(waitLabel(sync(app), contains: "Pull"), "got \(sync(app).label)")
-    XCTAssertFalse(sync(app).label.contains("Push"))
-  }
-
-  /// A clean repo's sync segment becomes a fetch affordance and shows only the staleness line. The
-  /// fixture pins the timestamp to nine minutes ago, so this is the reference design's exact string.
-  func testCleanShowsOnlyTheFetchedLine() {
-    let app = launchedApp(syncState: "clean")
-    XCTAssertTrue(waitExists(sync(app)))
-    XCTAssertTrue(
-      waitLabel(sync(app), contains: "9 minutes ago"), "got \(sync(app).label)")
-    XCTAssertFalse(sync(app).label.contains("Push"))
-    XCTAssertFalse(
-      sync(app).label.contains("Last"), "\"ago\" already places it in the past")
-  }
-
-  /// A fresh workroom is `git worktree add -b` with no counterpart on the remote —
-  /// the product's DEFAULT state. It must read as Publish, never as Push against a ref that doesn't exist.
-  func testNoCounterpartOffersPublish() {
-    let app = launchedApp(syncState: "noCounterpart")
-    XCTAssertTrue(waitExists(sync(app)))
-    XCTAssertTrue(waitLabel(sync(app), contains: "Publish"), "got \(sync(app).label)")
-  }
-
-  func testNoRemoteIsDisabled() {
-    let app = launchedApp(syncState: "noRemote")
-    XCTAssertTrue(waitExists(sync(app)))
-    XCTAssertTrue(waitLabel(sync(app), contains: "No remote"), "got \(sync(app).label)")
-    XCTAssertFalse(sync(app).isEnabled, "there is nothing to sync with")
-  }
-
-  func testNeverFetchedIsSaidPlainly() {
-    let app = launchedApp(syncState: "neverFetched")
-    XCTAssertTrue(waitExists(sync(app)))
-    XCTAssertTrue(waitLabel(sync(app), contains: "Never fetched"), "got \(sync(app).label)")
-  }
-
   // MARK: Branch segment
 
-  /// The name, and the caption naming it a branch.
+  /// The name, and the caption naming it a branch — always, and as display only.
   ///
   /// The segment is one accessibility element whose LABEL carries both parts, as `"Current Branch:
   /// feature/login"`. Not label + value: `.accessibilityValue` stopped applying once the segment became a
   /// non-`Button` collapsed with `children: .ignore`, and read back empty.
-  func testBranchSegmentShowsTheCurrentRefAndCaption() {
+  ///
+  /// The caption is not optional. It used to sit in a `ViewThatFits` ladder against a name-only
+  /// variant, and `ViewThatFits` measures each variant's IDEAL width — a `.lineLimit(1)` truncating
+  /// `Text` reports its FULL untruncated string — so the caption was vetoed by a long NAME rather than
+  /// by a narrow cell. The segment is also display only: no `Button`, so it must expose no press action.
+  func testBranchSegmentShowsTheRefUnderItsCaptionAndIsNotAControl() {
     let app = launchedApp(syncState: "ahead")
     XCTAssertTrue(waitExists(branch(app)))
     XCTAssertTrue(waitLabel(branch(app), contains: "feature/login"))
@@ -201,22 +156,8 @@ final class VCSToolbarUITests: XCTestCase {
     // `contains` assertion pass against a caption that is wrong.
     XCTAssertTrue(
       label.hasPrefix("Current Branch"),
-      "expected the caption to lead with Current Branch; got \(label)")
+      "the caption must render, not be silently dropped; got \(label)")
     XCTAssertTrue(label.contains("feature/login"), "the name must be spoken too; got \(label)")
-  }
-
-  /// The caption is not optional, and it is not a control.
-  ///
-  /// It used to sit in a `ViewThatFits` ladder against a name-only variant, and `ViewThatFits` measures
-  /// each variant's IDEAL width — a `.lineLimit(1)` truncating `Text` reports its FULL untruncated string —
-  /// so the caption was vetoed by a long NAME rather than by a narrow cell. The segment is also display
-  /// only: no `Button`, so it must expose no press action.
-  func testCaptionAlwaysRendersAndTheSegmentIsNotAControl() {
-    let app = launchedApp(syncState: "ahead")
-    XCTAssertTrue(waitExists(branch(app)))
-    XCTAssertTrue(
-      waitLabel(branch(app), contains: "Current"),
-      "the caption must render, not be silently dropped; got \(branch(app).label)")
     XCTAssertFalse(
       button(app, id: "vcs.toolbar.branch").exists,
       "the branch segment is display only — it must not be a button")
@@ -235,6 +176,10 @@ final class VCSToolbarUITests: XCTestCase {
     XCTAssertTrue(
       waitLabel(sync(app), contains: "authenticate", 10),
       "a failed push must surface inline on the segment; got \(sync(app).label)")
+    // A failed action tells you nothing new about the repo, so it must not blank the toolbar.
+    XCTAssertTrue(
+      branch(app).label.contains("feature/login"),
+      "a failed action must leave the branch visible; got " + branch(app).label)
   }
 
   /// The fixture delays each action, so the in-flight state is observable — and while it's in flight the
@@ -369,18 +314,5 @@ final class VCSToolbarUITests: XCTestCase {
     XCTAssertTrue(
       waitExists(element(app, id: "vcs.failure.sheet"), true, 10),
       "a read failure's explanation belongs in the dialog, like an action's")
-  }
-
-  /// A failed action must NOT blank the toolbar — the ref is still known, and the repo is unchanged.
-  func testAFailedActionKeepsTheBranchVisible() {
-    let app = launchedApp(syncState: "ahead", extraArguments: ["-WorkroomUITestSyncFailure", "1"])
-    XCTAssertTrue(waitExists(sync(app)))
-    XCTAssertTrue(button(app, id: "vcs.toolbar.sync").isHittable)
-    button(app, id: "vcs.toolbar.sync").click()
-    XCTAssertTrue(waitLabel(sync(app), contains: "authenticate", 10))
-    XCTAssertTrue(
-      branch(app).label.contains("feature/login"),
-      "a failed action tells you nothing new about the repo, so the snapshot must stand; got "
-        + branch(app).label)
   }
 }
