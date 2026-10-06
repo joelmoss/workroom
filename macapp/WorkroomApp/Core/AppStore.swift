@@ -3570,11 +3570,13 @@ final class AppStore: ObservableObject {
       && !deletingProjects.contains(project.path)
   }
 
-  /// Creates a container workroom for `project` on `runtime` (#253, #309), derived from the
-  /// project's base machine (built first if it has none), then selects it, which opens its first
-  /// pane on the far side. `splitAnchor` lands it beside that workroom instead, as `createWorkroom`.
+  /// Creates a remote workroom for `project` at `place` (#253, #309, #356): a container on this Mac
+  /// or a boxd machine, derived from the project's base machine there (built first if it has none),
+  /// then selects it, which opens its first pane on the far side. `splitAnchor` lands it beside
+  /// that workroom instead, as `createWorkroom`.
   func createRemoteWorkroom(
-    in project: Project, runtime: RemoteWorkrooms.Runtime = .docker, splitAnchor: SidebarID? = nil
+    in project: Project, place: RemoteWorkrooms.Place = .container(.docker),
+    splitAnchor: SidebarID? = nil
   ) async {
     // As it is now, not as a menu or the picker caught it: a create that finished meanwhile may
     // have recorded the project's first base, which this one must derive from, not overwrite.
@@ -3585,10 +3587,14 @@ final class AppStore: ObservableObject {
     do {
       // A project keeps a base per runtime and Docker context (#309): the workroom derives from the
       // one where it is asked for, made there first if there is none.
-      let wanted = try await RemoteHosts.shared.key(for: runtime)
+      let wanted = try await RemoteHosts.shared.key(for: place)
       let base = RemoteWorkrooms.base(in: project.host, for: wanted)
       let key = base.flatMap(RemoteHosts.DriverKey.init) ?? wanted
       let (driver, environment) = try RemoteHosts.shared.environment(key)
+      // A remote host has no relay to fall back to (OQ20): say so before anything is made.
+      if key.runtime == nil, environment.client == nil {
+        throw RemoteWorkrooms.Failure.codasetRequired
+      }
       let resolution = await WorkroomStatusResolver().resolveRepository(in: project.path)
       guard case .found(let repository) = resolution else {
         throw RemoteWorkrooms.Failure.notOnGitHub("Couldn't find its GitHub repository with gh.")
@@ -3629,10 +3635,10 @@ final class AppStore: ObservableObject {
         signedIn: environment.client != nil, hadBase: base != nil, made: made)
       {
         errorTitle =
-          "\(runtime.displayName) workrooms of \(project.displayName) use your own GitHub access"
+          "\(place.displayName) workrooms of \(project.displayName) use your own GitHub access"
         errorMessage =
           "The Codaset App isn't installed for \(repository.owner), so git in this project's "
-          + "\(runtime.displayName) workrooms asks your gh sign-in on this Mac, with all of its "
+          + "\(place.displayName) workrooms asks your gh sign-in on this Mac, with all of its "
           + "access, as a workroom on this Mac does. They keep doing so after the App is installed."
       }
     } catch {
