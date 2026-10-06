@@ -908,6 +908,11 @@ final class PortForwardingModel: ObservableObject {
   /// forwards with its connection (`watch()`), leaving an empty model behind.
   private static var models: [HostID: PortForwardingModel] = [:]
 
+  /// Whether `host` has a forward up: its connection is carrying it, so it must not be dropped.
+  static func hasForwards(_ host: HostID) -> Bool {
+    models[host]?.forwards.isEmpty == false
+  }
+
   static func model(for host: HostID) -> PortForwardingModel {
     if let model = models[host] { return model }
     let model = PortForwardingModel(host: host, transport: .live(host))

@@ -703,6 +703,12 @@ final class WakefulnessModel: ObservableObject {
     guard issued.request > newestApplied else { return next }
     newestApplied = issued.request
     if next != self.status { self.status = next }
+    // A remote box reporting IDLE may be let go of, so the app's own traffic stops holding it
+    // awake (#356); `RemoteHosts` decides, by its kind and whether it is selected.
+    if let host, next.running {
+      let busy = next.busy
+      Task { await RemoteHosts.shared.observed(.remote(host), busy: busy) }
+    }
     if issued.generation == promptGeneration {
       prompt.reconcile(next, now: Date())
     }

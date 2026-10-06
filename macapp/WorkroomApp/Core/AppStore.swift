@@ -208,8 +208,11 @@ final class AppStore: ObservableObject {
       // instead of lingering on the previous workroom's commits until the panel's `.task` catches
       // up. `focus` is idempotent, so the panel's later re-focus to the same root no-ops.
       if selectedTargetID != oldValue {
-        // Opening a container workroom starts its container if it was stopped (#309).
-        if let host = selectedWorkroom?.reachableHost { RemoteHosts.shared.activate(.remote(host)) }
+        // Opening a container workroom starts its container if it was stopped (#309). Its host is
+        // never let go of as idle while selected (#356).
+        let selected = selectedWorkroom?.reachableHost.map(HostID.remote)
+        RemoteHosts.shared.select(selected)
+        if let selected { RemoteHosts.shared.activate(selected) }
         focusHistoryIfShown()
         focusRemoteStateIfShown()
         // A confirmation asking about the OLD workroom's dirty tree is meaningless once the selection
