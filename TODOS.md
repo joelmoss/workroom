@@ -57,14 +57,14 @@ Three more things the same reviews found, all moot until a host that sleeps is w
 make a resume after `Suppressed` stay suppressed until the user answers. Pin it with a
 `new_settings_apply_from_the_next_tick`-style table in `wakefulness/tests.rs`.
 
-**Depends on:** wiring `BoxdHostDriver` into `RemoteHosts` (#258, #260). Land it with the
-`BoxdIntegrationTests` keep-awake case (P2, gated on #258).
+**Depends on:** wiring `BoxdHostDriver` into `RemoteHosts` (#356). Land it with the
+`BoxdIntegrationTests` keep-awake case (P2, part of #356).
 
 **Priority:** P1, gating boxd in the app (chosen in /ship's adversarial review of #257, 2026-10-06)
 
 ## P2 — perf, correctness, and the next VCS phase
 
-### Put the keep-awake acceptance run in `BoxdIntegrationTests` (macapp) — gate on #258
+### Put the keep-awake acceptance run in `BoxdIntegrationTests` (macapp) — part of #356
 
 **What:** Encode #257's live acceptance as a gated case in
 `macapp/WorkroomAppTests/BoxdIntegrationTests.swift`, so one command reruns it. Two machines:
@@ -91,13 +91,13 @@ its ticks on the box. Pass: the control hibernates mid-job; the agent's machine 
 hibernates within the idle window after the job ends. Destroy both, whatever the outcome (the
 derive tests' `remove(machine:)` pattern). About 15 minutes per run.
 
-**Depends on:** wiring `BoxdHostDriver` into `RemoteHosts` (#258, #260). Runs only with
+**Depends on:** wiring `BoxdHostDriver` into `RemoteHosts` (#356). Runs only with
 `TEST_RUNNER_WR_BOXD_TESTS=1`, a `WR_AGENT_LINUX=1` build and the sandbox off, like the other
 cases there.
 
-**Priority:** gate on #258: build it with the boxd wiring, and run it before any release that ships
-boxd. Moved out of P1 on 2026-10-06 because nothing that sleeps is wired in yet; originally
-deferred from plan `~/.gstack/projects/joelmoss-workroom/master-eng-review-20261005-233111.md`
+**Priority:** build it with the boxd wiring (#356; eng review decision D10, 2026-10-06), and run it
+before any release that ships boxd. Moved out of P1 on 2026-10-06 because nothing that sleeps is
+wired in yet; originally deferred from plan `~/.gstack/projects/joelmoss-workroom/master-eng-review-20261005-233111.md`
 (T6), at /ship of #257.
 
 ### Give the keep-awake heartbeat its own thread (wr-agent) — #257 review
