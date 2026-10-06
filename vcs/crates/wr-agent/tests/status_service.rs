@@ -284,11 +284,24 @@ fn a_running_agent_starts_with_its_kept_settings_and_keeps_new_ones() {
         r["ceiling_seconds"] == 3600.0
     });
     assert_eq!(applied["ask_at_ceiling"], false);
-    let saved: Value = serde_json::from_slice(&std::fs::read(&kept).unwrap()).unwrap();
-    assert_eq!(
-        saved["ceiling_seconds"], 3600.0,
-        "kept for the next start: {saved}"
-    );
+    // Kept by the saver's own thread, so polled rather than read once.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let saved = std::fs::read(&kept)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        if saved
+            .as_ref()
+            .is_some_and(|s| s["ceiling_seconds"] == 3600.0)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "never kept for the next start: {saved:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// A `settings` request the moment the agent is up, before its service has ticked, is still kept
