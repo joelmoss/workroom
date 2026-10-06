@@ -22,11 +22,12 @@ the container driver (#252, PR #280, 2026-10-01); the boxd driver with portable 
 #349, 2026-10-05); and keeping a busy box awake (#257, PR #353, 2026-10-06), built as a heartbeat in
 the agent, not a shim. Follow-ups from #253's reviews are #283 to #288; #283 (closing a remote pane
 ends its session on the host) is merged (PR #306, 2026-10-03), with its own follow-ups in #293, #297
-and #304. The rest of Phase 4 is open: boxd live fork (#258) and the second real provider, exe.dev
-(#259). #260 is the gate: it runs the Success Criteria on two real providers, and the remote UI
-leaves Nightly only after they pass. The first Nightly DMG with the Linux agent inside (#227) still
-has to be checked, and that check is part of #260. Each merged item has its "As built" entry under
-Phase 4, except #255, which is recorded as the answer to open question 8.
+and #304. The rest of Phase 4 is open: the second real provider, exe.dev (#259), and boxd live fork
+(#258), which is deferred to a later release and does not gate #260. #260 is the gate: it runs the
+Success Criteria on two real providers, and the remote UI leaves Nightly only after they pass. The
+first Nightly DMG with the Linux agent inside (#227) still has to be checked, and that check is part
+of #260. Each merged item has its "As built" entry under Phase 4, except #255, which is recorded as
+the answer to open question 8.
 
 The 2026-09-26 status follows.
 
@@ -2930,7 +2931,9 @@ disagreement passes every test on either side alone while presenting as an empty
   OQ20) nor an ssh host key.
 - On a live-fork provider, derivation from a warm base completes in well under a second (a
   hibernated base is wake-then-derive) — as a measured *speed-up* over the portable path,
-  not as the only path that works.
+  not as the only path that works. **Deferred to a later release (2026-10-06):** this criterion
+  moved to #258 and does not gate the remote UI leaving Nightly (#260). boxd's portable snapshot
+  path is what the gate measures.
 - A job longer than the provider's idle window finishes with no client attached, on a provider whose
   idle policy would otherwise have stopped it. That is the wakefulness service doing its job.
 - Start a long-running agent in it, quit Workroom entirely, reopen hours later, and land in the
@@ -3801,8 +3804,9 @@ service milestones below so each layer can be reviewed and landed independently.
    in the app; built 2026-10-02, PR #289) → #254 (pane parity; built 2026-10-04, PR #326) and #255
    (cross-machine reattach, OQ8; built 2026-10-05, PR #349); #256 (boxd driver; built 2026-10-02, PR
    #281) → #257 (keeping a busy box awake; built 2026-10-06 as an agent heartbeat, PR #353) and #258
-   (boxd live fork); #259 (the second real provider, exe.dev, decided
-   2026-09-27); and #260, the gate that runs the success criteria on two real providers.
+   (boxd live fork; deferred to a later release on 2026-10-06, so it no longer gates #260); #259
+   (the second real provider, exe.dev, decided 2026-09-27); and #260, the gate that runs the success
+   criteria on two real providers.
 
 **Release follow-up, independent of Phase 2:** ~~Phase 1 Outstanding item 5 supplies the warning
 about rolling back to v2.0.0 and then updating again. Verify that the first release containing the
