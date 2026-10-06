@@ -125,6 +125,15 @@ enum UITestFixture {
     return weights
   }
 
+  /// When set (`-WorkroomUITestCeilingPrompt 1`), a stand-in remote host is asking to be kept awake
+  /// (#257): its ceiling-prompt card shows until its "Keep awake" is clicked. No host or agent is
+  /// involved (`WakefulnessModel.seedUITestPrompt`).
+  static var ceilingPromptHost: UUID? {
+    flag("WorkroomUITestCeilingPrompt") ? ceilingPromptHostID : nil
+  }
+
+  static let ceilingPromptHostID = UUID(uuidString: "25700000-0000-4000-8000-000000000257")!
+
   /// When set (`-WorkroomUITestNoProjects 1`), the fixture loads an EMPTY project list — the
   /// fresh-install / nothing-configured state. Used by `NewWorkroomDialogUITests` to assert File ▸
   /// New Workroom is disabled when there's nothing to pick (issue #81 D3).

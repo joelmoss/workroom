@@ -1,3 +1,4 @@
+import Defaults
 import XCTest
 
 @testable import Workroom
@@ -15,9 +16,16 @@ final class AgentBootstrapTests: XCTestCase {
     private let lock = NSLock()
     private var answers: [Answer]
     private(set) var commands: [String] = []
-    let traits = HostDriverTraits(
-      transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
-      durableDisk: false, maxLifetime: nil)
+    /// Where `openStream` connects, or nil for one that throws.
+    var streamSocket: String?
+    /// Whether the stand-in host is one its provider sleeps when idle.
+    var sleeps = true
+    var traits: HostDriverTraits {
+      HostDriverTraits(
+        transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
+        durableDisk: false, maxLifetime: nil, keepAwakeHoldsCredential: false,
+        sleepsWhenIdle: sleeps)
+    }
 
     init(_ answers: [Answer]) { self.answers = answers }
 
@@ -27,7 +35,10 @@ final class AgentBootstrapTests: XCTestCase {
     }
     func destroy(_ host: HostID) async throws { throw HostDriverError.notImplemented("destroy") }
     func openStream(to host: HostID) async throws -> HostStream {
-      throw HostDriverError.notImplemented("openStream")
+      guard let streamSocket else { throw HostDriverError.notImplemented("openStream") }
+      return try HostStream.spawn(
+        URL(fileURLWithPath: "/usr/bin/nc"), ["-U", streamSocket], environment: [:],
+        handshakeTimeout: 5, purpose: .connection)
     }
 
     func exec(_ command: String, on host: HostID) async throws -> HostStream {
@@ -408,6 +419,56 @@ final class AgentBootstrapTests: XCTestCase {
     }
   }
 
+  /// Every connect hands the host's agent this Mac's ceiling settings (#257): a remote agent
+  /// outlives every connection, so this is the one way a changed preference reaches it.
+  func testConnectHandsTheAgentTheCeilingSettings() async throws {
+    let fake = try FakeAgent(version: 4, status: true)
+    defer { fake.stop() }
+    // This Mac's preferences, away from their defaults, so the request can only carry them.
+    let saved = (Defaults[.awakeCeilingHours], Defaults[.askAtAwakeCeiling])
+    Defaults[.awakeCeilingHours] = 2
+    Defaults[.askAtAwakeCeiling] = true
+    defer { (Defaults[.awakeCeilingHours], Defaults[.askAtAwakeCeiling]) = saved }
+    let driver = StubDriver([probe(installed: digest, handOff: "0 current")])
+    driver.streamSocket = fake.socketPath
+    let connection = try await AgentBootstrap.connect(
+      host: host, driver: driver, socket: socket, agent: bundled(_:), handOff: true,
+      resources: nil)
+    // Sent without holding up the connect, so it lands a moment later.
+    let deadline = ContinuousClock.now + .seconds(5)
+    while fake.receivedStatusRequests.isEmpty && ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    await connection.close()
+    let request = try XCTUnwrap(fake.receivedStatusRequests.first, "no settings request")
+    XCTAssertTrue(request.contains(#""method":"settings""#), request)
+    XCTAssertTrue(request.contains(#""ceiling_seconds":7200"#), request)
+    XCTAssertTrue(request.contains(#""ask_at_ceiling":true"#), request)
+  }
+
+  /// A host its provider never sleeps (a container) is not handed ask-at-ceiling (#257): its prompt
+  /// would say the box may sleep, and nothing ever will. The rest of the settings still go.
+  func testAHostThatNeverSleepsIsNotAskedAboutSleeping() async throws {
+    let fake = try FakeAgent(version: 4, status: true)
+    defer { fake.stop() }
+    let saved = Defaults[.askAtAwakeCeiling]
+    Defaults[.askAtAwakeCeiling] = true
+    defer { Defaults[.askAtAwakeCeiling] = saved }
+    let driver = StubDriver([probe(installed: digest, handOff: "0 current")])
+    driver.streamSocket = fake.socketPath
+    driver.sleeps = false
+    let connection = try await AgentBootstrap.connect(
+      host: host, driver: driver, socket: socket, agent: bundled(_:), handOff: true,
+      resources: nil)
+    let deadline = ContinuousClock.now + .seconds(5)
+    while fake.receivedStatusRequests.isEmpty && ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    await connection.close()
+    let request = try XCTUnwrap(fake.receivedStatusRequests.first, "no settings request")
+    XCTAssertTrue(request.contains(#""ask_at_ceiling":false"#), request)
+  }
+
   /// The Ghostty resource set (#239) is keyed by the hash of its `CHECKSUMS`: a host the probe
   /// finds holding it is pushed nothing, one without it gets every file the manifest lists and the
   /// manifest itself, and a push that fails is reported without failing the connect.
@@ -730,7 +791,8 @@ final class AgentBootstrapTests: XCTestCase {
     let path: String
     let traits = HostDriverTraits(
       transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
-      durableDisk: false, maxLifetime: nil)
+      durableDisk: false, maxLifetime: nil, keepAwakeHoldsCredential: false,
+      sleepsWhenIdle: false)
 
     init(path: String) { self.path = path }
 

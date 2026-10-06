@@ -107,7 +107,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   var traits: HostDriverTraits {
     HostDriverTraits(
       transport: .sshStdio, deriveSpeed: provisioning == nil ? nil : .seconds(5),
-      deriveCarriesLiveProcesses: false, durableDisk: false, maxLifetime: nil)
+      deriveCarriesLiveProcesses: false, durableDisk: false, maxLifetime: nil,
+      keepAwakeHoldsCredential: false, sleepsWhenIdle: false)
   }
 
   /// Where each host's `ssh_config` and `known_hosts` are written.

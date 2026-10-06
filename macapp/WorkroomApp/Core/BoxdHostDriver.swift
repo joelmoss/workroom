@@ -57,7 +57,8 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   var traits: HostDriverTraits {
     HostDriverTraits(
       transport: .sshStdio, deriveSpeed: .seconds(20), deriveCarriesLiveProcesses: false,
-      durableDisk: true, maxLifetime: nil)
+      durableDisk: true, maxLifetime: nil, keepAwakeHoldsCredential: false,
+      sleepsWhenIdle: true)
   }
 
   let configuration: Configuration

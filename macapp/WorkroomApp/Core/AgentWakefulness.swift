@@ -28,6 +28,18 @@ struct AgentWakefulnessService: Sendable {
     guard reply.kept else { throw HostConnectionError.serviceUnavailable("Agent declined keep.") }
   }
 
+  /// Hands the agent the app's ceiling settings (#257). The agent applies them from its next tick
+  /// and keeps them for its next start, so a remote box takes the Settings pane's values on each
+  /// connect rather than keeping what it was started with. An agent that predates the request
+  /// answers `unsupported`, which throws like any refusal, and keeps its own.
+  func apply(_ settings: AgentWakefulnessSettings) async throws {
+    _ = try AgentStatusReply<AgentSettingsApplied>.decode(
+      await connection.statusRequest(
+        AgentStatusRequest(
+          method: "settings", ceilingSeconds: settings.ceiling,
+          promptTimeoutSeconds: settings.promptTimeout, askAtCeiling: settings.ask)))
+  }
+
   /// Unsolicited `awake_ceiling_prompt` events, in arrival order. Finishes when the connection does.
   var prompts: AsyncStream<AgentCeilingPrompt> { connection.ceilingPrompts }
 }
@@ -57,10 +69,15 @@ struct AgentWakefulness: Decodable, Sendable, Equatable {
   /// The prompt went unanswered and the agent has stopped asserting BUSY.
   let suppressed: Bool
   let promptTimeoutSeconds: Double
-  /// Whether the last verdict reached the file the provider's shim reads. False means the box is NOT
-  /// being kept awake, whatever `busy` says — a full disk is the case. Nil from an agent that predates
-  /// the field.
+  /// Whether the last verdict reached the agent's verdict file. A diagnostic since the heartbeat
+  /// replaced the far-side shim that read it (#257). Nil from an agent that predates the field.
   let verdictWritten: Bool?
+  /// What keeps a BUSY box awake (#257): the agent's heartbeat. Nil from an agent that predates it.
+  let keepAwake: KeepAwake?
+  /// The agent's service has gone several ticks without finishing one, so this reply is its last
+  /// tick's and the heartbeat has stopped with it (#257). Nil from an agent that predates the
+  /// field.
+  let stalled: Bool?
   /// What the reader sees, after the ceiling: `"BUSY"` or `"IDLE"`.
   let verdict: String?
   /// What the classifier itself decided, before the ceiling had its say.
@@ -77,13 +94,38 @@ struct AgentWakefulness: Decodable, Sendable, Equatable {
     return wakefulnessSeconds(deadline - monotonic)
   }
 
-  /// Work is running and nothing is keeping the box awake: the prompt went unanswered, or the verdict
-  /// never reached the file the shim reads. The one state the badge must not soften.
-  var unprotected: Bool { suppressed || (busy && verdictWritten == false) }
+  /// The agent's keep-awake heartbeat, as `status` reports it.
+  struct KeepAwake: Decodable, Sendable, Equatable {
+    /// On the agent's monotonic clock, like `monotonic`.
+    let lastSent: Double?
+    /// Why the last heartbeat could not be sent. Non-nil while BUSY means nothing is keeping the
+    /// box awake.
+    let error: String?
+  }
+
+  /// Work is running and nothing is keeping the box awake: the prompt went unanswered, the agent's
+  /// service has stalled, the heartbeat is failing, or the agent predates the heartbeat (#257). The
+  /// one state the badge must not soften. That last one is real, not hypothetical: a busy box can
+  /// refuse the hand-off to a newer agent and keep the old one (`AgentBootstrap`'s `keptOlder`),
+  /// which keeps nothing awake.
+  var unprotected: Bool {
+    suppressed || (busy && stalled == true) || (busy && keepAwake?.error != nil)
+      || (running && busy && keepAwake == nil)
+  }
 
   /// What the badge shows. Only these four, because only these four are actionable: the classifier's
   /// raw verdict and the CPU cost are diagnostics.
   enum Display: Equatable { case idle, busy, busyPastCeiling, busyUnprotected }
+
+  /// What the badge shows for a host that `sleeps` when idle or not. One that never sleeps (a
+  /// container) cannot be slept under a job, so nothing there is "not kept awake": an old agent,
+  /// a stalled one or a failing heartbeat would only be a false alarm, and its advice (restart the
+  /// agent) would end the user's sessions.
+  func display(hostSleeps sleeps: Bool) -> Display {
+    if sleeps { return display }
+    if awakeCeilingExceeded { return .busyPastCeiling }
+    return busy ? .busy : .idle
+  }
 
   var display: Display {
     if unprotected { return .busyUnprotected }
@@ -91,10 +133,11 @@ struct AgentWakefulness: Decodable, Sendable, Equatable {
     return busy ? .busy : .idle
   }
 
-  /// The running agent's ceiling settings against the app's preferences, as one sentence, or nil when
-  /// they agree (or the agent did not say). The settings are flags fixed at the agent's start, and the
-  /// agent is persistent — it outlives the app on purpose — so "takes effect next time an agent
-  /// starts" is, in practice, "not until the agent is restarted"; this is how the user finds out.
+  /// The running agent's ceiling settings against the app's preferences, as one sentence, or nil
+  /// when they agree (or the agent did not say). This Mac's agent takes them as flags fixed at its
+  /// start, and it is persistent — it outlives the app on purpose — so "takes effect next time an
+  /// agent starts" is, in practice, "not until the agent is restarted"; this is how the user finds
+  /// out. A remote agent is handed them on every connect instead (`AgentBootstrap.connect`, #257).
   func settingsMismatch(against settings: AgentWakefulnessSettings) -> String? {
     var differences: [String] = []
     if let ask = askAtCeiling, ask != settings.ask {
@@ -184,9 +227,10 @@ struct AgentWakefulnessSettings: Equatable, Sendable {
     self.ask = ask
   }
 
-  /// From the preferences' own units. A value the agent would refuse — not finite, not positive —
-  /// becomes the agent's default HERE, so a hand-edited preference (these two keys have no UI) reaches
-  /// the agent as a number it accepts, not as `nan` on its command line.
+  /// From the preferences' own units. A value the agent would refuse — outside 30 s to 30 days, the
+  /// agent's `usable_seconds` — becomes the agent's default HERE, so a hand-edited preference
+  /// (these two keys have no UI) reaches the agent as a number it accepts, not as `nan` on its
+  /// command line or a settings request it refuses.
   init(ceilingHours: Double, promptTimeoutMinutes: Double, ask: Bool) {
     self.init(
       ceiling: Self.usable(ceilingHours * 3600) ?? Self.defaultCeiling,
@@ -194,13 +238,17 @@ struct AgentWakefulnessSettings: Equatable, Sendable {
       ask: ask)
   }
 
+  /// The agent's `usable_seconds` bounds, which it refuses a `settings` request outside of.
+  static let usableSeconds: ClosedRange<TimeInterval> = 30...(30 * 24 * 3600)
+
   private static func usable(_ seconds: Double) -> TimeInterval? {
-    seconds.isFinite && seconds > 0 ? seconds : nil
+    usableSeconds.contains(seconds) ? seconds : nil
   }
 
-  /// Read from preferences at the moment the app spawns an agent. Not observed: the flags are fixed
-  /// for an agent's whole life, because the agent is long-lived and negotiated with rather than
-  /// replaced — changing a preference takes effect the next time an agent is started.
+  /// Read from preferences when the app spawns this Mac's agent, and when it connects to a remote
+  /// one (#257). Not observed: this Mac's agent keeps its flags for its whole life, because it is
+  /// long-lived and negotiated with rather than replaced, and a remote agent takes a changed
+  /// preference on the next connect.
   static var current: AgentWakefulnessSettings {
     AgentWakefulnessSettings(
       ceilingHours: Defaults[.awakeCeilingHours],
@@ -251,6 +299,21 @@ struct AgentStatusEvent: Decodable {
 struct AgentStatusRequest: Encodable, Sendable {
   var version = 1
   let method: String
+  /// `settings` only (#257).
+  var ceilingSeconds: Double?
+  var promptTimeoutSeconds: Double?
+  var askAtCeiling: Bool?
+}
+
+/// The `{"method": "settings"}` reply: the settings the agent took, echoed back. Decoded rather
+/// than ignored so a refusal surfaces as an error.
+struct AgentSettingsApplied: Decodable, Sendable {
+  struct Settings: Decodable, Sendable {
+    let ceilingSeconds: Double
+    let promptTimeoutSeconds: Double
+    let askAtCeiling: Bool
+  }
+  let settings: Settings
 }
 
 /// The awake-ceiling prompt as the UI holds it: pure, so the rules worth testing — "keep" clears it,
@@ -439,23 +502,61 @@ final class WakefulnessModel: ObservableObject {
   }
 
   private let transport: Transport
+  /// The remote host this model is for, or nil for this Mac's (`shared`).
+  let host: UUID?
+  /// Whether this model's host is put to sleep when idle (`HostDriverTraits.sleepsWhenIdle`), set
+  /// from its driver on connect. Assumed until then; nothing shows before a connection anyway.
+  var hostSleeps = true
 
-  init(transport: Transport = .live) {
+  init(transport: Transport = .live, host: UUID? = nil) {
     self.transport = transport
+    self.host = host
   }
 
-  /// Each remote host's model, made on first use and kept for the launch, as
+  /// Each remote host's model, made on first use and kept until its host is deleted, as
   /// `PortForwardingModel`'s are. This Mac's is `shared`, whose transport may start an agent.
-  private static var hosts: [UUID: WakefulnessModel] = [:]
+  /// Published, so the toast stack shows a prompt from a host it had not seen before.
+  @MainActor
+  final class Hosts: ObservableObject {
+    static let shared = Hosts()
+    /// Not published: the sidebar makes a host's model inside a view's body, where publishing is
+    /// not allowed. Nothing renders from this; the toast stack renders from `showing`.
+    fileprivate(set) var models: [UUID: WakefulnessModel] = [:]
+    /// The hosts whose card is up, which the toast stack renders and takes clicks for. Changed
+    /// only by a model's prompt, never while a view is being drawn.
+    @Published fileprivate(set) var showing: Set<UUID> = []
+  }
 
+  /// A remote host's model. Made watching for its ceiling prompts (#257): the app hands a remote
+  /// agent whose box sleeps this Mac's ask-at-ceiling setting, so a prompt the app never showed
+  /// would let the box sleep under a running job with the user sitting at the Mac. The watch never
+  /// connects the host; it waits for a connection to be there.
   static func model(forHost id: UUID) -> WakefulnessModel {
-    if let model = hosts[id] { return model }
+    if let model = Hosts.shared.models[id] { return model }
     let model = WakefulnessModel(
       transport: .on(.remote(id), manager: .shared) {
         try await RemoteHosts.shared.ensureConnected($0)
-      })
-    hosts[id] = model
+      },
+      host: id)
+    Hosts.shared.models[id] = model
+    model.startWatchingPrompts()
     return model
+  }
+
+  #if DEBUG
+    /// The UI-test fixture's remote host asking to be kept awake (#257): a stand-in agent whose
+    /// prompt stays pending until it is sent `keep`, so the card is testable without a host.
+    static func seedUITestPrompt(host id: UUID) {
+      let model = WakefulnessModel(transport: UITestPromptAgent().transport, host: id)
+      Hosts.shared.models[id] = model
+      model.startWatchingPrompts()
+    }
+  #endif
+
+  /// The host is gone (deleted): its model, its watch and any prompt card with it.
+  static func forgetHost(_ id: UUID) {
+    Hosts.shared.models.removeValue(forKey: id)?.stopWatchingPrompts()
+    Hosts.shared.showing.remove(id)
   }
 
   /// Every model's in-flight "Keep awake", this Mac's and each remote host's, for quit. At once, so
@@ -468,7 +569,7 @@ final class WakefulnessModel: ObservableObject {
   static func drainAllKeeps() async {
     await withTaskGroup(of: Void.self) { group in
       group.addTask { await shared.drainKeep() }
-      for model in hosts.values {
+      for model in Hosts.shared.models.values {
         group.addTask { await model.drainKeep(timeout: remoteKeepDrain) }
       }
     }
@@ -482,7 +583,19 @@ final class WakefulnessModel: ObservableObject {
   /// service, or a macOS agent (which answers `running: false`) all show nothing rather than a
   /// guess.
   @Published private(set) var status: AgentWakefulness?
-  @Published private(set) var prompt = AwakeCeilingPromptState()
+  @Published private(set) var prompt = AwakeCeilingPromptState() {
+    didSet {
+      // A forgotten host's model (a failed keep landing after the delete, say) must not put a
+      // card back that the stack has no model to draw, or the stack would swallow clicks.
+      guard let host, prompt.isShowing != oldValue.isShowing, Hosts.shared.models[host] === self
+      else { return }
+      if prompt.isShowing {
+        Hosts.shared.showing.insert(host)
+      } else {
+        Hosts.shared.showing.remove(host)
+      }
+    }
+  }
 
   /// Modest on purpose. The verdict changes on a 30 s hysteresis window, so anything faster only
   /// costs round trips, and this runs only while something is showing the result.
@@ -535,12 +648,13 @@ final class WakefulnessModel: ObservableObject {
 
   /// One `status` round trip, applied. Public for the tests; the poll loop is this on a timer.
   ///
-  /// The reply is taken as it is. There is deliberately NO staleness rule here: the reader whose
-  /// staleness rule matters is the provider's shim, and its rule is "a verdict older than two ticks
-  /// is BUSY" — it fails awake. A rule in the app that hid a verdict whose agent clock had not moved
-  /// blanked the badge (and its "Keep awake") for every pair of replies inside one 1 s tick, which
-  /// the watch's first reply and the poll's produce on every connection; and a classifier that has
-  /// died says `running: false`, which the badge already hides.
+  /// The reply is taken as it is. There is deliberately NO staleness rule here: the reader a
+  /// staleness rule was meant for is the provider's shim, never built (#257), whose rule was "a
+  /// verdict older than two ticks is BUSY" — it fails awake. A rule in the app that hid a verdict
+  /// whose agent clock had not moved blanked the badge (and its "Keep awake") for every pair of
+  /// replies inside one 1 s tick, which the watch's first reply and the poll's produce on every
+  /// connection; and a classifier that has died says `running: false`, which the badge already
+  /// hides.
   func refresh() async {
     await observe(issued: issue(), status: transport.status)
   }
@@ -586,6 +700,14 @@ final class WakefulnessModel: ObservableObject {
   func startWatchingPrompts() {
     guard watchTask == nil else { return }
     watchTask = Task { [weak self] in await self?.runWatch() }
+  }
+
+  var isWatchingPrompts: Bool { watchTask != nil }
+
+  func stopWatchingPrompts() {
+    watchTask?.cancel()
+    watchTask = nil
+    if prompt.isShowing { prompt.withdraw() }
   }
 
   /// Retries, because the agent may not be connected yet when the app opens, and the stream ends
@@ -694,8 +816,45 @@ final class WakefulnessModel: ObservableObject {
   func tick() { prompt.tick(now: Date()) }
 }
 
-/// The reply envelope. Shaped like `AgentFileReply`, with the Status service's single error kind:
-/// `{"unsupported": "message"}`.
+#if DEBUG
+  /// `WakefulnessModel.seedUITestPrompt`'s agent: BUSY past a 4 h ceiling with a prompt pending,
+  /// raised once on its prompt stream, until a `keep` answers it.
+  private final class UITestPromptAgent: @unchecked Sendable {
+    private let lock = NSLock()
+    private var kept = false
+    /// Held so the stream stays open: a stream that ends withdraws its card.
+    private var continuation: AsyncStream<AgentCeilingPrompt>.Continuation?
+
+    var transport: WakefulnessModel.Transport {
+      WakefulnessModel.Transport(
+        status: { try self.status() },
+        keep: { self.lock.withLock { self.kept = true } },
+        prompts: {
+          AsyncStream { continuation in
+            self.lock.withLock { self.continuation = continuation }
+            continuation.yield(AgentCeilingPrompt(awakeSeconds: 14400.5, promptDeadline: 15600))
+          }
+        })
+    }
+
+    private func status() throws -> AgentWakefulness {
+      let pending = lock.withLock { !kept }
+      let json = """
+        {"running":true,"busy":true,"monotonic":15000.0,"awake_seconds":14400.5,\
+        "awake_ceiling_exceeded":\(pending),"prompt_pending":\(pending),\
+        "prompt_deadline":\(pending ? "15600.0" : "null"),"suppressed":false,\
+        "prompt_timeout_seconds":600.0,"keep_awake":{"last_sent":14990.0,"error":null},\
+        "stalled":false}
+        """
+      let decoder = JSONDecoder()
+      decoder.keyDecodingStrategy = .convertFromSnakeCase
+      return try decoder.decode(AgentWakefulness.self, from: Data(json.utf8))
+    }
+  }
+#endif
+
+/// The reply envelope. Shaped like `AgentFileReply`, with the Status service's error kinds:
+/// `{"unsupported": "message"}`, and `{"invalid": "message"}` for a refused `settings` request.
 struct AgentStatusReply<T: Decodable>: Decodable {
   let result: T
   enum CodingKeys: CodingKey { case version, result, error }

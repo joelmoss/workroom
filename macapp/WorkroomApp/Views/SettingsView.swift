@@ -479,7 +479,8 @@ private struct TerminalSettingsPane: View {
           "The session agent reports whether a machine is busy so a remote one isn't hibernated "
             + "mid-job. Past the ceiling that's only reported — nothing is ever put to sleep by "
             + "Workroom. Turn this on to be asked instead; no answer lets the machine sleep. "
-            + "Takes effect the next time an agent starts."
+            + "Applies to remote machines whose provider sleeps them when idle, the next time "
+            + "Workroom connects to one."
         )
         .font(.caption)
         .foregroundStyle(.secondary)

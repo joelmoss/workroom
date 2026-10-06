@@ -397,7 +397,8 @@ private struct ChangedFileCountBadge: View {
 /// classifier does not run), so this is invisible on a local-only setup.
 struct WakefulnessBadge: View {
   @ObservedObject var model: WakefulnessModel = .shared
-  /// False for a remote host's badge, whose agent was not started with this Mac's settings.
+  /// False for a remote host's badge. Its agent is handed this Mac's settings on each connect
+  /// (#257) rather than started with them, so the "started with" sentence does not apply to it.
   var isLocal = true
   var identifier = "changes.wakefulness"
   private let theme = ThemeService.shared
@@ -405,17 +406,17 @@ struct WakefulnessBadge: View {
   var body: some View {
     Group {
       if let status = model.status, status.running {
-        let glyph = Self.glyph(for: status.display, theme: theme)
+        let glyph = Self.glyph(for: status.display(hostSleeps: model.hostSleeps), theme: theme)
         let image = Image(systemName: glyph.symbol)
           .font(.caption)
           .foregroundStyle(glyph.tint)
           .padding(.horizontal, 4)
         Group {
-          // Past the ceiling, or unprotected, the badge IS the "Keep awake" control: the prompt card
-          // is gone four ordinary ways (✕, its deadline, no window open when it was raised, the
-          // connection it came on) and a box in `Suppressed` has no other way out from here — the
-          // agent's own exits are a keystroke on the box itself or the job finishing.
-          if Self.offersKeep(status.display) {
+          // Past the ceiling, an unanswered prompt included, the badge IS the "Keep awake" control:
+          // the prompt card is gone four ordinary ways (✕, its deadline, no window open when it was
+          // raised, the connection it came on) and a box in `Suppressed` has no other way out from
+          // here — the agent's own exits are a keystroke on the box itself or the job finishing.
+          if Self.offersKeep(status) {
             Button {
               model.keep()
             } label: {
@@ -428,7 +429,10 @@ struct WakefulnessBadge: View {
             image
           }
         }
-        .help(Self.help(for: status, settings: isLocal ? .current : nil))
+        .help(
+          Self.help(
+            for: status, settings: isLocal ? .current : nil, hostSleeps: model.hostSleeps)
+        )
         .accessibilityLabel(glyph.label)
         .accessibilityIdentifier(identifier)
       }
@@ -436,9 +440,9 @@ struct WakefulnessBadge: View {
     .task { await model.poll() }
   }
 
-  static func offersKeep(_ display: AgentWakefulness.Display) -> Bool {
-    display == .busyPastCeiling || display == .busyUnprotected
-  }
+  /// Only past the ceiling, an unanswered prompt included: "keep" restarts the ceiling and does
+  /// nothing for a failing heartbeat or an agent too old to send one (#257).
+  static func offersKeep(_ status: AgentWakefulness) -> Bool { status.awakeCeilingExceeded }
 
   static func glyph(for display: AgentWakefulness.Display, theme: ThemeService)
     -> (symbol: String, tint: Color, label: String)
@@ -458,11 +462,13 @@ struct WakefulnessBadge: View {
 
   /// `settings` is this Mac's, to name a running agent's that differ; nil for a remote host's
   /// agent, which this Mac's settings never started.
-  static func help(for status: AgentWakefulness, settings: AgentWakefulnessSettings?) -> String {
+  static func help(
+    for status: AgentWakefulness, settings: AgentWakefulnessSettings?, hostSleeps: Bool = true
+  ) -> String {
     let awake = wakefulnessDuration(status.awakeSeconds).formatted(
       .units(allowed: [.hours, .minutes], width: .narrow))
     var text: String
-    switch status.display {
+    switch status.display(hostSleeps: hostSleeps) {
     case .idle: text = "This machine is idle."
     case .busy: text = "This machine is busy (awake \(awake))."
     case .busyPastCeiling:
@@ -474,8 +480,21 @@ struct WakefulnessBadge: View {
         status.suppressed
         ? "This machine is busy, but the awake-ceiling prompt went unanswered, so it is no longer "
           + "being kept awake and may sleep. Click to keep it awake."
-        : "This machine is busy, but the agent could not write its verdict, so nothing is keeping "
-          + "it awake. Click to keep it awake."
+        : status.stalled == true
+          ? "This machine is busy, but its agent has stopped checking on it, so nothing is "
+            + "keeping it awake and it may sleep once it has been idle on the network long enough."
+          : status.keepAwake == nil
+            ? "This machine is busy, but its agent predates the keep-awake heartbeat, so it may "
+              + "sleep once it has been idle on the network long enough. Reconnecting updates the "
+              + "agent when it can; if it does not, restart the agent on the machine."
+            : "This machine is busy, but its keep-awake heartbeat is failing "
+              + "(\(String((status.keepAwake?.error ?? "unknown error").prefix(200)))), so it may sleep once it has been "
+              + "idle on the network long enough."
+      // Unprotected outranks the ceiling in the glyph, but the badge is still the "Keep awake"
+      // button past it (`offersKeep`), so say why.
+      if !status.suppressed && status.awakeCeilingExceeded {
+        text += " It has been busy for \(awake), past its awake ceiling. Click to keep it awake."
+      }
     }
     if let settings, let mismatch = status.settingsMismatch(against: settings) {
       text += " " + mismatch
