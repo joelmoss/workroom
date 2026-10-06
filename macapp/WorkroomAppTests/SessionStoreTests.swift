@@ -239,6 +239,18 @@ final class SessionStoreTests: XCTestCase {
     XCTAssertFalse(store.isDisabled)
   }
 
+  // Value: protects=the production wiring of `forCurrentEnvironment` (the real env key + fixture
+  // inputs) that makes a `make app-test` run leave the developer's own session file alone;
+  // fails_when=the XCTest env key is renamed/typo'd or the inputs are mis-wired, so the shared
+  // coordinator gets an ENABLED store; why_new=the `forEnvironment` tests pass literals and never touch
+  // the real environment; seam=none
+  func testTheRealEnvironmentOfTheUnitTestHostIsDisabled() {
+    XCTAssertNotNil(
+      ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"],
+      "this test is only meaningful inside the XCTest host")
+    XCTAssertTrue(SessionStore.forCurrentEnvironment().isDisabled)
+  }
+
   /// What "disabled" has to mean: it writes nothing, reads nothing, and clears nothing.
   func testADisabledStoreNeitherWritesReadsNorClears() throws {
     let disabled = SessionStore(url: url, isDisabled: true)
