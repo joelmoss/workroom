@@ -28,30 +28,6 @@ through the broker rather than by hand.
 
 **Priority:** P1 (chosen in the #255 eng review, 2026-10-05)
 
-### Put the keep-awake acceptance run in `BoxdIntegrationTests` (macapp) — #257 deferral
-
-**What:** Encode #257's live acceptance as a gated case in
-`macapp/WorkroomAppTests/BoxdIntegrationTests.swift`, so one command reruns it.
-
-**Why:** It ran once by hand on 2026-10-06 and passed (results in "As built (#257)" in
-`docs/designs/remote-workrooms.md`). Nothing reruns it, so a boxd change to how it counts idle
-network time, or a provider whose meter ignores the datagram, goes unseen. exe.dev (#259) needs the
-same proof.
-
-**How to start:** Three throwaway machines with 120 s suspend and hibernate timers. Run the same
-6-minute job, with no network use, on each: a control with no agent; this branch's agent; and the
-agent in ask mode, with a saved `<socket>.settings` of 60 s ceiling and 30 s prompt that nobody
-answers. Poll each machine's status every ~20 s from the Mac. Pass: the control and ask-mode
-machines hibernate mid-job, and the agent's machine keeps every job tick and hibernates within the
-idle window after the job ends. Destroy all three, whatever the outcome. About 15 minutes per run.
-
-**Depends on:** nothing. Runs only with `TEST_RUNNER_WR_BOXD_TESTS=1`, a `WR_AGENT_LINUX=1` build
-and the sandbox off, like the other cases there.
-
-**Priority:** P1. Deferred from plan:
-`~/.gstack/projects/joelmoss-workroom/master-eng-review-20261005-233111.md` (T6), at /ship,
-2026-10-06.
-
 ### Before wiring boxd into the app: a wake-on-connect resets the awake ceiling (wr-agent) — #257 review
 
 **What:** Decide what a resume does to the awake ceiling once a remote host can sleep, before
@@ -81,11 +57,48 @@ Three more things the same reviews found, all moot until a host that sleeps is w
 make a resume after `Suppressed` stay suppressed until the user answers. Pin it with a
 `new_settings_apply_from_the_next_tick`-style table in `wakefulness/tests.rs`.
 
-**Depends on:** wiring `BoxdHostDriver` into `RemoteHosts` (#258, #260).
+**Depends on:** wiring `BoxdHostDriver` into `RemoteHosts` (#258, #260). Land it with the
+`BoxdIntegrationTests` keep-awake case (P2, gated on #258).
 
 **Priority:** P1, gating boxd in the app (chosen in /ship's adversarial review of #257, 2026-10-06)
 
 ## P2 — perf, correctness, and the next VCS phase
+
+### Put the keep-awake acceptance run in `BoxdIntegrationTests` (macapp) — gate on #258
+
+**What:** Encode #257's live acceptance as a gated case in
+`macapp/WorkroomAppTests/BoxdIntegrationTests.swift`, so one command reruns it. Two machines:
+
+- **Control** (no agent): proves the job alone does not keep the box awake, which is what lets the
+  agent's result mean anything.
+- **Agent**: the claim under test.
+
+The hand run's third machine (ask mode, nobody answering) is dropped: "an unanswered prompt stops
+the heartbeat" is pinned by unit tests that run on every push, so the live case only re-proved
+boxd's timer.
+
+**Why:** It ran once by hand on 2026-10-06 and passed (results in "As built (#257)" in
+`docs/designs/remote-workrooms.md`). Nothing reruns it, so a boxd change to how it counts idle
+network time would quietly let busy boxes sleep. That costs nothing while boxd is not wired into the
+app, and costs users' work once it is. exe.dev (#259) needs the same proof.
+
+**How to start:** Two throwaway machines with 120 s suspend and hibernate timers
+(`--auto-suspend-timeout=120 --auto-hibernate-timeout=120`; `BoxdHostDriver.create()` takes no
+timers, so the case calls the CLI or the driver gains a test-only option). Run the same 6-minute
+job, with no network use, on each: the control with no agent, and the agent supervised with
+`--idle-timeout never`. Poll each machine's state every ~20 s from the Mac, and have the job log
+its ticks on the box. Pass: the control hibernates mid-job; the agent's machine logs every tick and
+hibernates within the idle window after the job ends. Destroy both, whatever the outcome (the
+derive tests' `remove(machine:)` pattern). About 15 minutes per run.
+
+**Depends on:** wiring `BoxdHostDriver` into `RemoteHosts` (#258, #260). Runs only with
+`TEST_RUNNER_WR_BOXD_TESTS=1`, a `WR_AGENT_LINUX=1` build and the sandbox off, like the other
+cases there.
+
+**Priority:** gate on #258: build it with the boxd wiring, and run it before any release that ships
+boxd. Moved out of P1 on 2026-10-06 because nothing that sleeps is wired in yet; originally
+deferred from plan `~/.gstack/projects/joelmoss-workroom/master-eng-review-20261005-233111.md`
+(T6), at /ship of #257.
 
 ### Give the keep-awake heartbeat its own thread (wr-agent) — #257 review
 
