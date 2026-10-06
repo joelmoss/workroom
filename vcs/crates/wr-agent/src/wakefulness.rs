@@ -415,6 +415,8 @@ pub struct Classifier {
     wake_masked_last: bool,
     /// The last tick's keystroke age, so the ceiling can tell a user acting from a job running.
     since_input: f64,
+    /// The last tick's CPU and network signals were masked (see [`WAKE_GAP_S`]).
+    masked: bool,
 }
 
 impl Classifier {
@@ -434,12 +436,19 @@ impl Classifier {
             resumed: false,
             wake_masked_last: false,
             since_input: f64::INFINITY,
+            masked: false,
         }
     }
 
     /// Whether the last tick was the first after a resume. Production only, like the mask.
     pub fn resumed(&self) -> bool {
         self.resumed
+    }
+
+    /// Whether the last tick's CPU and network signals were masked by a resume: its IDLE verdict
+    /// then says nothing about a job that uses only those, and the ceiling must not act on it.
+    pub fn wake_masked(&self) -> bool {
+        self.masked
     }
 
     /// Whether the user acted within the policy's grace as of the last tick: the keystroke signal,
@@ -503,6 +512,7 @@ impl Classifier {
         // mask still measures the last masked second; it is masked too.
         let masked = wake_masked || self.wake_masked_last;
         self.wake_masked_last = wake_masked;
+        self.masked = masked;
         // A masked tick moves the window's base to itself instead of feeding it: bytes that arrive
         // under a mask must not sit in the window and vote BUSY the tick the mask ends (the resume
         // blip is ~1.5 KB/s for three seconds; unmasking on the fourth with those bytes still inside
@@ -679,6 +689,8 @@ pub struct Ceiling {
     pub settings: Settings,
     busy_since: Option<f64>,
     state: CeilingState,
+    /// The time of the last `step`, so a resume can carry the awake time from before the sleep.
+    last_t: Option<f64>,
 }
 
 impl Ceiling {
@@ -687,12 +699,14 @@ impl Ceiling {
             settings,
             busy_since: None,
             state: CeilingState::Below,
+            last_t: None,
         }
     }
 
     /// Feeds the classifier's verdict. Returns true when a prompt should be raised NOW (once per
     /// crossing, not once per tick).
     pub fn step(&mut self, t: f64, verdict: Verdict) -> bool {
+        self.last_t = Some(t);
         if verdict == Verdict::Idle {
             // The box went idle on its own: the ceiling has nothing left to cap.
             self.busy_since = None;
@@ -763,12 +777,33 @@ impl Ceiling {
         }
     }
 
-    /// The box resumed from a sleep. Whatever continuous awake period the ceiling was capping has
-    /// ended, so it starts over: a job that resumes with the box gets the full ceiling again, and
-    /// `awake_for` does not count the hours the box spent asleep.
-    pub fn resumed(&mut self) {
-        self.busy_since = None;
+    /// The box resumed from a sleep at `t`. `awake_for` never counts the hours the box spent
+    /// asleep.
+    ///
+    /// After an unanswered prompt (`Suppressed`), the awake time from before the sleep carries
+    /// over, so the box is still past its ceiling and the next BUSY tick asks again at once. A user
+    /// who woke the box gets a fresh prompt card; with nobody there, the box sleeps again once that
+    /// prompt times out, not a whole ceiling later. A wake is never an answer: a connect wakes the
+    /// box too (TODOS: "a wake-on-connect resets the awake ceiling").
+    ///
+    /// Any other state starts over: a job that resumes with the box gets the full ceiling again.
+    pub fn resumed(&mut self, t: f64) {
+        let carried = match (self.state, self.busy_since, self.last_t) {
+            (CeilingState::Suppressed, Some(since), Some(last)) => Some(last - since),
+            _ => None,
+        };
+        self.busy_since = carried.map(|awake| t - awake);
         self.state = CeilingState::Below;
+    }
+
+    /// `step`, except that an IDLE verdict from a tick whose CPU and network were masked by a
+    /// resume (`Classifier::wake_masked`) is ignored: a job that uses only those reads IDLE for the
+    /// few seconds after every wake, and acting on it would end the awake time `resumed` carried.
+    pub fn step_unless_masked(&mut self, t: f64, verdict: Verdict, masked: bool) -> bool {
+        if masked && verdict == Verdict::Idle {
+            return false;
+        }
+        self.step(t, verdict)
     }
 
     pub fn state(&self) -> CeilingState {
@@ -1278,13 +1313,13 @@ mod service {
                 ceiling.set_settings(s.t, settings);
             }
             if classifier.resumed() {
-                ceiling.resumed();
+                ceiling.resumed(s.t);
                 keep_awake.resumed();
             }
             if keep {
                 ceiling.keep(s.t);
             }
-            let prompted = ceiling.step(s.t, raw);
+            let prompted = ceiling.step_unless_masked(s.t, raw, classifier.wake_masked());
             // After the step, so a keystroke inside the grace on the very tick the prompt is
             // raised or expires answers it at once rather than a tick later.
             if classifier.user_acted() {

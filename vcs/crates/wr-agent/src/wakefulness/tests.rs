@@ -246,12 +246,15 @@ fn keep_resets_the_ceiling_and_going_idle_clears_it() {
     assert_eq!(c.state(), CeilingState::Below, "idle clears the ceiling");
 }
 
-/// The two exits from `Suppressed` a real user gets without the prompt card: typing, and the box
-/// coming back from the sleep the suppression allowed. Neither existed at first, so a user who
-/// woke the box and typed kept the classifier BUSY while the service kept publishing IDLE, and the
-/// provider hibernated the box under them, again after every resume.
+/// The exits from `Suppressed` a real user gets without the prompt card: typing answers it, and
+/// the box coming back from the sleep the suppression allowed asks again. Neither existed at
+/// first, so a user who woke the box and typed kept the classifier BUSY while the service kept
+/// publishing IDLE, and the provider hibernated the box under them, again after every resume.
+/// A resume once cleared the ceiling outright; but a connect wakes the box too, so every status
+/// probe then bought a running job another full ceiling (TODOS: "a wake-on-connect resets the awake
+/// ceiling").
 #[test]
-fn typing_or_resuming_clears_a_suppressed_ceiling() {
+fn typing_clears_a_suppressed_ceiling_and_resuming_asks_again() {
     let settings = Settings {
         ask: true,
         ..Settings::default()
@@ -286,18 +289,36 @@ fn typing_or_resuming_clears_a_suppressed_ceiling() {
         "well inside the new ceiling"
     );
 
-    // So is the box resuming: the continuous awake period the ceiling capped has ended.
+    // The box resuming is not an answer: it keeps the awake time from before the sleep, so the
+    // next BUSY tick asks again, with a fresh deadline.
     let (mut c, deadline) = suppressed();
-    c.resumed();
+    let before = c.awake_for(deadline);
+    let woke = deadline + 3600.0;
+    c.resumed(woke);
     assert_eq!(c.state(), CeilingState::Below);
-    assert_eq!(
-        c.awake_for(deadline + 3600.0),
-        0.0,
-        "sleep is not awake time"
+    assert_eq!(c.awake_for(woke), before, "sleep is not awake time");
+    assert!(
+        c.step(woke + 1.0, Verdict::Busy),
+        "past the ceiling: ask again at once"
     );
-    c.step(deadline + 3600.0, Verdict::Busy);
-    assert_eq!(c.awake_for(deadline + 3600.0), 0.0);
-    assert!(!c.exceeded());
+    assert_eq!(
+        c.state(),
+        CeilingState::Prompted {
+            deadline: woke + 1.0 + 600.0
+        }
+    );
+    assert!(
+        !c.suppressing(),
+        "a fresh prompt keeps the box awake until its deadline"
+    );
+
+    // A resume from any other state starts the ceiling over: a job that resumes with the box gets
+    // the full ceiling again.
+    let mut c = Ceiling::new(settings);
+    busy_until(&mut c, 3.0 * 3600.0);
+    c.resumed(5.0 * 3600.0);
+    assert_eq!(c.awake_for(5.0 * 3600.0), 0.0);
+    assert!(!c.step(5.0 * 3600.0 + 60.0, Verdict::Busy));
 
     // Typing while the prompt is still pending answers it too: the user is there and working.
     let mut c = Ceiling::new(settings);
@@ -474,6 +495,86 @@ fn the_resume_masks_cpu_for_the_tick_after_it_too() {
     s.procs[1].ticks = 160;
     c.step(&s, false);
     assert_eq!(c.verdict(), Verdict::Busy);
+}
+
+/// The service loop's ceiling steps, as `wakefulness.rs` runs them each tick. Returns whether a
+/// prompt was raised, and the verdict the service publishes.
+fn ceiling_tick(
+    c: &mut Classifier,
+    ceiling: &mut Ceiling,
+    s: &Sample,
+    honour_mask: bool,
+) -> (bool, Verdict) {
+    c.step(s, false);
+    let raw = c.verdict();
+    if c.resumed() {
+        ceiling.resumed(s.t);
+    }
+    let prompted = if honour_mask {
+        ceiling.step_unless_masked(s.t, raw, c.wake_masked())
+    } else {
+        ceiling.step(s.t, raw)
+    };
+    (prompted, ceiling.published(raw))
+}
+
+/// A CPU-only job outlasts its ceiling, nobody answers, the box sleeps, and a connect wakes it with
+/// the job still running. The wake must ask again, not buy the job another ceiling. The resume mask
+/// reads such a job IDLE for its first few ticks, and an IDLE step ends the ceiling, so those ticks
+/// have to be ignored or the carried awake time is lost before the job is seen again.
+fn wake_with_a_cpu_job_running(honour_mask: bool) -> Option<f64> {
+    let settings = Settings {
+        ceiling: 30.0,
+        prompt_timeout: 10.0,
+        ask: true,
+    };
+    let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
+    let mut ceiling = Ceiling::new(settings);
+    let mut s = quiet(1000.0, 0);
+    // One core of CPU a second.
+    let tick = |s: &mut Sample, t: f64| {
+        s.t = t;
+        s.procs[1].ticks += 100;
+    };
+    let mut t = 1000.0;
+    for _ in 0..60 {
+        tick(&mut s, t);
+        ceiling_tick(&mut c, &mut ceiling, &s, honour_mask);
+        t += 1.0;
+    }
+    assert!(
+        ceiling.suppressing(),
+        "unanswered: the service let the box sleep"
+    );
+    // Asleep for 300 s; the job's CPU stops with the box.
+    t += 300.0;
+    for _ in 0..20 {
+        tick(&mut s, t);
+        let (prompted, published) = ceiling_tick(&mut c, &mut ceiling, &s, honour_mask);
+        if prompted {
+            assert!(matches!(ceiling.state(), CeilingState::Prompted { .. }));
+            assert_eq!(
+                published,
+                Verdict::Busy,
+                "a pending prompt keeps the box awake"
+            );
+            return Some(t);
+        }
+        t += 1.0;
+    }
+    None
+}
+
+#[test]
+fn a_wake_with_the_job_still_running_asks_again() {
+    let asked = wake_with_a_cpu_job_running(true).expect("the wake must ask again");
+    assert!(
+        asked - 1360.0 < 10.0,
+        "asked within the resume mask's few seconds, at {asked}"
+    );
+    // The other half of the claim: acting on the masked IDLE ticks loses the carried awake time,
+    // so the box is not asked and the job gets a whole new ceiling.
+    assert_eq!(wake_with_a_cpu_job_running(false), None);
 }
 
 /// What the service reads off the classifier to drive the ceiling: the resume flag is up for the
