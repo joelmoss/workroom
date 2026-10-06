@@ -167,6 +167,7 @@ final class ChangesetDetailUITests: XCTestCase {
   /// row to keep it. That double-click must persist the tab — proved by previewing the next commit,
   /// which would retarget a preview but leaves a persisted tab alone. It used to stay a preview: the
   /// resting pointer raised the row's hover card, and the double-click's first click only closed it.
+  /// Then the same after the pointer leaves the open row and returns to it.
   func testDoubleClickingARowAlreadyOpenAsAPreviewPersistsIt() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
@@ -184,5 +185,19 @@ final class ChangesetDetailUITests: XCTestCase {
     XCTAssertTrue(
       el(app, "terminal.tab.Fixture commit 1").exists,
       "the double-click persisted commit 1, so previewing commit 2 left its tab open")
+
+    // Same again after the pointer leaves the row and comes back: commit 2 is now the open preview.
+    // Leaving used to re-arm the card, so the return dwell raised it and ate the first click again.
+    let row2 = els(app, "HistoryRow").element(boundBy: 1)
+    el(app, "ChangesetDetail").hover()
+    Thread.sleep(forTimeInterval: 1)
+    row2.hover()
+    Thread.sleep(forTimeInterval: 1.5)  // past the 0.5s dwell on the way back
+    row2.doubleClick()
+    els(app, "HistoryRow").element(boundBy: 2).click()
+    XCTAssertTrue(waitExists(el(app, "terminal.tab.Fixture commit 3")), "the third commit previews")
+    XCTAssertTrue(
+      el(app, "terminal.tab.Fixture commit 2").exists,
+      "the double-click after leaving and returning persisted commit 2")
   }
 }
