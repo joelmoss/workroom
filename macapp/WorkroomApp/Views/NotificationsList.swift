@@ -97,8 +97,11 @@ struct NotificationsPopover: View {
   @EnvironmentObject var notifications: NotificationCenterStore
   /// Forwarded to `NotificationsList`: drop the oldest (the strip's displayed one) for the `+N` popover.
   var dropFirst: Bool = false
-  /// Forwarded to `NotificationsList` so a row tap can close the hosting popover.
+  /// Forwarded to `NotificationsList` so a row tap can close the hosting popover. Escape calls it too.
   var onActivate: (() -> Void)?
+  /// Claimed on appear so the popover's window becomes key. Holding only buttons, nothing in it took
+  /// focus, so Escape went to the terminal behind it and the popover stayed open.
+  @FocusState private var focused: Bool
 
   var body: some View {
     VStack(spacing: 0) {
@@ -130,6 +133,11 @@ struct NotificationsPopover: View {
       .accessibilityLabel("Clear all notifications")
     }
     .frame(width: 320, height: 360, alignment: .top)
+    .focusable()
+    .focusEffectDisabled()
+    .focused($focused)
+    .onAppear { focused = true }
+    .onExitCommand { onActivate?() }
     .accessibilityIdentifier("notifications.popover")
   }
 }
