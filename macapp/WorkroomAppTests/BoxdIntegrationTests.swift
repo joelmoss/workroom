@@ -40,6 +40,12 @@ final class BoxdIntegrationTests: XCTestCase {
   override func tearDown() async throws {
     for connection in connections { await connection.close() }
     connections.removeAll()
+    for host in attached {
+      if let lease = await HostConnectionManager.shared.snapshot(for: host).lease {
+        await HostConnectionManager.shared.disconnect(lease)
+      }
+    }
+    attached.removeAll()
     if cli != nil, prefix != nil {
       for name in (try? leftovers("machine")) ?? [] {
         _ = try? boxd(["machine", "remove", name, "-y"])
@@ -643,12 +649,46 @@ final class BoxdIntegrationTests: XCTestCase {
     return nil
   }
 
-  /// The app's badge on a connected host polls its agent's status every 10 s
-  /// (`WakefulnessModel.poll`). This does the same until cancelled.
-  private func pollLikeTheBadge(_ connection: AgentVCSConnection) -> Task<Void, Never> {
+  /// The app attached to `host` as it is to a workroom that is not selected: its `RemoteHosts`
+  /// holds the host's service connection (ssh, with keepalives) through `HostConnectionManager`.
+  /// The connect hands the agent no settings, so a test can set its own.
+  private func attach(_ driver: BoxdHostDriver, _ host: HostID) async throws -> RemoteHosts {
+    guard case .remote(let id) = host else { throw HostDriverError.unknownHost(host) }
+    let socket = driver.configuration.agentSocket
+    let remote = RemoteHosts(
+      makeDriver: { _ in driver },
+      connectAgent: { host, driver in
+        try await AgentBootstrap.connect(
+          host: host, driver: driver, socket: socket, handOff: false, watched: false)
+      })
+    remote.adopt(
+      [
+        Project(
+          path: "/proj", vcs: "git",
+          workrooms: [
+            Workroom(
+              name: "w", path: Self.path, vcsName: "workroom/w", warnings: [],
+              host: HostDescriptor(
+                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+                id: id))
+          ])
+      ], sweep: false)
+    try await remote.connect(host, driver: driver)
+    attached.append(host)
+    return remote
+  }
+
+  private var attached: [HostID] = []
+
+  /// The sidebar's badge on that workroom: its agent's status every 10 s, each verdict reported to
+  /// `RemoteHosts.observed`, as `WakefulnessModel` does. A host let go of answers nothing, and is
+  /// sent nothing.
+  private func pollLikeTheBadge(_ remote: RemoteHosts, _ host: HostID) -> Task<Void, Never> {
     Task {
       while !Task.isCancelled {
-        _ = try? await connection.wakefulness().status()
+        if let status = try? await HostConnectionManager.shared.wakefulness(host: host).status() {
+          await remote.observed(host, busy: status.busy)
+        }
         try? await Task.sleep(for: .seconds(10))
       }
     }
@@ -692,10 +732,11 @@ final class BoxdIntegrationTests: XCTestCase {
     let driver = driver()
     let host = try await driver.create()
     try idleTimers(host, 120)
-    let connection = try await connect(driver, host)
-    let badge = pollLikeTheBadge(connection)
+    let remote = try await attach(driver, host)
+    let badge = pollLikeTheBadge(remote, host)
     defer { badge.cancel() }
     let slept = try await sleeps(host, since: .now, within: .seconds(420))
+    XCTAssertTrue(remote.isParked(host), "the app never let go of the idle box")
     XCTAssertNotNil(slept, "an idle box with the app attached never slept")
   }
 
@@ -706,14 +747,23 @@ final class BoxdIntegrationTests: XCTestCase {
     let driver = driver()
     let host = try await driver.create()
     try idleTimers(host, 120)
-    let connection = try await connect(driver, host)
-    await AgentBootstrap.applyWakefulnessSettings(
-      AgentWakefulnessSettings(ceiling: 60, promptTimeout: 30, ask: true), on: connection)
+    let remote = try await attach(driver, host)
+    try await HostConnectionManager.shared.wakefulness(host: host).apply(
+      AgentWakefulnessSettings(ceiling: 60, promptTimeout: 30, ask: true))
     let start = ContinuousClock.now
     try await startJob(driver, host, seconds: 900)
-    let badge = pollLikeTheBadge(connection)
+    // The badge starts once the job is running, so the box is let go of for its unanswered prompt,
+    // not for being idle before the job began.
+    let deadline = ContinuousClock.now + .seconds(60)
+    while ContinuousClock.now < deadline,
+      (try? await HostConnectionManager.shared.wakefulness(host: host).status().busy) != true
+    {
+      try await Task.sleep(for: .seconds(2))
+    }
+    let badge = pollLikeTheBadge(remote, host)
     defer { badge.cancel() }
     let slept = try await sleeps(host, since: start, within: .seconds(480))
+    XCTAssertTrue(remote.isParked(host), "the app never let go of the box")
     XCTAssertNotNil(
       slept, "a busy box whose prompt went unanswered never slept with the app attached")
     badge.cancel()

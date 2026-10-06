@@ -21,7 +21,8 @@ enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError, CustomS
     case .invalidPath(let path): return "Invalid repository path: \(path)"
     case .mixedHosts: return "Working and shared repositories must be on the same host."
     case .unavailable: return "Repository service unavailable."
-    case .asleep: return "The box is asleep. Open the workroom to wake it."
+    case .asleep:
+      return "The box is asleep, or idle and left to sleep. Open the workroom to reach it."
     case .registrationRequired:
       return "Reload projects to register this repository before changing it."
     }

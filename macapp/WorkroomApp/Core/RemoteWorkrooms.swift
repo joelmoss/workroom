@@ -585,6 +585,13 @@ final class RemoteHosts: @unchecked Sendable {
   private var failedAt: [HostID: ContinuousClock.Instant] = [:]
   /// When boxd last said each host was asleep, which answers for it for `retryAfter` (#356).
   private var asleepAt: [HostID: ContinuousClock.Instant] = [:]
+  /// boxd hosts the app let go of because they reported IDLE while not selected (#356): boxd counts
+  /// inbound traffic as activity, so a connection's ssh keepalives and the badge's polls kept an
+  /// idle box awake for good (measured, eng review D8). A background read never reconnects one;
+  /// selecting or opening its workroom does.
+  private var parked: Set<HostID> = []
+  /// The host of the workroom selected in the app, which is never let go of.
+  private var selectedHost: HostID?
   /// Hosts of workrooms the user has opened this launch (`activate`), whose connect starts a
   /// stopped container first.
   private var activated: Set<HostID> = []
@@ -970,7 +977,11 @@ final class RemoteHosts: @unchecked Sendable {
     }
     // A boxd box wakes on an ssh login, so a background read must not connect to one that is
     // asleep: every status sweep would wake every box and keep it billing (#356). Only opening the
-    // workroom wakes it. When boxd can't say, the read goes ahead as before.
+    // workroom wakes it. When boxd can't say, the read goes ahead as before. Nor does one reconnect
+    // a box let go of as idle, which would hold it awake again.
+    if !opened, lock.withLock({ parked.contains(host) }) {
+      throw RepositoryRoutingError.asleep(host)
+    }
     if !opened, try await boxdIsAsleep(host) { throw RepositoryRoutingError.asleep(host) }
     do {
       let connect =
@@ -1023,8 +1034,42 @@ final class RemoteHosts: @unchecked Sendable {
       activated.insert(host)
       failedAt[host] = nil
       asleepAt[host] = nil
+      parked.remove(host)
     }
   }
+
+  /// The workroom selected in the app is on `host` (nil for one on this Mac). Its host is never let
+  /// go of while selected (#356).
+  func select(_ host: HostID?) {
+    lock.withLock {
+      selectedHost = host
+      if let host { parked.remove(host) }
+    }
+  }
+
+  /// A connected host's agent reported its published verdict (`WakefulnessModel`). A boxd host
+  /// that is IDLE, not selected and forwarding no port is let go of: its connection is closed, so
+  /// nothing the app sends reaches the box and boxd's idle timer can sleep it (#356). An IDLE that
+  /// comes of an unanswered prompt lets it sleep the same way. Returns whether it was let go of.
+  @discardableResult
+  func observed(_ host: HostID, busy: Bool) async -> Bool {
+    guard !busy, case .remote(let id) = host else { return false }
+    let eligible = lock.withLock { () -> Bool in
+      guard let key = keys[id], case .boxd = key else { return false }
+      return selectedHost != host && !parked.contains(host)
+    }
+    guard eligible, await !MainActor.run(body: { PortForwardingModel.hasForwards(host) })
+    else { return false }
+    lock.withLock { _ = parked.insert(host) }
+    if let lease = await HostConnectionManager.shared.snapshot(for: host).lease {
+      await HostConnectionManager.shared.disconnect(lease)
+    }
+    Self.logger.notice("let go of idle boxd host \(id, privacy: .public)")
+    return true
+  }
+
+  /// Whether the app let go of `host` as idle (`observed`).
+  func isParked(_ host: HostID) -> Bool { lock.withLock { parked.contains(host) } }
 
   /// Whether `host` is a boxd box that boxd says is asleep, asking boxd at most once a
   /// `retryAfter`. ponytail: one `machine get` per host per window; one `machine list` per sweep is

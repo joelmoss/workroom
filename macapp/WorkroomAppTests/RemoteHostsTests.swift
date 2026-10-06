@@ -139,6 +139,66 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(connects.calls, 3)
   }
 
+  /// boxd counts inbound traffic as activity, so a connection's keepalives and the badge's polls
+  /// held an idle box awake for good (measured live, #356). A boxd host that reports IDLE while
+  /// not selected is let go of, and a background read then never reconnects it; selecting or
+  /// opening its workroom does. A busy, selected or container host is kept.
+  @MainActor
+  func testAnIdleBoxdHostThatIsNotSelectedIsLetGoOf() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let asked = Asleep()
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
+      startHost: { _ in }, now: { connects.now }, isAsleep: { _ in asked.answer() })
+    let (boxd, container) = (UUID(), UUID())
+    remote.adopt(
+      [
+        Project(
+          path: "/proj", vcs: "git",
+          workrooms: [
+            Workroom(
+              name: "b", path: "/home/boxd/r", vcsName: "workroom/b", warnings: [],
+              host: HostDescriptor(
+                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+                id: boxd, account: "usr_1")),
+            Workroom(
+              name: "c", path: "/home/workroom/r", vcsName: "workroom/c", warnings: [],
+              host: HostDescriptor(
+                driver: RemoteWorkrooms.containerDriver, provisioner: RemoteWorkrooms.provisioner,
+                id: container)),
+          ])
+      ], sweep: false)
+    let host = HostID.remote(boxd)
+
+    let busyKept = await remote.observed(host, busy: true)
+    XCTAssertFalse(busyKept, "a busy box was let go of")
+    let containerKept = await remote.observed(.remote(container), busy: false)
+    XCTAssertFalse(containerKept, "a container was let go of")
+    remote.select(host)
+    let selectedKept = await remote.observed(host, busy: false)
+    XCTAssertFalse(selectedKept, "the selected workroom's box was let go of")
+
+    remote.select(nil)
+    let letGo = await remote.observed(host, busy: false)
+    XCTAssertTrue(letGo)
+    XCTAssertTrue(remote.isParked(host))
+    do {
+      try await remote.ensureConnected(host)
+      XCTFail("a background read reconnected a box let go of as idle")
+    } catch {
+      XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
+    }
+    XCTAssertEqual(connects.calls, 0)
+    XCTAssertEqual(asked.calls, 0, "boxd was asked about a box already let go of")
+
+    // Selecting its workroom takes it back.
+    remote.select(host)
+    XCTAssertFalse(remote.isParked(host))
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(connects.calls, 1)
+  }
+
   private final class Asleep: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Bool?
