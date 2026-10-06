@@ -191,6 +191,35 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertLessThan(WakefulnessBadge.help(for: flood, settings: nil).count, 600)
   }
 
+  /// A provider that sleeps a box after less idle time than the once-a-minute heartbeat can beat
+  /// sleeps it under a running job however healthy the heartbeat is (#356): the badge says so, and
+  /// says how to fix it. A long enough window, an unknown one, an idle box and a host that never
+  /// sleeps show nothing new.
+  func testAnIdleWindowTheHeartbeatCannotBeatLeavesBusyWorkUnprotected() throws {
+    let healthy = try status(
+      Self.notPending + [(#""awake_ceiling_exceeded":true"#, #""awake_ceiling_exceeded":false"#)])
+    XCTAssertEqual(healthy.display(hostSleeps: true, idleWindow: nil), .busy)
+    XCTAssertEqual(healthy.display(hostSleeps: true, idleWindow: 120), .busy)
+    XCTAssertEqual(healthy.display(hostSleeps: true, idleWindow: 60), .busyUnprotected)
+    XCTAssertEqual(healthy.display(hostSleeps: false, idleWindow: 60), .busy)
+    let idle = try status(
+      Self.notPending + [
+        (#""awake_ceiling_exceeded":true"#, #""awake_ceiling_exceeded":false"#),
+        (#""busy":true"#, #""busy":false"#),
+      ])
+    XCTAssertEqual(idle.display(hostSleeps: true, idleWindow: 60), .idle)
+
+    let help = WakefulnessBadge.help(for: healthy, settings: nil, idleWindow: 60)
+    XCTAssertTrue(help.contains("after 60 s idle"), help)
+    XCTAssertTrue(help.contains("auto-suspend"), help)
+    XCTAssertFalse(help.contains("heartbeat is failing"), help)
+    // An idle box is warned too, before a job is started on it.
+    XCTAssertTrue(
+      WakefulnessBadge.help(for: idle, settings: nil, idleWindow: 60).contains("auto-suspend"))
+    XCTAssertFalse(
+      WakefulnessBadge.help(for: healthy, settings: nil, idleWindow: 120).contains("auto-suspend"))
+  }
+
   /// "Keep awake" restarts the ceiling, so the badge offers it only past the ceiling, an unanswered
   /// prompt included, and never for a heartbeat it cannot fix.
   func testKeepAwakeIsOfferedOnlyWhereItHelps() throws {

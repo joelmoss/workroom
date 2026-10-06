@@ -124,6 +124,22 @@ struct AgentWakefulness: Decodable, Sendable, Equatable {
     return busy ? .busy : .idle
   }
 
+  /// What the badge shows on a host its provider sleeps after `idleWindow` seconds idle on the
+  /// network, when known (#356). A window shorter than the heartbeat can beat leaves busy work
+  /// unprotected however healthy the heartbeat is.
+  func display(hostSleeps sleeps: Bool, idleWindow: TimeInterval?) -> Display {
+    if sleeps, busy, Self.isTooShort(idleWindow) { return .busyUnprotected }
+    return display(hostSleeps: sleeps)
+  }
+
+  /// The heartbeat sends once a minute (`heartbeat.rs`), so a provider that sleeps a box after
+  /// less idle time than this can sleep it between two sends.
+  static let minimumIdleWindow: TimeInterval = 90
+
+  static func isTooShort(_ idleWindow: TimeInterval?) -> Bool {
+    idleWindow.map { $0 < minimumIdleWindow } ?? false
+  }
+
   var display: Display {
     if unprotected { return .busyUnprotected }
     if awakeCeilingExceeded { return .busyPastCeiling }
@@ -504,6 +520,9 @@ final class WakefulnessModel: ObservableObject {
   /// Whether this model's host is put to sleep when idle (`HostDriverTraits.sleepsWhenIdle`), set
   /// from its driver on connect. Assumed until then; nothing shows before a connection anyway.
   var hostSleeps = true
+  /// How long the host's provider lets it sit idle on the network before sleeping it, in seconds,
+  /// read on connect where the provider says (boxd, #356); nil when unknown.
+  var idleWindow: TimeInterval?
 
   init(transport: Transport = .live, host: UUID? = nil) {
     self.transport = transport

@@ -406,7 +406,9 @@ struct WakefulnessBadge: View {
   var body: some View {
     Group {
       if let status = model.status, status.running {
-        let glyph = Self.glyph(for: status.display(hostSleeps: model.hostSleeps), theme: theme)
+        let glyph = Self.glyph(
+          for: status.display(hostSleeps: model.hostSleeps, idleWindow: model.idleWindow),
+          theme: theme)
         let image = Image(systemName: glyph.symbol)
           .font(.caption)
           .foregroundStyle(glyph.tint)
@@ -431,7 +433,8 @@ struct WakefulnessBadge: View {
         }
         .help(
           Self.help(
-            for: status, settings: isLocal ? .current : nil, hostSleeps: model.hostSleeps)
+            for: status, settings: isLocal ? .current : nil, hostSleeps: model.hostSleeps,
+            idleWindow: model.idleWindow)
         )
         .accessibilityLabel(glyph.label)
         .accessibilityIdentifier(identifier)
@@ -463,18 +466,25 @@ struct WakefulnessBadge: View {
   /// `settings` is this Mac's, to name a running agent's that differ; nil for a remote host's
   /// agent, which this Mac's settings never started.
   static func help(
-    for status: AgentWakefulness, settings: AgentWakefulnessSettings?, hostSleeps: Bool = true
+    for status: AgentWakefulness, settings: AgentWakefulnessSettings?, hostSleeps: Bool = true,
+    idleWindow: TimeInterval? = nil
   ) -> String {
     let awake = wakefulnessDuration(status.awakeSeconds).formatted(
       .units(allowed: [.hours, .minutes], width: .narrow))
+    let shortWindow = hostSleeps && AgentWakefulness.isTooShort(idleWindow)
+    let window =
+      "Its provider sleeps it after \(Int(idleWindow ?? 0)) s idle on the network, sooner than the "
+      + "keep-awake heartbeat's once a minute can hold it. Raise the machine's auto-suspend timeout."
     var text: String
-    switch status.display(hostSleeps: hostSleeps) {
+    switch status.display(hostSleeps: hostSleeps, idleWindow: idleWindow) {
     case .idle: text = "This machine is idle."
     case .busy: text = "This machine is busy (awake \(awake))."
     case .busyPastCeiling:
       text =
         "This machine has been busy for \(awake), past its awake ceiling. Nothing has been "
         + "slept — this is a report. Click to keep it awake."
+    case .busyUnprotected where shortWindow && !status.unprotected:
+      text = "This machine is busy (awake \(awake)), but it may sleep under the job. " + window
     case .busyUnprotected:
       text =
         status.suppressed
@@ -496,6 +506,7 @@ struct WakefulnessBadge: View {
         text += " It has been busy for \(awake), past its awake ceiling. Click to keep it awake."
       }
     }
+    if shortWindow, !text.hasSuffix(window) { text += " " + window }
     if let settings, let mismatch = status.settingsMismatch(against: settings) {
       text += " " + mismatch
     }

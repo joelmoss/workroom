@@ -386,6 +386,56 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     return Self.asleepStatuses.contains(machine.status ?? "")
   }
 
+  /// How long boxd lets `host` sit idle on the network before suspending or hibernating it, in
+  /// seconds: the shorter of the two that are set, or nil when neither is or boxd can't say (#356).
+  func idleWindow(_ host: HostID) async -> TimeInterval? {
+    guard case .remote(let id) = host,
+      let timers = try? decode(Timers.self, await cli(["machine", "get", name(of: id)]), "")
+    else { return nil }
+    return [timers.autoSuspend, timers.autoHibernate].compactMap { $0?.seconds }.filter { $0 > 0 }
+      .min()
+  }
+
+  /// `machine get --json`'s idle timers. Their encoding isn't documented, so each is read as
+  /// seconds from a number, or from a string such as `120`, `120s`, `2m` or `1h`; anything else is
+  /// nil, which never warns.
+  struct Timers: Decodable {
+    let autoSuspend: Seconds?
+    let autoHibernate: Seconds?
+    enum CodingKeys: String, CodingKey {
+      case autoSuspend = "auto_suspend"
+      case autoHibernate = "auto_hibernate"
+    }
+
+    init(from decoder: Decoder) throws {
+      let fields = try decoder.container(keyedBy: CodingKeys.self)
+      autoSuspend = try? fields.decodeIfPresent(Seconds.self, forKey: .autoSuspend)
+      autoHibernate = try? fields.decodeIfPresent(Seconds.self, forKey: .autoHibernate)
+    }
+  }
+
+  struct Seconds: Decodable, Equatable {
+    let seconds: TimeInterval?
+
+    init(from decoder: Decoder) throws {
+      let value = try decoder.singleValueContainer()
+      if let number = try? value.decode(Double.self) {
+        seconds = number
+      } else {
+        seconds = Self.parse(try value.decode(String.self))
+      }
+    }
+
+    static func parse(_ text: String) -> TimeInterval? {
+      let text = text.trimmingCharacters(in: .whitespaces).lowercased()
+      let units: [(String, Double)] = [("h", 3600), ("m", 60), ("s", 1)]
+      for (suffix, scale) in units where text.hasSuffix(suffix) {
+        return Double(text.dropLast()).map { $0 * scale }
+      }
+      return Double(text)
+    }
+  }
+
   /// The statuses a connection would wake from: suspended and hibernated.
   static let asleepStatuses: Set<String> = ["standby", "hibernated"]
 
