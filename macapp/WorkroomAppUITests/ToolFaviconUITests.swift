@@ -51,8 +51,9 @@ final class ToolFaviconUITests: XCTestCase {
 
   /// `git status; sleep 8` (not a bare `git status`) is deliberate — `git status` alone usually exits
   /// before XCUITest can observe the recognized-tool state, the exact failure mode
-  /// `testOSCProgressReportMarksTheTabBusyThenIdle` already measured and worked around by holding the
-  /// shell open. One shell-integration command line, so the tab latches "git" for the whole duration.
+  /// `GhosttyActionDispatchUITests`' OSC progress step already measured and worked around by
+  /// holding the shell open. One shell-integration command line, so the tab latches "git" for the
+  /// whole duration.
   ///
   /// Asserted via the chip's accessibility LABEL, not a separate identifier on the favicon `Image`
   /// itself: the chip already carries its own `.accessibilityIdentifier`/`.accessibilityValue`, and a

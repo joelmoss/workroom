@@ -65,11 +65,21 @@ final class HistoryStressUITests: XCTestCase {
       "the stress fixture's history rows render")
   }
 
-  func testLargeHistoryRealizesOnlyTheVisibleRows() throws {
+  /// One launch, three ordered steps (they share the 800-commit launch, so they run as a chain).
+  ///
+  /// 1. Realized-row count, BEFORE any scroll or click: the pane realizes only what it draws.
+  /// 2. Scroll away and back: recycled rows must come back live and open their changeset.
+  /// 3. A row that started off-screen opens ITS OWN changeset.
+  ///
+  /// `testLargeHistoryStaysInteractive` is deliberately NOT part of this chain: the Makefile skips it
+  /// by name in routine runs, so merging it would get the whole chain skipped.
+  func testLargeHistoryIsLazyAndItsRowsStayUsableAfterScrolling() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     openHistory(app)
 
+    // Step 1: only the visible rows are realized.
+    //
     // Anti-vacuity guard: with only the default five-commit fixture, "fewer than 100 realized rows"
     // would pass while proving nothing. Stress commits carry `s…` short ids (the default fixture's are
     // `fixc000…`), and each row's accessibility label leads with its short id — so this asserts the
@@ -90,6 +100,57 @@ final class HistoryStressUITests: XCTestCase {
       realized, 100,
       "\(realized) of 800 rows are in the accessibility tree — that many realized rows means the list "
         + "is building the whole window again (the WORKROOM-2B amplifier)")
+
+    // Step 2: scroll away and back. No changeset is open yet (nothing above clicked a row), so the
+    // `ChangesetDetail` wait below really does prove this click opened one.
+    let firstRow = els(app, "HistoryRow").element(boundBy: 0)
+    let scroller = app.scrollViews.firstMatch
+    XCTAssertTrue(scroller.waitForExistence(timeout: 8))
+    XCTAssertFalse(
+      el(app, "ChangesetDetail").exists, "no changeset is open before the first row is clicked")
+
+    // Recycled row state is the lazy-stack hazard: rows destroyed on scroll-out must come back live,
+    // not blank or stale.
+    scroller.scroll(byDeltaX: 0, deltaY: -1200)
+    XCTAssertTrue(els(app, "HistoryRow").element(boundBy: 0).waitForExistence(timeout: 8))
+    scroller.scroll(byDeltaX: 0, deltaY: 1200)
+
+    XCTAssertTrue(
+      firstRow.waitForExistence(timeout: 8), "the top rows come back after scrolling back")
+    let firstLabel = firstRow.label
+    firstRow.click()
+    XCTAssertTrue(
+      el(app, "ChangesetDetail").waitForExistence(timeout: 4),
+      "a recycled row still opens its changeset")
+
+    // Step 3: back at the top (asserted, not assumed), scroll down to a row that started off-screen.
+    // Row 0's changeset is still open, so the `ChangesetDetail` wait below cannot prove anything on
+    // its own; the short-id check, which must differ from row 0's, is what pins the clicked commit.
+    XCTAssertTrue(
+      els(app, "HistoryRow").matching(NSPredicate(format: "label BEGINSWITH %@", "s000")).firstMatch
+        .waitForExistence(timeout: 8),
+      "history is scrolled back to the top before the next step")
+
+    // A row that started off-screen: scrolling realizes it, and clicking it must select THAT commit —
+    // the case index-based selection can't express once rows come and go.
+    scroller.scroll(byDeltaX: 0, deltaY: -600)
+    let row = els(app, "HistoryRow").element(boundBy: 1)
+    XCTAssertTrue(row.waitForExistence(timeout: 8))
+    let label = row.label
+    XCTAssertNotEqual(label, firstLabel, "the second step clicks a different commit than the first")
+    row.click()
+
+    XCTAssertTrue(el(app, "ChangesetDetail").waitForExistence(timeout: 4))
+    // The row's label leads with the commit's short id; the detail must be showing that commit.
+    let shortID = String(label.prefix(while: { $0 != "," }))
+    let firstShortID = String(firstLabel.prefix(while: { $0 != "," }))
+    XCTAssertNotEqual(shortID, firstShortID)
+    XCTAssertTrue(
+      app.staticTexts.matching(
+        NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", shortID, shortID)
+      )
+      .firstMatch.waitForExistence(timeout: 4),
+      "the changeset that opened belongs to the row that was clicked (\(shortID))")
   }
 
   func testLargeHistoryStaysInteractive() throws {
@@ -104,53 +165,5 @@ final class HistoryStressUITests: XCTestCase {
       "clicking a row on an 800-commit page must open its changeset within 2s — a budget under the "
         + "2000 ms app-hang threshold, so a stalled main thread fails instead of passing slowly")
     XCTAssertLessThan(Date().timeIntervalSince(started), 2.0)
-  }
-
-  func testScrollingAwayAndBackKeepsRowsUsable() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    openHistory(app)
-    let firstRow = els(app, "HistoryRow").element(boundBy: 0)
-    let scroller = app.scrollViews.firstMatch
-    XCTAssertTrue(scroller.waitForExistence(timeout: 8))
-
-    // Recycled row state is the lazy-stack hazard: rows destroyed on scroll-out must come back live,
-    // not blank or stale.
-    scroller.scroll(byDeltaX: 0, deltaY: -1200)
-    XCTAssertTrue(els(app, "HistoryRow").element(boundBy: 0).waitForExistence(timeout: 8))
-    scroller.scroll(byDeltaX: 0, deltaY: 1200)
-
-    XCTAssertTrue(
-      firstRow.waitForExistence(timeout: 8), "the top rows come back after scrolling back")
-    firstRow.click()
-    XCTAssertTrue(
-      el(app, "ChangesetDetail").waitForExistence(timeout: 4),
-      "a recycled row still opens its changeset")
-  }
-
-  func testRowFurtherDownThePageOpensItsOwnChangeset() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    openHistory(app)
-    let scroller = app.scrollViews.firstMatch
-    XCTAssertTrue(scroller.waitForExistence(timeout: 8))
-
-    // A row that started off-screen: scrolling realizes it, and clicking it must select THAT commit —
-    // the case index-based selection can't express once rows come and go.
-    scroller.scroll(byDeltaX: 0, deltaY: -600)
-    let row = els(app, "HistoryRow").element(boundBy: 1)
-    XCTAssertTrue(row.waitForExistence(timeout: 8))
-    let label = row.label
-    row.click()
-
-    XCTAssertTrue(el(app, "ChangesetDetail").waitForExistence(timeout: 4))
-    // The row's label leads with the commit's short id; the detail must be showing that commit.
-    let shortID = String(label.prefix(while: { $0 != "," }))
-    XCTAssertTrue(
-      app.staticTexts.matching(
-        NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", shortID, shortID)
-      )
-      .firstMatch.waitForExistence(timeout: 4),
-      "the changeset that opened belongs to the row that was clicked (\(shortID))")
   }
 }

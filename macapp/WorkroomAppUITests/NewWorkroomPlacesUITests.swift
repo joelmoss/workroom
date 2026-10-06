@@ -23,7 +23,11 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     return app
   }
 
-  func testNewWorkroomAsksWhereWithThePreviewOn() {
+  /// One launch (preview on), three surfaces in order, each asking where with the same places:
+  /// the project's context menu, the row's "+" and File ▸ New Workroom… (⌘N, and the tab bar's +),
+  /// where picking a project offers the same places rather than creating on this Mac. Nothing is
+  /// picked, so nothing is created. The picker goes last: it leaves a sheet open.
+  func testNewWorkroomAsksWhereFromTheMenuThePlusAndThePickerWithThePreviewOn() {
     let app = launch(preview: true)
     let newWorkroom = app.menuItems["New Workroom"]
     XCTAssertTrue(newWorkroom.waitForExistence(timeout: 5))
@@ -48,11 +52,57 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     shot.name = "new-workroom-places"
     shot.lifetime = .keepAlways
     add(shot)
+    // The context menu `launch` opened, and its submenu: a "This Mac" left over from here would
+    // satisfy the "+" menu's wait below.
+    dismissMenus(app)
+
+    // The row's "+" asks where too, with the same places as the context menu.
+    let plus = app.menuButtons.matching(
+      NSPredicate(format: "title BEGINSWITH %@", "New workroom in UITestProject, on this Mac")
+    ).firstMatch
+    XCTAssertTrue(plus.waitForExistence(timeout: 5), "the row has no places +")
+    plus.hover()
+    let idle = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+    idle.name = "plus-places-idle"
+    idle.lifetime = .keepAlways
+    add(idle)
+    plus.click()
+    XCTAssertTrue(app.menuItems["This Mac"].waitForExistence(timeout: 5), "+ didn't ask where")
+    for runtime in ["Docker", "Apple Container"] {
+      XCTAssertTrue(
+        app.menuItems.matching(
+          NSPredicate(format: "title == %@ OR title BEGINSWITH %@", runtime, "\(runtime) — ")
+        ).firstMatch.waitForExistence(timeout: 5), "\(runtime) isn't listed")
+    }
+    let plusShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+    plusShot.name = "plus-places"
+    plusShot.lifetime = .keepAlways
+    add(plusShot)
+    // Closed before File is used, or a stale menu can cover its items.
+    dismissMenus(app)
+
+    pickProject(app)
+    let pickerThisMac = app.buttons["newWorkroom.place.thisMac"]
+    XCTAssertTrue(pickerThisMac.waitForExistence(timeout: 5), "the picker didn't ask where")
+    XCTAssertFalse(app.textFields["newWorkroom.filter"].exists, "still listing projects")
+    XCTAssertTrue(pickerThisMac.isEnabled)
+    for runtime in ["container", "apple-container"] {
+      XCTAssertTrue(app.buttons["newWorkroom.place.\(runtime)"].exists, "\(runtime) isn't offered")
+    }
+    XCTAssertFalse(app.staticTexts["newWorkroom.placesBlocked"].exists)
+    attach(app, "picker-places")
+
+    // Back lists the projects again.
+    app.buttons["newWorkroom.back"].click()
+    XCTAssertTrue(app.textFields["newWorkroom.filter"].waitForExistence(timeout: 5))
     app.typeKey(.escape, modifierFlags: [])
   }
 
-  /// A create downloading its host image shows how far it has got in place of the row's spinner.
-  func testADownloadingImageShowsItsProgressOnTheRow() {
+  /// A create downloading its host image shows how far it has got in place of the row's spinner,
+  /// and meanwhile the project's New Workroom menu and then the File ▸ New Workroom… picker say
+  /// once that a create is running and offer no place. The picker goes last: it leaves a sheet
+  /// open.
+  func testADownloadingImageShowsItsProgressAndTurnsThePlacesOff() {
     let app = XCUIApplication()
     app.launchArguments += [
       "-WorkroomUITestFixture", "1", "-WorkroomUITestRemotePreview", "1",
@@ -89,67 +139,11 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     shot.name = "new-workroom-busy"
     shot.lifetime = .keepAlways
     add(shot)
-    app.typeKey(.escape, modifierFlags: [])
-  }
+    // Closed before File is used, or a stale menu can cover its items.
+    dismissMenus(app)
 
-  private func attach(_ app: XCUIApplication, _ name: String) {
-    let shot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
-    shot.name = name
-    shot.lifetime = .keepAlways
-    add(shot)
-  }
-
-  /// The row's "+" asks where too, with the same places as the context menu.
-  func testTheRowsPlusAsksWhereWithThePreviewOn() {
-    let app = launch(preview: true)
-    app.typeKey(.escape, modifierFlags: [])  // the context menu `launch` opened
-    let plus = app.menuButtons.matching(
-      NSPredicate(format: "title BEGINSWITH %@", "New workroom in UITestProject, on this Mac")
-    ).firstMatch
-    XCTAssertTrue(plus.waitForExistence(timeout: 5), "the row has no places +")
-    plus.hover()
-    let idle = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-    idle.name = "plus-places-idle"
-    idle.lifetime = .keepAlways
-    add(idle)
-    plus.click()
-    XCTAssertTrue(app.menuItems["This Mac"].waitForExistence(timeout: 5), "+ didn't ask where")
-    for runtime in ["Docker", "Apple Container"] {
-      XCTAssertTrue(
-        app.menuItems.matching(
-          NSPredicate(format: "title == %@ OR title BEGINSWITH %@", runtime, "\(runtime) — ")
-        ).firstMatch.waitForExistence(timeout: 5), "\(runtime) isn't listed")
-    }
-    let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-    shot.name = "plus-places"
-    shot.lifetime = .keepAlways
-    add(shot)
-    app.typeKey(.escape, modifierFlags: [])
-  }
-
-  /// File ▸ New Workroom… (⌘N, and the tab bar's +) asks where too: picking a project offers the
-  /// same places, rather than creating on this Mac. Nothing is picked, so nothing is created.
-  func testThePickerAsksWhereWithThePreviewOn() {
-    let app = openPicker(extraArgs: [])
-    XCTAssertFalse(app.textFields["newWorkroom.filter"].exists, "still listing projects")
-    let thisMac = app.buttons["newWorkroom.place.thisMac"]
-    XCTAssertTrue(thisMac.waitForExistence(timeout: 5), "the picker didn't ask where")
-    XCTAssertTrue(thisMac.isEnabled)
-    for runtime in ["container", "apple-container"] {
-      XCTAssertTrue(app.buttons["newWorkroom.place.\(runtime)"].exists, "\(runtime) isn't offered")
-    }
-    XCTAssertFalse(app.staticTexts["newWorkroom.placesBlocked"].exists)
-    attach(app, "picker-places")
-
-    // Back lists the projects again.
-    app.buttons["newWorkroom.back"].click()
-    XCTAssertTrue(app.textFields["newWorkroom.filter"].waitForExistence(timeout: 5))
-    app.typeKey(.escape, modifierFlags: [])
-  }
-
-  /// While a create runs in the project, the picker says so once and offers no place.
-  func testThePickersPlacesAreOffWhileACreateRuns() {
-    let app = openPicker(extraArgs: ["-WorkroomUITestImagePull", "0.42"])
+    // The picker says so once too, and offers no place.
+    pickProject(app)
     let blocked = app.staticTexts["newWorkroom.placesBlocked"]
     XCTAssertTrue(blocked.waitForExistence(timeout: 5), "the picker doesn't say why")
     XCTAssertEqual(blocked.value as? String, "A workroom is already being created")
@@ -162,19 +156,28 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     app.typeKey(.escape, modifierFlags: [])
   }
 
-  /// Opens File ▸ New Workroom… with the preview on, and picks the fixture project.
-  private func openPicker(extraArgs: [String]) -> XCUIApplication {
-    let app = XCUIApplication()
-    app.launchArguments += [
-      "-WorkroomUITestFixture", "1", "-WorkroomUITestRemotePreview", "1",
-      "-ApplePersistenceIgnoreState", "YES",
-    ]
-    app.launchArguments += extraArgs
-    app.launch()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
-    XCTAssertTrue(
-      app.otherElements["sidebar.project.UITestProject"].waitForExistence(timeout: 10),
-      "fixture project row should exist")
+  private func attach(_ app: XCUIApplication, _ name: String) {
+    let shot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
+    shot.name = name
+    shot.lifetime = .keepAlways
+    add(shot)
+  }
+
+  /// Closes the context menu, its submenu and the "+" menu, however many Escapes that takes, and
+  /// proves they are gone: the next step's waits must not be satisfied by a leftover menu.
+  private func dismissMenus(_ app: XCUIApplication) {
+    let places = [app.menuItems["This Mac"], app.menuItems["New Workroom"]]
+    for _ in 0..<3 where places.contains(where: \.exists) {
+      app.typeKey(.escape, modifierFlags: [])
+      _ = places[0].waitForNonExistence(timeout: 1)
+    }
+    for place in places {
+      XCTAssertTrue(place.waitForNonExistence(timeout: 5), "a menu is still open")
+    }
+  }
+
+  /// Opens File ▸ New Workroom… and picks the fixture project.
+  private func pickProject(_ app: XCUIApplication) {
     let file = app.menuBars.menuBarItems["File"]
     file.click()
     file.menuItems["New Workroom…"].click()
@@ -182,7 +185,6 @@ final class NewWorkroomPlacesUITests: XCTestCase {
       .matching(identifier: "newWorkroom.project.UITestProject").firstMatch
     XCTAssertTrue(project.waitForExistence(timeout: 5), "the picker didn't list the project")
     project.click()
-    return app
   }
 
   func testNewWorkroomIsOneItemWithThePreviewOff() {
