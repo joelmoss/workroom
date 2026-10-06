@@ -311,6 +311,13 @@ struct ProjectSidebar: View {
               .progressViewStyle(.circular)
               .controlSize(.small)
               .help("Downloading the workroom image: \(Int(pulled * 100))%")
+          } else if let step = store.createSteps[project.path] {
+            // A boxd create's steps take a while each (#356): which one it is on.
+            ProgressView(value: step.fraction)
+              .progressViewStyle(.circular)
+              .controlSize(.small)
+              .help(step.label)
+              .accessibilityLabel(step.label)
           } else {
             ProgressView().controlSize(.small)
           }

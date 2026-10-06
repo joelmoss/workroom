@@ -1418,6 +1418,20 @@ final class RemoteHostsTests: XCTestCase {
       "sign in to Codaset or run gh auth login")
   }
 
+  /// A boxd create's row shows the step it is on as a fraction of the steps it takes: all eight
+  /// when it builds the project's base first, the five of a derive when the base exists (#356).
+  func testABoxdCreateShowsItsStepOfTheStepsItTakes() {
+    XCTAssertEqual(
+      AppStore.createStep(.machine, buildsBase: true),
+      .init(fraction: 0, label: "Creating the base machine (step 1 of 8)"))
+    XCTAssertEqual(AppStore.createStep(.snapshot, buildsBase: true)?.fraction, 3.0 / 8)
+    XCTAssertEqual(
+      AppStore.createStep(.snapshot, buildsBase: false),
+      .init(fraction: 0, label: "Copying the base machine (step 1 of 5)"))
+    XCTAssertEqual(AppStore.createStep(.checkout, buildsBase: false)?.fraction, 4.0 / 5)
+    XCTAssertNil(AppStore.createStep(.clone, buildsBase: false), "a derive clones nothing")
+  }
+
   /// boxd's entry is off without its CLI, and without Codaset: a boxd workroom takes the broker's
   /// tokens only, never the Mac's gh, so `gh auth login` is no way in (OQ20, #356). Whether boxd
   /// itself is signed in is a CLI call, which a create makes rather than the menu.

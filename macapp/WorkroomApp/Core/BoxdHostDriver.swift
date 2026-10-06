@@ -105,7 +105,9 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     let id = UUID()
     let name = name(of: id)
     do {
+      RemoteProvisioning.reportStep?(.machine)
       _ = try await cli(["machine", "new", name])
+      RemoteProvisioning.reportStep?(.setup)
       let script = try Self.setupScript()
       let user = try ssh(id).user
       let (status, output) = try await exec(
@@ -154,9 +156,11 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
         throw HostDriverError.provisioning("syncing \(baseName) failed: \(output)")
       }
       // `snapshots save` prints nothing until it is done, and copying a base's disk takes a while.
+      RemoteProvisioning.reportStep?(.snapshot)
       _ = try await cli(["snapshots", "save", baseName, name], timeout: 900)
       // From here until the reboot the instance runs the base's processes (a restore resumes
       // them), so nothing waits in between that does not have to.
+      RemoteProvisioning.reportStep?(.restore)
       _ = try await cli(["machine", "new", name, "--from-snapshot", name])
       // boxd names the machine on restore; minting before it had would key the identity on the
       // base's hostname. Measured to be there at once.
@@ -174,6 +178,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
         throw HostDriverError.provisioning("minting \(name)'s identity failed: \(said)")
       }
       let boot = try await bootID(of: id)
+      RemoteProvisioning.reportStep?(.reboot)
       _ = try await cli(["machine", "reboot", name])
       _ = try await cli(["snapshots", "remove", name, "-y"])
       try await awaitIdentity(of: id, rebootedFrom: boot)

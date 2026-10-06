@@ -157,6 +157,28 @@ final class BoxdHostDriverTests: XCTestCase {
     XCTAssertEqual(cli.commands, ["machine new", "machine remove"], "the machine was kept")
   }
 
+  /// A create says which step it is on, for its project row (#356): the machine first, then its
+  /// setup, which this one never reaches (the CLI wrote no ssh details).
+  func testACreateReportsItsSteps() async throws {
+    let cli = StubCLI([
+      "machine new": Self.ok(#"{"name":"x"}"#),
+      "machine remove": Self.ok(#"{"status":"destroyed"}"#),
+    ])
+    let steps = Steps()
+    let report: @Sendable (RemoteProvisioning.Step) -> Void = { steps.add($0) }
+    await RemoteProvisioning.$reportStep.withValue(report) {
+      _ = try? await driver(cli).create()
+    }
+    XCTAssertEqual(steps.all, [.machine, .setup])
+  }
+
+  private final class Steps: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seen: [RemoteProvisioning.Step] = []
+    var all: [RemoteProvisioning.Step] { lock.withLock { seen } }
+    func add(_ step: RemoteProvisioning.Step) { lock.withLock { seen.append(step) } }
+  }
+
   func testACreateWhoseMachineIsRefusedSaysTheCLIsReasonAndHasNothingToRemove() async throws {
     let cli = StubCLI([
       "machine new": Self.failed("error: quota exceeded"),

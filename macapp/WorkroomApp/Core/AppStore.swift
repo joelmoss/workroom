@@ -3546,6 +3546,28 @@ final class AppStore: ObservableObject {
   /// shows it.
   @Published var imagePulls: [String: Double] = [:]
 
+  /// How far each project's boxd workroom create has got (#356): the step it is on, and that as a
+  /// fraction of the steps it will take. The row's spinner shows it, as it does an image pull.
+  @Published var createSteps: [String: CreateStep] = [:]
+
+  struct CreateStep: Equatable {
+    let fraction: Double
+    let label: String
+  }
+
+  /// `step` of a boxd create that builds the project's base first or not, as the row shows it, or
+  /// nil for a step that create does not take.
+  nonisolated static func createStep(_ step: RemoteProvisioning.Step, buildsBase: Bool)
+    -> CreateStep?
+  {
+    let all = RemoteProvisioning.Step.allCases
+    let steps = buildsBase ? all : Array(all.drop { $0 != .snapshot })
+    guard let index = steps.firstIndex(of: step) else { return nil }
+    return CreateStep(
+      fraction: Double(index) / Double(steps.count),
+      label: "\(step.rawValue) (step \(index + 1) of \(steps.count))")
+  }
+
   /// Why no workroom can be created in `project` right now, as the New Workroom menu shows it beside
   /// an entry (#309), or nil when one can: another create holds the project, or it is being deleted.
   func createBlockedReason(in project: Project) -> String? {
@@ -3603,7 +3625,19 @@ final class AppStore: ObservableObject {
         throw RemoteWorkrooms.Failure.notOnGitHub("Its origin is on \(repository.host).")
       }
       let path = project.path
-      defer { imagePulls[path] = nil }
+      defer {
+        imagePulls[path] = nil
+        createSteps[path] = nil
+      }
+      let buildsBase = base == nil
+      let stepped: @Sendable (RemoteProvisioning.Step) -> Void = { step in
+        Task { @MainActor [weak self] in
+          guard let self, self.isBusyProject(path),
+            let shown = Self.createStep(step, buildsBase: buildsBase)
+          else { return }
+          self.createSteps[path] = shown
+        }
+      }
       let report: @Sendable (Double?) -> Void = { fraction in
         Task { @MainActor [weak self] in
           // A report that arrives after the create ended shows nothing.
@@ -3611,12 +3645,17 @@ final class AppStore: ObservableObject {
           self.imagePulls[path] = fraction
         }
       }
-      let created = try await ContainerHostDriver.$pullProgress.withValue(report) {
-        try await RemoteWorkrooms.create(
-          repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
-          base: base, project: project.host, key: key, driver: driver,
-          environment: environment,
-          recorder: remoteRecorder(project: project.path))
+      // Only a boxd create reports steps: a container's are quick, bar its image pull.
+      let created = try await RemoteProvisioning.$reportStep.withValue(
+        key.runtime == nil ? stepped : nil
+      ) {
+        try await ContainerHostDriver.$pullProgress.withValue(report) {
+          try await RemoteWorkrooms.create(
+            repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
+            base: base, project: project.host, key: key, driver: driver,
+            environment: environment,
+            recorder: remoteRecorder(project: project.path))
+        }
       }
       // Its panes attach through their own ssh; Changes and the rest connect for themselves.
       await created.instance.connection.close()
