@@ -383,7 +383,8 @@ fn the_wake_mask_swallows_the_resume_blip() {
 
 /// Masked bytes must not sit in the rate window and vote the tick the mask ends: the blip is three
 /// seconds of 1.5 KB/s and the mask is three seconds, so the fourth tick sees the whole blip inside
-/// a 3 s window unless the base moved with the mask. Same rule for the shim's self-call mask.
+/// a 3 s window unless the base moved with the mask. Same rule for the shim's self-call mask, which
+/// production no longer uses (#257).
 #[test]
 fn masked_traffic_does_not_vote_the_tick_the_mask_ends() {
     for self_call in [false, true] {
@@ -483,7 +484,8 @@ fn the_resume_masks_cpu_for_the_tick_after_it_too() {
 
 /// The shim's self-call mask is about interface bytes. It must not silence CPU: a compute-only
 /// job that starts while the shim is talking to the provider is work, and the shim's own CPU is
-/// already excluded by name.
+/// already excluded by name. The shim was never built (#257) and production passes `net_masked`
+/// false; this pins the classifier until the input is removed (TODOS.md).
 #[test]
 fn the_self_call_mask_leaves_cpu_voting() {
     let mut c = Classifier::new(Policy::production(), Boundary::agent(999));
@@ -767,4 +769,296 @@ fn a_session_process_renamed_to_an_excluded_name_still_votes() {
         cand.contains(&20) && cand.contains(&21),
         "a session beneath a `cron` ancestor was swept out with it: {cand:?}"
     );
+}
+
+// ---- settings from the app (#257) -------------------------------------------------------------
+
+fn ask(ceiling: f64) -> Settings {
+    Settings {
+        ceiling,
+        prompt_timeout: 600.0,
+        ask: true,
+    }
+}
+
+fn advisory(ceiling: f64) -> Settings {
+    Settings {
+        ceiling,
+        prompt_timeout: 600.0,
+        ask: false,
+    }
+}
+
+/// What a new setting does to a box that is mid-ceiling: kept only when it still applies, and
+/// otherwise re-decided by the next step as if the new settings had always been in force.
+#[test]
+fn new_settings_apply_from_the_next_tick() {
+    let hours = |h: f64| h * 3600.0;
+    // (name, settings before, busy until, new settings, state right after the next step)
+    let cases: &[(&str, Settings, f64, Settings, CeilingState)] = &[
+        (
+            "the same settings again change nothing, a pending prompt included",
+            ask(hours(4.0)),
+            hours(4.0),
+            ask(hours(4.0)),
+            CeilingState::Prompted {
+                deadline: hours(4.0) + 600.0,
+            },
+        ),
+        (
+            "turning ask off withdraws the prompt: the box is reported, and kept awake",
+            ask(hours(4.0)),
+            hours(4.0),
+            advisory(hours(4.0)),
+            CeilingState::Exceeded,
+        ),
+        (
+            "a ceiling raised past the time awake withdraws the prompt",
+            ask(hours(4.0)),
+            hours(4.0),
+            ask(hours(8.0)),
+            CeilingState::Below,
+        ),
+        (
+            "turning ask on past the ceiling prompts now",
+            advisory(hours(4.0)),
+            hours(5.0),
+            ask(hours(4.0)),
+            CeilingState::Prompted {
+                deadline: hours(5.0) + 60.0 + 600.0,
+            },
+        ),
+        (
+            "a lowered ceiling the box is already past is reported at once",
+            advisory(hours(4.0)),
+            hours(2.0),
+            advisory(hours(1.0)),
+            CeilingState::Exceeded,
+        ),
+        (
+            "a pending prompt that still applies keeps the deadline it was raised with",
+            ask(hours(4.0)),
+            hours(4.0),
+            Settings {
+                prompt_timeout: 300.0,
+                ..ask(hours(4.0))
+            },
+            CeilingState::Prompted {
+                deadline: hours(4.0) + 600.0,
+            },
+        ),
+        (
+            "an unanswered prompt stays unanswered under a lower ceiling",
+            ask(hours(4.0)),
+            hours(4.0) + 660.0,
+            ask(hours(3.0)),
+            CeilingState::Suppressed,
+        ),
+        (
+            "turning ask off ends an unanswered prompt: reported, and kept awake again",
+            ask(hours(4.0)),
+            hours(4.0) + 660.0,
+            advisory(hours(4.0)),
+            CeilingState::Exceeded,
+        ),
+        (
+            "a ceiling raised past the time awake ends an unanswered prompt",
+            ask(hours(4.0)),
+            hours(4.0) + 660.0,
+            ask(hours(8.0)),
+            CeilingState::Below,
+        ),
+    ];
+    for (name, before, busy, after, expected) in cases {
+        let mut c = Ceiling::new(*before);
+        busy_until(&mut c, *busy);
+        let now = (*busy / 60.0).floor() * 60.0 + 60.0;
+        c.set_settings(now, *after);
+        c.step(now, Verdict::Busy);
+        assert_eq!(c.state(), *expected, "{name}");
+        assert_eq!(c.settings, *after, "{name}");
+    }
+}
+
+#[test]
+fn an_unanswered_prompt_kept_by_the_same_settings_still_lets_the_box_sleep() {
+    let mut c = Ceiling::new(ask(3600.0));
+    busy_until(&mut c, 3600.0);
+    c.set_settings(3660.0, ask(3600.0));
+    c.step(3600.0 + 600.0, Verdict::Busy);
+    assert!(c.suppressing());
+}
+
+/// The heartbeat runs on the PUBLISHED verdict: a minute apart while the prompt is pending, and
+/// none once it has gone unanswered, so the provider sleeps the box.
+#[test]
+fn an_unanswered_prompt_stops_the_heartbeat() {
+    let mut c = Ceiling::new(ask(3600.0));
+    let mut keep_awake = heartbeat::KeepAwake::default();
+    let mut sends = Vec::new();
+    let mut t = 0.0;
+    while t <= 3600.0 + 600.0 + 300.0 {
+        c.step(t, Verdict::Busy);
+        keep_awake.tick(t, &c, Verdict::Busy, || {
+            sends.push(t);
+            Ok(())
+        });
+        t += 60.0;
+    }
+    assert!(c.suppressing());
+    assert_eq!(sends.first(), Some(&0.0));
+    assert_eq!(
+        sends.last(),
+        Some(&(3600.0 + 540.0)),
+        "none after the deadline"
+    );
+}
+
+/// `status` says a service has stalled once it has gone `WAKE_GAP_S` without finishing a tick, and
+/// not for a sampler starved the 7.9-14.3 s a CFS quota was measured to.
+#[test]
+fn a_service_that_stops_ticking_is_reported_stalled() {
+    for (last, now, expected) in [
+        (100.0, 101.0, false),
+        (100.0, 114.3, false),
+        (100.0, 130.0, false),
+        (100.0, 130.5, true),
+        (100.0, 4000.0, true),
+    ] {
+        assert_eq!(stalled(last, now), expected, "last {last} now {now}");
+    }
+}
+
+/// What `status` says of a running service that has stopped ticking, and of one that is not
+/// running at all (a macOS agent, a retired one), whose old reading is no stall.
+#[test]
+fn status_reports_a_stall_only_for_a_running_service() {
+    let mut s = shared()
+        .state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    s.t = 100.0;
+    s.keep_awake_error = Some("no IPv4 default route".into());
+    for (running, now, expected) in [
+        (true, 101.0, false),
+        (true, 131.0, true),
+        (false, 4000.0, false),
+    ] {
+        s.running = running;
+        let reply = status_json(&s, now);
+        assert_eq!(reply["stalled"], expected, "running {running} now {now}");
+        assert_eq!(reply["keep_awake"]["error"], "no IPv4 default route");
+    }
+}
+
+#[test]
+fn settings_parse_only_what_the_ceiling_can_use() {
+    let good = serde_json::json!({
+        "method": "settings",
+        "ceiling_seconds": 7200.0,
+        "prompt_timeout_seconds": 300,
+        "ask_at_ceiling": true,
+    });
+    assert_eq!(
+        Settings::from_json(&good),
+        Ok(Settings {
+            ceiling: 7200.0,
+            prompt_timeout: 300.0,
+            ask: true
+        })
+    );
+    // Round trip: what `to_json` writes is what `from_json` reads.
+    let settings = Settings::from_json(&good).unwrap();
+    assert_eq!(Settings::from_json(&settings.to_json()), Ok(settings));
+    for (name, field, value) in [
+        ("zero", "ceiling_seconds", serde_json::json!(0)),
+        ("negative", "prompt_timeout_seconds", serde_json::json!(-1)),
+        (
+            "no grace",
+            "prompt_timeout_seconds",
+            serde_json::json!(0.001),
+        ),
+        ("never reached", "ceiling_seconds", serde_json::json!(1e300)),
+        (
+            "just under 30 s",
+            "prompt_timeout_seconds",
+            serde_json::json!(29.999),
+        ),
+        (
+            "just over 30 days",
+            "ceiling_seconds",
+            serde_json::json!(2_592_000.001),
+        ),
+        ("a string", "ceiling_seconds", serde_json::json!("7200")),
+        ("missing", "ceiling_seconds", serde_json::Value::Null),
+        ("not a bool", "ask_at_ceiling", serde_json::json!(1)),
+    ] {
+        let mut bad = good.clone();
+        if value.is_null() {
+            bad.as_object_mut().unwrap().remove(field);
+        } else {
+            bad[field] = value;
+        }
+        assert!(Settings::from_json(&bad).is_err(), "{name} {field}");
+    }
+}
+
+/// Settings sent from many connections at once are kept whole, and the last one sent is the one
+/// kept: one thread writes the file, so two saves never share its temporary file.
+#[test]
+fn settings_sent_at_once_are_kept_whole_and_the_last_wins() {
+    let dir = std::env::temp_dir().join(format!("wr-saver-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("agent.sock.settings");
+    let (sender, saver) = settings_saver(path.clone());
+    let threads: Vec<_> = (0..8)
+        .map(|i| {
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                for j in 0..25 {
+                    let ceiling = 60.0 + f64::from(i * 100 + j);
+                    let settings = Settings {
+                        ceiling,
+                        prompt_timeout: 600.0,
+                        ask: i % 2 == 0,
+                    };
+                    sender.send(settings).unwrap();
+                }
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    let last = Settings {
+        ceiling: 7200.0,
+        prompt_timeout: 120.0,
+        ask: true,
+    };
+    sender.send(last).unwrap();
+    drop(sender);
+    saver.join().unwrap();
+    assert_eq!(load_settings(&path), Some(last));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A remote agent's settings survive its restart, and a file that is gone or garbled is no
+/// settings at all rather than a broken ceiling.
+#[test]
+fn kept_settings_load_back_and_a_bad_file_is_ignored() {
+    let dir = std::env::temp_dir().join(format!("wr-settings-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = settings_path(&dir.join("agent.sock"));
+    assert_eq!(path, dir.join("agent.sock.settings"));
+    assert_eq!(load_settings(&path), None, "no file");
+    save_settings(&path, ask(1800.0)).unwrap();
+    assert_eq!(load_settings(&path), Some(ask(1800.0)));
+    assert!(
+        !dir.join("agent.sock.settings.tmp").exists(),
+        "the temporary file is renamed into place"
+    );
+    std::fs::write(&path, "{\"ceiling_seconds\": \"nan\"").unwrap();
+    assert_eq!(load_settings(&path), None, "garbled");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

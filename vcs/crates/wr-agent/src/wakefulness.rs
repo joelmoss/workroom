@@ -2,8 +2,9 @@
 //!
 //! A remote workroom's provider hibernates an idle box. The agent is the only thing on the box that
 //! knows whether the box is idle, so it decides BUSY or IDLE once a second and publishes the
-//! verdict; a per-provider lifecycle shim reads it and works the provider's lever. This module is
-//! the deciding half only — nothing here calls a provider.
+//! verdict. While the published verdict is BUSY it also keeps the box awake, with a small network
+//! heartbeat the provider's idle timer counts ([`heartbeat`], issue #257). Nothing here calls a
+//! provider or changes its settings: the heartbeat stopping is all it takes for the box to sleep.
 //!
 //! **The policy is not invented here.** It is P4, frozen in
 //! `vcs/scripts/oq19/results/frozen.json` and measured in
@@ -42,7 +43,13 @@
 //! not started, exited idle, or retired the file after a panic — and the reader lets the provider's
 //! own idle timer decide, because holding a box awake for an agent that is not running would hold
 //! it awake forever.
+//!
+//! Nothing in Workroom reads the verdict file since #257: the heartbeat keeps a busy box awake, and
+//! the far-side shim this file was written for was never built. The file, its staleness contract
+//! and the `net_masked` input the shim's self-call mask needed are kept as they were, unused, and
+//! are due to go (TODOS.md). The "reader" in the comments below is that never-built shim.
 
+pub mod heartbeat;
 pub mod sample;
 
 use std::collections::{HashMap, HashSet};
@@ -75,6 +82,8 @@ const COMPRESSION: f64 = 0.1;
 const TIMER_WCHAN: [&str; 3] = ["hrtimer_nanosleep", "do_nanosleep", "common_nsleep"];
 
 /// Housekeeping daemons: their children are their own work, so the whole subtree is excluded.
+/// `wr-wakeshim` is the never-built shim's name (#257); left in because this list mirrors the
+/// frozen policy's (`vcs/scripts/oq19/analyze.py`).
 const EXCLUDED_WITH_DESCENDANTS: [&str; 4] =
     ["cron", "unattended-upgr", "apt.systemd.dai", "wr-wakeshim"];
 /// Hosts of user work: excluded themselves, never their children. On a real box `systemd` is pid 1
@@ -519,11 +528,12 @@ impl Classifier {
         };
         Features {
             t: s.t,
-            // Only the resume mask silences CPU. The shim's self-call mask is about interface bytes,
-            // which no process exclusion can attribute; the shim's own CPU is already excluded by
-            // name, and silencing everyone else's for four seconds per provider call would hide a
-            // compute-only job for as long as the shim keeps calling. The Python it ports agrees
-            // (`live.py`: the self-call mask zeroes `net` alone).
+            // Only the resume mask silences CPU. The shim's self-call mask (unused since #257: the
+            // shim was never built, and production passes `net_masked` false) is about interface
+            // bytes, which no process exclusion can attribute; the shim's own CPU is already
+            // excluded by name, and silencing everyone else's for four seconds per provider call
+            // would hide a compute-only job for as long as the shim keeps calling. The Python it
+            // ports agrees (`live.py`: the self-call mask zeroes `net` alone).
             cpu: if cpu_masked { 0.0 } else { cpu },
             d_state: cand.iter().any(|p| p.state == "D"),
             timer: cand
@@ -620,6 +630,55 @@ impl Default for Settings {
     }
 }
 
+/// A number of seconds the ceiling can use: 30 s to 30 days. `f64::parse` accepts "nan", "inf"
+/// and "-1", and each breaks the ceiling a different way: NaN trips it on the first BUSY tick
+/// (every comparison is false), infinity never trips it, and a non-positive prompt timeout expires
+/// the prompt on the next tick and lets the box sleep with no grace at all. The bounds stop the
+/// finite versions of the same: a ceiling of 1e300 s is never reached, and a prompt timeout of a
+/// millisecond is no grace. They matter more since #257, because a remote agent keeps what the app
+/// sends it across restarts, ahead of its flags.
+pub fn usable_seconds(seconds: f64) -> bool {
+    (USABLE_SECONDS_MIN..=USABLE_SECONDS_MAX).contains(&seconds)
+}
+
+/// Mirrored by the app's `AgentWakefulnessSettings.usableSeconds`.
+const USABLE_SECONDS_MIN: f64 = 30.0;
+const USABLE_SECONDS_MAX: f64 = 30.0 * 24.0 * 3600.0;
+
+impl Settings {
+    /// From a `settings` request, or the file a remote agent keeps them in (#257): the same three
+    /// fields `status` reports, all required, each number [`usable_seconds`].
+    pub fn from_json(value: &Value) -> Result<Settings, String> {
+        let seconds = |key: &str| {
+            value
+                .get(key)
+                .and_then(Value::as_f64)
+                .filter(|v| usable_seconds(*v))
+                .ok_or_else(|| {
+                    format!(
+                        "{key} must be between {USABLE_SECONDS_MIN} and {USABLE_SECONDS_MAX} seconds"
+                    )
+                })
+        };
+        Ok(Settings {
+            ceiling: seconds("ceiling_seconds")?,
+            prompt_timeout: seconds("prompt_timeout_seconds")?,
+            ask: value
+                .get("ask_at_ceiling")
+                .and_then(Value::as_bool)
+                .ok_or("ask_at_ceiling must be true or false")?,
+        })
+    }
+
+    pub fn to_json(self) -> Value {
+        json!({
+            "ceiling_seconds": self.ceiling,
+            "prompt_timeout_seconds": self.prompt_timeout,
+            "ask_at_ceiling": self.ask,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CeilingState {
     /// Inside the ceiling, or not BUSY at all.
@@ -680,6 +739,28 @@ impl Ceiling {
         }
     }
 
+    /// New settings from the app (#257), in force from this tick. The app sends them on every
+    /// connect, so the same settings again change nothing. Otherwise a pending or unanswered prompt
+    /// is kept only while ask mode stays on and the box is still past the new ceiling, and a kept
+    /// prompt keeps the deadline it was raised with; anything else goes back below, and the next
+    /// `step` crosses again under the new settings if the box is past them: an advisory crossing,
+    /// or a fresh prompt.
+    pub fn set_settings(&mut self, t: f64, settings: Settings) {
+        if settings == self.settings {
+            return;
+        }
+        let keep_prompt = settings.ask
+            && matches!(
+                self.state,
+                CeilingState::Prompted { .. } | CeilingState::Suppressed
+            )
+            && self.awake_for(t) >= settings.ceiling;
+        self.settings = settings;
+        if !keep_prompt {
+            self.state = CeilingState::Below;
+        }
+    }
+
     /// The user said keep it awake: the ceiling restarts from here.
     pub fn keep(&mut self, t: f64) {
         self.busy_since = Some(t);
@@ -722,6 +803,17 @@ impl Ceiling {
     /// timer may sleep the box.
     pub fn suppressing(&self) -> bool {
         self.state == CeilingState::Suppressed
+    }
+
+    /// The verdict the service publishes, and keeps the box awake on: the classifier's, except IDLE
+    /// once a prompt went unanswered. Advisory-only: the ceiling never sleeps the box, it can only
+    /// stop the service ASSERTING busy.
+    pub fn published(&self, raw: Verdict) -> Verdict {
+        if self.suppressing() {
+            Verdict::Idle
+        } else {
+            raw
+        }
     }
 
     pub fn exceeded(&self) -> bool {
@@ -855,13 +947,23 @@ struct Published {
     settings: Settings,
     /// Set by a `keep`, consumed by the service thread on its next tick.
     keep_requested: bool,
+    /// Set by a `settings` request, consumed by the service thread on its next tick, so one place
+    /// owns the ceiling.
+    settings_requested: Option<Settings>,
+    /// The thread that keeps `settings` requests for the next start (`settings_saver`), set before
+    /// the agent accepts a connection. Neither the service's thread nor a connection's reader
+    /// writes the file: a slow disk must hold up neither the heartbeat nor a connection's requests.
+    settings_saver: Option<std::sync::mpsc::Sender<Settings>>,
     /// The service's own CPU as a fraction of one core, against the 0.5% gate.
     cpu_fraction: f64,
-    /// Whether the last tick's verdict reached the file. False means the reader is NOT seeing
-    /// what `verdict` says (a full disk, a quota): the shim falls back to the provider's own
-    /// timer, and a BUSY box may be slept. Reported so the app can say so instead of showing a
-    /// BUSY badge that protects nothing.
+    /// Whether the last tick's verdict reached the file. Nothing in Workroom reads the file since
+    /// the heartbeat replaced the far-side shim (#257); kept as a diagnostic.
     verdict_written: bool,
+    /// When the last heartbeat went out, on the service's monotonic clock.
+    keep_awake_sent: Option<f64>,
+    /// Why the last heartbeat could not be sent, while the box is BUSY. Set means the box is NOT
+    /// being kept awake whatever `verdict` says, so the app shows it as unprotected.
+    keep_awake_error: Option<String>,
 }
 
 /// At most this many connections are remembered for ceiling prompts. The app is one client.
@@ -879,8 +981,12 @@ pub fn shared() -> &'static Wakefulness {
             ceiling: CeilingState::Below,
             settings: Settings::default(),
             keep_requested: false,
+            settings_requested: None,
+            settings_saver: None,
             cpu_fraction: 0.0,
             verdict_written: false,
+            keep_awake_sent: None,
+            keep_awake_error: None,
         }),
         listeners: Mutex::new(Vec::new()),
     })
@@ -889,33 +995,18 @@ pub fn shared() -> &'static Wakefulness {
 impl Wakefulness {
     fn status(&self) -> Value {
         let s = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        json!({
-            "running": s.running,
-            "verdict": s.verdict.as_str(),
-            "busy": s.verdict == Verdict::Busy,
-            "classifier_verdict": s.raw.as_str(),
-            "monotonic": s.t,
-            "awake_seconds": s.awake_for,
-            // OQ22: advisory-only. True means "this box has been BUSY past the ceiling", which the
-            // app shows; the service has not hibernated anything and will not.
-            "awake_ceiling_exceeded": s.ceiling != CeilingState::Below,
-            "prompt_pending": matches!(s.ceiling, CeilingState::Prompted { .. }),
-            "prompt_deadline": match s.ceiling {
-                CeilingState::Prompted { deadline } => json!(deadline),
-                _ => Value::Null,
-            },
-            // The prompt went unanswered: the service has stopped asserting BUSY, so the provider's
-            // own idle timer may sleep the box.
-            "asserting": s.verdict == Verdict::Busy,
-            "suppressed": s.ceiling == CeilingState::Suppressed,
-            "ceiling_seconds": s.settings.ceiling,
-            "prompt_timeout_seconds": s.settings.prompt_timeout,
-            "ask_at_ceiling": s.settings.ask,
-            "cpu_fraction": s.cpu_fraction,
-            // False while running means the verdict file is not being written (disk full, quota):
-            // the reader sees nothing, and `asserting` above protects nothing.
-            "verdict_written": s.verdict_written,
-        })
+        status_json(&s, sample::monotonic())
+    }
+
+    /// The app's ceiling settings (#257). Taken by the service thread next tick, as `keep` is.
+    /// Kept for the next start too, queued under the same lock, so the order the file is written in
+    /// is the order the requests took effect, whatever connections they came on.
+    fn request_settings(&self, settings: Settings) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.settings_requested = Some(settings);
+        if let Some(saver) = &state.settings_saver {
+            let _ = saver.send(settings);
+        }
     }
 
     /// The app answered "keep": the ceiling restarts. Taken by the service thread next tick, so one
@@ -1003,22 +1094,94 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter) {
             wakefulness.keep();
             reply(json!({"version": STATUS_SERVICE_VERSION, "result": {"kept": true}}));
         }
+        // An added request, not a changed shape, so `STATUS_SERVICE_VERSION` stays: an app that
+        // never sends it sees nothing new, and an agent that predates it answers `unsupported`.
+        Some("settings") => {
+            let parsed = serde_json::from_slice::<Value>(&envelope.payload)
+                .map_err(|e| e.to_string())
+                .and_then(|request| Settings::from_json(&request));
+            match parsed {
+                Ok(settings) => {
+                    wakefulness.request_settings(settings);
+                    reply(json!({
+                        "version": STATUS_SERVICE_VERSION,
+                        "result": {"settings": settings.to_json()},
+                    }));
+                }
+                Err(message) => reply(json!({
+                    "version": STATUS_SERVICE_VERSION,
+                    "error": {"invalid": message},
+                })),
+            }
+        }
         _ => reply(json!({
             "version": STATUS_SERVICE_VERSION,
-            "error": {"unsupported": "status requests are {\"method\": \"status\"|\"keep\"}"},
+            "error": {"unsupported": "status requests are {\"method\": \"status\"|\"keep\"|\"settings\"}"},
         })),
     }
 }
 
 // ---- the service ------------------------------------------------------------------------------
 
+/// The `status` reply for the published state `s`, read at `now` on the monotonic clock.
+fn status_json(s: &Published, now: f64) -> Value {
+    let stalled = s.running && stalled(s.t, now);
+    json!({
+        "running": s.running,
+        // The service has not finished a tick for a while (a blocked `/proc` read, say): what
+        // follows is that tick's, and the heartbeat has stopped with it (#257). Read against a
+        // clock of the request's own, because the service's is the one that stopped.
+        "stalled": stalled,
+        "verdict": s.verdict.as_str(),
+        "busy": s.verdict == Verdict::Busy,
+        "classifier_verdict": s.raw.as_str(),
+        "monotonic": s.t,
+        "awake_seconds": s.awake_for,
+        // OQ22: advisory-only. True means "this box has been BUSY past the ceiling", which the
+        // app shows; the service has not hibernated anything and will not.
+        "awake_ceiling_exceeded": s.ceiling != CeilingState::Below,
+        "prompt_pending": matches!(s.ceiling, CeilingState::Prompted { .. }),
+        "prompt_deadline": match s.ceiling {
+            CeilingState::Prompted { deadline } => json!(deadline),
+            _ => Value::Null,
+        },
+        // The prompt went unanswered: the service has stopped asserting BUSY, so the provider's
+        // own idle timer may sleep the box.
+        "asserting": s.verdict == Verdict::Busy,
+        "suppressed": s.ceiling == CeilingState::Suppressed,
+        "ceiling_seconds": s.settings.ceiling,
+        "prompt_timeout_seconds": s.settings.prompt_timeout,
+        "ask_at_ceiling": s.settings.ask,
+        "cpu_fraction": s.cpu_fraction,
+        "verdict_written": s.verdict_written,
+        // What actually keeps a BUSY box awake (#257). An error while BUSY means nothing is:
+        // the provider's own idle timer may sleep the box.
+        "keep_awake": {
+            "last_sent": s.keep_awake_sent,
+            "error": s.keep_awake_error,
+        },
+    })
+}
+
+/// How long the service may go without finishing a tick before `status` says it has stalled:
+/// `WAKE_GAP_S`, past the 7.9-14.3 s a CFS quota was measured starving the sampler, so a throttled
+/// busy box is not reported unprotected, and well inside the heartbeat's 60 s. A status taken just
+/// after a resume, before the service's next tick, can read as stalled for that one tick: the
+/// monotonic clock ran on through the sleep (`sample::Sample`).
+const STALL_AFTER_S: f64 = WAKE_GAP_S;
+
+/// Whether a service whose last tick was at `last` has stalled, at `now`.
+fn stalled(last: f64, now: f64) -> bool {
+    now - last > STALL_AFTER_S
+}
+
 /// Where the verdict file sits for a given socket. The reader is a local process on the same box, so
 /// it is a sibling of the socket and never on a bind mount: `os.replace` on a Docker Desktop mount
 /// is not atomic for a reader, which the measurement found the hard way.
 ///
 /// Derived from the socket path and nothing else, so it is exactly as private as the socket: the
-/// app puts that under Application Support per bundle id, and Dev, Nightly and Release therefore
-/// each get their own agent, verdict, temp and self-call files. `.tmp` is a fixed sibling name
+/// app puts this Mac's under Application Support per bundle id, and Dev, Nightly and Release
+/// therefore each get their own agent, verdict and temp files. `.tmp` is a fixed sibling name
 /// written without `O_EXCL`; a same-user peer who could plant a symlink there could write these
 /// files directly, so nothing is gained by guarding against them.
 pub fn verdict_path(socket: &Path) -> PathBuf {
@@ -1030,36 +1193,102 @@ pub fn verdict_path(socket: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Where an agent keeps the last settings the app sent it (#257), beside its socket like the
+/// verdict. A remote agent outlives every connection and keeps its environment through a hand-off,
+/// so this is how the app's settings survive the agent's own restart. A remote host's socket is a
+/// fixed path, so every app that connects to it, any Mac's and any channel's, shares this one file
+/// and the last to connect wins (TODOS.md).
+pub fn settings_path(socket: &Path) -> PathBuf {
+    let mut name = socket.as_os_str().to_owned();
+    name.push(".settings");
+    PathBuf::from(name)
+}
+
+/// The settings kept at `path`, or None when there are none or they do not parse: the agent then
+/// starts with its flags, environment or defaults.
+pub fn load_settings(path: &Path) -> Option<Settings> {
+    let text = std::fs::read(path).ok()?;
+    Settings::from_json(&serde_json::from_slice(&text).ok()?).ok()
+}
+
+/// The one thread that writes `path`, in the order settings are sent to it: two requests at once
+/// (two apps connected, say) would otherwise share the temporary file and could leave it garbled,
+/// and the next start would then quietly fall back to the flags. Best effort: a failed save costs
+/// the next start these settings, and the app sends them again on its next connect. The thread
+/// ends when every sender is gone.
+pub fn settings_saver(
+    path: PathBuf,
+) -> (
+    std::sync::mpsc::Sender<Settings>,
+    std::thread::JoinHandle<()>,
+) {
+    let (sender, receiver) = std::sync::mpsc::channel::<Settings>();
+    let thread = std::thread::Builder::new()
+        .name("wr-settings".into())
+        .spawn(move || {
+            for settings in receiver {
+                if let Err(e) = save_settings(&path, settings) {
+                    crate::note!("wakefulness: settings not kept for the next start: {e}");
+                }
+            }
+        })
+        .expect("spawn the settings saver");
+    (sender, thread)
+}
+
+/// Keeps `settings` at `path`, atomically, so a crash mid-write leaves the old file or the new one.
+pub fn save_settings(path: &Path, settings: Settings) -> std::io::Result<()> {
+    let tmp = path.with_extension("settings.tmp");
+    std::fs::write(&tmp, settings.to_json().to_string())?;
+    std::fs::rename(&tmp, path)
+}
+
 #[cfg(target_os = "linux")]
 pub use service::spawn;
 
 #[cfg(target_os = "linux")]
 mod service {
+    use super::heartbeat::{self, KeepAwake};
     use super::{
-        drain_counters, shared, verdict_path, write_verdict, Boundary, Ceiling, CeilingState,
-        Classifier, Policy, Settings, Verdict, EXCLUDED_COMMS, NET_WINDOW_S,
+        drain_counters, load_settings, settings_path, settings_saver, shared, verdict_path,
+        write_verdict, Boundary, Ceiling, CeilingState, Classifier, Policy, Settings,
+        EXCLUDED_COMMS,
     };
     use crate::session::SessionStore;
-    use std::path::Path;
-    use std::time::{Duration, SystemTime};
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     /// Starts the wakefulness thread. One per agent; it runs whether or not a client is attached,
     /// because the whole point is to keep reporting while the user's Mac is asleep.
+    ///
+    /// The settings the app last sent this agent (#257) win over `settings` (its flags, environment
+    /// or defaults): they are the app's latest word, and a remote agent is started by its
+    /// supervisor with none of its own.
     pub fn spawn(sessions: SessionStore, socket: &Path, settings: Settings) {
         let socket = socket.to_path_buf();
+        // Before `serve` accepts a connection, so no `settings` request can arrive with nowhere to
+        // be kept, and the kept file is read before any request can rewrite it.
+        let kept = settings_path(&socket);
+        let settings = load_settings(&kept).unwrap_or(settings);
+        shared()
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .settings_saver = Some(settings_saver(kept).0);
         std::thread::spawn(move || {
             let path = verdict_path(&socket);
             let run = std::panic::AssertUnwindSafe(|| run(sessions, path, settings));
-            // A panic here is otherwise silent: the handle is dropped, nothing restarts the thread,
-            // and the verdict file freezes at its last line, which its reader takes as BUSY for the
-            // rest of the box's life. Retiring the verdict says "no classifier here" instead.
+            // A panic here is otherwise silent: the handle is dropped and nothing restarts the
+            // thread. The heartbeat stops, so the provider may sleep a busy box, and `status` says
+            // `running: false`, which hides the badge (TODOS.md). Retiring the verdict file keeps
+            // it from freezing at its last line.
             if std::panic::catch_unwind(run).is_err() {
                 super::retire_verdict(&socket);
             }
         });
     }
 
-    fn run(sessions: SessionStore, path: std::path::PathBuf, settings: Settings) {
+    fn run(sessions: SessionStore, path: PathBuf, settings: Settings) {
         // Named so this thread's own cost can be read from outside the process, at
         // /proc/<pid>/task/<tid>/, against the plan's 0.5%-of-a-core gate. Thread names do not reach
         // /proc/<pid>/comm, so this cannot change how the classifier sees the agent.
@@ -1072,15 +1301,8 @@ mod service {
             .with_wake_mask()
             .with_clk_tck(super::sample::clk_tck());
         let mut ceiling = Ceiling::new(settings);
-        // The shim touches this around each provider call: that traffic is ours, not the workroom's,
-        // and without subtracting it the release's own HTTPS call re-votes BUSY and the timers flap.
-        // A requirement on the shim, stated here because the shim is not written yet: touch it
-        // once per provider call and no more often than every ~8 s. One touch at T masks the net
-        // vote for T..T+3 (`own_call_recent`), T+4 (the tick after a mask is masked too), and the
-        // window then under-counts at T+5 and T+6 (its base is one, then two, samples old, divided
-        // by the full 3 s window); the first accurate net sample is T+7. A shim calling more often
-        // than that would blind the net signal for as long as it kept calling.
-        let selfcall = path.with_extension("selfcall");
+        let start = super::sample::monotonic();
+        let mut keep_awake = KeepAwake::default();
         {
             // Under the same guard the writer uses: `serve` may already have retired the verdict
             // (an immediate accept failure), and `running` must not be set back to true after it.
@@ -1090,13 +1312,12 @@ mod service {
             if *stopped {
                 return;
             }
-            shared()
-                .state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .running = true;
+            let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
+            state.running = true;
+            // Published with `running`, so a `status` before the first tick reads a service that
+            // has just started, not one that stalled at clock 0.
+            state.t = start;
         }
-        let start = super::sample::monotonic();
         let mut tick: u64 = 0;
         loop {
             let due = start + tick as f64 * policy.interval;
@@ -1109,15 +1330,24 @@ mod service {
             let roots = sessions.pids();
             let s = super::sample::sample(roots, &EXCLUDED_COMMS);
             drain_counters(&mut classifier);
-            classifier.step(&s, crate::vcs::is_busy(), own_call_recent(&selfcall));
+            // No own-call mask: the heartbeat is ~30 bytes a minute against a 500 bytes/s
+            // threshold.
+            classifier.step(&s, crate::vcs::is_busy(), false);
             let raw = classifier.verdict();
 
-            let keep = {
+            let (keep, requested) = {
                 let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
-                std::mem::take(&mut state.keep_requested)
+                (
+                    std::mem::take(&mut state.keep_requested),
+                    state.settings_requested.take(),
+                )
             };
+            if let Some(settings) = requested {
+                ceiling.set_settings(s.t, settings);
+            }
             if classifier.resumed() {
                 ceiling.resumed();
+                keep_awake.resumed();
             }
             if keep {
                 ceiling.keep(s.t);
@@ -1136,13 +1366,11 @@ mod service {
                 }
                 _ => None,
             };
-            // Advisory-only: the ceiling never sleeps the box. It can only stop the service
-            // ASSERTING busy, and only after an unanswered prompt.
-            let verdict = if ceiling.suppressing() {
-                Verdict::Idle
-            } else {
-                raw
-            };
+            let verdict = ceiling.published(raw);
+            // The published verdict, after the ceiling, is what keeps the box awake: an unanswered
+            // prompt stops the heartbeat, and the provider's own timer then sleeps the box. Before
+            // the verdict file is written, so a slow disk there cannot hold it up.
+            keep_awake.tick(s.t, &ceiling, raw, heartbeat::send);
             let written = {
                 let stopped = super::VERDICT_STOPPED
                     .lock()
@@ -1153,6 +1381,8 @@ mod service {
                 write_verdict(&path, verdict, s.t).is_ok()
             };
             let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
+            state.keep_awake_sent = keep_awake.last_sent;
+            state.keep_awake_error.clone_from(&keep_awake.error);
             state.verdict_written = written;
             state.verdict = verdict;
             state.raw = raw;
@@ -1172,22 +1402,6 @@ mod service {
             // scheduling that again means an immediate second sample.
             let behind = ((super::sample::monotonic() - start) / policy.interval) as u64;
             tick = tick.max(behind + 1);
-        }
-    }
-
-    fn own_call_recent(selfcall: &Path) -> bool {
-        let Ok(modified) = selfcall.metadata().and_then(|m| m.modified()) else {
-            return false;
-        };
-        match SystemTime::now().duration_since(modified) {
-            Ok(age) => age.as_secs_f64() < NET_WINDOW_S + 1.0,
-            // The stamp is in the future: the wall clock stepped back between the touch and now.
-            // A small step (NTP slewing, a few seconds) keeps the mask; a large one (a post-resume
-            // correction of minutes) drops it, and the shim's traffic votes BUSY once — failing
-            // awake, not asleep. Bounded on purpose: a masked tick moves the net window's base
-            // rather than deferring its bytes, so an unbounded allowance would erase the signal
-            // for as long as the clock stayed behind.
-            Err(ahead) => ahead.duration().as_secs_f64() < NET_WINDOW_S + 1.0,
         }
     }
 

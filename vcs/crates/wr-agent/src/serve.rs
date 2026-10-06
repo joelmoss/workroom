@@ -133,8 +133,8 @@ impl Agent {
     /// across `execve` (`crate::handoff`), which must never be unbound and bound again.
     ///
     /// `wakefulness` configures the awake ceiling (OQ22); the wakefulness service itself starts
-    /// unconditionally on Linux, because the verdict has to keep flowing to the provider's lifecycle
-    /// shim while no client is attached at all — that is the whole reason it exists.
+    /// unconditionally on Linux, because its heartbeat has to keep a busy box awake while no client
+    /// is attached at all — that is the whole reason it exists (#257).
     pub fn run(
         &self,
         listener: UnixListener,

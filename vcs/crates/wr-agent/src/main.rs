@@ -26,14 +26,16 @@ fn usage() -> &'static str {
     "usage:
   wr-agent serve --socket <path> [--idle-timeout <secs>|never] [--screens <dir>]
         [--awake-ceiling <secs>] [--awake-prompt-timeout <secs>] [--ask-at-awake-ceiling]
-        own ptys and services (the daemon role). On Linux it also decides BUSY/IDLE for the
-        provider's lifecycle shim and writes it beside the socket as <socket>.wake.
+        own ptys and services (the daemon role). On Linux it also decides BUSY/IDLE, writes it
+        beside the socket as <socket>.wake, and keeps a BUSY box awake with a UDP heartbeat to
+        the default gateway, which a provider's network idle timer counts.
         The awake ceiling is advisory by default: past it a BUSY box is reported, never slept.
         --ask-at-awake-ceiling prompts the app instead, and lets the box sleep if nobody answers.
         Each flag falls back to WORKROOM_SESSION_AWAKE_CEILING,
         WORKROOM_SESSION_AWAKE_PROMPT_TIMEOUT and WORKROOM_SESSION_ASK_AT_AWAKE_CEILING=1, which
         is how the serve that attach spawns gets them. The WORKROOM_SESSION_ prefix is what keeps
         them out of every session's shell, with the rest of the app's launch variables.
+        Settings the app sends later are kept in <socket>.settings, which wins over both.
         --idle-timeout never is for a supervised remote agent, which must keep running (and keep
         reporting BUSY/IDLE) with no client attached.
         --screens <dir> keeps each session's screen in <dir>, so a pane reattaching after the
@@ -195,15 +197,12 @@ const ENV_AWAKE_PROMPT_TIMEOUT: &str = "WORKROOM_SESSION_AWAKE_PROMPT_TIMEOUT";
 const ENV_ASK_AT_AWAKE_CEILING: &str = "WORKROOM_SESSION_ASK_AT_AWAKE_CEILING";
 
 fn wakefulness_settings_from(args: &[String], env: impl Fn(&str) -> Option<String>) -> Settings {
-    // Finite and positive, or the default. `f64::parse` accepts "nan", "inf" and "-1", and each
-    // one breaks the ceiling a different way: NaN trips it on the first BUSY tick (every comparison
-    // is false), infinity never trips it, and a non-positive prompt timeout expires the prompt on
-    // the next tick and lets the box sleep with no grace at all.
+    // Usable (30 s to 30 days, see `usable_seconds`), or the default.
     let seconds = |name: &str, var: &str| {
         flag(args, name)
             .or_else(|| env(var))
             .and_then(|s| s.parse::<f64>().ok())
-            .filter(|v| v.is_finite() && *v > 0.0)
+            .filter(|v| wr_agent::wakefulness::usable_seconds(*v))
     };
     let defaults = Settings::default();
     Settings {
@@ -1378,11 +1377,14 @@ mod tests {
     }
 
     /// Values that parse but cannot run a ceiling fall back to the default rather than trip it on
-    /// the first tick (NaN, zero, negative), never trip it (infinity), or void the prompt's grace.
+    /// the first tick (NaN, zero, negative), never trip it (infinity, or over 30 days), or void the
+    /// prompt's grace (under 30 s).
     #[test]
     fn wakefulness_settings_reject_values_that_parse_but_cannot_work() {
         let defaults = Settings::default();
-        for bad in ["nan", "inf", "-inf", "0", "-5", "1e400"] {
+        for bad in [
+            "nan", "inf", "-inf", "0", "-5", "1e400", "0.5", "29", "1e300", "2592001",
+        ] {
             let args: Vec<String> = ["--awake-ceiling", bad, "--awake-prompt-timeout", bad]
                 .iter()
                 .map(|s| s.to_string())
@@ -1394,11 +1396,12 @@ mod tests {
                 "prompt timeout {bad:?}"
             );
         }
-        let args: Vec<String> = ["--awake-ceiling", "0.5"]
+        let args: Vec<String> = ["--awake-ceiling", "30", "--awake-prompt-timeout", "2592000"]
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert_eq!(wakefulness_settings_from(&args, |_| None).ceiling, 0.5);
+        let edges = wakefulness_settings_from(&args, |_| None);
+        assert_eq!((edges.ceiling, edges.prompt_timeout), (30.0, 2_592_000.0));
     }
 
     #[test]
