@@ -873,9 +873,10 @@ fn drain_counters(classifier: &mut Classifier) {
 
 // ---- publishing the state ---------------------------------------------------------------------
 
-/// Stops the service for good: `status` says it is not running, and the service thread ends at its
-/// next look, publishing nothing more (a tick already past its heartbeat has sent that one). Called
-/// by `serve` on its way out, and by the service thread if it panics.
+/// Stops the service for good: `status` says it is not running, and the service thread publishes
+/// nothing more and ends within a tick (that last tick may still send one heartbeat, which an agent
+/// on its way out can afford). Called by `serve` on its way out, and by the service thread if it
+/// panics.
 pub fn stop() {
     let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
     state.stopped = true;
@@ -1319,9 +1320,9 @@ mod service {
                 shared().prompt(awake_for, deadline);
             }
 
-            // Skip ahead rather than bursting to catch up: a gap past two intervals is one the
-            // classifier records as BUSY, and catching up would hide it. The next due tick is
-            // the first one strictly after now: `behind` alone is the tick just passed, and
+            // Skip ahead rather than bursting to catch up: a missed tick is simply missed, and
+            // catching up would only take back-to-back samples of the same moment. The next due
+            // tick is the first one strictly after now: `behind` alone is the tick just passed, and
             // scheduling that again means an immediate second sample.
             let behind = ((super::sample::monotonic() - start) / policy.interval) as u64;
             tick = tick.max(behind + 1);

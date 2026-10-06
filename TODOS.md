@@ -4142,7 +4142,9 @@ up the next heartbeat. `wakefulness::stop()` keeps what the retire did that stil
 `wr-wakeshim` STAYS on `EXCLUDED_WITH_DESCENDANTS`. A code comment said the golden fixtures had no
 such process, but every one of the ten traces runs the measurement shim under that name (304 to
 1,055 mentions each), and dropping it made `1-detached-full-r0` replay BUSY where the fixture says
-IDLE. The comment now says so.
+IDLE. The comment now says so. A box that ran an older agent keeps its last `<socket>.wake` (and
+any `.tmp`) beside the socket for good, since only the removed retire step deleted it; nothing reads
+it, so it is left there rather than cleaned up by new code.
 
 **2026-10-05 — the wakefulness net filter holds on a real boxd box (#215 follow-up, checked during
 #257).** A default-created boxd machine lists `eth0` with a `device` entry and no `brport`,
