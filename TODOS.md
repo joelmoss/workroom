@@ -52,33 +52,6 @@ and the sandbox off, like the other cases there.
 `~/.gstack/projects/joelmoss-workroom/master-eng-review-20261005-233111.md` (T6), at /ship,
 2026-10-06.
 
-### Remove what the never-built lifecycle shim left in the agent (wr-agent, macapp) — #257 review
-
-**What:** Delete the agent's `<socket>.wake` verdict file (`write_verdict`, `retire_verdict`,
-`VERDICT_STOPPED`, `verdict_path`), the `verdict_written` status field and the app's
-`verdictWritten`, the classifier's `net_masked` input with its two self-call-mask tests, and
-`wr-wakeshim` from `EXCLUDED_WITH_DESCENDANTS`.
-
-**Why:** All of it was built for the far-side shim, and #257 replaced the shim with the agent's own
-heartbeat. Nothing reads the file, production always passes `net_masked` false, and the comments
-had to be patched to say so (`wakefulness.rs` module doc). Worse, the verdict file is written and
-renamed synchronously on the service thread every tick: the heartbeat goes out first, but a write
-blocked on a stalled volume stops the NEXT tick's heartbeat, so a busy box on boxd (its socket
-directory is on the home disk) can be slept with a healthy network (Codex adversarial, /ship of
-#257). `status` reports `stalled` after 30 s, but the provider's timer does not wait for anyone to
-look. Deleting the write removes it; also consider giving the heartbeat its own thread fed from the
-published verdict, since a `/proc` read blocked behind a wedged process stalls it the same way.
-
-**How to start:** Remove `net_masked` first and rerun
-`golden_fixtures_replay_to_their_expected_change_points`: the replay passes false already, so it
-must stay EXACT. `wr-wakeshim` mirrors `vcs/scripts/oq19/analyze.py`'s list, so drop it from both
-or note the divergence. `verdict_written` is a status field: the app already decodes it as
-optional, so removing it needs no protocol bump.
-
-**Depends on:** nothing.
-
-**Priority:** P1 (raised from P2 by /ship's adversarial review of #257, 2026-10-06)
-
 ### Before wiring boxd into the app: a wake-on-connect resets the awake ceiling (wr-agent) — #257 review
 
 **What:** Decide what a resume does to the awake ceiling once a remote host can sleep, before
@@ -113,6 +86,26 @@ make a resume after `Suppressed` stay suppressed until the user answers. Pin it 
 **Priority:** P1, gating boxd in the app (chosen in /ship's adversarial review of #257, 2026-10-06)
 
 ## P2 — perf, correctness, and the next VCS phase
+
+### Give the keep-awake heartbeat its own thread (wr-agent) — #257 review
+
+**What:** Send the heartbeat from a thread of its own, fed the published verdict, instead of from
+the wakefulness service's tick.
+
+**Why:** The service samples `/proc` on the same thread. A read blocked behind a wedged process
+stops the tick, and with it the next heartbeat, so the provider's timer can sleep a busy box with a
+healthy network. `status` reports `stalled` after 30 s, but the timer does not wait for anyone to
+look. The other blocker on that thread, the verdict file write, is gone (Recently done,
+2026-10-06).
+
+**How to start:** The heartbeat thread reads `shared().state` once a second and sends while the
+published verdict is BUSY and the last tick is younger than `STALL_AFTER_S`, so a stalled service
+still lets the box sleep rather than holding it awake forever. `KeepAwake::tick` already takes the
+verdict as input.
+
+**Depends on:** nothing.
+
+**Priority:** P2 (left over from the P1 shim-leftover removal, 2026-10-06)
 
 ### Harden the agent's kept settings (wr-agent) — #257 review
 
@@ -4126,6 +4119,17 @@ error) is one of the hardest to diagnose from a bug report.
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-10-06 — the never-built lifecycle shim's leftovers are out of the agent (#257 review, P1).**
+The `<socket>.wake` verdict file (`write_verdict`, `retire_verdict`, `VERDICT_STOPPED`,
+`verdict_path`), the `verdict_written` status field with the app's `verdictWritten`, and the
+classifier's `net_masked` input with its self-call tests are gone. A slow disk can no longer hold
+up the next heartbeat. `wakefulness::stop()` keeps what the retire did that still matters:
+`running: false`, and a service thread that never comes back once `serve` has exited. The trap:
+`wr-wakeshim` STAYS on `EXCLUDED_WITH_DESCENDANTS`. A code comment said the golden fixtures had no
+such process, but every one of the ten traces runs the measurement shim under that name (304 to
+1,055 mentions each), and dropping it made `1-detached-full-r0` replay BUSY where the fixture says
+IDLE. The comment now says so.
 
 **2026-10-05 — the wakefulness net filter holds on a real boxd box (#215 follow-up, checked during
 #257).** A default-created boxd machine lists `eth0` with a `device` entry and no `brport`,

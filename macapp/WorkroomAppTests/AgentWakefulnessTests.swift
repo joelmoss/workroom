@@ -65,7 +65,6 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertEqual(status.promptTimeoutSeconds, 600, accuracy: 0.001)
     XCTAssertEqual(status.askAtCeiling, true)
     XCTAssertEqual(status.cpuFraction ?? 0, 0.0021, accuracy: 0.0001)
-    XCTAssertEqual(status.verdictWritten, true)
     XCTAssertEqual(status.keepAwake, AgentWakefulness.KeepAwake(lastSent: 14990, error: nil))
   }
 
@@ -81,7 +80,6 @@ final class AgentWakefulnessTests: XCTestCase {
     let service = try connection.wakefulness()
     let status = try await service.status()
     XCTAssertFalse(status.running, "the classifier is Linux-only")
-    XCTAssertNotNil(status.verdictWritten, "decoded; a diagnostic only since #257")
     XCTAssertNotNil(status.askAtCeiling, "the field the settings-mismatch line reads")
     XCTAssertNotNil(status.ceilingSeconds)
     XCTAssertNotNil(status.keepAwake, "the field `unprotected` reads (#257)")
@@ -137,10 +135,6 @@ final class AgentWakefulnessTests: XCTestCase {
       (#""awake_ceiling_exceeded":true"#, #""awake_ceiling_exceeded":false"#),
     ])
     XCTAssertEqual(idleFailing.display, .idle)
-
-    // The verdict file has no reader since the heartbeat replaced the shim: not a protection.
-    let unwritten = try status([(#""verdict_written":true"#, #""verdict_written":false"#)])
-    XCTAssertEqual(unwritten.display, .busyPastCeiling)
 
     // An agent that predates the heartbeat keeps nothing awake: a busy box can refuse the hand-off
     // to a newer one and keep it.

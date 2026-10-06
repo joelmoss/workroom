@@ -787,7 +787,7 @@ final class FakeAgent: @unchecked Sendable {
     "awake_ceiling_exceeded":true,"prompt_pending":true,"prompt_deadline":15600.0,\
     "asserting":true,"suppressed":false,"ceiling_seconds":14400.0,\
     "prompt_timeout_seconds":600.0,"ask_at_ceiling":true,"cpu_fraction":0.0021,\
-    "verdict_written":true,"keep_awake":{"last_sent":14990.0,"error":null},"stalled":false}}
+    "keep_awake":{"last_sent":14990.0,"error":null},"stalled":false}}
     """
 
   static let ceilingPromptJSON =

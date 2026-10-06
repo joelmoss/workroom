@@ -866,9 +866,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   free; review proved both claims wrong, so here they are honestly:
   - **Busy/idle decision — the design's load-bearing piece.** **The deciding half now ships
     (2026-09-21, `wr-agent/src/wakefulness.rs`):** the measured policy (OQ19, P4) sampled at 1 s
-    from `CLOCK_MONOTONIC`, replaying the ten golden traces exactly, writing a monotonic-stamped
-    verdict file for the shim (`<socket>.wake`, reader-side staleness; no shim reads it since #257's
-    heartbeat, see "As built (#257)"), published on
+    from `CLOCK_MONOTONIC`, replaying the ten golden traces exactly (the monotonic-stamped
+    `<socket>.wake` verdict file it wrote for the shim went in 2026-10-06, once #257's heartbeat
+    replaced the shim; see "As built (#257)"), published on
     `Service::Status` (`status`, `keep`, and an `awake_ceiling_prompt` event) with the OQ22 ceiling
     (advisory by default; `--ask-at-awake-ceiling`), and masking its own resume. Idle cost measured
     in a container: 0.46% of one core on a ~5-process box (the 0.5% gate), 1.8% at 500 processes;
@@ -1854,8 +1854,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     them again on its next connect). One saver thread writes the file, in the order the requests
     took effect, set up before the agent accepts a connection: neither the service's thread nor a
     connection's reader waits on the disk, two apps' requests cannot garble it, and one made the
-    moment the agent is up is still kept. The heartbeat is sent before the verdict file is written,
-    so a slow disk there cannot hold it up either. Both bounded to 30 s to 30 days, in the agent and
+    moment the agent is up is still kept. The verdict file is gone (2026-10-06), so no disk write
+    sits on the heartbeat's thread either. Both bounded to 30 s to 30 days, in the agent and
     the app. `AgentBootstrap.connect` sends the app's settings on every connect; an agent without
     the request answers `unsupported`, which is logged, and the connect goes on.
     `STATUS_SERVICE_VERSION` stays 1: the request is an addition, and the app accepts only 1.
@@ -1864,8 +1864,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     say), past the 7.9-14.3 s a CFS quota was measured starving the sampler, judged against a clock
     read by the request itself. The badge's "busy but not kept awake" now means an
     unanswered prompt, a stalled service, a BUSY box whose heartbeat is failing (no default route,
-    say), or an agent that predates the heartbeat; `verdict_written` no longer counts, since nothing
-    reads the verdict file. `HostDriverTraits.keepAwakeHoldsCredential` is false for both drivers.
+    say), or an agent that predates the heartbeat. `verdict_written` is gone from `status` with the
+    verdict file. `HostDriverTraits.keepAwakeHoldsCredential` is false for both drivers.
   - **Remote ceiling prompts.** A remote agent whose box sleeps is now handed this Mac's
     ask-at-ceiling setting, so it asks too. Each remote host's `WakefulnessModel` watches for its
     prompts from the moment `RemoteWorkrooms.connect` installs the host's connection (the watch
@@ -3621,7 +3621,7 @@ service milestones below so each layer can be reviewed and landed independently.
      OQ22 ceiling (advisory-only by default, ask-the-user behind `--ask-at-awake-ceiling`). Still
      owed: a real Claude Code trace (TODOS), the app side of the status and the ceiling prompt, and
      the far-side shim reading `<socket>.wake` (Phase 3; #257 replaced the shim with the agent's own
-     heartbeat, so nothing reads `<socket>.wake` now).
+     heartbeat, and the file itself went on 2026-10-06).
 
      **Port forwarding is implemented (#208, agent half).** `Service::Forward` (`0x05`) carries one
      TCP connection per multiplex stream: the client sends `open` on a fresh stream naming a host and

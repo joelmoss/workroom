@@ -26,9 +26,9 @@ fn usage() -> &'static str {
     "usage:
   wr-agent serve --socket <path> [--idle-timeout <secs>|never] [--screens <dir>]
         [--awake-ceiling <secs>] [--awake-prompt-timeout <secs>] [--ask-at-awake-ceiling]
-        own ptys and services (the daemon role). On Linux it also decides BUSY/IDLE, writes it
-        beside the socket as <socket>.wake, and keeps a BUSY box awake with a UDP heartbeat to
-        the default gateway, which a provider's network idle timer counts.
+        own ptys and services (the daemon role). On Linux it also decides BUSY/IDLE and keeps a
+        BUSY box awake with a UDP heartbeat to the default gateway, which a provider's network
+        idle timer counts.
         The awake ceiling is advisory by default: past it a BUSY box is reported, never slept.
         --ask-at-awake-ceiling prompts the app instead, and lets the box sleep if nobody answers.
         Each flag falls back to WORKROOM_SESSION_AWAKE_CEILING,
