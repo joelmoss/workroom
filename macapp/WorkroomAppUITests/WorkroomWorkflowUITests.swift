@@ -149,11 +149,9 @@ final class WorkroomWorkflowUITests: XCTestCase {
       "clicking the +N badge opens the extra-notifications popover")
 
     // Close it, and wait until NO popover remains: otherwise it would satisfy the bell step's
-    // `app.popovers.firstMatch` before the bell opened anything. A click away, not Escape: Escape
-    // left this popover open in three of three runs (measured 2026-10-06).
-    app.descendants(matching: .any).matching(identifier: "terminal.pane").firstMatch.click()
-    XCTAssertTrue(
-      waitForDisappearance(plusPopover), "a click away should close the +N popover")
+    // `app.popovers.firstMatch` before the bell opened anything.
+    app.typeKey(.escape, modifierFlags: [])
+    XCTAssertTrue(waitForDisappearance(plusPopover), "Escape should close the +N popover")
     XCTAssertTrue(
       waitForDisappearance(app.popovers.firstMatch), "no popover should remain open")
 
@@ -178,12 +176,9 @@ final class WorkroomWorkflowUITests: XCTestCase {
     XCTAssertTrue(
       popover.waitForExistence(timeout: 4), "a bell click opens the notifications popover")
     assertLabel(bell, equals: "Notifications, 7 unread")
-    // Dismiss the transient popover before the next step. A click away, not Escape: Escape left it
-    // open in three of three runs (measured 2026-10-06; the original test pressed Escape but never
-    // checked).
-    app.descendants(matching: .any).matching(identifier: "terminal.pane").firstMatch.click()
-    XCTAssertTrue(
-      waitForDisappearance(popover), "a click away should close the bell popover")
+    // Dismiss the transient popover before the next step.
+    app.typeKey(.escape, modifierFlags: [])
+    XCTAssertTrue(waitForDisappearance(popover), "Escape should close the bell popover")
 
     // ⇧⌘N (Next Notification) opens the oldest pending notification's terminal and dismisses it — the
     // same `openOldestNotification` path a ⌘-click on the bell drives. The oldest is the ×3 "Tests
