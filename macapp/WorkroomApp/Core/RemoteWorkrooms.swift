@@ -404,7 +404,12 @@ enum RemoteWorkrooms {
       var remaining = host
       remaining.state = "failed"
       remaining.grantID = grant
-      if liveHost == nil { (remaining.id, remaining.container) = (nil, nil) }
+      if liveHost == nil {
+        // The box is gone though its grant is not: the record forgets the host, so a later delete
+        // could not find its prompt watch to stop (#257).
+        if let id = host.id { await MainActor.run { WakefulnessModel.forgetHost(id) } }
+        (remaining.id, remaining.container) = (nil, nil)
+      }
       try? await recorder.record(name, remaining)
       throw RemoteProvisioning.Failure.rollbackIncomplete(
         cause: cause, host: liveHost, grantID: grant, cleanup: left)
