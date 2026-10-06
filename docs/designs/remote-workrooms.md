@@ -15,16 +15,16 @@ Mode: Builder
 only in a Nightly or Dev build with the hidden `remoteWorkroomsPreview` setting, and only on the
 container driver (the Mac's own Docker, from the `workroom-host` image). Merged so far: host
 descriptors in config (#249, PR #275, 2026-10-01); the credential broker service (#250, in
-joelmoss/codaset#43, 2026-10-01) and its clients (#251, PR #263, 2026-09-30); portable derivation
-on the container driver (#252, PR #280, 2026-10-01); the boxd driver with portable derivation
-(#256, PR #281, 2026-10-02), which the app does not yet create on; and remote workrooms in the app
-(#253, PR #289, 2026-10-02). Follow-ups from #253's reviews are #283 to #288; #283 (closing a
-remote pane ends its session on the host) is merged (PR #306, 2026-10-03), with its own follow-ups
-in #293, #297 and #304. The rest of Phase 4 is
-open: pane parity (#254), cross-machine reattach (#255), the lifecycle shim (#257), boxd live fork
-(#258) and the second real provider, exe.dev (#259). #260 is the gate: it runs the Success
-Criteria on two real providers, and the remote UI leaves Nightly only after they pass. The first
-Nightly DMG with the Linux agent inside (#227) still has to be checked, and that check is part of
+joelmoss/codaset#43, 2026-10-01) and its clients (#251, PR #263, 2026-09-30); portable derivation on
+the container driver (#252, PR #280, 2026-10-01); the boxd driver with portable derivation (#256, PR
+#281, 2026-10-02), which the app does not yet create on; and remote workrooms in the app (#253, PR
+#289, 2026-10-02). Follow-ups from #253's reviews are #283 to #288; #283 (closing a remote pane ends
+its session on the host) is merged (PR #306, 2026-10-03), with its own follow-ups in #293, #297 and
+#304. The rest of Phase 4 is open: pane parity (#254), cross-machine reattach (#255), keeping a busy
+box awake (#257, built as a heartbeat in the agent, not a shim), boxd live fork (#258) and the
+second real provider, exe.dev (#259). #260 is the gate: it runs the Success Criteria on two real
+providers, and the remote UI leaves Nightly only after they pass. The first Nightly DMG with the
+Linux agent inside (#227) still has to be checked, and that check is part of
 #260. Each merged item has its "As built" entry under Phase 4.
 
 The 2026-09-26 status follows.
@@ -67,7 +67,7 @@ item 3. The File service is implemented too (#211): directory listing, containme
 and change notification on `Service::File`, with the app's watch sites routed through it. The GitHub
 status and interchangeability services followed (#207, #208), and the whole stack is now merged.
 OQ1's gix measurements and OQ21's Swift driver decision are answered. The gix code remains a spike.
-Phase 4 (provisioning, credentials, the lifecycle shim and the UI) remains planned.
+Phase 4 (provisioning, credentials, keeping a busy box awake and the UI) remains planned.
 The implementation sequence and remaining decisions are in **Next Steps**.
 
 ## Problem Statement
@@ -204,7 +204,7 @@ datagrams; the portable path has no such constraint. Two reasons the distinction
   **region proximity**, and **live-process suspend on any provider that stops instances regardless
   of the wakefulness service** — where the far-side shim can defer the stop this is not a gate;
   where it cannot, a resumed workroom loses the running process, and no emulator recovers a dead
-  child.
+  child. (#257 built a heartbeat in the agent instead of the shim.)
 - **The accepted degradation closing premise 8 is no longer acceptable.** "Returns primary-screen
   content but neither its running process nor a full-screen program's screen" is the most
   discernible difference available. The screen half is answered by the shadow emulator; the process
@@ -250,6 +250,8 @@ datagrams; the portable path has no such constraint. Two reasons the distinction
   policy is *not* a gate — it is translated by a far-side per-driver shim (see below).
   **And agnosticism is scoped to the agent, not to the whole far side:** exactly one small,
   auditable, provider-specific component is sanctioned over there. See Provider Decision and Phase 3.
+  **Superseded by #257:** that component, the shim, was not built; the agent keeps a busy box awake
+  itself (see "As built (#257)").
 
 ## Decisions Made This Session
 
@@ -289,7 +291,9 @@ datagrams; the portable path has no such constraint. Two reasons the distinction
   *busy or idle*, and a thin per-driver shim beside it translates that into the provider's own
   control-plane call. Phase 3 already put a per-driver supervisor on the far side, so this uses an
   existing seam rather than opening one. The cost is a provider control-plane credential on the VM,
-  which premise 6 now has to account for rather than deny.
+  which premise 6 now has to account for rather than deny. **Superseded by #257:** the agent keeps
+  a busy box awake itself, with a network heartbeat, so no shim and no credential ship (see "As
+  built (#257)").
 - **The portable path ships before any accelerator.** Fast provider capabilities are optimisations
   added to a working portable implementation — never the first implementation. A "pluggable" system
   whose fast path lands first ends up permanently shaped like its first provider.
@@ -863,14 +867,16 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **Busy/idle decision — the design's load-bearing piece.** **The deciding half now ships
     (2026-09-21, `wr-agent/src/wakefulness.rs`):** the measured policy (OQ19, P4) sampled at 1 s
     from `CLOCK_MONOTONIC`, replaying the ten golden traces exactly, writing a monotonic-stamped
-    verdict file for the shim (`<socket>.wake`, reader-side staleness), published on
+    verdict file for the shim (`<socket>.wake`, reader-side staleness; no shim reads it since #257's
+    heartbeat, see "As built (#257)"), published on
     `Service::Status` (`status`, `keep`, and an `awake_ceiling_prompt` event) with the OQ22 ceiling
     (advisory by default; `--ask-at-awake-ceiling`), and masking its own resume. Idle cost measured
     in a container: 0.46% of one core on a ~5-process box (the 0.5% gate), 1.8% at 500 processes;
     the provider re-measure is owed. Note the split settled in Provider Decision: this service only
     *decides* busy or idle and reports it; a per-driver far-side shim does the provider-specific
-    translating (Phase 3). The two problems the draft below records are what the measurement and
-    the port resolved; kept as the history of why:
+    translating (Phase 3; #257 replaced the shim with the agent's own heartbeat). The two problems
+    the draft below records are what the measurement and the port resolved; kept as the history of
+    why:
     - *The signal is wrong in both directions.* "Foreground pgid is not the shell"
       (`SessionPTY.foregroundProcessGroup`, `tcgetpgrp`; used once today at
       `SessionDaemon.swift:376-377`) reports **idle** for `make &`, `npm run dev &`, or any
@@ -1004,12 +1010,14 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **A supervisor.** Something must start the agent on boot and after resume, and on the far side
     that is genuinely per-driver (systemd unit, provider init hook, wrapper) because it *is* how that
     provider's box boots. Note the far side differs from local here: a remote agent must survive with
-    no client attached, since the busy/idle reports feeding the shim have to keep flowing while your
-    Mac sleeps. So remote does need supervision that local does not.
+    no client attached, since the busy/idle decision that keeps the box awake has to keep running
+    while your Mac sleeps. So remote does need supervision that local does not.
   - **A lifecycle shim.** Takes the agent's busy/idle reports and makes the provider's control-plane
     defer call, so a job survives an idle timer with the Mac asleep (see Provider Decision). Holds
     an instance-scoped provider credential, must die with the instance including on failure paths,
     and must stay small enough to audit by reading. Its credential scope is a declared trait.
+    **Superseded by #257:** the agent keeps a busy box awake with a network heartbeat the provider's
+    idle timer counts, so no shim and no credential ship. See "As built (#257)".
   Everything else pushed to the far side is the agnostic agent. If a third provider-specific
   component appears, that is the signal the abstraction is wrong.
 - **A stream is not persistence.** Today's `wr-agent serve --stdio` creates a connection-scoped
@@ -1482,13 +1490,15 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     - The app creates remote workrooms on the container driver only (#253, part 2), so for boxd
       the acceptance criterion's "from the app" is met through `RemoteProvisioning` only.
     - A derived workroom keeps boxd's default timers, so it hibernates after 4 h with no network
-      traffic, busy or not. That is the lifecycle shim's job (#257).
+      traffic, busy or not. Closed by #257: the agent's heartbeat keeps a BUSY box awake (see
+      "As built (#257)" below).
     - Renaming a machine (`boxd machine rename`) changes its hostname, so its identity unit would
       mint a new identity and drop the enrolment. Nothing renames one.
-    - Machines are not `--isolated`, because isolation also removes the in-VM `boxd` CLI the
-      lifecycle shim needs (Phase 0, result 1). So any boxd integration connected on the account
-      (its short-lived tokens under `/run/boxd`) can be read by code a workroom runs, and
-      cancelling the broker grant does not revoke it. Only git's credential path is the broker's.
+    - Machines are not `--isolated`, because isolation also removes the in-VM `boxd` CLI, which the
+      lifecycle shim needed (Phase 0, result 1); #257 built a heartbeat instead, so that reason has
+      gone and whether to isolate is open again. So any boxd integration connected on the account
+      (its short-lived tokens under `/run/boxd`) can be read by code a workroom runs, and cancelling
+      the broker grant does not revoke it. Only git's credential path is the broker's.
     - A CLI call ended by its timeout or a cancelled derive can still finish on boxd's side after
       the one cleanup pass, leaving a machine or snapshot nothing records. This is the container
       driver's gap again, with the same owner: #253's reconciler, which can sweep this driver's
@@ -1753,11 +1763,13 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     remote one, which may have to reconnect over ssh first; a keep slower than that can miss the
     quit. The Linux agent runs the classifier unconditionally (`serve.rs`), so neither the agent nor
     host setup changed. A remote badge's tooltip leaves out the settings-mismatch sentence: that
-    agent was never started with the Mac's settings.
+    agent was never started with the Mac's settings (since #257 it is handed them on each connect,
+    and the sentence is still left out).
   - **Known limits.** The viewer opens a cmd-clicked file at the top: `FileDescriptor` has no line.
     A path outside the workroom (`/etc/hosts`, a sibling checkout) opens nothing. The ceiling prompt
-    is still raised only for the Mac's agent: a remote host's "Keep awake" works from its badge, but
-    no prompt card is shown for it, and a remote keep that fails shows nothing either (#324).
+    was raised only for the Mac's agent when this landed: a remote host's "Keep awake" worked from
+    its badge, but no prompt card was shown for it, and a remote keep that fails shows nothing
+    either (#324). #257 now shows a remote host's prompt card (see "As built (#257)").
     `hostCwd` is asked for again each time a command finishes, one round trip later, so a click
     inside that round trip after a `cd` resolves against the previous directory. `hostCwd` is the
     host's resolved path while the workroom root is the recorded one, so where the root goes
@@ -1809,6 +1821,75 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     it, and an answer whose pane has closed opens nothing. An error reading one path moves on to the
     next candidate. A transport failure stops the probe, and so does a resolve or file open that
     timed out, or either one refused at the cap.
+- **As built (#257, keeping a busy box awake).** **The far-side shim is not built; the agent keeps
+  the box awake itself, with a heartbeat.** This replaces the Provider Decision's per-driver
+  lifecycle shim and the Distribution Plan's "two artifacts" (owner, 2026-10-05, in an eng review
+  whose report is in `~/.gstack/projects/joelmoss-workroom/`).
+  - **Why a heartbeat.** boxd's suspend and hibernate timers count only idle network seconds (Phase
+    0 item 5). A probe on one machine with 120 s timers (2026-10-05) sent one 1-byte UDP datagram to
+    the default gateway every 60 s: the machine stayed `running` for six minutes with no gap in its
+    job's ticks. With the datagrams stopped and the job still running, it hibernated 120 s after the
+    last one (between 657 and 677 s against a predicted 668), while the box's own background traffic
+    (40-140 bytes per 10 s) did not hold it. So no `boxd` command, timer change, saved state or
+    credential is needed, and premise 6's "a provider control-plane credential on the VM" does not
+    arise for this.
+  - **What runs.** The wakefulness loop (`wakefulness/heartbeat.rs`, Linux only, so every remote
+    agent) sends one datagram to the IPv4 default gateway, read from `/proc/net/route` each time,
+    port 9, on the first tick the *published* verdict is BUSY and every 60 s while it stays BUSY,
+    from a fresh non-blocking socket each time, and on the first BUSY tick after a resume (the
+    provider's idle timer started over). IDLE sends nothing. So does a ceiling prompt
+    nobody answered, because the published verdict is then IDLE (OQ22): the box sleeps on its own
+    timer. A failed send is retried on the next tick. About 30 bytes a minute, against the
+    classifier's 500 bytes/s net threshold, so it cannot vote its own box BUSY; the
+    `<socket>.selfcall` mask that a shim's provider calls needed is gone from the loop. A dead agent
+    sends nothing, and boxd sleeps the box, which keeps its processes (Phase 0 item 5, run 1), so
+    the failure is a paused job, not a killed one.
+  - **Settings reach a running agent.** A remote agent outlives every connection and keeps its
+    environment through a hand-off (`execv`), so flags alone never changed it. `Service::Status`
+    gains a `settings` request (`ceiling_seconds`, `prompt_timeout_seconds`, `ask_at_ceiling`); the
+    service applies it on its next tick (`Ceiling::set_settings`: the same settings again change
+    nothing, and otherwise a pending prompt survives only while ask mode stays on and the box is
+    still past the new ceiling) and keeps it at `<socket>.settings`, which wins over flags and
+    environment at the next start (not a reboot: `/run` is tmpfs on a real host, and the app sends
+    them again on its next connect). One saver thread writes the file, in the order the requests
+    took effect, set up before the agent accepts a connection: neither the service's thread nor a
+    connection's reader waits on the disk, two apps' requests cannot garble it, and one made the
+    moment the agent is up is still kept. The heartbeat is sent before the verdict file is written,
+    so a slow disk there cannot hold it up either. Both bounded to 30 s to 30 days, in the agent and
+    the app. `AgentBootstrap.connect` sends the app's settings on every connect; an agent without
+    the request answers `unsupported`, which is logged, and the connect goes on.
+    `STATUS_SERVICE_VERSION` stays 1: the request is an addition, and the app accepts only 1.
+  - **What the app shows.** `status` gains `keep_awake` (`last_sent`, `error`) and `stalled`: true
+    once the service has gone 30 s (`WAKE_GAP_S`) without finishing a tick (a blocked `/proc` read,
+    say), past the 7.9-14.3 s a CFS quota was measured starving the sampler, judged against a clock
+    read by the request itself. The badge's "busy but not kept awake" now means an
+    unanswered prompt, a stalled service, a BUSY box whose heartbeat is failing (no default route,
+    say), or an agent that predates the heartbeat; `verdict_written` no longer counts, since nothing
+    reads the verdict file. `HostDriverTraits.keepAwakeHoldsCredential` is false for both drivers.
+  - **Remote ceiling prompts.** A remote agent whose box sleeps is now handed this Mac's
+    ask-at-ceiling setting, so it asks too. Each remote host's `WakefulnessModel` watches for its
+    prompts from the moment `RemoteWorkrooms.connect` installs the host's connection (the watch
+    never connects a host itself), and the toast stack shows each host's card, titled with its
+    workroom's name. A deleted host's model and watch go with it. Only a host its provider sleeps
+    when idle (`HostDriverTraits.sleepsWhenIdle`: boxd yes, containers no) is handed ask mode, since
+    the prompt says the box may sleep, and only such a host's badge ever says "not kept awake": on
+    one that never sleeps, an old or stalled agent or a failing heartbeat is no risk.
+  - **Nothing to install.** No flag, unit or script changes: a machine made before #257 gets the
+    heartbeat with its next agent push, which the bootstrap already keys by hash.
+  - **Acceptance, live on boxd (2026-10-06).** Three fresh machines with 120 s suspend and hibernate
+    timers, each running the same 6-minute job with no network I/O and no client attached, status
+    polled every 20 s from the control plane only. **Control** (no agent): hibernated mid-job, last
+    tick at 290 s. **Treatment** (this build's agent): all 36 ticks with no gap, then hibernated
+    121-141 s after the job ended, so the box still sleeps once idle. **Ask mode** (the same agent
+    started with a saved 60 s ceiling and 30 s prompt, no app to answer): hibernated mid-job like
+    the control, so an unanswered prompt stops the heartbeat. Both sleeping machines lasted about
+    290 s, not 120 s: a fresh machine's own start-up traffic holds its timer for the first few
+    minutes.
+  - **Known limits.** Measured on boxd only. A provider whose idle meter ignores traffic to the
+    gateway, or whose idle window is under 60 s, is not kept awake by it; exe.dev (#259) measures
+    its own. An IPv6-only box has no IPv4 default route and reports the error, and so does a default
+    route with no gateway (`default dev wg0`), which a provider VM is not known to have. A changed
+    setting reaches a remote agent on the app's next connect, not while connected.
 
 ## Phase 0 Results
 
@@ -2559,6 +2640,8 @@ disagreement passes every test on either side alone while presenting as an empty
     **how tightly can that credential be scoped?** An instance-scoped defer token is
     fine; an account-wide token on a disposable box is not, and it should disqualify or downgrade a
     driver. Phase 0 item 5 measures it for boxd.
+    **Superseded by #257:** no shim was built. The agent sends a network heartbeat that boxd's idle
+    timer counts, so no provider credential is involved (see "As built (#257)").
 18. **What counts as the second driver?** The agnosticism claim is unverifiable with one. The local
     container is called both "the cheapest real driver" and "the test fixture" in this document —
     decide whether it counts. If it does, the success criterion is nearly free and worth little; if
@@ -2904,6 +2987,7 @@ disagreement passes every test on either side alone while presenting as an empty
   Workroom.app and are pushed on first connect. The shim is small and provider-specific by design —
   it is the sanctioned exception to agnosticism — but it means the bootstrap pushes a *set* keyed by
   driver rather than a single binary, and each driver's shim needs its own Linux build target.
+  **Superseded by #257:** no shim ships; only the agent does (see "As built (#257)").
 - **Two things must be confirmed before push-on-first-connect is load-bearing:**
   - **A Linux ELF inside a notarized `.app`.** `lipo`/`ARCHS` checks do not apply to an ELF;
     the exposure is the reverse. The ELF must **not** land in `Contents/MacOS` and must be sealed
@@ -3536,7 +3620,8 @@ service milestones below so each layer can be reviewed and landed independently.
      (1.8% at 500 processes; the provider figure is owed), and publishes `Service::Status` with the
      OQ22 ceiling (advisory-only by default, ask-the-user behind `--ask-at-awake-ceiling`). Still
      owed: a real Claude Code trace (TODOS), the app side of the status and the ceiling prompt, and
-     the far-side shim reading `<socket>.wake` (Phase 3).
+     the far-side shim reading `<socket>.wake` (Phase 3; #257 replaced the shim with the agent's own
+     heartbeat, so nothing reads `<socket>.wake` now).
 
      **Port forwarding is implemented (#208, agent half).** `Service::Forward` (`0x05`) carries one
      TCP connection per multiplex stream: the client sends `open` on a fresh stream naming a host and
@@ -3702,20 +3787,20 @@ service milestones below so each layer can be reviewed and landed independently.
    #230) and #232 (stop-and-reboot restore, after #228; built 2026-09-25).
 
 5. **Phase 4: credentials, provisioning, lifecycle and the Nightly UI.** Resolve the non-admin
-   repository credential path (OQ20) before claiming ordinary organization-repository support.
-   OQ20 is decided (2026-09-27): a credential broker that Workroom runs.
-   Implement portable derivation first, including identity/key isolation and cleanup of instances
-   and credentials after partial failure. Apply the measured wakefulness policy through the
-   far-side shim. Add boxd's fast derivation only after the portable path passes. Remote UI remains
-   Nightly-only until the success criteria pass; the container fixture alone does not establish
-   parity across two real providers. **Filed 2026-09-27** as #249 (host descriptors; built
-   2026-10-01, PR #275), #250 (broker
-   service; built 2026-10-01, joelmoss/codaset#43) → #251 (broker clients; built 2026-09-30, PR
-   #263) → #252 (portable derivation on the container driver; built 2026-10-01, PR #280) → #253
-   (remote workrooms in the app; built 2026-10-02, PR #289) → #254 (pane parity) and #255
-   (cross-machine reattach, OQ8); #256 (boxd driver; built 2026-10-02, PR #281) → #257 (lifecycle shim) and #258 (boxd live fork); #259 (the second real provider,
-   exe.dev, decided 2026-09-27);
-   and #260, the gate that runs the success criteria on two real providers.
+   repository credential path (OQ20) before claiming ordinary organization-repository support. OQ20
+   is decided (2026-09-27): a credential broker that Workroom runs. Implement portable derivation
+   first, including identity/key isolation and cleanup of instances and credentials after partial
+   failure. Apply the measured wakefulness policy through the far-side shim (#257: through the
+   agent's own heartbeat instead). Add boxd's fast
+   derivation only after the portable path passes. Remote UI remains Nightly-only until the success
+   criteria pass; the container fixture alone does not establish parity across two real providers.
+   **Filed 2026-09-27** as #249 (host descriptors; built 2026-10-01, PR #275), #250 (broker service;
+   built 2026-10-01, joelmoss/codaset#43) → #251 (broker clients; built 2026-09-30, PR #263) → #252
+   (portable derivation on the container driver; built 2026-10-01, PR #280) → #253 (remote workrooms
+   in the app; built 2026-10-02, PR #289) → #254 (pane parity) and #255 (cross-machine reattach,
+   OQ8); #256 (boxd driver; built 2026-10-02, PR #281) → #257 (keeping a busy box awake; built as an
+   agent heartbeat) and #258 (boxd live fork); #259 (the second real provider, exe.dev, decided
+   2026-09-27); and #260, the gate that runs the success criteria on two real providers.
 
 **Release follow-up, independent of Phase 2:** ~~Phase 1 Outstanding item 5 supplies the warning
 about rolling back to v2.0.0 and then updating again. Verify that the first release containing the
