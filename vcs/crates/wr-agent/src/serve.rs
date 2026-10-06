@@ -205,9 +205,8 @@ impl Agent {
                     }
                     std::thread::sleep(Duration::from_millis(25));
                 }
-                // An accept failure (descriptor exhaustion, say) ends the agent, and it must take
-                // the verdict with it exactly as an idle exit does: falling out with the file in
-                // place is BUSY forever to its reader.
+                // An accept failure (descriptor exhaustion, say) ends the agent, and it must stop
+                // the wakefulness service exactly as an idle exit does.
                 Err(e) => {
                     result = Err(e.into());
                     break;
@@ -215,13 +214,9 @@ impl Agent {
             }
         }
         let _ = std::fs::remove_file(socket);
-        // The verdict goes with the socket. A verdict file that stops being rewritten means BUSY to
-        // its reader — which is right for a classifier that was killed or starved, and wrong for
-        // one that exited because nothing was left to own. Retiring it says "no classifier here",
-        // which is a supervisor's problem rather than a reason to hold a box awake forever. The
-        // service thread is still running at this point; `retire_verdict` stops it writing FIRST,
-        // under the same lock, so it cannot rename a fresh verdict into place after the removal.
-        crate::wakefulness::retire_verdict(socket);
+        // The wakefulness service goes with the socket: no more heartbeats from an agent that is
+        // on its way out, and `status` stops saying it is running.
+        crate::wakefulness::stop();
         result
     }
 }

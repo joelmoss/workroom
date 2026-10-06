@@ -6,7 +6,7 @@
 
 use super::sample::Sample;
 use super::*;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 fn golden_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/oq19/golden")
@@ -122,9 +122,8 @@ fn replay(f: &Fixture, policy: Policy) -> Vec<(f64, Verdict)> {
     }
     let mut got = Vec::new();
     for s in &f.samples {
-        // No lifecycle events exist in any fixture and P4 does not read the signal anyway; no net
-        // mask, because the replay is scored the way `analyze.features` scores it.
-        got.extend(c.step(s, false, false));
+        // No lifecycle events exist in any fixture and P4 does not read the signal anyway.
+        got.extend(c.step(s, false));
     }
     got
 }
@@ -358,19 +357,19 @@ fn resume_run(mask: bool) -> (Verdict, Verdict) {
     let mut t = 1000.0;
     let mut net = 10_000u64;
     for _ in 0..5 {
-        c.step(&quiet(t, net), false, false);
+        c.step(&quiet(t, net), false);
         t += 1.0;
     }
     t += 300.0;
     for _ in 0..3 {
         net += 1500;
-        c.step(&quiet(t, net), false, false);
+        c.step(&quiet(t, net), false);
         t += 1.0;
     }
     let after_blip = c.verdict();
     // Past the mask, and past the hysteresis window if anything did vote BUSY.
     for _ in 0..40 {
-        c.step(&quiet(t, net), false, false);
+        c.step(&quiet(t, net), false);
         t += 1.0;
     }
     (after_blip, c.verdict())
@@ -383,41 +382,36 @@ fn the_wake_mask_swallows_the_resume_blip() {
 
 /// Masked bytes must not sit in the rate window and vote the tick the mask ends: the blip is three
 /// seconds of 1.5 KB/s and the mask is three seconds, so the fourth tick sees the whole blip inside
-/// a 3 s window unless the base moved with the mask. Same rule for the shim's self-call mask, which
-/// production no longer uses (#257).
+/// a 3 s window unless the base moved with the mask.
 #[test]
 fn masked_traffic_does_not_vote_the_tick_the_mask_ends() {
-    for self_call in [false, true] {
-        let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
-        let mut t = 1000.0;
-        let mut net = 10_000u64;
-        for _ in 0..5 {
-            c.step(&quiet(t, net), false, false);
-            t += 1.0;
-        }
-        if !self_call {
-            t += 300.0;
-        }
-        for _ in 0..3 {
-            net += 1500;
-            c.step(&quiet(t, net), false, self_call);
-            t += 1.0;
-        }
-        // The first unmasked tick. Its delta is the last masked second's bytes, counted a tick
-        // late, and the earlier masked bytes are still less than 3 s old.
-        net += 1500;
-        c.step(&quiet(t, net), false, false);
-        assert_eq!(
-            c.verdict(),
-            Verdict::Idle,
-            "self_call={self_call}: masked bytes voted once the mask ended"
-        );
-        // From here on, bytes are real again.
+    let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
+    let mut t = 1000.0;
+    let mut net = 10_000u64;
+    for _ in 0..5 {
+        c.step(&quiet(t, net), false);
         t += 1.0;
-        net += 1500;
-        c.step(&quiet(t, net), false, false);
-        assert_eq!(c.verdict(), Verdict::Busy, "self_call={self_call}");
     }
+    t += 300.0;
+    for _ in 0..3 {
+        net += 1500;
+        c.step(&quiet(t, net), false);
+        t += 1.0;
+    }
+    // The first unmasked tick. Its delta is the last masked second's bytes, counted a tick late,
+    // and the earlier masked bytes are still less than 3 s old.
+    net += 1500;
+    c.step(&quiet(t, net), false);
+    assert_eq!(
+        c.verdict(),
+        Verdict::Idle,
+        "masked bytes voted once the mask ended"
+    );
+    // From here on, bytes are real again.
+    t += 1.0;
+    net += 1500;
+    c.step(&quiet(t, net), false);
+    assert_eq!(c.verdict(), Verdict::Busy);
 }
 
 /// A session leader is a candidate like any other process. One at its prompt votes through no
@@ -429,10 +423,10 @@ fn a_session_leader_that_does_work_is_work() {
         let mut c = Classifier::new(Policy::production(), Boundary::agent(999));
         let mut s = quiet(1000.0, 0);
         s.procs[0].comm = comm.into();
-        c.step(&s, false, false);
+        c.step(&s, false);
         s.t += 1.0;
         s.procs[0].ticks = 100;
-        c.step(&s, false, false);
+        c.step(&s, false);
         c.verdict()
     };
     assert_eq!(
@@ -448,7 +442,7 @@ fn a_session_leader_that_does_work_is_work() {
     // And a leader at its prompt still votes nothing.
     let mut c = Classifier::new(Policy::production(), Boundary::agent(999));
     for i in 0..3 {
-        c.step(&quiet(1000.0 + f64::from(i), 0), false, false);
+        c.step(&quiet(1000.0 + f64::from(i), 0), false);
     }
     assert_eq!(c.verdict(), Verdict::Idle);
 }
@@ -460,7 +454,7 @@ fn the_resume_masks_cpu_for_the_tick_after_it_too() {
     let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
     let mut t = 1000.0;
     for _ in 0..3 {
-        c.step(&quiet(t, 0), false, false);
+        c.step(&quiet(t, 0), false);
         t += 1.0;
     }
     t += 300.0;
@@ -471,35 +465,15 @@ fn the_resume_masks_cpu_for_the_tick_after_it_too() {
     for ticks in [0, 40, 80, 120] {
         s.t = t;
         s.procs[1].ticks = ticks;
-        c.step(&s, false, false);
+        c.step(&s, false);
         assert_eq!(c.verdict(), Verdict::Idle, "at resume + {}", t - resumed);
         t += 1.0;
     }
     // Real CPU after the boundary votes.
     s.t = t;
     s.procs[1].ticks = 160;
-    c.step(&s, false, false);
+    c.step(&s, false);
     assert_eq!(c.verdict(), Verdict::Busy);
-}
-
-/// The shim's self-call mask is about interface bytes. It must not silence CPU: a compute-only
-/// job that starts while the shim is talking to the provider is work, and the shim's own CPU is
-/// already excluded by name. The shim was never built (#257) and production passes `net_masked`
-/// false; this pins the classifier until the input is removed (TODOS.md).
-#[test]
-fn the_self_call_mask_leaves_cpu_voting() {
-    let mut c = Classifier::new(Policy::production(), Boundary::agent(999));
-    let mut s = quiet(1000.0, 10_000);
-    c.step(&s, false, true);
-    // One full core over the next second, under the mask.
-    s.t += 1.0;
-    s.procs[1].ticks = 100;
-    c.step(&s, false, true);
-    assert_eq!(
-        c.verdict(),
-        Verdict::Busy,
-        "a core of work is work, masked or not"
-    );
 }
 
 /// What the service reads off the classifier to drive the ceiling: the resume flag is up for the
@@ -509,28 +483,28 @@ fn the_classifier_reports_a_resume_and_a_recent_keystroke() {
     let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
     let mut t = 1000.0;
     for _ in 0..3 {
-        c.step(&quiet(t, 10_000), false, false);
+        c.step(&quiet(t, 10_000), false);
         assert!(!c.resumed());
         t += 1.0;
     }
     t += 300.0;
-    c.step(&quiet(t, 10_000), false, false);
+    c.step(&quiet(t, 10_000), false);
     assert!(c.resumed(), "the first tick after the gap");
     t += 1.0;
-    c.step(&quiet(t, 10_000), false, false);
+    c.step(&quiet(t, 10_000), false);
     assert!(!c.resumed(), "only that tick");
     assert!(!c.user_acted());
     c.push_pty_input(t + 0.5);
     t += 1.0;
-    c.step(&quiet(t, 10_000), false, false);
+    c.step(&quiet(t, 10_000), false);
     assert!(c.user_acted());
     t += 11.0;
-    c.step(&quiet(t, 10_000), false, false);
+    c.step(&quiet(t, 10_000), false);
     assert!(!c.user_acted(), "past the 10 s grace");
     // Without a wake mask (the replay) a gap is never a resume.
     let mut plain = Classifier::new(FROZEN, Boundary::agent(999));
-    plain.step(&quiet(1000.0, 0), false, false);
-    plain.step(&quiet(2000.0, 0), false, false);
+    plain.step(&quiet(1000.0, 0), false);
+    plain.step(&quiet(2000.0, 0), false);
     assert!(!plain.resumed());
 }
 
@@ -541,13 +515,13 @@ fn output_since_the_wake_votes_on_the_first_resumed_tick() {
     let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
     let mut t = 1000.0;
     for _ in 0..5 {
-        c.step(&quiet(t, 10_000), false, false);
+        c.step(&quiet(t, 10_000), false);
         t += 1.0;
     }
     t += 300.0;
     // 2 KB in the second before this tick: 400 B/s over the 5 s window, double the threshold.
     c.push_pty_out(t - 0.5, 2000);
-    c.step(&quiet(t, 10_000), false, false);
+    c.step(&quiet(t, 10_000), false);
     assert_eq!(c.verdict(), Verdict::Busy);
 }
 
@@ -677,36 +651,6 @@ fn a_compressed_run_scales_the_window_and_the_grace_and_nothing_else() {
     let c = FROZEN.compressed();
     assert_eq!((c.window, c.grace), (3.0, 1.0));
     assert_eq!((c.cpu, c.pty, c.net, c.interval), (0.05, 200.0, 500.0, 1.0));
-}
-
-/// LOW 17: `<socket>.wake` means append, not replace. `PathBuf::with_extension` replaces the
-/// existing extension, so a naive port of `<socket>.wake` (`main.rs`'s own `usage()` text and
-/// `docs/designs/remote-workrooms.md`) turned `agent.sock` into `agent.wake` — silently dropping
-/// `.sock` — rather than `agent.sock.wake`.
-#[test]
-fn verdict_path_appends_wake_rather_than_replacing_the_sockets_extension() {
-    assert_eq!(
-        verdict_path(Path::new("/run/workroom/agent.sock")),
-        Path::new("/run/workroom/agent.sock.wake")
-    );
-    // A socket with no extension at all must still gain one rather than staying bare.
-    assert_eq!(
-        verdict_path(Path::new("/run/workroom/agent")),
-        Path::new("/run/workroom/agent.wake")
-    );
-}
-
-#[test]
-fn the_verdict_file_carries_the_monotonic_stamp() {
-    let dir = std::env::temp_dir().join(format!("wr-wake-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    let path = dir.join("agent.wake");
-    write_verdict(&path, Verdict::Busy, 389_975.387_370_9).expect("writes");
-    assert_eq!(
-        std::fs::read_to_string(&path).expect("reads"),
-        "BUSY 389975.387\n"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// LOW 14: `comm` is mutable at runtime, so excluding `EXCLUDED_WITH_DESCENDANTS` by name alone lets
@@ -930,7 +874,7 @@ fn a_service_that_stops_ticking_is_reported_stalled() {
 }
 
 /// What `status` says of a running service that has stopped ticking, and of one that is not
-/// running at all (a macOS agent, a retired one), whose old reading is no stall.
+/// running at all (a macOS agent, a stopped one), whose old reading is no stall.
 #[test]
 fn status_reports_a_stall_only_for_a_running_service() {
     let mut s = shared()

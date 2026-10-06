@@ -69,9 +69,6 @@ struct AgentWakefulness: Decodable, Sendable, Equatable {
   /// The prompt went unanswered and the agent has stopped asserting BUSY.
   let suppressed: Bool
   let promptTimeoutSeconds: Double
-  /// Whether the last verdict reached the agent's verdict file. A diagnostic since the heartbeat
-  /// replaced the far-side shim that read it (#257). Nil from an agent that predates the field.
-  let verdictWritten: Bool?
   /// What keeps a BUSY box awake (#257): the agent's heartbeat. Nil from an agent that predates it.
   let keepAwake: KeepAwake?
   /// The agent's service has gone several ticks without finishing one, so this reply is its last

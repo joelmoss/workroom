@@ -36,18 +36,10 @@
 //!   here (`vcs::is_busy()` already exists), so production turns it on and the replay leaves it off,
 //!   which keeps the golden contract a test of P4 rather than of P5-with-no-events.
 //!
-//! The staleness rule (a verdict older than two intervals means BUSY) belongs to the *reader*: a
-//! stopped classifier cannot say anything. This service therefore must never go quiet while claiming
-//! IDLE, and the verdict file carries the monotonic stamp the reader needs to apply the rule. A
-//! verdict file that does not EXIST is a different statement: "no classifier here" — the agent has
-//! not started, exited idle, or retired the file after a panic — and the reader lets the provider's
-//! own idle timer decide, because holding a box awake for an agent that is not running would hold
-//! it awake forever.
-//!
-//! Nothing in Workroom reads the verdict file since #257: the heartbeat keeps a busy box awake, and
-//! the far-side shim this file was written for was never built. The file, its staleness contract
-//! and the `net_masked` input the shim's self-call mask needed are kept as they were, unused, and
-//! are due to go (TODOS.md). The "reader" in the comments below is that never-built shim.
+//! The staleness rule (a verdict older than two intervals means BUSY) belonged to the far-side shim
+//! that was to read this service's verdict from a file beside the socket. #257 replaced that shim
+//! with the service's own heartbeat ([`heartbeat`]), and the file went with it. The classifier still
+//! records a long gap as a BUSY change-point, because the golden fixtures were scored that way.
 
 pub mod heartbeat;
 pub mod sample;
@@ -74,7 +66,7 @@ type WeakWriter = Weak<Mutex<Box<dyn std::io::Write + Send>>>;
 const PTY_WINDOW_S: f64 = 5.0;
 /// Seconds of network history a rate is taken over. NOT scaled for a compressed run.
 const NET_WINDOW_S: f64 = 3.0;
-/// A sample older than this many intervals means BUSY — applied by the reader, recorded here.
+/// A gap longer than this many intervals is recorded as BUSY, as the golden fixtures were scored.
 const STALENESS_FACTOR: f64 = 2.0;
 /// A compressed measurement run scales the policy's window and grace by this, nothing else.
 const COMPRESSION: f64 = 0.1;
@@ -82,8 +74,9 @@ const COMPRESSION: f64 = 0.1;
 const TIMER_WCHAN: [&str; 3] = ["hrtimer_nanosleep", "do_nanosleep", "common_nsleep"];
 
 /// Housekeeping daemons: their children are their own work, so the whole subtree is excluded.
-/// `wr-wakeshim` is the never-built shim's name (#257); left in because this list mirrors the
-/// frozen policy's (`vcs/scripts/oq19/analyze.py`).
+/// `wr-wakeshim` is the name the measurement harness ran its shim under (`vcs/scripts/oq19`). No
+/// such process runs beside the agent since #257 replaced the shim with the heartbeat, but every
+/// golden fixture has one burning CPU, so dropping the name breaks the replay contract.
 const EXCLUDED_WITH_DESCENDANTS: [&str; 4] =
     ["cron", "unattended-upgr", "apt.systemd.dai", "wr-wakeshim"];
 /// Hosts of user work: excluded themselves, never their children. On a real box `systemd` is pid 1
@@ -261,8 +254,9 @@ fn closure(roots: &[i32], kids: &HashMap<i32, Vec<i32>>) -> HashSet<i32> {
 /// set along with every one of its descendants, and could then burn CPU indefinitely without ever
 /// voting BUSY. A process that IS part of a live session's tree is never excluded by name: only a
 /// `cron`/`wr-wakeshim` outside every session — the real housekeeping daemon this list exists for —
-/// still is, along with its descendants that are not session work. `roots` is carried by `Sample` already (see its doc); the ten golden fixtures contain
-/// no process named `cron` or `wr-wakeshim`, so this cannot change what they replay to.
+/// still is, along with its descendants that are not session work. `roots` is carried by `Sample`
+/// already (see its doc); the golden fixtures contain no `cron`, and their `wr-wakeshim` runs
+/// outside every session, so this cannot change what they replay to.
 fn candidates<'a>(procs: &'a [Proc], roots: &[i32], boundary: &Boundary) -> Vec<&'a Proc> {
     let mut kids: HashMap<i32, Vec<i32>> = HashMap::new();
     for p in procs {
@@ -416,10 +410,8 @@ pub struct Classifier {
     wake_masked_until: Option<f64>,
     /// The last tick was the first after a resume (a gap of [`WAKE_GAP_S`] or more).
     resumed: bool,
-    /// The last tick's net vote was masked, so this tick's delta (bytes that arrived during the
-    /// last masked second) is masked too.
-    net_masked_last: bool,
-    /// Same for the resume mask and CPU: the first tick after it measures the last masked second.
+    /// The last tick was under the resume mask, so this tick's CPU and network deltas (what the
+    /// last masked second used) are masked too.
     wake_masked_last: bool,
     /// The last tick's keystroke age, so the ceiling can tell a user acting from a job running.
     since_input: f64,
@@ -440,7 +432,6 @@ impl Classifier {
             wake_mask: false,
             wake_masked_until: None,
             resumed: false,
-            net_masked_last: false,
             wake_masked_last: false,
             since_input: f64::INFINITY,
         }
@@ -485,7 +476,7 @@ impl Classifier {
         self.pty.push_input(t);
     }
 
-    fn features(&mut self, s: &Sample, lifecycle: bool, net_masked: bool) -> Features {
+    fn features(&mut self, s: &Sample, lifecycle: bool) -> Features {
         let cand = candidates(&s.procs, &s.roots, &self.boundary);
         let dt = match &self.prev {
             Some((prev_t, _)) => s.t - prev_t,
@@ -508,18 +499,15 @@ impl Classifier {
                 sock.state == "ESTAB" && sock.pids.iter().any(|p| cand_pids.contains(p))
             });
         let wake_masked = self.wake_masked_until.is_some_and(|until| s.t < until);
-        // CPU is a delta over the last interval, so the first tick after the resume mask still
-        // measures the last masked second; it is masked too, exactly as the net window is below.
-        let cpu_masked = wake_masked || self.wake_masked_last;
+        // CPU and network are deltas over the last interval, so the first tick after the resume
+        // mask still measures the last masked second; it is masked too.
+        let masked = wake_masked || self.wake_masked_last;
         self.wake_masked_last = wake_masked;
         // A masked tick moves the window's base to itself instead of feeding it: bytes that arrive
         // under a mask must not sit in the window and vote BUSY the tick the mask ends (the resume
         // blip is ~1.5 KB/s for three seconds; unmasking on the fourth with those bytes still inside
-        // a 3 s window is a guaranteed vote and a 30 s hold). The first tick AFTER a mask is
-        // masked too: its delta is the bytes of the last masked second, counted a tick late.
-        let masked_net = net_masked || wake_masked || self.net_masked_last;
-        self.net_masked_last = net_masked || wake_masked;
-        let net = if masked_net {
+        // a 3 s window is a guaranteed vote and a 30 s hold).
+        let net = if masked {
             self.net.clear();
             self.net.feed(s.t, s.net_rx + s.net_tx);
             0.0
@@ -528,13 +516,7 @@ impl Classifier {
         };
         Features {
             t: s.t,
-            // Only the resume mask silences CPU. The shim's self-call mask (unused since #257: the
-            // shim was never built, and production passes `net_masked` false) is about interface
-            // bytes, which no process exclusion can attribute; the shim's own CPU is already
-            // excluded by name, and silencing everyone else's for four seconds per provider call
-            // would hide a compute-only job for as long as the shim keeps calling. The Python it
-            // ports agrees (`live.py`: the self-call mask zeroes `net` alone).
-            cpu: if cpu_masked { 0.0 } else { cpu },
+            cpu: if masked { 0.0 } else { cpu },
             d_state: cand.iter().any(|p| p.state == "D"),
             timer: cand
                 .iter()
@@ -549,15 +531,14 @@ impl Classifier {
 
     /// One tick. Returns the verdict change-points it produced, in order — zero, one, or two (a
     /// staleness BUSY for the gap that just ended, then this tick's own verdict).
-    pub fn step(&mut self, s: &Sample, lifecycle: bool, net_masked: bool) -> Vec<(f64, Verdict)> {
+    pub fn step(&mut self, s: &Sample, lifecycle: bool) -> Vec<(f64, Verdict)> {
         let mut events = Vec::new();
         self.resumed = false;
         if let Some(prev_t) = self.last_t {
             let gap = s.t - prev_t;
             if gap > STALENESS_FACTOR * self.policy.interval {
-                // The reader already called this BUSY; recording it keeps the change-point series
-                // equal to the golden fixtures'. The reader itself asserts up to a second later: it
-                // reads the verdict file's mtime at 1 s resolution with a strict `age > 2 * interval`.
+                // Recorded so the change-point series equals the golden fixtures', whose scorer
+                // called a gap this long BUSY.
                 self.put(
                     &mut events,
                     prev_t + STALENESS_FACTOR * self.policy.interval,
@@ -574,7 +555,7 @@ impl Classifier {
                 self.resumed = true;
             }
         }
-        let f = self.features(s, lifecycle, net_masked);
+        let f = self.features(s, lifecycle);
         self.since_input = f.since_input;
         if f.votes_busy(&self.policy) {
             self.last_busy = Some(f.t);
@@ -890,40 +871,14 @@ fn drain_counters(classifier: &mut Classifier) {
     }
 }
 
-// ---- publishing the verdict -------------------------------------------------------------------
+// ---- publishing the state ---------------------------------------------------------------------
 
-/// Writes `<VERDICT> <monotonic seconds>` to `path`, atomically.
-///
-/// Atomically because the reader polls it and must never see half a line, and every tick because
-/// staleness is the reader's rule: a file that stops being rewritten means BUSY, so a service that
-/// went quiet can never be mistaken for one reporting IDLE. The monotonic stamp is what lets a
-/// reader apply that rule on the classifier's own clock rather than on file mtime.
-pub fn write_verdict(path: &Path, verdict: Verdict, t: f64) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, format!("{} {:.3}\n", verdict.as_str(), t))?;
-    std::fs::rename(&tmp, path)
-}
-
-/// Whether the verdict may still be written. Shared by the service thread and the exiting `serve`,
-/// so "stop writing" and "remove the file" happen in that order under one lock: a thread that
-/// renamed a fresh verdict into place a moment after the removal would leave a file that stops
-/// changing, which its reader takes as BUSY forever, with no agent left to correct it.
-static VERDICT_STOPPED: Mutex<bool> = Mutex::new(false);
-
-/// Ends the verdict's life: nothing writes it again, the file goes, and `status` says the service
-/// is not running. Called by `serve` on its way out, and by the service thread if it panics, so a
-/// dead classifier is never mistaken for a busy one.
-pub fn retire_verdict(socket: &Path) {
-    let mut stopped = VERDICT_STOPPED.lock().unwrap_or_else(|e| e.into_inner());
-    *stopped = true;
-    let path = verdict_path(socket);
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_file(path.with_extension("tmp"));
-    shared()
-        .state
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .running = false;
+/// Stops the service for good: it publishes nothing more and sends no heartbeat, and `status` says
+/// it is not running. Called by `serve` on its way out, and by the service thread if it panics.
+pub fn stop() {
+    let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
+    state.stopped = true;
+    state.running = false;
 }
 
 /// Everything the app can ask about wakefulness. Process-global: one box, one verdict.
@@ -937,7 +892,9 @@ pub struct Wakefulness {
 #[derive(Debug, Clone)]
 struct Published {
     running: bool,
-    /// What the reader sees: the classifier's verdict, or IDLE once the ceiling prompt timed out.
+    /// Set by [`stop`]. The service thread ends at its next look, so `running` is never set back.
+    stopped: bool,
+    /// What the heartbeat follows: the classifier's verdict, or IDLE once the ceiling prompt timed out.
     verdict: Verdict,
     /// What the classifier itself decided, before the ceiling.
     raw: Verdict,
@@ -956,9 +913,6 @@ struct Published {
     settings_saver: Option<std::sync::mpsc::Sender<Settings>>,
     /// The service's own CPU as a fraction of one core, against the 0.5% gate.
     cpu_fraction: f64,
-    /// Whether the last tick's verdict reached the file. Nothing in Workroom reads the file since
-    /// the heartbeat replaced the far-side shim (#257); kept as a diagnostic.
-    verdict_written: bool,
     /// When the last heartbeat went out, on the service's monotonic clock.
     keep_awake_sent: Option<f64>,
     /// Why the last heartbeat could not be sent, while the box is BUSY. Set means the box is NOT
@@ -974,6 +928,7 @@ pub fn shared() -> &'static Wakefulness {
     SHARED.get_or_init(|| Wakefulness {
         state: Mutex::new(Published {
             running: false,
+            stopped: false,
             verdict: Verdict::Idle,
             raw: Verdict::Idle,
             t: 0.0,
@@ -984,7 +939,6 @@ pub fn shared() -> &'static Wakefulness {
             settings_requested: None,
             settings_saver: None,
             cpu_fraction: 0.0,
-            verdict_written: false,
             keep_awake_sent: None,
             keep_awake_error: None,
         }),
@@ -1153,7 +1107,6 @@ fn status_json(s: &Published, now: f64) -> Value {
         "prompt_timeout_seconds": s.settings.prompt_timeout,
         "ask_at_ceiling": s.settings.ask,
         "cpu_fraction": s.cpu_fraction,
-        "verdict_written": s.verdict_written,
         // What actually keeps a BUSY box awake (#257). An error while BUSY means nothing is:
         // the provider's own idle timer may sleep the box.
         "keep_awake": {
@@ -1175,26 +1128,8 @@ fn stalled(last: f64, now: f64) -> bool {
     now - last > STALL_AFTER_S
 }
 
-/// Where the verdict file sits for a given socket. The reader is a local process on the same box, so
-/// it is a sibling of the socket and never on a bind mount: `os.replace` on a Docker Desktop mount
-/// is not atomic for a reader, which the measurement found the hard way.
-///
-/// Derived from the socket path and nothing else, so it is exactly as private as the socket: the
-/// app puts this Mac's under Application Support per bundle id, and Dev, Nightly and Release
-/// therefore each get their own agent, verdict and temp files. `.tmp` is a fixed sibling name
-/// written without `O_EXCL`; a same-user peer who could plant a symlink there could write these
-/// files directly, so nothing is gained by guarding against them.
-pub fn verdict_path(socket: &Path) -> PathBuf {
-    // `with_extension` REPLACES the existing one, so `agent.sock` produced `agent.wake` — not the
-    // documented `agent.sock.wake` (`main.rs`'s own `usage()` and `docs/designs/remote-workrooms.md`
-    // both say `<socket>.wake`, appended). Appending onto the full path is what actually matches.
-    let mut name = socket.as_os_str().to_owned();
-    name.push(".wake");
-    PathBuf::from(name)
-}
-
-/// Where an agent keeps the last settings the app sent it (#257), beside its socket like the
-/// verdict. A remote agent outlives every connection and keeps its environment through a hand-off,
+/// Where an agent keeps the last settings the app sent it (#257), beside its socket. A
+/// remote agent outlives every connection and keeps its environment through a hand-off,
 /// so this is how the app's settings survive the agent's own restart. A remote host's socket is a
 /// fixed path, so every app that connects to it, any Mac's and any channel's, shares this one file
 /// and the last to connect wins (TODOS.md).
@@ -1250,12 +1185,11 @@ pub use service::spawn;
 mod service {
     use super::heartbeat::{self, KeepAwake};
     use super::{
-        drain_counters, load_settings, settings_path, settings_saver, shared, verdict_path,
-        write_verdict, Boundary, Ceiling, CeilingState, Classifier, Policy, Settings,
-        EXCLUDED_COMMS,
+        drain_counters, load_settings, settings_path, settings_saver, shared, Boundary, Ceiling,
+        CeilingState, Classifier, Policy, Settings, EXCLUDED_COMMS,
     };
     use crate::session::SessionStore;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::time::Duration;
 
     /// Starts the wakefulness thread. One per agent; it runs whether or not a client is attached,
@@ -1276,19 +1210,17 @@ mod service {
             .unwrap_or_else(|e| e.into_inner())
             .settings_saver = Some(settings_saver(kept).0);
         std::thread::spawn(move || {
-            let path = verdict_path(&socket);
-            let run = std::panic::AssertUnwindSafe(|| run(sessions, path, settings));
+            let run = std::panic::AssertUnwindSafe(|| run(sessions, settings));
             // A panic here is otherwise silent: the handle is dropped and nothing restarts the
             // thread. The heartbeat stops, so the provider may sleep a busy box, and `status` says
-            // `running: false`, which hides the badge (TODOS.md). Retiring the verdict file keeps
-            // it from freezing at its last line.
+            // `running: false`, which hides the badge (TODOS.md).
             if std::panic::catch_unwind(run).is_err() {
-                super::retire_verdict(&socket);
+                super::stop();
             }
         });
     }
 
-    fn run(sessions: SessionStore, path: PathBuf, settings: Settings) {
+    fn run(sessions: SessionStore, settings: Settings) {
         // Named so this thread's own cost can be read from outside the process, at
         // /proc/<pid>/task/<tid>/, against the plan's 0.5%-of-a-core gate. Thread names do not reach
         // /proc/<pid>/comm, so this cannot change how the classifier sees the agent.
@@ -1304,15 +1236,12 @@ mod service {
         let start = super::sample::monotonic();
         let mut keep_awake = KeepAwake::default();
         {
-            // Under the same guard the writer uses: `serve` may already have retired the verdict
-            // (an immediate accept failure), and `running` must not be set back to true after it.
-            let stopped = super::VERDICT_STOPPED
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if *stopped {
+            let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
+            // `serve` may already have stopped the service (an immediate accept failure), and
+            // `running` must not be set back to true after it.
+            if state.stopped {
                 return;
             }
-            let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
             state.running = true;
             // Published with `running`, so a `status` before the first tick reads a service that
             // has just started, not one that stalled at clock 0, with the settings it started with.
@@ -1331,9 +1260,9 @@ mod service {
             let roots = sessions.pids();
             let s = super::sample::sample(roots, &EXCLUDED_COMMS);
             drain_counters(&mut classifier);
-            // No own-call mask: the heartbeat is ~30 bytes a minute against a 500 bytes/s
+            // The heartbeat's own bytes need no mask: ~30 bytes a minute against a 500 bytes/s
             // threshold.
-            classifier.step(&s, crate::vcs::is_busy(), false);
+            classifier.step(&s, crate::vcs::is_busy());
             let raw = classifier.verdict();
 
             let (keep, requested) = {
@@ -1369,22 +1298,14 @@ mod service {
             };
             let verdict = ceiling.published(raw);
             // The published verdict, after the ceiling, is what keeps the box awake: an unanswered
-            // prompt stops the heartbeat, and the provider's own timer then sleeps the box. Before
-            // the verdict file is written, so a slow disk there cannot hold it up.
+            // prompt stops the heartbeat, and the provider's own timer then sleeps the box.
             keep_awake.tick(s.t, &ceiling, raw, heartbeat::send);
-            let written = {
-                let stopped = super::VERDICT_STOPPED
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if *stopped {
-                    return;
-                }
-                write_verdict(&path, verdict, s.t).is_ok()
-            };
             let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.stopped {
+                return;
+            }
             state.keep_awake_sent = keep_awake.last_sent;
             state.keep_awake_error.clone_from(&keep_awake.error);
-            state.verdict_written = written;
             state.verdict = verdict;
             state.raw = raw;
             state.t = s.t;
@@ -1397,8 +1318,8 @@ mod service {
                 shared().prompt(awake_for, deadline);
             }
 
-            // Skip ahead rather than bursting to catch up: a missed tick is a gap the reader's
-            // staleness rule already covers, and catching up would hide it. The next due tick is
+            // Skip ahead rather than bursting to catch up: a missed tick is a gap the classifier
+            // records as BUSY, and catching up would hide it. The next due tick is
             // the first one strictly after now: `behind` alone is the tick just passed, and
             // scheduling that again means an immediate second sample.
             let behind = ((super::sample::monotonic() - start) / policy.interval) as u64;
