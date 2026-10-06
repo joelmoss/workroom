@@ -131,6 +131,25 @@ final class SessionClaimTests: XCTestCase {
     XCTAssertFalse(store.sessionCoordinator.isSuspended)
   }
 
+  /// Corrupt input on the launch path must never cost more than the restore itself: the launch window
+  /// claims nothing (so it opens its one ordinary pane), nothing is left to dispatch, saving is not
+  /// suspended, and the unreadable file is quarantined rather than silently deleted. Each hop has its
+  /// own test (`SessionStoreTests.testCorruptFileIsQuarantinedOnce`, the no-session test above); this
+  /// is the glue between them, which used to need an app launch.
+  func testACorruptSessionFileClaimsNothingAndIsQuarantined() throws {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try Data("this is not json".utf8).write(to: url)
+    let store = makeProjectStore(windows: [])
+
+    XCTAssertNil(store.claimSession(for: UUID(), isLaunchWindow: true))
+    XCTAssertTrue(store.pendingSessionKeys().isEmpty)
+    XCTAssertFalse(store.sessionCoordinator.isSuspended, "a failed restore must not stop saving")
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: directory.appendingPathComponent("session.corrupt.json").path),
+      "the unreadable file should be quarantined, not silently deleted")
+  }
+
   // MARK: The save gate across several windows
 
   /// Saving stays suspended until EVERY window has finished — the whole point of the gate. Resuming

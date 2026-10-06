@@ -94,17 +94,4 @@ final class PullRequestWarningUITests: XCTestCase {
       warning(app, "installLink").waitForExistence(timeout: 4),
       "the install link is the fix for a missing gh")
   }
-
-  /// The default fixture launch (no seam argument) must warn about NOTHING — the optimistic
-  /// `.available` default plus a fixture that never probes should leave the panel quiet. This is the
-  /// reported bug's shape at the UI layer: a warning appearing when nothing is actually wrong.
-  func testNoWarningWhenGHStatusIsNotSeeded() throws {
-    let app = launchedApp(ghStatus: nil)
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(prSectionHeader(app).waitForExistence(timeout: 10))
-
-    for state in ["notInstalled", "notAuthenticated", "tooOld"] {
-      XCTAssertFalse(warning(app, state).exists, "warned about \(state) with nothing wrong")
-    }
-  }
 }

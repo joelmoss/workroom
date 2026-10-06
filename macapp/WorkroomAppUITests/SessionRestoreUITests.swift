@@ -186,24 +186,7 @@ final class SessionRestoreUITests: XCTestCase {
     assertCount(panes(relaunched), reaches: 2)
   }
 
-  // MARK: Degradation
-
-  /// Corrupt input on the launch path must never cost more than the restore itself.
-  func testCorruptSessionFileStillLaunchesCleanly() throws {
-    try FileManager.default.createDirectory(
-      at: sessionFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try Data("this is not json".utf8).write(to: sessionFile)
-
-    let app = launchedApp()
-    waitForFirstPane(app)
-    assertCount(panes(app), reaches: 1)
-    XCTAssertTrue(
-      FileManager.default.fileExists(
-        atPath: sessionFile.deletingLastPathComponent()
-          .appendingPathComponent("session.corrupt.json").path),
-      "the unreadable file should be quarantined, not silently deleted")
-  }
-
-  // `testWithoutASessionPathNothingIsWritten` is now a unit test: the fixture-mode no-op rule is
-  // pinned in `SessionStoreTests` (`forEnvironment`), which every `make app-test` run covers.
+  // `testWithoutASessionPathNothingIsWritten` and `testCorruptSessionFileStillLaunchesCleanly` are
+  // now unit tests: the fixture-mode no-op rule in `SessionStoreTests` (`forEnvironment`), and the
+  // corrupt-file launch in `SessionClaimTests.testACorruptSessionFileClaimsNothingAndIsQuarantined`.
 }

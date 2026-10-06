@@ -64,4 +64,13 @@ final class PullRequestPanelCopyTests: XCTestCase {
     XCTAssertTrue(copy.body.isEmpty)
     XCTAssertFalse(copy.showsInstallLink)
   }
+
+  /// Nothing is wrong until a probe says so: a fresh store starts `.available`, and the fixture seeds
+  /// no status without its launch argument. With the gate on `!= .available` and the copy above,
+  /// that is why a default fixture launch warns about nothing (the reported bug's shape).
+  @MainActor
+  func testTheDefaultStatusRaisesNoWarning() {
+    XCTAssertEqual(AppStore().githubCLIStatus, .available)
+    XCTAssertNil(UITestFixture.ghStatus, "no -WorkroomUITestGHStatus argument, so nothing seeded")
+  }
 }
