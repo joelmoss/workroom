@@ -309,8 +309,29 @@ final class BoxdHostDriverTests: XCTestCase {
       let answer = await driver(cli).isAsleep(.remote(UUID()))
       XCTAssertEqual(answer, asleep, status)
     }
-    let failedIsasleep = await driver(StubCLI([:])).isAsleep(.remote(UUID()))
-    XCTAssertNil(failedIsasleep, "a failed call says nothing")
+    // boxd answered with an error (signed out, another account, not found): leave it alone.
+    let refused = await driver(StubCLI(["machine get": Self.failed("error: not logged in")]))
+      .isAsleep(.remote(UUID()))
+    XCTAssertEqual(refused, true, "a CLI error woke the box")
+    // boxd couldn't answer at all (timed out): say nothing, and the read goes ahead.
+    let timedOut = await driver(
+      StubCLI([
+        "machine get": CommandResult(stdout: "", stderr: "", exitCode: 15, timedOut: true)
+      ])
+    ).isAsleep(.remote(UUID()))
+    XCTAssertNil(timedOut, "a CLI that never answered was taken for an answer")
+  }
+
+  /// Signed out of boxd, a create stops at its first CLI call and tells the user how to sign in.
+  func testSignedOutSaysToSignInAndRunsNothingElse() async throws {
+    let cli = StubCLI(["auth --json": Self.failed("error: not logged in")])
+    do {
+      _ = try await driver(cli).create()
+      XCTFail("a create went ahead signed out")
+    } catch HostDriverError.provisioning(let detail) {
+      XCTAssertTrue(detail.contains("boxd auth login"), detail)
+    }
+    XCTAssertEqual(cli.commands, [], "a command ran signed out")
   }
 
   /// The org can change between the check and the removal: "not found" then means nothing.

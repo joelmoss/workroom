@@ -148,6 +148,58 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     XCTAssertEqual(hosts, [remote.host, remote.host, remote.host])
   }
 
+  // Value: protects=an asleep boxd box reads as asleep (moon, no alarm), not as a broken repository;
+  // fails_when=the resolver's .asleep catch goes or .asleep joins the weighted failures;
+  // why_new=RemoteHostsTests stops at the thrown error and nothing maps it to the badge; seam=none
+  /// A boxd box left asleep (#356) is not a failure: the sidebar says asleep and neither the dot nor
+  /// the project row's aggregate raises an alarm, where "unavailable" is a question mark that does.
+  func testAnAsleepBoxReadsAsAsleepNotUnavailable() async throws {
+    let router = RepositoryRouter(connectRemote: { throw RepositoryRoutingError.asleep($0) })
+    let remote = try RepositoryLocation.remote(host: UUID(), path: path)
+    router.replaceRemote([try .init(location: remote, sharedLocation: remote)])
+
+    let status = await WorkroomStatusResolver().resolve(location: remote, router: router)
+
+    XCTAssertEqual(status.failure, .asleep)
+    XCTAssertNil(status.dirty)
+    let dot = try XCTUnwrap(VCSStatusPresentation.dot(status))
+    XCTAssertEqual(dot.accessibility, "asleep")
+    XCTAssertEqual(dot.semantic, .neutral)
+    XCTAssertEqual(status.aggregateWeight, 0, "an asleep box must not mark its project")
+  }
+
+  // Value: protects=the workroom the user has selected never has its boxd box's connection dropped as idle;
+  // fails_when=AppStore stops telling RemoteHosts which host is selected, or never releases it on deselect;
+  // why_new=RemoteHostsTests call select() directly; nothing drives it from the app's selection; seam=none
+  /// Selecting a boxd workroom (#356) takes its box back from being let go of and keeps it, idle or
+  /// not, for as long as it is selected; leaving it makes the box eligible again.
+  @MainActor
+  func testSelectingABoxdWorkroomKeepsItsBoxFromBeingLetGoOf() async throws {
+    let id = UUID()
+    let box = Workroom(
+      name: "w", path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
+      host: HostDescriptor(
+        driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id))
+    let projects = [Project(path: "/proj", vcs: "git", workrooms: [box])]
+    RemoteHosts.shared.adopt(projects, sweep: false)
+    let store = AppStore()
+    store.projects = projects
+    let host = HostID.remote(id)
+    defer { RemoteHosts.shared.select(nil) }
+
+    let letGo = await RemoteHosts.shared.observed(host, busy: false)
+    XCTAssertTrue(letGo, "the box was never let go of, so there is nothing to take back")
+
+    store.selectedTargetID = .workroom(project: "/proj", name: "w")
+    XCTAssertFalse(RemoteHosts.shared.isParked(host), "selecting its workroom left the box parked")
+    let whileSelected = await RemoteHosts.shared.observed(host, busy: false)
+    XCTAssertFalse(whileSelected, "the selected workroom's box was let go of")
+
+    store.selectedTargetID = .root(project: "/proj")
+    let afterLeaving = await RemoteHosts.shared.observed(host, busy: false)
+    XCTAssertTrue(afterLeaving, "leaving the workroom left its box held for good")
+  }
+
   /// A target names its repository by host: a reachable remote one by its host's location, and one
   /// it can't reach by none, so a viewer never reads its path on this Mac.
   func testATargetResolvesItsRemoteLocationFromItsHost() throws {

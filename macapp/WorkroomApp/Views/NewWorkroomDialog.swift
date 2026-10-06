@@ -330,13 +330,7 @@ enum WorkroomPlace: Hashable {
     }
   }
 
-  var name: String {
-    switch self {
-    case .thisMac: "This Mac"
-    case .container(let runtime): runtime.displayName
-    case .boxd: "boxd"
-    }
-  }
+  var name: String { remote?.displayName ?? "This Mac" }
 
   var id: String {
     switch self {

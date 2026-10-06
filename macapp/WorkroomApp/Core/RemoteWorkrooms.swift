@@ -300,7 +300,7 @@ enum RemoteWorkrooms {
     if let existing, existing.id != nil {
       let other = (try? RemoteHosts.deletionKey(existing)) ?? .init()
       if other.runtime != key.runtime {
-        throw Failure.baseOnOtherRuntime(placeName(other))
+        throw Failure.baseOnOtherRuntime(other.place.displayName)
       }
     }
     if let recorded = existing?.base {
@@ -427,11 +427,6 @@ enum RemoteWorkrooms {
   /// The descriptor's `driver` for `key`.
   static func driverName(_ key: RemoteHosts.DriverKey) -> String {
     key.runtime?.rawValue ?? boxdDriver
-  }
-
-  /// Where `key` makes its hosts, as a sentence names it: "Docker", "Apple Container", "boxd".
-  static func placeName(_ key: RemoteHosts.DriverKey) -> String {
-    key.runtime?.displayName ?? "boxd"
   }
 
   /// Whether `host` records anything still up: a box or a grant. A destroyed one has nothing, and
@@ -562,11 +557,8 @@ final class RemoteHosts: @unchecked Sendable {
       return nil
     }
 
-    /// The agent's socket on this key's hosts, which puts the agent's binary beside it.
-    var agentSocket: String {
-      if case .boxd = self { return BoxdHostDriver.Configuration.defaultAgentSocket }
-      return RemoteWorkrooms.agentSocket
-    }
+    /// Where this key's workrooms are made.
+    var place: RemoteWorkrooms.Place { runtime.map(RemoteWorkrooms.Place.container) ?? .boxd }
   }
 
   /// The drivers made so far.
@@ -590,8 +582,9 @@ final class RemoteHosts: @unchecked Sendable {
   /// idle box awake for good (measured, eng review D8). A background read never reconnects one;
   /// selecting or opening its workroom does.
   private var parked: Set<HostID> = []
-  /// The host of the workroom selected in the app, which is never let go of.
-  private var selectedHost: HostID?
+  /// The host of the workroom selected in each window (one `AppStore` per window), none of which
+  /// is ever let go of.
+  private var selectedHosts: [AnyHashable: HostID] = [:]
   /// Hosts of workrooms the user has opened this launch (`activate`), whose connect starts a
   /// stopped container first.
   private var activated: Set<HostID> = []
@@ -779,9 +772,8 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
-  /// The driver key a new workroom on `runtime` wants (#309): Apple's runtime has one, and Docker's
-  /// is the context the CLI uses now, which a new base is pinned to. `RemoteWorkrooms.base(in:for:)`
-  /// then finds the project's base there, if it has one.
+  /// The driver key a new workroom at `place` wants: a container runtime's (`key(for:)` below), or
+  /// for boxd the org and account it is signed in to now (#356).
   func key(for place: RemoteWorkrooms.Place) async throws -> DriverKey {
     switch place {
     case .container(let runtime): return try await key(for: runtime)
@@ -796,6 +788,9 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
+  /// The driver key a new workroom on `runtime` wants (#309): Apple's runtime has one, and Docker's
+  /// is the context the CLI uses now, which a new base is pinned to. `RemoteWorkrooms.base(in:for:)`
+  /// then finds the project's base there, if it has one.
   func key(for runtime: RemoteWorkrooms.Runtime) async throws -> DriverKey {
     guard runtime == .docker else { return DriverKey(runtime: runtime) }
     return DriverKey(runtime: .docker, context: try await containerDriver().currentContext())
@@ -812,7 +807,7 @@ final class RemoteHosts: @unchecked Sendable {
     let client = BrokerSession.shared.client()
     let driver = try driver(key)
     var environment = RemoteProvisioning.Environment(
-      driver: driver, agentSocket: key.agentSocket, client: client,
+      driver: driver, agentSocket: Self.agentSocket(of: driver), client: client,
       gitHubToken: key.runtime == nil ? nil : CredentialRelay.gitHubToken)
     #if DEBUG
       // A Debug agent reaches this Mac's Codaset through a listener on its host, which lives on
@@ -951,7 +946,10 @@ final class RemoteHosts: @unchecked Sendable {
   /// Any failure is `RepositoryRoutingError.unavailable`, which every panel shows as the host being
   /// out of reach. Untyped, a stopped host's ssh failure read as "Not a repository". The cause is
   /// logged.
-  func ensureConnected(_ host: HostID) async throws {
+  ///
+  /// `wake` for a click (closing a pane, Keep awake): the user asked for this host, so a boxd box
+  /// let go of or asleep is connected, and woken, rather than refused as a background read is.
+  func ensureConnected(_ host: HostID, wake: Bool = false) async throws {
     guard case .remote = host else { return }
     let up: Bool
     if let isConnected {
@@ -975,14 +973,20 @@ final class RemoteHosts: @unchecked Sendable {
     if !opened, let failed = lock.withLock({ failedAt[host] }), now() - failed < Self.retryAfter {
       throw RepositoryRoutingError.unavailable(host)
     }
+    if wake {
+      lock.withLock {
+        parked.remove(host)
+        asleepAt[host] = nil
+      }
+    }
     // A boxd box wakes on an ssh login, so a background read must not connect to one that is
     // asleep: every status sweep would wake every box and keep it billing (#356). Only opening the
     // workroom wakes it. When boxd can't say, the read goes ahead as before. Nor does one reconnect
     // a box let go of as idle, which would hold it awake again.
-    if !opened, lock.withLock({ parked.contains(host) }) {
+    if !opened, !wake, lock.withLock({ parked.contains(host) }) {
       throw RepositoryRoutingError.asleep(host)
     }
-    if !opened, try await boxdIsAsleep(host) { throw RepositoryRoutingError.asleep(host) }
+    if !opened, !wake, try await boxdIsAsleep(host) { throw RepositoryRoutingError.asleep(host) }
     do {
       let connect =
         try connectHost ?? { [driver = try heldDriver(host)] in
@@ -1038,11 +1042,11 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
-  /// The workroom selected in the app is on `host` (nil for one on this Mac). Its host is never let
-  /// go of while selected (#356).
-  func select(_ host: HostID?) {
+  /// The workroom selected in `window` is on `host` (nil for one on this Mac, or a window closing).
+  /// A host selected in any window is never let go of (#356).
+  func select(_ host: HostID?, in window: AnyHashable = "default") {
     lock.withLock {
-      selectedHost = host
+      selectedHosts[window] = host
       if let host { parked.remove(host) }
     }
   }
@@ -1056,11 +1060,16 @@ final class RemoteHosts: @unchecked Sendable {
     guard !busy, case .remote(let id) = host else { return false }
     let eligible = lock.withLock { () -> Bool in
       guard let key = keys[id], case .boxd = key else { return false }
-      return selectedHost != host && !parked.contains(host)
+      return !selectedHosts.values.contains(host) && !parked.contains(host)
     }
     guard eligible, await !MainActor.run(body: { PortForwardingModel.hasForwards(host) })
     else { return false }
-    lock.withLock { _ = parked.insert(host) }
+    // Checked again across the wait: a window may have selected it meanwhile.
+    let letGo = lock.withLock { () -> Bool in
+      guard !selectedHosts.values.contains(host) else { return false }
+      return parked.insert(host).inserted
+    }
+    guard letGo else { return false }
     if let lease = await HostConnectionManager.shared.snapshot(for: host).lease {
       await HostConnectionManager.shared.disconnect(lease)
     }

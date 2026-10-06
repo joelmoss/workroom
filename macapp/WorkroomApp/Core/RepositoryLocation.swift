@@ -16,13 +16,16 @@ enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError, CustomS
 
   var description: String { errorDescription ?? "Repository unavailable" }
 
+  /// What a read of an asleep or let-go boxd host says (#356), here and on the Changes panel.
+  static let asleepMessage =
+    "The box is asleep, or idle and left to sleep. Open the workroom to reach it."
+
   var errorDescription: String? {
     switch self {
     case .invalidPath(let path): return "Invalid repository path: \(path)"
     case .mixedHosts: return "Working and shared repositories must be on the same host."
     case .unavailable: return "Repository service unavailable."
-    case .asleep:
-      return "The box is asleep, or idle and left to sleep. Open the workroom to reach it."
+    case .asleep: return Self.asleepMessage
     case .registrationRequired:
       return "Reload projects to register this repository before changing it."
     }

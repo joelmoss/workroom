@@ -147,6 +147,8 @@ final class AppStore: ObservableObject {
 
   deinit {
     for token in frameObservers { NotificationCenter.default.removeObserver(token) }
+    // A closed window no longer holds its workroom's host connected (#356).
+    RemoteHosts.shared.select(nil, in: ObjectIdentifier(self))
   }
 
   /// Only the active (last-key) window writes the shared sidebar prefs to UserDefaults, so multiple
@@ -211,7 +213,7 @@ final class AppStore: ObservableObject {
         // Opening a container workroom starts its container if it was stopped (#309). Its host is
         // never let go of as idle while selected (#356).
         let selected = selectedWorkroom?.reachableHost.map(HostID.remote)
-        RemoteHosts.shared.select(selected)
+        RemoteHosts.shared.select(selected, in: ObjectIdentifier(self))
         if let selected { RemoteHosts.shared.activate(selected) }
         focusHistoryIfShown()
         focusRemoteStateIfShown()
@@ -3121,6 +3123,7 @@ final class AppStore: ObservableObject {
     // every reload passes here, and opening again on each would restart a container the user
     // stopped.
     if resolved == nil, let host = selectedWorkroom?.reachableHost {
+      RemoteHosts.shared.select(.remote(host), in: ObjectIdentifier(self))
       RemoteHosts.shared.activate(.remote(host))
     }
     // Prune shared caches only when publishing an accepted snapshot.
