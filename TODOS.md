@@ -135,8 +135,9 @@ They are not bugs. They were deferred so that the branch did not have to re-run 
 every class.
 
 **Also on the table, same review:** a fixture-launch UI check that pins the session-isolation launch
-wiring in the routine run. Today only `AgentResumeUITests` and `SessionRestoreUITests` exercise that
-wiring, and the Makefile skips both by default. The `APP_UITEST_FLAGS` comment states that gap.
+wiring in the routine run. Today only `SessionRestoreUITests` exercises that wiring, and the
+Makefile skips it by default. (The skip list also still names `AgentResumeUITests`, which was
+deleted with the Resume feature in `67cb53ed`; drop it there and in `test-invariants_test.sh`.) The `APP_UITEST_FLAGS` comment states that gap.
 
 **How to start:** `grep -l "func assertCount\|func waitForScreen\|func waitForDisappearance\|func waitForSheetToGoAway" macapp/WorkroomAppUITests`.
 Each file you touch needs its class re-run with `make app-uitest APP_UITEST_FLAGS="-only-testing:…"`.
