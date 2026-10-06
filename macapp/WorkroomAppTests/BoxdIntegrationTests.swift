@@ -654,8 +654,7 @@ final class BoxdIntegrationTests: XCTestCase {
     }
   }
 
-  /// #257's acceptance, rerunnable (TODOS, "Put the keep-awake acceptance run in
-  /// BoxdIntegrationTests"). Two machines with 120 s timers run the same 6-minute job with no
+  /// #257's acceptance, rerunnable (#356; it was a TODO). Two machines with 120 s timers run the same 6-minute job with no
   /// network use and no client attached. The control, with no agent, sleeps mid-job, which is
   /// what lets the other result mean anything; the agent's machine logs every tick, then sleeps
   /// once the job has ended. About 10 minutes.
@@ -687,7 +686,8 @@ final class BoxdIntegrationTests: XCTestCase {
 
   /// D8, first half: with the app attached (a watched connection, ssh keepalives, the badge
   /// polling every 10 s), an idle box must still sleep, or every open workroom would keep its box
-  /// awake and billing. About 5 minutes.
+  /// awake and billing. A fresh machine's start-up traffic holds its timer for about 290 s (#257's
+  /// acceptance), so it has 7 minutes. About 6 minutes.
   func testAnIdleBoxStillSleepsWithTheAppAttached() async throws {
     let driver = driver()
     let host = try await driver.create()
@@ -695,13 +695,13 @@ final class BoxdIntegrationTests: XCTestCase {
     let connection = try await connect(driver, host)
     let badge = pollLikeTheBadge(connection)
     defer { badge.cancel() }
-    let slept = try await sleeps(host, since: .now, within: .seconds(300))
+    let slept = try await sleeps(host, since: .now, within: .seconds(420))
     XCTAssertNotNil(slept, "an idle box with the app attached never slept")
   }
 
   /// D8, second half: with the app attached and a prompt nobody answers, a busy box past its
   /// ceiling must sleep, or the prompt's "let it sleep" would mean nothing while the app is open.
-  /// Ceiling 60 s, prompt 30 s, timers 120 s, a 15-minute job. About 6 minutes.
+  /// Ceiling 60 s, prompt 30 s, timers 120 s, a 15-minute job; 8 minutes to sleep. About 7 minutes.
   func testAnUnansweredPromptLetsABusyBoxSleepWithTheAppAttached() async throws {
     let driver = driver()
     let host = try await driver.create()
@@ -713,7 +713,7 @@ final class BoxdIntegrationTests: XCTestCase {
     try await startJob(driver, host, seconds: 900)
     let badge = pollLikeTheBadge(connection)
     defer { badge.cancel() }
-    let slept = try await sleeps(host, since: start, within: .seconds(420))
+    let slept = try await sleeps(host, since: start, within: .seconds(480))
     XCTAssertNotNil(
       slept, "a busy box whose prompt went unanswered never slept with the app attached")
     badge.cancel()

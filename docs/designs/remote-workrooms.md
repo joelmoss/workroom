@@ -1892,6 +1892,37 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     its own. An IPv6-only box has no IPv4 default route and reports the error, and so does a default
     route with no gateway (`default dev wg0`), which a provider VM is not known to have. A changed
     setting reaches a remote agent on the app's next connect, not while connected.
+- **As built (#356, boxd in the app).** The app now makes, opens and deletes remote workrooms on
+  boxd, in Nightly and Dev builds behind `remoteWorkroomsPreview`, from New Workroom › Remote ›
+  boxd. Eng review 2026-10-06 (decisions D1-D11).
+  - **One driver table.** `RemoteHosts.DriverKey` is an enum over a container runtime (with its
+    Docker context) and a boxd org and account, and `RemoteHosts` holds any `HostTerminalDriver`.
+    Before, a boxd host had no key: a delete fell back to Docker, adopt dropped it, and a missing
+    container CLI read as its host being gone. A descriptor naming an unknown driver is refused,
+    never taken down with another. A boxd host records `driver: "boxd"`, its `org` and its
+    `account` (`boxd auth`'s `user_id`); the CLI keeps both as opaque fields.
+  - **Account, not only org.** Every personal account's org is nil, so after an account switch the
+    org check passed and a machine read as "not found" was taken for gone. The driver now checks
+    the account too before every create, derive, destroy and rollback.
+  - **Credentials.** Broker only (OQ20): a boxd workroom never borrows the Mac's `gh`, so the menu
+    asks for Codaset, and a create without it stops before anything is made. Whether boxd itself is
+    signed in is a CLI call, so the create checks it, naming `boxd auth login`.
+  - **Sleeping boxes.** An ssh login wakes a box, so a background read of a boxd host asks boxd
+    first (`machine get`, `standby` or `hibernated`) and leaves an asleep box alone; its row shows a
+    moon. Opening the workroom wakes it. boxd is asked at most once per host per 30 s.
+  - **The ceiling across a wake.** A resume after an unanswered prompt carries the awake time from
+    before the sleep, so the agent asks again at once rather than granting a running job another
+    whole ceiling; the resume mask's IDLE ticks are ignored by the ceiling. Provisioning's connects
+    send the agent no settings (its `ask: false` could race a watched connection's `ask: true`), the
+    badge warns when a box's boxd idle timer is under 90 s, host prompt cards scroll past two, and a
+    stalled IDLE reading on a sleeping host shows "status unknown".
+  - **Not swept.** Unrecorded boxd machines are left alone: names carry no build, so one build's
+    sweep would take another's live workrooms (#284 has the boxd case).
+  - **Live runs.** `BoxdIntegrationTests` has gated cases for the app's create and delete, #257's
+    keep-awake acceptance, and two app-attached sleep checks (eng review D8): with ssh keepalives
+    and the badge's 10 s polls, an idle box and a box with an unanswered prompt must still sleep.
+    boxd documents its idle meter as inbound traffic, which those polls are, so these decide whether
+    the boxd entry can ship as is.
 
 ## Phase 0 Results
 
