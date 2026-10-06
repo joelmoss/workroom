@@ -357,7 +357,10 @@ struct HistoryRow: View, Equatable {
       // Keyed on `isSelected` too: the closure reads the row as it was when the task started, so a
       // click that opens this commit mid-dwell must restart it or the guard below sees it unselected.
       .task(id: [hovering, isSelected]) {
-        guard hovering else {
+        // Down when the pointer leaves, and over the open commit's row: its detail is already
+        // showing, and a card there sat under the pointer and ate the first click of a double-click
+        // meant to keep the tab. Hidden here too, not only on click, for a row opened another way.
+        guard hovering, !isSelected else {
           showCard = false
           return
         }
@@ -365,8 +368,6 @@ struct HistoryRow: View, Equatable {
         // Also re-read the LIVE hover state: `.task(id:)` swaps its id in place at a stable row
         // slot, and cancellation delivery for that shape isn't reliable everywhere (see TODOS
         // "`.task(id:)` cancellation is not reliably delivered on an in-place value swap").
-        // Never over the open commit's row: its detail is already showing, and a card there sat
-        // under the pointer and ate the first click of a double-click meant to keep the tab.
         guard !Task.isCancelled, hovering, !isSelected else { return }
         showCard = true
       }
