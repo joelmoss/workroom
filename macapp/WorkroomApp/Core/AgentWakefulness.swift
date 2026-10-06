@@ -110,9 +110,11 @@ struct AgentWakefulness: Decodable, Sendable, Equatable {
       || (running && busy && keepAwake == nil)
   }
 
-  /// What the badge shows. Only these four, because only these four are actionable: the classifier's
-  /// raw verdict and the CPU cost are diagnostics.
-  enum Display: Equatable { case idle, busy, busyPastCeiling, busyUnprotected }
+  /// What the badge shows. Only these, because only these are actionable: the classifier's raw
+  /// verdict and the CPU cost are diagnostics. `unknown` is a stalled service whose last reading
+  /// was IDLE, on a host that sleeps (#356): that reading may be stale while work runs, and nothing
+  /// is keeping the box awake either way.
+  enum Display: Equatable { case idle, busy, busyPastCeiling, busyUnprotected, unknown }
 
   /// What the badge shows for a host that `sleeps` when idle or not. One that never sleeps (a
   /// container) cannot be slept under a job, so nothing there is "not kept awake": an old agent,
@@ -142,6 +144,7 @@ struct AgentWakefulness: Decodable, Sendable, Equatable {
 
   var display: Display {
     if unprotected { return .busyUnprotected }
+    if stalled == true { return .unknown }
     if awakeCeilingExceeded { return .busyPastCeiling }
     return busy ? .busy : .idle
   }

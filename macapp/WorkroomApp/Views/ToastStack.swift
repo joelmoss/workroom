@@ -38,6 +38,32 @@ struct ToastStack: View {
       ?? "a remote machine"
   }
 
+  /// How many hosts' prompt cards show before they scroll, and the height they then take.
+  static let visibleHostPrompts = 2
+  static let hostPromptsHeight: CGFloat = 320
+
+  /// The hosts whose card is up, soonest deadline first; one with none known goes last, in a stable
+  /// order.
+  static func ordered(_ ids: Set<UUID>, expiries: [UUID: Date]) -> [UUID] {
+    ids.sorted { a, b in
+      switch (expiries[a], expiries[b]) {
+      case (let x?, let y?) where x != y: return x < y
+      case (.some, nil): return true
+      case (nil, .some): return false
+      default: return a.uuidString < b.uuidString
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func hostPrompts(_ ids: [UUID]) -> some View {
+    ForEach(ids, id: \.self) { id in
+      if let model = hosts.models[id] {
+        HostCeilingPrompt(model: model, machine: Self.machineName(forHost: id, in: store.projects))
+      }
+    }
+  }
+
   var body: some View {
     // ONE container (issue #67): live run toasts ride above the transient notification toasts, so the
     // two never overlap in the bottom-right corner (they'd collide as separate overlays).
@@ -48,12 +74,21 @@ struct ToastStack: View {
         AwakeCeilingToastView(model: wakefulness)
           .transition(.move(edge: .trailing).combined(with: .opacity))
       }
-      // Each remote host's: one whose box sleeps is handed this Mac's ask setting (#257).
-      ForEach(hosts.showing.sorted { $0.uuidString < $1.uuidString }, id: \.self) { id in
-        if let model = hosts.models[id] {
-          HostCeilingPrompt(
-            model: model, machine: Self.machineName(forHost: id, in: store.projects))
+      // Each remote host's: one whose box sleeps is handed this Mac's ask setting (#257). Soonest
+      // deadline first, and past a few they scroll (#356): stacked unbounded, a card could be pushed
+      // off the window while its countdown runs, and nobody answering lets that box sleep.
+      let asking = Self.ordered(
+        hosts.showing, expiries: hosts.models.compactMapValues(\.prompt.expiresAt))
+      if asking.count > Self.visibleHostPrompts {
+        ScrollView {
+          VStack(alignment: .trailing, spacing: 8) { hostPrompts(asking) }
         }
+        .scrollIndicators(.visible)
+        .frame(maxHeight: Self.hostPromptsHeight)
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityIdentifier("toasts.hostPrompts")
+      } else {
+        hostPrompts(asking)
       }
       // Tool-version warnings ride at the top: unlike the two below, these describe a STANDING
       // condition (an old `git` doesn't fix itself), so they never auto-dismiss and stay until the

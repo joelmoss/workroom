@@ -460,6 +460,9 @@ struct WakefulnessBadge: View {
     // The one state that must not be softened: work is running and nothing is keeping the box awake.
     case .busyUnprotected:
       return ("bolt.slash.fill", theme.tokens.warning, "Busy but not kept awake")
+    // A stalled service's IDLE may be stale: not "idle", which reads as nothing to worry about.
+    case .unknown:
+      return ("questionmark.circle", theme.tokens.warning, "Status unknown")
     }
   }
 
@@ -483,6 +486,11 @@ struct WakefulnessBadge: View {
       text =
         "This machine has been busy for \(awake), past its awake ceiling. Nothing has been "
         + "slept — this is a report. Click to keep it awake."
+    case .unknown:
+      text =
+        "This machine's agent has stopped checking on it, so whether it is busy is unknown, and "
+        + "nothing is keeping it awake: it may sleep once it has been idle on the network long "
+        + "enough."
     case .busyUnprotected where shortWindow && !status.unprotected:
       text = "This machine is busy (awake \(awake)), but it may sleep under the job. " + window
     case .busyUnprotected:
