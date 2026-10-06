@@ -156,6 +156,13 @@ enum UITestFixture {
     flag("WorkroomUITestSyncFailure")
   }
 
+  /// When set (`-WorkroomUITestSlowVCS 1`), `FixtureVCSWriter` holds every git action for 2.5s so a
+  /// test can observe its in-flight state ("Pushing…"). Off by default, so every other test's git
+  /// actions answer at once instead of each paying the hold.
+  static var slowVCSActions: Bool {
+    flag("WorkroomUITestSlowVCS")
+  }
+
   /// The `gh` availability state to seed (`-WorkroomUITestGHStatus notInstalled|notAuthenticated|tooOld`).
   ///
   /// Needed because `refreshGitHubCLI` returns immediately in fixture mode — it must, since the
@@ -1381,13 +1388,17 @@ struct StubAgentRunner: AgentRunning {
 actor FixtureVCSWriter: LocalVCSWriting {
   /// Set for `-WorkroomUITestSyncFailure`, so the error tier renders.
   private let failing: Bool
-  /// Delays each action so the in-flight state is observable rather than instantaneous.
+  /// Delays each action so the in-flight state is observable rather than instantaneous. Zero unless a
+  /// test opts in with `-WorkroomUITestSlowVCS 1` (`UITestFixture.slowVCSActions`).
   private let delay: TimeInterval
 
-  /// 2.5s, not a token delay: XCUITest's predicate expectations poll roughly once a second, so a
-  /// sub-second action completes between samples and the in-flight state is never observed — the test
-  /// then fails claiming the state never rendered when it rendered and passed.
-  init(failing: Bool = UITestFixture.syncFailure, delay: TimeInterval = 2.5) {
+  /// 2.5s when slowed, not a token delay: XCUITest's predicate expectations poll roughly once a
+  /// second, so a sub-second action completes between samples and the in-flight state is never
+  /// observed — the test then fails claiming the state never rendered when it rendered and passed.
+  init(
+    failing: Bool = UITestFixture.syncFailure,
+    delay: TimeInterval = UITestFixture.slowVCSActions ? 2.5 : 0
+  ) {
     self.failing = failing
     self.delay = delay
   }

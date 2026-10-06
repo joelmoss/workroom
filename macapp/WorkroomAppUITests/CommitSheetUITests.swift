@@ -219,10 +219,8 @@ final class CommitSheetUITests: XCTestCase {
 
     button(app, id: "commit.commit").click()
 
-    // The fixture writer delays deliberately so the in-flight state is observable rather than
-    // instantaneous, hence the generous timeout.
     XCTAssertTrue(
-      element(app, id: "commit.failure").waitForExistence(timeout: 20),
+      element(app, id: "commit.failure").waitForExistence(timeout: 10),
       "a rejected commit should report itself in the dialog")
     XCTAssertTrue(
       element(app, id: "commit.sheet").exists, "and the dialog must stay open, draft intact")

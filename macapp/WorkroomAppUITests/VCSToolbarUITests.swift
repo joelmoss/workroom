@@ -182,10 +182,11 @@ final class VCSToolbarUITests: XCTestCase {
       "a failed action must leave the branch visible; got " + branch(app).label)
   }
 
-  /// The fixture delays each action, so the in-flight state is observable — and while it's in flight the
-  /// segment must be disabled, which is what stops a double-click firing twice.
+  /// `-WorkroomUITestSlowVCS` holds each fixture action, so the in-flight state is observable — and
+  /// while it's in flight the segment must be disabled, which is what stops a double-click firing
+  /// twice.
   func testInFlightActionDisablesTheSegment() {
-    let app = launchedApp(syncState: "ahead")
+    let app = launchedApp(syncState: "ahead", extraArguments: ["-WorkroomUITestSlowVCS", "1"])
     XCTAssertTrue(waitExists(sync(app)))
     XCTAssertTrue(waitLabel(sync(app), contains: "Push"))
     XCTAssertTrue(button(app, id: "vcs.toolbar.sync").isHittable)
@@ -196,8 +197,9 @@ final class VCSToolbarUITests: XCTestCase {
     XCTAssertFalse(sync(app).isEnabled, "a second click must not be able to fire another push")
   }
 
+  /// Slowed (`-WorkroomUITestSlowVCS`) so the in-flight "Fetching" label is observable.
   func testClickingFetchRunsAFetch() {
-    let app = launchedApp(syncState: "clean")
+    let app = launchedApp(syncState: "clean", extraArguments: ["-WorkroomUITestSlowVCS", "1"])
     XCTAssertTrue(waitExists(fetch(app)))
     XCTAssertTrue(fetch(app).isEnabled)
     XCTAssertTrue(button(app, id: "vcs.toolbar.fetch").isHittable)
