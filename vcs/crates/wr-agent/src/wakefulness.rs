@@ -1315,8 +1315,9 @@ mod service {
             let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
             state.running = true;
             // Published with `running`, so a `status` before the first tick reads a service that
-            // has just started, not one that stalled at clock 0.
+            // has just started, not one that stalled at clock 0, with the settings it started with.
             state.t = start;
+            state.settings = settings;
         }
         let mut tick: u64 = 0;
         loop {

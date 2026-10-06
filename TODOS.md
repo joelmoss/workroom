@@ -116,12 +116,10 @@ make a resume after `Suppressed` stay suppressed until the user answers. Pin it 
 
 ### Harden the agent's kept settings (wr-agent) — #257 review
 
-**What:** Four small fixes the final reviews of #257 left, plus one known boundary:
+**What:** Three small fixes the final reviews of #257 left, plus one known boundary:
 
 - Coalesce the saver's queue (`settings_saver`): it is unbounded, and a buggy client flooding
   `settings` grows it while a stalled disk holds the saver. Keep only the latest pending settings.
-- Publish the starting settings with `running = true` (`run`, next to `state.t = start`), so a
-  `status` before the first tick does not report the defaults.
 - Make a failed saver thread spawn non-fatal (`settings_saver`'s `.expect`): leave the saver
   `None`, as a failed write already is.
 - `heartbeat.rs`'s status test runs its clock backwards (131.0, then 122.0 for the IDLE tick); use
