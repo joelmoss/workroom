@@ -881,6 +881,15 @@ final class RemoteHosts: @unchecked Sendable {
       await MainActor.run {
         WakefulnessModel.model(forHost: id).hostSleeps = driver.traits.sleepsWhenIdle
       }
+      // A provider timer shorter than the heartbeat can beat sleeps a box under a running job
+      // however healthy the heartbeat is, so the badge says so (#356). Read on every connect, as
+      // a machine's timers can change; not awaited, as the CLI call must not hold up the connect.
+      if let boxd = driver as? BoxdHostDriver {
+        Task {
+          let window = await boxd.idleWindow(host)
+          await MainActor.run { WakefulnessModel.model(forHost: id).idleWindow = window }
+        }
+      }
     }
     // A relayed workroom's git asks this Mac for credentials (#309): its listener goes with the
     // connection, and its secret with this launch, so it is set up again on every connect. A
