@@ -353,6 +353,35 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertEqual(ToastStack.machineName(forHost: UUID(), in: projects), "a remote machine")
   }
 
+  /// Several hosts asking at once (#356): the most urgent card comes first, so the one about to
+  /// let its box sleep is never the one scrolled away; a card with no known deadline goes last.
+  func testHostPromptsAreOrderedBySoonestDeadline() {
+    let (soon, later, unknown) = (UUID(), UUID(), UUID())
+    let now = Date()
+    let order = ToastStack.ordered(
+      [unknown, later, soon],
+      expiries: [soon: now.addingTimeInterval(30), later: now.addingTimeInterval(500)])
+    XCTAssertEqual(order, [soon, later, unknown])
+    XCTAssertGreaterThan(ToastStack.visibleHostPrompts, 0)
+  }
+
+  /// A stalled service on a host that sleeps: its last reading said IDLE, which may be stale while
+  /// work runs, and nothing is keeping the box awake either way, so it reads unknown, not idle
+  /// (#356). A host that never sleeps keeps reading idle: there is nothing to keep it awake from.
+  func testAStalledIdleReadingIsUnknownWhereTheBoxSleeps() throws {
+    let stalledIdle = try status(
+      Self.notPending + [
+        (#""stalled":false"#, #""stalled":true"#), (#""busy":true"#, #""busy":false"#),
+        (#""awake_ceiling_exceeded":true"#, #""awake_ceiling_exceeded":false"#),
+      ])
+    XCTAssertFalse(stalledIdle.unprotected)
+    XCTAssertEqual(stalledIdle.display(hostSleeps: true), .unknown)
+    XCTAssertEqual(stalledIdle.display(hostSleeps: false), .idle)
+    XCTAssertTrue(
+      WakefulnessBadge.help(for: stalledIdle, settings: nil).contains("unknown"),
+      WakefulnessBadge.help(for: stalledIdle, settings: nil))
+  }
+
   /// A remote host asks too, since the app hands its agent this Mac's ask-at-ceiling setting
   /// (#257): its model is published for the toast stack and watching for prompts from the moment
   /// it is made, and a deleted host's goes, watch and all.
