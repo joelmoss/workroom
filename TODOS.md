@@ -148,7 +148,7 @@ them reachable.
    remote badge, or have the agent refuse to lower protection from a different client.
 2. **A crashed wakefulness thread hides the badge.** (A thread that is blocked rather than crashed
    is covered: `status` reports `stalled` and the badge shows the box unprotected.) `catch_unwind`
-   retires the verdict and sets `running` false; the heartbeat stops, and the badge (gated on
+   calls `wakefulness::stop()`, which sets `running` false; the heartbeat stops, and the badge (gated on
    `status.running`) disappears rather than showing "busy but not kept awake". A remote agent is
    always Linux, so a remote badge could treat `running == false` with live sessions as unprotected.
    The `settings` request is then saved for the next start but not applied.

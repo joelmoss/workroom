@@ -75,7 +75,7 @@ struct AgentWakefulness: Decodable, Sendable, Equatable {
   /// tick's and the heartbeat has stopped with it (#257). Nil from an agent that predates the
   /// field.
   let stalled: Bool?
-  /// What the reader sees, after the ceiling: `"BUSY"` or `"IDLE"`.
+  /// What the heartbeat follows, after the ceiling: `"BUSY"` or `"IDLE"`.
   let verdict: String?
   /// What the classifier itself decided, before the ceiling had its say.
   let classifierVerdict: String?
