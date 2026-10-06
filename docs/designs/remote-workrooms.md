@@ -1918,11 +1918,19 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     stalled IDLE reading on a sleeping host shows "status unknown".
   - **Not swept.** Unrecorded boxd machines are left alone: names carry no build, so one build's
     sweep would take another's live workrooms (#284 has the boxd case).
-  - **Live runs.** `BoxdIntegrationTests` has gated cases for the app's create and delete, #257's
-    keep-awake acceptance, and two app-attached sleep checks (eng review D8): with ssh keepalives
-    and the badge's 10 s polls, an idle box and a box with an unanswered prompt must still sleep.
-    boxd documents its idle meter as inbound traffic, which those polls are, so these decide whether
-    the boxd entry can ship as is.
+  - **Letting go of an idle box.** boxd's idle meter counts inbound traffic, and the first live
+    run (2026-10-06) found an attached box never slept: the service connection's ssh keepalives
+    (15 s) and the badge's polls (10 s) held it, idle or past an unanswered prompt. So a boxd host
+    whose agent reports IDLE (its published verdict, which an unanswered prompt also makes IDLE),
+    whose workroom is not selected and which forwards no port is let go of: its connection closed,
+    no background read reconnecting it, its badge sending nothing. Selecting or opening the
+    workroom takes it back. A remote pane's own ssh still keeps its box awake.
+  - **Live runs (2026-10-06).** `BoxdIntegrationTests`, all nine cases, pass: the app's create and
+    delete (base in `/home/boxd`, records naming boxd with org and account, nothing left), #257's
+    keep-awake acceptance (the control slept mid-job, the agent's box logged every tick then
+    slept), and, after the change above, both app-attached checks: an idle box slept (the whole case,
+    machine creation included, took 318 s), and a box past a 60 s ceiling with its 30 s prompt unanswered slept mid-job. `machine
+    get --json` carries `status` and the timers as strings (`"auto_suspend": "120s"`).
 
 ## Phase 0 Results
 
