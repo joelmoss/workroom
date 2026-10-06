@@ -104,7 +104,7 @@ APP_TEST_FLAGS ?= -parallel-testing-enabled YES
 # `make app-uitest` was paying ~4-5 min for tests that are only load-bearing right before a release.
 # The isolation guard the REST of this suite depends on (no session read or write without a seeded
 # path) has its decision logic pinned by unit tests, in `SessionStoreTests` (`forEnvironment`); the
-# launch wiring that feeds it is covered only by these skipped classes. Run the full suite
+# launch wiring that feeds it is covered only by the skipped `SessionRestoreUITests`. Run the full suite
 # (pre-release, or after touching any of these) with `make app-uitest APP_UITEST_FLAGS=`.
 APP_UITEST_FLAGS ?= -skip-testing:WorkroomAppUITests/AgentResumeUITests -skip-testing:WorkroomAppUITests/SessionRestoreUITests -skip-testing:WorkroomAppUITests/HistoryStressUITests/testLargeHistoryStaysInteractive -skip-testing:WorkroomAppUITests/WindowDragUITests/testDraggingWorkroomTabReordersTwoChips
 

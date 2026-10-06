@@ -2,7 +2,7 @@ import XCTest
 
 /// App-shell workflow UI tests (XCUITest). These drive Workroom through the accessibility tree —
 /// sidebar, tabs, menus, badges. The libghostty surface is Metal-rendered, so terminal *content* is
-/// read only through the fixture-only `terminal.surface` accessibility value (`waitForScreen`).
+/// read only through the surface's accessibility value, which the fixture enables (`waitForScreen`).
 ///
 /// Run with `make app-uitest` on a real GUI login session — XCUITest can't drive a headless run,
 /// so these are intentionally excluded from `make app-test` (the unit gate) via a separate scheme.
