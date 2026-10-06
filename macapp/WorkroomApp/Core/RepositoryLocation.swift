@@ -10,6 +10,8 @@ enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError, CustomS
   case invalidPath(String)
   case mixedHosts
   case unavailable(HostID)
+  /// A boxd box asleep, which a background read leaves be: connecting would wake it (#356).
+  case asleep(HostID)
   case registrationRequired
 
   var description: String { errorDescription ?? "Repository unavailable" }
@@ -19,6 +21,7 @@ enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError, CustomS
     case .invalidPath(let path): return "Invalid repository path: \(path)"
     case .mixedHosts: return "Working and shared repositories must be on the same host."
     case .unavailable: return "Repository service unavailable."
+    case .asleep: return "The box is asleep. Open the workroom to wake it."
     case .registrationRequired:
       return "Reload projects to register this repository before changing it."
     }

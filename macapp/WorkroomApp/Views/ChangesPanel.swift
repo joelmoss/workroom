@@ -1024,6 +1024,7 @@ struct ChangesPanel: View {
     case .timeout: return "Status unavailable (timed out)."
     case .busy: return "Repository is busy — another VCS command is running."
     case .staleWorkingCopy: return "The working tree changed while it was read. Try again."
+    case .asleep: return "The box is asleep. Open the workroom to wake it."
     }
   }
 }
