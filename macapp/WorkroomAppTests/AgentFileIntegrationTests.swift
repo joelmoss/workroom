@@ -766,8 +766,12 @@ final class FakeAgent: @unchecked Sendable {
   private var services: [UInt8] = []
   private var clients: [Int32] = []
   private var forwardTraffic: [(stream: UInt32, opcode: UInt8)] = []
+  private var statusTraffic: [String] = []
 
   var receivedServices: [UInt8] { lock.withLock { services } }
+
+  /// Every Status request body received, in arrival order.
+  var receivedStatusRequests: [String] { lock.withLock { statusTraffic } }
 
   /// Every Forward envelope received, in arrival order.
   var receivedForwards: [(stream: UInt32, opcode: UInt8)] { lock.withLock { forwardTraffic } }
@@ -783,7 +787,7 @@ final class FakeAgent: @unchecked Sendable {
     "awake_ceiling_exceeded":true,"prompt_pending":true,"prompt_deadline":15600.0,\
     "asserting":true,"suppressed":false,"ceiling_seconds":14400.0,\
     "prompt_timeout_seconds":600.0,"ask_at_ceiling":true,"cpu_fraction":0.0021,\
-    "verdict_written":true}}
+    "verdict_written":true,"keep_awake":{"last_sent":14990.0,"error":null},"stalled":false}}
     """
 
   static let ceilingPromptJSON =
@@ -909,6 +913,7 @@ final class FakeAgent: @unchecked Sendable {
           continue
         }
         let request = String(decoding: payload, as: UTF8.self)
+        if bytes[0] == 4 { lock.withLock { statusTraffic.append(request) } }
         let body: Data
         switch bytes[0] {
         case 2 where request.contains("capabilities"):

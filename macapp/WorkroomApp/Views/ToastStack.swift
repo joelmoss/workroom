@@ -13,6 +13,7 @@ struct ToastStack: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @ObservedObject private var wakefulness = WakefulnessModel.shared
+  @ObservedObject private var hosts = WakefulnessModel.Hosts.shared
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   /// Toasts to render. Notifications no longer live in the right inspector (moved to the left
@@ -30,6 +31,13 @@ struct ToastStack: View {
     return live.isEmpty ? fallback : live
   }
 
+  /// The workroom a remote host is for, by its display label; a host with none (a project's base)
+  /// still gets a card, under a generic name.
+  static func machineName(forHost id: UUID, in projects: [Project]) -> String {
+    projects.lazy.flatMap(\.workrooms).first { $0.host?.id == id }?.displayName
+      ?? "a remote machine"
+  }
+
   var body: some View {
     // ONE container (issue #67): live run toasts ride above the transient notification toasts, so the
     // two never overlap in the bottom-right corner (they'd collide as separate overlays).
@@ -39,6 +47,13 @@ struct ToastStack: View {
       if wakefulness.prompt.isShowing {
         AwakeCeilingToastView(model: wakefulness)
           .transition(.move(edge: .trailing).combined(with: .opacity))
+      }
+      // Each remote host's: one whose box sleeps is handed this Mac's ask setting (#257).
+      ForEach(hosts.showing.sorted { $0.uuidString < $1.uuidString }, id: \.self) { id in
+        if let model = hosts.models[id] {
+          HostCeilingPrompt(
+            model: model, machine: Self.machineName(forHost: id, in: store.projects))
+        }
       }
       // Tool-version warnings ride at the top: unlike the two below, these describe a STANDING
       // condition (an old `git` doesn't fix itself), so they never auto-dismiss and stay until the
@@ -111,8 +126,22 @@ struct ToastStack: View {
     // An empty stack must not eat clicks meant for the content beneath it.
     .allowsHitTesting(
       !store.toasts.isEmpty || !store.runToastItems.isEmpty || !store.vcsToolWarnings.isEmpty
-        || wakefulness.prompt.isShowing
+        || wakefulness.prompt.isShowing || !hosts.showing.isEmpty
     )
+  }
+}
+
+/// A remote host's ceiling prompt, shown only while it asks. Its own view so the card follows the
+/// host's model, which the stack does not observe itself.
+private struct HostCeilingPrompt: View {
+  @ObservedObject var model: WakefulnessModel
+  let machine: String
+
+  var body: some View {
+    if model.prompt.isShowing {
+      AwakeCeilingToastView(model: model, machine: machine)
+        .transition(.move(edge: .trailing).combined(with: .opacity))
+    }
   }
 }
 
@@ -126,6 +155,8 @@ struct ToastStack: View {
 /// "Let it sleep" button to press.
 private struct AwakeCeilingToastView: View {
   @ObservedObject var model: WakefulnessModel
+  /// The remote machine asking, by its workroom's name; nil for this Mac's.
+  var machine: String?
 
   @State private var hovering = false
   @State private var now = Date()
@@ -143,7 +174,7 @@ private struct AwakeCeilingToastView: View {
       Image(systemName: "exclamationmark.triangle.fill")
         .foregroundStyle(theme.tokens.warning)
       VStack(alignment: .leading, spacing: 4) {
-        Text("Keep this machine awake?").font(.callout).fontWeight(.semibold).lineLimit(2)
+        Text(title).font(.callout).fontWeight(.semibold).lineLimit(2)
         Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(3)
         // Only after a `keep` came back from the card: the request did not reach the agent, so the
         // deadline is still running and the click has to be made again.
@@ -154,7 +185,8 @@ private struct AwakeCeilingToastView: View {
         Button("Keep awake") { model.keep() }
           .controlSize(.small)
           .disabled(model.keepInFlight != nil)
-          .accessibilityIdentifier("wakefulness.keepAwake")
+          .accessibilityIdentifier(
+            model.host.map { "wakefulness.keepAwake.\($0.uuidString)" } ?? "wakefulness.keepAwake")
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -175,10 +207,12 @@ private struct AwakeCeilingToastView: View {
     // job finishing) and how the countdown is corrected to the agent's exact remaining time.
     .task { await model.poll() }
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Keep this machine awake? \(detail)")
+    .accessibilityLabel("\(title) \(detail)")
     .accessibilityAction(named: "Keep awake") { model.keep() }
     .accessibilityAction(named: "Dismiss") { model.dismissPrompt() }
   }
+
+  private var title: String { machine.map { "Keep \($0) awake?" } ?? "Keep this machine awake?" }
 
   private var detail: String {
     // A retry with no prompt behind it (a keep from the badge, on a box past an advisory ceiling

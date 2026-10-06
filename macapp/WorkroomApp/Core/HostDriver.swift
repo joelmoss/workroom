@@ -15,6 +15,14 @@ struct HostDriverTraits: Equatable, Sendable {
   let durableDisk: Bool
   /// The wall clock an instance dies on, or nil for one that lives until destroyed.
   let maxLifetime: Duration?
+  /// Whether keeping a busy instance awake leaves a provider credential on it (#257: the design
+  /// doc's "its credential scope is a declared driver trait"). False for every driver today: the
+  /// agent keeps a box awake with a network heartbeat, which needs no credential at all.
+  let keepAwakeHoldsCredential: Bool
+  /// Whether an idle instance is put to sleep by its provider (#257). Only such a host is handed
+  /// ask-at-ceiling, whose prompt says the box may sleep: one that never sleeps would be asked for
+  /// nothing.
+  let sleepsWhenIdle: Bool
 }
 
 /// One provider. Four methods, and the only one that is not provisioning is `openStream`

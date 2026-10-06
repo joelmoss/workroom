@@ -625,6 +625,45 @@ final class RemoteHostsTests: XCTestCase {
       image: nil, context: context)
   }
 
+  /// A host's ceiling prompts are watched from its connect (#257): the connect hands its agent this
+  /// Mac's ask-at-ceiling setting, so a prompt that reached no card would let the box sleep under a
+  /// running job. The model is made, watching, and a prompt the agent raises shows on it.
+  @MainActor
+  func testConnectingAHostWatchesForItsCeilingPrompts() async throws {
+    let fake = try FakeAgent(version: 4, status: true)
+    defer { fake.stop() }
+    let id = UUID()
+    let host = HostID.remote(id)
+    defer { WakefulnessModel.forgetHost(id) }
+    XCTAssertNil(WakefulnessModel.Hosts.shared.models[id])
+    let remote = RemoteHosts(connectAgent: { host, _ in
+      try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
+    })
+    try await remote.connect(
+      host, driver: Self.driver(runtime: URL(fileURLWithPath: "/usr/bin/false"), context: nil))
+    let snapshot = await HostConnectionManager.shared.snapshot(for: host)
+    let lease = try XCTUnwrap(snapshot.lease)
+    addTeardownBlock { await HostConnectionManager.shared.disconnect(lease) }
+
+    let model = try XCTUnwrap(WakefulnessModel.Hosts.shared.models[id])
+    XCTAssertTrue(model.isWatchingPrompts)
+    XCTAssertFalse(model.hostSleeps, "a container is never slept, so its badge never says so")
+    // The watch subscribes with a `status`; then a prompt the agent pushes is the host's card.
+    let deadline = ContinuousClock.now + .seconds(5)
+    while fake.receivedStatusRequests.isEmpty, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertFalse(fake.receivedStatusRequests.isEmpty, "the watch never subscribed")
+    fake.pushCeilingPrompt()
+    while !model.prompt.isShowing, ContinuousClock.now < deadline + .seconds(5) {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertTrue(model.prompt.isShowing, "the host's prompt never reached its model")
+    // And the toast stack, which takes clicks only while a card it knows of is up, knows of it.
+    XCTAssertTrue(WakefulnessModel.Hosts.shared.showing.contains(id))
+    XCTAssertFalse(WakefulnessModel.shared.prompt.isShowing, "not this Mac's card")
+  }
+
   /// A record written before #309 has no context: it reads as nil, which names no context on any
   /// command, as every command did then. A pinned one keeps its context through config.
   func testARecordWithoutAContextReadsAsTheUnpinnedOne() throws {

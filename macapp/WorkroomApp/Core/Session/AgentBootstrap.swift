@@ -124,8 +124,33 @@ enum AgentBootstrap {
       host: host, driver: driver, socket: socket, agent: agent, handOff: handOff,
       resources: resources)
     logger.notice("agent bootstrap: \(String(describing: outcome), privacy: .public)")
-    return try await AgentVCSConnection.connect(
+    let connection = try await AgentVCSConnection.connect(
       host: host, stream: try await driver.openStream(to: host))
+    // Not awaited: a slow reply (its timeout is 5 s) must not hold up the connect, the cost
+    // `AgentVCSConnection.wakefulness()` declined a connect-time probe over.
+    // Ask mode only where the box can sleep: its prompt says it may.
+    let current = AgentWakefulnessSettings.current
+    let settings = AgentWakefulnessSettings(
+      ceiling: current.ceiling, promptTimeout: current.promptTimeout,
+      ask: current.ask && driver.traits.sleepsWhenIdle)
+    Task { await applyWakefulnessSettings(settings, on: connection) }
+    return connection
+  }
+
+  /// The app's ceiling settings, handed to the host's agent on every connect (#257): a remote agent
+  /// outlives every connection and keeps the environment it was started with through a hand-off, so
+  /// this is the one way a changed setting reaches it. Best effort: an agent too old for the
+  /// request keeps its own, which is logged, and the connect goes on.
+  static func applyWakefulnessSettings(
+    _ settings: AgentWakefulnessSettings, on connection: AgentVCSConnection
+  ) async {
+    do {
+      try await connection.wakefulness().apply(settings)
+    } catch {
+      logger.notice(
+        "agent bootstrap: ceiling settings not taken: \(error.localizedDescription, privacy: .public)"
+      )
+    }
   }
 
   /// Makes sure the host runs this app's agent, as far as the policy above allows, and says what

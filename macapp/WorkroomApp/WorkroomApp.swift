@@ -344,6 +344,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // `XCTestConfigurationFilePath`; an app launched by XCUITest does not, and is known by its
     // fixture flags. One shared answer (`UITestFixture.isTestProcess`) rather than a third copy of
     // the expression — the copies drifted once already.
+    #if DEBUG
+      if UITestFixture.isActive, let host = UITestFixture.ceilingPromptHost {
+        MainActor.assumeIsolated { WakefulnessModel.seedUITestPrompt(host: host) }
+      }
+    #endif
     if !UITestFixture.isTestProcess {
       MainActor.assumeIsolated { WakefulnessModel.shared.startWatchingPrompts() }
       // Hand an older running agent to the bundled one (#230), before panes are likely to attach.

@@ -225,7 +225,8 @@ private final class RefusingDriver: HostDriver, @unchecked Sendable {
   var derives: Int { lock.withLock { derived } }
   let traits = HostDriverTraits(
     transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
-    durableDisk: false, maxLifetime: nil)
+    durableDisk: false, maxLifetime: nil, keepAwakeHoldsCredential: false,
+    sleepsWhenIdle: false)
 
   func create() async throws -> HostID { throw HostDriverError.notImplemented("create") }
   func deriveFromBase(_ base: HostID) async throws -> HostID {

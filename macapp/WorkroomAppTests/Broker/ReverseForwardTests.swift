@@ -435,7 +435,8 @@ final class ReverseEvents: @unchecked Sendable {
 private final class ShellDriver: HostDriver, @unchecked Sendable {
   let traits = HostDriverTraits(
     transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
-    durableDisk: false, maxLifetime: nil)
+    durableDisk: false, maxLifetime: nil, keepAwakeHoldsCredential: false,
+    sleepsWhenIdle: false)
   let home: URL
   init(home: URL) { self.home = home }
 

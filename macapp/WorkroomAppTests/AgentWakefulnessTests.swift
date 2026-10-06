@@ -66,6 +66,7 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertEqual(status.askAtCeiling, true)
     XCTAssertEqual(status.cpuFraction ?? 0, 0.0021, accuracy: 0.0001)
     XCTAssertEqual(status.verdictWritten, true)
+    XCTAssertEqual(status.keepAwake, AgentWakefulness.KeepAwake(lastSent: 14990, error: nil))
   }
 
   /// The fixture above is a Swift string. This is the shipped binary: a field the agent renames or
@@ -80,10 +81,13 @@ final class AgentWakefulnessTests: XCTestCase {
     let service = try connection.wakefulness()
     let status = try await service.status()
     XCTAssertFalse(status.running, "the classifier is Linux-only")
-    XCTAssertNotNil(status.verdictWritten, "the field `unprotected` reads")
+    XCTAssertNotNil(status.verdictWritten, "decoded; a diagnostic only since #257")
     XCTAssertNotNil(status.askAtCeiling, "the field the settings-mismatch line reads")
     XCTAssertNotNil(status.ceilingSeconds)
+    XCTAssertNotNil(status.keepAwake, "the field `unprotected` reads (#257)")
     try await service.keep()
+    // The settings every remote connect hands over (#257): taken, not refused.
+    try await service.apply(AgentWakefulnessSettings(ceiling: 7200, promptTimeout: 120, ask: true))
   }
 
   /// The agent's clock is its own. `promptRemaining` is the ONLY subtraction allowed on it, and both
@@ -111,29 +115,139 @@ final class AgentWakefulnessTests: XCTestCase {
   /// The one state the badge must not soften. `Suppressed` is `awake_ceiling_exceeded: true` with
   /// `busy: false`: the prompt went unanswered and the provider may now sleep a box whose classifier
   /// still says BUSY. "Busy past the ceiling, nothing has been slept" was the wrong sentence for it.
-  /// And `verdict_written: false` is a BUSY verdict that never reached the shim: same badge.
+  /// And a failing heartbeat (#257) is a BUSY box nothing keeps awake: same badge.
   func testUnprotectedOutranksEverything() throws {
     let suppressed = try status([
       (#""busy":true"#, #""busy":false"#), (#""suppressed":false"#, #""suppressed":true"#),
     ])
     XCTAssertEqual(suppressed.display, .busyUnprotected)
     XCTAssertTrue(suppressed.unprotected)
+    // Each unprotected case tells the user its own reason.
+    let help = { (status: AgentWakefulness) in WakefulnessBadge.help(for: status, settings: nil) }
+    XCTAssertTrue(help(suppressed).contains("prompt went unanswered"), help(suppressed))
 
-    let unwritten = try status([(#""verdict_written":true"#, #""verdict_written":false"#)])
-    XCTAssertEqual(unwritten.display, .busyUnprotected)
+    let failing = (#""error":null"#, #""error":"no IPv4 default route""#)
+    XCTAssertEqual(try status([failing]).display, .busyUnprotected)
+    XCTAssertTrue(
+      try help(status([failing])).contains("heartbeat is failing (no IPv4 default route)"))
 
-    // An IDLE verdict that was not written protects nothing that needs protecting.
-    let idleUnwritten = try status([
-      (#""verdict_written":true"#, #""verdict_written":false"#),
-      (#""busy":true"#, #""busy":false"#),
+    // An IDLE box has nothing to keep awake, so a failed heartbeat protects nothing that needs it.
+    let idleFailing = try status([
+      failing, (#""busy":true"#, #""busy":false"#),
       (#""awake_ceiling_exceeded":true"#, #""awake_ceiling_exceeded":false"#),
     ])
-    XCTAssertEqual(idleUnwritten.display, .idle)
+    XCTAssertEqual(idleFailing.display, .idle)
 
-    // An agent that predates the field is not accused of anything.
-    let older = try status([(#","verdict_written":true"#, "")])
-    XCTAssertNil(older.verdictWritten)
-    XCTAssertEqual(older.display, .busyPastCeiling)
+    // The verdict file has no reader since the heartbeat replaced the shim: not a protection.
+    let unwritten = try status([(#""verdict_written":true"#, #""verdict_written":false"#)])
+    XCTAssertEqual(unwritten.display, .busyPastCeiling)
+
+    // An agent that predates the heartbeat keeps nothing awake: a busy box can refuse the hand-off
+    // to a newer one and keep it.
+    let older = try status([(#","keep_awake":{"last_sent":14990.0,"error":null}"#, "")])
+    XCTAssertNil(older.keepAwake)
+    XCTAssertEqual(older.display, .busyUnprotected)
+    XCTAssertTrue(help(older).contains("predates the keep-awake heartbeat"), help(older))
+    // Past the ceiling as well, so the badge is the "Keep awake" button: the text says why.
+    XCTAssertTrue(help(older).contains("past its awake ceiling. Click to keep it awake"))
+    let failingBelow = try status([
+      failing, (#""awake_ceiling_exceeded":true"#, #""awake_ceiling_exceeded":false"#),
+    ])
+    XCTAssertFalse(help(failingBelow).contains("Click"), help(failingBelow))
+
+    // This Mac's agent runs no classifier (macOS): no heartbeat field is not an old agent there.
+    let notRunning = try status([
+      (#""running":true"#, #""running":false"#),
+      (#","keep_awake":{"last_sent":14990.0,"error":null}"#, ""),
+    ])
+    XCTAssertFalse(notRunning.unprotected)
+
+    // A service that stopped ticking (#257): its last reading may say BUSY, and nothing is sending
+    // the heartbeat any more.
+    let stalled = (#""stalled":false"#, #""stalled":true"#)
+    XCTAssertEqual(try status([stalled]).display, .busyUnprotected)
+    XCTAssertTrue(try help(status([stalled])).contains("stopped checking"))
+    XCTAssertFalse(
+      try status([
+        stalled, (#""busy":true"#, #""busy":false"#),
+        (#""awake_ceiling_exceeded":true"#, #""awake_ceiling_exceeded":false"#),
+      ]).unprotected, "an idle box has nothing to keep awake")
+  }
+
+  /// A host that never sleeps (a container) has nothing to be kept awake from (#257): an old agent,
+  /// a stalled one or a failing heartbeat is not "not kept awake" there, only busy, while the
+  /// ceiling is still reported. A host that sleeps keeps every warning.
+  func testAHostThatNeverSleepsIsNeverShownUnprotected() throws {
+    let older = try status([
+      (#","keep_awake":{"last_sent":14990.0,"error":null}"#, ""),
+      (#""awake_ceiling_exceeded":true"#, #""awake_ceiling_exceeded":false"#),
+    ])
+    let stalled = try status([(#""stalled":false"#, #""stalled":true"#)])
+    let failing = try status([(#""error":null"#, #""error":"no IPv4 default route""#)])
+    XCTAssertEqual(older.display(hostSleeps: true), .busyUnprotected)
+    XCTAssertEqual(older.display(hostSleeps: false), .busy)
+    XCTAssertEqual(stalled.display(hostSleeps: false), .busyPastCeiling)
+    XCTAssertEqual(failing.display(hostSleeps: false), .busyPastCeiling)
+    XCTAssertFalse(
+      WakefulnessBadge.help(for: older, settings: nil, hostSleeps: false).contains("restart"))
+    // The error is the remote agent's text, so the tooltip takes only so much of it.
+    let flood = try status([
+      (#""error":null"#, "\"error\":\"" + String(repeating: "x", count: 5000) + "\"")
+    ])
+    XCTAssertLessThan(WakefulnessBadge.help(for: flood, settings: nil).count, 600)
+  }
+
+  /// "Keep awake" restarts the ceiling, so the badge offers it only past the ceiling, an unanswered
+  /// prompt included, and never for a heartbeat it cannot fix.
+  func testKeepAwakeIsOfferedOnlyWhereItHelps() throws {
+    XCTAssertTrue(WakefulnessBadge.offersKeep(try status()), "past the ceiling")
+    let suppressed = try status([
+      (#""busy":true"#, #""busy":false"#), (#""suppressed":false"#, #""suppressed":true"#),
+    ])
+    XCTAssertTrue(WakefulnessBadge.offersKeep(suppressed), "an unanswered prompt")
+    let failingBelowCeiling = try status([
+      (#""error":null"#, #""error":"no IPv4 default route""#),
+      (#""awake_ceiling_exceeded":true"#, #""awake_ceiling_exceeded":false"#),
+    ])
+    XCTAssertEqual(failingBelowCeiling.display, .busyUnprotected)
+    XCTAssertFalse(WakefulnessBadge.offersKeep(failingBelowCeiling), "a failing heartbeat")
+  }
+
+  /// The settings request carries the three settings under the agent's own names, and a plain
+  /// `status` carries none of them.
+  func testTheSettingsRequestNamesWhatTheAgentReads() throws {
+    let encoder = JSONEncoder()
+    encoder.keyEncodingStrategy = .convertToSnakeCase
+    encoder.outputFormatting = .sortedKeys
+    let settings = AgentStatusRequest(
+      method: "settings", ceilingSeconds: 7200, promptTimeoutSeconds: 120, askAtCeiling: true)
+    XCTAssertEqual(
+      String(decoding: try encoder.encode(settings), as: UTF8.self),
+      #"{"ask_at_ceiling":true,"ceiling_seconds":7200,"method":"settings","#
+        + #""prompt_timeout_seconds":120,"version":1}"#)
+    XCTAssertEqual(
+      String(decoding: try encoder.encode(AgentStatusRequest(method: "status")), as: UTF8.self),
+      #"{"method":"status","version":1}"#)
+  }
+
+  /// A remote connect hands over the settings and goes on whatever the agent says: one too old
+  /// for the request, or for the whole service, keeps its own settings and is still connected.
+  func testSettingsAnAgentCannotTakeDoNotFailTheConnect() async throws {
+    // No status service at all, and a status service that answers something other than the echo.
+    for (fake, sent) in [
+      (try FakeAgent(version: 3), 0), (try FakeAgent(version: 4, status: true), 1),
+    ] {
+      fakes.append(fake)
+      let connection = try await AgentVCSConnection.connect(
+        host: .local, socketPath: fake.socketPath)
+      connections.append(connection)
+      await AgentBootstrap.applyWakefulnessSettings(AgentWakefulnessSettings(), on: connection)
+      XCTAssertEqual(
+        fake.receivedStatusRequests.filter { $0.contains(#""method":"settings""#) }.count,
+        sent, "the request reaches an agent with a status service, once")
+      let reply = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 2)
+      XCTAssertNoThrow(try AgentVCSReply<AgentVCSCapabilities>.decode(reply))
+    }
   }
 
   /// The fields nothing displays are optional: an agent that renames one must not blank the badge.
@@ -180,10 +294,56 @@ final class AgentWakefulnessTests: XCTestCase {
   /// One model per remote host, kept for the launch, and never this Mac's (#254).
   @MainActor
   func testEachRemoteHostHasItsOwnWakefulnessModel() {
-    let id = UUID()
+    let (id, other) = (UUID(), UUID())
+    defer { [id, other].forEach(WakefulnessModel.forgetHost) }
     XCTAssertTrue(WakefulnessModel.model(forHost: id) === WakefulnessModel.model(forHost: id))
-    XCTAssertFalse(WakefulnessModel.model(forHost: id) === WakefulnessModel.model(forHost: UUID()))
+    XCTAssertFalse(WakefulnessModel.model(forHost: id) === WakefulnessModel.model(forHost: other))
     XCTAssertFalse(WakefulnessModel.model(forHost: id) === WakefulnessModel.shared)
+  }
+
+  /// The toast stack takes clicks only while a card it knows of is up, so a remote card going away
+  /// must give them back (#257), or the corner of every window stays unclickable.
+  @MainActor
+  func testARemoteCardGoingAwayGivesTheStackItsClicksBack() async throws {
+    let id = UUID()
+    WakefulnessModel.seedUITestPrompt(host: id)
+    defer { WakefulnessModel.forgetHost(id) }
+    let model = try XCTUnwrap(WakefulnessModel.Hosts.shared.models[id])
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !model.prompt.isShowing, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertTrue(WakefulnessModel.Hosts.shared.showing.contains(id), "the card never showed")
+    model.dismissPrompt()
+    XCTAssertFalse(WakefulnessModel.Hosts.shared.showing.contains(id))
+  }
+
+  /// A remote host's card names its workroom; a host that is no workroom's (a project's base) is
+  /// named generically.
+  func testARemoteCardIsNamedForItsWorkroom() {
+    let id = UUID()
+    let workroom = Workroom(
+      name: "feature", path: "/home/w", vcsName: "workroom/feature", warnings: [],
+      host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: id))
+    let projects = [Project(path: "/a", vcs: "git", workrooms: [workroom])]
+    XCTAssertEqual(ToastStack.machineName(forHost: id, in: projects), workroom.displayName)
+    XCTAssertEqual(ToastStack.machineName(forHost: UUID(), in: projects), "a remote machine")
+  }
+
+  /// A remote host asks too, since the app hands its agent this Mac's ask-at-ceiling setting
+  /// (#257): its model is published for the toast stack and watching for prompts from the moment
+  /// it is made, and a deleted host's goes, watch and all.
+  @MainActor
+  func testARemoteHostsModelWatchesForPromptsUntilTheHostIsForgotten() {
+    let id = UUID()
+    let model = WakefulnessModel.model(forHost: id)
+    XCTAssertTrue(WakefulnessModel.Hosts.shared.models[id] === model)
+    XCTAssertEqual(model.host, id)
+    XCTAssertTrue(model.isWatchingPrompts)
+    XCTAssertNil(WakefulnessModel.shared.host)
+    WakefulnessModel.forgetHost(id)
+    XCTAssertNil(WakefulnessModel.Hosts.shared.models[id])
+    XCTAssertFalse(model.isWatchingPrompts)
   }
 
   /// A remote host's poll reads that host's connection and never connects one: with only this Mac
@@ -426,8 +586,9 @@ final class AgentWakefulnessTests: XCTestCase {
   }
 
   /// The two duration keys have no UI, so nothing but this stops a hand-edited preference reaching
-  /// the agent as `nan`, `inf` or `-3600` on its command line. The agent would fall back to its
-  /// defaults for those; the app does the same, so the two agree on what it runs with.
+  /// the agent as `nan`, `inf` or `-3600` on its command line, or as a value outside the 30 s to 30
+  /// days the agent accepts. The agent would fall back to its defaults for those; the app does the
+  /// same, so the two agree on what it runs with.
   func testUnusablePreferencesBecomeTheAgentsDefaults() {
     for bad in [Double.nan, .infinity, -.infinity, 0, -1] {
       let settings = AgentWakefulnessSettings(
@@ -436,6 +597,15 @@ final class AgentWakefulnessTests: XCTestCase {
       XCTAssertEqual(settings.promptTimeout, 600, "prompt timeout \(bad)")
       XCTAssertTrue(settings.ask)
     }
+    // 721 hours is past 30 days; 0.4 minutes is 24 s, under the 30 s floor.
+    let outOfRange = AgentWakefulnessSettings(
+      ceilingHours: 721, promptTimeoutMinutes: 0.4, ask: true)
+    XCTAssertEqual(outOfRange.ceiling, 14400)
+    XCTAssertEqual(outOfRange.promptTimeout, 600)
+    // The edges themselves are the agent's to take: 30 days and 30 s.
+    let edges = AgentWakefulnessSettings(ceilingHours: 720, promptTimeoutMinutes: 0.5, ask: true)
+    XCTAssertEqual(edges.ceiling, 2_592_000)
+    XCTAssertEqual(edges.promptTimeout, 30)
     let good = AgentWakefulnessSettings(ceilingHours: 0.5, promptTimeoutMinutes: 1, ask: false)
     XCTAssertEqual(good.ceiling, 1800)
     XCTAssertEqual(good.promptTimeout, 60)

@@ -383,7 +383,13 @@ enum RemoteWorkrooms {
     _ name: String, host: HostDescriptor, environment: RemoteProvisioning.Environment?,
     recorder: Recorder
   ) async throws {
-    guard try checkDeletable([host]) else { return try await recorder.forget(name) }
+    // The entry goes, and the host's prompt watch with it (#257): one step for both ways out, so a
+    // workroom with nothing live to take down does not keep a model made earlier this launch.
+    func forget() async throws {
+      if let id = host.id { await MainActor.run { WakefulnessModel.forgetHost(id) } }
+      try await recorder.forget(name)
+    }
+    guard try checkDeletable([host]) else { return try await forget() }
     guard let environment else { throw Failure.signedOut }
     let box = host.id.map(HostID.remote)
     if let box, let lease = await HostConnectionManager.shared.snapshot(for: box).lease {
@@ -404,7 +410,7 @@ enum RemoteWorkrooms {
         cause: cause, host: liveHost, grantID: grant, cleanup: left)
     }
     if let id = host.id { await RemoteHosts.shared.forgetRelay(id) }
-    try await recorder.forget(name)
+    try await forget()
   }
 
   /// Destroys a project's base (#253), for an explicit project delete, then clears its record
@@ -471,6 +477,9 @@ final class RemoteHosts: @unchecked Sendable {
   private let connectHost: (@Sendable (HostID) async throws -> Void)?
   /// Sets up a relayed host's credential relay on its connection; nil in the app.
   private let relayHost: (@Sendable (HostID) async throws -> Void)?
+  /// `connect`'s agent connection, bootstrap included; nil in the app (`AgentBootstrap.connect`).
+  private let connectAgent:
+    (@Sendable (HostID, ContainerHostDriver) async throws -> AgentVCSConnection)?
   private let isConnected: (@Sendable (HostID) async -> Bool)?
   private let startHost: (@Sendable (HostID) async throws -> Void)?
   private let now: @Sendable () -> ContinuousClock.Instant
@@ -486,10 +495,13 @@ final class RemoteHosts: @unchecked Sendable {
     now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
     makeDriver: (@Sendable (DriverKey) throws -> ContainerHostDriver)? = nil,
     sweepDriver: (@Sendable (ContainerHostDriver, Set<UUID>, Set<String>) async -> [String])? = nil,
-    relayHost: (@Sendable (HostID) async throws -> Void)? = nil
+    relayHost: (@Sendable (HostID) async throws -> Void)? = nil,
+    connectAgent: (@Sendable (HostID, ContainerHostDriver) async throws -> AgentVCSConnection)? =
+      nil
   ) {
     self.connectHost = connectHost
     self.relayHost = relayHost
+    self.connectAgent = connectAgent
     self.isConnected = isConnected
     self.startHost = startHost
     self.now = now
@@ -679,8 +691,17 @@ final class RemoteHosts: @unchecked Sendable {
   /// first. One already there is kept.
   func connect(_ host: HostID, driver: ContainerHostDriver) async throws {
     _ = try await HostConnectionManager.shared.connectIfDisconnected(host: host) {
-      try await AgentBootstrap.connect(
+      [connectAgent] in
+      if let connectAgent { return try await connectAgent(host, driver) }
+      return try await AgentBootstrap.connect(
         host: host, driver: driver, socket: RemoteWorkrooms.agentSocket)
+    }
+    // Its ceiling prompts are watched from here (#257): the agent was just handed this Mac's
+    // ask-at-ceiling setting, and a prompt nobody shows lets the box sleep under a running job.
+    if case .remote(let id) = host {
+      await MainActor.run {
+        WakefulnessModel.model(forHost: id).hostSleeps = driver.traits.sleepsWhenIdle
+      }
     }
     // A relayed workroom's git asks this Mac for credentials (#309): its listener goes with the
     // connection, and its secret with this launch, so it is set up again on every connect. A
