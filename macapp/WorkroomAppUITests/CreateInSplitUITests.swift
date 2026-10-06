@@ -8,7 +8,7 @@ import XCTest
 /// create beside was therefore unmounted for the length of the create: a blink with no setup script,
 /// the entire script run with one.
 ///
-/// These tests assert the two things that are only true of the render, not of the model — which is why
+/// These tests assert the things that are only true of the render, not of the model — which is why
 /// they live here and not in `AppStoreCreateWorkroomTests`, where the split's *state* is already
 /// covered. The fixture seeds a mid-script create on the selected split member
 /// (`-WorkroomUITestCreatingSplitMember 1`) rather than producing one: fixture mode never shells out
@@ -59,7 +59,18 @@ final class CreateInSplitUITests: XCTestCase {
   /// screen — `app.descendants` would find it either way — so only scoping the query to
   /// `workroom.pane` tells the two routings apart. The pane count is the user-visible consequence: one
   /// pane means the anchor was unmounted, which is the bug.
-  func testTheCreateRendersInsideItsPaneAndKeepsTheAnchorOnScreen() throws {
+  ///
+  /// **The second half** (same launch, read-only, so it chains after the render checks): a creating
+  /// member's title bar drops Run. `startRunCommand` refuses a workroom whose setup script is still
+  /// writing the worktree (issue #167), so the button was live, pressable and silent — barely visible
+  /// until the focused create moved into a pane with a full title bar.
+  ///
+  /// Asserted PER PANE, not as a global count. Both members belong to the same project and so resolve
+  /// the same configured command, so the healthy one must keep its Run — a count of 1 alone would also
+  /// be satisfied by an INVERTED gate that hid the wrong pane's button, which is the regression most
+  /// worth catching. Panes are identified by their accessibility label (`WorkroomPaneLeaf` labels each
+  /// "Workroom <name>" or "Project <title>") rather than by index, which layout order could swap.
+  func testTheCreateRendersInsideItsPaneKeepsTheAnchorAndWithholdsItsRunButton() throws {
     let app = launchedApp()
 
     assertCount(panes(app), reaches: 2)
@@ -75,23 +86,8 @@ final class CreateInSplitUITests: XCTestCase {
       creatingPane(app).descendants(matching: .any).matching(identifier: "terminal.pane").firstMatch
         .exists,
       "while the creating member withholds its own, because its create owns that pane")
-  }
 
-  /// The second half: a creating member's title bar drops Run. `startRunCommand` refuses a workroom
-  /// whose setup script is still writing the worktree (issue #167), so the button was live, pressable
-  /// and silent — barely visible until the focused create moved into a pane with a full title bar.
-  ///
-  /// Asserted PER PANE, not as a global count. Both members belong to the same project and so resolve
-  /// the same configured command, so the healthy one must keep its Run — a count of 1 alone would also
-  /// be satisfied by an INVERTED gate that hid the wrong pane's button, which is the regression most
-  /// worth catching. Panes are identified by their accessibility label (`WorkroomPaneLeaf` labels each
-  /// "Workroom <name>" or "Project <title>") rather than by index, which layout order could swap.
-  func testTheCreatingMemberHasNoRunButtonWhileTheOtherKeepsOne() throws {
-    let app = launchedApp()
-
-    assertCount(panes(app), reaches: 2)
-    let creating = panes(app)
-      .matching(NSPredicate(format: "label BEGINSWITH %@", "Workroom ")).firstMatch
+    let creating = creatingPane(app)
     let healthy = panes(app)
       .matching(NSPredicate(format: "label BEGINSWITH %@", "Project ")).firstMatch
     XCTAssertTrue(creating.waitForExistence(timeout: 10), "the creating workroom member's pane")

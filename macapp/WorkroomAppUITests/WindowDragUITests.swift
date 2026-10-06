@@ -64,15 +64,41 @@ final class WindowDragUITests: XCTestCase {
     return previous
   }
 
-  /// The other half of the contract: dragging an *empty* part of the title bar still MOVES the window
-  /// (`WindowDragBackground` re-enables movement for its explicit `performDrag`). Uses the thin strip
-  /// just above the chips, clear of every control.
-  func testDraggingEmptyTitlebarMovesWindow() {
+  /// One launch, two halves of the title-bar drag contract, in this order:
+  ///
+  /// 1. The core regression: dragging a single workroom tab chip horizontally must NOT move the
+  ///    window.
+  /// 2. The other half: dragging an *empty* part of the title bar still MOVES the window
+  ///    (`WindowDragBackground` re-enables movement for its explicit `performDrag`). Uses the thin
+  ///    strip just above the chips, clear of every control. It runs second and re-reads the frame
+  ///    itself, and it proves in the SAME launch that a synthetic drag CAN move this window — so
+  ///    step 1's "did not move" cannot pass for a harness that never moves windows.
+  func testDraggingWorkroomTabDoesNotMoveWindowButEmptyTitlebarDoes() {
     let app = launchedApp()
+    let chip = workroomChips(app).firstMatch
+    // Wait for the bar to be live (a chip exists) before grabbing anything in it.
+    XCTAssertTrue(
+      chip.waitForExistence(timeout: 10),
+      "the fixture workroom should show a tab chip in the title bar")
     let window = app.windows.firstMatch
     XCTAssertTrue(window.waitForExistence(timeout: 10))
-    // Wait for the bar to be live (a chip exists) before grabbing the empty strip beside it.
-    XCTAssertTrue(workroomChips(app).firstMatch.waitForExistence(timeout: 10))
+
+    // --- Chip drag: the window must stay put ---
+    let chipBefore = window.frame
+
+    // A clearly-past-threshold horizontal drag (the reorder gesture's minimumDistance is 6pt).
+    let chipStart = chip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+    chipStart.click(forDuration: 0.25, thenDragTo: chipStart.withOffset(CGVector(dx: 140, dy: 0)))
+
+    let chipAfter = window.frame
+    XCTAssertEqual(
+      Double(chipAfter.origin.x), Double(chipBefore.origin.x), accuracy: 5,
+      "dragging a workroom tab moved the window horizontally — it dragged the window, not the tab")
+    XCTAssertEqual(
+      Double(chipAfter.origin.y), Double(chipBefore.origin.y), accuracy: 5,
+      "dragging a workroom tab moved the window vertically — it dragged the window, not the tab")
+
+    // --- Empty title bar drag: the window must move ---
     let before = window.frame
 
     // ~3pt below the window's top edge (above the chips, which start ~5pt down), mid-width — the
@@ -87,30 +113,6 @@ final class WindowDragUITests: XCTestCase {
     XCTAssertEqual(
       Double(after.origin.x), Double(before.origin.x) + 120, accuracy: 12,
       "dragging the empty title bar should move the window")
-  }
-
-  /// The core regression: dragging a single workroom tab chip horizontally must NOT move the window.
-  func testDraggingWorkroomTabDoesNotMoveWindow() {
-    let app = launchedApp()
-    let chip = workroomChips(app).firstMatch
-    XCTAssertTrue(
-      chip.waitForExistence(timeout: 10),
-      "the fixture workroom should show a tab chip in the title bar")
-    let window = app.windows.firstMatch
-    XCTAssertTrue(window.waitForExistence(timeout: 5))
-    let before = window.frame
-
-    // A clearly-past-threshold horizontal drag (the reorder gesture's minimumDistance is 6pt).
-    let start = chip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-    start.click(forDuration: 0.25, thenDragTo: start.withOffset(CGVector(dx: 140, dy: 0)))
-
-    let after = window.frame
-    XCTAssertEqual(
-      Double(after.origin.x), Double(before.origin.x), accuracy: 5,
-      "dragging a workroom tab moved the window horizontally — it dragged the window, not the tab")
-    XCTAssertEqual(
-      Double(after.origin.y), Double(before.origin.y), accuracy: 5,
-      "dragging a workroom tab moved the window vertically — it dragged the window, not the tab")
   }
 
   /// With two chips, dragging the leading chip past the trailing one swaps their order — proving the
