@@ -206,4 +206,49 @@ final class SessionStoreTests: XCTestCase {
     XCTAssertFalse(fallback.path.contains("com.developwithstyle.workroom"))
     XCTAssertNotEqual(fallback, SessionStore.defaultURL(bundleID: "com.developwithstyle.workroom"))
   }
+
+  // MARK: Isolation (the guard every UI test relies on)
+
+  /// A UI-test launch that names no session file must get a DISABLED store. The store still points
+  /// at the bundle-scoped default path, so if it were enabled, every fixture launch would read and
+  /// overwrite the developer's own `Workroom Dev` session.
+  func testFixtureLaunchWithoutASessionPathIsDisabled() {
+    let store = SessionStore.forEnvironment(
+      underXCTest: false, fixtureActive: true, sessionFilePath: nil)
+    XCTAssertTrue(store.isDisabled)
+  }
+
+  func testFixtureLaunchWithASessionPathUsesThatFile() {
+    let store = SessionStore.forEnvironment(
+      underXCTest: false, fixtureActive: true, sessionFilePath: url.path)
+    XCTAssertFalse(store.isDisabled)
+    XCTAssertEqual(store.url.path, url.path)
+  }
+
+  /// The unit-test host gets the same guard: tab mutations reach the shared coordinator.
+  func testUnitTestHostWithoutASessionPathIsDisabled() {
+    let store = SessionStore.forEnvironment(
+      underXCTest: true, fixtureActive: false, sessionFilePath: nil)
+    XCTAssertTrue(store.isDisabled)
+  }
+
+  /// The control: a normal launch persists, so the cases above are not disabled by default.
+  func testANormalLaunchIsEnabled() {
+    let store = SessionStore.forEnvironment(
+      underXCTest: false, fixtureActive: false, sessionFilePath: nil)
+    XCTAssertFalse(store.isDisabled)
+  }
+
+  /// What "disabled" has to mean: it writes nothing, reads nothing, and clears nothing.
+  func testADisabledStoreNeitherWritesReadsNorClears() throws {
+    let disabled = SessionStore(url: url, isDisabled: true)
+    XCTAssertFalse(disabled.writeSynchronously(makeFile()))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "a disabled store wrote")
+
+    // A real file is on disk; a disabled store must neither restore it nor delete it.
+    XCTAssertTrue(SessionStore(url: url).writeSynchronously(makeFile()))
+    XCTAssertEqual(disabled.read(), .none)
+    disabled.clear()
+    XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "a disabled store cleared")
+  }
 }

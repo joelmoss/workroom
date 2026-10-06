@@ -215,7 +215,6 @@ final class SessionRestoreUITests: XCTestCase {
     assertCount(tabs(app), reaches: 1)
   }
 
-  // `testWithoutASessionPathNothingIsWritten` moved to
-  // `AgentSessionIsolationTripwireUITests.swift` — it's an isolation tripwire the routine sweep
-  // must keep running even though this file is skipped by default via `APP_UITEST_FLAGS`.
+  // `testWithoutASessionPathNothingIsWritten` is now a unit test: the fixture-mode no-op rule is
+  // pinned in `SessionStoreTests` (`forEnvironment`), which every `make app-test` run covers.
 }

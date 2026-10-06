@@ -41,25 +41,33 @@ final class SessionStore {
   /// a fixture launch would otherwise write over the developer's own `Workroom Dev` session — and the
   /// fixture's temp-directory workrooms would then be restored into a real launch.
   static func forCurrentEnvironment() -> SessionStore {
+    forEnvironment(
+      underXCTest: ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil,
+      fixtureActive: UITestFixture.isActive, sessionFilePath: UITestFixture.sessionFilePath)
+  }
+
+  /// `forCurrentEnvironment`'s decision, with its inputs passed in so a unit test can pin every
+  /// branch without the store ever pointing at a real session file.
+  static func forEnvironment(underXCTest: Bool, fixtureActive: Bool, sessionFilePath: String?)
+    -> SessionStore
+  {
     // Unit tests inject their own store, but `AppStore.markSessionDirty` reaches the SHARED
     // coordinator — so without this a `make app-test` run writes the developer's own `Workroom Dev`
     // session file and scrollback sidecars as a side effect of exercising tab mutations. Same
     // isolation the app already applies at `WorkroomApp.swift:42` and `AppStore.swift:750`.
-    if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil,
-      UITestFixture.sessionFilePath == nil
-    {
+    if underXCTest, sessionFilePath == nil {
       return SessionStore(url: SessionStore.defaultURL(), isDisabled: true)
     }
-    guard UITestFixture.isActive else { return SessionStore() }
-    guard let path = UITestFixture.sessionFilePath else {
+    guard fixtureActive else { return SessionStore() }
+    guard let sessionFilePath else {
       return SessionStore(url: SessionStore.defaultURL(), isDisabled: true)
     }
-    return SessionStore(url: URL(fileURLWithPath: path))
+    return SessionStore(url: URL(fileURLWithPath: sessionFilePath))
   }
 
   let url: URL
   /// A disabled store reads nothing and writes nothing — fixture mode without a named session file.
-  private let isDisabled: Bool
+  let isDisabled: Bool
   /// Where an undecodable file is moved once, so a bug report has something to attach instead of the
   /// evidence being deleted.
   var quarantineURL: URL {

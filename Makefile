@@ -102,10 +102,10 @@ APP_TEST_FLAGS ?= -parallel-testing-enabled YES
 # Extra xcodebuild options for app-uitest. Skips the 3 most expensive/flaky cases by default (each
 # does a real quit+relaunch or a hard timing budget), since XCUITest never runs in CI and a routine
 # `make app-uitest` was paying ~4-5 min for tests that are only load-bearing right before a release.
-# The isolation-tripwire tests those two classes carried (proving discovery/session-restore no-op
-# without a seeded path — a guard the REST of this suite depends on) were extracted to
-# `AgentSessionIsolationTripwireUITests` first, so the routine sweep keeps that safety net. Run the
-# full suite (pre-release, or after touching any of these) with `make app-uitest APP_UITEST_FLAGS=`.
+# The isolation guard the REST of this suite depends on (no session read or write without a seeded
+# path) is pinned by unit tests instead, in `SessionStoreTests` (`forEnvironment`), so skipping
+# these classes drops no safety net. Run the full suite (pre-release, or after touching any of
+# these) with `make app-uitest APP_UITEST_FLAGS=`.
 APP_UITEST_FLAGS ?= -skip-testing:WorkroomAppUITests/AgentResumeUITests -skip-testing:WorkroomAppUITests/SessionRestoreUITests -skip-testing:WorkroomAppUITests/HistoryStressUITests/testLargeHistoryStaysInteractive -skip-testing:WorkroomAppUITests/WindowDragUITests/testDraggingWorkroomTabReordersTwoChips
 
 # Stops every running copy of THIS build's identity first (Scripts/stop-dev-app.sh), and its
