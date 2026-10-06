@@ -89,8 +89,8 @@ final class ChangesetDetailUITests: XCTestCase {
   ///    rendered diff (unified `diff.line` or side-by-side `diff.side.left`), and the moved file's
   ///    row reading `old → new`. Done first, so the persisted chip can't be a leftover preview (a
   ///    single click would give the preview chip the same title) and `ChangesetDetail` can't already
-  ///    be on screen. (Single-click-then-double-click on the same row does NOT persist today —
-  ///    measured — so the double-click has to land on a row with no preview open.)
+  ///    be on screen. (Double-clicking a row already open as a preview has its own regression test,
+  ///    `testDoubleClickingARowAlreadyOpenAsAPreviewPersistsIt`.)
   /// 2. Single-clicking the next row previews "Fixture commit 2". If the first were a preview it
   ///    would be retargeted; because it was persisted, both chips coexist.
   /// 3. Regression, LAST because it destroys every tab: closing ALL tabs of the selected workroom
@@ -161,5 +161,28 @@ final class ChangesetDetailUITests: XCTestCase {
     XCTAssertTrue(
       waitExists(els(app, "HistoryRow").element(boundBy: 0), false),
       "History empties once the selected workroom has no open tabs")
+  }
+
+  /// Regression: open a commit with a single click, let the pointer rest, then double-click the same
+  /// row to keep it. That double-click must persist the tab — proved by previewing the next commit,
+  /// which would retarget a preview but leaves a persisted tab alone. It used to stay a preview: the
+  /// resting pointer raised the row's hover card, and the double-click's first click only closed it.
+  func testDoubleClickingARowAlreadyOpenAsAPreviewPersistsIt() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    openHistory(app)
+    let row = els(app, "HistoryRow").element(boundBy: 0)
+
+    row.click()
+    XCTAssertTrue(
+      waitExists(el(app, "terminal.tab.Fixture commit 1")), "the single click opens a preview")
+    Thread.sleep(forTimeInterval: 1.5)  // past the hover card's 0.5s dwell, pointer still resting
+
+    row.doubleClick()
+    els(app, "HistoryRow").element(boundBy: 1).click()
+    XCTAssertTrue(waitExists(el(app, "terminal.tab.Fixture commit 2")), "the next commit previews")
+    XCTAssertTrue(
+      el(app, "terminal.tab.Fixture commit 1").exists,
+      "the double-click persisted commit 1, so previewing commit 2 left its tab open")
   }
 }

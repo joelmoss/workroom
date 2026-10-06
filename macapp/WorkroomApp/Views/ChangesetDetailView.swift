@@ -220,15 +220,15 @@ struct ChangesetDetailView: View {
         }
         diffStat(changeset)
         if commit.showsUnpushedBadge {
-          // Made its own accessibility element so the header container's `ChangesetDetail` id (below)
-          // can't swallow it — a container id propagates onto child leaves, and an XCUITest query for
-          // this marker found nothing until it became a leaf in its own right.
+          // Its own accessibility element, so VoiceOver reads one "Not pushed" rather than the icon and
+          // text apart. It exposes as an element (not a static text) labelled "Not pushed", carrying
+          // the header's `ChangesetDetail` id: the container id below propagates onto every leaf and
+          // overrides any id set here (measured 2026-10-06), so tests match it by that id + label.
           Label("Not pushed", systemImage: "arrow.up")
             .foregroundStyle(theme.tokens.warning)
             .help(VCSPushScope.unpushedHelp(changeset.pushScope))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Not pushed")
-            .accessibilityIdentifier("ChangesetDetailUnpushed")
         }
         Spacer(minLength: 0)
       }

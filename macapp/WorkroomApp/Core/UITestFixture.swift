@@ -1316,17 +1316,22 @@ struct FixtureVCSProvider: LocalVCSProviding {
     }
   }
 
+  /// The page `log` serves, so `changeset` resolves the same commits it lists.
+  private static var history: [VCSCommit] {
+    UITestFixture.manyCommits > 0 ? manyCommits(UITestFixture.manyCommits) : commits
+  }
+
   func log(root: URL, limit: Int) throws -> VCSHistoryPage {
-    let all =
-      UITestFixture.manyCommits > 0
-      ? Self.manyCommits(UITestFixture.manyCommits) : Self.commits
+    let all = Self.history
     let slice = Array(all.prefix(limit))
     return VCSHistoryPage(
       commits: slice, reachedEnd: slice.count >= all.count, pushScope: Self.pushScope)
   }
 
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
-    let commit = Self.commits.first { $0.commitID == commitID } ?? Self.commits[0]
+    // From the page `log` served. Searching only `commits` made every stress row open
+    // `fixturecommit1`'s detail, so no test could see which commit a click had opened.
+    let commit = Self.history.first { $0.commitID == commitID } ?? Self.commits[0]
     let files = [
       VCSChangedFile(path: "src/session.rb", oldPath: nil, kind: .modified),
       VCSChangedFile(path: "docs/notes.txt", oldPath: nil, kind: .added),

@@ -237,6 +237,8 @@ struct HistoryRow: View, Equatable {
   /// Whether the rich hover card (mirroring the changeset detail's header) is showing. Revealed on a
   /// short hover dwell so it doesn't flash while the pointer scans down the list (see the `.task`).
   @State private var showCard = false
+  /// Set by a click on the row, cleared when the pointer leaves: the hover card stays down meanwhile.
+  @State private var cardSuppressed = false
   /// Timestamp of the last plain click, for the manual double-click gate (mirrors `ChangesPanel`).
   @State private var lastClick: Date?
   private let theme = ThemeService.shared
@@ -357,18 +359,24 @@ struct HistoryRow: View, Equatable {
       .task(id: hovering) {
         guard hovering else {
           showCard = false
+          cardSuppressed = false
           return
         }
         try? await Task.sleep(for: .milliseconds(500))
         // Also re-read the LIVE hover state: `.task(id:)` swaps its id in place at a stable row
         // slot, and cancellation delivery for that shape isn't reliable everywhere (see TODOS
         // "`.task(id:)` cancellation is not reliably delivered on an in-place value swap").
-        guard !Task.isCancelled, hovering else { return }
+        guard !Task.isCancelled, hovering, !cardSuppressed else { return }
         showCard = true
       }
       // Eager single-click preview, quick second click (< 0.35s) persists — the same manual
       // double-click gate the Changes panel uses (avoids SwiftUI's count:2 delay).
       .onTapGesture {
+        // A click opens the commit, so its card has nothing left to say: keep it down until the
+        // pointer leaves. Left up, it sat over the resting pointer and the first click of a later
+        // double-click only closed it, so the row saw one click and the tab stayed a preview.
+        cardSuppressed = true
+        showCard = false
         let now = Date()
         if let last = lastClick, now.timeIntervalSince(last) < 0.35 {
           open(commit, true)
