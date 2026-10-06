@@ -784,7 +784,7 @@ impl Ceiling {
     /// over, so the box is still past its ceiling and the next BUSY tick asks again at once. A user
     /// who woke the box gets a fresh prompt card; with nobody there, the box sleeps again once that
     /// prompt times out, not a whole ceiling later. A wake is never an answer: a connect wakes the
-    /// box too (TODOS: "a wake-on-connect resets the awake ceiling").
+    /// box too (#356).
     ///
     /// Any other state starts over: a job that resumes with the box gets the full ceiling again.
     pub fn resumed(&mut self, t: f64) {

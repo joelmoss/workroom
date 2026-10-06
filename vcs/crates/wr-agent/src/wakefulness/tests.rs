@@ -251,8 +251,7 @@ fn keep_resets_the_ceiling_and_going_idle_clears_it() {
 /// first, so a user who woke the box and typed kept the classifier BUSY while the service kept
 /// publishing IDLE, and the provider hibernated the box under them, again after every resume.
 /// A resume once cleared the ceiling outright; but a connect wakes the box too, so every status
-/// probe then bought a running job another full ceiling (TODOS: "a wake-on-connect resets the awake
-/// ceiling").
+/// probe then bought a running job another full ceiling (#356).
 #[test]
 fn typing_clears_a_suppressed_ceiling_and_resuming_asks_again() {
     let settings = Settings {
