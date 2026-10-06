@@ -126,9 +126,10 @@ final class HistoryStressUITests: XCTestCase {
     // Step 3: back at the top (asserted, not assumed), scroll down to a row that started off-screen.
     // Row 0's changeset is still open, so the `ChangesetDetail` wait below cannot prove anything on
     // its own; the short-id check, which must differ from row 0's, is what pins the clicked commit.
+    // The exact first id: every one of the 800 fixture ids starts `s000`, so a prefix proves nothing.
     XCTAssertTrue(
-      els(app, "HistoryRow").matching(NSPredicate(format: "label BEGINSWITH %@", "s000")).firstMatch
-        .waitForExistence(timeout: 8),
+      els(app, "HistoryRow").matching(NSPredicate(format: "label BEGINSWITH %@", "s0000000,"))
+        .firstMatch.waitForExistence(timeout: 8),
       "history is scrolled back to the top before the next step")
 
     // A row that started off-screen: scrolling realizes it, and clicking it must select THAT commit —

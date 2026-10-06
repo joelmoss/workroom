@@ -237,12 +237,16 @@ struct HistoryRow: View, Equatable {
   /// Whether the rich hover card (mirroring the changeset detail's header) is showing. Revealed on a
   /// short hover dwell so it doesn't flash while the pointer scans down the list (see the `.task`).
   @State private var showCard = false
+  /// Which dwell-task invocation started last — a generation token, as in `AvatarView`, because an
+  /// in-place `.task(id:)` swap does not reliably cancel the outgoing task. A stale task that wakes
+  /// after a newer one started (say, the row was selected mid-dwell) sees a newer value and stays put.
+  @State private var dwellGeneration = 0
   /// Timestamp of the last plain click, for the manual double-click gate (mirrors `ChangesPanel`).
   @State private var lastClick: Date?
   private let theme = ThemeService.shared
 
   /// The equality gate behind `.equatable()` at the use site. Synthesis is impossible (the row stores
-  /// three `@State`s, a `ThemeService` handle and a closure), so this lists what the body actually reads
+  /// four `@State`s, a `ThemeService` handle and a closure), so this lists what the body actually reads
   /// from its inputs: the commit, the page's push scope, and whether this row is the selected one.
   ///
   /// `open` is EXCLUDED. That is sound only because `HistoryPanel` builds it with an explicit `[store]`
@@ -357,6 +361,8 @@ struct HistoryRow: View, Equatable {
       // Keyed on `isSelected` too: the closure reads the row as it was when the task started, so a
       // click that opens this commit mid-dwell must restart it or the guard below sees it unselected.
       .task(id: [hovering, isSelected]) {
+        dwellGeneration &+= 1
+        let generation = dwellGeneration
         // Down when the pointer leaves, and over the open commit's row: its detail is already
         // showing, and a card there sat under the pointer and ate the first click of a double-click
         // meant to keep the tab. Hidden here too, not only on click, for a row opened another way.
@@ -365,10 +371,10 @@ struct HistoryRow: View, Equatable {
           return
         }
         try? await Task.sleep(for: .milliseconds(500))
-        // Also re-read the LIVE hover state: `.task(id:)` swaps its id in place at a stable row
-        // slot, and cancellation delivery for that shape isn't reliable everywhere (see TODOS
-        // "`.task(id:)` cancellation is not reliably delivered on an in-place value swap").
-        guard !Task.isCancelled, hovering, !isSelected else { return }
+        // Checked against the generation, not `Task.isCancelled` alone: this closure's `isSelected`
+        // is the value from when it started, and cancellation of an in-place swap isn't reliable (see
+        // TODOS "`.task(id:)` cancellation is not reliably delivered on an in-place value swap").
+        guard !Task.isCancelled, dwellGeneration == generation, hovering else { return }
         showCard = true
       }
       // Eager single-click preview, quick second click (< 0.35s) persists — the same manual
