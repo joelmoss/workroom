@@ -48,6 +48,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// its broker enrolment beside it (`broker.rs`), and a stopped machine would lose it.
     var agentSocket = Configuration.defaultAgentSocket
     static let defaultAgentSocket = "/home/boxd/.local/state/workroom/agent/agent.sock"
+
     /// Where the supervisor has the agent keep each session's last screen (#232).
     var screens = "/home/boxd/.local/state/workroom/screens"
     /// The files the CLI writes each machine's ssh stanza and host key into.
@@ -56,6 +57,9 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     var knownHosts = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(".ssh/known_hosts")
   }
+
+  /// The user every boxd machine logs in as, whose home holds the agent's state and the clone.
+  static let user = "boxd"
 
   /// Estimated from its measured parts, not timed end to end: the snapshot is most of it (9-11 s
   /// for a stock machine's disk), the restore half a second, and the reboot a few seconds more.

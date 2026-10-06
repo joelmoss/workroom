@@ -144,9 +144,12 @@ enum RemoteWorkrooms {
     "https://\(repository.host)/\(repository.owner)/\(repository.name).git"
   }
 
-  /// Where a project's base clones its repository on the host.
-  static func clonePath(for repository: GitHubRepository) -> String {
-    "/home/\(user)/\(repository.name)"
+  /// Where a project's base clones its repository on a host of `key`: the home of the user its
+  /// driver logs in as (`workroom` in a container, `boxd` on boxd, #356).
+  static func clonePath(
+    for repository: GitHubRepository, on key: RemoteHosts.DriverKey = .init()
+  ) -> String {
+    "/home/\(key.runtime == nil ? BoxdHostDriver.user : user)/\(repository.name)"
   }
 
   enum Failure: Error, LocalizedError, Equatable {
@@ -317,7 +320,7 @@ enum RemoteWorkrooms {
       base = try await RemoteProvisioning.buildBase(
         repository: "\(repository.owner)/\(repository.name)",
         cloneURL: cloneURL,
-        path: clonePath(for: repository), in: environment
+        path: clonePath(for: repository, on: key), in: environment
       ) { base in
         // Beside the project's bases on other runtimes and contexts (#309).
         var descriptor = describing(
