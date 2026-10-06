@@ -55,7 +55,10 @@ final class SettingsSidebarUITests: XCTestCase {
 
   /// Clicking each sidebar row switches the detail to that pane: the pane's own control appears AND
   /// the previous pane's control disappears (proving the detail actually swapped, not just added).
-  func testClickingEachSidebarRowSwitchesTheDetailPane() throws {
+  /// Then, LAST: ⌘W closes the Settings window even though the app-wide "Close Terminal" ⌘W command is
+  /// disabled there (it has no focused terminal) — handled by the AppDelegate key monitor for
+  /// non-workroom windows.
+  func testClickingEachSidebarRowSwitchesTheDetailPaneThenCommandWClosesSettings() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     openSettings(app)
@@ -101,19 +104,11 @@ final class SettingsSidebarUITests: XCTestCase {
     XCTAssertTrue(aboutControl(app, "releaseNotes").exists, "About shows the release-notes link")
     XCTAssertTrue(
       control(app, "releaseChannel").exists, "About shows the release-channel picker")
-  }
 
-  /// ⌘W closes the Settings window even though the app-wide "Close Terminal" ⌘W command is disabled
-  /// there (it has no focused terminal) — handled by the AppDelegate key monitor for non-workroom
-  /// windows.
-  func testCommandWClosesSettingsWindow() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    openSettings(app)
-
+    // ⌘W: the Settings window is provably still open (its sidebar rows are on screen) before the
+    // keystroke, so the absence check below can't pass vacuously.
     let generalRow = pane(app, "general")
-    XCTAssertTrue(generalRow.waitForExistence(timeout: 10), "Settings should be open")
-
+    XCTAssertTrue(generalRow.exists, "Settings should still be open")
     app.typeKey("w", modifierFlags: .command)
     XCTAssertTrue(waitExists(generalRow, false), "⌘W should close the Settings window")
   }
