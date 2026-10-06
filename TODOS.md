@@ -2670,7 +2670,8 @@ brand logo rendering at all, the two bar fills (`accent` / `warning` / `failure`
 whatever ground it lands on.
 
 Issue #176 moved the segment to the app footer. XCUITest reads element frames, and
-`testSplitKeepsOneWindowQuotaSegment` now asserts that splitting a pane neither duplicates nor
+`AgentUsageUITests.testCodexQuotaLabelPopoverSplitAndSecondWindow` (its split step) now asserts that
+splitting a pane neither duplicates nor
 resizes the window's quota segment, and that it stays inside its window. Pane splits no longer
 exercise the `ViewThatFits` bar-width ladder; the visual checks below remain manual.
 

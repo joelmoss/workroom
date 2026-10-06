@@ -65,18 +65,36 @@ final class DetachedPaneUITests: XCTestCase {
     return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
   }
 
-  /// The pane leaves the main window for one of its own. Asserted on the pane, not just the window —
-  /// a second window containing nothing would pass a count check and fail the user.
+  /// One launch, one ordered chain (each original test used to cost its own app launch):
   ///
-  /// Docking back is deliberately NOT covered here: the detached window uses normal macOS chrome, so
-  /// the gesture is dragging it by its native title bar, which XCUITest can drive no more reliably
-  /// than the tear-off drag. The model half (`dockPane`, and which window ends up owning the surface)
-  /// is covered by `DetachedPaneTests` and `PaneRenderingTests`; the gesture itself is manual QA.
-  func testPaneDetachesToItsOwnWindow() throws {
+  /// 1. The pane leaves the main window for one of its own. Asserted on the pane, not just the window —
+  ///    a second window containing nothing would pass a count check and fail the user.
+  /// 2. The pane count is conserved: popping out MOVES the pane rather than cloning it, so the
+  ///    app-wide total is unchanged — it is simply in a different window.
+  /// 3. The Window-menu item is ONE item that flips with key focus: pop out while the main window is
+  ///    key, move back while the detached one is. Worth an explicit check because the mechanism is
+  ///    not the usual one — a detached window is not a SwiftUI scene, so no `@FocusedValue` changes
+  ///    when it becomes key, and a `Commands` body would never re-evaluate without something else
+  ///    observed. Docking via the item returns the app to its launch state.
+  /// 4. Pop out AGAIN (from the docked state) and close the detached window: closing it closes the
+  ///    PANE, Chrome/VS Code style — the asymmetry most likely to be "fixed" into a bug later, so it
+  ///    is pinned here. Last, because it destroys the pane.
+  ///
+  /// Docking back by gesture is deliberately NOT covered here: the detached window uses normal macOS
+  /// chrome, so the gesture is dragging it by its native title bar, which XCUITest can drive no more
+  /// reliably than the tear-off drag. The model half (`dockPane`, and which window ends up owning the
+  /// surface) is covered by `DetachedPaneTests` and `PaneRenderingTests`; the gesture itself is
+  /// manual QA.
+  func testPaneDetachesMovesFlipsTheMenuDocksAndClosesWithItsWindow() throws {
     let app = launchedApp()
     waitForLaunchWindow(app)
     let windowsBefore = app.windows.count
+    let panesBefore = terminalPanes(app).count
+    XCTAssertFalse(
+      detachedWindow(app).exists, "nothing is detached at launch, so the later checks start clean")
+    XCTAssertTrue(popOutMenuItem(app).exists, "the main window offers the pop-out direction")
 
+    // 1. Pop out.
     popOutMenuItem(app).click()
 
     XCTAssertTrue(
@@ -95,21 +113,14 @@ final class DetachedPaneUITests: XCTestCase {
       detached.descendants(matching: .any).matching(identifier: "terminal.pane.titlebar")
         .firstMatch.exists,
       "the pane drops its own title bar in there — the window's title bar names it instead")
-  }
 
-  /// The Window-menu item is ONE item that flips with key focus: pop out while the main window is
-  /// key, move back while the detached one is. Worth an explicit test because the mechanism is not
-  /// the usual one — a detached window is not a SwiftUI scene, so no `@FocusedValue` changes when it
-  /// becomes key, and a `Commands` body would never re-evaluate without something else observed.
-  func testTheMenuItemFlipsWithKeyFocus() throws {
-    let app = launchedApp()
-    waitForLaunchWindow(app)
-    XCTAssertTrue(popOutMenuItem(app).exists, "the main window offers the pop-out direction")
+    // 2. The pane moved, nothing was cloned.
+    XCTAssertTrue(
+      waitForPaneCount(app, panesBefore),
+      "the pane moved windows; nothing was created or destroyed")
 
-    popOutMenuItem(app).click()
-    XCTAssertTrue(detachedWindow(app).waitForExistence(timeout: 5))
-    detachedWindow(app).click()  // make the detached window key
-
+    // 3. The menu item flips with key focus, then docking restores the launch state.
+    detached.click()  // make the detached window key
     XCTAssertTrue(
       dockMenuItem(app).waitForExistence(timeout: 5),
       "with the detached window key, the same item becomes its inverse")
@@ -120,37 +131,28 @@ final class DetachedPaneUITests: XCTestCase {
     XCTAssertTrue(
       popOutMenuItem(app).waitForExistence(timeout: 5),
       "docking returns the menu to the pop-out direction")
-  }
-
-  /// The pane count is conserved: popping out MOVES the pane rather than cloning it, so the app-wide
-  /// total is unchanged — it is simply in a different window.
-  func testDetachingMovesThePaneRatherThanDuplicatingIt() throws {
-    let app = launchedApp()
-    waitForLaunchWindow(app)
-    let panesBefore = terminalPanes(app).count
-
-    popOutMenuItem(app).click()
-    XCTAssertTrue(detachedWindow(app).waitForExistence(timeout: 5))
-
+    // The first detached window must be fully gone before popping out again: otherwise
+    // `detachedWindow(app)` would match the old, closing window and the close assertions below would
+    // pass against it.
     XCTAssertTrue(
-      waitForPaneCount(app, panesBefore),
-      "the pane moved windows; nothing was created or destroyed")
-  }
+      waitForWindowCount(app, windowsBefore), "docking removes the detached window")
+    XCTAssertTrue(
+      detachedWindow(app).waitForNonExistence(timeout: 5),
+      "the first detached window is gone before the pane is popped out again")
+    XCTAssertTrue(
+      waitForPaneCount(app, panesBefore), "the docked pane is back in the main window")
 
-  /// Closing the detached window closes the PANE, Chrome/VS Code style — the asymmetry most likely to
-  /// be "fixed" into a bug later, so it is pinned here.
-  func testClosingTheDetachedWindowClosesThePane() throws {
-    let app = launchedApp()
-    waitForLaunchWindow(app)
-    let windowsBefore = app.windows.count
-    let panesBefore = terminalPanes(app).count
-
+    // 4. Pop out again and close the detached window: the pane goes with it.
     popOutMenuItem(app).click()
-    let detached = detachedWindow(app)
-    XCTAssertTrue(detached.waitForExistence(timeout: 5))
+    XCTAssertTrue(
+      waitForWindowCount(app, windowsBefore + 1),
+      "popping the pane out a second time adds one window again")
+    let redetached = detachedWindow(app)
+    XCTAssertTrue(
+      redetached.waitForExistence(timeout: 5), "the second detached window should be identifiable")
 
     // The window's own close button, not a pane button: the pane has no chrome of its own in there.
-    detached.buttons[XCUIIdentifierCloseWindow].click()
+    redetached.buttons[XCUIIdentifierCloseWindow].click()
 
     XCTAssertTrue(
       waitForWindowCount(app, windowsBefore), "the window goes when its pane does")

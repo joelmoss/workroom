@@ -78,7 +78,8 @@ final class PaneTitleBarUITests: XCTestCase {
   /// 1. A solo pane's bar must NOT be draggable. This runs first because it needs exactly one pane.
   ///    The gesture is masked `.subviews` when there is no split, so this asserts the inert half of
   ///    that mask; step 2's solo click asserts the half that would break every button if the mask
-  ///    were `.none`. Mirrors `WorkroomPaneHeaderUITests.testSoloTitleBarDragDoesNotCreateASplit`.
+  ///    were `.none`. Mirrors the solo-drag step of
+  ///    `WorkroomPaneHeaderUITests.testSoloPaneHeaderHostsItsControlsAndTheRunButtonFires`.
   /// 2. Every pane carries exactly one bar, solo included. That is the whole change of issue #150:
   ///    the bar is unconditional, so a pane's identity and its actions are always where the pane is.
   ///    The split click on a SOLO pane doubles as the check that its buttons still fire. The bar
@@ -86,7 +87,8 @@ final class PaneTitleBarUITests: XCTestCase {
   ///    every gesture in the bar's SUBVIEW hierarchy too, killing the buttons on every unsplit pane.
   ///    `ToolbarIconButtonStyle`'s hover well is `.onHover`, not a gesture, so a broken button still
   ///    reports `.exists` and `.isHittable`: only clicking it tells the difference. Same trap
-  ///    `WorkroomPaneHeaderUITests.testSoloRunButtonActuallyFires` documents.
+  ///    the Run-button step of
+  ///    `WorkroomPaneHeaderUITests.testSoloPaneHeaderHostsItsControlsAndTheRunButtonFires` documents.
   /// 3. Close acts on the pane whose button was clicked, not on the active tab. This is the defect
   ///    the issue exists to fix, so it is asserted on the pane that is NOT focused: clicking the
   ///    first pane's close must leave exactly the second one behind.

@@ -40,9 +40,26 @@ final class TerminalAgentUITests: XCTestCase {
     runTab.click()
   }
 
-  /// A failing run command surfaces the (stubbed) diagnosis in the status bar; clicking it opens the
-  /// popover with the fix and actions.
-  func testRunFailureShowsDiagnosisInStatusBar() {
+  /// A failing run command surfaces the (stubbed) diagnosis in the status bar and a ✦ badge on the
+  /// tab; clicking the diagnosis opens the popover with the fix and actions, and dismissing from it
+  /// clears the diagnosis everywhere. One ordered chain on one launch: badge, then popover, then
+  /// Dismiss (Dismiss removes the badge, so the badge check has to come first).
+  ///
+  /// The badge is asserted on the CHIP's own accessibility label, not on the badge button. The badge
+  /// is a nested `Button`, and the chip's explicit `.accessibilityLabel` (issue #141) collapses the
+  /// chip into one accessibility element, so no descendant of it is queryable — the same wall that
+  /// forced run state onto the chip's `.accessibilityValue`. This test previously queried
+  /// `app.buttons["Diagnosis available"]` and had been failing ever since, waiting 20s for an element
+  /// accessibility does not expose.
+  ///
+  /// **Not covered here:** clicking the badge to open the popover. XCUITest cannot invoke a named
+  /// accessibility action, and the badge has no reachable element to click, so the chip→popover path
+  /// is manual-verify only. The popover's own contents and actions are covered from the status-bar
+  /// entry point here and by `testClickingInvestigateSeedsTheRealDiagnosisNotABareCommand`.
+  ///
+  /// The popover lives in its own window, so its Dismiss button is always clickable (unlike a pane
+  /// overlay whose controls lose hit-testing to the terminal's Metal view).
+  func testRunFailureShowsDiagnosisBadgePopoverAndDismissClearsIt() {
     let app = launchedApp(runCommand: "echo 'boom: build failed'; exit 7")
     startRun(app)
     revealRunTab(app)
@@ -52,6 +69,13 @@ final class TerminalAgentUITests: XCTestCase {
       diagnosis.waitForExistence(timeout: 20),
       "a failed run auto-diagnoses and shows the diagnosis in the status bar")
 
+    // The ✦ badge: the per-tab signal that complements the status-bar diagnosis.
+    let chip = app.descendants(matching: .any).matching(identifier: "terminal.tab.Run").firstMatch
+    XCTAssertTrue(chip.waitForExistence(timeout: 15), "the run tab chip exists")
+    XCTAssertTrue(
+      poll(timeout: 20, until: { chip.label.contains("Diagnosis available") }),
+      "the failed tab announces the ✦ diagnosis badge; got label \(chip.label)")
+
     diagnosis.click()
     XCTAssertTrue(
       app.staticTexts["UITEST diagnosis: port already in use"].waitForExistence(timeout: 5),
@@ -59,6 +83,25 @@ final class TerminalAgentUITests: XCTestCase {
     // The canned fix is non-destructive, so Insert fix + Investigate are offered.
     XCTAssertTrue(app.buttons["Insert fix"].exists, "a safe fix offers Insert")
     XCTAssertTrue(app.buttons["Investigate"].exists)
+
+    // The badge is still present immediately before Dismiss, so the "badge cleared" assertion
+    // below can fail. It previously asserted `app.buttons["Diagnosis available"].exists == false`,
+    // which was VACUOUSLY true: accessibility never exposes that button, so it passed whether or not
+    // dismiss actually cleared the badge. Read the chip's own label instead, which is where the
+    // badge is announced — and which can therefore fail.
+    XCTAssertTrue(
+      chip.label.contains("Diagnosis available"),
+      "the badge is still present before Dismiss; got label \(chip.label)")
+    let dismiss = app.buttons["Dismiss"]
+    XCTAssertTrue(dismiss.waitForExistence(timeout: 5))
+    dismiss.click()
+
+    XCTAssertTrue(
+      diagnosis.waitForNonExistence(timeout: 5), "dismiss clears the status-bar diagnosis")
+    XCTAssertTrue(chip.exists, "the run tab chip is still on screen")
+    XCTAssertTrue(
+      poll(timeout: 5, until: { !chip.label.contains("Diagnosis available") }),
+      "dismiss also clears the tab badge; got label \(chip.label)")
   }
 
   /// The exact issue #146 regression: TerminalTabStrip's Investigate previously hardcoded a bare
@@ -66,7 +109,9 @@ final class TerminalAgentUITests: XCTestCase {
   /// diagnosis. Both now route through `AppStore.startInvestigate`, so clicking Investigate from
   /// EITHER entry point must open a tab whose command carries the canned diagnosis text — not a
   /// bare `claude` with nothing to go on. Checked via the status-bar popover here (the tab-strip's
-  /// popover is covered by `testFailedTabShowsAgentBadge`'s identical entry point, minus the click).
+  /// popover is covered by the badge step of
+  /// `testRunFailureShowsDiagnosisBadgePopoverAndDismissClearsIt`'s identical entry point, minus the
+  /// click).
   ///
   /// Asserts on the seeded ARGV (`accessibilityPlaceholderValue`), not the spawned process's
   /// rendered output: Investigate always shells out to the REAL `claude` binary (the agent stub only
@@ -101,32 +146,6 @@ final class TerminalAgentUITests: XCTestCase {
         + seededCommand)
   }
 
-  /// A failed tab carries a ✦ badge — the per-tab signal that complements the status-bar diagnosis.
-  ///
-  /// Asserted on the CHIP's own accessibility label, not on the badge button. The badge is a nested
-  /// `Button`, and the chip's explicit `.accessibilityLabel` (issue #141) collapses the chip into one
-  /// accessibility element, so no descendant of it is queryable — the same wall that forced run state
-  /// onto the chip's `.accessibilityValue`. This test previously queried
-  /// `app.buttons["Diagnosis available"]` and had been failing ever since, waiting 20s for an element
-  /// accessibility does not expose.
-  ///
-  /// **Not covered here:** clicking the badge to open the popover. XCUITest cannot invoke a named
-  /// accessibility action, and the badge has no reachable element to click, so the chip→popover path
-  /// is manual-verify only. The popover's own contents and actions are covered from the status-bar
-  /// entry point by `testRunFailureShowsDiagnosisInStatusBar` and
-  /// `testClickingInvestigateSeedsTheRealDiagnosisNotABareCommand`.
-  func testFailedTabShowsAgentBadge() {
-    let app = launchedApp(runCommand: "echo 'boom: build failed'; exit 7")
-    startRun(app)
-    revealRunTab(app)
-
-    let chip = app.descendants(matching: .any).matching(identifier: "terminal.tab.Run").firstMatch
-    XCTAssertTrue(chip.waitForExistence(timeout: 15), "the run tab chip exists")
-    XCTAssertTrue(
-      poll(timeout: 20, until: { chip.label.contains("Diagnosis available") }),
-      "the failed tab announces the ✦ diagnosis badge; got label \(chip.label)")
-  }
-
   private func poll(timeout: TimeInterval, until condition: () -> Bool) -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
@@ -136,39 +155,25 @@ final class TerminalAgentUITests: XCTestCase {
     return condition()
   }
 
-  /// Dismissing from the popover clears the diagnosis everywhere (status bar + badge). The popover
-  /// lives in its own window, so its Dismiss button is always clickable (unlike a pane overlay whose
-  /// controls lose hit-testing to the terminal's Metal view).
-  func testDismissFromPopoverClearsDiagnosis() {
-    let app = launchedApp(runCommand: "echo nope; exit 3")
-    startRun(app)
-    revealRunTab(app)
-
-    let diagnosis = app.buttons["terminal.statusBar.diagnosis"]
-    XCTAssertTrue(diagnosis.waitForExistence(timeout: 20))
-    diagnosis.click()
-
-    let dismiss = app.buttons["Dismiss"]
-    XCTAssertTrue(dismiss.waitForExistence(timeout: 5))
-    dismiss.click()
-
-    XCTAssertTrue(
-      diagnosis.waitForNonExistence(timeout: 5), "dismiss clears the status-bar diagnosis")
-    // This previously asserted `app.buttons["Diagnosis available"].exists == false`, which was
-    // VACUOUSLY true: accessibility never exposes that button (see `testFailedTabShowsAgentBadge`),
-    // so the assertion passed whether or not dismiss actually cleared the badge. Read the chip's own
-    // label instead, which is where the badge is announced — and which can therefore fail.
-    let chip = app.descendants(matching: .any).matching(identifier: "terminal.tab.Run").firstMatch
-    XCTAssertTrue(chip.exists, "the run tab chip is still on screen")
-    XCTAssertTrue(
-      poll(timeout: 5, until: { !chip.label.contains("Diagnosis available") }),
-      "dismiss also clears the tab badge; got label \(chip.label)")
-  }
-
-  /// A diff pane carries a status bar too — the path + branch variant, with no cwd/run/diagnosis
-  /// (those are terminal-only). What the path segment says is asserted in `DiffViewerUITests`.
-  func testDiffPaneHasStatusBar() {
+  /// Every pane carries its own status bar: the solo terminal, a diff pane (the path + branch
+  /// variant, with no cwd/run/diagnosis — those are terminal-only; what the path segment says is
+  /// asserted in `DiffViewerUITests`), and each member of a split. One launch: the diff tab goes
+  /// first (a pane renders only its selected tab's content, so the bar count stays 1 there), then the
+  /// terminal tab is re-selected so the split splits a terminal pane.
+  func testEveryPaneHasAStatusBar() {
     let app = launchedApp(runCommand: "true")
+    let bars = app.descendants(matching: .any).matching(identifier: "terminal.statusBar")
+    XCTAssertTrue(
+      app.descendants(matching: .any)["terminal.statusBar"].waitForExistence(timeout: 20),
+      "a solo pane has a status bar")
+    XCTAssertEqual(bars.count, 1)
+
+    // Remember the terminal tab's chip before the diff tab adds a second `terminal.tab.*` chip.
+    let terminalChip = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab.")).firstMatch
+    XCTAssertTrue(terminalChip.waitForExistence(timeout: 10), "the terminal tab chip exists")
+    let terminalChipID = terminalChip.identifier
+
     let row = app.descendants(matching: .any)["changes.file.app/models/user.rb"]
     XCTAssertTrue(row.waitForExistence(timeout: 15), "a changed-file row renders")
     row.scrollIntoView(in: app)
@@ -179,15 +184,13 @@ final class TerminalAgentUITests: XCTestCase {
     XCTAssertTrue(
       app.descendants(matching: .any)["terminal.statusBar"].waitForExistence(timeout: 6),
       "the diff pane has a status bar")
-  }
+    XCTAssertEqual(bars.count, 1, "the diff pane shows exactly one status bar")
 
-  /// Every terminal pane carries its own status bar — including each member of a split.
-  func testEveryPaneHasAStatusBar() {
-    let app = launchedApp(runCommand: "true")
-    let bars = app.descendants(matching: .any).matching(identifier: "terminal.statusBar")
+    // Back to the terminal tab, so the split below splits a terminal pane.
+    app.descendants(matching: .any).matching(identifier: terminalChipID).firstMatch.click()
     XCTAssertTrue(
-      app.descendants(matching: .any)["terminal.statusBar"].waitForExistence(timeout: 20),
-      "a solo pane has a status bar")
+      app.descendants(matching: .any)["terminal.statusBar"].waitForExistence(timeout: 6),
+      "the re-selected terminal pane has a status bar")
     XCTAssertEqual(bars.count, 1)
 
     // Split the focused pane → two terminals side by side, each with its own bar.

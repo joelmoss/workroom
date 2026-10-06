@@ -37,18 +37,31 @@ final class ActivityBarUITests: XCTestCase {
       for: [XCTNSPredicateExpectation(predicate: p, object: el)], timeout: timeout) == .completed
   }
 
-  /// Clicking each icon swaps the pane: the selected section's header(s) appear AND the other
-  /// section's header disappears (proving a swap, not an add). The Changes pane stacks Changes,
-  /// History and Pull Request headers; the Files pane shows only the Files header.
+  /// One launch, one ordered chain (each step leaves the state the next needs):
   ///
-  /// Each step is a SWITCH to a different section, which always opens that section's pane (never
-  /// toggles it closed), so the test is independent of the persisted open/section state it launches
-  /// with (tests share the real "Workroom Dev" defaults domain).
-  func testClickingIconsSwapsThePane() throws {
+  /// 1. Clicking each icon swaps the pane: the selected section's header(s) appear AND the other
+  ///    section's header disappears (proving a swap, not an add). The Changes pane stacks Changes,
+  ///    History and Pull Request headers; the Files pane shows only the Files header. Each step is
+  ///    a SWITCH to a different section, which always opens that section's pane (never toggles it
+  ///    closed), so the step is independent of the persisted open/section state the app launches
+  ///    with (tests share the real "Workroom Dev" defaults domain). Ends with Files active, open.
+  /// 2. History (issue #59) is a **section of the Changes stack**, sitting between Changes and Pull
+  ///    Request — not a bar section of its own. So there is no `activitySection.history` icon, and
+  ///    its header collapses in place (a chevron, an "expanded"/"collapsed" a11y label) exactly
+  ///    like its two siblings, rather than closing the whole pane the way solo Files does.
+  ///    Switching from Files to Changes (always an open) is the setup; History is restored before
+  ///    the next step.
+  /// 3. Clicking the ACTIVE icon collapses the content pane (its headers disappear) while the bar
+  ///    icon itself stays — the VSCode toggle behaviour. It runs last, and must NOT click `files`
+  ///    first: Files is already active here, so that click would collapse it. It leaves Changes
+  ///    active but collapsed, so the next run's first click (on `files`) is still a switch.
+  func testActivityBarIconsSwapCollapseAndHistorySection() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
 
     XCTAssertTrue(icon(app, "files").waitForExistence(timeout: 10), "activity bar should render")
+    // The bar has rendered (the Files icon exists), so this absence is meaningful.
+    XCTAssertFalse(icon(app, "history").exists, "History is no longer a bar section")
 
     // Files → the Files header; Changes header absent.
     icon(app, "files").click()
@@ -67,47 +80,9 @@ final class ActivityBarUITests: XCTestCase {
     XCTAssertTrue(waitExists(header(app, "Files"), true), "Files pane returns")
     XCTAssertTrue(waitExists(header(app, "Changes"), false), "the Changes pane is replaced")
     XCTAssertTrue(waitExists(header(app, "History"), false), "…History with it")
-  }
 
-  /// Clicking the ACTIVE icon collapses the content pane (its headers disappear) while the bar icon
-  /// itself stays — the VSCode toggle behaviour.
-  func testClickingActiveIconCollapsesContent() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-
-    let changes = icon(app, "changes")
-    XCTAssertTrue(changes.waitForExistence(timeout: 10), "activity bar should render")
-
-    // Put Changes into a known-open state by switching to it from Files (a switch always opens,
-    // regardless of the persisted visibility the app launched with).
-    icon(app, "files").click()
-    XCTAssertTrue(waitExists(header(app, "Files"), true), "Files pane opens")
-    changes.click()
-    XCTAssertTrue(waitExists(header(app, "Changes"), true), "Changes pane opens")
-
-    // Click the ACTIVE icon → the content collapses, the bar icon stays.
-    changes.click()
-    XCTAssertTrue(
-      waitExists(header(app, "Changes"), false), "clicking the active icon hides content")
-    XCTAssertTrue(changes.exists, "the bar icon stays visible after collapsing the pane")
-  }
-
-  /// History (issue #59) is a **section of the Changes stack**, sitting between Changes and Pull
-  /// Request — not a bar section of its own. So there is no `activitySection.history` icon, and its
-  /// header collapses in place (a chevron, an "expanded"/"collapsed" a11y label) exactly like its two
-  /// siblings, rather than closing the whole pane the way solo Files does.
-  func testHistoryIsACollapsibleSectionOfTheChangesStack() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-
-    XCTAssertTrue(icon(app, "files").waitForExistence(timeout: 10), "activity bar should render")
-    XCTAssertFalse(icon(app, "history").exists, "History is no longer a bar section")
-
-    // Prime with Files so the Changes click is guaranteed a SWITCH (which always opens), independent
-    // of whatever section the shared "Workroom Dev" defaults launched active.
-    icon(app, "files").click()
+    // Files is active and open, so Changes is a SWITCH (which always opens).
     icon(app, "changes").click()
-
     let history = header(app, "History")
     XCTAssertTrue(waitExists(history, true), "the Changes pane stacks the History section")
 
@@ -125,5 +100,20 @@ final class ActivityBarUITests: XCTestCase {
     XCTAssertTrue(header(app, "Pull Request").exists, "…and Pull Request")
 
     history.click()  // leave it as it was found
+    let restored = XCTWaiter().wait(
+      for: [
+        XCTNSPredicateExpectation(
+          predicate: NSPredicate(format: "label == %@", before), object: history)
+      ], timeout: 5)
+    XCTAssertEqual(restored, .completed, "History should be back as it was found (\(before))")
+
+    // Changes is active and open (just established) → clicking the ACTIVE icon collapses the
+    // content, the bar icon stays.
+    let changes = icon(app, "changes")
+    XCTAssertTrue(waitExists(header(app, "Changes"), true), "Changes pane is open")
+    changes.click()
+    XCTAssertTrue(
+      waitExists(header(app, "Changes"), false), "clicking the active icon hides content")
+    XCTAssertTrue(changes.exists, "the bar icon stays visible after collapsing the pane")
   }
 }
