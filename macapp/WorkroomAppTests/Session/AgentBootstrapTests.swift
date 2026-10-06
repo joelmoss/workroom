@@ -446,6 +446,23 @@ final class AgentBootstrapTests: XCTestCase {
     XCTAssertTrue(request.contains(#""ask_at_ceiling":true"#), request)
   }
 
+  /// A connect nothing watches for prompts (provisioning's) hands the agent no settings at all
+  /// (#356): settings are the whole agent's, so its `ask: false` could land after a watched
+  /// connection's `ask: true` and switch prompting off under it.
+  func testAnUnwatchedConnectSendsNoSettings() async throws {
+    let fake = try FakeAgent(version: 4, status: true)
+    defer { fake.stop() }
+    let driver = StubDriver([probe(installed: digest, handOff: "0 current")])
+    driver.streamSocket = fake.socketPath
+    let connection = try await AgentBootstrap.connect(
+      host: host, driver: driver, socket: socket, agent: bundled(_:), handOff: true,
+      resources: nil, watched: false)
+    // A watched connect's request lands within milliseconds (the test above waits for it).
+    try await Task.sleep(for: .milliseconds(500))
+    await connection.close()
+    XCTAssertEqual(fake.receivedStatusRequests, [], "an unwatched connect sent settings")
+  }
+
   /// A host its provider never sleeps (a container) is not handed ask-at-ceiling (#257): its prompt
   /// would say the box may sleep, and nothing ever will. The rest of the settings still go.
   func testAHostThatNeverSleepsIsNotAskedAboutSleeping() async throws {
