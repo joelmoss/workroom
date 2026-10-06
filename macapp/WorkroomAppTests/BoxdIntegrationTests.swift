@@ -532,4 +532,192 @@ final class BoxdIntegrationTests: XCTestCase {
     }
     try await RemoteProvisioning.destroyBase(base.host, in: environment(driver), forget: {})
   }
+
+  // MARK: In the app (#356)
+
+  /// A remote workroom made and taken down the way the app does it (`RemoteWorkrooms.create` and
+  /// `delete` on a boxd driver key): the base is built in the boxd user's home, the workroom's
+  /// record names boxd with its org and account, and deleting the workroom, then the base, leaves
+  /// no machine and no live grant.
+  @MainActor
+  func testARemoteWorkroomIsMadeAndTakenDownOnBoxdAsTheAppDoesIt() async throws {
+    let driver = WithFakeGitHub(driver: driver())
+    let environment = environment(driver)
+    let account =
+      try JSONSerialization.jsonObject(with: Data(try boxd(["auth"]).utf8))
+      as? [String: Any]
+    let key = RemoteHosts.DriverKey.boxd(
+      org: account?["active_org"] as? String, account: account?["user_id"] as? String)
+    let records = Records()
+    let recorder = RemoteWorkrooms.Recorder(
+      reserve: { _, descriptor in
+        records.set(nil, descriptor, as: "w")
+        return "w"
+      }, record: { name, descriptor in records.set(name, descriptor) },
+      forget: { name in records.forget(name) })
+    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
+
+    BrokerStub.reset([Self.cloneToken, Self.grant])
+    let created = try await RemoteWorkrooms.create(
+      repository: repository, cloneURL: "https://github.com/origin.git", base: nil, key: key,
+      driver: driver, environment: environment, recorder: recorder)
+    await created.instance.connection.close()
+    let base = try XCTUnwrap(records.project)
+    let workroom = try XCTUnwrap(records.workrooms["w"])
+    XCTAssertEqual(base.path, "/home/boxd/r")
+    for descriptor in [base, workroom] {
+      XCTAssertEqual(descriptor.driver, RemoteWorkrooms.boxdDriver)
+      XCTAssertEqual(descriptor.org, key.org)
+      XCTAssertEqual(descriptor.account, key.account)
+      XCTAssertNil(descriptor.container)
+    }
+    XCTAssertEqual(RemoteHosts.DriverKey(workroom), key)
+
+    BrokerStub.reset([Self.cancelled])
+    try await RemoteWorkrooms.delete(
+      "w", host: workroom, environment: environment, recorder: recorder)
+    XCTAssertNil(records.workrooms["w"], "the workroom's entry was kept")
+    XCTAssertEqual(grantsCancelled, 1, "deleting the workroom left its grant live")
+    try await RemoteWorkrooms.deleteBase(base, environment: environment, clear: {})
+    XCTAssertEqual(try leftovers("machine"), [])
+  }
+
+  private final class Records: @unchecked Sendable {
+    private let lock = NSLock()
+    private var base: HostDescriptor?
+    private var named: [String: HostDescriptor] = [:]
+    var project: HostDescriptor? { lock.withLock { base } }
+    var workrooms: [String: HostDescriptor] { lock.withLock { named } }
+    func set(_ name: String?, _ descriptor: HostDescriptor, as reserved: String? = nil) {
+      lock.withLock {
+        if let name = name ?? reserved { named[name] = descriptor } else { base = descriptor }
+      }
+    }
+    func forget(_ name: String) { _ = lock.withLock { named.removeValue(forKey: name) } }
+  }
+
+  // MARK: Sleep (#257, #356)
+
+  /// boxd's own record of whether a machine is asleep, from its control plane, which never
+  /// reaches the machine and so never wakes it.
+  private func status(_ host: HostID) throws -> String {
+    let got = try JSONSerialization.jsonObject(
+      with: Data(try boxd(["machine", "get", name(host)]).utf8))
+    return (got as? [String: Any])?["status"] as? String ?? "?"
+  }
+
+  private func asleep(_ host: HostID) -> Bool {
+    BoxdHostDriver.asleepStatuses.contains((try? status(host)) ?? "")
+  }
+
+  /// Suspend and hibernate after `seconds` idle on the network.
+  private func idleTimers(_ host: HostID, _ seconds: Int) throws {
+    for setting in ["auto-suspend.timeout", "auto-hibernate.timeout"] {
+      try boxd(["machine", "config", "set", name(host), setting, String(seconds)])
+    }
+  }
+
+  /// A job of `seconds` that burns a core and uses no network, writing one line a second to
+  /// `~/ticks`, detached so it outlives the exec. A box that sleeps stops its clock, and the ticks.
+  private func startJob(_ driver: any HostDriver, _ host: HostID, seconds: Int) async throws {
+    try await onHost(
+      driver, host,
+      "rm -f ~/ticks; nohup sh -c 'i=0; while [ $i -lt \(seconds) ]; do i=$((i+1)); echo $i >> ~/ticks;"
+        + " t=$(date +%s); while [ $(date +%s) -eq $t ]; do :; done; done' > /dev/null 2>&1 &")
+  }
+
+  /// The ticks the job logged. Reading them wakes the box.
+  private func ticks(_ driver: any HostDriver, _ host: HostID) async throws -> Int {
+    Int(try await onHost(driver, host, "wc -l < ~/ticks")) ?? 0
+  }
+
+  /// Polls boxd every 20 s until `host` is asleep or `limit` passes; when it fell asleep, measured
+  /// from `since`, or nil.
+  private func sleeps(_ host: HostID, since: ContinuousClock.Instant, within limit: Duration)
+    async throws -> Duration?
+  {
+    while ContinuousClock.now - since < limit {
+      if asleep(host) { return ContinuousClock.now - since }
+      try await Task.sleep(for: .seconds(20))
+    }
+    return nil
+  }
+
+  /// The app's badge on a connected host polls its agent's status every 10 s
+  /// (`WakefulnessModel.poll`). This does the same until cancelled.
+  private func pollLikeTheBadge(_ connection: AgentVCSConnection) -> Task<Void, Never> {
+    Task {
+      while !Task.isCancelled {
+        _ = try? await connection.wakefulness().status()
+        try? await Task.sleep(for: .seconds(10))
+      }
+    }
+  }
+
+  /// #257's acceptance, rerunnable (TODOS, "Put the keep-awake acceptance run in
+  /// BoxdIntegrationTests"). Two machines with 120 s timers run the same 6-minute job with no
+  /// network use and no client attached. The control, with no agent, sleeps mid-job, which is
+  /// what lets the other result mean anything; the agent's machine logs every tick, then sleeps
+  /// once the job has ended. About 10 minutes.
+  func testTheHeartbeatKeepsABusyBoxAwakeAndABoxWithoutOneSleeps() async throws {
+    let driver = driver()
+    let control = HostID.remote(UUID())
+    try boxd([
+      "machine", "new", name(control), "--auto-suspend-timeout=120", "--auto-hibernate-timeout=120",
+    ])
+    let kept = try await driver.create()
+    try idleTimers(kept, 120)
+    // Connected once, to push the agent, then let go: no client is attached for the run.
+    let pushed = try await connect(driver, kept)
+    await pushed.close()
+    let start = ContinuousClock.now
+    try await startJob(driver, control, seconds: 360)
+    try await startJob(driver, kept, seconds: 360)
+
+    let controlSlept = try await sleeps(control, since: start, within: .seconds(330))
+    XCTAssertNotNil(controlSlept, "the control never slept mid-job, so the run proves nothing")
+    let keptSlept = try await sleeps(kept, since: start, within: .seconds(600))
+    XCTAssertNotNil(keptSlept, "the agent's machine never slept after its job")
+    if let keptSlept { XCTAssertGreaterThan(keptSlept, .seconds(360), "it slept under its job") }
+    let controlTicks = try await ticks(driver, control)
+    let keptTicks = try await ticks(driver, kept)
+    XCTAssertLessThan(controlTicks, 360)
+    XCTAssertEqual(keptTicks, 360, "the agent's machine missed ticks")
+  }
+
+  /// D8, first half: with the app attached (a watched connection, ssh keepalives, the badge
+  /// polling every 10 s), an idle box must still sleep, or every open workroom would keep its box
+  /// awake and billing. About 5 minutes.
+  func testAnIdleBoxStillSleepsWithTheAppAttached() async throws {
+    let driver = driver()
+    let host = try await driver.create()
+    try idleTimers(host, 120)
+    let connection = try await connect(driver, host)
+    let badge = pollLikeTheBadge(connection)
+    defer { badge.cancel() }
+    let slept = try await sleeps(host, since: .now, within: .seconds(300))
+    XCTAssertNotNil(slept, "an idle box with the app attached never slept")
+  }
+
+  /// D8, second half: with the app attached and a prompt nobody answers, a busy box past its
+  /// ceiling must sleep, or the prompt's "let it sleep" would mean nothing while the app is open.
+  /// Ceiling 60 s, prompt 30 s, timers 120 s, a 15-minute job. About 6 minutes.
+  func testAnUnansweredPromptLetsABusyBoxSleepWithTheAppAttached() async throws {
+    let driver = driver()
+    let host = try await driver.create()
+    try idleTimers(host, 120)
+    let connection = try await connect(driver, host)
+    await AgentBootstrap.applyWakefulnessSettings(
+      AgentWakefulnessSettings(ceiling: 60, promptTimeout: 30, ask: true), on: connection)
+    let start = ContinuousClock.now
+    try await startJob(driver, host, seconds: 900)
+    let badge = pollLikeTheBadge(connection)
+    defer { badge.cancel() }
+    let slept = try await sleeps(host, since: start, within: .seconds(420))
+    XCTAssertNotNil(
+      slept, "a busy box whose prompt went unanswered never slept with the app attached")
+    badge.cancel()
+    let logged = try await ticks(driver, host)
+    XCTAssertLessThan(logged, 900)
+  }
 }
