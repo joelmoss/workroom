@@ -95,31 +95,12 @@ final class TabActionsUITests: XCTestCase {
     XCTAssertTrue(tab.waitForExistence(timeout: 10), "diff tab should open")
   }
 
-  /// The ON-SCREEN right-click menu item with this exact title, or nil. Hittable only, because
-  /// "Split Right" also lives in the menu bar (`WorkroomApp.swift`), whose collapsed items are in the
-  /// tree with a zero frame: a plain title match can be satisfied, or clicked, there instead.
-  private func menuItem(_ app: XCUIApplication, _ title: String) -> XCUIElement? {
-    app.menuItems.matching(NSPredicate(format: "title == %@", title))
-      .allElementsBoundByIndex.first { $0.isHittable }
-  }
-
-  /// Wait for an on-screen menu item to appear (a menu opens a beat after the right-click).
-  private func waitForMenuItem(_ app: XCUIApplication, _ title: String) -> XCUIElement? {
-    let shown = NSPredicate { _, _ in self.menuItem(app, title) != nil }
-    _ = XCTWaiter().wait(
-      for: [XCTNSPredicateExpectation(predicate: shown, object: nil)], timeout: 3)
-    return menuItem(app, title)
-  }
-
   /// Escape the open diff menu and wait until it is really gone, so the next menu's checks can't be
   /// satisfied by this one. "Keep Open" is the witness: only a preview diff's chip/panel menu has it.
   private func dismissDiffMenu(_ app: XCUIApplication) {
     app.typeKey(.escape, modifierFlags: [])
-    let closed = NSPredicate { _, _ in self.menuItem(app, "Keep Open") == nil }
-    XCTAssertEqual(
-      XCTWaiter().wait(
-        for: [XCTNSPredicateExpectation(predicate: closed, object: nil)], timeout: 4),
-      .completed, "the menu should close on Escape")
+    XCTAssertTrue(
+      app.waitForNoHittableMenuItem(titled: "Keep Open"), "the menu should close on Escape")
   }
 
   // MARK: Terminal tab — toolbar, then File ▸ Close All Tabs
@@ -184,36 +165,37 @@ final class TabActionsUITests: XCTestCase {
     // 2. Chip menu. "Keep Open" first: it proves THIS menu opened, so the absence check below can't
     // pass on a menu that never appeared.
     diffTab(app, "user.rb").rightClick()
-    XCTAssertNotNil(waitForMenuItem(app, "Keep Open"), "a preview diff tab offers Keep Open")
-    XCTAssertNotNil(menuItem(app, "Open File in…"))
-    XCTAssertNotNil(menuItem(app, "Split Right"))
-    XCTAssertNotNil(menuItem(app, "Close Others"))
-    XCTAssertNotNil(menuItem(app, "Close All"))
+    XCTAssertNotNil(
+      app.waitForHittableMenuItem(titled: "Keep Open"), "a preview diff tab offers Keep Open")
+    XCTAssertNotNil(app.hittableMenuItem(titled: "Open File in…"))
+    XCTAssertNotNil(app.hittableMenuItem(titled: "Split Right"))
+    XCTAssertNotNil(app.hittableMenuItem(titled: "Close Others"))
+    XCTAssertNotNil(app.hittableMenuItem(titled: "Close All"))
     XCTAssertNil(
-      menuItem(app, "Remove from Split"),
+      app.hittableMenuItem(titled: "Remove from Split"),
       "a solo tab is in no split, so Remove from Split must not appear")
     dismissDiffMenu(app)
 
     // 3. Panel menu.
     panes(app).firstMatch.rightClick()
     XCTAssertNotNil(
-      waitForMenuItem(app, "Open File in…"),
+      app.waitForHittableMenuItem(titled: "Open File in…"),
       "the diff panel offers the same Open File in… as its tab")
-    XCTAssertNotNil(menuItem(app, "Keep Open"))
-    XCTAssertNotNil(menuItem(app, "Split Right"))
-    XCTAssertNotNil(menuItem(app, "Close All"))
+    XCTAssertNotNil(app.hittableMenuItem(titled: "Keep Open"))
+    XCTAssertNotNil(app.hittableMenuItem(titled: "Split Right"))
+    XCTAssertNotNil(app.hittableMenuItem(titled: "Close All"))
     dismissDiffMenu(app)
 
     // 4. Split from the chip menu.
     diffTab(app, "user.rb").rightClick()
-    let split = waitForMenuItem(app, "Split Right")
+    let split = app.waitForHittableMenuItem(titled: "Split Right")
     XCTAssertNotNil(split)
     split?.click()
     assertCount(panes(app), reaches: 2)
 
     // 5. Remove the second pane from the split via its body.
     panes(app).element(boundBy: 1).rightClick()
-    let remove = waitForMenuItem(app, "Remove from Split")
+    let remove = app.waitForHittableMenuItem(titled: "Remove from Split")
     XCTAssertNotNil(remove, "a split member's menu offers Remove from Split")
     remove?.click()
     assertCount(panes(app), reaches: 1)  // extracted tab shown solo; split dissolved

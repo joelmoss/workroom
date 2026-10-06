@@ -36,19 +36,17 @@ final class RunSettingsPromptUITests: XCTestCase {
     return app
   }
 
-  private func waitGone(_ el: XCUIElement, _ message: String) {
-    let exp = XCTNSPredicateExpectation(
-      predicate: NSPredicate(format: "exists == false"), object: el)
-    XCTAssertEqual(XCTWaiter().wait(for: [exp], timeout: 5), .completed, message)
-  }
-
   /// Closes the Project Settings sheet via its Cancel button and proves it is gone. Escape is not
   /// relied on, and the next step's `runWarning`/`runCommand` waits would be vacuous against a sheet
   /// that is still open.
   private func cancelProjectSettings(_ app: XCUIApplication) {
     app.buttons["Cancel"].click()
-    waitGone(app.textFields["projectSettings.runCommand"], "Cancel should close the sheet")
-    waitGone(app.staticTexts["projectSettings.runWarning"], "the warning should go with the sheet")
+    XCTAssertTrue(
+      app.textFields["projectSettings.runCommand"].waitForNonExistence(timeout: 5),
+      "Cancel should close the sheet")
+    XCTAssertTrue(
+      app.staticTexts["projectSettings.runWarning"].waitForNonExistence(timeout: 5),
+      "the warning should go with the sheet")
   }
 
   /// Three doors into Project Settings on one launch, in order:

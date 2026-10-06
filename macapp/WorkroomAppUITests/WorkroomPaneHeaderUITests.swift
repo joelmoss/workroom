@@ -61,11 +61,6 @@ final class WorkroomPaneHeaderUITests: XCTestCase {
       "the fixture workroom should render a terminal pane on launch")
   }
 
-  private func hittableMenuItem(_ app: XCUIApplication, titled title: String) -> XCUIElement? {
-    app.menuItems.matching(NSPredicate(format: "title == %@", title))
-      .allElementsBoundByIndex.first { $0.isHittable }
-  }
-
   /// One launch for everything a SOLO workroom pane header must do, seeded with `sleep 30` so the
   /// closing Run click has a command that stays running. The Run button does not depend on a configured
   /// command (`WorkroomPaneToolbarPresentationTests`), so the seed is irrelevant to the earlier steps.
@@ -142,14 +137,11 @@ final class WorkroomPaneHeaderUITests: XCTestCase {
     // 15% across the bar: past the leading glyph, well clear of the trailing controls.
     bar.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)).rightClick()
     XCTAssertNotNil(
-      hittableMenuItem(app, titled: "Close"),
+      app.hittableMenuItem(titled: "Close"),
       "the workroom context menu should still open from the header")
     app.typeKey(.escape, modifierFlags: [])
-    let contextMenuGone = XCTNSPredicateExpectation(
-      predicate: NSPredicate { _, _ in self.hittableMenuItem(app, titled: "Close") == nil },
-      object: nil)
-    XCTAssertEqual(
-      XCTWaiter().wait(for: [contextMenuGone], timeout: 4), .completed,
+    XCTAssertTrue(
+      app.waitForNoHittableMenuItem(titled: "Close"),
       "the context menu should be closed before the next step")
 
     // 5. Dragging a solo header must not form a split.

@@ -99,8 +99,9 @@ struct NotificationsPopover: View {
   var dropFirst: Bool = false
   /// Forwarded to `NotificationsList` so a row tap can close the hosting popover. Escape calls it too.
   var onActivate: (() -> Void)?
-  /// Claimed on appear so the popover's window becomes key. Holding only buttons, nothing in it took
-  /// focus, so Escape went to the terminal behind it and the popover stayed open.
+  /// Claimed on appear so Escape reaches `.onExitCommand`. Holding only buttons, nothing in the popover
+  /// took focus and Escape left it open (measured 2026-10-06, both hosts); with this, Escape closes
+  /// it. Which window ends up key while it is open was not measured.
   @FocusState private var focused: Bool
 
   var body: some View {
