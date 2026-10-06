@@ -431,6 +431,11 @@ enum UITestFixture {
       return nil
     }
     let now = Date()
+    // `-WorkroomUITestUsageZero 1` seeds zero usage, the only way to see the plain-accent `.onPace`
+    // bar (TODOS' manual visual check). The spoken label for it is pinned by
+    // `AgentUsageSegmentLabelTests`; the bar's colour has no automated check.
+    let used = flag("WorkroomUITestUsageZero") ? 0.0 : 42.0
+    let weeklyUsed = flag("WorkroomUITestUsageZero") ? 0.0 : 61.0
     return AgentQuotaSnapshot(
       backend: backend,
       windows: [
@@ -438,14 +443,13 @@ enum UITestFixture {
         // 12-point gap between the fill's edge and the pace pin. At the old 3h the window was 40%
         // elapsed against the same 42% used: pace +2, a gap of about a point on a 44pt bar, so the
         // pin was indistinguishable from the fill and `.warning` was reachable by no fixture at all
-        // (weekly lands at +18 ⇒ `.critical`; zero usage is pinned by
-        // `AgentUsageSegmentLabelTests`). No test asserts `resetsAt` — they assert only that the
-        // label contains "resets in".
+        // (weekly lands at +18 ⇒ `.critical`, and `WorkroomUITestUsageZero` gives `.onPace`). No
+        // test asserts `resetsAt` — they assert only that the label contains "resets in".
         AgentQuotaWindow(
-          kind: .fiveHour, usedPercentage: 42, duration: 5 * 60 * 60,
+          kind: .fiveHour, usedPercentage: used, duration: 5 * 60 * 60,
           resetsAt: now.addingTimeInterval(3.5 * 60 * 60)),
         AgentQuotaWindow(
-          kind: .weekly, usedPercentage: 61, duration: 7 * 24 * 60 * 60,
+          kind: .weekly, usedPercentage: weeklyUsed, duration: 7 * 24 * 60 * 60,
           resetsAt: now.addingTimeInterval(4 * 24 * 60 * 60)),
       ], capturedAt: now)
   }

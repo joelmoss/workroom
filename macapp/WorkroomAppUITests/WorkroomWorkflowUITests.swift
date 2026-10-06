@@ -54,6 +54,21 @@ final class WorkroomWorkflowUITests: XCTestCase {
     return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
   }
 
+  /// Poll the terminal's visible text (the fixture exposes it as the surface's accessibility value)
+  /// until it contains `needle`. Polled by hand: a predicate expectation reads a cached snapshot.
+  private func waitForScreen(
+    containing needle: String, in app: XCUIApplication, timeout: TimeInterval = 15
+  ) -> Bool {
+    let surface = app.descendants(matching: .any).matching(identifier: "terminal.surface")
+      .firstMatch
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if ((surface.value as? String) ?? "").contains(needle) { return true }
+      usleep(250_000)
+    }
+    return false
+  }
+
   /// Wait for an element's accessibility label to settle on `label` (the bell's label carries the live
   /// unread total, so opening a notification drops the count it reports).
   private func assertLabel(
@@ -179,6 +194,24 @@ final class WorkroomWorkflowUITests: XCTestCase {
     // Dismiss the transient popover before the next step.
     app.typeKey(.escape, modifierFlags: [])
     XCTAssertTrue(waitForDisappearance(popover), "Escape should close the bell popover")
+
+    // The popover claims keyboard focus so Escape can reach it, so check that focus comes back once
+    // it closes. Typed text must reach the terminal with no click first; the arithmetic means only a
+    // shell that ran the line prints the sentinel.
+    app.typeText("echo WRFOCUS$((2+3))\r")
+    XCTAssertTrue(
+      waitForScreen(containing: "WRFOCUS5", in: app),
+      "after the popover closes, typing reaches the terminal without a click")
+
+    // The main window must be key again: Keyboard Shortcuts… only opens its sheet when it is
+    // (`RootView`'s `.showKeyboardShortcuts` handler guards on `hostWindow?.isKeyWindow`).
+    app.menuBars.menuItems["Keyboard Shortcuts…"].click()
+    let shortcuts = app.sheets.firstMatch
+    XCTAssertTrue(
+      shortcuts.waitForExistence(timeout: 5),
+      "Keyboard Shortcuts… opens its sheet, so the window is key again after the popover")
+    shortcuts.buttons["Done"].click()
+    XCTAssertTrue(waitForDisappearance(shortcuts), "Done closes the shortcuts sheet")
 
     // ⇧⌘N (Next Notification) opens the oldest pending notification's terminal and dismisses it — the
     // same `openOldestNotification` path a ⌘-click on the bell drives. The oldest is the ×3 "Tests

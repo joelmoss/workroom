@@ -97,6 +97,12 @@ final class AgentUsageUITests: XCTestCase {
     let wideWidth = usage.frame.width
 
     app.menuBars.menuBarItems["View"].menuItems["Split Right"].click()
+    // Wait for the split to render: the segment already existed before it, so without this the
+    // width and count checks below could read the unsplit window and pass for nothing.
+    let panes = app.descendants(matching: .any).matching(identifier: "terminal.pane")
+    let twoPanes = NSPredicate(format: "count == 2")
+    expectation(for: twoPanes, evaluatedWith: panes)
+    waitForExpectations(timeout: 10)
     let split = usageSegments.firstMatch
     XCTAssertTrue(split.waitForExistence(timeout: 10))
     XCTAssertTrue(split.label.contains("42%"), split.label)
