@@ -79,21 +79,17 @@ final class SplitPaneUITests: XCTestCase {
     assertCount(tabs(app), reaches: initial)
   }
 
-  func testSplitRightCreatesTwoPanes() throws {
-    let app = launchedApp()
-    try openWorkroom(app)
-    assertCount(panes(app), reaches: 1)
-    app.typeKey("d", modifierFlags: .command)  // ⌘D → Split Right
-    assertCount(panes(app), reaches: 2)
-  }
-
-  /// Regression for the close-collapse blank bug: closing one pane of a split must leave exactly one
-  /// rendered pane (the survivor), not a detached/blank surface.
+  /// ⌘D splits, and each terminal keeps its own strip tab even inside a pane (the issue's "terminal
+  /// tabs should remain for each terminal, even if it is in a pane"). Then the regression for the
+  /// close-collapse blank bug: closing one pane of a split must leave exactly one rendered pane (the
+  /// survivor), not a detached/blank surface.
   func testCloseSplitPaneLeavesOneRenderedPane() throws {
     let app = launchedApp()
     try openWorkroom(app)
+    let initial = tabs(app).count
     app.typeKey("d", modifierFlags: .command)
     assertCount(panes(app), reaches: 2)
+    assertCount(tabs(app), reaches: initial + 1)  // the split's new terminal has its own strip tab
     app.typeKey("w", modifierFlags: .command)  // close the focused (new) pane → collapse to solo
     assertCount(panes(app), reaches: 1)  // survivor still renders
   }
@@ -105,16 +101,6 @@ final class SplitPaneUITests: XCTestCase {
     assertCount(panes(app), reaches: 2)
     app.typeKey("d", modifierFlags: [.command, .shift])  // ⇧⌘D → Split Down (nested)
     assertCount(panes(app), reaches: 3)
-  }
-
-  /// The issue's "terminal tabs should remain for each terminal, even if it is in a pane."
-  func testSplitKeepsATabPerTerminal() throws {
-    let app = launchedApp()
-    try openWorkroom(app)
-    let initial = tabs(app).count
-    app.typeKey("d", modifierFlags: .command)
-    assertCount(panes(app), reaches: 2)
-    assertCount(tabs(app), reaches: initial + 1)  // the split's new terminal has its own strip tab
   }
 
   /// Regression: closing a pane from its own right-click menu must not crash the app. The
@@ -165,24 +151,40 @@ final class SplitPaneUITests: XCTestCase {
       .allElementsBoundByIndex.first { $0.isHittable }
   }
 
-  /// Right-clicking a **workroom** split member's title bar shows the full workroom menu: Close,
-  /// Remove from Split, Set Label…, and Delete Workroom….
-  func testSplitTitleBarMenuOnWorkroomMember() throws {
+  /// Each split member's title-bar menu matches its kind. A **workroom** member offers the full
+  /// workroom menu: Close, Remove from Split, Set Label…, and Delete Workroom…. A **project-root**
+  /// member is never labelled or deletable, but it can still be closed or popped out of the split —
+  /// so its menu offers Close + Remove from Split only.
+  func testSplitTitleBarMenuMatchesTheMemberKind() throws {
     let app = launchedApp(workroomSplit: true)
     try openWorkroom(app)
     assertCount(titlebars(app), reaches: 2)  // root + workroom members
 
-    let bar = workroomTitleBar(app)
-    XCTAssertTrue(bar.waitForExistence(timeout: 6), "the workroom member's title bar should render")
-    bar.rightClick()
-
+    let workroomBar = workroomTitleBar(app)
+    XCTAssertTrue(
+      workroomBar.waitForExistence(timeout: 6), "the workroom member's title bar should render")
+    workroomBar.rightClick()
     XCTAssertNotNil(hittableMenuItem(app, "Close"), "workroom member menu should offer Close")
-    XCTAssertNotNil(
-      hittableMenuItem(app, "Remove from Split"), "…and Remove from Split")
-    XCTAssertNotNil(
-      hittableMenuItem(app, "Set Label…"), "…and Set Label…")
-    XCTAssertNotNil(
-      hittableMenuItem(app, "Delete Workroom…"), "…and Delete Workroom…")
+    XCTAssertNotNil(hittableMenuItem(app, "Remove from Split"), "…and Remove from Split")
+    XCTAssertNotNil(hittableMenuItem(app, "Set Label…"), "…and Set Label…")
+    XCTAssertNotNil(hittableMenuItem(app, "Delete Workroom…"), "…and Delete Workroom…")
+
+    // Close that menu, and wait until it is really gone: otherwise its still-open Close and Remove
+    // from Split would satisfy the root assertions below whether or not the root menu opened.
+    app.typeKey(.escape, modifierFlags: [])
+    let closed = NSPredicate { _, _ in self.hittableMenuItem(app, "Delete Workroom…") == nil }
+    XCTAssertEqual(
+      XCTWaiter().wait(
+        for: [XCTNSPredicateExpectation(predicate: closed, object: nil)], timeout: 4),
+      .completed, "the workroom member's menu should close on Escape")
+
+    let rootBar = rootTitleBar(app)
+    XCTAssertTrue(rootBar.waitForExistence(timeout: 6), "the root member's title bar should render")
+    rootBar.rightClick()
+    XCTAssertNotNil(hittableMenuItem(app, "Close"), "root members can be closed")
+    XCTAssertNotNil(hittableMenuItem(app, "Remove from Split"), "…and removed from the split")
+    XCTAssertNil(hittableMenuItem(app, "Delete Workroom…"), "but root members aren't deletable")
+    XCTAssertNil(hittableMenuItem(app, "Set Label…"), "and aren't labelled")
   }
 
   // MARK: - Open/create as a split (issue #163)
@@ -230,23 +232,6 @@ final class SplitPaneUITests: XCTestCase {
     item?.click()
 
     assertCount(titlebars(app), reaches: 2)
-  }
-
-  /// A **project-root** split member is never labelled or deletable, but it can still be closed or
-  /// popped out of the split — so its menu offers Close + Remove from Split only.
-  func testSplitTitleBarMenuOnRootMember() throws {
-    let app = launchedApp(workroomSplit: true)
-    try openWorkroom(app)
-    assertCount(titlebars(app), reaches: 2)
-
-    let bar = rootTitleBar(app)
-    XCTAssertTrue(bar.waitForExistence(timeout: 6), "the root member's title bar should render")
-    bar.rightClick()
-
-    XCTAssertNotNil(hittableMenuItem(app, "Close"), "root members can be closed")
-    XCTAssertNotNil(hittableMenuItem(app, "Remove from Split"), "…and removed from the split")
-    XCTAssertNil(hittableMenuItem(app, "Delete Workroom…"), "but root members aren't deletable")
-    XCTAssertNil(hittableMenuItem(app, "Set Label…"), "and aren't labelled")
   }
 
   /// "Remove from Split" pops the member out of the split — the split collapses to a solo view. Since
