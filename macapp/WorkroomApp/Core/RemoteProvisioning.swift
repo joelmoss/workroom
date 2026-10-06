@@ -13,6 +13,24 @@ import Foundation
 ///
 /// Repository work runs through the agent's exec service, and the Go CLI stays on the Mac.
 enum RemoteProvisioning {
+  /// A step of a remote create that takes long enough to say (#356): the boxd driver's machine work
+  /// and the sequence's own git and enrolment.
+  enum Step: String, CaseIterable, Sendable {
+    case machine = "Creating the base machine"
+    case setup = "Setting up the base machine"
+    case clone = "Cloning the repository"
+    case snapshot = "Copying the base machine"
+    case restore = "Starting the workroom's machine"
+    case reboot = "Restarting it with its own identity"
+    case enrol = "Signing it in to Codaset"
+    case checkout = "Checking out the workroom's branch"
+  }
+
+  /// Told each `Step` as it starts, for a create's progress on its project row. Set with
+  /// `$reportStep.withValue`: a task-local, so the driver's methods keep their shape, as
+  /// `ContainerHostDriver.$pullProgress` does for an image pull.
+  @TaskLocal static var reportStep: (@Sendable (Step) -> Void)?
+
   /// What the sequence reaches a provider and the broker through.
   struct Environment: Sendable {
     let driver: any HostDriver
@@ -119,6 +137,7 @@ enum RemoteProvisioning {
       guard case .remote(let id) = host else { throw HostDriverError.unknownHost(host) }
       let connection = try await environment.connect(host)
       defer { Task { await connection.close() } }
+      reportStep?(.clone)
       let relayed = try await withCloneToken(repository, relayed: nil, in: environment) { header in
         _ = try await git(
           ["clone", "--quiet", "--origin", "origin", "--", cloneURL, path], in: "/",
@@ -277,6 +296,7 @@ enum RemoteProvisioning {
       } else {
         guard let client = environment.client else { throw RemoteWorkrooms.Failure.signedOut }
         let grantID: String
+        reportStep?(.enrol)
         do {
           grantID = try await AgentEnrolment.enrol(
             client: client, driver: environment.driver, host: host,
@@ -291,6 +311,7 @@ enum RemoteProvisioning {
         try await checkpoint(host, grantID)
       }
       // With the instance's own credentials: `wr-agent enrol` made its helper git's.
+      reportStep?(.checkout)
       try await fetch(base.path, environment: header, on: connected)
       // Fully qualified: a tag or branch named `origin/HEAD` would make the short form ambiguous.
       _ = try await git(
