@@ -785,11 +785,179 @@ final class RemoteHostsTests: XCTestCase {
 
     remote.adopt([project])
 
-    XCTAssertNil(try XCTUnwrap(remote.existingDriver(holding: base)).provisioning?.context)
-    XCTAssertEqual(remote.existingDriver(holding: pinned)?.provisioning?.context, "orbstack")
+    XCTAssertNil(
+      try XCTUnwrap(remote.existingDriver(holding: base) as? ContainerHostDriver).provisioning?
+        .context)
+    XCTAssertEqual(
+      (remote.existingDriver(holding: pinned) as? ContainerHostDriver)?.provisioning?.context,
+      "orbstack")
     for _ in 0..<500 where swept.calls.count < 2 { try await Task.sleep(for: .milliseconds(2)) }
     XCTAssertEqual(Set(swept.calls.map(\.context)), [nil, "orbstack"])
     for call in swept.calls { XCTAssertEqual(call.known, [base, pinned], call.context ?? "nil") }
+  }
+
+  /// A boxd host (#356) is its own driver key, never Docker's: before boxd had a key, a delete of
+  /// one fell back to Docker (`DriverKey(host) ?? DriverKey()`), and a descriptor naming a driver
+  /// this build doesn't know is refused rather than taken down with another.
+  func testABoxdHostIsItsOwnDriverKeyNeverDockers() throws {
+    let boxd = HostDescriptor(
+      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      org: "acme", account: "usr_1")
+    let key = RemoteHosts.DriverKey(boxd)
+    XCTAssertEqual(key, .boxd(org: "acme", account: "usr_1"))
+    XCTAssertNil(key?.runtime)
+    XCTAssertEqual(key?.agentSocket, BoxdHostDriver.Configuration.defaultAgentSocket)
+    XCTAssertEqual(try RemoteHosts.deletionKey(boxd), .boxd(org: "acme", account: "usr_1"))
+    // A descriptor from before the `driver` field is Docker's, as it always was.
+    XCTAssertEqual(try RemoteHosts.deletionKey(HostDescriptor(id: UUID())), RemoteHosts.DriverKey())
+    XCTAssertThrowsError(try RemoteHosts.deletionKey(HostDescriptor(driver: "exe.dev", id: UUID())))
+    // A boxd base serves only its own org and account; there is no unpinned form to fall back to.
+    XCTAssertEqual(
+      RemoteWorkrooms.base(in: boxd, for: .boxd(org: "acme", account: "usr_1"))?.id, boxd.id)
+    XCTAssertNil(RemoteWorkrooms.base(in: boxd, for: .boxd(org: nil, account: "usr_1")))
+    XCTAssertNil(RemoteWorkrooms.base(in: boxd, for: RemoteHosts.DriverKey()))
+    // And the descriptor round-trips through config with its org and account.
+    XCTAssertEqual(
+      try JSONDecoder().decode(HostDescriptor.self, from: try JSONEncoder().encode(boxd)), boxd)
+  }
+
+  /// A delete of a boxd host asks for boxd's driver and environment, never Docker's.
+  @MainActor
+  func testDeletingABoxdHostUsesTheBoxdDriver() throws {
+    let asked = Asked()
+    let remote = RemoteHosts(makeDriver: { key in
+      asked.add(key)
+      return BoxdHostDriver(
+        configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
+        directory: FileManager.default.temporaryDirectory)
+    })
+    let host = HostDescriptor(
+      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      org: "acme", account: "usr_1")
+    let deletion = try XCTUnwrap(try remote.environment(toDelete: [host]))
+    XCTAssertEqual(asked.keys, [.boxd(org: "acme", account: "usr_1")])
+    let environment = try XCTUnwrap(deletion.environment(for: host))
+    XCTAssertTrue(environment.driver is BoxdHostDriver)
+    XCTAssertEqual(environment.agentSocket, BoxdHostDriver.Configuration.defaultAgentSocket)
+    XCTAssertNil(environment.gitHubToken, "a remote host's git never borrows the Mac's gh")
+  }
+
+  /// After a relaunch a boxd workroom is reached without Docker: its driver is made by name, with
+  /// the org and account its record holds, and a missing container runtime never reads as its host
+  /// being gone, which would report a closed pane's session ended while it runs on (#356).
+  func testABoxdWorkroomIsReachedAfterARelaunchWithoutDocker() throws {
+    let remote = RemoteHosts()
+    let id = UUID()
+    let project = Project(
+      path: "/proj", vcs: "git",
+      workrooms: [
+        Workroom(
+          name: "w", path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
+          host: HostDescriptor(
+            driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+            org: "acme", account: "usr_1"))
+      ])
+
+    remote.adopt([project])
+
+    let driver = try XCTUnwrap(remote.existingDriver(holding: id) as? BoxdHostDriver)
+    XCTAssertEqual(driver.configuration.org, "acme")
+    XCTAssertEqual(driver.configuration.account, "usr_1")
+    XCTAssertFalse(remote.runtimeIsMissing(for: .remote(id)))
+  }
+
+  /// A workroom created on boxd records `driver: "boxd"` with its org and account, and no
+  /// container record, from the moment its machine exists; a base of another place is refused.
+  func testABoxdWorkroomRecordsItsOrgAndAccount() async throws {
+    let made = UUID()
+    let driver = DerivingDriver(derived: made)
+    let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
+    let environment = RemoteProvisioning.Environment(
+      driver: driver, agentSocket: key.agentSocket,
+      client: BrokerClient(
+        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())),
+      connect: { _ in throw HostDriverError.provisioning("stop after the checkpoint") })
+    let base = { (driver: String, org: String?, account: String?) in
+      HostDescriptor(
+        driver: driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(), repository: "o/r",
+        cloneURL: "https://github.com/o/r.git", path: "/home/boxd/r", org: org, account: account)
+    }
+    let recorded = Recorded()
+    let recorder = RemoteWorkrooms.Recorder(
+      reserve: { _, descriptor in
+        recorded.add(descriptor)
+        return "x"
+      }, record: { _, descriptor in recorded.add(descriptor) }, forget: { _ in })
+    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
+    do {
+      _ = try await RemoteWorkrooms.create(
+        repository: repository, cloneURL: "https://github.com/o/r.git",
+        base: base(RemoteWorkrooms.boxdDriver, "acme", "usr_1"), key: key, driver: driver,
+        environment: environment, recorder: recorder)
+      XCTFail("the connect was meant to fail")
+    } catch {}
+    let live = try XCTUnwrap(recorded.all.last { $0.id == made })
+    XCTAssertEqual(live.driver, RemoteWorkrooms.boxdDriver)
+    XCTAssertEqual(live.org, "acme")
+    XCTAssertEqual(live.account, "usr_1")
+    XCTAssertNil(live.container)
+    XCTAssertTrue(
+      recorded.all.allSatisfy { $0.driver == RemoteWorkrooms.boxdDriver && $0.account == "usr_1" })
+
+    for (place, other, said) in [
+      (key, base(RemoteWorkrooms.containerDriver, nil, nil), "Docker"),
+      (RemoteHosts.DriverKey(), base(RemoteWorkrooms.boxdDriver, "acme", "usr_1"), "boxd"),
+    ] {
+      do {
+        _ = try await RemoteWorkrooms.create(
+          repository: repository, cloneURL: "https://github.com/o/r.git", base: other, key: place,
+          driver: driver, environment: environment,
+          recorder: RemoteWorkrooms.Recorder(
+            reserve: { _, _ in "x" }, record: { _, _ in XCTFail("recorded") }, forget: { _ in }))
+        XCTFail("a workroom went on another place than its base")
+      } catch RemoteWorkrooms.Failure.baseOnOtherRuntime(let name) {
+        XCTAssertEqual(name, said)
+      }
+    }
+  }
+
+  /// A driver whose derive makes `derived` and whose destroy succeeds; nothing else is reached.
+  private struct DerivingDriver: HostTerminalDriver {
+    let derived: UUID
+    var traits: HostDriverTraits {
+      HostDriverTraits(
+        transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
+        durableDisk: true, maxLifetime: nil, keepAwakeHoldsCredential: false,
+        sleepsWhenIdle: true)
+    }
+    func create() async throws -> HostID { throw HostDriverError.provisioning("no create") }
+    func deriveFromBase(_ base: HostID) async throws -> HostID { .remote(derived) }
+    func destroy(_ host: HostID) async throws {}
+    func openStream(to host: HostID) async throws -> HostStream {
+      throw HostDriverError.provisioning("no stream")
+    }
+    func exec(_ command: String, on host: HostID) async throws -> HostStream {
+      throw HostDriverError.provisioning("no exec")
+    }
+    func attachCommand(
+      to host: HostID, session: UUID, workingDirectory: String, restored: Bool,
+      metadata: [(key: String, value: String)]
+    ) throws -> String { "" }
+    func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool { false }
+  }
+
+  private final class Recorded: @unchecked Sendable {
+    private let lock = NSLock()
+    private var made: [HostDescriptor] = []
+    var all: [HostDescriptor] { lock.withLock { made } }
+    func add(_ descriptor: HostDescriptor) { lock.withLock { made.append(descriptor) } }
+  }
+
+  private final class Asked: @unchecked Sendable {
+    private let lock = NSLock()
+    private var made: [RemoteHosts.DriverKey] = []
+    var keys: [RemoteHosts.DriverKey] { lock.withLock { made } }
+    func add(_ key: RemoteHosts.DriverKey) { lock.withLock { made.append(key) } }
   }
 
   private final class Swept: @unchecked Sendable {
@@ -1113,8 +1281,12 @@ final class RemoteHostsTests: XCTestCase {
           host: host(apple, .apple))
       ], host: host(docker, .docker))
     remote.adopt([project])
-    XCTAssertEqual(remote.existingDriver(holding: docker)?.provisioning?.dialect, .docker)
-    XCTAssertEqual(remote.existingDriver(holding: apple)?.provisioning?.dialect, .apple)
+    XCTAssertEqual(
+      (remote.existingDriver(holding: docker) as? ContainerHostDriver)?.provisioning?.dialect,
+      .docker)
+    XCTAssertEqual(
+      (remote.existingDriver(holding: apple) as? ContainerHostDriver)?.provisioning?.dialect,
+      .apple)
   }
 
   /// A project's workrooms are derived from its base, so they go on the base's runtime: asking
@@ -1134,7 +1306,7 @@ final class RemoteHostsTests: XCTestCase {
           driver: RemoteWorkrooms.Runtime.docker.rawValue, provisioner: RemoteWorkrooms.provisioner,
           id: UUID(), repository: "o/r", cloneURL: "https://github.com/o/r.git",
           path: "/home/workroom/r"),
-        runtime: .apple, driver: driver, environment: environment,
+        key: RemoteHosts.DriverKey(runtime: .apple), driver: driver, environment: environment,
         recorder: RemoteWorkrooms.Recorder(
           reserve: { _, _ in "x" }, record: { _, _ in XCTFail("recorded") },
           forget: { _ in }))
@@ -1206,7 +1378,7 @@ final class RemoteHostsTests: XCTestCase {
       environments: Dictionary(uniqueKeysWithValues: keys.map { ($0, environment($0)) }))
     for key in keys {
       let host = HostDescriptor(
-        driver: key.runtime.rawValue, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+        driver: key.runtime?.rawValue, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
         container: Self.record(context: key.context))
       let driver = try XCTUnwrap(deletion.environment(for: host)?.driver as? ContainerHostDriver)
       XCTAssertEqual(driver.provisioning?.context, key.context)

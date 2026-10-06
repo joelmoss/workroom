@@ -232,6 +232,32 @@ final class BoxdHostDriverTests: XCTestCase {
     XCTAssertEqual(cli.commands, ["machine remove"])
   }
 
+  /// Every personal account's org is nil, so after a switch to another account the org check alone
+  /// passes and the first account's machines read as not found, which `destroy` would take for gone
+  /// (#356). The account is checked too, and only the one that made the machines goes ahead.
+  func testNothingIsDoneWhileAnotherAccountIsSignedIn() async throws {
+    let cli = StubCLI([
+      "auth --json": Self.ok(#"{"active_org":null,"user_id":"usr_other"}"#),
+      "machine remove": Self.failed("error: VM 'x' not found"),
+    ])
+    let mine = BoxdHostDriver(
+      configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), account: "usr_mine"),
+      directory: FileManager.default.temporaryDirectory, runner: cli)
+    do {
+      try await mine.destroy(.remote(UUID()))
+      XCTFail("a destroy went ahead on another account")
+    } catch HostDriverError.invalidConfiguration(let detail) {
+      XCTAssertTrue(detail.contains("boxd auth login"), detail)
+    }
+    XCTAssertEqual(cli.commands, [], "a command ran on another account")
+
+    let other = BoxdHostDriver(
+      configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), account: "usr_other"),
+      directory: FileManager.default.temporaryDirectory, runner: cli)
+    try await other.destroy(.remote(UUID()))
+    XCTAssertEqual(cli.commands, ["machine remove"])
+  }
+
   /// The org can change between the check and the removal: "not found" then means nothing.
   func testANotFoundAfterTheOrgChangedIsNotTakenForGone() async throws {
     let cli = StubCLI(

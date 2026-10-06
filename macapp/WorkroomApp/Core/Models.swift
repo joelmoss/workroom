@@ -19,7 +19,8 @@ struct Warning: Codable, Hashable {
 /// remote workroom away from every local action instead of failing the whole listing.
 struct HostDescriptor: Codable, Hashable {
   var state: String? = nil
-  /// Which `HostDriver` made the host: `container` (`ContainerHostDriver`).
+  /// Which `HostDriver` made the host: `container` or `apple-container` (`ContainerHostDriver`),
+  /// or `boxd` (`BoxdHostDriver`, #356).
   var driver: String? = nil
   /// The bundle ID of the build that made the host, whose key and labels it carries: a Dev and a
   /// Nightly app share config but not keys, so each adopts only its own hosts.
@@ -44,6 +45,12 @@ struct HostDescriptor: Codable, Hashable {
   /// `relay` for a local container base or workroom whose git credentials come from the Mac's
   /// relay instead of the broker (#309); nil for the broker.
   var credentials: String? = nil
+  /// A boxd host's org, as `boxd auth` named the active one when it was made; nil is the account's
+  /// own (#356).
+  var org: String? = nil
+  /// A boxd host's account, `boxd auth`'s `user_id` when it was made (#356). Every personal
+  /// account's org is nil, so the org alone can't tell two accounts apart.
+  var account: String? = nil
 
   /// What kind of host this is, for the workroom's icon in the sidebar (#309): a container on this
   /// Mac, on Docker (naming its context when it has one) or Apple's runtime, or a remote provider by
@@ -69,7 +76,8 @@ struct HostDescriptor: Codable, Hashable {
   var isDestroyed: Bool { state == "destroyed" }
 
   enum CodingKeys: String, CodingKey {
-    case state, driver, provisioner, id, repository, path, container, bases, credentials
+    case state, driver, provisioner, id, repository, path, container, bases, credentials, org
+    case account
     case grantID = "grant_id"
     case workroomID = "workroom_id"
     case cloneURL = "clone_url"
@@ -79,7 +87,8 @@ struct HostDescriptor: Codable, Hashable {
     state: String? = nil, driver: String? = nil, provisioner: String? = nil, id: UUID? = nil,
     grantID: String? = nil, workroomID: UUID? = nil, repository: String? = nil,
     cloneURL: String? = nil, path: String? = nil, container: ContainerHostDriver.Record? = nil,
-    bases: [HostDescriptor]? = nil, credentials: String? = nil
+    bases: [HostDescriptor]? = nil, credentials: String? = nil, org: String? = nil,
+    account: String? = nil
   ) {
     self.state = state
     self.driver = driver
@@ -93,6 +102,8 @@ struct HostDescriptor: Codable, Hashable {
     self.container = container
     self.bases = bases
     self.credentials = credentials
+    self.org = org
+    self.account = account
   }
 
   init(from decoder: Decoder) throws {
@@ -109,6 +120,8 @@ struct HostDescriptor: Codable, Hashable {
     container = try? fields?.decodeIfPresent(ContainerHostDriver.Record.self, forKey: .container)
     bases = try? fields?.decodeIfPresent([HostDescriptor].self, forKey: .bases)
     credentials = try? fields?.decodeIfPresent(String.self, forKey: .credentials)
+    org = try? fields?.decodeIfPresent(String.self, forKey: .org)
+    account = try? fields?.decodeIfPresent(String.self, forKey: .account)
   }
 
   /// A project's base, when the descriptor records a whole one.
