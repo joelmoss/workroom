@@ -3608,7 +3608,7 @@ final class AppStore: ObservableObject {
       let created = try await ContainerHostDriver.$pullProgress.withValue(report) {
         try await RemoteWorkrooms.create(
           repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
-          base: base, project: project.host, runtime: runtime, driver: driver,
+          base: base, project: project.host, key: key, driver: driver,
           environment: environment,
           recorder: remoteRecorder(project: project.path))
       }

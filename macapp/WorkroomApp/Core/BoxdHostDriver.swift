@@ -39,9 +39,15 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// machines read as "not found", which `destroy` would take for gone and leave running.
     /// Whoever records a host records this beside it.
     var org: String?
+    /// The boxd account this driver's machines belong to, `boxd auth --json`'s `user_id`, or nil
+    /// to accept any (#356). Every personal account's org is nil, so after a switch to another
+    /// account the org check alone passes, and a machine of the first account reads as "not
+    /// found", which `destroy` would take for gone. Whoever records a host records this beside it.
+    var account: String?
     /// The agent's socket on every host. On the home disk, never the tmpfs `/run`: the agent keeps
     /// its broker enrolment beside it (`broker.rs`), and a stopped machine would lose it.
-    var agentSocket = "/home/boxd/.local/state/workroom/agent/agent.sock"
+    var agentSocket = Configuration.defaultAgentSocket
+    static let defaultAgentSocket = "/home/boxd/.local/state/workroom/agent/agent.sock"
     /// Where the supervisor has the agent keep each session's last screen (#232).
     var screens = "/home/boxd/.local/state/workroom/screens"
     /// The files the CLI writes each machine's ssh stanza and host key into.
@@ -290,18 +296,30 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     ) { "\(self.name(of: id))'s agent never answered: \($0)" }
   }
 
-  /// Refuses to act while boxd's active org is not this driver's (`Configuration.org`).
+  /// Refuses to act while boxd's active org or signed-in account is not this driver's
+  /// (`Configuration.org`, `Configuration.account`).
   private func checkOrg() async throws {
-    let account: Account
-    do {
-      account = try decode(Account.self, await cli(["auth"]), "the signed-in account")
-    } catch let failure as CLIFailure {
-      throw HostDriverError.provisioning(failure.localizedDescription)
+    let account = try await signedIn()
+    if let expected = configuration.account, account.userID != expected {
+      throw HostDriverError.invalidConfiguration(
+        "boxd is signed in to another account than the one this workroom's machines are in; sign"
+          + " back in to that account with `boxd auth login`")
     }
     guard account.activeOrg == configuration.org else {
       throw HostDriverError.invalidConfiguration(
         "boxd's active org is \(account.activeOrg ?? "your own"), but this workroom's machines are"
           + " in \(configuration.org ?? "your own"); switch back with `boxd auth switch`")
+    }
+  }
+
+  /// The signed-in account, as `boxd auth --json` reports it. Throws, naming `boxd auth login`,
+  /// when nobody is signed in.
+  func signedIn() async throws -> Account {
+    do {
+      return try decode(Account.self, await cli(["auth"]), "the signed-in account")
+    } catch let failure as CLIFailure {
+      throw HostDriverError.provisioning(
+        "\(failure.localizedDescription). Sign in with `boxd auth login`.")
     }
   }
 
@@ -336,9 +354,13 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   /// `auth --json`, as far as the driver reads it.
-  private struct Account: Decodable {
+  struct Account: Decodable, Equatable {
     let activeOrg: String?
-    enum CodingKeys: String, CodingKey { case activeOrg = "active_org" }
+    let userID: String?
+    enum CodingKeys: String, CodingKey {
+      case activeOrg = "active_org"
+      case userID = "user_id"
+    }
   }
 
   /// `machine get --json`, as far as the driver reads it.
