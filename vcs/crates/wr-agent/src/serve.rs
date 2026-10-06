@@ -214,8 +214,8 @@ impl Agent {
             }
         }
         let _ = std::fs::remove_file(socket);
-        // The wakefulness service goes with the socket: its thread ends at its next tick, so an
-        // agent on its way out stops sending heartbeats, and `status` stops saying it is running.
+        // The wakefulness service goes with the socket: `status` stops saying it is running, and
+        // its thread ends within a tick (that tick may still send one heartbeat).
         crate::wakefulness::stop();
         result
     }
