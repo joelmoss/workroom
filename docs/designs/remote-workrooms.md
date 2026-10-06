@@ -9,7 +9,7 @@ Mode: Builder
 > **Note:** Workroom dropped Jujutsu (jj) support in #266. Passages here that describe jj
 > behaviour are a record of the design as it stood then, not of the current code.
 
-## Current Status — 2026-10-03
+## Current Status — 2026-10-06
 
 **Phase 4 is under way, and the app can now create, open and delete remote workrooms.** That works
 only in a Nightly or Dev build with the hidden `remoteWorkroomsPreview` setting, and only on the
@@ -17,15 +17,16 @@ container driver (the Mac's own Docker, from the `workroom-host` image). Merged 
 descriptors in config (#249, PR #275, 2026-10-01); the credential broker service (#250, in
 joelmoss/codaset#43, 2026-10-01) and its clients (#251, PR #263, 2026-09-30); portable derivation on
 the container driver (#252, PR #280, 2026-10-01); the boxd driver with portable derivation (#256, PR
-#281, 2026-10-02), which the app does not yet create on; and remote workrooms in the app (#253, PR
-#289, 2026-10-02). Follow-ups from #253's reviews are #283 to #288; #283 (closing a remote pane ends
-its session on the host) is merged (PR #306, 2026-10-03), with its own follow-ups in #293, #297 and
-#304. The rest of Phase 4 is open: pane parity (#254), cross-machine reattach (#255), keeping a busy
-box awake (#257, built as a heartbeat in the agent, not a shim), boxd live fork (#258) and the
-second real provider, exe.dev (#259). #260 is the gate: it runs the Success Criteria on two real
-providers, and the remote UI leaves Nightly only after they pass. The first Nightly DMG with the
-Linux agent inside (#227) still has to be checked, and that check is part of
-#260. Each merged item has its "As built" entry under Phase 4.
+#281, 2026-10-02), which the app does not yet create on; remote workrooms in the app (#253, PR
+#289, 2026-10-02); remote pane parity (#254, PR #326, 2026-10-04); cross-machine reattach (#255, PR
+#349, 2026-10-05); and keeping a busy box awake (#257, PR #353, 2026-10-06), built as a heartbeat in
+the agent, not a shim. Follow-ups from #253's reviews are #283 to #288; #283 (closing a remote pane
+ends its session on the host) is merged (PR #306, 2026-10-03), with its own follow-ups in #293, #297
+and #304. The rest of Phase 4 is open: boxd live fork (#258) and the second real provider, exe.dev
+(#259). #260 is the gate: it runs the Success Criteria on two real providers, and the remote UI
+leaves Nightly only after they pass. The first Nightly DMG with the Linux agent inside (#227) still
+has to be checked, and that check is part of #260. Each merged item has its "As built" entry under
+Phase 4, except #255, which is recorded as the answer to open question 8.
 
 The 2026-09-26 status follows.
 
@@ -3797,9 +3798,10 @@ service milestones below so each layer can be reviewed and landed independently.
    **Filed 2026-09-27** as #249 (host descriptors; built 2026-10-01, PR #275), #250 (broker service;
    built 2026-10-01, joelmoss/codaset#43) → #251 (broker clients; built 2026-09-30, PR #263) → #252
    (portable derivation on the container driver; built 2026-10-01, PR #280) → #253 (remote workrooms
-   in the app; built 2026-10-02, PR #289) → #254 (pane parity) and #255 (cross-machine reattach,
-   OQ8); #256 (boxd driver; built 2026-10-02, PR #281) → #257 (keeping a busy box awake; built as an
-   agent heartbeat) and #258 (boxd live fork); #259 (the second real provider, exe.dev, decided
+   in the app; built 2026-10-02, PR #289) → #254 (pane parity; built 2026-10-04, PR #326) and #255
+   (cross-machine reattach, OQ8; built 2026-10-05, PR #349); #256 (boxd driver; built 2026-10-02, PR
+   #281) → #257 (keeping a busy box awake; built 2026-10-06 as an agent heartbeat, PR #353) and #258
+   (boxd live fork); #259 (the second real provider, exe.dev, decided
    2026-09-27); and #260, the gate that runs the success criteria on two real providers.
 
 **Release follow-up, independent of Phase 2:** ~~Phase 1 Outstanding item 5 supplies the warning
