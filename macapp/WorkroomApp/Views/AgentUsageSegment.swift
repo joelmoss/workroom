@@ -96,7 +96,7 @@ struct AgentUsageSegment: View {
           .help("Enable the opt-in Claude status-line bridge")
           .accessibilityIdentifier("terminal.statusBar.agentUsage.enableClaude")
       } else if let snapshot = agentUsage.snapshot(for: backend) {
-        let label = quotaAccessibilityLabel(snapshot, now: now)
+        let label = Self.quotaAccessibilityLabel(snapshot, now: now)
         Button {
           usageDetailPinned.toggle()
         } label: {
@@ -197,8 +197,9 @@ struct AgentUsageSegment: View {
 
   /// Takes `now` from the segment's `TimelineView` rather than reading its own clock, so the tooltip
   /// and the VoiceOver label describe the same instant the pace pins are drawn for. The FORMAT is
-  /// load-bearing: every `AgentUsageUITests` assertion reads this string.
-  private func quotaAccessibilityLabel(_ snapshot: AgentQuotaSnapshot, now: Date) -> String {
+  /// load-bearing: every `AgentUsageUITests` assertion reads this string, and
+  /// `AgentUsageSegmentLabelTests` pins the zero-usage branch. Static so a unit test can call it.
+  static func quotaAccessibilityLabel(_ snapshot: AgentQuotaSnapshot, now: Date) -> String {
     let windows = snapshot.windows.map { window in
       let used = Int(window.usedPercentage.rounded())
       let pace = used == 0 ? "" : ", \(window.pace(at: now).accessibilityDescription)"

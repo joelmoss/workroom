@@ -7,8 +7,7 @@ final class AgentUsageUITests: XCTestCase {
   }
 
   private func launchedApp(
-    agent: String? = nil, terminalTabs: Int? = nil, usageUnavailable: Bool = false,
-    zeroUsage: Bool = false
+    agent: String? = nil, terminalTabs: Int? = nil, usageUnavailable: Bool = false
   ) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1", "-ApplePersistenceIgnoreState", "YES"]
@@ -19,7 +18,6 @@ final class AgentUsageUITests: XCTestCase {
     if usageUnavailable {
       app.launchArguments += ["-WorkroomUITestUsageUnavailable", "1"]
     }
-    if zeroUsage { app.launchArguments += ["-WorkroomUITestUsageZero", "1"] }
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
     return app
@@ -138,17 +136,6 @@ final class AgentUsageUITests: XCTestCase {
     XCTAssertTrue(unavailable.isHittable)
     unavailable.click()
     XCTAssertTrue(unavailable.waitForExistence(timeout: 5))
-  }
-
-  func testZeroUsageOmitsPace() {
-    let app = launchedApp(agent: "codex", zeroUsage: true)
-    let usage = app.descendants(matching: .any)["terminal.statusBar.agentUsage"]
-    XCTAssertTrue(usage.waitForExistence(timeout: 15))
-    XCTAssertTrue(usage.label.contains("5h quota 0% used"), usage.label)
-    XCTAssertTrue(usage.label.contains("wk quota 0% used"), usage.label)
-    XCTAssertFalse(usage.label.contains("in deficit"), usage.label)
-    XCTAssertFalse(usage.label.contains("in reserve"), usage.label)
-    XCTAssertFalse(usage.label.contains("pace"), usage.label)
   }
 
   func testNonAgentTabKeepsRunningAgentQuotaSegment() {
