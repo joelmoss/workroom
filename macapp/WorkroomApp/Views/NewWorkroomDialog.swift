@@ -73,7 +73,10 @@ struct NewWorkroomDialog: View {
       switch place {
       case .thisMac: await store.createWorkroom(in: project, splitAnchor: anchor)
       case .container(let runtime):
-        await store.createRemoteWorkroom(in: project, runtime: runtime, splitAnchor: anchor)
+        await store.createRemoteWorkroom(
+          in: project, place: .container(runtime), splitAnchor: anchor)
+      case .boxd:
+        await store.createRemoteWorkroom(in: project, place: .boxd, splitAnchor: anchor)
       }
     }
   }
@@ -83,8 +86,8 @@ struct NewWorkroomDialog: View {
   private func isUsable(_ place: WorkroomPlace, in project: Project) -> Bool {
     switch place {
     case .thisMac: !store.isBusyProject(project.path)
-    case .container(let runtime):
-      RemoteWorkrooms.unavailability(of: runtime) == nil
+    case .container, .boxd:
+      place.remote.flatMap(RemoteWorkrooms.unavailability(of:)) == nil
         && store.canCreateRemoteWorkroom(in: project)
     }
   }
@@ -121,12 +124,7 @@ struct NewWorkroomDialog: View {
     -> some View
   {
     let usable = isUsable(place, in: project)
-    let reason: String? =
-      if case .container(let runtime) = place {
-        RemoteWorkrooms.unavailability(of: runtime)
-      } else {
-        nil
-      }
+    let reason = place.remote.flatMap(RemoteWorkrooms.unavailability(of:))
     return Button {
       pick(place, in: project, split: PickerSplitIntent.requestedFromCurrentModifiers())
     } label: {
@@ -312,19 +310,31 @@ struct NewWorkroomPresenter: ViewModifier {
   }
 }
 
-/// Where a new workroom can go (#309): this Mac, or a local container on one of the runtimes.
+/// Where a new workroom can go (#309, #356): this Mac, a local container on one of the runtimes,
+/// or a boxd machine.
 enum WorkroomPlace: Hashable {
   case thisMac
   case container(RemoteWorkrooms.Runtime)
+  case boxd
 
   static var all: [WorkroomPlace] {
-    [.thisMac] + RemoteWorkrooms.Runtime.allCases.map { .container($0) }
+    [.thisMac] + RemoteWorkrooms.Runtime.allCases.map { .container($0) } + [.boxd]
+  }
+
+  /// The remote place this is, or nil for this Mac.
+  var remote: RemoteWorkrooms.Place? {
+    switch self {
+    case .thisMac: nil
+    case .container(let runtime): .container(runtime)
+    case .boxd: .boxd
+    }
   }
 
   var name: String {
     switch self {
     case .thisMac: "This Mac"
     case .container(let runtime): runtime.displayName
+    case .boxd: "boxd"
     }
   }
 
@@ -332,6 +342,7 @@ enum WorkroomPlace: Hashable {
     switch self {
     case .thisMac: "thisMac"
     case .container(let runtime): runtime.rawValue
+    case .boxd: RemoteWorkrooms.boxdDriver
     }
   }
 
@@ -339,6 +350,7 @@ enum WorkroomPlace: Hashable {
     switch self {
     case .thisMac: "laptopcomputer"
     case .container: "network"
+    case .boxd: "cloud"
     }
   }
 
@@ -346,6 +358,7 @@ enum WorkroomPlace: Hashable {
     switch self {
     case .thisMac: "A workroom on this Mac"
     case .container(let runtime): "A workroom in \(runtime.containerPhrase) on this Mac"
+    case .boxd: "A workroom on a boxd machine"
     }
   }
 }

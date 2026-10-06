@@ -200,8 +200,11 @@ struct ProjectSidebar: View {
     newLocalWorkroomButton(Text("This Mac"), in: project)
     Section("Local containers") {
       ForEach(RemoteWorkrooms.Runtime.allCases, id: \.self) { runtime in
-        newContainerWorkroomButton(on: runtime, in: project)
+        newRemoteWorkroomButton(at: .container(runtime), in: project)
       }
+    }
+    Section("Remote") {
+      newRemoteWorkroomButton(at: .boxd, in: project)
     }
   }
 
@@ -218,22 +221,22 @@ struct ProjectSidebar: View {
     .disabled(store.isBusyProject(project.path))
   }
 
-  /// New Workroom in a local container on `runtime` (#309), cloned from the project's GitHub
-  /// origin. One that can't be used now says why in its title.
-  private func newContainerWorkroomButton(
-    on runtime: RemoteWorkrooms.Runtime, in project: Project
+  /// New Workroom at `place` (#309, #356): a local container, or a boxd machine, cloned from the
+  /// project's GitHub origin. One that can't be used now says why in its title.
+  private func newRemoteWorkroomButton(
+    at place: RemoteWorkrooms.Place, in project: Project
   ) -> some View {
-    // The runtime's own reason only: one that holds the whole project (a create in flight) is said
+    // The place's own reason only: one that holds the whole project (a create in flight) is said
     // once, above the entries.
-    let reason = RemoteWorkrooms.unavailability(of: runtime)
+    let reason = RemoteWorkrooms.unavailability(of: place)
     return Button {
-      Task { await store.createRemoteWorkroom(in: project, runtime: runtime) }
+      Task { await store.createRemoteWorkroom(in: project, place: place) }
     } label: {
-      Text(reason.map { "\(runtime.displayName) — \($0)" } ?? runtime.displayName)
+      Text(reason.map { "\(place.displayName) — \($0)" } ?? place.displayName)
     }
     .help(
-      reason.map { "\(runtime.displayName) can't be used: \($0)" }
-        ?? "A workroom of \(project.displayName) in \(runtime.containerPhrase) on this Mac"
+      reason.map { "\(place.displayName) can't be used: \($0)" }
+        ?? "A workroom of \(project.displayName) in \(place.hostPhrase)"
     )
     .disabled(reason != nil || !store.canCreateRemoteWorkroom(in: project))
   }

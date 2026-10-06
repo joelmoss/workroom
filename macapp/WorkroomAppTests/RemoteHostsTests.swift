@@ -1347,6 +1347,19 @@ final class RemoteHostsTests: XCTestCase {
       "sign in to Codaset or run gh auth login")
   }
 
+  /// boxd's entry is off without its CLI, and without Codaset: a boxd workroom takes the broker's
+  /// tokens only, never the Mac's gh, so `gh auth login` is no way in (OQ20, #356). Whether boxd
+  /// itself is signed in is a CLI call, which a create makes rather than the menu.
+  func testTheBoxdEntrySaysWhyItIsOff() {
+    XCTAssertNil(RemoteWorkrooms.unavailability(ofBoxdInstalled: true, codasetSignedIn: true))
+    XCTAssertEqual(
+      RemoteWorkrooms.unavailability(ofBoxdInstalled: false, codasetSignedIn: false),
+      "not installed")
+    XCTAssertEqual(
+      RemoteWorkrooms.unavailability(ofBoxdInstalled: true, codasetSignedIn: false),
+      "sign in to Codaset")
+  }
+
   /// A driver takes on only a host of its own context: its commands would not reach another's.
   func testADriverRefusesAHostOfAnotherContext() throws {
     let (runtime, _) = try stubRuntime()

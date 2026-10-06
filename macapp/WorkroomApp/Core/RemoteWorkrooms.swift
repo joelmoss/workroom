@@ -35,6 +35,50 @@ enum RemoteWorkrooms {
     var containerPhrase: String { self == .docker ? "a Docker container" : "an Apple container" }
   }
 
+  /// Where a remote workroom is made (#309, #356): a container runtime on this Mac, or boxd.
+  enum Place: Hashable, Sendable {
+    case container(Runtime)
+    case boxd
+
+    var displayName: String {
+      switch self {
+      case .container(let runtime): runtime.displayName
+      case .boxd: "boxd"
+      }
+    }
+
+    /// One of its hosts, in a sentence: "a Docker container on this Mac", "a boxd machine".
+    var hostPhrase: String {
+      switch self {
+      case .container(let runtime): "\(runtime.containerPhrase) on this Mac"
+      case .boxd: "a boxd machine"
+      }
+    }
+  }
+
+  /// Why a workroom can't be created at `place` now, as the New Workroom menu and picker show it
+  /// beside the entry, or nil when it can.
+  @MainActor
+  static func unavailability(of place: Place) -> String? {
+    switch place {
+    case .container(let runtime): unavailability(of: runtime)
+    case .boxd:
+      // Only what is cheap to read: this runs in menus' and the picker's bodies. Whether boxd is
+      // signed in is a CLI call, so a create checks that (`RemoteHosts.key(for:)`).
+      unavailability(
+        ofBoxdInstalled: RemoteHosts.boxdExecutable() != nil,
+        codasetSignedIn: BrokerSession.shared.isSignedIn)
+    }
+  }
+
+  /// A boxd workroom fetches and pushes with the broker's tokens, never the Mac's `gh` (OQ20): it
+  /// must keep working with the Mac closed. So Codaset is required, where a container is not.
+  static func unavailability(ofBoxdInstalled installed: Bool, codasetSignedIn: Bool) -> String? {
+    if !installed { return "not installed" }
+    if !codasetSignedIn { return "sign in to Codaset" }
+    return nil
+  }
+
   /// The descriptor's `driver` for a Docker host.
   static let containerDriver = Runtime.docker.rawValue
   /// The descriptor's `driver` for a boxd host (#356).
@@ -115,6 +159,8 @@ enum RemoteWorkrooms {
     case anotherBuildsHost(String)
     case baseRepositoryChanged(base: String, origin: String)
     case incompleteBase
+    case codasetRequired
+    case boxdNotInstalled
 
     var errorDescription: String? {
       switch self {
@@ -139,6 +185,12 @@ enum RemoteWorkrooms {
         return "This project's base machine record is incomplete, so it can't be reused, and "
           + "building another would leave it running unrecorded. Delete the project (its remote "
           + "workrooms and base go with it) and add it again."
+      case .codasetRequired:
+        return "A boxd workroom fetches and pushes with Codaset's repository tokens, so it keeps "
+          + "working with this Mac closed. Sign in to Codaset in Settings → Remote workrooms."
+      case .boxdNotInstalled:
+        return "The boxd command wasn't found. Install it from boxd.sh, then sign in with "
+          + "`boxd auth login`."
       case .noDocker:
         return "No docker command was found. Install Docker Desktop, OrbStack or Colima."
       case .noAppleContainer:
@@ -714,6 +766,20 @@ final class RemoteHosts: @unchecked Sendable {
   /// The driver key a new workroom on `runtime` wants (#309): Apple's runtime has one, and Docker's
   /// is the context the CLI uses now, which a new base is pinned to. `RemoteWorkrooms.base(in:for:)`
   /// then finds the project's base there, if it has one.
+  func key(for place: RemoteWorkrooms.Place) async throws -> DriverKey {
+    switch place {
+    case .container(let runtime): return try await key(for: runtime)
+    case .boxd:
+      // The org and account boxd is signed in to now, which a new base is made in. Throws, naming
+      // `boxd auth login`, when nobody is signed in.
+      guard let cli = Self.boxdExecutable() else { throw RemoteWorkrooms.Failure.boxdNotInstalled }
+      let account = try await BoxdHostDriver(
+        configuration: .init(cli: URL(fileURLWithPath: cli)), directory: Self.directory
+      ).signedIn()
+      return .boxd(org: account.activeOrg, account: account.userID)
+    }
+  }
+
   func key(for runtime: RemoteWorkrooms.Runtime) async throws -> DriverKey {
     guard runtime == .docker else { return DriverKey(runtime: runtime) }
     return DriverKey(runtime: .docker, context: try await containerDriver().currentContext())
