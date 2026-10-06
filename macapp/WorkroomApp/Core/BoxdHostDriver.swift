@@ -371,7 +371,23 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   struct Machine: Decodable {
     /// `standalone`, `fork/<name>` or `snapshot/<name>:<version>`.
     let source: String
+    /// `running`, `standby` (suspended; `get` normalises the raw `suspended`), `hibernated`,
+    /// `stopped`, and others in passing (boxd CLI docs).
+    var status: String? = nil
   }
+
+  /// Whether `host` is asleep, from boxd's own record, without reaching the machine: an ssh login
+  /// would wake it (#356). Nil when boxd can't say (no CLI, signed out, offline), which a caller
+  /// must not take for either answer.
+  func isAsleep(_ host: HostID) async -> Bool? {
+    guard case .remote(let id) = host,
+      let machine = try? decode(Machine.self, await cli(["machine", "get", name(of: id)]), "")
+    else { return nil }
+    return Self.asleepStatuses.contains(machine.status ?? "")
+  }
+
+  /// The statuses a connection would wake from: suspended and hibernated.
+  static let asleepStatuses: Set<String> = ["standby", "hibernated"]
 
   private func decode<T: Decodable>(_ type: T.Type, _ output: String, _ name: String) throws -> T {
     do {

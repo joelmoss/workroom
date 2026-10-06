@@ -87,6 +87,72 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(connects.calls, 2)
   }
 
+  /// A background read never connects to a boxd box boxd says is asleep: the ssh login would wake
+  /// it, and every status sweep would keep every box awake and billing (#356). boxd is asked once a
+  /// `retryAfter`; opening the workroom connects and wakes it; and when boxd can't say, or says
+  /// it's awake, the read goes ahead as before.
+  func testABackgroundReadLeavesAnAsleepBoxdBoxAsleep() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let asked = Asleep()
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
+      startHost: { _ in }, now: { connects.now },
+      isAsleep: { _ in asked.answer() })
+    let id = UUID()
+    let host = HostID.remote(id)
+    remote.adopt([
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "w", path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
+            host: HostDescriptor(
+              driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+              account: "usr_1"))
+        ])
+    ])
+
+    asked.set(true)
+    for _ in 0..<2 {
+      do {
+        try await remote.ensureConnected(host)
+        XCTFail("a background read connected to an asleep box")
+      } catch {
+        XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
+      }
+    }
+    XCTAssertEqual(connects.calls, 0)
+    XCTAssertEqual(asked.calls, 1, "boxd was asked again inside the window")
+
+    // Opening the workroom wakes it.
+    remote.activate(host)
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(connects.calls, 1)
+
+    // boxd can't say, or says it's running: the read connects as it always did.
+    for answer in [nil, false] as [Bool?] {
+      asked.set(answer)
+      connects.advance(RemoteHosts.retryAfter)
+      try await remote.ensureConnected(host)
+    }
+    XCTAssertEqual(connects.calls, 3)
+  }
+
+  private final class Asleep: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Bool?
+    private var count = 0
+    var calls: Int { lock.withLock { count } }
+    func set(_ asleep: Bool?) { lock.withLock { value = asleep } }
+    func answer() -> Bool? {
+      lock.withLock {
+        count += 1
+        return value
+      }
+    }
+  }
+
   /// Only a host whose workroom the user opened has its container started before connecting: the
   /// status sweep connects to every remote workroom, and must not start them all (#309).
   func testOnlyAnOpenedHostIsStartedBeforeItsConnect() async throws {
