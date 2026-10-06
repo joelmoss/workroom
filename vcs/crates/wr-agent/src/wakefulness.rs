@@ -873,8 +873,9 @@ fn drain_counters(classifier: &mut Classifier) {
 
 // ---- publishing the state ---------------------------------------------------------------------
 
-/// Stops the service for good: it publishes nothing more and sends no heartbeat, and `status` says
-/// it is not running. Called by `serve` on its way out, and by the service thread if it panics.
+/// Stops the service for good: `status` says it is not running, and the service thread ends at its
+/// next look, publishing nothing more (a tick already past its heartbeat has sent that one). Called
+/// by `serve` on its way out, and by the service thread if it panics.
 pub fn stop() {
     let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
     state.stopped = true;
@@ -894,7 +895,8 @@ struct Published {
     running: bool,
     /// Set by [`stop`]. The service thread ends at its next look, so `running` is never set back.
     stopped: bool,
-    /// What the heartbeat follows: the classifier's verdict, or IDLE once the ceiling prompt timed out.
+    /// What the heartbeat follows: the classifier's verdict, or IDLE once the ceiling prompt timed
+    /// out.
     verdict: Verdict,
     /// What the classifier itself decided, before the ceiling.
     raw: Verdict,
@@ -1016,9 +1018,9 @@ impl Wakefulness {
         };
         // Off the tick thread, one thread per listener: `send` blocks on the writer, and the
         // moment the prompt fires is the moment the app is likeliest to be wedged (that is why
-        // nobody answered). A stalled write on the tick thread would stop the verdict being
-        // rewritten, and a verdict that stops is BUSY forever; a stalled write ahead of another
-        // listener would eat that listener's whole prompt timeout.
+        // nobody answered). A stalled write on the tick thread would stop the next heartbeat, and
+        // the provider could then sleep a busy box; a stalled write ahead of another listener
+        // would eat that listener's whole prompt timeout.
         for writer in listeners {
             let event = event.clone();
             std::thread::spawn(move || crate::vcs::send(&writer, Service::Status, 0, event));
@@ -1199,10 +1201,9 @@ mod service {
     /// or defaults): they are the app's latest word, and a remote agent is started by its
     /// supervisor with none of its own.
     pub fn spawn(sessions: SessionStore, socket: &Path, settings: Settings) {
-        let socket = socket.to_path_buf();
         // Before `serve` accepts a connection, so no `settings` request can arrive with nowhere to
         // be kept, and the kept file is read before any request can rewrite it.
-        let kept = settings_path(&socket);
+        let kept = settings_path(socket);
         let settings = load_settings(&kept).unwrap_or(settings);
         shared()
             .state
@@ -1318,8 +1319,8 @@ mod service {
                 shared().prompt(awake_for, deadline);
             }
 
-            // Skip ahead rather than bursting to catch up: a missed tick is a gap the classifier
-            // records as BUSY, and catching up would hide it. The next due tick is
+            // Skip ahead rather than bursting to catch up: a gap past two intervals is one the
+            // classifier records as BUSY, and catching up would hide it. The next due tick is
             // the first one strictly after now: `behind` alone is the tick just passed, and
             // scheduling that again means an immediate second sample.
             let behind = ((super::sample::monotonic() - start) / policy.interval) as u64;

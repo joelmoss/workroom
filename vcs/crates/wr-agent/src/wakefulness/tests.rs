@@ -544,6 +544,34 @@ fn keep_flags_the_service_thread() {
     );
 }
 
+/// `serve` stops the service on its way out; `status` must stop saying it runs, and the flag the
+/// service thread checks before it sets `running` or publishes must be left up, or a thread that
+/// starts after an immediate accept failure revives a service nothing owns.
+/// Value: protects=stop() leaves running=false and stopped=true; fails_when=stop() drops either
+/// write; why_new=the only coverage was the removed verdict-file test; seam=none
+#[test]
+fn stop_leaves_the_service_stopped_and_not_running() {
+    let w = shared();
+    let before = {
+        let mut state = w.state.lock().unwrap_or_else(|e| e.into_inner());
+        let before = (state.running, state.stopped);
+        state.running = true;
+        state.stopped = false;
+        before
+    };
+    stop();
+    let mut state = w.state.lock().unwrap_or_else(|e| e.into_inner());
+    let after = (state.running, state.stopped);
+    // The state is process-global: put it back before asserting, so a failure leaks nothing.
+    (state.running, state.stopped) = before;
+    drop(state);
+    assert_eq!(
+        after,
+        (false, true),
+        "stop() must clear running and set stopped"
+    );
+}
+
 /// The exclusion pre-filter is the union of the two lists, by construction; if either list changes
 /// shape, the derivation still has to produce exactly the union.
 #[test]
