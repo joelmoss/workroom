@@ -339,14 +339,8 @@ final class AgentWakefulnessTests: XCTestCase {
   @MainActor
   func testAnIdleReadingOfABoxdHostIsReportedSoItIsLetGo() async throws {
     let (idle, busy) = (UUID(), UUID())
-    let workroom = { (id: UUID) in
-      Workroom(
-        name: id.uuidString, path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
-        host: HostDescriptor(
-          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id))
-    }
     RemoteHosts.shared.adopt(
-      [Project(path: "/proj", vcs: "git", workrooms: [workroom(idle), workroom(busy)])],
+      [Project(path: "/proj", vcs: "git", workrooms: [boxdWorkroom(idle), boxdWorkroom(busy)])],
       sweep: false)
     let quiet = try status([(#""busy":true"#, #""busy":false"#)])
     let working = try status()
@@ -374,14 +368,8 @@ final class AgentWakefulnessTests: XCTestCase {
   @MainActor
   func testAStalledIdleReadingDoesNotLetABoxGo() async throws {
     let (id, control) = (UUID(), UUID())
-    let workroom = { (id: UUID) in
-      Workroom(
-        name: id.uuidString, path: "/home/boxd/r", vcsName: "workroom/s", warnings: [],
-        host: HostDescriptor(
-          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id))
-    }
     RemoteHosts.shared.adopt(
-      [Project(path: "/proj", vcs: "git", workrooms: [workroom(id), workroom(control)])],
+      [Project(path: "/proj", vcs: "git", workrooms: [boxdWorkroom(id), boxdWorkroom(control)])],
       sweep: false)
     let idle = (#""busy":true"#, #""busy":false"#)
     let stalledIdle = try status([idle, (#""stalled":false"#, #""stalled":true"#)])
@@ -399,6 +387,7 @@ final class AgentWakefulnessTests: XCTestCase {
     await eventually("the control host's IDLE was never reported") {
       RemoteHosts.shared.isLetGo(.remote(control))
     }
+    try await Task.sleep(for: .milliseconds(100))
     XCTAssertFalse(RemoteHosts.shared.isLetGo(.remote(id)), "a stalled IDLE let the box go")
   }
 
@@ -412,18 +401,15 @@ final class AgentWakefulnessTests: XCTestCase {
   @MainActor
   func testAStoppedServiceLetsAnIdleBoxGoButKeepsABusyOne() async throws {
     let (idleID, busyID) = (UUID(), UUID())
-    let workroom = { (id: UUID) in
-      Workroom(
-        name: id.uuidString, path: "/home/boxd/r", vcsName: "workroom/s", warnings: [],
-        host: HostDescriptor(
-          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id))
-    }
     RemoteHosts.shared.adopt(
-      [Project(path: "/proj", vcs: "git", workrooms: [workroom(busyID), workroom(idleID)])],
+      [
+        Project(path: "/proj", vcs: "git", workrooms: [boxdWorkroom(busyID), boxdWorkroom(idleID)])
+      ],
       sweep: false)
     let stopped = (#""running":true"#, #""running":false"#)
     let stoppedBusy = try status([stopped])
     XCTAssertTrue(stoppedBusy.busy, "the fixture's last verdict was BUSY")
+    XCTAssertEqual(stoppedBusy.ceilingSeconds, 14400)
     let stoppedIdle = try status([stopped, (#""busy":true"#, #""busy":false"#)])
     let model = { (reply: AgentWakefulness, id: UUID) in
       WakefulnessModel(
@@ -437,9 +423,23 @@ final class AgentWakefulnessTests: XCTestCase {
     await eventually("a box whose service stopped while idle was never let go of") {
       RemoteHosts.shared.isLetGo(.remote(idleID))
     }
+    // The busy host reported first; a moment more lets a report that raced the control's land.
+    try await Task.sleep(for: .milliseconds(100))
     XCTAssertFalse(
       RemoteHosts.shared.isLetGo(.remote(busyID)), "a box whose service died under a job was let go"
     )
+
+    // Nothing will ever ask about that job, so its BUSY holds the box for one ceiling at most.
+    let expiredID = UUID()
+    RemoteHosts.shared.adopt(
+      [Project(path: "/proj", vcs: "git", workrooms: [boxdWorkroom(expiredID)])], sweep: false)
+    let pastCeiling = try status([
+      stopped, (#""ceiling_seconds":14400.0"#, #""ceiling_seconds":0.0"#),
+    ])
+    await model(pastCeiling, expiredID).refresh()
+    await eventually("a stopped service's BUSY held its box past its ceiling") {
+      RemoteHosts.shared.isLetGo(.remote(expiredID))
+    }
   }
 
   /// A connected boxd host is polled with nothing on screen (#356), so an IDLE reading lets it go
@@ -1221,6 +1221,14 @@ final class AgentWakefulnessTests: XCTestCase {
   private struct Unavailable: Error {}
 
   /// Waits for `condition` on the main actor, failing the test rather than hanging it.
+  /// A remote workroom on a boxd host `id`, for `RemoteHosts.shared.adopt`.
+  private func boxdWorkroom(_ id: UUID) -> Workroom {
+    Workroom(
+      name: id.uuidString, path: "/home/boxd/r", vcsName: "workroom/\(id)", warnings: [],
+      host: HostDescriptor(
+        driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id))
+  }
+
   @MainActor
   private func eventually(
     _ message: String, file: StaticString = #filePath, line: UInt = #line,

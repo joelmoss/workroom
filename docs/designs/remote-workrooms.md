@@ -1932,7 +1932,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     box go; it ignores IDLE readings for 10 s after a connect, so the read that connected the host
     is answered first; and a host whose agent's wakefulness service has stopped is let go of too,
     as nothing on it holds the box awake, unless its last reading was BUSY (the connection is then
-    all that keeps the job's box awake). A stalled service's IDLE never lets a box go. A host let
+    all that keeps the job's box awake): that reading never changes and nothing will ask about it,
+    so it holds the box for one ceiling at most. A stalled service's IDLE never lets a box go. The
+    box's idle window is read on every connect: a failed read keeps the last one, and an answer with
+    no timer set clears it, so the badge stops warning about a timer that was turned off. A host let
     go of is asked about again once its boxd idle window (plus 30 s) has passed: if boxd says it is
     still awake, something on the box holds it, so the app reconnects and hears its ceiling prompts.
   - **Limit: selected workrooms and attached panes.** The selected workroom's host is never let

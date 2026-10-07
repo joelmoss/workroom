@@ -904,8 +904,10 @@ final class RemoteHosts: @unchecked Sendable {
         lock.withLock { connectedAt[host] = now() }
         await MainActor.run { WakefulnessModel.model(forHost: id).pollWhileConnected() }
         Task {
-          // A failed read keeps the window last read, rather than forgetting it.
-          guard let window = await boxd.idleWindow(host) else { return }
+          // A failed read keeps the window last read, rather than forgetting it; an answer with no
+          // timer set (or none boxd would use) clears it.
+          let window: TimeInterval?
+          do { window = try await boxd.idleWindow(host) } catch { return }
           lock.withLock { idleWindows[host] = window }
           await MainActor.run { WakefulnessModel.model(forHost: id).idleWindow = window }
         }
@@ -1092,7 +1094,8 @@ final class RemoteHosts: @unchecked Sendable {
   }
 
   /// A connected host's agent reported its published verdict (`WakefulnessModel`). A boxd host
-  /// that is IDLE, not selected, forwarding no port and with no pane open is let go of: its
+  /// that is not busy (IDLE, or its service stopped), not selected, forwarding no port and with no
+  /// pane attached is let go of: its
   /// connection is closed, so nothing the app sends reaches the box and boxd's idle timer can sleep
   /// it (#356). An IDLE that comes of an unanswered prompt lets it sleep the same way. A pane's own
   /// ssh holds its box awake whatever the app does, so letting go of that one would only blank its

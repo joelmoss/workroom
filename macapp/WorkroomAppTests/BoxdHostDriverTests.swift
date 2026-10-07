@@ -315,11 +315,15 @@ final class BoxdHostDriverTests: XCTestCase {
       (#"{"source":"standalone","auto_suspend":604801}"#, nil),
     ]
     for (json, expected) in cases {
-      let window = await driver(StubCLI(["machine get": Self.ok(json)])).idleWindow(.remote(UUID()))
+      let window = try await driver(StubCLI(["machine get": Self.ok(json)])).idleWindow(
+        .remote(UUID()))
       XCTAssertEqual(window, expected, json)
     }
-    let failedIdlewindow = await driver(StubCLI([:])).idleWindow(.remote(UUID()))
-    XCTAssertNil(failedIdlewindow, "a failed call says nothing")
+    // A failed call is not "no timer": it throws, so a caller keeps what it knew.
+    do {
+      _ = try await driver(StubCLI([:])).idleWindow(.remote(UUID()))
+      XCTFail("a failed call read as no timer")
+    } catch {}
   }
 
   /// Asleep is boxd's own status: suspended (`standby`) or hibernated, never a guess.

@@ -635,6 +635,12 @@ final class WakefulnessModel: ObservableObject {
   /// `prompt_pending: false` cannot undo a newer reply's raise.
   private var requestsIssued = 0
   private var newestApplied = 0
+  /// When this host's service was first read as stopped (#356): its last BUSY holds the box for at
+  /// most one ceiling from then, as nothing on the box will ever ask the user about it.
+  private var stoppedSince: Date?
+  /// How long a stopped service's BUSY holds its box when the reply names no ceiling: the agent's
+  /// default ceiling.
+  static let stoppedHoldFallback: TimeInterval = 4 * 3600
 
   /// Polls for as long as the caller's task lives. Driven by a SwiftUI `.task`, so closing the
   /// inspector, the card or the window ends it — there is no polling while nothing is showing the
@@ -704,13 +710,22 @@ final class WakefulnessModel: ObservableObject {
     newestApplied = issued.request
     if next != self.status { self.status = next }
     // A remote box that is not busy may be let go of, so the app's own traffic stops holding it
-    // awake (#356); `RemoteHosts` decides, by its kind and whether it is selected.
+    // awake (#356); `RemoteHosts` decides whether to (`observed`).
     if let host {
       // A stalled service's IDLE may be stale while work runs (`display` shows it as unknown), so
       // it never lets a box go. One not running at all holds nothing awake, heartbeat included, so
       // its box is let go of too, unless its last reading was BUSY: a service that died under a job
-      // leaves the connection as the one thing keeping that job's box awake.
-      let busy = next.busy || (next.running && next.stalled == true)
+      // leaves the connection as the one thing keeping that job's box awake. That reading never
+      // changes and nothing will ask about it, so it holds the box for one ceiling at most.
+      if next.running {
+        stoppedSince = nil
+      } else if stoppedSince == nil {
+        stoppedSince = Date()
+      }
+      let held = stoppedSince.map {
+        Date().timeIntervalSince($0) < (next.ceilingSeconds ?? Self.stoppedHoldFallback)
+      }
+      let busy = next.running ? next.busy || next.stalled == true : next.busy && held == true
       Task { await RemoteHosts.shared.observed(.remote(host), busy: busy) }
     }
     if issued.generation == promptGeneration {

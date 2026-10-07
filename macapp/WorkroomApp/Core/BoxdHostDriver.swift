@@ -46,10 +46,10 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     var account: String?
     /// The agent's socket on every host. On the home disk, never the tmpfs `/run`: the agent keeps
     /// its broker enrolment beside it (`broker.rs`), and a stopped machine would lose it.
-    var agentSocket = "/home/\(BoxdHostDriver.user)/.local/state/workroom/agent/agent.sock"
+    var agentSocket = "\(BoxdHostDriver.stateDirectory)/agent/agent.sock"
 
     /// Where the supervisor has the agent keep each session's last screen (#232).
-    var screens = "/home/\(BoxdHostDriver.user)/.local/state/workroom/screens"
+    var screens = "\(BoxdHostDriver.stateDirectory)/screens"
     /// The files the CLI writes each machine's ssh stanza and host key into.
     var sshConfig = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(".ssh/config")
@@ -59,6 +59,8 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// The user every boxd machine logs in as, whose home holds the agent's state and the clone.
   static let user = "boxd"
+  /// Where Workroom keeps its state on a boxd machine: the agent's socket and the sessions' screens.
+  static let stateDirectory = "/home/\(user)/.local/state/workroom"
 
   /// Estimated from its measured parts, not timed end to end: the snapshot is most of it (9-11 s
   /// for a stock machine's disk), the restore half a second, and the reboot a few seconds more.
@@ -420,12 +422,12 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   enum Presence: Equatable, Sendable { case awake, asleep, gone }
 
   /// How long boxd lets `host` sit idle on the network before suspending or hibernating it, in
-  /// seconds: the shorter of the two that are set, or nil when neither is or boxd can't say (#356).
-  func idleWindow(_ host: HostID) async -> TimeInterval? {
-    guard case .remote(let id) = host,
-      let timers = try? decode(
-        Timers.self, await cli(["machine", "get", name(of: id)], timeout: Self.statusTimeout), "")
-    else { return nil }
+  /// seconds: the shorter of the two that are set, or nil when neither is (#356). Throws when boxd
+  /// can't say, which a caller must not take for "no timer".
+  func idleWindow(_ host: HostID) async throws -> TimeInterval? {
+    guard case .remote(let id) = host else { return nil }
+    let timers = try decode(
+      Timers.self, await cli(["machine", "get", name(of: id)], timeout: Self.statusTimeout), "")
     return [timers.autoSuspend, timers.autoHibernate].compactMap { $0?.seconds }.filter { $0 > 0 }
       .min()
   }
