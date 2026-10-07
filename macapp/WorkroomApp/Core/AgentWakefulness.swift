@@ -617,7 +617,8 @@ final class WakefulnessModel: ObservableObject {
   }
 
   /// Modest on purpose. The verdict changes on a 30 s hysteresis window, so anything faster only
-  /// costs round trips, and this runs only while something is showing the result.
+  /// costs round trips, and this runs only while something is showing the result, or while a boxd
+  /// host is connected (`pollWhileConnected`).
   nonisolated static let pollInterval: Duration = .seconds(10)
 
   private var pollers = 0
@@ -644,14 +645,15 @@ final class WakefulnessModel: ObservableObject {
 
   /// Polls for as long as the caller's task lives. Driven by a SwiftUI `.task`, so closing the
   /// inspector, the card or the window ends it — there is no polling while nothing is showing the
-  /// result. One loop however many callers: N windows with the inspector open are N callers of a
-  /// single poll, not N polls stomping one `status` (one's timeout would blank every window's badge).
+  /// result, except for a connected boxd host, which `pollWhileConnected` polls (#356). One loop
+  /// however many callers: N windows with the inspector open are N callers of a single poll, not N
+  /// polls stomping one `status` (one's timeout would blank every window's badge).
   ///
   /// A cancelled poll leaves the last verdict standing rather than clearing it. Clearing on exit
   /// read as tidy and was wrong in two ways: this model is shared by every window, so one window
   /// closing its inspector blanked the others' badge; and the value is only ever rendered by a badge
   /// whose own `.task` refreshes it before its first sleep, so a stale value cannot be displayed.
-  /// A FAILED poll still clears it — that assignment is the `try?` in `refresh`.
+  /// A FAILED poll still clears it, in `observe`'s failed-read branch.
   func poll() async {
     pollers += 1
     if pollTask == nil {
