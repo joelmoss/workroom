@@ -1508,18 +1508,66 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(kept.state, "failed")
   }
 
+  // Value: protects=a base create whose rollback fails records the base machine failed on the
+  // project, so the project knows it and a delete takes it down; fails_when=the leftBehind catch is
+  // dropped or its record is not written; why_new=the derive test passes a base and only covers the
+  // derive catch; seam=none
+  /// A project's first boxd create whose rollback leaves its machine running records that base on
+  /// the project, `failed`, rather than forgetting a paid machine (#356, #370).
+  func testABaseCreateThatLeavesItsMachineBehindIsRecorded() async throws {
+    let made = UUID()
+    let driver = DerivingDriver(derived: made, createLeavesItBehind: true)
+    let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
+    let environment = RemoteProvisioning.Environment(
+      driver: driver,
+      agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
+      client: BrokerClient(
+        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())))
+    let recorded = Recorded()
+    let forgot = Recorded()
+    let recorder = RemoteWorkrooms.Recorder(
+      reserve: { _, descriptor in
+        recorded.add(descriptor)
+        return "x"
+      }, record: { _, descriptor in recorded.add(descriptor) },
+      forget: { _ in forgot.add(HostDescriptor()) })
+    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
+    do {
+      _ = try await RemoteWorkrooms.create(
+        repository: repository, cloneURL: "https://github.com/o/r.git", base: nil, key: key,
+        driver: driver, environment: environment, recorder: recorder)
+      XCTFail("a base create that left its machine behind succeeded")
+    } catch HostDriverError.leftBehind(_, let left, let host) {
+      XCTAssertEqual(host, .remote(made))
+      XCTAssertEqual(left, ["machine x"])
+    }
+    XCTAssertTrue(forgot.all.isEmpty)
+    let failed = try XCTUnwrap(
+      recorded.all.flatMap { [$0] + ($0.bases ?? []) }.last { $0.id == made },
+      "the base machine left behind was not recorded")
+    XCTAssertEqual(failed.state, "failed")
+    XCTAssertEqual(failed.driver, RemoteWorkrooms.boxdDriver)
+    XCTAssertEqual(failed.account, "usr_1")
+  }
+
   /// A driver whose derive makes `derived` and whose destroy succeeds; nothing else is reached.
   private struct DerivingDriver: HostTerminalDriver {
     let derived: UUID
     /// The derive fails and cannot remove the machine it made.
     var leavesItBehind = false
+    /// The create fails and cannot remove the machine it made.
+    var createLeavesItBehind = false
     var traits: HostDriverTraits {
       HostDriverTraits(
         transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
         durableDisk: true, maxLifetime: nil, keepAwakeHoldsCredential: false,
         sleepsWhenIdle: true)
     }
-    func create() async throws -> HostID { throw HostDriverError.provisioning("no create") }
+    func create() async throws -> HostID {
+      guard createLeavesItBehind else { throw HostDriverError.provisioning("no create") }
+      throw HostDriverError.leftBehind(
+        cause: "setup timed out", leftover: ["machine x"], host: .remote(derived))
+    }
     func deriveFromBase(_ base: HostID) async throws -> HostID {
       guard leavesItBehind else { return .remote(derived) }
       throw HostDriverError.leftBehind(
