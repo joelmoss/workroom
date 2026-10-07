@@ -363,6 +363,12 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(young, [])
     XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label).count, 4, "young ones went")
 
+    // The first sweep to find the orphans unknown only writes them down (#284).
+    let firstSweep = await driver.sweep(keeping: [keptID, instanceID], grace: 0)
+    XCTAssertEqual(firstSweep, [])
+    XCTAssertEqual(
+      try leftovers("ps", runtime: runtime, label: label).count, 4, "one sweep took a container")
+
     let old = await driver.sweep(keeping: [keptID, instanceID], grace: 0)
     XCTAssertEqual(old, [])
     let names = try docker(

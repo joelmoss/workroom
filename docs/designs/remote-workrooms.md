@@ -1540,6 +1540,11 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     than the grace (20 minutes by default, longer than a commit's 15-minute bound) is left, since
     it may be a create or derive still running, in this app or another one on the same daemon.
     Images are removed without `--force`, so one a container still uses stays.
+  - **Changed by #284 (2026-10-07):** a container goes only once two sweeps in a row (two
+    launches) found it unknown, and at most 3 go per sweep; the rest go on later launches. Each
+    sweep writes what it found unknown to `hosts/unknown-containers-<runtime>-<context>.json`. A
+    lost, restored or half-written config so costs nothing on the launch that reads it. Still
+    open from #284: no sweep runs while config records nothing.
 - **As built (#253, part 2: creating one).** Remote workrooms are on only in a Nightly or Dev
   build with the hidden `remoteWorkroomsPreview` setting (`RemoteWorkrooms.isEnabled`); a stable
   build shows no remote UI, including the Settings section, whatever the setting says. The
