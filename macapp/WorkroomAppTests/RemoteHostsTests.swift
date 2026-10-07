@@ -98,7 +98,7 @@ final class RemoteHostsTests: XCTestCase {
     let remote = RemoteHosts(
       connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
       startHost: { _ in }, now: { connects.now },
-      isAsleep: { _ in asked.answer() })
+      presence: { _ in asked.answer() })
     let id = UUID()
     let host = HostID.remote(id)
     remote.adopt([
@@ -137,6 +137,21 @@ final class RemoteHostsTests: XCTestCase {
       try await remote.ensureConnected(host)
     }
     XCTAssertEqual(connects.calls, 3)
+
+    // A machine boxd says is gone is reported as gone, not asleep, and then left for the window.
+    asked.setGone()
+    connects.advance(RemoteHosts.retryAfter)
+    let before = asked.calls
+    for expected in [RepositoryRoutingError.gone(host), .unavailable(host)] {
+      do {
+        try await remote.ensureConnected(host)
+        XCTFail("a gone machine was connected to")
+      } catch {
+        XCTAssertEqual(error as? RepositoryRoutingError, expected)
+      }
+    }
+    XCTAssertEqual(asked.calls, before + 1, "boxd was asked again inside the window")
+    XCTAssertEqual(connects.calls, 3)
   }
 
   /// boxd counts inbound traffic as activity, so a connection's keepalives and the badge's polls
@@ -150,7 +165,7 @@ final class RemoteHostsTests: XCTestCase {
     let asked = Asleep()
     let remote = RemoteHosts(
       connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
-      startHost: { _ in }, now: { connects.now }, isAsleep: { _ in asked.answer() })
+      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() })
     let (boxd, container) = (UUID(), UUID())
     remote.adopt(
       [
@@ -210,7 +225,7 @@ final class RemoteHostsTests: XCTestCase {
     asked.set(true)
     let remote = RemoteHosts(
       connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
-      startHost: { _ in }, now: { connects.now }, isAsleep: { _ in asked.answer() })
+      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() })
     let id = UUID()
     let host = HostID.remote(id)
     remote.adopt(
@@ -243,6 +258,17 @@ final class RemoteHostsTests: XCTestCase {
     try await remote.ensureConnected(host, wake: true)
     XCTAssertEqual(connects.calls, 2)
     XCTAssertFalse(remote.isParked(host), "a click left the host let go of")
+
+    // A click right after one that failed is still tried: waking a box can fail once while it
+    // resumes, and the retry must not wait out the failure window.
+    connects.fail(true)
+    do {
+      try await remote.ensureConnected(host, wake: true)
+      XCTFail("the failing connect succeeded")
+    } catch {}
+    connects.fail(false)
+    try await remote.ensureConnected(host, wake: true)
+    XCTAssertEqual(connects.calls, 4, "a second click inside the window was refused")
   }
 
   /// Each window has its own selection (one AppStore per window): a host selected in any window
@@ -275,11 +301,12 @@ final class RemoteHostsTests: XCTestCase {
 
   private final class Asleep: @unchecked Sendable {
     private let lock = NSLock()
-    private var value: Bool?
+    private var value: BoxdHostDriver.Presence?
     private var count = 0
     var calls: Int { lock.withLock { count } }
-    func set(_ asleep: Bool?) { lock.withLock { value = asleep } }
-    func answer() -> Bool? {
+    func set(_ asleep: Bool?) { lock.withLock { value = asleep.map { $0 ? .asleep : .awake } } }
+    func setGone() { lock.withLock { value = .gone } }
+    func answer() -> BoxdHostDriver.Presence? {
       lock.withLock {
         count += 1
         return value

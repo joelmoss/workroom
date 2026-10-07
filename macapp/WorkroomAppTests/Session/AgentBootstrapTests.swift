@@ -460,8 +460,9 @@ final class AgentBootstrapTests: XCTestCase {
     let unwatched = try await AgentBootstrap.connect(
       host: host, driver: driver, socket: socket, agent: bundled(_:), handOff: true,
       resources: nil, watched: false)
-    // A watched connect to the same agent, after it: once its request has landed, anything the
-    // unwatched one sent would have landed first, so the count is exact, not a timed wait.
+    // A watched connect to the same agent, after it, shows the fake records the request a connect
+    // sends. The two connections are not ordered, so the count is read only after a settle of a
+    // second past that request, ~100x a send's measured latency, to catch an unwatched one too.
     let watched = try await AgentBootstrap.connect(
       host: host, driver: driver, socket: socket, agent: bundled(_:), handOff: true,
       resources: nil)
@@ -469,6 +470,7 @@ final class AgentBootstrapTests: XCTestCase {
     while fake.receivedStatusRequests.isEmpty && ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(20))
     }
+    try await Task.sleep(for: .seconds(1))
     await unwatched.close()
     await watched.close()
     XCTAssertEqual(

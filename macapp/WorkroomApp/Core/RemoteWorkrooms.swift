@@ -599,8 +599,8 @@ final class RemoteHosts: @unchecked Sendable {
   private let connectAgent:
     (@Sendable (HostID, any HostTerminalDriver) async throws -> AgentVCSConnection)?
   private let isConnected: (@Sendable (HostID) async -> Bool)?
-  /// Whether a boxd host is asleep (`BoxdHostDriver.isAsleep`); nil in the app.
-  private let isAsleep: (@Sendable (HostID) async -> Bool?)?
+  /// What boxd says of a boxd host (`BoxdHostDriver.presence`); nil in the app.
+  private let presenceSeam: (@Sendable (HostID) async -> BoxdHostDriver.Presence?)?
   private let startHost: (@Sendable (HostID) async throws -> Void)?
   private let now: @Sendable () -> ContinuousClock.Instant
   /// `adopt`'s seams, nil in the app: making a key's driver, and sweeping one.
@@ -618,9 +618,9 @@ final class RemoteHosts: @unchecked Sendable {
     relayHost: (@Sendable (HostID) async throws -> Void)? = nil,
     connectAgent: (@Sendable (HostID, any HostTerminalDriver) async throws -> AgentVCSConnection)? =
       nil,
-    isAsleep: (@Sendable (HostID) async -> Bool?)? = nil
+    presence: (@Sendable (HostID) async -> BoxdHostDriver.Presence?)? = nil
   ) {
-    self.isAsleep = isAsleep
+    self.presenceSeam = presence
     self.connectHost = connectHost
     self.relayHost = relayHost
     self.connectAgent = connectAgent
@@ -970,23 +970,36 @@ final class RemoteHosts: @unchecked Sendable {
     }
     // An opened host is tried whatever a probe of it found: its connect starts it.
     let opened = lock.withLock { activated.contains(host) }
-    if !opened, let failed = lock.withLock({ failedAt[host] }), now() - failed < Self.retryAfter {
-      throw RepositoryRoutingError.unavailable(host)
-    }
+    // A click is tried whatever came of the last attempt, as an opened host is: waking a box can
+    // fail once while it resumes, and a second click must not wait out the window.
     if wake {
       lock.withLock {
         parked.remove(host)
         asleepAt[host] = nil
+        failedAt[host] = nil
       }
+    } else if !opened, let failed = lock.withLock({ failedAt[host] }),
+      now() - failed < Self.retryAfter
+    {
+      throw RepositoryRoutingError.unavailable(host)
     }
     // A boxd box wakes on an ssh login, so a background read must not connect to one that is
     // asleep: every status sweep would wake every box and keep it billing (#356). Only opening the
-    // workroom wakes it. When boxd can't say, the read goes ahead as before. Nor does one reconnect
-    // a box let go of as idle, which would hold it awake again.
+    // workroom, or a click (`wake`), wakes it. When boxd can't say, the read goes ahead as before.
+    // Nor does one reconnect a box let go of as idle, which would hold it awake again; and one
+    // boxd says is gone is reported as such, not as asleep.
     if !opened, !wake, lock.withLock({ parked.contains(host) }) {
       throw RepositoryRoutingError.asleep(host)
     }
-    if !opened, !wake, try await boxdIsAsleep(host) { throw RepositoryRoutingError.asleep(host) }
+    if !opened, !wake {
+      switch try await boxdPresence(host) {
+      case .asleep: throw RepositoryRoutingError.asleep(host)
+      case .gone:
+        lock.withLock { failedAt[host] = now() }
+        throw RepositoryRoutingError.gone(host)
+      case .awake, nil: break
+      }
+    }
     do {
       let connect =
         try connectHost ?? { [driver = try heldDriver(host)] in
@@ -1070,9 +1083,11 @@ final class RemoteHosts: @unchecked Sendable {
       return parked.insert(host).inserted
     }
     guard letGo else { return false }
-    if let lease = await HostConnectionManager.shared.snapshot(for: host).lease {
-      await HostConnectionManager.shared.disconnect(lease)
-    }
+    let lease = await HostConnectionManager.shared.snapshot(for: host).lease
+    // And again: a selection or a click across that wait takes it back, and keeps its connection.
+    guard lock.withLock({ parked.contains(host) && !selectedHosts.values.contains(host) })
+    else { return false }
+    if let lease { await HostConnectionManager.shared.disconnect(lease) }
     Self.logger.notice("let go of idle boxd host \(id, privacy: .public)")
     return true
   }
@@ -1083,20 +1098,20 @@ final class RemoteHosts: @unchecked Sendable {
   /// Whether `host` is a boxd box that boxd says is asleep, asking boxd at most once a
   /// `retryAfter`. ponytail: one `machine get` per host per window; one `machine list` per sweep is
   /// the upgrade if many boxd workrooms make it slow.
-  private func boxdIsAsleep(_ host: HostID) async throws -> Bool {
+  private func boxdPresence(_ host: HostID) async throws -> BoxdHostDriver.Presence? {
     guard case .remote(let id) = host, let key = lock.withLock({ keys[id] }), case .boxd = key
-    else { return false }
+    else { return nil }
     if let slept = lock.withLock({ asleepAt[host] }), now() - slept < Self.retryAfter {
-      return true
+      return .asleep
     }
-    let asleep: Bool?
-    if let isAsleep {
-      asleep = await isAsleep(host)
+    let presence: BoxdHostDriver.Presence?
+    if let presenceSeam {
+      presence = await presenceSeam(host)
     } else {
-      asleep = await (try driver(key) as? BoxdHostDriver)?.isAsleep(host) ?? nil
+      presence = await (try driver(key) as? BoxdHostDriver)?.presence(host) ?? nil
     }
-    lock.withLock { asleepAt[host] = asleep == true ? now() : nil }
-    return asleep == true
+    lock.withLock { asleepAt[host] = presence == .asleep ? now() : nil }
+    return presence
   }
 
   /// Whether `host`'s runtime is missing from this Mac, so nothing can be running on it: the

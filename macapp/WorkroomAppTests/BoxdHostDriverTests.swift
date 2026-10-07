@@ -302,23 +302,28 @@ final class BoxdHostDriverTests: XCTestCase {
 
   /// Asleep is boxd's own status: suspended (`standby`) or hibernated, never a guess.
   func testAsleepIsBoxdsStandbyOrHibernated() async throws {
-    for (status, asleep) in [
-      ("standby", true), ("hibernated", true), ("running", false), ("stopped", false),
+    for (status, presence) in [
+      ("standby", BoxdHostDriver.Presence.asleep), ("hibernated", .asleep), ("running", .awake),
+      ("stopped", .awake),
     ] {
       let cli = StubCLI(["machine get": Self.ok(#"{"source":"standalone","status":"\#(status)"}"#)])
-      let answer = await driver(cli).isAsleep(.remote(UUID()))
-      XCTAssertEqual(answer, asleep, status)
+      let answer = await driver(cli).presence(.remote(UUID()))
+      XCTAssertEqual(answer, presence, status)
     }
-    // boxd answered with an error (signed out, another account, not found): leave it alone.
+    // boxd answered with an error (signed out, another account): leave it alone.
     let refused = await driver(StubCLI(["machine get": Self.failed("error: not logged in")]))
-      .isAsleep(.remote(UUID()))
-    XCTAssertEqual(refused, true, "a CLI error woke the box")
+      .presence(.remote(UUID()))
+    XCTAssertEqual(refused, .asleep, "a CLI error woke the box")
+    // boxd says the machine is not found: gone, which a read reports rather than "asleep".
+    let gone = await driver(StubCLI(["machine get": Self.failed("error: VM 'x' not found")]))
+      .presence(.remote(UUID()))
+    XCTAssertEqual(gone, .gone)
     // boxd couldn't answer at all (timed out): say nothing, and the read goes ahead.
     let timedOut = await driver(
       StubCLI([
         "machine get": CommandResult(stdout: "", stderr: "", exitCode: 15, timedOut: true)
       ])
-    ).isAsleep(.remote(UUID()))
+    ).presence(.remote(UUID()))
     XCTAssertNil(timedOut, "a CLI that never answered was taken for an answer")
   }
 
