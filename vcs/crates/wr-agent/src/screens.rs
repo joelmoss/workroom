@@ -4,8 +4,10 @@
 //! **VT bytes, not a snapshot.** The snapshot format carries no compatibility guarantee between
 //! agent revisions, and a reboot is exactly when a newer agent may be the one reading (design doc,
 //! Distribution Plan: "The snapshot format is not a wire contract"). VT does not change between
-//! revisions, so a record is `replay()`'s output behind a small versioned header, and the hand-off
-//! already carries screens the same way (`FrozenSession::screen`).
+//! revisions, so a record is `record()`'s output (`replay()` without the progress report and the
+//! parser continuation) behind a small versioned header, and the hand-off already carries screens
+//! the same way (`FrozenSession::screen`). A restored repaint says idle (OSC 9;4 REMOVE), never
+//! busy: the program that was busy is gone (#359).
 //!
 //! **A record is not a session.** After a reboot the shell is gone and only the screen is left. An
 //! attach that asks only for what exists (`CREATE=0`, a restored pane) and names an id the agent
@@ -589,6 +591,60 @@ mod tests {
             "a session that ended kept its record"
         );
         assert!(!written.contains(&ID));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A session that ended with its host reports busy only while it runs: its record is written
+    /// from the live shadow and rendered long after the program is gone, so a restored pane must
+    /// never be told it is busy (#359). Driven through the real writer, `flush`.
+    /// Value: protects=a restored pane's repaint carries no OSC 9;4 for a session that reported busy; fails_when=changed_screens() takes replay() instead of record(), pinning the restored pane's spinner on; why_new=no test took a record from a live session through flush and render; seam=none
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_restored_pane_is_never_told_the_session_was_busy() {
+        let dir = scratch("restorenotbusy");
+        let screens = Screens::open(&dir).expect("open");
+        let sessions = SessionStore::new();
+        sessions.keep_screens(screens);
+        let args = vec![
+            OsString::from("-c"),
+            OsString::from("printf 'WORKING\\033]9;4;3\\033\\\\'; sleep 5"),
+        ];
+        sessions
+            .create(crate::session::SessionSpec {
+                id: ID,
+                program: OsStr::new("/bin/sh"),
+                argv0: None,
+                args: &args,
+                env: &[],
+                cwd: None,
+                columns: 80,
+                rows: 24,
+                metadata: &[],
+            })
+            .expect("create");
+        let busy = b"\x1b]9;4;3";
+        let has = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !has(&sessions.replay_bytes(ID), busy) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            has(&sessions.replay_bytes(ID), busy),
+            "fixture: the session never became busy"
+        );
+        flush(&sessions, &mut HashSet::new(), &mut HashSet::new());
+        let live = sessions.screens().expect("screens");
+
+        let painted = live.render(ID, 80, 24).expect("render");
+        assert!(
+            has(&painted, b"WORKING"),
+            "fixture: the record has no screen; got {painted:?}"
+        );
+        assert!(
+            !has(&painted, busy),
+            "a restored pane was told the session was busy: {painted:?}"
+        );
+        sessions.kill_all();
         let _ = fs::remove_dir_all(&dir);
     }
 

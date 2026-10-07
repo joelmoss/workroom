@@ -16,7 +16,8 @@
 //!   session its id, pid, size, screen and metadata. A file, not a pipe: this process is the pipe's only
 //!   reader, and a table bigger than the pipe's buffer (16 KiB on macOS; a few screens) would block
 //!   the write forever.
-//! - **The screen as VT bytes** (`Shadow::replay`), never a snapshot. Two agent revisions share no
+//! - **The screen as VT bytes**, as an attaching client is shown it (`Shadow::replay_for`), never
+//!   a snapshot. Two agent revisions share no
 //!   snapshot format; they do share VT. The new program feeds the bytes to a fresh terminal of the
 //!   same size, so its fidelity is exactly a reattaching client's, including the one-row
 //!   scrollback offset that re-synthesis costs (`terminal.rs`). That row is lost at each hand-off.
