@@ -365,6 +365,52 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertFalse(RemoteHosts.shared.isParked(.remote(busy)), "a busy box was let go of")
   }
 
+  /// A stalled service's IDLE may be stale while work runs, so it never lets a box go (#356): the
+  /// connection may be all that still holds the box awake.
+  @MainActor
+  func testAStalledIdleReadingDoesNotLetABoxGo() async throws {
+    let id = UUID()
+    RemoteHosts.shared.adopt(
+      [
+        Project(
+          path: "/proj", vcs: "git",
+          workrooms: [
+            Workroom(
+              name: "s", path: "/home/boxd/r", vcsName: "workroom/s", warnings: [],
+              host: HostDescriptor(
+                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+                id: id))
+          ])
+      ], sweep: false)
+    let stalledIdle = try status([
+      (#""busy":true"#, #""busy":false"#), (#""stalled":false"#, #""stalled":true"#),
+    ])
+    let script = Script(stalledIdle)
+    let model = WakefulnessModel(
+      transport: .init(status: script.status, keep: {}, prompts: { throw Unavailable() }), host: id)
+    await model.refresh()
+    try await Task.sleep(for: .milliseconds(200))
+    XCTAssertFalse(RemoteHosts.shared.isParked(.remote(id)), "a stalled IDLE let the box go")
+  }
+
+  /// A connected boxd host is polled with nothing on screen (#356), so an IDLE reading lets it go
+  /// when its row is scrolled away; stopping ends the polls.
+  @MainActor
+  func testAConnectedHostIsPolledWithNothingOnScreen() async throws {
+    let script = Script(try status())
+    let model = WakefulnessModel(
+      transport: .init(status: script.status, keep: {}, prompts: { throw Unavailable() }),
+      host: UUID())
+    model.pollWhileConnected()
+    model.pollWhileConnected()
+    await eventually("a connected host was never polled") { script.calls == 1 }
+    XCTAssertTrue(model.isPollingWhileConnected)
+    model.stopPollingWhileConnected()
+    XCTAssertFalse(model.isPollingWhileConnected)
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertEqual(script.calls, 1, "a second poll loop was started")
+  }
+
   /// One model per remote host, kept for the launch, and never this Mac's (#254).
   @MainActor
   func testEachRemoteHostHasItsOwnWakefulnessModel() {
