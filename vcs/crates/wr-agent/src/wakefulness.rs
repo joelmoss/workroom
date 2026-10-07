@@ -1216,6 +1216,26 @@ pub fn save_settings(path: &Path, settings: Settings) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// One tick's ceiling steps after the classifier's, as the service loop runs them: a resume
+/// carries the awake time across the sleep, a "keep" is applied, then the step ignores the IDLE
+/// ticks the resume mask produces (#356). Returns whether a prompt was raised.
+#[cfg(any(target_os = "linux", test))]
+fn ceiling_step(
+    classifier: &Classifier,
+    ceiling: &mut Ceiling,
+    t: f64,
+    raw: Verdict,
+    keep: bool,
+) -> bool {
+    if classifier.resumed() {
+        ceiling.resumed(t);
+    }
+    if keep {
+        ceiling.keep(t);
+    }
+    ceiling.step_unless_masked(t, raw, classifier.wake_masked())
+}
+
 #[cfg(target_os = "linux")]
 pub use service::spawn;
 
@@ -1313,13 +1333,9 @@ mod service {
                 ceiling.set_settings(s.t, settings);
             }
             if classifier.resumed() {
-                ceiling.resumed(s.t);
                 keep_awake.resumed();
             }
-            if keep {
-                ceiling.keep(s.t);
-            }
-            let prompted = ceiling.step_unless_masked(s.t, raw, classifier.wake_masked());
+            let prompted = super::ceiling_step(&classifier, &mut ceiling, s.t, raw, keep);
             // After the step, so a keystroke inside the grace on the very tick the prompt is
             // raised or expires answers it at once rather than a tick later.
             if classifier.user_acted() {

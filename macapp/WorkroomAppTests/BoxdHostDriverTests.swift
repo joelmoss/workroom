@@ -254,6 +254,21 @@ final class BoxdHostDriverTests: XCTestCase {
     XCTAssertEqual(cli.commands, ["machine remove"])
   }
 
+  // Value: protects=every new boxd host records the account it was made in, so a delete checks it;
+  // fails_when=a boxd auth reply with no user_id is accepted and the host records no account;
+  // why_new=the account check is tested only with an account recorded; seam=none
+  /// A new host records its account (#356): an auth reply that names none is refused, so a later
+  /// delete never skips the check that the same account is signed in.
+  func testANewHostNeedsTheSignedInAccountsID() throws {
+    let decode = { (json: String) in
+      try JSONDecoder().decode(BoxdHostDriver.Account.self, from: Data(json.utf8))
+    }
+    XCTAssertEqual(try decode(#"{"active_org":null,"user_id":"usr_1"}"#).requiredUserID(), "usr_1")
+    XCTAssertThrowsError(try decode(#"{"active_org":"acme"}"#).requiredUserID()) { error in
+      XCTAssertTrue(error.localizedDescription.contains("boxd auth login"), "\(error)")
+    }
+  }
+
   /// Every personal account's org is nil, so after a switch to another account the org check alone
   /// passes and the first account's machines read as not found, which `destroy` would take for gone
   /// (#356). The account is checked too, and only the one that made the machines goes ahead.
@@ -291,6 +306,9 @@ final class BoxdHostDriverTests: XCTestCase {
       (#"{"source":"standalone","auto_suspend":null}"#, nil),
       (#"{"source":"standalone","auto_suspend":"never","auto_hibernate":false}"#, nil),
       (#"{"source":"standalone"}"#, nil),
+      (#"{"source":"standalone","auto_suspend":"120"}"#, 120),
+      // A timer no Duration can hold would trap the revisit arithmetic: it reads as unknown.
+      (#"{"source":"standalone","auto_suspend":1e30,"auto_hibernate":"inf"}"#, nil),
     ]
     for (json, expected) in cases {
       let window = await driver(StubCLI(["machine get": Self.ok(json)])).idleWindow(.remote(UUID()))

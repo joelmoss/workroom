@@ -1922,9 +1922,21 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     run (2026-10-06) found an attached box never slept: the service connection's ssh keepalives
     (15 s) and the badge's polls (10 s) held it, idle or past an unanswered prompt. So a boxd host
     whose agent reports IDLE (its published verdict, which an unanswered prompt also makes IDLE),
-    whose workroom is not selected and which forwards no port is let go of: its connection closed,
-    no background read reconnecting it, its badge sending nothing. Selecting or opening the
-    workroom takes it back. A remote pane's own ssh still keeps its box awake.
+    whose workroom is not selected, which forwards no port and has no pane open is let go of: its
+    connection closed, no background read reconnecting it, its badge sending nothing, and its row
+    showing "idle, not connected" (an open moon) until boxd confirms it asleep. Selecting or
+    opening the workroom, or a click (closing a pane, Keep awake), takes it back. A remote pane's
+    own ssh keeps its box awake whatever the app does, so a host with a pane open is never let go
+    of. The app polls each connected boxd host itself, so a row scrolled out of view still lets its
+    box go; it ignores IDLE readings for 10 s after a connect, so the read that connected the host
+    is answered first; and a host whose agent's wakefulness service has stopped is let go of too,
+    as nothing on it holds the box awake. A stalled service's IDLE never lets a box go. A host let
+    go of is asked about again once its boxd idle window (plus 30 s) has passed: if boxd says it is
+    still awake, something on the box holds it, so the app reconnects and hears its ceiling prompts.
+  - **Limit: the selected workroom.** The selected workroom's host is never let go of, so a job
+    past its ceiling there, with its prompt left unanswered, keeps the box awake (and billed) for as
+    long as the workroom stays selected. The prompt's "let it sleep" applies only once the user
+    selects another workroom or closes the window.
   - **Live runs (2026-10-06).** `BoxdIntegrationTests`, all nine cases, pass: the app's create and
     delete (base in `/home/boxd`, records naming boxd with org and account, nothing left), #257's
     keep-awake acceptance (the control slept mid-job, the agent's box logged every tick then

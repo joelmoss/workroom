@@ -705,10 +705,11 @@ final class WakefulnessModel: ObservableObject {
     if next != self.status { self.status = next }
     // A remote box reporting IDLE may be let go of, so the app's own traffic stops holding it
     // awake (#356); `RemoteHosts` decides, by its kind and whether it is selected.
-    if let host, next.running {
+    if let host {
       // A stalled service's IDLE may be stale while work runs (`display` shows it as unknown), so
-      // it never lets a box go.
-      let busy = next.busy || next.stalled == true
+      // it never lets a box go. One not running at all holds nothing awake, heartbeat included, so
+      // it does not keep the box's connection either.
+      let busy = next.running && (next.busy || next.stalled == true)
       Task { await RemoteHosts.shared.observed(.remote(host), busy: busy) }
     }
     if issued.generation == promptGeneration {

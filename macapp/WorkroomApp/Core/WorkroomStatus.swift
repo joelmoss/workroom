@@ -88,6 +88,7 @@ enum VCSStatusFailure: Equatable, Sendable {
   case busy  // the repository refused the read as busy (lock contention)
   case staleWorkingCopy  // the working tree changed while it was being read; a retry settles it
   case asleep  // a boxd box its provider put to sleep; a probe leaves it be (#356)
+  case idle  // a boxd box the app let go of as idle, awake until boxd sleeps it (#356)
 }
 
 /// One changed path in the working tree, with its change kind (for the detail panel grouping).
@@ -274,7 +275,7 @@ struct WorkroomStatus: Equatable, Sendable {
     case .unavailable, .registrationRequired, .missingPath, .notRepository, .busy,
       .staleWorkingCopy:
       return 1
-    case .timeout, .asleep, nil: break
+    case .timeout, .asleep, .idle, nil: break
     }
     if dirty == true { return 2 }
     return 0
@@ -310,6 +311,10 @@ enum VCSStatusPresentation {
       // Not a failure: the box is asleep, and a probe would have woken it.
       return StatusDot(symbol: "moon.zzz", semantic: .neutral, accessibility: "asleep")
     }
+    if s.failure == .idle {
+      // Nor this: the app disconnected from an idle box so it can sleep, which it may not have yet.
+      return StatusDot(symbol: "moon", semantic: .neutral, accessibility: "idle, not connected")
+    }
     if s.isUnknown {
       // gh-style "absent" never reaches here; only genuine probe failures render unknown.
       let why: String
@@ -321,7 +326,6 @@ enum VCSStatusPresentation {
       case .timeout: why = "status unavailable, timed out"
       case .busy: why = "status unavailable, repository is busy"
       case .staleWorkingCopy: why = "status unavailable, working copy is out of date"
-      case .asleep: why = "asleep"
       default: why = "status unavailable"
       }
       return StatusDot(symbol: "questionmark.circle", semantic: .unknown, accessibility: why)

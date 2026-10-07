@@ -12,15 +12,19 @@ enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError, CustomS
   case unavailable(HostID)
   /// A boxd box asleep, which a background read leaves be: connecting would wake it (#356).
   case asleep(HostID)
+  /// A boxd box the app let go of as idle, which may still be awake until boxd sleeps it (#356).
+  case idle(HostID)
   /// A boxd machine boxd says is not found: deleted, or in another org or account (#356).
   case gone(HostID)
   case registrationRequired
 
   var description: String { errorDescription ?? "Repository unavailable" }
 
-  /// What a read of an asleep or let-go boxd host says (#356), here and on the Changes panel.
-  static let asleepMessage =
-    "The box is asleep, or idle and left to sleep. Open the workroom to reach it."
+  /// What a read of an asleep boxd host says (#356), here and on the Changes panel.
+  static let asleepMessage = "The box is asleep. Open the workroom to reach it."
+  /// What a read of a boxd host the app let go of as idle says (#356).
+  static let idleMessage =
+    "The box is idle, so Workroom disconnected to let it sleep. Open the workroom to reach it."
 
   var errorDescription: String? {
     switch self {
@@ -28,6 +32,7 @@ enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError, CustomS
     case .mixedHosts: return "Working and shared repositories must be on the same host."
     case .unavailable: return "Repository service unavailable."
     case .asleep: return Self.asleepMessage
+    case .idle: return Self.idleMessage
     case .gone:
       return "This workroom's boxd machine is gone, or in a boxd org or account that isn't active."
     case .registrationRequired:

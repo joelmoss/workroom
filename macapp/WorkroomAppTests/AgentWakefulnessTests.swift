@@ -201,6 +201,10 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertEqual(healthy.display(hostSleeps: true, idleWindow: nil), .busy)
     XCTAssertEqual(healthy.display(hostSleeps: true, idleWindow: 120), .busy)
     XCTAssertEqual(healthy.display(hostSleeps: true, idleWindow: 60), .busyUnprotected)
+    // The boundary: a window of exactly the minimum is long enough.
+    let minimum = AgentWakefulness.minimumIdleWindow
+    XCTAssertEqual(healthy.display(hostSleeps: true, idleWindow: minimum - 1), .busyUnprotected)
+    XCTAssertEqual(healthy.display(hostSleeps: true, idleWindow: minimum), .busy)
     XCTAssertEqual(healthy.display(hostSleeps: false, idleWindow: 60), .busy)
     let idle = try status(
       Self.notPending + [
@@ -369,6 +373,42 @@ final class AgentWakefulnessTests: XCTestCase {
   /// connection may be all that still holds the box awake.
   @MainActor
   func testAStalledIdleReadingDoesNotLetABoxGo() async throws {
+    let (id, control) = (UUID(), UUID())
+    let workroom = { (id: UUID) in
+      Workroom(
+        name: id.uuidString, path: "/home/boxd/r", vcsName: "workroom/s", warnings: [],
+        host: HostDescriptor(
+          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id))
+    }
+    RemoteHosts.shared.adopt(
+      [Project(path: "/proj", vcs: "git", workrooms: [workroom(id), workroom(control)])],
+      sweep: false)
+    let idle = (#""busy":true"#, #""busy":false"#)
+    let stalledIdle = try status([idle, (#""stalled":false"#, #""stalled":true"#)])
+    let model = WakefulnessModel(
+      transport: .init(
+        status: Script(stalledIdle).status, keep: {}, prompts: { throw Unavailable() }),
+      host: id)
+    // A plain IDLE on another host, reported after the stalled one, proves the reports landed.
+    let controlModel = WakefulnessModel(
+      transport: .init(
+        status: Script(try status([idle])).status, keep: {}, prompts: { throw Unavailable() }),
+      host: control)
+    await model.refresh()
+    await controlModel.refresh()
+    await eventually("the control host's IDLE was never reported") {
+      RemoteHosts.shared.isParked(.remote(control))
+    }
+    XCTAssertFalse(RemoteHosts.shared.isParked(.remote(id)), "a stalled IDLE let the box go")
+  }
+
+  // Value: protects=a box whose status service has stopped is let go of, not held awake until quit;
+  // fails_when=observe() reports only readings from a running service; why_new=every other test
+  // reads a running service; seam=none
+  /// A service that is not running holds nothing awake, its heartbeat included (#356), so the app
+  /// lets the box go rather than hold it awake with its own traffic until it quits.
+  @MainActor
+  func testAStoppedServiceLetsTheBoxGo() async throws {
     let id = UUID()
     RemoteHosts.shared.adopt(
       [
@@ -376,21 +416,21 @@ final class AgentWakefulnessTests: XCTestCase {
           path: "/proj", vcs: "git",
           workrooms: [
             Workroom(
-              name: "s", path: "/home/boxd/r", vcsName: "workroom/s", warnings: [],
+              name: "stopped", path: "/home/boxd/r", vcsName: "workroom/s", warnings: [],
               host: HostDescriptor(
                 driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
                 id: id))
           ])
       ], sweep: false)
-    let stalledIdle = try status([
-      (#""busy":true"#, #""busy":false"#), (#""stalled":false"#, #""stalled":true"#),
-    ])
-    let script = Script(stalledIdle)
+    let stopped = try status([(#""running":true"#, #""running":false"#)])
+    XCTAssertTrue(stopped.busy, "the fixture's last verdict was BUSY")
     let model = WakefulnessModel(
-      transport: .init(status: script.status, keep: {}, prompts: { throw Unavailable() }), host: id)
+      transport: .init(status: Script(stopped).status, keep: {}, prompts: { throw Unavailable() }),
+      host: id)
     await model.refresh()
-    try await Task.sleep(for: .milliseconds(200))
-    XCTAssertFalse(RemoteHosts.shared.isParked(.remote(id)), "a stalled IDLE let the box go")
+    await eventually("a box whose service stopped was never let go of") {
+      RemoteHosts.shared.isParked(.remote(id))
+    }
   }
 
   /// A connected boxd host is polled with nothing on screen (#356), so an IDLE reading lets it go
@@ -409,6 +449,13 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertFalse(model.isPollingWhileConnected)
     try await Task.sleep(for: .milliseconds(100))
     XCTAssertEqual(script.calls, 1, "a second poll loop was started")
+    // Value: protects=stopping the connection poll ends its loop, not just the flag, so a let-go box gets no more polls;
+    // fails_when=stopPollingWhileConnected drops the task without cancelling it, leaving poll() running;
+    // why_new=the 10s poll interval makes the call count above unchanged whether or not the loop ended; seam=none
+    // A loop still running would answer a new poll on its 10 s timer; an ended one reads at once.
+    model.pollWhileConnected()
+    await eventually("the stopped poll's loop was still running") { script.calls == 2 }
+    model.stopPollingWhileConnected()
   }
 
   /// One model per remote host, kept for the launch, and never this Mac's (#254).

@@ -168,6 +168,41 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     XCTAssertEqual(status.aggregateWeight, 0, "an asleep box must not mark its project")
   }
 
+  // Value: protects=a box the app let go of reads as idle, not asleep, as boxd hasn't slept it yet;
+  // fails_when=the resolver folds .idle into .asleep or into the weighted failures;
+  // why_new=the idle state is new and only RemoteHostsTests see it thrown; seam=none
+  /// A box the app let go of as idle (#356) may still be awake: the dot says so, without an alarm.
+  func testABoxLetGoOfReadsAsIdleNotAsleep() async throws {
+    let router = RepositoryRouter(connectRemote: { throw RepositoryRoutingError.idle($0) })
+    let remote = try RepositoryLocation.remote(host: UUID(), path: path)
+    router.replaceRemote([try .init(location: remote, sharedLocation: remote)])
+
+    let status = await WorkroomStatusResolver().resolve(location: remote, router: router)
+
+    XCTAssertEqual(status.failure, .idle)
+    let dot = try XCTUnwrap(VCSStatusPresentation.dot(status))
+    XCTAssertEqual(dot.accessibility, "idle, not connected")
+    XCTAssertEqual(dot.semantic, .neutral)
+    XCTAssertEqual(status.aggregateWeight, 0, "an idle box must not mark its project")
+  }
+
+  // Value: protects=a deleted or other-account boxd machine raises an alarm on its row, never the quiet asleep moon;
+  // fails_when=the resolver folds .gone into its .asleep catch, or drops it from the failures that mark a project;
+  // why_new=RemoteHostsTests stop at the thrown .gone and nothing maps it to the sidebar; seam=none
+  /// A machine boxd says is gone (#356) is a failure the user must act on, not a box asleep.
+  func testAGoneBoxdMachineReadsAsAFailureNotAsleep() async throws {
+    let router = RepositoryRouter(connectRemote: { throw RepositoryRoutingError.gone($0) })
+    let remote = try RepositoryLocation.remote(host: UUID(), path: path)
+    router.replaceRemote([try .init(location: remote, sharedLocation: remote)])
+
+    let status = await WorkroomStatusResolver().resolve(location: remote, router: router)
+
+    XCTAssertNotEqual(status.failure, .asleep)
+    XCTAssertNotNil(status.failure)
+    XCTAssertNotEqual(VCSStatusPresentation.dot(status)?.accessibility, "asleep")
+    XCTAssertEqual(status.aggregateWeight, 1, "a gone machine must mark its project")
+  }
+
   // Value: protects=the workroom the user has selected never has its boxd box's connection dropped as idle;
   // fails_when=AppStore stops telling RemoteHosts which host is selected, or never releases it on deselect;
   // why_new=RemoteHostsTests call select() directly; nothing drives it from the app's selection; seam=none

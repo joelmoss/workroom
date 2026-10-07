@@ -195,6 +195,16 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertFalse(selectedKept, "the selected workroom's box was let go of")
 
     remote.select(nil)
+    // Value: protects=a workroom with a pane open keeps its status, as its pane holds the box awake;
+    // fails_when=observed() stops checking for open panes; why_new=no test opens a pane; seam=none
+    let session = UUID()
+    PersistentSessionService.shared.registerRemoteSession(
+      session, on: host, via: ContainerHostDriver(hosts: [:], directory: RemoteHosts.directory),
+      workingDirectory: "/home/boxd/r")
+    let paneKept = await remote.observed(host, busy: false)
+    PersistentSessionService.shared.forgetRemoteSession(session)
+    XCTAssertFalse(paneKept, "a host with a pane open was let go of")
+
     let letGo = await remote.observed(host, busy: false)
     XCTAssertTrue(letGo)
     XCTAssertTrue(remote.isParked(host))
@@ -202,7 +212,7 @@ final class RemoteHostsTests: XCTestCase {
       try await remote.ensureConnected(host)
       XCTFail("a background read reconnected a box let go of as idle")
     } catch {
-      XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
+      XCTAssertEqual(error as? RepositoryRoutingError, .idle(host))
     }
     XCTAssertEqual(connects.calls, 0)
     XCTAssertEqual(asked.calls, 0, "boxd was asked about a box already let go of")
@@ -253,6 +263,10 @@ final class RemoteHostsTests: XCTestCase {
 
     // Let go of as idle: the same, and the click takes it back.
     asked.set(false)
+    // Not within the grace after its connect, so the read that connected it is answered first.
+    let tooSoon = await remote.observed(host, busy: false)
+    XCTAssertFalse(tooSoon, "a host was let go of straight after its connect")
+    connects.advance(RemoteHosts.letGoGrace)
     let letGo = await remote.observed(host, busy: false)
     XCTAssertTrue(letGo)
     try await remote.ensureConnected(host, wake: true)
@@ -305,13 +319,30 @@ final class RemoteHostsTests: XCTestCase {
       try await remote.ensureConnected(host)
       XCTFail("a box let go of was reconnected inside its idle window")
     } catch {
-      XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
+      XCTAssertEqual(error as? RepositoryRoutingError, .idle(host))
     }
     XCTAssertEqual(asked.calls, 0)
 
+    // Value: protects=a box let go of that boxd says is asleep past its idle window is not woken by a read;
+    // fails_when=the revisit connects without asking boxd, or keeps asking it inside retryAfter;
+    // why_new=the revisit was only tested with boxd answering awake; seam=none
+    asked.set(true)
     connects.advance(.seconds(1))
+    for _ in 0..<2 {
+      do {
+        try await remote.ensureConnected(host)
+        XCTFail("a read past the idle window woke a box boxd says is asleep")
+      } catch {
+        XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
+      }
+    }
+    XCTAssertEqual(asked.calls, 1, "boxd was asked again inside retryAfter")
+    XCTAssertEqual(connects.calls, 0)
+
+    asked.set(false)
+    connects.advance(RemoteHosts.retryAfter)
     try await remote.ensureConnected(host)
-    XCTAssertEqual(asked.calls, 1)
+    XCTAssertEqual(asked.calls, 2)
     XCTAssertEqual(connects.calls, 1, "a box still awake past its idle window was left alone")
     XCTAssertFalse(remote.isParked(host))
   }
@@ -960,6 +991,13 @@ final class RemoteHostsTests: XCTestCase {
       try await Task.sleep(for: .milliseconds(20))
     }
     XCTAssertEqual(model.idleWindow, 60)
+    // Value: protects=a connected boxd box is polled off screen, revisited by its own idle window, and a deleted one stops polling;
+    // fails_when=connect stops starting the poll or recording the window, or forgetHost leaves the poll running;
+    // why_new=the poll test starts it by hand and the revisit test only reaches the unknown-window fallback; seam=none
+    XCTAssertTrue(model.isPollingWhileConnected, "a connected boxd host isn't polled")
+    XCTAssertEqual(remote.revisitAfter(host), .seconds(60) + RemoteHosts.retryAfter)
+    WakefulnessModel.forgetHost(id)
+    XCTAssertFalse(model.isPollingWhileConnected, "a forgotten host is still polled")
   }
 
   // Value: protects=a boxd host carrying a port forward stays connected when idle, so the user's dev server still answers;
@@ -1007,8 +1045,14 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertFalse(whileForwarding, "an idle host carrying a forward was let go of")
     XCTAssertFalse(remote.isParked(host))
     forwards.remove(forward.id)
+    // Value: protects=a boxd host let go of as idle stops being polled, so the poll can't hold it awake;
+    // fails_when=observed() closes the connection but leaves the connection poll running;
+    // why_new=no test lets go of a host whose connect started the poll; seam=none
+    let model = try XCTUnwrap(WakefulnessModel.Hosts.shared.models[id])
+    XCTAssertTrue(model.isPollingWhileConnected)
     let afterwards = await remote.observed(host, busy: false)
     XCTAssertTrue(afterwards, "the host was never eligible, so the forward proved nothing")
+    XCTAssertFalse(model.isPollingWhileConnected, "a host let go of is still polled")
   }
 
   /// A boxd CLI that answers every `machine get` with `json`.
