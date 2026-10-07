@@ -318,6 +318,10 @@ final class GhosttySurfaceView: NSView {
     surface = ghostty_surface_new(app, &config)
     guard let surface else {
       freeSurfaceCStrings()
+      // No surface, no ssh: the attach its command marked holds nothing (#356).
+      if let persistentSessionID {
+        PersistentSessionService.shared.paneDetached(persistentSessionID)
+      }
       return
     }
 
@@ -410,8 +414,10 @@ final class GhosttySurfaceView: NSView {
     if let surface { ghostty_surface_free(surface) }
     freeSurfaceCStrings()
     // A window closing frees its panes without a teardown; their ssh goes with them (#356).
+    // Detached now, on the main thread a view is freed on, so a later pane's attach of the same
+    // session is not undone by a detach queued behind it.
     if surface != nil, let id = persistentSessionID {
-      Task { @MainActor in PersistentSessionService.shared.paneDetached(id) }
+      MainActor.assumeIsolated { PersistentSessionService.shared.paneDetached(id) }
     }
   }
 

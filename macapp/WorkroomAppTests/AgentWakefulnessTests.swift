@@ -450,7 +450,7 @@ final class AgentWakefulnessTests: XCTestCase {
   /// the first such reading, not from each poll (#356).
   @MainActor
   func testAnUntrustedReadingHoldsItsBoxForOneCeilingAcrossPolls() async throws {
-    let ceiling = (#""ceiling_seconds":14400.0"#, #""ceiling_seconds":0.5"#)
+    let ceiling = (#""ceiling_seconds":14400.0"#, #""ceiling_seconds":1.0"#)
     let stalled = (#""stalled":false"#, #""stalled":true"#)
     let stopped = (#""running":true"#, #""running":false"#)
     let idle = (#""busy":true"#, #""busy":false"#)
@@ -489,9 +489,9 @@ final class AgentWakefulnessTests: XCTestCase {
     }
 
     // Polled again within the ceiling, then past it: the hold counts from the first reading.
-    try await Task.sleep(for: .milliseconds(300))
+    try await Task.sleep(for: .milliseconds(600))
     for model in models { await model.refresh() }
-    try await Task.sleep(for: .milliseconds(300))
+    try await Task.sleep(for: .milliseconds(600))
     for model in models { await model.refresh() }
     for (id, _) in scripts {
       await eventually("an untrusted reading held \(id) past its ceiling") {
@@ -504,44 +504,59 @@ final class AgentWakefulnessTests: XCTestCase {
   // a trusted one, so a stalled box that comes back after a let-go or a recovery is still held;
   // fails_when=a read refused before it left (.idle) starts the clock, or a trusted reading leaves
   // it running; why_new=the across-polls test never interleaves those; seam=none
-  /// A read refused before it left (the host let go of) says nothing about the box, and a trusted
-  /// reading ends an untrusted spell, so neither leaves an old clock to cut a later hold short.
+  /// A read refused before it left (the host let go of, the request never sent) says nothing about
+  /// the box, and a trusted reading or a connect ends an untrusted spell, so none of them leaves an
+  /// old clock to cut a later hold short.
   @MainActor
   func testAnUntrustedHoldCountsOnlyReadingsFromTheAgent() async throws {
-    let ceiling = (#""ceiling_seconds":14400.0"#, #""ceiling_seconds":0.8"#)
+    let ceiling = (#""ceiling_seconds":14400.0"#, #""ceiling_seconds":1.0"#)
     let stalled = (#""stalled":false"#, #""stalled":true"#)
     let idle = (#""busy":true"#, #""busy":false"#)
-    let (refusedID, recoveredID, control) = (UUID(), UUID(), UUID())
+    let (refusedID, recoveredID, reconnectedID, control) = (UUID(), UUID(), UUID(), UUID())
     RemoteHosts.shared.adopt(
       [
         Project(
-          path: "/proj", vcs: "git", workrooms: [refusedID, recoveredID, control].map(boxdWorkroom))
+          path: "/proj", vcs: "git",
+          workrooms: [refusedID, recoveredID, reconnectedID, control].map(boxdWorkroom))
       ], sweep: false)
     let trusted = try status([ceiling])
-    let (refused, recovered) = (Script(trusted), Script(trusted))
+    let (refused, recovered, reconnected) = (Script(trusted), Script(trusted), Script(trusted))
     let model = { (script: Script, id: UUID) in
       WakefulnessModel(
         transport: .init(status: script.status, keep: {}, prompts: { throw Unavailable() }),
         host: id)
     }
-    let (refusedModel, recoveredModel) = (model(refused, refusedID), model(recovered, recoveredID))
-    await refusedModel.refresh()
-    await recoveredModel.refresh()
-    // One host's reads are refused before they leave; the other's reach an agent that fails, then
-    // answers again.
-    refused.reply = .failure(RepositoryRoutingError.idle(.remote(refusedID)))
+    let (refusedModel, recoveredModel, reconnectedModel) = (
+      model(refused, refusedID), model(recovered, recoveredID), model(reconnected, reconnectedID)
+    )
+    defer { reconnectedModel.stopPollingWhileConnected() }
+    for model in [refusedModel, recoveredModel, reconnectedModel] { await model.refresh() }
+    // One host's reads are refused before they leave, every way they can be; another's reach an
+    // agent that fails, then answers again; the third's fail, and then it connects afresh.
+    let host = HostID.remote(refusedID)
+    let refusals: [Error] = [
+      RepositoryRoutingError.idle(host), RepositoryRoutingError.asleep(host),
+      RepositoryRoutingError.unavailable(host), HostConnectionError.notDispatched,
+      HostConnectionError.staleGeneration, HostConnectionError.mismatchedContext,
+    ]
+    for refusal in refusals {
+      refused.reply = .failure(refusal)
+      await refusedModel.refresh()
+    }
     recovered.reply = .failure(Unavailable())
-    await refusedModel.refresh()
+    reconnected.reply = .failure(Unavailable())
     await recoveredModel.refresh()
+    await reconnectedModel.refresh()
     recovered.reply = .success(trusted)
     await recoveredModel.refresh()
     // Past the ceiling those reads would have started, both come back stalled: a full hold.
-    try await Task.sleep(for: .milliseconds(900))
+    try await Task.sleep(for: .milliseconds(1100))
     let stalledReply = try status([ceiling, stalled, idle])
-    refused.reply = .success(stalledReply)
-    recovered.reply = .success(stalledReply)
+    for script in [refused, recovered, reconnected] { script.reply = .success(stalledReply) }
     await refusedModel.refresh()
     await recoveredModel.refresh()
+    reconnectedModel.pollWhileConnected()
+    await reconnectedModel.refresh()
     await model(Script(try status([idle])), control).refresh()
     await eventually("the control host's IDLE was never reported") {
       RemoteHosts.shared.isLetGo(.remote(control))
@@ -551,6 +566,8 @@ final class AgentWakefulnessTests: XCTestCase {
       RemoteHosts.shared.isLetGo(.remote(refusedID)), "a refused read started the hold")
     XCTAssertFalse(
       RemoteHosts.shared.isLetGo(.remote(recoveredID)), "a trusted reading left the hold's clock")
+    XCTAssertFalse(
+      RemoteHosts.shared.isLetGo(.remote(reconnectedID)), "a connect left the hold's old clock")
   }
 
   /// A connected boxd host is polled with nothing on screen (#356), so an IDLE reading lets it go

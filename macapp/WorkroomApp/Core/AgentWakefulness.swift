@@ -636,8 +636,8 @@ final class WakefulnessModel: ObservableObject {
   private var requestsIssued = 0
   private var newestApplied = 0
   /// When this host's readings stopped being ones to trust (#356): its service stopped, stalled, or
-  /// its `status` failed. Such a reading holds the box for at most one ceiling from then, as nothing
-  /// on the box will ask the user about it.
+  /// a `status` that reached its agent failed. Such a reading holds the box for at most one ceiling
+  /// from then, as nothing on the box will ask the user about it. A connect starts a new count.
   private var untrustedSince: Date?
   /// The ceiling the last applied reply named, for a failed read, which names none.
   private var lastCeiling: TimeInterval?
@@ -704,9 +704,14 @@ final class WakefulnessModel: ObservableObject {
     var reachedAgent = false
     do { next = try await status() } catch {
       next = nil
-      // A read refused before it left (the host let go of, asleep, not connected) says nothing
-      // about the box, so it neither holds it nor starts the hold's clock.
-      reachedAgent = !(error is RepositoryRoutingError)
+      // A read refused before it left (the host let go of, asleep, not connected, or the request
+      // never sent) says nothing about the box, so it neither holds it nor starts the hold's clock.
+      switch error {
+      case is RepositoryRoutingError, HostConnectionError.notDispatched,
+        HostConnectionError.staleGeneration, HostConnectionError.mismatchedContext:
+        reachedAgent = false
+      default: reachedAgent = true
+      }
     }
     guard !Task.isCancelled else { return next }
     guard let next else {
@@ -776,6 +781,8 @@ final class WakefulnessModel: ObservableObject {
   private var connectionPoll: Task<Void, Never>?
 
   func pollWhileConnected() {
+    // A connect is new evidence: an untrusted spell from before it does not cut a new one short.
+    untrustedSince = nil
     guard connectionPoll == nil else { return }
     connectionPoll = Task { [weak self] in await self?.poll() }
   }
