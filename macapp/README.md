@@ -69,7 +69,7 @@ The project is configured for team **B898J443L9**:
   timestamp. `Scripts/build-helper.sh` signs the embedded helper the same way before the
   app's final signature.
 
-Both configurations sign with `WorkroomApp/Workroom.entitlements`, which grants exactly two
+Every configuration (Debug, Release and Nightly) signs with `WorkroomApp/Workroom.entitlements`, which grants exactly two
 hardened-runtime keys. Each exists because macOS attributes what a terminal child does to the
 app that owns the terminal, so the app has to declare it:
 
@@ -82,9 +82,12 @@ app that owns the terminal, so the app has to declare it:
 
 Usage strings live in `project.yml`'s `info.properties`; `make app-generate` renders them into
 the checked-in `Info.plist`. `Scripts/test-invariants_test.sh` pins both halves of the
-microphone pair. Sessions started before an update keep the old app instance as their
-responsible process, so if voice input does not prompt in one, open a new session. If it
-still fails, check System Settings › Privacy & Security › Microphone for the Workroom entry.
+microphone pair. Terminals keep running under the session helper the previous version
+started, and new terminals do too while that helper lives, so an update does not change which
+app instance macOS attributes them to. If voice input does not prompt after an update, close
+every terminal, use Settings › Terminal › Stop Detached Terminals…, wait a few seconds for the
+helper to exit, then reopen. If it still fails, check System Settings › Privacy & Security ›
+Microphone for the Workroom entry.
 
 To produce a notarized, stapled `Workroom.dmg` installer (the app inside is notarized +
 stapled too), first install `create-dmg` and store notary credentials once (app-specific
