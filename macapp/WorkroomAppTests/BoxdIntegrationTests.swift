@@ -41,6 +41,8 @@ final class BoxdIntegrationTests: XCTestCase {
     for connection in connections { await connection.close() }
     connections.removeAll()
     for host in attached {
+      // `connect` starts the shared model's poll, which would otherwise outlive the test.
+      if case .remote(let id) = host { await MainActor.run { WakefulnessModel.forgetHost(id) } }
       if let lease = await HostConnectionManager.shared.snapshot(for: host).lease {
         await HostConnectionManager.shared.disconnect(lease)
       }

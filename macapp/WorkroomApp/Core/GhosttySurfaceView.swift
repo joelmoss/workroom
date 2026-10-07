@@ -360,6 +360,8 @@ final class GhosttySurfaceView: NSView {
   private func destroySurface() {
     if let surface { ghostty_surface_free(surface) }
     surface = nil
+    // Its ssh went with it, so it holds its remote host no more (#356).
+    if let persistentSessionID { PersistentSessionService.shared.paneDetached(persistentSessionID) }
     lastSetFocus = nil  // a new surface starts unfocused — don't let a stale value skip the re-sync
     freeSurfaceCStrings()
   }
@@ -399,6 +401,10 @@ final class GhosttySurfaceView: NSView {
     for observer in keyWindowObservers { NotificationCenter.default.removeObserver(observer) }
     if let surface { ghostty_surface_free(surface) }
     freeSurfaceCStrings()
+    // A window closing frees its panes without a teardown; their ssh goes with them (#356).
+    if surface != nil, let id = persistentSessionID {
+      Task { @MainActor in PersistentSessionService.shared.paneDetached(id) }
+    }
   }
 
   private func freeSurfaceCStrings() {
@@ -918,6 +924,8 @@ final class GhosttySurfaceView: NSView {
   private(set) var pendingReconnect: DispatchWorkItem?
 
   func handleChildExited(exitCode: UInt32) {
+    // A dead ssh holds its remote host no more, whether or not it reconnects (#356).
+    if let persistentSessionID { PersistentSessionService.shared.paneDetached(persistentSessionID) }
     reconnectIfTheLinkDropped(exitCode: exitCode)
     onChildExited?(exitCode)
   }

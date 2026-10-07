@@ -1933,7 +1933,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     is answered first; and a host whose agent's wakefulness service has stopped is let go of too,
     as nothing on it holds the box awake, unless its last reading was BUSY (the connection is then
     all that keeps the job's box awake): that reading never changes and nothing will ask about it,
-    so it holds the box for one ceiling at most. A stalled service's IDLE never lets a box go. The
+    so it holds the box for one ceiling at most. A stalled service's reading, and a failed one,
+    hold the box the same way: for one ceiling from the first such reading, then it is let go. The
     box's idle window is read on every connect: a failed read keeps the last one, and an answer with
     no timer set clears it, so the badge stops warning about a timer that was turned off. A host let
     go of is asked about again once its boxd idle window (plus 30 s) has passed: if boxd says it is
@@ -1941,8 +1942,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **Limit: selected workrooms and attached panes.** The selected workroom's host is never let
     go of, nor is one with a pane attached, and a pane's own ssh holds its box awake regardless.
     So a job past its ceiling, with its prompt left unanswered, keeps the box awake (and billed)
-    while its workroom is selected or any of its panes is attached this launch. The prompt's "let
-    it sleep" takes effect only once that workroom's panes are closed and another is selected.
+    while its workroom is selected or any of its panes is attached. A pane counts as attached only
+    while its ssh lives: one whose ssh exited, or whose window closed, holds nothing, and a
+    reconnect attaches it again. The prompt's "let it sleep" takes effect only once that
+    workroom's panes are closed and another is selected.
   - **Live runs (2026-10-06).** `BoxdIntegrationTests`, all nine cases, pass: the app's create and
     delete (base in `/home/boxd`, records naming boxd with org and account, nothing left), #257's
     keep-awake acceptance (the control slept mid-job, the agent's box logged every tick then

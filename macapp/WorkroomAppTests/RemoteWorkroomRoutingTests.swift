@@ -220,7 +220,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     let store = AppStore()
     store.projects = projects
     let host = HostID.remote(id)
-    defer { RemoteHosts.shared.select(nil) }
+    // The store selects under its own window key, which its deinit clears.
 
     let letGo = await RemoteHosts.shared.observed(host, busy: false)
     XCTAssertTrue(letGo, "the box was never let go of, so there is nothing to take back")
@@ -265,6 +265,71 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     XCTAssertTrue(letGo, "a closed window kept its box held")
     RemoteHosts.shared.activate(host)
     _ = second
+  }
+
+  /// A boxd host the app has adopted and let go of as idle, on the shared `RemoteHosts` the two
+  /// click call sites below use.
+  @MainActor
+  private func boxdHostLetGoOf() async -> HostID {
+    let id = UUID()
+    RemoteHosts.shared.adopt(
+      [
+        Project(
+          path: "/proj", vcs: "git",
+          workrooms: [
+            Workroom(
+              name: "w", path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
+              host: HostDescriptor(
+                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+                id: id))
+          ])
+      ], sweep: false)
+    let letGo = await RemoteHosts.shared.observed(.remote(id), busy: false)
+    XCTAssertTrue(letGo, "the box was never let go of, so there is nothing to wake")
+    return .remote(id)
+  }
+
+  // Value: protects=Keep awake on a boxd box the app let go of as idle is a click that wakes it, not a
+  // refused background read; fails_when=the host model's transport drops wake: true from ensureConnected;
+  // why_new=RemoteHostsTests pass wake: true by hand and nothing drives this call site; seam=none
+  /// The connect it makes fails here (boxd wrote no ssh details for the host), but a click clears
+  /// the let-go mark before connecting, and a refused background read never reaches that.
+  @MainActor
+  func testKeepAwakeOnABoxLetGoOfIsAClickNotABackgroundRead() async throws {
+    let host = await boxdHostLetGoOf()
+    guard case .remote(let id) = host else { return XCTFail("not a remote host") }
+    defer { WakefulnessModel.forgetHost(id) }
+
+    let model = WakefulnessModel.model(forHost: id)
+    model.keep()
+    await model.keepInFlight?.value
+
+    XCTAssertFalse(RemoteHosts.shared.isLetGo(host), "Keep awake was refused as a background read")
+  }
+
+  // Value: protects=closing a pane on a boxd box the app let go of wakes it to end the session, rather
+  // than leaving the session running; fails_when=endSession's remote kill drops wake: true; why_new=
+  // RemoteHostsTests pass wake: true by hand and nothing drives this call site; seam=none
+  /// As above: the kill fails here, so the session stays registered, which is the right outcome
+  /// for a host that can't be reached; the click still reached the box.
+  @MainActor
+  func testClosingAPaneOnABoxLetGoOfIsAClickNotABackgroundRead() async throws {
+    let host = await boxdHostLetGoOf()
+    let session = UUID()
+    let sessions = PersistentSessionService.shared
+    sessions.registerRemoteSession(
+      session, on: host,
+      via: BoxdHostDriver(
+        configuration: .init(cli: URL(fileURLWithPath: "/usr/bin/false")),
+        directory: FileManager.default.temporaryDirectory),
+      workingDirectory: "/home/boxd/r")
+    defer { sessions.forgetRemoteSession(session) }
+
+    let ended = await sessions.endSession(sessionID: session)
+
+    XCTAssertFalse(ended, "a session on an unreachable host was reported ended")
+    XCTAssertTrue(sessions.isRemote(session), "the failed kill dropped the session's registration")
+    XCTAssertFalse(RemoteHosts.shared.isLetGo(host), "closing the pane was refused as a read")
   }
 
   /// A target names its repository by host: a reachable remote one by its host's location, and one

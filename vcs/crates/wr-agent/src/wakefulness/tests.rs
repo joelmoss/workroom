@@ -577,6 +577,47 @@ fn a_wake_with_the_job_still_running_asks_again() {
     assert_eq!(wake_with_a_cpu_job_running(false), None);
 }
 
+/// A Keep awake that lands on the tick the box resumes is the user's answer to the carried ceiling,
+/// so it restarts the awake time and nothing is asked; without it, that tick asks at once.
+#[test]
+fn a_keep_on_the_resume_tick_restarts_the_ceiling() {
+    let settings = Settings {
+        ask: true,
+        ..Settings::default()
+    };
+    let resumed_and_suppressed = || {
+        let mut ceiling = Ceiling::new(settings);
+        busy_until(&mut ceiling, 4.0 * 3600.0);
+        let CeilingState::Prompted { deadline } = ceiling.state() else {
+            panic!("expected a prompt")
+        };
+        ceiling.step(deadline, Verdict::Busy);
+        assert!(ceiling.suppressing());
+        let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
+        let mut t = deadline + 1.0;
+        c.step(&quiet(t, 10_000), false);
+        t += 300.0;
+        c.step(&quiet(t, 10_000), false);
+        assert!(c.resumed());
+        (c, ceiling, t)
+    };
+
+    let (c, mut ceiling, t) = resumed_and_suppressed();
+    assert!(!ceiling_step(&c, &mut ceiling, t, Verdict::Busy, true));
+    assert_eq!(ceiling.state(), CeilingState::Below);
+    assert_eq!(
+        ceiling.awake_for(t),
+        0.0,
+        "the ceiling restarts from the keep"
+    );
+
+    let (c, mut ceiling, t) = resumed_and_suppressed();
+    assert!(
+        ceiling_step(&c, &mut ceiling, t, Verdict::Busy, false),
+        "without the keep, the carried time asks at once"
+    );
+}
+
 /// What the service reads off the classifier to drive the ceiling: the resume flag is up for the
 /// first tick after the gap only, and the keystroke signal reflects the last tick's grace.
 #[test]
