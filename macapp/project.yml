@@ -281,7 +281,7 @@ targets:
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.developer-tools
         # Shown once by the Automation TCC prompt when ⌘-clicking a file path in the terminal opens
-        # it via `/usr/bin/open` (see CODE_SIGN_ENTITLEMENTS above).
+        # it via `/usr/bin/open` (see CODE_SIGN_ENTITLEMENTS below).
         NSAppleEventsUsageDescription: "Workroom uses Apple Events to open files you ⌘-click in the terminal with your chosen editor."
         # Shown once by the Microphone TCC prompt when a program in the terminal opens the mic
         # (Claude Code's voice mode, say). Attributed to us because terminal children inherit the
@@ -361,8 +361,7 @@ targets:
           # preferences, session helpers and "is it already running". No provisioning profile is
           # involved (the two entitlements, apple-events and audio-input, are hardened-runtime
           # keys), but TCC treats each id as a new app, so a workroom's dev app asks for its
-          # permissions afresh. See
-          # docs/designs/parallel-workroom-testing.md.
+          # permissions afresh. See docs/designs/parallel-workroom-testing.md.
           PRODUCT_BUNDLE_IDENTIFIER: "com.developwithstyle.workroom.dev$(WORKROOM_DEV_ID_SUFFIX)"
           PRODUCT_NAME: "Workroom Dev"
           ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon-Dev
