@@ -124,7 +124,7 @@ enum AgentBootstrap {
   static func connect(
     host: HostID, driver: any HostDriver, socket: String,
     agent: (String) -> URL? = PersistentSessionPaths.linuxAgentURL(architecture:),
-    handOff: Bool = AgentHandOff.isEnabled, resources: URL? = GhosttyResources.bundledURL,
+    handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL,
     watched: Bool = true
   ) async throws -> AgentVCSConnection {
     let outcome = try await ensure(
@@ -166,10 +166,13 @@ enum AgentBootstrap {
   ///
   /// `agent` finds the bundled binary for an architecture (the bundle's, or a test's), and
   /// `resources` is the bundled Ghostty tree whose terminfo and shell integration go beside it.
+  /// `handOff` is on in every build, unlike the local hand-off (`AgentHandOff.isEnabled`): off, a
+  /// remote host keeps its first agent until the box restarts, since its supervisor never lets it
+  /// idle out, and so never gets a newer build's services.
   static func ensure(
     host: HostID, driver: any HostDriver, socket: String,
     agent: (String) -> URL? = PersistentSessionPaths.linuxAgentURL(architecture:),
-    handOff: Bool = AgentHandOff.isEnabled, resources: URL? = GhosttyResources.bundledURL
+    handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL
   ) async throws -> Outcome {
     let binary = binary(besideSocket: socket)
     let urls = architectures.compactMap { architecture in

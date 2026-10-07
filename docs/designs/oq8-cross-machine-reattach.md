@@ -171,8 +171,8 @@ Codex (gpt-6.1-sol, cold read of the repo):
 - **Capability detection:** the layout requests arrive with a protocol version bump; the app reads
   the agent's version at the handshake it already performs. An older agent means today's per-Mac
   behaviour for that workroom: no host layout, no second-Mac restore, nothing shown to the user
-  (the remote UI is Nightly-only, and the bootstrap pushes the new agent on the next connect,
-  #231).
+  (the bootstrap pushes the new agent on the next connect and hands off to it, #231, in every
+  build since 2026-10-07).
 - **Lifecycle:** a remote workroom's layout lives on that workroom's own host, so deleting the
   workroom destroys the host and its layout with it. No delete request is needed in #255.
 - **Session metadata:** the workroom ID, initial title and creation order travel in the attach

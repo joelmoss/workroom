@@ -15,6 +15,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The `workroom-host` image this release's local container workrooms run (#309), built, tested
+  # and published per architecture under the release's tag; its digest is pinned into the app.
+  # Remote workrooms are in every build, so a stable release needs one as a Nightly does.
+  host-image:
+    uses: ./.github/workflows/host-image.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      tag: ${{ github.ref_name }}
+
   release:
     runs-on: ubuntu-latest
     steps:
@@ -41,10 +52,9 @@ jobs:
   # NOTARY_KEY / NOTARY_KEY_ID / NOTARY_ISSUER_ID.
   # Optional: SENTRY_AUTH_TOKEN / SENTRY_ORG / SENTRY_PROJECT enable Sentry dSYM upload so release
   # crashes symbolicate; release.sh skips that step when any of them (or sentry-cli) is absent.
-  # No `workroom-host` image (#309) yet: container workrooms are Nightly-only until #260, so a
-  # release has nothing to pin, and an image build that failed on tag day would hold the DMG back
-  # after the CLI has shipped. Add the `host-image` job (as nightly.yml has it) with #260.
+  # The release's DMG pins the `workroom-host` image its container workrooms run (#309), by digest.
   macapp:
+    needs: host-image
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
@@ -132,6 +142,8 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          # The host image this app runs, by digest (release.sh → WorkroomHostImage).
+          WORKROOM_HOST_IMAGE: ${{ needs.host-image.outputs.image }}
         run: |
           echo "$NOTARY_KEY" | openssl base64 -d -A > "$RUNNER_TEMP/notary.p8"
           NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-test APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
