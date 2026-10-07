@@ -27,24 +27,7 @@ either order on the main actor; the assert assumes one.
 
 ## P1 — before GA
 
-### A second Mac can find a remote workroom and reach its host (macapp, Codaset) — #255 blocker
-
-**What:** Let a Mac that did not create a remote workroom discover it and get an ssh key its host
-accepts.
-
-**Why:** #255 (cross-machine reattach) cannot be tested on a real host until this exists. Today a
-remote workroom is listed only in the creating Mac's CLI config, and its host accepts only that
-Mac's key (`RemoteWorkrooms.swift` mints its `id_ed25519` once per Mac per build). Container
-workrooms on one Mac's Docker are unreachable from another Mac at all, so the live test runs on
-boxd. Design: `docs/designs/oq8-cross-machine-reattach.md`, premise 10.
-
-**How to start:** The Codaset broker already keys grants by `workroomID` per user (#250, #251).
-List the signed-in user's grants to discover workrooms, and enrol this Mac's public key on the host
-through the broker rather than by hand.
-
-**Depends on:** #250 and #251 (done). Blocks #255's live acceptance test.
-
-**Priority:** P1 (chosen in the #255 eng review, 2026-10-05)
+None open. The second-Mac discovery entry was dropped on 2026-10-07 (#348, closed as not needed).
 
 ## P2 — perf, correctness, and the next VCS phase
 

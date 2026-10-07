@@ -2663,8 +2663,8 @@ disagreement passes every test on either side alone while presenting as an empty
    two open Macs is not built.
 
    *Not covered.* Local workrooms keep their layouts in `session.json` (TODOS, P3). A second Mac
-   still has to find the workroom and hold a key its host accepts (TODOS, P1), so the live
-   two-Mac test runs on the ssh fixture for now.
+   finding the workroom and holding a key its host accepts is not planned (#348, closed
+   2026-10-07), so the two-Mac test runs on the ssh fixture only.
 9. **What machine identity does a fork need re-minted?** **ANSWERED — Phase 0 item 6.** Measured duplicated across two live forks: `/etc/machine-id`, **`/proc/sys/kernel/random/boot_id`** (not on the list below, and it should be), both ssh host keys, and any on-disk secret. Re-minted by boxd: hostname and IP. Live processes carry across with their original pids. Not session UUIDs — those are client-minted
    and a template base has no sessions. The real list is ssh host key, machine-id, the agent's
    instance/socket identity, and any base-resident pty. Phase 0 item 6 measures which of these
@@ -3007,10 +3007,10 @@ disagreement passes every test on either side alone while presenting as an empty
   idle policy would otherwise have stopped it. That is the wakefulness service doing its job.
 - Start a long-running agent in it, quit Workroom entirely, reopen hours later, and land in the
   same session with the alternate-screen program correctly repainted.
-- Do the same from a **different Mac**. Open question 8 is answered and built (#255): the
-  layout and the sessions' workrooms live on the host, proven with two clients on the ssh fixture.
-  What still gates it on a real host is a second Mac finding the workroom and holding a key the
-  host accepts (TODOS, P1).
+- ~~Do the same from a **different Mac**.~~ **Removed (2026-10-07):** dropped from the gate
+  (#260), together with the second-Mac discovery work it needed (#348, closed as not needed). Open
+  question 8 is still answered and built (#255): the layout and the sessions' workrooms live on the
+  host, proven with two clients on the ssh fixture.
 - Close the laptop; the remote agent completes a `git fetch` and a `git push` with no client
   attached. (The concrete test that premise 6's revision was necessary.)
 - Changes, History, the diff viewer and the Files tree all work against a remote workroom and agree
