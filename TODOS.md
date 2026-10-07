@@ -7,6 +7,24 @@
 
 ## P0 — before the next release
 
+### `AgentWakefulnessTests.testAReplyCrossingAKeepDoesNotResurrectTheCard` flakes (macapp) — #216 test
+
+**What:** Find why the crossing-`keep` test sometimes fails and fix the test or the race it exposes.
+
+**Why:** It failed once in a targeted `/ship` QA run on `feat/boxd-in-app` (2026-10-07, 2 of 80
+`AgentWakefulnessTests` red: "the failure brought the retry back", `XCTAssertTrue failed` at the
+retry-flag assert), then passed in every full suite after it (3267/0, four runs). The test came with
+#216 on master; the boxd branch didn't touch the keep/retry path. A flake in the prompt card's retry
+logic can hide a real resurrection bug, which is what the test exists to catch.
+
+**How to start:** Loop it alone (`make app-test "APP_TEST_FLAGS=-only-testing:WorkroomAppTests/AgentWakefulnessTests/testAReplyCrossingAKeepDoesNotResurrectTheCard"`)
+under CPU load until it fails. Then check whether the crossing reply and the failed `keep` can land in
+either order on the main actor; the assert assumes one.
+
+**Depends on:** nothing.
+
+**Priority:** P0 (chosen in /ship for #356, invocation 4, D6, 2026-10-07)
+
 ## P1 — before GA
 
 ### A second Mac can find a remote workroom and reach its host (macapp, Codaset) — #255 blocker
