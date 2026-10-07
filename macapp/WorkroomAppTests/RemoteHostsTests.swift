@@ -271,6 +271,82 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(connects.calls, 4, "a second click inside the window was refused")
   }
 
+  /// A box let go of as idle is asked about again once its idle window has passed (#356): boxd
+  /// sleeps a box nothing holds by then, so one still awake has work holding it, and is connected
+  /// again so its ceiling prompts are heard. Inside the window boxd is not asked.
+  @MainActor
+  func testABoxLetGoOfIsAskedAboutAgainOnceItsIdleWindowHasPassed() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let asked = Asleep()
+    asked.set(false)
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
+      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() })
+    let id = UUID()
+    let host = HostID.remote(id)
+    remote.adopt(
+      [
+        Project(
+          path: "/proj", vcs: "git",
+          workrooms: [
+            Workroom(
+              name: "b", path: "/home/boxd/r", vcsName: "workroom/b", warnings: [],
+              host: HostDescriptor(
+                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+                id: id, account: "usr_1"))
+          ])
+      ], sweep: false)
+    let letGo = await remote.observed(host, busy: false)
+    XCTAssertTrue(letGo)
+
+    connects.advance(remote.revisitAfter(host) - .seconds(1))
+    do {
+      try await remote.ensureConnected(host)
+      XCTFail("a box let go of was reconnected inside its idle window")
+    } catch {
+      XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
+    }
+    XCTAssertEqual(asked.calls, 0)
+
+    connects.advance(.seconds(1))
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(asked.calls, 1)
+    XCTAssertEqual(connects.calls, 1, "a box still awake past its idle window was left alone")
+    XCTAssertFalse(remote.isParked(host))
+  }
+
+  /// A selected workroom's box is reached by a background read, asleep or let go of (#356): after
+  /// the Mac sleeps, the open workroom must not read as asleep until it is selected again.
+  @MainActor
+  func testASelectedWorkroomsBoxIsReachedEvenAsleep() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let asked = Asleep()
+    asked.set(true)
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
+      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() })
+    let id = UUID()
+    let host = HostID.remote(id)
+    remote.adopt(
+      [
+        Project(
+          path: "/proj", vcs: "git",
+          workrooms: [
+            Workroom(
+              name: "b", path: "/home/boxd/r", vcsName: "workroom/b", warnings: [],
+              host: HostDescriptor(
+                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
+                id: id, account: "usr_1"))
+          ])
+      ], sweep: false)
+    remote.select(host, in: "window")
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(connects.calls, 1)
+    XCTAssertEqual(asked.calls, 0, "boxd was asked about the selected workroom's box")
+  }
+
   /// Each window has its own selection (one AppStore per window): a host selected in any window
   /// is kept, whatever another window selects, and a closed window lets it go (#356).
   @MainActor

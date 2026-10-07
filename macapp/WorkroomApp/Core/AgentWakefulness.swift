@@ -572,7 +572,9 @@ final class WakefulnessModel: ObservableObject {
 
   /// The host is gone (deleted): its model, its watch and any prompt card with it.
   static func forgetHost(_ id: UUID) {
-    Hosts.shared.models.removeValue(forKey: id)?.stopWatchingPrompts()
+    let model = Hosts.shared.models.removeValue(forKey: id)
+    model?.stopWatchingPrompts()
+    model?.stopPollingWhileConnected()
     Hosts.shared.showing.remove(id)
   }
 
@@ -704,7 +706,9 @@ final class WakefulnessModel: ObservableObject {
     // A remote box reporting IDLE may be let go of, so the app's own traffic stops holding it
     // awake (#356); `RemoteHosts` decides, by its kind and whether it is selected.
     if let host, next.running {
-      let busy = next.busy
+      // A stalled service's IDLE may be stale while work runs (`display` shows it as unknown), so
+      // it never lets a box go.
+      let busy = next.busy || next.stalled == true
       Task { await RemoteHosts.shared.observed(.remote(host), busy: busy) }
     }
     if issued.generation == promptGeneration {
@@ -726,6 +730,25 @@ final class WakefulnessModel: ObservableObject {
   }
 
   var isWatchingPrompts: Bool { watchTask != nil }
+
+  /// A boxd host's poll while its connection is up (#356), started by `RemoteHosts.connect`. An
+  /// IDLE reading is what lets the box go, and the badges poll only while they are on screen, so
+  /// without this a box whose row was scrolled away stayed connected, and awake, until quit.
+  /// ponytail: runs until the host is let go of or forgotten; a connection that drops otherwise
+  /// leaves it failing one local request every `pollInterval` until the next connect.
+  private var connectionPoll: Task<Void, Never>?
+
+  func pollWhileConnected() {
+    guard connectionPoll == nil else { return }
+    connectionPoll = Task { [weak self] in await self?.poll() }
+  }
+
+  var isPollingWhileConnected: Bool { connectionPoll != nil }
+
+  func stopPollingWhileConnected() {
+    connectionPoll?.cancel()
+    connectionPoll = nil
+  }
 
   func stopWatchingPrompts() {
     watchTask?.cancel()
