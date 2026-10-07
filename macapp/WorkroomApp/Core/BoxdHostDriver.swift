@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The first real provider driver (#256): boxd.sh machines, driven through the `boxd` CLI and
 /// reached over ssh, with the **portable** derivation (design doc, Phase 4: "the slowest correct
@@ -19,7 +20,7 @@ import Foundation
 ///   base's processes with the base's machine-id and boot_id (measured); after it, the instance
 ///   has only the base's disk, a kernel of its own, and the identity its identity unit mints at
 ///   boot. The snapshot is removed once the machine exists (a machine outlives its snapshot,
-///   measured).
+///   measured); a failed derive's snapshot goes with its machine's `destroy`.
 /// - **Names.** A host is the machine `<prefix>-<host id>`, and a derive's snapshot is named the
 ///   same. A failed step removes by name, since the CLI's own output may never have arrived, and
 ///   a driver made after a relaunch reaches a recorded host by its ID alone.
@@ -85,6 +86,9 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     self.directory = directory
     self.runner = runner
   }
+
+  private static let logger = Logger(
+    subsystem: "com.developwithstyle.workroom", category: "BoxdHostDriver")
 
   func name(of id: UUID) -> String { "\(configuration.prefix)-\(id.uuidString.lowercased())" }
 
@@ -202,10 +206,16 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       throw HostDriverError.provisioning(failure)
     }
     // A derive that failed partway can leave its snapshot, named as its machine is (#356): it goes
-    // too, or it would stay stored and billed with nothing recording it. Usually "not found".
-    if let failure = await remove(snapshot: name(of: id)) {
-      try Task.checkCancellation()
-      throw HostDriverError.provisioning(failure)
+    // too. Best-effort: the machine is gone, which is what a delete reports, so a failure here is
+    // logged rather than made to read as a running box. Usually "not found", which this org (just
+    // checked) makes final, so no second org check.
+    do {
+      _ = try await cli(["snapshots", "remove", name(of: id), "-y"])
+    } catch let failure as CLIFailure where failure.notFound {
+    } catch {
+      Self.logger.error(
+        "snapshot \(self.name(of: id), privacy: .public) not removed: \(error.localizedDescription, privacy: .public)"
+      )
     }
     try? FileManager.default.removeItem(at: hostDirectory(id))
   }
@@ -411,8 +421,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// `gone` when boxd answers that the machine is not found: deleted outside the app, or in an org
   /// that isn't active. Any other error the CLI answers with (signed out, another account) counts
   /// as asleep: the read can't tell, and connecting would wake a box the user may be paying for,
-  /// so a background read leaves it alone; opening the workroom still connects. Only a CLI that
-  /// couldn't answer (missing, timed out, unreadable output) says nothing.
+  /// so a background read leaves it alone; opening the workroom still connects.
   func presence(_ host: HostID) async -> Presence? {
     guard case .remote(let id) = host else { return nil }
     do {

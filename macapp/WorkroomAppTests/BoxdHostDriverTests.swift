@@ -103,6 +103,9 @@ final class BoxdHostDriverTests: XCTestCase {
       self.orgs = orgs
     }
 
+    /// Every call's full arguments, org checks included.
+    var arguments: [[String]] { lock.withLock { calls } }
+
     /// Every command but the org checks.
     var commands: [String] {
       lock.withLock { calls.map { $0.prefix(2).joined(separator: " ") } }
@@ -415,23 +418,25 @@ final class BoxdHostDriverTests: XCTestCase {
     }
 
     // Value: protects=a delete also removes the derive snapshot a failed derive left, named as its
-    // machine is, and keeps the entry when that fails; fails_when=destroy removes only the machine;
-    // why_new=destroy tests never named a snapshot; seam=none
-    let snapshot = StubCLI([
-      "machine remove": Self.ok(#"{"status":"destroyed"}"#),
-      "snapshots remove": Self.ok("{}"),
-    ])
-    try await driver(snapshot).destroy(.remote(UUID()))
-    XCTAssertEqual(snapshot.commands, ["machine remove", "snapshots remove"])
+    // machine is, even when the machine is already gone, and a snapshot that will not go never
+    // makes a removed machine read as running; fails_when=destroy removes only the machine, names
+    // another snapshot, or throws on the snapshot step; why_new=destroy tests never named a
+    // snapshot; seam=none
+    for machine in [Self.ok(#"{"status":"destroyed"}"#), Self.failed("error: VM 'x' not found")] {
+      let snapshot = StubCLI(["machine remove": machine, "snapshots remove": Self.ok("{}")])
+      try await driver(snapshot).destroy(.remote(UUID()))
+      XCTAssertEqual(snapshot.commands, ["machine remove", "snapshots remove"])
+      let removals = snapshot.arguments.filter { $0.count > 2 && $0[1] == "remove" }
+      XCTAssertEqual(removals.count, 2)
+      XCTAssertEqual(
+        removals.first?.dropFirst(2).first, removals.last?.dropFirst(2).first,
+        "the snapshot removed was not the one named after the machine")
+    }
     let stuck = StubCLI([
       "machine remove": Self.ok(#"{"status":"destroyed"}"#),
       "snapshots remove": Self.failed("error: internal"),
     ])
-    do {
-      try await driver(stuck).destroy(.remote(UUID()))
-      XCTFail("a snapshot left behind was dropped silently")
-    } catch HostDriverError.provisioning(let detail) {
-      XCTAssertTrue(detail.contains("snapshot"), detail)
-    }
+    try await driver(stuck).destroy(.remote(UUID()))
+    XCTAssertEqual(stuck.commands, ["machine remove", "snapshots remove"])
   }
 }
