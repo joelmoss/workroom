@@ -68,11 +68,11 @@ final class GhosttySurfaceView: NSView {
   /// #7); nil for every ordinary terminal. The host passes a shell-wrapped string (`$SHELL -lic …`).
   private let runCommand: String?
 
-  /// Daemon session this surface attaches to. When set and the helper is available, `createSurface`
-  /// launches `workroom-session attach` instead of a login shell.
   /// Names this pane's attach (`PersistentSessionService.attachCommand(by:)`), so only this pane
   /// clears it. Not its object identity, which a later view can reuse once this one is freed.
   let attachToken = UUID()
+  /// Daemon session this surface attaches to. When set and the helper is available, `createSurface`
+  /// launches `workroom-session attach` instead of a login shell.
   var persistentSessionID: UUID? {
     // Pointed at another session (the detached-sessions list): the old one's ssh goes with the
     // surface it is about to lose, so it holds its remote host no more (#356).

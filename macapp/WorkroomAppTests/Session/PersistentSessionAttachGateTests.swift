@@ -103,6 +103,9 @@ final class PersistentSessionAttachGateTests: XCTestCase {
     XCTAssertTrue(
       body.contains("forSession: persistentSessionID"),
       "applyPersistentSession no longer routes per session")
+    // Without its token the pane's attach holds nothing, and its box can be let go under it (#356).
+    XCTAssertTrue(
+      body.contains("by: attachToken"), "applyPersistentSession no longer marks the pane attached")
   }
 
   /// The other call site this commit added, and the one with the same blind spot.

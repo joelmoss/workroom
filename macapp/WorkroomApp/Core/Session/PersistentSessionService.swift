@@ -472,7 +472,7 @@ final class PersistentSessionService {
   }
 
   /// `pane`, when given, is the pane whose ssh will run the command: it holds the host until it
-  /// detaches (`paneDetached`).
+  /// detaches (`paneDetached`). Nil means no pane runs it (a probe), so nothing is held.
   func attachCommand(
     forSession sessionID: UUID, restored: Bool = false, by pane: UUID? = nil
   ) -> String? {
