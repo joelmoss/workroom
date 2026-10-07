@@ -364,9 +364,9 @@ final class AgentWakefulnessTests: XCTestCase {
     await idleModel.refresh()
 
     await eventually("an idle boxd host was never let go of") {
-      RemoteHosts.shared.isParked(.remote(idle))
+      RemoteHosts.shared.isLetGo(.remote(idle))
     }
-    XCTAssertFalse(RemoteHosts.shared.isParked(.remote(busy)), "a busy box was let go of")
+    XCTAssertFalse(RemoteHosts.shared.isLetGo(.remote(busy)), "a busy box was let go of")
   }
 
   /// A stalled service's IDLE may be stale while work runs, so it never lets a box go (#356): the
@@ -397,40 +397,49 @@ final class AgentWakefulnessTests: XCTestCase {
     await model.refresh()
     await controlModel.refresh()
     await eventually("the control host's IDLE was never reported") {
-      RemoteHosts.shared.isParked(.remote(control))
+      RemoteHosts.shared.isLetGo(.remote(control))
     }
-    XCTAssertFalse(RemoteHosts.shared.isParked(.remote(id)), "a stalled IDLE let the box go")
+    XCTAssertFalse(RemoteHosts.shared.isLetGo(.remote(id)), "a stalled IDLE let the box go")
   }
 
-  // Value: protects=a box whose status service has stopped is let go of, not held awake until quit;
-  // fails_when=observe() reports only readings from a running service; why_new=every other test
-  // reads a running service; seam=none
-  /// A service that is not running holds nothing awake, its heartbeat included (#356), so the app
-  /// lets the box go rather than hold it awake with its own traffic until it quits.
+  // Value: protects=a box whose status service stopped while idle is let go of, and one that
+  // stopped under a job keeps its connection; fails_when=observe() reports only readings from a
+  // running service, or lets a stopped service's BUSY go; why_new=every other test reads a running
+  // service; seam=none
+  /// A service that is not running holds nothing awake, its heartbeat included (#356), so its box
+  /// is let go of, unless its last reading was BUSY: then the connection is all that keeps the
+  /// job's box awake.
   @MainActor
-  func testAStoppedServiceLetsTheBoxGo() async throws {
-    let id = UUID()
-    RemoteHosts.shared.adopt(
-      [
-        Project(
-          path: "/proj", vcs: "git",
-          workrooms: [
-            Workroom(
-              name: "stopped", path: "/home/boxd/r", vcsName: "workroom/s", warnings: [],
-              host: HostDescriptor(
-                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
-                id: id))
-          ])
-      ], sweep: false)
-    let stopped = try status([(#""running":true"#, #""running":false"#)])
-    XCTAssertTrue(stopped.busy, "the fixture's last verdict was BUSY")
-    let model = WakefulnessModel(
-      transport: .init(status: Script(stopped).status, keep: {}, prompts: { throw Unavailable() }),
-      host: id)
-    await model.refresh()
-    await eventually("a box whose service stopped was never let go of") {
-      RemoteHosts.shared.isParked(.remote(id))
+  func testAStoppedServiceLetsAnIdleBoxGoButKeepsABusyOne() async throws {
+    let (idleID, busyID) = (UUID(), UUID())
+    let workroom = { (id: UUID) in
+      Workroom(
+        name: id.uuidString, path: "/home/boxd/r", vcsName: "workroom/s", warnings: [],
+        host: HostDescriptor(
+          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id))
     }
+    RemoteHosts.shared.adopt(
+      [Project(path: "/proj", vcs: "git", workrooms: [workroom(busyID), workroom(idleID)])],
+      sweep: false)
+    let stopped = (#""running":true"#, #""running":false"#)
+    let stoppedBusy = try status([stopped])
+    XCTAssertTrue(stoppedBusy.busy, "the fixture's last verdict was BUSY")
+    let stoppedIdle = try status([stopped, (#""busy":true"#, #""busy":false"#)])
+    let model = { (reply: AgentWakefulness, id: UUID) in
+      WakefulnessModel(
+        transport: .init(status: Script(reply).status, keep: {}, prompts: { throw Unavailable() }),
+        host: id)
+    }
+    let busyModel = model(stoppedBusy, busyID)
+    let idleModel = model(stoppedIdle, idleID)
+    await busyModel.refresh()
+    await idleModel.refresh()
+    await eventually("a box whose service stopped while idle was never let go of") {
+      RemoteHosts.shared.isLetGo(.remote(idleID))
+    }
+    XCTAssertFalse(
+      RemoteHosts.shared.isLetGo(.remote(busyID)), "a box whose service died under a job was let go"
+    )
   }
 
   /// A connected boxd host is polled with nothing on screen (#356), so an IDLE reading lets it go

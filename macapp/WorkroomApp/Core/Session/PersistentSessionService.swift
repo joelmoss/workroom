@@ -103,6 +103,10 @@ final class PersistentSessionService {
   /// it. Registered by whoever makes a pane for a remote workroom; nothing persists it yet, so a
   /// relaunch re-registers it (Phase 4).
   private var remoteSessions: [UUID: RemoteSession] = [:]
+  /// Remote sessions a pane has attached to, which its ssh holds open (#356). A pane registers its
+  /// session when it is made, but a restored one spawns nothing until it enters a window, so a
+  /// registration alone says nothing about whether the host is held.
+  private var attachedRemote: Set<UUID> = []
 
   private struct RemoteSession {
     let host: HostID
@@ -439,14 +443,17 @@ final class PersistentSessionService {
 
   /// Drops a remote session's registration without asking its host anything: for a pane whose
   /// workroom is being deleted, whose host goes with it (#283).
-  func forgetRemoteSession(_ sessionID: UUID) { remoteSessions.removeValue(forKey: sessionID) }
+  func forgetRemoteSession(_ sessionID: UUID) {
+    remoteSessions.removeValue(forKey: sessionID)
+    attachedRemote.remove(sessionID)
+  }
 
   /// The host a remote session's pane attaches to, or nil for a local session.
   func remoteHost(of sessionID: UUID) -> HostID? { remoteSessions[sessionID]?.host }
 
-  /// Whether any pane is registered on `host`: its ssh holds the host's box awake (#356).
-  func hasRemoteSessions(on host: HostID) -> Bool {
-    remoteSessions.values.contains { $0.host == host }
+  /// Whether a pane has attached to a session on `host`: its ssh holds the host's box awake (#356).
+  func hasAttachedPane(on host: HostID) -> Bool {
+    attachedRemote.contains { remoteSessions[$0]?.host == host }
   }
 
   /// Whether a remote session's last attach was refused by its host for good (#241).
@@ -458,9 +465,11 @@ final class PersistentSessionService {
   func attachCommand(forSession sessionID: UUID, restored: Bool = false) -> String? {
     if let remote = remoteSessions[sessionID] {
       do {
-        return try remote.driver.attachCommand(
+        let command = try remote.driver.attachCommand(
           to: remote.host, session: sessionID, workingDirectory: remote.workingDirectory,
           restored: restored, metadata: remote.metadata)
+        attachedRemote.insert(sessionID)
+        return command
       } catch {
         logger.error(
           "no attach command for remote session \(sessionID.uuidString, privacy: .public): \(error)"
@@ -635,6 +644,8 @@ final class PersistentSessionService {
     // running there, and without it a retry would ask the local agent (which "kills" an id it never
     // held) and a reattach would open a new session on this Mac.
     if let remote = remoteSessions[sessionID] {
+      // Its pane is closing, so nothing here holds the host any more, whatever the kill finds.
+      attachedRemote.remove(sessionID)
       let id = sessionID.uuidString
       logger.notice("ending remote session \(id, privacy: .public)")
       let killed: Bool

@@ -736,7 +736,7 @@ final class BoxdIntegrationTests: XCTestCase {
     let badge = pollLikeTheBadge(remote, host)
     defer { badge.cancel() }
     let slept = try await sleeps(host, since: .now, within: .seconds(420))
-    XCTAssertTrue(remote.isParked(host), "the app never let go of the idle box")
+    XCTAssertTrue(remote.isLetGo(host), "the app never let go of the idle box")
     XCTAssertNotNil(slept, "an idle box with the app attached never slept")
   }
 
@@ -763,7 +763,7 @@ final class BoxdIntegrationTests: XCTestCase {
     let badge = pollLikeTheBadge(remote, host)
     defer { badge.cancel() }
     let slept = try await sleeps(host, since: start, within: .seconds(480))
-    XCTAssertTrue(remote.isParked(host), "the app never let go of the box")
+    XCTAssertTrue(remote.isLetGo(host), "the app never let go of the box")
     XCTAssertNotNil(
       slept, "a busy box whose prompt went unanswered never slept with the app attached")
     badge.cancel()

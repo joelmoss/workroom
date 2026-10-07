@@ -21,7 +21,8 @@ enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError, CustomS
   var description: String { errorDescription ?? "Repository unavailable" }
 
   /// What a read of an asleep boxd host says (#356), here and on the Changes panel.
-  static let asleepMessage = "The box is asleep. Open the workroom to reach it."
+  static let asleepMessage =
+    "The box is asleep, or boxd can't say (check `boxd auth`). Open the workroom to reach it."
   /// What a read of a boxd host the app let go of as idle says (#356).
   static let idleMessage =
     "The box is idle, so Workroom disconnected to let it sleep. Open the workroom to reach it."

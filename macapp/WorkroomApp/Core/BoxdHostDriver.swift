@@ -46,9 +46,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     var account: String?
     /// The agent's socket on every host. On the home disk, never the tmpfs `/run`: the agent keeps
     /// its broker enrolment beside it (`broker.rs`), and a stopped machine would lose it.
-    var agentSocket = Configuration.defaultAgentSocket
-    static let defaultAgentSocket =
-      "/home/\(BoxdHostDriver.user)/.local/state/workroom/agent/agent.sock"
+    var agentSocket = "/home/\(BoxdHostDriver.user)/.local/state/workroom/agent/agent.sock"
 
     /// Where the supervisor has the agent keep each session's last screen (#232).
     var screens = "/home/\(BoxdHostDriver.user)/.local/state/workroom/screens"

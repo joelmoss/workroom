@@ -226,7 +226,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     XCTAssertTrue(letGo, "the box was never let go of, so there is nothing to take back")
 
     store.selectedTargetID = .workroom(project: "/proj", name: "w")
-    XCTAssertFalse(RemoteHosts.shared.isParked(host), "selecting its workroom left the box parked")
+    XCTAssertFalse(RemoteHosts.shared.isLetGo(host), "selecting its workroom left the box parked")
     let whileSelected = await RemoteHosts.shared.observed(host, busy: false)
     XCTAssertFalse(whileSelected, "the selected workroom's box was let go of")
 

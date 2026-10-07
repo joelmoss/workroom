@@ -195,19 +195,24 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertFalse(selectedKept, "the selected workroom's box was let go of")
 
     remote.select(nil)
-    // Value: protects=a workroom with a pane open keeps its status, as its pane holds the box awake;
-    // fails_when=observed() stops checking for open panes; why_new=no test opens a pane; seam=none
+    // Value: protects=a workroom whose pane attached keeps its status, as that pane's ssh holds the
+    // box awake, while a restored pane that never attached does not; fails_when=observed() stops
+    // checking panes, or counts a registration as attached; why_new=no test opens a pane; seam=none
     let session = UUID()
-    PersistentSessionService.shared.registerRemoteSession(
-      session, on: host, via: ContainerHostDriver(hosts: [:], directory: RemoteHosts.directory),
-      workingDirectory: "/home/boxd/r")
+    let sessions = PersistentSessionService.shared
+    sessions.registerRemoteSession(
+      session, on: host, via: DerivingDriver(derived: boxd), workingDirectory: "/home/boxd/r")
+    // A restored pane registers its session but spawns nothing until it enters a window.
+    XCTAssertFalse(sessions.hasAttachedPane(on: host), "a pane that never attached holds the box")
+    XCTAssertNotNil(sessions.attachCommand(forSession: session))
+    XCTAssertTrue(sessions.hasAttachedPane(on: host))
     let paneKept = await remote.observed(host, busy: false)
-    PersistentSessionService.shared.forgetRemoteSession(session)
-    XCTAssertFalse(paneKept, "a host with a pane open was let go of")
+    sessions.forgetRemoteSession(session)
+    XCTAssertFalse(paneKept, "a host with a pane attached was let go of")
 
     let letGo = await remote.observed(host, busy: false)
     XCTAssertTrue(letGo)
-    XCTAssertTrue(remote.isParked(host))
+    XCTAssertTrue(remote.isLetGo(host))
     do {
       try await remote.ensureConnected(host)
       XCTFail("a background read reconnected a box let go of as idle")
@@ -219,7 +224,7 @@ final class RemoteHostsTests: XCTestCase {
 
     // Selecting its workroom takes it back.
     remote.select(host)
-    XCTAssertFalse(remote.isParked(host))
+    XCTAssertFalse(remote.isLetGo(host))
     try await remote.ensureConnected(host)
     XCTAssertEqual(connects.calls, 1)
   }
@@ -266,12 +271,14 @@ final class RemoteHostsTests: XCTestCase {
     // Not within the grace after its connect, so the read that connected it is answered first.
     let tooSoon = await remote.observed(host, busy: false)
     XCTAssertFalse(tooSoon, "a host was let go of straight after its connect")
+    // The grace is one poll: the poll that follows a connect is the first that may let it go.
+    XCTAssertEqual(RemoteHosts.letGoGrace, WakefulnessModel.pollInterval)
     connects.advance(RemoteHosts.letGoGrace)
     let letGo = await remote.observed(host, busy: false)
     XCTAssertTrue(letGo)
     try await remote.ensureConnected(host, wake: true)
     XCTAssertEqual(connects.calls, 2)
-    XCTAssertFalse(remote.isParked(host), "a click left the host let go of")
+    XCTAssertFalse(remote.isLetGo(host), "a click left the host let go of")
 
     // A click right after one that failed is still tried: waking a box can fail once while it
     // resumes, and the retry must not wait out the failure window.
@@ -344,7 +351,7 @@ final class RemoteHostsTests: XCTestCase {
     try await remote.ensureConnected(host)
     XCTAssertEqual(asked.calls, 2)
     XCTAssertEqual(connects.calls, 1, "a box still awake past its idle window was left alone")
-    XCTAssertFalse(remote.isParked(host))
+    XCTAssertFalse(remote.isLetGo(host))
   }
 
   /// A selected workroom's box is reached by a background read, asleep or let go of (#356): after
@@ -996,6 +1003,21 @@ final class RemoteHostsTests: XCTestCase {
     // why_new=the poll test starts it by hand and the revisit test only reaches the unknown-window fallback; seam=none
     XCTAssertTrue(model.isPollingWhileConnected, "a connected boxd host isn't polled")
     XCTAssertEqual(remote.revisitAfter(host), .seconds(60) + RemoteHosts.retryAfter)
+
+    // Value: protects=a reconnect whose idle-window read fails keeps the window last read;
+    // fails_when=connect records a failed read as unknown; why_new=only a successful read is
+    // connected here; seam=none
+    await HostConnectionManager.shared.disconnect(lease)
+    let failing = BoxdHostDriver(
+      configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
+      directory: FileManager.default.temporaryDirectory, runner: MachineGet("", fails: true))
+    try await remote.connect(host, driver: failing)
+    if let again = await HostConnectionManager.shared.snapshot(for: host).lease {
+      addTeardownBlock { await HostConnectionManager.shared.disconnect(again) }
+    }
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertEqual(remote.revisitAfter(host), .seconds(60) + RemoteHosts.retryAfter)
+    XCTAssertEqual(model.idleWindow, 60, "a failed read forgot the badge's idle window")
     WakefulnessModel.forgetHost(id)
     XCTAssertFalse(model.isPollingWhileConnected, "a forgotten host is still polled")
   }
@@ -1011,9 +1033,12 @@ final class RemoteHostsTests: XCTestCase {
     defer { fake.stop() }
     let id = UUID()
     let host = HostID.remote(id)
-    let remote = RemoteHosts(connectAgent: { host, _ in
-      try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
-    })
+    let clock = Connects()
+    let remote = RemoteHosts(
+      now: { clock.now },
+      connectAgent: { host, _ in
+        try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
+      })
     remote.adopt(
       [
         Project(
@@ -1039,11 +1064,12 @@ final class RemoteHostsTests: XCTestCase {
     forwards.draft = "8080"
     await forwards.add()
     let forward = try XCTUnwrap(forwards.forwards.first, forwards.message ?? "no forward was made")
+    clock.advance(RemoteHosts.letGoGrace)
 
     let whileForwarding = await remote.observed(host, busy: false)
 
     XCTAssertFalse(whileForwarding, "an idle host carrying a forward was let go of")
-    XCTAssertFalse(remote.isParked(host))
+    XCTAssertFalse(remote.isLetGo(host))
     forwards.remove(forward.id)
     // Value: protects=a boxd host let go of as idle stops being polled, so the poll can't hold it awake;
     // fails_when=observed() closes the connection but leaves the connection poll running;
@@ -1058,11 +1084,17 @@ final class RemoteHostsTests: XCTestCase {
   /// A boxd CLI that answers every `machine get` with `json`.
   private struct MachineGet: StatusCommandRunning {
     let json: String
-    init(_ json: String) { self.json = json }
+    var fails = false
+    init(_ json: String, fails: Bool = false) {
+      self.json = json
+      self.fails = fails
+    }
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
       async -> CommandResult
     {
-      CommandResult(stdout: json, stderr: "", exitCode: 0, timedOut: false)
+      fails
+        ? CommandResult(stdout: "", stderr: "error: unreachable", exitCode: 1, timedOut: false)
+        : CommandResult(stdout: json, stderr: "", exitCode: 0, timedOut: false)
     }
   }
 
@@ -1284,7 +1316,9 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(asked.keys, [.boxd(org: "acme", account: "usr_1")])
     let environment = try XCTUnwrap(deletion.environment(for: host))
     XCTAssertTrue(environment.driver is BoxdHostDriver)
-    XCTAssertEqual(environment.agentSocket, BoxdHostDriver.Configuration.defaultAgentSocket)
+    XCTAssertEqual(
+      environment.agentSocket,
+      BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket)
     XCTAssertNil(environment.gitHubToken, "a remote host's git never borrows the Mac's gh")
   }
 
@@ -1322,7 +1356,8 @@ final class RemoteHostsTests: XCTestCase {
     let driver = DerivingDriver(derived: made)
     let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
     let environment = RemoteProvisioning.Environment(
-      driver: driver, agentSocket: BoxdHostDriver.Configuration.defaultAgentSocket,
+      driver: driver,
+      agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
       client: BrokerClient(
         baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())),
       connect: { _ in throw HostDriverError.provisioning("stop after the checkpoint") })
