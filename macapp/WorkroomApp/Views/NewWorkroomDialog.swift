@@ -70,13 +70,10 @@ struct NewWorkroomDialog: View {
     onClose()
     let anchor = placeAnchor ?? (split ? store.selectedTargetID : nil)
     Task {
-      switch place {
-      case .thisMac: await store.createWorkroom(in: project, splitAnchor: anchor)
-      case .container(let runtime):
-        await store.createRemoteWorkroom(
-          in: project, place: .container(runtime), splitAnchor: anchor)
-      case .boxd:
-        await store.createRemoteWorkroom(in: project, place: .boxd, splitAnchor: anchor)
+      if let remote = place.remote {
+        await store.createRemoteWorkroom(in: project, place: remote, splitAnchor: anchor)
+      } else {
+        await store.createWorkroom(in: project, splitAnchor: anchor)
       }
     }
   }

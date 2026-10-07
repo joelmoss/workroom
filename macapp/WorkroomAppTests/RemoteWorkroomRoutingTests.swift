@@ -200,6 +200,37 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     XCTAssertTrue(afterLeaving, "leaving the workroom left its box held for good")
   }
 
+  /// Each window is its own AppStore: a second window selecting elsewhere leaves the first
+  /// window's box kept, and closing the first window lets it go (#356).
+  @MainActor
+  func testAnotherWindowsSelectionKeepsThisWindowsBoxAndClosingItLetsGo() async throws {
+    let id = UUID()
+    let box = Workroom(
+      name: "w", path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
+      host: HostDescriptor(
+        driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id))
+    let projects = [Project(path: "/proj", vcs: "git", workrooms: [box])]
+    RemoteHosts.shared.adopt(projects, sweep: false)
+    let host = HostID.remote(id)
+    var first: AppStore? = AppStore()
+    first?.projects = projects
+    first?.selectedTargetID = .workroom(project: "/proj", name: "w")
+    let second = AppStore()
+    second.projects = projects
+    second.selectedTargetID = .root(project: "/proj")
+
+    let kept = await RemoteHosts.shared.observed(host, busy: false)
+    XCTAssertFalse(kept, "another window's selection let go of this window's box")
+
+    weak var closed = first
+    first = nil
+    XCTAssertNil(closed, "the first window's store outlived its window")
+    let letGo = await RemoteHosts.shared.observed(host, busy: false)
+    XCTAssertTrue(letGo, "a closed window kept its box held")
+    RemoteHosts.shared.activate(host)
+    _ = second
+  }
+
   /// A target names its repository by host: a reachable remote one by its host's location, and one
   /// it can't reach by none, so a viewer never reads its path on this Mac.
   func testATargetResolvesItsRemoteLocationFromItsHost() throws {

@@ -388,21 +388,26 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// would wake it (#356). Nil when boxd can't say (no CLI, signed out, offline), which a caller
   /// must not take for either answer.
   ///
-  /// A CLI that ran and answered with an error (signed out, another account or org, not found)
-  /// counts as asleep: the read can't tell, and connecting would wake a box the user may be paying
-  /// for, so a background read leaves it alone; opening the workroom still connects. Only a CLI
-  /// that couldn't answer (missing, timed out, unreadable output) says nothing.
-  func isAsleep(_ host: HostID) async -> Bool? {
+  /// `gone` when boxd answers that the machine is not found: deleted outside the app, or in an org
+  /// that isn't active. Any other error the CLI answers with (signed out, another account) counts
+  /// as asleep: the read can't tell, and connecting would wake a box the user may be paying for,
+  /// so a background read leaves it alone; opening the workroom still connects. Only a CLI that
+  /// couldn't answer (missing, timed out, unreadable output) says nothing.
+  func presence(_ host: HostID) async -> Presence? {
     guard case .remote(let id) = host else { return nil }
     do {
       let output = try await cli(
         ["machine", "get", name(of: id)], timeout: Self.statusTimeout)
       let machine = try decode(Machine.self, output, name(of: id))
-      return Self.asleepStatuses.contains(machine.status ?? "")
+      return Self.asleepStatuses.contains(machine.status ?? "") ? .asleep : .awake
     } catch let failure as CLIFailure {
-      return failure.answered ? true : nil
+      if failure.notFound { return .gone }
+      return failure.answered ? .asleep : nil
     } catch { return nil }
   }
+
+  /// What boxd says of a machine, for a background read (#356).
+  enum Presence: Equatable, Sendable { case awake, asleep, gone }
 
   /// How long boxd lets `host` sit idle on the network before suspending or hibernating it, in
   /// seconds: the shorter of the two that are set, or nil when neither is or boxd can't say (#356).
@@ -455,7 +460,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     }
   }
 
-  /// How long a status read (`isAsleep`, `idleWindow`) waits for the CLI: a status sweep and a
+  /// How long a status read (`presence`, `idleWindow`) waits for the CLI: a status sweep and a
   /// connect wait on it, so a hung CLI must not hold them for the CLI's usual 120 s.
   static let statusTimeout: TimeInterval = 10
 
@@ -478,12 +483,11 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     // The runner kills the CLI when the task is cancelled, and that reads as a failure.
     try Task.checkCancellation()
     guard result.ok else {
+      let line = Self.errorLine(result.stderr)
       let said =
-        Self.errorLine(result.stderr)
-        ?? (result.timedOut ? "timed out after \(Int(timeout))s" : "exited \(result.exitCode)")
+        line ?? (result.timedOut ? "timed out after \(Int(timeout))s" : "exited \(result.exitCode)")
       throw CLIFailure(
-        command: arguments.prefix(2).joined(separator: " "), said: said,
-        answered: Self.errorLine(result.stderr) != nil)
+        command: arguments.prefix(2).joined(separator: " "), said: said, answered: line != nil)
     }
     return result.stdout
   }

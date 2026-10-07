@@ -120,18 +120,15 @@ struct AgentWakefulness: Decodable, Sendable, Equatable {
   /// container) cannot be slept under a job, so nothing there is "not kept awake": an old agent,
   /// a stalled one or a failing heartbeat would only be a false alarm, and its advice (restart the
   /// agent) would end the user's sessions.
-  func display(hostSleeps sleeps: Bool) -> Display {
+  ///
+  /// On a host its provider sleeps after `idleWindow` seconds idle on the network, when known
+  /// (#356), a window shorter than the heartbeat can beat leaves busy work unprotected however
+  /// healthy the heartbeat is.
+  func display(hostSleeps sleeps: Bool, idleWindow: TimeInterval? = nil) -> Display {
+    if sleeps, busy, Self.isTooShort(idleWindow) { return .busyUnprotected }
     if sleeps { return display }
     if awakeCeilingExceeded { return .busyPastCeiling }
     return busy ? .busy : .idle
-  }
-
-  /// What the badge shows on a host its provider sleeps after `idleWindow` seconds idle on the
-  /// network, when known (#356). A window shorter than the heartbeat can beat leaves busy work
-  /// unprotected however healthy the heartbeat is.
-  func display(hostSleeps sleeps: Bool, idleWindow: TimeInterval?) -> Display {
-    if sleeps, busy, Self.isTooShort(idleWindow) { return .busyUnprotected }
-    return display(hostSleeps: sleeps)
   }
 
   /// The heartbeat sends once a minute (`heartbeat.rs`), so a provider that sleeps a box after

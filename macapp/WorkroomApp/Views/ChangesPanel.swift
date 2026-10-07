@@ -492,7 +492,7 @@ struct WakefulnessBadge: View {
         + "nothing is keeping it awake: it may sleep once it has been idle on the network long "
         + "enough."
     case .busyUnprotected where shortWindow && !status.unprotected:
-      text = "This machine is busy (awake \(awake)), but it may sleep under the job. " + window
+      text = "This machine is busy (awake \(awake)), but it may sleep under the job."
     case .busyUnprotected:
       text =
         status.suppressed
@@ -514,7 +514,7 @@ struct WakefulnessBadge: View {
         text += " It has been busy for \(awake), past its awake ceiling. Click to keep it awake."
       }
     }
-    if shortWindow, !text.hasSuffix(window) { text += " " + window }
+    if shortWindow { text += " " + window }
     if let settings, let mismatch = status.settingsMismatch(against: settings) {
       text += " " + mismatch
     }
