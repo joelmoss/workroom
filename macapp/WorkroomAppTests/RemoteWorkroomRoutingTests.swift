@@ -332,6 +332,38 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     XCTAssertFalse(RemoteHosts.shared.isLetGo(host), "closing the pane was refused as a read")
   }
 
+  // Value: protects=a pane attaching to a box the app let go of takes the box back, so its prompts
+  // are heard while the pane's ssh holds it; fails_when=attachCommand stops waking a let-go host;
+  // why_new=no test attaches a pane to a let-go host; seam=none
+  /// A pane attaching (a reconnect after a dropped link, a window reopened) is the user at the box:
+  /// its ssh holds the box awake, so the app takes it back rather than leave it unwatched.
+  @MainActor
+  func testAPaneAttachingToABoxLetGoOfTakesItBack() async throws {
+    let host = await boxdHostLetGoOf()
+    guard case .remote(let id) = host else { return XCTFail("not a remote host") }
+    let session = UUID()
+    let sessions = PersistentSessionService.shared
+    sessions.registerRemoteSession(
+      session, on: host,
+      via: ContainerHostDriver(
+        hosts: [
+          id: .init(
+            address: "127.0.0.1", port: 1, user: "boxd", identityFile: "/keys/id",
+            hostKey: "ssh-ed25519 AAAA", agentSocket: "/s")
+        ], directory: FileManager.default.temporaryDirectory),
+      workingDirectory: "/home/boxd/r")
+    defer { sessions.forgetRemoteSession(session) }
+
+    XCTAssertNotNil(sessions.attachCommand(forSession: session))
+
+    // The take-back runs in its own task.
+    for _ in 0..<100 where RemoteHosts.shared.isLetGo(host) {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertFalse(
+      RemoteHosts.shared.isLetGo(host), "a pane attached to a box the app let go of left it so")
+  }
+
   /// A target names its repository by host: a reachable remote one by its host's location, and one
   /// it can't reach by none, so a viewer never reads its path on this Mac.
   func testATargetResolvesItsRemoteLocationFromItsHost() throws {

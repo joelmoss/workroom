@@ -700,13 +700,20 @@ final class WakefulnessModel: ObservableObject {
     issued: (generation: Int, request: Int),
     status: @Sendable () async throws -> AgentWakefulness
   ) async -> AgentWakefulness? {
-    let next = try? await status()
+    let next: AgentWakefulness?
+    var reachedAgent = false
+    do { next = try await status() } catch {
+      next = nil
+      // A read refused before it left (the host let go of, asleep, not connected) says nothing
+      // about the box, so it neither holds it nor starts the hold's clock.
+      reachedAgent = !(error is RepositoryRoutingError)
+    }
     guard !Task.isCancelled else { return next }
     guard let next else {
       guard issued.request == requestsIssued else { return nil }
       if self.status != nil { self.status = nil }
       // A failed read says nothing about a job, so it holds the box, for one ceiling at most.
-      report(busy: holding(ceiling: lastCeiling))
+      if reachedAgent { report(busy: holding()) }
       return nil
     }
     guard issued.request > newestApplied else { return next }
@@ -722,8 +729,7 @@ final class WakefulnessModel: ObservableObject {
       untrustedSince = nil
       report(busy: next.busy)
     } else {
-      let held = holding(ceiling: next.ceilingSeconds ?? lastCeiling)
-      report(busy: held && (next.running || next.busy))
+      report(busy: holding() && (next.running || next.busy))
     }
     if issued.generation == promptGeneration {
       prompt.reconcile(next, now: Date())
@@ -731,13 +737,14 @@ final class WakefulnessModel: ObservableObject {
     return next
   }
 
-  /// Whether a reading the app can't trust still holds the box: for `ceiling` (the agent's default
-  /// when none is known) from the first such reading.
-  private func holding(ceiling: TimeInterval?) -> Bool {
+  /// Whether a reading the app can't trust still holds the box: for its last known ceiling (the
+  /// one in preferences, which the app hands the agent, before any is known) from the first such
+  /// reading.
+  private func holding() -> Bool {
     let since = untrustedSince ?? Date()
     untrustedSince = since
     return Date().timeIntervalSince(since)
-      < (ceiling ?? AgentWakefulnessSettings.defaultCeiling)
+      < (lastCeiling ?? AgentWakefulnessSettings.current.ceiling)
   }
 
   /// A remote box that is not busy may be let go of, so the app's own traffic stops holding it

@@ -474,6 +474,12 @@ final class PersistentSessionService {
           to: remote.host, session: sessionID, workingDirectory: remote.workingDirectory,
           restored: restored, metadata: remote.metadata)
         attachedRemote.insert(sessionID)
+        // A pane attaching is the user at that box, as a click is: a host the app let go of is
+        // taken back, so its badge and ceiling prompts are heard while the pane's ssh holds it.
+        let host = remote.host
+        if RemoteHosts.shared.isLetGo(host) {
+          Task { try? await RemoteHosts.shared.ensureConnected(host, wake: true) }
+        }
         return command
       } catch {
         logger.error(

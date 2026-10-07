@@ -1925,16 +1925,18 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     whose workroom is not selected, which forwards no port and has no pane attached is let go of: its
     connection closed, no background read reconnecting it, its badge sending nothing, and its row
     showing "idle, not connected" (an open moon) until boxd confirms it asleep. Selecting or
-    opening the workroom, or a click (closing a pane, Keep awake), takes it back. A remote pane's
-    own ssh keeps its box awake whatever the app does, so a host with a pane attached is never let
-    go of; a pane restored at launch attaches only once it is shown, and until then holds nothing.
+    opening the workroom, a click (closing a pane, Keep awake), or a pane attaching takes it back.
+    A remote pane's own ssh keeps its box awake whatever the app does, so a host with a pane
+    attached is never let go of; a pane restored at launch attaches only once it is shown, and until then holds nothing.
     The app polls each connected boxd host itself, so a row scrolled out of view still lets its
     box go; it ignores IDLE readings for 10 s after a connect, so the read that connected the host
     is answered first; and a host whose agent's wakefulness service has stopped is let go of too,
     as nothing on it holds the box awake, unless its last reading was BUSY (the connection is then
     all that keeps the job's box awake): that reading never changes and nothing will ask about it,
-    so it holds the box for one ceiling at most. A stalled service's reading, and a failed one,
-    hold the box the same way: for one ceiling from the first such reading, then it is let go. The
+    so it holds the box for one ceiling at most. A stalled service's reading, and a read that
+    reached the agent and failed, hold the box the same way: for one ceiling from the first such
+    reading (a trusted reading starts the count again), then it is let go. A read refused before
+    it left, as for a host already let go of, counts for nothing. The
     box's idle window is read on every connect: a failed read keeps the last one, and an answer with
     no timer set clears it, so the badge stops warning about a timer that was turned off. A host let
     go of is asked about again once its boxd idle window (plus 30 s) has passed: if boxd says it is

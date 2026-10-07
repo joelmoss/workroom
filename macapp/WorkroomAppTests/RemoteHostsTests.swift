@@ -283,9 +283,11 @@ final class RemoteHostsTests: XCTestCase {
     // Not within the grace after its connect, so the read that connected it is answered first.
     let tooSoon = await remote.observed(host, busy: false)
     XCTAssertFalse(tooSoon, "a host was let go of straight after its connect")
-    // The grace is one poll: the poll that follows a connect is the first that may let it go.
-    XCTAssertEqual(RemoteHosts.letGoGrace, WakefulnessModel.pollInterval)
-    connects.advance(RemoteHosts.letGoGrace)
+    // The grace is one poll: a reading just inside it is refused, the next poll's may let it go.
+    connects.advance(RemoteHosts.letGoGrace - .seconds(1))
+    let stillTooSoon = await remote.observed(host, busy: false)
+    XCTAssertFalse(stillTooSoon, "a host was let go of within its grace")
+    connects.advance(.seconds(1))
     let letGo = await remote.observed(host, busy: false)
     XCTAssertTrue(letGo)
     try await remote.ensureConnected(host, wake: true)
