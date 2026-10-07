@@ -172,8 +172,8 @@ pub struct FrozenSession {
     pub master: i32,
     pub columns: u16,
     pub rows: u16,
-    /// The screen as VT bytes (`Shadow::replay`), never a snapshot: two agent revisions share no
-    /// snapshot format, and they do share VT.
+    /// The screen as VT bytes, as an attaching client is shown it (`Shadow::replay_for`), never a
+    /// snapshot: two agent revisions share no snapshot format, and they do share VT.
     pub screen: Vec<u8>,
     /// The session's metadata (`Session::metadata`), so its workroom survives the hand-off.
     pub metadata: Vec<(String, String)>,
@@ -698,7 +698,7 @@ impl SessionStore {
         let mut painted = true;
         let size = {
             let mut attached = attached.lock().expect("attachment lock poisoned");
-            let replay = shadow.lock().map(|s| s.replay()).unwrap_or_default();
+            let replay = live_replay(&pty, &shadow);
             if !replay.is_empty() {
                 if let Ok(mut writer) = writer.lock() {
                     // CHUNKED, because `replay()` has no size bound and `Frame::encode` PANICS
@@ -964,8 +964,8 @@ impl SessionStore {
     /// What a client attaching to this session should be sent before anything else, so it sees
     /// the screen rather than waiting for the next keystroke to produce output.
     pub fn replay_bytes(&self, id: SessionId) -> Vec<u8> {
-        match self.shadow(id) {
-            Some(shadow) => shadow.lock().map(|s| s.replay()).unwrap_or_default(),
+        match self.parts(id) {
+            Some((pty, shadow, _)) => live_replay(&pty, &shadow),
             None => Vec::new(),
         }
     }
@@ -1034,7 +1034,11 @@ impl SessionStore {
                     master: pty.master_fd(),
                     columns,
                     rows,
-                    screen: shadow.lock().map(|s| s.replay()).unwrap_or_default(),
+                    // As a client would be shown it. The table carries no owner, so the new agent
+                    // gives any report in it to whoever owns the pty then; a dead sender's report
+                    // frozen whole would become the shell's, busy at its prompt (#359). A stopped
+                    // sender (^Z) loses its report here and shows idle until its next one.
+                    screen: live_replay(pty, shadow),
                     metadata: metadata.clone(),
                 }
             })
@@ -1060,7 +1064,8 @@ impl SessionStore {
         metadata: Vec<(String, String)>,
     ) -> Result<(), SessionError> {
         let mut shadow = Shadow::new(columns, rows);
-        shadow.write(screen);
+        // A hand-off keeps the processes, so whoever owns the pty now sent any report in `screen`.
+        shadow.write_from_pty(screen, || pty.foreground_pgid());
         let session = Session {
             id,
             pty: Arc::new(pty),
@@ -1389,6 +1394,16 @@ fn apply_size(
     held.changed = true;
 }
 
+/// What a client attaching to a live session is shown: its screen, busy only while the program
+/// that reported busy still owns the pty (`Shadow::replay_for`). `attach` and `replay_bytes` share
+/// it, so the tests that read the one cover the other.
+fn live_replay(pty: &Pty, shadow: &Mutex<Shadow>) -> Vec<u8> {
+    shadow
+        .lock()
+        .map(|s| s.replay_for(pty.foreground_pgid()))
+        .unwrap_or_default()
+}
+
 fn terminal_envelope(stream: u32, frame: Frame) -> Vec<u8> {
     Envelope::new(Service::Terminal, stream, frame.encode()).encode()
 }
@@ -1486,7 +1501,7 @@ fn read_session(
             let clients = match read {
                 Ok(n) if n > 0 => {
                     if let Ok(mut shadow) = shadow.lock() {
-                        shadow.write(&buffer[..n]);
+                        shadow.write_from_pty(&buffer[..n], || pty.foreground_pgid());
                     }
                     held.changed = true;
                     held.clients.iter().map(Client::target).collect::<Vec<_>>()
@@ -2071,6 +2086,210 @@ mod tests {
         // The refused pty was dropped, which hangs its shell up; reap it so no zombie is left.
         unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
         store.kill_all();
+    }
+
+    /// A hand-off keeps the busy indicator: the screen a session is frozen with, adopted by the
+    /// next program, replays its last OSC 9;4 report, so a client that attaches afterwards is told
+    /// the session is busy (#359). Unlike the on-disk record, a hand-off's screen is the live
+    /// replay (`live_replay`), which keeps the report while its sender owns the pty.
+    /// Value: protects=a session adopted from a frozen screen replays the progress report it was frozen with; fails_when=frozen() captures record() instead of the live replay, or adopt() drops the report; why_new=hand_off.rs checks pids and exit codes, not what an adopted screen replays; seam=none
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn an_adopted_session_replays_the_progress_report_it_was_frozen_with() {
+        let before = SessionStore::new();
+        let args = [
+            OsString::from("-c"),
+            OsString::from("printf 'WORKING\\033]9;4;3\\033\\\\'; sleep 5"),
+        ];
+        let e = env();
+        before.create(spec(id(81), &args, &e)).expect("create");
+        let started = Instant::now();
+        let screen = loop {
+            let frozen = before
+                .frozen(Duration::from_secs(2), |all| all[0].screen.clone())
+                .expect("frozen");
+            if has(&frozen, b"WORKING") || started.elapsed() > Duration::from_secs(5) {
+                break frozen;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+
+        let after = SessionStore::new();
+        let sleep = [OsString::from("-c"), OsString::from("sleep 5")];
+        let pty = Pty::spawn(OsStr::new("/bin/sh"), None, &sleep, &e, None, 80, 24).expect("pty");
+        after
+            .adopt(id(81), pty, 80, 24, &screen, Vec::new())
+            .expect("adopt");
+
+        let replay = after.replay_bytes(id(81));
+        assert!(
+            has(&replay, b"WORKING"),
+            "fixture: nothing was frozen; got {replay:?}"
+        );
+        assert!(
+            has(&replay, b"\x1b]9;4;3"),
+            "the adopted session lost its progress report; got {replay:?}"
+        );
+        before.kill_all();
+        after.kill_all();
+    }
+
+    /// `/bin/sh -c` for a session whose job-controlled child (reporting busy first when `report`)
+    /// waits for `gate` to exist and then exits without a REMOVE, as a killed agent does. `set -m` puts the
+    /// child in its own foreground group, as a program started from an interactive shell is. The
+    /// gate, not a sleep, decides when it exits, so a loaded test run cannot outpace it.
+    #[cfg(feature = "terminal-state")]
+    fn reporter_args(gate: &std::path::Path, report: bool) -> [OsString; 2] {
+        let report = if report {
+            r#"printf "\033]9;4;3\033\\\\"; "#
+        } else {
+            ""
+        };
+        [
+            OsString::from("-c"),
+            OsString::from(format!(
+                r#"set -m; /bin/sh -c '{report}until [ -e "{}" ]; do sleep 0.02; done'; echo GONE; sleep 5"#,
+                gate.display()
+            )),
+        ]
+    }
+
+    #[cfg(feature = "terminal-state")]
+    fn has(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// Polls `read` for up to 5 s until `needle` is in it, and returns the last read.
+    #[cfg(feature = "terminal-state")]
+    fn wait_for_bytes(needle: &[u8], mut read: impl FnMut() -> Vec<u8>) -> Vec<u8> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut bytes = read();
+        while !has(&bytes, needle) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            bytes = read();
+        }
+        bytes
+    }
+
+    /// A program killed or crashed mid-turn never sends its REMOVE. The app clears its spinner on
+    /// the shell's next prompt; the shadow cannot see that, so the replay says idle once the
+    /// program that sent the report no longer owns the pty (#359).
+    /// Value: protects=a reattach after the reporting program died is not told busy; fails_when=replay_for ignores the foreground or the owner is never noted; why_new=every other progress test has the reporter still alive or a clean REMOVE; seam=none
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_report_from_a_program_that_has_gone_is_not_replayed() {
+        let gate = std::env::temp_dir().join(format!("wr-gone-{}", std::process::id()));
+        let _ = std::fs::remove_file(&gate);
+        let store = SessionStore::new();
+        let args = reporter_args(&gate, true);
+        let e = env();
+        store.create(spec(id(82), &args, &e)).expect("create");
+        let busy = b"\x1b]9;4;3";
+
+        let replay = wait_for_bytes(busy, || store.replay_bytes(id(82)));
+        assert!(
+            has(&replay, busy),
+            "fixture: the live reporter was never replayed as busy; got {replay:?}"
+        );
+        std::fs::write(&gate, b"").expect("open the gate");
+        let replay = wait_for_bytes(b"GONE", || store.replay_bytes(id(82)));
+        store.kill_all();
+        let _ = std::fs::remove_file(&gate);
+        assert!(
+            has(&replay, b"GONE"),
+            "fixture: the reporter never exited; got {replay:?}"
+        );
+        assert!(
+            !has(&replay, busy),
+            "a report from a program that has gone was replayed; got {replay:?}"
+        );
+    }
+
+    /// A hand-off of a session whose reporter has gone freezes it idle, so the new agent cannot
+    /// hand the dead program's report to the shell at its prompt (#359).
+    /// Value: protects=a hand-off after the reporter died does not resurrect busy; fails_when=frozen() captures the whole replay() instead of the live one; why_new=the other hand-off tests keep the reporter alive; seam=none
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn a_hand_off_after_the_reporter_has_gone_is_frozen_idle() {
+        let gate = std::env::temp_dir().join(format!("wr-frozen-gone-{}", std::process::id()));
+        let _ = std::fs::remove_file(&gate);
+        let store = SessionStore::new();
+        let args = reporter_args(&gate, true);
+        let e = env();
+        store.create(spec(id(84), &args, &e)).expect("create");
+        let busy = b"\x1b]9;4;3";
+        let replay = wait_for_bytes(busy, || store.replay_bytes(id(84)));
+        assert!(has(&replay, busy), "fixture: never busy; got {replay:?}");
+        std::fs::write(&gate, b"").expect("open the gate");
+        wait_for_bytes(b"GONE", || store.replay_bytes(id(84)));
+
+        let screen = store
+            .frozen(Duration::from_secs(2), |all| all[0].screen.clone())
+            .expect("frozen");
+        store.kill_all();
+        let _ = std::fs::remove_file(&gate);
+        assert!(
+            has(&screen, b"GONE"),
+            "fixture: the reporter never exited; got {screen:?}"
+        );
+        assert!(
+            !has(&screen, busy),
+            "a dead reporter's report was frozen into the hand-off; got {screen:?}"
+        );
+    }
+
+    /// A hand-off keeps the processes, so `adopt` notes who owns the pty as the sender of the
+    /// report in the frozen screen; when that program later goes, the replay says idle (#359).
+    /// Value: protects=an adopted session whose reporter dies stops replaying busy; fails_when=adopt writes the screen without noting the owner; why_new=the other adopt test keeps its reporter alive, so it passes with no owner at all; seam=none
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn an_adopted_report_is_dropped_once_its_sender_goes() {
+        let gate = std::env::temp_dir().join(format!("wr-adopt-gone-{}", std::process::id()));
+        let _ = std::fs::remove_file(&gate);
+        // The report reaches this agent only in the frozen screen, as after a hand-off: the program
+        // sent it to the old agent, so nothing the new one reads names its sender.
+        let args = reporter_args(&gate, false);
+        let e = env();
+        let pty = Pty::spawn(OsStr::new("/bin/sh"), None, &args, &e, None, 80, 24).expect("pty");
+        // Adopt only once the reporter owns the pty, as it would mid-turn.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pty.foreground_pgid() == Some(pty.child_pid()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_ne!(
+            pty.foreground_pgid(),
+            Some(pty.child_pid()),
+            "fixture: the reporter never took the foreground"
+        );
+        let store = SessionStore::new();
+        store
+            .adopt(
+                id(83),
+                pty,
+                80,
+                24,
+                b"working\r\n\x1b]9;4;3\x1b\\",
+                Vec::new(),
+            )
+            .expect("adopt");
+        let busy = b"\x1b]9;4;3";
+        assert!(
+            has(&store.replay_bytes(id(83)), busy),
+            "fixture: the adopted report was not replayed while its sender lives"
+        );
+
+        std::fs::write(&gate, b"").expect("open the gate");
+        let replay = wait_for_bytes(b"GONE", || store.replay_bytes(id(83)));
+        store.kill_all();
+        let _ = std::fs::remove_file(&gate);
+        assert!(
+            has(&replay, b"GONE"),
+            "fixture: the reporter never exited; got {replay:?}"
+        );
+        assert!(
+            !has(&replay, busy),
+            "an adopted report outlived its sender; got {replay:?}"
+        );
     }
 
     /// A session whose attachment lock stays held (a slow client's repaint) is left for the next

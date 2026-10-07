@@ -322,6 +322,97 @@ fn a_reattaching_client_is_shown_the_screen() {
     let _ = agent.wait();
 }
 
+/// Runs `command` in a new session's shell, drops the client once `marker` shows, and returns
+/// everything a second client on the same session is sent unprompted: the replay.
+fn replay_after(name: &str, session: &str, command: &str, marker: &str) -> String {
+    let workspace = Workspace::new(name);
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+
+    let mut first = attach(&socket, session);
+    {
+        let stdin = first.stdin.as_mut().expect("stdin");
+        std::thread::sleep(Duration::from_millis(400));
+        stdin.write_all(command.as_bytes()).expect("write");
+        stdin.flush().expect("flush");
+    }
+    let mut reader = ClientReader::new(&mut first);
+    let seen = reader.read_until(&format!("{marker}\r\n"), Duration::from_secs(10));
+    assert!(seen.contains(marker), "setup failed; got {seen:?}");
+    reader.drain(Duration::from_millis(500));
+    first.kill().expect("kill");
+    first.wait().expect("reap");
+    assert!(
+        wait_for(Duration::from_secs(5), || {
+            list_sessions(&socket).contains("detached")
+        }),
+        "session did not detach"
+    );
+
+    // The second client types nothing, so all it reads is the replay.
+    let mut second = attach(&socket, session);
+    let mut reader = ClientReader::new(&mut second);
+    reader.read_until(marker, Duration::from_secs(10));
+    reader.drain(Duration::from_millis(500));
+    let seen = reader.read_until(marker, Duration::ZERO).to_string();
+
+    let _ = second.kill();
+    let _ = second.wait();
+    let _ = agent.kill();
+    let _ = agent.wait();
+    seen
+}
+
+/// An agent mid-turn reports OSC 9;4 once, at the start, and not again until the turn ends (#359).
+/// A client that reattaches in between must be told, or its busy indicator reads idle.
+///
+/// The reporter is a foreground program still running when the client reattaches, as an agent
+/// mid-turn is: the replay is busy only while the program that reported owns the pty.
+///
+/// Matched on the ESC byte: the shell echoes the command line, which holds `]9;4` as text.
+#[test]
+fn a_reattaching_client_is_told_the_session_is_busy() {
+    if !has_terminal_state() {
+        eprintln!("skipping: agent built without the terminal-state feature");
+        return;
+    }
+    let seen = replay_after(
+        "busy",
+        "5a5a5a5a-6b6b-7c7c-8d8d-9e9e9e9e9e9e",
+        "/bin/sh -c 'printf \"\\033]9;4;3;\\033\\\\\\\\\"; echo WORK\"\"ING; sleep 30'\n",
+        "WORKING",
+    );
+    assert!(
+        seen.contains("\x1b]9;4;3"),
+        "the replay did not carry the progress report; got {seen:?}"
+    );
+}
+
+/// The other half: a report the program has since cleared comes back as an explicit REMOVE, so a
+/// client still showing the old busy state drops it.
+#[test]
+fn a_reattaching_client_is_not_told_a_cleared_report() {
+    if !has_terminal_state() {
+        eprintln!("skipping: agent built without the terminal-state feature");
+        return;
+    }
+    let seen = replay_after(
+        "idle",
+        "6b6b6b6b-7c7c-8d8d-9e9e-afafafafafaf",
+        "printf '\\033]9;4;3;\\033\\\\'; printf '\\033]9;4;0;\\033\\\\'; echo DO''NE\n",
+        "DONE",
+    );
+    assert!(seen.contains("DONE"), "no replay arrived; got {seen:?}");
+    assert!(
+        !seen.contains("\x1b]9;4;3"),
+        "a cleared progress report was replayed; got {seen:?}"
+    );
+    assert!(
+        seen.contains("\x1b]9;4;0"),
+        "the replay did not say the session is idle; got {seen:?}"
+    );
+}
+
 /// Scrollback is most of what a detach used to cost: the screen is only the last 24 rows, and a
 /// build or test run's output is all above it. This marker is pushed well off-screen before the
 /// drop, so seeing it again can only mean history was restored.
