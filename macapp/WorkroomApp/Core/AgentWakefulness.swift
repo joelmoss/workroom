@@ -779,13 +779,12 @@ final class WakefulnessModel: ObservableObject {
   /// without this a box whose row was scrolled away stayed connected, and awake, until quit.
   /// ponytail: runs until the host is let go of or forgotten; a connection that drops otherwise
   /// leaves it failing one local request every `pollInterval` until the next connect.
-  /// Starting it (`pollWhileConnected`, called on each connect) also restarts the untrusted hold's
-  /// clock: a connect is new evidence.
   private var connectionPoll: Task<Void, Never>?
 
-  func pollWhileConnected() {
-    // A connect is new evidence: an untrusted spell from before it does not cut a new one short.
-    untrustedSince = nil
+  /// Starts the connection poll. `connected` is true from a connect, which is new evidence, so it
+  /// also restarts the untrusted hold's clock; a let-go taken back only resumes the poll.
+  func pollWhileConnected(connected: Bool = true) {
+    if connected { untrustedSince = nil }
     guard connectionPoll == nil else { return }
     connectionPoll = Task { [weak self] in await self?.poll() }
   }

@@ -1134,13 +1134,15 @@ final class RemoteHosts: @unchecked Sendable {
       PersistentSessionService.shared.hasAttachedPane(on: host)
     }
     // The last check before the disconnect, after every wait: a selection, a click or a pane
-    // across them takes the host back, and keeps its connection and its poll.
+    // across them takes the host back, which keeps its connection and resumes its poll.
     let committed = lock.withLock { () -> Bool in
       if paneAttached { letGoAt[host] = nil }
       return letGoAt[host] != nil && !selectedHosts.values.contains(host)
     }
     guard committed else {
-      await MainActor.run { WakefulnessModel.Hosts.shared.models[id]?.pollWhileConnected() }
+      await MainActor.run {
+        WakefulnessModel.Hosts.shared.models[id]?.pollWhileConnected(connected: false)
+      }
       return false
     }
     if let lease { await HostConnectionManager.shared.disconnect(lease) }

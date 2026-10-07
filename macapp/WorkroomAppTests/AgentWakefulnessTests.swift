@@ -517,12 +517,13 @@ final class AgentWakefulnessTests: XCTestCase {
     let idle = (#""busy":true"#, #""busy":false"#)
     let (refusedID, recoveredID, reconnectedID, control) = (UUID(), UUID(), UUID(), UUID())
     let reachedIDs = [UUID(), UUID(), UUID()]
+    let resumedID = UUID()
     RemoteHosts.shared.adopt(
       [
         Project(
           path: "/proj", vcs: "git",
-          workrooms: ([refusedID, recoveredID, reconnectedID, control] + reachedIDs).map(
-            boxdWorkroom))
+          workrooms: ([refusedID, recoveredID, reconnectedID, control, resumedID] + reachedIDs)
+            .map(boxdWorkroom))
       ], sweep: false)
     let trusted = try status([ceiling])
     let (refused, recovered, reconnected) = (Script(trusted), Script(trusted), Script(trusted))
@@ -537,7 +538,8 @@ final class AgentWakefulnessTests: XCTestCase {
     defer { reconnectedModel.stopPollingWhileConnected() }
     for model in [refusedModel, recoveredModel, reconnectedModel] { await model.refresh() }
     // One host's reads are refused before they leave, every way they can be; another's reach an
-    // agent that fails, then answers again; the third's fail, and then it connects afresh.
+    // agent that fails, then answers again; the third's fail, and then it connects afresh; and
+    // three more reach the agent and fail, which starts their clocks.
     let host = HostID.remote(refusedID)
     let refusals: [Error] = [
       RepositoryRoutingError.idle(host), RepositoryRoutingError.asleep(host),
@@ -560,6 +562,13 @@ final class AgentWakefulnessTests: XCTestCase {
       HostConnectionError.connectionLost, HostConnectionError.requestTimedOut,
       HostConnectionError.serviceUnavailable("wakefulness"),
     ]
+    // A poll resumed after a let-go was taken back is no connect: its clock keeps running.
+    let resumed = Script(trusted)
+    let resumedModel = model(resumed, resumedID)
+    defer { resumedModel.stopPollingWhileConnected() }
+    await resumedModel.refresh()
+    resumed.reply = .failure(Unavailable())
+    await resumedModel.refresh()
     var reachedModels: [(WakefulnessModel, Script)] = []
     for (id, failure) in zip(reachedIDs, reached) {
       let script = Script(trusted)
@@ -569,13 +578,17 @@ final class AgentWakefulnessTests: XCTestCase {
       await reachedModel.refresh()
       reachedModels.append((reachedModel, script))
     }
-    // Past the ceiling those reads would have started, both come back stalled: a full hold.
+    // Past the ceiling those reads would have started, all come back stalled: a full hold for the
+    // first three, whose clocks never started or restarted, and none for the reached ones.
     try await Task.sleep(for: .milliseconds(1100))
     let stalledReply = try status([ceiling, stalled, idle])
     for script in [refused, recovered, reconnected] + reachedModels.map(\.1) {
       script.reply = .success(stalledReply)
     }
     for (reachedModel, _) in reachedModels { await reachedModel.refresh() }
+    resumed.reply = .success(stalledReply)
+    resumedModel.pollWhileConnected(connected: false)
+    await resumedModel.refresh()
     await refusedModel.refresh()
     await recoveredModel.refresh()
     reconnectedModel.pollWhileConnected()
@@ -591,7 +604,7 @@ final class AgentWakefulnessTests: XCTestCase {
       RemoteHosts.shared.isLetGo(.remote(recoveredID)), "a trusted reading left the hold's clock")
     XCTAssertFalse(
       RemoteHosts.shared.isLetGo(.remote(reconnectedID)), "a connect left the hold's old clock")
-    for id in reachedIDs {
+    for id in reachedIDs + [resumedID] {
       await eventually("a failed read that reached the agent did not start the hold's clock") {
         RemoteHosts.shared.isLetGo(.remote(id))
       }
