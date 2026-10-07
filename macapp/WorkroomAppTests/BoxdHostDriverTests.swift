@@ -200,8 +200,10 @@ final class BoxdHostDriverTests: XCTestCase {
     do {
       _ = try await driver(cli).create()
       XCTFail("a refused machine became a base")
-    } catch HostDriverError.leftBehind(let cause, let leftover) {
+    } catch HostDriverError.leftBehind(let cause, let leftover, let host) {
       XCTAssertEqual(cause, "Couldn't provision the host: boxd machine new: error: quota exceeded")
+      // Named, so the caller can record the machine for a delete to take down.
+      XCTAssertNotNil(host, "a machine left behind was not named")
       XCTAssertEqual(leftover.count, 1)
       XCTAssertTrue(leftover[0].hasPrefix("machine workroom-"), leftover[0])
     }

@@ -110,8 +110,9 @@ enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
   /// host as it was, still known to the driver, so it can be tried again.
   case provisioning(String)
   /// A failed `create` or `deriveFromBase` could not remove what it had made: each of `leftover`
-  /// is still there, named by what the driver called it.
-  case leftBehind(cause: String, leftover: [String])
+  /// is still there, named by what the driver called it. `host`, when the driver can name it, is
+  /// the host it made, so the caller can record it for a later delete to take down (#356).
+  case leftBehind(cause: String, leftover: [String], host: HostID? = nil)
 
   var errorDescription: String? {
     switch self {
@@ -119,7 +120,7 @@ enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
     case .notImplemented(let what): return "\(what) is not implemented yet."
     case .invalidConfiguration(let detail): return "Invalid host configuration: \(detail)"
     case .provisioning(let detail): return "Couldn't provision the host: \(detail)"
-    case .leftBehind(let cause, let leftover):
+    case .leftBehind(let cause, let leftover, _):
       return
         "Couldn't provision the host: \(cause) Still there: \(leftover.joined(separator: "; "))"
     }

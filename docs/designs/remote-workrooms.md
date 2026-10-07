@@ -1909,7 +1909,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     signed in is a CLI call, so the create checks it, naming `boxd auth login`.
   - **Sleeping boxes.** An ssh login wakes a box, so a background read of a boxd host asks boxd
     first (`machine get`, `standby` or `hibernated`) and leaves an asleep box alone; its row shows a
-    moon. Opening the workroom wakes it. boxd is asked at most once per host per 30 s.
+    moon. Opening the workroom wakes it. boxd is asked at most once per host per 30 s about a box it
+    called asleep. When boxd cannot say (no CLI, a timeout, output the app does not expect), the
+    read leaves the box alone too and logs why, so a broken CLI cannot wake every box.
   - **The ceiling across a wake.** A resume after an unanswered prompt carries the awake time from
     before the sleep, so the agent asks again at once rather than granting a running job another
     whole ceiling; the resume mask's IDLE ticks are ignored by the ceiling. Provisioning's connects

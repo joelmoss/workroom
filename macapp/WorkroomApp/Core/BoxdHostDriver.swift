@@ -225,7 +225,8 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       (error as? CLIFailure).map { HostDriverError.provisioning($0.localizedDescription) }
       ?? error
     guard !leftover.isEmpty else { throw error }
-    throw HostDriverError.leftBehind(cause: error.localizedDescription, leftover: leftover)
+    throw HostDriverError.leftBehind(
+      cause: error.localizedDescription, leftover: leftover, host: .remote(id))
   }
 
   /// Nil once the machine is gone, whether this removed it or it was never there.
