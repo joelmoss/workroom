@@ -601,9 +601,6 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let edit = try await onHost(
       driver, instance.host, "cd \(path) && echo edited >> '\(tracked)' && echo new > fresh.txt")
     XCTAssertEqual(edit.status, 0, edit.output)
-
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let mine = RemoteWorkrooms.provisioner
     let project = Project(
       path: "/proj", vcs: "git",

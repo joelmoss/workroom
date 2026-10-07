@@ -277,7 +277,8 @@ Codex (gpt-6.1-sol, cold read of the repo):
 
 No new artifact. The agent ships inside the app (Mac and static Linux builds) and is pushed to a
 host on a version mismatch (#231), so a new protocol version reaches hosts through the existing
-bootstrap. The remote UI stays behind `remoteWorkroomsPreview` in Nightly and Dev until #260.
+bootstrap. The remote UI stayed behind `remoteWorkroomsPreview` in Nightly and Dev until 2026-10-07, when
+the owner removed that gate.
 
 ## Next Steps
 

@@ -221,12 +221,11 @@ struct TerminalTarget: Identifiable, Hashable {
   /// editor, run command, status) guards on `isMissing`; only the rendering sites tell the reasons
   /// apart.
   let unavailability: Unavailability?
-  /// The host of a remote workroom whose panes this app can reach (#253): set only while remote
-  /// workrooms are on (`RemoteWorkrooms.isEnabled`) and its host is recorded and serving. Panes
+  /// The host of a remote workroom whose panes this app can reach (#253): set only while its host
+  /// is recorded and serving. Panes
   /// mount there; every other local action still guards on `isMissing`, which stays true.
   var remoteHost: UUID? = nil
-  /// Why a remote workroom's panes don't open here, when that isn't simply this build
-  /// (`Workroom.remoteNote`).
+  /// Why a remote workroom's panes don't open here (`Workroom.remoteNote`).
   var remoteNote: String? = nil
   /// What kind of host a remote workroom is on (`HostDescriptor.kindDescription`), for its icon's
   /// tooltip (#309).
@@ -340,7 +339,6 @@ extension Workroom {
         "Another Workroom build made it (\(host.provisioner ?? "unknown")), and only that build "
         + "can open it."
     }
-    if !RemoteWorkrooms.isEnabled { return "Remote workrooms are turned off in this build." }
     switch host.state {
     case "creating":
       return "It isn't ready: it is being created, or creating it was interrupted. If nothing is "
@@ -356,8 +354,7 @@ extension Workroom {
   /// A host with no `state` is serving: "creating", "failed" and "destroyed" are not. Only this
   /// build's: another build's host takes its key.
   var reachableHost: UUID? {
-    guard let host, host.state == nil, host.provisioner == RemoteWorkrooms.provisioner,
-      RemoteWorkrooms.isEnabled
+    guard let host, host.state == nil, host.provisioner == RemoteWorkrooms.provisioner
     else { return nil }
     return host.id
   }

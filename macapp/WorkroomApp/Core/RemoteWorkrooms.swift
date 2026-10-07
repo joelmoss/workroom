@@ -6,23 +6,6 @@ import os
 /// host the app provisions. A remote workroom always belongs to a project registered on this Mac
 /// (design doc, Phase 4: there are no remote projects).
 enum RemoteWorkrooms {
-  /// Nightly and Dev only, and there only with `Defaults[.remoteWorkroomsPreview]`, until the
-  /// Phase 4 success criteria pass on two real providers (design doc, Next Steps item 5). A stable
-  /// build shows no remote UI whatever the setting says.
-  static var isEnabled: Bool {
-    if let enabledForTesting { return enabledForTesting }
-    #if DEBUG
-      let channel = true
-    #else
-      let channel = ReleaseChannel.isNightlyBuild
-    #endif
-    return channel && Defaults[.remoteWorkroomsPreview]
-  }
-
-  /// Set by tests in place of `Defaults[.remoteWorkroomsPreview]`: parallel test processes share one
-  /// defaults domain, and this is per process.
-  nonisolated(unsafe) static var enabledForTesting: Bool?
-
   /// Which container runtime makes a workroom's host (#309): Docker (Desktop, OrbStack, Colima) or
   /// Apple's `container`. The raw value is the descriptor's `driver`; `container` predates Apple's
   /// and keeps meaning Docker, so every record made before stays Docker's.

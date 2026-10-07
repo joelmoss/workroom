@@ -86,12 +86,6 @@ extension Defaults.Keys {
   /// OQ22 semantics: report only, and never let a box sleep on its own.
   static let askAtAwakeCeiling = Key<Bool>("askAtAwakeCeiling", default: false, suite: .app)
 
-  /// Turns remote workrooms on in a Nightly or Dev build (`RemoteWorkrooms.isEnabled`): the
-  /// Remote workrooms section in Settings (the broker sign-in, #251) and creating, opening and
-  /// deleting them (#253). A stable build ignores it. Hidden:
-  /// `defaults write <bundle id> remoteWorkroomsPreview -bool YES`.
-  static let remoteWorkroomsPreview = Key<Bool>(
-    "remoteWorkroomsPreview", default: false, suite: .app)
   /// Overrides the image a container workroom's host runs (#253, #309), which is otherwise the one
   /// this build pins (`RemoteWorkrooms.hostImage`). Hidden; set it with
   /// `defaults write <bundle id> remoteHostImage <image>`, e.g. `workroom-host` for the image

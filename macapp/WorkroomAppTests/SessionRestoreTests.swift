@@ -473,21 +473,22 @@ final class SessionRestoreTests: XCTestCase {
   /// save. Once the workroom is reachable, its first pane restores the whole session rather than
   /// opening a fresh shell.
   func testAnUnreachableRemoteWorkroomsSessionWaitsUntilItIsReachable() throws {
-    RemoteWorkrooms.enabledForTesting = false
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let store = AppStore()
     store.terminals.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
-    store.projects = [
+    func project(_ state: String?) -> Project {
       Project(
         path: "/proj", vcs: "git",
         workrooms: [
           Workroom(
             name: "r", path: "/home/workroom/r", vcsName: "workroom/r", warnings: [],
-            host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID()))
+            host: HostDescriptor(state: state, provisioner: RemoteWorkrooms.provisioner, id: UUID())
+          )
         ])
-    ]
+    }
+    // Still being created, so not reachable yet.
+    store.projects = [project("creating")]
     let id = TerminalTarget.workroomID(project: "/proj", name: "r")
     let session = TargetSession(
       targetID: id,
@@ -506,7 +507,7 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertEqual(store.captureWindowSession().expandedTargets, [id], "its expansion was lost")
     store.selectedTargetID = .workroom(project: "/proj", name: "r")
 
-    RemoteWorkrooms.enabledForTesting = true
+    store.projects = [project(nil)]
     let target = try XCTUnwrap(store.terminalTarget(forID: id))
     store.ensureInitialTerminal(for: target)
     XCTAssertEqual(store.terminals.tabCount(forTargetID: id), 2, "the session was not restored")
@@ -521,8 +522,6 @@ final class SessionRestoreTests: XCTestCase {
   /// restoring its own at once or opening a fresh shell; a host that cannot answer in time gets this
   /// Mac's own copy, whole. A second window showing the same workroom does not ask (D10).
   func testARemoteWorkroomWaitsForItsHostsLayoutThenFallsBackToItsOwn() async throws {
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let workroom = Workroom(
       name: "h", path: "/home/workroom/h", vcsName: "workroom/h", warnings: [],
       host: HostDescriptor(
@@ -598,8 +597,6 @@ final class SessionRestoreTests: XCTestCase {
   /// has answered, nothing unchanged, an empty layout only over one the host had (D11), and a
   /// write that cannot reach the host leaves this Mac's copy stale, to win at the next open.
   func testWhatAWindowWritesToItsHosts() async throws {
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let workroomID = UUID()
     let store = AppStore()
     store.terminals.makeView = { _, cwd, _ in
@@ -683,8 +680,6 @@ final class SessionRestoreTests: XCTestCase {
   /// knows, so it is not written back until something changes, although the restore re-minted
   /// every tab's key.
   func testAnUnansweredWorkroomsUnchangedCopyIsNotWrittenBack() async throws {
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let workroom = Workroom(
       name: "u", path: "/home/workroom/u", vcsName: "workroom/u", warnings: [],
       host: HostDescriptor(
@@ -727,8 +722,6 @@ final class SessionRestoreTests: XCTestCase {
         return 10
       }
     }
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let workroom = Workroom(
       name: "s", path: "/home/workroom/s", vcsName: "workroom/s", warnings: [],
       host: HostDescriptor(
@@ -780,8 +773,6 @@ final class SessionRestoreTests: XCTestCase {
     let saved = AppStore.hostLayoutStore
     AppStore.hostLayoutStore = { _ in host }
     defer { AppStore.hostLayoutStore = saved }
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let workroomID = UUID()
     let store = AppStore()
     store.terminals.makeView = { _, cwd, _ in
@@ -855,8 +846,6 @@ final class SessionRestoreTests: XCTestCase {
       return store
     }
     defer { AppStore.hostLayoutStore = saved }
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let workroomID = UUID()
     func project(host: UUID) -> Project {
       Project(
@@ -918,8 +907,6 @@ final class SessionRestoreTests: XCTestCase {
     let saved = AppStore.hostLayoutStore
     AppStore.hostLayoutStore = { _ in host }
     defer { AppStore.hostLayoutStore = saved }
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let workroomID = UUID()
     let first = UUID()
     func project(host: UUID) -> Project {
@@ -972,8 +959,6 @@ final class SessionRestoreTests: XCTestCase {
     let saved = AppStore.hostLayoutStore
     AppStore.hostLayoutStore = { _ in host }
     defer { AppStore.hostLayoutStore = saved }
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let workroomID = UUID()
     let first = UUID()
     func project(host: UUID) -> Project {
@@ -1032,8 +1017,6 @@ final class SessionRestoreTests: XCTestCase {
       AppStore.hostLayoutStore = savedStore
       AppStore.hostSessions = savedSessions
     }
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let workroom = Workroom(
       name: "l", path: "/home/workroom/l", vcsName: "workroom/l", warnings: [],
       host: HostDescriptor(
@@ -1074,8 +1057,6 @@ final class SessionRestoreTests: XCTestCase {
         return 2
       }
     }
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let workroomID = UUID()
     let host = SeededHost(seed: "the seed this Mac wrote")
     let saved = AppStore.hostLayoutStore
@@ -1127,8 +1108,6 @@ final class SessionRestoreTests: XCTestCase {
     let saved = AppStore.hostLayoutStore
     AppStore.hostLayoutStore = { _ in host }
     defer { AppStore.hostLayoutStore = saved }
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let workroomID = UUID()
     let store = AppStore()
     store.terminals.makeView = { _, cwd, _ in
@@ -1200,8 +1179,6 @@ final class SessionRestoreTests: XCTestCase {
   /// directory, not a remote workroom (reachable or not), not one that no longer exists.
   func testOnlyALocalTargetThatOpensReattaches() {
     // On, so the remote workroom is one whose panes do open, on its host.
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let store = AppStore()
     let here = FileManager.default.temporaryDirectory.path
     store.projects = [

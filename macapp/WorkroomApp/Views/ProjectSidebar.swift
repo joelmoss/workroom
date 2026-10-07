@@ -288,18 +288,12 @@ struct ProjectSidebar: View {
       ) {
         store.pendingProjectSettings = PendingProjectSettings(project: project)
       }
-      Group {
-        // With the preview on, "+" asks where, as the context menu does (#309).
-        if RemoteWorkrooms.isEnabled {
-          CreateRowButton(
-            help: "New workroom in \(project.displayName), on this Mac or in a local container",
-            places: { newWorkroomPlaces(in: project) })
-        } else {
-          CreateRowButton(help: "New workroom in \(project.displayName)") {
-            Task { await store.createWorkroom(in: project) }
-          }
-        }
-      }
+      // "+" asks where, as the context menu does (#309).
+      CreateRowButton(
+        help:
+          "New workroom in \(project.displayName), on this Mac, in a local container or on boxd",
+        places: { newWorkroomPlaces(in: project) }
+      )
       .opacity(busy ? 0 : 1)
       .allowsHitTesting(!busy)
       .overlay {
@@ -331,19 +325,14 @@ struct ProjectSidebar: View {
       if inside { hovered = id } else if hovered == id { hovered = nil }
     }
     .contextMenu {
-      // Nightly and Dev, behind the preview setting (#253, #309): New Workroom asks where, this Mac
-      // or a local container. Without the preview there is only this Mac, so no submenu.
-      if RemoteWorkrooms.isEnabled {
-        Menu {
-          newWorkroomPlaces(in: project)
-        } label: {
-          Label("New Workroom", systemImage: "plus")
-        }
-        // No tooltip here: a submenu's parent shows it on top of the submenu, over This Mac. Each
-        // entry has its own.
-      } else {
-        newLocalWorkroomButton(Label("New Workroom", systemImage: "plus"), in: project)
+      // New Workroom asks where: this Mac, a local container or boxd (#253, #309, #356).
+      Menu {
+        newWorkroomPlaces(in: project)
+      } label: {
+        Label("New Workroom", systemImage: "plus")
       }
+      // No tooltip here: a submenu's parent shows it on top of the submenu, over This Mac. Each
+      // entry has its own.
       Divider()
       Button {
         store.pendingProjectSettings = PendingProjectSettings(project: project)
@@ -749,23 +738,13 @@ private struct SetupSpinner: View {
   }
 }
 
-/// The always-visible "new workroom" button on a project row. Its own hover paints a
-/// subtle neutral background to read as an actionable control.
+/// The always-visible "new workroom" button on a project row: a menu of the places a workroom can
+/// go (#309). Its own hover paints a subtle neutral background to read as an actionable control.
 private struct CreateRowButton<Places: View>: View {
   let help: String
-  /// What a click does, or nil when it opens `places` instead (#309).
-  let action: (() -> Void)?
-  let places: (() -> Places)?
+  @ViewBuilder let places: () -> Places
   @State private var hovering = false
   private let theme = ThemeService.shared
-
-  init(help: String, action: @escaping () -> Void) where Places == EmptyView {
-    (self.help, self.action, self.places) = (help, action, nil)
-  }
-
-  init(help: String, @ViewBuilder places: @escaping () -> Places) {
-    (self.help, self.action, self.places) = (help, nil, places)
-  }
 
   private var glyph: some View {
     Image(systemName: "plus")
@@ -779,23 +758,16 @@ private struct CreateRowButton<Places: View>: View {
   }
 
   var body: some View {
-    Group {
-      if let places {
-        // A menu that looks exactly like the button it replaces: drawn by SwiftUI as a plain
-        // button, so the glyph keeps its size, weight and colour, with no arrow.
-        Menu(content: places) { glyph.accessibilityLabel(help) }
-          .menuStyle(.button)
-          .buttonStyle(.plain)
-          .menuIndicator(.hidden)
-          .fixedSize()
-      } else if let action {
-        Button(action: action) { glyph }
-          .buttonStyle(.plain)
-      }
-    }
-    .onHover { hovering = $0 }
-    .help(help)
-    .accessibilityLabel(help)
+    // A menu that looks exactly like a button: drawn by SwiftUI as a plain button, so the glyph
+    // keeps its size, weight and colour, with no arrow.
+    Menu(content: places) { glyph.accessibilityLabel(help) }
+      .menuStyle(.button)
+      .buttonStyle(.plain)
+      .menuIndicator(.hidden)
+      .fixedSize()
+      .onHover { hovering = $0 }
+      .help(help)
+      .accessibilityLabel(help)
   }
 }
 

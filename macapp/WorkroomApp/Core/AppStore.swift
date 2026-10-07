@@ -3107,10 +3107,7 @@ final class AppStore: ObservableObject {
     // Before publishing, so a remote workroom's panes find its host when they mount (#253).
     // No sweep while a delete is in flight: `fresh` leaves out hosts config still records, and a
     // delete that fails keeps them (#296).
-    if RemoteWorkrooms.isEnabled {
-      RemoteHosts.shared.adopt(
-        fresh, sweep: deletingProjects.isEmpty && deletingWorkrooms.isEmpty)
-    }
+    RemoteHosts.shared.adopt(fresh, sweep: deletingProjects.isEmpty && deletingWorkrooms.isEmpty)
     let acceptedPaths = Set(fresh.flatMap { [$0.path] + $0.workrooms.map(\.path) })
     RepositoryRouter.shared.replaceLocal(
       registrations.filter {
@@ -3199,7 +3196,7 @@ final class AppStore: ObservableObject {
   /// hide a failed sibling delete's hosts when that delete's own reload failed. A failed delete's
   /// reload does this itself, and `apply` holds the sweep again if another delete has begun.
   private func runHeldHostSweep() async {
-    guard RemoteWorkrooms.isEnabled, deletingProjects.isEmpty, deletingWorkrooms.isEmpty,
+    guard deletingProjects.isEmpty, deletingWorkrooms.isEmpty,
       RemoteHosts.shared.sweepHeld
     else { return }
     await load(warnings: "fast", surfaceErrors: false)
@@ -3594,8 +3591,7 @@ final class AppStore: ObservableObject {
   /// Whether creating a container workroom is on for `project`: not while another create holds it
   /// busy, since a second create would build a second base.
   func canCreateRemoteWorkroom(in project: Project) -> Bool {
-    RemoteWorkrooms.isEnabled && !isBusyProject(project.path)
-      && !deletingProjects.contains(project.path)
+    !isBusyProject(project.path) && !deletingProjects.contains(project.path)
   }
 
   /// Creates a remote workroom for `project` at `place` (#253, #309, #356): a container on this Mac

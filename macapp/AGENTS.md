@@ -203,7 +203,7 @@ side is `Core/Broker/`:
 - `AgentEnrolment.swift`: creates a grant and runs `wr-agent enrol` over `HostDriver.exec`, code on
   stdin. The agent side is `wr-agent enrol` / `wr-agent credential` (`vcs/crates/wr-agent/src/
   broker.rs`), git's credential helper on the remote host.
-- `BrokerSession.swift` backs a Settings ▸ General row hidden behind `remoteWorkroomsPreview`.
+- `BrokerSession.swift` backs the Settings ▸ General ▸ Remote workrooms row.
   `BrokerEndpoint` decides which Codaset a build talks to. Release and Nightly use codaset.dev,
   or a `brokerURL` override that is https or `http://127.0.0.1`, as the agent accepts. **A Debug
   build (the Dev app and every test host) never reaches another machine**: it defaults to the
