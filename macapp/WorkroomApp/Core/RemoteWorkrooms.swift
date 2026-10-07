@@ -970,14 +970,23 @@ final class RemoteHosts: @unchecked Sendable {
         // it go (`observed`).
         // Stamped before the poll starts, so its first reading already sees the grace.
         lock.withLock { connectedAt[host] = now() }
-        await MainActor.run { WakefulnessModel.model(forHost: id).pollWhileConnected() }
+        let model = await MainActor.run { () -> WakefulnessModel in
+          let model = WakefulnessModel.model(forHost: id)
+          model.pollWhileConnected()
+          return model
+        }
         Task {
           // A failed read keeps the window last read, rather than forgetting it; an answer with no
           // timer set (or none boxd would use) clears it.
           let window: TimeInterval?
           do { window = try await boxd.idleWindow(host) } catch { return }
           lock.withLock { idleWindows[host] = window }
-          await MainActor.run { WakefulnessModel.model(forHost: id).idleWindow = window }
+          // Given to the model this connect made, while it is still the host's: a delete across
+          // the read forgot it, and looking the host up again would make it anew, watching for
+          // prompts for good.
+          await MainActor.run {
+            if WakefulnessModel.Hosts.shared.models[id] === model { model.idleWindow = window }
+          }
         }
       }
     }
