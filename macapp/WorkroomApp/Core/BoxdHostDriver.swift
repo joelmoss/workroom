@@ -47,10 +47,11 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// The agent's socket on every host. On the home disk, never the tmpfs `/run`: the agent keeps
     /// its broker enrolment beside it (`broker.rs`), and a stopped machine would lose it.
     var agentSocket = Configuration.defaultAgentSocket
-    static let defaultAgentSocket = "/home/boxd/.local/state/workroom/agent/agent.sock"
+    static let defaultAgentSocket =
+      "/home/\(BoxdHostDriver.user)/.local/state/workroom/agent/agent.sock"
 
     /// Where the supervisor has the agent keep each session's last screen (#232).
-    var screens = "/home/boxd/.local/state/workroom/screens"
+    var screens = "/home/\(BoxdHostDriver.user)/.local/state/workroom/screens"
     /// The files the CLI writes each machine's ssh stanza and host key into.
     var sshConfig = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(".ssh/config")
@@ -373,6 +374,17 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       case activeOrg = "active_org"
       case userID = "user_id"
     }
+
+    /// The account's id, which a new host records (#356): without it, deleting the host would skip
+    /// the check that the same account is signed in, and another account's "not found" would read
+    /// as gone.
+    func requiredUserID() throws -> String {
+      guard let userID else {
+        throw HostDriverError.provisioning(
+          "boxd didn't say which account is signed in. Sign in again with `boxd auth login`.")
+      }
+      return userID
+    }
   }
 
   /// `machine get --json`, as far as the driver reads it.
@@ -443,12 +455,14 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
 
     init(from decoder: Decoder) throws {
       let value = try decoder.singleValueContainer()
-      if let number = try? value.decode(Double.self) {
-        seconds = number
-      } else {
-        seconds = Self.parse(try value.decode(String.self))
-      }
+      let read = try (try? value.decode(Double.self)) ?? Self.parse(value.decode(String.self))
+      // A timer past `maximum` (or not finite) is nothing boxd sets, and as a `Duration` it
+      // would trap: it reads as unknown instead.
+      seconds = read.flatMap { $0.isFinite && $0 <= Self.maximum ? $0 : nil }
     }
+
+    /// A week: longer than any idle timer boxd offers.
+    static let maximum: TimeInterval = 7 * 24 * 3600
 
     static func parse(_ text: String) -> TimeInterval? {
       let text = text.trimmingCharacters(in: .whitespaces).lowercased()

@@ -1044,6 +1044,7 @@ struct ChangesPanel: View {
     case .busy: return "Repository is busy — another VCS command is running."
     case .staleWorkingCopy: return "The working tree changed while it was read. Try again."
     case .asleep: return RepositoryRoutingError.asleepMessage
+    case .idle: return RepositoryRoutingError.idleMessage
     }
   }
 }

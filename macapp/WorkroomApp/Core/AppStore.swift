@@ -3620,7 +3620,7 @@ final class AppStore: ObservableObject {
       let key = base.flatMap(RemoteHosts.DriverKey.init) ?? wanted
       let (driver, environment) = try RemoteHosts.shared.environment(key)
       // A remote host has no relay to fall back to (OQ20): say so before anything is made.
-      if key.runtime == nil, environment.client == nil {
+      if key.isBoxd, environment.client == nil {
         throw RemoteWorkrooms.Failure.codasetRequired
       }
       let resolution = await WorkroomStatusResolver().resolveRepository(in: project.path)
@@ -3653,7 +3653,7 @@ final class AppStore: ObservableObject {
       }
       // Only a boxd create reports steps: a container's are quick, bar its image pull.
       let created = try await RemoteProvisioning.$reportStep.withValue(
-        key.runtime == nil ? stepped : nil
+        key.isBoxd ? stepped : nil
       ) {
         try await ContainerHostDriver.$pullProgress.withValue(report) {
           try await RemoteWorkrooms.create(

@@ -83,8 +83,8 @@ struct NewWorkroomDialog: View {
   private func isUsable(_ place: WorkroomPlace, in project: Project) -> Bool {
     switch place {
     case .thisMac: !store.isBusyProject(project.path)
-    case .container, .boxd:
-      place.remote.flatMap(RemoteWorkrooms.unavailability(of:)) == nil
+    case .remote(let remote):
+      RemoteWorkrooms.unavailability(of: remote) == nil
         && store.canCreateRemoteWorkroom(in: project)
     }
   }
@@ -311,20 +311,16 @@ struct NewWorkroomPresenter: ViewModifier {
 /// or a boxd machine.
 enum WorkroomPlace: Hashable {
   case thisMac
-  case container(RemoteWorkrooms.Runtime)
-  case boxd
+  case remote(RemoteWorkrooms.Place)
 
   static var all: [WorkroomPlace] {
-    [.thisMac] + RemoteWorkrooms.Runtime.allCases.map { .container($0) } + [.boxd]
+    [.thisMac] + RemoteWorkrooms.Runtime.allCases.map { .remote(.container($0)) } + [.remote(.boxd)]
   }
 
   /// The remote place this is, or nil for this Mac.
   var remote: RemoteWorkrooms.Place? {
-    switch self {
-    case .thisMac: nil
-    case .container(let runtime): .container(runtime)
-    case .boxd: .boxd
-    }
+    if case .remote(let place) = self { return place }
+    return nil
   }
 
   var name: String { remote?.displayName ?? "This Mac" }
@@ -332,24 +328,24 @@ enum WorkroomPlace: Hashable {
   var id: String {
     switch self {
     case .thisMac: "thisMac"
-    case .container(let runtime): runtime.rawValue
-    case .boxd: RemoteWorkrooms.boxdDriver
+    case .remote(.container(let runtime)): runtime.rawValue
+    case .remote(.boxd): RemoteWorkrooms.boxdDriver
     }
   }
 
   var icon: String {
     switch self {
     case .thisMac: "laptopcomputer"
-    case .container: "network"
-    case .boxd: "cloud"
+    case .remote(.container): "network"
+    case .remote(.boxd): "cloud"
     }
   }
 
   var detail: String {
     switch self {
     case .thisMac: "A workroom on this Mac"
-    case .container(let runtime): "A workroom in \(runtime.containerPhrase) on this Mac"
-    case .boxd: "A workroom on a boxd machine"
+    case .remote(.container(let runtime)): "A workroom in \(runtime.containerPhrase) on this Mac"
+    case .remote(.boxd): "A workroom on a boxd machine"
     }
   }
 }

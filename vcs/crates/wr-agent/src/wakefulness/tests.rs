@@ -496,8 +496,9 @@ fn the_resume_masks_cpu_for_the_tick_after_it_too() {
     assert_eq!(c.verdict(), Verdict::Busy);
 }
 
-/// The service loop's ceiling steps, as `wakefulness.rs` runs them each tick. Returns whether a
-/// prompt was raised, and the verdict the service publishes.
+/// One service tick: the classifier's step, then the service loop's own ceiling steps
+/// (`ceiling_step`). Without `honour_mask`, a control that steps the ceiling on every tick, masked
+/// or not. Returns whether a prompt was raised, and the verdict the service publishes.
 fn ceiling_tick(
     c: &mut Classifier,
     ceiling: &mut Ceiling,
@@ -506,12 +507,12 @@ fn ceiling_tick(
 ) -> (bool, Verdict) {
     c.step(s, false);
     let raw = c.verdict();
-    if c.resumed() {
-        ceiling.resumed(s.t);
-    }
     let prompted = if honour_mask {
-        ceiling.step_unless_masked(s.t, raw, c.wake_masked())
+        ceiling_step(c, ceiling, s.t, raw, false)
     } else {
+        if c.resumed() {
+            ceiling.resumed(s.t);
+        }
         ceiling.step(s.t, raw)
     };
     (prompted, ceiling.published(raw))
