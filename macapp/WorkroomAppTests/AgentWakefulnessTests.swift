@@ -1435,7 +1435,6 @@ final class AgentWakefulnessTests: XCTestCase {
 
   private struct Unavailable: Error {}
 
-  /// Waits for `condition` on the main actor, failing the test rather than hanging it.
   /// A remote workroom on a boxd host `id`, for `RemoteHosts.shared.adopt`.
   private func boxdWorkroom(_ id: UUID) -> Workroom {
     Workroom(
@@ -1444,6 +1443,7 @@ final class AgentWakefulnessTests: XCTestCase {
         driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id))
   }
 
+  /// Waits for `condition` on the main actor, failing the test rather than hanging it.
   @MainActor
   private func eventually(
     _ message: String, file: StaticString = #filePath, line: UInt = #line,

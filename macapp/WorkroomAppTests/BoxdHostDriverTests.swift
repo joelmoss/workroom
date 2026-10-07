@@ -366,7 +366,7 @@ final class BoxdHostDriverTests: XCTestCase {
     let gone = await driver(StubCLI(["machine get": Self.failed("error: VM 'x' not found")]))
       .presence(.remote(UUID()))
     XCTAssertEqual(gone, .gone)
-    // boxd couldn't answer at all (timed out): say nothing, and the read goes ahead.
+    // boxd couldn't answer at all (timed out): nil, which `RemoteHosts` takes as asleep.
     let timedOut = await driver(
       StubCLI([
         "machine get": CommandResult(stdout: "", stderr: "", exitCode: 15, timedOut: true)
@@ -399,14 +399,21 @@ final class BoxdHostDriverTests: XCTestCase {
     }
   }
 
-  /// A cancelled call is a cancellation, not a provisioning failure.
+  /// A cancelled call is a cancellation, not a provisioning failure: also while a delete removes
+  /// the derive snapshot, which the best-effort step must not swallow, or a cancelled delete would
+  /// read as done and its record go while the snapshot stays (#356).
   func testACancelledCLICallThrowsCancellation() async throws {
-    let cli = StubCLI(["machine remove": Self.ok("{}")])
-    cli.cancelling = "machine remove"
-    do {
-      try await driver(cli).destroy(.remote(UUID()))
-      XCTFail("a cancelled destroy reported success")
-    } catch is CancellationError {}
+    for step in ["machine remove", "snapshots remove"] {
+      let cli = StubCLI([
+        "machine remove": Self.ok("{}"), "snapshots remove": Self.failed("error: internal"),
+      ])
+      cli.cancelling = step
+      let destroy = Task { [driver = driver(cli)] in try await driver.destroy(.remote(UUID())) }
+      do {
+        try await destroy.value
+        XCTFail("a destroy cancelled at \(step) reported success")
+      } catch is CancellationError {}
+    }
   }
 
   func testDestroyingAMachineAlreadyGoneSucceedsAndAFailedRemovalThrows() async throws {
