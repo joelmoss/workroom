@@ -38,6 +38,16 @@ Go uses `testing` with `*_test.go` files and `Test…` functions. Swift uses XCT
 
 Use concise, descriptive commits. History commonly uses `fix(macapp): …`, `refactor(macapp): …`, and `docs(…): …`; plain imperative subjects also occur. PRs should explain behavior changes, link issues (`Fixes #177`), report validation and skipped checks, and include screenshots for visible UI changes.
 
+## Reviews & Reported Bugs
+
+A finding from a review, a reviewer bot or an agent is not a bug until it is checked against how the app is actually used, or could plausibly be used. Before fixing or filing it, answer three questions:
+
+- **What triggers it?** Name the real sequence: what the user does, what the environment does, and what timing it needs.
+- **How likely is that?** It needs a realistic path in ordinary use, or a failure that does happen (an outage, a quit mid-operation, a corrupt config). A race that needs a click inside one actor hop, or input the code never produces, does not qualify.
+- **What does it cost when it happens?** Lost or corrupted data, a paid resource left running, a broken or misleading UI, or nothing that persists.
+
+Fix it only when it is likely enough to happen, or costly enough when it does. Otherwise reply on the thread with that reasoning and close it. File an issue only when a future change could make it reachable. Comment wording, test-timing hypotheticals and style suggestions never justify another review round.
+
 ## Architecture & Configuration
 
 Preserve the CLI `--json` contract; breaking changes require a `schema_version` bump in `cmd/json.go`. Read `CONTRIBUTING.md` and [repository notes](docs/repository-notes.md) for architecture and operations. For app work, also follow [macapp/AGENTS.md](macapp/AGENTS.md). Never use personal workrooms as destructive test fixtures.
