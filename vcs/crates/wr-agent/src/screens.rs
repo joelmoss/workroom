@@ -596,8 +596,9 @@ mod tests {
 
     /// A session that ended with its host reports busy only while it runs: its record is written
     /// from the live shadow and rendered long after the program is gone, so a restored pane must
-    /// never be told it is busy (#359). Driven through the real writer, `flush`.
-    /// Value: protects=a restored pane's repaint carries no OSC 9;4 for a session that reported busy; fails_when=changed_screens() takes replay() instead of record(), pinning the restored pane's spinner on; why_new=no test took a record from a live session through flush and render; seam=none
+    /// never be told it is busy (#359): its repaint says idle (a REMOVE) at most. Driven through the
+    /// real writer, `flush`.
+    /// Value: protects=a restored pane's repaint carries no busy report for a session that reported busy; fails_when=changed_screens() takes replay() instead of record(), pinning the restored pane's spinner on; why_new=no test took a record from a live session through flush and render; seam=none
     #[cfg(feature = "terminal-state")]
     #[test]
     fn a_restored_pane_is_never_told_the_session_was_busy() {

@@ -2090,8 +2090,9 @@ mod tests {
 
     /// A hand-off keeps the busy indicator: the screen a session is frozen with, adopted by the
     /// next program, replays its last OSC 9;4 report, so a client that attaches afterwards is told
-    /// the session is busy (#359). Unlike the on-disk record, a hand-off's screen is `replay()`.
-    /// Value: protects=a session adopted from a frozen screen replays the progress report it was frozen with; fails_when=frozen() captures record() instead of replay(), or adopt() drops the report; why_new=hand_off.rs checks pids and exit codes, not what an adopted screen replays; seam=none
+    /// the session is busy (#359). Unlike the on-disk record, a hand-off's screen is the live
+    /// replay (`live_replay`), which keeps the report while its sender owns the pty.
+    /// Value: protects=a session adopted from a frozen screen replays the progress report it was frozen with; fails_when=frozen() captures record() instead of the live replay, or adopt() drops the report; why_new=hand_off.rs checks pids and exit codes, not what an adopted screen replays; seam=none
     #[cfg(feature = "terminal-state")]
     #[test]
     fn an_adopted_session_replays_the_progress_report_it_was_frozen_with() {

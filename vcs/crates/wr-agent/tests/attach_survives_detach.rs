@@ -366,6 +366,9 @@ fn replay_after(name: &str, session: &str, command: &str, marker: &str) -> Strin
 /// An agent mid-turn reports OSC 9;4 once, at the start, and not again until the turn ends (#359).
 /// A client that reattaches in between must be told, or its busy indicator reads idle.
 ///
+/// The reporter is a foreground program still running when the client reattaches, as an agent
+/// mid-turn is: the replay is busy only while the program that reported owns the pty.
+///
 /// Matched on the ESC byte: the shell echoes the command line, which holds `]9;4` as text.
 #[test]
 fn a_reattaching_client_is_told_the_session_is_busy() {
@@ -376,7 +379,7 @@ fn a_reattaching_client_is_told_the_session_is_busy() {
     let seen = replay_after(
         "busy",
         "5a5a5a5a-6b6b-7c7c-8d8d-9e9e9e9e9e9e",
-        "printf '\\033]9;4;3;\\033\\\\'; echo WORK''ING\n",
+        "/bin/sh -c 'printf \"\\033]9;4;3;\\033\\\\\\\\\"; echo WORK\"\"ING; sleep 30'\n",
         "WORKING",
     );
     assert!(
