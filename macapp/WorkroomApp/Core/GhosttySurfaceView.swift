@@ -70,7 +70,15 @@ final class GhosttySurfaceView: NSView {
 
   /// Daemon session this surface attaches to. When set and the helper is available, `createSurface`
   /// launches `workroom-session attach` instead of a login shell.
-  var persistentSessionID: UUID?
+  var persistentSessionID: UUID? {
+    // Pointed at another session (the detached-sessions list): the old one's ssh goes with the
+    // surface it is about to lose, so it holds its remote host no more (#356).
+    didSet {
+      if let oldValue, oldValue != persistentSessionID {
+        PersistentSessionService.shared.paneDetached(oldValue)
+      }
+    }
+  }
   /// Whether `persistentSessionID` was carried over from a previous launch rather than minted for
   /// this pane. Only a restored id can name a session that has since died, and only a restored id
   /// is re-checked before attaching — asking about a fresh one would refuse every new pane, since

@@ -336,6 +336,10 @@ final class BoxdHostDriverTests: XCTestCase {
       let answer = await driver(cli).presence(.remote(UUID()))
       XCTAssertEqual(answer, presence, status)
     }
+    // A reply without `source`, which only a derive reads, still says whether the box is asleep.
+    let sourceless = await driver(StubCLI(["machine get": Self.ok(#"{"status":"standby"}"#)]))
+      .presence(.remote(UUID()))
+    XCTAssertEqual(sourceless, .asleep, "a reply without source failed open")
     // boxd answered with an error (signed out, another account): leave it alone.
     let refused = await driver(StubCLI(["machine get": Self.failed("error: not logged in")]))
       .presence(.remote(UUID()))

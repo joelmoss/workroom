@@ -349,12 +349,13 @@ final class RemotePaneReconnectTests: XCTestCase {
     XCTAssertTrue(view.persistentSessionIsRestored)
   }
 
-  // Value: protects=a pane holds its remote host only while its ssh lives, so a closed window or a
-  // dead link lets an idle box go; fails_when=the surface's exit or teardown stops clearing the
-  // attach, or a reconnect stops re-marking it; why_new=only endSession and forget were covered;
-  // seam=none
+  // Value: protects=a pane holds its remote host only while its ssh lives, so a dead link, a closed
+  // pane or a pane pointed at another session lets an idle box go; fails_when=the surface's exit,
+  // teardown or session swap stops clearing the attach; why_new=only endSession and forget were
+  // covered; seam=none
   /// A pane's ssh holds its box awake, and the app keeps the host while one is attached (#356). An
-  /// ssh that exits, or a surface freed with its window, holds nothing; a reattach holds again.
+  /// ssh that exits, a pane pointed at another session, or a closed pane holds nothing. Not
+  /// reached here: a window freeing a live surface without a teardown (`deinit`), which needs one.
   func testAPaneHoldsItsHostOnlyWhileItsSshLives() throws {
     let view = try remotePane(log: "")
     let sessions = PersistentSessionService.shared
@@ -366,6 +367,12 @@ final class RemotePaneReconnectTests: XCTestCase {
 
     view.handleChildExited(exitCode: 1)
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a pane whose ssh exited holds its host")
+
+    XCTAssertNotNil(sessions.attachCommand(forSession: session))
+    view.persistentSessionID = UUID()
+    XCTAssertFalse(
+      sessions.hasAttachedPane(on: host), "a pane pointed at another session holds the old host")
+    view.persistentSessionID = session
 
     XCTAssertNotNil(sessions.attachCommand(forSession: session))
     view.tearDown()
