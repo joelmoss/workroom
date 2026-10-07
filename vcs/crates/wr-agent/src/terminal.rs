@@ -23,6 +23,10 @@
 //!    stack. The snapshot carries the flags correctly, so nothing is lost across persistence; they
 //!    simply are not emitted.
 //!
+//! Then **the last OSC 9;4 progress report**, or an explicit REMOVE when there is none (#359). A
+//! program reports busy once, at the start of its work, so a client attaching mid-turn learns it
+//! only from here. Never in the on-disk record, which outlives the program.
+//!
 //! And **the parser continuation last**, because a byte stream cut mid-sequence leaves the VT
 //! parser or UTF-8 decoder unfinished and nothing in the grid expresses that. Without it the tail
 //! of a split escape renders as literal text and a cut codepoint as U+FFFD.
@@ -67,9 +71,47 @@ const fn mode_new(value: u16, ansi: bool) -> GhosttyMode {
     (value & 0x7FFF) | ((ansi as u16) << 15)
 }
 
+/// The last OSC 9;4 a session reported, as (state, percent); percent is -1 when omitted.
+pub type Progress = Option<(GhosttyTerminalProgressState, i8)>;
+
+/// Where the progress callback writes: the last report, and whether one has arrived since
+/// `take_fresh_report` last asked.
+#[derive(Default)]
+struct ProgressSlot {
+    report: Progress,
+    fresh: bool,
+}
+
 /// A terminal shadowing one session.
 pub struct ShadowTerminal {
     inner: GhosttyTerminal,
+    /// The callback's userdata. A raw allocation rather than a `Box` field: moving a `Box`
+    /// asserts unique access to its contents, which the pointer the terminal holds would then
+    /// alias. Freed in `Drop`, after the terminal that writes to it.
+    progress: *mut ProgressSlot,
+}
+
+/// `GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT`: keep the last report; REMOVE clears it.
+unsafe extern "C" fn on_progress_report(
+    _terminal: GhosttyTerminal,
+    userdata: *mut std::ffi::c_void,
+    report: *const GhosttyTerminalProgressReport,
+) {
+    let (Some(slot), Some(report)) = (
+        unsafe { (userdata as *mut ProgressSlot).as_mut() },
+        unsafe { report.as_ref() },
+    ) else {
+        return;
+    };
+    // A sized struct: only read `progress` if this library's struct has it.
+    let has_percent = report.size
+        >= std::mem::offset_of!(GhosttyTerminalProgressReport, progress)
+            + std::mem::size_of::<i8>();
+    let percent = if has_percent { report.progress } else { -1 };
+    slot.report = (report.state
+        != GhosttyTerminalProgressState_GHOSTTY_TERMINAL_PROGRESS_STATE_REMOVE)
+        .then_some((report.state, percent));
+    slot.fresh = true;
 }
 
 // The handle is owned exclusively and every method takes `&mut self`, so the terminal is never
@@ -85,9 +127,58 @@ impl ShadowTerminal {
         if rc != OK || inner.is_null() {
             return None;
         }
-        let terminal = ShadowTerminal { inner };
+        let terminal = ShadowTerminal {
+            inner,
+            progress: Box::into_raw(Box::default()),
+        };
         terminal.enable_continuation_tracking();
+        terminal.track_progress_reports();
         Some(terminal)
+    }
+
+    /// A program reports busy with OSC 9;4 once, at the start of its work, so a client that
+    /// attaches later can only learn it from here (#359). Pointer-typed options are passed
+    /// directly, not by address (`ghostty_terminal_set`'s doc).
+    fn track_progress_reports(&self) {
+        unsafe {
+            ghostty_terminal_set(
+                self.inner,
+                GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_USERDATA,
+                self.progress as *const std::ffi::c_void,
+            );
+            ghostty_terminal_set(
+                self.inner,
+                GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT,
+                on_progress_report as *const std::ffi::c_void,
+            );
+        }
+    }
+
+    /// The last progress report the program sent, or `None` once it cleared it.
+    pub fn progress(&self) -> Progress {
+        unsafe { (*self.progress).report }
+    }
+
+    /// Whether a report (a REMOVE included) has arrived since this was last asked.
+    pub fn take_fresh_report(&mut self) -> bool {
+        unsafe { std::mem::take(&mut (*self.progress).fresh) }
+    }
+
+    /// The last progress report, re-emitted, or an explicit REMOVE when there is none or
+    /// `report` is false. The REMOVE matters to a client that kept its view across a reconnect:
+    /// it may still show a busy state the program has since cleared.
+    fn progress_report(&self, report: bool) -> Vec<u8> {
+        let remove = (
+            GhosttyTerminalProgressState_GHOSTTY_TERMINAL_PROGRESS_STATE_REMOVE,
+            -1,
+        );
+        let (state, percent) = self.progress().filter(|_| report).unwrap_or(remove);
+        let percent = if percent >= 0 {
+            format!(";{percent}")
+        } else {
+            String::new()
+        };
+        format!("\x1b]9;4;{state}{percent}\x1b\\").into_bytes()
     }
 
     fn enable_continuation_tracking(&self) {
@@ -194,6 +285,8 @@ impl ShadowTerminal {
     /// Used to read state the formatter cannot reach on the live terminal without destroying it —
     /// see `primary_screen`. The snapshot carries BOTH screens, which is exactly why it is the way
     /// in: the formatter only ever sees the active one.
+    ///
+    /// The copy tracks no progress reports: it is a scratch read, never replayed.
     fn clone_via_snapshot(&self) -> Option<ShadowTerminal> {
         let mut bytes: *mut u8 = ptr::null_mut();
         let mut len: usize = 0;
@@ -223,7 +316,10 @@ impl ShadowTerminal {
         if rc != OK || inner.is_null() {
             return None;
         }
-        Some(ShadowTerminal { inner })
+        Some(ShadowTerminal {
+            inner,
+            progress: Box::into_raw(Box::default()),
+        })
     }
 
     /// The primary screen's paint, when the alternate screen is the active one.
@@ -296,18 +392,34 @@ impl ShadowTerminal {
     }
 
     /// The bytes to send a client that has just attached, so it sees what the session looks like
-    /// instead of a blank screen. See the module doc for why this is four pieces and not one.
+    /// instead of a blank screen. See the module doc for why this is several pieces and not one.
     pub fn replay(&self) -> Vec<u8> {
+        self.replay_reporting(true)
+    }
+
+    /// `replay()` saying idle whatever the last report was: for a program that is gone.
+    pub fn replay_idle(&self) -> Vec<u8> {
+        self.replay_reporting(false)
+    }
+
+    fn replay_reporting(&self, report: bool) -> Vec<u8> {
         let mut out = self.record();
+        // Not in `record()`: a record outlives the program, and a stale "busy" would pin the
+        // client's spinner on. Not with an empty record either, which callers read as "nothing
+        // to show".
+        if !out.is_empty() {
+            out.extend_from_slice(&self.progress_report(report));
+        }
         // Last: the continuation leaves the client's parser mid-sequence, exactly as the
         // producer's is, so the bytes that arrive next complete it instead of printing as text.
         out.extend_from_slice(&self.continuation());
         out
     }
 
-    /// `replay()` without the parser continuation: the record kept on disk (`crate::screens`).
-    /// Nothing will ever complete a continuation in a record, and the notice written after one
-    /// would.
+    /// `replay()` without the progress report or the parser continuation: the record kept on disk
+    /// (`crate::screens`). A record outlives the program, so a report in it would only pin the
+    /// client's spinner on; and nothing will ever complete a continuation in a record, while the
+    /// notice written after one would.
     pub fn record(&self) -> Vec<u8> {
         // The primary screen first, then re-entering the alt screen, then the alt screen's own
         // paint below — the order a real session produced them in.
@@ -381,6 +493,8 @@ impl Drop for ShadowTerminal {
         if !self.inner.is_null() {
             unsafe { ghostty_terminal_free(self.inner) };
         }
+        // After the terminal: it is what writes here.
+        drop(unsafe { Box::from_raw(self.progress) });
     }
 }
 
@@ -651,6 +765,70 @@ mod tests {
         assert!(client.visible_text().contains("FULL-SCREEN"));
         client.write(b"\x1b[?1049l");
         assert!(client.visible_text().contains("shell history"));
+    }
+
+    /// The replay re-emits the last progress report, in a form Ghostty parses back to the same
+    /// report; the on-disk record never does, since it outlives the program that sent it (#359).
+    /// Value: protects=replay() carries the last OSC 9;4 report, a cleared one and record() never; fails_when=replay drops, mis-formats or keeps a cleared report, or record() carries one; why_new=nothing covered the progress report before #359; seam=none
+    #[test]
+    fn only_the_replay_carries_the_progress_report() {
+        for (sent, want) in [
+            (b"\x1b]9;4;3\x1b\\".as_slice(), Some((3, -1))),
+            (b"\x1b]9;4;1;42\x07".as_slice(), Some((1, 42))),
+            (b"\x1b]9;4;1;0\x07".as_slice(), Some((1, 0))),
+            (b"\x1b]9;4;3\x1b\\\x1b]9;4;0\x1b\\".as_slice(), None),
+        ] {
+            let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+            producer.write(b"busy\r\n");
+            producer.write(sent);
+            assert_eq!(producer.progress(), want, "producer for {sent:?}");
+
+            let mut client = ShadowTerminal::new(80, 24).expect("client");
+            client.write(&producer.replay());
+            assert_eq!(client.progress(), want, "client replayed from {sent:?}");
+
+            // Idle is said out loud, so a client still showing an old busy state drops it.
+            let remove = b"\x1b]9;4;0\x1b\\";
+            let replay = producer.replay();
+            assert_eq!(
+                want.is_none(),
+                replay.windows(remove.len()).any(|w| w == remove),
+                "REMOVE in the replay for {sent:?}: {:?}",
+                String::from_utf8_lossy(&replay)
+            );
+
+            let record = producer.record();
+            let osc = b"\x1b]9;4";
+            assert!(
+                !record.windows(osc.len()).any(|w| w == osc),
+                "the record carries a progress report: {:?}",
+                String::from_utf8_lossy(&record)
+            );
+        }
+    }
+
+    /// The progress report goes before the continuation, so a sequence the producer was
+    /// mid-way through still completes on the client instead of printing as text (#359).
+    /// Value: protects=replay() ends with the continuation even when a progress report is present; fails_when=progress_report() is appended after continuation(), splicing the report into the open CSI; why_new=the progress report is the first piece placed between the record and the continuation; seam=none
+    #[test]
+    fn the_progress_report_does_not_split_the_continuation() {
+        let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+        producer.write(b"busy\r\n\x1b]9;4;3\x1b\\\x1b[3");
+        let replay = producer.replay();
+        assert!(replay.ends_with(b"\x1b[3"), "{replay:?}");
+        assert!(
+            replay
+                .windows(b"\x1b]9;4;3".len())
+                .any(|w| w == b"\x1b]9;4;3"),
+            "no progress report in {replay:?}"
+        );
+
+        let mut client = ShadowTerminal::new(80, 24).expect("client");
+        client.write(&replay);
+        assert_eq!(client.progress(), Some((3, -1)));
+        client.write(b"1mRED\x1b[0m");
+        let text = client.visible_text();
+        assert!(text.contains("RED") && !text.contains("1mRED"), "{text:?}");
     }
 
     /// A session with nothing scrolled off must not gain phantom history.
