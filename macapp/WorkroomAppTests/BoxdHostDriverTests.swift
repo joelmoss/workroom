@@ -309,6 +309,10 @@ final class BoxdHostDriverTests: XCTestCase {
       (#"{"source":"standalone","auto_suspend":"120"}"#, 120),
       // A timer no Duration can hold would trap the revisit arithmetic: it reads as unknown.
       (#"{"source":"standalone","auto_suspend":1e30,"auto_hibernate":"inf"}"#, nil),
+      // One unreadable timer leaves the other; a week is the most read.
+      (#"{"source":"standalone","auto_suspend":1e30,"auto_hibernate":60}"#, 60),
+      (#"{"source":"standalone","auto_suspend":604800}"#, 604800),
+      (#"{"source":"standalone","auto_suspend":604801}"#, nil),
     ]
     for (json, expected) in cases {
       let window = await driver(StubCLI(["machine get": Self.ok(json)])).idleWindow(.remote(UUID()))
