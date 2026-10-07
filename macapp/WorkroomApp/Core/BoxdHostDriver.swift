@@ -416,7 +416,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// Whether `host` is asleep, from boxd's own record, without reaching the machine: an ssh login
   /// would wake it (#356). Nil when the CLI could not answer (missing, timed out, output it did not
-  /// expect); `RemoteHosts` takes that as asleep for a background read.
+  /// expect, a machine without a status); `RemoteHosts` takes that as asleep for a background read.
   ///
   /// `gone` when boxd answers that the machine is not found: deleted outside the app, or in an org
   /// that isn't active. Any other error the CLI answers with (signed out, another account) counts
@@ -428,7 +428,9 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       let output = try await cli(
         ["machine", "get", name(of: id)], timeout: Self.statusTimeout)
       let machine = try decode(Machine.self, output, name(of: id))
-      return Self.asleepStatuses.contains(machine.status ?? "") ? .asleep : .awake
+      // A reply without a status says nothing either way: taken as awake, it would wake the box.
+      guard let status = machine.status else { return nil }
+      return Self.asleepStatuses.contains(status) ? .asleep : .awake
     } catch let failure as CLIFailure {
       if failure.notFound { return .gone }
       return failure.answered ? .asleep : nil
