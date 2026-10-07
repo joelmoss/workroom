@@ -389,8 +389,9 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// `machine get --json`, as far as the driver reads it.
   struct Machine: Decodable {
-    /// `standalone`, `fork/<name>` or `snapshot/<name>:<version>`.
-    let source: String
+    /// `standalone`, `fork/<name>` or `snapshot/<name>:<version>`. Optional, so a presence read
+    /// that needs only `status` does not fail open on it.
+    var source: String? = nil
     /// `running`, `standby` (suspended; `get` normalises the raw `suspended`), `hibernated`,
     /// `stopped`, and others in passing (boxd CLI docs).
     var status: String? = nil

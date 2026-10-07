@@ -663,11 +663,13 @@ final class RemoteHosts: @unchecked Sendable {
       if let makeDriver {
         driver = try makeDriver(key)
       } else if case .boxd(let org, let account) = key {
+        let cli = Self.boxdExecutable()
         driver = BoxdHostDriver(
           configuration: BoxdHostDriver.Configuration(
-            cli: URL(fileURLWithPath: Self.boxdExecutable() ?? Self.boxdCandidates[0]), org: org,
-            account: account),
+            cli: URL(fileURLWithPath: cli ?? Self.boxdCandidates[0]), org: org, account: account),
           directory: hosts)
+        // Not kept while the CLI is missing, so installing it later takes without a relaunch.
+        guard cli != nil else { return driver }
       } else {
         driver = ContainerHostDriver(
           hosts: [:], directory: hosts, provisioning: try Self.provisioning(key))
@@ -1094,13 +1096,13 @@ final class RemoteHosts: @unchecked Sendable {
   }
 
   /// A connected host's agent reported its published verdict (`WakefulnessModel`). A boxd host
-  /// that is not busy (IDLE, or its service stopped), not selected, forwarding no port and with no
-  /// pane attached is let go of: its
-  /// connection is closed, so nothing the app sends reaches the box and boxd's idle timer can sleep
-  /// it (#356). An IDLE that comes of an unanswered prompt lets it sleep the same way. A pane's own
-  /// ssh holds its box awake whatever the app does, so letting go of that one would only blank its
-  /// status. Nor is a host let go of within `letGoGrace` of its connect, so the read that connected
-  /// it is answered first. Returns whether it was let go of.
+  /// that is not busy (IDLE, its service stopped, or an untrusted reading past its ceiling), not
+  /// selected, forwarding no port and with no pane attached is let go of: its connection is closed,
+  /// so nothing the app sends reaches the box and boxd's idle timer can sleep it (#356). An IDLE
+  /// that comes of an unanswered prompt lets it sleep the same way. A pane's own ssh holds its box
+  /// awake whatever the app does, so letting go of that one would only blank its status. Nor is a
+  /// host let go of within `letGoGrace` of its connect, so the read that connected it is answered
+  /// first. Returns whether it was let go of.
   @discardableResult
   func observed(_ host: HostID, busy: Bool) async -> Bool {
     guard !busy, case .remote(let id) = host else { return false }
@@ -1137,7 +1139,7 @@ final class RemoteHosts: @unchecked Sendable {
 
   /// How long after a connect an IDLE reading is ignored: one `WakefulnessModel.pollInterval`, so
   /// the read that connected the host finishes before its connection is closed.
-  static let letGoGrace: Duration = .seconds(10)
+  static let letGoGrace = WakefulnessModel.pollInterval
 
   /// How long a host let go of is left before boxd is asked about it again: its idle window, by
   /// when boxd sleeps a box nothing holds, plus a `retryAfter`. ponytail: an unknown window is

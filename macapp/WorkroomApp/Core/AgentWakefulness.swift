@@ -618,7 +618,7 @@ final class WakefulnessModel: ObservableObject {
 
   /// Modest on purpose. The verdict changes on a 30 s hysteresis window, so anything faster only
   /// costs round trips, and this runs only while something is showing the result.
-  static let pollInterval: Duration = .seconds(10)
+  nonisolated static let pollInterval: Duration = .seconds(10)
 
   private var pollers = 0
   private var pollTask: Task<Void, Never>?
@@ -635,12 +635,12 @@ final class WakefulnessModel: ObservableObject {
   /// `prompt_pending: false` cannot undo a newer reply's raise.
   private var requestsIssued = 0
   private var newestApplied = 0
-  /// When this host's service was first read as stopped (#356): its last BUSY holds the box for at
-  /// most one ceiling from then, as nothing on the box will ever ask the user about it.
-  private var stoppedSince: Date?
-  /// How long a stopped service's BUSY holds its box when the reply names no ceiling: the agent's
-  /// default ceiling.
-  static let stoppedHoldFallback: TimeInterval = 4 * 3600
+  /// When this host's readings stopped being ones to trust (#356): its service stopped, stalled, or
+  /// its `status` failed. Such a reading holds the box for at most one ceiling from then, as nothing
+  /// on the box will ask the user about it.
+  private var untrustedSince: Date?
+  /// The ceiling the last applied reply named, for a failed read, which names none.
+  private var lastCeiling: TimeInterval?
 
   /// Polls for as long as the caller's task lives. Driven by a SwiftUI `.task`, so closing the
   /// inspector, the card or the window ends it — there is no polling while nothing is showing the
@@ -703,35 +703,48 @@ final class WakefulnessModel: ObservableObject {
     let next = try? await status()
     guard !Task.isCancelled else { return next }
     guard let next else {
-      if issued.request == requestsIssued, self.status != nil { self.status = nil }
+      guard issued.request == requestsIssued else { return nil }
+      if self.status != nil { self.status = nil }
+      // A failed read says nothing about a job, so it holds the box, for one ceiling at most.
+      report(busy: holding(ceiling: lastCeiling))
       return nil
     }
     guard issued.request > newestApplied else { return next }
     newestApplied = issued.request
     if next != self.status { self.status = next }
-    // A remote box that is not busy may be let go of, so the app's own traffic stops holding it
-    // awake (#356); `RemoteHosts` decides whether to (`observed`).
-    if let host {
-      // A stalled service's IDLE may be stale while work runs (`display` shows it as unknown), so
-      // it never lets a box go. One not running at all holds nothing awake, heartbeat included, so
-      // its box is let go of too, unless its last reading was BUSY: a service that died under a job
-      // leaves the connection as the one thing keeping that job's box awake. That reading never
-      // changes and nothing will ask about it, so it holds the box for one ceiling at most.
-      if next.running {
-        stoppedSince = nil
-      } else if stoppedSince == nil {
-        stoppedSince = Date()
-      }
-      let held = stoppedSince.map {
-        Date().timeIntervalSince($0) < (next.ceilingSeconds ?? Self.stoppedHoldFallback)
-      }
-      let busy = next.running ? next.busy || next.stalled == true : next.busy && held == true
-      Task { await RemoteHosts.shared.observed(.remote(host), busy: busy) }
+    lastCeiling = next.ceilingSeconds ?? lastCeiling
+    // A stalled service's reading may be stale while work runs (`display` shows it as unknown), so
+    // it holds the box. One not running at all holds nothing awake, heartbeat included, so its box
+    // is let go of too, unless its last reading was BUSY: a service that died under a job leaves
+    // the connection as the one thing keeping that job's box awake. Neither reading changes and
+    // nothing will ask about it, so each holds the box for one ceiling at most.
+    if next.running && next.stalled != true {
+      untrustedSince = nil
+      report(busy: next.busy)
+    } else {
+      let held = holding(ceiling: next.ceilingSeconds ?? lastCeiling)
+      report(busy: held && (next.running || next.busy))
     }
     if issued.generation == promptGeneration {
       prompt.reconcile(next, now: Date())
     }
     return next
+  }
+
+  /// Whether a reading the app can't trust still holds the box: for `ceiling` (the agent's default
+  /// when none is known) from the first such reading.
+  private func holding(ceiling: TimeInterval?) -> Bool {
+    let since = untrustedSince ?? Date()
+    untrustedSince = since
+    return Date().timeIntervalSince(since)
+      < (ceiling ?? AgentWakefulnessSettings.defaultCeiling)
+  }
+
+  /// A remote box that is not busy may be let go of, so the app's own traffic stops holding it
+  /// awake (#356); `RemoteHosts` decides whether to (`observed`).
+  private func report(busy: Bool) {
+    guard let host else { return }
+    Task { await RemoteHosts.shared.observed(.remote(host), busy: busy) }
   }
 
   private var watchTask: Task<Void, Never>?

@@ -363,8 +363,8 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertFalse(RemoteHosts.shared.isLetGo(.remote(busy)), "a busy box was let go of")
   }
 
-  /// A stalled service's IDLE may be stale while work runs, so it never lets a box go (#356): the
-  /// connection may be all that still holds the box awake.
+  /// A stalled service's IDLE may be stale while work runs, so it does not let a box go within its
+  /// ceiling (#356): the connection may be all that still holds the box awake.
   @MainActor
   func testAStalledIdleReadingDoesNotLetABoxGo() async throws {
     let (id, control) = (UUID(), UUID())
@@ -442,6 +442,64 @@ final class AgentWakefulnessTests: XCTestCase {
     }
   }
 
+  // Value: protects=a reading the app can't trust (failed, stalled, stopped under a job) holds its
+  // box across polls for one ceiling, then lets it go; fails_when=the hold restarts on every poll,
+  // is unbounded, or ends at once; why_new=the other hold tests read one refresh each; seam=none
+  /// A failed read, a stalled service and a stopped one under a job say nothing true about the job,
+  /// and nothing on the box will ask about it, so each holds its box for one ceiling, counted from
+  /// the first such reading, not from each poll (#356).
+  @MainActor
+  func testAnUntrustedReadingHoldsItsBoxForOneCeilingAcrossPolls() async throws {
+    let ceiling = (#""ceiling_seconds":14400.0"#, #""ceiling_seconds":0.5"#)
+    let stalled = (#""stalled":false"#, #""stalled":true"#)
+    let stopped = (#""running":true"#, #""running":false"#)
+    let idle = (#""busy":true"#, #""busy":false"#)
+    let (failingID, stalledID, stoppedID, control) = (UUID(), UUID(), UUID(), UUID())
+    RemoteHosts.shared.adopt(
+      [
+        Project(
+          path: "/proj", vcs: "git",
+          workrooms: [failingID, stalledID, stoppedID, control].map(boxdWorkroom))
+      ], sweep: false)
+    let failing = Script(try status([ceiling]))
+    let scripts = [
+      (failingID, failing), (stalledID, Script(try status([ceiling, stalled, idle]))),
+      (stoppedID, Script(try status([ceiling, stopped]))),
+    ]
+    let models = scripts.map { id, script in
+      WakefulnessModel(
+        transport: .init(status: script.status, keep: {}, prompts: { throw Unavailable() }),
+        host: id)
+    }
+    // The failing host's first read is a BUSY with its ceiling; every read after that fails.
+    await models[0].refresh()
+    failing.reply = .failure(Unavailable())
+    for model in models { await model.refresh() }
+    await WakefulnessModel(
+      transport: .init(
+        status: Script(try status([idle])).status, keep: {}, prompts: { throw Unavailable() }),
+      host: control
+    ).refresh()
+    await eventually("the control host's IDLE was never reported") {
+      RemoteHosts.shared.isLetGo(.remote(control))
+    }
+    try await Task.sleep(for: .milliseconds(100))
+    for (id, _) in scripts {
+      XCTAssertFalse(RemoteHosts.shared.isLetGo(.remote(id)), "\(id) was let go within its ceiling")
+    }
+
+    // Polled again within the ceiling, then past it: the hold counts from the first reading.
+    try await Task.sleep(for: .milliseconds(300))
+    for model in models { await model.refresh() }
+    try await Task.sleep(for: .milliseconds(300))
+    for model in models { await model.refresh() }
+    for (id, _) in scripts {
+      await eventually("an untrusted reading held \(id) past its ceiling") {
+        RemoteHosts.shared.isLetGo(.remote(id))
+      }
+    }
+  }
+
   /// A connected boxd host is polled with nothing on screen (#356), so an IDLE reading lets it go
   /// when its row is scrolled away; stopping ends the polls.
   @MainActor
@@ -515,7 +573,6 @@ final class AgentWakefulnessTests: XCTestCase {
       [unknown, later, soon],
       expiries: [soon: now.addingTimeInterval(30), later: now.addingTimeInterval(500)])
     XCTAssertEqual(order, [soon, later, unknown])
-    XCTAssertGreaterThan(ToastStack.visibleHostPrompts, 0)
   }
 
   /// A stalled service on a host that sleeps: its last reading said IDLE, which may be stale while

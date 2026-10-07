@@ -451,6 +451,11 @@ final class PersistentSessionService {
   /// The host a remote session's pane attaches to, or nil for a local session.
   func remoteHost(of sessionID: UUID) -> HostID? { remoteSessions[sessionID]?.host }
 
+  /// A pane's ssh to `sessionID` ended: its surface was freed or its process exited (#356). A
+  /// window closing does both without ending the session, so this, not `endSession`, is what
+  /// stops a pane holding its host. A reconnect attaches it again (`attachCommand`).
+  func paneDetached(_ sessionID: UUID) { attachedRemote.remove(sessionID) }
+
   /// Whether a pane has attached to a session on `host`: its ssh holds the host's box awake (#356).
   func hasAttachedPane(on host: HostID) -> Bool {
     attachedRemote.contains { remoteSessions[$0]?.host == host }
