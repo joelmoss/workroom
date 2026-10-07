@@ -1486,7 +1486,7 @@ final class RemoteHostsTests: XCTestCase {
       reserve: { _, descriptor in
         recorded.add(descriptor)
         return "x"
-      }, record: { _, descriptor in recorded.add(descriptor) },
+      }, record: { name, descriptor in recorded.add(descriptor, as: name) },
       forget: { _ in forgot.add(HostDescriptor()) })
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
     do {
@@ -1506,6 +1506,9 @@ final class RemoteHostsTests: XCTestCase {
     let kept = try XCTUnwrap(recorded.all.last)
     XCTAssertEqual(kept.id, made)
     XCTAssertEqual(kept.state, "failed")
+    XCTAssertNil(kept.grantID)
+    // Over the entry reserved for it, not beside it: the `creating` placeholder would dangle.
+    XCTAssertEqual(recorded.names.last, "x")
   }
 
   // Value: protects=a base create whose rollback fails records the base machine failed on the
@@ -1550,13 +1553,51 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(failed.account, "usr_1")
   }
 
-  /// A driver whose derive makes `derived` and whose destroy succeeds; nothing else is reached.
+  // Value: protects=a base whose build fails after its machine exists, and whose rollback cannot
+  // destroy it, is recorded failed on the project; fails_when=only the driver's own leftBehind is
+  // recorded; why_new=the other base test fails inside create(); seam=none
+  /// A base build that fails after its machine exists (here its first connect), with a destroy that
+  /// fails too, records the machine on the project, `failed`, as a create's own undo does (#356).
+  func testABaseBuildWhoseRollbackFailsIsRecorded() async throws {
+    let made = UUID()
+    let driver = DerivingDriver(derived: made, createMakes: true, destroyFails: true)
+    let environment = RemoteProvisioning.Environment(
+      driver: driver,
+      agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
+      client: BrokerClient(
+        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())),
+      connect: { _ in throw HostDriverError.provisioning("no agent") })
+    let recorded = Recorded()
+    let recorder = RemoteWorkrooms.Recorder(
+      reserve: { _, _ in "x" }, record: { _, descriptor in recorded.add(descriptor) },
+      forget: { _ in })
+    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
+    do {
+      _ = try await RemoteWorkrooms.create(
+        repository: repository, cloneURL: "https://github.com/o/r.git", base: nil,
+        key: .boxd(org: "acme", account: "usr_1"), driver: driver, environment: environment,
+        recorder: recorder)
+      XCTFail("a base build whose rollback failed succeeded")
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, _, _) {
+      XCTAssertEqual(host, .remote(made))
+    }
+    let failed = try XCTUnwrap(
+      recorded.all.flatMap { [$0] + ($0.bases ?? []) }.last { $0.id == made },
+      "the base machine left running was not recorded")
+    XCTAssertEqual(failed.state, "failed")
+  }
+
+  /// A driver whose derive makes `derived` and whose destroy succeeds unless told otherwise;
+  /// `create` fails, leaving `derived` behind or not, unless `createMakes`.
   private struct DerivingDriver: HostTerminalDriver {
     let derived: UUID
     /// The derive fails and cannot remove the machine it made.
     var leavesItBehind = false
     /// The create fails and cannot remove the machine it made.
     var createLeavesItBehind = false
+    /// The create makes `derived`, and a destroy of it fails.
+    var createMakes = false
+    var destroyFails = false
     var traits: HostDriverTraits {
       HostDriverTraits(
         transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
@@ -1564,6 +1605,7 @@ final class RemoteHostsTests: XCTestCase {
         sleepsWhenIdle: true)
     }
     func create() async throws -> HostID {
+      if createMakes { return .remote(derived) }
       guard createLeavesItBehind else { throw HostDriverError.provisioning("no create") }
       throw HostDriverError.leftBehind(
         cause: "setup timed out", leftover: ["machine x"], host: .remote(derived))
@@ -1573,7 +1615,9 @@ final class RemoteHostsTests: XCTestCase {
       throw HostDriverError.leftBehind(
         cause: "reboot timed out", leftover: ["machine x"], host: .remote(derived))
     }
-    func destroy(_ host: HostID) async throws {}
+    func destroy(_ host: HostID) async throws {
+      if destroyFails { throw HostDriverError.provisioning("remove failed") }
+    }
     func openStream(to host: HostID) async throws -> HostStream {
       throw HostDriverError.provisioning("no stream")
     }
@@ -1590,8 +1634,16 @@ final class RemoteHostsTests: XCTestCase {
   private final class Recorded: @unchecked Sendable {
     private let lock = NSLock()
     private var made: [HostDescriptor] = []
+    private var under: [String?] = []
     var all: [HostDescriptor] { lock.withLock { made } }
-    func add(_ descriptor: HostDescriptor) { lock.withLock { made.append(descriptor) } }
+    /// The entry name each descriptor was recorded under, in step with `all`.
+    var names: [String?] { lock.withLock { under } }
+    func add(_ descriptor: HostDescriptor, as name: String? = nil) {
+      lock.withLock {
+        made.append(descriptor)
+        under.append(name)
+      }
+    }
   }
 
   private final class Asked: @unchecked Sendable {

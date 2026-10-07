@@ -201,6 +201,12 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       try Task.checkCancellation()
       throw HostDriverError.provisioning(failure)
     }
+    // A derive that failed partway can leave its snapshot, named as its machine is (#356): it goes
+    // too, or it would stay stored and billed with nothing recording it. Usually "not found".
+    if let failure = await remove(snapshot: name(of: id)) {
+      try Task.checkCancellation()
+      throw HostDriverError.provisioning(failure)
+    }
     try? FileManager.default.removeItem(at: hostDirectory(id))
   }
 
@@ -399,8 +405,8 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   /// Whether `host` is asleep, from boxd's own record, without reaching the machine: an ssh login
-  /// would wake it (#356). Nil when boxd can't say (no CLI, signed out, offline), which a caller
-  /// must not take for either answer.
+  /// would wake it (#356). Nil when the CLI could not answer (missing, timed out, output it did not
+  /// expect); `RemoteHosts` takes that as asleep for a background read.
   ///
   /// `gone` when boxd answers that the machine is not found: deleted outside the app, or in an org
   /// that isn't active. Any other error the CLI answers with (signed out, another account) counts

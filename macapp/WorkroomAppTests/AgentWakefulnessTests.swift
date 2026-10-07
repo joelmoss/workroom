@@ -611,6 +611,28 @@ final class AgentWakefulnessTests: XCTestCase {
     }
   }
 
+  // Value: protects=an absurd ceiling on the wire (1e300 decodes as a JSON number) is clamped, not
+  // handed to Duration.seconds, which traps; fails_when=the hold uses the raw wire value;
+  // why_new=every other hold test sends a sane ceiling; seam=none
+  /// A stalled reading naming a ceiling past `Duration`'s range holds the box rather than crash the
+  /// app: wire durations are sanitised here as everywhere else (#356).
+  @MainActor
+  func testAnAbsurdCeilingOnTheWireHoldsRatherThanTraps() async throws {
+    let id = UUID()
+    RemoteHosts.shared.adopt(
+      [Project(path: "/proj", vcs: "git", workrooms: [boxdWorkroom(id)])], sweep: false)
+    let reply = try status([
+      (#""ceiling_seconds":14400.0"#, #""ceiling_seconds":1e300"#),
+      (#""stalled":false"#, #""stalled":true"#),
+    ])
+    let model = WakefulnessModel(
+      transport: .init(status: Script(reply).status, keep: {}, prompts: { throw Unavailable() }),
+      host: id)
+    await model.refresh()
+    await model.refresh()
+    XCTAssertFalse(RemoteHosts.shared.isLetGo(.remote(id)), "an absurd ceiling held nothing")
+  }
+
   /// A connected boxd host is polled with nothing on screen (#356), so an IDLE reading lets it go
   /// when its row is scrolled away; stopping ends the polls.
   @MainActor
