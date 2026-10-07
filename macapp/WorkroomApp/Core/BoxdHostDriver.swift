@@ -212,6 +212,9 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     do {
       _ = try await cli(["snapshots", "remove", name(of: id), "-y"])
     } catch let failure as CLIFailure where failure.notFound {
+    } catch is CancellationError {
+      // A cancelled delete isn't done: it fails, so the record of the snapshot stays.
+      throw CancellationError()
     } catch {
       Self.logger.error(
         "snapshot \(self.name(of: id), privacy: .public) not removed: \(error.localizedDescription, privacy: .public)"

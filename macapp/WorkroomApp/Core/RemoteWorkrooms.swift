@@ -541,8 +541,10 @@ enum RemoteWorkrooms {
       let live = [host.map { String(describing: $0) }, grant.map { "grant \($0)" }].compactMap {
         $0
       }
+      let what =
+        live.isEmpty ? "the workroom as destroyed" : "\(live.joined(separator: ", ")) left live"
       logger.error(
-        "could not record \(live.joined(separator: ", "), privacy: .public) left live: \(error.localizedDescription, privacy: .public)"
+        "could not record \(what, privacy: .public): \(error.localizedDescription, privacy: .public)"
       )
     }
   }
@@ -1216,7 +1218,19 @@ final class RemoteHosts: @unchecked Sendable {
       }
       return false
     }
-    if let lease { await HostConnectionManager.shared.disconnect(lease) }
+    // Checked once more on the manager, where the disconnect happens: a selection, a click or a pane
+    // that took the host back across the hop to it keeps the connection it already found up.
+    let takenBack: @Sendable () -> Bool = { [self] in
+      lock.withLock { letGoAt[host] == nil || selectedHosts.values.contains(host) }
+    }
+    if let lease,
+      await !HostConnectionManager.shared.disconnect(lease, unless: takenBack)
+    {
+      await MainActor.run {
+        WakefulnessModel.Hosts.shared.models[id]?.pollWhileConnected(connected: false)
+      }
+      return false
+    }
     Self.logger.notice("let go of idle boxd host \(id, privacy: .public)")
     return true
   }
@@ -1254,10 +1268,11 @@ final class RemoteHosts: @unchecked Sendable {
     } else {
       presence = await (try driver(key) as? BoxdHostDriver)?.presence(host) ?? nil
     }
-    lock.withLock { asleepAt[host] = presence == .asleep ? now() : nil }
+    lock.withLock { asleepAt[host] = presence == .asleep || presence == nil ? now() : nil }
     // boxd could not say (no CLI, a timeout, output it did not expect, the read cancelled): a
     // background read leaves the box be rather than wake it, and says why. Opening the workroom,
-    // selecting it or a click still connects. Not remembered, so the next read asks again.
+    // selecting it or a click still connects. Remembered as asleep is, so an outage asks boxd once a
+    // `retryAfter` rather than on every read.
     guard let presence else {
       Self.logger.notice(
         "boxd could not say whether host \(id, privacy: .public) is asleep; left it be")

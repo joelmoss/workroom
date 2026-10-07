@@ -90,8 +90,8 @@ final class RemoteHostsTests: XCTestCase {
   /// A background read never connects to a boxd box boxd says is asleep: the ssh login would wake
   /// it, and every status sweep would keep every box awake and billing (#356). boxd is asked once a
   /// `retryAfter`; opening the workroom connects and wakes it; when boxd can't say, the read leaves
-  /// the box be too, so a broken CLI cannot wake every box, and asks again next time; and when it
-  /// says it's awake, the read goes ahead as before.
+  /// the box be too, so a broken CLI cannot wake every box, and asks again only after a
+  /// `retryAfter`; and when it says it's awake, the read goes ahead as before.
   func testABackgroundReadLeavesAnAsleepBoxdBoxAsleep() async throws {
     let connects = Connects()
     connects.hold(false)
@@ -131,7 +131,7 @@ final class RemoteHostsTests: XCTestCase {
     try await remote.ensureConnected(host)
     XCTAssertEqual(connects.calls, 1)
 
-    // boxd can't say: the read leaves the box be, and boxd is asked again by the next one.
+    // boxd can't say: the read leaves the box be, and boxd isn't asked again inside the window.
     asked.set(nil)
     connects.advance(RemoteHosts.retryAfter)
     let unsure = asked.calls
@@ -144,9 +144,11 @@ final class RemoteHostsTests: XCTestCase {
       }
     }
     XCTAssertEqual(connects.calls, 1)
-    XCTAssertEqual(asked.calls, unsure + 2, "an unknown answer was remembered")
+    XCTAssertEqual(
+      asked.calls, unsure + 1, "boxd was asked again inside the window after no answer")
     // boxd says it's running: the read connects as it always did.
     asked.set(false)
+    connects.advance(RemoteHosts.retryAfter)
     try await remote.ensureConnected(host)
     XCTAssertEqual(connects.calls, 2)
 

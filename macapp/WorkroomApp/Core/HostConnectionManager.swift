@@ -218,6 +218,15 @@ actor HostConnectionManager {
     invalidate(host: lease.host, error: HostConnectionError.connectionLost)
   }
 
+  /// Disconnects `lease` unless `keep` says to keep it, asked here so nothing on this actor runs in
+  /// between: a caller that took the host back before this keeps the connection it found up (#356).
+  /// Returns whether it disconnected.
+  func disconnect(_ lease: Lease, unless keep: @Sendable () -> Bool) -> Bool {
+    guard !keep() else { return false }
+    disconnect(lease)
+    return true
+  }
+
   func perform<Value: Sendable>(
     on lease: Lease, operation: @escaping @Sendable () async throws -> Value
   ) async throws -> Value {
