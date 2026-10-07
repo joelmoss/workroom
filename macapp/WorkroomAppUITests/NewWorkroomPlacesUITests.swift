@@ -1,8 +1,11 @@
 import XCTest
 
 /// New Workroom asks where once the remote preview is on (#309): This Mac, then Docker and Apple
-/// Container under "Local containers", each disabled with its reason when it can't be used here.
-/// Without the preview it stays one plain item.
+/// Container under "Local containers" and boxd under "Remote" (#356), each disabled with its reason
+/// when it can't be used here. Without the preview it stays one plain item.
+// Value: protects=boxd is offered in New Workroom, disabled exactly when its title gives a reason;
+// fails_when=WorkroomPlace.all or the sidebar's Remote section drops boxd; why_new=the places
+// loops listed only Docker and Apple Container; seam=none
 final class NewWorkroomPlacesUITests: XCTestCase {
   override func setUp() {
     super.setUp()
@@ -38,7 +41,7 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     thisMac.hover()
     XCTAssertTrue(thisMac.isEnabled)
     // Each runtime is listed, usable or saying why not; which depends on this Mac.
-    for runtime in ["Docker", "Apple Container"] {
+    for runtime in ["Docker", "Apple Container", "boxd"] {
       let entry = app.menuItems.matching(
         NSPredicate(format: "title == %@ OR title BEGINSWITH %@", runtime, "\(runtime) — ")
       ).firstMatch
@@ -68,7 +71,7 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     add(idle)
     plus.click()
     XCTAssertTrue(app.menuItems["This Mac"].waitForExistence(timeout: 5), "+ didn't ask where")
-    for runtime in ["Docker", "Apple Container"] {
+    for runtime in ["Docker", "Apple Container", "boxd"] {
       XCTAssertTrue(
         app.menuItems.matching(
           NSPredicate(format: "title == %@ OR title BEGINSWITH %@", runtime, "\(runtime) — ")
@@ -86,7 +89,7 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     XCTAssertTrue(pickerThisMac.waitForExistence(timeout: 5), "the picker didn't ask where")
     XCTAssertFalse(app.textFields["newWorkroom.filter"].exists, "still listing projects")
     XCTAssertTrue(pickerThisMac.isEnabled)
-    for runtime in ["container", "apple-container"] {
+    for runtime in ["container", "apple-container", "boxd"] {
       XCTAssertTrue(app.buttons["newWorkroom.place.\(runtime)"].exists, "\(runtime) isn't offered")
     }
     XCTAssertFalse(app.staticTexts["newWorkroom.placesBlocked"].exists)
@@ -126,7 +129,7 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     let thisMac = app.menuItems["This Mac"]
     XCTAssertTrue(thisMac.waitForExistence(timeout: 5))
     XCTAssertFalse(thisMac.isEnabled)
-    for runtime in ["Docker", "Apple Container"] {
+    for runtime in ["Docker", "Apple Container", "boxd"] {
       let entry = app.menuItems.matching(
         NSPredicate(format: "title == %@ OR title BEGINSWITH %@", runtime, "\(runtime) — ")
       ).firstMatch
