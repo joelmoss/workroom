@@ -70,12 +70,15 @@ final class GhosttySurfaceView: NSView {
 
   /// Daemon session this surface attaches to. When set and the helper is available, `createSurface`
   /// launches `workroom-session attach` instead of a login shell.
+  /// Names this pane's attach (`PersistentSessionService.attachCommand(by:)`), so only this pane
+  /// clears it. Not its object identity, which a later view can reuse once this one is freed.
+  let attachToken = UUID()
   var persistentSessionID: UUID? {
     // Pointed at another session (the detached-sessions list): the old one's ssh goes with the
     // surface it is about to lose, so it holds its remote host no more (#356).
     didSet {
       if let oldValue, oldValue != persistentSessionID {
-        PersistentSessionService.shared.paneDetached(oldValue)
+        PersistentSessionService.shared.paneDetached(oldValue, by: attachToken)
       }
     }
   }
@@ -320,7 +323,7 @@ final class GhosttySurfaceView: NSView {
       freeSurfaceCStrings()
       // No surface, no ssh: the attach its command marked holds nothing (#356).
       if let persistentSessionID {
-        PersistentSessionService.shared.paneDetached(persistentSessionID)
+        PersistentSessionService.shared.paneDetached(persistentSessionID, by: attachToken)
       }
       return
     }
@@ -373,7 +376,9 @@ final class GhosttySurfaceView: NSView {
     if let surface { ghostty_surface_free(surface) }
     surface = nil
     // Its ssh went with it, so it holds its remote host no more (#356).
-    if let persistentSessionID { PersistentSessionService.shared.paneDetached(persistentSessionID) }
+    if let persistentSessionID {
+      PersistentSessionService.shared.paneDetached(persistentSessionID, by: attachToken)
+    }
     lastSetFocus = nil  // a new surface starts unfocused — don't let a stale value skip the re-sync
     freeSurfaceCStrings()
   }
@@ -413,11 +418,11 @@ final class GhosttySurfaceView: NSView {
     for observer in keyWindowObservers { NotificationCenter.default.removeObserver(observer) }
     if let surface { ghostty_surface_free(surface) }
     freeSurfaceCStrings()
-    // A window closing frees its panes without a teardown; their ssh goes with them (#356).
-    // Detached now, on the main thread a view is freed on, so a later pane's attach of the same
-    // session is not undone by a detach queued behind it.
+    // A window closing frees its panes without a teardown; their ssh goes with them (#356). Only
+    // this pane's own mark goes, so the hop to the main actor cannot undo a later pane's attach.
     if surface != nil, let id = persistentSessionID {
-      MainActor.assumeIsolated { PersistentSessionService.shared.paneDetached(id) }
+      let pane = attachToken
+      Task { @MainActor in PersistentSessionService.shared.paneDetached(id, by: pane) }
     }
   }
 
@@ -480,7 +485,8 @@ final class GhosttySurfaceView: NSView {
     // the owning backend has no binary, so the global check bought nothing on this path.
     guard
       let attach = PersistentSessionService.shared.attachCommand(
-        forSession: persistentSessionID, restored: persistentSessionIsRestored),
+        forSession: persistentSessionID, restored: persistentSessionIsRestored,
+        by: attachToken),
       let attachPointer = strdup(attach)
     else {
       // A pane that expected a persisted session fell back to a plain login shell. Whatever the
@@ -939,7 +945,9 @@ final class GhosttySurfaceView: NSView {
 
   func handleChildExited(exitCode: UInt32) {
     // A dead ssh holds its remote host no more, whether or not it reconnects (#356).
-    if let persistentSessionID { PersistentSessionService.shared.paneDetached(persistentSessionID) }
+    if let persistentSessionID {
+      PersistentSessionService.shared.paneDetached(persistentSessionID, by: attachToken)
+    }
     reconnectIfTheLinkDropped(exitCode: exitCode)
     onChildExited?(exitCode)
   }

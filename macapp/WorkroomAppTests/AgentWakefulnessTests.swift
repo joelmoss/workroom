@@ -501,23 +501,28 @@ final class AgentWakefulnessTests: XCTestCase {
   }
 
   // Value: protects=the untrusted hold's clock starts at a reading from the agent and restarts after
-  // a trusted one, so a stalled box that comes back after a let-go or a recovery is still held;
-  // fails_when=a read refused before it left (.idle) starts the clock, or a trusted reading leaves
-  // it running; why_new=the across-polls test never interleaves those; seam=none
-  /// A read refused before it left (the host let go of, the request never sent) says nothing about
-  /// the box, and a trusted reading or a connect ends an untrusted spell, so none of them leaves an
-  /// old clock to cut a later hold short.
+  // a trusted one or a connect, so a stalled box that comes back after a let-go, a recovery or a
+  // reconnect is still held, while a read that reached the agent and failed starts it;
+  // fails_when=a refused read (any of the six) starts the clock, one that reached the agent does
+  // not, or a trusted reading or a connect leaves it running; why_new=the across-polls test never
+  // interleaves those; seam=none
+  /// A read refused before it left (the host let go of, the request refused or its connection
+  /// replaced) says nothing about the box, and a trusted reading or a connect ends an untrusted
+  /// spell, so none of them leaves an old clock to cut a later hold short. A read that reached the
+  /// agent and failed does start it.
   @MainActor
   func testAnUntrustedHoldCountsOnlyReadingsFromTheAgent() async throws {
     let ceiling = (#""ceiling_seconds":14400.0"#, #""ceiling_seconds":1.0"#)
     let stalled = (#""stalled":false"#, #""stalled":true"#)
     let idle = (#""busy":true"#, #""busy":false"#)
     let (refusedID, recoveredID, reconnectedID, control) = (UUID(), UUID(), UUID(), UUID())
+    let reachedIDs = [UUID(), UUID(), UUID()]
     RemoteHosts.shared.adopt(
       [
         Project(
           path: "/proj", vcs: "git",
-          workrooms: [refusedID, recoveredID, reconnectedID, control].map(boxdWorkroom))
+          workrooms: ([refusedID, recoveredID, reconnectedID, control] + reachedIDs).map(
+            boxdWorkroom))
       ], sweep: false)
     let trusted = try status([ceiling])
     let (refused, recovered, reconnected) = (Script(trusted), Script(trusted), Script(trusted))
@@ -549,10 +554,28 @@ final class AgentWakefulnessTests: XCTestCase {
     await reconnectedModel.refresh()
     recovered.reply = .success(trusted)
     await recoveredModel.refresh()
+    // Each of these reached the agent, so it starts the clock, and the stalled reading after the
+    // ceiling holds nothing.
+    let reached: [Error] = [
+      HostConnectionError.connectionLost, HostConnectionError.requestTimedOut,
+      HostConnectionError.serviceUnavailable("wakefulness"),
+    ]
+    var reachedModels: [(WakefulnessModel, Script)] = []
+    for (id, failure) in zip(reachedIDs, reached) {
+      let script = Script(trusted)
+      let reachedModel = model(script, id)
+      await reachedModel.refresh()
+      script.reply = .failure(failure)
+      await reachedModel.refresh()
+      reachedModels.append((reachedModel, script))
+    }
     // Past the ceiling those reads would have started, both come back stalled: a full hold.
     try await Task.sleep(for: .milliseconds(1100))
     let stalledReply = try status([ceiling, stalled, idle])
-    for script in [refused, recovered, reconnected] { script.reply = .success(stalledReply) }
+    for script in [refused, recovered, reconnected] + reachedModels.map(\.1) {
+      script.reply = .success(stalledReply)
+    }
+    for (reachedModel, _) in reachedModels { await reachedModel.refresh() }
     await refusedModel.refresh()
     await recoveredModel.refresh()
     reconnectedModel.pollWhileConnected()
@@ -568,6 +591,11 @@ final class AgentWakefulnessTests: XCTestCase {
       RemoteHosts.shared.isLetGo(.remote(recoveredID)), "a trusted reading left the hold's clock")
     XCTAssertFalse(
       RemoteHosts.shared.isLetGo(.remote(reconnectedID)), "a connect left the hold's old clock")
+    for id in reachedIDs {
+      await eventually("a failed read that reached the agent did not start the hold's clock") {
+        RemoteHosts.shared.isLetGo(.remote(id))
+      }
+    }
   }
 
   /// A connected boxd host is polled with nothing on screen (#356), so an IDLE reading lets it go

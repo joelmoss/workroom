@@ -1128,16 +1128,21 @@ final class RemoteHosts: @unchecked Sendable {
     }
     guard letGo else { return false }
     let lease = await HostConnectionManager.shared.snapshot(for: host).lease
-    // And again: a selection or a click across that wait takes it back, and keeps its connection.
-    guard lock.withLock({ letGoAt[host] != nil && !selectedHosts.values.contains(host) })
-    else { return false }
+    await MainActor.run { WakefulnessModel.Hosts.shared.models[id]?.stopPollingWhileConnected() }
     // A pane may have attached across those waits, and its ssh holds the box whatever happens here.
-    guard await !MainActor.run(body: { PersistentSessionService.shared.hasAttachedPane(on: host) })
-    else {
-      lock.withLock { letGoAt[host] = nil }
+    let paneAttached = await MainActor.run {
+      PersistentSessionService.shared.hasAttachedPane(on: host)
+    }
+    // The last check before the disconnect, after every wait: a selection, a click or a pane
+    // across them takes the host back, and keeps its connection and its poll.
+    let committed = lock.withLock { () -> Bool in
+      if paneAttached { letGoAt[host] = nil }
+      return letGoAt[host] != nil && !selectedHosts.values.contains(host)
+    }
+    guard committed else {
+      await MainActor.run { WakefulnessModel.Hosts.shared.models[id]?.pollWhileConnected() }
       return false
     }
-    await MainActor.run { WakefulnessModel.Hosts.shared.models[id]?.stopPollingWhileConnected() }
     if let lease { await HostConnectionManager.shared.disconnect(lease) }
     Self.logger.notice("let go of idle boxd host \(id, privacy: .public)")
     return true

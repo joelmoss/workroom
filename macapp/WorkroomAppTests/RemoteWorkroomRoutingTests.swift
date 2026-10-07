@@ -355,12 +355,13 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     defer { sessions.forgetRemoteSession(session) }
 
     // An attach whose ssh is gone before the take-back runs holds nothing, so takes nothing back.
-    XCTAssertNotNil(sessions.attachCommand(forSession: session))
-    sessions.paneDetached(session)
+    let pane = UUID()
+    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: pane))
+    sessions.paneDetached(session, by: pane)
     try await Task.sleep(for: .milliseconds(200))
     XCTAssertTrue(RemoteHosts.shared.isLetGo(host), "a pane gone before the take-back took it back")
 
-    XCTAssertNotNil(sessions.attachCommand(forSession: session))
+    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: pane))
     // The take-back runs in its own task.
     for _ in 0..<100 where RemoteHosts.shared.isLetGo(host) {
       try await Task.sleep(for: .milliseconds(20))

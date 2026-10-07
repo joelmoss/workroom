@@ -103,10 +103,11 @@ final class PersistentSessionService {
   /// it. Registered by whoever makes a pane for a remote workroom; nothing persists it yet, so a
   /// relaunch re-registers it (Phase 4).
   private var remoteSessions: [UUID: RemoteSession] = [:]
-  /// Remote sessions a pane has attached to, which its ssh holds open (#356). A pane registers its
-  /// session when it is made, but a restored one spawns nothing until it enters a window, so a
-  /// registration alone says nothing about whether the host is held.
-  private var attachedRemote: Set<UUID> = []
+  /// Remote sessions a pane has attached to, which its ssh holds open (#356), by the pane that
+  /// attached: each pane clears only its own mark, so one freed late cannot clear a live pane's of
+  /// the same session. A pane registers its session when it is made, but a restored one spawns
+  /// nothing until it enters a window, so a registration alone says nothing about the host.
+  private var attachedRemote: [UUID: Set<UUID>] = [:]
 
   private struct RemoteSession {
     let host: HostID
@@ -445,20 +446,23 @@ final class PersistentSessionService {
   /// workroom is being deleted, whose host goes with it (#283).
   func forgetRemoteSession(_ sessionID: UUID) {
     remoteSessions.removeValue(forKey: sessionID)
-    attachedRemote.remove(sessionID)
+    attachedRemote.removeValue(forKey: sessionID)
   }
 
   /// The host a remote session's pane attaches to, or nil for a local session.
   func remoteHost(of sessionID: UUID) -> HostID? { remoteSessions[sessionID]?.host }
 
-  /// A pane's ssh to `sessionID` ended: its surface was freed or its process exited (#356). A
+  /// `pane`'s ssh to `sessionID` ended: its surface was freed or its process exited (#356). A
   /// window closing does both without ending the session, so this, not `endSession`, is what
   /// stops a pane holding its host. A reconnect attaches it again (`attachCommand`).
-  func paneDetached(_ sessionID: UUID) { attachedRemote.remove(sessionID) }
+  func paneDetached(_ sessionID: UUID, by pane: UUID) {
+    attachedRemote[sessionID]?.remove(pane)
+    if attachedRemote[sessionID]?.isEmpty == true { attachedRemote[sessionID] = nil }
+  }
 
   /// Whether a pane has attached to a session on `host`: its ssh holds the host's box awake (#356).
   func hasAttachedPane(on host: HostID) -> Bool {
-    attachedRemote.contains { remoteSessions[$0]?.host == host }
+    attachedRemote.keys.contains { remoteSessions[$0]?.host == host }
   }
 
   /// Whether a remote session's last attach was refused by its host for good (#241).
@@ -467,13 +471,18 @@ final class PersistentSessionService {
     return remote.driver.hostRefusedLastAttach(of: sessionID, on: remote.host)
   }
 
-  func attachCommand(forSession sessionID: UUID, restored: Bool = false) -> String? {
+  /// `pane`, when given, is the pane whose ssh will run the command: it holds the host until it
+  /// detaches (`paneDetached`).
+  func attachCommand(
+    forSession sessionID: UUID, restored: Bool = false, by pane: UUID? = nil
+  ) -> String? {
     if let remote = remoteSessions[sessionID] {
       do {
         let command = try remote.driver.attachCommand(
           to: remote.host, session: sessionID, workingDirectory: remote.workingDirectory,
           restored: restored, metadata: remote.metadata)
-        attachedRemote.insert(sessionID)
+        guard let pane else { return command }
+        attachedRemote[sessionID, default: []].insert(pane)
         // A pane attaching is the user at that box, as a click is: a host the app let go of is
         // taken back, so its badge and ceiling prompts are heard while the pane's ssh holds it.
         let host = remote.host
@@ -661,7 +670,7 @@ final class PersistentSessionService {
     // held) and a reattach would open a new session on this Mac.
     if let remote = remoteSessions[sessionID] {
       // Its pane is closing, so nothing here holds the host any more, whatever the kill finds.
-      attachedRemote.remove(sessionID)
+      attachedRemote.removeValue(forKey: sessionID)
       let id = sessionID.uuidString
       logger.notice("ending remote session \(id, privacy: .public)")
       let killed: Bool

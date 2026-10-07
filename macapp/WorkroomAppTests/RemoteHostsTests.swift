@@ -204,8 +204,17 @@ final class RemoteHostsTests: XCTestCase {
       session, on: host, via: DerivingDriver(derived: boxd), workingDirectory: "/home/boxd/r")
     // A restored pane registers its session but spawns nothing until it enters a window.
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a pane that never attached holds the box")
+    // An attach no pane runs (a probe, a test's own call) holds nothing.
     XCTAssertNotNil(sessions.attachCommand(forSession: session))
-    XCTAssertTrue(sessions.hasAttachedPane(on: host))
+    XCTAssertFalse(sessions.hasAttachedPane(on: host), "an attach no pane runs holds the box")
+    // Value: protects=each pane clears only its own attach, so a pane freed late cannot clear a
+    // live pane's of the same session; fails_when=attaches are kept by session alone; why_new=the
+    // detach tests use one pane per session; seam=none
+    let (first, second) = (UUID(), UUID())
+    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: first))
+    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: second))
+    sessions.paneDetached(session, by: first)
+    XCTAssertTrue(sessions.hasAttachedPane(on: host), "one pane's detach cleared another's attach")
     let paneKept = await remote.observed(host, busy: false)
     sessions.forgetRemoteSession(session)
     XCTAssertFalse(paneKept, "a host with a pane attached was let go of")
@@ -218,7 +227,7 @@ final class RemoteHostsTests: XCTestCase {
     sessions.registerRemoteSession(
       session, on: host, via: ContainerHostDriver(hosts: [:], directory: RemoteHosts.directory),
       workingDirectory: "/home/boxd/r")
-    XCTAssertNotNil(sessions.attachCommand(forSession: session))
+    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: UUID()))
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a pane that can't reach its host holds it")
     sessions.forgetRemoteSession(session)
 

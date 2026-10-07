@@ -362,19 +362,19 @@ final class RemotePaneReconnectTests: XCTestCase {
     let session = try XCTUnwrap(view.persistentSessionID)
     let host = try XCTUnwrap(sessions.remoteHost(of: session))
     addTeardownBlock { PersistentSessionService.shared.forgetRemoteSession(session) }
-    XCTAssertNotNil(sessions.attachCommand(forSession: session))
+    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: view.attachToken))
     XCTAssertTrue(sessions.hasAttachedPane(on: host))
 
     view.handleChildExited(exitCode: 1)
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a pane whose ssh exited holds its host")
 
-    XCTAssertNotNil(sessions.attachCommand(forSession: session))
+    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: view.attachToken))
     view.persistentSessionID = UUID()
     XCTAssertFalse(
       sessions.hasAttachedPane(on: host), "a pane pointed at another session holds the old host")
     view.persistentSessionID = session
 
-    XCTAssertNotNil(sessions.attachCommand(forSession: session))
+    XCTAssertNotNil(sessions.attachCommand(forSession: session, by: view.attachToken))
     view.tearDown()
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a closed pane holds its host")
   }
