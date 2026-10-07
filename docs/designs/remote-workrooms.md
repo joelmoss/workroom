@@ -26,7 +26,7 @@ the agent, not a shim. Follow-ups from #253's reviews are #283 to #288; #283 (cl
 ends its session on the host) is merged (PR #306, 2026-10-03), with its own follow-ups in #293, #297
 and #304. The rest of Phase 4 is open: the second real provider, exe.dev (#259), and boxd live fork
 (#258), which is deferred to a later release and does not gate #260. #260 is the gate: it runs the
-Success Criteria on two real providers, and the remote UI leaves Nightly only after they pass. The
+Success Criteria on two real providers; the remote UI already left Nightly, ahead of it (2026-10-07). The
 first Nightly DMG with the Linux agent inside (#227) still has to be checked, and that check is part
 of #260. Each merged item has its "As built" entry under Phase 4, except #255, which is recorded as
 the answer to open question 8.
@@ -3348,7 +3348,10 @@ disagreement passes every test on either side alone while presenting as an empty
       reattach in `wr-agent attach` (the same ssh and pty, ~100 ms, local too) is the upgrade,
       and needs the stdin and resize relays re-plumbed onto a swappable stream.
     - *Gated as the local hand-off is* (`AgentHandOff.isEnabled`, Nightly and Dev): one
-      older-agent policy on both hosts. Off, the scripts skip the hand-off and the install still
+      older-agent policy on both hosts. **Changed 2026-10-07:** remote hand-off is on in every
+      build, stable included, when remote workrooms left Nightly; the local one stays gated. A
+      remote agent runs under a supervisor with no idle exit, so without it a stable host would
+      keep its first agent until the box restarts. Off, the scripts skip the hand-off and the install still
       renames, so the next probe sees a match, nothing is pushed again, and the supervisor picks
       the file up on its next start.
     - *The crashed restore, remotely: measured.* A binary that passes `protocol` and the restore

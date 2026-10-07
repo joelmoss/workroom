@@ -2,7 +2,7 @@ import SwiftUI
 
 /// New Workroom picker (issue #81). A searchable list of projects, raised by File ▸ New Workroom
 /// (⌘N). Type to filter (partial, case-insensitive); ↑/↓ move the highlight; ⏎ or a click picks a
-/// project and **immediately** creates + opens a new workroom in it via `AppStore.createWorkroom`.
+/// project, and the dialog then asks where its new workroom goes (see below).
 ///
 /// Structurally this is `ThemePicker` (search field + scroll/highlight + `.onKeyPress`), with one
 /// deliberate difference: ↑/↓ only MOVE the highlight here — they never create. Creating a workroom
@@ -12,9 +12,8 @@ import SwiftUI
 /// replacing it (issue #163); raised by ⌥⌘N the whole dialog is already in split mode, so a plain
 /// ⏎ splits — which is why the title and footer are derived from `PickerSplitIntent`, not fixed.
 ///
-/// With the remote preview on (#309), picking a project doesn't create yet: the dialog then asks
-/// where, This Mac or a local container, as the sidebar's New Workroom menu does, and the place
-/// picked creates.
+/// Picking a project doesn't create yet (#309): the dialog asks where, This Mac, a local container
+/// or boxd, as the sidebar's New Workroom menu does, and the place picked creates and opens it.
 ///
 ///   ┌─ "New Workroom [(split right)]" ─ Done ─┐
 ///   │ 🔍 [ filter…                       ] │  ← auto-focused; single-line, so ↑/↓/⏎ bubble up
@@ -38,7 +37,7 @@ struct NewWorkroomDialog: View {
   /// Index into `filtered` of the keyboard-highlighted row (↑/↓ move it, ⏎ / click pick it).
   @State private var highlighted = 0
   @FocusState private var searchFocused: Bool
-  /// The project picked while the remote preview is on (#309), whose workroom's place is asked next.
+  /// The project picked (#309), whose workroom's place is asked next.
   @State private var placing: Project?
   /// Where that workroom lands beside, taken when its project was picked.
   @State private var placeAnchor: SidebarID?

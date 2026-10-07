@@ -97,12 +97,12 @@ BUILD_NUMBER="$(git -C "$MACAPP_DIR/.." rev-list --count HEAD 2>/dev/null || ech
 # rejects. Archiving also produces a distribution build with get-task-allow omitted.
 # The `workroom-host` image the app's local container workrooms run, by digest (#309): CI's
 # host-image workflow publishes it and passes it here. Without it the app falls back to a locally
-# built `workroom-host` (`make remote-host-image`), which a user won't have, so a Nightly, the only
-# build that runs container workrooms until #260, refuses to build without one.
+# built `workroom-host` (`make remote-host-image`), which a user won't have, so a Release or a
+# Nightly, both of which run container workrooms, refuses to build without one.
 case "$CONFIGURATION:${WORKROOM_HOST_IMAGE:-}" in
-  Nightly:*@sha256:*) ;;
-  Nightly:*)
-    echo "error: a Nightly needs WORKROOM_HOST_IMAGE, the workroom-host image by digest" \
+  Release:*@sha256:* | Nightly:*@sha256:*) ;;
+  Release:* | Nightly:*)
+    echo "error: a $CONFIGURATION build needs WORKROOM_HOST_IMAGE, the workroom-host image by digest" \
       "(<repo>@sha256:...), got '${WORKROOM_HOST_IMAGE:-}'." >&2
     exit 1 ;;
 esac

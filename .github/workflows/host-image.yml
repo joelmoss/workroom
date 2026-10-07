@@ -1,7 +1,7 @@
 name: Host image
 
-# Publishes the `workroom-host` image a local container workroom runs (#309), for the Nightly
-# workflow, which pins the app it builds to the digest this outputs. Release joins it with #260.
+# Publishes the `workroom-host` image a local container workroom runs (#309), for the Nightly and
+# Release workflows, which pin the app they build to the digest this outputs.
 #
 # Each architecture is built once, smoke-tested as that exact image (host-image-test.sh with
 # WR_HOST_IMAGE), and only then pushed by digest: a second build for the push could resolve other

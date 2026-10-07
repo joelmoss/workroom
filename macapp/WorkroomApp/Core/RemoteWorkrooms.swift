@@ -946,8 +946,8 @@ final class RemoteHosts: @unchecked Sendable {
     for host in hosts where RemoteWorkrooms.isLive(host) {
       let key = try Self.deletionKey(host)
       if environments[key] == nil { environments[key] = try environment(key).1 }
-      // Taking a box down needs it on its driver, whatever a reload adopted: with previews off it
-      // adopted nothing, and the box would read as unknown. A boxd driver needs nothing adopted.
+      // Taking a box down needs it on its driver, whatever a reload adopted: one that has not
+      // adopted it yet would read the box as unknown. A boxd driver needs nothing adopted.
       guard key.runtime != nil else { continue }
       let driver = try containerDriver(key)
       guard let id = host.id, let record = host.container, driver.record(of: .remote(id)) == nil
