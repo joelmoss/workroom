@@ -3031,11 +3031,12 @@ disagreement passes every test on either side alone while presenting as an empty
       which the socket is unbound. The session table (ids, pids, fds, sizes, size owner) crosses
       in an inherited pipe or memfd.
     - *The screen crosses as VT bytes, never as a snapshot.* Two agent revisions share no snapshot
-      format (see the next item). They do share VT. The outgoing agent calls `replay()` for each
-      session on its **live** terminal, which is the only place the parser continuation can be
-      read. The incoming agent feeds those bytes to a fresh terminal of the same size. The
-      fidelity is exactly what a reattaching client already gets, including its one-row
-      scrollback offset (Phase 0 Results, item 3).
+      format (see the next item). They do share VT. The outgoing agent takes, for each session
+      on its **live** terminal (the only place the parser continuation can be read), the replay a
+      reattaching client would be sent (`Shadow::replay_for`). The incoming agent feeds those
+      bytes to a fresh terminal of the same size. The fidelity is exactly what a reattaching
+      client already gets, including its one-row scrollback offset (Phase 0 Results, item 3) and
+      its busy state (#359, under "Terminal-state durability" in Next Steps item 3).
     - *Check first, and refuse rather than kill.* Before it `execve`s, the old agent runs the new
       binary once to confirm it starts on this box. If that check fails, or the old agent predates
       the hand-off request entirely, it keeps running and the app talks to it over the versioned
@@ -3699,6 +3700,22 @@ service milestones below so each layer can be reviewed and landed independently.
      restoration was left out of this milestone and is now built too (#232), so #208's durability
      criterion is met.
 
+     **The busy indicator survives a reattach too (#359).** A program reports busy with OSC 9;4
+     once, when its work starts, so a client that attaches mid-turn could only learn it from the
+     replay. The shadow keeps the last report, and the replay re-emits it, or an explicit REMOVE
+     when there is none, so a client that kept its view across a reconnect drops a state the
+     program has since cleared (`a_reattaching_client_is_told_the_session_is_busy`,
+     `a_reattaching_client_is_not_told_a_cleared_report`). The report goes before the parser
+     continuation. A program killed or crashed mid-turn never sends its REMOVE, and the shadow
+     cannot see the shell's next prompt clear it as the app does, so the live replay (a live
+     attach, and a hand-off's frozen screen) says idle once the process group that sent the
+     report no longer owns the pty. Ownership is the pty's foreground group sampled when the
+     report arrived, and the report is kept, so a program stopped and resumed (^Z, `fg`) is busy
+     again to the next client. A hand-off's new program gives a report it is handed to whoever
+     owns the pty then. The on-disk record never carries it (#232, below). Known limit: the
+     group is sampled after the read, so a reporter that exits within the same read chunk is
+     recorded as the shell and its report stays until a REMOVE.
+
      **As built (#232, `wr-agent/src/screens.rs`).** After a reboot the shells are dead, so what
      comes back is each session's last screen, frozen. A pane is not given a new shell.
      - *Opt-in, on durable disk.* `serve --screens <dir>` turns it on. The directory must survive a
@@ -3707,8 +3724,10 @@ service milestones below so each layer can be reviewed and landed independently.
        restoring local screens after a Mac restart is still a separate decision. The flag is in
        the arguments a hand-off re-executes with, so a new program keeps it.
      - *What is kept: a record, not a snapshot.* `ShadowTerminal::record()` is `replay()` without
-       the parser continuation. Nothing will ever complete a continuation in a record, and the
-       notice written after one would. A small header (magic, version 1, columns, rows, length)
+       the parser continuation and the last OSC 9;4 progress report (#359). Nothing will ever
+       complete a continuation in a record, and the notice written after one would. A record
+       outlives the program, so a report in it would pin a restored pane's spinner on; a restored
+       pane is painted idle instead. A small header (magic, version 1, columns, rows, length)
        precedes the VT, so a newer agent reads what an older one wrote without running it
        (`a_version_one_record_still_reads`).
      - *Write policy.* One thread writes, every 2 s, the record of each session whose screen
