@@ -69,24 +69,28 @@ The project is configured for team **B898J443L9**:
   timestamp. `Scripts/build-helper.sh` signs the embedded helper the same way before the
   app's final signature.
 
-Every configuration (Debug, Release and Nightly) signs with `WorkroomApp/Workroom.entitlements`, which grants exactly two
-hardened-runtime keys. Each exists because macOS attributes what a terminal child does to the
-app that owns the terminal, so the app has to declare it:
+Every configuration (Debug, Release and Nightly) signs with
+`WorkroomApp/Workroom.entitlements`, which grants two hardened-runtime keys. Each exists
+because macOS attributes what a terminal child does to the app that owns the terminal, so the
+app has to declare it:
 
 - `com.apple.security.automation.apple-events` + `NSAppleEventsUsageDescription`: ⌘-clicking a
   path runs `/usr/bin/open`, which sends an Apple Event.
-- `com.apple.security.device.audio-input` + `NSMicrophoneUsageDescription`: a program in the
-  terminal (Claude Code's voice mode, say) opens the microphone. Without the entitlement the
-  hardened runtime refuses before TCC is consulted and voice fails with no prompt at all; the
-  usage string is what the one-time prompt shows. Ghostty and iTerm2 declare the same pair.
+- `com.apple.security.device.audio-input` + `NSMicrophoneUsageDescription`: the microphone grant
+  covers every program Workroom runs with itself as responsible process: terminal commands,
+  repository setup scripts and agent CLIs (Claude Code's voice mode is the motivating case).
+  Without the entitlement the hardened runtime refuses before TCC is consulted and voice fails
+  with no prompt at all; the usage string is what the one-time prompt shows. Ghostty and iTerm2
+  declare the same pair.
 
 Usage strings live in `project.yml`'s `info.properties`; `make app-generate` renders them into
 the checked-in `Info.plist`. `Scripts/test-invariants_test.sh` pins both halves of the
 microphone pair. Terminals keep running under the session helper the previous version
 started, and new terminals do too while that helper lives, so an update does not change which
-app instance macOS attributes them to. If voice input does not prompt after an update, close
-every terminal, use Settings › Terminal › Stop Detached Terminals…, wait a few seconds for the
-helper to exit, then reopen. If it still fails, check System Settings › Privacy & Security ›
+app instance macOS attributes them to. The helper stays alive while Workroom is open, so if
+voice input does not prompt after an update, close every terminal, quit Workroom, wait about
+half a minute (or until `pgrep -f 'wr-agent serve'` shows the helper has exited), then
+relaunch. If it still fails, check System Settings › Privacy & Security ›
 Microphone for the Workroom entry.
 
 To produce a notarized, stapled `Workroom.dmg` installer (the app inside is notarized +

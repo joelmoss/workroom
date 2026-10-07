@@ -147,6 +147,7 @@ fi
 # prompt. Both were missing through v2.1.0, so voice failed silently in Workroom while working
 # in Ghostty and iTerm2, which declare the same pair. Nothing else catches a regression: every
 # build and test is green with either half gone; only a user's first voice attempt fails.
+# The plist check compares the full string, so an edit in project.yml without regeneration is caught.
 ENTITLEMENTS="${TEST_INVARIANTS_ENTITLEMENTS:-$ROOT/macapp/WorkroomApp/Workroom.entitlements}"
 INFO_PLIST="${TEST_INVARIANTS_INFO_PLIST:-$ROOT/macapp/WorkroomApp/Info.plist}"
 if ! grep -A1 '<key>com.apple.security.device.audio-input</key>' "$ENTITLEMENTS" | grep -q '<true/>'; then
@@ -154,14 +155,24 @@ if ! grep -A1 '<key>com.apple.security.device.audio-input</key>' "$ENTITLEMENTS"
   echo "      hardened runtime blocks the microphone for every program in a Workroom terminal."
   fails=$((fails + 1))
 fi
-if ! grep -q '^[[:space:]]*NSMicrophoneUsageDescription: "' "$PROJECT_YML"; then
+if ! grep -q '^[[:space:]]*NSMicrophoneUsageDescription: "[^"]' "$PROJECT_YML"; then
   echo "FAIL: project.yml's Info.plist properties no longer set NSMicrophoneUsageDescription —"
   echo "      TCC cannot show a microphone prompt for Workroom and denies the request."
   fails=$((fails + 1))
 fi
-if ! grep -q '<key>NSMicrophoneUsageDescription</key>' "$INFO_PLIST"; then
-  echo "FAIL: the checked-in Info.plist lacks NSMicrophoneUsageDescription — project.yml changed"
-  echo "      without 'make app-generate', so the committed plist is stale."
+mic_value="$(sed -n 's/^[[:space:]]*NSMicrophoneUsageDescription: "\(.*\)"[[:space:]]*$/\1/p' "$PROJECT_YML")"
+mic_line="<string>${mic_value}</string>"
+if [ -z "$mic_value" ] \
+  || ! grep -A1 '<key>NSMicrophoneUsageDescription</key>' "$INFO_PLIST" | grep -qF "$mic_line"; then
+  echo "FAIL: the checked-in Info.plist's NSMicrophoneUsageDescription is missing or differs from project.yml —"
+  echo "      project.yml changed without 'make app-generate', so the committed plist is stale."
+  fails=$((fails + 1))
+fi
+if ! grep -q '^[[:space:]]*CODE_SIGN_ENTITLEMENTS: WorkroomApp/Workroom.entitlements$' "$PROJECT_YML" \
+  || [ "$(grep -c '^[[:space:]]*CODE_SIGN_ENTITLEMENTS:' "$PROJECT_YML")" -ne 1 ]; then
+  echo "FAIL: project.yml no longer signs every configuration with WorkroomApp/Workroom.entitlements"
+  echo "      (or a config overrides it) — the audio-input and apple-events entitlements would vanish"
+  echo "      from the signed app while every test stays green."
   fails=$((fails + 1))
 fi
 

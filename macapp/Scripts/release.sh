@@ -248,6 +248,18 @@ echo "--- embedded helper ---"
 codesign -dv --verbose=4 "$APP/Contents/Resources/workroom" 2>&1 \
   | grep -iE "Authority|TeamIdentifier|flags|Timestamp" || true
 
+# Voice input from programs the app runs needs both halves of the microphone pair on the
+# SIGNED artifact (test-invariants_test.sh pins only the source files). A config that drops
+# CODE_SIGN_ENTITLEMENTS, or a re-sign that forgets the file, ships with voice silently broken.
+if ! codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q 'com.apple.security.device.audio-input'; then
+  echo "error: $(basename "$APP") is signed without com.apple.security.device.audio-input; see macapp/README.md (Signing & distribution)." >&2
+  exit 1
+fi
+if ! /usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$APP/Contents/Info.plist" >/dev/null 2>&1; then
+  echo "error: $(basename "$APP") has no NSMicrophoneUsageDescription; see macapp/README.md (Signing & distribution)." >&2
+  exit 1
+fi
+
 echo "==> Notarizing app"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"

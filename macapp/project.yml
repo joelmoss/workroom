@@ -283,12 +283,13 @@ targets:
         # Shown once by the Automation TCC prompt when ⌘-clicking a file path in the terminal opens
         # it via `/usr/bin/open` (see CODE_SIGN_ENTITLEMENTS below).
         NSAppleEventsUsageDescription: "Workroom uses Apple Events to open files you ⌘-click in the terminal with your chosen editor."
-        # Shown once by the Microphone TCC prompt when a program in the terminal opens the mic
-        # (Claude Code's voice mode, say). Attributed to us because terminal children inherit the
-        # app as their responsible process (see CODE_SIGN_ENTITLEMENTS below). No product name in
-        # the string, unlike the Apple Events one: the prompt's title already says which of
-        # Workroom / Workroom Dev / Workroom Nightly is asking, and the mic user is the program.
-        NSMicrophoneUsageDescription: "Programs running in your terminal, such as a coding agent's voice input, can use your microphone."
+        # Shown once by the Microphone TCC prompt when a program opens the mic. Attributed to us
+        # because children inherit the app as their responsible process (see CODE_SIGN_ENTITLEMENTS
+        # below).
+        # Deliberately broader than Ghostty's and iTerm2's terminal-only wording: the grant also reaches
+        # the repository setup scripts and agent CLIs Workroom runs on the user's behalf, so the string
+        # says so.
+        NSMicrophoneUsageDescription: "Programs Workroom runs, including terminal commands, repository setup scripts and coding agents, can use your microphone."
         # Resolve from the build settings below so Scripts/release.sh can inject them from the
         # git tag. CFBundleVersion MUST increase every release — Sparkle compares it to decide
         # whether a newer build is available.

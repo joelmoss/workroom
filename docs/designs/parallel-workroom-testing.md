@@ -224,10 +224,10 @@ make app-uitest-vm
 ```
 
 - **Build once, on the host.** The guest tests the products `make app-uitest` builds, signed Apple
-  Development. The only entitlement is `com.apple.security.automation.apple-events`, which needs
-  no provisioning profile, so a dev-signed runner should launch in the guest; the first pass
-  checks this, and falls back to an ad-hoc build in its own `-derivedDataPath DerivedData-vm` if
-  it does not. Never build ad-hoc into the shared `DerivedData`: that replaces the signed dev
+  Development. The only entitlements are `com.apple.security.automation.apple-events` and
+  `com.apple.security.device.audio-input`, both hardened-runtime keys that need no provisioning
+  profile, so a dev-signed runner should launch in the guest; the first pass checks this, and
+  falls back to an ad-hoc build in its own `-derivedDataPath DerivedData-vm` if it does not. Never build ad-hoc into the shared `DerivedData`: that replaces the signed dev
   products the dev app and TCC grants depend on.
 - **Snapshot before queueing.** The run clones its products right after the build, because the
   person keeps working while it waits, and a `make app-run` in the same workroom rebuilds `Debug/`.
