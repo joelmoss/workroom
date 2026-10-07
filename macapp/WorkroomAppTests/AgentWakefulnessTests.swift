@@ -618,19 +618,35 @@ final class AgentWakefulnessTests: XCTestCase {
   /// app: wire durations are sanitised here as everywhere else (#356).
   @MainActor
   func testAnAbsurdCeilingOnTheWireHoldsRatherThanTraps() async throws {
-    let id = UUID()
+    let (huge, negative, control) = (UUID(), UUID(), UUID())
     RemoteHosts.shared.adopt(
-      [Project(path: "/proj", vcs: "git", workrooms: [boxdWorkroom(id)])], sweep: false)
-    let reply = try status([
-      (#""ceiling_seconds":14400.0"#, #""ceiling_seconds":1e300"#),
-      (#""stalled":false"#, #""stalled":true"#),
-    ])
-    let model = WakefulnessModel(
-      transport: .init(status: Script(reply).status, keep: {}, prompts: { throw Unavailable() }),
-      host: id)
-    await model.refresh()
-    await model.refresh()
-    XCTAssertFalse(RemoteHosts.shared.isLetGo(.remote(id)), "an absurd ceiling held nothing")
+      [Project(path: "/proj", vcs: "git", workrooms: [huge, negative, control].map(boxdWorkroom))],
+      sweep: false)
+    let stalled = (#""stalled":false"#, #""stalled":true"#)
+    // A huge ceiling is capped, not trapped on; a negative one is dropped for the setting's, so
+    // neither ends the hold at once.
+    for (id, ceiling) in [(huge, "1e300"), (negative, "-5.0")] {
+      let reply = try status([
+        (#""ceiling_seconds":14400.0"#, #""ceiling_seconds":\#(ceiling)"#), stalled,
+      ])
+      await WakefulnessModel(
+        transport: .init(status: Script(reply).status, keep: {}, prompts: { throw Unavailable() }),
+        host: id
+      ).refresh()
+    }
+    // A plain IDLE on another host, reported after them, proves the reports landed.
+    await WakefulnessModel(
+      transport: .init(
+        status: Script(try status([(#""busy":true"#, #""busy":false"#)])).status, keep: {},
+        prompts: { throw Unavailable() }),
+      host: control
+    ).refresh()
+    await eventually("the control host's IDLE was never reported") {
+      RemoteHosts.shared.isLetGo(.remote(control))
+    }
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertFalse(RemoteHosts.shared.isLetGo(.remote(huge)), "a huge ceiling held nothing")
+    XCTAssertFalse(RemoteHosts.shared.isLetGo(.remote(negative)), "a negative ceiling held nothing")
   }
 
   /// A connected boxd host is polled with nothing on screen (#356), so an IDLE reading lets it go

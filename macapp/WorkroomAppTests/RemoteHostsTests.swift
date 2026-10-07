@@ -1585,6 +1585,20 @@ final class RemoteHostsTests: XCTestCase {
       recorded.all.flatMap { [$0] + ($0.bases ?? []) }.last { $0.id == made },
       "the base machine left running was not recorded")
     XCTAssertEqual(failed.state, "failed")
+
+    // A record that fails too leaves the caller the original failure, not the record's.
+    do {
+      _ = try await RemoteWorkrooms.create(
+        repository: repository, cloneURL: "https://github.com/o/r.git", base: nil,
+        key: .boxd(org: "acme", account: "usr_1"), driver: driver, environment: environment,
+        recorder: RemoteWorkrooms.Recorder(
+          reserve: { _, _ in "x" },
+          record: { _, _ in throw HostDriverError.provisioning("no record") },
+          forget: { _ in }))
+      XCTFail("a base build whose rollback failed succeeded")
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, _, _) {
+      XCTAssertEqual(host, .remote(made))
+    }
   }
 
   /// A driver whose derive makes `derived` and whose destroy succeeds unless told otherwise;

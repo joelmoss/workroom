@@ -725,8 +725,12 @@ final class WakefulnessModel: ObservableObject {
     guard issued.request > newestApplied else { return next }
     newestApplied = issued.request
     if next != self.status { self.status = next }
-    // Sanitised as every wire duration here is: `Duration.seconds` traps on an out-of-range value.
-    lastCeiling = next.ceilingSeconds.map(wakefulnessSeconds) ?? lastCeiling
+    // Only a usable ceiling is taken: garbage (negative, not finite) is dropped, so the hold keeps
+    // the last one or the setting rather than ending at once, and a huge one is capped, as every
+    // wire duration here is, since `Duration.seconds` traps out of range.
+    if let ceiling = next.ceilingSeconds, ceiling.isFinite, ceiling >= 0 {
+      lastCeiling = wakefulnessSeconds(ceiling)
+    }
     // A stalled service's reading may be stale while work runs (`display` shows it as unknown), so
     // it holds the box. One not running at all holds nothing awake, heartbeat included, so its box
     // is let go of too, unless its last reading was BUSY: a service that died under a job leaves

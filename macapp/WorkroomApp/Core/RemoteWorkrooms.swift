@@ -368,11 +368,13 @@ enum RemoteWorkrooms {
     {
       // `destroyed` only with nothing live: the CLI deletes a destroyed entry, and a live grant
       // must keep its record until the app's delete cancels it.
-      try? await recorder.record(
-        name,
-        remaining(
-          state: host == nil && grant == nil ? "destroyed" : "failed", workroomID: workroomID,
-          host: host, grant: grant, key: key, driver: driver))
+      await recordLeftBehind(host, grant: grant) {
+        try await recorder.record(
+          name,
+          remaining(
+            state: host == nil && grant == nil ? "destroyed" : "failed", workroomID: workroomID,
+            host: host, grant: grant, key: key, driver: driver))
+      }
       throw RemoteProvisioning.Failure.rollbackIncomplete(
         cause: cause, host: host, grantID: grant, cleanup: left)
     } catch HostDriverError.leftBehind(let cause, let left, let host?) {
@@ -407,11 +409,13 @@ enum RemoteWorkrooms {
         try await RemoteProvisioning.destroy(instance, workroom: workroomID, in: environment)
       } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, let grant, _) {
         // Something is still live: the entry stays, `failed`, for delete to finish.
-        try? await recorder.record(
-          name,
-          remaining(
-            state: "failed", workroomID: workroomID, host: host, grant: grant, key: key,
-            driver: driver))
+        await recordLeftBehind(host, grant: grant) {
+          try await recorder.record(
+            name,
+            remaining(
+              state: "failed", workroomID: workroomID, host: host, grant: grant, key: key,
+              driver: driver))
+        }
         throw error
       } catch {
         // `destroy` throws nothing else: everything it made is gone.
@@ -510,7 +514,7 @@ enum RemoteWorkrooms {
         if let id = host.id { await MainActor.run { WakefulnessModel.forgetHost(id) } }
         (remaining.id, remaining.container) = (nil, nil)
       }
-      try? await recorder.record(name, remaining)
+      await recordLeftBehind(liveHost, grant: grant) { try await recorder.record(name, remaining) }
       throw RemoteProvisioning.Failure.rollbackIncomplete(
         cause: cause, host: liveHost, grantID: grant, cleanup: left)
     }
@@ -528,17 +532,22 @@ enum RemoteWorkrooms {
     }
   }
 
-  /// Records a machine left running. A record that fails too is logged with the machine named,
-  /// since nothing else in the app will remember it (#356).
-  private static func recordLeftBehind(_ host: HostID, _ write: () async throws -> Void) async {
+  /// Records what a failure left live (a machine, a grant). A record that fails too is logged with
+  /// it named, since nothing else in the app will remember it (#356).
+  private static func recordLeftBehind(
+    _ host: HostID?, grant: String? = nil, _ write: () async throws -> Void
+  ) async {
     do { try await write() } catch {
-      leftBehindLogger.error(
-        "could not record machine \(String(describing: host), privacy: .public) left running: \(error.localizedDescription, privacy: .public)"
+      let live = [host.map { String(describing: $0) }, grant.map { "grant \($0)" }].compactMap {
+        $0
+      }
+      logger.error(
+        "could not record \(live.joined(separator: ", "), privacy: .public) left live: \(error.localizedDescription, privacy: .public)"
       )
     }
   }
 
-  private static let leftBehindLogger = Logger(
+  private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "RemoteWorkrooms")
 
   /// Destroys a project's base (#253), for an explicit project delete, then clears its record
