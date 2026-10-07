@@ -221,11 +221,16 @@ CLI manages in `~/.ssh/config` and `~/.ssh/known_hosts` (`SSHDetails`). A base i
 `Resources/host-setup/boxd.sh` (an identity unit and the agent's supervisor, both systemd). A
 derive is snapshot, restore, then reboot, and the reboot is not optional: a restored snapshot
 runs the base's processes until it happens. The CLI acts in boxd's active org, so the driver
-is told its org (`Configuration.org`) and refuses to act while another is active. Machines and
-snapshots are named
+is told its org and account (`Configuration.org`, `Configuration.account`; every personal
+account's org is nil, so the org alone cannot tell two accounts apart) and refuses to act while
+another is active (#356). Machines and snapshots are named
 `<prefix>-<host id>`, so cleanup and a relaunched app find them by ID. `BoxdIntegrationTests`
 make real machines: they run only with `TEST_RUNNER_WR_BOXD_TESTS=1`, a `WR_AGENT_LINUX=1` build,
-and the sandbox off. See "As built (#256)" in `docs/designs/remote-workrooms.md`.
+and the sandbox off. The app reaches it from New Workroom › Remote › boxd (#356): `RemoteHosts`
+holds any driver by `DriverKey` (a container runtime or a boxd org and account), a background read
+of a boxd host asks boxd first and leaves an asleep box asleep, and an idle host's connection is
+let go of so boxd can sleep it. See "As built (#256)" and "As built (#356)" in
+`docs/designs/remote-workrooms.md`.
 
 ## Remote workrooms in config (#249)
 
