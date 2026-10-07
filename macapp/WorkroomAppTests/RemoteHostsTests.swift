@@ -209,6 +209,18 @@ final class RemoteHostsTests: XCTestCase {
     let paneKept = await remote.observed(host, busy: false)
     sessions.forgetRemoteSession(session)
     XCTAssertFalse(paneKept, "a host with a pane attached was let go of")
+    // A forgotten pane holds nothing, even if its id is registered again; nor does one whose host
+    // the driver can't reach, whose pane only says why.
+    sessions.registerRemoteSession(
+      session, on: host, via: DerivingDriver(derived: boxd), workingDirectory: "/home/boxd/r")
+    XCTAssertFalse(sessions.hasAttachedPane(on: host), "a forgotten pane still holds the box")
+    sessions.forgetRemoteSession(session)
+    sessions.registerRemoteSession(
+      session, on: host, via: ContainerHostDriver(hosts: [:], directory: RemoteHosts.directory),
+      workingDirectory: "/home/boxd/r")
+    XCTAssertNotNil(sessions.attachCommand(forSession: session))
+    XCTAssertFalse(sessions.hasAttachedPane(on: host), "a pane that can't reach its host holds it")
+    sessions.forgetRemoteSession(session)
 
     let letGo = await remote.observed(host, busy: false)
     XCTAssertTrue(letGo)
@@ -1004,20 +1016,42 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertTrue(model.isPollingWhileConnected, "a connected boxd host isn't polled")
     XCTAssertEqual(remote.revisitAfter(host), .seconds(60) + RemoteHosts.retryAfter)
 
-    // Value: protects=a reconnect whose idle-window read fails keeps the window last read;
-    // fails_when=connect records a failed read as unknown; why_new=only a successful read is
-    // connected here; seam=none
-    await HostConnectionManager.shared.disconnect(lease)
-    let failing = BoxdHostDriver(
-      configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
-      directory: FileManager.default.temporaryDirectory, runner: MachineGet("", fails: true))
-    try await remote.connect(host, driver: failing)
-    if let again = await HostConnectionManager.shared.snapshot(for: host).lease {
-      addTeardownBlock { await HostConnectionManager.shared.disconnect(again) }
+    // Value: protects=a reconnect whose idle-window read fails keeps the window last read, while
+    // one that finds no timer set clears it; fails_when=connect treats a failed read as "no
+    // timer", or "no timer" as a failure; why_new=only a successful read is connected here;
+    // seam=none
+    let reconnect = { (runner: MachineGet) in
+      if let current = await HostConnectionManager.shared.snapshot(for: host).lease {
+        await HostConnectionManager.shared.disconnect(current)
+      }
+      try await remote.connect(
+        host,
+        driver: BoxdHostDriver(
+          configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
+          directory: FileManager.default.temporaryDirectory, runner: runner))
     }
-    try await Task.sleep(for: .milliseconds(300))
+    let failing = MachineGet("", fails: true)
+    try await reconnect(failing)
+    let asked = ContinuousClock.now + .seconds(5)
+    while failing.answered.calls == 0, ContinuousClock.now < asked {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertEqual(failing.answered.calls, 1, "the reconnect never read the idle window")
+    try await Task.sleep(for: .milliseconds(50))
     XCTAssertEqual(remote.revisitAfter(host), .seconds(60) + RemoteHosts.retryAfter)
     XCTAssertEqual(model.idleWindow, 60, "a failed read forgot the badge's idle window")
+
+    try await reconnect(MachineGet(#"{"source":"standalone"}"#))
+    let cleared = ContinuousClock.now + .seconds(5)
+    while model.idleWindow != nil, ContinuousClock.now < cleared {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertNil(model.idleWindow, "turning the timers off left the badge's idle window")
+    XCTAssertEqual(
+      remote.revisitAfter(host), .seconds(RemoteHosts.unknownIdleWindow) + RemoteHosts.retryAfter)
+    if let last = await HostConnectionManager.shared.snapshot(for: host).lease {
+      addTeardownBlock { await HostConnectionManager.shared.disconnect(last) }
+    }
     WakefulnessModel.forgetHost(id)
     XCTAssertFalse(model.isPollingWhileConnected, "a forgotten host is still polled")
   }
@@ -1085,6 +1119,8 @@ final class RemoteHostsTests: XCTestCase {
   private struct MachineGet: StatusCommandRunning {
     let json: String
     var fails = false
+    /// How many times it has answered, so a test can wait for a read it can't otherwise see.
+    let answered = Asleep()
     init(_ json: String, fails: Bool = false) {
       self.json = json
       self.fails = fails
@@ -1092,7 +1128,8 @@ final class RemoteHostsTests: XCTestCase {
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
       async -> CommandResult
     {
-      fails
+      _ = answered.answer()
+      return fails
         ? CommandResult(stdout: "", stderr: "error: unreachable", exitCode: 1, timedOut: false)
         : CommandResult(stdout: json, stderr: "", exitCode: 0, timedOut: false)
     }
