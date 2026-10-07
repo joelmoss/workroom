@@ -1918,29 +1918,29 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     stalled IDLE reading on a sleeping host shows "status unknown".
   - **Not swept.** Unrecorded boxd machines are left alone: names carry no build, so one build's
     sweep would take another's live workrooms (#284 has the boxd case).
-  - **Letting go of an idle box.** boxd's idle meter counts inbound traffic, and the first live
-    run (2026-10-06) found an attached box never slept: the service connection's ssh keepalives
-    (15 s) and the badge's polls (10 s) held it, idle or past an unanswered prompt. So a boxd host
-    whose agent reports IDLE (its published verdict, which an unanswered prompt also makes IDLE),
-    whose workroom is not selected, which forwards no port and has no pane attached is let go of: its
-    connection closed, no background read reconnecting it, its badge sending nothing, and its row
-    showing "idle, not connected" (an open moon) until boxd confirms it asleep. Selecting or
-    opening the workroom, a click (closing a pane, Keep awake), or a pane attaching takes it back.
-    A remote pane's own ssh keeps its box awake whatever the app does, so a host with a pane
-    attached is never let go of; a pane restored at launch attaches only once it is shown, and until then holds nothing.
-    The app polls each connected boxd host itself, so a row scrolled out of view still lets its
-    box go; it ignores IDLE readings for 10 s after a connect, so the read that connected the host
-    is answered first; and a host whose agent's wakefulness service has stopped is let go of too,
-    as nothing on it holds the box awake, unless its last reading was BUSY (the connection is then
-    all that keeps the job's box awake): that reading never changes and nothing will ask about it,
-    so it holds the box for one ceiling at most. A stalled service's reading, and a read that
-    reached the agent and failed, hold the box the same way: for one ceiling from the first such
-    reading (a trusted reading starts the count again), then it is let go. A read refused before
-    it left, as for a host already let go of, counts for nothing. The
-    box's idle window is read on every connect: a failed read keeps the last one, and an answer with
-    no timer set clears it, so the badge stops warning about a timer that was turned off. A host let
-    go of is asked about again once its boxd idle window (plus 30 s) has passed: if boxd says it is
-    still awake, something on the box holds it, so the app reconnects and hears its ceiling prompts.
+  - **Letting go of an idle box.** boxd's idle meter counts inbound traffic, and the first live run
+    (2026-10-06) found an attached box never slept: the service connection's ssh keepalives (15 s) and
+    the badge's polls (10 s) held it, idle or past an unanswered prompt. So a boxd host whose agent
+    reports IDLE (its published verdict, which an unanswered prompt also makes IDLE), whose workroom
+    is not selected, which forwards no port and has no pane attached is let go of: its connection
+    closed, no background read reconnecting it, its badge sending nothing, and its row showing "idle,
+    not connected" (an open moon) until boxd confirms it asleep. Selecting or opening the workroom, a
+    click (closing a pane, Keep awake), or a pane attaching takes it back. A remote pane's own ssh
+    keeps its box awake whatever the app does, so a host with a pane attached is never let go of; a
+    pane restored at launch attaches only once it is shown, and until then holds nothing. The app
+    polls each connected boxd host itself, so a row scrolled out of view still lets its box go; it
+    ignores IDLE readings for 10 s after a connect, so the read that connected the host is answered
+    first; and a host whose agent's wakefulness service has stopped is let go of too, as nothing on it
+    holds the box awake, unless its last reading was BUSY (the connection is then all that keeps the
+    job's box awake): that reading never changes and nothing will ask about it, so it holds the box
+    for one ceiling at most. A stalled service's reading, and a read that reached the agent and
+    failed, hold the box the same way: for one ceiling from the first such reading (a trusted reading
+    starts the count again), then it is let go. A read refused before it left, as for a host already
+    let go of, counts for nothing, and a connect starts a new count. The box's idle window is read on
+    every connect: a failed read keeps the last one, and an answer with no timer set clears it, so the
+    badge stops warning about a timer that was turned off. A host let go of is asked about again once
+    its boxd idle window (plus 30 s) has passed: if boxd says it is still awake, something on the box
+    holds it, so the app reconnects and hears its ceiling prompts.
   - **Limit: selected workrooms and attached panes.** The selected workroom's host is never let
     go of, nor is one with a pane attached, and a pane's own ssh holds its box awake regardless.
     So a job past its ceiling, with its prompt left unanswered, keeps the box awake (and billed)

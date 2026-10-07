@@ -478,7 +478,12 @@ final class PersistentSessionService {
         // taken back, so its badge and ceiling prompts are heard while the pane's ssh holds it.
         let host = remote.host
         if RemoteHosts.shared.isLetGo(host) {
-          Task { try? await RemoteHosts.shared.ensureConnected(host, wake: true) }
+          Task {
+            // Only while a pane still holds it: one that exited or closed meanwhile holds nothing.
+            guard self.hasAttachedPane(on: host) else { return }
+            self.logger.notice("a pane attached to a host let go of; taking it back")
+            try? await RemoteHosts.shared.ensureConnected(host, wake: true)
+          }
         }
         return command
       } catch {

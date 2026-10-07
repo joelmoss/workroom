@@ -973,6 +973,17 @@ final class RemoteHosts: @unchecked Sendable {
   /// let go of or asleep is connected, and woken, rather than refused as a background read is.
   func ensureConnected(_ host: HostID, wake: Bool = false) async throws {
     guard case .remote = host else { return }
+    // A click is tried whatever came of the last attempt, as an opened host is: waking a box can
+    // fail once while it resumes, and a second click must not wait out the window. Cleared before
+    // the connection is looked at, so a click that lands while a let-go's disconnect is in flight
+    // still takes the host back.
+    if wake {
+      lock.withLock {
+        letGoAt[host] = nil
+        asleepAt[host] = nil
+        failedAt[host] = nil
+      }
+    }
     let up: Bool
     if let isConnected {
       up = await isConnected(host)
@@ -995,15 +1006,7 @@ final class RemoteHosts: @unchecked Sendable {
     // A selected workroom's box is reached as an opened one is: it is on screen, and a Mac waking
     // from sleep must not leave it reading as asleep until it is selected again.
     let selected = lock.withLock { selectedHosts.values.contains(host) }
-    // A click is tried whatever came of the last attempt, as an opened host is: waking a box can
-    // fail once while it resumes, and a second click must not wait out the window.
-    if wake {
-      lock.withLock {
-        letGoAt[host] = nil
-        asleepAt[host] = nil
-        failedAt[host] = nil
-      }
-    } else if !opened, let failed = lock.withLock({ failedAt[host] }),
+    if !wake, !opened, let failed = lock.withLock({ failedAt[host] }),
       now() - failed < Self.retryAfter
     {
       throw RepositoryRoutingError.unavailable(host)
