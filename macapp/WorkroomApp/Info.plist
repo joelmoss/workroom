@@ -31,7 +31,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Programs running in your terminal, such as a coding agent's voice input, can use your microphone.</string>
+	<string>Programs Workroom runs, including terminal commands, repository setup scripts and coding agents, can use your microphone.</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>
