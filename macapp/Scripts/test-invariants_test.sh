@@ -140,6 +140,31 @@ if [ "$(grep -cF '$(WORKROOM_DEV_ID_SUFFIX)' "$PROJECT_YML")" -ne 1 ]; then
   fails=$((fails + 1))
 fi
 
+# --- Terminal programs can reach the microphone --------------------------------------------
+# A program in a Workroom terminal (Claude Code's voice mode first of all) opens the mic, and
+# macOS attributes that to the terminal app: the hardened runtime needs OUR audio-input
+# entitlement before audio input is allowed at all, and TCC needs OUR usage string to show a
+# prompt. Both were missing through v2.1.0, so voice failed silently in Workroom while working
+# in Ghostty and iTerm2, which declare the same pair. Nothing else catches a regression: every
+# build and test is green with either half gone; only a user's first voice attempt fails.
+ENTITLEMENTS="${TEST_INVARIANTS_ENTITLEMENTS:-$ROOT/macapp/WorkroomApp/Workroom.entitlements}"
+INFO_PLIST="${TEST_INVARIANTS_INFO_PLIST:-$ROOT/macapp/WorkroomApp/Info.plist}"
+if ! grep -A1 '<key>com.apple.security.device.audio-input</key>' "$ENTITLEMENTS" | grep -q '<true/>'; then
+  echo "FAIL: Workroom.entitlements no longer grants com.apple.security.device.audio-input — the"
+  echo "      hardened runtime blocks the microphone for every program in a Workroom terminal."
+  fails=$((fails + 1))
+fi
+if ! grep -q '^[[:space:]]*NSMicrophoneUsageDescription: "' "$PROJECT_YML"; then
+  echo "FAIL: project.yml's Info.plist properties no longer set NSMicrophoneUsageDescription —"
+  echo "      TCC cannot show a microphone prompt for Workroom and denies the request."
+  fails=$((fails + 1))
+fi
+if ! grep -q '<key>NSMicrophoneUsageDescription</key>' "$INFO_PLIST"; then
+  echo "FAIL: the checked-in Info.plist lacks NSMicrophoneUsageDescription — project.yml changed"
+  echo "      without 'make app-generate', so the committed plist is stale."
+  fails=$((fails + 1))
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "test-invariants_test: $fails failure(s)" >&2
   exit 1
