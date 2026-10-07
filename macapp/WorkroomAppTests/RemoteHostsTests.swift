@@ -1081,6 +1081,49 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertFalse(model.isPollingWhileConnected, "a forgotten host is still polled")
   }
 
+  // Value: protects=a boxd workroom deleted while its connect reads the idle timers stays deleted;
+  // fails_when=the late read looks the host's model up with the accessor that makes one;
+  // why_new=the idle-window test never deletes across the read; seam=none
+  /// A delete that lands while the connect is still reading the machine's idle timers forgets the
+  /// host's model, and the late answer does not make it anew, watching for prompts for good (#356).
+  @MainActor
+  func testADeleteAcrossTheIdleWindowReadDoesNotBringTheHostsModelBack() async throws {
+    let fake = try FakeAgent(version: 4, status: true)
+    defer { fake.stop() }
+    let id = UUID()
+    let host = HostID.remote(id)
+    defer { WakefulnessModel.forgetHost(id) }
+    let remote = RemoteHosts(connectAgent: { host, _ in
+      try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
+    })
+    let (opened, open) = AsyncStream<Void>.makeStream()
+    let read = MachineGet(#"{"source":"standalone","auto_suspend":60}"#, until: opened)
+    try await remote.connect(
+      host,
+      driver: BoxdHostDriver(
+        configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
+        directory: FileManager.default.temporaryDirectory, runner: read))
+    if let lease = await HostConnectionManager.shared.snapshot(for: host).lease {
+      addTeardownBlock { await HostConnectionManager.shared.disconnect(lease) }
+    }
+    XCTAssertNotNil(WakefulnessModel.Hosts.shared.models[id])
+
+    WakefulnessModel.forgetHost(id)
+    open.yield()
+    open.finish()
+    // The window is recorded just before the hop that would give it to a model.
+    let deadline = ContinuousClock.now + .seconds(5)
+    while remote.revisitAfter(host) != .seconds(60) + RemoteHosts.retryAfter,
+      ContinuousClock.now < deadline
+    {
+      try await Task.sleep(for: .milliseconds(10))
+    }
+    XCTAssertEqual(read.answered.calls, 1, "the connect never read the idle window")
+    try await Task.sleep(for: .milliseconds(200))
+    XCTAssertNil(
+      WakefulnessModel.Hosts.shared.models[id], "a late read brought a deleted host back")
+  }
+
   // Value: protects=a boxd host carrying a port forward stays connected when idle, so the user's dev server still answers;
   // fails_when=observed() lets go of an idle boxd host without asking PortForwardingModel.hasForwards;
   // why_new=pass-1 covers the idle release, not its one exception; no test pairs a live forward with observed; seam=none
@@ -1146,13 +1189,17 @@ final class RemoteHostsTests: XCTestCase {
     var fails = false
     /// How many times it has answered, so a test can wait for a read it can't otherwise see.
     let answered = Asleep()
-    init(_ json: String, fails: Bool = false) {
+    /// Holds each answer back until it yields, for a test that acts across a read.
+    let until: AsyncStream<Void>?
+    init(_ json: String, fails: Bool = false, until: AsyncStream<Void>? = nil) {
       self.json = json
       self.fails = fails
+      self.until = until
     }
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
       async -> CommandResult
     {
+      if let until { for await _ in until { break } }
       _ = answered.answer()
       return fails
         ? CommandResult(stdout: "", stderr: "error: unreachable", exitCode: 1, timedOut: false)
