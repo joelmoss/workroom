@@ -638,7 +638,7 @@ final class WakefulnessModel: ObservableObject {
   /// When this host's readings stopped being ones to trust (#356): its service stopped, stalled, or
   /// a `status` that reached its agent failed. Such a reading holds the box for at most one ceiling
   /// from then, as nothing on the box will ask the user about it. A connect starts a new count.
-  private var untrustedSince: Date?
+  private var untrustedSince: ContinuousClock.Instant?
   /// The ceiling the last applied reply named, for a failed read, which names none.
   private var lastCeiling: TimeInterval?
 
@@ -747,10 +747,12 @@ final class WakefulnessModel: ObservableObject {
   /// one in preferences, which the app hands the agent, before any is known) from the first such
   /// reading.
   private func holding() -> Bool {
-    let since = untrustedSince ?? Date()
+    // A monotonic clock: moving the Mac's clock must neither cut the hold short nor stretch it.
+    let now = ContinuousClock.now
+    let since = untrustedSince ?? now
     untrustedSince = since
-    return Date().timeIntervalSince(since)
-      < (lastCeiling ?? AgentWakefulnessSettings.current.ceiling)
+    return since.duration(to: now)
+      < .seconds(lastCeiling ?? AgentWakefulnessSettings.current.ceiling)
   }
 
   /// A remote box that is not busy may be let go of, so the app's own traffic stops holding it

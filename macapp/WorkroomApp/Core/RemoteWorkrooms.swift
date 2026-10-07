@@ -317,18 +317,29 @@ enum RemoteWorkrooms {
       // live with nothing pointing at it.
       throw Failure.incompleteBase
     } else {
-      base = try await RemoteProvisioning.buildBase(
-        repository: "\(repository.owner)/\(repository.name)",
-        cloneURL: cloneURL,
-        path: clonePath(for: repository, on: key), in: environment
-      ) { base in
-        // Beside the project's bases on other runtimes and contexts (#309).
-        var descriptor = describing(
-          .remote(base.host), key: key, driver: driver, credentials: base.relayed)
-        descriptor.repository = base.repository
-        descriptor.cloneURL = base.cloneURL
-        descriptor.path = base.path
-        try await recorder.record(nil, recording(descriptor, in: projectHost))
+      do {
+        base = try await RemoteProvisioning.buildBase(
+          repository: "\(repository.owner)/\(repository.name)",
+          cloneURL: cloneURL,
+          path: clonePath(for: repository, on: key), in: environment
+        ) { base in
+          // Beside the project's bases on other runtimes and contexts (#309).
+          var descriptor = describing(
+            .remote(base.host), key: key, driver: driver, credentials: base.relayed)
+          descriptor.repository = base.repository
+          descriptor.cloneURL = base.cloneURL
+          descriptor.path = base.path
+          try await recorder.record(nil, recording(descriptor, in: projectHost))
+        }
+      } catch {
+        // A base machine the driver could not remove stays recorded, `failed`, so the project
+        // knows it (a later create refuses to make a second one beside it) and a delete finds it.
+        if case HostDriverError.leftBehind(_, _, let host?) = error {
+          var descriptor = describing(host, key: key, driver: driver, credentials: nil)
+          descriptor.state = "failed"
+          try? await recorder.record(nil, recording(descriptor, in: projectHost))
+        }
+        throw error
       }
     }
 
@@ -361,6 +372,16 @@ enum RemoteWorkrooms {
           host: host, grant: grant, key: key, driver: driver))
       throw RemoteProvisioning.Failure.rollbackIncomplete(
         cause: cause, host: host, grantID: grant, cleanup: left)
+    } catch HostDriverError.leftBehind(let cause, let left, let host?) {
+      // The driver could not remove the machine it made: the entry keeps it, `failed`, so deleting
+      // the workroom takes it down. Forgotten, a paid machine would run on with nothing to find it.
+      try? await recorder.record(
+        name,
+        remaining(
+          state: "failed", workroomID: workroomID, host: host, grant: nil, key: key, driver: driver)
+      )
+      throw RemoteProvisioning.Failure.rollbackIncomplete(
+        cause: cause, host: host, grantID: nil, cleanup: left)
     } catch {
       try? await recorder.forget(name)
       throw error
@@ -591,6 +612,9 @@ final class RemoteHosts: @unchecked Sendable {
   private var letGoAt: [HostID: ContinuousClock.Instant] = [:]
   /// When the app last connected each host, which an IDLE reading must outlast to let it go.
   private var connectedAt: [HostID: ContinuousClock.Instant] = [:]
+  /// How many BUSY readings each host has reported, so a let-go that began on an older IDLE one
+  /// gives way to a BUSY reported while it waited.
+  private var busyReports: [HostID: Int] = [:]
   /// Each boxd host's idle window as its provider last said, read on connect.
   private var idleWindows: [HostID: TimeInterval] = [:]
   /// The host of the workroom selected in each window (one `AppStore` per window), none of which
@@ -1013,7 +1037,7 @@ final class RemoteHosts: @unchecked Sendable {
     }
     // A boxd box wakes on an ssh login, so a background read must not connect to one that is
     // asleep: every status sweep would wake every box and keep it billing (#356). Only opening the
-    // workroom, or a click (`wake`), wakes it. When boxd can't say, the read goes ahead as before.
+    // workroom, or a click (`wake`), wakes it. When boxd can't say, the read leaves it be too.
     // Nor does one reconnect a box let go of as idle until its idle window has passed, which would
     // hold it awake again: then boxd is asked again, and a box it says is still awake has something
     // on it holding it (work resumed), so it is connected again and its ceiling prompts are heard.
@@ -1108,7 +1132,12 @@ final class RemoteHosts: @unchecked Sendable {
   /// first. Returns whether it was let go of.
   @discardableResult
   func observed(_ host: HostID, busy: Bool) async -> Bool {
-    guard !busy, case .remote(let id) = host else { return false }
+    guard case .remote(let id) = host else { return false }
+    guard !busy else {
+      lock.withLock { busyReports[host, default: 0] += 1 }
+      return false
+    }
+    let busySeen = lock.withLock { busyReports[host, default: 0] }
     let eligible = lock.withLock { () -> Bool in
       guard let key = keys[id], case .boxd = key else { return false }
       if let connected = connectedAt[host], now() - connected < Self.letGoGrace { return false }
@@ -1129,14 +1158,16 @@ final class RemoteHosts: @unchecked Sendable {
     guard letGo else { return false }
     let lease = await HostConnectionManager.shared.snapshot(for: host).lease
     await MainActor.run { WakefulnessModel.Hosts.shared.models[id]?.stopPollingWhileConnected() }
-    // A pane may have attached across those waits, and its ssh holds the box whatever happens here.
-    let paneAttached = await MainActor.run {
+    // A pane or a port forward may have come across those waits, and either holds the box.
+    let held = await MainActor.run {
       PersistentSessionService.shared.hasAttachedPane(on: host)
+        || PortForwardingModel.hasForwards(host)
     }
-    // The last check before the disconnect, after every wait: a selection, a click or a pane
-    // across them takes the host back, which keeps its connection and resumes its poll.
+    // The last check before the disconnect, after every wait: a selection, a click, a pane, a
+    // forward or a newer BUSY reading across them takes the host back, which keeps its connection
+    // and resumes its poll.
     let committed = lock.withLock { () -> Bool in
-      if paneAttached { letGoAt[host] = nil }
+      if held || busyReports[host, default: 0] != busySeen { letGoAt[host] = nil }
       return letGoAt[host] != nil && !selectedHosts.values.contains(host)
     }
     guard committed else {
@@ -1183,6 +1214,14 @@ final class RemoteHosts: @unchecked Sendable {
       presence = await (try driver(key) as? BoxdHostDriver)?.presence(host) ?? nil
     }
     lock.withLock { asleepAt[host] = presence == .asleep ? now() : nil }
+    // boxd could not say (no CLI, a timeout, output it did not expect, the read cancelled): a
+    // background read leaves the box be rather than wake it, and says why. Opening the workroom,
+    // selecting it or a click still connects. Not remembered, so the next read asks again.
+    guard let presence else {
+      Self.logger.notice(
+        "boxd could not say whether host \(id, privacy: .public) is asleep; left it be")
+      return .asleep
+    }
     return presence
   }
 

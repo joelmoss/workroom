@@ -258,7 +258,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       }.value
       // A run that could not remove its container says so; its image goes on that list too.
       var (cause, leftover) = (error.localizedDescription, removals)
-      if case HostDriverError.leftBehind(let inner, let left) = error {
+      if case HostDriverError.leftBehind(let inner, let left, _) = error {
         (cause, leftover) = (inner, left + removals)
       }
       guard !leftover.isEmpty else { throw error }

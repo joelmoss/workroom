@@ -89,8 +89,9 @@ final class RemoteHostsTests: XCTestCase {
 
   /// A background read never connects to a boxd box boxd says is asleep: the ssh login would wake
   /// it, and every status sweep would keep every box awake and billing (#356). boxd is asked once a
-  /// `retryAfter`; opening the workroom connects and wakes it; and when boxd can't say, or says
-  /// it's awake, the read goes ahead as before.
+  /// `retryAfter`; opening the workroom connects and wakes it; when boxd can't say, the read leaves
+  /// the box be too, so a broken CLI cannot wake every box, and asks again next time; and when it
+  /// says it's awake, the read goes ahead as before.
   func testABackgroundReadLeavesAnAsleepBoxdBoxAsleep() async throws {
     let connects = Connects()
     connects.hold(false)
@@ -130,13 +131,24 @@ final class RemoteHostsTests: XCTestCase {
     try await remote.ensureConnected(host)
     XCTAssertEqual(connects.calls, 1)
 
-    // boxd can't say, or says it's running: the read connects as it always did.
-    for answer in [nil, false] as [Bool?] {
-      asked.set(answer)
-      connects.advance(RemoteHosts.retryAfter)
-      try await remote.ensureConnected(host)
+    // boxd can't say: the read leaves the box be, and boxd is asked again by the next one.
+    asked.set(nil)
+    connects.advance(RemoteHosts.retryAfter)
+    let unsure = asked.calls
+    for _ in 0..<2 {
+      do {
+        try await remote.ensureConnected(host)
+        XCTFail("a background read connected to a box boxd could not say about")
+      } catch {
+        XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
+      }
     }
-    XCTAssertEqual(connects.calls, 3)
+    XCTAssertEqual(connects.calls, 1)
+    XCTAssertEqual(asked.calls, unsure + 2, "an unknown answer was remembered")
+    // boxd says it's running: the read connects as it always did.
+    asked.set(false)
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(connects.calls, 2)
 
     // A machine boxd says is gone is reported as gone, not asleep, and then left for the window.
     asked.setGone()
@@ -151,7 +163,7 @@ final class RemoteHostsTests: XCTestCase {
       }
     }
     XCTAssertEqual(asked.calls, before + 1, "boxd was asked again inside the window")
-    XCTAssertEqual(connects.calls, 3)
+    XCTAssertEqual(connects.calls, 2)
   }
 
   /// boxd counts inbound traffic as activity, so a connection's keepalives and the badge's polls
@@ -1453,9 +1465,54 @@ final class RemoteHostsTests: XCTestCase {
     }
   }
 
+  // Value: protects=a derive that fails and cannot remove its machine keeps the workroom's entry,
+  // failed, naming the machine, so a delete can take the paid machine down; fails_when=the
+  // catch-all forgets the entry on leftBehind; why_new=no test fails a derive's rollback; seam=none
+  /// A derive whose rollback leaves its machine running keeps the workroom's entry, `failed`,
+  /// naming the machine, rather than forgetting it: otherwise a paid machine runs on with nothing
+  /// in the app to find it (#356).
+  func testADeriveThatLeavesItsMachineBehindKeepsItsEntry() async throws {
+    let made = UUID()
+    let driver = DerivingDriver(derived: made, leavesItBehind: true)
+    let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
+    let environment = RemoteProvisioning.Environment(
+      driver: driver,
+      agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
+      client: BrokerClient(
+        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())))
+    let recorded = Recorded()
+    let forgot = Recorded()
+    let recorder = RemoteWorkrooms.Recorder(
+      reserve: { _, descriptor in
+        recorded.add(descriptor)
+        return "x"
+      }, record: { _, descriptor in recorded.add(descriptor) },
+      forget: { _ in forgot.add(HostDescriptor()) })
+    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
+    do {
+      _ = try await RemoteWorkrooms.create(
+        repository: repository, cloneURL: "https://github.com/o/r.git",
+        base: HostDescriptor(
+          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+          repository: "o/r", cloneURL: "https://github.com/o/r.git", path: "/home/boxd/r",
+          org: "acme", account: "usr_1"),
+        key: key, driver: driver, environment: environment, recorder: recorder)
+      XCTFail("a derive that left its machine behind succeeded")
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, _, let cleanup) {
+      XCTAssertEqual(host, .remote(made))
+      XCTAssertEqual(cleanup, ["machine x"])
+    }
+    XCTAssertTrue(forgot.all.isEmpty, "the entry naming a live machine was forgotten")
+    let kept = try XCTUnwrap(recorded.all.last)
+    XCTAssertEqual(kept.id, made)
+    XCTAssertEqual(kept.state, "failed")
+  }
+
   /// A driver whose derive makes `derived` and whose destroy succeeds; nothing else is reached.
   private struct DerivingDriver: HostTerminalDriver {
     let derived: UUID
+    /// The derive fails and cannot remove the machine it made.
+    var leavesItBehind = false
     var traits: HostDriverTraits {
       HostDriverTraits(
         transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
@@ -1463,7 +1520,11 @@ final class RemoteHostsTests: XCTestCase {
         sleepsWhenIdle: true)
     }
     func create() async throws -> HostID { throw HostDriverError.provisioning("no create") }
-    func deriveFromBase(_ base: HostID) async throws -> HostID { .remote(derived) }
+    func deriveFromBase(_ base: HostID) async throws -> HostID {
+      guard leavesItBehind else { return .remote(derived) }
+      throw HostDriverError.leftBehind(
+        cause: "reboot timed out", leftover: ["machine x"], host: .remote(derived))
+    }
     func destroy(_ host: HostID) async throws {}
     func openStream(to host: HostID) async throws -> HostStream {
       throw HostDriverError.provisioning("no stream")

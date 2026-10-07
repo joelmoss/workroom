@@ -417,7 +417,7 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     do {
       _ = try await driver.deriveFromBase(base)
       XCTFail("a derive that failed succeeded")
-    } catch HostDriverError.leftBehind(let cause, let leftover) {
+    } catch HostDriverError.leftBehind(let cause, let leftover, _) {
       XCTAssertTrue(cause.contains("never minted"), cause)
       XCTAssertTrue(leftover.contains { $0.hasPrefix("container workroom-") }, "\(leftover)")
     }
