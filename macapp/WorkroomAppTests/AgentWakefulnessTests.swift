@@ -722,6 +722,15 @@ final class AgentWakefulnessTests: XCTestCase {
       [unknown, later, soon],
       expiries: [soon: now.addingTimeInterval(30), later: now.addingTimeInterval(500)])
     XCTAssertEqual(order, [soon, later, unknown])
+    // Hosts with no deadline, or the same one, keep one order however the set is built, so the
+    // cards don't reshuffle between renders.
+    let ids = (0..<4).map { _ in UUID() }
+    let stable = ids.sorted { $0.uuidString < $1.uuidString }
+    let tie = now.addingTimeInterval(60)
+    for expiries in [[:], Dictionary(uniqueKeysWithValues: ids.map { ($0, tie) })] {
+      XCTAssertEqual(ToastStack.ordered(Set(ids), expiries: expiries), stable)
+      XCTAssertEqual(ToastStack.ordered(Set(ids.reversed()), expiries: expiries), stable)
+    }
   }
 
   /// A stalled service on a host that sleeps: its last reading said IDLE, which may be stale while

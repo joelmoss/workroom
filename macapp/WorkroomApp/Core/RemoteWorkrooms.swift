@@ -279,8 +279,8 @@ enum RemoteWorkrooms {
   /// Creates a remote workroom for a project (#253): its base first if it has none, then a name
   /// in config, then the derived instance, then the instance's descriptor. The name is taken
   /// before the derive, so the branch is named for it and a crash part-way leaves an entry the
-  /// user can see and delete; anything the crash left on the host is the sweep's
-  /// (`RemoteHosts.adopt`).
+  /// user can see and delete; anything the crash left on a container host is the sweep's
+  /// (`RemoteHosts.adopt`). A boxd machine a crash left is nobody's until #284.
   ///
   /// When the derive fails and undid itself, the entry is dropped. When undoing it failed too,
   /// the entry keeps what is still live (host, grant) so deleting it can finish the job.
@@ -565,7 +565,8 @@ enum RemoteWorkrooms {
 
 /// The app's remote hosts (#253): a `ContainerHostDriver` per container runtime and Docker context
 /// on this Mac (#309), the hosts config records adopted into theirs at each reload, and one sweep
-/// per launch for what no record names.
+/// per launch for what no record names. A boxd host is reached by name through a `BoxdHostDriver`,
+/// never adopted or swept (#356).
 final class RemoteHosts: @unchecked Sendable {
   static let shared = RemoteHosts()
 
@@ -807,9 +808,11 @@ final class RemoteHosts: @unchecked Sendable {
     // names carry no build, so one build's sweep would take another's live workrooms (#284).
     // gstack-shortcut(dec-boxd-no-sweep): a crashed create can leave a paid boxd machine running,
     // upgrade when #284 makes sweeps safe and boxd machine names carry the build.
-    let keys = already.union(recorded.compactMap(DriverKey.init)).filter { $0.runtime != nil }
+    let containerKeys = already.union(recorded.compactMap(DriverKey.init)).filter {
+      $0.runtime != nil
+    }
     var drivers: [ContainerHostDriver] = []
-    for key in keys {
+    for key in containerKeys {
       let driver: ContainerHostDriver
       do { driver = try containerDriver(key) } catch {
         // That runtime isn't installed; another's may be.
