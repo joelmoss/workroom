@@ -988,8 +988,12 @@ final class RemoteHostsTests: XCTestCase {
   private static func driver(
     runtime: URL, context: String?, dialect: ContainerHostDriver.Dialect = .docker
   ) -> ContainerHostDriver {
+    // A directory of its own: a sweep writes down what it found unknown there (#284), which another
+    // test's driver must not read.
     ContainerHostDriver(
-      hosts: [:], directory: FileManager.default.temporaryDirectory,
+      hosts: [:],
+      directory: FileManager.default.temporaryDirectory.appendingPathComponent(
+        "wr-hosts-\(UUID().uuidString)", isDirectory: true),
       provisioning: ContainerHostDriver.Provisioning(
         runtime: runtime, image: "workroom-host", user: RemoteWorkrooms.user,
         identityFile: "/dev/null", publicKey: "ssh-ed25519 AAAA",
@@ -1744,6 +1748,57 @@ final class RemoteHostsTests: XCTestCase {
     }
   }
 
+  /// A Docker stand-in whose `ps -a` lists `names`, each made long ago, and that logs every call.
+  private func dockerListing(_ names: [String]) throws -> (runtime: URL, log: URL) {
+    let lines = names.map { "\($0)\t1" }.joined(separator: "\n")
+    let (runtime, log) = try stubRuntime()
+    let script = try String(contentsOf: runtime, encoding: .utf8)
+    try
+      (script + "\ncase \"$1 $2\" in \"ps -a\") printf '%s' "
+      + ContainerHostDriver.shellQuoted(lines) + " ;; esac\n").write(
+        to: runtime, atomically: true, encoding: .utf8)
+    return (runtime, log)
+  }
+
+  /// A container no record names goes only once a second sweep (the next launch) finds it unknown
+  /// too (#284): a config read lost, restored or half-written takes no live workroom on the launch
+  /// that reads it. One that is known again by then stays.
+  func testASweepRemovesAContainerOnlyWhenTwoSweepsFindItUnknown() async throws {
+    let (orphan, back) = (UUID(), UUID())
+    let names = [orphan, back].map(ContainerHostDriver.containerName)
+    let (runtime, log) = try dockerListing(names)
+    let driver = Self.driver(runtime: runtime, context: nil)
+    func removed() throws -> [String] { try calls(log).filter { $0.hasPrefix("rm ") } }
+
+    let firstSweep = await driver.sweep(keeping: [])
+
+    XCTAssertEqual(firstSweep, [])
+    XCTAssertEqual(try removed(), [], "a container went on the first sweep to miss it")
+
+    let secondSweep = await driver.sweep(keeping: [back])
+
+    XCTAssertEqual(secondSweep, [])
+    XCTAssertEqual(try removed(), ["rm --force --volumes \(names[0])"])
+  }
+
+  /// A sweep removes at most `cap` containers, and the rest go on later launches, `cap` at a time:
+  /// even two bad config reads in a row take few (#284).
+  func testASweepRemovesAtMostItsCapAndLeavesTheRestForLaterLaunches() async throws {
+    let names = (0..<5).map { _ in ContainerHostDriver.containerName(UUID()) }
+    let (runtime, log) = try dockerListing(names)
+    let driver = Self.driver(runtime: runtime, context: nil)
+    func removed() throws -> [String] { try calls(log).filter { $0.hasPrefix("rm ") } }
+
+    _ = await driver.sweep(keeping: [], cap: 2)
+    let failures = await driver.sweep(keeping: [], cap: 2)
+    XCTAssertEqual(try removed(), names.prefix(2).map { "rm --force --volumes \($0)" })
+    XCTAssertEqual(
+      failures, ["3 unknown container(s) left for a later launch: at most 2 go per sweep"])
+    // The stand-in still lists them all; a real daemon would not list the two removed.
+    _ = await driver.sweep(keeping: [], cap: 2)
+    XCTAssertEqual(try removed().count, 4)
+  }
+
   // MARK: Apple's container runtime (#309)
 
   /// A stand-in CLI that answers each command by the shell `cases` given (a `case "$*" in` body),
@@ -1826,13 +1881,22 @@ final class RemoteHostsTests: XCTestCase {
       "list --all --format json") printf '%s' \(ContainerHostDriver.shellQuoted(try json(list))) ;;
       "image list --format json") printf '%s' \(ContainerHostDriver.shellQuoted(try json(images))) ;;
       """)
-    let failures = await Self.driver(runtime: runtime, context: nil, dialect: .apple).sweep(
-      keeping: [kept], images: ["recorded:1"])
-    XCTAssertEqual(failures, [])
-    let removed = try calls(log).filter { $0.hasPrefix("delete ") || $0.hasPrefix("image delete ") }
+    let driver = Self.driver(runtime: runtime, context: nil, dialect: .apple)
+    func removed() throws -> [String] {
+      try calls(log).filter { $0.hasPrefix("delete ") || $0.hasPrefix("image delete ") }
+    }
+    // The unknown container waits for a second launch (#284); the leftover image doesn't.
+    let firstSweep = await driver.sweep(keeping: [kept], images: ["recorded:1"])
+    XCTAssertEqual(firstSweep, [])
+    XCTAssertEqual(try removed(), ["image delete leftover:1"])
+    let secondSweep = await driver.sweep(keeping: [kept], images: ["recorded:1"])
+    XCTAssertEqual(secondSweep, [])
     XCTAssertEqual(
-      removed,
-      ["delete --force \(ContainerHostDriver.containerName(swept))", "image delete leftover:1"])
+      try removed(),
+      [
+        "image delete leftover:1", "delete --force \(ContainerHostDriver.containerName(swept))",
+        "image delete leftover:1",
+      ])
   }
 
   /// A derive's snapshot image whose delete failed goes with the next sweep, though its workroom's

@@ -466,12 +466,19 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// ponytail: a resource made before `createdLabel` existed has no age and counts as old.
   /// `images` are images other drivers' hosts were run from, kept too: a driver for another Docker
   /// context can reach the same daemon (#309).
+  ///
+  /// A container is a live workroom's until proven otherwise, and removing one loses its unpushed
+  /// work (#284), so it goes only once two sweeps in a row (two launches: the app sweeps once per
+  /// launch) found it unknown, and at most `cap` go per sweep (`confirmedUnknown`). A config that
+  /// was lost, restored or half-written then costs nothing on the launch that reads it. Images are
+  /// not held back: one a container still runs from is never removed.
   func sweep(
-    keeping known: Set<UUID>, images: Set<String> = [], grace: TimeInterval = 20 * 60
+    keeping known: Set<UUID>, images: Set<String> = [], grace: TimeInterval = 20 * 60,
+    cap: Int = 3
   ) async -> [String] {
     guard let provisioning, !provisioning.labels.isEmpty else { return [] }
     if provisioning.dialect == .apple {
-      return await appleSweep(keeping: known, images: images, grace: grace)
+      return await appleSweep(keeping: known, images: images, grace: grace, cap: cap)
     }
     let filters = provisioning.labels.flatMap { ["--filter", "label=\($0)"] }
     let cutoff = Date().timeIntervalSince1970 - grace
@@ -483,15 +490,18 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       (lock.withLock { known.compactMap { provisioned[$0]?.image } } + images).map(
         Self.shortImageID))
     do {
+      var unknown: [String] = []
       for line in try await runtime(
         ["ps", "-a"] + filters + ["--format", "{{.Names}}\t{{.Label \"\(Self.createdLabel)\"}}"],
         allLines: true
       ).split(separator: "\n") {
         let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
         let name = String(fields[0])
-        guard !keptContainers.contains(name), old(fields.count > 1 ? fields[1] : "") else {
-          continue
+        if !keptContainers.contains(name), old(fields.count > 1 ? fields[1] : "") {
+          unknown.append(name)
         }
+      }
+      for name in confirmedUnknown(unknown, cap: cap, failed: &failed) {
         do { _ = try await runtime(["rm", "--force", "--volumes", name]) } catch {
           failed.append("container \(name): \(error.localizedDescription)")
         }
@@ -524,9 +534,9 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Apple's sweep (#309): the same rules as Docker's, read from JSON, since its CLI has no
   /// `--filter` and no templates. An image is kept while any container at all was run from it:
   /// Apple removes an image a container still uses, where Docker refuses.
-  private func appleSweep(keeping known: Set<UUID>, images kept: Set<String>, grace: TimeInterval)
-    async -> [String]
-  {
+  private func appleSweep(
+    keeping known: Set<UUID>, images kept: Set<String>, grace: TimeInterval, cap: Int
+  ) async -> [String] {
     guard let provisioning else { return [] }
     let cutoff = Date().timeIntervalSince1970 - grace
     func ours(_ labels: [String: String]) -> Bool {
@@ -558,6 +568,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     let keptContainers = Set(known.map(Self.containerName))
     var inUse = kept
     do {
+      var unknown: [String] = []
       for container in try AppleContainerCLI.objects(
         try await runtime(["list", "--all", "--format", "json"], allLines: true))
       {
@@ -569,9 +580,13 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
           inUse.insert(image)
         }
         let labels = AppleContainerCLI.labels(of: container)
-        guard let id = AppleContainerCLI.id(of: container), ours(labels), old(labels),
+        if let id = AppleContainerCLI.id(of: container), ours(labels), old(labels),
           !keptContainers.contains(id)
-        else { continue }
+        {
+          unknown.append(id)
+        }
+      }
+      for id in confirmedUnknown(unknown, cap: cap, failed: &failed) {
         do { _ = try await runtime(["delete", "--force", id]) } catch {
           failed.append("container \(id): \(error.localizedDescription)")
         }
@@ -594,6 +609,40 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       }
     } catch { failed.append("listing images: \(error.localizedDescription)") }
     return failed
+  }
+
+  /// Which of `unknown`, this sweep's unknown containers, it removes (#284): those the previous
+  /// sweep found unknown too, and of them at most `cap`, in listing order. Writes `unknown` down for
+  /// the next sweep, so the ones past the cap go on later launches, `cap` at a time; one this sweep
+  /// removes is gone from the next one's listing. Only a sweep whose listing was read writes it,
+  /// so a failed listing keeps the last one.
+  private func confirmedUnknown(_ unknown: [String], cap: Int, failed: inout [String]) -> [String] {
+    let file = unknownContainersFile
+    let before = Set(
+      (try? JSONDecoder().decode([String].self, from: Data(contentsOf: file))) ?? [])
+    do {
+      try FileManager.default.createDirectory(
+        at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try JSONEncoder().encode(unknown).write(to: file, options: .atomic)
+    } catch {
+      // Unrecorded, the next sweep reads none as seen before and removes nothing.
+      failed.append("recording unknown containers: \(error.localizedDescription)")
+    }
+    let confirmed = unknown.filter(before.contains)
+    if confirmed.count > cap {
+      failed.append(
+        "\(confirmed.count - cap) unknown container(s) left for a later launch: at most \(cap) go "
+          + "per sweep")
+    }
+    return Array(confirmed.prefix(cap))
+  }
+
+  /// Where a sweep writes down the containers it found unknown (#284): beside this driver's hosts,
+  /// one file per runtime and Docker context, since each context is swept by its own driver.
+  private var unknownContainersFile: URL {
+    let dialect = provisioning?.dialect == .apple ? "apple" : "docker"
+    let context = provisioning?.context ?? "default"
+    return directory.appendingPathComponent("unknown-containers-\(dialect)-\(context).json")
   }
 
   static func containerName(_ id: UUID) -> String { "workroom-\(id.uuidString.lowercased())" }
