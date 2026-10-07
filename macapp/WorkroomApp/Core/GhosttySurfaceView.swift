@@ -322,9 +322,7 @@ final class GhosttySurfaceView: NSView {
     guard let surface else {
       freeSurfaceCStrings()
       // No surface, no ssh: the attach its command marked holds nothing (#356).
-      if let persistentSessionID {
-        PersistentSessionService.shared.paneDetached(persistentSessionID, by: attachToken)
-      }
+      detachFromHost()
       return
     }
 
@@ -376,9 +374,7 @@ final class GhosttySurfaceView: NSView {
     if let surface { ghostty_surface_free(surface) }
     surface = nil
     // Its ssh went with it, so it holds its remote host no more (#356).
-    if let persistentSessionID {
-      PersistentSessionService.shared.paneDetached(persistentSessionID, by: attachToken)
-    }
+    detachFromHost()
     lastSetFocus = nil  // a new surface starts unfocused — don't let a stale value skip the re-sync
     freeSurfaceCStrings()
   }
@@ -943,11 +939,16 @@ final class GhosttySurfaceView: NSView {
   /// attach twice, and by closing the pane.
   private(set) var pendingReconnect: DispatchWorkItem?
 
-  func handleChildExited(exitCode: UInt32) {
-    // A dead ssh holds its remote host no more, whether or not it reconnects (#356).
+  /// This pane's ssh is gone: its attach no longer holds its remote host awake (#356).
+  private func detachFromHost() {
     if let persistentSessionID {
       PersistentSessionService.shared.paneDetached(persistentSessionID, by: attachToken)
     }
+  }
+
+  func handleChildExited(exitCode: UInt32) {
+    // A dead ssh holds its remote host no more, whether or not it reconnects (#356).
+    detachFromHost()
     reconnectIfTheLinkDropped(exitCode: exitCode)
     onChildExited?(exitCode)
   }
