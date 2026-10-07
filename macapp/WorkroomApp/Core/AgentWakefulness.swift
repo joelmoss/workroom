@@ -704,8 +704,9 @@ final class WakefulnessModel: ObservableObject {
     var reachedAgent = false
     do { next = try await status() } catch {
       next = nil
-      // A read refused before it left (the host let go of, asleep, not connected, or the request
-      // never sent) says nothing about the box, so it neither holds it nor starts the hold's clock.
+      // A read refused before it reached the agent (the host let go of, asleep, not connected, the
+      // request refused here, or its connection replaced) says nothing about the box, so it
+      // neither holds it nor starts the hold's clock.
       switch error {
       case is RepositoryRoutingError, HostConnectionError.notDispatched,
         HostConnectionError.staleGeneration, HostConnectionError.mismatchedContext:
@@ -778,6 +779,8 @@ final class WakefulnessModel: ObservableObject {
   /// without this a box whose row was scrolled away stayed connected, and awake, until quit.
   /// ponytail: runs until the host is let go of or forgotten; a connection that drops otherwise
   /// leaves it failing one local request every `pollInterval` until the next connect.
+  /// Starting it (`pollWhileConnected`, called on each connect) also restarts the untrusted hold's
+  /// clock: a connect is new evidence.
   private var connectionPoll: Task<Void, Never>?
 
   func pollWhileConnected() {
