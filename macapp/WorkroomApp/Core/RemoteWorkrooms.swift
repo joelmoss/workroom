@@ -332,12 +332,15 @@ enum RemoteWorkrooms {
           try await recorder.record(nil, recording(descriptor, in: projectHost))
         }
       } catch {
-        // A base machine the driver could not remove stays recorded, `failed`, so the project
-        // knows it (a later create refuses to make a second one beside it) and a delete finds it.
-        if case HostDriverError.leftBehind(_, _, let host?) = error {
+        // A base machine left running stays recorded, `failed`, so the project knows it (a later
+        // create refuses to make a second one beside it) and a delete finds it: whether the driver
+        // could not undo its create, or the build's own rollback could not destroy it.
+        if let host = leftBehindHost(error) {
           var descriptor = describing(host, key: key, driver: driver, credentials: nil)
           descriptor.state = "failed"
-          try? await recorder.record(nil, recording(descriptor, in: projectHost))
+          await recordLeftBehind(host) {
+            try await recorder.record(nil, recording(descriptor, in: projectHost))
+          }
         }
         throw error
       }
@@ -375,11 +378,13 @@ enum RemoteWorkrooms {
     } catch HostDriverError.leftBehind(let cause, let left, let host?) {
       // The driver could not remove the machine it made: the entry keeps it, `failed`, so deleting
       // the workroom takes it down. Forgotten, a paid machine would run on with nothing to find it.
-      try? await recorder.record(
-        name,
-        remaining(
-          state: "failed", workroomID: workroomID, host: host, grant: nil, key: key, driver: driver)
-      )
+      await recordLeftBehind(host) {
+        try await recorder.record(
+          name,
+          remaining(
+            state: "failed", workroomID: workroomID, host: host, grant: nil, key: key,
+            driver: driver))
+      }
       throw RemoteProvisioning.Failure.rollbackIncomplete(
         cause: cause, host: host, grantID: nil, cleanup: left)
     } catch {
@@ -512,6 +517,29 @@ enum RemoteWorkrooms {
     if let id = host.id { await RemoteHosts.shared.forgetRelay(id) }
     try await forget()
   }
+
+  /// The machine a failed create left running, when the failure names one: the driver's own undo
+  /// (`leftBehind`) or a build's rollback (`rollbackIncomplete`) that could not take it down.
+  private static func leftBehindHost(_ error: any Error) -> HostID? {
+    switch error {
+    case HostDriverError.leftBehind(_, _, let host?): return host
+    case RemoteProvisioning.Failure.rollbackIncomplete(_, let host?, _, _): return host
+    default: return nil
+    }
+  }
+
+  /// Records a machine left running. A record that fails too is logged with the machine named,
+  /// since nothing else in the app will remember it (#356).
+  private static func recordLeftBehind(_ host: HostID, _ write: () async throws -> Void) async {
+    do { try await write() } catch {
+      leftBehindLogger.error(
+        "could not record machine \(String(describing: host), privacy: .public) left running: \(error.localizedDescription, privacy: .public)"
+      )
+    }
+  }
+
+  private static let leftBehindLogger = Logger(
+    subsystem: "com.developwithstyle.workroom", category: "RemoteWorkrooms")
 
   /// Destroys a project's base (#253), for an explicit project delete, then clears its record
   /// (`clear`). Its workrooms go first: config keeps a project with a base when its last workroom is
@@ -1052,7 +1080,7 @@ final class RemoteHosts: @unchecked Sendable {
       case .gone:
         lock.withLock { failedAt[host] = now() }
         throw RepositoryRoutingError.gone(host)
-      case .awake, nil: break
+      case .awake, nil: break  // nil: not a boxd host
       }
     }
     do {
@@ -1138,17 +1166,20 @@ final class RemoteHosts: @unchecked Sendable {
       return false
     }
     let busySeen = lock.withLock { busyReports[host, default: 0] }
+    // What holds the box whatever the app does: a pane's ssh, or a port forward. Asked twice, before
+    // and after the waits, by the one question.
+    @Sendable func held() async -> Bool {
+      await MainActor.run {
+        PortForwardingModel.hasForwards(host)
+          || PersistentSessionService.shared.hasAttachedPane(on: host)
+      }
+    }
     let eligible = lock.withLock { () -> Bool in
       guard let key = keys[id], case .boxd = key else { return false }
       if let connected = connectedAt[host], now() - connected < Self.letGoGrace { return false }
       return !selectedHosts.values.contains(host) && letGoAt[host] == nil
     }
-    guard eligible,
-      await !MainActor.run(body: {
-        PortForwardingModel.hasForwards(host)
-          || PersistentSessionService.shared.hasAttachedPane(on: host)
-      })
-    else { return false }
+    guard eligible, await !held() else { return false }
     // Checked again across the wait: a window may have selected it meanwhile.
     let letGo = lock.withLock { () -> Bool in
       guard !selectedHosts.values.contains(host), letGoAt[host] == nil else { return false }
@@ -1158,16 +1189,13 @@ final class RemoteHosts: @unchecked Sendable {
     guard letGo else { return false }
     let lease = await HostConnectionManager.shared.snapshot(for: host).lease
     await MainActor.run { WakefulnessModel.Hosts.shared.models[id]?.stopPollingWhileConnected() }
-    // A pane or a port forward may have come across those waits, and either holds the box.
-    let held = await MainActor.run {
-      PersistentSessionService.shared.hasAttachedPane(on: host)
-        || PortForwardingModel.hasForwards(host)
-    }
+    // A pane or a port forward may have come across those waits.
+    let heldNow = await held()
     // The last check before the disconnect, after every wait: a selection, a click, a pane, a
     // forward or a newer BUSY reading across them takes the host back, which keeps its connection
     // and resumes its poll.
     let committed = lock.withLock { () -> Bool in
-      if held || busyReports[host, default: 0] != busySeen { letGoAt[host] = nil }
+      if heldNow || busyReports[host, default: 0] != busySeen { letGoAt[host] = nil }
       return letGoAt[host] != nil && !selectedHosts.values.contains(host)
     }
     guard committed else {
@@ -1197,8 +1225,9 @@ final class RemoteHosts: @unchecked Sendable {
 
   static let unknownIdleWindow: TimeInterval = 3600
 
-  /// What boxd says of `host` (awake, asleep, or gone), or nil when it isn't a boxd host or boxd
-  /// can't say, asking boxd at most once a `retryAfter` for an asleep answer.
+  /// What boxd says of `host` (awake, asleep, or gone), or nil only when it isn't a boxd host. A
+  /// boxd that can't say is taken as asleep, logged, so a background read leaves the box be. boxd
+  /// is asked at most once a `retryAfter` about a box it called asleep.
   // ponytail: one `machine get` per host per window; one `machine list` per sweep is the upgrade
   // if many boxd workrooms make it slow.
   private func boxdPresence(_ host: HostID) async throws -> BoxdHostDriver.Presence? {

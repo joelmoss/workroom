@@ -725,7 +725,8 @@ final class WakefulnessModel: ObservableObject {
     guard issued.request > newestApplied else { return next }
     newestApplied = issued.request
     if next != self.status { self.status = next }
-    lastCeiling = next.ceilingSeconds ?? lastCeiling
+    // Sanitised as every wire duration here is: `Duration.seconds` traps on an out-of-range value.
+    lastCeiling = next.ceilingSeconds.map(wakefulnessSeconds) ?? lastCeiling
     // A stalled service's reading may be stale while work runs (`display` shows it as unknown), so
     // it holds the box. One not running at all holds nothing awake, heartbeat included, so its box
     // is let go of too, unless its last reading was BUSY: a service that died under a job leaves
@@ -752,7 +753,7 @@ final class WakefulnessModel: ObservableObject {
     let since = untrustedSince ?? now
     untrustedSince = since
     return since.duration(to: now)
-      < .seconds(lastCeiling ?? AgentWakefulnessSettings.current.ceiling)
+      < wakefulnessDuration(lastCeiling ?? AgentWakefulnessSettings.current.ceiling)
   }
 
   /// A remote box that is not busy may be let go of, so the app's own traffic stops holding it

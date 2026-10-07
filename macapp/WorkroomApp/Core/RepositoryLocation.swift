@@ -23,7 +23,8 @@ enum RepositoryRoutingError: Error, Equatable, Sendable, LocalizedError, CustomS
 
   /// What a read of an asleep boxd host says (#356), here and on the Changes panel.
   static let asleepMessage =
-    "The box is asleep, or boxd refused to say (check `boxd auth`). Open the workroom to reach it."
+    "The box is asleep, or boxd could not say (check the boxd CLI and `boxd auth`). Open the "
+    + "workroom to reach it."
   /// What a read of a boxd host the app let go of as idle says (#356).
   static let idleMessage =
     "The box is idle, so Workroom disconnected to let it sleep. Open the workroom to reach it."

@@ -1369,8 +1369,12 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     instance. If undoing a step fails too, `Failure.rollbackIncomplete` names the host and grant
     still live, for the caller to record and finish, including a grant the enrolment itself
     could not cancel (`AgentEnrolment.GrantStillLive`); `destroy` reports the same way. The
-    driver's own failed cleanup is `HostDriverError.leftBehind`, naming what is still there, and
-    destroying a host twice succeeds, so a caller can retry what came after it. A failed grant cancel does not keep the box:
+    driver's own failed cleanup is `HostDriverError.leftBehind`, naming what is still there (and,
+    on boxd, the host it made), and destroying a host twice succeeds, so a caller can retry what
+    came after it. A create that leaves a machine running, from the driver's undo or a build's own
+    failed rollback, records it `failed`: a workroom's on its entry, a project's first base on the
+    project, which then refuses a second base until the project is deleted (#370). A boxd delete
+    also removes the derive snapshot named after the machine, which a failed derive can leave. A failed grant cancel does not keep the box:
     the key that would mint against the grant goes with it. An instance is never derived from,
     because its disk holds its key and credential helper. The workroom branches from
     `refs/remotes/origin/HEAD` after `git remote set-head origin --auto`, since `fetch` never
@@ -1927,7 +1931,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     is not selected, which forwards no port and has no pane attached is let go of: its connection
     closed, no background read reconnecting it, its badge sending nothing, and its row showing "idle,
     not connected" (an open moon) until boxd confirms it asleep. Selecting or opening the workroom, a
-    click (closing a pane, Keep awake), or a pane attaching takes it back. A remote pane's own ssh
+    click (closing a pane, Keep awake), a pane attaching, or a port forward or BUSY reading that
+    arrives while the app is letting it go, takes it back. A remote pane's own ssh
     keeps its box awake whatever the app does, so a host with a pane attached is never let go of; a
     pane restored at launch attaches only once it is shown, and until then holds nothing. The app
     polls each connected boxd host itself, so a row scrolled out of view still lets its box go; it
