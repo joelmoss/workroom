@@ -69,6 +69,23 @@ The project is configured for team **B898J443L9**:
   timestamp. `Scripts/build-helper.sh` signs the embedded helper the same way before the
   app's final signature.
 
+Both configurations sign with `WorkroomApp/Workroom.entitlements`, which grants exactly two
+hardened-runtime keys. Each exists because macOS attributes what a terminal child does to the
+app that owns the terminal, so the app has to declare it:
+
+- `com.apple.security.automation.apple-events` + `NSAppleEventsUsageDescription`: ⌘-clicking a
+  path runs `/usr/bin/open`, which sends an Apple Event.
+- `com.apple.security.device.audio-input` + `NSMicrophoneUsageDescription`: a program in the
+  terminal (Claude Code's voice mode, say) opens the microphone. Without the entitlement the
+  hardened runtime refuses before TCC is consulted and voice fails with no prompt at all; the
+  usage string is what the one-time prompt shows. Ghostty and iTerm2 declare the same pair.
+
+Usage strings live in `project.yml`'s `info.properties`; `make app-generate` renders them into
+the checked-in `Info.plist`. `Scripts/test-invariants_test.sh` pins both halves of the
+microphone pair. Sessions started before an update keep the old app instance as their
+responsible process, so if voice input does not prompt in one, open a new session. If it
+still fails, check System Settings › Privacy & Security › Microphone for the Workroom entry.
+
 To produce a notarized, stapled `Workroom.dmg` installer (the app inside is notarized +
 stapled too), first install `create-dmg` and store notary credentials once (app-specific
 password from appleid.apple.com — not your Apple ID password):
