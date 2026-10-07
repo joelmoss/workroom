@@ -11,9 +11,11 @@ Mode: Builder
 
 ## Current Status — 2026-10-06
 
-**Phase 4 is under way, and the app can now create, open and delete remote workrooms.** That works
-only in a Nightly or Dev build with the hidden `remoteWorkroomsPreview` setting, and only on the
-container driver (the Mac's own Docker, from the `workroom-host` image). Merged so far: host
+**Phase 4 is under way, and the app can now create, open and delete remote workrooms.** Since
+2026-10-07 that works in every build, stable included: the owner removed the Nightly-only gate and
+the hidden `remoteWorkroomsPreview` setting before #260's success criteria were run. At #253 it
+worked only on the container driver (the Mac's own Docker, from the `workroom-host` image). Merged
+so far: host
 descriptors in config (#249, PR #275, 2026-10-01); the credential broker service (#250, in
 joelmoss/codaset#43, 2026-10-01) and its clients (#251, PR #263, 2026-09-30); portable derivation on
 the container driver (#252, PR #280, 2026-10-01); the boxd driver with portable derivation (#256, PR
@@ -3904,8 +3906,10 @@ service milestones below so each layer can be reviewed and landed independently.
    first, including identity/key isolation and cleanup of instances and credentials after partial
    failure. Apply the measured wakefulness policy through the far-side shim (#257: through the
    agent's own heartbeat instead). Add boxd's fast
-   derivation only after the portable path passes. Remote UI remains Nightly-only until the success
-   criteria pass; the container fixture alone does not establish parity across two real providers.
+   derivation only after the portable path passes. ~~Remote UI remains Nightly-only until the success
+   criteria pass~~ — the owner lifted that gate on 2026-10-07, ahead of #260, which now verifies
+   the criteria after the fact; the container fixture alone does not establish parity across two
+   real providers.
    **Filed 2026-09-27** as #249 (host descriptors; built 2026-10-01, PR #275), #250 (broker service;
    built 2026-10-01, joelmoss/codaset#43) → #251 (broker clients; built 2026-09-30, PR #263) → #252
    (portable derivation on the container driver; built 2026-10-01, PR #280) → #253 (remote workrooms

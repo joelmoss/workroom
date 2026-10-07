@@ -398,9 +398,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     await store.createWorkroom(in: project([a]))
     XCTAssertEqual(store.errorMessage, "\(project([a]).displayName) is being deleted.")
     XCTAssertFalse(store.isBusyProject(projectPath), "no create was started")
-    RemoteWorkrooms.enabledForTesting = true
     XCTAssertFalse(store.canCreateRemoteWorkroom(in: project([a])), "nor a remote one")
-    RemoteWorkrooms.enabledForTesting = nil
 
     fake.allowDelete = true
     await waitUntil({ store.deletingProjects.isEmpty }, "tombstone should clear after teardown")

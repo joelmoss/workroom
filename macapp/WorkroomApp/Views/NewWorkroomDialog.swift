@@ -54,14 +54,9 @@ struct NewWorkroomDialog: View {
     // Capture the anchor NOW, not at landing: the create is async and the user can select a
     // different workroom while a setup script runs.
     let anchor = (split || splitIntent) ? store.selectedTargetID : nil
-    if RemoteWorkrooms.isEnabled {
-      placing = project
-      placeAnchor = anchor
-      highlighted = WorkroomPlace.all.firstIndex { isUsable($0, in: project) } ?? 0
-      return
-    }
-    onClose()
-    Task { await store.createWorkroom(in: project, splitAnchor: anchor) }
+    placing = project
+    placeAnchor = anchor
+    highlighted = WorkroomPlace.all.firstIndex { isUsable($0, in: project) } ?? 0
   }
 
   /// Creates `project`'s workroom at `place`, unless it can't go there now.

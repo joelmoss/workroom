@@ -8,13 +8,7 @@ import XCTest
 final class RemoteWorkroomRoutingTests: XCTestCase {
   private let path = "/home/workroom/r"
 
-  override func setUp() {
-    super.setUp()
-    RemoteWorkrooms.enabledForTesting = true
-  }
-
   override func tearDown() {
-    RemoteWorkrooms.enabledForTesting = nil
     RepositoryRouter.shared.replaceRemote([])
     super.tearDown()
   }

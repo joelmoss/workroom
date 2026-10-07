@@ -179,7 +179,6 @@ private struct GeneralSettingsPane: View {
   @Default(.confirmOnQuit) private var confirmOnQuit
   @Default(.globalHotkey) private var globalHotkey
   @Default(.showMenuBarItem) private var showMenuBarItem
-  @Default(.remoteWorkroomsPreview) private var remoteWorkroomsPreview
 
   var body: some View {
     Form {
@@ -195,15 +194,14 @@ private struct GeneralSettingsPane: View {
       Toggle("Show notifications in the menu bar", isOn: $showMenuBarItem)
         .help("Show the Workroom notifications item in the menu bar.")
 
-      if remoteWorkroomsPreview && RemoteWorkrooms.isEnabled { RemoteWorkroomsSection() }
+      RemoteWorkroomsSection()
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
   }
 }
 
-/// Signing this Mac in to Codaset, which gives remote workrooms their GitHub access (#251). Behind
-/// `Defaults[.remoteWorkroomsPreview]` until remote workrooms ship.
+/// Signing this Mac in to Codaset, which gives remote workrooms their GitHub access (#251).
 private struct RemoteWorkroomsSection: View {
   @ObservedObject private var broker = BrokerSession.shared
 

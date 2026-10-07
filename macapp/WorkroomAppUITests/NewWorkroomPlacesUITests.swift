@@ -1,8 +1,8 @@
 import XCTest
 
-/// New Workroom asks where once the remote preview is on (#309): This Mac, then Docker and Apple
-/// Container under "Local containers" and boxd under "Remote" (#356), each disabled with its reason
-/// when it can't be used here. Without the preview it stays one plain item.
+/// New Workroom asks where (#309): This Mac, then Docker and Apple Container under "Local
+/// containers" and boxd under "Remote" (#356), each disabled with its reason when it can't be used
+/// here.
 // Value: protects=boxd is offered in New Workroom, disabled exactly when its title gives a reason;
 // fails_when=WorkroomPlace.all or the sidebar's Remote section drops boxd; why_new=the places
 // loops listed only Docker and Apple Container; seam=none
@@ -12,10 +12,10 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     continueAfterFailure = false
   }
 
-  private func launch(preview: Bool) -> XCUIApplication {
+  private func launch() -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += [
-      "-WorkroomUITestFixture", "1", "-WorkroomUITestRemotePreview", preview ? "1" : "0",
+      "-WorkroomUITestFixture", "1",
       "-ApplePersistenceIgnoreState", "YES",
     ]
     app.launch()
@@ -26,12 +26,12 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     return app
   }
 
-  /// One launch (preview on), three surfaces in order, each asking where with the same places:
+  /// One launch, three surfaces in order, each asking where with the same places:
   /// the project's context menu, the row's "+" and File ▸ New Workroom… (⌘N, and the tab bar's +),
   /// where picking a project offers the same places rather than creating on this Mac. Nothing is
   /// picked, so nothing is created. The picker goes last: it leaves a sheet open.
-  func testNewWorkroomAsksWhereFromTheMenuThePlusAndThePickerWithThePreviewOn() {
-    let app = launch(preview: true)
+  func testNewWorkroomAsksWhereFromTheMenuThePlusAndThePicker() {
+    let app = launch()
     let newWorkroom = app.menuItems["New Workroom"]
     XCTAssertTrue(newWorkroom.waitForExistence(timeout: 5))
     newWorkroom.hover()
@@ -108,8 +108,8 @@ final class NewWorkroomPlacesUITests: XCTestCase {
   func testADownloadingImageShowsItsProgressAndTurnsThePlacesOff() {
     let app = XCUIApplication()
     app.launchArguments += [
-      "-WorkroomUITestFixture", "1", "-WorkroomUITestRemotePreview", "1",
-      "-WorkroomUITestImagePull", "0.42", "-ApplePersistenceIgnoreState", "YES",
+      "-WorkroomUITestFixture", "1", "-WorkroomUITestImagePull", "0.42",
+      "-ApplePersistenceIgnoreState", "YES",
     ]
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
@@ -188,22 +188,5 @@ final class NewWorkroomPlacesUITests: XCTestCase {
       .matching(identifier: "newWorkroom.project.UITestProject").firstMatch
     XCTAssertTrue(project.waitForExistence(timeout: 5), "the picker didn't list the project")
     project.click()
-  }
-
-  func testNewWorkroomIsOneItemWithThePreviewOff() {
-    let app = launch(preview: false)
-    defer {
-      // The row's "+" as it looks without the preview, to compare with the places one.
-      app.typeKey(.escape, modifierFlags: [])
-      app.otherElements["sidebar.project.UITestProject"].hover()
-      let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-      shot.name = "plus-plain"
-      shot.lifetime = .keepAlways
-      add(shot)
-    }
-    XCTAssertTrue(app.menuItems["New Workroom"].waitForExistence(timeout: 5))
-    XCTAssertFalse(app.menuItems["This Mac"].exists, "a submenu appeared without the preview")
-    XCTAssertFalse(app.menuItems["New Remote Workroom"].exists)
-    app.typeKey(.escape, modifierFlags: [])
   }
 }

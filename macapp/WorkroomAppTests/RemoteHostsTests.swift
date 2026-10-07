@@ -735,8 +735,6 @@ final class RemoteHostsTests: XCTestCase {
   /// base.
   @MainActor
   func testARemoteCreateIsOffWhileItsProjectIsBusy() {
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let store = AppStore()
     let project = Project(path: "/proj", vcs: "git", workrooms: [])
     XCTAssertTrue(store.canCreateRemoteWorkroom(in: project))
@@ -797,8 +795,6 @@ final class RemoteHostsTests: XCTestCase {
   /// would be a no-op.
   @MainActor
   func testReactivatingARemoteTreeListsItAgain() async throws {
-    RemoteWorkrooms.enabledForTesting = true
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let lists = Connects()
     lists.fail(true)
     lists.hold(false)
@@ -817,15 +813,13 @@ final class RemoteHostsTests: XCTestCase {
     }
   }
 
-  /// A remote workroom this app can't reach (previews off, here) reads nothing on this Mac: its
+  /// A remote workroom this app can't reach (another build's, here) reads nothing on this Mac: its
   /// path names a directory on its host, not here.
   @MainActor
   func testAnUnreachableRemoteWorkroomReadsNothingHere() {
-    RemoteWorkrooms.enabledForTesting = false
-    defer { RemoteWorkrooms.enabledForTesting = nil }
     let target = Workroom(
       name: "r", path: NSTemporaryDirectory(), vcsName: "workroom/r", warnings: [],
-      host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID())
+      host: HostDescriptor(provisioner: "another.build", id: UUID())
     ).target(inProject: "/proj")
     XCTAssertNil(target.remoteHost)
 
