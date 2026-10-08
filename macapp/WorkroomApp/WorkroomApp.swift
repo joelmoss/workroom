@@ -332,27 +332,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // into existence early, so its key-window observer is live before the first window appears.
     menuBarController = MenuBarController(registry: .shared)
 
-    // The awake-ceiling prompt watch (issue #208): app-lifetime, from here rather than a view's
-    // `onAppear`, because a prompt the agent raises while no window is open (onboarding suppresses
-    // the main window; the menu-bar item keeps the app alive with none) is a box that sleeps under
-    // a running job if nobody is listening.
-    //
-    // Not under test, for the same reason as the shell probe above: the watch reconnects to the
-    // developer's REAL agent socket, and a test host talking to that agent every ten seconds is
-    // both a leak out of the test sandbox and a source of hangs in tests that own their own agents.
-    // Every test path, as `DefaultsSuite` gates them: a hosted unit run sets
-    // `XCTestConfigurationFilePath`; an app launched by XCUITest does not, and is known by its
-    // fixture flags. One shared answer (`UITestFixture.isTestProcess`) rather than a third copy of
-    // the expression — the copies drifted once already.
-    #if DEBUG
-      if UITestFixture.isActive, let host = UITestFixture.ceilingPromptHost {
-        MainActor.assumeIsolated { WakefulnessModel.seedUITestPrompt(host: host) }
-      }
-    #endif
+    // Not under test (`UITestFixture.isTestProcess`): it would replace the developer's real agent.
     if !UITestFixture.isTestProcess {
-      MainActor.assumeIsolated { WakefulnessModel.shared.startWatchingPrompts() }
       // Hand an older running agent to the bundled one (#230), before panes are likely to attach.
-      // Not under test for the same reason: it would replace the developer's real agent.
       MainActor.assumeIsolated { AgentHandOff.start() }
     }
 
@@ -775,15 +757,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     Task {
       await PersistentSessionService.shared.awaitPendingCloseKills(
         until: ContinuousClock.now + PersistentSessionService.closeKillQuitBudget)
-      group.leave()
-    }
-    // A "Keep awake" clicked moments before quitting (issues #208, #254): the card cleared on the
-    // click, the request may still be reconnecting. Bounded, this Mac's and each remote host's at
-    // once (`WakefulnessModel.drainAllKeeps`): a box the user asked to keep awake is worth a few
-    // seconds of a quit.
-    group.enter()
-    Task {
-      await WakefulnessModel.drainAllKeeps()
       group.leave()
     }
     group.notify(queue: .main) { sender.reply(toApplicationShouldTerminate: true) }

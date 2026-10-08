@@ -40,8 +40,7 @@ final class PersistentSessionService {
   /// Waits for every close kill still in flight: every local one, and remote ones until `deadline`.
   /// Called at quit.
   func awaitPendingCloseKills(until deadline: ContinuousClock.Instant) async {
-    // Polled rather than awaited, as `WakefulnessModel.drainKeep` is: `await task.value` cannot be
-    // given up on.
+    // Polled rather than awaited: `await task.value` cannot be given up on.
     while Self.quitKeepsWaiting(
       local: localCloseKillsInFlight, remote: remoteCloseKillsInFlight,
       pastDeadline: ContinuousClock.now >= deadline)
@@ -483,16 +482,17 @@ final class PersistentSessionService {
           restored: restored, metadata: remote.metadata)
         guard let pane else { return command }
         attachedRemote[sessionID, default: []].insert(pane)
-        // A pane attaching is the user at that box, as a click is: a host the app let go of is
-        // taken back, so its badge and ceiling prompts are heard while the pane's ssh holds it.
+        // A pane attaching connects a host with no service connection, so its badge is heard and a
+        // container workroom's git credential relay, which rides that connection, is there for the
+        // pane's `git push`. One its agent let go of (#380) is woken, as a click wakes it: the pane
+        // is the user at that box. Any other is an ordinary attempt, which keeps the retry window,
+        // so a pane retrying its ssh against a host that is down does not retry the service too.
         let host = remote.host
-        if RemoteHosts.shared.isLetGo(host) {
-          Task {
-            // Only while a pane still holds it: one that exited or closed meanwhile holds nothing.
-            guard self.hasAttachedPane(on: host) else { return }
-            self.logger.notice("a pane attached to a host let go of; taking it back")
-            try? await RemoteHosts.shared.ensureConnected(host, wake: true)
-          }
+        Task {
+          // Only while a pane still holds it: one that exited or closed meanwhile holds nothing.
+          guard self.hasAttachedPane(on: host) else { return }
+          try? await RemoteHosts.shared.ensureConnected(
+            host, wake: RemoteHosts.shared.isReleased(host))
         }
         return command
       } catch {
@@ -550,12 +550,6 @@ final class PersistentSessionService {
     ]
     if let resourcesDirectory {
       entries.append(("WORKROOM_SESSION_RESOURCES", resourcesDirectory))
-    }
-    // Under the `WORKROOM_SESSION_` prefix, like everything else here: the agent scrubs that prefix
-    // from the shell it spawns, so these reach the `serve` that `attach` self-spawns and never the
-    // user's `env`.
-    if backend == .rustAgent {
-      entries.append(contentsOf: AgentWakefulnessSettings.current.serveEnvironment)
     }
     let variables = Dictionary(
       uniqueKeysWithValues: SessionMetadataKey.environmentVariables)

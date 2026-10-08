@@ -197,74 +197,30 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     XCTAssertEqual(status.aggregateWeight, 1, "a gone machine must mark its project")
   }
 
-  // Value: protects=the workroom the user has selected never has its boxd box's connection dropped as idle;
-  // fails_when=AppStore stops telling RemoteHosts which host is selected, or never releases it on deselect;
+  // Value: protects=selecting a boxd workroom whose agent let go of its box reconnects it;
+  // fails_when=AppStore stops telling RemoteHosts which host is selected;
   // why_new=RemoteHostsTests call select() directly; nothing drives it from the app's selection; seam=none
-  /// Selecting a boxd workroom (#356) takes its box back from being let go of and keeps it, idle or
-  /// not, for as long as it is selected; leaving it makes the box eligible again.
+  /// Selecting a boxd workroom whose agent let go of its box (#380) forgets the release, so its
+  /// reads reconnect it.
   @MainActor
-  func testSelectingABoxdWorkroomKeepsItsBoxFromBeingLetGoOf() async throws {
-    let id = UUID()
+  func testSelectingABoxdWorkroomForgetsItsRelease() async throws {
+    let host = boxdHostReleased()
+    guard case .remote(let id) = host else { return XCTFail("not a remote host") }
     let box = Workroom(
       name: "w", path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
       host: HostDescriptor(
         driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id))
-    let projects = [Project(path: "/proj", vcs: "git", workrooms: [box])]
-    RemoteHosts.shared.adopt(projects, sweep: false)
     let store = AppStore()
-    store.projects = projects
-    let host = HostID.remote(id)
+    store.projects = [Project(path: "/proj", vcs: "git", workrooms: [box])]
     // The store selects under its own window key, which its deinit clears.
-
-    let letGo = await RemoteHosts.shared.observed(host, busy: false)
-    XCTAssertTrue(letGo, "the box was never let go of, so there is nothing to take back")
-
     store.selectedTargetID = .workroom(project: "/proj", name: "w")
-    XCTAssertFalse(
-      RemoteHosts.shared.isLetGo(host), "selecting its workroom left the box let go of")
-    let whileSelected = await RemoteHosts.shared.observed(host, busy: false)
-    XCTAssertFalse(whileSelected, "the selected workroom's box was let go of")
-
-    store.selectedTargetID = .root(project: "/proj")
-    let afterLeaving = await RemoteHosts.shared.observed(host, busy: false)
-    XCTAssertTrue(afterLeaving, "leaving the workroom left its box held for good")
+    XCTAssertFalse(RemoteHosts.shared.isReleased(host), "selecting its workroom left it released")
   }
 
-  /// Each window is its own AppStore: a second window selecting elsewhere leaves the first
-  /// window's box kept, and closing the first window lets it go (#356).
+  /// A boxd host the app has adopted and whose agent let go of it (#380), on the shared
+  /// `RemoteHosts` the click call sites below use.
   @MainActor
-  func testAnotherWindowsSelectionKeepsThisWindowsBoxAndClosingItLetsGo() async throws {
-    let id = UUID()
-    let box = Workroom(
-      name: "w", path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
-      host: HostDescriptor(
-        driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id))
-    let projects = [Project(path: "/proj", vcs: "git", workrooms: [box])]
-    RemoteHosts.shared.adopt(projects, sweep: false)
-    let host = HostID.remote(id)
-    var first: AppStore? = AppStore()
-    first?.projects = projects
-    first?.selectedTargetID = .workroom(project: "/proj", name: "w")
-    let second = AppStore()
-    second.projects = projects
-    second.selectedTargetID = .root(project: "/proj")
-
-    let kept = await RemoteHosts.shared.observed(host, busy: false)
-    XCTAssertFalse(kept, "another window's selection let go of this window's box")
-
-    weak var closed = first
-    first = nil
-    XCTAssertNil(closed, "the first window's store outlived its window")
-    let letGo = await RemoteHosts.shared.observed(host, busy: false)
-    XCTAssertTrue(letGo, "a closed window kept its box held")
-    RemoteHosts.shared.activate(host)
-    _ = second
-  }
-
-  /// A boxd host the app has adopted and let go of as idle, on the shared `RemoteHosts` the two
-  /// click call sites below use.
-  @MainActor
-  private func boxdHostLetGoOf() async -> HostID {
+  private func boxdHostReleased() -> HostID {
     let id = UUID()
     RemoteHosts.shared.adopt(
       [
@@ -278,37 +234,18 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
                 id: id))
           ])
       ], sweep: false)
-    let letGo = await RemoteHosts.shared.observed(.remote(id), busy: false)
-    XCTAssertTrue(letGo, "the box was never let go of, so there is nothing to wake")
+    RemoteHosts.shared.released(.remote(id))
     return .remote(id)
   }
 
-  // Value: protects=Keep awake on a boxd box the app let go of as idle is a click that wakes it, not a
-  // refused background read; fails_when=the host model's transport drops wake: true from ensureConnected;
-  // why_new=RemoteHostsTests pass wake: true by hand and nothing drives this call site; seam=none
-  /// The connect it makes fails here (boxd wrote no ssh details for the host), but a click clears
-  /// the let-go mark before connecting, and a refused background read never reaches that.
-  @MainActor
-  func testKeepAwakeOnABoxLetGoOfIsAClickNotABackgroundRead() async throws {
-    let host = await boxdHostLetGoOf()
-    guard case .remote(let id) = host else { return XCTFail("not a remote host") }
-    defer { WakefulnessModel.forgetHost(id) }
-
-    let model = WakefulnessModel.model(forHost: id)
-    model.keep()
-    await model.keepInFlight?.value
-
-    XCTAssertFalse(RemoteHosts.shared.isLetGo(host), "Keep awake was refused as a background read")
-  }
-
-  // Value: protects=closing a pane on a boxd box the app let go of wakes it to end the session, rather
+  // Value: protects=closing a pane on a boxd box its agent let go of wakes it to end the session, rather
   // than leaving the session running; fails_when=endSession's remote kill drops wake: true; why_new=
   // RemoteHostsTests pass wake: true by hand and nothing drives this call site; seam=none
   /// As above: the kill fails here, so the session stays registered, which is the right outcome
   /// for a host that can't be reached; the click still reached the box.
   @MainActor
   func testClosingAPaneOnABoxLetGoOfIsAClickNotABackgroundRead() async throws {
-    let host = await boxdHostLetGoOf()
+    let host = boxdHostReleased()
     let session = UUID()
     let sessions = PersistentSessionService.shared
     sessions.registerRemoteSession(
@@ -323,17 +260,18 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
 
     XCTAssertFalse(ended, "a session on an unreachable host was reported ended")
     XCTAssertTrue(sessions.isRemote(session), "the failed kill dropped the session's registration")
-    XCTAssertFalse(RemoteHosts.shared.isLetGo(host), "closing the pane was refused as a read")
+    XCTAssertFalse(RemoteHosts.shared.isReleased(host), "closing the pane was refused as a read")
   }
 
-  // Value: protects=a pane attaching to a box the app let go of takes the box back, so its prompts
-  // are heard while the pane's ssh holds it; fails_when=attachCommand stops waking a let-go host;
-  // why_new=no test attaches a pane to a let-go host; seam=none
-  /// A pane attaching (a reconnect after a dropped link, a window reopened) is the user at the box:
-  /// its ssh holds the box awake, so the app takes it back rather than leave it unwatched.
+  // Value: protects=a pane attaching to a host with no service connection reconnects it, so its
+  // badge is heard and a container's credential relay is there for the pane's git; fails_when=
+  // attachCommand stops reconnecting the host; why_new=no test attaches a pane to a released host;
+  // seam=none
+  /// A pane attaching (a reconnect after a dropped link, a window reopened) is the user at the box,
+  /// as a click is: a host its agent let go of is reconnected (#380).
   @MainActor
   func testAPaneAttachingToABoxLetGoOfTakesItBack() async throws {
-    let host = await boxdHostLetGoOf()
+    let host = boxdHostReleased()
     guard case .remote(let id) = host else { return XCTFail("not a remote host") }
     let session = UUID()
     let sessions = PersistentSessionService.shared
@@ -353,15 +291,17 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     XCTAssertNotNil(sessions.attachCommand(forSession: session, by: pane))
     sessions.paneDetached(session, by: pane)
     try await Task.sleep(for: .milliseconds(200))
-    XCTAssertTrue(RemoteHosts.shared.isLetGo(host), "a pane gone before the take-back took it back")
+    XCTAssertTrue(
+      RemoteHosts.shared.isReleased(host), "a pane gone before the take-back took it back")
 
     XCTAssertNotNil(sessions.attachCommand(forSession: session, by: pane))
     // The take-back runs in its own task.
-    for _ in 0..<100 where RemoteHosts.shared.isLetGo(host) {
+    for _ in 0..<100 where RemoteHosts.shared.isReleased(host) {
       try await Task.sleep(for: .milliseconds(20))
     }
     XCTAssertFalse(
-      RemoteHosts.shared.isLetGo(host), "a pane attached to a box the app let go of left it so")
+      RemoteHosts.shared.isReleased(host), "a pane attached to a box its agent let go of left it so"
+    )
   }
 
   /// A target names its repository by host: a reachable remote one by its host's location, and one

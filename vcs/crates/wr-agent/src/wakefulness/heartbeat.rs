@@ -5,13 +5,12 @@
 //! on 2026-10-05 showed one datagram to the default gateway resets them. A box with 120 s timers
 //! stayed awake for six minutes on one a minute, and hibernated 120 s after the last one with its
 //! job still running, while the box's own background chatter (40-140 bytes per 10 s) did not hold
-//! it. So while the published verdict is BUSY the service sends one, and when it is IDLE (an idle
-//! box, or a ceiling prompt nobody answered) or the agent has died, nothing is sent and the
-//! provider's own timer decides. Nothing on the provider is changed, so nothing has to be put back
+//! it. So while the verdict is BUSY the service sends one, and when it is IDLE or the agent has died,
+//! nothing is sent and the provider's own timer decides. Nothing on the provider is changed, so nothing has to be put back
 //! after a crash or an update, and no credential is needed.
 //!
 //! ```text
-//!   each tick, with the published verdict
+//!   each tick, with the verdict
 //!     IDLE ------------------------------------------> forget the last send; nothing sent
 //!     BUSY, and no send yet or INTERVAL_S since the last one
 //!       -> default gateway from /proc/net/route
@@ -30,7 +29,7 @@
 
 use std::net::{Ipv4Addr, UdpSocket};
 
-use super::{Ceiling, Verdict};
+use super::Verdict;
 
 /// Measured: one a minute held a box whose timers were 120 s. A provider whose idle window is
 /// shorter than this cannot be kept awake by it.
@@ -54,18 +53,10 @@ pub struct KeepAwake {
 }
 
 impl KeepAwake {
-    /// One tick. The heartbeat follows the PUBLISHED verdict, after the ceiling, so an unanswered
-    /// prompt stops it; taking the ceiling rather than a verdict keeps a caller from passing the
-    /// classifier's raw one. `send` sends one datagram; only one that went out moves the cadence,
-    /// so a failed send is due again on the next tick.
-    pub fn tick(
-        &mut self,
-        t: f64,
-        ceiling: &Ceiling,
-        raw: Verdict,
-        send: impl FnOnce() -> Result<(), String>,
-    ) {
-        if ceiling.published(raw) != Verdict::Busy {
+    /// One tick, with the classifier's verdict. `send` sends one datagram; only one that went out
+    /// moves the cadence, so a failed send is due again on the next tick.
+    pub fn tick(&mut self, t: f64, verdict: Verdict, send: impl FnOnce() -> Result<(), String>) {
+        if verdict != Verdict::Busy {
             // Nothing to keep awake, so an old error no longer means anything.
             self.due_from = None;
             self.error = None;
@@ -182,12 +173,11 @@ mod tests {
                 &[0.0, 30.0],
             ),
         ];
-        let c = Ceiling::new(Default::default());
         for (name, ticks, expected) in cases {
             let mut k = KeepAwake::default();
             let mut sent = Vec::new();
             for &(t, verdict) in *ticks {
-                k.tick(t, &c, verdict, || {
+                k.tick(t, verdict, || {
                     sent.push(t);
                     Ok(())
                 });
@@ -200,14 +190,11 @@ mod tests {
     /// by the box going IDLE, and a failed send is never recorded as sent.
     #[test]
     fn the_status_shows_the_last_send_and_why_the_last_one_failed() {
-        let c = Ceiling::new(Default::default());
         let mut k = KeepAwake::default();
-        k.tick(0.0, &c, Verdict::Busy, || Ok(()));
+        k.tick(0.0, Verdict::Busy, || Ok(()));
         assert_eq!((k.last_sent, k.error.as_deref()), (Some(0.0), None));
 
-        k.tick(60.0, &c, Verdict::Busy, || {
-            Err("no IPv4 default route".into())
-        });
+        k.tick(60.0, Verdict::Busy, || Err("no IPv4 default route".into()));
         assert_eq!(
             (k.last_sent, k.error.as_deref()),
             (Some(0.0), Some("no IPv4 default route")),
@@ -215,30 +202,28 @@ mod tests {
         );
 
         let mut called = false;
-        k.tick(61.0, &c, Verdict::Busy, || {
+        k.tick(61.0, Verdict::Busy, || {
             called = true;
             Ok(())
         });
         assert!(called, "a failed send is due again on the next tick");
         assert_eq!((k.last_sent, k.error.as_deref()), (Some(61.0), None));
 
-        k.tick(62.0, &c, Verdict::Busy, || Err("not due".into()));
+        k.tick(62.0, Verdict::Busy, || Err("not due".into()));
         assert_eq!(k.error, None, "nothing is sent between sends");
 
         // A resume: the last send was a moment ago on the monotonic clock, but the box slept.
-        k.tick(70.0, &c, Verdict::Busy, || Ok(()));
+        k.tick(70.0, Verdict::Busy, || Ok(()));
         k.resumed();
         let mut called = false;
-        k.tick(71.0, &c, Verdict::Busy, || {
+        k.tick(71.0, Verdict::Busy, || {
             called = true;
             Ok(())
         });
         assert!(called, "a resumed box sends on its next BUSY tick");
 
-        k.tick(131.0, &c, Verdict::Busy, || Err("send failed".into()));
-        k.tick(122.0, &c, Verdict::Idle, || {
-            unreachable!("IDLE sends nothing")
-        });
+        k.tick(131.0, Verdict::Busy, || Err("send failed".into()));
+        k.tick(122.0, Verdict::Idle, || unreachable!("IDLE sends nothing"));
         assert_eq!(k.error, None, "an IDLE box has nothing to keep awake");
     }
 

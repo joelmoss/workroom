@@ -38,15 +38,21 @@ struct AgentForwardService: Sendable {
   /// agent's box. `openTimeout` is how long one accepted connection waits for the agent's REPLY;
   /// `sendTimeout` and `drainTimeout` bound a local client that stops reading (see `PortForward`).
   /// `sendTimeout` also bounds how long an OPEN may sit unsent behind a stalled connection writer.
+  ///
+  /// `reconnect`, when given, makes the forward outlive this connection (#380): a connection
+  /// accepted once it has ended waits for `reconnect` to give it a new one, and the forward keeps
+  /// that one from then on. Without it, the forward carries only while this connection lives.
   func listen(
     remotePort: UInt16, openTimeout: TimeInterval = PortForward.openTimeout,
     sendTimeout: TimeInterval = PortForward.sendTimeout,
     drainTimeout: TimeInterval = PortForward.drainTimeout,
+    reconnect: PortForward.Reconnect? = nil,
     onEvent: @escaping @Sendable (PortForward.Event) -> Void
   ) throws -> PortForward {
     try PortForward(
       remotePort: remotePort, connection: connection,
-      timeouts: .init(open: openTimeout, send: sendTimeout, drain: drainTimeout), onEvent: onEvent)
+      timeouts: .init(open: openTimeout, send: sendTimeout, drain: drainTimeout),
+      reconnect: reconnect, onEvent: onEvent)
   }
 
   /// The other direction: listen on `remotePort` on the agent's box (0 for any free port) and carry
@@ -189,11 +195,16 @@ final class PortForward: @unchecked Sendable {
   /// Out of descriptors: how long the accept queue pauses before the backlog is tried again.
   private static let acceptBackoff: TimeInterval = 0.1
 
+  /// A new connection to the forward's host, or nil when there is none to be had.
+  typealias Reconnect = @Sendable () async -> AgentVCSConnection?
+
   let remotePort: UInt16
   /// The ephemeral port the kernel bound. This is the address the user connects to.
   let localPort: UInt16
   private let listener: Int32
-  private let connection: AgentVCSConnection
+  /// The connection streams are opened on. Replaced only through `reconnect`.
+  private var connection: AgentVCSConnection
+  private let reconnect: Reconnect?
   private let timeouts: Timeouts
   private let onEvent: @Sendable (Event) -> Void
   private let lock = NSLock()
@@ -211,10 +222,11 @@ final class PortForward: @unchecked Sendable {
 
   init(
     remotePort: UInt16, connection: AgentVCSConnection, timeouts: Timeouts,
-    onEvent: @escaping @Sendable (Event) -> Void
+    reconnect: Reconnect? = nil, onEvent: @escaping @Sendable (Event) -> Void
   ) throws {
     self.remotePort = remotePort
     self.connection = connection
+    self.reconnect = reconnect
     self.timeouts = timeouts
     self.onEvent = onEvent
     // Loopback, so nothing off this Mac can reach a forward: the agent's own allowlist is
@@ -288,6 +300,33 @@ final class PortForward: @unchecked Sendable {
   }
 
   private func begin(_ client: Int32) {
+    guard let connection = lock.withLock({ stopped ? nil : connection }) else {
+      Darwin.close(client)
+      return
+    }
+    guard connection.isClosed, let reconnect else {
+      begin(client, on: connection)
+      return
+    }
+    // The host's connection has ended (its agent let go of an idle box, #380): this client is the
+    // user at the forward again, so the host is reconnected, waking its box, and the client waits
+    // for that rather than being refused. Off the accept queue, which keeps accepting meanwhile.
+    Task { [weak self] in
+      guard let fresh = await reconnect() else {
+        Darwin.close(client)
+        self?.onEvent(.failed("Could not reconnect to the host; a connection was refused."))
+        return
+      }
+      guard let self else {
+        Darwin.close(client)
+        return
+      }
+      self.lock.withLock { self.connection = fresh }
+      self.accepts.async { self.begin(client, on: fresh) }
+    }
+  }
+
+  private func begin(_ client: Int32, on connection: AgentVCSConnection) {
     let slot = lock.withLock({ stopped }) ? nil : connection.reserveForwardSlot()
     guard let slot else {
       // Closed at once, before an OPEN the agent would refuse. A browser sees a reset on its 65th
@@ -904,14 +943,9 @@ private final class ForwardedConnection: @unchecked Sendable {
 @MainActor
 final class PortForwardingModel: ObservableObject {
   /// Each host's model, made on first use and kept for the launch: its listeners must outlive the
-  /// Ports panel showing another workroom and coming back. A host that goes away takes its
-  /// forwards with its connection (`watch()`), leaving an empty model behind.
+  /// Ports panel showing another workroom and coming back. This Mac's agent takes its forwards
+  /// with its connection (`watch()`); a remote host's outlive it (`Transport.reconnect`, #380).
   private static var models: [HostID: PortForwardingModel] = [:]
-
-  /// Whether `host` has a forward up: its connection is carrying it, so it must not be dropped.
-  static func hasForwards(_ host: HostID) -> Bool {
-    models[host]?.forwards.isEmpty == false
-  }
 
   static func model(for host: HostID) -> PortForwardingModel {
     if let model = models[host] { return model }
@@ -930,11 +964,30 @@ final class PortForwardingModel: ObservableObject {
     /// The connected lease right now, or nil. What `add()` reconciles against: the watch's last
     /// snapshot can lag a reconnect that `forwarding` has already seen.
     var current: @Sendable () async -> HostConnectionManager.Lease?
+    /// A new connection for a forward to carry on once the old one has ended, or nil for a host
+    /// whose forwards go with their connection (#380).
+    var reconnect: @Sendable () async -> PortForward.Reconnect? = { nil }
 
     static func live(_ host: HostID) -> Transport {
       var transport = on(host, manager: .shared)
       if host == .local { transport.forwarding = { try await LocalAgentVCS.shared.forwarding() } }
+      transport.reconnect = { reconnecting(host, manager: .shared) }
       return transport
+    }
+
+    /// For a remote host, the reconnect a forward runs when it is used after the agent let go of
+    /// the host (#380): the user is at the forward, as a click is the user at a workroom, so a box
+    /// asleep is woken. It never starts a stopped container: `ensureConnected` starts only a host
+    /// whose workroom was opened, so the reconnect fails and the row says why. Nil for this Mac's
+    /// agent, whose forwards go with its connection.
+    static func reconnecting(_ host: HostID, manager: HostConnectionManager)
+      -> PortForward.Reconnect?
+    {
+      guard case .remote = host else { return nil }
+      return {
+        try? await RemoteHosts.shared.ensureConnected(host, wake: true)
+        return try? await manager.forwarding(host: host).1.connection
+      }
     }
 
     /// `host`'s connection in `manager`. A remote host's connection is made by selecting its
@@ -959,8 +1012,12 @@ final class PortForwardingModel: ObservableObject {
     let localPort: UInt16
     /// The connection this forward's streams run on. The agent closes every socket a departing
     /// connection opened, so a forward outlives its lease as a listener that accepts connections it
-    /// can never carry — which is why a lease that is no longer the connected one drops the row.
+    /// can never carry — which is why a lease that is no longer the connected one drops the row,
+    /// unless the forward reconnects on use (`reconnects`).
     let lease: HostConnectionManager.Lease
+    /// The forward reconnects its host when it is used after its connection ended (#380), so it
+    /// keeps its row and its local port across a lost connection.
+    let reconnects: Bool
     /// Order of creation, so a reconcile judges only the rows that existed when its read began.
     let sequence: Int
     /// The last refusal any connection through this forward hit — `connection refused` and friends.
@@ -1008,15 +1065,17 @@ final class PortForwardingModel: ObservableObject {
     }
     do {
       let (lease, service) = try await transport.forwarding()
+      let reconnect = await transport.reconnect()
       let id = UUID()
-      let forward = try service.listen(remotePort: remote) { [weak self] event in
+      let forward = try service.listen(remotePort: remote, reconnect: reconnect) {
+        [weak self] event in
         Task { @MainActor in self?.record(event, for: id) }
       }
       listeners[id] = forward
       forwards.append(
         Entry(
           id: id, remotePort: remote, localPort: forward.localPort, lease: lease,
-          sequence: nextSequence))
+          reconnects: reconnect != nil, sequence: nextSequence))
       nextSequence += 1
       draft = ""
       watch()
@@ -1025,7 +1084,7 @@ final class PortForwardingModel: ObservableObject {
       // the manager, not the watch's last snapshot: that one can still name the disconnect when
       // `forwarding` has already answered on the reconnected lease, and would drop a valid row.
       let current = await transport.current()
-      drop { $0.lease != current }
+      drop { !$0.reconnects && $0.lease != current }
     } catch {
       message = Self.describe(error)
     }
@@ -1085,7 +1144,7 @@ final class PortForwardingModel: ObservableObject {
         let live = await transport.current()
         snapshotsSeen += 1
         connected = live != nil
-        drop { $0.sequence < horizon && $0.lease != live }
+        drop { $0.sequence < horizon && !$0.reconnects && $0.lease != live }
       }
     }
   }

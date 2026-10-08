@@ -18,13 +18,11 @@ final class AgentBootstrapTests: XCTestCase {
     private(set) var commands: [String] = []
     /// Where `openStream` connects, or nil for one that throws.
     var streamSocket: String?
-    /// Whether the stand-in host is one its provider sleeps when idle.
-    var sleeps = true
     var traits: HostDriverTraits {
       HostDriverTraits(
         transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
         durableDisk: false, maxLifetime: nil, keepAwakeHoldsCredential: false,
-        sleepsWhenIdle: sleeps)
+        sleepsWhenIdle: true)
     }
 
     init(_ answers: [Answer]) { self.answers = answers }
@@ -417,87 +415,6 @@ final class AgentBootstrapTests: XCTestCase {
     } catch HostDriverError.notImplemented(let what) {
       XCTAssertEqual(what, "openStream")
     }
-  }
-
-  /// Every connect hands the host's agent this Mac's ceiling settings (#257): a remote agent
-  /// outlives every connection, so this is the one way a changed preference reaches it.
-  func testConnectHandsTheAgentTheCeilingSettings() async throws {
-    let fake = try FakeAgent(version: 4, status: true)
-    defer { fake.stop() }
-    // This Mac's preferences, away from their defaults, so the request can only carry them.
-    let saved = (Defaults[.awakeCeilingHours], Defaults[.askAtAwakeCeiling])
-    Defaults[.awakeCeilingHours] = 2
-    Defaults[.askAtAwakeCeiling] = true
-    defer { (Defaults[.awakeCeilingHours], Defaults[.askAtAwakeCeiling]) = saved }
-    let driver = StubDriver([probe(installed: digest, handOff: "0 current")])
-    driver.streamSocket = fake.socketPath
-    let connection = try await AgentBootstrap.connect(
-      host: host, driver: driver, socket: socket, agent: bundled(_:), handOff: true,
-      resources: nil)
-    // Sent without holding up the connect, so it lands a moment later.
-    let deadline = ContinuousClock.now + .seconds(5)
-    while fake.receivedStatusRequests.isEmpty && ContinuousClock.now < deadline {
-      try await Task.sleep(for: .milliseconds(20))
-    }
-    await connection.close()
-    let request = try XCTUnwrap(fake.receivedStatusRequests.first, "no settings request")
-    XCTAssertTrue(request.contains(#""method":"settings""#), request)
-    XCTAssertTrue(request.contains(#""ceiling_seconds":7200"#), request)
-    XCTAssertTrue(request.contains(#""ask_at_ceiling":true"#), request)
-  }
-
-  /// A connect nothing watches for prompts (provisioning's) hands the agent no settings at all
-  /// (#356): settings are the whole agent's, so its `ask: false` could land after a watched
-  /// connection's `ask: true` and switch prompting off under it.
-  func testAnUnwatchedConnectSendsNoSettings() async throws {
-    let fake = try FakeAgent(version: 4, status: true)
-    defer { fake.stop() }
-    let driver = StubDriver([
-      probe(installed: digest, handOff: "0 current"),
-      probe(installed: digest, handOff: "0 current"),
-    ])
-    driver.streamSocket = fake.socketPath
-    let unwatched = try await AgentBootstrap.connect(
-      host: host, driver: driver, socket: socket, agent: bundled(_:), handOff: true,
-      resources: nil, watched: false)
-    // A watched connect to the same agent, after it, shows the fake records the request a connect
-    // sends. The two connections are not ordered, so the count is read only after a settle of a
-    // second past that request, ~100x a send's measured latency, to catch an unwatched one too.
-    let watched = try await AgentBootstrap.connect(
-      host: host, driver: driver, socket: socket, agent: bundled(_:), handOff: true,
-      resources: nil)
-    let deadline = ContinuousClock.now + .seconds(5)
-    while fake.receivedStatusRequests.isEmpty && ContinuousClock.now < deadline {
-      try await Task.sleep(for: .milliseconds(20))
-    }
-    try await Task.sleep(for: .seconds(1))
-    await unwatched.close()
-    await watched.close()
-    XCTAssertEqual(
-      fake.receivedStatusRequests.count, 1, "an unwatched connect sent settings, or none landed")
-  }
-
-  /// A host its provider never sleeps (a container) is not handed ask-at-ceiling (#257): its prompt
-  /// would say the box may sleep, and nothing ever will. The rest of the settings still go.
-  func testAHostThatNeverSleepsIsNotAskedAboutSleeping() async throws {
-    let fake = try FakeAgent(version: 4, status: true)
-    defer { fake.stop() }
-    let saved = Defaults[.askAtAwakeCeiling]
-    Defaults[.askAtAwakeCeiling] = true
-    defer { Defaults[.askAtAwakeCeiling] = saved }
-    let driver = StubDriver([probe(installed: digest, handOff: "0 current")])
-    driver.streamSocket = fake.socketPath
-    driver.sleeps = false
-    let connection = try await AgentBootstrap.connect(
-      host: host, driver: driver, socket: socket, agent: bundled(_:), handOff: true,
-      resources: nil)
-    let deadline = ContinuousClock.now + .seconds(5)
-    while fake.receivedStatusRequests.isEmpty && ContinuousClock.now < deadline {
-      try await Task.sleep(for: .milliseconds(20))
-    }
-    await connection.close()
-    let request = try XCTUnwrap(fake.receivedStatusRequests.first, "no settings request")
-    XCTAssertTrue(request.contains(#""ask_at_ceiling":false"#), request)
   }
 
   /// The Ghostty resource set (#239) is keyed by the hash of its `CHECKSUMS`: a host the probe

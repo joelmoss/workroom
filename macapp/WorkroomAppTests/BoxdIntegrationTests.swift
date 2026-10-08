@@ -41,7 +41,7 @@ final class BoxdIntegrationTests: XCTestCase {
     for connection in connections { await connection.close() }
     connections.removeAll()
     for host in attached {
-      // `connect` starts the shared model's poll, which would otherwise outlive the test.
+      // `connect` starts the host's model's watch, which would otherwise outlive the test.
       if case .remote(let id) = host { await MainActor.run { WakefulnessModel.forgetHost(id) } }
       if let lease = await HostConnectionManager.shared.snapshot(for: host).lease {
         await HostConnectionManager.shared.disconnect(lease)
@@ -652,8 +652,8 @@ final class BoxdIntegrationTests: XCTestCase {
   }
 
   /// The app attached to `host` as it is to a workroom that is not selected: its `RemoteHosts`
-  /// holds the host's service connection (ssh, with keepalives) through `HostConnectionManager`.
-  /// The connect hands the agent no settings, so a test can set its own.
+  /// holds the host's service connection (ssh, with keepalives) through `HostConnectionManager`,
+  /// and the host's `WakefulnessModel` watches its verdict (#380), as the sidebar's badge does.
   private func attach(_ driver: BoxdHostDriver, _ host: HostID) async throws -> RemoteHosts {
     guard case .remote(let id) = host else { throw HostDriverError.unknownHost(host) }
     let socket = driver.configuration.agentSocket
@@ -661,7 +661,7 @@ final class BoxdIntegrationTests: XCTestCase {
       makeDriver: { _ in driver },
       connectAgent: { host, driver in
         try await AgentBootstrap.connect(
-          host: host, driver: driver, socket: socket, handOff: false, watched: false)
+          host: host, driver: driver, socket: socket, handOff: false)
       })
     remote.adopt(
       [
@@ -681,20 +681,6 @@ final class BoxdIntegrationTests: XCTestCase {
   }
 
   private var attached: [HostID] = []
-
-  /// The sidebar's badge on that workroom: its agent's status every 10 s, each verdict reported to
-  /// `RemoteHosts.observed`, as `WakefulnessModel` does. A host let go of answers nothing, and is
-  /// sent nothing.
-  private func pollLikeTheBadge(_ remote: RemoteHosts, _ host: HostID) -> Task<Void, Never> {
-    Task {
-      while !Task.isCancelled {
-        if let status = try? await HostConnectionManager.shared.wakefulness(host: host).status() {
-          await remote.observed(host, busy: status.busy)
-        }
-        try? await Task.sleep(for: .seconds(10))
-      }
-    }
-  }
 
   /// #257's acceptance, rerunnable (#356; it was a TODO). Two machines with 120 s timers run the same 6-minute job with no
   /// network use and no client attached. The control, with no agent, sleeps mid-job, which is
@@ -726,50 +712,80 @@ final class BoxdIntegrationTests: XCTestCase {
     XCTAssertEqual(keptTicks, 360, "the agent's machine missed ticks")
   }
 
-  /// D8, first half: with the app attached (a watched connection, ssh keepalives, the badge
-  /// polling every 10 s), an idle box must still sleep, or every open workroom would keep its box
-  /// awake and billing. A fresh machine's start-up traffic holds its timer for about 290 s (#257's
-  /// acceptance), so it has 7 minutes. About 6 minutes.
+  /// Whether `host` has a service connection in the app.
+  private func connected(_ host: HostID) async -> Bool {
+    await HostConnectionManager.shared.snapshot(for: host).status == .connected
+  }
+
+  /// #380's acceptance: with the app attached as it really is (pushed verdicts, no poll, no
+  /// app-side let-go), an idle box must still sleep, or every open workroom would keep its box
+  /// awake and billing. Its agent closes the app's idle connection itself, and the app takes that as
+  /// the box idle, not an error. Then the user comes back: a port forward kept across the closed
+  /// connection wakes the box when used, and selecting the workroom reconnects it. A fresh
+  /// machine's start-up traffic holds its timer for about 290 s (#257's acceptance), so it has 7
+  /// minutes to sleep. About 8 minutes.
   func testAnIdleBoxStillSleepsWithTheAppAttached() async throws {
     let driver = driver()
     let host = try await driver.create()
     try idleTimers(host, 120)
     let remote = try await attach(driver, host)
-    let badge = pollLikeTheBadge(remote, host)
-    defer { badge.cancel() }
-    let slept = try await sleeps(host, since: .now, within: .seconds(420))
-    XCTAssertTrue(remote.isLetGo(host), "the app never let go of the idle box")
+    let connection = try await HostConnectionManager.shared.forwarding(host: host).1.connection
+    // A forward kept across the connection the agent will close, reconnecting through this test's
+    // `RemoteHosts` as the Ports panel's does through the app's: to the box's own sshd, which
+    // speaks first.
+    let reconnect: PortForward.Reconnect = {
+      try? await remote.ensureConnected(host, wake: true)
+      return try? await HostConnectionManager.shared.forwarding(host: host).1.connection
+    }
+    let forward = try AgentForwardService(connection: connection).listen(
+      remotePort: 22, reconnect: reconnect, onEvent: { _ in })
+    defer { forward.stop() }
+    let start = ContinuousClock.now
+    while await connected(host), ContinuousClock.now - start < .seconds(300) {
+      try await Task.sleep(for: .seconds(5))
+    }
+    let connectedNow = await connected(host)
+    XCTAssertFalse(connectedNow, "the agent never let go of the app's idle connection")
+    XCTAssertTrue(
+      RemoteHosts.shared.isReleased(host), "the app took the closed connection for an error")
+    let slept = try await sleeps(host, since: start, within: .seconds(420))
     XCTAssertNotNil(slept, "an idle box with the app attached never slept")
+    guard slept != nil else { return }
+
+    // A connection on the forward wakes the box, and the browser waits rather than failing.
+    let client = try TCPClient(port: forward.localPort)
+    defer { client.close() }
+    let banner = String(decoding: try client.read(8, timeout: 60), as: UTF8.self)
+    XCTAssertEqual(banner, "SSH-2.0-", "a forward used after the let-go never reached the box")
+
+    // Selecting the workroom reconnects a box its agent let go of, and its services answer.
+    remote.select(host)
+    defer { remote.select(nil) }
+    try await remote.ensureConnected(host)
+    let status = try await HostConnectionManager.shared.wakefulness(host: host).status()
+    XCTAssertTrue(status.running)
   }
 
-  /// D8, second half: with the app attached and a prompt nobody answers, a busy box past its
-  /// ceiling must sleep, or the prompt's "let it sleep" would mean nothing while the app is open.
-  /// Ceiling 60 s, prompt 30 s, timers 120 s, a 15-minute job; 8 minutes to sleep. About 7 minutes.
-  func testAnUnansweredPromptLetsABusyBoxSleepWithTheAppAttached() async throws {
+  /// #380's acceptance, the other half: with the app attached, a busy box stays awake through its
+  /// job, the agent keeping its connection while the job runs, and sleeps once it has ended. A
+  /// 6-minute job with no network use, timers 120 s, 10 minutes to sleep. About 10 minutes.
+  func testABusyBoxWithTheAppAttachedStaysAwakeThroughItsJob() async throws {
     let driver = driver()
     let host = try await driver.create()
     try idleTimers(host, 120)
-    let remote = try await attach(driver, host)
-    try await HostConnectionManager.shared.wakefulness(host: host).apply(
-      AgentWakefulnessSettings(ceiling: 60, promptTimeout: 30, ask: true))
+    _ = try await attach(driver, host)
     let start = ContinuousClock.now
-    try await startJob(driver, host, seconds: 900)
-    // The badge starts once the job is running, so the box is let go of for its unanswered prompt,
-    // not for being idle before the job began.
-    let deadline = ContinuousClock.now + .seconds(60)
-    while ContinuousClock.now < deadline,
-      (try? await HostConnectionManager.shared.wakefulness(host: host).status().busy) != true
-    {
-      try await Task.sleep(for: .seconds(2))
+    try await startJob(driver, host, seconds: 360)
+    var droppedAt: Duration?
+    while ContinuousClock.now - start < .seconds(330) {
+      if await !connected(host), droppedAt == nil { droppedAt = ContinuousClock.now - start }
+      try await Task.sleep(for: .seconds(10))
     }
-    let badge = pollLikeTheBadge(remote, host)
-    defer { badge.cancel() }
-    let slept = try await sleeps(host, since: start, within: .seconds(480))
-    XCTAssertTrue(remote.isLetGo(host), "the app never let go of the box")
-    XCTAssertNotNil(
-      slept, "a busy box whose prompt went unanswered never slept with the app attached")
-    badge.cancel()
+    XCTAssertNil(droppedAt, "the agent let go of a busy box's connection")
+    let slept = try await sleeps(host, since: start, within: .seconds(600))
+    XCTAssertNotNil(slept, "the box never slept after its job")
+    if let slept { XCTAssertGreaterThan(slept, .seconds(360), "it slept under its job") }
     let logged = try await ticks(driver, host)
-    XCTAssertLessThan(logged, 900)
+    XCTAssertEqual(logged, 360, "the box missed ticks")
   }
 }

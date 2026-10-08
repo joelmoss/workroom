@@ -228,8 +228,9 @@ another is active (#356). Machines and snapshots are named
 make real machines: they run only with `TEST_RUNNER_WR_BOXD_TESTS=1`
 and the sandbox off. The app reaches it from New Workroom › Remote › boxd (#356): `RemoteHosts`
 holds any driver by `DriverKey` (a container runtime or a boxd org and account), a background read
-of a boxd host asks boxd first and leaves an asleep box asleep, and an idle host's connection is
-let go of so boxd can sleep it. See "As built (#256)" and "As built (#356)" in
+of a boxd host asks boxd first and leaves an asleep box asleep, and the host's agent closes an
+idle connection itself so boxd can sleep it (#380); a background read never reconnects a host its
+agent let go of. See "As built (#256)", "As built (#356)" and "As built (#380)" in
 `docs/designs/remote-workrooms.md`.
 
 ## Remote workrooms in config (#249)

@@ -180,161 +180,6 @@ fn a_changed_parameter_breaks_the_contract() {
     assert_ne!(replay(&f, blunted), f.expected);
 }
 
-// ---- the ceiling (OQ22) -----------------------------------------------------------------------
-
-fn busy_until(c: &mut Ceiling, t: f64) -> bool {
-    let mut prompted = false;
-    let mut now = 0.0;
-    while now <= t {
-        prompted |= c.step(now, Verdict::Busy);
-        now += 60.0;
-    }
-    prompted
-}
-
-#[test]
-fn by_default_the_ceiling_only_reports() {
-    let mut c = Ceiling::new(Settings::default());
-    assert!(!busy_until(&mut c, 3.0 * 3600.0));
-    assert!(!c.exceeded(), "3 h is inside the 4 h ceiling");
-    assert!(!busy_until(&mut c, 5.0 * 3600.0));
-    assert!(c.exceeded(), "past the ceiling the box is reported");
-    assert!(
-        !c.suppressing(),
-        "advisory-only: the service keeps asserting BUSY"
-    );
-    assert_eq!(c.state(), CeilingState::Exceeded);
-}
-
-#[test]
-fn asking_prompts_once_and_lets_the_box_sleep_if_nobody_answers() {
-    let settings = Settings {
-        ask: true,
-        ..Settings::default()
-    };
-    let mut c = Ceiling::new(settings);
-    assert!(busy_until(&mut c, 4.0 * 3600.0), "the ceiling prompts");
-    let CeilingState::Prompted { deadline } = c.state() else {
-        panic!("expected a pending prompt, got {:?}", c.state());
-    };
-    assert_eq!(deadline, 4.0 * 3600.0 + 600.0);
-    assert!(!c.step(deadline - 1.0, Verdict::Busy), "prompts only once");
-    assert!(!c.suppressing());
-    c.step(deadline, Verdict::Busy);
-    assert!(c.suppressing(), "unanswered: stop asserting BUSY");
-    assert!(c.exceeded());
-}
-
-#[test]
-fn keep_resets_the_ceiling_and_going_idle_clears_it() {
-    let settings = Settings {
-        ask: true,
-        ..Settings::default()
-    };
-    let mut c = Ceiling::new(settings);
-    busy_until(&mut c, 4.0 * 3600.0);
-    c.keep(4.0 * 3600.0);
-    assert_eq!(c.state(), CeilingState::Below);
-    assert_eq!(c.awake_for(4.0 * 3600.0), 0.0);
-    assert!(
-        !c.step(7.0 * 3600.0, Verdict::Busy),
-        "the ceiling restarts from the keep, so 3 h later is still inside it"
-    );
-    c.step(9.0 * 3600.0, Verdict::Busy);
-    assert!(c.exceeded());
-    c.step(9.0 * 3600.0 + 1.0, Verdict::Idle);
-    assert_eq!(c.state(), CeilingState::Below, "idle clears the ceiling");
-}
-
-/// The exits from `Suppressed` a real user gets without the prompt card: typing answers it, and
-/// the box coming back from the sleep the suppression allowed asks again. Neither existed at
-/// first, so a user who woke the box and typed kept the classifier BUSY while the service kept
-/// publishing IDLE, and the provider hibernated the box under them, again after every resume.
-/// A resume once cleared the ceiling outright; but a connect wakes the box too, so every status
-/// probe then bought a running job another full ceiling (#356).
-#[test]
-fn typing_clears_a_suppressed_ceiling_and_resuming_asks_again() {
-    let settings = Settings {
-        ask: true,
-        ..Settings::default()
-    };
-    let suppressed = || {
-        let mut c = Ceiling::new(settings);
-        busy_until(&mut c, 4.0 * 3600.0);
-        let CeilingState::Prompted { deadline } = c.state() else {
-            panic!("expected a prompt")
-        };
-        c.step(deadline, Verdict::Busy);
-        assert!(c.suppressing());
-        (c, deadline)
-    };
-
-    // A job still running is not an answer.
-    let (mut c, deadline) = suppressed();
-    c.step(deadline + 60.0, Verdict::Busy);
-    assert!(c.suppressing(), "BUSY alone never clears suppression");
-
-    // The user typing is.
-    let (mut c, deadline) = suppressed();
-    c.user_acted(deadline + 60.0);
-    assert_eq!(c.state(), CeilingState::Below);
-    assert_eq!(
-        c.awake_for(deadline + 60.0),
-        0.0,
-        "the ceiling restarts from the keystroke"
-    );
-    assert!(
-        !c.step(deadline + 120.0, Verdict::Busy),
-        "well inside the new ceiling"
-    );
-
-    // The box resuming is not an answer: it keeps the awake time from before the sleep, so the
-    // next BUSY tick asks again, with a fresh deadline.
-    let (mut c, deadline) = suppressed();
-    let before = c.awake_for(deadline);
-    let woke = deadline + 3600.0;
-    c.resumed(woke);
-    assert_eq!(c.state(), CeilingState::Below);
-    assert_eq!(c.awake_for(woke), before, "sleep is not awake time");
-    assert!(
-        c.step(woke + 1.0, Verdict::Busy),
-        "past the ceiling: ask again at once"
-    );
-    assert_eq!(
-        c.state(),
-        CeilingState::Prompted {
-            deadline: woke + 1.0 + 600.0
-        }
-    );
-    assert!(
-        !c.suppressing(),
-        "a fresh prompt keeps the box awake until its deadline"
-    );
-
-    // A resume from any other state starts the ceiling over: a job that resumes with the box gets
-    // the full ceiling again.
-    let mut c = Ceiling::new(settings);
-    busy_until(&mut c, 3.0 * 3600.0);
-    c.resumed(5.0 * 3600.0);
-    assert_eq!(c.awake_for(5.0 * 3600.0), 0.0);
-    assert!(!c.step(5.0 * 3600.0 + 60.0, Verdict::Busy));
-
-    // Typing while the prompt is still pending answers it too: the user is there and working.
-    let mut c = Ceiling::new(settings);
-    busy_until(&mut c, 4.0 * 3600.0);
-    assert!(matches!(c.state(), CeilingState::Prompted { .. }));
-    c.user_acted(4.0 * 3600.0 + 30.0);
-    assert_eq!(c.state(), CeilingState::Below);
-    assert_eq!(c.awake_for(4.0 * 3600.0 + 30.0), 0.0);
-
-    // Typing while merely past an advisory ceiling changes nothing: there is nothing to answer.
-    let mut c = Ceiling::new(Settings::default());
-    busy_until(&mut c, 5.0 * 3600.0);
-    assert_eq!(c.state(), CeilingState::Exceeded);
-    c.user_acted(5.0 * 3600.0);
-    assert_eq!(c.state(), CeilingState::Exceeded);
-}
-
 // ---- the wake mask ----------------------------------------------------------------------------
 
 /// A quiet box: one candidate process burning nothing, no sockets, no pty.
@@ -496,132 +341,10 @@ fn the_resume_masks_cpu_for_the_tick_after_it_too() {
     assert_eq!(c.verdict(), Verdict::Busy);
 }
 
-/// One service tick: the classifier's step, then the service loop's own ceiling steps
-/// (`ceiling_step`). Without `honour_mask`, a control that steps the ceiling on every tick, masked
-/// or not. Returns whether a prompt was raised, and the verdict the service publishes.
-fn ceiling_tick(
-    c: &mut Classifier,
-    ceiling: &mut Ceiling,
-    s: &Sample,
-    honour_mask: bool,
-) -> (bool, Verdict) {
-    c.step(s, false);
-    let raw = c.verdict();
-    let prompted = if honour_mask {
-        ceiling_step(c, ceiling, s.t, raw, false)
-    } else {
-        if c.resumed() {
-            ceiling.resumed(s.t);
-        }
-        ceiling.step(s.t, raw)
-    };
-    (prompted, ceiling.published(raw))
-}
-
-/// A CPU-only job outlasts its ceiling, nobody answers, the box sleeps, and a connect wakes it with
-/// the job still running. The wake must ask again, not buy the job another ceiling. The resume mask
-/// reads such a job IDLE for its first few ticks, and an IDLE step ends the ceiling, so those ticks
-/// have to be ignored or the carried awake time is lost before the job is seen again.
-fn wake_with_a_cpu_job_running(honour_mask: bool) -> Option<f64> {
-    let settings = Settings {
-        ceiling: 30.0,
-        prompt_timeout: 10.0,
-        ask: true,
-    };
-    let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
-    let mut ceiling = Ceiling::new(settings);
-    let mut s = quiet(1000.0, 0);
-    // One core of CPU a second.
-    let tick = |s: &mut Sample, t: f64| {
-        s.t = t;
-        s.procs[1].ticks += 100;
-    };
-    let mut t = 1000.0;
-    for _ in 0..60 {
-        tick(&mut s, t);
-        ceiling_tick(&mut c, &mut ceiling, &s, honour_mask);
-        t += 1.0;
-    }
-    assert!(
-        ceiling.suppressing(),
-        "unanswered: the service let the box sleep"
-    );
-    // Asleep for 300 s; the job's CPU stops with the box.
-    t += 300.0;
-    for _ in 0..20 {
-        tick(&mut s, t);
-        let (prompted, published) = ceiling_tick(&mut c, &mut ceiling, &s, honour_mask);
-        if prompted {
-            assert!(matches!(ceiling.state(), CeilingState::Prompted { .. }));
-            assert_eq!(
-                published,
-                Verdict::Busy,
-                "a pending prompt keeps the box awake"
-            );
-            return Some(t);
-        }
-        t += 1.0;
-    }
-    None
-}
-
+/// What the service reads off the classifier to restart the heartbeat's cadence: the resume flag is
+/// up for the first tick after the gap only.
 #[test]
-fn a_wake_with_the_job_still_running_asks_again() {
-    let asked = wake_with_a_cpu_job_running(true).expect("the wake must ask again");
-    assert!(
-        asked - 1360.0 < 10.0,
-        "asked within the resume mask's few seconds, at {asked}"
-    );
-    // The other half of the claim: acting on the masked IDLE ticks loses the carried awake time,
-    // so the box is not asked and the job gets a whole new ceiling.
-    assert_eq!(wake_with_a_cpu_job_running(false), None);
-}
-
-/// A Keep awake that lands on the tick the box resumes is the user's answer to the carried ceiling,
-/// so it restarts the awake time and nothing is asked; without it, that tick asks at once.
-#[test]
-fn a_keep_on_the_resume_tick_restarts_the_ceiling() {
-    let settings = Settings {
-        ask: true,
-        ..Settings::default()
-    };
-    let resumed_and_suppressed = || {
-        let mut ceiling = Ceiling::new(settings);
-        busy_until(&mut ceiling, 4.0 * 3600.0);
-        let CeilingState::Prompted { deadline } = ceiling.state() else {
-            panic!("expected a prompt")
-        };
-        ceiling.step(deadline, Verdict::Busy);
-        assert!(ceiling.suppressing());
-        let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
-        let mut t = deadline + 1.0;
-        c.step(&quiet(t, 10_000), false);
-        t += 300.0;
-        c.step(&quiet(t, 10_000), false);
-        assert!(c.resumed());
-        (c, ceiling, t)
-    };
-
-    let (c, mut ceiling, t) = resumed_and_suppressed();
-    assert!(!ceiling_step(&c, &mut ceiling, t, Verdict::Busy, true));
-    assert_eq!(ceiling.state(), CeilingState::Below);
-    assert_eq!(
-        ceiling.awake_for(t),
-        0.0,
-        "the ceiling restarts from the keep"
-    );
-
-    let (c, mut ceiling, t) = resumed_and_suppressed();
-    assert!(
-        ceiling_step(&c, &mut ceiling, t, Verdict::Busy, false),
-        "without the keep, the carried time asks at once"
-    );
-}
-
-/// What the service reads off the classifier to drive the ceiling: the resume flag is up for the
-/// first tick after the gap only, and the keystroke signal reflects the last tick's grace.
-#[test]
-fn the_classifier_reports_a_resume_and_a_recent_keystroke() {
+fn the_classifier_reports_a_resume() {
     let mut c = Classifier::new(Policy::production(), Boundary::agent(999)).with_wake_mask();
     let mut t = 1000.0;
     for _ in 0..3 {
@@ -635,14 +358,6 @@ fn the_classifier_reports_a_resume_and_a_recent_keystroke() {
     t += 1.0;
     c.step(&quiet(t, 10_000), false);
     assert!(!c.resumed(), "only that tick");
-    assert!(!c.user_acted());
-    c.push_pty_input(t + 0.5);
-    t += 1.0;
-    c.step(&quiet(t, 10_000), false);
-    assert!(c.user_acted());
-    t += 11.0;
-    c.step(&quiet(t, 10_000), false);
-    assert!(!c.user_acted(), "past the 10 s grace");
     // Without a wake mask (the replay) a gap is never a resume.
     let mut plain = Classifier::new(FROZEN, Boundary::agent(999));
     plain.step(&quiet(1000.0, 0), false);
@@ -665,25 +380,6 @@ fn output_since_the_wake_votes_on_the_first_resumed_tick() {
     c.push_pty_out(t - 0.5, 2000);
     c.step(&quiet(t, 10_000), false);
     assert_eq!(c.verdict(), Verdict::Busy);
-}
-
-/// `keep` over the wire flags the service thread; the reply alone proves nothing, since it is
-/// unconditional.
-#[test]
-fn keep_flags_the_service_thread() {
-    let w = shared();
-    w.keep();
-    let flagged = std::mem::take(
-        &mut w
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .keep_requested,
-    );
-    assert!(
-        flagged,
-        "keep() must leave keep_requested for the next tick"
-    );
 }
 
 /// `serve` stops the service on its way out; `status` must stop saying it runs, and the flag the
@@ -885,149 +581,6 @@ fn a_session_process_renamed_to_an_excluded_name_still_votes() {
     );
 }
 
-// ---- settings from the app (#257) -------------------------------------------------------------
-
-fn ask(ceiling: f64) -> Settings {
-    Settings {
-        ceiling,
-        prompt_timeout: 600.0,
-        ask: true,
-    }
-}
-
-fn advisory(ceiling: f64) -> Settings {
-    Settings {
-        ceiling,
-        prompt_timeout: 600.0,
-        ask: false,
-    }
-}
-
-/// What a new setting does to a box that is mid-ceiling: kept only when it still applies, and
-/// otherwise re-decided by the next step as if the new settings had always been in force.
-#[test]
-fn new_settings_apply_from_the_next_tick() {
-    let hours = |h: f64| h * 3600.0;
-    // (name, settings before, busy until, new settings, state right after the next step)
-    let cases: &[(&str, Settings, f64, Settings, CeilingState)] = &[
-        (
-            "the same settings again change nothing, a pending prompt included",
-            ask(hours(4.0)),
-            hours(4.0),
-            ask(hours(4.0)),
-            CeilingState::Prompted {
-                deadline: hours(4.0) + 600.0,
-            },
-        ),
-        (
-            "turning ask off withdraws the prompt: the box is reported, and kept awake",
-            ask(hours(4.0)),
-            hours(4.0),
-            advisory(hours(4.0)),
-            CeilingState::Exceeded,
-        ),
-        (
-            "a ceiling raised past the time awake withdraws the prompt",
-            ask(hours(4.0)),
-            hours(4.0),
-            ask(hours(8.0)),
-            CeilingState::Below,
-        ),
-        (
-            "turning ask on past the ceiling prompts now",
-            advisory(hours(4.0)),
-            hours(5.0),
-            ask(hours(4.0)),
-            CeilingState::Prompted {
-                deadline: hours(5.0) + 60.0 + 600.0,
-            },
-        ),
-        (
-            "a lowered ceiling the box is already past is reported at once",
-            advisory(hours(4.0)),
-            hours(2.0),
-            advisory(hours(1.0)),
-            CeilingState::Exceeded,
-        ),
-        (
-            "a pending prompt that still applies keeps the deadline it was raised with",
-            ask(hours(4.0)),
-            hours(4.0),
-            Settings {
-                prompt_timeout: 300.0,
-                ..ask(hours(4.0))
-            },
-            CeilingState::Prompted {
-                deadline: hours(4.0) + 600.0,
-            },
-        ),
-        (
-            "an unanswered prompt stays unanswered under a lower ceiling",
-            ask(hours(4.0)),
-            hours(4.0) + 660.0,
-            ask(hours(3.0)),
-            CeilingState::Suppressed,
-        ),
-        (
-            "turning ask off ends an unanswered prompt: reported, and kept awake again",
-            ask(hours(4.0)),
-            hours(4.0) + 660.0,
-            advisory(hours(4.0)),
-            CeilingState::Exceeded,
-        ),
-        (
-            "a ceiling raised past the time awake ends an unanswered prompt",
-            ask(hours(4.0)),
-            hours(4.0) + 660.0,
-            ask(hours(8.0)),
-            CeilingState::Below,
-        ),
-    ];
-    for (name, before, busy, after, expected) in cases {
-        let mut c = Ceiling::new(*before);
-        busy_until(&mut c, *busy);
-        let now = (*busy / 60.0).floor() * 60.0 + 60.0;
-        c.set_settings(now, *after);
-        c.step(now, Verdict::Busy);
-        assert_eq!(c.state(), *expected, "{name}");
-        assert_eq!(c.settings, *after, "{name}");
-    }
-}
-
-#[test]
-fn an_unanswered_prompt_kept_by_the_same_settings_still_lets_the_box_sleep() {
-    let mut c = Ceiling::new(ask(3600.0));
-    busy_until(&mut c, 3600.0);
-    c.set_settings(3660.0, ask(3600.0));
-    c.step(3600.0 + 600.0, Verdict::Busy);
-    assert!(c.suppressing());
-}
-
-/// The heartbeat runs on the PUBLISHED verdict: a minute apart while the prompt is pending, and
-/// none once it has gone unanswered, so the provider sleeps the box.
-#[test]
-fn an_unanswered_prompt_stops_the_heartbeat() {
-    let mut c = Ceiling::new(ask(3600.0));
-    let mut keep_awake = heartbeat::KeepAwake::default();
-    let mut sends = Vec::new();
-    let mut t = 0.0;
-    while t <= 3600.0 + 600.0 + 300.0 {
-        c.step(t, Verdict::Busy);
-        keep_awake.tick(t, &c, Verdict::Busy, || {
-            sends.push(t);
-            Ok(())
-        });
-        t += 60.0;
-    }
-    assert!(c.suppressing());
-    assert_eq!(sends.first(), Some(&0.0));
-    assert_eq!(
-        sends.last(),
-        Some(&(3600.0 + 540.0)),
-        "none after the deadline"
-    );
-}
-
 /// `status` says a service has stalled once it has gone `WAKE_GAP_S` without finishing a tick, and
 /// not for a sampler starved the 7.9-14.3 s a CFS quota was measured to.
 #[test]
@@ -1066,113 +619,76 @@ fn status_reports_a_stall_only_for_a_running_service() {
     }
 }
 
+// ---- the box decides (#380) -------------------------------------------------------------------
+
+/// A change the app shows is pushed, and nothing else: the clock, the last send and the service's
+/// own CPU move every tick and would otherwise write to the app once a second. A heartbeat error
+/// shows only while BUSY, which is when the box is not being kept awake.
 #[test]
-fn settings_parse_only_what_the_ceiling_can_use() {
-    let good = serde_json::json!({
-        "method": "settings",
-        "ceiling_seconds": 7200.0,
-        "prompt_timeout_seconds": 300,
-        "ask_at_ceiling": true,
-    });
-    assert_eq!(
-        Settings::from_json(&good),
-        Ok(Settings {
-            ceiling: 7200.0,
-            prompt_timeout: 300.0,
-            ask: true
-        })
-    );
-    // Round trip: what `to_json` writes is what `from_json` reads.
-    let settings = Settings::from_json(&good).unwrap();
-    assert_eq!(Settings::from_json(&settings.to_json()), Ok(settings));
-    for (name, field, value) in [
-        ("zero", "ceiling_seconds", serde_json::json!(0)),
-        ("negative", "prompt_timeout_seconds", serde_json::json!(-1)),
-        (
-            "no grace",
-            "prompt_timeout_seconds",
-            serde_json::json!(0.001),
-        ),
-        ("never reached", "ceiling_seconds", serde_json::json!(1e300)),
-        (
-            "just under 30 s",
-            "prompt_timeout_seconds",
-            serde_json::json!(29.999),
-        ),
-        (
-            "just over 30 days",
-            "ceiling_seconds",
-            serde_json::json!(2_592_000.001),
-        ),
-        ("a string", "ceiling_seconds", serde_json::json!("7200")),
-        ("missing", "ceiling_seconds", serde_json::Value::Null),
-        ("not a bool", "ask_at_ceiling", serde_json::json!(1)),
-    ] {
-        let mut bad = good.clone();
-        if value.is_null() {
-            bad.as_object_mut().unwrap().remove(field);
-        } else {
-            bad[field] = value;
+fn only_a_change_the_app_shows_is_pushed() {
+    let ticks = [
+        (Verdict::Idle, false),
+        (Verdict::Idle, false),
+        (Verdict::Busy, false),
+        (Verdict::Busy, false),
+        (Verdict::Busy, true),
+        (Verdict::Busy, true),
+        (Verdict::Idle, true),
+        (Verdict::Idle, false),
+        (Verdict::Busy, false),
+    ];
+    let mut pushed = None;
+    let mut pushes = Vec::new();
+    for (i, (verdict, error)) in ticks.into_iter().enumerate() {
+        let now = shown(verdict, error);
+        if pushed != Some(now) {
+            pushed = Some(now);
+            pushes.push(i);
         }
-        assert!(Settings::from_json(&bad).is_err(), "{name} {field}");
     }
+    assert_eq!(pushes, vec![0, 2, 4, 6, 8]);
 }
 
-/// Settings sent from many connections at once are kept whole, and the last one sent is the one
-/// kept: one thread writes the file, so two saves never share its temporary file.
+/// The let-go waits for the verdict to have been IDLE for the whole grace, and a BUSY tick starts
+/// it over.
 #[test]
-fn settings_sent_at_once_are_kept_whole_and_the_last_wins() {
-    let dir = std::env::temp_dir().join(format!("wr-saver-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("agent.sock.settings");
-    let (sender, saver) = settings_saver(path.clone());
-    let threads: Vec<_> = (0..8)
-        .map(|i| {
-            let sender = sender.clone();
-            std::thread::spawn(move || {
-                for j in 0..25 {
-                    let ceiling = 60.0 + f64::from(i * 100 + j);
-                    let settings = Settings {
-                        ceiling,
-                        prompt_timeout: 600.0,
-                        ask: i % 2 == 0,
-                    };
-                    sender.send(settings).unwrap();
-                }
-            })
-        })
-        .collect();
-    for thread in threads {
-        thread.join().unwrap();
+fn the_let_go_waits_for_a_whole_grace_of_idle() {
+    let mut since = None;
+    let mut letting = Vec::new();
+    let verdicts = [
+        (0.0, Verdict::Busy),
+        (1.0, Verdict::Idle),
+        (30.0, Verdict::Idle),
+        (31.0, Verdict::Idle),
+        (32.0, Verdict::Busy),
+        (33.0, Verdict::Idle),
+        (62.0, Verdict::Idle),
+        (63.0, Verdict::Idle),
+    ];
+    for (t, verdict) in verdicts {
+        since = idle_since(since, t, verdict);
+        if letting_go(since, t) {
+            letting.push(t);
+        }
     }
-    let last = Settings {
-        ceiling: 7200.0,
-        prompt_timeout: 120.0,
-        ask: true,
-    };
-    sender.send(last).unwrap();
-    drop(sender);
-    saver.join().unwrap();
-    assert_eq!(load_settings(&path), Some(last));
-    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(letting, vec![31.0, 63.0]);
 }
 
-/// A remote agent's settings survive its restart, and a file that is gone or garbled is no
-/// settings at all rather than a broken ceiling.
+/// A pushed change is what `status` returns, under `status`, at the service's version: an app that
+/// knows `status` reads the event with the same decoder.
 #[test]
-fn kept_settings_load_back_and_a_bad_file_is_ignored() {
-    let dir = std::env::temp_dir().join(format!("wr-settings-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = settings_path(&dir.join("agent.sock"));
-    assert_eq!(path, dir.join("agent.sock.settings"));
-    assert_eq!(load_settings(&path), None, "no file");
-    save_settings(&path, ask(1800.0)).unwrap();
-    assert_eq!(load_settings(&path), Some(ask(1800.0)));
-    assert!(
-        !dir.join("agent.sock.settings.tmp").exists(),
-        "the temporary file is renamed into place"
-    );
-    std::fs::write(&path, "{\"ceiling_seconds\": \"nan\"").unwrap();
-    assert_eq!(load_settings(&path), None, "garbled");
-    std::fs::remove_dir_all(&dir).unwrap();
+fn a_pushed_change_carries_the_status_reply() {
+    let mut s = shared()
+        .state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    s.running = true;
+    s.verdict = Verdict::Busy;
+    s.t = 100.0;
+    let event = status_event(status_json(&s, 100.0));
+    assert_eq!(event["version"], STATUS_SERVICE_VERSION);
+    assert_eq!(event["event"], "status");
+    assert_eq!(event["status"], status_json(&s, 100.0));
+    assert_eq!(event["status"]["busy"], true);
 }

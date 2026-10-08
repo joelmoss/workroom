@@ -61,10 +61,7 @@ enum RemoteProvisioning {
       self.agentBroker = agentBroker
       self.connect =
         connect ?? { host in
-          // Nothing watches a provisioning connection's ceiling prompts, so it hands the agent
-          // no settings (#356).
-          try await AgentBootstrap.connect(
-            host: host, driver: driver, socket: agentSocket, watched: false)
+          try await AgentBootstrap.connect(host: host, driver: driver, socket: agentSocket)
         }
       self.revoke = revoke
     }
