@@ -7,23 +7,7 @@
 
 ## P0 — before the next release
 
-### `AgentWakefulnessTests.testAReplyCrossingAKeepDoesNotResurrectTheCard` flakes (macapp) — #216 test
-
-**What:** Find why the crossing-`keep` test sometimes fails and fix the test or the race it exposes.
-
-**Why:** It failed once in a targeted `/ship` QA run on `feat/boxd-in-app` (2026-10-07, 2 of 80
-`AgentWakefulnessTests` red: "the failure brought the retry back", `XCTAssertTrue failed` at the
-retry-flag assert), then passed in every full suite after it (3267/0, four runs). The test came with
-#216 on master; the boxd branch didn't touch the keep/retry path. A flake in the prompt card's retry
-logic can hide a real resurrection bug, which is what the test exists to catch.
-
-**How to start:** Loop it alone (`make app-test "APP_TEST_FLAGS=-only-testing:WorkroomAppTests/AgentWakefulnessTests/testAReplyCrossingAKeepDoesNotResurrectTheCard"`)
-under CPU load until it fails. Then check whether the crossing reply and the failed `keep` can land in
-either order on the main actor; the assert assumes one.
-
-**Depends on:** nothing.
-
-**Priority:** P0 (chosen in /ship for #356, invocation 4, D6, 2026-10-07)
+None open. The crossing-`keep` flake entry went with the test, `keep` and the prompt card in #380.
 
 ## P1 — before GA
 
@@ -88,18 +72,12 @@ Each file you touch needs its class re-run with `make app-uitest APP_UITEST_FLAG
 
 **Priority:** P2 (deferred in /ship review, 2026-10-06)
 
-### Harden the agent's kept settings (wr-agent) — #257 review
+### Fix the heartbeat status test's backwards clock (wr-agent) — #257 review
 
-**What:** Three small fixes the final reviews of #257 left, plus one known boundary:
-
-- Coalesce the saver's queue (`settings_saver`): it is unbounded, and a buggy client flooding
-  `settings` grows it while a stalled disk holds the saver. Keep only the latest pending settings.
-- Make a failed saver thread spawn non-fatal (`settings_saver`'s `.expect`): leave the saver
-  `None`, as a failed write already is.
-- `heartbeat.rs`'s status test runs its clock backwards (131.0, then 122.0 for the IDLE tick); use
-  132.0.
-- Known, no privilege gained: any process of the agent's user can send `settings`, and it persists
-  until the next app connect. Same uid can already kill the agent.
+**What:** `heartbeat.rs`'s status test runs its clock backwards (131.0, then 122.0 for the IDLE
+tick); use 132.0. The other items here (the settings saver's queue and spawn, who may send
+`settings`) went with the `settings` request in #380. This one goes too if #382 removes the
+heartbeat first.
 
 **Priority:** P2 (chosen in /ship's adversarial review of #257, 2026-10-06)
 
