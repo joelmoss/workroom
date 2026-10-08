@@ -512,7 +512,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       }
     } catch {
       empty = false
-      failed.append("listing containers: \(error.localizedDescription)")
+      failed.append(Self.listingFailed + error.localizedDescription)
     }
 
     do {
@@ -603,7 +603,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       }
     } catch {
       // Without the list, no image is known to be unused.
-      return ["listing containers: \(error.localizedDescription)"]
+      return [Self.listingFailed + error.localizedDescription]
     }
     do {
       let images = try AppleContainerCLI.objects(
@@ -703,6 +703,10 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       try? FileManager.default.removeItem(at: madeFile)
     }
   }
+
+  /// How a sweep's failure starts when it could not list the containers, so swept nothing: the
+  /// runtime was down, say. `RemoteHosts.adopt` sweeps that runtime again on a later reload.
+  static let listingFailed = "listing containers: "
 
   static func containerName(_ id: UUID) -> String { "workroom-\(id.uuidString.lowercased())" }
 

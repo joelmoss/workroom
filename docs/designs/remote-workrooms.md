@@ -1550,8 +1550,12 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     recorded therefore no longer leaves its container for good. A sweep that finds nothing of
     this build's left removes the marker once it is older than the grace, so a Mac that no longer
     has container workrooms stops asking the runtime. A Mac that never made one has no marker
-    and is never asked. Still open: the sweep is claimed before it runs, so a runtime that is
-    down at launch is not swept until the next launch.
+    and is never asked.
+  - **Changed by #284 (2026-10-08):** the once-per-launch sweep is tracked per runtime and
+    context, and one counts as done only once it listed its containers. A runtime that is down
+    at launch is swept on a later reload instead of being skipped for the whole launch. A
+    runtime and context whose sweep ran, or is still running, is never swept again in that
+    launch, since the two-launch rule would count a second sweep as the next launch.
 - **As built (#253, part 2: creating one).** Remote workrooms are on only in a Nightly or Dev
   build with the hidden `remoteWorkroomsPreview` setting (`RemoteWorkrooms.isEnabled`); a stable
   build shows no remote UI, including the Settings section, whatever the setting says. The
@@ -1935,7 +1939,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     badge warns when a box's boxd idle timer is under 90 s, host prompt cards scroll past two, and a
     stalled IDLE reading on a sleeping host shows "status unknown".
   - **Not swept.** Unrecorded boxd machines are left alone: names carry no build, so one build's
-    sweep would take another's live workrooms (#284 has the boxd case).
+    sweep would take another's live workrooms (#373 has the boxd case).
   - **Letting go of an idle box.** boxd's idle meter counts inbound traffic, and the first live run
     (2026-10-06) found an attached box never slept: the service connection's ssh keepalives (15 s) and
     the badge's polls (10 s) held it, idle or past an unanswered prompt. So a boxd host whose agent
