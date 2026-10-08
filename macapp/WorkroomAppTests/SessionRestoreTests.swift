@@ -1178,7 +1178,6 @@ final class SessionRestoreTests: XCTestCase {
   /// The app lets a target's panes reattach only while it is local and opens here: not a missing
   /// directory, not a remote workroom (reachable or not), not one that no longer exists.
   func testOnlyALocalTargetThatOpensReattaches() {
-    // On, so the remote workroom is one whose panes do open, on its host.
     let store = AppStore()
     let here = FileManager.default.temporaryDirectory.path
     store.projects = [

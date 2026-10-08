@@ -265,6 +265,23 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(runner.calls.first?.args, ["repo", "view", "--json", "url", "-q", ".url"])
   }
 
+  /// A create without gh (signed in to Codaset only) reads the repository from the project's own
+  /// origin remote (#260); a project with no origin, or git failing, has none.
+  func testOriginRepositoryReadsGitAlone() async {
+    let runner = RecordingStatusRunner { _, _ in ok("git@github.com:octo/repo.git\n") }
+    let found = await WorkroomStatusResolver(runner: runner).originRepository(in: "/proj")
+    XCTAssertEqual(found, repo)
+    XCTAssertEqual(runner.calls.first?.dir, "/proj")
+    XCTAssertEqual(runner.calls.first?.args, ["remote", "get-url", "origin"])
+    let none = await WorkroomStatusResolver(
+      runner: MockStatusRunner { _, _ in
+        CommandResult(
+          stdout: "", stderr: "error: No such remote 'origin'", exitCode: 2, timedOut: false)
+      }
+    ).originRepository(in: "/proj")
+    XCTAssertNil(none)
+  }
+
   /// REGRESSION. The PR panel, checks list and CI badge all depend on this answer now, and they used
   /// to survive a transient `gh` failure through `ghPreflight`. A lookup that collapsed every failure
   /// into "no repository" would blank a good panel on a blip.

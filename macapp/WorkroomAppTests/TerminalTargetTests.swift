@@ -135,8 +135,7 @@ final class TerminalTargetTests: XCTestCase {
     XCTAssertTrue(target([destroyed], HostDescriptor(state: "destroyed")).isMissing)
   }
 
-  /// A remote workroom this build could reach says why its panes don't open, rather than that this
-  /// build cannot open remote workrooms (#253).
+  /// A remote workroom whose panes don't open says why (#253).
   func testAnUnopenedRemoteWorkroomSaysWhy() {
     let mine = RemoteWorkrooms.provisioner
     func detail(_ host: HostDescriptor) -> String {

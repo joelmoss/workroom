@@ -330,8 +330,8 @@ extension Workroom {
       remoteWorkroomID: host?.workroomID)
   }
 
-  /// Why this remote workroom's panes don't open here, for one this build could otherwise reach:
-  /// nil for a serving one, a destroyed one, and a local one.
+  /// Why this remote workroom's panes don't open here: nil for a serving one, a destroyed one, and a
+  /// local one.
   var remoteNote: String? {
     guard let host, !host.isDestroyed, reachableHost == nil else { return nil }
     if host.provisioner != RemoteWorkrooms.provisioner {

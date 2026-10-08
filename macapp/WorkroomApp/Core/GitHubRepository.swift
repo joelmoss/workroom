@@ -47,6 +47,35 @@ struct GitHubRepository: Hashable, Sendable {
     self.init(host: host, owner: segments[0], name: segments[1])
   }
 
+  /// Parses a git remote, as `git remote get-url` prints it (#260): the https form `init?(url:)`
+  /// takes, scp-style `[user@]host:owner/name`, or `ssh://[user@]host/owner/name`, `.git` or not.
+  /// For a create when `gh` can't say which repository a project is. Anything else is nil.
+  init?(remote string: String) {
+    let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let https = GitHubRepository(url: trimmed) {
+      self = https
+      return
+    }
+    let host: String
+    let path: Substring
+    if trimmed.hasPrefix("ssh://") {
+      guard let url = URL(string: trimmed), let found = url.host, url.port == nil else {
+        return nil
+      }
+      (host, path) = (found, Substring(url.path))
+    } else {
+      // scp-style: everything before the first `:` is `[user@]host`, and the path is relative.
+      guard !trimmed.contains("://"), let colon = trimmed.firstIndex(of: ":") else { return nil }
+      let authority = trimmed[..<colon]
+      host = String(authority.split(separator: "@").last ?? authority)
+      path = trimmed[trimmed.index(after: colon)...]
+      guard !path.hasPrefix("/") else { return nil }
+    }
+    let segments = path.split(separator: "/").map(String.init)
+    guard segments.count == 2 else { return nil }
+    self.init(host: host, owner: segments[0], name: segments[1])
+  }
+
   /// The `--repo` value: `[HOST/]OWNER/REPO`.
   var flag: String { "\(host)/\(owner)/\(name)" }
 
