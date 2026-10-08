@@ -2041,6 +2041,14 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     `PortForwardingModel.hasForwards` as a hold, `BoxdHostDriver.idleWindow`, `isTooShort` and its
     badge text. This Mac's own badge and `WakefulnessModel.shared` went too: its agent runs no
     wakefulness service (Linux only), so they only ever showed nothing.
+  - **What the live suite checks.** Only what Workroom owns: an idle box's agent lets go of the
+    attached app, the app takes that as idle and stops reaching the host, a kept forward and a
+    selection reconnect it (`testAnIdleBoxsAgentLetsGoOfTheAttachedApp`), and a busy box keeps the
+    app's connection and logs every tick of its job (`testABusyBoxWithTheAppAttachedStaysAwakeThroughItsJob`).
+    Whether an idle box then sleeps is its provider's, and not asserted: on a fresh boxd box the
+    agent let go at about 110 s, yet the box was still running 300 s later with 120 s timers, the
+    classifier briefly voting BUSY with nothing running (dockerd and containerd are on the base
+    image). #257's heartbeat test still checks sleep, as a control for the heartbeat.
   - **Mixed versions.** An app from before #380 against a version 2 agent shows no badge (it
     accepts only version 1) and its 10 s poll holds the box as before. An app from after it, against
     an agent a busy box kept rather than hand off, shows that agent's first reading and nothing
