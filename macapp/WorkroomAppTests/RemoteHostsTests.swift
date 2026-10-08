@@ -1093,12 +1093,24 @@ final class RemoteHostsTests: XCTestCase {
           org: "acme", account: "usr_1"),
         .boxd(org: "acme", account: "usr_1"),
         BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket
-      )
+      ),
+      (
+        HostDescriptor(
+          driver: RemoteWorkrooms.exeDevDriver, provisioner: RemoteWorkrooms.provisioner,
+          id: UUID(), account: "me@x.dev"),
+        .exeDev(account: "me@x.dev"),
+        ExeDevHostDriver.Configuration().agentSocket
+      ),
     ]
     for row in rows {
       let asked = Asked()
-      let remote = RemoteHosts(makeDriver: { key in
+      let remote = RemoteHosts(makeDriver: { key -> any HostTerminalDriver in
         asked.add(key)
+        if case .exeDev(let account) = key {
+          return ExeDevHostDriver(
+            configuration: .init(account: account),
+            directory: FileManager.default.temporaryDirectory)
+        }
         return BoxdHostDriver(
           configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
           directory: FileManager.default.temporaryDirectory)
@@ -1121,6 +1133,7 @@ final class RemoteHostsTests: XCTestCase {
       baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey()))
     let rows: [(key: RemoteHosts.DriverKey, needsCodaset: Bool)] = [
       (.boxd(org: "acme", account: "usr_1"), true),
+      (.exeDev(account: "me@x.dev"), true),
       (RemoteHosts.DriverKey(), false),
       (RemoteHosts.DriverKey(runtime: .apple), false),
     ]
@@ -1162,6 +1175,53 @@ final class RemoteHostsTests: XCTestCase {
     // Discriminates only where no container runtime is installed (CI's runners): on a Mac with
     // Docker, `runtimeIsMissing` is false for any host, and no seam-free way picks the runtime
     // lookup (`RemoteHosts.executable`, fixed paths). Kept for CI; eng review D6.
+    XCTAssertFalse(remote.runtimeIsMissing(for: .remote(id)))
+  }
+
+  /// An exe.dev host (#259) is its own driver key, keyed by its account: never Docker's or boxd's.
+  /// Its clone goes in the home of the user exe.dev logs in as, its base serves only its own
+  /// account, and its descriptor round-trips through config.
+  func testAnExeDevHostIsItsOwnDriverKey() throws {
+    let host = HostDescriptor(
+      driver: RemoteWorkrooms.exeDevDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      account: "me@x.dev")
+    let key = try XCTUnwrap(RemoteHosts.DriverKey(host))
+    XCTAssertEqual(key, .exeDev(account: "me@x.dev"))
+    XCTAssertTrue(key.isRemoteProvider)
+    XCTAssertEqual(key.place, .exeDev)
+    XCTAssertEqual(key.account, "me@x.dev")
+    XCTAssertNil(key.org)
+    XCTAssertEqual(RemoteWorkrooms.driverName(key), "exedev")
+    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
+    XCTAssertEqual(RemoteWorkrooms.clonePath(for: repository, on: key), "/home/exedev/r")
+    XCTAssertEqual(try RemoteHosts.deletionKey(host), key)
+    XCTAssertEqual(RemoteWorkrooms.base(in: host, for: key)?.id, host.id)
+    XCTAssertNil(RemoteWorkrooms.base(in: host, for: .exeDev(account: "other@x.dev")))
+    XCTAssertNil(RemoteWorkrooms.base(in: host, for: .boxd(org: nil, account: "me@x.dev")))
+    XCTAssertEqual(host.kindDescription, "Remote workroom on exe.dev")
+    XCTAssertEqual(
+      try JSONDecoder().decode(HostDescriptor.self, from: try JSONEncoder().encode(host)), host)
+    XCTAssertTrue(WorkroomPlace.all.contains(.remote(.exeDev)))
+  }
+
+  /// After a relaunch an exe.dev workroom is reached without Docker, by its driver made with the
+  /// account its record holds, and a missing container runtime never reads as its host gone.
+  func testAnExeDevWorkroomIsReachedAfterARelaunchWithoutDocker() throws {
+    let remote = RemoteHosts()
+    let id = UUID()
+    remote.adopt([
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "w", path: "/home/exedev/r", vcsName: "workroom/w", warnings: [],
+            host: HostDescriptor(
+              driver: RemoteWorkrooms.exeDevDriver, provisioner: RemoteWorkrooms.provisioner,
+              id: id, account: "me@x.dev"))
+        ])
+    ])
+    let driver = try XCTUnwrap(remote.existingDriver(holding: id) as? ExeDevHostDriver)
+    XCTAssertEqual(driver.configuration.account, "me@x.dev")
     XCTAssertFalse(remote.runtimeIsMissing(for: .remote(id)))
   }
 

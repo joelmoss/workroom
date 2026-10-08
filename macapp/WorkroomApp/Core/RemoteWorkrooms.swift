@@ -22,11 +22,13 @@ enum RemoteWorkrooms {
   enum Place: Hashable, Sendable {
     case container(Runtime)
     case boxd
+    case exeDev
 
     var displayName: String {
       switch self {
       case .container(let runtime): runtime.displayName
       case .boxd: "boxd"
+      case .exeDev: "exe.dev"
       }
     }
 
@@ -35,12 +37,13 @@ enum RemoteWorkrooms {
       switch self {
       case .container(let runtime): "\(runtime.containerPhrase) on this Mac"
       case .boxd: "a boxd machine"
+      case .exeDev: "an exe.dev VM"
       }
     }
 
     /// The remote providers, in the order the New Workroom menu and picker list them (#259). A new
     /// provider is a case here and an entry in this list.
-    static let remoteProviders: [Place] = [.boxd]
+    static let remoteProviders: [Place] = [.boxd, .exeDev]
   }
 
   /// Why a workroom can't be created at `place` now, as the New Workroom menu and picker show it
@@ -55,6 +58,10 @@ enum RemoteWorkrooms {
       unavailability(
         ofBoxdInstalled: RemoteHosts.boxdExecutable() != nil,
         codasetSignedIn: BrokerSession.shared.isSignedIn)
+    case .exeDev:
+      // ssh is always there; whether exe.dev knows a key of the user's is an ssh call, which a
+      // create makes (`RemoteHosts.key(for:)`).
+      BrokerSession.shared.isSignedIn ? nil : "sign in to Codaset"
     }
   }
 
@@ -77,6 +84,8 @@ enum RemoteWorkrooms {
   static let containerDriver = Runtime.docker.rawValue
   /// The descriptor's `driver` for a boxd host (#356).
   static let boxdDriver = "boxd"
+  /// The descriptor's `driver` for an exe.dev host (#259).
+  static let exeDevDriver = "exedev"
 
   /// Why a workroom can't be created on `runtime` now, as the New Workroom menu shows it beside the
   /// entry, or nil when it can (#309).
@@ -453,6 +462,7 @@ enum RemoteWorkrooms {
     switch key {
     case .container(let runtime, _): runtime.rawValue
     case .boxd: boxdDriver
+    case .exeDev: exeDevDriver
     }
   }
 
@@ -585,11 +595,17 @@ final class RemoteHosts: @unchecked Sendable {
   enum DriverKey: Hashable, Sendable {
     case container(RemoteWorkrooms.Runtime, context: String?)
     case boxd(org: String?, account: String?)
+    /// An exe.dev account, `whoami`'s email (#259).
+    case exeDev(account: String?)
 
     /// The driver a recorded host is in, or nil for a descriptor of no driver this build knows.
     init?(_ descriptor: HostDescriptor) {
       if descriptor.driver == RemoteWorkrooms.boxdDriver {
         self = .boxd(org: descriptor.org, account: descriptor.account)
+        return
+      }
+      if descriptor.driver == RemoteWorkrooms.exeDevDriver {
+        self = .exeDev(account: descriptor.account)
         return
       }
       guard let runtime = RemoteWorkrooms.Runtime(rawValue: descriptor.driver ?? "") else {
@@ -613,6 +629,7 @@ final class RemoteHosts: @unchecked Sendable {
       switch self {
       case .container: RemoteWorkrooms.user
       case .boxd: BoxdHostDriver.user
+      case .exeDev: ExeDevHostDriver.user
       }
     }
 
@@ -634,8 +651,10 @@ final class RemoteHosts: @unchecked Sendable {
       return nil
     }
     var account: String? {
-      if case .boxd(_, let account) = self { return account }
-      return nil
+      switch self {
+      case .boxd(_, let account), .exeDev(let account): account
+      case .container: nil
+      }
     }
 
     /// Where this key's workrooms are made.
@@ -643,6 +662,7 @@ final class RemoteHosts: @unchecked Sendable {
       switch self {
       case .container(let runtime, _): .container(runtime)
       case .boxd: .boxd
+      case .exeDev: .exeDev
       }
     }
   }
@@ -750,6 +770,8 @@ final class RemoteHosts: @unchecked Sendable {
           directory: hosts)
         // Not kept while the CLI is missing, so installing it later takes without a relaunch.
         guard cli != nil else { return driver }
+      } else if case .exeDev(let account) = key {
+        driver = ExeDevHostDriver(configuration: .init(account: account), directory: hosts)
       } else {
         driver = ContainerHostDriver(
           hosts: [:], directory: hosts, provisioning: try Self.provisioning(key))
@@ -922,6 +944,12 @@ final class RemoteHosts: @unchecked Sendable {
         configuration: .init(cli: URL(fileURLWithPath: cli)), directory: Self.directory
       ).signedIn()
       return .boxd(org: account.activeOrg, account: try account.requiredUserID())
+    case .exeDev:
+      // The account exe.dev knows the user's key as, which a new base is made in. Throws, naming
+      // the fix, when no key of the user's gets in.
+      return .exeDev(
+        account: try await ExeDevHostDriver(configuration: .init(), directory: Self.hosts)
+          .signedIn())
     }
   }
 

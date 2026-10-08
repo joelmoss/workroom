@@ -325,6 +325,7 @@ enum WorkroomPlace: Hashable {
     case .thisMac: "thisMac"
     case .remote(.container(let runtime)): runtime.rawValue
     case .remote(.boxd): RemoteWorkrooms.boxdDriver
+    case .remote(.exeDev): RemoteWorkrooms.exeDevDriver
     }
   }
 
@@ -332,7 +333,7 @@ enum WorkroomPlace: Hashable {
     switch self {
     case .thisMac: "laptopcomputer"
     case .remote(.container): "network"
-    case .remote(.boxd): "cloud"
+    case .remote(.boxd), .remote(.exeDev): "cloud"
     }
   }
 
@@ -341,6 +342,7 @@ enum WorkroomPlace: Hashable {
     case .thisMac: "A workroom on this Mac"
     case .remote(.container(let runtime)): "A workroom in \(runtime.containerPhrase) on this Mac"
     case .remote(.boxd): "A workroom on a boxd machine"
+    case .remote(.exeDev): "A workroom on an exe.dev VM"
     }
   }
 }

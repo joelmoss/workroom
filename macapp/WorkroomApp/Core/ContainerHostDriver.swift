@@ -22,6 +22,13 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     let hostKey: String
     /// The supervised agent's socket on the host.
     let agentSocket: String
+    /// The ssh-agent socket ssh may ask to sign with, or nil for none (`IdentityAgent none`). Only
+    /// for a driver that authenticates with the user's own key (exe.dev, #259); `IdentitiesOnly`
+    /// still limits it to `identityFile`, and nothing is forwarded.
+    var sshAgent: String? = nil
+    /// Whether ssh may read `identityFile`'s passphrase from the login Keychain (Apple's
+    /// `UseKeychain`), for the same drivers as `sshAgent`.
+    var useKeychain = false
 
     /// The agent's binary, beside its socket: what the app installs there (`AgentBootstrap`,
     /// #231), the supervisor starts, and the relay and the attach run. One directory per host,
@@ -1105,6 +1112,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     for (name, value) in [
       ("address", host.address), ("user", host.user), ("identity file", host.identityFile),
       ("host key", host.hostKey), ("agent socket", host.agentSocket),
+      ("ssh agent", host.sshAgent ?? "none"),
     ] {
       guard !value.isEmpty, !value.contains(where: { $0.isNewline || $0 == "\"" || $0 == "\0" })
       else {
@@ -1134,7 +1142,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       User "\(host.user)"
       IdentityFile "\(host.identityFile)"
       IdentitiesOnly yes
-      IdentityAgent none
+      IdentityAgent \(host.sshAgent.map { "\"\($0)\"" } ?? "none")\(host.useKeychain ? "\n  UseKeychain yes" : "")
       BatchMode yes
       StrictHostKeyChecking yes
       UserKnownHostsFile "\(knownHosts.path)"
