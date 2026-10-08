@@ -753,7 +753,7 @@ final class BoxdIntegrationTests: XCTestCase {
   /// connection itself, and the app takes that as the box idle, not an error, and stops reaching
   /// it. Whether the box then sleeps is the box's and its provider's, not Workroom's, so it is not
   /// asserted. Then the user comes back: a port forward kept across the closed connection
-  /// reconnects when used, and selecting the workroom reconnects it. About 3 minutes.
+  /// reconnects the host when used, and its services answer again. About 3 minutes.
   func testAnIdleBoxsAgentLetsGoOfTheAttachedApp() async throws {
     let driver = driver()
     let host = try await driver.create()
@@ -808,10 +808,8 @@ final class BoxdIntegrationTests: XCTestCase {
     XCTAssertEqual(
       reply, "HTTP/1.0", "a forward used after the let-go never reached the box: \(seen.all)")
 
-    // Selecting the workroom reconnects a box its agent let go of, and its services answer.
-    remote.select(host)
-    defer { remote.select(nil) }
-    try await remote.ensureConnected(host)
+    // The forward's reconnect brought the host's service connection back, and its services
+    // answer on it. (Selecting a released host's workroom is unit-tested in RemoteHostsTests.)
     let status = try await HostConnectionManager.shared.wakefulness(host: host).status()
     XCTAssertTrue(status.running)
   }

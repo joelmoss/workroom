@@ -279,6 +279,33 @@ final class AgentWakefulnessTests: XCTestCase {
     }
   }
 
+  // Value: protects=the pushed-change stream ends when its connection does, which is how the watch learns
+  // the agent let go and marks the host released; fails_when=AgentVCSConnection.fail stops finishing
+  // statusChanges; why_new=the model tests end the stream by hand on a stand-in transport; seam=none
+  /// A watch only notices the agent letting go (#380) because the stream it follows finishes with the
+  /// connection; one that never finished would leave the badge and the host's release stale for good.
+  func testTheChangesStreamEndsWithItsConnection() async throws {
+    let fake = try FakeAgent(version: 4, status: true)
+    fakes.append(fake)
+    let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
+    connections.append(connection)
+    let service = try connection.wakefulness()
+    // Bounded, so a stream that never finishes fails the test instead of hanging the suite: the
+    // cancellation also ends the loop, which `isCancelled` tells apart from the stream finishing.
+    let waiter = Task { () -> Bool in
+      for await _ in service.changes {}
+      return !Task.isCancelled
+    }
+    let bound = Task {
+      try? await Task.sleep(for: .seconds(3))
+      waiter.cancel()
+    }
+    await connection.close()
+    let finished = await waiter.value
+    bound.cancel()
+    XCTAssertTrue(finished, "the changes stream outlived its connection")
+  }
+
   // MARK: - The model
 
   /// Hands out one connection's worth: its stream ONCE (then reports no connection, so the watch
@@ -394,6 +421,32 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertEqual(agent.calls, 1, "the box was asked more than once on one connection")
   }
 
+  // Value: protects=a busy box is asked again, so a stalled or crashed service shows unprotected;
+  // fails_when=the busy re-ask is removed, or runs while idle; why_new=the agent pushes only on a
+  // change, which a stalled service never makes, and no other test asks twice; seam=none
+  /// A BUSY box is asked again (#380 review): its agent pushes only when its verdict changes, which
+  /// a stalled or crashed service never does, so the re-ask is what shows it no longer kept awake.
+  /// An IDLE box is never asked again: the app's traffic must not hold it awake.
+  @MainActor
+  func testOnlyABusyBoxIsAskedAgain() async throws {
+    let busy = Agent(replies: [.success(try at(15000)), .success(try status([Self.stalled]))])
+    let model = WakefulnessModel(transport: busy.transport, host: UUID())
+    model.busyRecheckInterval = .milliseconds(20)
+    model.startWatching()
+    defer { model.stopWatching() }
+    await eventually("a stalled service was never shown") { model.status?.stalled == true }
+    XCTAssertEqual(model.status?.display(hostSleeps: true), .busyUnprotected)
+
+    let idle = Agent(replies: [.success(try at(100, busy: false))])
+    let quiet = WakefulnessModel(transport: idle.transport, host: UUID())
+    quiet.busyRecheckInterval = .milliseconds(20)
+    quiet.startWatching()
+    defer { quiet.stopWatching() }
+    await eventually("the watch never asked") { quiet.status != nil }
+    try await Task.sleep(for: .milliseconds(200))
+    XCTAssertEqual(idle.calls, 1, "an idle box was asked again")
+  }
+
   /// The reply and a change pushed meanwhile can arrive in either order; the older reading, by the
   /// agent's clock, never replaces the newer.
   @MainActor
@@ -461,6 +514,7 @@ final class AgentWakefulnessTests: XCTestCase {
         }),
       host: UUID())
     model.hostSleeps = false
+    model.retryInterval = .milliseconds(20)
     model.startWatching()
     defer { model.stopWatching() }
     await eventually("the first connection's reading") { model.status?.monotonic == 9000 }
@@ -468,7 +522,7 @@ final class AgentWakefulnessTests: XCTestCase {
     first.continuation?.finish()
     // The watch waits `retryInterval` before it looks again; the second connection's reading is
     // what it finds.
-    let deadline = ContinuousClock.now + WakefulnessModel.retryInterval + .seconds(3)
+    let deadline = ContinuousClock.now + .seconds(3)
     while model.status?.monotonic != 10, ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(20))
     }

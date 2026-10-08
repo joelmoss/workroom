@@ -966,12 +966,12 @@ final class PortForwardingModel: ObservableObject {
     var current: @Sendable () async -> HostConnectionManager.Lease?
     /// A new connection for a forward to carry on once the old one has ended, or nil for a host
     /// whose forwards go with their connection (#380).
-    var reconnect: @Sendable () async -> PortForward.Reconnect? = { nil }
+    var reconnect: PortForward.Reconnect?
 
     static func live(_ host: HostID) -> Transport {
       var transport = on(host, manager: .shared)
       if host == .local { transport.forwarding = { try await LocalAgentVCS.shared.forwarding() } }
-      transport.reconnect = { reconnecting(host, manager: .shared) }
+      transport.reconnect = reconnecting(host, manager: .shared)
       return transport
     }
 
@@ -1065,7 +1065,7 @@ final class PortForwardingModel: ObservableObject {
     }
     do {
       let (lease, service) = try await transport.forwarding()
-      let reconnect = await transport.reconnect()
+      let reconnect = transport.reconnect
       let id = UUID()
       let forward = try service.listen(remotePort: remote, reconnect: reconnect) {
         [weak self] event in

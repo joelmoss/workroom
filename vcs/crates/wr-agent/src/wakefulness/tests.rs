@@ -640,9 +640,7 @@ fn only_a_change_the_app_shows_is_pushed() {
     let mut pushed = None;
     let mut pushes = Vec::new();
     for (i, (verdict, error)) in ticks.into_iter().enumerate() {
-        let now = shown(verdict, error);
-        if pushed != Some(now) {
-            pushed = Some(now);
+        if changed(&mut pushed, verdict, error) {
             pushes.push(i);
         }
     }

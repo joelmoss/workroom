@@ -696,7 +696,7 @@ final class PortForwardingModelTests: XCTestCase {
         forwarding: forwarding ?? { (lease, service) },
         updates: { stream },
         current: override ?? { current.get() },
-        reconnect: { reconnect }))
+        reconnect: reconnect))
     models.append(model)
     return model
   }
@@ -808,6 +808,15 @@ final class PortForwardingModelTests: XCTestCase {
     let entry = try XCTUnwrap(model.forwards.first)
     XCTAssertTrue(entry.reconnects)
     await settle("the watch did not see the connection") { model.connected }
+
+    // Value: protects=a reconnecting forward uses its connection while it lives and reconnects only once it has
+    // ended; fails_when=PortForward.begin reconnects for every client; why_new=the cases below start after the
+    // loss, so only they ran the reconnect; seam=none
+    let live = try TCPClient(port: entry.localPort)
+    try live.write(Data("a".utf8))
+    XCTAssertEqual(try live.read(1), Data("a".utf8), "not carried on the live connection")
+    live.close()
+    XCTAssertEqual(reconnects.count, 0, "a live connection was replaced for a new one")
 
     await connections[0].close()
     publish(HostConnectionManager.Snapshot(lease: first, status: .disconnected))

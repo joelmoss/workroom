@@ -484,12 +484,12 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     return AgentForwardService(connection: self)
   }
 
-  /// One of the agent's `MAX_FORWARDS` slots, or nil when this connection holds them all. Released
-  /// when the returned value is dropped.
   /// Whether this connection has ended: a forward that outlives it (`PortForward`'s `reconnect`)
   /// makes a new one before it opens a stream.
   var isClosed: Bool { lock.withLock { closed } }
 
+  /// One of the agent's `MAX_FORWARDS` slots, or nil when this connection holds them all. Released
+  /// when the returned value is dropped.
   func reserveForwardSlot() -> ForwardSlot? {
     let reserved = lock.withLock { () -> Bool in
       guard forwardsHeld < PortForward.maxConnections else { return false }
