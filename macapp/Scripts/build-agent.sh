@@ -9,8 +9,8 @@
 # not collide with the app executable "Workroom" on a case-insensitive filesystem. It goes there
 # because that is where `PersistentSessionPaths.binaryURL(for:)` looks, beside workroom-session.
 #
-# Release and Nightly builds also put a static Linux agent per arch in Contents/Resources, for remote
-# hosts. See the end of this file.
+# Every build also puts a static Linux agent per arch in Contents/Resources, for remote hosts. See
+# the end of this file.
 #
 # Env vars provided by Xcode: SRCROOT, TARGET_BUILD_DIR, EXECUTABLE_FOLDER_PATH,
 # UNLOCALIZED_RESOURCES_FOLDER_PATH, EXPANDED_CODE_SIGN_IDENTITY, ARCHS, DERIVED_FILE_DIR,
@@ -181,14 +181,9 @@ fi
 # Resources, not MacOS, and not codesigned. codesign sees an ELF as data, and the app's own
 # signature seals it like any other resource.
 #
-# Release and Nightly only, unless WR_AGENT_LINUX=1. They are two more release builds of the agent,
-# and a Debug app has no remote host to push them to yet. A build that skips them also removes any
-# that an earlier opt-in build left, so a bundle never carries a stale agent.
+# Every configuration, Debug included: every build offers remote workrooms, and a host with no agent
+# needs one pushed from this bundle. Cargo caches both builds, so only the first costs a compile.
 RES_DIR="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
-if [ "${CONFIGURATION:-Debug}" = "Debug" ] && [ "${WR_AGENT_LINUX:-}" != "1" ]; then
-  rm -f "$RES_DIR/${HELPER_NAME}-linux-"*
-  exit 0
-fi
 
 if ! command -v cargo-zigbuild >/dev/null 2>&1; then
   echo "error: the Linux agents need cargo-zigbuild. Run 'cargo install cargo-zigbuild --locked'." >&2

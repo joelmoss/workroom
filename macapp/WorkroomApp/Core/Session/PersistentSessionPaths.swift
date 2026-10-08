@@ -38,8 +38,8 @@ enum PersistentSessionPaths {
 
   /// The Linux agent the app bundles for `architecture` (`uname -m` on the host: `aarch64` or
   /// `x86_64`), for pushing to a remote host (`AgentBootstrap`, #231). Put in
-  /// `Contents/Resources` by `build-agent.sh`, sealed as a resource rather than codesigned. Nil on
-  /// a Debug build, which carries none unless built with `WR_AGENT_LINUX=1`.
+  /// `Contents/Resources` by `build-agent.sh`, sealed as a resource rather than codesigned. Nil
+  /// only for a bundle missing that file.
   static func linuxAgentURL(architecture: String) -> URL? {
     guard
       let url = Bundle.main.resourceURL?.appendingPathComponent(

@@ -1478,8 +1478,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     snapshot, a 0.5 s restore, then the reboot), not timed end to end.
   - **Tests.** `BoxdHostDriverTests` (CI) pin the ssh-block parsing, the not-found matching, the
     org check and the rollback with the CLI stubbed. `BoxdIntegrationTests` run on real boxd
-    machines, only with `TEST_RUNNER_WR_BOXD_TESTS=1`, the sandbox off and a build with
-    `WR_AGENT_LINUX=1`. They
+    machines, only with `TEST_RUNNER_WR_BOXD_TESTS=1` and the sandbox off. They
     cover a derive returning only once its agent answers, even with the base's supervisor made
     slow (red without the wait), and distinct ssh host keys, machine-ids and boot_ids across two
     instances. Every fresh boxd
@@ -1582,8 +1581,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     `RemoteHosts` makes the one `ContainerHostDriver`: `docker` from the usual install paths (a GUI
     app's PATH has none), the image from the hidden `remoteHostImage` setting, an ed25519 key it
     makes under `Application Support/Workroom/<bundle id>/remote`, and the label
-    `workroom.provisioner=<bundle id>`, so one build's sweep never takes another's hosts. A Debug
-    build carries no Linux agent unless built with `WR_AGENT_LINUX=1`.
+    `workroom.provisioner=<bundle id>`, so one build's sweep never takes another's hosts. Every
+    build, Debug included, carries the Linux agents.
   - **The sequence** (`RemoteWorkrooms.create`): the project's GitHub repository from `gh`
     (github.com only, since the broker mints for it alone); its base, built and recorded on the
     project if it has none, cloned at `/home/workroom/<repo>`; then a name, taken before the
@@ -3364,7 +3363,7 @@ disagreement passes every test on either side alone while presenting as an empty
       (`over_ssh_the_bootstrap_installs_hands_off_and_survives_a_crashed_restore`). What is
       unrecoverable is the same as locally; it now costs one connect's sessions rather than a
       host, and until the app is fixed every connect pushes that binary again.
-    - *This build has no agent for the host* (a Debug build without `WR_AGENT_LINUX=1`): a host
+    - *This build has no agent for the host* (a bundle missing its `wr-agent-linux-*`): a host
       already holding one is connected to as it is, and a host with none is an error naming the
       architecture. A host that is not a Linux this app builds for is refused before anything is
       pushed.
