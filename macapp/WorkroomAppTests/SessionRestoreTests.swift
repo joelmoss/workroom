@@ -477,13 +477,14 @@ final class SessionRestoreTests: XCTestCase {
     store.terminals.makeView = { _, cwd, _ in
       GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
     }
+    let hostID = UUID()
     func project(_ state: String?) -> Project {
       Project(
         path: "/proj", vcs: "git",
         workrooms: [
           Workroom(
             name: "r", path: "/home/workroom/r", vcsName: "workroom/r", warnings: [],
-            host: HostDescriptor(state: state, provisioner: RemoteWorkrooms.provisioner, id: UUID())
+            host: HostDescriptor(state: state, provisioner: RemoteWorkrooms.provisioner, id: hostID)
           )
         ])
     }

@@ -398,6 +398,22 @@ jobs:
           archive: aarch64-macos
           sha256: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
 
+      # The Debug build bundles the Linux agents too (#227), cross-built by build-agent.sh with
+      # cargo-zigbuild and the Zig above.
+      - name: Add rustup targets (Linux agents)
+        run: rustup target add --toolchain stable aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+
+      - name: Cache cargo-zigbuild
+        id: zigbuild
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-zigbuild
+          key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-0.23.4
+
+      - name: Install cargo-zigbuild
+        if: steps.zigbuild.outputs.cache-hit != 'true'
+        run: cargo install cargo-zigbuild --locked --version 0.23.4
+
       # Keyed on the pinned engine sha, as in `agent-terminal-state`: a bump refetches and
       # rebuilds, nothing else does.
       - name: Cache libghostty-vt

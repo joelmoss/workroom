@@ -167,13 +167,13 @@ the app**: without it a reattaching pane repaints blank, which only shows up aft
 quit-and-relaunch. `wr-agent protocol` reports `terminal-state yes|no`, and the build test asserts it
 against the shipped binary.
 
-**Linux agents (issue #227).** Release and Nightly builds also put a static musl `wr-agent` per
+**Linux agents (issue #227).** Every build also puts a static musl `wr-agent` per
 Linux arch in `Contents/Resources/wr-agent-linux-{aarch64,x86_64}`, for pushing to remote hosts.
 Both arches ship always, whatever `ARCHS` says, because a remote box's arch has nothing to do with
-the Mac's. They are not codesigned; the app's signature seals them as resources. Debug skips them
-(and removes stale ones) unless `WR_AGENT_LINUX=1`. Building them needs `cargo install
+the Mac's. They are not codesigned; the app's signature seals them as resources. Debug builds them
+too, since every build offers remote workrooms. Building them needs `cargo install
 cargo-zigbuild --locked` and `rustup target add aarch64-unknown-linux-musl
-x86_64-unknown-linux-musl`, which the release workflows install. `release.sh` asserts both ELFs are
+x86_64-unknown-linux-musl`, which the CI and release workflows install. `release.sh` asserts both ELFs are
 present and static, and the `agent-linux` CI job runs `protocol` on each under Linux.
 `AgentBootstrap.connect` (#231) pushes the matching one to a remote host on first connect, beside
 the agent's socket, and hands the running agent off to it; the far side is
@@ -225,7 +225,7 @@ is told its org and account (`Configuration.org`, `Configuration.account`; every
 account's org is nil, so the org alone cannot tell two accounts apart) and refuses to act while
 another is active (#356). Machines and snapshots are named
 `<prefix>-<host id>`, so cleanup and a relaunched app find them by ID. `BoxdIntegrationTests`
-make real machines: they run only with `TEST_RUNNER_WR_BOXD_TESTS=1`, a `WR_AGENT_LINUX=1` build,
+make real machines: they run only with `TEST_RUNNER_WR_BOXD_TESTS=1`
 and the sandbox off. The app reaches it from New Workroom › Remote › boxd (#356): `RemoteHosts`
 holds any driver by `DriverKey` (a container runtime or a boxd org and account), a background read
 of a boxd host asks boxd first and leaves an asleep box asleep, and an idle host's connection is

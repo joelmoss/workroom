@@ -122,7 +122,7 @@ for attempt in $(seq 1 100); do
 done
 
 # AGENT: the ELF itself, for the tests of the bootstrap that pushes it (#231). The app's tests
-# take it as their bundled agent, since a Debug build carries no Linux agent of its own. CONTAINER,
+# take it as their bundled agent. CONTAINER,
 # RUNTIME and SCREENS: for the test that reboots the box (#232). IMAGE, RUNTIME_PATH, PUBLIC_KEY
 # and LABEL: for the app's tests that provision containers of their own from the image (#252),
 # and CLONE_TOKEN and BROKER_URL for the image's GitHub and broker (fake-github.py).

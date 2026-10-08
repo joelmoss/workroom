@@ -6,9 +6,9 @@ import XCTest
 /// `BoxdHostDriver` on real boxd machines (#256): bases, workrooms derived from them through the
 /// portable path, and what each failure leaves. These make and remove real machines on the
 /// signed-in boxd account, so they run only when asked for, with the sandbox off (the CLI's gRPC
-/// does not go through the sandbox's proxy) and a Debug build that bundles the Linux agents:
+/// does not go through the sandbox's proxy):
 ///
-///   TEST_RUNNER_WR_BOXD_TESTS=1 WR_AGENT_LINUX=1 \
+///   TEST_RUNNER_WR_BOXD_TESTS=1 \
 ///     make app-test APP_TEST_FLAGS=-only-testing:WorkroomAppTests/BoxdIntegrationTests
 ///
 /// `TEST_RUNNER_WR_BOXD_CLI` names the CLI if it is not `~/.local/bin/boxd`. Every machine and
@@ -26,7 +26,7 @@ final class BoxdIntegrationTests: XCTestCase {
       throw XCTSkip("set TEST_RUNNER_WR_BOXD_TESTS=1 to run these on boxd")
     }
     guard PersistentSessionPaths.linuxAgentURL(architecture: "x86_64") != nil else {
-      throw XCTSkip("this build bundles no Linux agent; build it with WR_AGENT_LINUX=1")
+      throw XCTSkip("this build bundles no Linux agent")
     }
     cli = URL(
       fileURLWithPath: environment["WR_BOXD_CLI"]
