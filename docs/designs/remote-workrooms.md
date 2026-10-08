@@ -27,8 +27,10 @@ the agent, not a shim. #380 (2026-10-08) then made the box decide its own wakefu
 pushes its verdict, and the awake ceiling and every let-go, the app's and the agent's, are gone
 ("As built (#380)"). Follow-ups from #253's reviews are #283 to #288; #283 (closing a remote pane
 ends its session on the host) is merged (PR #306, 2026-10-03), with its own follow-ups in #293, #297
-and #304. The rest of Phase 4 is open: the second real provider, exe.dev (#259), and boxd live fork
-(#258), which is deferred to a later release and does not gate #260. #260 is the gate: it runs the
+and #304. The second real provider, exe.dev (#259), is built on branch `feat/259-exedev-driver`, not yet
+merged, with its live suite passing; its overnight idle soak and pool load measurement are pending
+(see "As built (#259)"). boxd live fork (#258) is deferred to a later release and does not gate
+#260. #260 is the gate: it runs the
 Success Criteria on two real providers; the remote UI already left Nightly, ahead of it (PR #375, 2026-10-08). The
 first Nightly DMG with the Linux agent inside (#227) still has to be checked, and that check is part
 of #260. Each merged item has its "As built" entry under Phase 4, except #255, which is recorded as
@@ -417,6 +419,9 @@ document.
 **Ruled out:** exe.dev as a primary driver (no live fork, and its $20/mo flat pool is 2 vCPU/8 GB *in
 total*, which one full-size workroom consumes). It was later chosen as the second real provider for the
 release gate (Phase 4, #259, decided 2026-09-27); that choice did not revisit the pool objection here.
+The objection still stands (#259, 2026-10-08): the owner chose the account's pool over `--standalone`
+VMs, and the Individual (Small) plan's pool is 2 vCPU / 8 GB shared by the base and every workroom.
+"As built (#259)" records how a base and two building workrooms share it.
 Also ruled out: Daytona's OSS path (README says unmaintained since June 2026, core
 moved to a private codebase); `kern` (Linux-only by design, and its own docs call its shared-kernel
 boundary unsafe for other people's code — fine locally, not shippable in a macOS app).
@@ -2050,6 +2055,66 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     an agent a busy box kept rather than hand off, shows that agent's first reading and nothing
     pushed; the next connect hands off.
 
+- **As built (#259, the exe.dev driver).** `ExeDevHostDriver` drives exe.dev's ssh API
+  (`ssh exe.dev <command> --json`) and reaches each VM as `<name>.exe.xyz`, over the container
+  driver's ssh transport, with the portable derivation. Plan and spike results are on #259; eng
+  review 2026-10-08 (D1-D9, amendments M1-M6).
+  - **What `cp` copies (acceptance criterion 5).** A cold copy of the base's *flushed* disk: no
+    process, no `/dev/shm`, and no write still in the page cache (a 50 MB unsynced file was missing
+    from the copy). So a derive runs `sync` on the base first. The copy boots under its own name,
+    and exe.dev gives it a new hostname, `/etc/machine-id` and gateway sshd key
+    (`/exe.dev/etc/ssh`); no reboot step, unlike boxd. `cp` returns in about 0.4 s and the copy
+    answers ssh about 2 s later.
+  - **Traits.** `sshStdio`; `deriveSpeed` about 5 s (copy, then the identity and agent waits);
+    `deriveCarriesLiveProcesses: false`; `durableDisk: true` (exe.dev streams disk writes off the
+    machine); `maxLifetime: nil`; `keepAwakeHoldsCredential: false`; `sleepsWhenIdle: false`.
+    Idle is not defined by exe.dev at all: the CLI has no stop, start or idle timer, and three VMs
+    left idle for 40 minutes kept their boot, processes and `/dev/shm`. **No lifecycle shim**, for
+    that reason. The overnight soak that tests it longer (D7) is pending; if a VM sleeps, the trait
+    flips and the shim question reopens.
+  - **Auth is the user's own ssh credentials** (D2, reopened by the owner). The first of
+    `~/.ssh/*.pub` exe.dev accepts, unlocked through the user's ssh-agent (`SSH_AUTH_SOCK`, the
+    app's or the login shell's) or their Keychain (`UseKeychain yes`), with `IdentitiesOnly`.
+    Nothing is registered on the account, so the generic SSH driver (#378) can share this path.
+    `ContainerHostDriver.Host` gained optional `sshAgent` and `useKeychain`; every other driver
+    keeps `IdentityAgent none`. The key found is recorded so a pane attaching after a relaunch can
+    use it before anything has asked exe.dev. A key that won't unlock fails the create before
+    anything is made, naming `ssh-add --apple-use-keychain`.
+  - **Host key from the user's `known_hosts`** (M2, revised). exe.dev's gateway presents one RSA key
+    for `exe.dev` and every `*.exe.xyz`; the driver reads the user's entry for `exe.dev`, plain or
+    hashed, and writes it into each VM's `known_hosts`. It is not compared with a fingerprint built
+    into the app: that would need an app update after a rotation, which taking the key from
+    `known_hosts` avoids. The published fingerprint
+    (`SHA256:JJOP/lwiBGOMilfONPWZCXUrfK154cnJFXcqlsi6lPo`) appears in the error that asks the user
+    to accept the key, and a unit test pins it to the key.
+  - **A base** is `new --tag workroom-base`, a wait for systemd to finish booting, then
+    `Resources/host-setup/systemd.sh` (renamed from `boxd.sh`; it ran on exe.dev unchanged). The
+    boot wait is load-bearing: `new` returns, and ssh answers, while the VM still boots, and the
+    setup's `systemctl` failed with "Failed to connect to bus" on four of seven creates before it.
+  - **A derive** refuses a source without the base tag (every driver must refuse to derive from a
+    workroom), syncs the base, then `cp --copy-tags=false`, then waits for the identity unit and
+    the agent. A failure removes the copy by name.
+  - **`rm` exits 0 whatever happened**, printing `{"deleted":[…],"failed":[…]}` after any error, so
+    a delete reads that and exe.dev's not-found line (`VM "<name>" not found`, `vm` lowercase from
+    `cp`), never the status. `whoami`'s email is the account guard before every create, derive,
+    destroy and rollback.
+  - **The seam (#259 step 1).** `RemoteHosts` asks only whether a key is a local container or a
+    remote provider (`DriverKey.isRemoteProvider`); the agent socket is a `HostDriver` property;
+    the readiness poll is a `HostDriver` extension; `Place.remoteProviders` feeds the menu and
+    picker. boxd's sleep, presence and let-go code stays boxd-specific (D1): exe.dev doesn't sleep,
+    so a presence protocol would have had one adopter. A new provider is one driver file, one
+    `DriverKey` case and one `Place` entry.
+  - **Parity.** `ProviderParityTestCase` holds the cases every real provider must pass alike;
+    `BoxdIntegrationTests` and `ExeDevIntegrationTests` each call them. The identity case reads each
+    provider's sshd host key where that provider keeps it (M5). Live on exe.dev (2026-10-08): all
+    seven pass, including two workrooms with distinct `machine-id`, sshd key and enrolment key, a
+    push with the Mac disconnected, and a pane's last screen after `restart` (machine-id and sshd
+    key both kept). The boxd live suite was not re-run for the refactor: it bills the boxd account.
+  - **Pool load (D6): pending.** The account is on the Individual (Small) plan, 2 vCPU / 8 GB
+    shared by every VM. A base and two building workrooms timed against one alone is to be measured
+    once the soak's busy VM, which holds the pool's CPU, is gone.
+  - **Not built:** a sweep of VMs a crash leaves unrecorded (TODOS.md, with #373); the generic
+    SSH driver (#378).
 
 ## Phase 0 Results
 
