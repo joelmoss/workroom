@@ -2072,21 +2072,28 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     left idle for 40 minutes kept their boot, processes and `/dev/shm`. **No lifecycle shim**, for
     that reason. The overnight soak that tests it longer (D7) is pending; if a VM sleeps, the trait
     flips and the shim question reopens.
-  - **Auth is the user's own ssh credentials** (D2, reopened by the owner). The first of
-    `~/.ssh/*.pub` exe.dev accepts, unlocked through the user's ssh-agent (`SSH_AUTH_SOCK`, the
-    app's or the login shell's) or their Keychain (`UseKeychain yes`), with `IdentitiesOnly`.
-    Nothing is registered on the account, so the generic SSH driver (#378) can share this path.
-    `ContainerHostDriver.Host` gained optional `sshAgent` and `useKeychain`; every other driver
-    keeps `IdentityAgent none`. The key found is recorded so a pane attaching after a relaunch can
-    use it before anything has asked exe.dev. A key that won't unlock fails the create before
-    anything is made, naming `ssh-add --apple-use-keychain`.
-  - **Host key from the user's `known_hosts`** (M2, revised). exe.dev's gateway presents one RSA key
-    for `exe.dev` and every `*.exe.xyz`; the driver reads the user's entry for `exe.dev`, plain or
-    hashed, and writes it into each VM's `known_hosts`. It is not compared with a fingerprint built
-    into the app: that would need an app update after a rotation, which taking the key from
-    `known_hosts` avoids. The published fingerprint
-    (`SHA256:JJOP/lwiBGOMilfONPWZCXUrfK154cnJFXcqlsi6lPo`) appears in the error that asks the user
-    to accept the key, and a unit test pins it to the key.
+  - **Auth is the user's own ssh** (D2, reopened by the owner, then "ssh should behave as close
+    as possible to normal SSH usage"). The driver runs `/usr/bin/ssh` with no configuration or key
+    of its own: the user's `~/.ssh/config`, `/etc/ssh/ssh_config`, agent and Keychain pick the key,
+    exactly as `ssh exe.dev` in Terminal does. A second exe.dev account is therefore a
+    `Host exe.dev` / `Host *.exe.xyz` block in `~/.ssh/config`, as for any ssh, and the account
+    guard refuses to act when `whoami` names another account than the host's. The only things set
+    over the user's configuration, as `-o` (`ExeDevHostDriver.sshOptions`): `BatchMode`, no
+    forwarding of any kind (an agent works on the VM), no multiplexing, `RemoteCommand none`,
+    `RequestTTY no` (a pane's `-t` outranks it), `EscapeChar none`, the dead-link keepalives (#228),
+    `ConnectTimeout` and `LogLevel ERROR` (the attach log is read). The app's `SSH_AUTH_SOCK` (or
+    the login shell's) is passed to ssh; the user's own `IdentityAgent` wins over it. Measured
+    (2026-10-08): with a bare environment, ssh signed in through launchd's agent and through the
+    Keychain alone. Nothing is registered on the account, so the generic SSH driver (#378) can
+    share this path. The first build chose a key itself (`IdentitiesOnly`, the first of
+    `~/.ssh/*.pub` exe.dev accepted); that is gone, since it could pick the wrong account's key.
+  - **Host keys are the user's `known_hosts`** (M2, revised). exe.dev's gateway presents one RSA
+    key for `exe.dev` and every `*.exe.xyz`, so a VM's key is checked against the user's own entry
+    for `exe.dev` (`HostKeyAlias exe.dev`; measured: without that entry, "Host key verification
+    failed"). Nothing is compared with a fingerprint built into the app, which would need an app
+    update after a rotation. An ssh that can't sign in or verify fails the create before anything
+    is made, and the error says to run `ssh exe.dev` once, naming the published fingerprint
+    (`SHA256:JJOP/lwiBGOMilfONPWZCXUrfK154cnJFXcqlsi6lPo`).
   - **A base** is `new --tag workroom-base`, a wait for systemd to finish booting, then
     `Resources/host-setup/systemd.sh` (renamed from `boxd.sh`; it ran on exe.dev unchanged). The
     boot wait is load-bearing: `new` returns, and ssh answers, while the VM still boots, and the

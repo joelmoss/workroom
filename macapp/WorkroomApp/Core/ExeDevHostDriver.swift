@@ -1,19 +1,19 @@
-import CryptoKit
 import Foundation
 import os
 
 /// The second real provider driver (#259): exe.dev VMs, driven through exe.dev's ssh API
 /// (`ssh exe.dev <command> --json`) and reached over ssh, with the portable derivation.
 ///
-/// - **The user's own ssh credentials.** exe.dev knows the user by their ssh key. The driver uses
-///   that key (one of `~/.ssh/*.pub`, the first exe.dev accepts), unlocked through the user's
-///   ssh-agent or their Keychain, with `IdentitiesOnly` so nothing else is offered. Nothing is
-///   registered on the account: the generic ssh driver (#378) can't register keys on a server it
-///   didn't make, so both take this path (eng review, D2 reopened).
+/// - **The user's own ssh.** exe.dev knows the user by their ssh key, and the driver's ssh is the
+///   one `ssh exe.dev` in Terminal is: the user's `~/.ssh/config`, keys, agent and Keychain pick
+///   the key, so a second account is a `Host exe.dev` block there, as for any ssh. Workroom sets
+///   only what a background link needs (`sshOptions`). Nothing is registered on the account: the
+///   generic ssh driver (#378) can't register keys on a server it didn't make, so both take this
+///   path (eng review, D2 reopened).
 /// - **One gateway.** exe.dev ends ssh at its gateway, which presents one host key for `exe.dev`
-///   and every `<vm>.exe.xyz` (spike, 2026-10-08). The driver takes it from the user's own
-///   `~/.ssh/known_hosts` entry for `exe.dev`, so a key exe.dev rotates is accepted again with
-///   one `ssh exe.dev`, not an app update.
+///   and every `<vm>.exe.xyz` (spike, 2026-10-08). A VM's key is checked against the user's own
+///   `known_hosts` entry for `exe.dev` (`HostKeyAlias`), so a key exe.dev rotates is accepted
+///   again with one `ssh exe.dev`, not an app update.
 /// - **A base** is `new --tag workroom-base`, then `Resources/host-setup/systemd.sh` run as root.
 /// - **A derive** is `sync` on the base, then `cp --copy-tags=false`: a cold copy of the base's
 ///   flushed disk. The copy boots under its own name, so exe.dev gives it a new hostname and
@@ -36,10 +36,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     var agentSocket = "\(ExeDevHostDriver.stateDirectory)/agent/agent.sock"
     /// Where the supervisor has the agent keep each session's last screen (#232).
     var screens = "\(ExeDevHostDriver.stateDirectory)/screens"
-    /// Where the user's public keys are, one of which exe.dev knows.
-    var sshDirectory = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(".ssh")
-    /// The user's ssh-agent socket, or nil for none.
+    /// The user's ssh-agent socket, or nil for none. Their `IdentityAgent`, if set, wins.
     var sshAgent: String? = ExeDevHostDriver.userSSHAgent()
   }
 
@@ -50,7 +47,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   static let baseTag = "workroom-base"
   static let lobby = "exe.dev"
   /// The gateway's key's fingerprint as exe.dev publishes it (`ssh exe.dev doc faq/host-key`), for
-  /// an error that asks the user to accept it.
+  /// an error that asks the user to sign in once.
   static let gatewayFingerprint = "SHA256:JJOP/lwiBGOMilfONPWZCXUrfK154cnJFXcqlsi6lPo"
 
   /// Measured: `cp` returns in about half a second and the copy answers ssh about 2 s later; the
@@ -64,12 +61,9 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   let configuration: Configuration
   var agentSocket: String { configuration.agentSocket }
-  /// Where each host's `ssh_config` and `known_hosts` are written, and the lobby's.
+  /// Where each host's attach logs are kept.
   let directory: URL
   private let runner: any StatusCommandRunning
-  private let lock = NSLock()
-  /// The key exe.dev accepted, found once per driver.
-  private var key: URL?
 
   init(
     configuration: Configuration, directory: URL,
@@ -197,10 +191,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Nil once the VM is gone, whether this removed it or it was never there. `rm` exits 0 either
   /// way, so its answer is read from what it printed, never its status (spike).
   private func remove(_ name: String) async -> String? {
-    let result: CommandResult
-    do { result = try await run(["rm", name, "--json"], timeout: 120) } catch {
-      return "VM \(name): \(error.localizedDescription)"
-    }
+    let result = await run(["rm", name, "--json"], timeout: 120)
     if Task.isCancelled { return "VM \(name): cancelled" }
     let objects = Self.jsonObjects(result.stdout)
     if let removal = objects.compactMap({ try? JSONDecoder().decode(Removal.self, from: $0) }).last
@@ -313,7 +304,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// One lobby command with `--json`, and its stdout. A failure says exe.dev's own error.
   private func cli(_ arguments: [String], timeout: TimeInterval = 120) async throws -> String {
-    let result = try await run(arguments + ["--json"], timeout: timeout)
+    let result = await run(arguments + ["--json"], timeout: timeout)
     // The runner kills ssh when the task is cancelled, and that reads as a failure.
     try Task.checkCancellation()
     guard result.ok else {
@@ -325,18 +316,22 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     return result.stdout
   }
 
-  /// `ssh exe.dev <arguments>` with the user's key, found the first time. Throws when no key of the
-  /// user's gets in, or exe.dev's host key isn't known, saying how to fix it.
-  private func run(_ arguments: [String], timeout: TimeInterval) async throws -> CommandResult {
-    let config = try await lobbyConfiguration()
-    return await runner.run(
-      "/usr/bin/ssh", ["-F", config.path, ContainerHostDriver.alias] + arguments,
+  /// `ssh exe.dev <arguments>`, as the user's own ssh signs in.
+  private func run(_ arguments: [String], timeout: TimeInterval) async -> CommandResult {
+    await runner.run(
+      "/usr/bin/ssh", Self.sshOptions + [Self.lobby] + arguments,
       in: NSHomeDirectory(), timeout: timeout)
   }
 
   /// exe.dev's error from a command's output: `{"error": "..."}`, printed on stdout and stderr
   /// alike (spike), or ssh's own message when it never got in.
   static func errorLine(_ result: CommandResult) -> String? {
+    // 255 is ssh's own failure: it never got in, so the fix is the user's ssh, not exe.dev.
+    if result.exitCode == 255, !result.stderr.contains("{") {
+      let said = result.stderr.split(separator: "\n").last.map(String.init) ?? "ssh failed"
+      return "\(said.trimmingCharacters(in: .whitespaces)) Run `ssh exe.dev` in Terminal: it must"
+        + " sign in without asking, and know exe.dev's host key (\(gatewayFingerprint))."
+    }
     for output in [result.stdout, result.stderr] {
       for object in jsonObjects(output) {
         if let error = (try? JSONSerialization.jsonObject(with: object) as? [String: Any])?[
@@ -368,6 +363,19 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   // MARK: ssh
 
+  /// What Workroom sets over the user's own ssh configuration, which supplies the rest (keys,
+  /// agent, Keychain, proxies), as for `ssh exe.dev` in Terminal. A background link can't prompt,
+  /// takes a VM's key to be the gateway's, forwards nothing to a VM an agent works on, and notices
+  /// a dead link (#228); a pane's ssh reads no escapes from what is typed in it. A pane's `-t`
+  /// outranks `RequestTTY`.
+  static let sshOptions = [
+    "BatchMode=yes", "HostKeyAlias=\(lobby)", "ForwardAgent=no", "ForwardX11=no",
+    "ClearAllForwardings=yes", "ControlMaster=no", "ControlPath=none", "RemoteCommand=none",
+    "EscapeChar=none", "RequestTTY=no", "ServerAliveInterval=15", "ServerAliveCountMax=3",
+    "ConnectTimeout=10",
+    "LogLevel=ERROR",
+  ].flatMap { ["-o", $0] }
+
   /// The user's ssh-agent socket: the app's own environment's, else the login shell's, where an
   /// agent such as 1Password's is set (`StatusCommandRunner.forwardedAuthKeys`).
   static func userSSHAgent(
@@ -380,151 +388,24 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     return nil
   }
 
-  /// The gateway's key, `<type> <base64>`, from the user's `known_hosts` entry for `exe.dev`,
-  /// plain or hashed (`HashKnownHosts`).
-  static func gatewayKey(knownHosts: String) -> String? {
-    for line in knownHosts.split(separator: "\n") {
-      let fields = line.split(separator: " ", omittingEmptySubsequences: true)
-      guard fields.count >= 3, !fields[0].hasPrefix("@"), !fields[0].hasPrefix("#") else {
-        continue
-      }
-      let names = fields[0].split(separator: ",")
-      if names.contains(where: { $0 == lobby || matchesHashed(String($0), lobby) }) {
-        return "\(fields[1]) \(fields[2])"
-      }
-    }
-    return nil
-  }
-
-  /// Whether `entry`, a hashed `known_hosts` name (`|1|<salt>|<hash>`), is `host`.
-  static func matchesHashed(_ entry: String, _ host: String) -> Bool {
-    let parts = entry.split(separator: "|", omittingEmptySubsequences: true)
-    guard parts.count == 3, parts[0] == "1", let salt = Data(base64Encoded: String(parts[1])),
-      let hash = Data(base64Encoded: String(parts[2]))
-    else { return false }
-    let mac = HMAC<Insecure.SHA1>.authenticationCode(
-      for: Data(host.utf8), using: SymmetricKey(data: salt))
-    return Data(mac) == hash
-  }
-
-  /// `SHA256:<base64>` of a public key's blob, as ssh and exe.dev print it.
-  static func fingerprint(publicKey: String) -> String? {
-    let fields = publicKey.split(separator: " ")
-    guard fields.count >= 2, let blob = Data(base64Encoded: String(fields[1])) else { return nil }
-    let digest = Data(SHA256.hash(data: blob)).base64EncodedString()
-    return "SHA256:" + digest.replacingOccurrences(of: "=", with: "")
-  }
-
-  private var knownHosts: URL { configuration.sshDirectory.appendingPathComponent("known_hosts") }
-
-  /// An ssh target with the user's key, the gateway's key, and the user's agent and Keychain.
-  private func target(_ address: String, key: URL) throws -> ContainerHostDriver.Host {
-    let known = (try? String(contentsOf: knownHosts, encoding: .utf8)) ?? ""
-    guard let hostKey = Self.gatewayKey(knownHosts: known) else {
-      throw HostDriverError.invalidConfiguration(
-        "exe.dev's host key isn't in \(knownHosts.path). Run `ssh exe.dev` in Terminal once and"
-          + " accept the key with the fingerprint \(Self.gatewayFingerprint).")
-    }
-    return ContainerHostDriver.Host(
-      address: address, port: 22, user: Self.user, identityFile: key.path, hostKey: hostKey,
-      agentSocket: configuration.agentSocket, sshAgent: configuration.sshAgent, useKeychain: true)
-  }
-
-  private var lobbyDirectory: URL { directory.appendingPathComponent("exe.dev") }
-  /// The key exe.dev last accepted, kept so a pane attaching after a relaunch, before anything has
-  /// asked the lobby, finds it (`attachCommand` can't wait for a `whoami`).
-  private var keyRecord: URL { lobbyDirectory.appendingPathComponent("identity") }
-
-  /// The key exe.dev accepted: found by this driver, else recorded by an earlier one.
-  private func acceptedKey() -> URL? {
-    if let key = lock.withLock({ self.key }) { return key }
-    guard let path = try? String(contentsOf: keyRecord, encoding: .utf8), !path.isEmpty,
-      FileManager.default.isReadableFile(atPath: path)
-    else { return nil }
-    return URL(fileURLWithPath: path)
-  }
-
-  /// The lobby's `ssh_config`, with the key exe.dev accepts, found the first time: each of the
-  /// user's keys is tried with `whoami` until one gets in. When none does, the error says why.
-  private func lobbyConfiguration() async throws -> URL {
-    if let key = lock.withLock({ self.key }) {
-      return try ContainerHostDriver.writeConfiguration(
-        for: try target(Self.lobby, key: key), in: lobbyDirectory)
-    }
-    // The key an earlier driver found goes first, so a new driver (each relaunch, each create's
-    // account check) gets in with one `whoami` rather than one per key.
-    let recorded = acceptedKey()
-    let keys = Self.publicKeys(in: configuration.sshDirectory)
-    let candidates = keys.filter { $0.key == recorded } + keys.filter { $0.key != recorded }
-    var refused: [String] = []
-    for (key, publicKey) in candidates {
-      let config = try ContainerHostDriver.writeConfiguration(
-        for: try target(Self.lobby, key: key), in: lobbyDirectory)
-      let result = await runner.run(
-        "/usr/bin/ssh", ["-F", config.path, ContainerHostDriver.alias, "whoami", "--json"],
-        in: NSHomeDirectory(), timeout: 30)
-      try Task.checkCancellation()
-      if result.ok {
-        lock.withLock { self.key = key }
-        try? key.path.write(to: keyRecord, atomically: true, encoding: .utf8)
-        return config
-      }
-      refused.append("\(key.lastPathComponent) (\(Self.fingerprint(publicKey: publicKey) ?? "?"))")
-      Self.logger.notice(
-        "exe.dev refused \(key.lastPathComponent, privacy: .public): \(result.stderr, privacy: .public)"
-      )
-    }
-    throw HostDriverError.invalidConfiguration(
-      candidates.isEmpty
-        ? "No ssh key in \(configuration.sshDirectory.path) to sign in to exe.dev with. Add one"
-          + " with `ssh exe.dev ssh-key add`."
-        : "exe.dev refused every key in \(configuration.sshDirectory.path): "
-          + refused.joined(separator: ", ")
-          + ". If one is on your exe.dev account (`ssh exe.dev ssh-key list`), let Workroom unlock"
-          + " it: `ssh-add --apple-use-keychain ~/.ssh/<key>`, or unlock the agent that holds it.")
-  }
-
-  /// The user's key pairs: each `*.pub` with its private half beside it, by name.
-  static func publicKeys(in directory: URL) -> [(key: URL, publicKey: String)] {
-    let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
-    return names.filter { $0.hasSuffix(".pub") }.sorted().compactMap { name in
-      let key = directory.appendingPathComponent(String(name.dropLast(4)))
-      guard FileManager.default.isReadableFile(atPath: key.path),
-        let publicKey = try? String(
-          contentsOf: directory.appendingPathComponent(name), encoding: .utf8)
-      else { return nil }
-      return (key, publicKey.trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-  }
-
-  /// The VM's ssh target. Its key is found by the lobby's first command, which every caller has
-  /// made by then (`create`, `deriveFromBase`); a driver made after a relaunch finds it here.
-  private func ssh(_ id: UUID) async throws -> ContainerHostDriver.Host {
-    if lock.withLock({ key }) == nil { _ = try await lobbyConfiguration() }
-    return try knownTarget(id)
-  }
-
-  /// The VM's ssh target with the key already found or recorded, for `attachCommand`, which is
-  /// synchronous.
-  private func knownTarget(_ id: UUID) throws -> ContainerHostDriver.Host {
-    guard let key = acceptedKey() else {
-      throw HostDriverError.invalidConfiguration("exe.dev hasn't been signed in to yet")
-    }
-    return try target("\(name(of: id)).exe.xyz", key: key)
+  /// The VM as the user's ssh reaches it, with only the agent's socket from the app's environment.
+  private func route(_ id: UUID) -> ContainerHostDriver.Route {
+    ContainerHostDriver.Route(
+      options: Self.sshOptions, destination: "\(Self.user)@\(name(of: id)).exe.xyz",
+      environment: configuration.sshAgent.map { ["SSH_AUTH_SOCK": $0] } ?? [:])
   }
 
   func openStream(to host: HostID) async throws -> HostStream {
     let id = try id(of: host)
-    let target = try await ssh(id)
     return try ContainerHostDriver.exec(
-      ContainerHostDriver.relayCommand(binary: target.agentBinary, socket: target.agentSocket),
-      on: target, in: hostDirectory(id), purpose: .connection)
+      ContainerHostDriver.relayCommand(
+        binary: AgentBootstrap.binary(besideSocket: agentSocket), socket: agentSocket),
+      via: route(id), purpose: .connection)
   }
 
   func exec(_ command: String, on host: HostID) async throws -> HostStream {
-    let id = try id(of: host)
-    return try ContainerHostDriver.exec(
-      command, on: try await ssh(id), in: hostDirectory(id), purpose: .exchange)
+    try ContainerHostDriver.exec(
+      command, via: route(try id(of: host)), purpose: .exchange)
   }
 
   func attachCommand(
@@ -532,8 +413,10 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     metadata: [(key: String, value: String)]
   ) throws -> String {
     let id = try id(of: host)
-    return try ContainerHostDriver.attachCommand(
-      to: try knownTarget(id), in: hostDirectory(id), session: session,
+    try FileManager.default.createDirectory(
+      at: hostDirectory(id), withIntermediateDirectories: true)
+    return ContainerHostDriver.attachCommand(
+      via: route(id), in: hostDirectory(id), agentSocket: agentSocket, session: session,
       workingDirectory: workingDirectory, restored: restored, metadata: metadata)
   }
 
