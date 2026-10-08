@@ -333,5 +333,9 @@ final class ExeDevHostDriverTests: XCTestCase {
         try XCTUnwrap(configs.first)), encoding: .utf8)
     XCTAssertTrue(config.contains("id_work\""), config)
     XCTAssertTrue(config.contains(".exe.xyz\""), config)
+    // And it signs in with that key first, rather than trying every key again.
+    let before = exe.identities.count
+    _ = try await later.signedIn()
+    XCTAssertEqual(Array(exe.identities.dropFirst(before)), ["id_work", "id_work"])
   }
 }

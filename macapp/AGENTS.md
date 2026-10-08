@@ -214,6 +214,13 @@ side is `Core/Broker/`:
 
 ## boxd driver (#256)
 
+`Core/ExeDevHostDriver.swift` is the second (#259): exe.dev VMs driven through exe.dev's ssh API
+(`ssh exe.dev <cmd> --json`), signed in with the user's own key through their ssh-agent or Keychain
+(nothing registered on the account), with the gateway's host key from their `known_hosts`. A derive
+is `cp` of the base's flushed disk, so the base is synced first and no reboot follows; `rm` exits 0
+whatever happened, so a delete reads what it printed. Both drivers' shared live cases are in
+`WorkroomAppTests/ProviderParityTestCase.swift`.
+
 `Core/BoxdHostDriver.swift` is the first real provider: boxd machines driven through the `boxd`
 CLI (`--json`) and reached over the container driver's ssh transport (its `exec`,
 `attachCommand` and `writeConfiguration` statics). Its ssh details come only from the blocks the

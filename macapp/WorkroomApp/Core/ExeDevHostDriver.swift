@@ -451,7 +451,11 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
       return try ContainerHostDriver.writeConfiguration(
         for: try target(Self.lobby, key: key), in: lobbyDirectory)
     }
-    let candidates = Self.publicKeys(in: configuration.sshDirectory)
+    // The key an earlier driver found goes first, so a new driver (each relaunch, each create's
+    // account check) gets in with one `whoami` rather than one per key.
+    let recorded = acceptedKey()
+    let keys = Self.publicKeys(in: configuration.sshDirectory)
+    let candidates = keys.filter { $0.key == recorded } + keys.filter { $0.key != recorded }
     var refused: [String] = []
     for (key, publicKey) in candidates {
       let config = try ContainerHostDriver.writeConfiguration(
