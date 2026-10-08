@@ -88,7 +88,7 @@ enum VCSStatusFailure: Equatable, Sendable {
   case busy  // the repository refused the read as busy (lock contention)
   case staleWorkingCopy  // the working tree changed while it was being read; a retry settles it
   case asleep  // a boxd box its provider put to sleep; a probe leaves it be (#356)
-  case idle  // a boxd box the app let go of as idle, awake until boxd sleeps it (#356)
+  case idle  // a boxd box whose agent let go of it as idle, awake until boxd sleeps it (#380)
 }
 
 /// One changed path in the working tree, with its change kind (for the detail panel grouping).

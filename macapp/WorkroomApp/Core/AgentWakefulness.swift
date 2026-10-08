@@ -160,7 +160,7 @@ final class WakefulnessModel: ObservableObject {
   @Published private(set) var status: AgentWakefulness?
 
   /// How long the watch waits before looking for a connection again. A local lookup, nothing sent.
-  nonisolated static let retryInterval: Duration = .seconds(10)
+  var retryInterval: Duration = .seconds(10)
 
   private var watchTask: Task<Void, Never>?
 
@@ -191,19 +191,41 @@ final class WakefulnessModel: ObservableObject {
       guard let changes = try? await transport.changes(),
         let first = try? await transport.status()
       else {
-        try? await Task.sleep(for: Self.retryInterval)
+        try? await Task.sleep(for: retryInterval)
         continue
       }
       // Each connection's readings are ordered among themselves only: a box that rebooted
       // restarts the agent's clock.
       newest = nil
       apply(first)
+      let recheck = Task { [weak self] in await self?.recheckWhileBusy() }
       for await change in changes { apply(change) }
+      recheck.cancel()
       guard !Task.isCancelled else { return }
       connectionEnded()
       // A stream that ended at once (handed out already finished, the connection replaced between
       // the two acquisitions) must not spin this loop.
-      try? await Task.sleep(for: Self.retryInterval)
+      try? await Task.sleep(for: retryInterval)
+    }
+  }
+
+  /// How often a BUSY box is asked again. Its agent pushes only when its verdict changes, which is
+  /// exactly what a stalled or crashed wakefulness service never does: the heartbeat has stopped,
+  /// the box may sleep under the job, and the badge would keep showing it kept awake. Asking again
+  /// is what surfaces `stalled` or `running: false` (#380 review). Only while BUSY, so an idle box
+  /// is never held awake by the app's own traffic, and at 60 s, which a measured poll at that rate
+  /// did not vote BUSY on a box.
+  var busyRecheckInterval: Duration = .seconds(60)
+
+  /// Asks the agent again every `busyRecheckInterval` while the last reading is BUSY, until
+  /// cancelled with its connection.
+  private func recheckWhileBusy() async {
+    while !Task.isCancelled {
+      try? await Task.sleep(for: busyRecheckInterval)
+      guard !Task.isCancelled, status?.busy == true,
+        let reading = try? await transport.status(), !Task.isCancelled
+      else { continue }
+      apply(reading)
     }
   }
 

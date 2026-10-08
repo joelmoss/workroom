@@ -843,6 +843,18 @@ fn shown(verdict: Verdict, keep_awake_error: bool) -> (Verdict, bool) {
 }
 
 #[cfg(any(target_os = "linux", test))]
+/// Whether this tick's verdict is pushed: only when what the app shows (`shown`) differs from what
+/// was last pushed, which `pushed` then records. The first tick always pushes.
+fn changed(pushed: &mut Option<(Verdict, bool)>, verdict: Verdict, keep_awake_error: bool) -> bool {
+    let now = shown(verdict, keep_awake_error);
+    if *pushed == Some(now) {
+        return false;
+    }
+    *pushed = Some(now);
+    true
+}
+
+#[cfg(any(target_os = "linux", test))]
 /// When the verdict became IDLE, after this tick's: kept while it stays IDLE, gone on BUSY.
 fn idle_since(previous: Option<f64>, t: f64, verdict: Verdict) -> Option<f64> {
     match verdict {
@@ -864,7 +876,7 @@ pub use service::spawn;
 mod service {
     use super::heartbeat::{self, KeepAwake};
     use super::{
-        drain_counters, idle_since, letting_go, shared, shown, status_json, Boundary, Classifier,
+        changed, drain_counters, idle_since, letting_go, shared, status_json, Boundary, Classifier,
         Policy, EXCLUDED_COMMS, LET_GO_GRACE_S,
     };
     use crate::session::SessionStore;
@@ -946,9 +958,7 @@ mod service {
             };
             // After the state is published, so an app that asks for `status` on the event sees
             // this tick's.
-            let now_shown = shown(verdict, keep_awake.error.is_some());
-            if pushed != Some(now_shown) {
-                pushed = Some(now_shown);
+            if changed(&mut pushed, verdict, keep_awake.error.is_some()) {
                 shared().push(status);
             }
             idle_from = idle_since(idle_from, s.t, verdict);

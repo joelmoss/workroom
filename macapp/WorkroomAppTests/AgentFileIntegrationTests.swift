@@ -749,7 +749,8 @@ final class AgentFileIntegrationTests: XCTestCase {
 /// A stand-in for a pre-File agent: greets with `version`, answers the VCS `capabilities` probe so
 /// `connect()` succeeds, and records the service byte of every envelope it receives.
 ///
-/// `status: true` also answers `Service::Status` (`0x04`) and can push an unsolicited ceiling prompt;
+/// `status: true` also answers `Service::Status` (`0x04`) and can push an unsolicited change of verdict
+/// (`pushStatusChange`);
 /// left off, the Status probe goes unanswered exactly as a pre-#208 protocol-3 agent's would.
 ///
 /// `forward: true` answers `Service::Forward` (`0x05`) — **scripted, not socket-backed**: it replies

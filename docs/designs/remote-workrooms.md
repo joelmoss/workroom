@@ -1867,14 +1867,14 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     agent) sends one datagram to the IPv4 default gateway, read from `/proc/net/route` each time,
     port 9, on the first tick the *published* verdict is BUSY and every 60 s while it stays BUSY,
     from a fresh non-blocking socket each time, and on the first BUSY tick after a resume (the
-    provider's idle timer started over). IDLE sends nothing. So does a ceiling prompt
-    nobody answered, because the published verdict is then IDLE (OQ22): the box sleeps on its own
-    timer. A failed send is retried on the next tick. About 30 bytes a minute, against the
+    provider's idle timer started over). IDLE sends nothing. So did a ceiling prompt nobody
+    answered, because the published verdict was then IDLE (OQ22, gone since #380): the box slept on
+    its own timer. A failed send is retried on the next tick. About 30 bytes a minute, against the
     classifier's 500 bytes/s net threshold, so it cannot vote its own box BUSY; the
     `<socket>.selfcall` mask that a shim's provider calls needed is gone from the loop. A dead agent
     sends nothing, and boxd sleeps the box, which keeps its processes (Phase 0 item 5, run 1), so
     the failure is a paused job, not a killed one.
-  - **Settings reach a running agent.** A remote agent outlives every connection and keeps its
+  - **Settings reach a running agent (superseded by #380).** A remote agent outlives every connection and keeps its
     environment through a hand-off (`execv`), so flags alone never changed it. `Service::Status`
     gains a `settings` request (`ceiling_seconds`, `prompt_timeout_seconds`, `ask_at_ceiling`); the
     service applies it on its next tick (`Ceiling::set_settings`: the same settings again change
@@ -1896,7 +1896,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     unanswered prompt, a stalled service, a BUSY box whose heartbeat is failing (no default route,
     say), or an agent that predates the heartbeat. `verdict_written` is gone from `status` with the
     verdict file. `HostDriverTraits.keepAwakeHoldsCredential` is false for both drivers.
-  - **Remote ceiling prompts.** A remote agent whose box sleeps is now handed this Mac's
+  - **Remote ceiling prompts (superseded by #380).** A remote agent whose box sleeps is now handed this Mac's
     ask-at-ceiling setting, so it asks too. Each remote host's `WakefulnessModel` watches for its
     prompts from the moment `RemoteWorkrooms.connect` installs the host's connection (the watch
     never connects a host itself), and the toast stack shows each host's card, titled with its
@@ -1940,7 +1940,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     moon. Opening the workroom wakes it. boxd is asked at most once per host per 30 s about a box it
     called asleep. When boxd cannot say (no CLI, a timeout, output the app does not expect), the
     read leaves the box alone too and logs why, so a broken CLI cannot wake every box.
-  - **The ceiling across a wake.** A resume after an unanswered prompt carries the awake time from
+  - **The ceiling across a wake (superseded by #380).** A resume after an unanswered prompt carries the awake time from
     before the sleep, so the agent asks again at once rather than granting a running job another
     whole ceiling; the resume mask's IDLE ticks are ignored by the ceiling. Provisioning's connects
     send the agent no settings (its `ask: false` could race a watched connection's `ask: true`), the
@@ -1974,7 +1974,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     badge stops warning about a timer that was turned off. A host let go of is asked about again once
     its boxd idle window (plus 30 s) has passed: if boxd says it is still awake, something on the box
     holds it, so the app reconnects and hears its ceiling prompts.
-  - **Limit: selected workrooms and attached panes.** The selected workroom's host is never let
+  - **Limit: selected workrooms and attached panes (superseded by #380).** The selected workroom's host is never let
     go of, nor is one with a pane attached, and a pane's own ssh holds its box awake regardless.
     So a job past its ceiling, with its prompt left unanswered, keeps the box awake (and billed)
     while its workroom is selected or any of its panes is attached. A pane counts as attached only
