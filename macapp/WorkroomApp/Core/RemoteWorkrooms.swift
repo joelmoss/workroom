@@ -62,6 +62,13 @@ enum RemoteWorkrooms {
     return nil
   }
 
+  /// Throws `codasetRequired` for a workroom on a remote provider with nobody signed in to Codaset:
+  /// it fetches and pushes with the broker's tokens only, so it keeps working with the Mac closed
+  /// (OQ20, #356). A local container needs no broker; signed out, it takes the Mac's relay (#309).
+  static func checkCredentials(for key: RemoteHosts.DriverKey, client: BrokerClient?) throws {
+    if key.isBoxd, client == nil { throw Failure.codasetRequired }
+  }
+
   /// The descriptor's `driver` for a Docker host.
   static let containerDriver = Runtime.docker.rawValue
   /// The descriptor's `driver` for a boxd host (#356).
