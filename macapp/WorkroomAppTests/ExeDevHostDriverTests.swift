@@ -52,9 +52,18 @@ final class ExeDevHostDriverTests: XCTestCase {
     /// ssh's own arguments for the last lobby command, up to and including the destination.
     var ssh: [String] { lock.withLock { calls.last?.ssh ?? [] } }
 
+    /// Only `runNetwork` answers: it is the runner that brings the login shell's ssh agent to an
+    /// app launched from Finder, so a lobby command run without it is a failure.
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
       async -> CommandResult
     {
+      XCTFail("exe.dev ran without the login shell's ssh agent: \(args)")
+      return CommandResult(stdout: "", stderr: "", exitCode: 1, timedOut: false)
+    }
+
+    func runNetwork(
+      _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval
+    ) async -> CommandResult {
       let lobby = args.firstIndex(of: ExeDevHostDriver.lobby) ?? args.endIndex - 1
       let command = args[lobby + 1]
       lock.withLock {

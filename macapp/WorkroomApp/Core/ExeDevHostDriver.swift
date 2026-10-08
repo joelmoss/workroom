@@ -315,9 +315,10 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     return result.stdout
   }
 
-  /// `ssh exe.dev <arguments>`, as the user's own ssh signs in.
+  /// `ssh exe.dev <arguments>`, as the user's own ssh signs in: with the login shell's ssh agent
+  /// when the app has none, as a VM's ssh gets it (`sshAgent`), for an app launched from Finder.
   private func run(_ arguments: [String], timeout: TimeInterval) async -> CommandResult {
-    await runner.run(
+    await runner.runNetwork(
       "/usr/bin/ssh", Self.sshOptions + [Self.lobby] + arguments,
       in: NSHomeDirectory(), timeout: timeout)
   }
