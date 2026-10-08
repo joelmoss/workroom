@@ -986,14 +986,16 @@ final class RemoteHostsTests: XCTestCase {
   }
 
   private static func driver(
-    runtime: URL, context: String?, dialect: ContainerHostDriver.Dialect = .docker
+    runtime: URL, context: String?, dialect: ContainerHostDriver.Dialect = .docker,
+    directory: URL? = nil
   ) -> ContainerHostDriver {
     // A directory of its own: a sweep writes down what it found unknown there (#284), which another
     // test's driver must not read.
     ContainerHostDriver(
       hosts: [:],
-      directory: FileManager.default.temporaryDirectory.appendingPathComponent(
-        "wr-hosts-\(UUID().uuidString)", isDirectory: true),
+      directory: directory
+        ?? FileManager.default.temporaryDirectory.appendingPathComponent(
+          "wr-hosts-\(UUID().uuidString)", isDirectory: true),
       provisioning: ContainerHostDriver.Provisioning(
         runtime: runtime, image: "workroom-host", user: RemoteWorkrooms.user,
         identityFile: "/dev/null", publicKey: "ssh-ed25519 AAAA",
@@ -1797,6 +1799,74 @@ final class RemoteHostsTests: XCTestCase {
     // The stand-in still lists them all; a real daemon would not list the two removed.
     _ = await driver.sweep(keeping: [], cap: 2)
     XCTAssertEqual(try removed().count, 4)
+  }
+
+  /// A create marks its runtime and context before running a container, so a crash before config
+  /// records the host still leaves something that names it (#284). Only a sweep that finds nothing
+  /// of this build's, with the marker older than its grace, clears it: a create under way keeps it.
+  func testACreateMarksItsRuntimeUntilASweepFindsNothingLeft() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-hosts-\(UUID().uuidString)", isDirectory: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    func marked() -> [String] {
+      ContainerHostDriver.made(in: directory).map { "\($0.dialect) \($0.context ?? "nil")" }
+    }
+    let (failing, _) = try scriptedRuntime("run*) exit 1 ;;")
+    do {
+      _ = try await Self.driver(runtime: failing, context: nil, directory: directory)
+        .create()
+      XCTFail("run was meant to fail")
+    } catch {}
+    XCTAssertEqual(marked(), ["docker nil"])
+
+    let (listing, _) = try dockerListing([ContainerHostDriver.containerName(UUID())])
+    _ = await Self.driver(runtime: listing, context: nil, directory: directory)
+      .sweep(keeping: [], grace: 0)
+    XCTAssertEqual(marked(), ["docker nil"], "a container is still there")
+
+    let (empty, _) = try stubRuntime()
+    let sweeper = Self.driver(runtime: empty, context: nil, directory: directory)
+    _ = await sweeper.sweep(keeping: [], grace: 3600)
+    XCTAssertEqual(marked(), ["docker nil"], "the marker is new enough to be a create's")
+    _ = await sweeper.sweep(keeping: [], grace: 0)
+    XCTAssertEqual(marked(), [])
+  }
+
+  /// With nothing recorded and no driver made, a launch sweeps each runtime and context a create
+  /// marked (#284): a crash during a project's first base creation leaves exactly that. With no
+  /// marker it makes no driver, so a user who never made a container workroom is never asked about
+  /// Docker.
+  func testAdoptSweepsWhatACreateMarkedWithNothingRecorded() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-made-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let (runtime, _) = try stubRuntime()
+    let swept = Swept()
+    let make = { (madeIn: URL) in
+      RemoteHosts(
+        makeDriver: {
+          Self.driver(
+            runtime: runtime, context: $0.context, dialect: $0.runtime == .apple ? .apple : .docker)
+        },
+        sweepDriver: { driver, known, _ in
+          swept.add(
+            (driver.provisioning?.dialect == .apple ? "apple " : "docker ")
+              + (driver.provisioning?.context ?? "nil"), known)
+          return []
+        }, madeIn: madeIn)
+    }
+
+    make(directory).adopt([])
+    try await Task.sleep(for: .milliseconds(50))
+    XCTAssertTrue(swept.calls.isEmpty, "a launch with no marker swept")
+
+    for name in ["made-containers-docker@orbstack", "made-containers-apple", "unrelated"] {
+      try Data().write(to: directory.appendingPathComponent(name))
+    }
+    make(directory).adopt([])
+    for _ in 0..<500 where swept.calls.count < 2 { try await Task.sleep(for: .milliseconds(2)) }
+    XCTAssertEqual(Set(swept.calls.compactMap(\.context)), ["docker orbstack", "apple nil"])
   }
 
   // MARK: Apple's container runtime (#309)

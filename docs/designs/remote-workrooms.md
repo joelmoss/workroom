@@ -1542,9 +1542,16 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     Images are removed without `--force`, so one a container still uses stays.
   - **Changed by #284 (2026-10-07):** a container goes only once two sweeps in a row (two
     launches) found it unknown, and at most 3 go per sweep; the rest go on later launches. Each
-    sweep writes what it found unknown to `hosts/unknown-containers-<runtime>-<context>.json`. A
-    lost, restored or half-written config so costs nothing on the launch that reads it. Still
-    open from #284: no sweep runs while config records nothing.
+    sweep writes what it found unknown to `hosts/unknown-containers-<runtime>[@<context>].json`.
+    A lost, restored or half-written config so costs nothing on the launch that reads it.
+  - **Changed by #284 (2026-10-08):** a sweep also runs when config records nothing. Before
+    running a container, a driver writes `hosts/made-containers-<runtime>[@<context>]`, and a
+    launch sweeps every runtime and context so marked. A crash before a project's first base was
+    recorded therefore no longer leaves its container for good. A sweep that finds nothing of
+    this build's left removes the marker once it is older than the grace, so a Mac that no longer
+    has container workrooms stops asking the runtime. A Mac that never made one has no marker
+    and is never asked. Still open: the sweep is claimed before it runs, so a runtime that is
+    down at launch is not swept until the next launch.
 - **As built (#253, part 2: creating one).** Remote workrooms are on only in a Nightly or Dev
   build with the hidden `remoteWorkroomsPreview` setting (`RemoteWorkrooms.isEnabled`); a stable
   build shows no remote UI, including the Settings section, whatever the setting says. The
