@@ -103,25 +103,16 @@ Each file you touch needs its class re-run with `make app-uitest APP_UITEST_FLAG
 
 **Priority:** P2 (chosen in /ship's adversarial review of #257, 2026-10-06)
 
-### Remote ceiling settings: several Macs, and a crashed wakefulness thread (macapp, wr-agent) — #257 review
+### A crashed wakefulness thread hides the badge (macapp, wr-agent) — #257 review
 
-**What:** Two gaps the #257 red-team pass found, left for when cross-machine reattach (#255) makes
-them reachable.
-
-1. **Last writer wins across Macs.** Every Mac that connects to a box pushes its own ceiling
-   settings, and the agent keeps them for its restarts. A Mac with ask mode on connecting briefly
-   switches the box to ask mode, and a long job left by an advisory-mode Mac can be slept when the
-   prompt goes unanswered. The other Mac is never told: a remote badge passes `settings: nil`, so no
-   mismatch line shows. Options: show the box's effective settings (and which Mac set them) in the
-   remote badge, or have the agent refuse to lower protection from a different client.
-2. **A crashed wakefulness thread hides the badge.** (A thread that is blocked rather than crashed
-   is covered: `status` reports `stalled` and the badge shows the box unprotected.) `catch_unwind`
-   calls `wakefulness::stop()`, which sets `running` false; the heartbeat stops, and the badge (gated on
-   `status.running`) disappears rather than showing "busy but not kept awake". A remote agent is
-   always Linux, so a remote badge could treat `running == false` with live sessions as unprotected.
-   The `settings` request is then saved for the next start but not applied.
-
-**Depends on:** #255 for (1).
+**What:** A gap the #257 red-team pass found. (A thread that is blocked rather than crashed is
+covered: `status` reports `stalled` and the badge shows the box unprotected.) `catch_unwind` calls
+`wakefulness::stop()`, which sets `running` false; the heartbeat stops, and the badge (gated on
+`status.running`) disappears rather than showing "busy but not kept awake". A remote agent is always
+Linux, so a remote badge could treat `running == false` with live sessions as unprotected. Since
+#380 a crashed thread also stops the agent letting go of idle connections, so its box is held awake
+while the app is attached. (The other #257 item, the last Mac's ceiling settings winning, went with
+the ceiling in #380.)
 
 **Priority:** P2 (chosen in /ship's review of #257, 2026-10-06)
 
