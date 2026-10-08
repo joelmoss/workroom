@@ -218,7 +218,8 @@ side is `Core/Broker/`:
 CLI (`--json`) and reached over the container driver's ssh transport (its `exec`,
 `attachCommand` and `writeConfiguration` statics). Its ssh details come only from the blocks the
 CLI manages in `~/.ssh/config` and `~/.ssh/known_hosts` (`SSHDetails`). A base is set up by
-`Resources/host-setup/boxd.sh` (an identity unit and the agent's supervisor, both systemd). A
+`Resources/host-setup/systemd.sh` (an identity unit and the agent's supervisor, both systemd; shared
+with every provider driver whose machines run systemd, #259). A
 derive is snapshot, restore, then reboot, and the reboot is not optional: a restored snapshot
 runs the base's processes until it happens. The CLI acts in boxd's active org, so the driver
 is told its org and account (`Configuration.org`, `Configuration.account`; every personal

@@ -204,7 +204,9 @@ struct ProjectSidebar: View {
       }
     }
     Section("Remote") {
-      newRemoteWorkroomButton(at: .boxd, in: project)
+      ForEach(RemoteWorkrooms.Place.remoteProviders, id: \.self) { place in
+        newRemoteWorkroomButton(at: place, in: project)
+      }
     }
   }
 

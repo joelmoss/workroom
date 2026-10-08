@@ -1,8 +1,12 @@
 #!/bin/sh
-# Makes a fresh boxd machine a Workroom base (issue #256; `BoxdHostDriver.create` runs it as root
-# over the driver's ssh, with this script on stdin):
+# Makes a fresh systemd machine a Workroom base (issue #256; shared by every provider driver since
+# #259: `BoxdHostDriver.create` runs it as root over the driver's ssh, with this script on stdin):
 #
-#   sudo sh -s -- <user> <agent socket> <screens directory>  < boxd.sh
+#   sudo sh -s -- <user> <agent socket> <screens directory>  < systemd.sh
+#
+# It needs systemd as PID 1 and a hostname the provider gives each machine its own of (boxd names
+# a machine on restore; exe.dev's `cp` boots the copy under its new name). Written for boxd, it runs
+# unchanged on exe.dev (spike, 2026-10-08).
 #
 # It installs the two far-side pieces the design doc gives a provider (Phase 3, "A lifecycle shim";
 # Phase 4, the derive sequence), both as systemd units, so they come back with every boot:

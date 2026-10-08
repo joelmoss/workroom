@@ -13,7 +13,7 @@ import os
 ///   nothing else in the user's ssh config applies. The host key is boxd's gateway's, the same
 ///   for every machine, which is why a derived machine's own regenerated keys never trip it
 ///   (Phase 0, item 6). The VM's sshd is not what answers: boxd terminates ssh at the gateway.
-/// - **A base** is a fresh machine with `Resources/host-setup/boxd.sh` run on it: the identity
+/// - **A base** is a fresh machine with `Resources/host-setup/systemd.sh` run on it: the identity
 ///   unit and the agent's supervisor, both systemd units (see the script).
 /// - **A derive** snapshots the base, makes a machine from the snapshot, and cold-reboots it. A
 ///   snapshot restores memory as well as disk, so without the reboot the instance would run the
@@ -74,6 +74,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   let configuration: Configuration
+  var agentSocket: String { configuration.agentSocket }
   /// Where each host's `ssh_config` and `known_hosts` are written.
   let directory: URL
   private let runner: any StatusCommandRunning
@@ -113,7 +114,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       RemoteProvisioning.reportStep?(.machine)
       _ = try await cli(["machine", "new", name])
       RemoteProvisioning.reportStep?(.setup)
-      let script = try Self.setupScript()
+      let script = try HostSetup.systemdScript()
       let user = try ssh(id).user
       let (status, output) = try await exec(
         "sudo sh -s -- "
@@ -279,7 +280,9 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// boxd's own readiness signal is not one: a restore can report `"boot": "timeout"` for a
   /// machine that works (Phase 0, item 6). So each wait asks the machine itself, over ssh.
   private func awaitHostname(of id: UUID) async throws {
-    try await poll(id, "test \"$(hostname)\" = \(PosixShell.quoted(name(of: id)))", tries: 50) {
+    try await poll(
+      .remote(id), "test \"$(hostname)\" = \(PosixShell.quoted(name(of: id)))", tries: 50
+    ) {
       "\(self.name(of: id)) never took its name: \($0)"
     }
   }
@@ -289,7 +292,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   private func awaitIdentity(of id: UUID, rebootedFrom boot: String? = nil) async throws {
     let name = PosixShell.quoted(name(of: id))
     try await poll(
-      id,
+      .remote(id),
       "test \"$(cat /etc/workroom-identity 2>/dev/null)\" = \(name)"
         + " && test \"$(hostname)\" = \(name)"
         // A failed read is empty, which differs from any boot_id, so it must not pass as new.
@@ -320,7 +323,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     let socket = configuration.agentSocket
     let binary = PosixShell.quoted(AgentBootstrap.binary(besideSocket: socket))
     try await poll(
-      id,
+      .remote(id),
       "test ! -e \(binary) || \(binary) list --socket \(PosixShell.quoted(socket)) > /dev/null",
       tries: 75
     ) { "\(self.name(of: id))'s agent never answered: \($0)" }
@@ -351,25 +354,6 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       throw HostDriverError.provisioning(
         "\(failure.localizedDescription). Sign in with `boxd auth login`.")
     }
-  }
-
-  private func poll(
-    _ id: UUID, _ check: String, tries: Int, failure: (String) -> String
-  ) async throws {
-    var last = ""
-    for _ in 0..<tries {
-      // A machine mid-reboot refuses, or holds the connection: neither is the answer, but the
-      // last one is what the failure says.
-      do {
-        let (status, output) = try await exec(check, on: .remote(id)).communicate(nil, timeout: 20)
-        if status == 0 { return }
-        last = output
-      } catch is CancellationError {
-        throw CancellationError()
-      } catch { last = error.localizedDescription }
-      try await Task.sleep(for: .milliseconds(400))
-    }
-    throw HostDriverError.provisioning(failure(last))
   }
 
   // MARK: The CLI
@@ -486,14 +470,6 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   static func isNotFound(_ said: String) -> Bool {
     said == "error: snapshot not found"
       || (said.hasPrefix("error: VM '") && said.hasSuffix("' not found"))
-  }
-
-  static func setupScript() throws -> String {
-    guard
-      let url = Bundle.main.url(
-        forResource: "boxd", withExtension: "sh", subdirectory: "host-setup")
-    else { throw HostDriverError.invalidConfiguration("this build has no host-setup/boxd.sh") }
-    return try String(contentsOf: url, encoding: .utf8)
   }
 
   // MARK: ssh

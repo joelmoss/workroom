@@ -37,6 +37,10 @@ enum RemoteWorkrooms {
       case .boxd: "a boxd machine"
       }
     }
+
+    /// The remote providers, in the order the New Workroom menu and picker list them (#259). A new
+    /// provider is a case here and an entry in this list.
+    static let remoteProviders: [Place] = [.boxd]
   }
 
   /// Why a workroom can't be created at `place` now, as the New Workroom menu and picker show it
@@ -66,7 +70,7 @@ enum RemoteWorkrooms {
   /// it fetches and pushes with the broker's tokens only, so it keeps working with the Mac closed
   /// (OQ20, #356). A local container needs no broker; signed out, it takes the Mac's relay (#309).
   static func checkCredentials(for key: RemoteHosts.DriverKey, client: BrokerClient?) throws {
-    if key.isBoxd, client == nil { throw Failure.codasetRequired }
+    if key.isRemoteProvider, client == nil { throw Failure.codasetRequired }
   }
 
   /// The descriptor's `driver` for a Docker host.
@@ -139,7 +143,7 @@ enum RemoteWorkrooms {
   static func clonePath(
     for repository: GitHubRepository, on key: RemoteHosts.DriverKey = .init()
   ) -> String {
-    "/home/\(key.isBoxd ? BoxdHostDriver.user : user)/\(repository.name)"
+    "/home/\(key.loginUser)/\(repository.name)"
   }
 
   enum Failure: Error, LocalizedError, Equatable {
@@ -179,7 +183,7 @@ enum RemoteWorkrooms {
           + "building another would leave it running unrecorded. Delete the project (its remote "
           + "workrooms and base go with it) and add it again."
       case .codasetRequired:
-        return "A boxd workroom fetches and pushes with Codaset's repository tokens, so it keeps "
+        return "A remote workroom fetches and pushes with Codaset's repository tokens, so it keeps "
           + "working with this Mac closed. Sign in to Codaset in Settings → Remote workrooms."
       case .boxdNotInstalled:
         return "The boxd command wasn't found. Install it from boxd.sh, then sign in with "
@@ -446,7 +450,10 @@ enum RemoteWorkrooms {
 
   /// The descriptor's `driver` for `key`.
   static func driverName(_ key: RemoteHosts.DriverKey) -> String {
-    key.runtime?.rawValue ?? boxdDriver
+    switch key {
+    case .container(let runtime, _): runtime.rawValue
+    case .boxd: boxdDriver
+    }
   }
 
   /// Whether `host` records anything still up: a box or a grant. A destroyed one has nothing, and
@@ -596,10 +603,17 @@ final class RemoteHosts: @unchecked Sendable {
       self = .container(runtime, context: runtime == .docker ? context : nil)
     }
 
-    /// Whether the key names a boxd account rather than a container runtime.
-    var isBoxd: Bool {
-      if case .boxd = self { return true }
-      return false
+    /// Whether the key names a remote provider rather than a container runtime on this Mac. A
+    /// remote provider's workroom takes the broker's tokens only (OQ20), is reached by name with
+    /// nothing to adopt, and runs whether or not this Mac has a container runtime (#259).
+    var isRemoteProvider: Bool { runtime == nil }
+
+    /// The user its driver's hosts log in as, whose home holds the clone.
+    var loginUser: String {
+      switch self {
+      case .container: RemoteWorkrooms.user
+      case .boxd: BoxdHostDriver.user
+      }
     }
 
     /// The container runtime, or nil for boxd.
@@ -625,7 +639,12 @@ final class RemoteHosts: @unchecked Sendable {
     }
 
     /// Where this key's workrooms are made.
-    var place: RemoteWorkrooms.Place { runtime.map(RemoteWorkrooms.Place.container) ?? .boxd }
+    var place: RemoteWorkrooms.Place {
+      switch self {
+      case .container(let runtime, _): .container(runtime)
+      case .boxd: .boxd
+      }
+    }
   }
 
   /// The drivers made so far.
@@ -790,11 +809,11 @@ final class RemoteHosts: @unchecked Sendable {
   var sweepHeld: Bool { lock.withLock { held } }
 
   /// The driver that holds host `id`, for a pane, which must not probe Docker: nil when no driver
-  /// made so far has it. A boxd host's driver is made here if need be: it reaches the host by name,
-  /// with nothing to adopt and no runtime to probe (#356).
+  /// made so far has it. A remote provider's driver (boxd, #356) is made here if need be: it reaches
+  /// the host by name, with nothing to adopt and no runtime to probe.
   func existingDriver(holding id: UUID) -> (any HostTerminalDriver)? {
     let key = lock.withLock { keys[id] }
-    if let key, case .boxd = key { return try? driver(key) }
+    if let key, key.isRemoteProvider { return try? driver(key) }
     return lock.withLock {
       made.values.first { ($0 as? ContainerHostDriver)?.record(of: .remote(id)) != nil }
     }
@@ -925,8 +944,8 @@ final class RemoteHosts: @unchecked Sendable {
     let client = BrokerSession.shared.client()
     let driver = try driver(key)
     var environment = RemoteProvisioning.Environment(
-      driver: driver, agentSocket: Self.agentSocket(of: driver), client: client,
-      gitHubToken: key.isBoxd ? nil : CredentialRelay.gitHubToken)
+      driver: driver, agentSocket: driver.agentSocket, client: client,
+      gitHubToken: key.isRemoteProvider ? nil : CredentialRelay.gitHubToken)
     #if DEBUG
       // A Debug agent reaches this Mac's Codaset through a listener on its host, which lives on
       // the host's service connection (`BrokerReverseForwards`), so that connection comes first.
@@ -993,7 +1012,7 @@ final class RemoteHosts: @unchecked Sendable {
       [connectAgent] in
       if let connectAgent { return try await connectAgent(host, driver) }
       return try await AgentBootstrap.connect(
-        host: host, driver: driver, socket: Self.agentSocket(of: driver))
+        host: host, driver: driver, socket: driver.agentSocket)
     }
     // Its verdict is watched from here: the badge shows what the agent pushes (#380).
     if case .remote(let id) = host {
@@ -1023,7 +1042,7 @@ final class RemoteHosts: @unchecked Sendable {
           let held = try driver ?? heldDriver(host)
           try await CredentialRelay.shared.install(
             on: host, driver: held,
-            agentBinary: AgentBootstrap.binary(besideSocket: Self.agentSocket(of: held)))
+            agentBinary: AgentBootstrap.binary(besideSocket: held.agentSocket))
         }
         _ = lock.withLock { relayPending.removeValue(forKey: id) }
         return
@@ -1201,12 +1220,12 @@ final class RemoteHosts: @unchecked Sendable {
   /// Whether `host`'s runtime is missing from this Mac, so nothing can be running on it: the
   /// runtime config records it on, or with none recorded, every runtime.
   ///
-  /// Never for a boxd host (#356): it runs on boxd whether or not this Mac has the boxd CLI, and its
-  /// panes reach it over ssh without one.
+  /// Never for a remote provider's host (boxd, #356): it runs there whether or not this Mac has the
+  /// provider's CLI, and its panes reach it over ssh without one.
   func runtimeIsMissing(for host: HostID) -> Bool {
     guard case .remote(let id) = host else { return false }
     let key = lock.withLock { keys[id] }
-    if let key, case .boxd = key { return false }
+    if let key, key.isRemoteProvider { return false }
     return (key?.runtime.map { [$0] } ?? RemoteWorkrooms.Runtime.allCases).allSatisfy {
       Self.executable(for: $0) == nil
     }
@@ -1250,11 +1269,6 @@ final class RemoteHosts: @unchecked Sendable {
   /// The boxd CLI on this Mac, or nil when it isn't installed.
   static func boxdExecutable() -> String? {
     boxdCandidates.first { FileManager.default.isExecutableFile(atPath: $0) }
-  }
-
-  /// The agent's socket on `driver`'s hosts.
-  static func agentSocket(of driver: any HostDriver) -> String {
-    (driver as? BoxdHostDriver)?.configuration.agentSocket ?? RemoteWorkrooms.agentSocket
   }
 
   /// `runtime`'s CLI on this Mac, or nil when it isn't installed.
