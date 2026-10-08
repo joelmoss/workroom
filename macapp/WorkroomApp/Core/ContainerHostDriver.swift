@@ -489,12 +489,16 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     let keptImages = Set(
       (lock.withLock { known.compactMap { provisioned[$0]?.image } } + images).map(
         Self.shortImageID))
+    // Whether the listings found nothing of this build's, so nothing is left to sweep (`madeFile`).
+    var empty = true
     do {
       var unknown: [String] = []
-      for line in try await runtime(
+      let lines = try await runtime(
         ["ps", "-a"] + filters + ["--format", "{{.Names}}\t{{.Label \"\(Self.createdLabel)\"}}"],
         allLines: true
-      ).split(separator: "\n") {
+      ).split(separator: "\n")
+      empty = lines.isEmpty
+      for line in lines {
         let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
         let name = String(fields[0])
         if !keptContainers.contains(name), old(fields.count > 1 ? fields[1] : "") {
@@ -506,11 +510,15 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
           failed.append("container \(name): \(error.localizedDescription)")
         }
       }
-    } catch { failed.append("listing containers: \(error.localizedDescription)") }
+    } catch {
+      empty = false
+      failed.append("listing containers: \(error.localizedDescription)")
+    }
 
     do {
       let images = try await runtime(["images", "-aq"] + filters, allLines: true)
         .split(separator: "\n").map(String.init)
+      if empty, images.isEmpty { clearMade(before: cutoff) }
       for image in Set(images) where !keptImages.contains(Self.shortImageID(image)) {
         // One that cannot be inspected is left for the next sweep.
         guard
@@ -567,6 +575,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     }
     let keptContainers = Set(known.map(Self.containerName))
     var inUse = kept
+    var empty = true
     do {
       var unknown: [String] = []
       for container in try AppleContainerCLI.objects(
@@ -580,6 +589,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
           inUse.insert(image)
         }
         let labels = AppleContainerCLI.labels(of: container)
+        if ours(labels) { empty = false }
         if let id = AppleContainerCLI.id(of: container), ours(labels), old(labels),
           !keptContainers.contains(id)
         {
@@ -596,9 +606,12 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       return ["listing containers: \(error.localizedDescription)"]
     }
     do {
-      for image in try AppleContainerCLI.objects(
+      let images = try AppleContainerCLI.objects(
         try await runtime(["image", "list", "--format", "json"], allLines: true))
-      {
+      if empty, !images.contains(where: { ours(AppleContainerCLI.labels(ofImage: $0)) }) {
+        clearMade(before: cutoff)
+      }
+      for image in images {
         let labels = AppleContainerCLI.labels(ofImage: image)
         guard let name = AppleContainerCLI.name(ofImage: image), ours(labels), old(labels),
           !inUse.contains(name)
@@ -640,9 +653,55 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Where a sweep writes down the containers it found unknown (#284): beside this driver's hosts,
   /// one file per runtime and Docker context, since each context is swept by its own driver.
   private var unknownContainersFile: URL {
-    let dialect = provisioning?.dialect == .apple ? "apple" : "docker"
-    let context = provisioning?.context ?? "default"
-    return directory.appendingPathComponent("unknown-containers-\(dialect)-\(context).json")
+    directory.appendingPathComponent(
+      "unknown-containers-\(Self.suffix(provisioning?.dialect ?? .docker, provisioning?.context)).json"
+    )
+  }
+
+  /// Written before each container this driver runs, and removed by a sweep that finds nothing of
+  /// this build's left (#284). `RemoteHosts.adopt` sweeps a runtime only when something names it:
+  /// with no record, a crash before a project's first base was recorded would leave its container
+  /// for good, and without the marker every launch would ask a runtime the user never used.
+  private var madeFile: URL {
+    directory.appendingPathComponent(
+      Self.madePrefix + Self.suffix(provisioning?.dialect ?? .docker, provisioning?.context))
+  }
+  private static let madePrefix = "made-containers-"
+
+  /// A file name's runtime and Docker context. `@` is in no context's name, so no context (the
+  /// current one) is told apart from one named `default`.
+  private static func suffix(_ dialect: Dialect, _ context: String?) -> String {
+    (dialect == .apple ? "apple" : "docker") + (context.map { "@\($0)" } ?? "")
+  }
+
+  /// The runtimes and Docker contexts whose drivers, with hosts in `directory`, may have left a
+  /// container behind (`madeFile`).
+  static func made(in directory: URL) -> [(dialect: Dialect, context: String?)] {
+    ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).compactMap {
+      guard $0.hasPrefix(madePrefix) else { return nil }
+      let parts = $0.dropFirst(madePrefix.count).split(separator: "@", maxSplits: 1)
+      let context = parts.count > 1 ? String(parts[1]) : nil
+      switch parts.first {
+      case "docker": return (.docker, context)
+      case "apple": return (.apple, nil)
+      default: return nil
+      }
+    }
+  }
+
+  private func markMade() throws {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try Data().write(to: madeFile)
+  }
+
+  /// Removes the marker when it was written before `cutoff` (seconds since 1970), so a create that
+  /// began after this sweep's listing keeps it.
+  private func clearMade(before cutoff: TimeInterval) {
+    let written = try? madeFile.resourceValues(forKeys: [.contentModificationDateKey])
+      .contentModificationDate
+    if let written, written.timeIntervalSince1970 <= cutoff {
+      try? FileManager.default.removeItem(at: madeFile)
+    }
   }
 
   static func containerName(_ id: UUID) -> String { "workroom-\(id.uuidString.lowercased())" }
@@ -694,6 +753,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       arguments += ["--name", container, "--publish", "127.0.0.1:\(port):22"]
       for label in provisioning.labels + [Self.created()] { arguments += ["--label", label] }
       arguments += ["--env", "AUTHORIZED_KEY=\(provisioning.publicKey)", source]
+      // Before the container exists: a crash from here on leaves the marker beside it (#284).
+      try markMade()
       _ = try await runtime(arguments)
       let hostKey = try await identity(of: container)
       lock.withLock {

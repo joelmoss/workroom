@@ -682,6 +682,9 @@ final class RemoteHosts: @unchecked Sendable {
   private let makeDriver: (@Sendable (DriverKey) throws -> any HostTerminalDriver)?
   private let sweepDriver:
     (@Sendable (ContainerHostDriver, Set<UUID>, Set<String>) async -> [String])?
+  /// Where `adopt` looks for the runtimes a driver made a container on
+  /// (`ContainerHostDriver.made(in:)`), or nil to look nowhere.
+  private let madeIn: URL?
 
   init(
     connectHost: (@Sendable (HostID) async throws -> Void)? = nil,
@@ -693,8 +696,10 @@ final class RemoteHosts: @unchecked Sendable {
     relayHost: (@Sendable (HostID) async throws -> Void)? = nil,
     connectAgent: (@Sendable (HostID, any HostTerminalDriver) async throws -> AgentVCSConnection)? =
       nil,
-    presence: (@Sendable (HostID) async -> BoxdHostDriver.Presence?)? = nil
+    presence: (@Sendable (HostID) async -> BoxdHostDriver.Presence?)? = nil,
+    madeIn: URL? = RemoteHosts.madeIn
   ) {
+    self.madeIn = madeIn
     self.presenceSeam = presence
     self.connectHost = connectHost
     self.relayHost = relayHost
@@ -722,7 +727,7 @@ final class RemoteHosts: @unchecked Sendable {
   func driver(_ key: DriverKey = DriverKey()) throws -> any HostTerminalDriver {
     try lock.withLock {
       if let made = made[key] { return made }
-      let hosts = Self.directory.appendingPathComponent("hosts", isDirectory: true)
+      let hosts = Self.hosts
       let driver: any HostTerminalDriver
       if let makeDriver {
         driver = try makeDriver(key)
@@ -751,6 +756,14 @@ final class RemoteHosts: @unchecked Sendable {
     }
     return driver
   }
+
+  /// Where every container driver writes its hosts' files.
+  static var hosts: URL { directory.appendingPathComponent("hosts", isDirectory: true) }
+
+  /// `hosts`, except under test (a hosted unit run or a UI-test launch), which must never sweep
+  /// the developer's own runtime: its config records nothing, so a marker alone would sweep it with
+  /// every live workroom unknown.
+  static var madeIn: URL? { UITestFixture.isTestProcess ? nil : hosts }
 
   /// Whether this call runs the launch's one sweep. A call that isn't allowed leaves it for the
   /// next.
@@ -783,8 +796,9 @@ final class RemoteHosts: @unchecked Sendable {
   /// Takes on every host `projects` record, each into the driver for its Docker context, so their
   /// panes and services reach them after a relaunch, then sweeps once per launch what carries this
   /// app's labels and no record names. Does nothing, and never touches Docker, when nothing is
-  /// recorded and nothing has been made. `sweep: false` holds the sweep for a later call: a list
-  /// with a delete in flight leaves out hosts config still records (#296).
+  /// recorded, nothing has been made, and no driver ever made a container (#284). `sweep: false`
+  /// holds the sweep for a later call: a list with a delete in flight leaves out hosts config
+  /// still records (#296).
   func adopt(_ projects: [Project], sweep: Bool = true) {
     let descriptors =
       projects.flatMap { $0.host?.allBases ?? [] }
@@ -803,14 +817,19 @@ final class RemoteHosts: @unchecked Sendable {
       }
       return Set(made.keys)
     }
-    guard !recorded.isEmpty || !already.isEmpty else { return }
+    // A runtime a create made a container on, which a crash may have left before config recorded
+    // it (#284).
+    let marked = (madeIn.map(ContainerHostDriver.made(in:)) ?? []).map {
+      DriverKey(runtime: $0.dialect == .apple ? .apple : .docker, context: $0.context)
+    }
+    guard !recorded.isEmpty || !already.isEmpty || !marked.isEmpty else { return }
     // A descriptor with no container record yet goes to its runtime's driver that names no
     // context, where the one driver before #309 would have had it.
     // A boxd host needs no adopting: its driver reaches it by name. Nor is boxd swept: machine
     // names carry no build, so one build's sweep would take another's live workrooms (#284).
     // gstack-shortcut(dec-boxd-no-sweep): a crashed create can leave a paid boxd machine running,
     // upgrade when #284 makes sweeps safe and boxd machine names carry the build.
-    let containerKeys = already.union(recorded.compactMap(DriverKey.init)).filter {
+    let containerKeys = already.union(recorded.compactMap(DriverKey.init)).union(marked).filter {
       $0.runtime != nil
     }
     var drivers: [ContainerHostDriver] = []
