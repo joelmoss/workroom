@@ -363,9 +363,10 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(young, [])
     XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label).count, 4, "young ones went")
 
-    // The first sweep to find the orphans unknown only writes them down (#284).
+    // The first sweep to find the orphans unknown only writes them down (#284). Images are not
+    // held back, but the orphaned instance's is still in use by its container, which refuses it.
     let firstSweep = await driver.sweep(keeping: [keptID, instanceID], grace: 0)
-    XCTAssertEqual(firstSweep, [])
+    XCTAssertTrue(firstSweep.allSatisfy { $0.hasPrefix("image ") }, "\(firstSweep)")
     XCTAssertEqual(
       try leftovers("ps", runtime: runtime, label: label).count, 4, "one sweep took a container")
 
