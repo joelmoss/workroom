@@ -3619,9 +3619,18 @@ final class AppStore: ObservableObject {
       if key.isBoxd, environment.client == nil {
         throw RemoteWorkrooms.Failure.codasetRequired
       }
-      let resolution = await WorkroomStatusResolver().resolveRepository(in: project.path)
-      guard case .found(let repository) = resolution else {
-        throw RemoteWorkrooms.Failure.notOnGitHub("Couldn't find its GitHub repository with gh.")
+      // gh first, as it knows which remote is GitHub's; without it (not installed, or signed out
+      // while Codaset is signed in, which is enough for a remote workroom) origin says (#260).
+      let resolver = WorkroomStatusResolver()
+      var repository: GitHubRepository?
+      if case .found(let found) = await resolver.resolveRepository(in: project.path) {
+        repository = found
+      } else {
+        repository = await resolver.originRepository(in: project.path)
+      }
+      guard let repository else {
+        throw RemoteWorkrooms.Failure.notOnGitHub(
+          "Its origin remote names no GitHub repository, and gh couldn't say which one it is.")
       }
       guard repository.host == "github.com" else {
         throw RemoteWorkrooms.Failure.notOnGitHub("Its origin is on \(repository.host).")

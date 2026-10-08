@@ -75,6 +75,35 @@ final class GitHubRepositoryTests: XCTestCase {
     XCTAssertEqual(repo, GitHubRepository(host: "github.com", owner: "o", name: "r"))
   }
 
+  // MARK: - Remote parsing (`git remote get-url origin`, for a create without gh)
+
+  /// A project's origin read from git alone (#260): https, scp-style and ssh:// remotes all name
+  /// the same repository, `.git` or not.
+  func testParsesEveryRemoteFormGitUses() throws {
+    let expected = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "octo", name: "repo"))
+    for remote in [
+      "https://github.com/octo/repo.git\n",
+      "git@github.com:octo/repo.git",
+      "git@github.com:octo/repo",
+      "github.com:octo/repo.git",
+      "ssh://git@github.com/octo/repo.git",
+      "ssh://github.com/octo/repo",
+    ] {
+      XCTAssertEqual(GitHubRepository(remote: remote), expected, remote)
+    }
+  }
+
+  /// A remote that names no single repository is nil rather than a guess.
+  func testRefusesARemoteThatNamesNoRepository() {
+    for remote in [
+      "", "/Users/me/repos/repo.git", "file:///repos/repo.git", "git@github.com:octo",
+      "git@github.com:octo/repo/extra", "ssh://git@github.com:2222/octo/repo.git",
+      "git@github.com:/octo/repo.git",
+    ] {
+      XCTAssertNil(GitHubRepository(remote: remote), remote)
+    }
+  }
+
   // MARK: - URL parsing (`gh repo view --json url`)
 
   func testParsesTheURLGhPrints() throws {

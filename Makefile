@@ -139,7 +139,7 @@ app-uitest: ## Run the app's UI tests (XCUITest — needs the GUI session; queue
 app-identity: ## Print the bundle id this checkout's Debug build gets (one per workroom)
 	@echo "com.developwithstyle.workroom.dev$(APP_DEV_ID_SUFFIX)"
 
-remote-host-image: ## Build the `workroom-host` image a Nightly or Dev app's remote workrooms run on (Docker, #253)
+remote-host-image: ## Build the `workroom-host` image an app's remote workrooms run on (Docker, #253)
 	docker build --tag workroom-host vcs/scripts/ssh-fixture
 
 remote-host-image-test: ## Build the `workroom-host` image, without its tag, and smoke-test it: sshd serves and is hardened, no fixture pieces, a pushed agent starts (#288)
