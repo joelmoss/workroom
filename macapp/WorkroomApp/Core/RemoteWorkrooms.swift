@@ -946,7 +946,7 @@ final class RemoteHosts: @unchecked Sendable {
       return .boxd(org: account.activeOrg, account: try account.requiredUserID())
     case .exeDev:
       // The account exe.dev knows the user's key as, which a new base is made in. Throws, naming
-      // the fix, when no key of the user's gets in.
+      // the fix, when the user's ssh can't sign in to exe.dev.
       return .exeDev(
         account: try await ExeDevHostDriver(configuration: .init(), directory: Self.hosts)
           .signedIn())
