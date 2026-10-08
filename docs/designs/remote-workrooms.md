@@ -28,7 +28,7 @@ pushes its verdict, and the awake ceiling and every let-go, the app's and the ag
 ("As built (#380)"). Follow-ups from #253's reviews are #283 to #288; #283 (closing a remote pane
 ends its session on the host) is merged (PR #306, 2026-10-03), with its own follow-ups in #293, #297
 and #304. The second real provider, exe.dev (#259), is built on branch `feat/259-exedev-driver`, not yet
-merged, with its live suite passing; its overnight idle soak and pool load measurement are pending
+merged, with its live suite passing, a 9-hour soak in which no VM slept, and its pool load measured
 (see "As built (#259)"). boxd live fork (#258) is deferred to a later release and does not gate
 #260. #260 is the gate: it runs the
 Success Criteria on two real providers; the remote UI already left Nightly, ahead of it (PR #375, 2026-10-08). The
@@ -2070,8 +2070,11 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     machine); `maxLifetime: nil`; `keepAwakeHoldsCredential: false`; `sleepsWhenIdle: false`.
     Idle is not defined by exe.dev at all: the CLI has no stop, start or idle timer, and three VMs
     left idle for 40 minutes kept their boot, processes and `/dev/shm`. **No lifecycle shim**, for
-    that reason. The overnight soak that tests it longer (D7) is pending; if a VM sleeps, the trait
-    flips and the shim question reopens.
+    that reason. The soak (D7, 2026-10-08, 13:20 to 22:24 UTC, 9 h 4 min) confirmed it: one VM
+    idle and one running a detached CPU loop (`head -c 100000000 /dev/urandom | sha256sum`, logging
+    each pass), with no client and only `ls` on the control plane. Both kept their `boot_id`; a
+    60 s tick log on each never gapped more than 61 s, so neither paused; the busy loop's process
+    was the one started at 13:20, its log never gapped more than 1 s.
   - **Auth is the user's own ssh** (D2, reopened by the owner, then "ssh should behave as close
     as possible to normal SSH usage"). The driver runs `/usr/bin/ssh` with no configuration or key
     of its own: the user's `~/.ssh/config`, `/etc/ssh/ssh_config`, agent and Keychain pick the key,
@@ -2123,9 +2126,14 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     keeps the agent's verdict BUSY, so it never lets go and the box never sleeps (measured: BUSY for
     900 s at a 10 s poll, IDLE at once and asleep at about 307 s at 60 s). #380 redesigns it: the
     box decides its own wakefulness.
-  - **Pool load (D6): pending.** The account is on the Individual (Small) plan, 2 vCPU / 8 GB
-    shared by every VM. A base and two building workrooms timed against one alone is to be measured
-    once the soak's busy VM, which holds the pool's CPU, is gone.
+  - **Pool load (D6, 2026-10-08).** The account is on the Individual (Small) plan, 2 vCPU / 8 GB
+    shared by every VM, though each VM reports 2 vCPU and 8 GB of its own (`allocated_cpus`,
+    `memory_capacity_bytes`) and the pool admits more VMs than it has CPUs. Measured with an idle
+    base and two `cp` copies of it (`cp` 0.4-0.5 s), each building Go's standard library from an
+    empty cache (`go build -a std`, Go 1.27.1): one workroom alone took 20.9-22.7 s (four runs, up
+    to 0.7 s of steal); two at once took 36.3-37.4 s each (four runs), with about 30 s of steal
+    each. So the pool's CPU is really shared: a second building workroom makes each build about
+    1.7 times slower, and an idle base costs nothing measurable. Memory was not loaded.
   - **Not built:** a sweep of VMs a crash leaves unrecorded (TODOS.md, with #373); the generic
     SSH driver (#378).
 
