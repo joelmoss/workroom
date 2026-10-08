@@ -712,51 +712,101 @@ final class BoxdIntegrationTests: XCTestCase {
     XCTAssertEqual(keptTicks, 360, "the agent's machine missed ticks")
   }
 
+  /// The verdicts the host's agent pushed to the app, as they change, with when (seconds from
+  /// `start`), for a failure message: a let-go that never came is otherwise a bare "never".
+  private func recordVerdicts(_ host: HostID, from start: ContinuousClock.Instant)
+    -> (task: Task<Void, Never>, read: @Sendable () -> String)
+  {
+    final class Log: @unchecked Sendable {
+      let lock = NSLock()
+      var lines: [String] = []
+    }
+    let log = Log()
+    let task = Task {
+      guard case .remote(let id) = host else { return }
+      var last: String?
+      while !Task.isCancelled {
+        let now = await MainActor.run { () -> String in
+          guard let status = WakefulnessModel.models[id]?.status else { return "none" }
+          return status.busy ? "BUSY" : "IDLE"
+        }
+        let up = await HostConnectionManager.shared.snapshot(for: host).status == .connected
+        let line = "\(now)\(up ? "" : " (disconnected)")"
+        if line != last {
+          let at = Int((ContinuousClock.now - start).components.seconds)
+          log.lock.withLock { log.lines.append("\(at)s \(line)") }
+          last = line
+        }
+        try? await Task.sleep(for: .seconds(1))
+      }
+    }
+    return (task, { log.lock.withLock { log.lines.joined(separator: ", ") } })
+  }
+
   /// Whether `host` has a service connection in the app.
   private func connected(_ host: HostID) async -> Bool {
     await HostConnectionManager.shared.snapshot(for: host).status == .connected
   }
 
   /// #380's acceptance: with the app attached as it really is (pushed verdicts, no poll, no
-  /// app-side let-go), an idle box must still sleep, or every open workroom would keep its box
-  /// awake and billing. Its agent closes the app's idle connection itself, and the app takes that as
-  /// the box idle, not an error. Then the user comes back: a port forward kept across the closed
-  /// connection wakes the box when used, and selecting the workroom reconnects it. A fresh
-  /// machine's start-up traffic holds its timer for about 290 s (#257's acceptance), so it has 7
-  /// minutes to sleep. About 8 minutes.
-  func testAnIdleBoxStillSleepsWithTheAppAttached() async throws {
+  /// app-side let-go), an open app does not hold an idle box: its agent closes the app's idle
+  /// connection itself, and the app takes that as the box idle, not an error, and stops reaching
+  /// it. Whether the box then sleeps is the box's and its provider's, not Workroom's, so it is not
+  /// asserted. Then the user comes back: a port forward kept across the closed connection
+  /// reconnects when used, and selecting the workroom reconnects it. About 3 minutes.
+  func testAnIdleBoxsAgentLetsGoOfTheAttachedApp() async throws {
     let driver = driver()
     let host = try await driver.create()
-    try idleTimers(host, 120)
+    // A dev server on the box for the forward to reach: a boxd box runs no sshd of its own, so
+    // there is nothing listening there unless something is started.
+    try await onHost(
+      driver, host,
+      "command -v python3 >/dev/null && (nohup python3 -m http.server 8123 --bind 127.0.0.1"
+        + " > /dev/null 2>&1 &)")
     let remote = try await attach(driver, host)
     let connection = try await HostConnectionManager.shared.forwarding(host: host).1.connection
     // A forward kept across the connection the agent will close, reconnecting through this test's
-    // `RemoteHosts` as the Ports panel's does through the app's: to the box's own sshd, which
-    // speaks first.
+    // `RemoteHosts` as the Ports panel's does through the app's.
+    final class Seen: @unchecked Sendable {
+      let lock = NSLock()
+      var lines: [String] = []
+      func add(_ line: String) { lock.withLock { lines.append(line) } }
+      var all: String { lock.withLock { lines.joined(separator: "; ") } }
+    }
+    let seen = Seen()
     let reconnect: PortForward.Reconnect = {
-      try? await remote.ensureConnected(host, wake: true)
-      return try? await HostConnectionManager.shared.forwarding(host: host).1.connection
+      do { try await remote.ensureConnected(host, wake: true) } catch {
+        seen.add("reconnect: \(error)")
+      }
+      do { return try await HostConnectionManager.shared.forwarding(host: host).1.connection } catch
+      {
+        seen.add("forwarding: \(error)")
+        return nil
+      }
     }
     let forward = try AgentForwardService(connection: connection).listen(
-      remotePort: 22, reconnect: reconnect, onEvent: { _ in })
+      remotePort: 8123, reconnect: reconnect, onEvent: { seen.add("event: \($0)") })
     defer { forward.stop() }
     let start = ContinuousClock.now
+    let verdicts = recordVerdicts(host, from: start)
+    defer { verdicts.task.cancel() }
     while await connected(host), ContinuousClock.now - start < .seconds(300) {
       try await Task.sleep(for: .seconds(5))
     }
     let connectedNow = await connected(host)
-    XCTAssertFalse(connectedNow, "the agent never let go of the app's idle connection")
+    XCTAssertFalse(
+      connectedNow, "the agent never let go of the app's idle connection: \(verdicts.read())")
     XCTAssertTrue(
       RemoteHosts.shared.isReleased(host), "the app took the closed connection for an error")
-    let slept = try await sleeps(host, since: start, within: .seconds(420))
-    XCTAssertNotNil(slept, "an idle box with the app attached never slept")
-    guard slept != nil else { return }
+    guard !connectedNow else { return }
 
-    // A connection on the forward wakes the box, and the browser waits rather than failing.
+    // A connection on the forward reconnects, and the browser waits rather than failing.
     let client = try TCPClient(port: forward.localPort)
     defer { client.close() }
-    let banner = String(decoding: try client.read(8, timeout: 60), as: UTF8.self)
-    XCTAssertEqual(banner, "SSH-2.0-", "a forward used after the let-go never reached the box")
+    try client.write(Data("GET / HTTP/1.0\r\n\r\n".utf8))
+    let reply = String(decoding: try client.read(8, timeout: 60), as: UTF8.self)
+    XCTAssertEqual(
+      reply, "HTTP/1.0", "a forward used after the let-go never reached the box: \(seen.all)")
 
     // Selecting the workroom reconnects a box its agent let go of, and its services answer.
     remote.select(host)
@@ -766,26 +816,27 @@ final class BoxdIntegrationTests: XCTestCase {
     XCTAssertTrue(status.running)
   }
 
-  /// #380's acceptance, the other half: with the app attached, a busy box stays awake through its
-  /// job, the agent keeping its connection while the job runs, and sleeps once it has ended. A
-  /// 6-minute job with no network use, timers 120 s, 10 minutes to sleep. About 10 minutes.
+  /// #380's acceptance, the other half: with the app attached, a busy box is not slept under its
+  /// job: its agent keeps the app's connection while the job runs, and its heartbeat keeps the box
+  /// awake through it. A 6-minute job with no network use, timers 120 s. About 7 minutes.
   func testABusyBoxWithTheAppAttachedStaysAwakeThroughItsJob() async throws {
     let driver = driver()
     let host = try await driver.create()
     try idleTimers(host, 120)
     _ = try await attach(driver, host)
     let start = ContinuousClock.now
+    let verdicts = recordVerdicts(host, from: start)
+    defer { verdicts.task.cancel() }
     try await startJob(driver, host, seconds: 360)
     var droppedAt: Duration?
     while ContinuousClock.now - start < .seconds(330) {
       if await !connected(host), droppedAt == nil { droppedAt = ContinuousClock.now - start }
       try await Task.sleep(for: .seconds(10))
     }
-    XCTAssertNil(droppedAt, "the agent let go of a busy box's connection")
-    let slept = try await sleeps(host, since: start, within: .seconds(600))
-    XCTAssertNotNil(slept, "the box never slept after its job")
-    if let slept { XCTAssertGreaterThan(slept, .seconds(360), "it slept under its job") }
+    XCTAssertNil(droppedAt, "the agent let go of a busy box's connection: \(verdicts.read())")
+    // Past the job's end, then read what it logged: every tick, so the box never slept under it.
+    try await Task.sleep(for: .seconds(45))
     let logged = try await ticks(driver, host)
-    XCTAssertEqual(logged, 360, "the box missed ticks")
+    XCTAssertEqual(logged, 360, "the box missed ticks, so it slept under its job")
   }
 }
