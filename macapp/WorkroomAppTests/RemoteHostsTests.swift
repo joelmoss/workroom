@@ -2131,6 +2131,13 @@ final class RemoteHostsTests: XCTestCase {
       .init(fraction: 0, label: "Copying the base machine (step 1 of 5)"))
     XCTAssertEqual(AppStore.createStep(.checkout, buildsBase: false)?.fraction, 4.0 / 5)
     XCTAssertNil(AppStore.createStep(.clone, buildsBase: false), "a derive clones nothing")
+    // exe.dev's copy boots with its own identity, so it takes no reboot step (#259).
+    XCTAssertEqual(
+      AppStore.createStep(.checkout, buildsBase: true, reboots: false),
+      .init(fraction: 6.0 / 7, label: "Checking out the workroom's branch (step 7 of 7)"))
+    XCTAssertEqual(
+      AppStore.createStep(.enrol, buildsBase: false, reboots: false)?.fraction, 2.0 / 4)
+    XCTAssertNil(AppStore.createStep(.reboot, buildsBase: false, reboots: false))
   }
 
   /// boxd's entry is off without its CLI, and without Codaset: a boxd workroom takes the broker's
