@@ -3653,9 +3653,9 @@ final class AppStore: ObservableObject {
           self.imagePulls[path] = fraction
         }
       }
-      // Only a boxd create reports steps: a container's are quick, bar its image pull.
+      // Only a remote provider's create reports steps: a container's are quick, bar its image pull.
       let created = try await RemoteProvisioning.$reportStep.withValue(
-        key.isBoxd ? stepped : nil
+        key.isRemoteProvider ? stepped : nil
       ) {
         try await ContainerHostDriver.$pullProgress.withValue(report) {
           try await RemoteWorkrooms.create(

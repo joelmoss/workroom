@@ -34,6 +34,10 @@ struct HostDriverTraits: Equatable, Sendable {
 /// WebSocket driver must show it does before it counts as a driver.
 protocol HostDriver: Sendable {
   var traits: HostDriverTraits { get }
+  /// The supervised agent's socket on this driver's hosts: what the bootstrap installs the agent
+  /// beside, and the relay and the attach connect to. A remote provider's is on the host's home
+  /// disk, so its enrolment and screens survive a stop (#259).
+  var agentSocket: String { get }
   /// Provisions a base.
   func create() async throws -> HostID
   /// Provisions a workroom instance from `base`.
@@ -52,6 +56,46 @@ protocol HostDriver: Sendable {
   /// is the stream, its stdin a socket of its own that `communicate` closes for EOF (#305).
   /// `openStream` runs the same carrier with the relay as the command, as a `.connection`.
   func exec(_ command: String, on host: HostID) async throws -> HostStream
+}
+
+extension HostDriver {
+  /// Runs `check`, a line for `host`'s shell, until it exits 0: up to `tries` times, 400 ms apart,
+  /// for a wait on a machine coming up (its name, its identity, its agent). A machine mid-reboot
+  /// refuses or holds the connection; neither is the answer, but the last one is what the failure
+  /// says. A cancel ends the wait at once (#259: shared by every provider driver).
+  func poll(
+    _ host: HostID, _ check: String, tries: Int, failure: (String) -> String
+  ) async throws {
+    var last = ""
+    for _ in 0..<tries {
+      do {
+        let (status, output) = try await exec(check, on: host).communicate(nil, timeout: 20)
+        if status == 0 { return }
+        last = output
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch { last = error.localizedDescription }
+      try await Task.sleep(for: .milliseconds(400))
+    }
+    throw HostDriverError.provisioning(failure(last))
+  }
+
+  /// The container image's socket (`vcs/scripts/ssh-fixture/entrypoint.sh`), for a driver that
+  /// doesn't say otherwise.
+  var agentSocket: String { RemoteWorkrooms.agentSocket }
+}
+
+/// What a provider driver runs on a new base to set it up.
+enum HostSetup {
+  /// `Resources/host-setup/systemd.sh`: the identity unit and the agent's supervisor, for a machine
+  /// that runs systemd (boxd, exe.dev).
+  static func systemdScript() throws -> String {
+    guard
+      let url = Bundle.main.url(
+        forResource: "systemd", withExtension: "sh", subdirectory: "host-setup")
+    else { throw HostDriverError.invalidConfiguration("this build has no host-setup/systemd.sh") }
+    return try String(contentsOf: url, encoding: .utf8)
+  }
 }
 
 enum PosixShell {

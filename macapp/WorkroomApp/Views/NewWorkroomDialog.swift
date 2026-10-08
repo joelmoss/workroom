@@ -308,7 +308,8 @@ enum WorkroomPlace: Hashable {
   case remote(RemoteWorkrooms.Place)
 
   static var all: [WorkroomPlace] {
-    [.thisMac] + RemoteWorkrooms.Runtime.allCases.map { .remote(.container($0)) } + [.remote(.boxd)]
+    [.thisMac] + RemoteWorkrooms.Runtime.allCases.map { .remote(.container($0)) }
+      + RemoteWorkrooms.Place.remoteProviders.map { .remote($0) }
   }
 
   /// The remote place this is, or nil for this Mac.

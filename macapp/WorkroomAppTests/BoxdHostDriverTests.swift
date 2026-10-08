@@ -82,7 +82,7 @@ final class BoxdHostDriverTests: XCTestCase {
   }
 
   func testTheSetupScriptShipsInTheBundle() throws {
-    let script = try BoxdHostDriver.setupScript()
+    let script = try HostSetup.systemdScript()
     XCTAssertTrue(script.contains("workroom-agent.service"))
   }
 

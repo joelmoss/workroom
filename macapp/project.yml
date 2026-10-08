@@ -197,8 +197,8 @@ targets:
       - path: Resources/agent-bootstrap
         type: folder
         buildPhase: resources
-      # What a provider driver runs on a new base to set it up (issue #256): the identity unit and
-      # the agent's supervisor. Folder reference → Contents/Resources/host-setup; BoxdHostDriver
+      # What a provider driver runs on a new base to set it up (issue #256, shared since #259): the
+      # identity unit and the agent's supervisor. Folder reference → Contents/Resources/host-setup; BoxdHostDriver
       # loads it from Bundle.main.
       - path: Resources/host-setup
         type: folder
