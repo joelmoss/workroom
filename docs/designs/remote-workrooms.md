@@ -9,7 +9,7 @@ Mode: Builder
 > **Note:** Workroom dropped Jujutsu (jj) support in #266. Passages here that describe jj
 > behaviour are a record of the design as it stood then, not of the current code.
 
-## Current Status — 2026-10-06
+## Current Status — 2026-10-08
 
 **Phase 4 is under way, and the app can now create, open and delete remote workrooms.** Since PR
 #375 (merged 2026-10-08) that works in every build, stable included: the owner removed the
