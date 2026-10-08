@@ -3615,9 +3615,7 @@ final class AppStore: ObservableObject {
       let key = base.flatMap(RemoteHosts.DriverKey.init) ?? wanted
       let (driver, environment) = try RemoteHosts.shared.environment(key)
       // A remote host has no relay to fall back to (OQ20): say so before anything is made.
-      if key.isBoxd, environment.client == nil {
-        throw RemoteWorkrooms.Failure.codasetRequired
-      }
+      try RemoteWorkrooms.checkCredentials(for: key, client: environment.client)
       // gh first, as it knows which remote is GitHub's; without it (not installed, or signed out
       // while Codaset is signed in, which is enough for a remote workroom) origin says (#260).
       let resolver = WorkroomStatusResolver()

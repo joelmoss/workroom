@@ -1080,27 +1080,62 @@ final class RemoteHostsTests: XCTestCase {
       try JSONDecoder().decode(HostDescriptor.self, from: try JSONEncoder().encode(boxd)), boxd)
   }
 
-  /// A delete of a boxd host asks for boxd's driver and environment, never Docker's.
+  /// A delete of a remote provider's host asks for that provider's driver and environment, never
+  /// Docker's; the environment's agent socket is the driver's own, on the host's home disk, never
+  /// the container image's tmpfs `/run/workroom` one; and its git never borrows the Mac's `gh`
+  /// (OQ20). One row per remote provider.
   @MainActor
-  func testDeletingABoxdHostUsesTheBoxdDriver() throws {
-    let asked = Asked()
-    let remote = RemoteHosts(makeDriver: { key in
-      asked.add(key)
-      return BoxdHostDriver(
-        configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
-        directory: FileManager.default.temporaryDirectory)
-    })
-    let host = HostDescriptor(
-      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
-      org: "acme", account: "usr_1")
-    let deletion = try XCTUnwrap(try remote.environment(toDelete: [host]))
-    XCTAssertEqual(asked.keys, [.boxd(org: "acme", account: "usr_1")])
-    let environment = try XCTUnwrap(deletion.environment(for: host))
-    XCTAssertTrue(environment.driver is BoxdHostDriver)
-    XCTAssertEqual(
-      environment.agentSocket,
-      BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket)
-    XCTAssertNil(environment.gitHubToken, "a remote host's git never borrows the Mac's gh")
+  func testDeletingARemoteProviderHostUsesItsOwnDriver() throws {
+    let rows: [(host: HostDescriptor, key: RemoteHosts.DriverKey, socket: String)] = [
+      (
+        HostDescriptor(
+          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+          org: "acme", account: "usr_1"),
+        .boxd(org: "acme", account: "usr_1"),
+        BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket
+      )
+    ]
+    for row in rows {
+      let asked = Asked()
+      let remote = RemoteHosts(makeDriver: { key in
+        asked.add(key)
+        return BoxdHostDriver(
+          configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
+          directory: FileManager.default.temporaryDirectory)
+      })
+      let deletion = try XCTUnwrap(try remote.environment(toDelete: [row.host]))
+      XCTAssertEqual(asked.keys, [row.key], "\(row.key)")
+      let environment = try XCTUnwrap(deletion.environment(for: row.host))
+      XCTAssertEqual(environment.agentSocket, row.socket, "\(row.key)")
+      XCTAssertNotEqual(environment.agentSocket, RemoteWorkrooms.agentSocket, "\(row.key)")
+      XCTAssertNil(
+        environment.gitHubToken, "\(row.key): a remote host's git never borrows the Mac's gh")
+    }
+  }
+
+  /// A workroom on a remote provider takes the broker's tokens only (OQ20): signed out of Codaset,
+  /// its create stops before anything is made. A local container doesn't need Codaset, since it can
+  /// take the Mac's relay (#309).
+  func testARemoteProviderCreateNeedsCodaset() {
+    let client = BrokerClient(
+      baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey()))
+    let rows: [(key: RemoteHosts.DriverKey, needsCodaset: Bool)] = [
+      (.boxd(org: "acme", account: "usr_1"), true),
+      (RemoteHosts.DriverKey(), false),
+      (RemoteHosts.DriverKey(runtime: .apple), false),
+    ]
+    for row in rows {
+      XCTAssertNoThrow(
+        try RemoteWorkrooms.checkCredentials(for: row.key, client: client), "\(row.key)")
+      if row.needsCodaset {
+        XCTAssertThrowsError(
+          try RemoteWorkrooms.checkCredentials(for: row.key, client: nil), "\(row.key)"
+        ) { XCTAssertEqual($0 as? RemoteWorkrooms.Failure, .codasetRequired) }
+      } else {
+        XCTAssertNoThrow(
+          try RemoteWorkrooms.checkCredentials(for: row.key, client: nil), "\(row.key)")
+      }
+    }
   }
 
   /// After a relaunch a boxd workroom is reached without Docker: its driver is made by name, with
