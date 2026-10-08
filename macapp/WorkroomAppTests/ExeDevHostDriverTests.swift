@@ -248,6 +248,24 @@ final class ExeDevHostDriverTests: XCTestCase {
     }
   }
 
+  /// exe.dev failing to list the base is a provisioning error the app can show, never the driver's
+  /// own failure type escaping it.
+  func testAFailedListingIsAProvisioningError() async throws {
+    let exe = StubExeDev(
+      [
+        "ls": CommandResult(
+          stdout: #"{"error":"rate limited"}"#, stderr: "", exitCode: 1, timedOut: false)
+      ],
+      accepted: ["id_ed25519"])
+    let (driver, _) = try driver(exe)
+    do {
+      _ = try await driver.deriveFromBase(.remote(UUID()))
+      XCTFail("derived with no listing")
+    } catch HostDriverError.provisioning(let detail) {
+      XCTAssertEqual(detail, "exe.dev ls: rate limited")
+    }
+  }
+
   /// A base is made with the base tag, which a copy is made without.
   func testABaseIsTaggedAndARefusedOneHasNothingToRemove() async throws {
     let exe = StubExeDev(

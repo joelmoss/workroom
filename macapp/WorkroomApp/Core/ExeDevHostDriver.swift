@@ -105,6 +105,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     do {
       RemoteProvisioning.reportStep?(.machine)
       _ = try await cli(["new", "--name", name, "--tag", Self.baseTag, "--no-email"])
+      try await awaitBoot(of: id)
       RemoteProvisioning.reportStep?(.setup)
       let (status, output) = try await exec(
         "sudo sh -s -- "
@@ -129,7 +130,12 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     try await checkAccount()
     // A workroom's disk holds its enrolment key and credential helper: a copy would start with
     // both. Every base is made by `create`, with the tag, and every copy is made without it.
-    let listed = try decode(Listing.self, await cli(["ls", baseName]), baseName).vms
+    let listed: [Listing.Machine]
+    do {
+      listed = try decode(Listing.self, await cli(["ls", baseName]), baseName).vms
+    } catch let failure as CLIFailure {
+      throw HostDriverError.provisioning(failure.localizedDescription)
+    }
     guard let machine = listed.first(where: { $0.name == baseName }) else {
       throw HostDriverError.unknownHost(base)
     }
@@ -205,6 +211,17 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
       }
     }
     return "VM \(name): \(Self.errorLine(result) ?? "rm exited \(result.exitCode)")"
+  }
+
+  /// Until systemd has finished booting a new VM: `new` returns, and ssh answers, while it still
+  /// boots, and the setup's `systemctl` then fails with "Failed to connect to bus" (measured,
+  /// 2026-10-08: four of seven fresh VMs). `degraded` is booted, with a unit that failed.
+  private func awaitBoot(of id: UUID) async throws {
+    try await poll(
+      .remote(id),
+      "s=$(systemctl is-system-running --wait 2>/dev/null); test \"$s\" = running || test \"$s\" = degraded",
+      tries: 150
+    ) { "\(self.name(of: id)) never finished booting: \($0)" }
   }
 
   /// Until the identity unit has run on this VM: its marker and hostname both name it. On a copy
