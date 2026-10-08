@@ -227,21 +227,14 @@ fn a_running_agent_pushes_its_verdict_to_a_listener() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let mut client = Client::connect_to(&socket);
-    // Asking makes this connection a listener. The service pushed its first verdict on its first
-    // tick, usually before this asked, and pushes again only on a change, so the test makes one: a
-    // process in `nanosleep` is work to the classifier. An IDLE box goes BUSY at once; a box that
-    // was already BUSY (the test polling for the socket in `sleep` votes too) goes IDLE once the
-    // child has ended and the 30 s hold has run out. Either is a push to this listener.
+    // Asking makes this connection a listener, and the service's next tick pushes it the current
+    // status whatever the box is doing: a test that waited for the verdict to change failed on a
+    // busy CI runner, where it never did.
     let asked = client.request(&json!({"method": "status"}));
     assert_eq!(asked["version"], 2);
-    let mut work = std::process::Command::new("sleep")
-        .arg("3")
-        .spawn()
-        .expect("spawn sleep");
-    let event = client.event(Instant::now() + Duration::from_secs(45));
-    let _ = work.kill();
-    let _ = work.wait();
-    let event = event.expect("no verdict was pushed");
+    let event = client
+        .event(Instant::now() + Duration::from_secs(10))
+        .expect("no verdict was pushed");
     assert_eq!(event["version"], 2, "{event}");
     assert_eq!(event["event"], "status", "{event}");
     let status = &event["status"];

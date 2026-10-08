@@ -210,6 +210,9 @@ final class PortForward: @unchecked Sendable {
   private let lock = NSLock()
   /// Each with the connection-wide slot it holds, released when the entry leaves this table.
   private var live: [UUID: (connection: ForwardedConnection, slot: ForwardSlot)] = [:]
+  /// Accepted clients waiting for `reconnect`, at most `maxConnections`. Each is closed by whichever
+  /// of its reconnect or `stop()` takes it out of here first, so a descriptor is never closed twice.
+  private var waiting: Set<Int32> = []
   private var stopped = false
   /// Accepts are event-driven, not a thread parked in `accept`: the source fires on this serial
   /// queue when the backlog has something, `accept` never blocks (the listener is non-blocking),
@@ -255,16 +258,24 @@ final class PortForward: @unchecked Sendable {
   func stop() {
     // Taken out whole so the slots are released after the lock, not under it: a slot's release
     // takes the connection's lock.
-    let entries: [UUID: (connection: ForwardedConnection, slot: ForwardSlot)]? = lock.withLock {
+    let taken = lock.withLock {
+      () -> (
+        live: [UUID: (connection: ForwardedConnection, slot: ForwardSlot)], waiting: Set<Int32>
+      )?
+      in
       guard !stopped else { return nil }
       stopped = true
-      defer { live = [:] }
-      return live
+      defer {
+        live = [:]
+        waiting = []
+      }
+      return (live, waiting)
     }
-    guard let entries else { return }
-    let connections = entries.values.map(\.connection)
+    guard let taken else { return }
+    let connections = taken.live.values.map(\.connection)
     source.cancel()
     for connection in connections { connection.finish(tellAgent: true) }
+    for client in taken.waiting { Darwin.close(client) }
   }
 
   /// Everything the backlog holds, on the accept queue. A non-blocking `accept` ends with
@@ -311,14 +322,25 @@ final class PortForward: @unchecked Sendable {
     // The host's connection has ended (its agent let go of an idle box, #380): this client is the
     // user at the forward again, so the host is reconnected, waking its box, and the client waits
     // for that rather than being refused. Off the accept queue, which keeps accepting meanwhile.
+    // At most `maxConnections` wait, as at most that many are carried: a burst against a slow wake
+    // must not hold descriptors without bound.
+    let admitted = lock.withLock { () -> Bool in
+      guard !stopped, waiting.count < Self.maxConnections else { return false }
+      waiting.insert(client)
+      return true
+    }
+    guard admitted else {
+      Darwin.close(client)
+      onEvent(.failed("Too many connections waiting for the host to reconnect; one was refused."))
+      return
+    }
     Task { [weak self] in
-      guard let fresh = await reconnect() else {
+      let fresh = await reconnect()
+      // A forward gone meanwhile was stopped, which closed every waiting client.
+      guard let self, self.lock.withLock({ self.waiting.remove(client) != nil }) else { return }
+      guard let fresh else {
         Darwin.close(client)
-        self?.onEvent(.failed("Could not reconnect to the host; a connection was refused."))
-        return
-      }
-      guard let self else {
-        Darwin.close(client)
+        self.onEvent(.failed("Could not reconnect to the host; a connection was refused."))
         return
       }
       self.lock.withLock { self.connection = fresh }
@@ -946,6 +968,13 @@ final class PortForwardingModel: ObservableObject {
   /// Ports panel showing another workroom and coming back. This Mac's agent takes its forwards
   /// with its connection (`watch()`); a remote host's outlive it (`Transport.reconnect`, #380).
   private static var models: [HostID: PortForwardingModel] = [:]
+
+  /// A deleted host's forwards go with it: their listeners stop, and nothing reconnects a host that
+  /// is gone. Its connection no longer drops them, since a remote host's forwards outlive it (#380).
+  static func forgetHost(_ host: HostID) {
+    guard let model = models.removeValue(forKey: host) else { return }
+    for entry in model.forwards { model.remove(entry.id) }
+  }
 
   static func model(for host: HostID) -> PortForwardingModel {
     if let model = models[host] { return model }
