@@ -886,12 +886,18 @@ final class PortForwardingModelTests: XCTestCase {
 
   /// A deleted host's forwards go with it (#381 review): its connection no longer drops them, since a
   /// remote host's forwards outlive their connection.
-  func testForgettingAHostForgetsItsForwards() {
+  func testForgettingAHostForgetsItsForwards() async throws {
     let host = HostID.remote(UUID())
-    let model = PortForwardingModel.model(for: host)
+    let model = try await model(lease: lease())
+    model.draft = "5173"
+    await model.add()
+    let entry = try XCTUnwrap(model.forwards.first)
+    PortForwardingModel.models[host] = model
+
     PortForwardingModel.forgetHost(host)
-    XCTAssertFalse(PortForwardingModel.model(for: host) === model, "the host's model outlived it")
-    PortForwardingModel.forgetHost(host)
+    XCTAssertNil(PortForwardingModel.models[host], "the host's model outlived it")
+    XCTAssertTrue(model.forwards.isEmpty, "the host's forwards outlived it")
+    await settle("the listener must be gone") { listenerIsGone(entry.localPort) }
   }
 
   /// A forward whose reconnect finds no host (a container the user stopped, a box that is gone)

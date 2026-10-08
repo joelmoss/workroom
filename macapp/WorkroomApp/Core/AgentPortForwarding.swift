@@ -967,7 +967,7 @@ final class PortForwardingModel: ObservableObject {
   /// Each host's model, made on first use and kept for the launch: its listeners must outlive the
   /// Ports panel showing another workroom and coming back. This Mac's agent takes its forwards
   /// with its connection (`watch()`); a remote host's outlive it (`Transport.reconnect`, #380).
-  private static var models: [HostID: PortForwardingModel] = [:]
+  static var models: [HostID: PortForwardingModel] = [:]
 
   /// A deleted host's forwards go with it: their listeners stop, and nothing reconnects a host that
   /// is gone. Its connection no longer drops them, since a remote host's forwards outlive it (#380).
