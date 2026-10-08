@@ -52,6 +52,7 @@ pub mod heartbeat;
 pub mod sample;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use sample::{Proc, Sample};
@@ -678,6 +679,10 @@ pub struct Wakefulness {
     /// Connections that have asked about status, which each verdict change is pushed to. Weak, so a
     /// closed connection drops out of the list instead of being kept alive by it.
     listeners: Mutex<Vec<WeakWriter>>,
+    /// A connection started listening since the last tick, so the next tick pushes the current
+    /// status even with no change: a listener hears the service within a tick of asking, whatever
+    /// the box is doing, rather than waiting for a change that a steady box never makes.
+    joined: AtomicBool,
 }
 
 #[derive(Debug, Clone)]
@@ -713,6 +718,7 @@ pub fn shared() -> &'static Wakefulness {
             keep_awake_error: None,
         }),
         listeners: Mutex::new(Vec::new()),
+        joined: AtomicBool::new(false),
     })
 }
 
@@ -741,6 +747,7 @@ impl Wakefulness {
             listeners.remove(0);
         }
         listeners.push(Arc::downgrade(writer));
+        self.joined.store(true, Ordering::SeqCst);
     }
 
     /// Pushes `status` to every connection that has asked about status: unsolicited, on stream 0,
@@ -757,9 +764,15 @@ impl Wakefulness {
         // Off the tick thread, one thread per listener: `send` blocks on the writer, and a stalled
         // write on the tick thread would stop the next heartbeat, and the provider could then sleep
         // a busy box.
+        // `Builder::spawn`, not `thread::spawn`, which panics when the OS refuses a thread: that
+        // panic would end the service, heartbeat and let-go included, over one missed event.
         for writer in listeners {
             let event = event.clone();
-            std::thread::spawn(move || crate::vcs::send(&writer, Service::Status, 0, event));
+            let spawned = std::thread::Builder::new()
+                .spawn(move || crate::vcs::send(&writer, Service::Status, 0, event));
+            if let Err(e) = spawned {
+                crate::note!("wakefulness: a status push was not sent: {e}");
+            }
         }
     }
 }
@@ -880,6 +893,7 @@ mod service {
         Policy, EXCLUDED_COMMS, LET_GO_GRACE_S,
     };
     use crate::session::SessionStore;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     /// Starts the wakefulness thread. One per agent; it runs whether or not a client is attached,
@@ -958,7 +972,8 @@ mod service {
             };
             // After the state is published, so an app that asks for `status` on the event sees
             // this tick's.
-            if changed(&mut pushed, verdict, keep_awake.error.is_some()) {
+            let joined = shared().joined.swap(false, Ordering::SeqCst);
+            if changed(&mut pushed, verdict, keep_awake.error.is_some()) || joined {
                 shared().push(status);
             }
             idle_from = idle_since(idle_from, s.t, verdict);

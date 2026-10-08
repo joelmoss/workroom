@@ -470,10 +470,15 @@ enum RemoteWorkrooms {
     _ name: String, host: HostDescriptor, environment: RemoteProvisioning.Environment?,
     recorder: Recorder
   ) async throws {
-    // The entry goes, and the host's prompt watch with it (#257): one step for both ways out, so a
-    // workroom with nothing live to take down does not keep a model made earlier this launch.
+    // The entry goes, and the host's verdict watch and port forwards with it (#380): one step for
+    // both ways out, so a workroom with nothing live to take down keeps nothing made this launch.
     func forget() async throws {
-      if let id = host.id { await MainActor.run { WakefulnessModel.forgetHost(id) } }
+      if let id = host.id {
+        await MainActor.run {
+          WakefulnessModel.forgetHost(id)
+          PortForwardingModel.forgetHost(.remote(id))
+        }
+      }
       try await recorder.forget(name)
     }
     guard try checkDeletable([host]) else { return try await forget() }
@@ -493,8 +498,13 @@ enum RemoteWorkrooms {
       remaining.grantID = grant
       if liveHost == nil {
         // The box is gone though its grant is not: the record forgets the host, so a later delete
-        // could not find its prompt watch to stop (#257).
-        if let id = host.id { await MainActor.run { WakefulnessModel.forgetHost(id) } }
+        // could not find its watch and forwards to stop (#380).
+        if let id = host.id {
+          await MainActor.run {
+            WakefulnessModel.forgetHost(id)
+            PortForwardingModel.forgetHost(.remote(id))
+          }
+        }
         (remaining.id, remaining.container) = (nil, nil)
       }
       await recordLeftBehind(liveHost, grant: grant) { try await recorder.record(name, remaining) }

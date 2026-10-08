@@ -841,6 +841,59 @@ final class PortForwardingModelTests: XCTestCase {
     XCTAssertNotNil(PortForwardingModel.Transport.reconnecting(.remote(UUID()), manager: manager))
   }
 
+  // Value: protects=a forward waiting on a reconnect holds at most maxConnections clients, and stop
+  // closes them; fails_when=the waiting cap or stop's close of waiting clients is removed; why_new=no
+  // test holds a reconnect open while clients arrive; seam=none
+  /// A burst against a forward whose host is reconnecting slowly (a waking box, a hung ssh) holds at
+  /// most `maxConnections` clients: the next is refused at once and the row says why. Removing the
+  /// forward closes every client still waiting (#381 review).
+  func testClientsWaitingOnAReconnectAreCappedAndClosedOnRemove() async throws {
+    let first = lease()
+    let model = try await model(
+      lease: first,
+      reconnect: {
+        try? await Task.sleep(for: .seconds(30))
+        return nil
+      })
+    model.draft = "5173"
+    await model.add()
+    let entry = try XCTUnwrap(model.forwards.first)
+    await connections[0].close()
+    publish(HostConnectionManager.Snapshot(lease: first, status: .disconnected))
+    await settle("the watch did not see the disconnect") { !model.connected }
+
+    var waiting: [TCPClient] = []
+    for _ in 0..<PortForward.maxConnections { waiting.append(try TCPClient(port: entry.localPort)) }
+    defer { for client in waiting { client.close() } }
+    let refused = try TCPClient(port: entry.localPort)
+    defer { refused.close() }
+    XCTAssertEqual(
+      try refused.read(1, timeout: 5), Data(), "a client past the cap was kept waiting")
+    await settle("the row never said why") { model.forwards.first?.failure != nil }
+    XCTAssertEqual(
+      model.forwards.first?.failure,
+      "Too many connections waiting for the host to reconnect; one was refused.")
+
+    // EOF, not a read timeout, which reads empty too: each must close at once.
+    model.remove(entry.id)
+    for client in waiting.prefix(3) {
+      let started = ContinuousClock.now
+      XCTAssertEqual(try client.read(1, timeout: 3), Data())
+      XCTAssertLessThan(
+        ContinuousClock.now - started, .seconds(2), "a waiting client outlived its forward")
+    }
+  }
+
+  /// A deleted host's forwards go with it (#381 review): its connection no longer drops them, since a
+  /// remote host's forwards outlive their connection.
+  func testForgettingAHostForgetsItsForwards() {
+    let host = HostID.remote(UUID())
+    let model = PortForwardingModel.model(for: host)
+    PortForwardingModel.forgetHost(host)
+    XCTAssertFalse(PortForwardingModel.model(for: host) === model, "the host's model outlived it")
+    PortForwardingModel.forgetHost(host)
+  }
+
   /// A forward whose reconnect finds no host (a container the user stopped, a box that is gone)
   /// refuses the connection and says why.
   func testAForwardWhoseReconnectFailsRefusesTheConnectionAndSaysWhy() async throws {

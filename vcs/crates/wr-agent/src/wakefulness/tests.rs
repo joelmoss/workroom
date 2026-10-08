@@ -690,3 +690,31 @@ fn a_pushed_change_carries_the_status_reply() {
     assert_eq!(event["status"], status_json(&s, 100.0));
     assert_eq!(event["status"]["busy"], true);
 }
+
+/// A connection that starts listening is pushed the current status on the next tick, whatever the
+/// box is doing; the same connection asking again is not news.
+#[test]
+fn a_new_listener_is_pushed_the_current_status() {
+    let w = Wakefulness {
+        state: Mutex::new(
+            shared()
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+        ),
+        listeners: Mutex::new(Vec::new()),
+        joined: std::sync::atomic::AtomicBool::new(false),
+    };
+    let writer: crate::session::SharedWriter = Arc::new(Mutex::new(Box::new(std::io::sink())));
+    w.remember(&writer);
+    assert!(
+        w.joined.swap(false, std::sync::atomic::Ordering::SeqCst),
+        "a new listener"
+    );
+    w.remember(&writer);
+    assert!(
+        !w.joined.swap(false, std::sync::atomic::Ordering::SeqCst),
+        "the same one again"
+    );
+}
