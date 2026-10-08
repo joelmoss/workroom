@@ -2116,7 +2116,13 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     provider's sshd host key where that provider keeps it (M5). Live on exe.dev (2026-10-08): all
     seven pass, including two workrooms with distinct `machine-id`, sshd key and enrolment key, a
     push with the Mac disconnected, and a pane's last screen after `restart` (machine-id and sshd
-    key both kept). The boxd live suite was not re-run for the refactor: it bills the boxd account.
+    key both kept), rerun after the switch to the user's own ssh (6a3ede0c). Live on boxd
+    (2026-10-08, after the refactor): eight of nine pass. The ninth,
+    `testAnIdleBoxStillSleepsWithTheAppAttached`, fails on a regression since the 2026-10-06 run
+    (this branch's boxd code behaves as master's; the cause was not bisected): the app's own 10 s status poll
+    keeps the agent's verdict BUSY, so it never lets go and the box never sleeps (measured: BUSY for
+    900 s at a 10 s poll, IDLE at once and asleep at about 307 s at 60 s). #380 redesigns it: the
+    box decides its own wakefulness.
   - **Pool load (D6): pending.** The account is on the Individual (Small) plan, 2 vCPU / 8 GB
     shared by every VM. A base and two building workrooms timed against one alone is to be measured
     once the soak's busy VM, which holds the pool's CPU, is gone.
