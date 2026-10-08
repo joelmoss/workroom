@@ -1360,7 +1360,7 @@ final class RemoteHostsTests: XCTestCase {
     let swept = Swept()
     let remote = RemoteHosts(
       makeDriver: { Self.driver(runtime: runtime, context: $0.context) },
-      sweepDriver: { driver, known, _ in
+      sweepDriver: { driver, known, _, _ in
         swept.add(driver.provisioning?.context, known)
         return []
       })
@@ -1790,6 +1790,30 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(try removed(), ["rm --force --volumes \(names[0])"])
   }
 
+  /// A sweep that cannot write down what it found unknown removes nothing (#284): the list left
+  /// from an older sweep is not this sweep's predecessor, and a container known in between would
+  /// otherwise go on its first sighting after a later config loss.
+  func testASweepThatCannotRecordItsUnknownListRemovesNothing() async throws {
+    let name = ContainerHostDriver.containerName(UUID())
+    let (runtime, log) = try dockerListing([name])
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-hosts-\(UUID().uuidString)", isDirectory: true)
+    addTeardownBlock {
+      try? FileManager.default.setAttributes(
+        [.posixPermissions: 0o755], ofItemAtPath: directory.path)
+      try? FileManager.default.removeItem(at: directory)
+    }
+    let driver = Self.driver(runtime: runtime, context: nil, directory: directory)
+
+    _ = await driver.sweep(keeping: [])
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+    let failures = await driver.sweep(keeping: [])
+
+    XCTAssertEqual(try calls(log).filter { $0.hasPrefix("rm ") }, [], "removed on a stale list")
+    XCTAssertTrue(
+      failures.contains { $0.hasPrefix("recording unknown containers") }, "\(failures)")
+  }
+
   /// A sweep removes at most `cap` containers, and the rest go on later launches, `cap` at a time:
   /// even two bad config reads in a row take few (#284).
   func testASweepRemovesAtMostItsCapAndLeavesTheRestForLaterLaunches() async throws {
@@ -1808,105 +1832,169 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(try removed().count, 4)
   }
 
-  /// A create marks its runtime and context before running a container, so a crash before config
-  /// records the host still leaves something that names it (#284). Only a sweep that finds nothing
-  /// of this build's, with the marker older than its grace, clears it: a create under way keeps it.
-  func testACreateMarksItsRuntimeUntilASweepFindsNothingLeft() async throws {
+  /// A fresh directory for a driver's host files, removed after the test.
+  private func hostsDirectory() throws -> URL {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
       "wr-hosts-\(UUID().uuidString)", isDirectory: true)
-    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-    func marked() -> [String] {
-      ContainerHostDriver.made(in: directory).map { "\($0.dialect) \($0.context ?? "nil")" }
-    }
-    let (failing, _) = try scriptedRuntime("run*) exit 1 ;;")
-    do {
-      _ = try await Self.driver(runtime: failing, context: nil, directory: directory)
-        .create()
-      XCTFail("run was meant to fail")
-    } catch {}
-    XCTAssertEqual(marked(), ["docker nil"])
-
-    let (listing, _) = try dockerListing([ContainerHostDriver.containerName(UUID())])
-    _ = await Self.driver(runtime: listing, context: nil, directory: directory)
-      .sweep(keeping: [], grace: 0)
-    XCTAssertEqual(marked(), ["docker nil"], "a container is still there")
-
-    let (empty, _) = try stubRuntime()
-    let sweeper = Self.driver(runtime: empty, context: nil, directory: directory)
-    _ = await sweeper.sweep(keeping: [], grace: 3600)
-    XCTAssertEqual(marked(), ["docker nil"], "the marker is new enough to be a create's")
-    _ = await sweeper.sweep(keeping: [], grace: 0)
-    XCTAssertEqual(marked(), [])
-  }
-
-  /// With nothing recorded and no driver made, a launch sweeps each runtime and context a create
-  /// marked (#284): a crash during a project's first base creation leaves exactly that. With no
-  /// marker it makes no driver, so a user who never made a container workroom is never asked about
-  /// Docker.
-  func testAdoptSweepsWhatACreateMarkedWithNothingRecorded() async throws {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-      "wr-made-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    return directory
+  }
+
+  /// A create writes its container's name down as pending before running it, so a crash before
+  /// config records the host still leaves it named (#284); a create that removed its container
+  /// again takes the name off.
+  func testACreateJournalsItsContainerUntilItIsRemoved() async throws {
+    let directory = try hostsDirectory()
+    let journal = directory.appendingPathComponent("pending-containers-docker.json")
+    let seen = directory.appendingPathComponent("seen-at-run")
+    let (failing, _) = try scriptedRuntime(
+      "run*) cat \(ContainerHostDriver.shellQuoted(journal.path)) >> "
+        + "\(ContainerHostDriver.shellQuoted(seen.path)); exit 1 ;;")
+    let driver = Self.driver(runtime: failing, context: nil, directory: directory)
+    do {
+      _ = try await driver.create()
+      XCTFail("run was meant to fail")
+    } catch {}
+    XCTAssertTrue(
+      try String(contentsOf: seen, encoding: .utf8).contains("workroom-"),
+      "the name was not pending when the container ran")
+    XCTAssertEqual(driver.pendingContainers, [], "a removed container stayed pending")
+    XCTAssertTrue(ContainerHostDriver.pending(in: directory).isEmpty)
+  }
+
+  /// With nothing recorded, a sweep takes only containers a create left pending, and no images
+  /// (#284): a lost config, or a launch with a throwaway `HOME`, reads nothing, and every live
+  /// container would look unknown.
+  func testASweepWithNothingRecordedTakesOnlyPendingContainers() async throws {
+    let directory = try hostsDirectory()
+    let (leftover, live) = (
+      ContainerHostDriver.containerName(UUID()), ContainerHostDriver.containerName(UUID())
+    )
+    try JSONEncoder().encode([leftover]).write(
+      to: directory.appendingPathComponent("pending-containers-docker.json"))
+    let (runtime, log) = try dockerListing([leftover, live])
+    let driver = Self.driver(runtime: runtime, context: nil, directory: directory)
+
+    _ = await driver.sweep(keeping: [], onlyPending: true)
+    _ = await driver.sweep(keeping: [], onlyPending: true)
+
+    XCTAssertEqual(
+      try calls(log).filter { $0.hasPrefix("rm ") }, ["rm --force --volumes \(leftover)"])
+    XCTAssertFalse(try calls(log).contains { $0.hasPrefix("images") }, "images were swept")
+    XCTAssertEqual(driver.pendingContainers, [])
+  }
+
+  /// With nothing recorded and no driver made, a launch sweeps each runtime and context with a
+  /// container pending, and only those (#284): a crash during a project's first base creation
+  /// leaves exactly that. With none pending it makes no driver, so a user who never made a
+  /// container workroom is never asked about Docker. Config recording a host takes it off.
+  func testAdoptSweepsWhatACreateLeftPendingWithNothingRecorded() async throws {
+    let directory = try hostsDirectory()
     let (runtime, _) = try stubRuntime()
     let swept = Swept()
-    let make = { (madeIn: URL) in
+    let make = {
       RemoteHosts(
         makeDriver: {
           Self.driver(
-            runtime: runtime, context: $0.context, dialect: $0.runtime == .apple ? .apple : .docker)
+            runtime: runtime, context: $0.context,
+            dialect: $0.runtime == .apple ? .apple : .docker, directory: directory)
         },
-        sweepDriver: { driver, known, _ in
+        sweepDriver: { driver, known, _, onlyPending in
           swept.add(
             (driver.provisioning?.dialect == .apple ? "apple " : "docker ")
-              + (driver.provisioning?.context ?? "nil"), known)
+              + (driver.provisioning?.context ?? "nil") + (onlyPending ? " pending" : ""), known)
           return []
-        }, madeIn: madeIn)
+        }, pendingIn: directory)
     }
 
-    make(directory).adopt([])
+    make().adopt([])
     try await Task.sleep(for: .milliseconds(50))
-    XCTAssertTrue(swept.calls.isEmpty, "a launch with no marker swept")
+    XCTAssertTrue(swept.calls.isEmpty, "a launch with nothing pending swept")
 
-    for name in ["made-containers-docker@orbstack", "made-containers-apple", "unrelated"] {
-      try Data().write(to: directory.appendingPathComponent(name))
+    for name in ["pending-containers-docker@orbstack.json", "pending-containers-apple.json"] {
+      try JSONEncoder().encode(["workroom-x"]).write(to: directory.appendingPathComponent(name))
     }
-    make(directory).adopt([])
+    try Data().write(to: directory.appendingPathComponent("unrelated"))
+    make().adopt([])
     for _ in 0..<500 where swept.calls.count < 2 { try await Task.sleep(for: .milliseconds(2)) }
-    XCTAssertEqual(Set(swept.calls.compactMap(\.context)), ["docker orbstack", "apple nil"])
+    XCTAssertEqual(
+      Set(swept.calls.compactMap(\.context)), ["docker orbstack pending", "apple nil pending"])
+
+    let boxd = HostDescriptor(
+      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+      account: "usr_1")
+    make().adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: boxd)])
+    for _ in 0..<500 where swept.calls.count < 4 { try await Task.sleep(for: .milliseconds(2)) }
+    XCTAssertTrue(
+      swept.calls.dropFirst(2).allSatisfy { $0.context?.hasSuffix("pending") == true },
+      "a recorded boxd host made a container sweep take more than what was pending")
+
+    let id = UUID()
+    let recorded = HostDescriptor(
+      driver: RemoteWorkrooms.containerDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+      container: Self.record(context: "orbstack"))
+    let remote = make()
+    remote.adopt([Project(path: "/proj", vcs: "git", workrooms: [], host: recorded)])
+    for _ in 0..<500 where swept.calls.count < 6 { try await Task.sleep(for: .milliseconds(2)) }
+    XCTAssertTrue(
+      swept.calls.dropFirst(4).allSatisfy { $0.context?.hasSuffix("pending") == false },
+      "a launch that records a host swept only what was pending")
+    try JSONEncoder().encode([ContainerHostDriver.containerName(id), "workroom-x"]).write(
+      to: directory.appendingPathComponent("pending-containers-docker@orbstack.json"))
+    remote.adopt([Project(path: "/proj", vcs: "git", workrooms: [], host: recorded)])
+    let pinned = try XCTUnwrap(remote.existingDriver(holding: id) as? ContainerHostDriver)
+    XCTAssertEqual(pinned.pendingContainers, ["workroom-x"], "a recorded host stayed pending")
   }
 
   /// A runtime that could not list its containers at launch (Docker not started yet) is swept on a
   /// later reload rather than skipped for the whole launch (#284), and once its sweep ran, no
   /// reload sweeps it again: a second sweep in one launch would pass for the next launch's.
   func testARuntimeDownAtLaunchIsSweptOnALaterReload() async throws {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-      "wr-made-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-    try Data().write(to: directory.appendingPathComponent("made-containers-docker"))
+    let directory = try hostsDirectory()
+    try JSONEncoder().encode(["workroom-x"]).write(
+      to: directory.appendingPathComponent("pending-containers-docker.json"))
     let (runtime, _) = try stubRuntime()
     let swept = Swept()
     let remote = RemoteHosts(
       makeDriver: { Self.driver(runtime: runtime, context: $0.context) },
-      sweepDriver: { driver, known, _ in
+      sweepDriver: { driver, known, _, _ in
         swept.add(driver.provisioning?.context, known)
         return swept.calls.count == 1 ? [ContainerHostDriver.listingFailed + "daemon down"] : []
-      }, madeIn: directory)
+      }, pendingIn: directory)
     func reload(expecting calls: Int) async throws {
       remote.adopt([])
-      for _ in 0..<500 where swept.calls.count < calls {
+      // Until the sweep this reload started, if any, has ended (`finishSweep`).
+      for _ in 0..<500 where swept.calls.count < calls || remote.sweepsRunning > 0 {
         try await Task.sleep(for: .milliseconds(2))
       }
-      // Long enough for the detached sweep's end to be recorded.
-      try await Task.sleep(for: .milliseconds(50))
     }
 
     try await reload(expecting: 1)
     try await reload(expecting: 2)
     XCTAssertEqual(swept.calls.count, 2, "a sweep that could not list was not tried again")
-    try await reload(expecting: 3)
+    try await reload(expecting: 2)
     XCTAssertEqual(swept.calls.count, 2, "a sweep that ran was run again in the same launch")
+  }
+
+  /// A sweep whose listing failed leaves the last unknown list as it was (#284), so a runtime that
+  /// is down for a launch neither resets the two-sweep count nor stands in for a sweep.
+  func testAFailedListingKeepsTheLastUnknownList() async throws {
+    let directory = try hostsDirectory()
+    let name = ContainerHostDriver.containerName(UUID())
+    let (runtime, log) = try dockerListing([name])
+    let (down, _) = try scriptedRuntime("ps*) exit 1 ;;")
+    let up = Self.driver(runtime: runtime, context: nil, directory: directory)
+
+    _ = await up.sweep(keeping: [])
+    let failures = await Self.driver(runtime: down, context: nil, directory: directory)
+      .sweep(keeping: [])
+    XCTAssertTrue(
+      failures.first?.hasPrefix(ContainerHostDriver.listingFailed) == true, "\(failures)")
+    XCTAssertEqual(try calls(log).filter { $0.hasPrefix("rm ") }, [], "removed on one sighting")
+    _ = await up.sweep(keeping: [])
+
+    XCTAssertEqual(try calls(log).filter { $0.hasPrefix("rm ") }, ["rm --force --volumes \(name)"])
   }
 
   // MARK: Apple's container runtime (#309)
@@ -2196,7 +2284,7 @@ final class RemoteHostsTests: XCTestCase {
       makeDriver: { key in
         Self.driver(
           runtime: runtime, context: key.context, dialect: key.runtime == .apple ? .apple : .docker)
-      }, sweepDriver: { _, _, _ in [] })
+      }, sweepDriver: { _, _, _, _ in [] })
     let (docker, apple) = (UUID(), UUID())
     let host = { (id: UUID, runtime: RemoteWorkrooms.Runtime) in
       HostDescriptor(
