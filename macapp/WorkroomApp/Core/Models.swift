@@ -63,7 +63,8 @@ struct HostDescriptor: Codable, Hashable {
     case .apple:
       return "Apple container on this Mac"
     case nil:
-      return driver.map { "Remote workroom on \($0)" } ?? "Remote workroom"
+      let provider = RemoteHosts.DriverKey(self)?.place.displayName ?? driver
+      return provider.map { "Remote workroom on \($0)" } ?? "Remote workroom"
     }
   }
 
