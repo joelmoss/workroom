@@ -443,60 +443,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// What boxd says of a machine, for a background read (#356).
   enum Presence: Equatable, Sendable { case awake, asleep, gone }
 
-  /// How long boxd lets `host` sit idle on the network before suspending or hibernating it, in
-  /// seconds: the shorter of the two that are set, or nil when neither is (#356). Throws when boxd
-  /// can't say, which a caller must not take for "no timer".
-  func idleWindow(_ host: HostID) async throws -> TimeInterval? {
-    guard case .remote(let id) = host else { return nil }
-    let timers = try decode(
-      Timers.self, await cli(["machine", "get", name(of: id)], timeout: Self.statusTimeout), "")
-    return [timers.autoSuspend, timers.autoHibernate].compactMap { $0?.seconds }.filter { $0 > 0 }
-      .min()
-  }
-
-  /// `machine get --json`'s idle timers. Their encoding isn't documented, so each is read as
-  /// seconds from a number, or from a string such as `120`, `120s`, `2m` or `1h`; anything else is
-  /// nil, which never warns.
-  struct Timers: Decodable {
-    let autoSuspend: Seconds?
-    let autoHibernate: Seconds?
-    enum CodingKeys: String, CodingKey {
-      case autoSuspend = "auto_suspend"
-      case autoHibernate = "auto_hibernate"
-    }
-
-    init(from decoder: Decoder) throws {
-      let fields = try decoder.container(keyedBy: CodingKeys.self)
-      autoSuspend = try? fields.decodeIfPresent(Seconds.self, forKey: .autoSuspend)
-      autoHibernate = try? fields.decodeIfPresent(Seconds.self, forKey: .autoHibernate)
-    }
-  }
-
-  struct Seconds: Decodable, Equatable {
-    let seconds: TimeInterval?
-
-    init(from decoder: Decoder) throws {
-      let value = try decoder.singleValueContainer()
-      let read = try (try? value.decode(Double.self)) ?? Self.parse(value.decode(String.self))
-      // A timer past `maximum` (or not finite) is nothing boxd sets, and as a `Duration` it
-      // would trap: it reads as unknown instead.
-      seconds = read.flatMap { $0.isFinite && $0 <= Self.maximum ? $0 : nil }
-    }
-
-    /// A week: longer than any idle timer boxd offers.
-    static let maximum: TimeInterval = 7 * 24 * 3600
-
-    static func parse(_ text: String) -> TimeInterval? {
-      let text = text.trimmingCharacters(in: .whitespaces).lowercased()
-      let units: [(String, Double)] = [("h", 3600), ("m", 60), ("s", 1)]
-      for (suffix, scale) in units where text.hasSuffix(suffix) {
-        return Double(text.dropLast()).map { $0 * scale }
-      }
-      return Double(text)
-    }
-  }
-
-  /// How long a status read (`presence`, `idleWindow`) waits for the CLI: a status sweep and a
+  /// How long a status read (`presence`) waits for the CLI: a status sweep and a
   /// connect wait on it, so a hung CLI must not hold them for the CLI's usual 120 s.
   static let statusTimeout: TimeInterval = 10
 

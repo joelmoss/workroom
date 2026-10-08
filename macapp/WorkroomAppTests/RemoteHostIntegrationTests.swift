@@ -189,8 +189,13 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let host = HostID.remote(id)
     let manager = HostConnectionManager()
     _ = try await manager.connect(host: host) { connection }
-    let model = WakefulnessModel(transport: .on(host, manager: manager))
-    await model.refresh()
+    let model = WakefulnessModel(transport: .on(host, manager: manager), host: id)
+    model.startWatching()
+    defer { model.stopWatching() }
+    let deadline = ContinuousClock.now + .seconds(10)
+    while model.status == nil, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(50))
+    }
     let status = try XCTUnwrap(model.status, "no verdict from the host")
     XCTAssertTrue(status.running, "the host's classifier is not running")
   }

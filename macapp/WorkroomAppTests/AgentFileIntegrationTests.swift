@@ -780,22 +780,27 @@ final class FakeAgent: @unchecked Sendable {
     receivedForwards.filter { $0.opcode == opcode }.map(\.stream)
   }
 
-  /// One `status` reply, with the box busy past a 4h ceiling and a prompt pending.
-  static let statusJSON = """
-    {"version":1,"result":{"running":true,"verdict":"BUSY","busy":true,\
-    "classifier_verdict":"BUSY","monotonic":15000.0,"awake_seconds":14400.5,\
-    "awake_ceiling_exceeded":true,"prompt_pending":true,"prompt_deadline":15600.0,\
-    "asserting":true,"suppressed":false,"ceiling_seconds":14400.0,\
-    "prompt_timeout_seconds":600.0,"ask_at_ceiling":true,"cpu_fraction":0.0021,\
-    "keep_awake":{"last_sent":14990.0,"error":null},"stalled":false}}
+  /// What a version 2 agent's `status` says (#380): the box busy, kept awake by its heartbeat.
+  static let statusResultJSON = """
+    {"running":true,"verdict":"BUSY","busy":true,"monotonic":15000.0,"cpu_fraction":0.0021,\
+    "keep_awake":{"last_sent":14990.0,"error":null},"stalled":false}
     """
 
-  static let ceilingPromptJSON =
-    #"{"version":1,"event":"awake_ceiling_prompt","awake_seconds":14400.5,"prompt_deadline":15600.0}"#
+  /// One `status` reply.
+  static let statusJSON = #"{"version":2,"result":"# + statusResultJSON + "}"
 
-  /// Pushes an event on the Status service, stream 0 — the agent's own stream. The ceiling prompt by
-  /// default; any body, so a malformed or unknown event can be proven dropped.
-  func pushCeilingPrompt(body json: String = FakeAgent.ceilingPromptJSON) {
+  /// A pushed change of verdict: the box gone IDLE, a tick later.
+  static let statusChangeJSON =
+    #"{"version":2,"event":"status","status":"#
+    + statusResultJSON.replacingOccurrences(
+      of: #""verdict":"BUSY","busy":true"#,
+      with: #""verdict":"IDLE","busy":false"#
+    )
+    .replacingOccurrences(of: "15000.0", with: "15001.0") + "}"
+
+  /// Pushes an event on the Status service, stream 0 — the agent's own stream. A change of verdict
+  /// by default; any body, so a malformed or unknown event can be proven dropped.
+  func pushStatusChange(body json: String = FakeAgent.statusChangeJSON) {
     push(service: 4, stream: 0, payload: Data([1]) + Data(json.utf8))
   }
 
@@ -918,8 +923,6 @@ final class FakeAgent: @unchecked Sendable {
         switch bytes[0] {
         case 2 where request.contains("capabilities"):
           body = capabilities
-        case 4 where status && request.contains("keep"):
-          body = Data(#"{"version":1,"result":{"kept":true}}"#.utf8)
         case 4 where status:
           body = Data(Self.statusJSON.utf8)
         default:

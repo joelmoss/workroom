@@ -676,7 +676,8 @@ final class PortForwardingModelTests: XCTestCase {
     forwarding: (@Sendable () async throws -> (HostConnectionManager.Lease, AgentForwardService))? =
       nil,
     refusal: String? = nil, refusals: Int = .max,
-    current override: (@Sendable () async -> HostConnectionManager.Lease?)? = nil
+    current override: (@Sendable () async -> HostConnectionManager.Lease?)? = nil,
+    reconnect: PortForward.Reconnect? = nil
   ) async throws -> PortForwardingModel {
     let agent = try FakeAgent(
       version: 5, forward: true, forwardRefusal: refusal, forwardRefusals: refusals)
@@ -694,7 +695,8 @@ final class PortForwardingModelTests: XCTestCase {
       transport: .init(
         forwarding: forwarding ?? { (lease, service) },
         updates: { stream },
-        current: override ?? { current.get() }))
+        current: override ?? { current.get() },
+        reconnect: { reconnect }))
     models.append(model)
     return model
   }
@@ -780,6 +782,93 @@ final class PortForwardingModelTests: XCTestCase {
     publish(HostConnectionManager.Snapshot(lease: current, status: .disconnected))
     await settle("the forwards outlived the connection") { model.forwards.isEmpty }
     XCTAssertFalse(model.connected)
+  }
+
+  /// A forward on a host whose agent lets go of it (#380) outlives the connection: its row and its
+  /// local port stay, the caption says it reconnects on use, and a connection made to it then
+  /// reconnects and is carried on the new connection, without the user adding it again.
+  func testAForwardThatReconnectsOutlivesItsConnectionAndCarriesOnTheNext() async throws {
+    let next = try FakeAgent(version: 5, forward: true)
+    fakes.append(next)
+    let reconnects = Counter()
+    // Kept off the main actor: the test blocks it in a synchronous read while this runs.
+    let made = Made()
+    let first = lease()
+    let model = try await model(
+      lease: first,
+      reconnect: {
+        reconnects.bump()
+        let connection = try? await AgentVCSConnection.connect(
+          host: .local, socketPath: next.socketPath)
+        made.keep(connection)
+        return connection
+      })
+    model.draft = "5173"
+    await model.add()
+    let entry = try XCTUnwrap(model.forwards.first)
+    XCTAssertTrue(entry.reconnects)
+    await settle("the watch did not see the connection") { model.connected }
+
+    await connections[0].close()
+    publish(HostConnectionManager.Snapshot(lease: first, status: .disconnected))
+    await settle("the watch did not see the disconnect") { !model.connected }
+    XCTAssertEqual(model.forwards.map(\.id), [entry.id], "the row went with its connection")
+    XCTAssertNil(model.message)
+    XCTAssertEqual(reconnects.count, 0, "nothing reconnects before the forward is used")
+
+    let client = try TCPClient(port: entry.localPort)
+    defer { client.close() }
+    try client.write(Data("x".utf8))
+    XCTAssertEqual(try client.read(1), Data("x".utf8), "not carried on the new connection")
+    XCTAssertEqual(reconnects.count, 1)
+    await made.close()
+  }
+
+  /// Which hosts' forwards outlive their connection (#380): every remote host's, a container's
+  /// included, since its agent lets go of an idle connection too; never this Mac's.
+  func testEveryRemoteHostsForwardsReconnectAndThisMacsDoNot() {
+    let manager = HostConnectionManager()
+    XCTAssertNil(PortForwardingModel.Transport.reconnecting(.local, manager: manager))
+    XCTAssertNotNil(PortForwardingModel.Transport.reconnecting(.remote(UUID()), manager: manager))
+  }
+
+  /// A forward whose reconnect finds no host (a container the user stopped, a box that is gone)
+  /// refuses the connection and says why.
+  func testAForwardWhoseReconnectFailsRefusesTheConnectionAndSaysWhy() async throws {
+    let first = lease()
+    let model = try await model(lease: first, reconnect: { nil })
+    model.draft = "5173"
+    await model.add()
+    let entry = try XCTUnwrap(model.forwards.first)
+    await connections[0].close()
+    publish(HostConnectionManager.Snapshot(lease: first, status: .disconnected))
+    await settle("the watch did not see the disconnect") { !model.connected }
+
+    let client = try TCPClient(port: entry.localPort)
+    defer { client.close() }
+    XCTAssertEqual(try client.read(1, timeout: 5), Data(), "a refused connection was left open")
+    await settle("the row never said why") { model.forwards.first?.failure != nil }
+    XCTAssertEqual(
+      model.forwards.first?.failure, "Could not reconnect to the host; a connection was refused.")
+  }
+
+  private final class Made: @unchecked Sendable {
+    private let lock = NSLock()
+    private var connections: [AgentVCSConnection] = []
+    func keep(_ connection: AgentVCSConnection?) {
+      guard let connection else { return }
+      lock.withLock { connections.append(connection) }
+    }
+    func close() async {
+      for connection in lock.withLock({ connections }) { await connection.close() }
+    }
+  }
+
+  private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func bump() { lock.withLock { value += 1 } }
+    var count: Int { lock.withLock { value } }
   }
 
   /// An `add()` that resumes after the watch consumed a disconnect must not leave a row for a

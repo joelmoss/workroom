@@ -2,9 +2,16 @@
 //!
 //! A remote workroom's provider hibernates an idle box. The agent is the only thing on the box that
 //! knows whether the box is idle, so it decides BUSY or IDLE once a second and publishes the
-//! verdict. While the published verdict is BUSY it also keeps the box awake, with a small network
-//! heartbeat the provider's idle timer counts ([`heartbeat`], issue #257). Nothing here calls a
-//! provider or changes its settings: the heartbeat stopping is all it takes for the box to sleep.
+//! verdict. While the verdict is BUSY it also keeps the box awake, with a small network heartbeat
+//! the provider's idle timer counts ([`heartbeat`], issue #257). Nothing here calls a provider or
+//! changes its settings: the heartbeat stopping is all it takes for the box to sleep.
+//!
+//! **The box decides its own wakefulness (#380).** The verdict is pushed to every connection that
+//! has asked for `status`, so no client polls (a poll's own bytes on eth0 voted the box BUSY for
+//! good). And once the verdict has been IDLE for [`LET_GO_GRACE_S`], the service closes the
+//! connections that serve no attached pane (`serve::Connections::let_go`): with Workroom's traffic
+//! gone, the provider's own idle timer sleeps the box. When to sleep, and for how long a box may
+//! stay awake, are the provider's and the user's; there is no awake ceiling here any more.
 //!
 //! **The policy is not invented here.** It is P4, frozen in
 //! `vcs/scripts/oq19/results/frozen.json` and measured in
@@ -45,7 +52,6 @@ pub mod heartbeat;
 pub mod sample;
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use sample::{Proc, Sample};
@@ -54,8 +60,17 @@ use serde_json::{json, Value};
 use crate::protocol::envelope::{Envelope, Service};
 use crate::session::SharedWriter;
 
-/// Bumped when the Status service's JSON shape changes, exactly as `FILE_SERVICE_VERSION` is.
-pub const STATUS_SERVICE_VERSION: u32 = 1;
+/// Bumped when the Status service's JSON shape changes, exactly as `FILE_SERVICE_VERSION` is. 2
+/// (#380): the awake ceiling's fields and requests are gone, and verdict changes are pushed, so an
+/// app that sees 2 needs no poll.
+pub const STATUS_SERVICE_VERSION: u32 = 2;
+
+/// How long the verdict stays IDLE before the service lets go of the connections it may close, and
+/// how old a connection must be before it may be closed: a new one is someone arriving, and a pane's
+/// connection says so with its `Attach` well inside this. On top of the policy's 30 s window, so a
+/// connection is let go of a minute after the last work on the box, well inside a provider's own
+/// idle timer (boxd's were 120 s in the live suite).
+pub const LET_GO_GRACE_S: f64 = 30.0;
 
 /// A `SharedWriter` held without keeping its connection alive.
 type WeakWriter = Weak<Mutex<Box<dyn std::io::Write + Send>>>;
@@ -413,10 +428,6 @@ pub struct Classifier {
     /// The last tick was under the resume mask, so this tick's CPU and network deltas (what the
     /// last masked second used) are masked too.
     wake_masked_last: bool,
-    /// The last tick's keystroke age, so the ceiling can tell a user acting from a job running.
-    since_input: f64,
-    /// The last tick's CPU and network signals were masked (see [`WAKE_GAP_S`]).
-    masked: bool,
 }
 
 impl Classifier {
@@ -435,26 +446,12 @@ impl Classifier {
             wake_masked_until: None,
             resumed: false,
             wake_masked_last: false,
-            since_input: f64::INFINITY,
-            masked: false,
         }
     }
 
     /// Whether the last tick was the first after a resume. Production only, like the mask.
     pub fn resumed(&self) -> bool {
         self.resumed
-    }
-
-    /// Whether the last tick's CPU and network signals were masked by a resume: its IDLE verdict
-    /// then says nothing about a job that uses only those, and the ceiling must not act on it.
-    pub fn wake_masked(&self) -> bool {
-        self.masked
-    }
-
-    /// Whether the user acted within the policy's grace as of the last tick: the keystroke signal,
-    /// which `session.rs` feeds only for input its classifier calls the user's own.
-    pub fn user_acted(&self) -> bool {
-        self.policy.grace > 0.0 && self.since_input <= self.policy.grace
     }
 
     /// Mask the box's own resume. After a wake the provider's guest tooling burns 0.2-0.4 core and
@@ -512,7 +509,6 @@ impl Classifier {
         // mask still measures the last masked second; it is masked too.
         let masked = wake_masked || self.wake_masked_last;
         self.wake_masked_last = wake_masked;
-        self.masked = masked;
         // A masked tick moves the window's base to itself instead of feeding it: bytes that arrive
         // under a mask must not sit in the window and vote BUSY the tick the mask ends (the resume
         // blip is ~1.5 KB/s for three seconds; unmasking on the fourth with those bytes still inside
@@ -566,7 +562,6 @@ impl Classifier {
             }
         }
         let f = self.features(s, lifecycle);
-        self.since_input = f.since_input;
         if f.votes_busy(&self.policy) {
             self.last_busy = Some(f.t);
         }
@@ -593,247 +588,6 @@ impl Classifier {
 
     pub fn verdict(&self) -> Verdict {
         self.current.unwrap_or(Verdict::Idle)
-    }
-}
-
-// ---- the awake ceiling (OQ22) -----------------------------------------------------------------
-
-/// How the ceiling behaves. Advisory-only by default: past the ceiling a BUSY box is REPORTED,
-/// never hibernated by this service. Force-sleep is not offered.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Settings {
-    /// How long a box may stay continuously BUSY before the ceiling trips.
-    pub ceiling: f64,
-    /// How long the user has to answer the prompt before the service stops asserting BUSY.
-    pub prompt_timeout: f64,
-    /// Off: report only. On: prompt at the ceiling, and let the box sleep if nobody answers.
-    pub ask: bool,
-}
-
-/// 4 h spares the longest job the measurement ran; 10 min to answer a prompt.
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            ceiling: 4.0 * 3600.0,
-            prompt_timeout: 600.0,
-            ask: false,
-        }
-    }
-}
-
-/// A number of seconds the ceiling can use: 30 s to 30 days. `f64::parse` accepts "nan", "inf"
-/// and "-1", and each breaks the ceiling a different way: NaN trips it on the first BUSY tick
-/// (every comparison is false), infinity never trips it, and a non-positive prompt timeout expires
-/// the prompt on the next tick and lets the box sleep with no grace at all. The bounds stop the
-/// finite versions of the same: a ceiling of 1e300 s is never reached, and a prompt timeout of a
-/// millisecond is no grace. They matter more since #257, because a remote agent keeps what the app
-/// sends it across restarts, ahead of its flags.
-pub fn usable_seconds(seconds: f64) -> bool {
-    (USABLE_SECONDS_MIN..=USABLE_SECONDS_MAX).contains(&seconds)
-}
-
-/// Mirrored by the app's `AgentWakefulnessSettings.usableSeconds`.
-const USABLE_SECONDS_MIN: f64 = 30.0;
-const USABLE_SECONDS_MAX: f64 = 30.0 * 24.0 * 3600.0;
-
-impl Settings {
-    /// From a `settings` request, or the file a remote agent keeps them in (#257): the same three
-    /// fields `status` reports, all required, each number [`usable_seconds`].
-    pub fn from_json(value: &Value) -> Result<Settings, String> {
-        let seconds = |key: &str| {
-            value
-                .get(key)
-                .and_then(Value::as_f64)
-                .filter(|v| usable_seconds(*v))
-                .ok_or_else(|| {
-                    format!(
-                        "{key} must be between {USABLE_SECONDS_MIN} and {USABLE_SECONDS_MAX} seconds"
-                    )
-                })
-        };
-        Ok(Settings {
-            ceiling: seconds("ceiling_seconds")?,
-            prompt_timeout: seconds("prompt_timeout_seconds")?,
-            ask: value
-                .get("ask_at_ceiling")
-                .and_then(Value::as_bool)
-                .ok_or("ask_at_ceiling must be true or false")?,
-        })
-    }
-
-    pub fn to_json(self) -> Value {
-        json!({
-            "ceiling_seconds": self.ceiling,
-            "prompt_timeout_seconds": self.prompt_timeout,
-            "ask_at_ceiling": self.ask,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CeilingState {
-    /// Inside the ceiling, or not BUSY at all.
-    Below,
-    /// Past the ceiling, reported to the app. The service keeps asserting BUSY (advisory-only).
-    Exceeded,
-    /// Past the ceiling with `ask` on: the app has been asked, and has until `deadline`.
-    Prompted { deadline: f64 },
-    /// Nobody answered: the service stops asserting BUSY and lets the provider's own timer sleep
-    /// the box. It never sleeps the box itself.
-    Suppressed,
-}
-
-/// The ceiling state machine. Nothing here hibernates anything.
-#[derive(Debug)]
-pub struct Ceiling {
-    pub settings: Settings,
-    busy_since: Option<f64>,
-    state: CeilingState,
-    /// The time of the last `step`, so a resume can carry the awake time from before the sleep.
-    last_t: Option<f64>,
-}
-
-impl Ceiling {
-    pub fn new(settings: Settings) -> Self {
-        Self {
-            settings,
-            busy_since: None,
-            state: CeilingState::Below,
-            last_t: None,
-        }
-    }
-
-    /// Feeds the classifier's verdict. Returns true when a prompt should be raised NOW (once per
-    /// crossing, not once per tick).
-    pub fn step(&mut self, t: f64, verdict: Verdict) -> bool {
-        self.last_t = Some(t);
-        if verdict == Verdict::Idle {
-            // The box went idle on its own: the ceiling has nothing left to cap.
-            self.busy_since = None;
-            self.state = CeilingState::Below;
-            return false;
-        }
-        let since = *self.busy_since.get_or_insert(t);
-        if let CeilingState::Prompted { deadline } = self.state {
-            if t >= deadline {
-                self.state = CeilingState::Suppressed;
-            }
-            return false;
-        }
-        if self.state != CeilingState::Below || t - since < self.settings.ceiling {
-            return false;
-        }
-        if self.settings.ask {
-            self.state = CeilingState::Prompted {
-                deadline: t + self.settings.prompt_timeout,
-            };
-            true
-        } else {
-            self.state = CeilingState::Exceeded;
-            false
-        }
-    }
-
-    /// New settings from the app (#257), in force from this tick. The app sends them on every
-    /// connect, so the same settings again change nothing. Otherwise a pending or unanswered prompt
-    /// is kept only while ask mode stays on and the box is still past the new ceiling, and a kept
-    /// prompt keeps the deadline it was raised with; anything else goes back below, and the next
-    /// `step` crosses again under the new settings if the box is past them: an advisory crossing,
-    /// or a fresh prompt.
-    pub fn set_settings(&mut self, t: f64, settings: Settings) {
-        if settings == self.settings {
-            return;
-        }
-        let keep_prompt = settings.ask
-            && matches!(
-                self.state,
-                CeilingState::Prompted { .. } | CeilingState::Suppressed
-            )
-            && self.awake_for(t) >= settings.ceiling;
-        self.settings = settings;
-        if !keep_prompt {
-            self.state = CeilingState::Below;
-        }
-    }
-
-    /// The user said keep it awake: the ceiling restarts from here.
-    pub fn keep(&mut self, t: f64) {
-        self.busy_since = Some(t);
-        self.state = CeilingState::Below;
-    }
-
-    /// The user acted (a keystroke the input classifier called theirs). While a prompt is pending,
-    /// or has gone unanswered and the service has stopped asserting BUSY, that IS the answer:
-    /// someone is at the box, so it is kept awake from here. Without this, `Suppressed` held until
-    /// the classifier went idle on its own, which a user typing never lets it do — the box was
-    /// hibernated under them, and again after every resume. Past an advisory ceiling there is
-    /// nothing to answer, so typing changes nothing there.
-    pub fn user_acted(&mut self, t: f64) {
-        if matches!(
-            self.state,
-            CeilingState::Suppressed | CeilingState::Prompted { .. }
-        ) {
-            self.keep(t);
-        }
-    }
-
-    /// The box resumed from a sleep at `t`. `awake_for` never counts the hours the box spent
-    /// asleep.
-    ///
-    /// After an unanswered prompt (`Suppressed`), the awake time from before the sleep carries
-    /// over, so the box is still past its ceiling and the next BUSY tick asks again at once. A user
-    /// who woke the box gets a fresh prompt card; with nobody there, the box sleeps again once that
-    /// prompt times out, not a whole ceiling later. A wake is never an answer: a connect wakes the
-    /// box too (#356).
-    ///
-    /// Any other state starts over: a job that resumes with the box gets the full ceiling again.
-    pub fn resumed(&mut self, t: f64) {
-        let carried = match (self.state, self.busy_since, self.last_t) {
-            (CeilingState::Suppressed, Some(since), Some(last)) => Some(last - since),
-            _ => None,
-        };
-        self.busy_since = carried.map(|awake| t - awake);
-        self.state = CeilingState::Below;
-    }
-
-    /// `step`, except that an IDLE verdict from a tick whose CPU and network were masked by a
-    /// resume (`Classifier::wake_masked`) is ignored: a job that uses only those reads IDLE for the
-    /// few seconds after every wake, and acting on it would end the awake time `resumed` carried.
-    pub fn step_unless_masked(&mut self, t: f64, verdict: Verdict, masked: bool) -> bool {
-        if masked && verdict == Verdict::Idle {
-            return false;
-        }
-        self.step(t, verdict)
-    }
-
-    pub fn state(&self) -> CeilingState {
-        self.state
-    }
-
-    /// Seconds the box has been continuously BUSY.
-    pub fn awake_for(&self, t: f64) -> f64 {
-        self.busy_since.map_or(0.0, |since| t - since)
-    }
-
-    /// True once the prompt timed out: the service stops asserting BUSY, so the provider's own idle
-    /// timer may sleep the box.
-    pub fn suppressing(&self) -> bool {
-        self.state == CeilingState::Suppressed
-    }
-
-    /// The verdict the service publishes, and keeps the box awake on: the classifier's, except IDLE
-    /// once a prompt went unanswered. Advisory-only: the ceiling never sleeps the box, it can only
-    /// stop the service ASSERTING busy.
-    pub fn published(&self, raw: Verdict) -> Verdict {
-        if self.suppressing() {
-            Verdict::Idle
-        } else {
-            raw
-        }
-    }
-
-    pub fn exceeded(&self) -> bool {
-        self.state != CeilingState::Below
     }
 }
 
@@ -921,7 +675,7 @@ pub fn stop() {
 /// Everything the app can ask about wakefulness. Process-global: one box, one verdict.
 pub struct Wakefulness {
     state: Mutex<Published>,
-    /// Connections that have asked about status and may be sent a ceiling prompt. Weak, so a
+    /// Connections that have asked about status, which each verdict change is pushed to. Weak, so a
     /// closed connection drops out of the list instead of being kept alive by it.
     listeners: Mutex<Vec<WeakWriter>>,
 }
@@ -931,24 +685,9 @@ struct Published {
     running: bool,
     /// Set by [`stop`]. The service thread ends at its next look, so `running` is never set back.
     stopped: bool,
-    /// What the heartbeat follows: the classifier's verdict, or IDLE once the ceiling prompt timed
-    /// out.
+    /// What the heartbeat follows.
     verdict: Verdict,
-    /// What the classifier itself decided, before the ceiling.
-    raw: Verdict,
     t: f64,
-    awake_for: f64,
-    ceiling: CeilingState,
-    settings: Settings,
-    /// Set by a `keep`, consumed by the service thread on its next tick.
-    keep_requested: bool,
-    /// Set by a `settings` request, consumed by the service thread on its next tick, so one place
-    /// owns the ceiling.
-    settings_requested: Option<Settings>,
-    /// The thread that keeps `settings` requests for the next start (`settings_saver`), set before
-    /// the agent accepts a connection. Neither the service's thread nor a connection's reader
-    /// writes the file: a slow disk must hold up neither the heartbeat nor a connection's requests.
-    settings_saver: Option<std::sync::mpsc::Sender<Settings>>,
     /// The service's own CPU as a fraction of one core, against the 0.5% gate.
     cpu_fraction: f64,
     /// When the last heartbeat went out, on the service's monotonic clock.
@@ -958,7 +697,7 @@ struct Published {
     keep_awake_error: Option<String>,
 }
 
-/// At most this many connections are remembered for ceiling prompts. The app is one client.
+/// At most this many connections are remembered for pushed changes. The app is one client.
 const MAX_LISTENERS: usize = 8;
 
 pub fn shared() -> &'static Wakefulness {
@@ -968,14 +707,7 @@ pub fn shared() -> &'static Wakefulness {
             running: false,
             stopped: false,
             verdict: Verdict::Idle,
-            raw: Verdict::Idle,
             t: 0.0,
-            awake_for: 0.0,
-            ceiling: CeilingState::Below,
-            settings: Settings::default(),
-            keep_requested: false,
-            settings_requested: None,
-            settings_saver: None,
             cpu_fraction: 0.0,
             keep_awake_sent: None,
             keep_awake_error: None,
@@ -990,32 +722,12 @@ impl Wakefulness {
         status_json(&s, sample::monotonic())
     }
 
-    /// The app's ceiling settings (#257). Taken by the service thread next tick, as `keep` is.
-    /// Kept for the next start too, queued under the same lock, so the order the file is written in
-    /// is the order the requests took effect, whatever connections they came on.
-    fn request_settings(&self, settings: Settings) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.settings_requested = Some(settings);
-        if let Some(saver) = &state.settings_saver {
-            let _ = saver.send(settings);
-        }
-    }
-
-    /// The app answered "keep": the ceiling restarts. Taken by the service thread next tick, so one
-    /// place owns the state machine.
-    fn keep(&self) {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .keep_requested = true;
-    }
-
-    /// Remembers a connection so the ceiling prompt can reach it.
+    /// Remembers a connection so verdict changes reach it.
     ///
     /// Weakly, and pruned on every touch. A connection's `Subscriptions` are torn down with it
     /// because `ConnectionServices` owns them; this list is process-global (one box, one verdict),
     /// so it has no such teardown and a strong reference here would keep every connection the app
-    /// ever opened alive and eligible for a prompt it can no longer read.
+    /// ever opened alive.
     fn remember(&self, writer: &SharedWriter) {
         let mut listeners = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
         listeners.retain(|w| w.strong_count() > 0);
@@ -1031,32 +743,20 @@ impl Wakefulness {
         listeners.push(Arc::downgrade(writer));
     }
 
-    /// Raises the ceiling prompt on every connection that has asked about status. Unsolicited, on
-    /// stream 0, exactly as the file service pushes watch events. Raised by the service thread, so
-    /// it exists where the service does.
-    ///
-    /// Nobody listening is not an error and does not stop the deadline: ask mode means an
-    /// unattended box past its ceiling gets to sleep, and "the app is closed" is the commonest way
-    /// to be unattended. An app that connects during the prompt sees `prompt_pending` and the
-    /// deadline in its first `status` reply, so it can still answer in time.
+    /// Pushes `status` to every connection that has asked about status: unsolicited, on stream 0,
+    /// exactly as the file service pushes watch events. The app holds no opinion of its own and asks
+    /// `status` only when a connection comes up, so this is how its badge follows the box.
     #[cfg(target_os = "linux")]
-    fn prompt(&self, awake_for: f64, deadline: f64) {
-        let event = json!({
-            "version": STATUS_SERVICE_VERSION,
-            "event": "awake_ceiling_prompt",
-            "awake_seconds": awake_for,
-            "prompt_deadline": deadline,
-        });
+    fn push(&self, status: Value) {
+        let event = status_event(status);
         let listeners: Vec<SharedWriter> = {
             let mut held = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
             held.retain(|w| w.strong_count() > 0);
             held.iter().filter_map(std::sync::Weak::upgrade).collect()
         };
-        // Off the tick thread, one thread per listener: `send` blocks on the writer, and the
-        // moment the prompt fires is the moment the app is likeliest to be wedged (that is why
-        // nobody answered). A stalled write on the tick thread would stop the next heartbeat, and
-        // the provider could then sleep a busy box; a stalled write ahead of another listener
-        // would eat that listener's whole prompt timeout.
+        // Off the tick thread, one thread per listener: `send` blocks on the writer, and a stalled
+        // write on the tick thread would stop the next heartbeat, and the provider could then sleep
+        // a busy box.
         for writer in listeners {
             let event = event.clone();
             std::thread::spawn(move || crate::vcs::send(&writer, Service::Status, 0, event));
@@ -1064,11 +764,20 @@ impl Wakefulness {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
+/// The unsolicited event a verdict change is pushed as: what `status` returns, under `status`.
+fn status_event(status: Value) -> Value {
+    json!({
+        "version": STATUS_SERVICE_VERSION,
+        "event": "status",
+        "status": status,
+    })
+}
+
 /// Handles one Status envelope. Shaped like `file::dispatch`: a single JSON object in, a
 /// `{version, result|error}` object back on the same stream.
 pub fn dispatch(envelope: &Envelope, writer: &SharedWriter) {
-    // Stream 0 belongs to the agent: it is where the ceiling prompt goes, never where a request
-    // arrives.
+    // Stream 0 belongs to the agent: it is where verdict changes go, never where a request arrives.
     if envelope.stream == 0 {
         return;
     }
@@ -1082,33 +791,9 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter) {
             wakefulness.remember(writer);
             reply(json!({"version": STATUS_SERVICE_VERSION, "result": wakefulness.status()}));
         }
-        Some("keep") => {
-            wakefulness.keep();
-            reply(json!({"version": STATUS_SERVICE_VERSION, "result": {"kept": true}}));
-        }
-        // An added request, not a changed shape, so `STATUS_SERVICE_VERSION` stays: an app that
-        // never sends it sees nothing new, and an agent that predates it answers `unsupported`.
-        Some("settings") => {
-            let parsed = serde_json::from_slice::<Value>(&envelope.payload)
-                .map_err(|e| e.to_string())
-                .and_then(|request| Settings::from_json(&request));
-            match parsed {
-                Ok(settings) => {
-                    wakefulness.request_settings(settings);
-                    reply(json!({
-                        "version": STATUS_SERVICE_VERSION,
-                        "result": {"settings": settings.to_json()},
-                    }));
-                }
-                Err(message) => reply(json!({
-                    "version": STATUS_SERVICE_VERSION,
-                    "error": {"invalid": message},
-                })),
-            }
-        }
         _ => reply(json!({
             "version": STATUS_SERVICE_VERSION,
-            "error": {"unsupported": "status requests are {\"method\": \"status\"|\"keep\"|\"settings\"}"},
+            "error": {"unsupported": "status requests are {\"method\": \"status\"}"},
         })),
     }
 }
@@ -1126,24 +811,7 @@ fn status_json(s: &Published, now: f64) -> Value {
         "stalled": stalled,
         "verdict": s.verdict.as_str(),
         "busy": s.verdict == Verdict::Busy,
-        "classifier_verdict": s.raw.as_str(),
         "monotonic": s.t,
-        "awake_seconds": s.awake_for,
-        // OQ22: advisory-only. True means "this box has been BUSY past the ceiling", which the
-        // app shows; the service has not hibernated anything and will not.
-        "awake_ceiling_exceeded": s.ceiling != CeilingState::Below,
-        "prompt_pending": matches!(s.ceiling, CeilingState::Prompted { .. }),
-        "prompt_deadline": match s.ceiling {
-            CeilingState::Prompted { deadline } => json!(deadline),
-            _ => Value::Null,
-        },
-        // The prompt went unanswered: the service has stopped asserting BUSY, so the provider's
-        // own idle timer may sleep the box.
-        "asserting": s.verdict == Verdict::Busy,
-        "suppressed": s.ceiling == CeilingState::Suppressed,
-        "ceiling_seconds": s.settings.ceiling,
-        "prompt_timeout_seconds": s.settings.prompt_timeout,
-        "ask_at_ceiling": s.settings.ask,
         "cpu_fraction": s.cpu_fraction,
         // What actually keeps a BUSY box awake (#257). An error while BUSY means nothing is:
         // the provider's own idle timer may sleep the box.
@@ -1166,74 +834,27 @@ fn stalled(last: f64, now: f64) -> bool {
     now - last > STALL_AFTER_S
 }
 
-/// Where an agent keeps the last settings the app sent it (#257), beside its socket. A
-/// remote agent outlives every connection and keeps its environment through a hand-off,
-/// so this is how the app's settings survive the agent's own restart. A remote host's socket is a
-/// fixed path, so every app that connects to it, any Mac's and any channel's, shares this one file
-/// and the last to connect wins (TODOS.md).
-pub fn settings_path(socket: &Path) -> PathBuf {
-    let mut name = socket.as_os_str().to_owned();
-    name.push(".settings");
-    PathBuf::from(name)
-}
-
-/// The settings kept at `path`, or None when there are none or they do not parse: the agent then
-/// starts with its flags, environment or defaults.
-pub fn load_settings(path: &Path) -> Option<Settings> {
-    let text = std::fs::read(path).ok()?;
-    Settings::from_json(&serde_json::from_slice(&text).ok()?).ok()
-}
-
-/// The one thread that writes `path`, in the order settings are sent to it: two requests at once
-/// (two apps connected, say) would otherwise share the temporary file and could leave it garbled,
-/// and the next start would then quietly fall back to the flags. Best effort: a failed save costs
-/// the next start these settings, and the app sends them again on its next connect. The thread
-/// ends when every sender is gone.
-pub fn settings_saver(
-    path: PathBuf,
-) -> (
-    std::sync::mpsc::Sender<Settings>,
-    std::thread::JoinHandle<()>,
-) {
-    let (sender, receiver) = std::sync::mpsc::channel::<Settings>();
-    let thread = std::thread::Builder::new()
-        .name("wr-settings".into())
-        .spawn(move || {
-            for settings in receiver {
-                if let Err(e) = save_settings(&path, settings) {
-                    crate::note!("wakefulness: settings not kept for the next start: {e}");
-                }
-            }
-        })
-        .expect("spawn the settings saver");
-    (sender, thread)
-}
-
-/// Keeps `settings` at `path`, atomically, so a crash mid-write leaves the old file or the new one.
-pub fn save_settings(path: &Path, settings: Settings) -> std::io::Result<()> {
-    let tmp = path.with_extension("settings.tmp");
-    std::fs::write(&tmp, settings.to_json().to_string())?;
-    std::fs::rename(&tmp, path)
-}
-
-/// One tick's ceiling steps after the classifier's, as the service loop runs them: a resume
-/// carries the awake time across the sleep, a "keep" is applied, then the step ignores the IDLE
-/// ticks the resume mask produces (#356). Returns whether a prompt was raised.
 #[cfg(any(target_os = "linux", test))]
-fn ceiling_step(
-    classifier: &Classifier,
-    ceiling: &mut Ceiling,
-    t: f64,
-    raw: Verdict,
-    keep: bool,
-) -> bool {
-    if classifier.resumed() {
-        ceiling.resumed(t);
+/// What the app shows of a verdict, which a change of is pushed: BUSY or IDLE, and whether a BUSY
+/// box is being kept awake. The rest of `status` (the clock, the last send, the service's CPU)
+/// moves every tick and is no reason to write to the app.
+fn shown(verdict: Verdict, keep_awake_error: bool) -> (Verdict, bool) {
+    (verdict, verdict == Verdict::Busy && keep_awake_error)
+}
+
+#[cfg(any(target_os = "linux", test))]
+/// When the verdict became IDLE, after this tick's: kept while it stays IDLE, gone on BUSY.
+fn idle_since(previous: Option<f64>, t: f64, verdict: Verdict) -> Option<f64> {
+    match verdict {
+        Verdict::Idle => Some(previous.unwrap_or(t)),
+        Verdict::Busy => None,
     }
-    if keep {
-        ceiling.keep(t);
-    }
-    ceiling.step_unless_masked(t, raw, classifier.wake_masked())
+}
+
+#[cfg(any(target_os = "linux", test))]
+/// Whether the service lets go of connections at `t`: IDLE for [`LET_GO_GRACE_S`] at least.
+fn letting_go(idle_since: Option<f64>, t: f64) -> bool {
+    idle_since.is_some_and(|since| t - since >= LET_GO_GRACE_S)
 }
 
 #[cfg(target_os = "linux")]
@@ -1243,31 +864,17 @@ pub use service::spawn;
 mod service {
     use super::heartbeat::{self, KeepAwake};
     use super::{
-        drain_counters, load_settings, settings_path, settings_saver, shared, Boundary, Ceiling,
-        CeilingState, Classifier, Policy, Settings, EXCLUDED_COMMS,
+        drain_counters, idle_since, letting_go, shared, shown, status_json, Boundary, Classifier,
+        Policy, EXCLUDED_COMMS, LET_GO_GRACE_S,
     };
     use crate::session::SessionStore;
-    use std::path::Path;
     use std::time::Duration;
 
     /// Starts the wakefulness thread. One per agent; it runs whether or not a client is attached,
     /// because the whole point is to keep reporting while the user's Mac is asleep.
-    ///
-    /// The settings the app last sent this agent (#257) win over `settings` (its flags, environment
-    /// or defaults): they are the app's latest word, and a remote agent is started by its
-    /// supervisor with none of its own.
-    pub fn spawn(sessions: SessionStore, socket: &Path, settings: Settings) {
-        // Before `serve` accepts a connection, so no `settings` request can arrive with nowhere to
-        // be kept, and the kept file is read before any request can rewrite it.
-        let kept = settings_path(socket);
-        let settings = load_settings(&kept).unwrap_or(settings);
-        shared()
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .settings_saver = Some(settings_saver(kept).0);
+    pub fn spawn(sessions: SessionStore) {
         std::thread::spawn(move || {
-            let run = std::panic::AssertUnwindSafe(|| run(sessions, settings));
+            let run = std::panic::AssertUnwindSafe(|| run(sessions));
             // A panic here is otherwise silent: the handle is dropped and nothing restarts the
             // thread. The heartbeat stops, so the provider may sleep a busy box, and `status` says
             // `running: false`, which hides the badge (TODOS.md).
@@ -1277,7 +884,7 @@ mod service {
         });
     }
 
-    fn run(sessions: SessionStore, settings: Settings) {
+    fn run(sessions: SessionStore) {
         // Named so this thread's own cost can be read from outside the process, at
         // /proc/<pid>/task/<tid>/, against the plan's 0.5%-of-a-core gate. Thread names do not reach
         // /proc/<pid>/comm, so this cannot change how the classifier sees the agent.
@@ -1289,7 +896,6 @@ mod service {
         let mut classifier = Classifier::new(policy, Boundary::agent(std::process::id() as i32))
             .with_wake_mask()
             .with_clk_tck(super::sample::clk_tck());
-        let mut ceiling = Ceiling::new(settings);
         let start = super::sample::monotonic();
         let mut keep_awake = KeepAwake::default();
         {
@@ -1301,10 +907,11 @@ mod service {
             }
             state.running = true;
             // Published with `running`, so a `status` before the first tick reads a service that
-            // has just started, not one that stalled at clock 0, with the settings it started with.
+            // has just started, not one that stalled at clock 0.
             state.t = start;
-            state.settings = settings;
         }
+        let mut pushed = None;
+        let mut idle_from = None;
         let mut tick: u64 = 0;
         loop {
             let due = start + tick as f64 * policy.interval;
@@ -1320,55 +927,39 @@ mod service {
             // The heartbeat's own bytes need no mask: ~30 bytes a minute against a 500 bytes/s
             // threshold.
             classifier.step(&s, crate::vcs::is_busy());
-            let raw = classifier.verdict();
-
-            let (keep, requested) = {
-                let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
-                (
-                    std::mem::take(&mut state.keep_requested),
-                    state.settings_requested.take(),
-                )
-            };
-            if let Some(settings) = requested {
-                ceiling.set_settings(s.t, settings);
-            }
+            let verdict = classifier.verdict();
             if classifier.resumed() {
                 keep_awake.resumed();
             }
-            let prompted = super::ceiling_step(&classifier, &mut ceiling, s.t, raw, keep);
-            // After the step, so a keystroke inside the grace on the very tick the prompt is
-            // raised or expires answers it at once rather than a tick later.
-            if classifier.user_acted() {
-                ceiling.user_acted(s.t);
-            }
-            // Raised only after this tick's state is published below: an app that reacts to the
-            // event by asking for `status` must see `prompt_pending`, not the previous tick.
-            let prompt = match ceiling.state() {
-                CeilingState::Prompted { deadline } if prompted => {
-                    Some((ceiling.awake_for(s.t), deadline))
+            keep_awake.tick(s.t, verdict, heartbeat::send);
+            let status = {
+                let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
+                if state.stopped {
+                    return;
                 }
-                _ => None,
+                state.keep_awake_sent = keep_awake.last_sent;
+                state.keep_awake_error.clone_from(&keep_awake.error);
+                state.verdict = verdict;
+                state.t = s.t;
+                state.cpu_fraction = thread_cpu_fraction(s.t - start);
+                status_json(&state, s.t)
             };
-            let verdict = ceiling.published(raw);
-            // The published verdict, after the ceiling, is what keeps the box awake: an unanswered
-            // prompt stops the heartbeat, and the provider's own timer then sleeps the box.
-            keep_awake.tick(s.t, &ceiling, raw, heartbeat::send);
-            let mut state = shared().state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.stopped {
-                return;
+            // After the state is published, so an app that asks for `status` on the event sees
+            // this tick's.
+            let now_shown = shown(verdict, keep_awake.error.is_some());
+            if pushed != Some(now_shown) {
+                pushed = Some(now_shown);
+                shared().push(status);
             }
-            state.keep_awake_sent = keep_awake.last_sent;
-            state.keep_awake_error.clone_from(&keep_awake.error);
-            state.verdict = verdict;
-            state.raw = raw;
-            state.t = s.t;
-            state.awake_for = ceiling.awake_for(s.t);
-            state.ceiling = ceiling.state();
-            state.settings = ceiling.settings;
-            state.cpu_fraction = thread_cpu_fraction(s.t - start);
-            drop(state);
-            if let Some((awake_for, deadline)) = prompt {
-                shared().prompt(awake_for, deadline);
+            idle_from = idle_since(idle_from, s.t, verdict);
+            if letting_go(idle_from, s.t) {
+                let closed = crate::serve::connections().let_go(
+                    std::time::Instant::now(),
+                    Duration::from_secs_f64(LET_GO_GRACE_S),
+                );
+                if closed > 0 {
+                    crate::note!("wakefulness: idle; let go of {closed} connection(s)");
+                }
             }
 
             // Skip ahead rather than bursting to catch up: a missed tick is simply missed, and

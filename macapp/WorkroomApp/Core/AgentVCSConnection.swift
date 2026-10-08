@@ -99,10 +99,10 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// `MAX_FORWARDS` is per multiplex connection, so a per-listener count let several rows together
   /// send OPENs it would certainly refuse.
   private var forwardsHeld = 0
-  /// The ceiling prompt, delivered to whoever is watching. One stream per connection: the verdict is
-  /// per box, so there is nothing to key subscriptions by.
-  let ceilingPrompts: AsyncStream<AgentCeilingPrompt>
-  private let ceilingPrompt: AsyncStream<AgentCeilingPrompt>.Continuation
+  /// The verdict changes the agent pushes (#380), delivered to whoever is watching. One stream per
+  /// connection: the verdict is per box, so there is nothing to key subscriptions by.
+  let statusChanges: AsyncStream<AgentWakefulness>
+  private let statusChange: AsyncStream<AgentWakefulness>.Continuation
   /// The local process carrying a driver's stream (`ssh host wr-agent relay`), or nil for a local
   /// agent's socket. Ended when the connection fails, so a closed connection leaves no ssh behind.
   private let carrier: HostStream?
@@ -113,9 +113,8 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     self.helloVersion = helloVersion
     self.carrier = carrier
     (disconnection, disconnected) = AsyncStream<Void>.makeStream()
-    // Newest-only: a prompt the app never got round to reading is superseded by the next one, and
-    // the deadline in a stale one has passed by definition.
-    (ceilingPrompts, ceilingPrompt) = AsyncStream<AgentCeilingPrompt>.makeStream(
+    // Newest-only: a change the app never got round to reading is superseded by the next one.
+    (statusChanges, statusChange) = AsyncStream<AgentWakefulness>.makeStream(
       bufferingPolicy: .bufferingNewest(1))
   }
 
@@ -383,9 +382,8 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// Gated on the greeting version alone — there is no connect-time probe, unlike the File service.
   /// The version IS the contract (`MIN_STATUS_VERSION`: a protocol-4 agent answers Status), and a
   /// probe added a failure mode with no data to show for it: one reply slower than its timeout, on an
-  /// agent under exactly the load that makes wakefulness matter, left the badge and every ceiling
-  /// prompt off for the life of the connection. The number the probe used to keep, the agent's prompt
-  /// timeout, is in every `status` reply; the watch reads it from its first.
+  /// agent under exactly the load that makes wakefulness matter, left the badge off for the life of
+  /// the connection.
   func wakefulness() throws -> AgentWakefulnessService {
     try lock.withLock {
       guard !closed else { throw HostConnectionError.connectionLost }
@@ -488,6 +486,10 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
 
   /// One of the agent's `MAX_FORWARDS` slots, or nil when this connection holds them all. Released
   /// when the returned value is dropped.
+  /// Whether this connection has ended: a forward that outlives it (`PortForward`'s `reconnect`)
+  /// makes a new one before it opens a stream.
+  var isClosed: Bool { lock.withLock { closed } }
+
   func reserveForwardSlot() -> ForwardSlot? {
     let reserved = lock.withLock { () -> Bool in
       guard forwardsHeld < PortForward.maxConnections else { return false }
@@ -819,7 +821,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           let stream = header[1..<5].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
           let length = header[5..<9].reduce(0) { ($0 << 8) | Int($1) }
           let service = header[0]
-          // Stream 0 is the agent's own: File watch events and the Status service's ceiling prompt,
+          // Stream 0 is the agent's own: File watch events and the Status service's verdict changes,
           // never a reply. On the VCS service it has always been a violation and still is.
           // `forward.rs` carries nothing there today and documents a stream-0 envelope as DROPPED,
           // so it is admitted here and dropped by `deliver(forward:)`: a future agent that adds a
@@ -866,7 +868,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
               throw HostConnectionError.serviceUnavailable("Invalid agent event chunk.")
             }
             // Branched on the SERVICE, not decoded twice: the two events share nothing but their
-            // stream, and decoding a ceiling prompt as an `AgentFileEvent` would fail and drop it
+            // stream, and decoding a verdict change as an `AgentFileEvent` would fail and drop it
             // silently — a bug every existing test stays green through.
             deliver(event: payload.dropFirst(), service: service)
             continue
@@ -950,12 +952,12 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     if service == Self.statusService {
       // Only the one event kind exists; anything else a newer agent adds is dropped, exactly as an
       // unknown file event is — and so is a version this build does not speak, as a reply's would be.
+      // A version 1 agent's `awake_ceiling_prompt` is one of those (#380).
       guard let wire = try? decoder.decode(AgentStatusEvent.self, from: payload),
-        wire.version == 1, wire.event == "awake_ceiling_prompt", let awake = wire.awakeSeconds,
-        let deadline = wire.promptDeadline
+        agentStatusVersions.contains(wire.version), wire.event == "status",
+        let status = wire.status
       else { return }
-      ceilingPrompt.yield(
-        AgentCeilingPrompt(awakeSeconds: awake, promptDeadline: deadline))
+      statusChange.yield(status)
       return
     }
     guard let wire = try? decoder.decode(AgentFileEvent.self, from: payload),
@@ -999,7 +1001,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
         }
     guard let failed else { return }
     carrier?.end()
-    ceilingPrompt.finish()
+    statusChange.finish()
     for operation in failed.pending { operation.continuation.resume(throwing: error) }
     // Outside the lock: a handler is caller code. Every subscription learns its watch is gone, so it
     // can resubscribe on the next generation and refresh whatever it was showing.

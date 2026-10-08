@@ -393,14 +393,6 @@ private struct TerminalSettingsPane: View {
 
   @Default(.copyOnSelect) private var copyOnSelect
   @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
-  // Only the ask-at-ceiling toggle has a row: the ceiling and the prompt timeout are durations most
-  // people never touch, so they stay defaults-only keys (`awakeCeilingHours`,
-  // `awakePromptTimeoutMinutes`) until someone asks for them.
-  @Default(.askAtAwakeCeiling) private var askAtAwakeCeiling
-  // The running agent's own settings, for the mismatch line under the toggle: the flags are fixed at
-  // the agent's start and the agent outlives the app, so a toggle flipped here can sit unapplied for
-  // as long as the agent runs. Polled while this pane is on screen, exactly as the badge polls.
-  @ObservedObject private var wakefulness = WakefulnessModel.shared
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @Default(.filePathEditor) private var pathEditor
   // The detached sessions "Stop Detached Terminals" found; non-nil presents its alert.
@@ -466,32 +458,6 @@ private struct TerminalSettingsPane: View {
         .font(.caption)
         .foregroundStyle(.secondary)
       }
-
-      VStack(alignment: .leading, spacing: 4) {
-        Toggle("Ask before a busy machine sleeps", isOn: $askAtAwakeCeiling)
-          .help(
-            "When a machine has been busy past its awake ceiling, ask whether to keep it awake."
-          )
-          .accessibilityIdentifier("settings.control.askAtAwakeCeiling")
-        Text(
-          "The session agent reports whether a machine is busy so a remote one isn't hibernated "
-            + "mid-job. Past the ceiling that's only reported — nothing is ever put to sleep by "
-            + "Workroom. Turn this on to be asked instead; no answer lets the machine sleep. "
-            + "Applies to remote machines whose provider sleeps them when idle, the next time "
-            + "Workroom connects to one."
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        if let status = wakefulness.status, status.running,
-          let mismatch = status.settingsMismatch(against: .current)
-        {
-          Text(mismatch)
-            .font(.caption)
-            .foregroundStyle(ThemeService.shared.tokens.warning)
-            .accessibilityIdentifier("settings.control.awakeSettingsMismatch")
-        }
-      }
-      .task { await wakefulness.poll() }
 
       Picker("Open file paths in", selection: $pathEditor) {
         Text("Default App").tag("")

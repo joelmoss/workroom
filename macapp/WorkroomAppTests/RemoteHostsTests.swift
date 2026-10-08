@@ -168,19 +168,21 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(connects.calls, 2)
   }
 
-  /// boxd counts inbound traffic as activity, so a connection's keepalives and the badge's polls
-  /// held an idle box awake for good (measured live, #356). A boxd host that reports IDLE while
-  /// not selected is let go of, and a background read then never reconnects it; selecting or
-  /// opening its workroom does. A busy, selected or container host is kept.
+  /// The agent lets go of an idle box itself (#380), and a background read must not undo it: an
+  /// ssh login is activity to boxd, so every status sweep reconnecting the box would hold it awake
+  /// again. Released, a box boxd says is awake reads idle and one it says is asleep reads asleep;
+  /// opening, selecting or a click (`wake`) reconnects it.
   @MainActor
-  func testAnIdleBoxdHostThatIsNotSelectedIsLetGoOf() async throws {
+  func testABoxItsAgentLetGoOfIsLeftAloneByABackgroundRead() async throws {
     let connects = Connects()
     connects.hold(false)
     let asked = Asleep()
+    asked.set(false)
     let remote = RemoteHosts(
       connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
       startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() })
-    let (boxd, container) = (UUID(), UUID())
+    let id = UUID()
+    let host = HostID.remote(id)
     remote.adopt(
       [
         Project(
@@ -190,28 +192,50 @@ final class RemoteHostsTests: XCTestCase {
               name: "b", path: "/home/boxd/r", vcsName: "workroom/b", warnings: [],
               host: HostDescriptor(
                 driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
-                id: boxd, account: "usr_1")),
-            Workroom(
-              name: "c", path: "/home/workroom/r", vcsName: "workroom/c", warnings: [],
-              host: HostDescriptor(
-                driver: RemoteWorkrooms.containerDriver, provisioner: RemoteWorkrooms.provisioner,
-                id: container)),
+                id: id, account: "usr_1"))
           ])
       ], sweep: false)
+
+    remote.released(host)
+    XCTAssertTrue(remote.isReleased(host))
+    do {
+      try await remote.ensureConnected(host)
+      XCTFail("a background read reconnected a box its agent let go of")
+    } catch {
+      XCTAssertEqual(error as? RepositoryRoutingError, .idle(host))
+    }
+    asked.set(true)
+    connects.advance(RemoteHosts.retryAfter)
+    do {
+      try await remote.ensureConnected(host)
+      XCTFail("a background read woke an asleep box")
+    } catch {
+      XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
+    }
+    XCTAssertEqual(connects.calls, 0)
+
+    // Each of the things the user does reconnects it, and forgets the release.
+    for take in [
+      { remote.select(host) }, { remote.activate(host) },
+    ] as [() -> Void] {
+      remote.released(host)
+      take()
+      XCTAssertFalse(remote.isReleased(host))
+      remote.select(nil)
+    }
+    remote.released(host)
+    try await remote.ensureConnected(host, wake: true)
+    XCTAssertFalse(remote.isReleased(host), "a click left the host released")
+    XCTAssertEqual(connects.calls, 1)
+  }
+
+  /// Which panes the app counts as attached to a host: a pane attaching reconnects its host
+  /// (`attachCommand`, #380), so a registration alone, an attach no pane runs, or a pane on a host
+  /// the driver can't reach must not count, and each pane clears only its own.
+  @MainActor
+  func testOnlyAPaneThatAttachedHoldsItsHost() {
+    let boxd = UUID()
     let host = HostID.remote(boxd)
-
-    let busyKept = await remote.observed(host, busy: true)
-    XCTAssertFalse(busyKept, "a busy box was let go of")
-    let containerKept = await remote.observed(.remote(container), busy: false)
-    XCTAssertFalse(containerKept, "a container was let go of")
-    remote.select(host)
-    let selectedKept = await remote.observed(host, busy: false)
-    XCTAssertFalse(selectedKept, "the selected workroom's box was let go of")
-
-    remote.select(nil)
-    // Value: protects=a workroom whose pane attached keeps its status, as that pane's ssh holds the
-    // box awake, while a restored pane that never attached does not; fails_when=observed() stops
-    // checking panes, or counts a registration as attached; why_new=no test opens a pane; seam=none
     let session = UUID()
     let sessions = PersistentSessionService.shared
     sessions.registerRemoteSession(
@@ -221,17 +245,12 @@ final class RemoteHostsTests: XCTestCase {
     // An attach no pane runs (a probe, a test's own call) holds nothing.
     XCTAssertNotNil(sessions.attachCommand(forSession: session))
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "an attach no pane runs holds the box")
-    // Value: protects=each pane clears only its own attach, so a pane freed late cannot clear a
-    // live pane's of the same session; fails_when=attaches are kept by session alone; why_new=the
-    // detach tests use one pane per session; seam=none
     let (first, second) = (UUID(), UUID())
     XCTAssertNotNil(sessions.attachCommand(forSession: session, by: first))
     XCTAssertNotNil(sessions.attachCommand(forSession: session, by: second))
     sessions.paneDetached(session, by: first)
     XCTAssertTrue(sessions.hasAttachedPane(on: host), "one pane's detach cleared another's attach")
-    let paneKept = await remote.observed(host, busy: false)
     sessions.forgetRemoteSession(session)
-    XCTAssertFalse(paneKept, "a host with a pane attached was let go of")
     // A forgotten pane holds nothing, even if its id is registered again; nor does one whose host
     // the driver can't reach, whose pane only says why.
     sessions.registerRemoteSession(
@@ -244,29 +263,10 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertNotNil(sessions.attachCommand(forSession: session, by: UUID()))
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a pane that can't reach its host holds it")
     sessions.forgetRemoteSession(session)
-
-    let letGo = await remote.observed(host, busy: false)
-    XCTAssertTrue(letGo)
-    XCTAssertTrue(remote.isLetGo(host))
-    do {
-      try await remote.ensureConnected(host)
-      XCTFail("a background read reconnected a box let go of as idle")
-    } catch {
-      XCTAssertEqual(error as? RepositoryRoutingError, .idle(host))
-    }
-    XCTAssertEqual(connects.calls, 0)
-    XCTAssertEqual(asked.calls, 0, "boxd was asked about a box already let go of")
-
-    // Selecting its workroom takes it back.
-    remote.select(host)
-    XCTAssertFalse(remote.isLetGo(host))
-    try await remote.ensureConnected(host)
-    XCTAssertEqual(connects.calls, 1)
   }
 
   /// A click reaches a boxd host a background read would leave alone (#356): closing a pane (to
-  /// end its session there) and "Keep awake" wake a box let go of as idle, or asleep, where a
-  /// status read is refused.
+  /// end its session there) wakes a box that is asleep, where a status read is refused.
   @MainActor
   func testAClickWakesABoxdHostABackgroundReadLeavesAlone() async throws {
     let connects = Connects()
@@ -291,7 +291,6 @@ final class RemoteHostsTests: XCTestCase {
           ])
       ], sweep: false)
 
-    // Asleep: a read is refused, a click connects.
     do {
       try await remote.ensureConnected(host)
       XCTFail("a background read woke an asleep box")
@@ -300,22 +299,6 @@ final class RemoteHostsTests: XCTestCase {
     }
     try await remote.ensureConnected(host, wake: true)
     XCTAssertEqual(connects.calls, 1)
-
-    // Let go of as idle: the same, and the click takes it back.
-    asked.set(false)
-    // Not within the grace after its connect, so the read that connected it is answered first.
-    let tooSoon = await remote.observed(host, busy: false)
-    XCTAssertFalse(tooSoon, "a host was let go of straight after its connect")
-    // The grace is one poll: a reading just inside it is refused, the next poll's may let it go.
-    connects.advance(RemoteHosts.letGoGrace - .seconds(1))
-    let stillTooSoon = await remote.observed(host, busy: false)
-    XCTAssertFalse(stillTooSoon, "a host was let go of within its grace")
-    connects.advance(.seconds(1))
-    let letGo = await remote.observed(host, busy: false)
-    XCTAssertTrue(letGo)
-    try await remote.ensureConnected(host, wake: true)
-    XCTAssertEqual(connects.calls, 2)
-    XCTAssertFalse(remote.isLetGo(host), "a click left the host let go of")
 
     // A click right after one that failed is still tried: waking a box can fail once while it
     // resumes, and the retry must not wait out the failure window.
@@ -326,69 +309,7 @@ final class RemoteHostsTests: XCTestCase {
     } catch {}
     connects.fail(false)
     try await remote.ensureConnected(host, wake: true)
-    XCTAssertEqual(connects.calls, 4, "a second click inside the window was refused")
-  }
-
-  /// A box let go of as idle is asked about again once its idle window has passed (#356): boxd
-  /// sleeps a box nothing holds by then, so one still awake has work holding it, and is connected
-  /// again so its ceiling prompts are heard. Inside the window boxd is not asked.
-  @MainActor
-  func testABoxLetGoOfIsAskedAboutAgainOnceItsIdleWindowHasPassed() async throws {
-    let connects = Connects()
-    connects.hold(false)
-    let asked = Asleep()
-    asked.set(false)
-    let remote = RemoteHosts(
-      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
-      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() })
-    let id = UUID()
-    let host = HostID.remote(id)
-    remote.adopt(
-      [
-        Project(
-          path: "/proj", vcs: "git",
-          workrooms: [
-            Workroom(
-              name: "b", path: "/home/boxd/r", vcsName: "workroom/b", warnings: [],
-              host: HostDescriptor(
-                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
-                id: id, account: "usr_1"))
-          ])
-      ], sweep: false)
-    let letGo = await remote.observed(host, busy: false)
-    XCTAssertTrue(letGo)
-
-    connects.advance(remote.revisitAfter(host) - .seconds(1))
-    do {
-      try await remote.ensureConnected(host)
-      XCTFail("a box let go of was reconnected inside its idle window")
-    } catch {
-      XCTAssertEqual(error as? RepositoryRoutingError, .idle(host))
-    }
-    XCTAssertEqual(asked.calls, 0)
-
-    // Value: protects=a box let go of that boxd says is asleep past its idle window is not woken by a read;
-    // fails_when=the revisit connects without asking boxd, or keeps asking it inside retryAfter;
-    // why_new=the revisit was only tested with boxd answering awake; seam=none
-    asked.set(true)
-    connects.advance(.seconds(1))
-    for _ in 0..<2 {
-      do {
-        try await remote.ensureConnected(host)
-        XCTFail("a read past the idle window woke a box boxd says is asleep")
-      } catch {
-        XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
-      }
-    }
-    XCTAssertEqual(asked.calls, 1, "boxd was asked again inside retryAfter")
-    XCTAssertEqual(connects.calls, 0)
-
-    asked.set(false)
-    connects.advance(RemoteHosts.retryAfter)
-    try await remote.ensureConnected(host)
-    XCTAssertEqual(asked.calls, 2)
-    XCTAssertEqual(connects.calls, 1, "a box still awake past its idle window was left alone")
-    XCTAssertFalse(remote.isLetGo(host))
+    XCTAssertEqual(connects.calls, 3, "a second click inside the window was refused")
   }
 
   /// A selected workroom's box is reached by a background read, asleep or let go of (#356): after
@@ -422,11 +343,17 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(asked.calls, 0, "boxd was asked about the selected workroom's box")
   }
 
-  /// Each window has its own selection (one AppStore per window): a host selected in any window
-  /// is kept, whatever another window selects, and a closed window lets it go (#356).
+  /// Each window has its own selection (one AppStore per window): a host selected in any window is
+  /// reconnected by a background read, released or not, whatever another window selects.
   @MainActor
-  func testAHostSelectedInAnyWindowIsKept() async throws {
-    let remote = RemoteHosts()
+  func testAHostSelectedInAnyWindowIsReconnected() async throws {
+    let connects = Connects()
+    connects.hold(false)
+    let asked = Asleep()
+    asked.set(false)
+    let remote = RemoteHosts(
+      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
+      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() })
     let id = UUID()
     let host = HostID.remote(id)
     remote.adopt(
@@ -441,13 +368,20 @@ final class RemoteHostsTests: XCTestCase {
                 id: id, account: "usr_1"))
           ])
       ], sweep: false)
+
     remote.select(host, in: "window A")
     remote.select(nil, in: "window B")
-    let keptAcrossWindows = await remote.observed(host, busy: false)
-    XCTAssertFalse(keptAcrossWindows, "another window's selection let go of window A's host")
+    remote.released(host)
+    try await remote.ensureConnected(host)
+    XCTAssertEqual(connects.calls, 1, "another window's selection left window A's host alone")
     remote.select(nil, in: "window A")
-    let letGoOnceUnselected = await remote.observed(host, busy: false)
-    XCTAssertTrue(letGoOnceUnselected)
+    remote.released(host)
+    do {
+      try await remote.ensureConnected(host)
+      XCTFail("an unselected released host was reconnected")
+    } catch {
+      XCTAssertEqual(error as? RepositoryRoutingError, .idle(host))
+    }
   }
 
   private final class Asleep: @unchecked Sendable {
@@ -1010,247 +944,42 @@ final class RemoteHostsTests: XCTestCase {
       image: nil, context: context)
   }
 
-  // Value: protects=a boxd box with a provider idle timer shorter than the heartbeat is flagged on its badge;
-  // fails_when=connect stops reading the machine's idle timers into its wakefulness model, or reads them wrongly;
-  // why_new=idleWindow parsing and the badge copy are unit-tested but nothing sets the model on connect; seam=none
-  /// Connecting a boxd host reads its idle timers into its wakefulness model (#356), so the badge
-  /// can say a 60 s timer sleeps the box under a job the once-a-minute heartbeat cannot hold.
+  /// A host's verdict is watched from its connect (#380): the model is made, watching, the watch
+  /// asks once, and a change the agent pushes shows on it. The connect also forgets a release: the
+  /// host is connected again.
   @MainActor
-  func testConnectingABoxdHostGivesItsBadgeTheMachinesIdleWindow() async throws {
+  func testConnectingAHostWatchesItsVerdict() async throws {
     let fake = try FakeAgent(version: 4, status: true)
     defer { fake.stop() }
     let id = UUID()
     let host = HostID.remote(id)
     defer { WakefulnessModel.forgetHost(id) }
+    XCTAssertNil(WakefulnessModel.models[id])
     let remote = RemoteHosts(connectAgent: { host, _ in
       try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
     })
-    let driver = BoxdHostDriver(
-      configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
-      directory: FileManager.default.temporaryDirectory,
-      runner: MachineGet(#"{"source":"standalone","auto_suspend":60}"#))
-
-    try await remote.connect(host, driver: driver)
-    let snapshot = await HostConnectionManager.shared.snapshot(for: host)
-    let lease = try XCTUnwrap(snapshot.lease)
-    addTeardownBlock { await HostConnectionManager.shared.disconnect(lease) }
-
-    let model = try XCTUnwrap(WakefulnessModel.Hosts.shared.models[id])
-    XCTAssertTrue(model.hostSleeps)
-    let deadline = ContinuousClock.now + .seconds(5)
-    while model.idleWindow == nil, ContinuousClock.now < deadline {
-      try await Task.sleep(for: .milliseconds(20))
-    }
-    XCTAssertEqual(model.idleWindow, 60)
-    // Value: protects=a connected boxd box is polled off screen, revisited by its own idle window, and a deleted one stops polling;
-    // fails_when=connect stops starting the poll or recording the window, or forgetHost leaves the poll running;
-    // why_new=the poll test starts it by hand and the revisit test only reaches the unknown-window fallback; seam=none
-    XCTAssertTrue(model.isPollingWhileConnected, "a connected boxd host isn't polled")
-    XCTAssertEqual(remote.revisitAfter(host), .seconds(60) + RemoteHosts.retryAfter)
-
-    // Value: protects=a reconnect whose idle-window read fails keeps the window last read, while
-    // one that finds no timer set clears it; fails_when=connect treats a failed read as "no
-    // timer", or "no timer" as a failure; why_new=only a successful read is connected here;
-    // seam=none
-    let reconnect = { (runner: MachineGet) in
-      if let current = await HostConnectionManager.shared.snapshot(for: host).lease {
-        await HostConnectionManager.shared.disconnect(current)
-      }
-      try await remote.connect(
-        host,
-        driver: BoxdHostDriver(
-          configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
-          directory: FileManager.default.temporaryDirectory, runner: runner))
-    }
-    let failing = MachineGet("", fails: true)
-    try await reconnect(failing)
-    let asked = ContinuousClock.now + .seconds(5)
-    while failing.answered.calls == 0, ContinuousClock.now < asked {
-      try await Task.sleep(for: .milliseconds(10))
-    }
-    XCTAssertEqual(failing.answered.calls, 1, "the reconnect never read the idle window")
-    try await Task.sleep(for: .milliseconds(50))
-    XCTAssertEqual(remote.revisitAfter(host), .seconds(60) + RemoteHosts.retryAfter)
-    XCTAssertEqual(model.idleWindow, 60, "a failed read forgot the badge's idle window")
-
-    try await reconnect(MachineGet(#"{"source":"standalone"}"#))
-    let cleared = ContinuousClock.now + .seconds(5)
-    while model.idleWindow != nil, ContinuousClock.now < cleared {
-      try await Task.sleep(for: .milliseconds(10))
-    }
-    XCTAssertNil(model.idleWindow, "turning the timers off left the badge's idle window")
-    XCTAssertEqual(
-      remote.revisitAfter(host), .seconds(RemoteHosts.unknownIdleWindow) + RemoteHosts.retryAfter)
-    if let last = await HostConnectionManager.shared.snapshot(for: host).lease {
-      addTeardownBlock { await HostConnectionManager.shared.disconnect(last) }
-    }
-    WakefulnessModel.forgetHost(id)
-    XCTAssertFalse(model.isPollingWhileConnected, "a forgotten host is still polled")
-  }
-
-  // Value: protects=a boxd workroom deleted while its connect reads the idle timers stays deleted;
-  // fails_when=the late read looks the host's model up with the accessor that makes one;
-  // why_new=the idle-window test never deletes across the read; seam=none
-  /// A delete that lands while the connect is still reading the machine's idle timers forgets the
-  /// host's model, and the late answer does not make it anew, watching for prompts for good (#356).
-  @MainActor
-  func testADeleteAcrossTheIdleWindowReadDoesNotBringTheHostsModelBack() async throws {
-    let fake = try FakeAgent(version: 4, status: true)
-    defer { fake.stop() }
-    let id = UUID()
-    let host = HostID.remote(id)
-    defer { WakefulnessModel.forgetHost(id) }
-    let remote = RemoteHosts(connectAgent: { host, _ in
-      try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
-    })
-    let (opened, open) = AsyncStream<Void>.makeStream()
-    let read = MachineGet(#"{"source":"standalone","auto_suspend":60}"#, until: opened)
-    try await remote.connect(
-      host,
-      driver: BoxdHostDriver(
-        configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
-        directory: FileManager.default.temporaryDirectory, runner: read))
-    if let lease = await HostConnectionManager.shared.snapshot(for: host).lease {
-      addTeardownBlock { await HostConnectionManager.shared.disconnect(lease) }
-    }
-    XCTAssertNotNil(WakefulnessModel.Hosts.shared.models[id])
-
-    WakefulnessModel.forgetHost(id)
-    open.yield()
-    open.finish()
-    // The window is recorded just before the hop that would give it to a model.
-    let deadline = ContinuousClock.now + .seconds(5)
-    while remote.revisitAfter(host) != .seconds(60) + RemoteHosts.retryAfter,
-      ContinuousClock.now < deadline
-    {
-      try await Task.sleep(for: .milliseconds(10))
-    }
-    XCTAssertEqual(read.answered.calls, 1, "the connect never read the idle window")
-    try await Task.sleep(for: .milliseconds(200))
-    XCTAssertNil(
-      WakefulnessModel.Hosts.shared.models[id], "a late read brought a deleted host back")
-  }
-
-  // Value: protects=a boxd host carrying a port forward stays connected when idle, so the user's dev server still answers;
-  // fails_when=observed() lets go of an idle boxd host without asking PortForwardingModel.hasForwards;
-  // why_new=pass-1 covers the idle release, not its one exception; no test pairs a live forward with observed; seam=none
-  /// An idle boxd host is let go of (#356) unless it is carrying a forward: closing its connection
-  /// would close the listener the user's browser is pointed at.
-  @MainActor
-  func testAnIdleBoxdHostWithAPortForwardIsKept() async throws {
-    let fake = try FakeAgent(version: 5, forward: true)
-    defer { fake.stop() }
-    let id = UUID()
-    let host = HostID.remote(id)
-    let clock = Connects()
-    let remote = RemoteHosts(
-      now: { clock.now },
-      connectAgent: { host, _ in
-        try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
-      })
-    remote.adopt(
-      [
-        Project(
-          path: "/proj", vcs: "git",
-          workrooms: [
-            Workroom(
-              name: "w", path: "/home/boxd/r", vcsName: "workroom/w", warnings: [],
-              host: HostDescriptor(
-                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
-                id: id, org: "acme", account: "usr_1"))
-          ])
-      ], sweep: false)
-    let driver = BoxdHostDriver(
-      configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")),
-      directory: FileManager.default.temporaryDirectory,
-      runner: MachineGet(#"{"source":"standalone","auto_suspend":60}"#))
-    try await remote.connect(host, driver: driver)
-    let snapshot = await HostConnectionManager.shared.snapshot(for: host)
-    let lease = try XCTUnwrap(snapshot.lease)
-    addTeardownBlock { await HostConnectionManager.shared.disconnect(lease) }
-    defer { WakefulnessModel.forgetHost(id) }
-    let forwards = PortForwardingModel.model(for: host)
-    forwards.draft = "8080"
-    await forwards.add()
-    let forward = try XCTUnwrap(forwards.forwards.first, forwards.message ?? "no forward was made")
-    clock.advance(RemoteHosts.letGoGrace)
-
-    let whileForwarding = await remote.observed(host, busy: false)
-
-    XCTAssertFalse(whileForwarding, "an idle host carrying a forward was let go of")
-    XCTAssertFalse(remote.isLetGo(host))
-    forwards.remove(forward.id)
-    // Value: protects=a boxd host let go of as idle stops being polled, so the poll can't hold it awake;
-    // fails_when=observed() closes the connection but leaves the connection poll running;
-    // why_new=no test lets go of a host whose connect started the poll; seam=none
-    let model = try XCTUnwrap(WakefulnessModel.Hosts.shared.models[id])
-    XCTAssertTrue(model.isPollingWhileConnected)
-    let afterwards = await remote.observed(host, busy: false)
-    XCTAssertTrue(afterwards, "the host was never eligible, so the forward proved nothing")
-    XCTAssertFalse(model.isPollingWhileConnected, "a host let go of is still polled")
-  }
-
-  /// A boxd CLI that answers every `machine get` with `json`.
-  private struct MachineGet: StatusCommandRunning {
-    let json: String
-    var fails = false
-    /// How many times it has answered, so a test can wait for a read it can't otherwise see.
-    let answered = Asleep()
-    /// Holds each answer back until it yields, for a test that acts across a read.
-    let until: AsyncStream<Void>?
-    init(_ json: String, fails: Bool = false, until: AsyncStream<Void>? = nil) {
-      self.json = json
-      self.fails = fails
-      self.until = until
-    }
-    func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
-      async -> CommandResult
-    {
-      if let until { for await _ in until { break } }
-      _ = answered.answer()
-      return fails
-        ? CommandResult(stdout: "", stderr: "error: unreachable", exitCode: 1, timedOut: false)
-        : CommandResult(stdout: json, stderr: "", exitCode: 0, timedOut: false)
-    }
-  }
-
-  /// A host's ceiling prompts are watched from its connect (#257): the connect hands its agent this
-  /// Mac's ask-at-ceiling setting, so a prompt that reached no card would let the box sleep under a
-  /// running job. The model is made, watching, and a prompt the agent raises shows on it.
-  @MainActor
-  func testConnectingAHostWatchesForItsCeilingPrompts() async throws {
-    let fake = try FakeAgent(version: 4, status: true)
-    defer { fake.stop() }
-    let id = UUID()
-    let host = HostID.remote(id)
-    defer { WakefulnessModel.forgetHost(id) }
-    XCTAssertNil(WakefulnessModel.Hosts.shared.models[id])
-    let remote = RemoteHosts(connectAgent: { host, _ in
-      try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
-    })
+    remote.released(host)
     try await remote.connect(
       host, driver: Self.driver(runtime: URL(fileURLWithPath: "/usr/bin/false"), context: nil))
+    XCTAssertFalse(remote.isReleased(host), "a connect left the host released")
     let snapshot = await HostConnectionManager.shared.snapshot(for: host)
     let lease = try XCTUnwrap(snapshot.lease)
     addTeardownBlock { await HostConnectionManager.shared.disconnect(lease) }
 
-    let model = try XCTUnwrap(WakefulnessModel.Hosts.shared.models[id])
-    XCTAssertTrue(model.isWatchingPrompts)
+    let model = try XCTUnwrap(WakefulnessModel.models[id])
+    XCTAssertTrue(model.isWatching)
     XCTAssertFalse(model.hostSleeps, "a container is never slept, so its badge never says so")
-    // The watch subscribes with a `status`; then a prompt the agent pushes is the host's card.
     let deadline = ContinuousClock.now + .seconds(5)
-    while fake.receivedStatusRequests.isEmpty, ContinuousClock.now < deadline {
+    while model.status?.busy != true, ContinuousClock.now < deadline {
       try await Task.sleep(for: .milliseconds(20))
     }
-    XCTAssertFalse(fake.receivedStatusRequests.isEmpty, "the watch never subscribed")
-    fake.pushCeilingPrompt()
-    while !model.prompt.isShowing, ContinuousClock.now < deadline + .seconds(5) {
+    XCTAssertEqual(model.status?.busy, true, "the watch's first reply never reached the model")
+    fake.pushStatusChange()
+    while model.status?.busy != false, ContinuousClock.now < deadline + .seconds(5) {
       try await Task.sleep(for: .milliseconds(20))
     }
-    XCTAssertTrue(model.prompt.isShowing, "the host's prompt never reached its model")
-    // And the toast stack, which takes clicks only while a card it knows of is up, knows of it.
-    XCTAssertTrue(WakefulnessModel.Hosts.shared.showing.contains(id))
-    XCTAssertFalse(WakefulnessModel.shared.prompt.isShowing, "not this Mac's card")
+    XCTAssertEqual(model.status?.busy, false, "the pushed change never reached the model")
+    XCTAssertEqual(fake.receivedStatusRequests.count, 1, "the box was asked more than once")
   }
 
   /// A record written before #309 has no context: it reads as nil, which names no context on any

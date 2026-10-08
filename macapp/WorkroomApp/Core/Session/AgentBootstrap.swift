@@ -115,50 +115,17 @@ enum AgentBootstrap {
   }
 
   /// The bootstrap, then the connection: the one way to a remote host's services.
-  ///
-  /// `watched` for a connection whose host has its ceiling prompts watched (`RemoteHosts.connect`),
-  /// which hands the agent this Mac's settings. An unwatched one (provisioning's) sends none: the
-  /// settings are the whole agent's, so its `ask: false` could land after a watched connection's
-  /// `ask: true` and switch prompting off under it (#356). A base that only provisioning ever
-  /// connects keeps the agent's default, which never asks.
   static func connect(
     host: HostID, driver: any HostDriver, socket: String,
     agent: (String) -> URL? = PersistentSessionPaths.linuxAgentURL(architecture:),
-    handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL,
-    watched: Bool = true
+    handOff: Bool = true, resources: URL? = GhosttyResources.bundledURL
   ) async throws -> AgentVCSConnection {
     let outcome = try await ensure(
       host: host, driver: driver, socket: socket, agent: agent, handOff: handOff,
       resources: resources)
     logger.notice("agent bootstrap: \(String(describing: outcome), privacy: .public)")
-    let connection = try await AgentVCSConnection.connect(
+    return try await AgentVCSConnection.connect(
       host: host, stream: try await driver.openStream(to: host))
-    guard watched else { return connection }
-    // Not awaited: a slow reply (its timeout is 5 s) must not hold up the connect, the cost
-    // `AgentVCSConnection.wakefulness()` declined a connect-time probe over.
-    // Ask mode only where the box can sleep: its prompt says it may.
-    let current = AgentWakefulnessSettings.current
-    let settings = AgentWakefulnessSettings(
-      ceiling: current.ceiling, promptTimeout: current.promptTimeout,
-      ask: current.ask && driver.traits.sleepsWhenIdle)
-    Task { await applyWakefulnessSettings(settings, on: connection) }
-    return connection
-  }
-
-  /// The app's ceiling settings, handed to the host's agent on every connect (#257): a remote agent
-  /// outlives every connection and keeps the environment it was started with through a hand-off, so
-  /// this is the one way a changed setting reaches it. Best effort: an agent too old for the
-  /// request keeps its own, which is logged, and the connect goes on.
-  static func applyWakefulnessSettings(
-    _ settings: AgentWakefulnessSettings, on connection: AgentVCSConnection
-  ) async {
-    do {
-      try await connection.wakefulness().apply(settings)
-    } catch {
-      logger.notice(
-        "agent bootstrap: ceiling settings not taken: \(error.localizedDescription, privacy: .public)"
-      )
-    }
   }
 
   /// Makes sure the host runs this app's agent, as far as the policy above allows, and says what

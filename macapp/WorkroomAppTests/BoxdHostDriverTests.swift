@@ -311,35 +311,6 @@ final class BoxdHostDriverTests: XCTestCase {
 
   /// boxd's idle timers, whose encoding isn't documented: the shorter of the two that are set, in
   /// seconds, from a number or a string with a unit; a timer that is off, absent or unreadable
-  /// never counts, so it never warns (#356).
-  func testTheIdleWindowIsTheShorterTimerThatIsSet() async throws {
-    let cases: [(String, TimeInterval?)] = [
-      (#"{"source":"standalone","auto_suspend":120,"auto_hibernate":600}"#, 120),
-      (#"{"source":"standalone","auto_suspend":"2m","auto_hibernate":"45s"}"#, 45),
-      (#"{"source":"standalone","auto_suspend":0,"auto_hibernate":"1h"}"#, 3600),
-      (#"{"source":"standalone","auto_suspend":null}"#, nil),
-      (#"{"source":"standalone","auto_suspend":"never","auto_hibernate":false}"#, nil),
-      (#"{"source":"standalone"}"#, nil),
-      (#"{"source":"standalone","auto_suspend":"120"}"#, 120),
-      // A timer no Duration can hold would trap the revisit arithmetic: it reads as unknown.
-      (#"{"source":"standalone","auto_suspend":1e30,"auto_hibernate":"inf"}"#, nil),
-      // One unreadable timer leaves the other; a week is the most read.
-      (#"{"source":"standalone","auto_suspend":1e30,"auto_hibernate":60}"#, 60),
-      (#"{"source":"standalone","auto_suspend":604800}"#, 604800),
-      (#"{"source":"standalone","auto_suspend":604801}"#, nil),
-    ]
-    for (json, expected) in cases {
-      let window = try await driver(StubCLI(["machine get": Self.ok(json)])).idleWindow(
-        .remote(UUID()))
-      XCTAssertEqual(window, expected, json)
-    }
-    // A failed call is not "no timer": it throws, so a caller keeps what it knew.
-    do {
-      _ = try await driver(StubCLI([:])).idleWindow(.remote(UUID()))
-      XCTFail("a failed call read as no timer")
-    } catch {}
-  }
-
   /// Asleep is boxd's own status: suspended (`standby`) or hibernated, never a guess.
   func testAsleepIsBoxdsStandbyOrHibernated() async throws {
     for (status, presence) in [

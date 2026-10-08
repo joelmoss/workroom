@@ -20,22 +20,14 @@ use wr_agent::protocol::envelope::{
 };
 use wr_agent::protocol::frame::{Frame, FrameDecoder, FrameKind};
 use wr_agent::serve::{self, Agent, BUILD, DEFAULT_IDLE_TIMEOUT};
-use wr_agent::wakefulness::Settings;
 
 fn usage() -> &'static str {
     "usage:
   wr-agent serve --socket <path> [--idle-timeout <secs>|never] [--screens <dir>]
-        [--awake-ceiling <secs>] [--awake-prompt-timeout <secs>] [--ask-at-awake-ceiling]
         own ptys and services (the daemon role). On Linux it also decides BUSY/IDLE and keeps a
         BUSY box awake with a UDP heartbeat to the default gateway, which a provider's network
-        idle timer counts.
-        The awake ceiling is advisory by default: past it a BUSY box is reported, never slept.
-        --ask-at-awake-ceiling prompts the app instead, and lets the box sleep if nobody answers.
-        Each flag falls back to WORKROOM_SESSION_AWAKE_CEILING,
-        WORKROOM_SESSION_AWAKE_PROMPT_TIMEOUT and WORKROOM_SESSION_ASK_AT_AWAKE_CEILING=1, which
-        is how the serve that attach spawns gets them. The WORKROOM_SESSION_ prefix is what keeps
-        them out of every session's shell, with the rest of the app's launch variables.
-        Settings the app sends later are kept in <socket>.settings, which wins over both.
+        idle timer counts, and once the box has been IDLE a while it closes the connections that
+        serve no attached pane, so the provider's own timer can sleep it.
         --idle-timeout never is for a supervised remote agent, which must keep running (and keep
         reporting BUSY/IDLE) with no client attached.
         --screens <dir> keeps each session's screen in <dir>, so a pane reattaching after the
@@ -116,7 +108,6 @@ fn main() -> ExitCode {
             Some(socket) => run_serve(
                 PathBuf::from(socket),
                 flag(&args, "--idle-timeout"),
-                wakefulness_settings(&args),
                 flag(&args, "--handoff").map(PathBuf::from),
                 flag(&args, "--screens").map(PathBuf::from),
             ),
@@ -183,41 +174,9 @@ fn run_serve_stdio() -> ExitCode {
     }
 }
 
-/// The awake ceiling's settings (OQ22). Flags first; then the environment, because `attach`
-/// self-spawns `serve` with no flags (`serve::spawn_agent`) and the app controls that path only
-/// through the environment it launches `attach` with.
-fn wakefulness_settings(args: &[String]) -> Settings {
-    wakefulness_settings_from(args, |name| std::env::var(name).ok())
-}
-
-/// Under `WORKROOM_SESSION_` on purpose: `spawn_session` scrubs that prefix from the child's
-/// environment, so the settings reach the self-spawned `serve` and never the user's shell.
-const ENV_AWAKE_CEILING: &str = "WORKROOM_SESSION_AWAKE_CEILING";
-const ENV_AWAKE_PROMPT_TIMEOUT: &str = "WORKROOM_SESSION_AWAKE_PROMPT_TIMEOUT";
-const ENV_ASK_AT_AWAKE_CEILING: &str = "WORKROOM_SESSION_ASK_AT_AWAKE_CEILING";
-
-fn wakefulness_settings_from(args: &[String], env: impl Fn(&str) -> Option<String>) -> Settings {
-    // Usable (30 s to 30 days, see `usable_seconds`), or the default.
-    let seconds = |name: &str, var: &str| {
-        flag(args, name)
-            .or_else(|| env(var))
-            .and_then(|s| s.parse::<f64>().ok())
-            .filter(|v| wr_agent::wakefulness::usable_seconds(*v))
-    };
-    let defaults = Settings::default();
-    Settings {
-        ceiling: seconds("--awake-ceiling", ENV_AWAKE_CEILING).unwrap_or(defaults.ceiling),
-        prompt_timeout: seconds("--awake-prompt-timeout", ENV_AWAKE_PROMPT_TIMEOUT)
-            .unwrap_or(defaults.prompt_timeout),
-        ask: args.iter().any(|a| a == "--ask-at-awake-ceiling")
-            || env(ENV_ASK_AT_AWAKE_CEILING).is_some_and(|v| v == "1" || v == "true"),
-    }
-}
-
 fn run_serve(
     socket: PathBuf,
     idle: Option<String>,
-    wakefulness: Settings,
     handoff: Option<PathBuf>,
     screens: Option<PathBuf>,
 ) -> ExitCode {
@@ -311,7 +270,7 @@ fn run_serve(
         digest,
         arguments: std::env::args_os().skip(1).collect(),
     });
-    match agent.run(listener, &socket, timeout, wakefulness) {
+    match agent.run(listener, &socket, timeout) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
@@ -1338,71 +1297,6 @@ fn handshake<S: Read + Write>(stream: &mut S) -> Result<u16, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A flag wins over the environment; the environment wins over the default; the self-spawned
-    /// `serve` (no flags) still gets the app's settings.
-    #[test]
-    fn wakefulness_settings_fall_back_to_the_environment() {
-        let env = |name: &str| match name {
-            ENV_AWAKE_CEILING => Some("7200".to_string()),
-            ENV_AWAKE_PROMPT_TIMEOUT => Some("bogus".to_string()),
-            ENV_ASK_AT_AWAKE_CEILING => Some("1".to_string()),
-            _ => None,
-        };
-        let none = |_: &str| None;
-        let defaults = Settings::default();
-
-        let from_env = wakefulness_settings_from(&[], env);
-        assert_eq!(from_env.ceiling, 7200.0);
-        assert_eq!(
-            from_env.prompt_timeout, defaults.prompt_timeout,
-            "unparsable env = default"
-        );
-        assert!(from_env.ask);
-
-        let args: Vec<String> = ["--awake-ceiling", "60"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let flag_wins = wakefulness_settings_from(&args, env);
-        assert_eq!(flag_wins.ceiling, 60.0);
-        assert!(
-            flag_wins.ask,
-            "ask has no negative flag; the environment still enables it"
-        );
-
-        let bare = wakefulness_settings_from(&[], none);
-        assert_eq!(bare.ceiling, defaults.ceiling);
-        assert!(!bare.ask);
-    }
-
-    /// Values that parse but cannot run a ceiling fall back to the default rather than trip it on
-    /// the first tick (NaN, zero, negative), never trip it (infinity, or over 30 days), or void the
-    /// prompt's grace (under 30 s).
-    #[test]
-    fn wakefulness_settings_reject_values_that_parse_but_cannot_work() {
-        let defaults = Settings::default();
-        for bad in [
-            "nan", "inf", "-inf", "0", "-5", "1e400", "0.5", "29", "1e300", "2592001",
-        ] {
-            let args: Vec<String> = ["--awake-ceiling", bad, "--awake-prompt-timeout", bad]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-            let settings = wakefulness_settings_from(&args, |_| None);
-            assert_eq!(settings.ceiling, defaults.ceiling, "ceiling {bad:?}");
-            assert_eq!(
-                settings.prompt_timeout, defaults.prompt_timeout,
-                "prompt timeout {bad:?}"
-            );
-        }
-        let args: Vec<String> = ["--awake-ceiling", "30", "--awake-prompt-timeout", "2592000"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        let edges = wakefulness_settings_from(&args, |_| None);
-        assert_eq!((edges.ceiling, edges.prompt_timeout), (30.0, 2_592_000.0));
-    }
 
     #[test]
     fn idle_timeout_takes_seconds_or_never_and_rejects_anything_else() {

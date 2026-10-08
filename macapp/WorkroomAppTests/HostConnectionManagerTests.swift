@@ -23,22 +23,6 @@ final class HostConnectionManagerTests: XCTestCase {
     await connection.statusRelease.open()
   }
 
-  /// A let-go's disconnect asks, on the manager, whether the host was taken back meanwhile: one a
-  /// click or a selection took back keeps the connection it found up (#356).
-  func testADisconnectUnlessTakenBackKeepsATakenBackConnection() async throws {
-    let manager = HostConnectionManager()
-    let host = HostID.remote(UUID())
-    let lease = try await manager.connect(host: host) { ConnectionFixture() }
-    let disconnectedTakenBack = await manager.disconnect(lease, unless: { true })
-    XCTAssertFalse(disconnectedTakenBack)
-    var state = await manager.snapshot(for: host)
-    XCTAssertEqual(state.status, .connected, "a taken-back host was disconnected")
-    let disconnected = await manager.disconnect(lease, unless: { false })
-    XCTAssertTrue(disconnected)
-    state = await manager.snapshot(for: host)
-    XCTAssertNotEqual(state.status, .connected)
-  }
-
   func testAlreadyCancelledCallerCannotReplaceConnectionOrStartOperation() async throws {
     let manager = HostConnectionManager()
     let host = HostID.remote(UUID())

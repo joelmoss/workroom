@@ -15,14 +15,15 @@
 //! anyone can lose. The one thing that must outlive the app is a live terminal, which is precisely
 //! what the rule already protects.
 
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::protocol::envelope::{
@@ -31,7 +32,7 @@ use crate::protocol::envelope::{
 use crate::protocol::frame::{Frame, FrameDecoder, FrameKind, HEADER_SIZE, MAX_PAYLOAD_SIZE};
 use crate::session::{SessionId, SessionSpec, SessionStore, SharedWriter};
 use crate::shell;
-use crate::transport::Transport;
+use crate::transport::{Closer, Transport};
 
 pub const BUILD: &str = concat!("wr-agent ", env!("CARGO_PKG_VERSION"));
 
@@ -132,21 +133,18 @@ impl Agent {
     /// for `idle_timeout`. The listener is the one `bind` returns, or the one a hand-off carried
     /// across `execve` (`crate::handoff`), which must never be unbound and bound again.
     ///
-    /// `wakefulness` configures the awake ceiling (OQ22); the wakefulness service itself starts
-    /// unconditionally on Linux, because its heartbeat has to keep a busy box awake while no client
-    /// is attached at all — that is the whole reason it exists (#257).
+    /// The wakefulness service starts unconditionally on Linux, because its heartbeat has to keep a
+    /// busy box awake while no client is attached at all — that is the whole reason it exists
+    /// (#257).
     pub fn run(
         &self,
         listener: UnixListener,
         socket: &Path,
         idle_timeout: Duration,
-        wakefulness: crate::wakefulness::Settings,
     ) -> Result<(), ServeError> {
         listener.set_nonblocking(true)?;
         #[cfg(target_os = "linux")]
-        crate::wakefulness::spawn(self.sessions.clone(), socket, wakefulness);
-        #[cfg(not(target_os = "linux"))]
-        let _ = wakefulness;
+        crate::wakefulness::spawn(self.sessions.clone());
 
         let mut idle_since = Some(Instant::now());
         let mut result = Ok(());
@@ -221,6 +219,87 @@ impl Agent {
     }
 }
 
+/// Every connection this agent serves, so the wakefulness service can let go of the idle ones
+/// (#380). Process-global, like the verdict it acts on: one box, one decision.
+#[derive(Default)]
+pub struct Connections {
+    next: AtomicU64,
+    live: Mutex<HashMap<u64, Live>>,
+}
+
+/// One served connection, as the let-go sees it.
+pub struct Live {
+    pub opened: Instant,
+    pub close: Closer,
+    /// A pane is attached on this connection, or shows a session's last screen: the user at work.
+    pub pane: Arc<AtomicBool>,
+    /// Whether a forwarded connection is in flight on it (`Forwards::carrying`).
+    pub forwarding: Box<dyn Fn() -> bool + Send>,
+}
+
+/// Takes its connection out of the registry when dropped, on every way out of `handle_connection`.
+pub struct Registered<'a> {
+    id: u64,
+    connections: &'a Connections,
+}
+
+impl Drop for Registered<'_> {
+    fn drop(&mut self) {
+        self.connections
+            .live
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.id);
+    }
+}
+
+pub fn connections() -> &'static Connections {
+    static CONNECTIONS: OnceLock<Connections> = OnceLock::new();
+    CONNECTIONS.get_or_init(Connections::default)
+}
+
+impl Connections {
+    pub fn register(&self, live: Live) -> Registered<'_> {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        self.live
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, live);
+        Registered {
+            id,
+            connections: self,
+        }
+    }
+
+    /// Closes every connection at least `grace` old (at `now`) that carries no forwarded connection,
+    /// and returns how many it closed. The service calls it once the box has been IDLE for the
+    /// grace, so what it closes is the app's service connection: with its traffic gone, the
+    /// provider's own idle timer sleeps the box.
+    ///
+    /// Nothing is closed while any pane is attached. A pane's ssh holds a box awake whatever this
+    /// does, and a local container's git credential relay rides the app's service connection: a
+    /// `git push` typed into a pane after the grace would find it gone.
+    ///
+    /// A closed connection leaves the registry here, so the next tick neither closes nor counts it
+    /// again while its reader is still on its way out. The client finds out when its transport
+    /// drops, and reconnects when it next needs the host.
+    pub fn let_go(&self, now: Instant, grace: Duration) -> usize {
+        let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        if live.values().any(|c| c.pane.load(Ordering::SeqCst)) {
+            return 0;
+        }
+        let before = live.len();
+        live.retain(|_, c| {
+            let idle = now.saturating_duration_since(c.opened) >= grace && !(c.forwarding)();
+            if idle {
+                (c.close)();
+            }
+            !idle
+        });
+        before - live.len()
+    }
+}
+
 /// Binds the agent's socket.
 ///
 /// A socket file left by a previous run would make bind fail with EADDRINUSE even though nobody is
@@ -253,6 +332,8 @@ struct ConnectionServices {
     layout_partial: crate::vcs::PartialRequests,
     subscriptions: crate::watch::Subscriptions,
     forwards: crate::forward::Forwards,
+    /// A pane is attached on this connection, for the let-go (`Connections`).
+    pane: Arc<AtomicBool>,
 }
 
 /// Greets, negotiates, then serves envelopes until the peer goes away.
@@ -315,9 +396,16 @@ pub fn handle_connection<T: Transport>(
         peer,
         partial: crate::vcs::PartialRequests::default(),
         layout_partial: crate::vcs::PartialRequests::default(),
-        subscriptions: crate::watch::Subscriptions::new(Arc::clone(&writer), closer),
+        subscriptions: crate::watch::Subscriptions::new(Arc::clone(&writer), Arc::clone(&closer)),
         forwards: crate::forward::Forwards::new(),
+        pane: Arc::new(AtomicBool::new(false)),
     };
+    let _registered = connections().register(Live {
+        opened: Instant::now(),
+        close: closer,
+        pane: Arc::clone(&services.pane),
+        forwarding: Box::new(services.forwards.carrying()),
+    });
     // Identifies THIS attachment, so ending this connection cannot detach a client that has since
     // taken the session over.
     let mut token = 0u64;
@@ -466,6 +554,8 @@ fn dispatch(
                     .screens()
                     .and_then(|screens| screens.render(id, request.columns, request.rows));
                 if let Some(screen) = ended {
+                    // Its user is looking at it for as long as the pane stays open.
+                    services.pane.store(true, Ordering::SeqCst);
                     let attached = Frame::control(FrameKind::Attached).encode();
                     if send(&Envelope::new(Service::Control, envelope.stream, attached).encode()) {
                         for chunk in screen.chunks(crate::session::READ_CHUNK) {
@@ -539,6 +629,7 @@ fn dispatch(
                 Ok((_, granted)) => {
                     *attached = Some(id);
                     *token = granted;
+                    services.pane.store(true, Ordering::SeqCst);
                     None
                 }
                 Err(e) => reply(Frame::new(FrameKind::Failure, e.to_string().into_bytes())),
@@ -1063,6 +1154,72 @@ pub fn session_id_from_env() -> Option<SessionId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the let-go closes (#380): a connection old enough that serves no pane and carries no
+    /// forwarded connection. A young one, one carrying a forward, and every connection while any
+    /// pane is attached are left alone; a closed one is really closed, and leaves the registry.
+    #[test]
+    fn the_let_go_closes_only_old_connections_with_no_pane_and_no_forward() {
+        use std::io::Read;
+        let connections = Connections::default();
+        let start = Instant::now();
+        let grace = Duration::from_secs(30);
+        let old = start - grace;
+        // One live socket per connection, so a close can be seen from the far end.
+        let open = |opened: Instant, pane: bool, forwarding: bool| {
+            let (agent, mut client) = UnixStream::pair().unwrap();
+            let live = Live {
+                opened,
+                close: agent.closer(),
+                pane: Arc::new(AtomicBool::new(pane)),
+                forwarding: Box::new(move || forwarding),
+            };
+            client
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .unwrap();
+            let closed = move || matches!(client.read(&mut [0u8; 1]), Ok(0));
+            (agent, live, closed)
+        };
+
+        let (_a, idle, mut idle_closed) = open(old, false, false);
+        let (_b, young, mut young_closed) = open(start, false, false);
+        let (_c, carrying, mut carrying_closed) = open(old, false, true);
+        let (_d, pane, _) = open(old, true, false);
+        let pane_flag = Arc::clone(&pane.pane);
+        let _idle = connections.register(idle);
+        let _young = connections.register(young);
+        let _carrying = connections.register(carrying);
+        let _pane = connections.register(pane);
+
+        assert_eq!(
+            connections.let_go(start, grace),
+            0,
+            "nothing goes while a pane is attached"
+        );
+        assert!(!idle_closed());
+
+        pane_flag.store(false, Ordering::SeqCst);
+        assert_eq!(
+            connections.let_go(start, grace),
+            2,
+            "the idle one and the old pane's"
+        );
+        assert!(idle_closed(), "the idle connection is closed");
+        assert!(!young_closed(), "a young connection is someone arriving");
+        assert!(!carrying_closed(), "a forward in flight is traffic");
+        assert_eq!(
+            connections.let_go(start, grace),
+            0,
+            "a closed connection is not closed or counted again"
+        );
+        assert_eq!(connections.live.lock().unwrap().len(), 2);
+        drop(_young);
+        assert_eq!(
+            connections.live.lock().unwrap().len(),
+            1,
+            "a guard deregisters"
+        );
+    }
 
     #[test]
     fn instance_lock_is_exclusive() {

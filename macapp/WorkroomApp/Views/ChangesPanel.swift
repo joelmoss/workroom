@@ -121,7 +121,6 @@ struct RightInspector: View {
           indicator: changesIndicator, indicatorLabel: changesIndicatorLabel, shortcut: "⌥⌘C"
         ) {
           HStack(spacing: 0) {
-            WakefulnessBadge()
             InspectorHeaderButton(
               systemImage: "checkmark.circle", help: commitButtonHelp,
               disabled: !canCommitSelectedTarget
@@ -385,67 +384,26 @@ private struct ChangedFileCountBadge: View {
   }
 }
 
-/// Whether a box is busy, as its agent's wakefulness service reports it (issues #208, #254).
-///
-/// This Mac's is in the Changes header rather than in the sidebar rows, matching the PR badge it
-/// sits beside: the verdict is per BOX, not per workroom, so every local row would carry the same
-/// glyph. A remote workroom is its own box, so its row carries its own (`ProjectSidebar`).
-///
-/// It owns its polling through `.task`, which is what makes "no polling while hidden" true rather
-/// than merely intended: closing the inspector or the window unmounts this view and cancels the poll.
-/// Nothing is drawn when the agent has no status service (an older agent, or macOS, where the
-/// classifier does not run), so this is invisible on a local-only setup.
+/// Whether a remote box is busy, as its agent reports it (issues #208, #254, #380). A remote
+/// workroom is its own box, so its sidebar row carries its own (`ProjectSidebar`). Nothing is drawn
+/// before its agent has said, or for one with no status service.
 struct WakefulnessBadge: View {
-  @ObservedObject var model: WakefulnessModel = .shared
-  /// False for a remote host's badge. Its agent is handed this Mac's settings on each connect
-  /// (#257) rather than started with them, so the "started with" sentence does not apply to it.
-  var isLocal = true
-  var identifier = "changes.wakefulness"
+  @ObservedObject var model: WakefulnessModel
+  var identifier: String
   private let theme = ThemeService.shared
 
   var body: some View {
-    Group {
-      if let status = model.status, status.running {
-        let glyph = Self.glyph(
-          for: status.display(hostSleeps: model.hostSleeps, idleWindow: model.idleWindow),
-          theme: theme)
-        let image = Image(systemName: glyph.symbol)
-          .font(.caption)
-          .foregroundStyle(glyph.tint)
-          .padding(.horizontal, 4)
-        Group {
-          // Past the ceiling, an unanswered prompt included, the badge IS the "Keep awake" control:
-          // the prompt card is gone four ordinary ways (✕, its deadline, no window open when it was
-          // raised, the connection it came on) and a box in `Suppressed` has no other way out from
-          // here — the agent's own exits are a keystroke on the box itself or the job finishing.
-          if Self.offersKeep(status) {
-            Button {
-              model.keep()
-            } label: {
-              image
-            }
-            .buttonStyle(.plain)
-            .disabled(model.keepInFlight != nil)
-            .accessibilityAction(named: "Keep awake") { model.keep() }
-          } else {
-            image
-          }
-        }
-        .help(
-          Self.help(
-            for: status, settings: isLocal ? .current : nil, hostSleeps: model.hostSleeps,
-            idleWindow: model.idleWindow)
-        )
+    if let status = model.status, status.running {
+      let glyph = Self.glyph(for: status.display(hostSleeps: model.hostSleeps), theme: theme)
+      Image(systemName: glyph.symbol)
+        .font(.caption)
+        .foregroundStyle(glyph.tint)
+        .padding(.horizontal, 4)
+        .help(Self.help(for: status, hostSleeps: model.hostSleeps))
         .accessibilityLabel(glyph.label)
         .accessibilityIdentifier(identifier)
-      }
     }
-    .task { await model.poll() }
   }
-
-  /// Only past the ceiling, an unanswered prompt included: "keep" restarts the ceiling and does
-  /// nothing for a failing heartbeat or an agent too old to send one (#257).
-  static func offersKeep(_ status: AgentWakefulness) -> Bool { status.awakeCeilingExceeded }
 
   static func glyph(for display: AgentWakefulness.Display, theme: ThemeService)
     -> (symbol: String, tint: Color, label: String)
@@ -453,10 +411,6 @@ struct WakefulnessBadge: View {
     switch display {
     case .idle: return ("moon.zzz", .secondary, "Idle")
     case .busy: return ("bolt.fill", theme.tokens.fgMuted, "Busy")
-    // The ceiling is advisory: this warns that the box has been busy a long time, it does not report
-    // anything having been done about it.
-    case .busyPastCeiling:
-      return ("exclamationmark.triangle.fill", theme.tokens.warning, "Busy past the awake ceiling")
     // The one state that must not be softened: work is running and nothing is keeping the box awake.
     case .busyUnprotected:
       return ("bolt.slash.fill", theme.tokens.warning, "Busy but not kept awake")
@@ -466,59 +420,31 @@ struct WakefulnessBadge: View {
     }
   }
 
-  /// `settings` is this Mac's, to name a running agent's that differ; nil for a remote host's
-  /// agent, which this Mac's settings never started.
-  static func help(
-    for status: AgentWakefulness, settings: AgentWakefulnessSettings?, hostSleeps: Bool = true,
-    idleWindow: TimeInterval? = nil
-  ) -> String {
-    let awake = wakefulnessDuration(status.awakeSeconds).formatted(
-      .units(allowed: [.hours, .minutes], width: .narrow))
-    let shortWindow = hostSleeps && AgentWakefulness.isTooShort(idleWindow)
-    let window =
-      "Its provider sleeps it after \(Int(idleWindow ?? 0)) s idle on the network, sooner than the "
-      + "keep-awake heartbeat's once a minute can hold it. Raise the machine's auto-suspend timeout."
-    var text: String
-    switch status.display(hostSleeps: hostSleeps, idleWindow: idleWindow) {
-    case .idle: text = "This machine is idle."
-    case .busy: text = "This machine is busy (awake \(awake))."
-    case .busyPastCeiling:
-      text =
-        "This machine has been busy for \(awake), past its awake ceiling. Nothing has been "
-        + "slept — this is a report. Click to keep it awake."
+  static func help(for status: AgentWakefulness, hostSleeps: Bool = true) -> String {
+    switch status.display(hostSleeps: hostSleeps) {
+    case .idle:
+      // The box decides (#380): Workroom lets go of an idle box and leaves its sleep to its provider.
+      return hostSleeps
+        ? "This machine is idle. Workroom doesn't hold it awake, so its provider may put it to sleep."
+        : "This machine is idle."
+    case .busy: return "This machine is busy."
     case .unknown:
-      text =
+      return
         "This machine's agent has stopped checking on it, so whether it is busy is unknown, and "
         + "nothing is keeping it awake: it may sleep once it has been idle on the network long "
         + "enough."
-    case .busyUnprotected where shortWindow && !status.unprotected:
-      text = "This machine is busy (awake \(awake)), but it may sleep under the job."
     case .busyUnprotected:
-      text =
-        status.suppressed
-        ? "This machine is busy, but the awake-ceiling prompt went unanswered, so it is no longer "
-          + "being kept awake and may sleep. Click to keep it awake."
-        : status.stalled == true
-          ? "This machine is busy, but its agent has stopped checking on it, so nothing is "
-            + "keeping it awake and it may sleep once it has been idle on the network long enough."
-          : status.keepAwake == nil
-            ? "This machine is busy, but its agent predates the keep-awake heartbeat, so it may "
-              + "sleep once it has been idle on the network long enough. Reconnecting updates the "
-              + "agent when it can; if it does not, restart the agent on the machine."
-            : "This machine is busy, but its keep-awake heartbeat is failing "
-              + "(\(String((status.keepAwake?.error ?? "unknown error").prefix(200)))), so it may sleep once it has been "
-              + "idle on the network long enough."
-      // Unprotected outranks the ceiling in the glyph, but the badge is still the "Keep awake"
-      // button past it (`offersKeep`), so say why.
-      if !status.suppressed && status.awakeCeilingExceeded {
-        text += " It has been busy for \(awake), past its awake ceiling. Click to keep it awake."
-      }
+      return status.stalled == true
+        ? "This machine is busy, but its agent has stopped checking on it, so nothing is "
+          + "keeping it awake and it may sleep once it has been idle on the network long enough."
+        : status.keepAwake == nil
+          ? "This machine is busy, but its agent predates the keep-awake heartbeat, so it may "
+            + "sleep once it has been idle on the network long enough. Reconnecting updates the "
+            + "agent when it can; if it does not, restart the agent on the machine."
+          : "This machine is busy, but its keep-awake heartbeat is failing "
+            + "(\(String((status.keepAwake?.error ?? "unknown error").prefix(200)))), so it may "
+            + "sleep once it has been idle on the network long enough."
     }
-    if shortWindow { text += " " + window }
-    if let settings, let mismatch = status.settingsMismatch(against: settings) {
-      text += " " + mismatch
-    }
-    return text
   }
 }
 
@@ -554,8 +480,14 @@ private struct PortsSection: View {
         .accessibilityIdentifier("ports.add")
       }
       if !model.connected {
-        // Said here rather than discovered from `+`: the controls are useless without an agent.
-        Text("No agent is connected.").font(.caption2).foregroundStyle(.secondary)
+        // Said here rather than discovered from `+`: the controls are useless without an agent. A
+        // forward kept across the lost connection reconnects when it is used (#380).
+        Text(
+          model.forwards.contains(where: \.reconnects)
+            ? "Not connected. A forward reconnects when it is used."
+            : "No agent is connected."
+        )
+        .font(.caption2).foregroundStyle(.secondary)
       }
       if let message = model.message {
         Text(message).font(.caption2).foregroundStyle(theme.tokens.failure).lineLimit(3)
