@@ -1544,13 +1544,17 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     launches) found it unknown, and at most 3 go per sweep; the rest go on later launches. Each
     sweep writes what it found unknown to `hosts/unknown-containers-<runtime>[@<context>].json`.
     A lost, restored or half-written config so costs nothing on the launch that reads it.
-  - **Changed by #284 (2026-10-08):** a sweep also runs when config records nothing. Before
-    running a container, a driver writes `hosts/made-containers-<runtime>[@<context>]`, and a
-    launch sweeps every runtime and context so marked. A crash before a project's first base was
-    recorded therefore no longer leaves its container for good. A sweep that finds nothing of
-    this build's left removes the marker once it is older than the grace, so a Mac that no longer
-    has container workrooms stops asking the runtime. A Mac that never made one has no marker
-    and is never asked.
+  - **Changed by #284 (2026-10-08):** a sweep also runs when config records nothing, but then
+    takes only containers a create left pending. Before running a container, a driver writes its
+    name to `hosts/pending-containers-<runtime>[@<context>].json`. The name comes off once config
+    records the host (`RemoteHosts.adopt`), or once a rollback, a delete or a sweep removes it. A
+    launch sweeps every runtime and context with a name pending. With nothing recorded it removes
+    only pending names, still under the two-launch rule and the cap, and no images. So a crash
+    before a project's first base was recorded no longer leaves its container for good. A lost
+    config, or a Dev launch with a throwaway `HOME` (the CLI's config follows `HOME`, the app's
+    `hosts/` does not), cannot make a live workroom's container look disposable. A Mac that never
+    made a container workroom has nothing pending and is never asked. A name is not dropped for
+    being missing from a listing, since a key with no context lists whichever daemon is current.
   - **Changed by #284 (2026-10-08):** the once-per-launch sweep is tracked per runtime and
     context, and one counts as done only once it listed its containers. A runtime that is down
     at launch is swept on a later reload instead of being skipped for the whole launch. A

@@ -683,10 +683,10 @@ final class RemoteHosts: @unchecked Sendable {
   /// `adopt`'s seams, nil in the app: making a key's driver, and sweeping one.
   private let makeDriver: (@Sendable (DriverKey) throws -> any HostTerminalDriver)?
   private let sweepDriver:
-    (@Sendable (ContainerHostDriver, Set<UUID>, Set<String>) async -> [String])?
-  /// Where `adopt` looks for the runtimes a driver made a container on
-  /// (`ContainerHostDriver.made(in:)`), or nil to look nowhere.
-  private let madeIn: URL?
+    (@Sendable (ContainerHostDriver, Set<UUID>, Set<String>, Bool) async -> [String])?
+  /// Where `adopt` looks for the runtimes with containers pending
+  /// (`ContainerHostDriver.pending(in:)`), or nil to look nowhere.
+  private let pendingIn: URL?
 
   init(
     connectHost: (@Sendable (HostID) async throws -> Void)? = nil,
@@ -694,14 +694,17 @@ final class RemoteHosts: @unchecked Sendable {
     startHost: (@Sendable (HostID) async throws -> Void)? = nil,
     now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
     makeDriver: (@Sendable (DriverKey) throws -> any HostTerminalDriver)? = nil,
-    sweepDriver: (@Sendable (ContainerHostDriver, Set<UUID>, Set<String>) async -> [String])? = nil,
+    sweepDriver: (
+      @Sendable (ContainerHostDriver, Set<UUID>, Set<String>, Bool) async -> [String]
+    )? =
+      nil,
     relayHost: (@Sendable (HostID) async throws -> Void)? = nil,
     connectAgent: (@Sendable (HostID, any HostTerminalDriver) async throws -> AgentVCSConnection)? =
       nil,
     presence: (@Sendable (HostID) async -> BoxdHostDriver.Presence?)? = nil,
-    madeIn: URL? = RemoteHosts.madeIn
+    pendingIn: URL? = RemoteHosts.pendingIn
   ) {
-    self.madeIn = madeIn
+    self.pendingIn = pendingIn
     self.presenceSeam = presence
     self.connectHost = connectHost
     self.relayHost = relayHost
@@ -763,9 +766,8 @@ final class RemoteHosts: @unchecked Sendable {
   static var hosts: URL { directory.appendingPathComponent("hosts", isDirectory: true) }
 
   /// `hosts`, except under test (a hosted unit run or a UI-test launch), which must never sweep
-  /// the developer's own runtime: its config records nothing, so a marker alone would sweep it with
-  /// every live workroom unknown.
-  static var madeIn: URL? { UITestFixture.isTestProcess ? nil : hosts }
+  /// the developer's own runtime.
+  static var pendingIn: URL? { UITestFixture.isTestProcess ? nil : hosts }
 
   /// Which of `keys` this call sweeps: each whose sweep has neither run this launch nor is running,
   /// so no key is swept twice in a launch, which the two-launch rule would count as two launches
@@ -793,6 +795,9 @@ final class RemoteHosts: @unchecked Sendable {
     }
   }
 
+  /// How many sweeps are running, for tests to wait on `finishSweep`.
+  var sweepsRunning: Int { lock.withLock { sweeping.count } }
+
   /// Whether a sweep was held back and has yet to run. False when no call has reached the sweep,
   /// so a launch with nothing recorded never reads config again for one.
   var sweepHeld: Bool { lock.withLock { held } }
@@ -811,7 +816,7 @@ final class RemoteHosts: @unchecked Sendable {
   /// Takes on every host `projects` record, each into the driver for its Docker context, so their
   /// panes and services reach them after a relaunch, then sweeps once per launch what carries this
   /// app's labels and no record names. Does nothing, and never touches Docker, when nothing is
-  /// recorded, nothing has been made, and no driver ever made a container (#284). `sweep: false`
+  /// recorded, nothing has been made, and no create left a container pending (#284). `sweep: false`
   /// holds the sweep for a later call: a list with a delete in flight leaves out hosts config
   /// still records (#296).
   func adopt(_ projects: [Project], sweep: Bool = true) {
@@ -832,9 +837,9 @@ final class RemoteHosts: @unchecked Sendable {
       }
       return Set(made.keys)
     }
-    // A runtime a create made a container on, which a crash may have left before config recorded
-    // it (#284).
-    let marked = (madeIn.map(ContainerHostDriver.made(in:)) ?? []).map {
+    // A runtime with a container a create began, which a crash may have left before config
+    // recorded it (#284).
+    let marked = (pendingIn.map(ContainerHostDriver.pending(in:)) ?? []).map {
       DriverKey(runtime: $0.dialect == .apple ? .apple : .docker, context: $0.context)
     }
     guard !recorded.isEmpty || !already.isEmpty || !marked.isEmpty else { return }
@@ -856,6 +861,8 @@ final class RemoteHosts: @unchecked Sendable {
         continue
       }
       drivers[key] = driver
+      // Every recorded host, not only this key's: two contexts can name one daemon.
+      driver.forgetPending(recorded.compactMap(\.id).map(ContainerHostDriver.containerName))
       for descriptor in recorded where !descriptor.isDestroyed && DriverKey(descriptor) == key {
         guard let id = descriptor.id, let record = descriptor.container,
           driver.record(of: .remote(id)) == nil
@@ -872,13 +879,18 @@ final class RemoteHosts: @unchecked Sendable {
     // own hosts would remove the other's, labelled as this build's and old enough.
     let known = Set(recorded.compactMap(\.id))
     let images = Set(recorded.compactMap { $0.container?.image })
-    let sweep = sweepDriver ?? { await $0.sweep(keeping: $1, images: $2) }
+    // With no container host recorded, config may simply not be the one the containers were made
+    // under (a lost config, a launch with a throwaway `HOME`): only what a create left pending
+    // goes. A boxd host recorded says nothing of the containers.
+    let onlyPending = !recorded.contains { DriverKey($0)?.runtime != nil }
+    let sweep =
+      sweepDriver ?? { await $0.sweep(keeping: $1, images: $2, onlyPending: $3) }
     // At once: a context whose daemon is slow to answer holds up no other context's sweep.
     Task.detached(priority: .utility) {
       await withTaskGroup(of: (DriverKey, [String]).self) { group in
         for key in claimed {
           guard let driver = drivers[key] else { continue }
-          group.addTask { (key, await sweep(driver, known, images)) }
+          group.addTask { (key, await sweep(driver, known, images, onlyPending)) }
         }
         for await (key, failures) in group {
           self.finishSweep(

@@ -391,6 +391,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       provisioned[id] = nil
       destroyed.insert(id)
     }
+    forgetPending([made.container])
     try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
   }
 
@@ -472,13 +473,19 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// launch) found it unknown, and at most `cap` go per sweep (`confirmedUnknown`). A config that
   /// was lost, restored or half-written then costs nothing on the launch that reads it. Images are
   /// not held back: one a container still runs from is never removed.
+  ///
+  /// `onlyPending` sweeps only containers a create began and no record has named since
+  /// (`pendingContainers`), and no images: for when config records nothing, which is also what a
+  /// lost config or a launch with a throwaway `HOME` reads, where every live container would
+  /// otherwise look unknown.
   func sweep(
     keeping known: Set<UUID>, images: Set<String> = [], grace: TimeInterval = 20 * 60,
-    cap: Int = 3
+    cap: Int = 3, onlyPending: Bool = false
   ) async -> [String] {
     guard let provisioning, !provisioning.labels.isEmpty else { return [] }
     if provisioning.dialect == .apple {
-      return await appleSweep(keeping: known, images: images, grace: grace, cap: cap)
+      return await appleSweep(
+        keeping: known, images: images, grace: grace, cap: cap, onlyPending: onlyPending)
     }
     let filters = provisioning.labels.flatMap { ["--filter", "label=\($0)"] }
     let cutoff = Date().timeIntervalSince1970 - grace
@@ -489,36 +496,37 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     let keptImages = Set(
       (lock.withLock { known.compactMap { provisioned[$0]?.image } } + images).map(
         Self.shortImageID))
-    // Whether the listings found nothing of this build's, so nothing is left to sweep (`madeFile`).
-    var empty = true
+    let pending = onlyPending ? pendingContainers : []
     do {
       var unknown: [String] = []
-      let lines = try await runtime(
+      for line in try await runtime(
         ["ps", "-a"] + filters + ["--format", "{{.Names}}\t{{.Label \"\(Self.createdLabel)\"}}"],
         allLines: true
-      ).split(separator: "\n")
-      empty = lines.isEmpty
-      for line in lines {
+      ).split(separator: "\n") {
         let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
         let name = String(fields[0])
-        if !keptContainers.contains(name), old(fields.count > 1 ? fields[1] : "") {
+        if !keptContainers.contains(name), old(fields.count > 1 ? fields[1] : ""),
+          !onlyPending || pending.contains(name)
+        {
           unknown.append(name)
         }
       }
+      var removed: [String] = []
       for name in confirmedUnknown(unknown, cap: cap, failed: &failed) {
-        do { _ = try await runtime(["rm", "--force", "--volumes", name]) } catch {
+        do {
+          _ = try await runtime(["rm", "--force", "--volumes", name])
+          removed.append(name)
+        } catch {
           failed.append("container \(name): \(error.localizedDescription)")
         }
       }
-    } catch {
-      empty = false
-      failed.append(Self.listingFailed + error.localizedDescription)
-    }
+      forgetPending(removed)
+    } catch { failed.append(Self.listingFailed + error.localizedDescription) }
+    guard !onlyPending else { return failed }
 
     do {
       let images = try await runtime(["images", "-aq"] + filters, allLines: true)
         .split(separator: "\n").map(String.init)
-      if empty, images.isEmpty { clearMade(before: cutoff) }
       for image in Set(images) where !keptImages.contains(Self.shortImageID(image)) {
         // One that cannot be inspected is left for the next sweep.
         guard
@@ -543,7 +551,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// `--filter` and no templates. An image is kept while any container at all was run from it:
   /// Apple removes an image a container still uses, where Docker refuses.
   private func appleSweep(
-    keeping known: Set<UUID>, images kept: Set<String>, grace: TimeInterval, cap: Int
+    keeping known: Set<UUID>, images kept: Set<String>, grace: TimeInterval, cap: Int,
+    onlyPending: Bool
   ) async -> [String] {
     guard let provisioning else { return [] }
     let cutoff = Date().timeIntervalSince1970 - grace
@@ -575,7 +584,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     }
     let keptContainers = Set(known.map(Self.containerName))
     var inUse = kept
-    var empty = true
+    let pending = onlyPending ? pendingContainers : []
     do {
       var unknown: [String] = []
       for container in try AppleContainerCLI.objects(
@@ -589,29 +598,31 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
           inUse.insert(image)
         }
         let labels = AppleContainerCLI.labels(of: container)
-        if ours(labels) { empty = false }
         if let id = AppleContainerCLI.id(of: container), ours(labels), old(labels),
-          !keptContainers.contains(id)
+          !keptContainers.contains(id), !onlyPending || pending.contains(id)
         {
           unknown.append(id)
         }
       }
+      var removed: [String] = []
       for id in confirmedUnknown(unknown, cap: cap, failed: &failed) {
-        do { _ = try await runtime(["delete", "--force", id]) } catch {
+        do {
+          _ = try await runtime(["delete", "--force", id])
+          removed.append(id)
+        } catch {
           failed.append("container \(id): \(error.localizedDescription)")
         }
       }
+      forgetPending(removed)
     } catch {
       // Without the list, no image is known to be unused.
       return [Self.listingFailed + error.localizedDescription]
     }
+    guard !onlyPending else { return failed }
     do {
-      let images = try AppleContainerCLI.objects(
+      for image in try AppleContainerCLI.objects(
         try await runtime(["image", "list", "--format", "json"], allLines: true))
-      if empty, !images.contains(where: { ours(AppleContainerCLI.labels(ofImage: $0)) }) {
-        clearMade(before: cutoff)
-      }
-      for image in images {
+      {
         let labels = AppleContainerCLI.labels(ofImage: image)
         guard let name = AppleContainerCLI.name(ofImage: image), ours(labels), old(labels),
           !inUse.contains(name)
@@ -638,8 +649,12 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
         at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
       try JSONEncoder().encode(unknown).write(to: file, options: .atomic)
     } catch {
-      // Unrecorded, the next sweep reads none as seen before and removes nothing.
+      // The list left behind is an older sweep's, not this one's predecessor: confirming against
+      // it, now or next time, would take a container that was known in between. So it goes, and
+      // this sweep removes nothing.
+      try? FileManager.default.removeItem(at: file)
       failed.append("recording unknown containers: \(error.localizedDescription)")
+      return []
     }
     let confirmed = unknown.filter(before.contains)
     if confirmed.count > cap {
@@ -658,15 +673,51 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     )
   }
 
-  /// Written before each container this driver runs, and removed by a sweep that finds nothing of
-  /// this build's left (#284). `RemoteHosts.adopt` sweeps a runtime only when something names it:
-  /// with no record, a crash before a project's first base was recorded would leave its container
-  /// for good, and without the marker every launch would ask a runtime the user never used.
-  private var madeFile: URL {
-    directory.appendingPathComponent(
-      Self.madePrefix + Self.suffix(provisioning?.dialect ?? .docker, provisioning?.context))
+  /// The containers this driver began running that no config record names yet (#284), one file per
+  /// runtime and Docker context. A name goes in before its `run`, and out once config records its
+  /// host (`RemoteHosts.adopt`) or it is removed. So a crash before a project's first base was
+  /// recorded still leaves its container named here, and a launch whose config records nothing
+  /// sweeps only these (`sweep(onlyPending:)`), never a live workroom that config fails to show.
+  /// ponytail: a container removed by hand stays listed, costing its runtime one listing a launch;
+  /// a name is not dropped for being missing, since a context with none named lists whichever
+  /// daemon is current, and the leftover may be on another.
+  var pendingContainers: Set<String> {
+    pendingLock.withLock { Set(readPending()) }
   }
-  private static let madePrefix = "made-containers-"
+  private var pendingFile: URL {
+    directory.appendingPathComponent(
+      Self.pendingPrefix + Self.suffix(provisioning?.dialect ?? .docker, provisioning?.context)
+        + ".json")
+  }
+  private static let pendingPrefix = "pending-containers-"
+  private let pendingLock = NSLock()
+
+  private func readPending() -> [String] {
+    (try? JSONDecoder().decode([String].self, from: Data(contentsOf: pendingFile))) ?? []
+  }
+
+  /// Rewrites the pending list as `change` leaves it, removing the file once it is empty.
+  private func updatePending(_ change: (inout [String]) -> Void) throws {
+    try pendingLock.withLock {
+      var names = readPending()
+      let before = names
+      change(&names)
+      guard names != before else { return }
+      guard !names.isEmpty else {
+        try FileManager.default.removeItem(at: pendingFile)
+        return
+      }
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      try JSONEncoder().encode(names).write(to: pendingFile, options: .atomic)
+    }
+  }
+
+  /// Takes `names` off the pending list: config records their hosts now, or they are gone.
+  func forgetPending(_ names: [String]) {
+    guard !names.isEmpty else { return }
+    let drop = Set(names)
+    try? updatePending { $0.removeAll(where: drop.contains) }
+  }
 
   /// A file name's runtime and Docker context. `@` is in no context's name, so no context (the
   /// current one) is told apart from one named `default`.
@@ -674,33 +725,19 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     (dialect == .apple ? "apple" : "docker") + (context.map { "@\($0)" } ?? "")
   }
 
-  /// The runtimes and Docker contexts whose drivers, with hosts in `directory`, may have left a
-  /// container behind (`madeFile`).
-  static func made(in directory: URL) -> [(dialect: Dialect, context: String?)] {
+  /// The runtimes and Docker contexts whose drivers, with hosts in `directory`, have containers
+  /// pending (`pendingContainers`).
+  static func pending(in directory: URL) -> [(dialect: Dialect, context: String?)] {
     ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).compactMap {
-      guard $0.hasPrefix(madePrefix) else { return nil }
-      let parts = $0.dropFirst(madePrefix.count).split(separator: "@", maxSplits: 1)
+      guard $0.hasPrefix(pendingPrefix), $0.hasSuffix(".json") else { return nil }
+      let parts = $0.dropFirst(pendingPrefix.count).dropLast(".json".count)
+        .split(separator: "@", maxSplits: 1)
       let context = parts.count > 1 ? String(parts[1]) : nil
       switch parts.first {
       case "docker": return (.docker, context)
       case "apple": return (.apple, nil)
       default: return nil
       }
-    }
-  }
-
-  private func markMade() throws {
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try Data().write(to: madeFile)
-  }
-
-  /// Removes the marker when it was written before `cutoff` (seconds since 1970), so a create that
-  /// began after this sweep's listing keeps it.
-  private func clearMade(before cutoff: TimeInterval) {
-    let written = try? madeFile.resourceValues(forKeys: [.contentModificationDateKey])
-      .contentModificationDate
-    if let written, written.timeIntervalSince1970 <= cutoff {
-      try? FileManager.default.removeItem(at: madeFile)
     }
   }
 
@@ -743,6 +780,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     // Named here, not by the runtime's own ID, which is known only from its output: a run that
     // outlives its CLI still leaves a container this name removes.
     let container = Self.containerName(id)
+    // Before the container exists: a crash from here on leaves its name pending (#284).
+    try updatePending { $0.append(container) }
     do {
       // Docker's `unless-stopped`: a Docker or Mac restart brings it back, on the port its record
       // names. Apple's runtime has no restart policy; opening the workroom starts it
@@ -757,8 +796,6 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       arguments += ["--name", container, "--publish", "127.0.0.1:\(port):22"]
       for label in provisioning.labels + [Self.created()] { arguments += ["--label", label] }
       arguments += ["--env", "AUTHORIZED_KEY=\(provisioning.publicKey)", source]
-      // Before the container exists: a crash from here on leaves the marker beside it (#284).
-      try markMade()
       _ = try await runtime(arguments)
       let hostKey = try await identity(of: container)
       lock.withLock {
@@ -784,6 +821,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
           return nil
         } catch { return "container \(container): \(error.localizedDescription)" }
       }.value
+      if removal == nil { forgetPending([container]) }
       // The login wait wrote the host's ssh_config and pinned key here.
       try? FileManager.default.removeItem(at: directory.appendingPathComponent(id.uuidString))
       guard let removal else { throw error }
