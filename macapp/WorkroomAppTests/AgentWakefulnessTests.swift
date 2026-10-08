@@ -404,8 +404,8 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertEqual(snapshot.status, .disconnected)
   }
 
-  /// The watch asks once and then follows what is pushed: nothing polls (#380), so the box hears
-  /// one request per connection, and the badge follows the box.
+  /// The watch asks once and then follows what is pushed: an idle box is never polled (#380), so
+  /// it hears one request per connection, and the badge follows the box.
   @MainActor
   func testTheWatchAsksOnceThenFollowsWhatIsPushed() async throws {
     let agent = Agent(replies: [.success(try at(100))])

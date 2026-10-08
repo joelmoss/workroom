@@ -748,7 +748,7 @@ final class BoxdIntegrationTests: XCTestCase {
     await HostConnectionManager.shared.snapshot(for: host).status == .connected
   }
 
-  /// #380's acceptance: with the app attached as it really is (pushed verdicts, no poll, no
+  /// #380's acceptance: with the app attached as it really is (pushed verdicts, no poll while idle, no
   /// app-side let-go), an open app does not hold an idle box: its agent closes the app's idle
   /// connection itself, and the app takes that as the box idle, not an error, and stops reaching
   /// it. Whether the box then sleeps is the box's and its provider's, not Workroom's, so it is not

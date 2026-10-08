@@ -7,8 +7,8 @@
 //! changes its settings: the heartbeat stopping is all it takes for the box to sleep.
 //!
 //! **The box decides its own wakefulness (#380).** The verdict is pushed to every connection that
-//! has asked for `status`, so no client polls (a poll's own bytes on eth0 voted the box BUSY for
-//! good). And once the verdict has been IDLE for [`LET_GO_GRACE_S`], the service closes the
+//! has asked for `status`, so no client polls an idle box (a poll's own bytes on eth0 voted the box
+//! BUSY for good). And once the verdict has been IDLE for [`LET_GO_GRACE_S`], the service closes the
 //! connections that serve no attached pane (`serve::Connections::let_go`): with Workroom's traffic
 //! gone, the provider's own idle timer sleeps the box. When to sleep, and for how long a box may
 //! stay awake, are the provider's and the user's; there is no awake ceiling here any more.
@@ -62,7 +62,7 @@ use crate::session::SharedWriter;
 
 /// Bumped when the Status service's JSON shape changes, exactly as `FILE_SERVICE_VERSION` is. 2
 /// (#380): the awake ceiling's fields and requests are gone, and verdict changes are pushed, so an
-/// app that sees 2 needs no poll.
+/// app that sees 2 needs no poll while the box is idle.
 pub const STATUS_SERVICE_VERSION: u32 = 2;
 
 /// How long the verdict stays IDLE before the service lets go of the connections it may close, and
