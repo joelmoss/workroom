@@ -3557,12 +3557,13 @@ final class AppStore: ObservableObject {
     let label: String
   }
 
-  /// `step` of a boxd create that builds the project's base first or not, as the row shows it, or
-  /// nil for a step that create does not take.
-  nonisolated static func createStep(_ step: RemoteProvisioning.Step, buildsBase: Bool)
-    -> CreateStep?
-  {
-    let all = RemoteProvisioning.Step.allCases
+  /// `step` of a remote provider's create that builds the project's base first or not, as the row
+  /// shows it, or nil for a step that create does not take. Only boxd restarts a copy (`reboots`):
+  /// exe.dev's copy boots with its own identity (#259).
+  nonisolated static func createStep(
+    _ step: RemoteProvisioning.Step, buildsBase: Bool, reboots: Bool = true
+  ) -> CreateStep? {
+    let all = RemoteProvisioning.Step.allCases.filter { reboots || $0 != .reboot }
     let steps = buildsBase ? all : Array(all.drop { $0 != .snapshot })
     guard let index = steps.firstIndex(of: step) else { return nil }
     return CreateStep(
@@ -3638,10 +3639,11 @@ final class AppStore: ObservableObject {
         createSteps[path] = nil
       }
       let buildsBase = base == nil
+      let reboots = if case .boxd = key { true } else { false }
       let stepped: @Sendable (RemoteProvisioning.Step) -> Void = { step in
         Task { @MainActor [weak self] in
           guard let self, self.isBusyProject(path),
-            let shown = Self.createStep(step, buildsBase: buildsBase)
+            let shown = Self.createStep(step, buildsBase: buildsBase, reboots: reboots)
           else { return }
           self.createSteps[path] = shown
         }

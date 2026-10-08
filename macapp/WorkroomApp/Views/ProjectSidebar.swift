@@ -293,7 +293,8 @@ struct ProjectSidebar: View {
       // "+" asks where, as the context menu does (#309).
       CreateRowButton(
         help:
-          "New workroom in \(project.displayName), on this Mac, in a local container or on boxd",
+          "New workroom in \(project.displayName), on this Mac, in a local container or on "
+          + RemoteWorkrooms.Place.remoteProviders.map(\.displayName).joined(separator: " or "),
         places: { newWorkroomPlaces(in: project) }
       )
       .opacity(busy ? 0 : 1)
