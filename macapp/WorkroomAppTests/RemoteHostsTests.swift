@@ -713,15 +713,22 @@ final class RemoteHostsTests: XCTestCase {
   }
 
   /// The launch's one sweep waits out a delete (#296): a call that isn't allowed leaves it for the
-  /// next, and only one call ever runs it.
+  /// next, and only one call ever runs it. One whose runtime could not list is owed again (#284),
+  /// and one still running is never claimed twice.
   func testTheSweepIsHeldUntilAllowedThenRunsOnce() {
     let remote = RemoteHosts()
+    let (docker, apple) = (RemoteHosts.DriverKey(), RemoteHosts.DriverKey(runtime: .apple))
     XCTAssertFalse(remote.sweepHeld, "nothing has reached the sweep, so nothing is owed")
-    XCTAssertFalse(remote.claimSweep(allowed: false))
+    XCTAssertEqual(remote.claimSweep([docker, apple], allowed: false), [])
     XCTAssertTrue(remote.sweepHeld, "a held sweep is still owed")
-    XCTAssertTrue(remote.claimSweep(allowed: true))
+    XCTAssertEqual(remote.claimSweep([docker, apple], allowed: true), [docker, apple])
     XCTAssertFalse(remote.sweepHeld)
-    XCTAssertFalse(remote.claimSweep(allowed: true))
+    XCTAssertEqual(remote.claimSweep([docker, apple], allowed: true), [], "claimed while running")
+    remote.finishSweep(docker, ran: true)
+    remote.finishSweep(apple, ran: false)
+    XCTAssertEqual(remote.claimSweep([docker, apple], allowed: true), [apple])
+    remote.finishSweep(apple, ran: true)
+    XCTAssertEqual(remote.claimSweep([docker, apple], allowed: true), [])
   }
 
   /// A container workroom's create is off while its project is busy: a second create would build a second
@@ -1867,6 +1874,39 @@ final class RemoteHostsTests: XCTestCase {
     make(directory).adopt([])
     for _ in 0..<500 where swept.calls.count < 2 { try await Task.sleep(for: .milliseconds(2)) }
     XCTAssertEqual(Set(swept.calls.compactMap(\.context)), ["docker orbstack", "apple nil"])
+  }
+
+  /// A runtime that could not list its containers at launch (Docker not started yet) is swept on a
+  /// later reload rather than skipped for the whole launch (#284), and once its sweep ran, no
+  /// reload sweeps it again: a second sweep in one launch would pass for the next launch's.
+  func testARuntimeDownAtLaunchIsSweptOnALaterReload() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-made-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    try Data().write(to: directory.appendingPathComponent("made-containers-docker"))
+    let (runtime, _) = try stubRuntime()
+    let swept = Swept()
+    let remote = RemoteHosts(
+      makeDriver: { Self.driver(runtime: runtime, context: $0.context) },
+      sweepDriver: { driver, known, _ in
+        swept.add(driver.provisioning?.context, known)
+        return swept.calls.count == 1 ? [ContainerHostDriver.listingFailed + "daemon down"] : []
+      }, madeIn: directory)
+    func reload(expecting calls: Int) async throws {
+      remote.adopt([])
+      for _ in 0..<500 where swept.calls.count < calls {
+        try await Task.sleep(for: .milliseconds(2))
+      }
+      // Long enough for the detached sweep's end to be recorded.
+      try await Task.sleep(for: .milliseconds(50))
+    }
+
+    try await reload(expecting: 1)
+    try await reload(expecting: 2)
+    XCTAssertEqual(swept.calls.count, 2, "a sweep that could not list was not tried again")
+    try await reload(expecting: 3)
+    XCTAssertEqual(swept.calls.count, 2, "a sweep that ran was run again in the same launch")
   }
 
   // MARK: Apple's container runtime (#309)

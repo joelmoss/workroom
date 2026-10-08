@@ -280,7 +280,7 @@ enum RemoteWorkrooms {
   /// in config, then the derived instance, then the instance's descriptor. The name is taken
   /// before the derive, so the branch is named for it and a crash part-way leaves an entry the
   /// user can see and delete; anything the crash left on a container host is the sweep's
-  /// (`RemoteHosts.adopt`). A boxd machine a crash left is nobody's until #284.
+  /// (`RemoteHosts.adopt`). A boxd machine a crash left is nobody's until #373.
   ///
   /// When the derive fails and undid itself, the entry is dropped. When undoing it failed too,
   /// the entry keeps what is still live (host, grant) so deleting it can finish the job.
@@ -634,7 +634,9 @@ final class RemoteHosts: @unchecked Sendable {
   private var keys: [UUID: DriverKey] = [:]
   /// Workroom hosts whose git credentials come through the Mac's relay (#309).
   private var relayed: Set<UUID> = []
-  private var swept = false
+  /// The driver keys whose sweep ran this launch, and those whose sweep is running (#284).
+  private var swept: Set<DriverKey> = []
+  private var sweeping: Set<DriverKey> = []
   /// A call reached the sweep while a delete was in flight and left it for later (#296).
   private var held = false
   /// The connection attempt running for each host, which `ensureConnected` callers share, and
@@ -765,22 +767,35 @@ final class RemoteHosts: @unchecked Sendable {
   /// every live workroom unknown.
   static var madeIn: URL? { UITestFixture.isTestProcess ? nil : hosts }
 
-  /// Whether this call runs the launch's one sweep. A call that isn't allowed leaves it for the
+  /// Which of `keys` this call sweeps: each whose sweep has neither run this launch nor is running,
+  /// so no key is swept twice in a launch, which the two-launch rule would count as two launches
+  /// (`ContainerHostDriver.sweep`). A call that isn't allowed sweeps none and leaves them for the
   /// next.
-  func claimSweep(allowed: Bool) -> Bool {
-    return lock.withLock {
+  func claimSweep(_ keys: Set<DriverKey>, allowed: Bool) -> Set<DriverKey> {
+    lock.withLock {
+      let owed = keys.subtracting(swept).subtracting(sweeping)
       guard allowed else {
-        held = held || !swept
-        return false
+        held = held || !owed.isEmpty
+        return []
       }
-      defer { swept = true }
-      return !swept
+      held = false
+      sweeping.formUnion(owed)
+      return owed
+    }
+  }
+
+  /// Ends `key`'s sweep: done for the launch when it ran, and owed again when its runtime could not
+  /// list its containers (down at launch, say), so a later reload sweeps it (#284).
+  func finishSweep(_ key: DriverKey, ran: Bool) {
+    lock.withLock {
+      sweeping.remove(key)
+      if ran { swept.insert(key) }
     }
   }
 
   /// Whether a sweep was held back and has yet to run. False when no call has reached the sweep,
   /// so a launch with nothing recorded never reads config again for one.
-  var sweepHeld: Bool { lock.withLock { held && !swept } }
+  var sweepHeld: Bool { lock.withLock { held } }
 
   /// The driver that holds host `id`, for a pane, which must not probe Docker: nil when no driver
   /// made so far has it. A boxd host's driver is made here if need be: it reaches the host by name,
@@ -828,11 +843,11 @@ final class RemoteHosts: @unchecked Sendable {
     // A boxd host needs no adopting: its driver reaches it by name. Nor is boxd swept: machine
     // names carry no build, so one build's sweep would take another's live workrooms (#284).
     // gstack-shortcut(dec-boxd-no-sweep): a crashed create can leave a paid boxd machine running,
-    // upgrade when #284 makes sweeps safe and boxd machine names carry the build.
+    // upgrade when boxd machine names carry the build (#373).
     let containerKeys = already.union(recorded.compactMap(DriverKey.init)).union(marked).filter {
       $0.runtime != nil
     }
-    var drivers: [ContainerHostDriver] = []
+    var drivers: [DriverKey: ContainerHostDriver] = [:]
     for key in containerKeys {
       let driver: ContainerHostDriver
       do { driver = try containerDriver(key) } catch {
@@ -840,7 +855,7 @@ final class RemoteHosts: @unchecked Sendable {
         Self.logger.error("remote hosts: \(error.localizedDescription, privacy: .public)")
         continue
       }
-      drivers.append(driver)
+      drivers[key] = driver
       for descriptor in recorded where !descriptor.isDestroyed && DriverKey(descriptor) == key {
         guard let id = descriptor.id, let record = descriptor.container,
           driver.record(of: .remote(id)) == nil
@@ -850,7 +865,8 @@ final class RemoteHosts: @unchecked Sendable {
         }
       }
     }
-    guard claimSweep(allowed: sweep) else { return }
+    let claimed = claimSweep(Set(drivers.keys), allowed: sweep)
+    guard !claimed.isEmpty else { return }
     // Every driver keeps every recorded host, not only its own: two contexts can name one daemon
     // (the nil driver's current context and that context by name), and a sweep that kept only its
     // own hosts would remove the other's, labelled as this build's and old enough.
@@ -859,9 +875,14 @@ final class RemoteHosts: @unchecked Sendable {
     let sweep = sweepDriver ?? { await $0.sweep(keeping: $1, images: $2) }
     // At once: a context whose daemon is slow to answer holds up no other context's sweep.
     Task.detached(priority: .utility) {
-      await withTaskGroup(of: [String].self) { group in
-        for driver in drivers { group.addTask { await sweep(driver, known, images) } }
-        for await failures in group {
+      await withTaskGroup(of: (DriverKey, [String]).self) { group in
+        for key in claimed {
+          guard let driver = drivers[key] else { continue }
+          group.addTask { (key, await sweep(driver, known, images)) }
+        }
+        for await (key, failures) in group {
+          self.finishSweep(
+            key, ran: !failures.contains { $0.hasPrefix(ContainerHostDriver.listingFailed) })
           for failure in failures {
             Self.logger.error("remote host sweep: \(failure, privacy: .public)")
           }
