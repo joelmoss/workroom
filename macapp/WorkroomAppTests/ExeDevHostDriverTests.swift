@@ -252,4 +252,143 @@ final class ExeDevHostDriverTests: XCTestCase {
       XCTAssertEqual(exe.commands, ["rm"])
     }
   }
+
+  /// What the user is told when exe.dev or their ssh says no: exe.dev's own `error`, from stdout or
+  /// stderr, else ssh's first line without its `error: ` label; ssh's own failure (255) says to
+  /// fix the user's ssh unless exe.dev answered in JSON; a silent failure still says how it ended.
+  func testTheUsersErrorIsWhatExeDevOrSSHActuallySaid() async throws {
+    func result(stdout: String = "", stderr: String = "", exit: Int32 = 1) -> CommandResult {
+      CommandResult(stdout: stdout, stderr: stderr, exitCode: exit, timedOut: false)
+    }
+    // Value: protects=the failure text a user reads in New Workroom when exe.dev refuses;
+    // fails_when=a stream, label or the 255 case is read wrong; why_new=only the sign-in and
+    // stdout-JSON shapes were pinned; seam=none
+    XCTAssertEqual(
+      ExeDevHostDriver.errorLine(result(stderr: #"{"error":"quota"}"#)), "quota")
+    XCTAssertEqual(
+      ExeDevHostDriver.errorLine(result(stderr: #"{"error":"denied"}"#, exit: 255)), "denied")
+    XCTAssertEqual(
+      ExeDevHostDriver.errorLine(result(stderr: "\n error: no such command\nmore\n")),
+      "no such command")
+    XCTAssertNil(ExeDevHostDriver.errorLine(result()))
+
+    let timedOut = CommandResult(stdout: "", stderr: "", exitCode: 15, timedOut: true)
+    for (answer, expected) in [
+      (result(), "exe.dev new: exited 1"),
+      (timedOut, "exe.dev new: timed out after 120s"),
+    ] {
+      let driver = driver(StubExeDev(["new": answer]))
+      do {
+        _ = try await driver.create()
+        XCTFail("created on \(expected)")
+      } catch HostDriverError.provisioning(let detail) {
+        XCTAssertEqual(detail, expected)
+      }
+    }
+  }
+
+  /// A failed create whose VM can't be removed names it and records it (`host`), so the app keeps
+  /// the host for a later delete rather than losing a VM that bills.
+  func testACreateThatCantRemoveItsVMRecordsIt() async throws {
+    // Value: protects=a half-made VM stays recorded and named when its removal fails;
+    // fails_when=undo drops the leftover or the host; why_new=the tests only cover a clean rollback;
+    // seam=none
+    let exe = StubExeDev(
+      [
+        "new": CommandResult(
+          stdout: #"{"error":"VM limit reached"}"#, stderr: "", exitCode: 1, timedOut: false),
+        "rm": Self.ok(#"{"error":"VM is busy"}"# + "\n" + #"{"deleted":[],"failed":[]}"#),
+      ])
+    do {
+      _ = try await driver(exe).create()
+      XCTFail("a VM that couldn't be removed was reported removed")
+    } catch HostDriverError.leftBehind(let cause, let leftover, let host) {
+      XCTAssertEqual(cause, "Couldn't provision the host: exe.dev new: VM limit reached")
+      let name = try XCTUnwrap(leftover.first)
+      XCTAssertEqual(leftover.count, 1)
+      XCTAssertTrue(name.hasPrefix("VM workroom-") && name.hasSuffix(": VM is busy"), name)
+      guard case .remote(let id)? = host else { return XCTFail("no host recorded: \(name)") }
+      XCTAssertTrue(name.contains(id.uuidString.lowercased()), name)
+    }
+    XCTAssertEqual(exe.commands, ["new", "rm"])
+  }
+
+  /// A pane stops retrying when ssh's log for its session says exe.dev refused the key: read from
+  /// the same per-host directory `attachCommand` has ssh log to, and only for a VM.
+  func testAPaneStopsRetryingOnARefusedKey() throws {
+    // Value: protects=a refused key or host key ends a pane's reconnect loop (#241);
+    // fails_when=the refusal is read from another directory than the attach logs to;
+    // why_new=attach is only checked for its command line; seam=none
+    let driver = driver(StubExeDev([:]))
+    let id = UUID()
+    let session = UUID()
+    let command = try driver.attachCommand(
+      to: .remote(id), session: session, workingDirectory: "/w", restored: true)
+    let log = ContainerHostDriver.attachLog(
+      session, in: driver.directory.appendingPathComponent(id.uuidString))
+    XCTAssertTrue(command.contains("'\(log.path)'"), command)
+    XCTAssertFalse(driver.hostRefusedLastAttach(of: session, on: .remote(id)))
+    try "Connection refused\n".write(to: log, atomically: true, encoding: .utf8)
+    XCTAssertFalse(driver.hostRefusedLastAttach(of: session, on: .remote(id)))
+    try "exedev@x.exe.xyz: Permission denied (publickey).\n".write(
+      to: log, atomically: true, encoding: .utf8)
+    XCTAssertTrue(driver.hostRefusedLastAttach(of: session, on: .remote(id)))
+    XCTAssertFalse(driver.hostRefusedLastAttach(of: session, on: .local))
+  }
+
+  // MARK: The readiness wait both remote drivers share
+
+  /// A `HostDriver` whose "host" is a local shell: `exec` runs the check line with `/bin/sh`.
+  private struct ShellHost: HostDriver {
+    var traits: HostDriverTraits {
+      HostDriverTraits(
+        transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
+        durableDisk: true, maxLifetime: nil, keepAwakeHoldsCredential: false,
+        sleepsWhenIdle: false)
+    }
+    func create() async throws -> HostID { .local }
+    func deriveFromBase(_ base: HostID) async throws -> HostID { .local }
+    func destroy(_ host: HostID) async throws {}
+    func openStream(to host: HostID) async throws -> HostStream {
+      throw HostDriverError.notImplemented("stream")
+    }
+    func exec(_ command: String, on host: HostID) async throws -> HostStream {
+      try HostStream.spawn(
+        URL(fileURLWithPath: "/bin/sh"), ["-c", command], environment: [:],
+        handshakeTimeout: 5, purpose: .exchange)
+    }
+  }
+
+  /// `poll` is the gate every create waits at (boot, identity, agent): it passes once the check
+  /// exits 0, however many tries it took; gives up with the last answer; and ends at once on a cancel.
+  func testPollWaitsForTheCheckThenGivesUpWithTheLastAnswer() async throws {
+    // Value: protects=a create waits for a host to come up and says why it never did;
+    // fails_when=poll gives up early, never gives up, or swallows a cancel;
+    // why_new=poll moved out of BoxdHostDriver and only the live suites ran it; seam=none
+    let marker = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "wr-poll-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: marker) }
+    let path = PosixShell.quoted(marker.path)
+    try await ShellHost().poll(.local, "test -e \(path) || { touch \(path); exit 1; }", tries: 3) {
+      "never: \($0)"
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "the check never ran")
+
+    do {
+      try await ShellHost().poll(.local, "echo not yet; exit 3", tries: 2) { "never: \($0)" }
+      XCTFail("passed a failing check")
+    } catch HostDriverError.provisioning(let detail) {
+      XCTAssertEqual(detail, "never: not yet\n")
+    }
+
+    let waiting = Task {
+      try await ShellHost().poll(.local, "exit 1", tries: 1000) { "never: \($0)" }
+    }
+    try await Task.sleep(for: .milliseconds(200))
+    waiting.cancel()
+    do {
+      try await waiting.value
+      XCTFail("a cancelled wait went on")
+    } catch is CancellationError {}
+  }
 }
