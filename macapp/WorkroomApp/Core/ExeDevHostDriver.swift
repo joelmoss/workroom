@@ -248,8 +248,8 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     }
   }
 
-  /// The account exe.dev knows the user's key as, `whoami`'s email. Finds the key first, so it
-  /// throws, naming the fix, when no key of the user's gets in.
+  /// The account exe.dev knows the user's key as, `whoami`'s email. Throws, naming the fix, when
+  /// the user's ssh can't sign in to exe.dev.
   func signedIn() async throws -> String {
     do {
       return try await decode(Whoami.self, cli(["whoami"]), "the signed-in account").email
@@ -265,7 +265,6 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   private struct CLIFailure: Error, LocalizedError {
     let command: String
     let said: String
-    var notFound: Bool { ExeDevHostDriver.isNotFound(said) }
     var errorDescription: String? { "exe.dev \(command): \(said)" }
   }
 
