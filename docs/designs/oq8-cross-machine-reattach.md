@@ -172,7 +172,7 @@ Codex (gpt-6.1-sol, cold read of the repo):
   the agent's version at the handshake it already performs. An older agent means today's per-Mac
   behaviour for that workroom: no host layout, no second-Mac restore, nothing shown to the user
   (the bootstrap pushes the new agent on the next connect and hands off to it, #231, in every
-  build since 2026-10-07).
+  build since PR #375, 2026-10-08).
 - **Lifecycle:** a remote workroom's layout lives on that workroom's own host, so deleting the
   workroom destroys the host and its layout with it. No delete request is needed in #255.
 - **Session metadata:** the workroom ID, initial title and creation order travel in the attach
@@ -277,7 +277,7 @@ Codex (gpt-6.1-sol, cold read of the repo):
 
 No new artifact. The agent ships inside the app (Mac and static Linux builds) and is pushed to a
 host on a version mismatch (#231), so a new protocol version reaches hosts through the existing
-bootstrap. The remote UI stayed behind `remoteWorkroomsPreview` in Nightly and Dev until 2026-10-07, when
+bootstrap. The remote UI stayed behind `remoteWorkroomsPreview` in Nightly and Dev until PR #375 (2026-10-08), when
 the owner removed that gate.
 
 ## Next Steps
