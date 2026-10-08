@@ -1785,7 +1785,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     and the inspector's Ports section shows the selected workroom's host. A remote workroom the
     app can't reach shows no Ports section, rather than the Mac's list. A forward never connects a
     host; selecting the workroom does. This closed #208's last criterion.
-  - **Idle state.** A remote workroom's sidebar row carries the wakefulness badge, backed by one
+  - **Idle state (superseded by #380).** A remote workroom's sidebar row carries the wakefulness badge, backed by one
     `WakefulnessModel` per remote host (`model(forHost:)`). It polls only while the row is shown
     and never connects the host. Its "Keep awake" click does connect it first
     (`RemoteHosts.ensureConnected`), as the Mac's own spawns an agent. Quitting drains every host's
@@ -1796,8 +1796,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     agent was never started with the Mac's settings (since #257 it is handed them on each connect,
     and the sentence is still left out).
   - **Known limits.** The viewer opens a cmd-clicked file at the top: `FileDescriptor` has no line.
-    A path outside the workroom (`/etc/hosts`, a sibling checkout) opens nothing. The ceiling prompt
-    was raised only for the Mac's agent when this landed: a remote host's "Keep awake" worked from
+    A path outside the workroom (`/etc/hosts`, a sibling checkout) opens nothing. (The ceiling
+    prompt, and "Keep awake", went with #380.) The ceiling prompt was raised only for the Mac's agent when this landed: a remote host's "Keep awake" worked from
     its badge, but no prompt card was shown for it, and a remote keep that fails shows nothing
     either (#324). #257 now shows a remote host's prompt card (see "As built (#257)").
     `hostCwd` is asked for again each time a command finishes, one round trip later, so a click
@@ -1996,7 +1996,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **Pushed verdicts.** `STATUS_SERVICE_VERSION` is 2. The agent pushes `{"event": "status",
     "status": …}` on stream 0 to every connection that has asked for `status`, whenever what the
     app shows changes (BUSY or IDLE, and whether a BUSY box's heartbeat is failing). The app asks
-    once per connection and follows the pushes; nothing polls. It orders a connection's readings by
+    once per connection and follows the pushes; it never polls an idle box. A busy one is asked again
+    every 60 s (added in #381's review): the agent pushes only on a change, which a stalled or crashed
+    wakefulness service never makes, so the re-ask is what shows that box unprotected. It orders a
+    connection's readings by
     the agent's clock, so a reply and a push can arrive in either order, and starts the order over
     on each connection, as a rebooted box restarts that clock. It still reads a version 1 agent's
     reply (one a busy box kept rather than hand off), with no poll for it.

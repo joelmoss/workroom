@@ -103,8 +103,9 @@ struct AgentStatusRequest: Encodable, Sendable {
 /// wakefulness service (the service is Linux only).
 ///
 /// It asks `status` once per connection, which also subscribes the connection to the changes the
-/// agent pushes, and applies each change as it comes. Nothing polls: a poll's own bytes on the box's
-/// network voted the box BUSY, so an open app held an idle box awake.
+/// agent pushes, and applies each change as it comes. An idle box is never asked again: a 10 s
+/// poll's own bytes on the box's network voted it BUSY, so an open app held an idle box awake. A busy
+/// one is asked again once a minute (`recheckWhileBusy`), which a stalled service needs.
 @MainActor
 final class WakefulnessModel: ObservableObject {
   /// The two calls the model makes, so its rules — subscribe, then ask; never run a reading

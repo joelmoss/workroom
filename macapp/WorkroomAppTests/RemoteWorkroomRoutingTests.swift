@@ -162,10 +162,10 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     XCTAssertEqual(status.aggregateWeight, 0, "an asleep box must not mark its project")
   }
 
-  // Value: protects=a box the app let go of reads as idle, not asleep, as boxd hasn't slept it yet;
+  // Value: protects=a box its agent let go of reads as idle, not asleep, as boxd hasn't slept it yet;
   // fails_when=the resolver folds .idle into .asleep or into the weighted failures;
   // why_new=the idle state is new and only RemoteHostsTests see it thrown; seam=none
-  /// A box the app let go of as idle (#356) may still be awake: the dot says so, without an alarm.
+  /// A box its agent let go of as idle (#380) may still be awake: the dot says so, without an alarm.
   func testABoxLetGoOfReadsAsIdleNotAsleep() async throws {
     let router = RepositoryRouter(connectRemote: { throw RepositoryRoutingError.idle($0) })
     let remote = try RepositoryLocation.remote(host: UUID(), path: path)
