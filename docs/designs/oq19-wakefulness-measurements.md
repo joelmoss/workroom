@@ -205,6 +205,10 @@ ran 687 s for 640 labelled) because monotonic keeps counting while the box sleep
 
 ## OQ22: the awake ceiling (decided 2026-09-21)
 
+**Superseded 2026-10-08 (#380): there is no awake ceiling.** When a box sleeps, and how long it may
+stay awake, are the provider's and the user's. The ceiling, its prompt and its settings are removed.
+The decision below is kept for the record.
+
 Scenario 17 ran legitimate work for 5400 s five times. With a force-sleep ceiling of 1800 s or 3600 s
 the job is killed every time; at 14400 s it completes. The measurement cannot choose between
 force-sleep, advisory-only and ask-the-user, and a false-busy state has no natural ceiling other than

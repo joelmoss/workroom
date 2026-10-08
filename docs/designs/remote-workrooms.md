@@ -877,7 +877,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     `<socket>.wake` verdict file it wrote for the shim went in 2026-10-06, once #257's heartbeat
     replaced the shim; see "As built (#257)"), published on
     `Service::Status` (`status`, `keep`, and an `awake_ceiling_prompt` event) with the OQ22 ceiling
-    (advisory by default; `--ask-at-awake-ceiling`), and masking its own resume. Idle cost measured
+    (advisory by default; `--ask-at-awake-ceiling`; the ceiling, `keep` and the prompt event went
+    with #380), and masking its own resume. Idle cost measured
     in a container: 0.46% of one core on a ~5-process box (the 0.5% gate), 1.8% at 500 processes;
     the provider re-measure is owed. Note the split settled in Provider Decision: this service only
     *decides* busy or idle and reports it; a per-driver far-side shim does the provider-specific
@@ -1893,7 +1894,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     once the service has gone 30 s (`WAKE_GAP_S`) without finishing a tick (a blocked `/proc` read,
     say), past the 7.9-14.3 s a CFS quota was measured starving the sampler, judged against a clock
     read by the request itself. The badge's "busy but not kept awake" now means an
-    unanswered prompt, a stalled service, a BUSY box whose heartbeat is failing (no default route,
+    unanswered prompt (gone since #380), a stalled service, a BUSY box whose heartbeat is failing (no default route,
     say), or an agent that predates the heartbeat. `verdict_written` is gone from `status` with the
     verdict file. `HostDriverTraits.keepAwakeHoldsCredential` is false for both drivers.
   - **Remote ceiling prompts (superseded by #380).** A remote agent whose box sleeps is now handed this Mac's
@@ -1919,7 +1920,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     gateway, or whose idle window is under 60 s, is not kept awake by it; exe.dev (#259) measures
     its own. An IPv6-only box has no IPv4 default route and reports the error, and so does a default
     route with no gateway (`default dev wg0`), which a provider VM is not known to have. A changed
-    setting reaches a remote agent on the app's next connect, not while connected.
+    setting reaches a remote agent on the app's next connect, not while connected. (The settings
+    went with #380.)
 - **As built (#356, boxd in the app).** The app now makes, opens and deletes remote workrooms on
   boxd, in Nightly and Dev builds behind `remoteWorkroomsPreview`, from New Workroom › Remote ›
   boxd. Eng review 2026-10-06 (decisions D1-D11).
@@ -3795,8 +3797,8 @@ service milestones below so each layer can be reviewed and landed independently.
      traces exactly, masks its own resume (a tick gap of 30 s or more clears the rate windows and
      ignores CPU and net for 3 s), costs 0.46% of one core idle on a ~5-process box in a container
      (1.8% at 500 processes; the provider figure is owed), and publishes `Service::Status` with the
-     OQ22 ceiling (advisory-only by default, ask-the-user behind `--ask-at-awake-ceiling`). Still
-     owed: a real Claude Code trace (TODOS), the app side of the status and the ceiling prompt, and
+     OQ22 ceiling (advisory-only by default, ask-the-user behind `--ask-at-awake-ceiling`; removed
+     in #380). Still owed: a real Claude Code trace (TODOS), the app side of the status and the ceiling prompt, and
      the far-side shim reading `<socket>.wake` (Phase 3; #257 replaced the shim with the agent's own
      heartbeat, and the file itself went on 2026-10-06).
 

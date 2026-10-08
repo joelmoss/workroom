@@ -236,7 +236,7 @@ Codex (gpt-6.1-sol, cold read of the repo):
    it did not create?
 2. **Keep-awake across Macs:** quitting drains *this* Mac's keeps. #255's third criterion depends
    on Mac B's keep surviving Mac A quitting. Answered by measurement in Next Steps 4, before #255
-   closes; if it does not hold, the fix is part of #255.
+   closes; if it does not hold, the fix is part of #255. (Moot since #380: there is no `keep`.)
 
 ### Follow-ups, outside #255
 
@@ -260,7 +260,7 @@ Codex (gpt-6.1-sol, cold read of the repo):
   Mac A; open the workroom on Mac B with no copy of A's `session.json`; B shows the same tabs and
   split, Vim correctly repainted.
 - Quitting the app on Mac A, while Mac B is attached and holds a keep-awake on the host, leaves
-  B's panes attached and working and B's keep in force.
+  B's panes attached and working and B's keep in force. (The keep went in #380.)
 - Closing a tab on Mac A ends that session, and Mac B's pane for it shows ended.
 - With a stale write from Mac A after Mac B changed the layout, every session tagged with the
   workroom is still present on both Macs on the next open (the append rule).
@@ -467,7 +467,8 @@ Where the build departed from the text above, and why. The decisions below them 
   that already has the workroom open does not see another Mac's changes until its next launch.
 - **Open question 2 (keep-awake across Macs), answered by the code.** `keep` restarts one timer for
   the whole host (`busy_since`) and records nothing about which connection asked, so no Mac
-  quitting can revoke another's; there is nothing per client for a test to catch.
+  quitting can revoke another's; there is nothing per client for a test to catch. (`keep` was
+  removed in #380, with the awake ceiling.)
 
 ## Eng Review (/plan-eng-review, 2026-10-04)
 
