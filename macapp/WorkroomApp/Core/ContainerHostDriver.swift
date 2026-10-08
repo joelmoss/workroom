@@ -22,13 +22,6 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     let hostKey: String
     /// The supervised agent's socket on the host.
     let agentSocket: String
-    /// The ssh-agent socket ssh may ask to sign with, or nil for none (`IdentityAgent none`). Only
-    /// for a driver that authenticates with the user's own key (exe.dev, #259); `IdentitiesOnly`
-    /// still limits it to `identityFile`, and nothing is forwarded.
-    var sshAgent: String? = nil
-    /// Whether ssh may read `identityFile`'s passphrase from the login Keychain (Apple's
-    /// `UseKeychain`), for the same drivers as `sshAgent`.
-    var useKeychain = false
 
     /// The agent's binary, beside its socket: what the app installs there (`AgentBootstrap`,
     /// #231), the supervisor starts, and the relay and the attach run. One directory per host,
@@ -947,14 +940,34 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   static func exec(
     _ command: String, on host: Host, in hostDirectory: URL, purpose: HostStream.Purpose
   ) throws -> HostStream {
-    let config = try writeConfiguration(for: host, in: hostDirectory)
-    return try HostStream.spawn(
-      URL(fileURLWithPath: "/usr/bin/ssh"),
-      ["-F", config.path, Self.alias, command],
-      // Nothing from the app's own environment: ssh needs none of it with this configuration, and
-      // `SSH_AUTH_SOCK` in particular is a Mac credential. `-F` also keeps `/etc/ssh/ssh_config`
-      // out, whose `SendEnv LANG LC_*` would send the Mac's locale across.
-      environment: [:],
+    try exec(command, via: route(to: host, in: hostDirectory), purpose: purpose)
+  }
+
+  /// How `/usr/bin/ssh` reaches a host: the options ahead of the destination, the destination,
+  /// and the environment ssh runs with.
+  struct Route: Sendable {
+    let options: [String]
+    let destination: String
+    var environment: [String: String] = [:]
+  }
+
+  /// `host` through its own `ssh_config`, written to `hostDirectory`, and nothing from the app's
+  /// environment: ssh needs none of it with this configuration, and `SSH_AUTH_SOCK` in particular
+  /// is a Mac credential. `-F` also keeps `/etc/ssh/ssh_config` out, whose `SendEnv LANG LC_*`
+  /// would send the Mac's locale across.
+  static func route(to host: Host, in hostDirectory: URL) throws -> Route {
+    Route(
+      options: ["-F", try writeConfiguration(for: host, in: hostDirectory).path],
+      destination: alias)
+  }
+
+  /// Runs `command` over `route`.
+  static func exec(_ command: String, via route: Route, purpose: HostStream.Purpose) throws
+    -> HostStream
+  {
+    try HostStream.spawn(
+      URL(fileURLWithPath: "/usr/bin/ssh"), route.options + [route.destination, command],
+      environment: route.environment,
       // ssh connects and authenticates before the agent can greet. `ConnectTimeout` bounds the
       // connect; this leaves room for the rest.
       handshakeTimeout: 20, purpose: purpose)
@@ -966,19 +979,33 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     to host: Host, in hostDirectory: URL, session: UUID, workingDirectory: String, restored: Bool,
     metadata: [(key: String, value: String)] = []
   ) throws -> String {
-    let config = try writeConfiguration(for: host, in: hostDirectory)
+    attachCommand(
+      via: try route(to: host, in: hostDirectory), in: hostDirectory,
+      agentSocket: host.agentSocket, session: session, workingDirectory: workingDirectory,
+      restored: restored, metadata: metadata)
+  }
+
+  /// The command a pane runs to attach to `session` over `route`, keeping ssh's log in
+  /// `hostDirectory`.
+  static func attachCommand(
+    via route: Route, in hostDirectory: URL, agentSocket: String, session: UUID,
+    workingDirectory: String, restored: Bool, metadata: [(key: String, value: String)] = []
+  ) -> String {
     // `-t`: the attach client on the far side wants a terminal, for raw mode and the pane's size,
     // and ssh forwards the pane's resizes to it. It outranks the config's `RequestTTY no`, which
     // is right for the service stream.
     let log = attachLog(session, in: hostDirectory).path
-    let ssh = [
-      "/usr/bin/ssh", "-F", config.path, "-E", log, "-o", "PermitLocalCommand=yes", "-o",
-      "LocalCommand=printf '\\0338\\033[J'", "-t", alias,
-      remoteAttachCommand(
-        binary: host.agentBinary, session: session, socket: host.agentSocket,
-        resources: host.resources, workingDirectory: workingDirectory, restored: restored,
-        metadata: metadata),
-    ]
+    let environment = route.environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
+    let ssh =
+      (environment.isEmpty ? [] : ["/usr/bin/env"] + environment) + ["/usr/bin/ssh"]
+      + route.options + [
+        "-E", log, "-o", "PermitLocalCommand=yes", "-o", "LocalCommand=printf '\\0338\\033[J'",
+        "-t", route.destination,
+        remoteAttachCommand(
+          binary: AgentBootstrap.binary(besideSocket: agentSocket), session: session,
+          socket: agentSocket, resources: AgentBootstrap.resources(besideSocket: agentSocket),
+          workingDirectory: workingDirectory, restored: restored, metadata: metadata),
+      ]
     return (["/bin/sh", "-c", attachWrapper, "workroom-attach", log] + ssh)
       .map(shellQuoted).joined(separator: " ")
   }
@@ -1112,7 +1139,6 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     for (name, value) in [
       ("address", host.address), ("user", host.user), ("identity file", host.identityFile),
       ("host key", host.hostKey), ("agent socket", host.agentSocket),
-      ("ssh agent", host.sshAgent ?? "none"),
     ] {
       guard !value.isEmpty, !value.contains(where: { $0.isNewline || $0 == "\"" || $0 == "\0" })
       else {
@@ -1142,7 +1168,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
       User "\(host.user)"
       IdentityFile "\(host.identityFile)"
       IdentitiesOnly yes
-      IdentityAgent \(host.sshAgent.map { "\"\($0)\"" } ?? "none")\(host.useKeychain ? "\n  UseKeychain yes" : "")
+      IdentityAgent none
       BatchMode yes
       StrictHostKeyChecking yes
       UserKnownHostsFile "\(knownHosts.path)"

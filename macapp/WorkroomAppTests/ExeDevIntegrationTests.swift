@@ -96,15 +96,13 @@ final class ExeDevIntegrationTests: ProviderParityTestCase {
     return "\(prefix!)-\(id.uuidString.lowercased())"
   }
 
-  /// One shell line on the VM over plain ssh with the config the driver wrote for it, not over the
-  /// Mac's link to the agent: the user's own `known_hosts` has no entry for a new VM's name. Its
-  /// output, then `exit=<status>`.
+  /// One shell line on the VM over the user's own ssh, as the driver reaches it, not over the
+  /// Mac's link to the agent. Its output, then `exit=<status>`.
   private func onBox(_ host: HostID, _ line: String) throws -> String {
-    guard case .remote(let id) = host else { throw HostDriverError.unknownHost(host) }
-    let config = directory.appendingPathComponent(id.uuidString).appendingPathComponent(
-      "ssh_config")
     let (_, output) = try ssh(
-      ["-F", config.path, ContainerHostDriver.alias, "\(line); echo exit=$?"])
+      ExeDevHostDriver.sshOptions + [
+        "\(ExeDevHostDriver.user)@\(name(host)).exe.xyz", "\(line); echo exit=$?",
+      ])
     return output.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
@@ -151,7 +149,8 @@ final class ExeDevIntegrationTests: ProviderParityTestCase {
     func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
       async -> CommandResult
     {
-      let command = args.count > 3 ? args[3] : ""
+      let lobby = args.firstIndex(of: ExeDevHostDriver.lobby)
+      let command = lobby.map { args.count > $0 + 1 ? args[$0 + 1] : "" } ?? ""
       let step = lock.withLock { () -> String? in
         guard let failing, failing == command || failing == command + "+" else { return nil }
         self.failing = nil
