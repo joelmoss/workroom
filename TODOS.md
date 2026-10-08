@@ -232,6 +232,26 @@ fixture and the fixtures would be re-recorded with it.
 
 **Priority:** P2, effort M.
 
+### exe.dev VMs a crash leaves unrecorded (macapp) — #259 eng review, with #373
+
+**What:** Find and remove exe.dev VMs that a create made but Workroom never recorded, as #373 does
+for boxd.
+
+**Why:** If the app dies in the few seconds between `ssh exe.dev new`/`cp` returning and the host
+descriptor being written, nothing names the VM. On exe.dev it costs idle pool capacity (the plan is
+flat-priced) and one of the account's 50 VM slots; it shows in `ssh exe.dev ls`. Left out of #259 on
+purpose: the trigger needs a crash inside that window.
+
+**How to start:** exe.dev VMs carry tags, and `cp` copies them by default (`--copy-tags`). Tag every VM
+with the build (`provisioner`) at `new`, then sweep VMs with this build's tag that no record names,
+with the two-launch rule `ContainerHostDriver.sweep` uses. `ls --json` reports a VM's `tags` when it
+has any (checked 2026-10-08). #259 already tags bases `workroom-base` and derives with
+`--copy-tags=false`, so a build tag on instances must be added at `cp` explicitly.
+
+**Depends on / blocked by:** #259 merged; reuse #373's design for boxd.
+
+**Priority:** P3, effort S.
+
 ### AgentHarness.stop hang: `waitUntilExit` never returned for an exited agent (macapp tests) — #223
 
 **What:** In the serial test host (`make app-test APP_TEST_FLAGS=-only-testing:…`, which turns
