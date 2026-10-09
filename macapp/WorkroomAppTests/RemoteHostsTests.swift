@@ -638,6 +638,30 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(destroyed.workroomGlyph, "network")
   }
 
+  /// A remote workroom's icon names its machine as its provider lists it, the name each driver gives
+  /// it, so it can be found in the provider's dashboard; a destroyed one names none.
+  func testAWorkroomOnAHostNamesItsMachine() {
+    let id = UUID()
+    let boxd = Workroom(
+      name: "b", path: "/home/boxd/r", vcsName: "workroom/b", warnings: [],
+      host: HostDescriptor(driver: "boxd", provisioner: RemoteWorkrooms.provisioner, id: id)
+    ).target(inProject: "/proj")
+    let name = "workroom-\(id.uuidString.lowercased())"
+    XCTAssertEqual(boxd.machineName, name)
+    XCTAssertEqual(boxd.hostTooltip, "Remote workroom on boxd\nMachine: \(name)")
+    let directory = FileManager.default.temporaryDirectory
+    XCTAssertEqual(
+      BoxdHostDriver(
+        configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd")), directory: directory
+      ).name(of: id), name)
+    XCTAssertEqual(
+      ExeDevHostDriver(configuration: .init(), directory: directory).name(of: id), name)
+    XCTAssertNil(HostDescriptor(state: "destroyed", driver: "boxd", id: id).machineName)
+    let local = Workroom(name: "w", path: "/tmp/w", vcsName: "workroom/w", warnings: [])
+      .target(inProject: "/proj")
+    XCTAssertEqual(local.hostTooltip, "")
+  }
+
   /// A workroom's icon says what kind of host it is on (#309).
   func testAHostSaysWhatKindItIs() {
     let host = { (driver: String?, context: String?) in

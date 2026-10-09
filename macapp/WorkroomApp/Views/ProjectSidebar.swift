@@ -481,6 +481,16 @@ struct ProjectSidebar: View {
           // would silently add a "Close" item and reorder the menu.
           openInSplitMenuItem(store: store, sid: id)
           if canOpenInSplit(store: store, sid: id) { Divider() }
+          // To find its machine in the provider's dashboard.
+          if let machine = workroom.host?.machineName {
+            Button {
+              NSPasteboard.general.clearContents()
+              NSPasteboard.general.setString(machine, forType: .string)
+            } label: {
+              Label("Copy Machine Name", systemImage: "doc.on.doc")
+            }
+            Divider()
+          }
           // Set/edit the display label, and remove it when one is set (issue #41). A label is a
           // display-only alias — the workroom name and its branch are unchanged.
           Button {
@@ -529,7 +539,7 @@ struct ProjectSidebar: View {
         .font(.system(size: 10))
         .foregroundStyle(VCSStatusPresentation.iconTint(store.workroomStatuses[id] ?? .unresolved))
         .frame(width: caretWidth, height: 18, alignment: .center)
-        .help(root ? "" : target.hostKind ?? "")
+        .help(root ? "" : target.hostTooltip)
         .accessibilityLabel(root ? "Project root" : target.hostKind ?? "Workroom")
     }
   }
