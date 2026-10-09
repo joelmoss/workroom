@@ -225,9 +225,10 @@ struct WorkroomStatusResolver: Sendable {
   /// Whether `dir`'s origin has `branch`, asked of origin itself: nil when that can't be told
   /// (offline, no credentials, a timeout), as `git ls-remote --exit-code` exits 2 only for no match.
   func originHasBranch(_ branch: String, in dir: String) async -> Bool? {
-    let r = await runner.run(
+    // A network call: the network runner (the shell's ssh agent and BatchMode) and its timeout.
+    let r = await runner.runNetwork(
       "git", ["ls-remote", "--exit-code", "--heads", "origin", "refs/heads/\(branch)"], in: dir,
-      timeout: timeout)
+      timeout: ciTimeout)
     guard !r.timedOut else { return nil }
     switch r.exitCode {
     case 0: return true

@@ -286,7 +286,7 @@ workroom base clear
 
 `workroom base set <branch>` makes the project's new workrooms start from that branch. Workroom
 fetches `origin` and uses `origin`'s copy of the branch. If `origin` does not have it, Workroom uses
-the local branch. If neither exists, the create fails with `BaseBranchNotFound`. `workroom base clear`
+the local branch and warns that it may be out of date. If neither exists, the create fails with `BaseBranchNotFound`. `workroom base clear`
 goes back to `origin`'s default branch. Both take `--project <dir>`. In the macOS app, set it in
 Project Settings, under New Workrooms. Remote workrooms use the same setting, but they have no local
 branch to fall back to, so the branch must be on `origin`.

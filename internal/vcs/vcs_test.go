@@ -245,8 +245,8 @@ func TestGitCreateBranchesFromTheProjectBaseOnOrigin(t *testing.T) {
 	git(t, pusher, "commit", "-q", "--allow-empty", "-m", "develop")
 	git(t, pusher, "push", "-q", "origin", "develop")
 	want := git(t, pusher, "rev-parse", "HEAD")
-	if got, _ := createdFromBase(t, project, "develop"); got != want {
-		t.Fatalf("workroom at %s, want origin/develop %s", got, want)
+	if got, warning := createdFromBase(t, project, "develop"); got != want || warning != "" {
+		t.Fatalf("workroom at %s (warning %q), want origin/develop %s and no warning", got, warning, want)
 	}
 }
 
@@ -293,6 +293,31 @@ func TestGitCreateDoesNotUseABaseDeletedOnOrigin(t *testing.T) {
 	_, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path, "develop")
 	if !errors.Is(err, errs.ErrBaseBranchNotFound) {
 		t.Fatalf("err = %v, want ErrBaseBranchNotFound for a base deleted on origin", err)
+	}
+}
+
+// Origin answered but lacks the base (deleted after a merge, or never pushed): the local copy is
+// used, and the user hears it may be behind.
+func TestGitCreateWarnsWhenTheBaseIsOnlyLocal(t *testing.T) {
+	project, _, _, _, _ := projectBehindOrigin(t)
+	git(t, project, "branch", "develop")
+	want := git(t, project, "rev-parse", "develop")
+	got, warning := createdFromBase(t, project, "develop")
+	if got != want {
+		t.Fatalf("workroom at %s, want local develop %s", got, want)
+	}
+	if !strings.Contains(warning, "Origin has no develop") {
+		t.Fatalf("warning = %q, want it to say origin has no develop", warning)
+	}
+}
+
+// Offline, a missing base may well be on origin: the error says origin was not reached.
+func TestGitCreateSaysTheFetchFailedWhenTheBaseIsMissing(t *testing.T) {
+	project, _, _, _, _ := projectBehindOrigin(t)
+	git(t, project, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
+	_, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", filepath.Join(t.TempDir(), "wr"), "develop")
+	if !errors.Is(err, errs.ErrBaseBranchNotFound) || !strings.Contains(err.Error(), "could not fetch origin") {
+		t.Fatalf("err = %v, want BaseBranchNotFound naming the failed fetch", err)
 	}
 }
 

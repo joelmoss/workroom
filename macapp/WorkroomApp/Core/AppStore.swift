@@ -5655,15 +5655,6 @@ struct WorkroomCreation {
   var hasSetup = false
 }
 
-/// One create's private handle on its own landing (issue #167). It hands the "landed on the created
-/// workroom" task from `createWorkroom`'s `onReady` closure back to `createWorkroom` itself, so the
-/// flow can await the landing instead of racing it, and it carries the landed target id — the single
-/// answer to "which workroom is THIS create's", which every release point keys on rather than reading
-/// whichever create currently owns the presentation slot.
-///
-/// A box is needed because `onReady` is a *synchronous* callback the CLI invokes from whichever thread
-/// it is parsing on — it can start the task but cannot await it. Locked rather than actor-isolated so
-/// `set`/`claim` stay synchronous: registration has to be complete when `onReady` returns.
 /// The create's fetch warning, set from the CLI's parsing thread and read on the main actor.
 final class CreationWarningBox: @unchecked Sendable {
   private let lock = NSLock()
@@ -5682,6 +5673,15 @@ final class CreationWarningBox: @unchecked Sendable {
   }
 }
 
+/// One create's private handle on its own landing (issue #167). It hands the "landed on the created
+/// workroom" task from `createWorkroom`'s `onReady` closure back to `createWorkroom` itself, so the
+/// flow can await the landing instead of racing it, and it carries the landed target id — the single
+/// answer to "which workroom is THIS create's", which every release point keys on rather than reading
+/// whichever create currently owns the presentation slot.
+///
+/// A box is needed because `onReady` is a *synchronous* callback the CLI invokes from whichever thread
+/// it is parsing on — it can start the task but cannot await it. Locked rather than actor-isolated so
+/// `set`/`claim` stay synchronous: registration has to be complete when `onReady` returns.
 final class CreationLandingBox: @unchecked Sendable {
   private let lock = NSLock()
   private var task: Task<Void, Never>?
