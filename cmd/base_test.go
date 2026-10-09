@@ -97,8 +97,12 @@ func TestBaseSetRegistersTheRepository(t *testing.T) {
 func TestBaseRefusesAWorkroom(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Cleanup(func() { baseProject, listProject, baseGlobal = "", "", false })
-	project := t.TempDir()
-	wr := filepath.Join(t.TempDir(), "wr")
+	// A space in the paths, as in "My Projects": git prints one path per line.
+	project := filepath.Join(t.TempDir(), "My Project")
+	wr := filepath.Join(t.TempDir(), "My Workrooms", "wr")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for _, args := range [][]string{
 		{"init", "-q"},
 		{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "first"},
