@@ -133,7 +133,7 @@ enum AgentBootstrap {
   ///
   /// `agent` finds the bundled binary for an architecture (the bundle's, or a test's), and
   /// `resources` is the bundled Ghostty tree whose terminfo and shell integration go beside it.
-  /// `handOff` is on in every build, unlike the local hand-off (`AgentHandOff.isEnabled`): off, a
+  /// `handOff` is on in every build, as the local hand-off (`AgentHandOff`) is: off, a
   /// remote host keeps its first agent until the box restarts, since its supervisor never lets it
   /// idle out, and so never gets a newer build's services.
   static func ensure(
