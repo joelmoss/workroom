@@ -1043,6 +1043,47 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertFalse(store.hostLayouts.unanswered.contains(id))
   }
 
+  /// A host that keeps no layouts gives the workroom this Mac's own copy back, reattached to its
+  /// saved session, whether the restore or the workroom's pane asks the host first.
+  func testAHostKeepingNoLayoutsRestoresThisMacsCopy() async throws {
+    for paneFirst in [false, true] {
+      let saved = AppStore.hostLayoutStore
+      AppStore.hostLayoutStore = { _ in
+        throw AgentLayoutError.unsupported("this agent keeps no layouts")
+      }
+      defer { AppStore.hostLayoutStore = saved }
+      let workroom = Workroom(
+        name: "n", path: "/home/workroom/n", vcsName: "workroom/n", warnings: [],
+        host: HostDescriptor(
+          provisioner: RemoteWorkrooms.provisioner, id: UUID(), workroomID: UUID()))
+      let store = AppStore()
+      store.terminals.makeView = { _, cwd, _ in
+        GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false)
+      }
+      store.projects = [Project(path: "/proj", vcs: "git", workrooms: [workroom])]
+      let id = TerminalTarget.workroomID(project: "/proj", name: "n")
+      let session = UUID()
+      var tab = terminal("a", title: "Terminal 1")
+      tab.terminal?.sessionID = session.uuidString
+      store.pendingSessionRestore = WindowSession(
+        windowKey: UUID().uuidString, targets: [TargetSession(targetID: id, tabs: [tab])])
+      if paneFirst, let target = store.terminalTarget(forID: id) {
+        store.ensureInitialTerminal(for: target)
+      }
+      store.restorePersistedSessionIfPending(in: store.projects)
+      let restored = expectation(description: "restored")
+      func poll() {
+        if store.terminals.tabCount(forTargetID: id) > 0 { return restored.fulfill() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: poll)
+      }
+      poll()
+      await fulfillment(of: [restored], timeout: AppStore.hostLayoutTimeout + 3)
+      let sessions = store.captureWindowSession().targets.first { $0.targetID == id }?.tabs
+        .compactMap { $0.terminal?.sessionID }
+      XCTAssertEqual(sessions, [session.uuidString], "pane first: \(paneFirst)")
+    }
+  }
+
   /// An unanswered workroom whose own seed landed after the wait gave up finds it on the host when
   /// its first write is refused, and writes again at that seed's revision rather than leave the
   /// seed to win at the next launch.
