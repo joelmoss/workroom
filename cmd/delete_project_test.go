@@ -435,6 +435,30 @@ func TestUnsafeProjectDeletePath(t *testing.T) {
 	}
 }
 
+// TestUnsafeProjectDeletePathIgnoresScalarSettings: run from inside the project, a global
+// base_branch key resolved as a path lies under it and wrongly refused the delete.
+func TestUnsafeProjectDeletePathIgnoresScalarSettings(t *testing.T) {
+	leaf, _ := config.CanonicalPath(t.TempDir())
+	cfg, err := config.New(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddProject(leaf, "git"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SetGlobalBaseBranch("develop"); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(leaf)
+	got, err := unsafeProjectDeletePath(leaf, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Fatal("a global base_branch refused deleting the project it was run from")
+	}
+}
+
 // TestDeleteProjectRefusesAProjectWithABase: a project's own host descriptor records its base
 // machine (#252), so every mode refuses a project carrying one even with no remote workroom,
 // rather than dropping the only record of a running box.
