@@ -226,6 +226,44 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     XCTAssertEqual(store.projects, [project], "a create still deriving was deleted")
   }
 
+  /// Once a remote create's workroom has a name, its row takes the create's progress and the
+  /// project is free for another create; the workroom stays undeletable until the create ends.
+  @MainActor
+  func testARemoteCreateHandsItsProgressToItsWorkroomOnceNamed() async {
+    let cli = RecordingCLI()
+    let store = AppStore(cli: cli)
+    let creating = Workroom(
+      name: "c", path: "/home/workroom/r", vcsName: "workroom/c", warnings: [],
+      host: HostDescriptor(state: "creating", provisioner: mine, workroomID: UUID()))
+    let project = Project(path: "/proj", vcs: "git", workrooms: [])
+    cli.listed = [Project(path: "/proj", vcs: "git", workrooms: [creating])]
+    store.projects = [project]
+    let row = AppStore.RemoteCreateRow()
+    let clone = AppStore.CreateStep(fraction: 0.25, label: "clone")
+    let snapshot = AppStore.CreateStep(fraction: 0.5, label: "snapshot")
+    let sid = SidebarID.workroom(project: "/proj", name: "c")
+
+    store.busyProjects["/proj"] = 1
+    store.showRemoteCreateStep(clone, in: "/proj", row: row)
+    XCTAssertEqual(store.createSteps, [.project("/proj"): clone])
+
+    await store.handOffRemoteCreate(named: "c", in: "/proj", to: row)
+    XCTAssertEqual(store.createSteps, [sid: clone], "the step moves to the workroom's row")
+    XCTAssertTrue(store.canCreateRemoteWorkroom(in: project), "the project is free again")
+    XCTAssertEqual(store.projects.first?.workrooms, [creating], "the row is listed")
+    XCTAssertTrue(store.isCreatingWorkroom(creating, in: project))
+
+    store.showRemoteCreateStep(snapshot, in: "/proj", row: row)
+    XCTAssertEqual(store.createSteps, [sid: snapshot])
+
+    store.endRemoteCreate(in: "/proj", row: row)
+    XCTAssertEqual(store.createSteps, [:])
+    XCTAssertFalse(store.isCreatingWorkroom(creating, in: project))
+    XCTAssertFalse(store.isBusyProject("/proj"))
+    store.showRemoteCreateStep(snapshot, in: "/proj", row: row)
+    XCTAssertEqual(store.createSteps, [:], "a step after the create ended shows nowhere")
+  }
+
   /// A teardown that fails says what is still up and that deleting again finishes it, not that
   /// undoing something failed.
   func testAFailedTeardownSaysToDeleteAgain() {

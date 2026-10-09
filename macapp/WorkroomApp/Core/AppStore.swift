@@ -3548,9 +3548,15 @@ final class AppStore: ObservableObject {
   /// shows it.
   @Published var imagePulls: [String: Double] = [:]
 
-  /// How far each project's boxd workroom create has got (#356): the step it is on, and that as a
-  /// fraction of the steps it will take. The row's spinner shows it, as it does an image pull.
-  @Published var createSteps: [String: CreateStep] = [:]
+  /// How far each remote provider's workroom create has got (#356): the step it is on, and that as
+  /// a fraction of the steps it will take. Keyed by the row that shows it: the project's while the
+  /// create builds the project's base, then the new workroom's once it has a name.
+  @Published var createSteps: [SidebarID: CreateStep] = [:]
+
+  /// The workroom a remote create made its own row for, once it has a name.
+  @MainActor final class RemoteCreateRow {
+    var workroom: SidebarID?
+  }
 
   struct CreateStep: Equatable {
     let fraction: Double
@@ -3589,9 +3595,47 @@ final class AppStore: ObservableObject {
   }
 
   /// Whether creating a container workroom is on for `project`: not while another create holds it
-  /// busy, since a second create would build a second base.
+  /// busy, since a second create would build a second base. A remote create holds it only until its
+  /// workroom has a name, by when any base it built is recorded.
   func canCreateRemoteWorkroom(in project: Project) -> Bool {
     !isBusyProject(project.path) && !deletingProjects.contains(project.path)
+  }
+
+  /// Moves a remote create's progress from its project's row to its new workroom's, once the
+  /// workroom has a name: the row shows it, disabled, and the project is free for another create.
+  func handOffRemoteCreate(named name: String, in path: String, to row: RemoteCreateRow) async {
+    let sid = SidebarID.workroom(project: path, name: name)
+    // Before the reload, so the row arrives undeletable and with its progress.
+    creatingWorkrooms.insert(TerminalTarget.workroomID(project: path, name: name))
+    createSteps[sid] = createSteps.removeValue(forKey: .project(path))
+    imagePulls[path] = nil
+    row.workroom = sid
+    await reload()
+    endBusy(path)
+  }
+
+  /// Shows `step` of a remote create on the row that has it now, or nowhere once the create ended.
+  func showRemoteCreateStep(_ step: CreateStep, in path: String, row: RemoteCreateRow) {
+    if let sid = row.workroom {
+      guard case .workroom(_, let name) = sid,
+        creatingWorkrooms.contains(TerminalTarget.workroomID(project: path, name: name))
+      else { return }
+      createSteps[sid] = step
+    } else if isBusyProject(path) {
+      createSteps[.project(path)] = step
+    }
+  }
+
+  /// Ends a remote create's progress, on whichever row has it.
+  func endRemoteCreate(in path: String, row: RemoteCreateRow) {
+    if let sid = row.workroom, case .workroom(_, let name) = sid {
+      creatingWorkrooms.remove(TerminalTarget.workroomID(project: path, name: name))
+      createSteps[sid] = nil
+    } else {
+      imagePulls[path] = nil
+      createSteps[.project(path)] = nil
+      endBusy(path)
+    }
   }
 
   /// Creates a remote workroom for `project` at `place` (#253, #309, #356): a container on this Mac
@@ -3607,7 +3651,8 @@ final class AppStore: ObservableObject {
     let project = projects.first { $0.path == project.path } ?? project
     guard canCreateRemoteWorkroom(in: project) else { return }
     beginBusy(project.path)
-    defer { endBusy(project.path) }
+    let row = RemoteCreateRow()
+    defer { endRemoteCreate(in: project.path, row: row) }
     do {
       // A project keeps a base per runtime and Docker context (#309): the workroom derives from the
       // one where it is asked for, made there first if there is none.
@@ -3634,18 +3679,14 @@ final class AppStore: ObservableObject {
         throw RemoteWorkrooms.Failure.notOnGitHub("Its origin is on \(repository.host).")
       }
       let path = project.path
-      defer {
-        imagePulls[path] = nil
-        createSteps[path] = nil
-      }
       let buildsBase = base == nil
       let reboots = if case .boxd = key { true } else { false }
       let stepped: @Sendable (RemoteProvisioning.Step) -> Void = { step in
         Task { @MainActor [weak self] in
-          guard let self, self.isBusyProject(path),
+          guard let self,
             let shown = Self.createStep(step, buildsBase: buildsBase, reboots: reboots)
           else { return }
-          self.createSteps[path] = shown
+          self.showRemoteCreateStep(shown, in: path, row: row)
         }
       }
       let report: @Sendable (Double?) -> Void = { fraction in
@@ -3655,6 +3696,14 @@ final class AppStore: ObservableObject {
           self.imagePulls[path] = fraction
         }
       }
+      // Once the workroom has a name, its own row shows the rest of the create.
+      var recorder = remoteRecorder(project: path)
+      let reserve = recorder.reserve
+      recorder.reserve = { [weak self] hostPath, descriptor in
+        let name = try await reserve(hostPath, descriptor)
+        await self?.handOffRemoteCreate(named: name, in: path, to: row)
+        return name
+      }
       // Only a remote provider's create reports steps: a container's are quick, bar its image pull.
       let created = try await RemoteProvisioning.$reportStep.withValue(
         key.isRemoteProvider ? stepped : nil
@@ -3663,8 +3712,7 @@ final class AppStore: ObservableObject {
           try await RemoteWorkrooms.create(
             repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
             base: base, project: project.host, key: key, driver: driver,
-            environment: environment,
-            recorder: remoteRecorder(project: project.path))
+            environment: environment, recorder: recorder)
         }
       }
       // Its panes attach through their own ssh; Changes and the rest connect for themselves.
@@ -3852,8 +3900,8 @@ final class AppStore: ObservableObject {
   func isCreatingWorkroom(_ workroom: Workroom, in project: Project) -> Bool {
     creatingWorkrooms.contains(
       TerminalTarget.workroomID(project: project.path, name: workroom.name))
-      // A remote create (#253) holds its project busy, not this set: `creating` while it does is
-      // one still deriving. One a crash left at `creating` is deletable.
+      // A remote create (#253) is in this set from just after its workroom has a name; until then,
+      // its project busy says so. One a crash left at `creating` is deletable.
       || (workroom.host?.state == "creating" && isBusyProject(project.path))
   }
 
