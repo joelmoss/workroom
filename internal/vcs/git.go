@@ -13,8 +13,28 @@ type Git struct {
 func (g *Git) Type() Type    { return TypeGit }
 func (g *Git) Label() string { return "Git worktree" }
 
+// Create branches from origin's default branch, as a remote workroom does, not from whatever
+// the main checkout has out. `--no-track`: a workroom's branch has no upstream until published.
 func (g *Git) Create(dir, vcsName, path string) (string, error) {
-	return g.Executor.Run(dir, "git", "worktree", "add", "-b", vcsName, path)
+	return g.Executor.Run(dir, "git", "worktree", "add", "--no-track", "-b", vcsName, path, g.startPoint(dir))
+}
+
+// startPoint is origin's default branch, fetched first so it is current. A failed fetch
+// (offline, no credentials) keeps the last-fetched one; no origin, or no origin/HEAD, falls back
+// to HEAD. `set-head --auto` because fetch never moves origin/HEAD after a default-branch rename.
+func (g *Git) startPoint(dir string) string {
+	if _, err := g.Executor.Run(dir, "git", "remote", "get-url", "origin"); err != nil {
+		return "HEAD"
+	}
+	if _, err := g.Executor.Run(dir, "git", "fetch", "--quiet", "origin"); err == nil {
+		_, _ = g.Executor.Run(dir, "git", "remote", "set-head", "origin", "--auto")
+	}
+	// Fully qualified: a tag or branch named `origin/HEAD` would make the short form ambiguous.
+	const ref = "refs/remotes/origin/HEAD"
+	if _, err := g.Executor.Run(dir, "git", "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err != nil {
+		return "HEAD"
+	}
+	return ref
 }
 
 func (g *Git) Delete(dir, _, path string) (string, error) {

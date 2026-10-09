@@ -172,8 +172,8 @@ func TestCreateRunsSetupScript(t *testing.T) {
 		output: gitWorktrees(dir),
 		onRun: func(dir, name string, args []string) {
 			// Simulate git worktree add creating the directory
-			if name == "git" && len(args) > 4 && args[0] == "worktree" && args[1] == "add" {
-				os.MkdirAll(args[4], 0o755)
+			if name == "git" && len(args) > 5 && args[0] == "worktree" && args[1] == "add" {
+				os.MkdirAll(args[5], 0o755)
 			}
 		},
 	}
@@ -217,8 +217,8 @@ func TestCreateOnReadyFiresBeforeSetup(t *testing.T) {
 	mock := &mockExecutor{
 		output: gitWorktrees(dir),
 		onRun: func(_, name string, args []string) {
-			if name == "git" && len(args) > 4 && args[0] == "worktree" && args[1] == "add" {
-				os.MkdirAll(args[4], 0o755)
+			if name == "git" && len(args) > 5 && args[0] == "worktree" && args[1] == "add" {
+				os.MkdirAll(args[5], 0o755)
 			}
 		},
 	}
@@ -263,8 +263,8 @@ func TestCreateOnReadyReportsNoSetupScript(t *testing.T) {
 	mock := &mockExecutor{
 		output: gitWorktrees(dir),
 		onRun: func(_, name string, args []string) {
-			if name == "git" && len(args) > 4 && args[0] == "worktree" && args[1] == "add" {
-				os.MkdirAll(args[4], 0o755)
+			if name == "git" && len(args) > 5 && args[0] == "worktree" && args[1] == "add" {
+				os.MkdirAll(args[5], 0o755)
 			}
 		},
 	}
@@ -302,8 +302,8 @@ func TestCreateErrorsOnFailedSetupScript(t *testing.T) {
 	mock := &mockExecutor{
 		output: gitWorktrees(dir),
 		onRun: func(dir, name string, args []string) {
-			if name == "git" && len(args) > 4 && args[0] == "worktree" && args[1] == "add" {
-				os.MkdirAll(args[4], 0o755)
+			if name == "git" && len(args) > 5 && args[0] == "worktree" && args[1] == "add" {
+				os.MkdirAll(args[5], 0o755)
 			}
 		},
 	}
