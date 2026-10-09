@@ -336,7 +336,8 @@ enum RemoteWorkrooms {
   /// the entry keeps what is still live (host, grant) so deleting it can finish the job.
   static func create(
     repository: GitHubRepository, cloneURL: String, base existing: HostDescriptor?,
-    project projectHost: HostDescriptor? = nil, key: RemoteHosts.DriverKey = .init(),
+    project projectHost: HostDescriptor? = nil, startBranch: String? = nil,
+    key: RemoteHosts.DriverKey = .init(),
     driver: any HostTerminalDriver,
     environment: RemoteProvisioning.Environment, recorder: Recorder,
     pendingIn: URL? = RemoteHosts.pendingIn
@@ -407,7 +408,8 @@ enum RemoteWorkrooms {
     let instance: RemoteProvisioning.Instance
     do {
       instance = try await RemoteProvisioning.derive(
-        from: base, workroom: workroomID, branch: branch(for: name), in: environment
+        from: base, workroom: workroomID, branch: branch(for: name), startBranch: startBranch,
+        in: environment
       ) { host, grant in
         // Still `creating`, but now naming what a delete has to take down.
         try await recorder.record(

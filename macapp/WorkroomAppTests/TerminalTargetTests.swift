@@ -59,6 +59,18 @@ final class TerminalTargetTests: XCTestCase {
     XCTAssertTrue(byName["odd"]!.isRemote)
     XCTAssertFalse(byName["null"]!.isRemote)
     XCTAssertNotNil(try JSONDecoder().decode(ListResponse.self, from: json).projects[0].host)
+    XCTAssertNil(try JSONDecoder().decode(ListResponse.self, from: json).projects[0].baseBranch)
+  }
+
+  /// The project's base branch arrives under the CLI's snake_case key.
+  func testListDecodesAProjectsBaseBranch() throws {
+    let json = Data(
+      """
+      {"ok":true,"schema_version":1,"projects":[{"path":"/p","vcs":"git",
+        "base_branch":"develop","workrooms":[]}]}
+      """.utf8)
+    let project = try JSONDecoder().decode(ListResponse.self, from: json).projects[0]
+    XCTAssertEqual(project.baseBranch, "develop")
   }
 
   /// The app's own descriptor (#253) survives a write and a `list --json` read, and its record is

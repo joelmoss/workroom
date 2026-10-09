@@ -139,6 +139,8 @@ protocol WorkroomCLIProtocol {
     _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
   ) async throws -> [URL]
   func setHost(project: String, workroom: String?, descriptor: Data?) async throws
+  /// Sets the branch a project's new workrooms start from; nil clears it.
+  func setBaseBranch(project: String, branch: String?) async throws
   func createRemote(project: String, hostPath: String, descriptor: Data) async throws
     -> CreateResponse
   func claimProvisioned(from shared: String, provisioner: String) async throws
@@ -157,6 +159,10 @@ extension WorkroomCLIProtocol {
   }
 
   func claimProvisioned(from shared: String, provisioner: String) async throws {}
+
+  func setBaseBranch(project: String, branch: String?) async throws {
+    throw WorkroomCLIError.cli(kind: "Unsupported", message: "setBaseBranch is not faked")
+  }
 }
 
 /// Drives the bundled `workroom` binary over its `--json` contract. All work runs
@@ -212,6 +218,12 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     }
     args += ["--json", "--project", project]
     if let workroom { args += ["--workroom", workroom] }
+    try throwIfError(try await run(args, timeout: 5))
+  }
+
+  func setBaseBranch(project: String, branch: String?) async throws {
+    let args =
+      (branch.map { ["base", "set", $0] } ?? ["base", "clear"]) + ["--json", "--project", project]
     try throwIfError(try await run(args, timeout: 5))
   }
 

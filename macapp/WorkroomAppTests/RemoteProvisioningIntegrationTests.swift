@@ -886,6 +886,34 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
       head.trimmingCharacters(in: .whitespacesAndNewlines), "refs/remotes/origin/trunk")
   }
 
+  /// A project's base branch setting: the workroom starts from origin's copy of that branch, which
+  /// appeared after the base was cloned, not from the default branch.
+  @MainActor
+  func testAWorkroomStartsFromTheProjectsBaseBranch() async throws {
+    let fixture = try fixture()
+    let driver = ContainerHostDriver(
+      hosts: [:], directory: directory, provisioning: fixture.provisioning)
+    let environment = environment(fixture, driver: driver, revoked: Revoked())
+    let base = try await build(environment)
+    cleanups.append { try? await driver.destroy(.remote(base.host)) }
+    let branched = try await onHost(
+      driver, .remote(base.host),
+      "git -C /srv/origin.git -c user.name=t -c user.email=t@t commit-tree -p main"
+        + " -m develop main^{tree} | xargs git -C /srv/origin.git branch develop"
+        + " && git -C /srv/origin.git rev-parse develop")
+    XCTAssertEqual(branched.status, 0, branched.output)
+    let develop = branched.output.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    BrokerStub.reset([Self.grant])
+    let instance = try await RemoteProvisioning.derive(
+      from: base, workroom: UUID(), branch: "wr-develop", startBranch: "develop", in: environment)
+    cleanups.append { try? await driver.destroy(instance.host) }
+
+    let head = try await RemoteProvisioning.git(
+      ["rev-parse", "HEAD"], in: instance.path, on: instance.connection)
+    XCTAssertEqual(head.trimmingCharacters(in: .whitespacesAndNewlines), develop)
+  }
+
   @MainActor
   func testABaseWhoseCloneTokenIsRefusedIsRemovedWithNothingToRevoke() async throws {
     let fixture = try fixture()

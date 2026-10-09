@@ -259,7 +259,7 @@ enum RemoteProvisioning {
   // MARK: A workroom
 
   /// Derives a workroom from `base`, enrols it, and checks its own `branch` out from the remote's
-  /// default branch. Returns it serving. On a failure at any step, the grant is cancelled (by the
+  /// `startBranch`, or its default branch when that is nil (the project's base branch setting). Returns it serving. On a failure at any step, the grant is cancelled (by the
   /// enrolment itself when it was the step that failed) and the instance destroyed; if either of
   /// those fails too, `Failure.rollbackIncomplete` says what is still live.
   ///
@@ -267,7 +267,8 @@ enum RemoteProvisioning {
   /// once it is minted. A crash later still leaves both recorded for a delete to take down (#253).
   /// A checkpoint that fails is a failed step, and undoes the derive.
   static func derive(
-    from base: Base, workroom: UUID, branch: String, in environment: Environment,
+    from base: Base, workroom: UUID, branch: String, startBranch: String? = nil,
+    in environment: Environment,
     checkpoint: @Sendable (_ host: HostID, _ grant: String?) async throws -> Void = { _, _ in }
   ) async throws -> Instance {
     // What the workroom's git will need, checked before the copy, which can take many minutes: a
@@ -311,9 +312,12 @@ enum RemoteProvisioning {
       // With the instance's own credentials: `wr-agent enrol` made its helper git's.
       reportStep?(.checkout)
       try await fetch(base.path, environment: header, on: connected)
-      // Fully qualified: a tag or branch named `origin/HEAD` would make the short form ambiguous.
+      // Fully qualified: a tag or branch named like the short form would make it ambiguous.
       _ = try await git(
-        ["switch", "--quiet", "--no-track", "--create", branch, "refs/remotes/origin/HEAD"],
+        [
+          "switch", "--quiet", "--no-track", "--create", branch,
+          "refs/remotes/origin/\(startBranch ?? "HEAD")",
+        ],
         in: base.path, environment: header, on: connected)
       return Instance(
         host: host, grantID: grant, path: base.path, branch: branch, connection: connected)

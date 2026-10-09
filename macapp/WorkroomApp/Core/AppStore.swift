@@ -786,7 +786,8 @@ final class AppStore: ObservableObject {
   private static let maxToasts = 4
   /// Posts native banners. Behind a protocol for testability; the real one wraps
   /// `UNUserNotificationCenter`.
-  let systemNotifier: SystemNotifying = SystemNotifier()
+  /// `var` so a test can stand in a fake and never raise the real permission prompt.
+  var systemNotifier: SystemNotifying = SystemNotifier()
 
   /// Branch names from the VCS toolbar's remote-state read, keyed by `SidebarID`.
   ///
@@ -1951,6 +1952,19 @@ final class AppStore: ObservableObject {
   /// deliberately shows for a target with no command configured (issue #139).
   func canRunCommand(for target: TerminalTarget, inProject projectPath: String) -> Bool {
     !target.isMissing && !isRunBlocked(target.id) && hasRunCommand(forProject: projectPath)
+  }
+
+  /// Set the branch a project's new workrooms start from (nil or blank: origin's default branch),
+  /// through the CLI, which owns it so `workroom create` in a terminal agrees.
+  func setBaseBranch(_ branch: String?, forProject projectPath: String) async {
+    let trimmed = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+    do {
+      try await cli.setBaseBranch(
+        project: projectPath, branch: trimmed?.isEmpty == false ? trimmed : nil)
+    } catch {
+      present(error)
+    }
+    await reload()
   }
 
   /// Persist a project's run config. A blank command with auto-run off removes the entry so the map
@@ -3527,6 +3541,12 @@ final class AppStore: ObservableObject {
       // terminal. Auto-run is NOT triggered here: it fires from `ensureInitialTerminal` when the
       // terminal pane first mounts, which for a setup script is after dismissal (issue #7).
       if let id = landing.landedID, creations[id]?.hasSetup != true { creations[id] = nil }
+      if let id = landing.landedID, let warning = created.warning, !warning.isEmpty {
+        surface(
+          notifications.recordNotice(
+            targetID: id, source: notificationSource(forTargetID: id),
+            title: "This workroom may start from an old commit", body: warning))
+      }
       clearPendingCreation(session)
     } catch {
       await landing.finish()  // as above: read the landing's state, don't race it
@@ -3756,8 +3776,8 @@ final class AppStore: ObservableObject {
         try await ContainerHostDriver.$pullProgress.withValue(report) {
           try await RemoteWorkrooms.create(
             repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
-            base: base, project: project.host, key: key, driver: driver,
-            environment: environment, recorder: recorder)
+            base: base, project: project.host, startBranch: project.baseBranch, key: key,
+            driver: driver, environment: environment, recorder: recorder)
         }
       }
       // Its panes attach through their own ssh; Changes and the rest connect for themselves.
@@ -5265,6 +5285,12 @@ final class AppStore: ObservableObject {
         targetID: targetID, tabID: tabID, source: notificationSource(forTargetID: targetID),
         activity: activity, focused: false)
     else { return }
+    surface(note)
+  }
+
+  /// Present a recorded notification: an in-app toast and the arrival sound while the app is
+  /// frontmost, a native banner otherwise.
+  private func surface(_ note: WorkroomNotification) {
     if NotificationGate.shouldPresentInApp(recorded: true, appActive: NSApp.isActive) {
       // App is focused: sound on every arrival, then pop a toast. Notifications now live in the
       // always-visible left-sidebar strip + the title-bar bell badge (issue #118), so the transient

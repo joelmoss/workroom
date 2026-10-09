@@ -187,6 +187,13 @@ struct Project: Codable, Identifiable, Hashable {
   let workrooms: [Workroom]
   /// The project's base machine (#252), or nil when it has none. The project is still on this Mac.
   var host: HostDescriptor? = nil
+  /// The branch new workrooms start from, origin's copy first; nil means origin's default branch.
+  var baseBranch: String? = nil
+
+  enum CodingKeys: String, CodingKey {
+    case path, vcs, workrooms, host
+    case baseBranch = "base_branch"
+  }
 
   var id: String { path }
   var displayName: String { (path as NSString).lastPathComponent }
@@ -470,6 +477,9 @@ struct CreateResponse: Codable {
   let path: String
   let vcs: String
   let project: String
+  /// For the user, when the workroom started from a ref that may be out of date because the fetch
+  /// before it failed.
+  var warning: String? = nil
 }
 
 /// `add-project` success payload. `path` is the canonical (symlink-resolved,

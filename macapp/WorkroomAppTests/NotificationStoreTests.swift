@@ -26,6 +26,20 @@ final class NotificationStoreTests: XCTestCase {
     XCTAssertEqual(s.total, 0)
   }
 
+  /// An app notice names no tab, so a terminal gaining focus never dismisses it unread; it still
+  /// counts toward its target's badge and is dismissed by id.
+  func testANoticeSurvivesTabDismissalAndCountsForItsTarget() {
+    let s = makeStore()
+    let tab = UUID()
+    let note = s.recordNotice(targetID: target, source: "p / foo", title: "t", body: "b")
+    s.dismiss(tab: tab)
+    XCTAssertEqual(s.items.map(\.id), [note.id])
+    XCTAssertEqual(s.count(target: target), 1)
+    XCTAssertEqual(s.items.first?.body, "b")
+    s.dismiss(notifID: note.id)
+    XCTAssertTrue(s.items.isEmpty)
+  }
+
   func testOSCItemsStayDistinct() {
     let s = makeStore()
     let tab = UUID()
