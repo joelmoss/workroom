@@ -142,7 +142,7 @@ final class PersistentSessionService {
       // would defeat. Off the main actor: it looks at the file system.
       let noRuntime = await Task.detached { RemoteHosts.shared.runtimeIsMissing(for: host) }.value
       if noRuntime { return true }
-      // A click: a box let go of as idle, or asleep, is woken to end the session (#356).
+      // A click: a box asleep is woken to end the session (#356).
       try await RemoteHosts.shared.ensureConnected(host, wake: true)
       return try await HostConnectionManager.shared.endSession(session, on: host)
     }
@@ -484,15 +484,13 @@ final class PersistentSessionService {
         attachedRemote[sessionID, default: []].insert(pane)
         // A pane attaching connects a host with no service connection, so its badge is heard and a
         // container workroom's git credential relay, which rides that connection, is there for the
-        // pane's `git push`. One its agent let go of (#380) is woken, as a click wakes it: the pane
-        // is the user at that box. Any other is an ordinary attempt, which keeps the retry window,
-        // so a pane retrying its ssh against a host that is down does not retry the service too.
+        // pane's `git push`. It is an ordinary attempt, which keeps the retry window, so a pane
+        // retrying its ssh against a host that is down does not retry the service too.
         let host = remote.host
         Task {
           // Only while a pane still holds it: one that exited or closed meanwhile holds nothing.
           guard self.hasAttachedPane(on: host) else { return }
-          try? await RemoteHosts.shared.ensureConnected(
-            host, wake: RemoteHosts.shared.isReleased(host))
+          try? await RemoteHosts.shared.ensureConnected(host)
         }
         return command
       } catch {

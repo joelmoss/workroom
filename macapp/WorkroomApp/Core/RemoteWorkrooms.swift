@@ -639,12 +639,6 @@ final class RemoteHosts: @unchecked Sendable {
   private var failedAt: [HostID: ContinuousClock.Instant] = [:]
   /// When boxd last said each host was asleep, which answers for it for `retryAfter` (#356).
   private var asleepAt: [HostID: ContinuousClock.Instant] = [:]
-  /// Hosts that sleep whose connection ended on an IDLE box (#380): the agent let go of it, so its
-  /// provider's own timer could sleep the box, or the box slept. A background read never reconnects
-  /// one, or every status sweep would hold an idle box awake again (boxd counts a login as
-  /// activity). Selecting or opening its workroom, a pane, a port forward in use or a click (`wake`)
-  /// does, and a connection coming up forgets it.
-  private var releasedHosts: Set<HostID> = []
   /// The host of the workroom selected in each window (one `AppStore` per window), which a
   /// background read reconnects whatever its agent last did.
   private var selectedHosts: [AnyHashable: HostID] = [:]
@@ -994,7 +988,6 @@ final class RemoteHosts: @unchecked Sendable {
       return try await AgentBootstrap.connect(
         host: host, driver: driver, socket: Self.agentSocket(of: driver))
     }
-    _ = lock.withLock { releasedHosts.remove(host) }
     // Its verdict is watched from here: the badge shows what the agent pushes (#380).
     if case .remote(let id) = host {
       await MainActor.run {
@@ -1056,15 +1049,14 @@ final class RemoteHosts: @unchecked Sendable {
   /// logged.
   ///
   /// `wake` for something the user did (a click, a pane attaching, a port forward in use): the user
-  /// asked for this host, so a boxd box the agent let go of, or asleep, is connected, and woken,
-  /// rather than refused as a background read is.
+  /// asked for this host, so a boxd box that is asleep is connected, and woken, rather than refused
+  /// as a background read is.
   func ensureConnected(_ host: HostID, wake: Bool = false) async throws {
     guard case .remote = host else { return }
     // Tried whatever came of the last attempt, as an opened host is: waking a box can fail once
     // while it resumes, and a second try must not wait out the window.
     if wake {
       lock.withLock {
-        releasedHosts.remove(host)
         asleepAt[host] = nil
         failedAt[host] = nil
       }
@@ -1097,21 +1089,16 @@ final class RemoteHosts: @unchecked Sendable {
       throw RepositoryRoutingError.unavailable(host)
     }
     // A boxd box wakes on an ssh login, so a background read must not connect to one that is
-    // asleep: every status sweep would wake every box and keep it billing (#356). Nor to one its
-    // agent let go of (`releasedHosts`): the login would hold the idle box awake again, until the
-    // agent let go once more. Only opening or selecting the workroom, or something the user did
-    // (`wake`), wakes it. When boxd can't say, the read leaves it be too. One boxd says is gone is
-    // reported as such, not as asleep.
+    // asleep: every status sweep would wake every box and keep it billing (#356). Only opening or
+    // selecting the workroom, or something the user did (`wake`), wakes it. When boxd can't say,
+    // the read leaves it be too. One boxd says is gone is reported as such, not as asleep.
     if !opened, !wake, !selected {
       switch try await boxdPresence(host) {
       case .asleep: throw RepositoryRoutingError.asleep(host)
       case .gone:
         lock.withLock { failedAt[host] = now() }
         throw RepositoryRoutingError.gone(host)
-      case .awake, nil:  // nil: not a boxd host
-        if lock.withLock({ releasedHosts.contains(host) }) {
-          throw RepositoryRoutingError.idle(host)
-        }
+      case .awake, nil: break  // nil: not a boxd host
       }
     }
     do {
@@ -1165,28 +1152,14 @@ final class RemoteHosts: @unchecked Sendable {
       activated.insert(host)
       failedAt[host] = nil
       asleepAt[host] = nil
-      releasedHosts.remove(host)
     }
   }
 
   /// The workroom selected in `window` is on `host` (nil for one on this Mac, or a window closing).
   /// A host selected in any window is reconnected by a background read, as an opened one is.
   func select(_ host: HostID?, in window: AnyHashable = "default") {
-    lock.withLock {
-      selectedHosts[window] = host
-      if let host { releasedHosts.remove(host) }
-    }
+    lock.withLock { selectedHosts[window] = host }
   }
-
-  /// `host`'s connection ended on an IDLE box (`WakefulnessModel.connectionEnded`, #380): its agent
-  /// let go of it, or the box slept. Until something the user does reconnects it, a background read
-  /// leaves it be.
-  func released(_ host: HostID) {
-    _ = lock.withLock { releasedHosts.insert(host) }
-  }
-
-  /// Whether `host`'s agent let go of it and nothing has reconnected it since (`released`).
-  func isReleased(_ host: HostID) -> Bool { lock.withLock { releasedHosts.contains(host) } }
 
   /// What boxd says of `host` (awake, asleep, or gone), or nil only when it isn't a boxd host. A
   /// boxd that can't say is taken as asleep, logged, so a background read leaves the box be. boxd

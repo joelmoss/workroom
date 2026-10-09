@@ -103,7 +103,7 @@ final class PersistentSessionAttachGateTests: XCTestCase {
     XCTAssertTrue(
       body.contains("forSession: persistentSessionID"),
       "applyPersistentSession no longer routes per session")
-    // Without its token the pane's attach holds nothing, and its box can be let go under it (#356).
+    // Without its token the pane's attach holds nothing, and its host is not reconnected for it.
     XCTAssertTrue(
       body.contains("by: attachToken"), "applyPersistentSession no longer marks the pane attached")
   }

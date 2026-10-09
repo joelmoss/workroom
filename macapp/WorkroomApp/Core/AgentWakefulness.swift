@@ -156,8 +156,7 @@ final class WakefulnessModel: ObservableObject {
 
   /// Nil while there is no reading: no agent yet, an agent that predates the service, or a
   /// connection that ended on a box that was busy, whose reading may no longer hold. A connection
-  /// that ended on an IDLE box keeps its reading: the agent let go of it (#380), and the box is
-  /// idle, or asleep, until something wakes it.
+  /// that ended on an IDLE box keeps its reading: nothing runs on it to change that.
   @Published private(set) var status: AgentWakefulness?
 
   /// How long the watch waits before looking for a connection again. A local lookup, nothing sent.
@@ -242,16 +241,10 @@ final class WakefulnessModel: ObservableObject {
   }
 
   /// The connection that carried the readings is gone. One that ended on a busy box says nothing
-  /// more about it. One that ended on an idle box of a host that sleeps is the agent letting go
-  /// (#380), or the box sleeping: either way the host stays idle until something wakes it, so a
-  /// background read must not reconnect it (`RemoteHosts.released`).
+  /// more about it; one that ended on an idle box keeps its reading.
   func connectionEnded() {
-    guard let last = status, last.running, !last.busy else {
-      status = nil
-      return
-    }
-    guard hostSleeps else { return }
-    RemoteHosts.shared.released(.remote(host))
+    if let last = status, last.running, !last.busy { return }
+    status = nil
   }
 }
 

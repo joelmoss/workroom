@@ -24,8 +24,8 @@ the container driver (#252, PR #280, 2026-10-01); the boxd driver with portable 
 #289, 2026-10-02); remote pane parity (#254, PR #326, 2026-10-04); cross-machine reattach (#255, PR
 #349, 2026-10-05); and keeping a busy box awake (#257, PR #353, 2026-10-06), built as a heartbeat in
 the agent, not a shim. #380 (2026-10-08) then made the box decide its own wakefulness: the agent
-pushes its verdict and lets go of idle connections itself, and the awake ceiling and the app's
-let-go are gone ("As built (#380)"). Follow-ups from #253's reviews are #283 to #288; #283 (closing a remote pane
+pushes its verdict, and the awake ceiling and every let-go, the app's and the agent's, are gone
+("As built (#380)"). Follow-ups from #253's reviews are #283 to #288; #283 (closing a remote pane
 ends its session on the host) is merged (PR #306, 2026-10-03), with its own follow-ups in #293, #297
 and #304. The rest of Phase 4 is open: the second real provider, exe.dev (#259), and boxd live fork
 (#258), which is deferred to a later release and does not gate #260. #260 is the gate: it runs the
@@ -1950,8 +1950,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     stalled IDLE reading on a sleeping host shows "status unknown".
   - **Not swept.** Unrecorded boxd machines are left alone: names carry no build, so one build's
     sweep would take another's live workrooms (#373 has the boxd case).
-  - **Letting go of an idle box** (superseded by #380, below: the agent lets go now, and the app's
-    let-go, poll, ceiling prompt and idle-window warning are gone). boxd's idle meter counts inbound
+  - **Letting go of an idle box** (superseded by #380, below: there is no let-go now, and the
+    app's poll, ceiling prompt and idle-window warning are gone). boxd's idle meter counts inbound
     traffic, and the first live run
     (2026-10-06) found an attached box never slept: the service connection's ssh keepalives (15 s) and
     the badge's polls (10 s) held it, idle or past an unanswered prompt. So a boxd host whose agent
@@ -1993,8 +1993,11 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   failed on 2026-10-08: the app's 10 s status poll crossed the box's eth0 often enough to vote it
   BUSY on every poll, so the app's own let-go never fired and a connected boxd box never slept
   (measured; a 60 s poll let it go at once). The owner's decision: Workroom does not manage a
-  provider's sleep or billing. It owns two things only, both because it causes them: an open app
-  never holds an idle box awake, and a box never sleeps under running work (the heartbeat, #257).
+  provider's sleep or billing. As first built it still owned two things: an open app never holds an
+  idle box awake, and a box never sleeps under running work (the heartbeat, #257). In #381's review
+  (2026-10-09) the owner dropped the first: "we don't care if the box stays awake forever ... that
+  is the user's responsibility. deleting a workroom will fix that." The second goes with the
+  heartbeat in #382.
   - **Pushed verdicts.** `STATUS_SERVICE_VERSION` is 2. The agent pushes `{"event": "status",
     "status": …}` on stream 0 to every connection that has asked for `status`, whenever what the
     app shows changes (BUSY or IDLE, and whether a BUSY box's heartbeat is failing). The app asks
@@ -2005,38 +2008,30 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     the agent's clock, so a reply and a push can arrive in either order, and starts the order over
     on each connection, as a rebooted box restarts that clock. It still reads a version 1 agent's
     reply (one a busy box kept rather than hand off), with no poll for it.
-  - **The agent lets go.** Every connection the agent serves is in a registry (`serve::Connections`)
-    with its closer, its age, whether a pane is attached on it (an `Attach`, or a session's last
-    screen shown), and whether a forwarded connection is in flight on it. Once the verdict has been
-    IDLE for 30 s (`LET_GO_GRACE_S`), each tick closes every connection at least 30 s old that
-    carries no forwarded connection, unless a pane is attached anywhere: a pane's ssh holds the box
-    awake whatever this does, and a local container's credential relay rides the service connection.
-    Listeners (the Debug broker's) do not count. A held connection takes no `vcs` permit, so it is
-    never work. A read in flight at that moment, slower than the net vote's 500 B/s, gets
-    `connectionLost`; the window is small.
-  - **The app takes it as idle, not an error.** A connection that ends on an IDLE reading keeps
-    that reading on the badge ("Workroom doesn't hold it awake, so its provider may put it to
-    sleep"), and on a host that sleeps (`sleepsWhenIdle`) it marks the host released
-    (`RemoteHosts.released`): a background read (the status sweep) does not reconnect it, since an
-    ssh login is activity to boxd and every sweep would hold the box awake again; the row shows idle,
-    or asleep once boxd says so. Selecting or opening the workroom, a click, a pane attaching, a port
-    forward in use, or any connection coming up forgets the release. A connection that ends on a
-    BUSY reading clears the badge. This is the one piece of the old let-go that stays: the issue's
-    "the host shows as idle/asleep" needs it.
-  - **A pane attaching reconnects its host** whenever the host has no service connection, not only
-    one the app let go of: the badge is heard, and a container's credential relay is there for the
-    pane's `git push`. Only a released host is woken (as a click wakes it); any other is an ordinary
-    attempt, so a pane retrying its ssh against a host that is down keeps the 30 s retry window.
+  - **No let-go.** As first built, the agent closed every connection with no pane attached and no
+    forward in flight once its verdict had been IDLE for 30 s, and the app marked such a host
+    released so background reads left it be. Codex's review found it also closed local
+    containers' connections, which never sleep, dropping their credential relay with them; on
+    master the app's let-go had been boxd-only. The owner then removed the let-go altogether
+    (2026-10-09): the agent's connection registry (`serve::Connections`, `LET_GO_GRACE_S`),
+    `Forwards::carrying`, `RemoteHosts.released` and the routing error and status it raised
+    (`RepositoryRoutingError.idle`, `VCSStatusFailure.idle`) are gone. An open app holds its
+    connections for as long as it runs, and a box it holds awake is the user's to free, by
+    deleting its workroom. A background read still never wakes a box boxd says is asleep (#356).
+    A connection that ends on an IDLE reading keeps that reading on the badge; one that ends on
+    a BUSY reading clears it.
+  - **A pane attaching reconnects its host** whenever the host has no service connection: the
+    badge is heard, and a container's credential relay is there for the pane's `git push`. It is
+    an ordinary attempt, so a pane retrying its ssh against a host that is down keeps the 30 s
+    retry window.
   - **Port forwards outlive the connection** on every remote host (`PortForwardingModel.Transport
-    .reconnect`): the agent lets go of a container's idle connection too, so a container's forward
-    would otherwise vanish a minute into an idle browser tab. The row and its local port stay, the
+    .reconnect`): a connection drops when the network does or the box sleeps, and the forward
+    should not vanish with it. The row and its local port stay, the
     caption says it reconnects on use, and a connection accepted once the old one has ended
     reconnects the host (waking a box) and is carried on the new one, the browser waiting meanwhile.
     It never starts a container the user stopped: `ensureConnected` starts only a host whose
     workroom was opened, so that reconnect fails, refuses the connection and says why on the row.
-    This Mac's agent keeps the old rule: a forward goes with its connection. A container is
-    reconnected by every status sweep after its agent lets go (it never sleeps, so nothing gates
-    it), which costs a bootstrap probe and its relay's set-up each time.
+    This Mac's agent keeps the old rule: a forward goes with its connection.
   - **Removed.** The awake ceiling (OQ22) everywhere: `Ceiling`, `keep`, `settings`, the kept
     `<socket>.settings` file (left on old boxes, unread), `--awake-ceiling`,
     `--awake-prompt-timeout`, `--ask-at-awake-ceiling` and their variables (an old agent's flags on
@@ -2046,18 +2041,14 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     `PortForwardingModel.hasForwards` as a hold, `BoxdHostDriver.idleWindow`, `isTooShort` and its
     badge text. This Mac's own badge and `WakefulnessModel.shared` went too: its agent runs no
     wakefulness service (Linux only), so they only ever showed nothing.
-  - **What the live suite checks.** Only what Workroom owns: an idle box's agent lets go of the
-    attached app, the app takes that as idle and stops reaching the host, a kept forward and a
-    selection reconnect it (`testAnIdleBoxsAgentLetsGoOfTheAttachedApp`), and a busy box keeps the
-    app's connection and logs every tick of its job (`testABusyBoxWithTheAppAttachedStaysAwakeThroughItsJob`).
-    Whether an idle box then sleeps is its provider's, and not asserted: on a fresh boxd box the
-    agent let go at about 110 s, yet the box was still running 300 s later with 120 s timers, the
-    classifier briefly voting BUSY with nothing running (dockerd and containerd are on the base
-    image). #257's heartbeat test still checks sleep, as a control for the heartbeat.
+  - **What the live suite checks.** The let-go's two live tests went with it
+    (`testAnIdleBoxsAgentLetsGoOfTheAttachedApp`, `testABusyBoxWithTheAppAttachedStaysAwakeThroughItsJob`):
+    whether a box sleeps is its provider's and the user's, and not asserted. #257's heartbeat test
+    still checks sleep, as a control for the heartbeat, until #382 removes both.
   - **Mixed versions.** An app from before #380 against a version 2 agent shows no badge (it
     accepts only version 1) and its 10 s poll holds the box as before. An app from after it, against
     an agent a busy box kept rather than hand off, shows that agent's first reading and nothing
-    pushed, and the old agent never lets go; the next connect hands off.
+    pushed; the next connect hands off.
 
 
 ## Phase 0 Results

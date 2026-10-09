@@ -784,7 +784,7 @@ final class PortForwardingModelTests: XCTestCase {
     XCTAssertFalse(model.connected)
   }
 
-  /// A forward on a host whose agent lets go of it (#380) outlives the connection: its row and its
+  /// A forward on a remote host (#380) outlives its connection: its row and its
   /// local port stay, the caption says it reconnects on use, and a connection made to it then
   /// reconnects and is carried on the new connection, without the user adding it again.
   func testAForwardThatReconnectsOutlivesItsConnectionAndCarriesOnTheNext() async throws {
@@ -834,7 +834,7 @@ final class PortForwardingModelTests: XCTestCase {
   }
 
   /// Which hosts' forwards outlive their connection (#380): every remote host's, a container's
-  /// included, since its agent lets go of an idle connection too; never this Mac's.
+  /// included, since any connection can drop; never this Mac's.
   func testEveryRemoteHostsForwardsReconnectAndThisMacsDoNot() {
     let manager = HostConnectionManager()
     XCTAssertNil(PortForwardingModel.Transport.reconnecting(.local, manager: manager))
