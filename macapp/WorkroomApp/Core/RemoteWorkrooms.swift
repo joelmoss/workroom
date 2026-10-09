@@ -128,6 +128,24 @@ enum RemoteWorkrooms {
   }
   /// The descriptor's `provisioner`: this build, whose ssh key and Docker labels its hosts carry.
   static var provisioner: String { Bundle.main.bundleIdentifier ?? "com.developwithstyle.workroom" }
+
+  /// The builds that share each other's boxd and exe.dev hosts: Release and Nightly, which share a
+  /// config too. A Dev build keeps its own config and hosts.
+  static let sharedHostBuilds: Set<String> = [
+    "com.developwithstyle.workroom", "com.developwithstyle.workroom.nightly",
+  ]
+
+  /// Whether `own`'s build may open, derive from and take down `host`. Its own, always. Another
+  /// build's only on a remote provider, and only between Release and Nightly: a boxd or exe.dev
+  /// machine is reached through the provider's CLI and the user's own ssh, and a grant cancels by
+  /// Codaset user, so nothing there is the build's. A container takes this build's ssh key and
+  /// Docker labels, so it stays the build's alone.
+  static func ownsHost(_ host: HostDescriptor, as own: String = provisioner) -> Bool {
+    if host.provisioner == own { return true }
+    guard let theirs = host.provisioner, RemoteHosts.DriverKey(host)?.isRemoteProvider == true
+    else { return false }
+    return sharedHostBuilds.contains(own) && sharedHostBuilds.contains(theirs)
+  }
   /// Fixed by the host image's entrypoint (`vcs/scripts/ssh-fixture/entrypoint.sh`).
   static let agentSocket = "/run/workroom/agent.sock"
   static let user = "workroom"
@@ -325,7 +343,7 @@ enum RemoteWorkrooms {
   ) async throws -> Created {
     let recorder = recorder.forgettingPending(in: pendingIn)
     let base: RemoteProvisioning.Base
-    if let existing, existing.provisioner != provisioner {
+    if let existing, !ownsHost(existing) {
       // Its key and labels are another build's, so this one can neither reach nor replace it.
       throw Failure.anotherBuildsBase(existing.provisioner ?? "an unknown build")
     }
@@ -509,7 +527,7 @@ enum RemoteWorkrooms {
   @discardableResult
   static func checkDeletable(_ hosts: [HostDescriptor]) throws -> Bool {
     let live = hosts.filter(isLive)
-    if let other = live.first(where: { $0.provisioner != provisioner }) {
+    if let other = live.first(where: { !ownsHost($0) }) {
       throw Failure.anotherBuildsHost(other.provisioner ?? "an unknown build")
     }
     return !live.isEmpty
@@ -878,9 +896,10 @@ final class RemoteHosts: @unchecked Sendable {
     let descriptors =
       projects.flatMap { $0.host?.allBases ?? [] }
       + projects.flatMap { $0.workrooms.compactMap(\.host) }
-    // Another build's hosts take another key: adopted here, they would refuse every login.
+    // Another build's hosts take another key: adopted here, they would refuse every login. A
+    // remote provider's host Release and Nightly share is both's (`ownsHost`).
     let recorded = descriptors.filter {
-      DriverKey($0) != nil && $0.provisioner == RemoteWorkrooms.provisioner
+      DriverKey($0) != nil && RemoteWorkrooms.ownsHost($0)
     }
     // Only a base is derived from; on Apple nothing in its record says which a host is.
     let bases = Set(projects.flatMap { $0.host?.allBases.compactMap(\.id) ?? [] })
