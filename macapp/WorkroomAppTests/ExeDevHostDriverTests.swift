@@ -131,6 +131,13 @@ final class ExeDevHostDriverTests: XCTestCase {
       attach.contains("'/usr/bin/env' 'SSH_AUTH_SOCK=/agent.sock' '/usr/bin/ssh'"), attach)
     XCTAssertTrue(attach.contains("'HostKeyAlias=exe.dev'"), attach)
     XCTAssertFalse(attach.contains("'-F'"), attach)
+
+    // An ssh the app spawns has no environment of its own, so it gets the login shell's PATH for a
+    // ProxyCommand's helper; a pane's ssh keeps the pane's.
+    XCTAssertEqual(
+      driver.route(id, spawned: true).environment,
+      ["SSH_AUTH_SOCK": "/agent.sock", "PATH": ShellEnvironment.path()])
+    XCTAssertEqual(driver.route(id, spawned: false).environment, ["SSH_AUTH_SOCK": "/agent.sock"])
   }
 
   /// When the user's ssh can't sign in to exe.dev, or doesn't know its host key, nothing runs and
