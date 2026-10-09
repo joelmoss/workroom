@@ -199,7 +199,7 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
     BrokerStub.reset([])
     // A connection the sequence reaches and then loses, so the git it runs fails at once.
     let connect: @Sendable (HostID) async throws -> AgentVCSConnection = { host in
-      let fake = try FakeAgent(version: 4, status: true)
+      let fake = try FakeAgent(version: 4)
       defer { fake.stop() }
       return try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
     }
@@ -275,8 +275,7 @@ private final class RefusingDriver: HostDriver, @unchecked Sendable {
   var derives: Int { lock.withLock { derived } }
   let traits = HostDriverTraits(
     transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
-    durableDisk: false, maxLifetime: nil, keepAwakeHoldsCredential: false,
-    sleepsWhenIdle: false)
+    durableDisk: false, maxLifetime: nil)
 
   func create() async throws -> HostID { throw HostDriverError.notImplemented("create") }
   func deriveFromBase(_ base: HostID) async throws -> HostID {
@@ -308,8 +307,7 @@ private final class StepLog: @unchecked Sendable {
 private struct MakingDriver: HostDriver {
   let traits = HostDriverTraits(
     transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
-    durableDisk: false, maxLifetime: nil, keepAwakeHoldsCredential: false,
-    sleepsWhenIdle: false)
+    durableDisk: false, maxLifetime: nil)
 
   func create() async throws -> HostID { .remote(UUID()) }
   func deriveFromBase(_ base: HostID) async throws -> HostID { .remote(UUID()) }

@@ -359,8 +359,7 @@ final class ExeDevHostDriverTests: XCTestCase {
     var traits: HostDriverTraits {
       HostDriverTraits(
         transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
-        durableDisk: true, maxLifetime: nil, keepAwakeHoldsCredential: false,
-        sleepsWhenIdle: false)
+        durableDisk: true, maxLifetime: nil)
     }
     func create() async throws -> HostID { .local }
     func deriveFromBase(_ base: HostID) async throws -> HostID { .local }

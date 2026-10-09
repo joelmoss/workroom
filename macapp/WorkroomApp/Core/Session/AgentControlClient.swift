@@ -47,9 +47,6 @@ struct AgentControlClient: SessionControlPlane {
   /// which would refuse Terminal traffic to an older agent that is still running someone's shell.
   static let minVCSVersion: UInt16 = 2
   static let minFileVersion: UInt16 = 3
-  /// `MIN_STATUS_VERSION`: the first peer version that answers `Service::Status` (issue #208). A
-  /// protocol-3 agent drops a Status envelope without answering, so it is never sent one.
-  static let minStatusVersion: UInt16 = 4
   /// `MIN_FORWARD_VERSION`: the first peer version that answers `Service::Forward` (issue #208). A
   /// protocol-4 agent drops a Forward envelope without answering, so it is never sent one.
   static let minForwardVersion: UInt16 = 5

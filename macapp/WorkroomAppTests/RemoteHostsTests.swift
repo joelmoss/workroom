@@ -883,41 +883,6 @@ final class RemoteHostsTests: XCTestCase {
       image: nil, context: context)
   }
 
-  /// A host's verdict is watched from its connect (#380): the model is made, watching, the watch
-  /// asks once, and a change the agent pushes shows on it.
-  @MainActor
-  func testConnectingAHostWatchesItsVerdict() async throws {
-    let fake = try FakeAgent(version: 4, status: true)
-    defer { fake.stop() }
-    let id = UUID()
-    let host = HostID.remote(id)
-    defer { WakefulnessModel.forgetHost(id) }
-    XCTAssertNil(WakefulnessModel.models[id])
-    let remote = RemoteHosts(connectAgent: { host, _ in
-      try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
-    })
-    try await remote.connect(
-      host, driver: Self.driver(runtime: URL(fileURLWithPath: "/usr/bin/false"), context: nil))
-    let snapshot = await HostConnectionManager.shared.snapshot(for: host)
-    let lease = try XCTUnwrap(snapshot.lease)
-    addTeardownBlock { await HostConnectionManager.shared.disconnect(lease) }
-
-    let model = try XCTUnwrap(WakefulnessModel.models[id])
-    XCTAssertTrue(model.isWatching)
-    XCTAssertFalse(model.hostSleeps, "a container is never slept, so its badge never says so")
-    let deadline = ContinuousClock.now + .seconds(5)
-    while model.status?.busy != true, ContinuousClock.now < deadline {
-      try await Task.sleep(for: .milliseconds(20))
-    }
-    XCTAssertEqual(model.status?.busy, true, "the watch's first reply never reached the model")
-    fake.pushStatusChange()
-    while model.status?.busy != false, ContinuousClock.now < deadline + .seconds(5) {
-      try await Task.sleep(for: .milliseconds(20))
-    }
-    XCTAssertEqual(model.status?.busy, false, "the pushed change never reached the model")
-    XCTAssertEqual(fake.receivedStatusRequests.count, 1, "the box was asked more than once")
-  }
-
   /// A record written before #309 has no context: it reads as nil, which names no context on any
   /// command, as every command did then. A pinned one keeps its context through config.
   func testARecordWithoutAContextReadsAsTheUnpinnedOne() throws {
@@ -1431,8 +1396,7 @@ final class RemoteHostsTests: XCTestCase {
     var traits: HostDriverTraits {
       HostDriverTraits(
         transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
-        durableDisk: true, maxLifetime: nil, keepAwakeHoldsCredential: false,
-        sleepsWhenIdle: true)
+        durableDisk: true, maxLifetime: nil)
     }
     func create() async throws -> HostID {
       if createMakes { return .remote(derived) }

@@ -145,9 +145,6 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let data = try await files.read(path: "file", symlinks: .refuse, maxBytes: 100)
     XCTAssertEqual(data, Data("next\n".utf8))
 
-    // Status.
-    _ = try await connection.wakefulness().status()
-
     // Forward, to a process listening in the container: its own sshd, which speaks first.
     let forward = try connection.forwarding().listen(remotePort: 22) { _ in }
     defer { forward.stop() }
@@ -178,26 +175,6 @@ final class RemoteHostIntegrationTests: XCTestCase {
     defer { client.close() }
     let banner = String(decoding: try client.read(8, timeout: 10), as: UTF8.self)
     XCTAssertEqual(banner, "SSH-2.0-")
-  }
-
-  /// A remote workroom's sidebar badge (#254): the host's agent runs its classifier (Linux always
-  /// does), and the model reads its verdict through that host's connection.
-  @MainActor
-  func testTheWakefulnessModelReadsARemoteHostsVerdict() async throws {
-    let fixture = try fixture()
-    let (connection, id) = try await connect(fixture.host)
-    let host = HostID.remote(id)
-    let manager = HostConnectionManager()
-    _ = try await manager.connect(host: host) { connection }
-    let model = WakefulnessModel(transport: .on(host, manager: manager), host: id)
-    model.startWatching()
-    defer { model.stopWatching() }
-    let deadline = ContinuousClock.now + .seconds(10)
-    while model.status == nil, ContinuousClock.now < deadline {
-      try await Task.sleep(for: .milliseconds(50))
-    }
-    let status = try XCTUnwrap(model.status, "no verdict from the host")
-    XCTAssertTrue(status.running, "the host's classifier is not running")
   }
 
   /// ⌘-click in a remote pane (#254, C7) finds a file on the host through its file service,
@@ -361,7 +338,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
       host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
       agent: { _ in fixture.agent }, handOff: true)
     connections.append(connection)
-    _ = try await connection.wakefulness().status()
+    _ = try await connection.sessions()
   }
 
   /// Connecting again with the same build pushes nothing: the probe finds the file, and the
@@ -614,7 +591,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
       host: .remote(id), driver: driver, socket: fixture.host.agentSocket,
       agent: { _ in broken }, handOff: true)
     connections.append(connection)
-    _ = try await connection.wakefulness().status()
+    _ = try await connection.sessions()
   }
 
   /// The app half of the Phase 3 acceptance (#229): a pane attached through the driver keeps its

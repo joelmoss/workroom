@@ -107,8 +107,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   var traits: HostDriverTraits {
     HostDriverTraits(
       transport: .sshStdio, deriveSpeed: provisioning == nil ? nil : .seconds(5),
-      deriveCarriesLiveProcesses: false, durableDisk: false, maxLifetime: nil,
-      keepAwakeHoldsCredential: false, sleepsWhenIdle: false)
+      deriveCarriesLiveProcesses: false, durableDisk: false, maxLifetime: nil)
   }
 
   /// Where each host's `ssh_config` and `known_hosts` are written.
@@ -1056,8 +1055,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   ///
   /// The session contract is the environment `wr-agent attach` reads, set with `env` because ssh
   /// carries none of the pane's own. Deliberately absent: the shell (the host's own login shell
-  /// applies) and the wakefulness settings (they configure an agent the attach starts, and
-  /// `--no-spawn` never starts one).
+  /// applies).
   ///
   /// The terminal is the pane's own `xterm-ghostty`, with Ghostty's shell integration, when the
   /// bootstrap has put its terminfo and integration at `resources` (#239), and `xterm-256color`

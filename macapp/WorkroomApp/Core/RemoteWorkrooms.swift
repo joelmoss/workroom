@@ -494,14 +494,11 @@ enum RemoteWorkrooms {
     _ name: String, host: HostDescriptor, environment: RemoteProvisioning.Environment?,
     recorder: Recorder
   ) async throws {
-    // The entry goes, and the host's verdict watch and port forwards with it (#380): one step for
-    // both ways out, so a workroom with nothing live to take down keeps nothing made this launch.
+    // The entry goes, and the host's port forwards with it (#380): one step for both ways out, so
+    // a workroom with nothing live to take down keeps nothing made this launch.
     func forget() async throws {
       if let id = host.id {
-        await MainActor.run {
-          WakefulnessModel.forgetHost(id)
-          PortForwardingModel.forgetHost(.remote(id))
-        }
+        await MainActor.run { PortForwardingModel.forgetHost(.remote(id)) }
       }
       try await recorder.forget(name)
     }
@@ -522,12 +519,9 @@ enum RemoteWorkrooms {
       remaining.grantID = grant
       if liveHost == nil {
         // The box is gone though its grant is not: the record forgets the host, so a later delete
-        // could not find its watch and forwards to stop (#380).
+        // could not find its forwards to stop (#380).
         if let id = host.id {
-          await MainActor.run {
-            WakefulnessModel.forgetHost(id)
-            PortForwardingModel.forgetHost(.remote(id))
-          }
+          await MainActor.run { PortForwardingModel.forgetHost(.remote(id)) }
         }
         (remaining.id, remaining.container) = (nil, nil)
       }
@@ -1041,12 +1035,6 @@ final class RemoteHosts: @unchecked Sendable {
       if let connectAgent { return try await connectAgent(host, driver) }
       return try await AgentBootstrap.connect(
         host: host, driver: driver, socket: driver.agentSocket)
-    }
-    // Its verdict is watched from here: the badge shows what the agent pushes (#380).
-    if case .remote(let id) = host {
-      await MainActor.run {
-        WakefulnessModel.model(forHost: id).hostSleeps = driver.traits.sleepsWhenIdle
-      }
     }
     // A relayed workroom's git asks this Mac for credentials (#309): its listener goes with the
     // connection, and its secret with this launch, so it is set up again on every connect. A

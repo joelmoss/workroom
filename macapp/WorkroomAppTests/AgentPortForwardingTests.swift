@@ -99,9 +99,9 @@ final class AgentPortForwardingTests: XCTestCase {
 
   /// A protocol-4 agent silently DROPS a Forward envelope, so none is sent — otherwise every
   /// forwarded connection would hang until the client's own timeout against an agent that can never
-  /// answer. Checked against the peer's RAW greeting, exactly as File and Status are.
+  /// answer. Checked against the peer's RAW greeting, exactly as File is.
   func testAProtocol4AgentIsNeverSentAForwardEnvelope() async throws {
-    let agent = try FakeAgent(version: 4, status: true, forward: true)
+    let agent = try FakeAgent(version: 4, forward: true)
     let connection = try await fake(agent)
     XCTAssertThrowsError(try connection.forwarding()) { error in
       guard case VCSError.backendVersion = error else {
@@ -109,7 +109,7 @@ final class AgentPortForwardingTests: XCTestCase {
       }
     }
     // The refusal above is the gate; this is the other half of it — that nothing SENDS a Forward
-    // envelope either. Unlike Status, this service has no connect-time probe (its only request opens
+    // envelope either. Unlike File, this service has no connect-time probe (its only request opens
     // a real socket), so `connect()` must stay silent on service 5 against every peer, not merely
     // against an old one. The fake would answer a Forward envelope; it never receives one.
     // `testEachConnectionGetsAFreshStreamIdAndIdsAreNeverReused` is the positive control.
@@ -636,8 +636,7 @@ final class AgentPortForwardingTests: XCTestCase {
 }
 
 /// The model behind the Ports row, against a scripted agent and a connection stream the test
-/// drives. Everything a live agent would do is behind `Transport`, the way `WakefulnessModel` is
-/// tested.
+/// drives. Everything a live agent would do is behind `Transport`.
 @MainActor
 final class PortForwardingModelTests: XCTestCase {
   private var fakes: [FakeAgent] = []
