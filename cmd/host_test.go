@@ -66,6 +66,7 @@ func runHostCLI(t *testing.T, args ...string) (int, map[string]any) {
 	// cobra keeps flag values between runs.
 	t.Cleanup(func() {
 		jsonOutput, hostProject, hostWorkroom, pretend, currentCommand = false, "", "", false, ""
+		claimFrom, claimProvisioner = "", ""
 		rootCmd.SetArgs(nil)
 	})
 	rootCmd.SetArgs(args)
