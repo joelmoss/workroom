@@ -141,6 +141,7 @@ workroom/
 │   ├── version.go           # `workroom version`
 │   ├── add_project.go       # Hidden; --json only; used by the app to register a project
 │   ├── delete_project.go    # Hidden; --json only; used by the app to drop a project
+│   ├── claim.go             # Hidden; `claim-provisioned`; used by a Dev build of the app to move its remote entries into its own config
 │   ├── json.go              # --json success/error envelope writers
 │   ├── jsonlog.go           # NDJSON streaming of setup/teardown output (stderr)
 │   └── helpers.go           # cwd / --project resolution
@@ -286,7 +287,9 @@ config type string for listing, without requiring the project directory to exist
 
 ### The config file
 
-`~/.config/workroom/config.json` is the single source of truth, shared by the CLI and the app. Shape:
+`~/.config/workroom/config.json` is the single source of truth, shared by the CLI and the app. Set
+`$WORKROOM_CONFIG` to use another file instead. A Dev build of the app does this, so it keeps its own
+config. Shape:
 
 ```json
 {
@@ -346,9 +349,11 @@ cd macapp && xcodegen generate && open WorkroomApp.xcodeproj   # then ⌘R
 ```
 
 The Debug product is **"Workroom Dev"** — a distinct bundle id (`…workroom.dev`) and name, with an
-amber icon — so it runs alongside the installed release "Workroom" without conflict. It shares the
-same `~/.config/workroom/config.json`, but skips the global `⌘§` hotkey and Sparkle scheduled checks
-so it doesn't interfere with your real install.
+amber icon — so it runs alongside the installed release "Workroom" without conflict. It keeps its
+own config at `~/Library/Application Support/Workroom/<bundle id>/config.json` (the app sets
+`$WORKROOM_CONFIG` for the CLI), so its remote workrooms never show in your installed app. It also
+skips the global `⌘§` hotkey and Sparkle scheduled checks so it doesn't interfere with your real
+install.
 
 > **Adding/removing Swift files** requires regenerating the project (`make app-generate`), since the
 > file list lives in the generated `.xcodeproj`.

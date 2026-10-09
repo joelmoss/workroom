@@ -346,9 +346,12 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   `Workroom` for activation, the key window, preferences (separate UserDefaults domain via the
   bundle id), or the system-wide ⌘§ hotkey. The Debug build deliberately **doesn't register ⌘§**
   and **doesn't run Sparkle scheduled checks** (`#if DEBUG` in `WorkroomApp.swift` / `Updater.swift`)
-  so it can't grab the global hotkey or try to "update" itself to the release DMG. Both builds
-  still share the CLI config at `~/.config/workroom/config.json` (the bundled CLI has no
-  config-path override), so they show the same projects/workrooms. `make app-run` only stops copies
+  so it can't grab the global hotkey or try to "update" itself to the release DMG. Release and
+  Nightly share the CLI config at `~/.config/workroom/config.json`. A Dev build
+  keeps its own config, at `Application Support/Workroom/<bundle id>/config.json`, so what it makes
+  never shows in the other builds. The app passes that path to the CLI as `$WORKROOM_CONFIG`
+  (`WorkroomCLI.configPath`). At each launch a Dev build runs the hidden `workroom claim-provisioned`
+  command, which moves the remote entries it made out of the shared config. `make app-run` only stops copies
   of the identity it is launching — never your release build, and never another workroom's dev app,
   which `make` builds under its own id (see "Several workrooms at once"). The three app icons
   (`make app-icon` renders all of them) share the yellow blocked mark; Dev and Nightly overlay their
