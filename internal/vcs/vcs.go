@@ -18,7 +18,9 @@ const (
 type VCS interface {
 	Type() Type
 	Label() string
-	Create(dir, vcsName, path string) (string, error)
+	// Create makes the workspace, starting from base when non-empty, and returns a warning
+	// for the user, or "".
+	Create(dir, vcsName, path, base string) (string, error)
 	Delete(dir, vcsName, path string) (string, error)
 	// ListWorkrooms is the sole membership primitive: a caller that needs an existence check
 	// lists once and does an in-memory lookup, rather than the interface exposing a second

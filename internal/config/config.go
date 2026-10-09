@@ -63,8 +63,11 @@ type Project struct {
 	// Host is the project's "host" descriptor, reported verbatim and interpreted nowhere. A
 	// project is always a local repository (there are no remote projects); its descriptor is
 	// state its remote workrooms share.
-	Host      any
-	Workrooms map[string]Workroom
+	Host any
+	// BaseBranch is the branch new workrooms start from, origin's copy first; "" means origin's
+	// default branch.
+	BaseBranch string
+	Workrooms  map[string]Workroom
 }
 
 // RemoteWorkroomNames returns the names of the project's remote workrooms, sorted.
@@ -84,7 +87,8 @@ func (p Project) RemoteWorkroomNames() []string {
 // or legacy config entry degrades gracefully instead of panicking.
 func decodeProject(raw map[string]any) Project {
 	vcs, _ := raw["vcs"].(string)
-	project := Project{VCS: vcs, Host: raw["host"], Workrooms: map[string]Workroom{}}
+	base, _ := raw["base_branch"].(string)
+	project := Project{VCS: vcs, Host: raw["host"], BaseBranch: base, Workrooms: map[string]Workroom{}}
 	wrMap, ok := raw["workrooms"].(map[string]any)
 	if !ok {
 		return project
@@ -371,6 +375,27 @@ func (c *Config) SetHost(parentPath, workroom string, host map[string]any) error
 			delete(entry, "host")
 		} else {
 			entry["host"] = host
+		}
+		return c.Write(data)
+	})
+}
+
+// SetBaseBranch stores the branch a project's new workrooms start from. "" removes it, so they
+// start from origin's default branch again. The project must already be registered.
+func (c *Config) SetBaseBranch(parentPath, branch string) error {
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
+		entry, ok := data[parentPath].(map[string]any)
+		if !ok || isReserved(parentPath) {
+			return fmt.Errorf("%w: %s", errs.ErrProjectNotFound, parentPath)
+		}
+		if branch == "" {
+			delete(entry, "base_branch")
+		} else {
+			entry["base_branch"] = branch
 		}
 		return c.Write(data)
 	})

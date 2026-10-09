@@ -28,7 +28,7 @@ type fakeVCS struct {
 
 func (f *fakeVCS) Type() vcs.Type                           { return vcs.TypeGit }
 func (f *fakeVCS) Label() string                            { return "Git" }
-func (f *fakeVCS) Create(_, _, _ string) (string, error)    { return "", nil }
+func (f *fakeVCS) Create(_, _, _, _ string) (string, error) { return "", nil }
 func (f *fakeVCS) ListWorkrooms(_ string) ([]string, error) { return f.list, nil }
 func (f *fakeVCS) Delete(_, vcsName, _ string) (string, error) {
 	f.deleteCalls = append(f.deleteCalls, vcsName)

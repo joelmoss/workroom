@@ -266,13 +266,29 @@ workroom create
 ```
 
 A random friendly name (e.g. `swift-meadow`) is auto-generated from a 120-adjective × 210-noun word
-list. Workroom creates a Git worktree for it, on a new branch from `origin`'s default branch. Workroom
-fetches `origin` first. If the fetch fails, it uses the last fetched copy. A repository without
-`origin` branches from the current `HEAD`. If the generated name collides, it retries up to 5 times,
-then falls back to appending a random 2-digit suffix (e.g. `swift-meadow-42`).
+list. If the generated name collides, it retries up to 5 times, then falls back to appending a random
+2-digit suffix (e.g. `swift-meadow-42`).
+
+Workroom creates a Git worktree for the workroom, on a new branch from `origin`'s default branch.
+Workroom fetches `origin` first. If the fetch fails, Workroom uses the last fetched copy and prints a
+warning. The macOS app shows the warning as a notification on the new workroom. A repository without
+`origin` branches from the current `HEAD`. A repository with no commits gets an empty branch.
 
 Alias: `workroom c`. Flags: `--project <dir>` (operate on a directory other than the cwd),
 `--no-editor` (suppress the post-create "open in `$EDITOR`?" prompt).
+
+#### Choose the branch new workrooms start from
+
+```bash
+workroom base set develop
+workroom base clear
+```
+
+`workroom base set <branch>` makes the project's new workrooms start from that branch. Workroom
+fetches `origin` and uses `origin`'s copy of the branch. If `origin` does not have it, Workroom uses
+the local branch. If neither exists, the create fails with `BaseBranchNotFound`. `workroom base clear`
+goes back to `origin`'s default branch. Both take `--project <dir>`. In the macOS app, set it in
+Project Settings, under New Workrooms. Remote workrooms use the same setting.
 
 #### List workrooms
 
@@ -411,6 +427,7 @@ whose host its provider destroyed gets `HostDestroyed` instead.
 | `VCSCommandFailed` | Underlying `git` command failed |
 | `RemoteProjectUnsupported` | `add-project` was given a remote path (`host:path`, `ssh://…`) |
 | `RemoteWorkroomUnsupported` | `delete` / `delete-project` on a remote workroom (not yet supported) |
+| `BaseBranchNotFound` | The project's base branch exists neither on `origin` nor locally |
 | `InternalError` | Anything else |
 
 #### Exit codes
@@ -436,7 +453,10 @@ operations — the app drives the same engine, so the same hooks work no matter 
 
 ### Setup script
 
-Place an executable script at `scripts/workroom_setup` in your project (remember `chmod +x`). It
+Place an executable script at `scripts/workroom_setup` in your project (remember `chmod +x`). Workroom
+runs the new workroom's own copy of the script. If the workroom has no copy, for example because the
+script is gitignored, Workroom runs the copy in the root project. A new workroom can start from a
+newer commit than your root checkout, so the script that runs can be newer than the one you see. It
 runs **inside the new workroom** right after creation — a good place to install dependencies and
 pull in gitignored local config that the worktree/workspace doesn't carry over. (In the macOS app,
 its output streams into the setup overlay as it runs.)

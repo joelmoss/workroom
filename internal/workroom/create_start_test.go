@@ -1,0 +1,151 @@
+package workroom
+
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/joelmoss/workroom/internal/vcs"
+	"github.com/joelmoss/workroom/internal/vcs/vcstest"
+)
+
+// scriptedExecutor answers each git call through answer, and makes the directory a
+// `worktree add` names, as git would.
+type scriptedExecutor struct {
+	calls  [][]string
+	answer func(args []string) (string, error)
+}
+
+func (e *scriptedExecutor) Run(dir string, name string, args ...string) (string, error) {
+	e.calls = append(e.calls, append([]string{name}, args...))
+	if len(args) > 1 && args[0] == "worktree" && args[1] == "add" {
+		if i := slices.Index(args, "-b"); i >= 0 && i+2 < len(args) {
+			_ = os.MkdirAll(args[i+2], 0o755)
+		}
+	}
+	return e.answer(args)
+}
+
+func newCreateFixture(t *testing.T, answer func(args []string) (string, error)) (*Service, *scriptedExecutor, string) {
+	t.Helper()
+	dir := t.TempDir()
+	vcstest.MakeGitDir(t, dir)
+	exec := &scriptedExecutor{answer: answer}
+	svc, _, _ := newTestService(t, &vcs.Git{Executor: exec})
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	if err := svc.Config.SetWorkroomsDir(filepath.Join(dir, "workrooms")); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Config.AddProject(dir, "git"); err != nil {
+		t.Fatal(err)
+	}
+	svc.NameGenFunc = func() string { return "foo" }
+	return svc, exec, dir
+}
+
+func worktreeAdd(calls [][]string) []string {
+	for _, c := range calls {
+		if len(c) > 2 && c[1] == "worktree" && c[2] == "add" {
+			return c
+		}
+	}
+	return nil
+}
+
+// The project's base branch reaches the worktree's start point.
+func TestCreateStartsFromTheProjectBaseBranch(t *testing.T) {
+	svc, exec, dir := newCreateFixture(t, func(args []string) (string, error) {
+		if args[0] == "worktree" && args[1] == "list" {
+			return gitWorktrees(t.TempDir()), nil
+		}
+		return "", nil
+	})
+	if err := svc.Config.SetBaseBranch(dir, "develop"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateNamed(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if add := worktreeAdd(exec.calls); add == nil || add[len(add)-1] != "refs/remotes/origin/develop" {
+		t.Fatalf("worktree add = %v, want it to start from refs/remotes/origin/develop", add)
+	}
+}
+
+// A failed fetch reaches the result and the human output as a warning.
+func TestCreateReportsAFailedFetch(t *testing.T) {
+	svc, _, dir := newCreateFixture(t, func(args []string) (string, error) {
+		switch {
+		case args[0] == "worktree" && args[1] == "list":
+			return gitWorktrees(t.TempDir()), nil
+		case args[0] == "fetch":
+			return "", os.ErrDeadlineExceeded
+		case args[0] == "rev-parse" && args[1] == "--abbrev-ref":
+			return "origin/main", nil
+		}
+		return "", nil
+	})
+	if err := svc.Create(dir); err != nil {
+		t.Fatal(err)
+	}
+	out := svc.Out.(interface{ String() string }).String()
+	if !strings.Contains(out, "Could not fetch origin") || !strings.Contains(out, "origin/main") {
+		t.Fatalf("output = %q, want the fetch warning naming origin/main", out)
+	}
+}
+
+// The workroom's own setup script runs, not the root checkout's, which can be older.
+func TestCreateRunsTheWorkroomsOwnSetupScript(t *testing.T) {
+	var svc *Service
+	var dir string
+	svc, _, dir = newCreateFixture(t, func(args []string) (string, error) {
+		if args[0] == "worktree" && args[1] == "list" {
+			return gitWorktrees(dir), nil
+		}
+		if args[0] == "worktree" && args[1] == "add" {
+			wr := args[slices.Index(args, "-b")+2]
+			writeScript(t, wr, "echo from-the-workroom")
+		}
+		return "", nil
+	})
+	writeScript(t, dir, "echo from-the-root")
+	res, err := svc.CreateNamed(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.SetupOutput, "from-the-workroom") || strings.Contains(res.SetupOutput, "from-the-root") {
+		t.Fatalf("setup output = %q, want only the workroom's script", res.SetupOutput)
+	}
+}
+
+// A local-only script in the root checkout (gitignored, so absent from the workroom) still runs.
+func TestCreateFallsBackToTheRootSetupScript(t *testing.T) {
+	var dir string
+	svc, _, d := newCreateFixture(t, func(args []string) (string, error) {
+		if args[0] == "worktree" && args[1] == "list" {
+			return gitWorktrees(dir), nil
+		}
+		return "", nil
+	})
+	dir = d
+	writeScript(t, dir, "echo from-the-root")
+	res, err := svc.CreateNamed(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.SetupOutput, "from-the-root") {
+		t.Fatalf("setup output = %q, want the root's script", res.SetupOutput)
+	}
+}
+
+func writeScript(t *testing.T, base, body string) {
+	t.Helper()
+	scripts := filepath.Join(base, "scripts")
+	if err := os.MkdirAll(scripts, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scripts, "workroom_setup"), []byte("#!/usr/bin/env bash\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
