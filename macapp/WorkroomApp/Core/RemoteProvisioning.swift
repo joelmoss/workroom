@@ -379,7 +379,9 @@ enum RemoteProvisioning {
     if let grantID {
       do {
         // A grant needs the broker to cancel; signed out, it is left for a later delete.
-        guard let client = environment.client else { throw RemoteWorkrooms.Failure.signedOut }
+        guard let client = environment.client else {
+          throw RemoteWorkrooms.Failure.signedOutOfGrant
+        }
         try await client.cancelGrant(grantID)
       } catch {
         grantLive = grantID

@@ -72,6 +72,24 @@ final class RemoteProvisioningTests: XCTestCase {
 final class RemoteProvisioningCredentialsTests: XCTestCase {
   private let repository = "o/r"
 
+  /// Signed out, a grant is left for a later delete with the one thing that cancels it: Codaset,
+  /// never GitHub.
+  func testASignedOutTeardownSaysOnlyCodasetCancelsTheGrant() async throws {
+    do {
+      try await RemoteProvisioning.tearDown(
+        host: nil, grantID: "g", workroom: nil,
+        in: environment(client: false, gitHubToken: nil))
+      XCTFail("a grant was cancelled signed out")
+    } catch RemoteProvisioning.Failure.rollbackIncomplete(_, _, let grant, let cleanup) {
+      XCTAssertEqual(grant, "g")
+      XCTAssertEqual(
+        cleanup,
+        [
+          "cancelling grant g: Sign in to Codaset in Settings → Remote workrooms to cancel its grant."
+        ])
+    }
+  }
+
   private func environment(
     client: Bool, gitHubToken: (@Sendable () async throws -> String)?,
     driver: any HostDriver = RefusingDriver(), revoked: Revoked = Revoked()

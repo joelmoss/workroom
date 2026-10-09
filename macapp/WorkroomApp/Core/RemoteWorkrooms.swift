@@ -157,6 +157,8 @@ enum RemoteWorkrooms {
 
   enum Failure: Error, LocalizedError, Equatable {
     case signedOut
+    /// Signed out of Codaset, which alone can cancel a workroom's grant.
+    case signedOutOfGrant
     case notOnGitHub(String)
     case noDocker
     case noAppleContainer
@@ -173,6 +175,8 @@ enum RemoteWorkrooms {
       case .signedOut:
         return "Sign in to Codaset in Settings → Remote workrooms, or to GitHub with "
           + "`gh auth login`: one of them gives the workroom its GitHub access."
+      case .signedOutOfGrant:
+        return "Sign in to Codaset in Settings → Remote workrooms to cancel its grant."
       case .notOnGitHub(let detail):
         return "A remote workroom needs a project whose origin is on github.com. \(detail)"
       case .anotherBuildsBase(let build):

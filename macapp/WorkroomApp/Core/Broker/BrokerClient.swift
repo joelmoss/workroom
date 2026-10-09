@@ -35,10 +35,6 @@ struct BrokerRefusal: Error, Equatable, Sendable {
     default: break
     }
     switch status {
-    // A gateway's answer, not Codaset's: whatever stands in front of it found nothing behind it.
-    case 502 where SentryConfig.isDebugBuild:
-      return "Codaset isn't responding. In a Debug build that usually means its dev server isn't "
-        + "running: start it with `bin/dev` in the codaset repository, then try again."
     case 502, 503, 504: return "Codaset isn't responding right now. Try again in a minute."
     case 500...: return "Codaset ran into a problem on its side. Try again in a minute."
     // A code this build doesn't know: the broker's own words, when it sent any.
