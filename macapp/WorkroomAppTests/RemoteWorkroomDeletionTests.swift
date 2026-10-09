@@ -153,6 +153,28 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     }
   }
 
+  /// A remote create that ends before its workroom has a name (it failed building the base, say)
+  /// frees its project and clears the row's progress and image pull, as the project row spinner's
+  /// old `defer` did.
+  /// Value: protects=a failed pre-name create leaving the project busy, its "+" disabled and its
+  /// spinner on for good; fails_when=endRemoteCreate's no-row branch loses endBusy or a clear;
+  /// why_new=only the post-hand-off branch was asserted; seam=none
+  @MainActor
+  func testARemoteCreateThatEndsBeforeItsNameFreesItsProject() {
+    let store = AppStore()
+    let row = AppStore.RemoteCreateRow()
+    store.busyProjects["/proj"] = 1
+    store.imagePulls["/proj"] = 0.5
+    store.showRemoteCreateStep(
+      AppStore.CreateStep(fraction: 0.1, label: "machine"), in: "/proj", row: row)
+    XCTAssertNotNil(store.createSteps[.project("/proj")])
+
+    store.endRemoteCreate(in: "/proj", row: row)
+    XCTAssertFalse(store.isBusyProject("/proj"))
+    XCTAssertEqual(store.createSteps, [:])
+    XCTAssertNil(store.imagePulls["/proj"])
+  }
+
   /// Every Dev build keeps its own config, a workroom's included; Release and Nightly share the
   /// CLI's own.
   func testOnlyDevBuildsKeepTheirOwnConfig() {
