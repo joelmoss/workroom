@@ -412,7 +412,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   }
 
   /// The layout service on this connection, or `VCSError.backendVersion` when the peer predates it
-  /// (#255), checked against the peer's greeting as File and Status are.
+  /// (#255), checked against the peer's greeting as File is.
   func layouts() throws -> AgentLayoutService {
     try lock.withLock {
       guard !closed else { throw HostConnectionError.connectionLost }
@@ -448,7 +448,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   ///
   /// There is no probe and no negotiation state to keep: `Service::Forward` has no `capabilities`
   /// method — its only request opens a real socket — so the peer's raw greeting version is the whole
-  /// answer, checked the way File and Status check theirs. A protocol-4 agent drops a Forward
+  /// answer, checked the way File checks its own. A protocol-4 agent drops a Forward
   /// envelope without answering it, so it is never sent one.
   func forwarding() throws -> AgentForwardService {
     try lock.withLock {
@@ -790,8 +790,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           let stream = header[1..<5].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
           let length = header[5..<9].reduce(0) { ($0 << 8) | Int($1) }
           let service = header[0]
-          // Stream 0 is the agent's own: File watch events and, from an agent before #382, the Status
-          // service's verdict changes, never a reply. On the VCS service it has always been a violation and still is.
+          // Stream 0 is the agent's own: File watch events and, from an agent before #382, the
+          // Status service's verdict changes, never a reply. On the VCS service it has always been a
+          // violation and still is.
           // `forward.rs` carries nothing there today and documents a stream-0 envelope as DROPPED,
           // so it is admitted here and dropped by `deliver(forward:)`: a future agent that adds a
           // stream-0 Forward notification must not fail every shipped client's whole connection.
@@ -901,7 +902,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// An envelope for a stream this client has already released — a CLOSE that raced the client's
   /// own, or DATA for a forward that has just ended — is DROPPED, exactly as `forward.rs` drops
   /// client traffic for a stream it has forgotten. Treating it as a protocol violation would fail
-  /// the whole connection, taking VCS, File, Status and every other forward down over the normal
+  /// the whole connection, taking VCS, File and every other forward down over the normal
   /// shape of a race.
   private func deliver(forward payload: Data, stream: UInt32) {
     guard stream > 0, let opcode = payload.first else { return }
