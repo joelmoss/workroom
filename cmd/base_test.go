@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/config"
@@ -86,5 +89,64 @@ func TestBaseSetRegistersTheRepository(t *testing.T) {
 	}
 	if code, _ := runHostCLI(t, "base", "set", "main", "--project", t.TempDir(), "--json"); code == 0 {
 		t.Fatal("a directory that is no repository was registered")
+	}
+}
+
+// A base belongs to the root checkout: from a workroom terminal, `base set` must not register the
+// workroom as a project of its own.
+func TestBaseRefusesAWorkroom(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Cleanup(func() { baseProject, listProject, baseGlobal = "", "", false })
+	project := t.TempDir()
+	wr := filepath.Join(t.TempDir(), "wr")
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "first"},
+		{"worktree", "add", "-q", "-b", "workroom/wr", wr},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", project}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	for _, verb := range []string{"set", "clear"} {
+		args := []string{"base", verb}
+		if verb == "set" {
+			args = append(args, "develop")
+		}
+		code, envelope := runHostCLI(t, append(args, "--project", wr, "--json")...)
+		kind, _ := envelope["error"].(map[string]any)["kind"].(string)
+		if code == 0 || kind != "InWorkroom" {
+			t.Fatalf("base %s in a workroom: exit %d, %v", verb, code, envelope)
+		}
+	}
+	cfg, _ := config.New("")
+	if projects, _ := cfg.AllProjects(); len(projects) != 0 {
+		t.Fatalf("a workroom was registered: %v", projects)
+	}
+}
+
+// `clear` only edits: it works for a project whose folder has gone, and registers nothing.
+func TestBaseClearWorksForAMovedProjectAndRegistersNothing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Cleanup(func() { baseProject, listProject, baseGlobal = "", "", false })
+	cfg, _ := config.New("")
+	gone := filepath.Join(t.TempDir(), "gone")
+	if err := cfg.AddProject(gone, "git"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SetBaseBranch(gone, "develop"); err != nil {
+		t.Fatal(err)
+	}
+	if code, envelope := runHostCLI(t, "base", "clear", "--project", gone, "--json"); code != 0 {
+		t.Fatalf("clear for a moved project: exit %d, %v", code, envelope)
+	}
+	plain := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(plain, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runHostCLI(t, "base", "clear", "--project", plain, "--json")
+	canon, _ := config.CanonicalPath(plain)
+	if projects, _ := cfg.AllProjects(); projects[canon].VCS != "" {
+		t.Fatalf("clear registered a project: %v", projects)
 	}
 }

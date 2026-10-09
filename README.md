@@ -299,7 +299,9 @@ remote only if the repository has a remote of that name, so `release/1.0` stays 
 `--global` sets the default for every project that names no base branch. A project's own setting
 wins. If the default does not exist in a project, for example `upstream/main` in a project without
 an `upstream` remote, that project's workrooms start from `origin`'s default branch with a warning.
-`workroom base set` registers the project if it is not registered yet. `workroom base clear` removes the setting; both commands take `--project <dir>` or
+If Workroom cannot fetch to check, the create fails instead. `workroom base set` registers the
+project if it is not registered yet. Run it from the project's root checkout: inside a workroom it
+fails with `InWorkroom`. `workroom base clear` removes the setting; both commands take `--project <dir>` or
 `--global`. In the macOS app, set the default in Settings and a project's own branch in Project
 Settings, both under New Workrooms. Remote workrooms use the same setting, but they have only
 `origin` and no local branch to fall back to, so the branch must be on `origin`.

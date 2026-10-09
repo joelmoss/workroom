@@ -276,15 +276,10 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 		if global {
 			base = s.Config.BaseBranch()
 		}
-		warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, base)
 		// An app-wide default must not block a project it doesn't fit (`upstream/main` in a
-		// repository with no upstream): start from origin's default and say so. A project's own
-		// base is an explicit choice, so it still fails.
-		if global && base != "" && errors.Is(err, ErrBaseBranchNotFound) {
-			warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, "")
-			notice := fmt.Sprintf("The default base branch %s doesn't exist in this project, so the workroom starts from origin's default branch.", base)
-			warning = strings.TrimSpace(notice + " " + warning)
-		}
+		// repository with no upstream), so it may fall back; a project's own base is an explicit
+		// choice and still fails.
+		warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, base, global)
 		if errors.Is(err, ErrBaseBranchNotFound) {
 			return res, err
 		}

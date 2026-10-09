@@ -18,11 +18,12 @@ func (g *Git) Type() Type    { return TypeGit }
 func (g *Git) Label() string { return "Git worktree" }
 
 // Create branches from origin's default branch, as a remote workroom does, not from whatever
-// the main checkout has out; or from base, when the project names one. `--no-track`: a
-// workroom's branch has no upstream until published. The returned string is a warning for the
-// user, non-empty when the fetch failed and the start point may be out of date.
-func (g *Git) Create(dir, vcsName, path, base string) (string, error) {
-	start, warning, err := g.startPoint(dir, base)
+// the main checkout has out; or from base, when the project names one. fallback marks base as the
+// app-wide default, which gives way to origin's default branch where it doesn't fit (see
+// startPoint). `--no-track`: a workroom's branch has no upstream until published. The returned
+// string is a warning for the user, non-empty when the start point may not be what they expect.
+func (g *Git) Create(dir, vcsName, path, base string, fallback bool) (string, error) {
+	start, warning, err := g.startPoint(dir, base, fallback)
 	if err != nil {
 		return "", err
 	}
@@ -48,27 +49,20 @@ func SplitBase(base string, remotes []string) (remote, branch string) {
 }
 
 // startPoint resolves where a new workroom's branch starts: <remote>/<branch> then the local
-// <branch> when the project names a base (see SplitBase), else origin's default branch. It
-// fetches that remote first so the ref is current, and prunes so a branch deleted there is not
-// used from its stale copy; a failed fetch (offline, no credentials) keeps the last-fetched ref
-// and returns a warning. A named base that resolves nowhere is an error. With no base and no
-// origin/HEAD it returns "", so the caller passes no start point: git then uses HEAD, or makes
-// an orphan branch in a repository with no commits, where an explicit HEAD is refused.
-// `set-head --auto` because fetch never moves origin/HEAD after a default-branch rename.
-func (g *Git) startPoint(dir, base string) (start, warning string, err error) {
+// <branch> when there is a base (see SplitBase), else origin's default branch. It fetches that
+// remote first so the ref is current, and prunes so a branch deleted there is not used from its
+// stale copy; a failed fetch (offline, no credentials) keeps the last-fetched ref and returns a
+// warning. A base that resolves nowhere is an error, and so is one that couldn't be looked for
+// because the fetch failed. With fallback (the app-wide default), a base the fetched remote and
+// the local branches both lack gives way to origin's default branch, with a warning. With no
+// base and no origin/HEAD it returns "", so the caller passes no start point: git then uses HEAD,
+// or makes an orphan branch in a repository with no commits, where an explicit HEAD is refused.
+func (g *Git) startPoint(dir, base string, fallback bool) (start, warning string, err error) {
 	out, _ := g.Executor.Run(dir, "git", "remote")
 	remotes := strings.Fields(out)
 	remote, branch := SplitBase(base, remotes)
 	hasRemote := slices.Contains(remotes, remote)
-	fetched := false
-	if hasRemote {
-		if _, err := g.Executor.Run(dir, "git", "fetch", "--quiet", "--prune", remote); err == nil {
-			fetched = true
-			if branch == "" {
-				_, _ = g.Executor.Run(dir, "git", "remote", "set-head", remote, "--auto")
-			}
-		}
-	}
+	fetched := hasRemote && g.fetch(dir, remote, branch == "")
 	// Fully qualified: a tag or branch named like the short form would make it ambiguous.
 	var candidates []string
 	if hasRemote {
@@ -81,17 +75,15 @@ func (g *Git) startPoint(dir, base string) (start, warning string, err error) {
 	if branch != "" {
 		candidates = append(candidates, "refs/heads/"+branch)
 	}
-	for _, ref := range candidates {
-		if _, err := g.Executor.Run(dir, "git", "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err == nil {
-			start = ref
-			break
-		}
-	}
+	start = g.firstRef(dir, candidates)
 	if start == "" && branch != "" {
-		if hasRemote && !fetched {
+		switch {
+		case hasRemote && !fetched:
 			return "", "", fmt.Errorf("%w: '%s' (could not fetch %s to look there)", errs.ErrBaseBranchNotFound, base, remote)
+		case !fallback:
+			return "", "", fmt.Errorf("%w: '%s'", errs.ErrBaseBranchNotFound, base)
 		}
-		return "", "", fmt.Errorf("%w: '%s'", errs.ErrBaseBranchNotFound, base)
+		return g.originDefault(dir, base, remotes, remote == "origin" && fetched)
 	}
 	switch {
 	case hasRemote && !fetched:
@@ -102,6 +94,47 @@ func (g *Git) startPoint(dir, base string) (start, warning string, err error) {
 		warning = fmt.Sprintf("%s has no %s, so the workroom starts from your local %s, which may be out of date.", remote, branch, branch)
 	}
 	return start, warning, nil
+}
+
+// originDefault is origin's default branch for an app-wide default base that doesn't exist in
+// this project. Origin is fetched only if the base named another remote; otherwise its fetch for
+// the base already happened (originFetched), so a create never fetches the same remote twice.
+func (g *Git) originDefault(dir, base string, remotes []string, originFetched bool) (start, warning string, err error) {
+	if slices.Contains(remotes, "origin") {
+		if originFetched {
+			_, _ = g.Executor.Run(dir, "git", "remote", "set-head", "origin", "--auto")
+		} else {
+			originFetched = g.fetch(dir, "origin", true)
+		}
+		start = g.firstRef(dir, []string{"refs/remotes/origin/HEAD"})
+	}
+	warning = fmt.Sprintf("The default base branch %s doesn't exist in this project, so the workroom starts from %s.", base, g.refName(dir, start))
+	if slices.Contains(remotes, "origin") && !originFetched {
+		warning += " Could not fetch origin, so it may be out of date."
+	}
+	return start, warning, nil
+}
+
+// fetch fetches remote, pruned, and with setHead refreshes its HEAD, which fetch never moves after
+// a default-branch rename. It reports whether the fetch worked.
+func (g *Git) fetch(dir, remote string, setHead bool) bool {
+	if _, err := g.Executor.Run(dir, "git", "fetch", "--quiet", "--prune", remote); err != nil {
+		return false
+	}
+	if setHead {
+		_, _ = g.Executor.Run(dir, "git", "remote", "set-head", remote, "--auto")
+	}
+	return true
+}
+
+// firstRef is the first of refs that names a commit, or "".
+func (g *Git) firstRef(dir string, refs []string) string {
+	for _, ref := range refs {
+		if _, err := g.Executor.Run(dir, "git", "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err == nil {
+			return ref
+		}
+	}
+	return ""
 }
 
 // refName is ref as a user knows it: origin/HEAD as the branch it points to, such as origin/main.

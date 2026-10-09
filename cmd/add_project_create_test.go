@@ -164,7 +164,7 @@ func TestAddProjectCreate_EndToEndWorkroomCreatable(t *testing.T) {
 
 	wrPath := filepath.Join(t.TempDir(), "feat")
 	g := &vcs.Git{Executor: &vcs.RealExecutor{}}
-	if _, err := g.Create(canon, "feat", wrPath, ""); err != nil {
+	if _, err := g.Create(canon, "feat", wrPath, "", false); err != nil {
 		t.Fatalf("workroom creation in fresh project failed: %v", err)
 	}
 	if !branchExists(t, canon, "feat") {

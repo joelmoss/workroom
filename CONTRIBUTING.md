@@ -245,7 +245,9 @@ the editor prompt):
    `base_branch`, else the global `base_branch` (`workroom base set [--global]`). `vcs.SplitBase`
    reads it as `<remote>/<branch>` when the part before the first `/` is a remote, else a branch on
    `origin`. The start is `refs/remotes/<remote>/<branch>` then `refs/heads/<branch>`, and an
-   unresolvable base fails with `BaseBranchNotFound`. Without a base, the remote is `origin`,
+   unresolvable base fails with `BaseBranchNotFound`. A global base that the fetched remote and the
+   local branches both lack falls back to `refs/remotes/origin/HEAD` with a warning, fetching origin
+   only if it was not the remote already fetched. A base that could not be fetched never falls back. Without a base, the remote is `origin`,
    `git remote set-head origin --auto` runs after the fetch, and the start is
    `refs/remotes/origin/HEAD`.
    A failed fetch keeps the last fetched refs and returns a warning in `CreateResult.Warning`, and so
