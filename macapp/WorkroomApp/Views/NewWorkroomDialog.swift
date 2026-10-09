@@ -332,8 +332,7 @@ enum WorkroomPlace: Hashable {
   var icon: String {
     switch self {
     case .thisMac: "laptopcomputer"
-    case .remote(.container): "network"
-    case .remote(.boxd), .remote(.exeDev): "cloud"
+    case .remote(let place): place.icon
     }
   }
 

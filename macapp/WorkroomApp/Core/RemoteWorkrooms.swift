@@ -32,6 +32,15 @@ enum RemoteWorkrooms {
       }
     }
 
+    /// Its SF Symbol, wherever a workroom or a choice of place is shown: a container on this Mac
+    /// is on the local network, a remote provider's machine is in the cloud.
+    var icon: String {
+      switch self {
+      case .container: "network"
+      case .boxd, .exeDev: "cloud"
+      }
+    }
+
     /// One of its hosts, in a sentence: "a Docker container on this Mac", "a boxd machine".
     var hostPhrase: String {
       switch self {

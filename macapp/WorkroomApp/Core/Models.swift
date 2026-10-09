@@ -239,6 +239,9 @@ struct TerminalTarget: Identifiable, Hashable {
   var hostKind: String? = nil
   /// The name its host's provider lists it under (`HostDescriptor.machineName`).
   var machineName: String? = nil
+  /// Where a remote workroom's host is, for its icon: nil for a workroom on this Mac, and for one
+  /// whose record names no driver this build knows.
+  var hostPlace: RemoteWorkrooms.Place? = nil
   /// A remote workroom's own id (`HostDescriptor.workroomID`): the same on every Mac, where `id`
   /// holds this Mac's project path (#255).
   var remoteWorkroomID: UUID? = nil
@@ -251,9 +254,12 @@ struct TerminalTarget: Identifiable, Hashable {
     [hostKind, machineName.map { "Machine: \($0)" }].compactMap { $0 }.joined(separator: "\n")
   }
 
-  /// The glyph that marks a workroom: the network for one on a host, a container on this Mac or a
-  /// remote provider (#309), and a cube for one on this Mac itself. A root takes a house instead.
-  var workroomGlyph: String { isRemoteWorkroom ? "network" : "cube" }
+  /// The glyph that marks a workroom: its place's for one on a host (#309), the network for a
+  /// remote one whose place is unknown, and a cube for one on this Mac itself. A root takes a house
+  /// instead.
+  var workroomGlyph: String {
+    hostPlace?.icon ?? (isRemoteWorkroom ? "network" : "cube")
+  }
 
   /// A remote workroom, reachable or not: its path names nothing on this Mac.
   var isRemoteWorkroom: Bool {
@@ -342,7 +348,8 @@ extension Workroom {
       id: TerminalTarget.workroomID(project: projectPath, name: name),
       title: displayName, path: path, unavailability: unavailability,
       remoteHost: reachableHost, remoteNote: remoteNote, hostKind: host?.kindDescription,
-      machineName: host?.machineName, remoteWorkroomID: host?.workroomID)
+      machineName: host?.machineName, hostPlace: host.flatMap(RemoteHosts.DriverKey.init)?.place,
+      remoteWorkroomID: host?.workroomID)
   }
 
   /// Why this remote workroom's panes don't open here: nil for a serving one, a destroyed one, and a
