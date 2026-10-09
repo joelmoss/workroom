@@ -356,12 +356,12 @@ func TestGitCreateBranchesFromAnotherRemotesBranch(t *testing.T) {
 
 // `origin/trunk` is plain `trunk`, and a branch with a slash that names no remote is origin's.
 func TestGitCreateReadsOriginPrefixAndSlashedBranches(t *testing.T) {
-	project, origin, _, newer, _ := projectBehindOrigin(t)
+	project, _, _, newer, _ := projectBehindOrigin(t)
 	if got, _ := createdFromBase(t, project, "origin/trunk"); got != newer {
 		t.Fatalf("origin/trunk: workroom at %s, want trunk %s", got, newer)
 	}
 	// A second create in the same project would reuse the workroom/wr branch name.
-	project, origin, _, _, _ = projectBehindOrigin(t)
+	project, origin, _, _, _ := projectBehindOrigin(t)
 	pusher := filepath.Join(t.TempDir(), "rel")
 	git(t, filepath.Dir(pusher), "clone", "-q", origin, pusher)
 	git(t, pusher, "commit", "-q", "--allow-empty", "-m", "release")
