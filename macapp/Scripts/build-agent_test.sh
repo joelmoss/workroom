@@ -53,7 +53,7 @@ trap 'rm -rf "$WORK"' EXIT
 # The real crate, but a throwaway CARGO_TARGET_DIR so the test neither pollutes nor is polluted by
 # the developer's build tree. The agent includes the VCS backends, so this is a full Cargo build.
 REPO="$(cd "$DIR/../.." && pwd)"
-export CARGO_TARGET_DIR="$WORK/cargo-target"
+export CARGO_TARGET_DIR="${WR_TEST_CARGO_TARGET_DIR:-$WORK/cargo-target}"
 
 # run_agent <case-name> <ARCHS value> [CONFIGURATION] -> sets $OUT to the built helper path, $RC to
 # the exit code. CONFIGURATION defaults to unset, which the script treats as Debug.
