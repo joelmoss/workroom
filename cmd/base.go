@@ -132,7 +132,8 @@ func linkedWorktree(dir string) bool {
 	if err != nil {
 		return false
 	}
-	dirs := strings.Fields(out)
+	// One path per line; a path may hold spaces ("My Projects").
+	dirs := strings.Split(out, "\n")
 	return len(dirs) == 2 && dirs[0] != dirs[1]
 }
 
