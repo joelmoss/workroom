@@ -127,7 +127,7 @@ func TestGitCreate(t *testing.T) {
 	mock := &MockExecutor{}
 	git := &Git{Executor: mock}
 
-	_, err := git.Create("/project", "workroom/foo", "/workrooms/foo")
+	_, err := git.Create("/project", "workroom/foo", "/workrooms/foo", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,14 +153,22 @@ func git(t *testing.T, dir string, args ...string) string {
 // its branch has an upstream.
 func createdFrom(t *testing.T, project string) string {
 	t.Helper()
+	commit, _ := createdFromBase(t, project, "")
+	return commit
+}
+
+// createdFromBase is createdFrom with a project base branch, also returning Create's warning.
+func createdFromBase(t *testing.T, project, base string) (commit, warning string) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "wr")
-	if out, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path); err != nil {
-		t.Fatalf("create: %v %s", err, out)
+	warning, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path, base)
+	if err != nil {
+		t.Fatalf("create: %v", err)
 	}
 	if out, err := (&RealExecutor{}).Run(path, "git", "rev-parse", "--abbrev-ref", "@{upstream}"); err == nil {
 		t.Fatalf("workroom branch has an upstream: %s", out)
 	}
-	return git(t, path, "rev-parse", "HEAD")
+	return git(t, path, "rev-parse", "HEAD"), warning
 }
 
 // A project with origin, its checkout on a feature branch and behind origin's default branch.
@@ -190,16 +198,82 @@ func projectBehindOrigin(t *testing.T) (project, origin, fetched, newer, feature
 
 func TestGitCreateBranchesFromOriginsDefaultBranchFetched(t *testing.T) {
 	project, _, _, newer, _ := projectBehindOrigin(t)
-	if got := createdFrom(t, project); got != newer {
+	got, warning := createdFromBase(t, project, "")
+	if got != newer {
 		t.Fatalf("workroom at %s, want origin's newest trunk %s", got, newer)
+	}
+	if warning != "" {
+		t.Fatalf("a fetch that worked warned: %q", warning)
 	}
 }
 
+// The user hears that the base may be stale: an expired token fails every fetch, silently.
 func TestGitCreateUsesTheLastFetchWhenOriginIsUnreachable(t *testing.T) {
 	project, _, fetched, _, _ := projectBehindOrigin(t)
 	git(t, project, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
-	if got := createdFrom(t, project); got != fetched {
+	got, warning := createdFromBase(t, project, "")
+	if got != fetched {
 		t.Fatalf("workroom at %s, want the last-fetched trunk %s", got, fetched)
+	}
+	if !strings.Contains(warning, "Could not fetch origin") || !strings.Contains(warning, "origin/trunk") {
+		t.Fatalf("warning = %q, want it to name the failed fetch and origin/trunk", warning)
+	}
+}
+
+// A repository with no commits yet (a fresh clone of an empty repository) creates an orphan
+// branch, as `git worktree add` without a start point always did; an explicit HEAD is refused.
+func TestGitCreateInARepositoryWithNoCommits(t *testing.T) {
+	empty := filepath.Join(t.TempDir(), "empty.git")
+	git(t, filepath.Dir(empty), "init", "-q", "--bare", empty)
+	project := filepath.Join(t.TempDir(), "project")
+	git(t, filepath.Dir(project), "clone", "-q", empty, project)
+	path := filepath.Join(t.TempDir(), "wr")
+	if _, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path, ""); err != nil {
+		t.Fatalf("create in a repository with no commits: %v", err)
+	}
+	if got := git(t, path, "symbolic-ref", "--short", "HEAD"); got != "workroom/wr" {
+		t.Fatalf("workroom on %q, want workroom/wr", got)
+	}
+}
+
+// A project's base branch: origin's copy, fetched, wins over the stale local one.
+func TestGitCreateBranchesFromTheProjectBaseOnOrigin(t *testing.T) {
+	project, origin, _, _, _ := projectBehindOrigin(t)
+	pusher := filepath.Join(t.TempDir(), "dev")
+	git(t, filepath.Dir(pusher), "clone", "-q", origin, pusher)
+	git(t, pusher, "switch", "-q", "-c", "develop")
+	git(t, pusher, "commit", "-q", "--allow-empty", "-m", "develop")
+	git(t, pusher, "push", "-q", "origin", "develop")
+	want := git(t, pusher, "rev-parse", "HEAD")
+	if got, _ := createdFromBase(t, project, "develop"); got != want {
+		t.Fatalf("workroom at %s, want origin/develop %s", got, want)
+	}
+}
+
+// A base that exists only locally (no origin, or not pushed) is still honoured.
+func TestGitCreateBranchesFromALocalOnlyBase(t *testing.T) {
+	project := t.TempDir()
+	git(t, project, "init", "-q")
+	git(t, project, "commit", "-q", "--allow-empty", "-m", "first")
+	git(t, project, "switch", "-q", "-c", "develop")
+	git(t, project, "commit", "-q", "--allow-empty", "-m", "develop")
+	want := git(t, project, "rev-parse", "HEAD")
+	git(t, project, "switch", "-q", "-")
+	if got, _ := createdFromBase(t, project, "develop"); got != want {
+		t.Fatalf("workroom at %s, want local develop %s", got, want)
+	}
+}
+
+// A named base that resolves nowhere is the user's typo: refuse, never silently use HEAD.
+func TestGitCreateRefusesABaseThatDoesNotExist(t *testing.T) {
+	project, _, _, _, _ := projectBehindOrigin(t)
+	path := filepath.Join(t.TempDir(), "wr")
+	_, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path, "nope")
+	if !errors.Is(err, errs.ErrBaseBranchNotFound) {
+		t.Fatalf("err = %v, want ErrBaseBranchNotFound", err)
+	}
+	if _, statErr := os.Stat(path); statErr == nil {
+		t.Fatal("a refused create left a workroom directory")
 	}
 }
 

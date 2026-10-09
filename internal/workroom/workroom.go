@@ -1,6 +1,7 @@
 package workroom
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -199,10 +200,13 @@ func (s *Service) vcsWorkspaceSet(path, vcsType string) map[string]bool {
 // setup script exists for the project (resolved before OnReady fires) so a GUI can
 // decide to block on the setup log; it too stays out of the machine payload.
 type CreateResult struct {
-	Name        string `json:"name"`
-	Path        string `json:"path"`
-	VCS         string `json:"vcs"`
-	Project     string `json:"project"`
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	VCS     string `json:"vcs"`
+	Project string `json:"project"`
+	// Warning is for the user: non-empty when the workspace started from a ref that may be out
+	// of date because the fetch before it failed.
+	Warning     string `json:"warning,omitempty"`
 	SetupOutput string `json:"-"`
 	HasSetup    bool   `json:"-"`
 }
@@ -253,7 +257,12 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 	}
 
 	// Create VCS workspace
+	var warning string
 	if !s.Pretend {
+		projects, err := s.Config.AllProjects()
+		if err != nil {
+			return res, err
+		}
 		wrDir, err := s.Config.WorkroomsDir()
 		if err != nil {
 			return res, err
@@ -261,7 +270,11 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 		if err := os.MkdirAll(wrDir, 0o755); err != nil {
 			return res, err
 		}
-		if _, err := s.VCS.Create(dir, s.vcsName(name), wrPath); err != nil {
+		warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, projects[dir].BaseBranch)
+		if errors.Is(err, ErrBaseBranchNotFound) {
+			return res, err
+		}
+		if err != nil {
 			return res, fmt.Errorf("%w: %v", ErrVCSCommand, err)
 		}
 	}
@@ -275,14 +288,12 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 
 	// From here the workroom exists; populate the result so partial-failure callers
 	// can still report what was created.
-	res = CreateResult{Name: name, Path: wrPath, VCS: string(s.VCS.Type()), Project: dir}
+	res = CreateResult{Name: name, Path: wrPath, VCS: string(s.VCS.Type()), Project: dir, Warning: warning}
 
 	// Resolve whether a setup script exists before signalling readiness, so OnReady
 	// carries HasSetup and a GUI can decide to block on the setup log up front.
-	setupScript := filepath.Join(dir, "scripts", "workroom_setup")
-	if _, err := os.Stat(setupScript); err == nil {
-		res.HasSetup = true
-	}
+	setupScript, ok := findSetupScript(wrPath, dir)
+	res.HasSetup = ok
 
 	// Signal readiness before the (potentially slow) setup script runs, so a GUI can
 	// show the workroom and stream setup output beneath its terminal immediately.
@@ -307,6 +318,19 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 	}
 
 	return res, nil
+}
+
+// findSetupScript is scripts/workroom_setup from the new workroom, whose files it sets up, else
+// from the project's root checkout, where a gitignored, local-only script lives. The workroom's
+// copy comes first because the workroom can start from a newer commit than the root has out.
+func findSetupScript(wrPath, dir string) (string, bool) {
+	for _, base := range []string{wrPath, dir} {
+		p := filepath.Join(base, "scripts", "workroom_setup")
+		if _, err := os.Stat(p); err == nil {
+			return p, true
+		}
+	}
+	return filepath.Join(dir, "scripts", "workroom_setup"), false
 }
 
 // CreateRemote registers a workroom on another host (#253) under a newly generated name, and
@@ -350,6 +374,9 @@ func (s *Service) Create(dir string) error {
 		s.say("")
 	}
 	s.sayColor(fmt.Sprintf("Workroom '%s' created successfully at %s.", res.Name, ui.DisplayPath(res.Path)), "green")
+	if res.Warning != "" {
+		s.sayColor(res.Warning, "yellow")
+	}
 
 	// Offer to open the workroom in the user's editor
 	editor := os.Getenv("EDITOR")

@@ -570,3 +570,27 @@ func TestRemoveProjectKeepsAProjectThatGainedAHost(t *testing.T) {
 		}
 	}
 }
+
+func TestSetBaseBranchStoresAndClears(t *testing.T) {
+	c := newTestConfig(t)
+	if err := c.AddWorkroom("/project", "foo", "/home/workroom/foo", "git"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetBaseBranch("/project", "develop"); err != nil {
+		t.Fatal(err)
+	}
+	projects, _ := c.AllProjects()
+	if got := projects["/project"]; got.BaseBranch != "develop" || got.Workrooms["foo"].Path == "" {
+		t.Fatalf("project = %#v, want base develop and its workroom kept", got)
+	}
+	if err := c.SetBaseBranch("/project", ""); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := c.Read()
+	if _, ok := data["/project"].(map[string]any)["base_branch"]; ok {
+		t.Fatal("clearing left a base_branch key behind")
+	}
+	if err := c.SetBaseBranch("/elsewhere", "develop"); !errors.Is(err, errs.ErrProjectNotFound) {
+		t.Fatalf("unknown project: err = %v, want ErrProjectNotFound", err)
+	}
+}

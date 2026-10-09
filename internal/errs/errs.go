@@ -24,6 +24,7 @@ var (
 	ErrWorkroomNotFound    = errors.New("workroom is not registered")
 	ErrInvalidHost         = errors.New("a host descriptor must be a JSON object")
 	ErrWorkroomExists      = errors.New("a workroom of that name is already registered")
+	ErrBaseBranchNotFound  = errors.New("the project's base branch exists neither on origin nor locally")
 )
 
 // classification is one sentinel error's entry in the registry: its stable --json code and
@@ -60,6 +61,7 @@ var registry = []classification{
 	{ErrWorkroomNotFound, "WorkroomNotFound", 3},
 	{ErrInvalidHost, "InvalidHostDescriptor", 2},
 	{ErrWorkroomExists, "WorkroomExists", 3},
+	{ErrBaseBranchNotFound, "BaseBranchNotFound", 3},
 }
 
 func classify(err error) (classification, bool) {

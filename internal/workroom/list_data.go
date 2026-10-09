@@ -45,10 +45,11 @@ type WorkroomInfo struct {
 // ProjectInfo describes a project and its workrooms in the JSON contract. Host is the project's
 // host descriptor, verbatim; a project with one is still a local repository.
 type ProjectInfo struct {
-	Path      string         `json:"path"`
-	VCS       string         `json:"vcs"`
-	Host      any            `json:"host,omitempty"`
-	Workrooms []WorkroomInfo `json:"workrooms"`
+	Path       string         `json:"path"`
+	VCS        string         `json:"vcs"`
+	Host       any            `json:"host,omitempty"`
+	BaseBranch string         `json:"base_branch,omitempty"`
+	Workrooms  []WorkroomInfo `json:"workrooms"`
 }
 
 // ListResult is the cwd-independent, deterministic listing of all configured
@@ -113,7 +114,7 @@ func (s *Service) projectInfo(path string, project config.Project, level Warning
 		vcsSet = s.vcsWorkspaceSet(path, vcsType)
 	}
 
-	pinfo := ProjectInfo{Path: path, VCS: vcsType, Host: project.Host, Workrooms: []WorkroomInfo{}}
+	pinfo := ProjectInfo{Path: path, VCS: vcsType, Host: project.Host, BaseBranch: project.BaseBranch, Workrooms: []WorkroomInfo{}}
 	for _, name := range names {
 		wr := project.Workrooms[name]
 		wi := WorkroomInfo{Name: name, Path: wr.Path, VCSName: "workroom/" + name, Host: wr.Host, Warnings: []Warning{}}

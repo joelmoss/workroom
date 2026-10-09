@@ -240,15 +240,21 @@ the editor prompt):
 3. **Generate a unique name:** try `namegen.Generate()` up to 5 times; on persistent collision,
    append a random 2-digit suffix (up to 10 more tries).
 4. **Collision checks:** ensure the VCS workspace and the target directory don't already exist.
-5. **Create the workspace:** `mkdir -p ~/workrooms`, then `git fetch origin` and `git remote set-head origin --auto`,
-   then `git worktree add --no-track -b workroom/<name> <path> refs/remotes/origin/HEAD`. A failed fetch keeps the
-   last fetched `origin/HEAD`. With no `origin` or no `origin/HEAD`, the start point is `HEAD`.
+5. **Create the workspace:** `mkdir -p ~/workrooms`, then `git fetch origin`, then
+   `git worktree add --no-track -b workroom/<name> <path> <start>`. The start is
+   `refs/remotes/origin/<base>` then `refs/heads/<base>` when the project sets `base_branch`
+   (`workroom base set`), and an unresolvable base fails with `BaseBranchNotFound`. Without a base,
+   `git remote set-head origin --auto` runs after the fetch and the start is `refs/remotes/origin/HEAD`.
+   A failed fetch keeps the last fetched refs and returns a warning in `CreateResult.Warning`.
+   With no usable start, the command has no start point and no `--no-track`, so git uses `HEAD`, or
+   makes an orphan branch in a repository with no commits.
 6. **Persist:** `config.AddWorkroom(...)` records `{path}` under the project, keyed by project path,
    with the VCS type.
 7. **Signal readiness:** fire `OnReady` (the app mounts the workroom and starts streaming the setup
    log) before the potentially slow setup script runs.
-8. **Run setup:** if `scripts/workroom_setup` exists, `script.Run("setup", …)` executes it inside the
-   new workroom with the [environment variables](README.md#environment-variables), streaming combined
+8. **Run setup:** if `scripts/workroom_setup` exists in the new workroom, else in the root project,
+   `script.Run("setup", …)` executes it inside the new workroom with the
+   [environment variables](README.md#environment-variables), streaming combined
    stdout/stderr live.
 
 Creation is **not transactional**: if setup fails, the workspace and config entry already exist, so
