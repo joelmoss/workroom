@@ -148,12 +148,13 @@ remote-host-image-test: ## Build the `workroom-host` image, without its tag, and
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
 
-app-test-scripts: ## Run the script tests (build-helper/build-agent archs, channel classify, dev identity, GUI lock)
+app-test-scripts: ## Run the script tests (build-helper/build-agent archs, channel classify, dev identity, GUI lock, agent protocol)
 	sh macapp/Scripts/build-helper_test.sh
 	sh macapp/Scripts/build-agent_test.sh
 	sh macapp/Scripts/channel-helper_test.sh
 	sh macapp/Scripts/appcast-feed_test.sh
 	sh macapp/Scripts/test-invariants_test.sh
+	sh macapp/Scripts/agent-protocol_test.sh
 	sh macapp/Scripts/dev-identity_test.sh
 	sh macapp/Scripts/stop-dev-app_test.sh
 	python3 macapp/Scripts/gui-lock_test.py
