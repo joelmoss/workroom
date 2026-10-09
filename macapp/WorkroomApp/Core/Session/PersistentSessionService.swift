@@ -107,6 +107,14 @@ final class PersistentSessionService {
   /// the same session. A pane registers its session when it is made, but a restored one spawns
   /// nothing until it enters a window, so a registration alone says nothing about the host.
   private var attachedRemote: [UUID: Set<UUID>] = [:]
+  /// Remote sessions whose pane closed but whose host did not end them (#293). Each is tried again
+  /// once per connection to its host (`retryWhenReconnected`), so a host that refuses for good is
+  /// not asked in a loop.
+  private var unendedRemote: Set<UUID> = []
+  /// The connection (`Lease.generation`) each unended session was last tried on.
+  private var unendedTriedOn: [UUID: UUID] = [:]
+  /// One watch per host with unended sessions, on its service connection's updates.
+  private var unendedWatches: [HostID: Task<Void, Never>] = [:]
 
   private struct RemoteSession {
     let host: HostID
@@ -129,6 +137,9 @@ final class PersistentSessionService {
   /// Ends a session on its host (#283), connecting to the host first if need be. Throws when the
   /// host cannot be reached; false when its agent did not acknowledge the kill.
   private let endRemote: (UUID, HostID) async throws -> Bool
+  /// A host's service connection as it changes (`HostConnectionManager.updates(for:)`), which a
+  /// closed pane's unended session waits on to be ended again (#293).
+  private let hostUpdates: (HostID) async -> AsyncStream<HostConnectionManager.Snapshot>
 
   private init() {
     self.probe = { SessionBackendProbe.probe($0) }
@@ -146,6 +157,7 @@ final class PersistentSessionService {
       try await RemoteHosts.shared.ensureConnected(host, wake: true)
       return try await HostConnectionManager.shared.endSession(session, on: host)
     }
+    self.hostUpdates = { await HostConnectionManager.shared.updates(for: $0) }
   }
 
   /// Test seam. `shared` never uses it; every other behaviour is identical.
@@ -153,12 +165,16 @@ final class PersistentSessionService {
     probe: @escaping (SessionBackend) -> SessionBackendAvailability,
     ownership: @escaping (UUID) -> SessionOwnership,
     now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime },
-    endRemote: @escaping (UUID, HostID) async throws -> Bool = { _, _ in false }
+    endRemote: @escaping (UUID, HostID) async throws -> Bool = { _, _ in false },
+    hostUpdates: @escaping (HostID) async -> AsyncStream<HostConnectionManager.Snapshot> = {
+      _ in AsyncStream { $0.finish() }
+    }
   ) {
     self.probe = probe
     self.ownershipOverride = ownership
     self.now = now
     self.endRemote = endRemote
+    self.hostUpdates = hostUpdates
   }
 
   /// Where a NEW session would be created, or **nil when nowhere can take one**. Existing sessions
@@ -435,6 +451,8 @@ final class PersistentSessionService {
     _ sessionID: UUID, on host: HostID, via driver: any HostTerminalDriver,
     workingDirectory: String, metadata: [(key: String, value: String)] = []
   ) {
+    // A pane holds it again, so it is no longer a closed pane's to end.
+    dropUnended(sessionID)
     remoteSessions[sessionID] = RemoteSession(
       host: host, driver: driver, workingDirectory: workingDirectory, metadata: metadata)
   }
@@ -444,6 +462,7 @@ final class PersistentSessionService {
   /// Drops a remote session's registration without asking its host anything: for a pane whose
   /// workroom is being deleted, whose host goes with it (#283).
   func forgetRemoteSession(_ sessionID: UUID) {
+    dropUnended(sessionID)
     remoteSessions.removeValue(forKey: sessionID)
     attachedRemote.removeValue(forKey: sessionID)
   }
@@ -677,12 +696,15 @@ final class PersistentSessionService {
         logger.error(
           "remote session \(id, privacy: .public) left running on its host: \(error, privacy: .public)"
         )
+        retryWhenReconnected(sessionID, on: remote.host)
         return false
       }
       guard killed else {
         logger.error("remote session \(id, privacy: .public) left running: kill not acknowledged")
+        retryWhenReconnected(sessionID, on: remote.host)
         return false
       }
+      dropUnended(sessionID)
       remoteSessions.removeValue(forKey: sessionID)
       return true
     }
@@ -721,6 +743,44 @@ final class PersistentSessionService {
       logger.error("failed to kill persistent session \(sessionID.uuidString, privacy: .public)")
     }
     return killed
+  }
+
+  /// Ends `sessionID` again each time `host`'s service connection comes up, until it ends (#293).
+  /// Once per connection: a host that keeps refusing is asked again only after a reconnect. The
+  /// connection the kill just failed on can be asked once more, when it is still up: one request.
+  private func retryWhenReconnected(_ sessionID: UUID, on host: HostID) {
+    // Forgotten while its kill was in flight: its workroom is being deleted, with the host.
+    guard remoteSessions[sessionID] != nil else { return }
+    unendedRemote.insert(sessionID)
+    guard unendedWatches[host] == nil else { return }
+    let updates = hostUpdates
+    unendedWatches[host] = Task { [weak self] in
+      for await snapshot in await updates(host) {
+        guard let self, !Task.isCancelled else { return }
+        guard snapshot.status == .connected, let generation = snapshot.lease?.generation else {
+          continue
+        }
+        for id in self.unendedRemote
+        where self.remoteSessions[id]?.host == host && self.unendedTriedOn[id] != generation {
+          self.unendedTriedOn[id] = generation
+          self.logger.notice(
+            "retrying the end of remote session \(id.uuidString, privacy: .public)")
+          // Through `endSession`, so its host's kill limit holds, and a success forgets it.
+          Task { await self.endSession(sessionID: id) }
+        }
+      }
+    }
+  }
+
+  /// `sessionID` no longer needs ending again; its host's watch stops with its last such session.
+  /// Before its registration goes, which says which host that is.
+  private func dropUnended(_ sessionID: UUID) {
+    guard unendedRemote.remove(sessionID) != nil else { return }
+    unendedTriedOn.removeValue(forKey: sessionID)
+    guard let host = remoteSessions[sessionID]?.host,
+      !unendedRemote.contains(where: { remoteSessions[$0]?.host == host })
+    else { return }
+    unendedWatches.removeValue(forKey: host)?.cancel()
   }
 
   /// Awaits every kill before returning so a caller can safely delete the workroom's directory

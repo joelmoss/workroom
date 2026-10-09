@@ -641,7 +641,7 @@ final class AppStore: ObservableObject {
       Self.sidebarID(forTargetID: target, in: projects) != nil
     else { return }
     errorMessage =
-      "Its host didn't confirm the terminal stopped, so whatever was running in it may still be running there. Deleting the workroom stops it."
+      "Its host didn't confirm the terminal stopped, so whatever was running in it may still be running there. Workroom tries again when it next connects to the host, and deleting the workroom stops it."
     errorTitle = "Couldn't stop the terminal in \(title)"
   }
 
