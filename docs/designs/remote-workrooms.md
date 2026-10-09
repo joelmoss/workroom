@@ -3244,8 +3244,10 @@ disagreement passes every test on either side alone while presenting as an empty
   not as the only path that works. **Deferred to a later release (2026-10-06):** this criterion
   moved to #258 and does not gate the remote UI leaving Nightly (#260). boxd's portable snapshot
   path is what the gate measures.
-- A job longer than the provider's idle window finishes with no client attached, on a provider whose
-  idle policy would otherwise have stopped it. That is the wakefulness service doing its job.
+- ~~A job longer than the provider's idle window finishes with no client attached, on a provider
+  whose idle policy would otherwise have stopped it.~~ **Removed (2026-10-09):** dropped from the
+  gate (#260). Since #382, whether a box sleeps is up to the user, and Workroom no longer keeps a
+  busy box awake.
 - Start a long-running agent in it, quit Workroom entirely, reopen hours later, and land in the
   same session with the alternate-screen program correctly repainted.
 - ~~Do the same from a **different Mac**.~~ **Removed (2026-10-07):** dropped from the gate
