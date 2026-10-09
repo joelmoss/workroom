@@ -52,27 +52,6 @@ Each file you touch needs its class re-run with `make app-uitest APP_UITEST_FLAG
 
 **Priority:** P2 (deferred in /ship review, 2026-10-06)
 
-### A hand-off can refuse a build that did report, when the check uses its whole time (wr-agent) — #352 finding
-
-**What:** `BuildProbe::no_downgrade` (`vcs/crates/wr-agent/src/handoff.rs:480-487`) waits for the
-probed binary to exit, then waits for its report only for whatever time is left before the deadline.
-The report is handed over by a reader thread after it reads the binary's stdout to EOF. With the
-deadline reached, that wait is zero, and a report the thread has not sent yet reads as none: the
-binary is refused with "did not say its build", although it said it. Seen as a test flake:
-`handoff::tests::a_hand_off_to_an_older_build_is_refused` failed at line 798
-(`probe.no_downgrade(&newer, 200, Instant::now())`) in 1 of 4 full `cargo test -p wr-agent` runs on
-2026-10-05, and passed alone.
-
-**Why:** A real hand-off is refused only when the check takes all of `CHECK_TIMEOUT`, so this is rare
-outside the test. When it happens, the host keeps its old agent although the new one was fine.
-
-**How to start:** Once the child has exited, give the reader a short bounded grace (its pipe hits EOF
-once nothing else holds it) instead of the deadline's remainder, keeping the existing refusal for a
-binary whose leftover process holds the pipe open (the "lingering" case in the same test). Pin it with
-a test that delays the reader thread past the deadline.
-
-**Priority:** P2 (filed while fixing #352, 2026-10-05)
-
 ### Tell a Mac its pane is sized for another Mac (wr-agent, macapp) — #255 follow-up
 
 **What:** When another client owns a session's size, tell every attached client who owns it, and
