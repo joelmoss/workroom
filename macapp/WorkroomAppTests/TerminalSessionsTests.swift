@@ -2048,6 +2048,71 @@ final class RemotePaneCloseTests: XCTestCase {
     XCTAssertEqual(asked, 3)
   }
 
+  /// Value: protects=every pane closed while its host was away is ended on reconnect, and one ending does not stop the host's retries for the rest; fails_when=dropUnended stops the host's watch while another unended session remains; why_new=the other retry tests close one pane; seam=hostUpdates
+  func testEveryPaneClosedOfflineIsEndedOnReconnect() async throws {
+    let target = remoteTarget()
+    let (updates, connection) = AsyncStream<HostConnectionManager.Snapshot>.makeStream()
+    var reachable = false
+    var refusals = 1
+    var ended: Set<UUID> = []
+    var asked = 0
+    let s = makeSessions(hostUpdates: updates) { session, host in
+      asked += 1
+      guard reachable else { throw RepositoryRoutingError.unavailable(host) }
+      // The first kill on the first connection is refused; every other is acknowledged.
+      if refusals > 0 {
+        refusals -= 1
+        return false
+      }
+      ended.insert(session)
+      return true
+    }
+    let tabs = [s.addTab(for: target), s.addTab(for: target)]
+    let sessions = tabs.compactMap { tab -> UUID? in
+      guard case .terminal(let state) = tab.content else { return nil }
+      return state.sessionID
+    }
+    XCTAssertEqual(sessions.count, 2, "a remote pane always has a session")
+    for tab in tabs { s.closeTab(tab.id, for: target) }
+    await s.sessionService.awaitPendingCloseKills(until: .now + .seconds(5))
+    XCTAssertEqual(asked, 2)
+
+    reachable = true
+    connection.yield(connected(target, UUID()))
+    try await waitUntil { asked == 4 }
+    XCTAssertEqual(ended.count, 1)
+    connection.yield(connected(target, UUID()))
+    try await waitUntil { ended == Set(sessions) }
+    XCTAssertFalse(sessions.contains { s.sessionService.isRemote($0) })
+  }
+
+  /// Value: protects=one host reconnecting retries only its own closed panes, never waking another host; fails_when=the retry loop drops its per-host filter; why_new=the other retry tests use one host; seam=hostUpdates
+  func testAReconnectRetriesOnlyItsOwnHostsSessions() async throws {
+    let near = remoteTarget()
+    var far = TerminalTarget(id: "wr|/p|far", title: "far", path: "/w", isMissing: false)
+    far.remoteHost = UUID()
+    let (nearUpdates, nearConnection) = AsyncStream<HostConnectionManager.Snapshot>.makeStream()
+    let (farUpdates, _) = AsyncStream<HostConnectionManager.Snapshot>.makeStream()
+    var asked: [HostID] = []
+    let s = makeSessions { _, _ in true }
+    s.sessionService = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "none here") }, ownership: { _ in .notOwned },
+      endRemote: { _, host in
+        asked.append(host)
+        throw RepositoryRoutingError.unavailable(host)
+      },
+      hostUpdates: { $0 == .remote(near.remoteHost!) ? nearUpdates : farUpdates })
+    for target in [near, far] { s.closeTab(s.addTab(for: target).id, for: target) }
+    await s.sessionService.awaitPendingCloseKills(until: .now + .seconds(5))
+    XCTAssertEqual(asked.count, 2)
+
+    nearConnection.yield(connected(near, UUID()))
+    try await waitUntil { asked.count == 3 }
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertEqual(asked.last, .remote(near.remoteHost!))
+    XCTAssertEqual(asked.count, 3, "the other host's closed pane was retried")
+  }
+
   /// Value: protects=an unended session a delete forgets is not ended later; fails_when=a reconnect retries a session with no registration; why_new=the retry test above ends the session itself; seam=hostUpdates
   func testAForgottenUnendedSessionIsNotRetried() async throws {
     let target = remoteTarget()
