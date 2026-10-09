@@ -137,6 +137,7 @@ workroom/
 │   ├── create.go            # `workroom create` (alias c)
 │   ├── list.go              # `workroom list` (aliases ls, l)
 │   ├── delete.go            # `workroom delete` (alias d)
+│   ├── base.go              # `workroom base set|clear` (the branch new workrooms start from)
 │   ├── update.go            # `workroom update` (alias u) — CLI self-update
 │   ├── version.go           # `workroom version`
 │   ├── add_project.go       # Hidden; --json only; used by the app to register a project

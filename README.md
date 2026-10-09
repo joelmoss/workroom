@@ -421,6 +421,14 @@ exists (before setup runs), so a GUI can mount it and dock the streaming setup l
 (register an empty project) and `delete-project` (drop a project; `--with-workrooms` cascades the
 teardown). The schema is versioned (`schema_version: 1`); breaking changes bump it.
 
+`base set` and `base clear` also run in `--json` mode. They print `{"project": …, "base_branch": …}`,
+or `{"global": true, "base_branch": …}` with `--global`.
+
+If the new workroom starts from out-of-date refs or from a fallback base, the `create` result has a
+`warning` string. The early `created` event always has a `warning` field, and an empty
+one means no warning. `list` adds `base_branch` at the top level for the global default. It also adds it to
+each project that sets its own. Without a setting, the field is absent.
+
 In `list`, a workroom (or project) on another host carries a `host` object, absent for a local
 one. A remote workroom never gets the local `DirectoryMissing` / `VCSWorkroomMissing` warnings; one
 whose host its provider destroyed gets `HostDestroyed` instead.
@@ -443,7 +451,7 @@ whose host its provider destroyed gets `HostDestroyed` instead.
 | `VCSCommandFailed` | Underlying `git` command failed |
 | `RemoteProjectUnsupported` | `add-project` was given a remote path (`host:path`, `ssh://…`) |
 | `RemoteWorkroomUnsupported` | `delete` / `delete-project` on a remote workroom (not yet supported) |
-| `BaseBranchNotFound` | The project's own base branch exists neither on its remote nor locally |
+| `BaseBranchNotFound` | A base branch exists neither on its remote nor locally, or the fetch that checks the remote failed |
 | `InternalError` | Anything else |
 
 #### Exit codes
@@ -563,9 +571,10 @@ Workroom has no required environment for normal use. The relevant variables:
 | `EDITOR` | `workroom create` | If set (and not `--no-editor`/`--json`), Workroom offers to open the new workroom in it. |
 | `WORKROOM_NAME`, `WORKROOM_PATH`, `WORKROOM_ROOT_PATH` | setup/teardown scripts | See [Environment variables](#environment-variables). Set by Workroom, not by you. |
 
-**Config file:** `~/.config/workroom/config.json`. The only user-editable key is
-`workrooms_dir` (where workrooms are created; default `~/workrooms`, supports a leading `~`). Everything
-else is managed by Workroom.
+**Config file:** `~/.config/workroom/config.json`. Two keys are for you to
+set. `workrooms_dir` is where workrooms are created (default `~/workrooms`, a leading `~` works).
+`base_branch` is the default start branch for new workrooms, set with `workroom base set --global`.
+Workroom manages everything else.
 
 ---
 
