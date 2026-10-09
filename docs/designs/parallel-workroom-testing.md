@@ -32,8 +32,8 @@ the session helpers' sockets (`PersistentSessionPaths.preferredSocketPath`,
 (`SessionStore.defaultURL`), the `.standard` preferences domain, notifications, and what
 LaunchServices and XCUITest consider "that app is already running". The consequences:
 
-- **One `wr-agent` for every dev app.** Agent hand-off is on for Debug (`AgentHandOff.isEnabled`
-  returns true under `DEBUG`) and runs on every non-test launch (`applicationDidFinishLaunching`),
+- **One `wr-agent` for every dev app.** Agent hand-off is on in every build (#389; until then it
+  was gated to Nightly and Dev) and runs on every non-test launch (`applicationDidFinishLaunching`),
   asking the agent on the shared socket to exec *this copy's* `wr-agent`. The agent accepts any
   binary whose digest differs (`handoff.rs`), so two workrooms' dev apps pass the one agent back and
   forth between their builds on each launch, and every pane attached at that moment ends, because
