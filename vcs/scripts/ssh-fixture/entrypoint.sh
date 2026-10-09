@@ -51,7 +51,7 @@ if [ -x /usr/local/bin/wr-agent ]; then
 fi
 
 # `--idle-timeout never`: a remote agent must keep running with no client attached, because its
-# BUSY/IDLE reports have to keep flowing while the Mac sleeps. Run as the ssh user, so the relay
+# detached sessions live in it. Run as the ssh user, so the relay
 # that user runs can reach the socket. `env -i`, because the agent's environment is what every git
 # it runs gets (the app sends none from the Mac), and this script's own holds AUTHORIZED_KEY.
 #

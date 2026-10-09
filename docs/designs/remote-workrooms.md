@@ -877,7 +877,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
 - **Three services that exist to make providers interchangeable.** These are the concrete cost of
   the agnosticism decision. An earlier draft called them cheap and called the wakefulness signal
   free; review proved both claims wrong, so here they are honestly:
-  - **Busy/idle decision — the design's load-bearing piece.** **The deciding half now ships
+  - **Busy/idle decision — the design's load-bearing piece.** (Removed in #382, with the
+    heartbeat; see "As built (#382)".) **The deciding half now ships
     (2026-09-21, `wr-agent/src/wakefulness.rs`):** the measured policy (OQ19, P4) sampled at 1 s
     from `CLOCK_MONOTONIC`, replaying the ten golden traces exactly (the monotonic-stamped
     `<socket>.wake` verdict file it wrote for the shim went in 2026-10-06, once #257's heartbeat
@@ -1008,7 +1009,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   is about workrooms; it does not orphan `create`, which is how a base comes to exist at all.)
   `start`/`suspend` are gone — lifecycle
   hinting is now driven by the agent's wakefulness reports, so each driver implements whatever its
-  provider needs behind that rather than exposing suspend semantics upward. Declared traits:
+  provider needs behind that rather than exposing suspend semantics upward. (Since #382 there are
+  no wakefulness reports: a box's sleep is its provider's.) Declared traits:
   transport kind, derive speed, whether derive carries live processes, disk durability, and
   `maxLifetime`.
 - **The gates, stated honestly.** An early draft made the headline feature depend on
@@ -1025,13 +1027,15 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     that is genuinely per-driver (systemd unit, provider init hook, wrapper) because it *is* how that
     provider's box boots. Note the far side differs from local here: a remote agent must survive with
     no client attached, since the busy/idle decision that keeps the box awake has to keep running
-    while your Mac sleeps. So remote does need supervision that local does not.
+    while your Mac sleeps. So remote does need supervision that local does not. (Since #382 the
+    reason is its detached sessions: there is no busy/idle decision.)
   - **A lifecycle shim.** Takes the agent's busy/idle reports and makes the provider's control-plane
     defer call, so a job survives an idle timer with the Mac asleep (see Provider Decision). Holds
     an instance-scoped provider credential, must die with the instance including on failure paths,
     and must stay small enough to audit by reading. Its credential scope is a declared trait.
     **Superseded by #257:** the agent keeps a busy box awake with a network heartbeat the provider's
-    idle timer counts, so no shim and no credential ship. See "As built (#257)".
+    idle timer counts, so no shim and no credential ship. See "As built (#257)". The heartbeat went
+    in #382 (see "As built (#382)").
   Everything else pushed to the far side is the agnostic agent. If a third provider-specific
   component appears, that is the signal the abstraction is wrong.
 - **A stream is not persistence.** Today's `wr-agent serve --stdio` creates a connection-scoped
