@@ -74,8 +74,27 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 /// it runs. A crash in one of those goes to the app's handler, which never answers for another
 /// process, so the faulting thread waits forever and the SIGSEGV a Go or C program would recover
 /// from never arrives. With no port, the kernel delivers the signal as usual.
+///
+/// Not under a debugger: lldb catches breakpoints through the same ports, and launched under it
+/// the agent would die at the first one.
 #[cfg(target_os = "macos")]
 fn drop_inherited_exception_ports() {
+    // <sys/proc_info.h>
+    const PROC_FLAG_TRACED: u32 = 2;
+    let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+    let written = unsafe {
+        libc::proc_pidinfo(
+            std::process::id() as libc::c_int,
+            libc::PROC_PIDT_SHORTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if written == size && info.pbsi_flags & PROC_FLAG_TRACED != 0 {
+        return;
+    }
     extern "C" {
         // What <mach/mach_init.h>'s `mach_task_self()` reads.
         static mach_task_self_: libc::mach_port_t;
