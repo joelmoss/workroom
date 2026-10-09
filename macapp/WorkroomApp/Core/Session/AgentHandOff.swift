@@ -21,16 +21,6 @@ import os
 /// pane's attach exits 255 instead, and the app attaches it again (#231; `AgentBootstrap` is the
 /// remote side of this, on in every build).
 enum AgentHandOff {
-  /// Nightly and Dev only for now. A hand-off bug kills local terminals on an update, which has
-  /// never been possible before, so stable waits until Nightly has proven it.
-  static var isEnabled: Bool {
-    #if DEBUG
-      return true
-    #else
-      return ReleaseChannel.isNightlyBuild
-    #endif
-  }
-
   /// How long the app waits before killing the request. Safe to give up: the agent tells its
   /// requester just before it replaces itself, and calls the hand-off off when the requester is
   /// gone. Longer than the agent's own worst case before that point (`QUIET_TIMEOUT`,
@@ -46,7 +36,7 @@ enum AgentHandOff {
   /// Starts this launch's hand-off and returns at once. The outcome is logged at `notice`, which
   /// the log store keeps, where `info` is dropped unless someone is streaming.
   @MainActor static func start() {
-    guard isEnabled, let binary = PersistentSessionPaths.binaryURL(for: .rustAgent),
+    guard let binary = PersistentSessionPaths.binaryURL(for: .rustAgent),
       let socket = PersistentSessionService.shared.existingSocketPath(for: .rustAgent)
     else { return }
     // Logged at the start too, so the hand-off's window can be placed beside what the agent's own

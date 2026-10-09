@@ -127,7 +127,7 @@ the app attaches to it. There are two, mid-migration (issue #154, Phase 1):
   behind the `terminal-state` cargo feature) so a reattaching pane is repainted from emulator state
   rather than a byte replay. A newer app does not kill a running agent: it asks it to replace its
   own program with the bundled binary in place, keeping its pid and every session
-  (`AgentHandOff.start()`, protocol 6, `wr-agent hand-off`), gated to Nightly and Dev (#230); see
+  (`AgentHandOff.start()`, protocol 6, `wr-agent hand-off`, #230), in every build; see
   the "As built (#230)" section of `docs/designs/remote-workrooms.md` for the mechanics.
 - **`workroom-session`** (`macapp/WorkroomSession/`, Swift) — the shipped daemon. It keeps the
   sessions it already holds until the user closes them; it cannot hand a live pty over.

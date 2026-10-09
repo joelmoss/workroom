@@ -3428,7 +3428,8 @@ disagreement passes every test on either side alone while presenting as an empty
       session is refused (#297): not in the table but in the `.refused` file beside the socket,
       which a program of this build or later reads when it starts serving. An older binary handed
       to ignores it, so a kill's refusal does not survive a hand-off to one (#310).
-    - *Gated to Nightly and Dev* (`AgentHandOff.isEnabled`). Stable waits until Nightly has run it.
+    - *On in every build* since 2026-10-09 (owner's decision). Until then it was gated to Nightly
+      and Dev (`AgentHandOff.isEnabled`), so stable could wait until Nightly had run it.
     - *Trust model: the socket is the boundary. DECIDED (2026-09-25, owner).* `HandOff` makes the
       agent execute any regular file a socket client names. That crosses no user boundary, because
       the socket (in a 0700 directory) already lets any client run commands and type into every
@@ -3550,7 +3551,7 @@ disagreement passes every test on either side alone while presenting as an empty
       and needs the stdin and resize relays re-plumbed onto a swappable stream.
     - *Gated as the local hand-off is* (`AgentHandOff.isEnabled`, Nightly and Dev): one
       older-agent policy on both hosts. **Changed by PR #375 (2026-10-08):** remote hand-off is on in every
-      build, stable included, when remote workrooms left Nightly; the local one stays gated. A
+      build, stable included, when remote workrooms left Nightly; the local one followed on 2026-10-09. A
       remote agent runs under a supervisor with no idle exit, so without it a stable host would
       keep its first agent until the box restarts. Off, the scripts skip the hand-off and the install still
       renames, so the next probe sees a match, nothing is pushed again, and the supervisor picks
