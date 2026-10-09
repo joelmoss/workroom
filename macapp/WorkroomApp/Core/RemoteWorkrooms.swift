@@ -169,6 +169,18 @@ enum RemoteWorkrooms {
   /// The branch a remote workroom checks out, as a local workroom's is named.
   static func branch(for name: String) -> String { "workroom/\(name)" }
 
+  /// A base branch setting as the CLI reads it (`vcs.SplitBase`): `<remote>/<branch>` when the part
+  /// before the first `/` is one of `remotes`, else a branch on origin. So `upstream/main` is
+  /// upstream's main, `origin/main` is `main`, and `release/1.0` stays an origin branch.
+  static func splitBase(_ base: String, remotes: [String]) -> (remote: String, branch: String) {
+    if let slash = base.firstIndex(of: "/") {
+      let remote = String(base[..<slash])
+      let branch = String(base[base.index(after: slash)...])
+      if !branch.isEmpty, remotes.contains(remote) { return (remote, branch) }
+    }
+    return ("origin", base)
+  }
+
   /// How a base clones `repository`: over https, which is how the broker's tokens work.
   static func cloneURL(for repository: GitHubRepository) -> String {
     "https://\(repository.host)/\(repository.owner)/\(repository.name).git"
@@ -197,6 +209,7 @@ enum RemoteWorkrooms {
     case codasetRequired
     case boxdNotInstalled
     case baseBranchNotOnOrigin(String)
+    case baseBranchOnOtherRemote(String)
 
     var errorDescription: String? {
       switch self {
@@ -230,6 +243,10 @@ enum RemoteWorkrooms {
         return "This project's new workrooms start from \(branch), which origin doesn't have. A "
           + "remote workroom can only start from origin's branches. Push \(branch), or change the "
           + "base branch in Project Settings."
+      case .baseBranchOnOtherRemote(let base):
+        return "This project's new workrooms start from \(base), on a remote other than origin. A "
+          + "remote workroom's machine has only origin, so it can't start there. To make remote "
+          + "workrooms, set a base branch on origin in Project Settings."
       case .boxdNotInstalled:
         return "The boxd command wasn't found. Install it from boxd.sh, then sign in with "
           + "`boxd auth login`."

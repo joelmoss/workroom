@@ -20,6 +20,8 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
   let existingWorkrooms: [String]
   /// The create's warning, as the CLI reports a failed fetch.
   let warning: String?
+  /// The app-wide base branch `list` reports.
+  var globalBase: String?
   /// What `setBaseBranch` was asked to store, in order.
   private(set) var baseBranches: [String?] = []
 
@@ -60,7 +62,7 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
     }
     return ListResponse(
       projects: [Project(path: projectPath, vcs: "git", workrooms: workrooms)],
-      workroomsDir: nil, configPath: nil)
+      workroomsDir: nil, configPath: nil, baseBranch: globalBase)
   }
 
   func addProject(_ path: String, create: Bool) async throws -> String { projectPath }
@@ -306,6 +308,22 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     await store.createWorkroom(in: Project(path: projectPath, vcs: "git", workrooms: []))
 
     XCTAssertTrue(store.notifications.items.isEmpty)
+  }
+
+  /// A project's own base wins; without one the app-wide base from `list` applies.
+  func testEffectiveBaseBranchPrefersTheProjectsOwn() async {
+    let fake = CreatingFakeCLI(projectPath: projectPath, workroomName: "x", hasSetup: false)
+    fake.globalBase = "upstream/main"
+    let store = makeStore(fake)
+    await store.reload()
+
+    XCTAssertEqual(
+      store.effectiveBaseBranch(for: Project(path: projectPath, vcs: "git", workrooms: [])),
+      "upstream/main")
+    XCTAssertEqual(
+      store.effectiveBaseBranch(
+        for: Project(path: projectPath, vcs: "git", workrooms: [], baseBranch: "develop")),
+      "develop")
   }
 
   /// Project Settings stores a trimmed branch, and a blank one clears it.

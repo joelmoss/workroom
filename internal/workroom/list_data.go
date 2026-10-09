@@ -57,7 +57,9 @@ type ProjectInfo struct {
 type ListResult struct {
 	Projects     []ProjectInfo `json:"projects"`
 	WorkroomsDir string        `json:"workrooms_dir"`
-	ConfigPath   string        `json:"config_path"`
+	// BaseBranch is the global default for projects that name no base branch of their own.
+	BaseBranch string `json:"base_branch,omitempty"`
+	ConfigPath string `json:"config_path"`
 }
 
 // ListData returns every configured project (incl. empty), sorted by path with
@@ -70,7 +72,10 @@ func (s *Service) ListData(level WarningsLevel) (ListResult, error) {
 	}
 
 	wrDir, _ := s.Config.WorkroomsDir()
-	result := ListResult{Projects: []ProjectInfo{}, WorkroomsDir: wrDir, ConfigPath: s.Config.Path()}
+	result := ListResult{
+		Projects: []ProjectInfo{}, WorkroomsDir: wrDir, ConfigPath: s.Config.Path(),
+		BaseBranch: s.Config.BaseBranch(),
+	}
 
 	paths := make([]string, 0, len(projects))
 	for p := range projects {

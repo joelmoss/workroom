@@ -28,6 +28,7 @@ const DefaultChannel = "stable"
 var reservedKeys = map[string]bool{
 	"workrooms_dir": true,
 	"channel":       true,
+	"base_branch":   true,
 }
 
 // isReserved reports whether key is a reserved scalar setting rather than a project path.
@@ -657,6 +658,34 @@ func (c *Config) Channel() string {
 		return ch
 	}
 	return DefaultChannel
+}
+
+// BaseBranch is the branch new workrooms start from in a project that names none; "" means
+// origin's default branch.
+func (c *Config) BaseBranch() string {
+	data, err := c.Read()
+	if err != nil {
+		return ""
+	}
+	base, _ := data["base_branch"].(string)
+	return base
+}
+
+// SetGlobalBaseBranch stores the branch new workrooms start from in a project that names none.
+// "" removes it.
+func (c *Config) SetGlobalBaseBranch(branch string) error {
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
+		if branch == "" {
+			delete(data, "base_branch")
+		} else {
+			data["base_branch"] = branch
+		}
+		return c.Write(data)
+	})
 }
 
 // SetChannel persists the release channel in the config.

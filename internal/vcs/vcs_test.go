@@ -124,7 +124,7 @@ func TestGitListWorktreesSupportsMembershipCheck(t *testing.T) {
 }
 
 func TestGitCreate(t *testing.T) {
-	mock := &MockExecutor{}
+	mock := &MockExecutor{Output: "origin"}
 	git := &Git{Executor: mock}
 
 	_, err := git.Create("/project", "workroom/foo", "/workrooms/foo", "")
@@ -306,7 +306,7 @@ func TestGitCreateWarnsWhenTheBaseIsOnlyLocal(t *testing.T) {
 	if got != want {
 		t.Fatalf("workroom at %s, want local develop %s", got, want)
 	}
-	if !strings.Contains(warning, "Origin has no develop") {
+	if !strings.Contains(warning, "origin has no develop") {
 		t.Fatalf("warning = %q, want it to say origin has no develop", warning)
 	}
 }
@@ -318,6 +318,57 @@ func TestGitCreateSaysTheFetchFailedWhenTheBaseIsMissing(t *testing.T) {
 	_, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", filepath.Join(t.TempDir(), "wr"), "develop")
 	if !errors.Is(err, errs.ErrBaseBranchNotFound) || !strings.Contains(err.Error(), "could not fetch origin") {
 		t.Fatalf("err = %v, want BaseBranchNotFound naming the failed fetch", err)
+	}
+}
+
+func TestSplitBase(t *testing.T) {
+	remotes := []string{"origin", "upstream"}
+	for _, c := range []struct{ base, remote, branch string }{
+		{"develop", "origin", "develop"},
+		{"origin/main", "origin", "main"},
+		{"upstream/main", "upstream", "main"},
+		{"upstream/release/1.0", "upstream", "release/1.0"},
+		{"release/1.0", "origin", "release/1.0"},
+		{"upstream/", "origin", "upstream/"},
+	} {
+		if remote, branch := SplitBase(c.base, remotes); remote != c.remote || branch != c.branch {
+			t.Errorf("SplitBase(%q) = %q, %q; want %q, %q", c.base, remote, branch, c.remote, c.branch)
+		}
+	}
+}
+
+// A fork's workroom starts from the real project: `upstream/<branch>` fetches upstream, not the
+// fork that is origin.
+func TestGitCreateBranchesFromAnotherRemotesBranch(t *testing.T) {
+	project, _, _, _, _ := projectBehindOrigin(t)
+	upstream := filepath.Join(t.TempDir(), "upstream.git")
+	git(t, filepath.Dir(upstream), "init", "-q", "--bare", "-b", "main", upstream)
+	pusher := filepath.Join(t.TempDir(), "up")
+	git(t, filepath.Dir(pusher), "clone", "-q", upstream, pusher)
+	git(t, pusher, "commit", "-q", "--allow-empty", "-m", "upstream")
+	git(t, pusher, "push", "-q", "origin", "HEAD:main")
+	want := git(t, pusher, "rev-parse", "HEAD")
+	git(t, project, "remote", "add", "upstream", upstream)
+	if got, warning := createdFromBase(t, project, "upstream/main"); got != want || warning != "" {
+		t.Fatalf("workroom at %s (warning %q), want upstream/main %s", got, warning, want)
+	}
+}
+
+// `origin/trunk` is plain `trunk`, and a branch with a slash that names no remote is origin's.
+func TestGitCreateReadsOriginPrefixAndSlashedBranches(t *testing.T) {
+	project, origin, _, newer, _ := projectBehindOrigin(t)
+	if got, _ := createdFromBase(t, project, "origin/trunk"); got != newer {
+		t.Fatalf("origin/trunk: workroom at %s, want trunk %s", got, newer)
+	}
+	// A second create in the same project would reuse the workroom/wr branch name.
+	project, origin, _, _, _ = projectBehindOrigin(t)
+	pusher := filepath.Join(t.TempDir(), "rel")
+	git(t, filepath.Dir(pusher), "clone", "-q", origin, pusher)
+	git(t, pusher, "commit", "-q", "--allow-empty", "-m", "release")
+	git(t, pusher, "push", "-q", "origin", "HEAD:release/1.0")
+	want := git(t, pusher, "rev-parse", "HEAD")
+	if got, _ := createdFromBase(t, project, "release/1.0"); got != want {
+		t.Fatalf("release/1.0: workroom at %s, want origin's release/1.0 %s", got, want)
 	}
 }
 

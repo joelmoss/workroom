@@ -21,6 +21,9 @@ type scriptedExecutor struct {
 
 func (e *scriptedExecutor) Run(dir string, name string, args ...string) (string, error) {
 	e.calls = append(e.calls, append([]string{name}, args...))
+	if slices.Equal(args, []string{"remote"}) {
+		return "origin\n", nil
+	}
 	if len(args) > 1 && args[0] == "worktree" && args[1] == "add" {
 		if i := slices.Index(args, "-b"); i >= 0 && i+2 < len(args) {
 			_ = os.MkdirAll(args[i+2], 0o755)
@@ -71,6 +74,36 @@ func TestCreateStartsFromTheProjectBaseBranch(t *testing.T) {
 	}
 	if add := worktreeAdd(exec.calls); add == nil || add[len(add)-1] != "refs/remotes/origin/develop" {
 		t.Fatalf("worktree add = %v, want it to start from refs/remotes/origin/develop", add)
+	}
+}
+
+// A project without a base of its own uses the global one, and its own wins when both are set.
+func TestCreateUsesTheGlobalBaseUnlessTheProjectHasOne(t *testing.T) {
+	answer := func(args []string) (string, error) {
+		if args[0] == "worktree" && args[1] == "list" {
+			return gitWorktrees(t.TempDir()), nil
+		}
+		return "", nil
+	}
+	svc, exec, dir := newCreateFixture(t, answer)
+	if err := svc.Config.SetGlobalBaseBranch("upstream-ish"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateNamed(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if add := worktreeAdd(exec.calls); add == nil || add[len(add)-1] != "refs/remotes/origin/upstream-ish" {
+		t.Fatalf("global base: worktree add = %v", add)
+	}
+
+	svc, exec, dir = newCreateFixture(t, answer)
+	_ = svc.Config.SetGlobalBaseBranch("upstream-ish")
+	_ = svc.Config.SetBaseBranch(dir, "develop")
+	if _, err := svc.CreateNamed(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if add := worktreeAdd(exec.calls); add == nil || add[len(add)-1] != "refs/remotes/origin/develop" {
+		t.Fatalf("project base: worktree add = %v", add)
 	}
 }
 

@@ -17,7 +17,7 @@ func TestBaseCommandsSetClearAndListTheBranch(t *testing.T) {
 	if err := cfg.AddProject(canon, "git"); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { baseProject, listProject = "", "" })
+	t.Cleanup(func() { baseProject, listProject, baseGlobal = "", "", false })
 
 	code, envelope := runHostCLI(t, "base", "set", "develop", "--project", project, "--json")
 	if code != 0 || envelope["ok"] != true || envelope["base_branch"] != "develop" {
@@ -32,9 +32,9 @@ func TestBaseCommandsSetClearAndListTheBranch(t *testing.T) {
 	if code, envelope = runHostCLI(t, "base", "set", "bad..name", "--project", project, "--json"); code == 0 {
 		t.Fatalf("an invalid branch name was accepted: %v", envelope)
 	}
-	// origin/ is implied: `origin/main` would mean origin/origin/main and fail every create.
-	if code, envelope = runHostCLI(t, "base", "set", "origin/main", "--project", project, "--json"); code == 0 {
-		t.Fatalf("an origin/ prefix was accepted: %v", envelope)
+	// A remote-qualified base is a valid setting: `upstream/main` for a fork.
+	if code, envelope = runHostCLI(t, "base", "set", "upstream/main", "--project", project, "--json"); code != 0 {
+		t.Fatalf("upstream/main was refused: %v", envelope)
 	}
 
 	code, envelope = runHostCLI(t, "base", "clear", "--project", project, "--json")
@@ -44,5 +44,25 @@ func TestBaseCommandsSetClearAndListTheBranch(t *testing.T) {
 	got, _ := cfg.AllProjects()
 	if got[canon].BaseBranch != "" {
 		t.Fatalf("base after clear = %q", got[canon].BaseBranch)
+	}
+}
+
+func TestBaseGlobalSetsTheDefaultAndListShowsIt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Cleanup(func() { baseProject, listProject, baseGlobal = "", "", false })
+	code, envelope := runHostCLI(t, "base", "set", "upstream/main", "--global", "--json")
+	if code != 0 || envelope["global"] != true {
+		t.Fatalf("set --global: exit %d, %v", code, envelope)
+	}
+	baseGlobal = false
+	if code, envelope = runHostCLI(t, "list", "--json"); code != 0 || envelope["base_branch"] != "upstream/main" {
+		t.Fatalf("list: exit %d, %v", code, envelope)
+	}
+	if code, _ = runHostCLI(t, "base", "clear", "--global", "--json"); code != 0 {
+		t.Fatalf("clear --global: exit %d", code)
+	}
+	baseGlobal = false
+	if _, envelope = runHostCLI(t, "list", "--json"); envelope["base_branch"] != nil {
+		t.Fatalf("list after clear: %v", envelope)
 	}
 }

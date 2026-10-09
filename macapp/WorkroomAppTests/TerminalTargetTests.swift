@@ -75,6 +75,27 @@ final class TerminalTargetTests: XCTestCase {
     XCTAssertEqual(response.warning, "stale")
   }
 
+  /// The app-wide base branch arrives at the top level of `list --json`.
+  func testListDecodesTheGlobalBaseBranch() throws {
+    let json = Data(
+      #"{"ok":true,"schema_version":1,"projects":[],"base_branch":"upstream/main"}"#.utf8)
+    XCTAssertEqual(
+      try JSONDecoder().decode(ListResponse.self, from: json).baseBranch, "upstream/main")
+  }
+
+  /// A base names another remote only when the part before the slash is one, as the CLI reads it.
+  func testSplitBaseMatchesTheCLIsRule() {
+    let remotes = ["origin", "upstream"]
+    XCTAssertTrue(RemoteWorkrooms.splitBase("develop", remotes: remotes) == ("origin", "develop"))
+    XCTAssertTrue(RemoteWorkrooms.splitBase("origin/main", remotes: remotes) == ("origin", "main"))
+    XCTAssertTrue(
+      RemoteWorkrooms.splitBase("upstream/main", remotes: remotes) == ("upstream", "main"))
+    XCTAssertTrue(
+      RemoteWorkrooms.splitBase("release/1.0", remotes: remotes) == ("origin", "release/1.0"))
+    XCTAssertTrue(
+      RemoteWorkrooms.splitBase("upstream/", remotes: remotes) == ("origin", "upstream/"))
+  }
+
   /// The project's base branch arrives under the CLI's snake_case key.
   func testListDecodesAProjectsBaseBranch() throws {
     let json = Data(

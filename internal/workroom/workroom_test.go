@@ -172,8 +172,10 @@ func TestCreateRunsSetupScript(t *testing.T) {
 		output: gitWorktrees(dir),
 		onRun: func(dir, name string, args []string) {
 			// Simulate git worktree add creating the directory
-			if name == "git" && len(args) > 5 && args[0] == "worktree" && args[1] == "add" {
-				os.MkdirAll(args[5], 0o755)
+			if name == "git" && len(args) > 1 && args[0] == "worktree" && args[1] == "add" {
+				if i := slices.Index(args, "-b"); i >= 0 && i+2 < len(args) {
+					os.MkdirAll(args[i+2], 0o755)
+				}
 			}
 		},
 	}
@@ -217,8 +219,10 @@ func TestCreateOnReadyFiresBeforeSetup(t *testing.T) {
 	mock := &mockExecutor{
 		output: gitWorktrees(dir),
 		onRun: func(_, name string, args []string) {
-			if name == "git" && len(args) > 5 && args[0] == "worktree" && args[1] == "add" {
-				os.MkdirAll(args[5], 0o755)
+			if name == "git" && len(args) > 1 && args[0] == "worktree" && args[1] == "add" {
+				if i := slices.Index(args, "-b"); i >= 0 && i+2 < len(args) {
+					os.MkdirAll(args[i+2], 0o755)
+				}
 			}
 		},
 	}
@@ -263,8 +267,10 @@ func TestCreateOnReadyReportsNoSetupScript(t *testing.T) {
 	mock := &mockExecutor{
 		output: gitWorktrees(dir),
 		onRun: func(_, name string, args []string) {
-			if name == "git" && len(args) > 5 && args[0] == "worktree" && args[1] == "add" {
-				os.MkdirAll(args[5], 0o755)
+			if name == "git" && len(args) > 1 && args[0] == "worktree" && args[1] == "add" {
+				if i := slices.Index(args, "-b"); i >= 0 && i+2 < len(args) {
+					os.MkdirAll(args[i+2], 0o755)
+				}
 			}
 		},
 	}
@@ -302,8 +308,10 @@ func TestCreateErrorsOnFailedSetupScript(t *testing.T) {
 	mock := &mockExecutor{
 		output: gitWorktrees(dir),
 		onRun: func(dir, name string, args []string) {
-			if name == "git" && len(args) > 5 && args[0] == "worktree" && args[1] == "add" {
-				os.MkdirAll(args[5], 0o755)
+			if name == "git" && len(args) > 1 && args[0] == "worktree" && args[1] == "add" {
+				if i := slices.Index(args, "-b"); i >= 0 && i+2 < len(args) {
+					os.MkdirAll(args[i+2], 0o755)
+				}
 			}
 		},
 	}

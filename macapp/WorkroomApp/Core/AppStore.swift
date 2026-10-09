@@ -1954,6 +1954,15 @@ final class AppStore: ObservableObject {
     !target.isMissing && !isRunBlocked(target.id) && hasRunCommand(forProject: projectPath)
   }
 
+  /// The app-wide base branch for projects that name none; nil means origin's default branch.
+  var globalBaseBranch: String? { projectStore.globalBaseBranch }
+
+  /// The base branch `project`'s new workrooms start from: its own, else the app-wide one, else nil
+  /// for origin's default branch. The CLI applies the same rule to a local create.
+  func effectiveBaseBranch(for project: Project) -> String? {
+    project.baseBranch ?? globalBaseBranch
+  }
+
   /// Set the branch a project's new workrooms start from (nil or blank: origin's default branch),
   /// through the CLI, which owns it so `workroom create` in a terminal agrees.
   func setBaseBranch(_ branch: String?, forProject projectPath: String) async {
@@ -2964,6 +2973,8 @@ final class AppStore: ObservableObject {
           continue
         }
         if projectStore.claimPublication(of: load) {
+          projectStore.globalBaseBranch =
+            response.baseBranch?.isEmpty == false ? response.baseBranch : nil
           apply(response.projects, registrations: registrations)
           resolveBranches()
           refreshWorkroomStatuses()
@@ -3745,12 +3756,19 @@ final class AppStore: ObservableObject {
       guard repository.host == "github.com" else {
         throw RemoteWorkrooms.Failure.notOnGitHub("Its origin is on \(repository.host).")
       }
-      // A remote host has only origin, so a base branch this Mac alone has would fail its derive
-      // minutes in. Unreachable (nil) is left to the derive, which says so itself.
-      if let branch = project.baseBranch,
-        await resolver.originHasBranch(branch, in: project.path) == false
-      {
-        throw RemoteWorkrooms.Failure.baseBranchNotOnOrigin(branch)
+      // A remote host has only origin, so a base on another remote, or one only this Mac has, would
+      // fail its derive minutes in. Unreachable (nil) is left to the derive, which says so itself.
+      var startBranch: String?
+      if let base = effectiveBaseBranch(for: project) {
+        let (remote, branch) = RemoteWorkrooms.splitBase(
+          base, remotes: await resolver.remoteNames(in: project.path))
+        guard remote == "origin" else {
+          throw RemoteWorkrooms.Failure.baseBranchOnOtherRemote(base)
+        }
+        if await resolver.originHasBranch(branch, in: project.path) == false {
+          throw RemoteWorkrooms.Failure.baseBranchNotOnOrigin(branch)
+        }
+        startBranch = branch
       }
       let path = project.path
       let buildsBase = base == nil
@@ -3785,7 +3803,7 @@ final class AppStore: ObservableObject {
         try await ContainerHostDriver.$pullProgress.withValue(report) {
           try await RemoteWorkrooms.create(
             repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
-            base: base, project: project.host, startBranch: project.baseBranch, key: key,
+            base: base, project: project.host, startBranch: startBranch, key: key,
             driver: driver, environment: environment, recorder: recorder)
         }
       }

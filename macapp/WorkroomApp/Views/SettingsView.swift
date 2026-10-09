@@ -194,10 +194,61 @@ private struct GeneralSettingsPane: View {
       Toggle("Show notifications in the menu bar", isOn: $showMenuBarItem)
         .help("Show the Workroom notifications item in the menu bar.")
 
+      NewWorkroomsSection()
+
       RemoteWorkroomsSection()
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
+  }
+}
+
+/// The app-wide base branch: where new workrooms start in a project that names none of its own. It
+/// lives in the CLI's config (`workroom base set --global`), so a terminal create agrees, and is
+/// saved on Return or when the field loses focus, not per keystroke.
+private struct NewWorkroomsSection: View {
+  @State private var branch = ""
+  @State private var saved = ""
+  @State private var failure: String?
+  @FocusState private var focused: Bool
+
+  var body: some View {
+    Section {
+      TextField("Base branch", text: $branch, prompt: Text("origin's default branch"))
+        .focused($focused)
+        .onSubmit(save)
+        .onChange(of: focused) { _, now in if !now { save() } }
+        .accessibilityIdentifier("settings.control.baseBranch")
+      if let failure {
+        Text(failure).font(.footnote).foregroundStyle(.red)
+      }
+    } header: {
+      Text("New Workrooms")
+    } footer: {
+      Text(
+        "New workrooms start from origin's copy of this branch, else the local branch. Write "
+          + "upstream/main for another remote's branch, such as a fork's upstream. A project's own "
+          + "base branch in Project Settings wins.")
+    }
+    .task {
+      let current = (try? await WorkroomCLI.shared.list(warnings: "none", project: nil))?.baseBranch
+      branch = current ?? ""
+      saved = branch
+    }
+  }
+
+  private func save() {
+    let value = branch.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard value != saved else { return }
+    Task {
+      do {
+        try await WorkroomCLI.shared.setGlobalBaseBranch(value.isEmpty ? nil : value)
+        saved = value
+        failure = nil
+      } catch {
+        failure = error.localizedDescription
+      }
+    }
   }
 }
 

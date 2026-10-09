@@ -282,6 +282,17 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertNil(none)
   }
 
+  /// A remote create reads the project's remotes to tell `upstream/main` from an origin branch.
+  func testRemoteNamesListsGitRemotes() async {
+    let names = await WorkroomStatusResolver(
+      runner: MockStatusRunner { _, args in
+        XCTAssertEqual(args, ["remote"])
+        return ok("origin\nupstream\n")
+      }
+    ).remoteNames(in: "/proj")
+    XCTAssertEqual(names, ["origin", "upstream"])
+  }
+
   /// A remote create checks origin has the project's base branch: `ls-remote --exit-code` exits 2
   /// only for no match, so anything else (offline, no credentials) is left undecided.
   func testOriginHasBranchReadsLsRemotesExitCode() async {

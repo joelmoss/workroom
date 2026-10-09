@@ -18,6 +18,8 @@ final class ProjectStore: ObservableObject {
   /// The list of configured projects (from the CLI's `~/.config/workroom/config.json`). The one
   /// piece of state shared across all windows.
   @Published var projects: [Project] = []
+  /// The app-wide base branch for projects that name none; nil means origin's default branch.
+  @Published var globalBaseBranch: String?
 
   /// A read is stamped when issued, across all windows (#170). Superseded callers await
   /// the newest read too. Success publishes its result; failure leaves the project list unchanged.

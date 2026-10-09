@@ -240,11 +240,14 @@ the editor prompt):
 3. **Generate a unique name:** try `namegen.Generate()` up to 5 times; on persistent collision,
    append a random 2-digit suffix (up to 10 more tries).
 4. **Collision checks:** ensure the VCS workspace and the target directory don't already exist.
-5. **Create the workspace:** `mkdir -p ~/workrooms`, then `git fetch --prune origin`, then
-   `git worktree add --no-track -b workroom/<name> <path> <start>`. The start is
-   `refs/remotes/origin/<base>` then `refs/heads/<base>` when the project sets `base_branch`
-   (`workroom base set`), and an unresolvable base fails with `BaseBranchNotFound`. Without a base,
-   `git remote set-head origin --auto` runs after the fetch and the start is `refs/remotes/origin/HEAD`.
+5. **Create the workspace:** `mkdir -p ~/workrooms`, then `git fetch --prune <remote>`, then
+   `git worktree add --no-track -b workroom/<name> <path> <start>`. The base is the project's
+   `base_branch`, else the global `base_branch` (`workroom base set [--global]`). `vcs.SplitBase`
+   reads it as `<remote>/<branch>` when the part before the first `/` is a remote, else a branch on
+   `origin`. The start is `refs/remotes/<remote>/<branch>` then `refs/heads/<branch>`, and an
+   unresolvable base fails with `BaseBranchNotFound`. Without a base, the remote is `origin`,
+   `git remote set-head origin --auto` runs after the fetch, and the start is
+   `refs/remotes/origin/HEAD`.
    A failed fetch keeps the last fetched refs and returns a warning in `CreateResult.Warning`, and so
    does a base that origin lacks when the local branch is used instead.
    With no usable start, the command has no start point and no `--no-track`, so git uses `HEAD`, or
