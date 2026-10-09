@@ -577,11 +577,15 @@ jobs:
           path: ~/.cache/workroom/ghostty-vt
           key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
 
+      # The target directory build-agent_test.sh builds into (BUILD_AGENT_TEST_TARGET_DIR on the test
+      # step below); without one the test compiles from scratch in a throwaway directory. Not
+      # `vcs/target`, for the reason the test gives. The key changed with the directory: an exact hit
+      # on the old entry would never save the new one.
       - name: Cache cargo (agent)
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: vcs
-          key: app-scripts
+          workspaces: vcs -> build-agent-target
+          key: app-scripts-build-agent
 
       # `build-agent_test.sh`'s universal cases need BOTH darwin targets installed and skip
       # themselves otherwise — and the step still prints OK, so the skip is invisible. Measured on
@@ -624,4 +628,6 @@ jobs:
       # shipped an arm64-only CLI inside every universal .app. These run them directly with
       # ARCHS="arm64 x86_64".
       - name: Test (build + channel helper scripts)
+        env:
+          BUILD_AGENT_TEST_TARGET_DIR: ${{ github.workspace }}/vcs/build-agent-target
         run: make app-test-scripts
