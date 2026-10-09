@@ -4,20 +4,25 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/joelmoss/workroom/internal/config"
 	"github.com/spf13/cobra"
 )
 
-var baseProject string
+var (
+	baseProject string
+	baseGlobal  bool
+)
 
-// baseCmd sets the branch a project's new workrooms start from. Unset, they start from origin's
-// freshly fetched default branch.
+// baseCmd sets the branch new workrooms start from, for one project or, with --global, for every
+// project that names none. Unset, they start from origin's freshly fetched default branch.
 var baseCmd = &cobra.Command{
 	Use:   "base",
 	Short: "Set or clear the branch new workrooms start from",
-	Long:  "Set or clear the branch a project's new workrooms start from. Workroom fetches origin and uses origin's copy of the branch, else the local branch. Unset, new workrooms start from origin's default branch.",
+	Long: "Set or clear the branch new workrooms start from. BRANCH is a branch on origin, such as " +
+		"develop, or <remote>/<branch> for another remote, such as upstream/main. Workroom fetches " +
+		"that remote and uses its copy of the branch, else the local branch. A project's own base " +
+		"wins over the --global one. Unset, new workrooms start from origin's default branch.",
 }
 
 var baseSetCmd = &cobra.Command{
@@ -26,10 +31,6 @@ var baseSetCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		currentCommand = "base"
-		// Workroom already looks on origin first, so `origin/main` would mean origin/origin/main.
-		if rest, ok := strings.CutPrefix(args[0], "origin/"); ok {
-			return fmt.Errorf("invalid branch name %q: give the branch without origin/, such as %q", args[0], rest)
-		}
 		// git's own rule for a branch name, so a typo is refused now, not at the next create.
 		if out, err := exec.Command("git", "check-ref-format", "--branch", args[0]).CombinedOutput(); err != nil {
 			return fmt.Errorf("invalid branch name %q: %s", args[0], out)
@@ -40,7 +41,7 @@ var baseSetCmd = &cobra.Command{
 
 var baseClearCmd = &cobra.Command{
 	Use:   "clear",
-	Short: "Start new workrooms from origin's default branch",
+	Short: "Start new workrooms from the global base, else origin's default branch",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		currentCommand = "base"
@@ -52,6 +53,17 @@ func setBase(branch string) error {
 	cfg, err := config.New("")
 	if err != nil {
 		return err
+	}
+	if baseGlobal {
+		if !pretend {
+			if err := cfg.SetGlobalBaseBranch(branch); err != nil {
+				return err
+			}
+		}
+		if jsonOutput {
+			return writeJSONSuccess(os.Stdout, "base", map[string]any{"global": true, "base_branch": branch})
+		}
+		return nil
 	}
 	dir, err := resolveProject(baseProject)
 	if err != nil {
@@ -71,6 +83,7 @@ func setBase(branch string) error {
 func init() {
 	for _, c := range []*cobra.Command{baseSetCmd, baseClearCmd} {
 		c.Flags().StringVar(&baseProject, "project", "", "Project directory (defaults to the current directory)")
+		c.Flags().BoolVar(&baseGlobal, "global", false, "The default for every project that names no base branch")
 		baseCmd.AddCommand(c)
 	}
 	rootCmd.AddCommand(baseCmd)

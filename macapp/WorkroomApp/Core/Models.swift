@@ -464,11 +464,14 @@ struct ListResponse: Codable {
   let projects: [Project]
   let workroomsDir: String?
   let configPath: String?
+  /// The app-wide base branch for projects that name none (`workroom base set --global`).
+  var baseBranch: String? = nil
 
   enum CodingKeys: String, CodingKey {
     case projects
     case workroomsDir = "workrooms_dir"
     case configPath = "config_path"
+    case baseBranch = "base_branch"
   }
 }
 

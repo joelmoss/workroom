@@ -594,3 +594,26 @@ func TestSetBaseBranchStoresAndClears(t *testing.T) {
 		t.Fatalf("unknown project: err = %v, want ErrProjectNotFound", err)
 	}
 }
+
+func TestGlobalBaseBranchIsAReservedScalar(t *testing.T) {
+	c := newTestConfig(t)
+	if err := c.AddProject("/project", "git"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetGlobalBaseBranch("upstream/main"); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.BaseBranch(); got != "upstream/main" {
+		t.Fatalf("BaseBranch() = %q", got)
+	}
+	projects, _ := c.AllProjects()
+	if _, ok := projects["base_branch"]; ok || len(projects) != 1 {
+		t.Fatalf("the global key was read as a project: %v", projects)
+	}
+	if err := c.SetBaseBranch("base_branch", "x"); !errors.Is(err, errs.ErrProjectNotFound) {
+		t.Fatalf("SetBaseBranch on the reserved key: err = %v", err)
+	}
+	if err := c.SetGlobalBaseBranch(""); err != nil || c.BaseBranch() != "" {
+		t.Fatalf("clear: err %v, base %q", err, c.BaseBranch())
+	}
+}

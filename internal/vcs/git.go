@@ -3,6 +3,7 @@ package vcs
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/joelmoss/workroom/internal/errs"
@@ -35,35 +36,50 @@ func (g *Git) Create(dir, vcsName, path, base string) (string, error) {
 	return warning, nil
 }
 
-// startPoint resolves where a new workroom's branch starts: origin/<base> then the local <base>
-// when the project names a base, else origin's default branch. It fetches first so the ref is
-// current, and prunes so a branch deleted on origin is not used from its stale copy; a failed
-// fetch (offline, no credentials) keeps the last-fetched ref and returns a warning. A named base that resolves nowhere is an error. With no base and no origin/HEAD it
-// returns "", so the caller passes no start point: git then uses HEAD, or makes an orphan
-// branch in a repository with no commits, where an explicit HEAD is refused.
+// SplitBase reads a base branch setting: "<remote>/<branch>" when the part before the first "/"
+// is one of remotes, else a branch on origin. So `upstream/main` is upstream's main, `origin/main`
+// is plain `main`, and `release/1.0` stays an origin branch unless a remote is named "release".
+// The macOS app applies the same rule (RemoteWorkrooms.splitBase).
+func SplitBase(base string, remotes []string) (remote, branch string) {
+	if r, rest, ok := strings.Cut(base, "/"); ok && rest != "" && slices.Contains(remotes, r) {
+		return r, rest
+	}
+	return "origin", base
+}
+
+// startPoint resolves where a new workroom's branch starts: <remote>/<branch> then the local
+// <branch> when the project names a base (see SplitBase), else origin's default branch. It
+// fetches that remote first so the ref is current, and prunes so a branch deleted there is not
+// used from its stale copy; a failed fetch (offline, no credentials) keeps the last-fetched ref
+// and returns a warning. A named base that resolves nowhere is an error. With no base and no
+// origin/HEAD it returns "", so the caller passes no start point: git then uses HEAD, or makes
+// an orphan branch in a repository with no commits, where an explicit HEAD is refused.
 // `set-head --auto` because fetch never moves origin/HEAD after a default-branch rename.
 func (g *Git) startPoint(dir, base string) (start, warning string, err error) {
-	_, noOrigin := g.Executor.Run(dir, "git", "remote", "get-url", "origin")
+	out, _ := g.Executor.Run(dir, "git", "remote")
+	remotes := strings.Fields(out)
+	remote, branch := SplitBase(base, remotes)
+	hasRemote := slices.Contains(remotes, remote)
 	fetched := false
-	if noOrigin == nil {
-		if _, err := g.Executor.Run(dir, "git", "fetch", "--quiet", "--prune", "origin"); err == nil {
+	if hasRemote {
+		if _, err := g.Executor.Run(dir, "git", "fetch", "--quiet", "--prune", remote); err == nil {
 			fetched = true
-			if base == "" {
-				_, _ = g.Executor.Run(dir, "git", "remote", "set-head", "origin", "--auto")
+			if branch == "" {
+				_, _ = g.Executor.Run(dir, "git", "remote", "set-head", remote, "--auto")
 			}
 		}
 	}
 	// Fully qualified: a tag or branch named like the short form would make it ambiguous.
 	var candidates []string
-	if noOrigin == nil {
-		if base == "" {
-			candidates = append(candidates, "refs/remotes/origin/HEAD")
+	if hasRemote {
+		if branch == "" {
+			candidates = append(candidates, "refs/remotes/"+remote+"/HEAD")
 		} else {
-			candidates = append(candidates, "refs/remotes/origin/"+base)
+			candidates = append(candidates, "refs/remotes/"+remote+"/"+branch)
 		}
 	}
-	if base != "" {
-		candidates = append(candidates, "refs/heads/"+base)
+	if branch != "" {
+		candidates = append(candidates, "refs/heads/"+branch)
 	}
 	for _, ref := range candidates {
 		if _, err := g.Executor.Run(dir, "git", "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err == nil {
@@ -71,19 +87,19 @@ func (g *Git) startPoint(dir, base string) (start, warning string, err error) {
 			break
 		}
 	}
-	if start == "" && base != "" {
-		if noOrigin == nil && !fetched {
-			return "", "", fmt.Errorf("%w: '%s' (could not fetch origin to look there)", errs.ErrBaseBranchNotFound, base)
+	if start == "" && branch != "" {
+		if hasRemote && !fetched {
+			return "", "", fmt.Errorf("%w: '%s' (could not fetch %s to look there)", errs.ErrBaseBranchNotFound, base, remote)
 		}
 		return "", "", fmt.Errorf("%w: '%s'", errs.ErrBaseBranchNotFound, base)
 	}
 	switch {
-	case noOrigin == nil && !fetched:
-		warning = fmt.Sprintf("Could not fetch origin. The workroom starts from %s, which may be out of date.", g.refName(dir, start))
-	case noOrigin == nil && strings.HasPrefix(start, "refs/heads/"):
-		// Origin answered without the base: deleted there after a merge, or never pushed. The local
-		// copy can be far behind, so say which one this is.
-		warning = fmt.Sprintf("Origin has no %s, so the workroom starts from your local %s, which may be out of date.", base, base)
+	case hasRemote && !fetched:
+		warning = fmt.Sprintf("Could not fetch %s. The workroom starts from %s, which may be out of date.", remote, g.refName(dir, start))
+	case hasRemote && strings.HasPrefix(start, "refs/heads/"):
+		// The remote answered without the base: deleted there after a merge, or never pushed. The
+		// local copy can be far behind, so say which one this is.
+		warning = fmt.Sprintf("%s has no %s, so the workroom starts from your local %s, which may be out of date.", remote, branch, branch)
 	}
 	return start, warning, nil
 }

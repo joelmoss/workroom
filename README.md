@@ -281,15 +281,26 @@ Alias: `workroom c`. Flags: `--project <dir>` (operate on a directory other than
 
 ```bash
 workroom base set develop
+workroom base set upstream/main --global
 workroom base clear
 ```
 
 `workroom base set <branch>` makes the project's new workrooms start from that branch. Workroom
-fetches `origin` and uses `origin`'s copy of the branch. If `origin` does not have it, Workroom uses
-the local branch and warns that it may be out of date. If neither exists, the create fails with `BaseBranchNotFound`. `workroom base clear`
-goes back to `origin`'s default branch. Both take `--project <dir>`. In the macOS app, set it in
-Project Settings, under New Workrooms. Remote workrooms use the same setting, but they have no local
-branch to fall back to, so the branch must be on `origin`.
+fetches the remote and uses the remote's copy of the branch. If the remote does not have it,
+Workroom uses the local branch and warns that it may be out of date. If neither exists, the create
+fails with `BaseBranchNotFound`.
+
+A plain name such as `develop` is a branch on `origin`. To use another remote, write
+`<remote>/<branch>`. For example, if you work from a fork, `upstream/main` starts new workrooms from
+the real project's `main` instead of your fork's. Workroom reads the part before the first `/` as a
+remote only if the repository has a remote of that name, so `release/1.0` stays a branch on
+`origin`.
+
+`--global` sets the default for every project that names no base branch. A project's own setting
+wins. `workroom base clear` removes the setting; both commands take `--project <dir>` or
+`--global`. In the macOS app, set the default in Settings and a project's own branch in Project
+Settings, both under New Workrooms. Remote workrooms use the same setting, but they have only
+`origin` and no local branch to fall back to, so the branch must be on `origin`.
 
 #### List workrooms
 

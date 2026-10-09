@@ -56,16 +56,20 @@ struct ProjectSettingsSheet: View {
               + "Start it from the toolbar Run button or ⌘R.")
         }
         Section {
-          TextField("Base branch", text: $baseBranch, prompt: Text("origin's default branch"))
-            .lineLimit(1)
-            .accessibilityIdentifier("projectSettings.baseBranch")
+          TextField(
+            "Base branch", text: $baseBranch,
+            prompt: Text(
+              store.globalBaseBranch.map { "App default: \($0)" } ?? "origin's default branch")
+          )
+          .lineLimit(1)
+          .accessibilityIdentifier("projectSettings.baseBranch")
         } header: {
           Text("New Workrooms")
         } footer: {
           Text(
             "New workrooms start from origin's copy of this branch, fetched first, else the local "
-              + "branch. Remote workrooms need it on origin. Leave it empty to start from origin's "
-              + "default branch.")
+              + "branch. Write upstream/main for another remote's branch. Remote workrooms need a "
+              + "branch on origin. Leave it empty to use the app default in Settings.")
         }
       }
       .formStyle(.grouped)

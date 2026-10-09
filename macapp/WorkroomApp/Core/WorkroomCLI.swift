@@ -245,6 +245,12 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     try throwIfError(try await run(args, timeout: 5))
   }
 
+  /// Sets the app-wide base branch for projects that name none; nil clears it.
+  func setGlobalBaseBranch(_ branch: String?) async throws {
+    let args = (branch.map { ["base", "set", $0] } ?? ["base", "clear"]) + ["--json", "--global"]
+    try throwIfError(try await run(args, timeout: 5))
+  }
+
   /// Registers a remote workroom the app is about to make (#253) under a new name, with
   /// `descriptor` as its host descriptor and `hostPath` its checkout on the host. Nothing is made on
   /// this Mac.

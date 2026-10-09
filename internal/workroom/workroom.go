@@ -270,7 +270,12 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 		if err := os.MkdirAll(wrDir, 0o755); err != nil {
 			return res, err
 		}
-		warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, projects[dir].BaseBranch)
+		// The project's own base wins; else the global one; else origin's default branch.
+		base := projects[dir].BaseBranch
+		if base == "" {
+			base = s.Config.BaseBranch()
+		}
+		warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, base)
 		if errors.Is(err, ErrBaseBranchNotFound) {
 			return res, err
 		}

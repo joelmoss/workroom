@@ -222,6 +222,13 @@ struct WorkroomStatusResolver: Sendable {
     return GitHubRepository(remote: r.stdout)
   }
 
+  /// The names of `dir`'s git remotes, from local config; empty when git fails.
+  func remoteNames(in dir: String) async -> [String] {
+    let r = await runner.run("git", ["remote"], in: dir, timeout: timeout)
+    guard r.exitCode == 0, !r.timedOut else { return [] }
+    return r.stdout.split(whereSeparator: \.isNewline).map(String.init)
+  }
+
   /// Whether `dir`'s origin has `branch`, asked of origin itself: nil when that can't be told
   /// (offline, no credentials, a timeout), as `git ls-remote --exit-code` exits 2 only for no match.
   func originHasBranch(_ branch: String, in dir: String) async -> Bool? {
