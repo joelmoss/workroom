@@ -514,15 +514,6 @@ impl Forwards {
         }
     }
 
-    /// Whether a forwarded connection is in flight on this connection, readable from another
-    /// thread: the wakefulness service's let-go never closes a connection that is carrying one
-    /// (#380). Listeners are not counted: a Debug build's broker listener lives as long as its
-    /// connection, and counting it would hold every Debug box awake.
-    pub fn carrying(&self) -> impl Fn() -> bool + Send + 'static {
-        let open = Arc::clone(&self.open);
-        move || !open.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
-    }
-
     fn open(&self, stream: u32, body: &[u8], writer: &SharedWriter) {
         // Ownership before content: an OPEN on a stream that is already forwarding is refused
         // whatever its body says, and NOT closed — the stream belongs to the forward that is

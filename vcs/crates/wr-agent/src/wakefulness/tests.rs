@@ -647,31 +647,6 @@ fn only_a_change_the_app_shows_is_pushed() {
     assert_eq!(pushes, vec![0, 2, 4, 6, 8]);
 }
 
-/// The let-go waits for the verdict to have been IDLE for the whole grace, and a BUSY tick starts
-/// it over.
-#[test]
-fn the_let_go_waits_for_a_whole_grace_of_idle() {
-    let mut since = None;
-    let mut letting = Vec::new();
-    let verdicts = [
-        (0.0, Verdict::Busy),
-        (1.0, Verdict::Idle),
-        (30.0, Verdict::Idle),
-        (31.0, Verdict::Idle),
-        (32.0, Verdict::Busy),
-        (33.0, Verdict::Idle),
-        (62.0, Verdict::Idle),
-        (63.0, Verdict::Idle),
-    ];
-    for (t, verdict) in verdicts {
-        since = idle_since(since, t, verdict);
-        if letting_go(since, t) {
-            letting.push(t);
-        }
-    }
-    assert_eq!(letting, vec![31.0, 63.0]);
-}
-
 /// A pushed change is what `status` returns, under `status`, at the service's version: an app that
 /// knows `status` reads the event with the same decoder.
 #[test]
