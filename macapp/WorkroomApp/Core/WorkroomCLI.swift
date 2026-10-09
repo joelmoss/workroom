@@ -141,6 +141,7 @@ protocol WorkroomCLIProtocol {
   func setHost(project: String, workroom: String?, descriptor: Data?) async throws
   func createRemote(project: String, hostPath: String, descriptor: Data) async throws
     -> CreateResponse
+  func claimProvisioned(from shared: String, provisioner: String) async throws
 }
 
 /// Fakes that never meet a remote workroom need not implement its two calls.
@@ -154,6 +155,8 @@ extension WorkroomCLIProtocol {
   {
     throw WorkroomCLIError.cli(kind: "Unsupported", message: "createRemote is not faked")
   }
+
+  func claimProvisioned(from shared: String, provisioner: String) async throws {}
 }
 
 /// Drives the bundled `workroom` binary over its `--json` contract. All work runs
@@ -175,6 +178,31 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   /// Stores `descriptor` as the host descriptor of `project`, or of its `workroom` (#252), or
   /// clears it when `descriptor` is nil. The app owns the descriptor's schema; the CLI stores it
   /// verbatim and never creates an entry for it.
+  /// Moves the remote workrooms and bases this build made out of the config at `shared` and into
+  /// its own (`configPath`). Idempotent: one an earlier launch left half-moved is finished.
+  func claimProvisioned(from shared: String, provisioner: String) async throws {
+    try throwIfError(
+      try await run(
+        ["claim-provisioned", "--json", "--from", shared, "--provisioner", provisioner],
+        timeout: 5))
+  }
+
+  /// The config a Dev build keeps for itself, beside its sessions and its Codaset sign-in, so a
+  /// workroom it creates never shows in Release or Nightly, nor theirs in it. Nil for those two,
+  /// which share the CLI's own (`sharedConfigPath`). Every Dev build has its own, a workroom's
+  /// included.
+  static func configPath(bundleID: String? = Bundle.main.bundleIdentifier) -> String? {
+    let dev = "com.developwithstyle.workroom.dev"
+    guard let bundleID, bundleID == dev || bundleID.hasPrefix(dev + ".") else { return nil }
+    return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("Workroom/\(bundleID)/config.json").path
+  }
+
+  /// The config Release and Nightly share, and the CLI uses outside the app.
+  static var sharedConfigPath: String {
+    NSHomeDirectory() + "/.config/workroom/config.json"
+  }
+
   func setHost(project: String, workroom: String? = nil, descriptor: Data?) async throws {
     var args = ["host"]
     if let descriptor {
@@ -367,6 +395,8 @@ final class WorkroomCLI: WorkroomCLIProtocol {
         env = ProcessInfo.processInfo.environment
         env["PATH"] = ShellEnvironment.path()
       }
+      // The probed environment is the login shell's, which never had the app's.
+      if let config = Self.configPath() { env["WORKROOM_CONFIG"] = config }
       env["GIT_TERMINAL_PROMPT"] = "0"
       env["GIT_OPTIONAL_LOCKS"] = "0"
       proc.environment = env

@@ -1427,8 +1427,8 @@ final class RemoteHosts: @unchecked Sendable {
 /// hosts, which is this build's alone (`RemoteWorkrooms.directory` is per bundle ID).
 ///
 /// The sweep removes only these, never every unrecorded `workroom-*` machine: the names carry no
-/// build, and config is shared by every build, so a listing could not tell another build's
-/// create still under way from a leftover. A machine whose record was lost after it was written
+/// build, and no config holds every build's (Release and Nightly share one, each Dev build keeps
+/// its own), so a listing could not tell another build's create still under way from a leftover. A machine whose record was lost after it was written
 /// is not named here and stays.
 enum PendingMachines {
   struct Entry: Codable, Equatable, Sendable {

@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Defaults
 import Foundation
+import OSLog
 import SwiftUI
 
 /// Identifies a selectable row in the project → (root | workroom) sidebar tree. Workroom
@@ -2853,6 +2854,7 @@ final class AppStore: ObservableObject {
       pendingRestoreSelection = nil
     }
     if projectStore.projects.isEmpty {
+      await Self.claimProvisionedOnce(cli)
       await load(warnings: "none")
       await load(warnings: "fast")
     } else {
@@ -2864,6 +2866,36 @@ final class AppStore: ObservableObject {
 
   func reload() async {
     await load(warnings: "fast")
+  }
+
+  private static var claimingProvisioned: Task<Void, Never>?
+  private static let configLogger = Logger(
+    subsystem: "com.developwithstyle.workroom", category: "config")
+
+  /// Once per launch, before a Dev build first lists its projects: takes what it made out of the
+  /// config Release and Nightly share, into its own (`WorkroomCLI.configPath`), so they stop
+  /// showing its remote workrooms and stop refusing creates over its bases. Never in a test
+  /// process, which would move the developer's real entries. A failure is logged and tried again
+  /// at the next launch: the move is idempotent.
+  static func claimProvisionedOnce(
+    _ cli: any WorkroomCLIProtocol, bundleID: String? = Bundle.main.bundleIdentifier,
+    isTestProcess: Bool = UITestFixture.isTestProcess
+  ) async {
+    guard !isTestProcess, let bundleID, WorkroomCLI.configPath(bundleID: bundleID) != nil
+    else { return }
+    let task =
+      claimingProvisioned
+      ?? Task {
+        do {
+          try await cli.claimProvisioned(
+            from: WorkroomCLI.sharedConfigPath, provisioner: bundleID)
+        } catch {
+          configLogger.error(
+            "claiming this build's remote entries: \(error.localizedDescription, privacy: .public)")
+        }
+      }
+    claimingProvisioned = task
+    await task.value
   }
 
   /// Reload only if it's been a while since the last load. Driven by the app regaining

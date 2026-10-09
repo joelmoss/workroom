@@ -148,6 +148,41 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
       let state = try descriptor.map { try JSONDecoder().decode(HostDescriptor.self, from: $0) }
       calls.add("host \(workroom ?? "project") \(state.map { $0.state ?? "serving" } ?? "clear")")
     }
+    func claimProvisioned(from shared: String, provisioner: String) async throws {
+      calls.add("claim \(shared) \(provisioner)")
+    }
+  }
+
+  /// Every Dev build keeps its own config, a workroom's included; Release and Nightly share the
+  /// CLI's own.
+  func testOnlyDevBuildsKeepTheirOwnConfig() {
+    XCTAssertNil(WorkroomCLI.configPath(bundleID: "com.developwithstyle.workroom"))
+    XCTAssertNil(WorkroomCLI.configPath(bundleID: "com.developwithstyle.workroom.nightly"))
+    XCTAssertNil(WorkroomCLI.configPath(bundleID: "com.developwithstyle.workroom.develop"))
+    XCTAssertNil(WorkroomCLI.configPath(bundleID: nil))
+    for id in ["com.developwithstyle.workroom.dev", "com.developwithstyle.workroom.dev.wr-a-1"] {
+      XCTAssertEqual(
+        WorkroomCLI.configPath(bundleID: id).map {
+          URL(fileURLWithPath: $0).pathComponents.suffix(3)
+        },
+        ["Workroom", id, "config.json"])
+    }
+  }
+
+  /// A Dev build takes what it made out of the shared config once a launch, and never from a
+  /// test process or a Release or Nightly build. The once is per process, so this is the only test
+  /// that may call `claimProvisionedOnce` with `isTestProcess: false`.
+  @MainActor
+  func testADevBuildClaimsItsEntriesOnceALaunch() async {
+    let cli = RecordingCLI()
+    let dev = "com.developwithstyle.workroom.dev"
+    await AppStore.claimProvisionedOnce(cli, bundleID: dev, isTestProcess: true)
+    await AppStore.claimProvisionedOnce(
+      cli, bundleID: "com.developwithstyle.workroom.nightly", isTestProcess: false)
+    XCTAssertEqual(cli.calls.all, [])
+    await AppStore.claimProvisionedOnce(cli, bundleID: dev, isTestProcess: false)
+    await AppStore.claimProvisionedOnce(cli, bundleID: dev, isTestProcess: false)
+    XCTAssertEqual(cli.calls.all, ["claim \(WorkroomCLI.sharedConfigPath) \(dev)"])
   }
 
   @MainActor
