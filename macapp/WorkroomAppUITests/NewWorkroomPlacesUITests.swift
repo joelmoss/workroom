@@ -95,9 +95,14 @@ final class NewWorkroomPlacesUITests: XCTestCase {
     XCTAssertFalse(app.staticTexts["newWorkroom.placesBlocked"].exists)
     attach(app, "picker-places")
 
-    // Back lists the projects again.
+    // Back lists the projects again, and so does ←.
     app.buttons["newWorkroom.back"].click()
     XCTAssertTrue(app.textFields["newWorkroom.filter"].waitForExistence(timeout: 5))
+    app.typeKey(.return, modifierFlags: [])
+    XCTAssertTrue(pickerThisMac.waitForExistence(timeout: 5), "⏎ didn't pick the project")
+    app.typeKey(.leftArrow, modifierFlags: [])
+    XCTAssertTrue(
+      app.textFields["newWorkroom.filter"].waitForExistence(timeout: 5), "← didn't go back")
     app.typeKey(.escape, modifierFlags: [])
   }
 

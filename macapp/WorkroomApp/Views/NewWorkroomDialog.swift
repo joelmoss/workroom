@@ -85,6 +85,14 @@ struct NewWorkroomDialog: View {
 
   private var rowCount: Int { placing == nil ? filtered.count : WorkroomPlace.all.count }
 
+  /// From the places back to the projects (the back button, or ←).
+  private func goBack() {
+    placing = nil
+    placeAnchor = nil
+    highlighted = 0
+    searchFocused = true
+  }
+
   /// Where `project`'s workroom can go: the reason none can, said once, then each place, a
   /// container one saying why it can't be used.
   private func placesList(_ project: Project) -> some View {
@@ -143,20 +151,18 @@ struct NewWorkroomDialog: View {
     VStack(spacing: 0) {
       HStack {
         if let placing {
+          Button(action: goBack) {
+            Image(systemName: "chevron.left")
+          }
+          .buttonStyle(.borderless)
+          .help("Back (←)")
+          .accessibilityLabel("Back")
+          .accessibilityIdentifier("newWorkroom.back")
           Text("New Workroom in \(placing.displayName)").font(.headline)
         } else {
           Text(PickerSplitIntent.title(open: false, split: splitIntent)).font(.headline)
         }
         Spacer()
-        if placing != nil {
-          Button("Back") {
-            placing = nil
-            placeAnchor = nil
-            highlighted = 0
-            searchFocused = true
-          }
-          .accessibilityIdentifier("newWorkroom.back")
-        }
         Button("Cancel") { onClose() }.keyboardShortcut(.cancelAction)
       }
       .padding(12)
@@ -182,6 +188,12 @@ struct NewWorkroomDialog: View {
     }
     .onKeyPress(.downArrow) {
       highlighted = ProjectPickerModel.move(highlight: highlighted, by: 1, count: rowCount)
+      return .handled
+    }
+    // ← steps back from the places. On the projects it stays the filter field's caret key.
+    .onKeyPress(.leftArrow) {
+      guard placing != nil else { return .ignored }
+      goBack()
       return .handled
     }
     // ⌥⏎ splits, plain ⏎ creates (issue #163). The `keys:` overload is what carries the modifiers;
