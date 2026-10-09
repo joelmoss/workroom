@@ -23,7 +23,7 @@
 set -euo pipefail
 
 # Must match `ghostty engine` in macapp/project.yml.
-GHOSTTY_SHA="3c47ca159"
+GHOSTTY_SHA="35a81a980"
 GHOSTTY_REPO="https://github.com/ghostty-org/ghostty.git"
 # build.zig.zon's `minimum_zig_version` at the pinned sha.
 ZIG_VERSION="0.16.0"
