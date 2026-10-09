@@ -2079,7 +2079,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     as possible to normal SSH usage"). The driver runs `/usr/bin/ssh` with no configuration or key
     of its own: the user's `~/.ssh/config`, `/etc/ssh/ssh_config`, agent and Keychain pick the key,
     exactly as `ssh exe.dev` in Terminal does. A second exe.dev account is therefore a
-    `Host exe.dev` / `Host *.exe.xyz` block in `~/.ssh/config`, as for any ssh, and the account
+    `Host exe.dev *.exe.xyz` block in `~/.ssh/config`, as for any ssh: both names, since a VM is
+    reached as `exedev@<vm>.exe.xyz` (exe.dev's own name for it), so a `Host exe.dev` block alone
+    signs in the account check but not the VMs (kept so, owner, #383 review). The account
     guard refuses to act when `whoami` names another account than the host's. The only things set
     over the user's configuration, as `-o` (`ExeDevHostDriver.sshOptions`): `BatchMode`, no
     forwarding of any kind (an agent works on the VM), no multiplexing, `RemoteCommand none`,
