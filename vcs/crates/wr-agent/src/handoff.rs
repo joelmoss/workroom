@@ -58,10 +58,14 @@ const OLDEST_TABLE_VERSION: u16 = 1;
 /// How long the new binary gets to check the table. Every session's output is stopped meanwhile
 /// (a shell blocks once its pty buffer fills), so it is short; a healthy check takes milliseconds.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long a program that has exited still gets for its `protocol` report to come through the
+/// reader thread, past `CHECK_TIMEOUT` if need be. A check that used all its time otherwise left
+/// a report the program had already given unread, and refused a build that did say it.
+const REPORT_GRACE: Duration = Duration::from_millis(200);
 /// How long a hand-off waits for running repository commands to finish before refusing. New ones
 /// are refused meanwhile, so it is short too.
 ///
-/// With `FREEZE_TIMEOUT` and `CHECK_TIMEOUT`, inside the app's own wait (`AgentHandOff.timeout`,
+/// With `FREEZE_TIMEOUT`, `CHECK_TIMEOUT` and `REPORT_GRACE`, inside the app's own wait (`AgentHandOff.timeout`,
 /// 6 s): a requester that gives up first calls the hand-off off, so a longer agent-side wait would
 /// only hold every repository request off for a hand-off that can no longer happen.
 const QUIET_TIMEOUT: Duration = Duration::from_secs(2);
@@ -75,7 +79,10 @@ const FREEZE_TIMEOUT: Duration = Duration::from_millis(500);
 /// answer, or has gone and fails the write at once, so it is not counted.
 const APP_TIMEOUT: Duration = Duration::from_secs(6);
 const _: () = assert!(
-    QUIET_TIMEOUT.as_millis() + FREEZE_TIMEOUT.as_millis() + CHECK_TIMEOUT.as_millis()
+    QUIET_TIMEOUT.as_millis()
+        + FREEZE_TIMEOUT.as_millis()
+        + CHECK_TIMEOUT.as_millis()
+        + REPORT_GRACE.as_millis()
         < APP_TIMEOUT.as_millis()
 );
 /// How much of a refusal reaches the requester (`serve.rs` truncates to it). The reason can quote
@@ -469,7 +476,8 @@ impl BuildProbe {
     /// otherwise each hand the host's agent to their own, older or newer, in turn. A program says
     /// its build in `protocol` (`build-number`); one that predates the line is older than any that
     /// has it. A build of this program with no number (0) refuses nothing, having nothing to
-    /// compare. A program that has not said by `deadline` is refused.
+    /// compare. A program that has not exited by `deadline` is refused, and so is one whose report
+    /// has not come through `REPORT_GRACE` after it exited: a process it left behind holds the pipe.
     fn no_downgrade(mut self, binary: &Path, ours: u64, deadline: Instant) -> Result<(), String> {
         if ours == 0 {
             return Ok(());
@@ -486,7 +494,11 @@ impl BuildProbe {
         }
         let report = match self.report.take() {
             Some(report) => report
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .recv_timeout(
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .max(REPORT_GRACE),
+                )
                 .map_err(|_| late())?,
             None => String::new(),
         };
@@ -800,6 +812,28 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(probe.no_downgrade(&newer, 200, Instant::now()), Ok(()));
+        // One whose report comes through just after it exited, with the time already used, is
+        // read within `REPORT_GRACE` rather than refused: here a short-lived process it started
+        // holds the pipe for 100 ms.
+        let late_report = dir.join("late-report");
+        std::fs::write(
+            &late_report,
+            "#!/bin/sh\necho build-number 300\n(sleep 0.1 &)\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &late_report,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let mut probe = BuildProbe::start(&late_report).unwrap();
+        while probe.child.try_wait().unwrap().is_none() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            probe.no_downgrade(&late_report, 200, Instant::now()),
+            Ok(())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
