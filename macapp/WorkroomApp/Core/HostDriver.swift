@@ -121,6 +121,9 @@ protocol HostTerminalDriver: HostDriver {
   /// a pane deciding whether to keep trying: a host that is rebooting comes back, one that
   /// answers with another host key does not (#241).
   func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool
+  /// Whether the last attach of `session` ended with ssh's own failure (255), read from what the
+  /// attach wrapper recorded: the pane's exit status is `login`'s, always 0 (#392).
+  func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool
 }
 
 extension HostTerminalDriver {

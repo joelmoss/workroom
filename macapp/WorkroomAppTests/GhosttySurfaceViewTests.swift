@@ -309,8 +309,9 @@ final class RemoteReconnectBackoffTests: XCTestCase {
 /// what the attach itself does is the fixture's (`RemoteHostIntegrationTests`).
 @MainActor
 final class RemotePaneReconnectTests: XCTestCase {
-  /// A pane for a session on a host whose last attach left `log` behind.
-  private func remotePane(log: String) throws -> GhosttySurfaceView {
+  /// A pane for a session on a host whose last attach left `log` behind, and `status` as the
+  /// attach wrapper's record of ssh's exit status (none when nil).
+  private func remotePane(log: String, status: String? = nil) throws -> GhosttySurfaceView {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
       "wr-reconnect-\(UUID().uuidString.prefix(8))")
     addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
@@ -327,6 +328,11 @@ final class RemotePaneReconnectTests: XCTestCase {
     try log.write(
       to: ContainerHostDriver.attachLog(session, in: hostDirectory), atomically: true,
       encoding: .utf8)
+    if let status {
+      try status.write(
+        to: ContainerHostDriver.attachStatus(session, in: hostDirectory), atomically: true,
+        encoding: .utf8)
+    }
     PersistentSessionService.shared.registerRemoteSession(
       session, on: .remote(host), via: driver, workingDirectory: "/home/w")
     let view = GhosttySurfaceView(workingDirectory: "/home/w", spawnsSurface: false)
@@ -339,9 +345,15 @@ final class RemotePaneReconnectTests: XCTestCase {
     RunLoop.main.run(until: Date().addingTimeInterval(seconds))
   }
 
+  // Value: protects=a remote pane reattaching after its host restarts; fails_when=the reconnect is
+  // gated on the pane's exit status again, which macOS `login` always reports as 0;
+  // why_new=the old test passed 255 straight in, which no real pane ever sees (#392); seam=none
+  /// The pane's exit status is `login`'s 0 (#392): the wrapper's record of ssh's 255 is what says
+  /// the link dropped.
   func testALostLinkReattachesAsARestoredPane() throws {
-    let view = try remotePane(log: "ssh: connect to host 127.0.0.1 port 1: Connection refused\n")
-    view.handleChildExited(exitCode: 255)
+    let view = try remotePane(
+      log: "ssh: connect to host 127.0.0.1 port 1: Connection refused\n", status: "255\n")
+    view.handleChildExited(exitCode: 0)
     XCTAssertNotNil(view.pendingReconnect)
     XCTAssertFalse(view.persistentSessionIsRestored)
     spin(1.5)
@@ -380,8 +392,8 @@ final class RemotePaneReconnectTests: XCTestCase {
   }
 
   func testClosingThePaneCancelsAReconnectThatIsWaiting() throws {
-    let view = try remotePane(log: "")
-    view.handleChildExited(exitCode: 255)
+    let view = try remotePane(log: "", status: "255\n")
+    view.handleChildExited(exitCode: 0)
     let pending = try XCTUnwrap(view.pendingReconnect)
     view.tearDown()
     XCTAssertTrue(pending.isCancelled)
@@ -390,11 +402,15 @@ final class RemotePaneReconnectTests: XCTestCase {
   }
 
   /// Only ssh's own failure is a lost link: a session that ended with any other status is left
-  /// alone, as is a pane whose session is not remote.
+  /// alone, as is a pane with no record of one (an exit status alone never decides, #392), and a
+  /// pane whose session is not remote.
   func testOnlyARemotePanesLostLinkReconnects() throws {
-    let remote = try remotePane(log: "")
-    remote.handleChildExited(exitCode: 1)
+    let remote = try remotePane(log: "", status: "1\n")
+    remote.handleChildExited(exitCode: 0)
     XCTAssertNil(remote.pendingReconnect)
+    let unrecorded = try remotePane(log: "")
+    unrecorded.handleChildExited(exitCode: 255)
+    XCTAssertNil(unrecorded.pendingReconnect)
     let local = GhosttySurfaceView(workingDirectory: "/tmp", spawnsSurface: false)
     local.persistentSessionID = UUID()
     local.handleChildExited(exitCode: 255)

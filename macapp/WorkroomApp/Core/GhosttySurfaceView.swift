@@ -547,9 +547,14 @@ final class GhosttySurfaceView: NSView {
   /// process while its session runs on: 255 is ssh's own failure, as after laptop sleep, a network
   /// change or the host rebooting. It reattaches as a restored pane, so a session that ended
   /// meanwhile becomes a shell that says so. See `RemoteReconnectBackoff` for when it gives up.
-  private func reconnectIfTheLinkDropped(exitCode: UInt32) {
-    guard exitCode == 255, let session = persistentSessionID, !isTornDown,
+  ///
+  /// ssh's status comes from what the attach wrapper recorded, never from the pane's exit status:
+  /// libghostty runs every command under macOS `login`, which exits 0 whatever ran under it, so
+  /// gating on the exit status meant no pane ever reattached (#392).
+  private func reconnectIfTheLinkDropped() {
+    guard let session = persistentSessionID, !isTornDown,
       PersistentSessionService.shared.isRemote(session),
+      PersistentSessionService.shared.remoteLastAttachLostLink(session),
       let delay = remoteReconnects.next(
         attachedFor: Date().timeIntervalSince(lastAttachAt),
         refused: PersistentSessionService.shared.remoteHostRefusedLastAttach(session))
@@ -949,7 +954,7 @@ final class GhosttySurfaceView: NSView {
   func handleChildExited(exitCode: UInt32) {
     // A dead ssh holds its remote host no more, whether or not it reconnects (#356).
     detachFromHost()
-    reconnectIfTheLinkDropped(exitCode: exitCode)
+    reconnectIfTheLinkDropped()
     onChildExited?(exitCode)
   }
 

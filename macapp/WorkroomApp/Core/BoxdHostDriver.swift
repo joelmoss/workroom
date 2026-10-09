@@ -532,6 +532,11 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     guard case .remote(let id) = host else { return false }
     return ContainerHostDriver.refusedLastAttach(of: session, in: hostDirectory(id))
   }
+
+  func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool {
+    guard case .remote(let id) = host else { return false }
+    return ContainerHostDriver.lostLinkLastAttach(of: session, in: hostDirectory(id))
+  }
 }
 
 /// One boxd machine's ssh details, read from the blocks the CLI manages in the user's ssh files

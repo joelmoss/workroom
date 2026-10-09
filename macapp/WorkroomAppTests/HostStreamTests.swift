@@ -229,6 +229,32 @@ final class HostStreamTests: XCTestCase {
       encoding: .utf8)
     XCTAssertTrue(log.contains("Connection refused"), log)
     XCTAssertFalse(driver.hostRefusedLastAttach(of: session, on: .remote(id)))
+    XCTAssertTrue(driver.lastAttachLostLink(of: session, on: .remote(id)))
+  }
+
+  // Value: protects=the record a remote pane's reconnect reads ssh's status from; fails_when=the
+  // wrapper stops writing it, or writes the last attach's; why_new=the pane's exit status is
+  // macOS `login`'s 0 and cannot say the link dropped (#392); seam=none
+  /// The attach wrapper records the status of what it ran, so a session that ended with any other
+  /// status than 255 is not read as a lost link, whatever the attach before it recorded.
+  func testTheAttachWrapperRecordsTheStatusOfWhatItRan() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let session = UUID()
+    let log = ContainerHostDriver.attachLog(session, in: directory).path
+    for (code, lostLink) in [(255, true), (3, false)] {
+      let run = try SessionBackendProbe.run(
+        URL(fileURLWithPath: "/bin/sh"),
+        arguments: [
+          "-c", ContainerHostDriver.attachWrapper, "workroom-attach", log, "/bin/sh", "-c",
+          "exit \(code)",
+        ], timeout: 15)
+      XCTAssertEqual(run.status, Int32(code), run.output)
+      XCTAssertEqual(
+        ContainerHostDriver.lostLinkLastAttach(of: session, in: directory), lostLink, "\(code)")
+    }
   }
 
   /// ssh's wording for a host that answered and will keep refusing, which stops a pane's retries,

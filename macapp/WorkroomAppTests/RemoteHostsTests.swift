@@ -1489,6 +1489,7 @@ final class RemoteHostsTests: XCTestCase {
       metadata: [(key: String, value: String)]
     ) throws -> String { "" }
     func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool { false }
+    func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool { false }
   }
 
   private final class Recorded: @unchecked Sendable {
