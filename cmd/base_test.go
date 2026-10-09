@@ -150,3 +150,18 @@ func TestBaseClearWorksForAMovedProjectAndRegistersNothing(t *testing.T) {
 		t.Fatalf("clear registered a project: %v", projects)
 	}
 }
+
+// A repository whose root has a .git file (a submodule, `git init --separate-git-dir`) is a project,
+// not a workroom: its base can be set.
+func TestBaseSetAcceptsARootWithAGitFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Cleanup(func() { baseProject, listProject, baseGlobal = "", "", false })
+	project := t.TempDir()
+	gitDir := filepath.Join(t.TempDir(), "repo.git")
+	if out, err := exec.Command("git", "init", "-q", "--separate-git-dir", gitDir, project).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	if code, envelope := runHostCLI(t, "base", "set", "develop", "--project", project, "--json"); code != 0 {
+		t.Fatalf("base set in a separate-git-dir repository: exit %d, %v", code, envelope)
+	}
+}

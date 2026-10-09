@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/joelmoss/workroom/internal/config"
 	"github.com/joelmoss/workroom/internal/errs"
@@ -99,11 +100,11 @@ func setBase(branch string) error {
 	return nil
 }
 
-// refuseWorkroom refuses dir when it is a workroom: a linked worktree (its .git is a file) or a
-// registered workroom's path. A base belongs to the project's root checkout; run from a workroom
-// terminal, `base set` would otherwise register that workroom as a project of its own.
+// refuseWorkroom refuses dir when it is a workroom: a linked worktree or a registered workroom's
+// path. A base belongs to the project's root checkout; run from a workroom terminal, `base set`
+// would otherwise register that workroom as a project of its own.
 func refuseWorkroom(cfg *config.Config, dir string) error {
-	if info, err := os.Stat(filepath.Join(dir, ".git")); err == nil && !info.IsDir() {
+	if linkedWorktree(dir) {
 		return errs.ErrInWorkroom
 	}
 	projects, err := cfg.AllProjects()
@@ -118,6 +119,21 @@ func refuseWorkroom(cfg *config.Config, dir string) error {
 		}
 	}
 	return nil
+}
+
+// linkedWorktree reports whether dir is a linked worktree. A .git file alone doesn't say: a
+// submodule or a `git init --separate-git-dir` repository has one at its root too. Only in a
+// linked worktree does git's own directory differ from the common one.
+func linkedWorktree(dir string) bool {
+	if info, err := os.Stat(filepath.Join(dir, ".git")); err != nil || info.IsDir() {
+		return false
+	}
+	out, err := (&vcs.RealExecutor{}).Run(dir, "git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir")
+	if err != nil {
+		return false
+	}
+	dirs := strings.Fields(out)
+	return len(dirs) == 2 && dirs[0] != dirs[1]
 }
 
 func init() {
