@@ -2073,8 +2073,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **Mixed versions.** `Service::Status` keeps byte `0x04`, and `PROTOCOL_VERSION` is unchanged
     at 7. An app from before #382 still asks for `status`; a new agent answers every Status request
     with `{"version": 2, "error": {"unsupported": …}}`, which that app reads as no service: no
-    badge, no hang, and its watch asks again every 10 s. A new app never asks, and drops any
-    Status envelope an older agent sends rather than failing the connection. An older agent, kept
+    badge, no hang, and its watch asks again every 10 s. A new app never asks, and drops a
+    verdict an older agent pushes on stream 0 rather than failing the connection. An older agent, kept
     by a busy box rather than handed off, still runs its heartbeat until the next connect hands off.
     Pinned by `tests/status_service.rs` (agent) and
     `testAStatusEnvelopeFromAnOlderAgentDoesNotFailTheConnection` (app).

@@ -227,17 +227,15 @@ final class AgentVCSIntegrationTests: XCTestCase {
     await connection.close()
   }
 
-  /// An agent from before #382 still runs the Status service. It pushes verdicts only to a
-  /// connection that asked, which this build never does, but one that arrives anyway, or a late
-  /// reply, is dropped rather than failing the connection.
+  /// An agent from before #382 still runs the Status service. It pushes verdicts on stream 0 only to
+  /// a connection that asked, which this build never does, but one that arrives anyway is dropped
+  /// rather than failing the connection. (It never replies on another stream: nothing asks.)
   func testAStatusEnvelopeFromAnOlderAgentDoesNotFailTheConnection() async throws {
     let fake = try FakeAgent(version: 7)
     defer { fake.stop() }
     let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
     let verdict = #"{"version":2,"event":"status","status":{"running":true,"busy":true}}"#
-    for stream: UInt32 in [0, 9] {
-      fake.push(service: 4, stream: stream, payload: Data([1]) + Data(verdict.utf8))
-    }
+    fake.push(service: 4, stream: 0, payload: Data([1]) + Data(verdict.utf8))
     _ = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
     await connection.close()
   }
