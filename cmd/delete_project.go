@@ -224,13 +224,14 @@ func unsafeProjectDeletePath(canon string, cfg *config.Config) (bool, error) {
 		return true, nil
 	}
 
-	// Check against other registered projects.
-	data, err := cfg.Read()
+	// Check against other registered projects. A scalar setting's key (base_branch) is no path:
+	// taken as one, it resolves under the current directory.
+	projects, err := cfg.AllProjects()
 	if err != nil {
 		return false, err
 	}
-	for key := range data {
-		if key == "workrooms_dir" || key == canon {
+	for key := range projects {
+		if key == canon {
 			continue
 		}
 		otherCanon, _ := config.CanonicalPath(key)
