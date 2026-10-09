@@ -6,7 +6,9 @@ import os
 ///
 /// - **The user's own ssh.** exe.dev knows the user by their ssh key, and the driver's ssh is the
 ///   one `ssh exe.dev` in Terminal is: the user's `~/.ssh/config`, keys, agent and Keychain pick
-///   the key, so a second account is a `Host exe.dev` block there, as for any ssh. Workroom sets
+///   the key, so a second account is a `Host exe.dev *.exe.xyz` block there (VMs are reached as
+///   `exedev@<vm>.exe.xyz`, exe.dev's own name for them, which `Host exe.dev` alone doesn't match),
+///   as for any ssh. Workroom sets
 ///   only what a background link needs (`sshOptions`). Nothing is registered on the account: the
 ///   generic ssh driver (#378) can't register keys on a server it didn't make, so both take this
 ///   path (eng review, D2 reopened).
