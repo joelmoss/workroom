@@ -97,6 +97,12 @@ final class BoxdHostDriverTests: XCTestCase {
     private var orgs: [String?]
     /// Cancels the calling task from inside the CLI call naming this command.
     var cancelling: String?
+    /// Where pending machines are written down, read at each call into `pendingAt` (#373).
+    var pendingIn: URL?
+    private var pending: [String: [PendingMachines.Entry]] = [:]
+    func pendingAt(_ command: String) -> [PendingMachines.Entry]? {
+      lock.withLock { pending[command] }
+    }
 
     init(_ answers: [String: CommandResult], orgs: [String?] = []) {
       self.answers = answers
@@ -117,6 +123,10 @@ final class BoxdHostDriverTests: XCTestCase {
     {
       lock.withLock { calls.append(args) }
       let command = args.prefix(2).joined(separator: " ")
+      if let pendingIn {
+        let entries = PendingMachines.entries(in: pendingIn)
+        lock.withLock { pending[command] = entries }
+      }
       if command == cancelling { withUnsafeCurrentTask { $0?.cancel() } }
       // A delete also removes the derive snapshot named after the machine, usually absent.
       if command == "snapshots remove", answers[command] == nil {
@@ -144,6 +154,7 @@ final class BoxdHostDriverTests: XCTestCase {
   private func driver(_ cli: StubCLI) -> BoxdHostDriver {
     let empty = FileManager.default.temporaryDirectory.appendingPathComponent(
       "wr-boxd-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: empty) }
     return BoxdHostDriver(
       configuration: .init(
         cli: URL(fileURLWithPath: "/nonexistent/boxd"), sshConfig: empty, knownHosts: empty),
@@ -219,6 +230,36 @@ final class BoxdHostDriverTests: XCTestCase {
       XCTAssertTrue(leftover[0].contains(id.uuidString.lowercased()), leftover[0])
       XCTAssertTrue(leftover[0].hasPrefix("machine workroom-"), leftover[0])
     }
+  }
+
+  /// A create names its machine as pending before `machine new`, and a derive before it snapshots,
+  /// so a crash before config records the host leaves it for the launch sweep (#373). A rollback
+  /// that removed the machine takes it off; one that couldn't keeps it.
+  func testAMachineStaysPendingUntilItIsRemoved() async throws {
+    // Value: protects=a crash mid-create leaves the paid machine named for the sweep;
+    // fails_when=the marker is written after the CLI call, never, or dropped on a failed removal;
+    // why_new=#373 adds the marker; seam=the stub CLI reads the marker file at each call
+    for removed in [true, false] {
+      let cli = StubCLI([
+        "machine new": Self.failed("error: quota exceeded"),
+        "machine remove": removed ? Self.ok(#"{"status":"destroyed"}"#) : Self.failed("error: x"),
+      ])
+      let driver = driver(cli)
+      cli.pendingIn = driver.directory
+      _ = try? await driver.create()
+      XCTAssertEqual(cli.pendingAt("machine new")?.map(\.driver), [RemoteWorkrooms.boxdDriver])
+      XCTAssertEqual(PendingMachines.entries(in: driver.directory).count, removed ? 0 : 1)
+    }
+
+    // The derive fails at its first ssh step (no ssh details), before the snapshot.
+    let derive = StubCLI([
+      "machine get": Self.ok(#"{"source":"standalone"}"#),
+      "machine remove": Self.failed("error: x"),
+    ])
+    let driver = driver(derive)
+    _ = try? await driver.deriveFromBase(.remote(UUID()))
+    XCTAssertEqual(derive.commands, ["machine get", "machine remove", "snapshots remove"])
+    XCTAssertEqual(PendingMachines.entries(in: driver.directory).count, 1)
   }
 
   func testAnInstanceCannotBeDerivedFromAndAnUnknownBaseIsUnknown() async throws {

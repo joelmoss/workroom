@@ -1195,6 +1195,11 @@ final class RemoteHostsTests: XCTestCase {
   func testABoxdWorkroomRecordsItsOrgAndAccount() async throws {
     let made = UUID()
     let driver = DerivingDriver(derived: made)
+    // The driver wrote its machine down as pending; the record naming it takes it off (#373), so
+    // the sweep can never take a machine config names, whatever a later config read says.
+    let pending = try hostsDirectory()
+    try PendingMachines.add(
+      .init(id: made, driver: RemoteWorkrooms.boxdDriver, account: "usr_1"), in: pending)
     let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
     let environment = RemoteProvisioning.Environment(
       driver: driver,
@@ -1218,9 +1223,10 @@ final class RemoteHostsTests: XCTestCase {
       _ = try await RemoteWorkrooms.create(
         repository: repository, cloneURL: "https://github.com/o/r.git",
         base: base(RemoteWorkrooms.boxdDriver, "acme", "usr_1"), key: key, driver: driver,
-        environment: environment, recorder: recorder)
+        environment: environment, recorder: recorder, pendingIn: pending)
       XCTFail("the connect was meant to fail")
     } catch {}
+    XCTAssertEqual(PendingMachines.entries(in: pending), [], "a recorded machine stayed pending")
     let live = try XCTUnwrap(recorded.all.last { $0.id == made })
     XCTAssertEqual(live.driver, RemoteWorkrooms.boxdDriver)
     XCTAssertEqual(live.org, "acme")
@@ -1393,6 +1399,8 @@ final class RemoteHostsTests: XCTestCase {
     /// The create makes `derived`, and a destroy of it fails.
     var createMakes = false
     var destroyFails = false
+    /// Told of each host a destroy is asked for.
+    var onDestroy: (@Sendable (HostID) -> Void)? = nil
     var traits: HostDriverTraits {
       HostDriverTraits(
         transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
@@ -1410,6 +1418,7 @@ final class RemoteHostsTests: XCTestCase {
         cause: "reboot timed out", leftover: ["machine x"], host: .remote(derived))
     }
     func destroy(_ host: HostID) async throws {
+      onDestroy?(host)
       if destroyFails { throw HostDriverError.provisioning("remove failed") }
     }
     func openStream(to host: HostID) async throws -> HostStream {
@@ -1663,6 +1672,104 @@ final class RemoteHostsTests: XCTestCase {
     remote.adopt([Project(path: "/proj", vcs: "git", workrooms: [], host: recorded)])
     let pinned = try XCTUnwrap(remote.existingDriver(holding: id) as? ContainerHostDriver)
     XCTAssertEqual(pinned.pendingContainers, ["workroom-x"], "a recorded host stayed pending")
+  }
+
+  /// A remote provider's machine a create left pending goes only on a later launch than the one
+  /// that first found it unrecorded, at most `cap` a sweep (#373): a config that failed to read once
+  /// costs nothing. One whose removal fails stays for a later sweep, and the sweep counts as not
+  /// run, so a reload tries again.
+  func testAPendingMachineGoesOnlyOnALaterLaunchAtMostCapAtATime() async throws {
+    // Value: protects=a live workroom whose record one launch failed to read is never destroyed,
+    // and a bad read takes few; fails_when=an entry goes on its first sighting, twice in one launch
+    // counts as two, the cap is ignored, or a failed removal drops the entry; why_new=#373;
+    // seam=launch and destroy are parameters
+    let directory = try hostsDirectory()
+    let ids = (0..<5).map { _ in UUID() }
+    for id in ids {
+      try PendingMachines.add(
+        .init(id: id, driver: RemoteWorkrooms.boxdDriver, account: "usr_1"), in: directory)
+    }
+    let (first, second, third) = (UUID(), UUID(), UUID())
+    var gone: [UUID] = []
+    _ = await PendingMachines.sweep(Set(ids), in: directory, launch: first) { gone.append($0) }
+    _ = await PendingMachines.sweep(Set(ids), in: directory, launch: first) { gone.append($0) }
+    XCTAssertEqual(gone, [], "a machine went in the launch that first found it unrecorded")
+
+    let swept = await PendingMachines.sweep(Set(ids), in: directory, launch: second) {
+      gone.append($0)
+    }
+    XCTAssertEqual(gone, Array(ids.prefix(3)))
+    XCTAssertTrue(swept.ran)
+    XCTAssertTrue(swept.failures.contains { $0.hasPrefix("2 unrecorded") }, "\(swept.failures)")
+    XCTAssertEqual(PendingMachines.entries(in: directory).map(\.id), Array(ids.suffix(2)))
+
+    let failing = await PendingMachines.sweep(Set(ids), in: directory, launch: third) { _ in
+      throw HostDriverError.provisioning("signed in to another account")
+    }
+    XCTAssertFalse(failing.ran)
+    XCTAssertEqual(PendingMachines.entries(in: directory).map(\.id), Array(ids.suffix(2)))
+  }
+
+  /// A sweep that cannot mark what it found unrecorded removes nothing (#373), as the container
+  /// sweep does (#284).
+  func testAPendingMachineSweepThatCannotMarkRemovesNothing() async throws {
+    let directory = try hostsDirectory()
+    let (old, new) = (UUID(), UUID())
+    try PendingMachines.add(
+      .init(id: old, driver: RemoteWorkrooms.boxdDriver, unrecordedIn: UUID()), in: directory)
+    try PendingMachines.add(.init(id: new, driver: RemoteWorkrooms.boxdDriver), in: directory)
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+    defer {
+      try? FileManager.default.setAttributes(
+        [.posixPermissions: 0o755], ofItemAtPath: directory.path)
+    }
+    var gone: [UUID] = []
+    let swept = await PendingMachines.sweep([old, new], in: directory) { gone.append($0) }
+    XCTAssertEqual(gone, [])
+    XCTAssertTrue(swept.failures.contains { $0.hasPrefix("recording unrecorded") })
+  }
+
+  /// A launch sweeps the boxd and exe.dev machines a create left pending, each through its own
+  /// driver key's destroy, which checks the account first (#373). One config records is taken off
+  /// and never destroyed; one first found unrecorded now is marked for the next launch.
+  func testAdoptSweepsMachinesACreateLeftPending() async throws {
+    // Value: protects=a crashed create's paid machine is removed, by the account that made it, and
+    // a recorded one never is; fails_when=adopt skips remote keys, routes to the wrong key, or
+    // ignores records; why_new=#373; seam=makeDriver
+    let directory = try hostsDirectory()
+    let (earlier, fresh, recorded) = (UUID(), UUID(), UUID())
+    try PendingMachines.add(
+      .init(
+        id: earlier, driver: RemoteWorkrooms.boxdDriver, account: "usr_1", unrecordedIn: UUID()),
+      in: directory)
+    try PendingMachines.add(
+      .init(id: fresh, driver: RemoteWorkrooms.exeDevDriver, account: "me@x.dev"), in: directory)
+    try PendingMachines.add(
+      .init(
+        id: recorded, driver: RemoteWorkrooms.boxdDriver, account: "usr_1", unrecordedIn: UUID()),
+      in: directory)
+    let destroyed = Swept()
+    let remote = RemoteHosts(
+      makeDriver: { key in
+        DerivingDriver(derived: UUID(), onDestroy: { destroyed.add("\(key) \($0)", []) })
+      }, pendingIn: directory)
+    let host = HostDescriptor(
+      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: recorded,
+      account: "usr_1")
+
+    remote.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: host)])
+    for _ in 0..<500 where remote.sweepsRunning > 0 { try await Task.sleep(for: .milliseconds(2)) }
+
+    XCTAssertEqual(
+      destroyed.calls.map(\.context),
+      ["\(RemoteHosts.DriverKey.boxd(org: nil, account: "usr_1")) \(HostID.remote(earlier))"])
+    XCTAssertEqual(
+      PendingMachines.entries(in: directory),
+      [
+        .init(
+          id: fresh, driver: RemoteWorkrooms.exeDevDriver, account: "me@x.dev",
+          unrecordedIn: PendingMachines.launch)
+      ])
   }
 
   /// A runtime that could not list its containers at launch (Docker not started yet) is swept on a

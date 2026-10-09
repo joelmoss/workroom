@@ -97,6 +97,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     try await checkAccount()
     let id = UUID()
     let name = name(of: id)
+    try markPending(id)
     do {
       RemoteProvisioning.reportStep?(.machine)
       _ = try await cli(["new", "--name", name, "--tag", Self.baseTag, "--no-email"])
@@ -139,6 +140,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     }
     let id = UUID()
     let name = name(of: id)
+    try markPending(id)
     do {
       // `cp` copies the base's disk as it is on disk: a write still in the page cache, such as
       // the end of the base's last clone or fetch, would be missing from the copy (measured).
@@ -167,7 +169,16 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
       try Task.checkCancellation()
       throw HostDriverError.provisioning(failure)
     }
+    PendingMachines.forget([id], in: directory)
     try? FileManager.default.removeItem(at: hostDirectory(id))
+  }
+
+  /// Names VM `id` as pending before the call that makes it, so a crash before config records its
+  /// host still leaves it for the sweep (#373).
+  private func markPending(_ id: UUID) throws {
+    try PendingMachines.add(
+      .init(id: id, driver: RemoteWorkrooms.exeDevDriver, account: configuration.account),
+      in: directory)
   }
 
   /// Removes what a failed `create` or `deriveFromBase` made, then rethrows `error`, or says what
@@ -184,7 +195,10 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     try? FileManager.default.removeItem(at: hostDirectory(id))
     let error =
       (error as? CLIFailure).map { HostDriverError.provisioning($0.localizedDescription) } ?? error
-    guard let failure else { throw error }
+    guard let failure else {
+      PendingMachines.forget([id], in: directory)
+      throw error
+    }
     throw HostDriverError.leftBehind(
       cause: error.localizedDescription, leftover: [failure], host: .remote(id))
   }
