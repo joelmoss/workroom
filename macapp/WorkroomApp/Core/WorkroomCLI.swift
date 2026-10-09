@@ -175,9 +175,6 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     return try decode(ListResponse.self, from: result)
   }
 
-  /// Stores `descriptor` as the host descriptor of `project`, or of its `workroom` (#252), or
-  /// clears it when `descriptor` is nil. The app owns the descriptor's schema; the CLI stores it
-  /// verbatim and never creates an entry for it.
   /// Moves the remote workrooms and bases this build made out of the config at `shared` and into
   /// its own (`configPath`). Idempotent: one an earlier launch left half-moved is finished.
   func claimProvisioned(from shared: String, provisioner: String) async throws {
@@ -203,6 +200,9 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     NSHomeDirectory() + "/.config/workroom/config.json"
   }
 
+  /// Stores `descriptor` as the host descriptor of `project`, or of its `workroom` (#252), or
+  /// clears it when `descriptor` is nil. The app owns the descriptor's schema; the CLI stores it
+  /// verbatim and never creates an entry for it.
   func setHost(project: String, workroom: String? = nil, descriptor: Data?) async throws {
     var args = ["host"]
     if let descriptor {
