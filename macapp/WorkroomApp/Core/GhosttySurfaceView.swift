@@ -551,17 +551,24 @@ final class GhosttySurfaceView: NSView {
   /// ssh's status comes from what the attach wrapper recorded, never from the pane's exit status:
   /// libghostty runs every command under macOS `login`, which exits 0 whatever ran under it, so
   /// gating on the exit status meant no pane ever reattached (#392).
+  ///
+  /// Only a pane whose attach had been up becomes a restored one. A new pane whose first attach
+  /// never connected (opened offline, or before the bootstrap installed the agent) has no session
+  /// on the host yet: reattaching it with `--no-create` would show it ended instead of creating
+  /// it. Up means longer than the backoff's ceiling, which already reads that as a link that was up.
   private func reconnectIfTheLinkDropped() {
+    let attachedFor = Date().timeIntervalSince(lastAttachAt)
     guard let session = persistentSessionID, !isTornDown,
       PersistentSessionService.shared.isRemote(session),
       PersistentSessionService.shared.remoteLastAttachLostLink(session),
       let delay = remoteReconnects.next(
-        attachedFor: Date().timeIntervalSince(lastAttachAt),
+        attachedFor: attachedFor,
         refused: PersistentSessionService.shared.remoteHostRefusedLastAttach(session))
     else { return }
+    let wasUp = attachedFor > RemoteReconnectBackoff.ceiling
     let reconnect = DispatchWorkItem { [weak self] in
       guard let self, !self.isTornDown, self.persistentSessionID == session else { return }
-      self.persistentSessionIsRestored = true
+      if wasUp { self.persistentSessionIsRestored = true }
       self.reattachPersistentSession()
     }
     pendingReconnect = reconnect

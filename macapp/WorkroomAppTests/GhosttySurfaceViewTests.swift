@@ -391,6 +391,22 @@ final class RemotePaneReconnectTests: XCTestCase {
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a closed pane holds its host")
   }
 
+  // Value: protects=a new remote pane opened offline (or before its agent is installed) getting a
+  // working shell once its host answers; fails_when=every reconnect is marked restored again, so
+  // its retry carries `--no-create` and the never-created session reads as ended; why_new=the
+  // reconnect only started firing with #392, which exposed it (Codex review); seam=none
+  /// A pane whose first attach never came up retries as a fresh attach: it has no session on the
+  /// host yet, and a restored attach (`--no-create`) would show it ended instead of creating it.
+  func testAPaneThatNeverConnectedRetriesAsAFreshAttach() throws {
+    let view = try remotePane(log: "", status: "255\n")
+    view.reattachPersistentSession()  // the attach that just failed began now
+    view.handleChildExited(exitCode: 0)
+    XCTAssertNotNil(view.pendingReconnect)
+    spin(1.5)
+    XCTAssertNil(view.pendingReconnect, "the reconnect did not run")
+    XCTAssertFalse(view.persistentSessionIsRestored)
+  }
+
   func testClosingThePaneCancelsAReconnectThatIsWaiting() throws {
     let view = try remotePane(log: "", status: "255\n")
     view.handleChildExited(exitCode: 0)
