@@ -214,7 +214,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
   }
 
   /// A Control envelope nobody asked for (a late reply, or something a newer agent sends) is
-  /// dropped. Failing the connection over it would take every VCS, File and Status request on it
+  /// dropped. Failing the connection over it would take every VCS, File and Forward request on it
   /// down with a session list nobody is waiting for.
   func testAnUnaskedControlEnvelopeDoesNotFailTheConnection() async throws {
     let fake = try FakeAgent(version: 5)
@@ -222,6 +222,21 @@ final class AgentVCSIntegrationTests: XCTestCase {
     let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
     for stream: UInt32 in [7, 0] {
       fake.push(service: 0, stream: stream, payload: Data([0x31, 0, 0, 0, 4, 0, 0, 0, 0]))
+    }
+    _ = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
+    await connection.close()
+  }
+
+  /// An agent from before #382 still runs the Status service. It pushes verdicts only to a
+  /// connection that asked, which this build never does, but one that arrives anyway, or a late
+  /// reply, is dropped rather than failing the connection.
+  func testAStatusEnvelopeFromAnOlderAgentDoesNotFailTheConnection() async throws {
+    let fake = try FakeAgent(version: 7)
+    defer { fake.stop() }
+    let connection = try await AgentVCSConnection.connect(host: .local, socketPath: fake.socketPath)
+    let verdict = #"{"version":2,"event":"status","status":{"running":true,"busy":true}}"#
+    for stream: UInt32 in [0, 9] {
+      fake.push(service: 4, stream: stream, payload: Data([1]) + Data(verdict.utf8))
     }
     _ = try await connection.request(AgentVCSRequest(method: "capabilities"), timeout: 5)
     await connection.close()

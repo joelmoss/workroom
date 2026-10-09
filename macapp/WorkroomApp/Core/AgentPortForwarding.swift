@@ -28,9 +28,8 @@ enum ForwardOpcode {
   static let accepted: UInt8 = 0x06
 }
 
-/// The port-forwarding service on one host's connection. Concrete rather than behind a protocol, for
-/// the reason `AgentWakefulnessService` is: only a wr-agent has one, and a second implementer would
-/// be a second agent.
+/// The port-forwarding service on one host's connection. Concrete rather than behind a protocol:
+/// only a wr-agent has one, and a second implementer would be a second agent.
 struct AgentForwardService: Sendable {
   let connection: AgentVCSConnection
 
@@ -984,7 +983,7 @@ final class PortForwardingModel: ObservableObject {
   }
 
   /// How the model reaches the agent, so a test can hand it a scripted agent and a connection
-  /// stream it controls — the shape `WakefulnessModel.Transport` set.
+  /// stream it controls.
   struct Transport {
     /// The service and the lease of the connection it runs on. Never spawns an agent or connects a
     /// host; the reasoning is on `LocalAgentVCS.forwarding()`, the decision point.

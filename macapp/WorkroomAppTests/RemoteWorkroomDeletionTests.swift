@@ -41,19 +41,6 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     XCTAssertEqual(calls.all, ["forget gone", "forget crashed"])
   }
 
-  /// A deleted workroom's host stops being watched (#380), even when there was nothing live to
-  /// take down: its model may have been made by a connect earlier this launch.
-  @MainActor
-  func testADeletedWorkroomsHostIsNoLongerWatched() async throws {
-    let id = UUID()
-    defer { WakefulnessModel.forgetHost(id) }
-    XCTAssertTrue(WakefulnessModel.model(forHost: id).isWatching)
-    try await RemoteWorkrooms.delete(
-      "gone", host: HostDescriptor(state: "destroyed", provisioner: mine, id: id),
-      environment: nil, recorder: Calls().recorder)
-    XCTAssertNil(WakefulnessModel.models[id])
-  }
-
   /// Another build's host takes another build's key, so this one refuses it and records nothing;
   /// one already destroyed is anyone's to drop.
   func testAnotherBuildsLiveWorkroomIsRefusedBeforeAnythingIsDone() async throws {

@@ -327,8 +327,7 @@ final class AgentEnrolmentTests: XCTestCase {
   private final class StubDriver: HostDriver, @unchecked Sendable {
     let traits = HostDriverTraits(
       transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
-      durableDisk: false, maxLifetime: nil, keepAwakeHoldsCredential: false,
-      sleepsWhenIdle: false)
+      durableDisk: false, maxLifetime: nil)
     let stdinFile: URL
     let output: String
     let status: Int32

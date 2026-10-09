@@ -21,8 +21,7 @@ final class AgentBootstrapTests: XCTestCase {
     var traits: HostDriverTraits {
       HostDriverTraits(
         transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
-        durableDisk: false, maxLifetime: nil, keepAwakeHoldsCredential: false,
-        sleepsWhenIdle: true)
+        durableDisk: false, maxLifetime: nil)
     }
 
     init(_ answers: [Answer]) { self.answers = answers }
@@ -739,8 +738,7 @@ final class AgentBootstrapTests: XCTestCase {
     let path: String
     let traits = HostDriverTraits(
       transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
-      durableDisk: false, maxLifetime: nil, keepAwakeHoldsCredential: false,
-      sleepsWhenIdle: false)
+      durableDisk: false, maxLifetime: nil)
 
     init(path: String) { self.path = path }
 

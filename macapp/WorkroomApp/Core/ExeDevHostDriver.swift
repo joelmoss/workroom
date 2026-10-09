@@ -57,8 +57,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   var traits: HostDriverTraits {
     HostDriverTraits(
       transport: .sshStdio, deriveSpeed: .seconds(5), deriveCarriesLiveProcesses: false,
-      durableDisk: true, maxLifetime: nil, keepAwakeHoldsCredential: false,
-      sleepsWhenIdle: false)
+      durableDisk: true, maxLifetime: nil)
   }
 
   let configuration: Configuration

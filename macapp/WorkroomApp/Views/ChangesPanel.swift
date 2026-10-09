@@ -384,66 +384,6 @@ private struct ChangedFileCountBadge: View {
   }
 }
 
-/// Whether a remote box is busy, as its agent reports it (issues #208, #254, #380). A remote
-/// workroom is its own box, so its sidebar row carries its own (`ProjectSidebar`). Nothing is drawn
-/// before its agent has said, or for one with no status service.
-struct WakefulnessBadge: View {
-  @ObservedObject var model: WakefulnessModel
-  var identifier: String
-  private let theme = ThemeService.shared
-
-  var body: some View {
-    if let status = model.status, status.running {
-      let glyph = Self.glyph(for: status.display(hostSleeps: model.hostSleeps), theme: theme)
-      Image(systemName: glyph.symbol)
-        .font(.caption)
-        .foregroundStyle(glyph.tint)
-        .padding(.horizontal, 4)
-        .help(Self.help(for: status, hostSleeps: model.hostSleeps))
-        .accessibilityLabel(glyph.label)
-        .accessibilityIdentifier(identifier)
-    }
-  }
-
-  static func glyph(for display: AgentWakefulness.Display, theme: ThemeService)
-    -> (symbol: String, tint: Color, label: String)
-  {
-    switch display {
-    case .idle: return ("moon.zzz", .secondary, "Idle")
-    case .busy: return ("bolt.fill", theme.tokens.fgMuted, "Busy")
-    // The one state that must not be softened: work is running and nothing is keeping the box awake.
-    case .busyUnprotected:
-      return ("bolt.slash.fill", theme.tokens.warning, "Busy but not kept awake")
-    // A stalled service's IDLE may be stale: not "idle", which reads as nothing to worry about.
-    case .unknown:
-      return ("questionmark.circle", theme.tokens.warning, "Status unknown")
-    }
-  }
-
-  static func help(for status: AgentWakefulness, hostSleeps: Bool = true) -> String {
-    switch status.display(hostSleeps: hostSleeps) {
-    case .idle: return "This machine is idle."
-    case .busy: return "This machine is busy."
-    case .unknown:
-      return
-        "This machine's agent has stopped checking on it, so whether it is busy is unknown, and "
-        + "nothing is keeping it awake: it may sleep once it has been idle on the network long "
-        + "enough."
-    case .busyUnprotected:
-      return status.stalled == true
-        ? "This machine is busy, but its agent has stopped checking on it, so nothing is "
-          + "keeping it awake and it may sleep once it has been idle on the network long enough."
-        : status.keepAwake == nil
-          ? "This machine is busy, but its agent predates the keep-awake heartbeat, so it may "
-            + "sleep once it has been idle on the network long enough. Reconnecting updates the "
-            + "agent when it can; if it does not, restart the agent on the machine."
-          : "This machine is busy, but its keep-awake heartbeat is failing "
-            + "(\(String((status.keepAwake?.error ?? "unknown error").prefix(200)))), so it may "
-            + "sleep once it has been idle on the network long enough."
-    }
-  }
-}
-
 /// Ports forwarded from a host's agent to this Mac (issues #208, #254).
 ///
 /// Per HOST, not per workroom — two local workrooms share this Mac's list, which is why it sits

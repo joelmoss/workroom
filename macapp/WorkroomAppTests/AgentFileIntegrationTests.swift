@@ -749,10 +749,6 @@ final class AgentFileIntegrationTests: XCTestCase {
 /// A stand-in for a pre-File agent: greets with `version`, answers the VCS `capabilities` probe so
 /// `connect()` succeeds, and records the service byte of every envelope it receives.
 ///
-/// `status: true` also answers `Service::Status` (`0x04`) and can push an unsolicited change of verdict
-/// (`pushStatusChange`);
-/// left off, the Status probe goes unanswered exactly as a pre-#208 protocol-3 agent's would.
-///
 /// `forward: true` answers `Service::Forward` (`0x05`) — **scripted, not socket-backed**: it replies
 /// to OPEN, echoes DATA straight back and mirrors EOF, and it records the stream id and opcode of
 /// every Forward envelope it receives. The real socket semantics are covered end to end against the
@@ -767,42 +763,14 @@ final class FakeAgent: @unchecked Sendable {
   private var services: [UInt8] = []
   private var clients: [Int32] = []
   private var forwardTraffic: [(stream: UInt32, opcode: UInt8)] = []
-  private var statusTraffic: [String] = []
 
   var receivedServices: [UInt8] { lock.withLock { services } }
-
-  /// Every Status request body received, in arrival order.
-  var receivedStatusRequests: [String] { lock.withLock { statusTraffic } }
 
   /// Every Forward envelope received, in arrival order.
   var receivedForwards: [(stream: UInt32, opcode: UInt8)] { lock.withLock { forwardTraffic } }
 
   func forwards(opcode: UInt8) -> [UInt32] {
     receivedForwards.filter { $0.opcode == opcode }.map(\.stream)
-  }
-
-  /// What a version 2 agent's `status` says (#380): the box busy, kept awake by its heartbeat.
-  static let statusResultJSON = """
-    {"running":true,"verdict":"BUSY","busy":true,"monotonic":15000.0,"cpu_fraction":0.0021,\
-    "keep_awake":{"last_sent":14990.0,"error":null},"stalled":false}
-    """
-
-  /// One `status` reply.
-  static let statusJSON = #"{"version":2,"result":"# + statusResultJSON + "}"
-
-  /// A pushed change of verdict: the box gone IDLE, a tick later.
-  static let statusChangeJSON =
-    #"{"version":2,"event":"status","status":"#
-    + statusResultJSON.replacingOccurrences(
-      of: #""verdict":"BUSY","busy":true"#,
-      with: #""verdict":"IDLE","busy":false"#
-    )
-    .replacingOccurrences(of: "15000.0", with: "15001.0") + "}"
-
-  /// Pushes an event on the Status service, stream 0 — the agent's own stream. A change of verdict
-  /// by default; any body, so a malformed or unknown event can be proven dropped.
-  func pushStatusChange(body json: String = FakeAgent.statusChangeJSON) {
-    push(service: 4, stream: 0, payload: Data([1]) + Data(json.utf8))
   }
 
   /// Pushes one envelope nobody asked for, to every client.
@@ -840,7 +808,7 @@ final class FakeAgent: @unchecked Sendable {
   private let forwardEpilogueOnData: Bool
 
   init(
-    version: UInt16, status: Bool = false, forward: Bool = false, forwardRefusal: String? = nil,
+    version: UInt16, forward: Bool = false, forwardRefusal: String? = nil,
     forwardEpilogue: Int = 0, forwardReplies: Int = 1, forwardReplyBody: Data? = nil,
     forwardRefusals: Int = .max, forwardEpilogueOnData: Bool = false,
     capabilities: String = #"{"version":1,"result":{"version":1,"reads":9,"exec":2}}"#,
@@ -877,7 +845,7 @@ final class FakeAgent: @unchecked Sendable {
         let client = accept(listenerFD, nil, nil)
         guard client >= 0 else { return }
         self?.lock.withLock { self?.clients.append(client) }
-        DispatchQueue.global().async { self?.serve(client, version: version, status: status) }
+        DispatchQueue.global().async { self?.serve(client, version: version) }
       }
     }
   }
@@ -888,7 +856,7 @@ final class FakeAgent: @unchecked Sendable {
     try? FileManager.default.removeItem(at: directory)
   }
 
-  private func serve(_ client: Int32, version: UInt16, status: Bool) {
+  private func serve(_ client: Int32, version: UInt16) {
     let magic = Array("WRA1".utf8)
     let hello = magic + [UInt8(version >> 8), UInt8(version & 0xFF), 0]
     guard send(client, hello, hello.count, 0) == hello.count else { return }
@@ -919,16 +887,8 @@ final class FakeAgent: @unchecked Sendable {
           continue
         }
         let request = String(decoding: payload, as: UTF8.self)
-        if bytes[0] == 4 { lock.withLock { statusTraffic.append(request) } }
-        let body: Data
-        switch bytes[0] {
-        case 2 where request.contains("capabilities"):
-          body = capabilities
-        case 4 where status:
-          body = Data(Self.statusJSON.utf8)
-        default:
-          continue
-        }
+        guard bytes[0] == 2, request.contains("capabilities") else { continue }
+        let body = capabilities
         var reply = Data([bytes[0]])
         for value in [stream, UInt32(body.count + 1)] {
           var value = value.bigEndian

@@ -80,7 +80,8 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// unambiguous — see `REQUEST_CHUNK_MARKER`.
   private static let requestChunkMarker: UInt8 = 0x02
   /// `Service::Vcs`, `Service::File`, `Service::Status` and `Service::Forward` in the agent's
-  /// envelope.
+  /// envelope. Status is retired (#382) and never asked, but an agent from before then may still
+  /// send on it, which is dropped rather than failing the connection.
   private static let vcsService: UInt8 = 2
   private static let fileService: UInt8 = 3
   private static let statusService: UInt8 = 4
@@ -99,10 +100,6 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// `MAX_FORWARDS` is per multiplex connection, so a per-listener count let several rows together
   /// send OPENs it would certainly refuse.
   private var forwardsHeld = 0
-  /// The verdict changes the agent pushes (#380), delivered to whoever is watching. One stream per
-  /// connection: the verdict is per box, so there is nothing to key subscriptions by.
-  let statusChanges: AsyncStream<AgentWakefulness>
-  private let statusChange: AsyncStream<AgentWakefulness>.Continuation
   /// The local process carrying a driver's stream (`ssh host wr-agent relay`), or nil for a local
   /// agent's socket. Ended when the connection fails, so a closed connection leaves no ssh behind.
   private let carrier: HostStream?
@@ -113,9 +110,6 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     self.helloVersion = helloVersion
     self.carrier = carrier
     (disconnection, disconnected) = AsyncStream<Void>.makeStream()
-    // Newest-only: a change the app never got round to reading is superseded by the next one.
-    (statusChanges, statusChange) = AsyncStream<AgentWakefulness>.makeStream(
-      bufferingPolicy: .bufferingNewest(1))
   }
 
   deinit { Darwin.close(descriptor) }
@@ -376,24 +370,6 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
     }
   }
 
-  /// The wakefulness service on this connection, or `VCSError.backendVersion` when the peer predates
-  /// it.
-  ///
-  /// Gated on the greeting version alone — there is no connect-time probe, unlike the File service.
-  /// The version IS the contract (`MIN_STATUS_VERSION`: a protocol-4 agent answers Status), and a
-  /// probe added a failure mode with no data to show for it: one reply slower than its timeout, on an
-  /// agent under exactly the load that makes wakefulness matter, left the badge off for the life of
-  /// the connection.
-  func wakefulness() throws -> AgentWakefulnessService {
-    try lock.withLock {
-      guard !closed else { throw HostConnectionError.connectionLost }
-      guard helloVersion >= AgentControlClient.minStatusVersion else {
-        throw VCSError.backendVersion("Agent does not support the status service.")
-      }
-    }
-    return AgentWakefulnessService(connection: self)
-  }
-
   /// The working directory of terminal `session` on this connection's host, or nil when the agent
   /// holds no such session or could not read it (#239).
   ///
@@ -543,13 +519,6 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// `receive()`, which is the normal end of a stream the client closed itself.
   func releaseForward(_ stream: UInt32) {
     lock.withLock { _ = forwardHandlers.removeValue(forKey: stream) }
-  }
-
-  /// A Status request: one envelope, never chunked. 5s — `status` and `keep` both read a mutex the
-  /// service thread holds for microseconds, so anything slower is a wedged agent, and this runs on a
-  /// poll that will simply ask again.
-  func statusRequest(_ request: AgentStatusRequest) async throws -> Data {
-    try await self.request(request, timeout: 5, service: Self.statusService)
   }
 
   /// A File request: one envelope, never chunked (the agent does not reassemble them).
@@ -821,8 +790,8 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
           let stream = header[1..<5].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
           let length = header[5..<9].reduce(0) { ($0 << 8) | Int($1) }
           let service = header[0]
-          // Stream 0 is the agent's own: File watch events and the Status service's verdict changes,
-          // never a reply. On the VCS service it has always been a violation and still is.
+          // Stream 0 is the agent's own: File watch events and, from an agent before #382, the Status
+          // service's verdict changes, never a reply. On the VCS service it has always been a violation and still is.
           // `forward.rs` carries nothing there today and documents a stream-0 envelope as DROPPED,
           // so it is admitted here and dropped by `deliver(forward:)`: a future agent that adds a
           // stream-0 Forward notification must not fail every shipped client's whole connection.
@@ -947,19 +916,11 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// protocol violation, and treating it as one would fail every other request on the connection. An
   /// undecodable or unrecognized event is dropped too, for forward compatibility.
   private func deliver(event payload: Data, service: UInt8) {
+    // An agent from before #382 pushes verdicts only to a connection that asked, which this build
+    // never does; one that arrives anyway is dropped.
+    if service == Self.statusService { return }
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
-    if service == Self.statusService {
-      // Only the one event kind exists; anything else a newer agent adds is dropped, exactly as an
-      // unknown file event is — and so is a version this build does not speak, as a reply's would be.
-      // A version 1 agent's `awake_ceiling_prompt` is one of those (#380).
-      guard let wire = try? decoder.decode(AgentStatusEvent.self, from: payload),
-        agentStatusVersions.contains(wire.version), wire.event == "status",
-        let status = wire.status
-      else { return }
-      statusChange.yield(status)
-      return
-    }
     guard let wire = try? decoder.decode(AgentFileEvent.self, from: payload),
       let event = wire.model
     else { return }
@@ -1001,7 +962,6 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
         }
     guard let failed else { return }
     carrier?.end()
-    statusChange.finish()
     for operation in failed.pending { operation.continuation.resume(throwing: error) }
     // Outside the lock: a handler is caller code. Every subscription learns its watch is gone, so it
     // can resubscribe on the next generation and refresh whatever it was showing.
