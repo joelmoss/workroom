@@ -236,6 +236,7 @@ final class ExeDevHostDriverTests: XCTestCase {
     } catch HostDriverError.provisioning(let detail) {
       XCTAssertEqual(detail, "exe.dev new: VM limit reached")
     }
+    XCTAssertEqual(PendingMachines.entries(in: driver.directory), [], "a removed VM stayed pending")
     let new = try XCTUnwrap(exe.arguments(of: "new"))
     XCTAssertEqual(
       Array(new[new.firstIndex(of: "--tag")!...].prefix(2)), ["--tag", "workroom-base"])
@@ -315,8 +316,9 @@ final class ExeDevHostDriverTests: XCTestCase {
           stdout: #"{"error":"VM limit reached"}"#, stderr: "", exitCode: 1, timedOut: false),
         "rm": Self.ok(#"{"error":"VM is busy"}"# + "\n" + #"{"deleted":[],"failed":[]}"#),
       ])
+    let driver = driver(exe, account: "me@x.dev")
     do {
-      _ = try await driver(exe).create()
+      _ = try await driver.create()
       XCTFail("a VM that couldn't be removed was reported removed")
     } catch HostDriverError.leftBehind(let cause, let leftover, let host) {
       XCTAssertEqual(cause, "Couldn't provision the host: exe.dev new: VM limit reached")
@@ -325,6 +327,10 @@ final class ExeDevHostDriverTests: XCTestCase {
       XCTAssertTrue(name.hasPrefix("VM workroom-") && name.hasSuffix(": VM is busy"), name)
       guard case .remote(let id)? = host else { return XCTFail("no host recorded: \(name)") }
       XCTAssertTrue(name.contains(id.uuidString.lowercased()), name)
+      // Pending too, with its account, so the launch sweep takes it if no record ever does (#373).
+      XCTAssertEqual(
+        PendingMachines.entries(in: driver.directory),
+        [.init(id: id, driver: RemoteWorkrooms.exeDevDriver, account: "me@x.dev")])
     }
     XCTAssertEqual(exe.commands, ["new", "rm"])
   }

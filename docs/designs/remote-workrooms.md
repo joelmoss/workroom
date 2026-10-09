@@ -1958,8 +1958,13 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     send the agent no settings (its `ask: false` could race a watched connection's `ask: true`), the
     badge warns when a box's boxd idle timer is under 90 s, host prompt cards scroll past two, and a
     stalled IDLE reading on a sleeping host shows "status unknown".
-  - **Not swept.** Unrecorded boxd machines are left alone: names carry no build, so one build's
-    sweep would take another's live workrooms (#373 has the boxd case).
+  - **Swept only when pending (#373).** The driver writes a machine down (`PendingMachines`) before
+    the call that makes it, and the record naming it takes it off as soon as it is written. So an
+    entry names only a machine this build began making and config never recorded. At launch, an entry that two
+    launches in a row found unrecorded is removed through the driver's `destroy`, at most 3 per
+    sweep. The sweep never lists every unrecorded `workroom-*` machine: names carry no build and
+    config is shared by every build, so a listing would take another build's create still under
+    way. A machine whose record is lost after it was written is not swept.
   - **Letting go of an idle box** (superseded by #380, below: there is no let-go now, and the
     app's poll, ceiling prompt and idle-window warning are gone). boxd's idle meter counts inbound
     traffic, and the first live run
@@ -2171,8 +2176,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     to 0.7 s of steal); two at once took 36.3-37.4 s each (four runs), with about 30 s of steal
     each. So the pool's CPU is really shared: a second building workroom makes each build about
     1.7 times slower, and an idle base costs nothing measurable. Memory was not loaded.
-  - **Not built:** a sweep of VMs a crash leaves unrecorded (TODOS.md, with #373); the generic
-    SSH driver (#378).
+  - **Not built:** the generic SSH driver (#378). A VM a crash leaves unrecorded is swept as a boxd
+    machine is (#373).
 
 ## Phase 0 Results
 

@@ -144,7 +144,11 @@ enrolment path for 5.
 
 **Priority:** P2, effort S.
 
-### exe.dev VMs a crash leaves unrecorded (macapp) — #259 eng review, with #373
+### exe.dev VMs a crash leaves unrecorded (macapp) — #259 eng review, with #373 — FIXED
+
+**Fixed by #373:** the boxd sweep covers exe.dev too. The driver writes a VM down before `new`
+or `cp` (`PendingMachines`), and the launch sweep removes one that two launches in a row found
+unrecorded. No build tag was needed: the sweep never lists VMs by name or tag.
 
 **What:** Find and remove exe.dev VMs that a create made but Workroom never recorded, as #373 does
 for boxd.

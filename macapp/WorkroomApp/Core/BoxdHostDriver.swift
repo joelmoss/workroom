@@ -109,6 +109,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     try await checkOrg()
     let id = UUID()
     let name = name(of: id)
+    try markPending(id)
     do {
       RemoteProvisioning.reportStep?(.machine)
       _ = try await cli(["machine", "new", name])
@@ -151,6 +152,8 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     }
     let id = UUID()
     let name = name(of: id)
+    // Before the snapshot, named as its machine is: `destroy` takes both.
+    try markPending(id)
     do {
       // Load-bearing twice over. A snapshot holds memory as well as disk, and the reboot below is
       // a power cut to it: whatever the base's last clone or fetch left in its page cache would
@@ -220,7 +223,17 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
         "snapshot \(self.name(of: id), privacy: .public) not removed: \(error.localizedDescription, privacy: .public)"
       )
     }
+    PendingMachines.forget([id], in: directory)
     try? FileManager.default.removeItem(at: hostDirectory(id))
+  }
+
+  /// Names machine `id` as pending before the call that makes it, so a crash before config records
+  /// its host still leaves it for the sweep (#373).
+  private func markPending(_ id: UUID) throws {
+    try PendingMachines.add(
+      .init(
+        id: id, driver: RemoteWorkrooms.boxdDriver, org: configuration.org,
+        account: configuration.account), in: directory)
   }
 
   /// Removes what a failed `create` or `deriveFromBase` made, then rethrows `error`, or says what
@@ -243,7 +256,10 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     let error =
       (error as? CLIFailure).map { HostDriverError.provisioning($0.localizedDescription) }
       ?? error
-    guard !leftover.isEmpty else { throw error }
+    guard !leftover.isEmpty else {
+      PendingMachines.forget([id], in: directory)
+      throw error
+    }
     throw HostDriverError.leftBehind(
       cause: error.localizedDescription, leftover: leftover, host: .remote(id))
   }

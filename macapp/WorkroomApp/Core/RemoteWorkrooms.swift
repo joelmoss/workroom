@@ -271,6 +271,22 @@ enum RemoteWorkrooms {
     var record: @Sendable (_ workroom: String?, _ descriptor: HostDescriptor) async throws -> Void
     /// Drops a workroom whose host never came to be.
     var forget: @Sendable (_ workroom: String) async throws -> Void
+
+    /// This recorder, taking each machine a record names off the pending list in `directory`
+    /// once the record is written (#373): from then on config names it, so only a machine whose
+    /// record was never written is left for the sweep.
+    func forgettingPending(in directory: URL?) -> Recorder {
+      guard let directory else { return self }
+      var recorder = self
+      let record = self.record
+      recorder.record = { workroom, descriptor in
+        try await record(workroom, descriptor)
+        PendingMachines.forget(
+          Set(descriptor.allBases.compactMap(\.id) + [descriptor.id].compactMap { $0 }),
+          in: directory)
+      }
+      return recorder
+    }
   }
 
   /// A workroom the sequence made: its name in config, and its instance.
@@ -282,8 +298,8 @@ enum RemoteWorkrooms {
   /// Creates a remote workroom for a project (#253): its base first if it has none, then a name
   /// in config, then the derived instance, then the instance's descriptor. The name is taken
   /// before the derive, so the branch is named for it and a crash part-way leaves an entry the
-  /// user can see and delete; anything the crash left on a container host is the sweep's
-  /// (`RemoteHosts.adopt`). A boxd machine a crash left is nobody's until #373.
+  /// user can see and delete; anything the crash left on a host is the sweep's
+  /// (`RemoteHosts.adopt`, and `PendingMachines` for a remote provider's machine, #373).
   ///
   /// When the derive fails and undid itself, the entry is dropped. When undoing it failed too,
   /// the entry keeps what is still live (host, grant) so deleting it can finish the job.
@@ -291,8 +307,10 @@ enum RemoteWorkrooms {
     repository: GitHubRepository, cloneURL: String, base existing: HostDescriptor?,
     project projectHost: HostDescriptor? = nil, key: RemoteHosts.DriverKey = .init(),
     driver: any HostTerminalDriver,
-    environment: RemoteProvisioning.Environment, recorder: Recorder
+    environment: RemoteProvisioning.Environment, recorder: Recorder,
+    pendingIn: URL? = RemoteHosts.pendingIn
   ) async throws -> Created {
+    let recorder = recorder.forgettingPending(in: pendingIn)
     let base: RemoteProvisioning.Base
     if let existing, existing.provisioner != provisioner {
       // Its key and labels are another build's, so this one can neither reach nor replace it.
@@ -578,8 +596,9 @@ enum RemoteWorkrooms {
 
 /// The app's remote hosts (#253): a `ContainerHostDriver` per container runtime and Docker context
 /// on this Mac (#309), the hosts config records adopted into theirs at each reload, and one sweep
-/// per launch for what no record names. A boxd host is reached by name through a `BoxdHostDriver`,
-/// never adopted or swept (#356).
+/// per launch for what no record names. A boxd or exe.dev host is reached by name through its
+/// provider's driver, never adopted (#356); of its machines, only those a create left pending are
+/// swept (#373).
 final class RemoteHosts: @unchecked Sendable {
   static let shared = RemoteHosts()
 
@@ -837,8 +856,9 @@ final class RemoteHosts: @unchecked Sendable {
 
   /// Takes on every host `projects` record, each into the driver for its Docker context, so their
   /// panes and services reach them after a relaunch, then sweeps once per launch what carries this
-  /// app's labels and no record names. Does nothing, and never touches Docker, when nothing is
-  /// recorded, nothing has been made, and no create left a container pending (#284). `sweep: false`
+  /// app's labels and no record names, and the remote provider machines a create left pending
+  /// (#373). Does nothing, and never touches Docker, when nothing is recorded, nothing has been
+  /// made, and no create left a container or machine pending (#284). `sweep: false`
   /// holds the sweep for a later call: a list with a delete in flight leaves out hosts config
   /// still records (#296).
   func adopt(_ projects: [Project], sweep: Bool = true) {
@@ -864,13 +884,16 @@ final class RemoteHosts: @unchecked Sendable {
     let marked = (pendingIn.map(ContainerHostDriver.pending(in:)) ?? []).map {
       DriverKey(runtime: $0.dialect == .apple ? .apple : .docker, context: $0.context)
     }
-    guard !recorded.isEmpty || !already.isEmpty || !marked.isEmpty else { return }
+    // A boxd or exe.dev machine a create began, which config may not have recorded (#373).
+    if let pendingIn { PendingMachines.forget(Set(recorded.compactMap(\.id)), in: pendingIn) }
+    let machines = pendingIn.map(PendingMachines.entries(in:)) ?? []
+    guard !recorded.isEmpty || !already.isEmpty || !marked.isEmpty || !machines.isEmpty else {
+      return
+    }
     // A descriptor with no container record yet goes to its runtime's driver that names no
     // context, where the one driver before #309 would have had it.
-    // A boxd host needs no adopting: its driver reaches it by name. Nor is boxd swept: machine
-    // names carry no build, so one build's sweep would take another's live workrooms (#284).
-    // gstack-shortcut(dec-boxd-no-sweep): a crashed create can leave a paid boxd machine running,
-    // upgrade when boxd machine names carry the build (#373).
+    // A remote provider's host needs no adopting: its driver reaches it by name. Of its machines,
+    // only those a create left pending are swept (`PendingMachines`).
     let containerKeys = already.union(recorded.compactMap(DriverKey.init)).union(marked).filter {
       $0.runtime != nil
     }
@@ -894,7 +917,8 @@ final class RemoteHosts: @unchecked Sendable {
         }
       }
     }
-    let claimed = claimSweep(Set(drivers.keys), allowed: sweep)
+    let machineKeys = Set(machines.compactMap(\.key))
+    let claimed = claimSweep(Set(drivers.keys).union(machineKeys), allowed: sweep)
     guard !claimed.isEmpty else { return }
     // Every driver keeps every recorded host, not only its own: two contexts can name one daemon
     // (the nil driver's current context and that context by name), and a sweep that kept only its
@@ -909,14 +933,30 @@ final class RemoteHosts: @unchecked Sendable {
       sweepDriver ?? { await $0.sweep(keeping: $1, images: $2, onlyPending: $3) }
     // At once: a context whose daemon is slow to answer holds up no other context's sweep.
     Task.detached(priority: .utility) {
-      await withTaskGroup(of: (DriverKey, [String]).self) { group in
+      await withTaskGroup(of: (DriverKey, [String], Bool).self) { group in
         for key in claimed {
-          guard let driver = drivers[key] else { continue }
-          group.addTask { (key, await sweep(driver, known, images, onlyPending)) }
+          if let driver = drivers[key] {
+            group.addTask {
+              let failures = await sweep(driver, known, images, onlyPending)
+              return (
+                key, failures,
+                !failures.contains { $0.hasPrefix(ContainerHostDriver.listingFailed) }
+              )
+            }
+          } else if let pendingIn = self.pendingIn {
+            let ids = Set(machines.filter { $0.key == key }.map(\.id))
+            group.addTask {
+              // Through `destroy`, which first checks the driver's account: another account's
+              // "not found" would read as gone.
+              let swept = await PendingMachines.sweep(ids, in: pendingIn) {
+                try await self.driver(key).destroy(.remote($0))
+              }
+              return (key, swept.failures, swept.ran)
+            }
+          }
         }
-        for await (key, failures) in group {
-          self.finishSweep(
-            key, ran: !failures.contains { $0.hasPrefix(ContainerHostDriver.listingFailed) })
+        for await (key, failures, ran) in group {
+          self.finishSweep(key, ran: ran)
           for failure in failures {
             Self.logger.error("remote host sweep: \(failure, privacy: .public)")
           }
@@ -1365,5 +1405,117 @@ final class RemoteHosts: @unchecked Sendable {
         "ssh-keygen \(arguments.joined(separator: " ")) exited \(process.terminationStatus)")
     }
     return data
+  }
+}
+
+/// Remote provider machines (boxd, exe.dev) a create began that no config record names yet (#373),
+/// so a crash before config records one still leaves it named. A driver writes an entry before
+/// the CLI call that makes the machine, and takes it off once it removed the machine again. The
+/// create takes it off the moment a record naming it is written (`Recorder.forgettingPending`),
+/// and each reload takes off any that config names (`RemoteHosts.adopt`). So an entry names only
+/// a machine this build began making and config never recorded. One file beside the drivers'
+/// hosts, which is this build's alone (`RemoteWorkrooms.directory` is per bundle ID).
+///
+/// The sweep removes only these, never every unrecorded `workroom-*` machine: the names carry no
+/// build, and config is shared by every build, so a listing could not tell another build's
+/// create still under way from a leftover. A machine whose record was lost after it was written
+/// is not named here and stays.
+enum PendingMachines {
+  struct Entry: Codable, Equatable, Sendable {
+    let id: UUID
+    /// The host descriptor's `driver`, `org` and `account`: the driver key that removes it.
+    let driver: String
+    var org: String? = nil
+    var account: String? = nil
+    /// The launch whose sweep first found it unrecorded (`launch`), or nil before any did.
+    var unrecordedIn: UUID? = nil
+
+    var key: RemoteHosts.DriverKey? {
+      RemoteHosts.DriverKey(HostDescriptor(driver: driver, org: org, account: account))
+    }
+  }
+
+  /// This launch, for the two-launch rule.
+  static let launch = UUID()
+  private static let fileName = "pending-machines.json"
+  private static let lock = NSLock()
+
+  static func entries(in directory: URL) -> [Entry] {
+    lock.withLock { read(directory) }
+  }
+
+  /// Writes `entry` down, before the call that makes its machine.
+  static func add(_ entry: Entry, in directory: URL) throws {
+    try update(in: directory) { $0.append(entry) }
+  }
+
+  /// Takes `ids` off: config records their hosts now, or they are gone.
+  static func forget(_ ids: Set<UUID>, in directory: URL) {
+    guard !ids.isEmpty else { return }
+    try? update(in: directory) { $0.removeAll { ids.contains($0.id) } }
+  }
+
+  /// Removes, through `destroy`, those of `ids` (one driver key's unrecorded entries) that an
+  /// earlier launch's sweep found unrecorded too, at most `cap`, and marks the rest for the next
+  /// launch: a config that failed to read once costs nothing (#284's rule). Nothing goes when the
+  /// marks cannot be written. Returns what failed, and whether every removal it tried succeeded.
+  static func sweep(
+    _ ids: Set<UUID>, in directory: URL, launch: UUID = launch, cap: Int = 3,
+    destroy: (UUID) async throws -> Void
+  ) async -> (failures: [String], ran: Bool) {
+    var confirmed: [UUID] = []
+    do {
+      try update(in: directory) { entries in
+        for index in entries.indices where ids.contains(entries[index].id) {
+          if let seen = entries[index].unrecordedIn, seen != launch {
+            confirmed.append(entries[index].id)
+          } else {
+            entries[index].unrecordedIn = launch
+          }
+        }
+      }
+    } catch {
+      return (["recording unrecorded machines: \(error.localizedDescription)"], true)
+    }
+    var failures: [String] = []
+    if confirmed.count > cap {
+      failures.append(
+        "\(confirmed.count - cap) unrecorded machine(s) left for a later launch: at most \(cap) go"
+          + " per sweep")
+    }
+    var ran = true
+    for id in confirmed.prefix(cap) {
+      do {
+        try await destroy(id)
+        forget([id], in: directory)
+      } catch {
+        // Left named, for a later sweep: signed in to another account, say.
+        ran = false
+        failures.append("machine \(id): \(error.localizedDescription)")
+      }
+    }
+    return (failures, ran)
+  }
+
+  private static func read(_ directory: URL) -> [Entry] {
+    (try? JSONDecoder().decode(
+      [Entry].self, from: Data(contentsOf: directory.appendingPathComponent(fileName)))) ?? []
+  }
+
+  /// Rewrites the file as `change` leaves it, removing it once it is empty.
+  private static func update(in directory: URL, _ change: (inout [Entry]) -> Void) throws {
+    try lock.withLock {
+      let file = directory.appendingPathComponent(fileName)
+      var entries = read(directory)
+      let before = entries
+      change(&entries)
+      guard entries != before else { return }
+      guard !entries.isEmpty else {
+        try FileManager.default.removeItem(at: file)
+        return
+      }
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      try JSONEncoder().encode(entries).write(to: file, options: .atomic)
+    }
   }
 }
