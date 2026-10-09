@@ -251,10 +251,15 @@ codesign -dv --verbose=4 "$APP/Contents/Resources/workroom" 2>&1 \
 # Voice input from programs the app runs needs both halves of the microphone pair on the
 # SIGNED artifact (test-invariants_test.sh pins only the source files). A config that drops
 # CODE_SIGN_ENTITLEMENTS, or a re-sign that forgets the file, ships with voice silently broken.
-if ! codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q 'com.apple.security.device.audio-input'; then
-  echo "error: $(basename "$APP") is signed without com.apple.security.device.audio-input; see macapp/README.md (Signing & distribution)." >&2
-  exit 1
-fi
+# `--entitlements -`, not the deprecated `:-`: on macOS 27 the XML form prints nothing at all, which
+# would fail every release. Captured rather than piped to `grep -q`, which can SIGPIPE codesign
+# under pipefail and report a present entitlement as missing.
+APP_ENTITLEMENTS="$(codesign -d --entitlements - "$APP" 2>/dev/null || true)"
+case "$APP_ENTITLEMENTS" in
+  *com.apple.security.device.audio-input*) ;;
+  *) echo "error: $(basename "$APP") is signed without com.apple.security.device.audio-input; see macapp/README.md (Signing & distribution)." >&2
+     exit 1 ;;
+esac
 if ! /usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$APP/Contents/Info.plist" >/dev/null 2>&1; then
   echo "error: $(basename "$APP") has no NSMicrophoneUsageDescription; see macapp/README.md (Signing & distribution)." >&2
   exit 1
