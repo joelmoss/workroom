@@ -303,7 +303,7 @@ datagrams; the portable path has no such constraint. Two reasons the distinction
   existing seam rather than opening one. The cost is a provider control-plane credential on the VM,
   which premise 6 now has to account for rather than deny. **Superseded by #257:** the agent keeps
   a busy box awake itself, with a network heartbeat, so no shim and no credential ship (see "As
-  built (#257)").
+  built (#257)"). The heartbeat itself went in #382 (see "As built (#382)").
 - **The portable path ships before any accelerator.** Fast provider capabilities are optimisations
   added to a working portable implementation — never the first implementation. A "pluggable" system
   whose fast path lands first ends up permanently shaped like its first provider.
@@ -2073,7 +2073,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **Mixed versions.** `Service::Status` keeps byte `0x04`, and `PROTOCOL_VERSION` is unchanged
     at 7. An app from before #382 still asks for `status`; a new agent answers every Status request
     with `{"version": 2, "error": {"unsupported": …}}`, which that app reads as no service: no
-    badge, no hang, and its watch asks again every 10 s. A new app never asks, and drops a
+    badge, no hang, and its watch asks again every 10 s. One case keeps a stale badge: that app
+    had read IDLE from an older agent, and its connection ended when another Mac handed the agent
+    off, so it keeps showing "idle" until it restarts. A new app never asks, and drops a
     verdict an older agent pushes on stream 0 rather than failing the connection. An older agent, kept
     by a busy box rather than handed off, still runs its heartbeat until the next connect hands off.
     Pinned by `tests/status_service.rs` (agent) and

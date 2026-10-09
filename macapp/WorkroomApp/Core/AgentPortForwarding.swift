@@ -189,7 +189,7 @@ final class PortForward: @unchecked Sendable {
   /// The agent's `MAX_FORWARDS`: what it holds per multiplex connection before refusing. Mirrored
   /// on the connection (`AgentVCSConnection.reserveForwardSlot`), across every listener on it, so a
   /// burst of local connects never sends OPENs the agent will certainly refuse — each refusal is
-  /// two more envelopes through the writer VCS, File and Status share.
+  /// two more envelopes through the writer VCS and File share.
   static let maxConnections = 64
   /// Out of descriptors: how long the accept queue pauses before the backlog is tried again.
   private static let acceptBackoff: TimeInterval = 0.1
@@ -642,7 +642,7 @@ private final class ForwardedConnection: @unchecked Sendable {
   private let onEvent: @Sendable (PortForward.Event) -> Void
   private let onFinished: @Sendable () -> Void
   /// Agent bytes reach the accepted socket HERE, never on the connection's reader thread: writing
-  /// straight from `receive()` would stall every VCS, File and Status request sharing that
+  /// straight from `receive()` would stall every VCS and File request sharing that
   /// connection behind one slow local client.
   private let writes = DispatchQueue(label: "workroom.agent.forward")
   private let lock = NSLock()
@@ -665,7 +665,7 @@ private final class ForwardedConnection: @unchecked Sendable {
   private var queuedToSocket = 0
   /// Client → agent bytes handed to the connection's writer and not yet on the wire. The pump
   /// waits on `credit` while this is over budget, so a stalled agent or a suspended one backs up
-  /// the local socket instead of the shared writer every VCS, File and Status request uses.
+  /// the local socket instead of the shared writer every VCS and File request uses.
   private var queuedToAgent = 0
   private let credit = NSCondition()
 
