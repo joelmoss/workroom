@@ -308,13 +308,9 @@ struct ProjectSidebar: View {
               .progressViewStyle(.circular)
               .controlSize(.small)
               .help("Downloading the workroom image: \(Int(pulled * 100))%")
-          } else if let step = store.createSteps[project.path] {
+          } else if let step = store.createSteps[id] {
             // A boxd create's steps take a while each (#356): which one it is on.
-            ProgressView(value: step.fraction)
-              .progressViewStyle(.circular)
-              .controlSize(.small)
-              .help(step.label)
-              .accessibilityLabel(step.label)
+            CreateStepCircle(step: step)
           } else {
             ProgressView().controlSize(.small)
           }
@@ -418,6 +414,8 @@ struct ProjectSidebar: View {
     let target = workroom.target(inProject: project.path)
     let targetID = target.id
     let unread = notifications.count(target: targetID)
+    // A remote workroom still being made: shown with its create's progress, but nothing to open yet.
+    let pending = workroom.host != nil && store.isCreatingWorkroom(workroom, in: project)
     HStack(spacing: 6) {
       // Leading identity glyph (a cube for a workroom), swapped for the expand/collapse chevron on
       // hover when the row has ≥2 terminals — the same left edge as the root row, so roots and
@@ -438,7 +436,9 @@ struct ProjectSidebar: View {
       // deletable even mid-run. The delete button is always laid out (it reveals via opacity), so it
       // fixes the slot's size and the smaller spinner can't shift the row.
       ZStack {
-        if store.isCreatingWorkroom(workroom, in: project) {
+        if let step = store.createSteps[id] {
+          CreateStepCircle(step: step)
+        } else if store.isCreatingWorkroom(workroom, in: project) {
           // Setup script still running against the new worktree — a spinner, and (below) no delete.
           SetupSpinner()
         } else if terminals.isRunning(forTargetID: targetID), hovered != id {
@@ -462,45 +462,48 @@ struct ProjectSidebar: View {
       }
     }.frame(height: rowHeight)
       .contentShape(Rectangle())
-      .opacity(isDraggingForSplit(id) ? 0.5 : 1)
-      .onTapGesture { selectTarget(id) }
+      .opacity(pending || isDraggingForSplit(id) ? 0.5 : 1)
+      .onTapGesture { if !pending { selectTarget(id) } }
       // Drag this workroom onto a displayed pane to split them (issue #101). Simultaneous so the List
       // still scrolls vertically; the tap above still selects.
-      .simultaneousGesture(rowSplitDrag(id))
+      .simultaneousGesture(rowSplitDrag(id), including: pending ? .none : .all)
       .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
       .accessibilityAddTraits(.isButton)
       .onHover { inside in
         if inside { hovered = id } else if hovered == id { hovered = nil }
       }
       .contextMenu {
-        // Open this workroom beside the current one (issue #163) — the same shared item the tab
-        // chip and split pane title bar get from `workroomContextMenu`. Called directly because
-        // this row's menu is its own inline list, not that shared builder; migrating it wholesale
-        // would silently add a "Close" item and reorder the menu.
-        openInSplitMenuItem(store: store, sid: id)
-        if canOpenInSplit(store: store, sid: id) { Divider() }
-        // Set/edit the display label, and remove it when one is set (issue #41). A label is a
-        // display-only alias — the workroom name and its branch are unchanged.
-        Button {
-          store.pendingWorkroomLabel = PendingWorkroomLabel(workroom: workroom, project: project)
-        } label: {
-          Label(workroom.label == nil ? "Set Label…" : "Edit Label…", systemImage: "pencil")
-        }
-        if workroom.label != nil {
+        // A workroom still being made has nothing to open, label or delete yet.
+        if !pending {
+          // Open this workroom beside the current one (issue #163) — the same shared item the tab
+          // chip and split pane title bar get from `workroomContextMenu`. Called directly because
+          // this row's menu is its own inline list, not that shared builder; migrating it wholesale
+          // would silently add a "Close" item and reorder the menu.
+          openInSplitMenuItem(store: store, sid: id)
+          if canOpenInSplit(store: store, sid: id) { Divider() }
+          // Set/edit the display label, and remove it when one is set (issue #41). A label is a
+          // display-only alias — the workroom name and its branch are unchanged.
           Button {
-            store.removeWorkroomLabel(workroom, in: project)
+            store.pendingWorkroomLabel = PendingWorkroomLabel(workroom: workroom, project: project)
           } label: {
-            Label("Remove Label", systemImage: "pencil.slash")
+            Label(workroom.label == nil ? "Set Label…" : "Edit Label…", systemImage: "pencil")
           }
+          if workroom.label != nil {
+            Button {
+              store.removeWorkroomLabel(workroom, in: project)
+            } label: {
+              Label("Remove Label", systemImage: "pencil.slash")
+            }
+          }
+          Divider()
+          Button(role: .destructive) {
+            store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
+          } label: {
+            Label("Delete \(workroom.displayName)", systemImage: "trash")
+          }
+          // Can't delete a workroom while its setup is still running against the worktree (issue #116).
+          .disabled(store.isCreatingWorkroom(workroom, in: project))
         }
-        Divider()
-        Button(role: .destructive) {
-          store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
-        } label: {
-          Label("Delete \(workroom.displayName)", systemImage: "trash")
-        }
-        // Can't delete a workroom while its setup is still running against the worktree (issue #116).
-        .disabled(store.isCreatingWorkroom(workroom, in: project))
       }
   }
 
@@ -731,6 +734,19 @@ private struct SetupSpinner: View {
       .controlSize(.small)
       .help("Setting up workroom")
       .accessibilityLabel("Setting up workroom")
+  }
+}
+
+/// How far a remote create has got (#356), on the row that has it: its project's while it builds
+/// the project's base, then its new workroom's.
+private struct CreateStepCircle: View {
+  let step: AppStore.CreateStep
+  var body: some View {
+    ProgressView(value: step.fraction)
+      .progressViewStyle(.circular)
+      .controlSize(.small)
+      .help(step.label)
+      .accessibilityLabel(step.label)
   }
 }
 
