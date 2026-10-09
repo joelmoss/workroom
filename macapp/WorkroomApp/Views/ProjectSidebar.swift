@@ -468,7 +468,7 @@ struct ProjectSidebar: View {
       // still scrolls vertically; the tap above still selects.
       .simultaneousGesture(rowSplitDrag(id), including: pending ? .none : .all)
       .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
-      .accessibilityAddTraits(.isButton)
+      .accessibilityAddTraits(pending ? [] : .isButton)
       .onHover { inside in
         if inside { hovered = id } else if hovered == id { hovered = nil }
       }
