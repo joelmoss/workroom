@@ -105,8 +105,9 @@ enum RemoteProvisioning {
       switch self {
       case .git(let command, let detail): return "git \(command) failed on the host: \(detail)"
       case .rollbackIncomplete(let cause, _, _, let cleanup) where cause.isEmpty:
-        return "Taking it down didn't finish: \(cleanup.joined(separator: "; ")). Delete it again "
-          + "to finish."
+        // What stopped it is the advice: a reason already ending in a full stop gets no second.
+        let left = cleanup.joined(separator: "; ")
+        return "Taking it down didn't finish: \(left)\(left.hasSuffix(".") ? "" : ".")"
       case .rollbackIncomplete(let cause, _, _, let cleanup):
         return "\(cause) Undoing it failed too: \(cleanup.joined(separator: "; "))"
       }

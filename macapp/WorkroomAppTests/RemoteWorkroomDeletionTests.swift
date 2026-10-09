@@ -264,14 +264,20 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     XCTAssertEqual(store.createSteps, [:], "a step after the create ended shows nowhere")
   }
 
-  /// A teardown that fails says what is still up and that deleting again finishes it, not that
-  /// undoing something failed.
-  func testAFailedTeardownSaysToDeleteAgain() {
-    let failure = RemoteProvisioning.Failure.rollbackIncomplete(
-      cause: "", host: nil, grantID: "g", cleanup: ["cancelling grant g: down"])
+  /// A teardown that fails says what is still up and why, ending in one full stop whether or not
+  /// the reason brings its own, not that undoing something failed.
+  func testAFailedTeardownSaysWhatIsStillUp() {
+    func message(_ cleanup: String) -> String? {
+      RemoteProvisioning.Failure.rollbackIncomplete(
+        cause: "", host: nil, grantID: "g", cleanup: [cleanup]
+      ).errorDescription
+    }
     XCTAssertEqual(
-      failure.errorDescription,
-      "Taking it down didn't finish: cancelling grant g: down. Delete it again to finish.")
+      message("cancelling grant g: down"), "Taking it down didn't finish: cancelling grant g: down."
+    )
+    XCTAssertEqual(
+      message("cancelling grant g: Try again in a minute."),
+      "Taking it down didn't finish: cancelling grant g: Try again in a minute.")
   }
 
   /// A later message replaces an earlier error's link as well as its details: the Install button
