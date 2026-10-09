@@ -885,8 +885,12 @@ final class RemoteHosts: @unchecked Sendable {
       DriverKey(runtime: $0.dialect == .apple ? .apple : .docker, context: $0.context)
     }
     // A boxd or exe.dev machine a create began, which config may not have recorded (#373).
-    if let pendingIn { PendingMachines.forget(Set(recorded.compactMap(\.id)), in: pendingIn) }
-    let machines = pendingIn.map(PendingMachines.entries(in:)) ?? []
+    let recordedIDs = Set(recorded.compactMap(\.id))
+    if let pendingIn { PendingMachines.forget(recordedIDs, in: pendingIn) }
+    // Filtered here too: the forget is best-effort, and a machine config names is never swept.
+    let machines = (pendingIn.map(PendingMachines.entries(in:)) ?? []).filter {
+      !recordedIDs.contains($0.id)
+    }
     guard !recorded.isEmpty || !already.isEmpty || !marked.isEmpty || !machines.isEmpty else {
       return
     }

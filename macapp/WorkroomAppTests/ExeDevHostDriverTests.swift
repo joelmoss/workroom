@@ -339,7 +339,9 @@ final class ExeDevHostDriverTests: XCTestCase {
       // Pending too, with its account, so the launch sweep takes it if no record ever does (#373).
       let pending = PendingMachines.entries(in: driver.directory)
       XCTAssertEqual(pending.map(\.id), [id])
+      XCTAssertEqual(pending.map(\.driver), [RemoteWorkrooms.exeDevDriver])
       XCTAssertEqual(pending.map(\.account), ["me@x.dev"])
+      XCTAssertNotNil(pending.first?.made, "an entry was written down with no age")
     }
     XCTAssertEqual(exe.commands, ["new", "rm"])
   }

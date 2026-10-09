@@ -248,6 +248,8 @@ final class BoxdHostDriverTests: XCTestCase {
       cli.pendingIn = driver.directory
       _ = try? await driver.create()
       XCTAssertEqual(cli.pendingAt("machine new")?.map(\.driver), [RemoteWorkrooms.boxdDriver])
+      XCTAssertNotNil(
+        cli.pendingAt("machine new")?.first?.made, "an entry was written down with no age")
       XCTAssertEqual(PendingMachines.entries(in: driver.directory).count, removed ? 0 : 1)
     }
 

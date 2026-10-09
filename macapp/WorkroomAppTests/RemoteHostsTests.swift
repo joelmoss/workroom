@@ -1775,6 +1775,39 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(left.first?.unrecordedIn, PendingMachines.launch)
   }
 
+  /// A machine config records is never swept, even when its pending entry could not be taken off
+  /// (#373): the forget is best-effort, and an entry an earlier launch marked needs no write.
+  func testAMachineConfigRecordsIsNeverSweptWhenItsEntryCannotBeForgotten() async throws {
+    // Value: protects=a live recorded workroom is not destroyed when the pending file is
+    // read-only; fails_when=adopt trusts the file's forget instead of filtering by records;
+    // why_new=Copilot review on #385; seam=makeDriver
+    let directory = try hostsDirectory()
+    let id = UUID()
+    try PendingMachines.add(
+      .init(
+        id: id, driver: RemoteWorkrooms.boxdDriver, account: "usr_1", unrecordedIn: UUID(),
+        made: .distantPast), in: directory)
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+    defer {
+      try? FileManager.default.setAttributes(
+        [.posixPermissions: 0o755], ofItemAtPath: directory.path)
+    }
+    let destroyed = Swept()
+    let remote = RemoteHosts(
+      makeDriver: { _ in
+        DerivingDriver(derived: UUID(), onDestroy: { destroyed.add("\($0)", []) })
+      }, pendingIn: directory)
+    let host = HostDescriptor(
+      driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
+      account: "usr_1")
+
+    remote.adopt([Project(path: "/boxd", vcs: "git", workrooms: [], host: host)])
+    for _ in 0..<500 where remote.sweepsRunning > 0 { try await Task.sleep(for: .milliseconds(2)) }
+    try await Task.sleep(for: .milliseconds(50))
+
+    XCTAssertTrue(destroyed.calls.isEmpty, "a recorded machine was swept: \(destroyed.calls)")
+  }
+
   /// A runtime that could not list its containers at launch (Docker not started yet) is swept on a
   /// later reload rather than skipped for the whole launch (#284), and once its sweep ran, no
   /// reload sweeps it again: a second sweep in one launch would pass for the next launch's.
