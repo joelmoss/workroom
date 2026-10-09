@@ -551,7 +551,11 @@ jobs:
     if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: macos-15
     steps:
+      # Full history, for the tags: agent-protocol_test.sh reads the latest stable release's app
+      # protocol at its tag, and fails in a clone without them.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       # build-helper_test.sh cross-compiles the workroom CLI.
       - uses: actions/setup-go@v6
