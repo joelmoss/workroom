@@ -68,6 +68,12 @@ struct HostDescriptor: Codable, Hashable {
     }
   }
 
+  /// The name the host's provider lists it under, so it can be found in boxd's or exe.dev's
+  /// dashboard, or in `docker ps`: every driver names a host `workroom-<id>`.
+  var machineName: String? {
+    isDestroyed ? nil : id.map(ContainerHostDriver.containerName)
+  }
+
   /// Whether git's credentials on this host come through the Mac's relay (#309).
   var isRelayed: Bool { credentials == "relay" }
 
@@ -231,11 +237,19 @@ struct TerminalTarget: Identifiable, Hashable {
   /// What kind of host a remote workroom is on (`HostDescriptor.kindDescription`), for its icon's
   /// tooltip (#309).
   var hostKind: String? = nil
+  /// The name its host's provider lists it under (`HostDescriptor.machineName`).
+  var machineName: String? = nil
   /// A remote workroom's own id (`HostDescriptor.workroomID`): the same on every Mac, where `id`
   /// holds this Mac's project path (#255).
   var remoteWorkroomID: UUID? = nil
 
   var isMissing: Bool { unavailability != nil }
+
+  /// The tooltip of a remote workroom's icon: what kind of host it is, and the machine to look for
+  /// in its provider's dashboard.
+  var hostTooltip: String {
+    [hostKind, machineName.map { "Machine: \($0)" }].compactMap { $0 }.joined(separator: "\n")
+  }
 
   /// The glyph that marks a workroom: the network for one on a host, a container on this Mac or a
   /// remote provider (#309), and a cube for one on this Mac itself. A root takes a house instead.
@@ -328,7 +342,7 @@ extension Workroom {
       id: TerminalTarget.workroomID(project: projectPath, name: name),
       title: displayName, path: path, unavailability: unavailability,
       remoteHost: reachableHost, remoteNote: remoteNote, hostKind: host?.kindDescription,
-      remoteWorkroomID: host?.workroomID)
+      machineName: host?.machineName, remoteWorkroomID: host?.workroomID)
   }
 
   /// Why this remote workroom's panes don't open here: nil for a serving one, a destroyed one, and a

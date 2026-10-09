@@ -537,7 +537,7 @@ private struct WorkroomTabChip: View {
       Image(systemName: isRoot ? "house" : target.workroomGlyph)
         .font(.system(size: 10))
         .foregroundStyle(VCSStatusPresentation.iconTint(store.workroomStatuses[sid] ?? .unresolved))
-        .help(isRoot ? "" : target.hostKind ?? "")
+        .help(isRoot ? "" : target.hostTooltip)
       if let reason = target.terminalUnavailability {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 10))
