@@ -297,6 +297,10 @@ final class GhosttySurfaceView: NSView {
 
     let startedPersistent = applyPersistentSession(
       to: &config, environment: &envPairs)
+    // A pane's first attach starts here, not in `reattachPersistentSession`: without this its
+    // `lastAttachAt` stays `.distantPast`, and a first attach that never connected reads as a
+    // link that was up (`reconnectIfTheLinkDropped`).
+    if startedPersistent { lastAttachAt = Date() }
 
     if !startedPersistent, let runCommand, !runCommand.isEmpty, let cmd = strdup(runCommand) {
       surfaceCStrings.append(cmd)
