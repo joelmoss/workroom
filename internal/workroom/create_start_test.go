@@ -1,6 +1,7 @@
 package workroom
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -146,6 +147,81 @@ func writeScript(t *testing.T, base, body string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(scripts, "workroom_setup"), []byte("#!/usr/bin/env bash\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A base that resolves nowhere keeps its own kind through CreateNamed, so `create --json` says
+// BaseBranchNotFound, not VCSCommandFailed.
+func TestCreateKeepsTheBaseBranchNotFoundKind(t *testing.T) {
+	svc, _, dir := newCreateFixture(t, func(args []string) (string, error) {
+		switch {
+		case args[0] == "worktree" && args[1] == "list":
+			return gitWorktrees(t.TempDir()), nil
+		case args[0] == "rev-parse" && args[1] == "--verify":
+			return "", os.ErrNotExist
+		}
+		return "", nil
+	})
+	if err := svc.Config.SetBaseBranch(dir, "nope"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.CreateNamed(dir, nil)
+	if !errors.Is(err, ErrBaseBranchNotFound) || errors.Is(err, ErrVCSCommand) {
+		t.Fatalf("err = %v, want BaseBranchNotFound and not VCSCommandFailed", err)
+	}
+}
+
+// Offline, the fetch and a networked setup script fail together: the warning still shows.
+func TestCreateShowsTheFetchWarningWhenSetupFails(t *testing.T) {
+	var dir string
+	svc, _, d := newCreateFixture(t, func(args []string) (string, error) {
+		switch {
+		case args[0] == "worktree" && args[1] == "list":
+			return gitWorktrees(dir), nil
+		case args[0] == "fetch":
+			return "", os.ErrDeadlineExceeded
+		}
+		return "", nil
+	})
+	dir = d
+	writeScript(t, dir, "exit 1")
+	if err := svc.Create(dir); err == nil {
+		t.Fatal("a failing setup script reported success")
+	}
+	if out := svc.Out.(interface{ String() string }).String(); !strings.Contains(out, "Could not fetch origin") {
+		t.Fatalf("output = %q, want the fetch warning", out)
+	}
+}
+
+// Teardown runs the workroom's own script, as setup does, so a pair comes from one place.
+func TestTeardownRunsTheWorkroomsOwnScript(t *testing.T) {
+	dir := t.TempDir()
+	vcstest.MakeGitDir(t, dir)
+	workroomsDir := filepath.Join(dir, "workrooms")
+	wrPath := filepath.Join(workroomsDir, "foo")
+	writeTeardown(t, wrPath, "echo from-the-workroom")
+	writeTeardown(t, dir, "echo from-the-root")
+	svc, buf, _ := newTestService(t, &vcs.Git{Executor: &mockExecutor{output: gitWorktrees(dir, wrPath)}})
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	_ = svc.Config.SetWorkroomsDir(workroomsDir)
+	_ = svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
+
+	if err := svc.RunTeardown(dir, "foo"); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); !strings.Contains(out, "from-the-workroom") || strings.Contains(out, "from-the-root") {
+		t.Fatalf("output = %q, want only the workroom's teardown", out)
+	}
+}
+
+func writeTeardown(t *testing.T, base, body string) {
+	t.Helper()
+	scripts := filepath.Join(base, "scripts")
+	if err := os.MkdirAll(scripts, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scripts, "workroom_teardown"), []byte("#!/usr/bin/env bash\n"+body+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

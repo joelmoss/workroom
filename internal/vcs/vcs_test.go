@@ -264,6 +264,38 @@ func TestGitCreateBranchesFromALocalOnlyBase(t *testing.T) {
 	}
 }
 
+// After origin renames its default branch, new workrooms follow it: fetch alone never moves
+// origin/HEAD, and once --prune drops the old branch, origin/HEAD would name nothing.
+func TestGitCreateFollowsARenamedDefaultBranch(t *testing.T) {
+	project, origin, _, _, _ := projectBehindOrigin(t)
+	pusher := filepath.Join(t.TempDir(), "renamer")
+	git(t, filepath.Dir(pusher), "clone", "-q", origin, pusher)
+	git(t, pusher, "commit", "-q", "--allow-empty", "-m", "on main")
+	git(t, pusher, "push", "-q", "origin", "HEAD:main")
+	git(t, origin, "symbolic-ref", "HEAD", "refs/heads/main")
+	git(t, pusher, "push", "-q", "origin", ":trunk")
+	want := git(t, pusher, "rev-parse", "HEAD")
+	if got := createdFrom(t, project); got != want {
+		t.Fatalf("workroom at %s, want the renamed default branch main %s", got, want)
+	}
+}
+
+// A base deleted on origin is not used from its stale local copy: the fetch prunes it.
+func TestGitCreateDoesNotUseABaseDeletedOnOrigin(t *testing.T) {
+	_, origin, _, _, _ := projectBehindOrigin(t)
+	pusher := filepath.Join(t.TempDir(), "dev")
+	git(t, filepath.Dir(pusher), "clone", "-q", origin, pusher)
+	git(t, pusher, "push", "-q", "origin", "HEAD:develop")
+	project := filepath.Join(t.TempDir(), "project")
+	git(t, filepath.Dir(project), "clone", "-q", origin, project)
+	git(t, pusher, "push", "-q", "origin", ":develop")
+	path := filepath.Join(t.TempDir(), "wr")
+	_, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path, "develop")
+	if !errors.Is(err, errs.ErrBaseBranchNotFound) {
+		t.Fatalf("err = %v, want ErrBaseBranchNotFound for a base deleted on origin", err)
+	}
+}
+
 // A named base that resolves nowhere is the user's typo: refuse, never silently use HEAD.
 func TestGitCreateRefusesABaseThatDoesNotExist(t *testing.T) {
 	project, _, _, _, _ := projectBehindOrigin(t)

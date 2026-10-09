@@ -32,6 +32,10 @@ func TestBaseCommandsSetClearAndListTheBranch(t *testing.T) {
 	if code, envelope = runHostCLI(t, "base", "set", "bad..name", "--project", project, "--json"); code == 0 {
 		t.Fatalf("an invalid branch name was accepted: %v", envelope)
 	}
+	// origin/ is implied: `origin/main` would mean origin/origin/main and fail every create.
+	if code, envelope = runHostCLI(t, "base", "set", "origin/main", "--project", project, "--json"); code == 0 {
+		t.Fatalf("an origin/ prefix was accepted: %v", envelope)
+	}
 
 	code, envelope = runHostCLI(t, "base", "clear", "--project", project, "--json")
 	if code != 0 || envelope["ok"] != true {

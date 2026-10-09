@@ -292,7 +292,7 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 
 	// Resolve whether a setup script exists before signalling readiness, so OnReady
 	// carries HasSetup and a GUI can decide to block on the setup log up front.
-	setupScript, ok := findSetupScript(wrPath, dir)
+	setupScript, ok := findScript("workroom_setup", wrPath, dir)
 	res.HasSetup = ok
 
 	// Signal readiness before the (potentially slow) setup script runs, so a GUI can
@@ -320,17 +320,18 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 	return res, nil
 }
 
-// findSetupScript is scripts/workroom_setup from the new workroom, whose files it sets up, else
-// from the project's root checkout, where a gitignored, local-only script lives. The workroom's
-// copy comes first because the workroom can start from a newer commit than the root has out.
-func findSetupScript(wrPath, dir string) (string, bool) {
+// findScript is scripts/<name> from the workroom, whose files it sets up or tears down, else from
+// the project's root checkout, where a gitignored, local-only script lives. The workroom's copy
+// comes first because the workroom can start from a newer commit than the root has out; setup and
+// teardown use the same rule so a pair always comes from the same place.
+func findScript(name, wrPath, dir string) (string, bool) {
 	for _, base := range []string{wrPath, dir} {
-		p := filepath.Join(base, "scripts", "workroom_setup")
+		p := filepath.Join(base, "scripts", name)
 		if _, err := os.Stat(p); err == nil {
 			return p, true
 		}
 	}
-	return filepath.Join(dir, "scripts", "workroom_setup"), false
+	return filepath.Join(dir, "scripts", name), false
 }
 
 // CreateRemote registers a workroom on another host (#253) under a newly generated name, and
@@ -366,6 +367,10 @@ func (s *Service) Create(dir string) error {
 	panel := ui.NewLogPanel(s.output(), "Setup")
 	res, err := s.CreateNamed(dir, panel)
 	panel.Close(err == nil)
+	// Before a setup error too: offline, the fetch and a networked setup script fail together.
+	if res.Warning != "" {
+		s.sayColor(res.Warning, "yellow")
+	}
 	if err != nil {
 		return err
 	}
@@ -374,9 +379,6 @@ func (s *Service) Create(dir string) error {
 		s.say("")
 	}
 	s.sayColor(fmt.Sprintf("Workroom '%s' created successfully at %s.", res.Name, ui.DisplayPath(res.Path)), "green")
-	if res.Warning != "" {
-		s.sayColor(res.Warning, "yellow")
-	}
 
 	// Offer to open the workroom in the user's editor
 	editor := os.Getenv("EDITOR")
@@ -722,8 +724,7 @@ func (s *Service) RunTeardown(dir, name string) error {
 		return err
 	}
 
-	teardownScript := filepath.Join(dir, "scripts", "workroom_teardown")
-	if _, err := os.Stat(teardownScript); err == nil {
+	if teardownScript, ok := findScript("workroom_teardown", wrPath, dir); ok {
 		s.sayStatus("teardown", fmt.Sprintf("Running %s from %q", teardownScript, wrPath))
 		if !s.Pretend {
 			var panel *ui.LogPanel

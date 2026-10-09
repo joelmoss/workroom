@@ -61,9 +61,11 @@ var createCmd = &cobra.Command{
 				// Create is not transactional: on setup failure the workroom already
 				// exists, so report it so the GUI can offer to delete it.
 				if res.Name != "" {
-					jsonErrorExtra = map[string]any{"created": map[string]any{
-						"name": res.Name, "path": res.Path, "vcs": res.VCS, "project": res.Project,
-					}}
+					created := map[string]any{"name": res.Name, "path": res.Path, "vcs": res.VCS, "project": res.Project}
+					if res.Warning != "" {
+						created["warning"] = res.Warning
+					}
+					jsonErrorExtra = map[string]any{"created": created}
 				}
 				return err
 			}

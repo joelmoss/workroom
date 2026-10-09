@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/joelmoss/workroom/internal/config"
 	"github.com/spf13/cobra"
@@ -25,6 +26,10 @@ var baseSetCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		currentCommand = "base"
+		// Workroom already looks on origin first, so `origin/main` would mean origin/origin/main.
+		if rest, ok := strings.CutPrefix(args[0], "origin/"); ok {
+			return fmt.Errorf("invalid branch name %q: give the branch without origin/, such as %q", args[0], rest)
+		}
 		// git's own rule for a branch name, so a typo is refused now, not at the next create.
 		if out, err := exec.Command("git", "check-ref-format", "--branch", args[0]).CombinedOutput(); err != nil {
 			return fmt.Errorf("invalid branch name %q: %s", args[0], out)
