@@ -176,14 +176,6 @@ final class AgentWakefulnessTests: XCTestCase {
     XCTAssertTrue(WakefulnessBadge.help(for: stalledIdle).contains("unknown"))
   }
 
-  /// An idle box that sleeps is left to its provider (#380), and the badge says so; one that never
-  /// sleeps is only idle.
-  func testAnIdleBadgeSaysTheProviderMaySleepTheBox() throws {
-    let idle = try status([Self.idle])
-    XCTAssertTrue(WakefulnessBadge.help(for: idle).contains("its provider may put it to sleep"))
-    XCTAssertEqual(WakefulnessBadge.help(for: idle, hostSleeps: false), "This machine is idle.")
-  }
-
   // MARK: - The version gate
 
   /// A peer below `minStatusVersion` silently DROPS a Status envelope, so none is sent — otherwise
@@ -280,10 +272,10 @@ final class AgentWakefulnessTests: XCTestCase {
   }
 
   // Value: protects=the pushed-change stream ends when its connection does, which is how the watch learns
-  // the agent let go and marks the host released; fails_when=AgentVCSConnection.fail stops finishing
-  // statusChanges; why_new=the model tests end the stream by hand on a stand-in transport; seam=none
-  /// A watch only notices the agent letting go (#380) because the stream it follows finishes with the
-  /// connection; one that never finished would leave the badge and the host's release stale for good.
+  // the connection is gone; fails_when=AgentVCSConnection.fail stops finishing statusChanges;
+  // why_new=the model tests end the stream by hand on a stand-in transport; seam=none
+  /// A watch only notices its connection ending (#380) because the stream it follows finishes with
+  /// the connection; one that never finished would leave the badge stale for good.
   func testTheChangesStreamEndsWithItsConnection() async throws {
     let fake = try FakeAgent(version: 4, status: true)
     fakes.append(fake)
@@ -474,27 +466,18 @@ final class AgentWakefulnessTests: XCTestCase {
   }
 
   /// A connection ending on a busy box says nothing more about it: the badge clears. One ending on
-  /// an idle box that sleeps is its agent letting go (#380): the badge stays idle, and a background
-  /// read must not reconnect it. One that never sleeps is not held back.
+  /// an idle box keeps its idle reading.
   @MainActor
   func testWhatAConnectionEndingLeaves() throws {
     let busy = WakefulnessModel(transport: Agent(replies: []).transport, host: UUID())
     busy.apply(try at(100))
     busy.connectionEnded()
     XCTAssertNil(busy.status)
-    XCTAssertFalse(RemoteHosts.shared.isReleased(.remote(busy.host)))
 
-    let sleeps = WakefulnessModel(transport: Agent(replies: []).transport, host: UUID())
-    sleeps.apply(try at(100, busy: false))
-    sleeps.connectionEnded()
-    XCTAssertEqual(sleeps.status?.busy, false, "an idle box's badge stays idle")
-    XCTAssertTrue(RemoteHosts.shared.isReleased(.remote(sleeps.host)))
-
-    let never = WakefulnessModel(transport: Agent(replies: []).transport, host: UUID())
-    never.hostSleeps = false
-    never.apply(try at(100, busy: false))
-    never.connectionEnded()
-    XCTAssertFalse(RemoteHosts.shared.isReleased(.remote(never.host)))
+    let idle = WakefulnessModel(transport: Agent(replies: []).transport, host: UUID())
+    idle.apply(try at(100, busy: false))
+    idle.connectionEnded()
+    XCTAssertEqual(idle.status?.busy, false, "an idle box's badge stays idle")
   }
 
   /// Each connection's readings are ordered among themselves only: a box that rebooted restarts

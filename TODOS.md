@@ -87,10 +87,8 @@ heartbeat first.
 covered: `status` reports `stalled` and the badge shows the box unprotected.) `catch_unwind` calls
 `wakefulness::stop()`, which sets `running` false; the heartbeat stops, and the badge (gated on
 `status.running`) disappears rather than showing "busy but not kept awake". A remote agent is always
-Linux, so a remote badge could treat `running == false` with live sessions as unprotected. Since
-#380 a crashed thread also stops the agent letting go of idle connections, so its box is held awake
-while the app is attached. (The other #257 item, the last Mac's ceiling settings winning, went with
-the ceiling in #380.)
+Linux, so a remote badge could treat `running == false` with live sessions as unprotected. (The
+other #257 item, the last Mac's ceiling settings winning, went with the ceiling in #380.)
 
 **Priority:** P2 (chosen in /ship's review of #257, 2026-10-06)
 

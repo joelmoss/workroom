@@ -319,7 +319,7 @@ final class PortForward: @unchecked Sendable {
       begin(client, on: connection)
       return
     }
-    // The host's connection has ended (its agent let go of an idle box, #380): this client is the
+    // The host's connection has ended (the network dropped, or the box slept): this client is the
     // user at the forward again, so the host is reconnected, waking its box, and the client waits
     // for that rather than being refused. Off the accept queue, which keeps accepting meanwhile.
     // At most `maxConnections` wait, as at most that many are carried: a burst against a slow wake
@@ -1004,8 +1004,8 @@ final class PortForwardingModel: ObservableObject {
       return transport
     }
 
-    /// For a remote host, the reconnect a forward runs when it is used after the agent let go of
-    /// the host (#380): the user is at the forward, as a click is the user at a workroom, so a box
+    /// For a remote host, the reconnect a forward runs when it is used after the host's connection
+    /// ended (#380): the user is at the forward, as a click is the user at a workroom, so a box
     /// asleep is woken. It never starts a stopped container: `ensureConnected` starts only a host
     /// whose workroom was opened, so the reconnect fails and the row says why. Nil for this Mac's
     /// agent, whose forwards go with its connection.

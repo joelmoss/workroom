@@ -20,8 +20,7 @@ struct HostDriverTraits: Equatable, Sendable {
   /// agent keeps a box awake with a network heartbeat, which needs no credential at all.
   let keepAwakeHoldsCredential: Bool
   /// Whether an idle instance is put to sleep by its provider (#257). Only such a host's badge can
-  /// say "busy but not kept awake", and only such a host is left be by a background read once its
-  /// agent let go of it (`RemoteHosts.released`, #380).
+  /// say "busy but not kept awake".
   let sleepsWhenIdle: Bool
 }
 

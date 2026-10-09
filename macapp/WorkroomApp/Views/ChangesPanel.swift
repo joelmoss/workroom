@@ -422,11 +422,7 @@ struct WakefulnessBadge: View {
 
   static func help(for status: AgentWakefulness, hostSleeps: Bool = true) -> String {
     switch status.display(hostSleeps: hostSleeps) {
-    case .idle:
-      // The box decides (#380): Workroom lets go of an idle box and leaves its sleep to its provider.
-      return hostSleeps
-        ? "This machine is idle. Workroom doesn't hold it awake, so its provider may put it to sleep."
-        : "This machine is idle."
+    case .idle: return "This machine is idle."
     case .busy: return "This machine is busy."
     case .unknown:
       return
@@ -976,7 +972,6 @@ struct ChangesPanel: View {
     case .busy: return "Repository is busy — another VCS command is running."
     case .staleWorkingCopy: return "The working tree changed while it was read. Try again."
     case .asleep: return RepositoryRoutingError.asleepMessage
-    case .idle: return RepositoryRoutingError.idleMessage
     }
   }
 }

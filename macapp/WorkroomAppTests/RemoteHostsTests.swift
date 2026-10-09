@@ -168,67 +168,6 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(connects.calls, 2)
   }
 
-  /// The agent lets go of an idle box itself (#380), and a background read must not undo it: an
-  /// ssh login is activity to boxd, so every status sweep reconnecting the box would hold it awake
-  /// again. Released, a box boxd says is awake reads idle and one it says is asleep reads asleep;
-  /// opening, selecting or a click (`wake`) reconnects it.
-  @MainActor
-  func testABoxItsAgentLetGoOfIsLeftAloneByABackgroundRead() async throws {
-    let connects = Connects()
-    connects.hold(false)
-    let asked = Asleep()
-    asked.set(false)
-    let remote = RemoteHosts(
-      connectHost: { try await connects.connect($0) }, isConnected: { _ in false },
-      startHost: { _ in }, now: { connects.now }, presence: { _ in asked.answer() })
-    let id = UUID()
-    let host = HostID.remote(id)
-    remote.adopt(
-      [
-        Project(
-          path: "/proj", vcs: "git",
-          workrooms: [
-            Workroom(
-              name: "b", path: "/home/boxd/r", vcsName: "workroom/b", warnings: [],
-              host: HostDescriptor(
-                driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner,
-                id: id, account: "usr_1"))
-          ])
-      ], sweep: false)
-
-    remote.released(host)
-    XCTAssertTrue(remote.isReleased(host))
-    do {
-      try await remote.ensureConnected(host)
-      XCTFail("a background read reconnected a box its agent let go of")
-    } catch {
-      XCTAssertEqual(error as? RepositoryRoutingError, .idle(host))
-    }
-    asked.set(true)
-    connects.advance(RemoteHosts.retryAfter)
-    do {
-      try await remote.ensureConnected(host)
-      XCTFail("a background read woke an asleep box")
-    } catch {
-      XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
-    }
-    XCTAssertEqual(connects.calls, 0)
-
-    // Each of the things the user does reconnects it, and forgets the release.
-    for take in [
-      { remote.select(host) }, { remote.activate(host) },
-    ] as [() -> Void] {
-      remote.released(host)
-      take()
-      XCTAssertFalse(remote.isReleased(host))
-      remote.select(nil)
-    }
-    remote.released(host)
-    try await remote.ensureConnected(host, wake: true)
-    XCTAssertFalse(remote.isReleased(host), "a click left the host released")
-    XCTAssertEqual(connects.calls, 1)
-  }
-
   /// Which panes the app counts as attached to a host: a pane attaching reconnects its host
   /// (`attachCommand`, #380), so a registration alone, an attach no pane runs, or a pane on a host
   /// the driver can't reach must not count, and each pane clears only its own.
@@ -312,7 +251,7 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(connects.calls, 3, "a second click inside the window was refused")
   }
 
-  /// A selected workroom's box is reached by a background read, asleep or let go of (#356): after
+  /// A selected workroom's box is reached by a background read, even asleep (#356): after
   /// the Mac sleeps, the open workroom must not read as asleep until it is selected again.
   @MainActor
   func testASelectedWorkroomsBoxIsReachedEvenAsleep() async throws {
@@ -344,7 +283,8 @@ final class RemoteHostsTests: XCTestCase {
   }
 
   /// Each window has its own selection (one AppStore per window): a host selected in any window is
-  /// reconnected by a background read, released or not, whatever another window selects.
+  /// reconnected by a background read, even one boxd says is asleep, whatever another window
+  /// selects.
   @MainActor
   func testAHostSelectedInAnyWindowIsReconnected() async throws {
     let connects = Connects()
@@ -369,18 +309,17 @@ final class RemoteHostsTests: XCTestCase {
           ])
       ], sweep: false)
 
+    asked.set(true)
     remote.select(host, in: "window A")
     remote.select(nil, in: "window B")
-    remote.released(host)
     try await remote.ensureConnected(host)
     XCTAssertEqual(connects.calls, 1, "another window's selection left window A's host alone")
     remote.select(nil, in: "window A")
-    remote.released(host)
     do {
       try await remote.ensureConnected(host)
-      XCTFail("an unselected released host was reconnected")
+      XCTFail("an unselected asleep host was reconnected")
     } catch {
-      XCTAssertEqual(error as? RepositoryRoutingError, .idle(host))
+      XCTAssertEqual(error as? RepositoryRoutingError, .asleep(host))
     }
   }
 
@@ -945,8 +884,7 @@ final class RemoteHostsTests: XCTestCase {
   }
 
   /// A host's verdict is watched from its connect (#380): the model is made, watching, the watch
-  /// asks once, and a change the agent pushes shows on it. The connect also forgets a release: the
-  /// host is connected again.
+  /// asks once, and a change the agent pushes shows on it.
   @MainActor
   func testConnectingAHostWatchesItsVerdict() async throws {
     let fake = try FakeAgent(version: 4, status: true)
@@ -958,10 +896,8 @@ final class RemoteHostsTests: XCTestCase {
     let remote = RemoteHosts(connectAgent: { host, _ in
       try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
     })
-    remote.released(host)
     try await remote.connect(
       host, driver: Self.driver(runtime: URL(fileURLWithPath: "/usr/bin/false"), context: nil))
-    XCTAssertFalse(remote.isReleased(host), "a connect left the host released")
     let snapshot = await HostConnectionManager.shared.snapshot(for: host)
     let lease = try XCTUnwrap(snapshot.lease)
     addTeardownBlock { await HostConnectionManager.shared.disconnect(lease) }
