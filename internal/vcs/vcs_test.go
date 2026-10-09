@@ -203,6 +203,19 @@ func TestGitCreateUsesTheLastFetchWhenOriginIsUnreachable(t *testing.T) {
 	}
 }
 
+// Value: protects=Create falls back to HEAD when origin exists but has no default branch to track; fails_when=the origin/HEAD rev-parse guard is removed; why_new=the other tests have an origin with commits or none at all; seam=none
+func TestGitCreateBranchesFromHEADWhenOriginHasNoDefaultBranch(t *testing.T) {
+	empty := filepath.Join(t.TempDir(), "empty.git")
+	git(t, filepath.Dir(empty), "init", "-q", "--bare", empty)
+	project := t.TempDir()
+	git(t, project, "init", "-q")
+	git(t, project, "commit", "-q", "--allow-empty", "-m", "only")
+	git(t, project, "remote", "add", "origin", empty)
+	if got, want := createdFrom(t, project), git(t, project, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("workroom at %s, want HEAD %s", got, want)
+	}
+}
+
 func TestGitCreateBranchesFromHEADWithoutOrigin(t *testing.T) {
 	project := t.TempDir()
 	git(t, project, "init", "-q")
