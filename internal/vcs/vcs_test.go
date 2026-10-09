@@ -127,7 +127,7 @@ func TestGitCreate(t *testing.T) {
 	mock := &MockExecutor{Output: "origin"}
 	git := &Git{Executor: mock}
 
-	_, err := git.Create("/project", "workroom/foo", "/workrooms/foo", "")
+	_, err := git.Create("/project", "workroom/foo", "/workrooms/foo", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func createdFrom(t *testing.T, project string) string {
 func createdFromBase(t *testing.T, project, base string) (commit, warning string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "wr")
-	warning, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path, base)
+	warning, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path, base, false)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestGitCreateInARepositoryWithNoCommits(t *testing.T) {
 	project := filepath.Join(t.TempDir(), "project")
 	git(t, filepath.Dir(project), "clone", "-q", empty, project)
 	path := filepath.Join(t.TempDir(), "wr")
-	if _, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path, ""); err != nil {
+	if _, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path, "", false); err != nil {
 		t.Fatalf("create in a repository with no commits: %v", err)
 	}
 	if got := git(t, path, "symbolic-ref", "--short", "HEAD"); got != "workroom/wr" {
@@ -290,7 +290,7 @@ func TestGitCreateDoesNotUseABaseDeletedOnOrigin(t *testing.T) {
 	git(t, filepath.Dir(project), "clone", "-q", origin, project)
 	git(t, pusher, "push", "-q", "origin", ":develop")
 	path := filepath.Join(t.TempDir(), "wr")
-	_, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path, "develop")
+	_, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path, "develop", false)
 	if !errors.Is(err, errs.ErrBaseBranchNotFound) {
 		t.Fatalf("err = %v, want ErrBaseBranchNotFound for a base deleted on origin", err)
 	}
@@ -315,7 +315,52 @@ func TestGitCreateWarnsWhenTheBaseIsOnlyLocal(t *testing.T) {
 func TestGitCreateSaysTheFetchFailedWhenTheBaseIsMissing(t *testing.T) {
 	project, _, _, _, _ := projectBehindOrigin(t)
 	git(t, project, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
-	_, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", filepath.Join(t.TempDir(), "wr"), "develop")
+	_, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", filepath.Join(t.TempDir(), "wr"), "develop", false)
+	if !errors.Is(err, errs.ErrBaseBranchNotFound) || !strings.Contains(err.Error(), "could not fetch origin") {
+		t.Fatalf("err = %v, want BaseBranchNotFound naming the failed fetch", err)
+	}
+}
+
+// countingExecutor runs real git and counts each `git fetch` by remote.
+type countingExecutor struct {
+	RealExecutor
+	fetches map[string]int
+}
+
+func (e *countingExecutor) Run(dir, name string, args ...string) (string, error) {
+	if len(args) > 0 && args[0] == "fetch" {
+		e.fetches[args[len(args)-1]]++
+	}
+	return e.RealExecutor.Run(dir, name, args...)
+}
+
+// The app-wide default that doesn't exist here gives way to origin's default branch, with one
+// fetch of origin, and says so.
+func TestGitCreateFallsBackFromADefaultThatDoesNotFit(t *testing.T) {
+	project, _, _, newer, _ := projectBehindOrigin(t)
+	exec := &countingExecutor{fetches: map[string]int{}}
+	path := filepath.Join(t.TempDir(), "wr")
+	warning, err := (&Git{Executor: exec}).Create(project, "workroom/wr", path, "upstream/main", true)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if got := git(t, path, "rev-parse", "HEAD"); got != newer {
+		t.Fatalf("workroom at %s, want origin's default %s", got, newer)
+	}
+	if exec.fetches["origin"] != 1 {
+		t.Fatalf("fetches = %v, want origin fetched once", exec.fetches)
+	}
+	if !strings.Contains(warning, "default base branch upstream/main") || !strings.Contains(warning, "origin/trunk") {
+		t.Fatalf("warning = %q, want the unused default and origin/trunk", warning)
+	}
+}
+
+// A default that couldn't be looked for, because the fetch failed, may well exist: it fails with
+// the fetch as the reason instead of falling back.
+func TestGitCreateDoesNotFallBackWhenTheFetchFailed(t *testing.T) {
+	project, _, _, _, _ := projectBehindOrigin(t)
+	git(t, project, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
+	_, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", filepath.Join(t.TempDir(), "wr"), "develop", true)
 	if !errors.Is(err, errs.ErrBaseBranchNotFound) || !strings.Contains(err.Error(), "could not fetch origin") {
 		t.Fatalf("err = %v, want BaseBranchNotFound naming the failed fetch", err)
 	}
@@ -376,7 +421,7 @@ func TestGitCreateReadsOriginPrefixAndSlashedBranches(t *testing.T) {
 func TestGitCreateRefusesABaseThatDoesNotExist(t *testing.T) {
 	project, _, _, _, _ := projectBehindOrigin(t)
 	path := filepath.Join(t.TempDir(), "wr")
-	_, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path, "nope")
+	_, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path, "nope", false)
 	if !errors.Is(err, errs.ErrBaseBranchNotFound) {
 		t.Fatalf("err = %v, want ErrBaseBranchNotFound", err)
 	}

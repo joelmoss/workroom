@@ -19,8 +19,9 @@ type VCS interface {
 	Type() Type
 	Label() string
 	// Create makes the workspace, starting from base when non-empty, and returns a warning
-	// for the user, or "".
-	Create(dir, vcsName, path, base string) (string, error)
+	// for the user, or "". fallback marks base as the app-wide default, which gives way to
+	// origin's default branch in a project it doesn't fit.
+	Create(dir, vcsName, path, base string, fallback bool) (string, error)
 	Delete(dir, vcsName, path string) (string, error)
 	// ListWorkrooms is the sole membership primitive: a caller that needs an existence check
 	// lists once and does an in-memory lookup, rather than the interface exposing a second

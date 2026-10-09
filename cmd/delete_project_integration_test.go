@@ -54,7 +54,7 @@ func setupGitProject(t *testing.T) (svc *workroom.Service, cfg *config.Config, c
 	wrPath = filepath.Join(workroomsDir, "feat")
 
 	g := &vcs.Git{Executor: &vcs.RealExecutor{}}
-	if _, err := g.Create(canon, "workroom/feat", wrPath, ""); err != nil {
+	if _, err := g.Create(canon, "workroom/feat", wrPath, "", false); err != nil {
 		t.Fatalf("git worktree add failed: %v", err)
 	}
 

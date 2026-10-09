@@ -132,6 +132,15 @@ func TestCreateFallsBackWhenTheGlobalBaseDoesNotFit(t *testing.T) {
 	if !strings.Contains(res.Warning, "default base branch upstream/main") {
 		t.Fatalf("warning = %q, want it to name the default that was not used", res.Warning)
 	}
+	fetches := 0
+	for _, c := range exec.calls {
+		if len(c) > 1 && c[1] == "fetch" {
+			fetches++
+		}
+	}
+	if fetches != 1 {
+		t.Fatalf("%d fetches, want one", fetches)
+	}
 }
 
 // A failed fetch reaches the result and the human output as a warning.

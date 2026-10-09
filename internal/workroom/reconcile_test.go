@@ -23,7 +23,7 @@ type fakeVCS struct {
 
 func (f *fakeVCS) Type() vcs.Type { return f.typ }
 func (f *fakeVCS) Label() string  { return string(f.typ) }
-func (f *fakeVCS) Create(dir, vcsName, path, base string) (string, error) {
+func (f *fakeVCS) Create(dir, vcsName, path, base string, fallback bool) (string, error) {
 	return "", nil
 }
 func (f *fakeVCS) Delete(dir, vcsName, path string) (string, error) {

@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/joelmoss/workroom/internal/config"
+	"github.com/joelmoss/workroom/internal/errs"
 	"github.com/joelmoss/workroom/internal/vcs"
 	"github.com/spf13/cobra"
 )
@@ -70,14 +72,22 @@ func setBase(branch string) error {
 	if err != nil {
 		return err
 	}
-	// The CLI otherwise registers a project at its first create, which a base may have to come
-	// before; register a repository here as add-project does.
-	if _, err := vcs.Detect(dir); err != nil {
+	if err := refuseWorkroom(cfg, dir); err != nil {
 		return err
 	}
-	if !pretend {
-		if err := cfg.AddProject(dir, string(vcs.TypeGit)); err != nil {
+	// The CLI otherwise registers a project at its first create, which a base may have to come
+	// before; `set` registers a repository as add-project does. `clear` only edits, so it still
+	// works for a project whose folder has moved.
+	if branch != "" {
+		if _, err := vcs.Detect(dir); err != nil {
 			return err
+		}
+	}
+	if !pretend {
+		if branch != "" {
+			if err := cfg.AddProject(dir, string(vcs.TypeGit)); err != nil {
+				return err
+			}
 		}
 		if err := cfg.SetBaseBranch(dir, branch); err != nil {
 			return err
@@ -85,6 +95,27 @@ func setBase(branch string) error {
 	}
 	if jsonOutput {
 		return writeJSONSuccess(os.Stdout, "base", map[string]any{"project": dir, "base_branch": branch})
+	}
+	return nil
+}
+
+// refuseWorkroom refuses dir when it is a workroom: a linked worktree (its .git is a file) or a
+// registered workroom's path. A base belongs to the project's root checkout; run from a workroom
+// terminal, `base set` would otherwise register that workroom as a project of its own.
+func refuseWorkroom(cfg *config.Config, dir string) error {
+	if info, err := os.Stat(filepath.Join(dir, ".git")); err == nil && !info.IsDir() {
+		return errs.ErrInWorkroom
+	}
+	projects, err := cfg.AllProjects()
+	if err != nil {
+		return err
+	}
+	for _, project := range projects {
+		for _, wr := range project.Workrooms {
+			if wr.Path == dir {
+				return errs.ErrInWorkroom
+			}
+		}
 	}
 	return nil
 }
