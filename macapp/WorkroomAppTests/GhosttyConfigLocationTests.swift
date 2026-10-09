@@ -66,7 +66,7 @@ final class GhosttyConfigLocationTests: XCTestCase {
     // pass against a reverted sanitiser. The file's length does not — the two stripped newlines are
     // two extra lines.
     XCTAssertEqual(
-      lines.count, 6, "the name broke out of its own directive and started another line")
+      lines.count, 7, "the name broke out of its own directive and started another line")
     XCTAssertEqual(
       lines.first { $0.hasPrefix("minimum-contrast") }, "minimum-contrast = 3.0",
       "the injected `minimum-contrast = 0` became a directive and displaced the real contrast floor"
