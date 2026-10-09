@@ -49,7 +49,10 @@ esac
 # The socket's directory is the trust boundary (a client of the socket can type into every
 # session), so it is the user's own and 0700, as is every directory above it that this creates.
 umask 077
-install -d -o "$user" -g "$user" -m 700 "$agent_dir" "$screens"
+# Made as the user, so every directory made on the way to them is the user's too: the agent keeps
+# its layouts beside its screens (#255), and a parent left to root refuses them.
+runuser -u "$user" -- mkdir -p "$agent_dir" "$screens"
+chmod 700 "$agent_dir" "$screens"
 install -d -m 755 /usr/local/libexec
 
 cat > /usr/local/libexec/workroom-identity <<EOF
