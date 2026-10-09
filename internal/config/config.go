@@ -455,7 +455,8 @@ func (c *Config) RemoveWorkroom(parentPath, name string) error {
 
 		delete(workrooms, name)
 
-		if len(workrooms) == 0 && project["host"] == nil {
+		// A host or a base branch is the project's own setting: keep the entry that holds it.
+		if len(workrooms) == 0 && project["host"] == nil && project["base_branch"] == nil {
 			delete(data, parentPath)
 		}
 

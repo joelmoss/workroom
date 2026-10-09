@@ -617,3 +617,22 @@ func TestGlobalBaseBranchIsAReservedScalar(t *testing.T) {
 		t.Fatalf("clear: err %v, base %q", err, c.BaseBranch())
 	}
 }
+
+// Deleting a project's last workroom from the CLI drops the empty project, but not one that holds
+// a base branch: that setting would be lost silently.
+func TestRemoveLastWorkroomKeepsAProjectWithABaseBranch(t *testing.T) {
+	c := newTestConfig(t)
+	if err := c.AddWorkroom("/project", "foo", "/w/foo", "git"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetBaseBranch("/project", "develop"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RemoveWorkroom("/project", "foo"); err != nil {
+		t.Fatal(err)
+	}
+	projects, _ := c.AllProjects()
+	if got := projects["/project"].BaseBranch; got != "develop" {
+		t.Fatalf("base after deleting the last workroom = %q, want develop", got)
+	}
+}
