@@ -76,7 +76,7 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 /// from never arrives. With no port, the kernel delivers the signal as usual.
 ///
 /// Not under a debugger: lldb catches breakpoints through the same ports, and launched under it
-/// the agent would die at the first one.
+/// the agent would die at the first one. Its sessions then inherit the debugger's port instead.
 #[cfg(target_os = "macos")]
 fn drop_inherited_exception_ports() {
     // <sys/proc_info.h>
