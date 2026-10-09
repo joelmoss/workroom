@@ -24,7 +24,7 @@ var (
 	ErrWorkroomNotFound    = errors.New("workroom is not registered")
 	ErrInvalidHost         = errors.New("a host descriptor must be a JSON object")
 	ErrWorkroomExists      = errors.New("a workroom of that name is already registered")
-	ErrBaseBranchNotFound  = errors.New("the project's base branch exists neither on origin nor locally")
+	ErrBaseBranchNotFound  = errors.New("the base branch exists neither on its remote nor locally")
 )
 
 // classification is one sentinel error's entry in the registry: its stable --json code and

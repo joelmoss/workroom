@@ -22,6 +22,8 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
   let warning: String?
   /// The app-wide base branch `list` reports.
   var globalBase: String?
+  /// The project's own base branch `list` reports.
+  var projectBase: String?
   /// What `setBaseBranch` was asked to store, in order.
   private(set) var baseBranches: [String?] = []
 
@@ -61,7 +63,9 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
         name: $0, path: "\(projectPath)/.workrooms/\($0)", vcsName: "git", warnings: [])
     }
     return ListResponse(
-      projects: [Project(path: projectPath, vcs: "git", workrooms: workrooms)],
+      projects: [
+        Project(path: projectPath, vcs: "git", workrooms: workrooms, baseBranch: projectBase)
+      ],
       workroomsDir: nil, configPath: nil, baseBranch: globalBase)
   }
 
@@ -324,6 +328,22 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       store.effectiveBaseBranch(
         for: Project(path: projectPath, vcs: "git", workrooms: [], baseBranch: "develop")),
       "develop")
+  }
+
+  /// A workroom label makes every reload rebuild the project; its base branch must survive that, or
+  /// Project Settings shows it empty and a remote create ignores it.
+  func testALabelledReloadKeepsTheProjectsBaseBranch() async {
+    let fake = CreatingFakeCLI(projectPath: projectPath, workroomName: "x", hasSetup: false)
+    fake.projectBase = "develop"
+    let store = makeStore(fake)
+    await store.reload()
+    guard let project = store.projects.first, let workroom = project.workrooms.first else {
+      return XCTFail("no project")
+    }
+    store.setWorkroomLabel(workroom, in: project, to: "Labelled")
+    await store.reload()
+
+    XCTAssertEqual(store.projects.first?.baseBranch, "develop")
   }
 
   /// Project Settings stores a trimmed branch, and a blank one clears it.

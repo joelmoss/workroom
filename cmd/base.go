@@ -6,6 +6,7 @@ import (
 	"os/exec"
 
 	"github.com/joelmoss/workroom/internal/config"
+	"github.com/joelmoss/workroom/internal/vcs"
 	"github.com/spf13/cobra"
 )
 
@@ -69,7 +70,15 @@ func setBase(branch string) error {
 	if err != nil {
 		return err
 	}
+	// The CLI otherwise registers a project at its first create, which a base may have to come
+	// before; register a repository here as add-project does.
+	if _, err := vcs.Detect(dir); err != nil {
+		return err
+	}
 	if !pretend {
+		if err := cfg.AddProject(dir, string(vcs.TypeGit)); err != nil {
+			return err
+		}
 		if err := cfg.SetBaseBranch(dir, branch); err != nil {
 			return err
 		}

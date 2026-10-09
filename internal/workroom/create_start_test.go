@@ -107,6 +107,33 @@ func TestCreateUsesTheGlobalBaseUnlessTheProjectHasOne(t *testing.T) {
 	}
 }
 
+// An app-wide default that doesn't exist in this project (`upstream/main` with no upstream) falls
+// back to origin's default branch with a warning; it must not block the create.
+func TestCreateFallsBackWhenTheGlobalBaseDoesNotFit(t *testing.T) {
+	svc, exec, dir := newCreateFixture(t, func(args []string) (string, error) {
+		switch {
+		case args[0] == "worktree" && args[1] == "list":
+			return gitWorktrees(t.TempDir()), nil
+		case args[0] == "rev-parse" && args[1] == "--verify" && !strings.HasPrefix(args[3], "refs/remotes/origin/HEAD"):
+			return "", os.ErrNotExist
+		}
+		return "", nil
+	})
+	if err := svc.Config.SetGlobalBaseBranch("upstream/main"); err != nil {
+		t.Fatal(err)
+	}
+	res, err := svc.CreateNamed(dir, nil)
+	if err != nil {
+		t.Fatalf("a global base that doesn't fit blocked the create: %v", err)
+	}
+	if add := worktreeAdd(exec.calls); add == nil || add[len(add)-1] != "refs/remotes/origin/HEAD" {
+		t.Fatalf("worktree add = %v, want origin's default branch", add)
+	}
+	if !strings.Contains(res.Warning, "default base branch upstream/main") {
+		t.Fatalf("warning = %q, want it to name the default that was not used", res.Warning)
+	}
+}
+
 // A failed fetch reaches the result and the human output as a warning.
 func TestCreateReportsAFailedFetch(t *testing.T) {
 	svc, _, dir := newCreateFixture(t, func(args []string) (string, error) {

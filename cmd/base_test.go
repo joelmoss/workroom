@@ -4,11 +4,13 @@ import (
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/config"
+	"github.com/joelmoss/workroom/internal/vcs/vcstest"
 )
 
 func TestBaseCommandsSetClearAndListTheBranch(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	project := t.TempDir()
+	vcstest.MakeGitDir(t, project)
 	cfg, err := config.New("")
 	if err != nil {
 		t.Fatal(err)
@@ -64,5 +66,25 @@ func TestBaseGlobalSetsTheDefaultAndListShowsIt(t *testing.T) {
 	baseGlobal = false
 	if _, envelope = runHostCLI(t, "list", "--json"); envelope["base_branch"] != nil {
 		t.Fatalf("list after clear: %v", envelope)
+	}
+}
+
+// A CLI user may need a base before the first create, which is what registers a project.
+func TestBaseSetRegistersTheRepository(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	project := t.TempDir()
+	vcstest.MakeGitDir(t, project)
+	t.Cleanup(func() { baseProject, listProject, baseGlobal = "", "", false })
+	if code, envelope := runHostCLI(t, "base", "set", "main", "--project", project, "--json"); code != 0 {
+		t.Fatalf("set on an unregistered repository: exit %d, %v", code, envelope)
+	}
+	cfg, _ := config.New("")
+	canon, _ := config.CanonicalPath(project)
+	projects, _ := cfg.AllProjects()
+	if projects[canon].BaseBranch != "main" {
+		t.Fatalf("project = %#v, want it registered with base main", projects[canon])
+	}
+	if code, _ := runHostCLI(t, "base", "set", "main", "--project", t.TempDir(), "--json"); code == 0 {
+		t.Fatal("a directory that is no repository was registered")
 	}
 }

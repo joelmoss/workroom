@@ -218,6 +218,8 @@ private struct NewWorkroomsSection: View {
         .focused($focused)
         .onSubmit(save)
         .onChange(of: focused) { _, now in if !now { save() } }
+        // Closing Settings mid-edit takes no Return and may not end focus first.
+        .onDisappear(perform: save)
         .accessibilityIdentifier("settings.control.baseBranch")
       if let failure {
         Text(failure).font(.footnote).foregroundStyle(.red)
@@ -243,6 +245,9 @@ private struct NewWorkroomsSection: View {
     Task {
       do {
         try await WorkroomCLI.shared.setGlobalBaseBranch(value.isEmpty ? nil : value)
+        // Every window's store reads it from here; otherwise a remote create before the next
+        // reload would still use the old default.
+        ProjectStore.shared.globalBaseBranch = value.isEmpty ? nil : value
         saved = value
         failure = nil
       } catch {
