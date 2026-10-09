@@ -40,6 +40,17 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
     baseBranches.append(branch)
   }
 
+  /// As the CLI does: the warning rides the "created" event, before setup runs.
+  func create(
+    project: String,
+    onLog: ((String) -> Void)?,
+    onReady: ((String, String, Bool) -> Void)?,
+    onWarning: ((String) -> Void)?
+  ) async throws -> CreateResponse {
+    if let warning { onWarning?(warning) }
+    return try await create(project: project, onLog: onLog, onReady: onReady)
+  }
+
   private var workroomAbsPath: String { "\(projectPath)/.workrooms/\(workroomName)" }
 
   func list(warnings: String, project: String?) async throws -> ListResponse {
@@ -267,6 +278,22 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
     XCTAssertEqual(store.notifications.items.map(\.body), [warning])
     XCTAssertEqual(store.notifications.items.first?.targetID, store.selectedTarget?.id)
+  }
+
+  /// Offline, the fetch and a networked setup script fail together: the setup failure must not
+  /// swallow the warning.
+  func testAFetchWarningSurvivesAFailedSetup() async {
+    let warning =
+      "Could not fetch origin. The workroom starts from origin/main, which may be out of date."
+    let fake = CreatingFakeCLI(
+      projectPath: projectPath, workroomName: "calm-otter", hasSetup: true, failAfterReady: true,
+      warning: warning)
+    let store = makeStore(fake)
+    store.systemNotifier = SilentNotifier()
+
+    await store.createWorkroom(in: Project(path: projectPath, vcs: "git", workrooms: []))
+
+    XCTAssertEqual(store.notifications.items.map(\.body), [warning])
   }
 
   /// A create that fetched raises nothing.

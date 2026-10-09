@@ -134,6 +134,14 @@ protocol WorkroomCLIProtocol {
     onLog: ((String) -> Void)?,
     onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?
   ) async throws -> CreateResponse
+  /// `create`, also handing `onWarning` the create's fetch warning as soon as the workroom exists,
+  /// so a setup script that then fails doesn't lose it.
+  func create(
+    project: String,
+    onLog: ((String) -> Void)?,
+    onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?,
+    onWarning: ((String) -> Void)?
+  ) async throws -> CreateResponse
   func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws
   func deleteProject(
     _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
@@ -148,6 +156,16 @@ protocol WorkroomCLIProtocol {
 
 /// Fakes that never meet a remote workroom need not implement its two calls.
 extension WorkroomCLIProtocol {
+  /// Fakes that report no warning need not implement it.
+  func create(
+    project: String,
+    onLog: ((String) -> Void)?,
+    onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?,
+    onWarning: ((String) -> Void)?
+  ) async throws -> CreateResponse {
+    try await create(project: project, onLog: onLog, onReady: onReady)
+  }
+
   func setHost(project: String, workroom: String?, descriptor: Data?) async throws {
     throw WorkroomCLIError.cli(kind: "Unsupported", message: "setHost is not faked")
   }
@@ -262,6 +280,15 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     onLog: ((String) -> Void)? = nil,
     onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)? = nil
   ) async throws -> CreateResponse {
+    try await create(project: project, onLog: onLog, onReady: onReady, onWarning: nil)
+  }
+
+  func create(
+    project: String,
+    onLog: ((String) -> Void)?,
+    onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)?,
+    onWarning: ((String) -> Void)?
+  ) async throws -> CreateResponse {
     // Setup scripts run inside this call, so resolve the user's environment first — freshly, in
     // case a tool was installed or a dotfile edited since launch. Usually already warm: the New
     // Workroom dialog kicks the same single-flighted probe when it opens.
@@ -272,6 +299,7 @@ final class WorkroomCLI: WorkroomCLIProtocol {
       switch event.type {
       case "log": if let text = event.text { onLog?(text) }
       case "created":
+        if let warning = event.warning, !warning.isEmpty { onWarning?(warning) }
         if let name = event.name, let path = event.path {
           onReady?(name, path, event.setup ?? false)
         }

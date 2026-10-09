@@ -288,7 +288,8 @@ workroom base clear
 fetches `origin` and uses `origin`'s copy of the branch. If `origin` does not have it, Workroom uses
 the local branch. If neither exists, the create fails with `BaseBranchNotFound`. `workroom base clear`
 goes back to `origin`'s default branch. Both take `--project <dir>`. In the macOS app, set it in
-Project Settings, under New Workrooms. Remote workrooms use the same setting.
+Project Settings, under New Workrooms. Remote workrooms use the same setting, but they have no local
+branch to fall back to, so the branch must be on `origin`.
 
 #### List workrooms
 
@@ -482,8 +483,9 @@ createdb "myapp_${WORKROOM_NAME}"
 
 ### Teardown script
 
-Place an executable script at `scripts/workroom_teardown` in your project (`chmod +x`). It runs
-**inside the workroom** just before it's deleted — undo anything setup created that lives outside
+Place an executable script at `scripts/workroom_teardown` in your project (`chmod +x`). Workroom
+looks for it as it looks for the setup script: the workroom's own copy first, then the root project's.
+It runs **inside the workroom** just before it's deleted — undo anything setup created that lives outside
 the workroom (the directory itself is removed for you):
 
 ```bash

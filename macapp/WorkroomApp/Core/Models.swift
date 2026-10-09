@@ -513,4 +513,6 @@ struct StreamEvent: Decodable {
   let name: String?
   let path: String?
   let setup: Bool?
+  /// On "created": the create's fetch warning, which arrives before setup runs.
+  var warning: String? = nil
 }

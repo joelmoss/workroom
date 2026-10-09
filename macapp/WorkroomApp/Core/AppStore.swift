@@ -3477,6 +3477,8 @@ final class AppStore: ObservableObject {
     // whole point of a setup script. The `catch` awaits it too, so a setup *failure* can't lose its
     // dialog the same way.
     let landing = CreationLandingBox()
+    // The create's fetch warning, from the "created" event, so a failed setup keeps it.
+    let warning = CreationWarningBox()
     // ONE release point per create, and all three are keyed on THIS create's own target — never on
     // which dialog happens to be on screen (issue #167, defect 1). A create superseded in the
     // presentation slot still lifts its own deletion protection here, and a stale landing can never
@@ -3523,7 +3525,8 @@ final class AppStore: ObservableObject {
                 name: name, project: project, setup: setup, session: session,
                 splitAnchor: splitAnchor, landing: landing)
             })
-        }
+        },
+        onWarning: { warning.value = $0 }
       )
       await landing.finish()
       session.finish()
@@ -3541,11 +3544,8 @@ final class AppStore: ObservableObject {
       // terminal. Auto-run is NOT triggered here: it fires from `ensureInitialTerminal` when the
       // terminal pane first mounts, which for a setup script is after dismissal (issue #7).
       if let id = landing.landedID, creations[id]?.hasSetup != true { creations[id] = nil }
-      if let id = landing.landedID, let warning = created.warning, !warning.isEmpty {
-        surface(
-          notifications.recordNotice(
-            targetID: id, source: notificationSource(forTargetID: id),
-            title: "This workroom may start from an old commit", body: warning))
+      if let id = landing.landedID, let text = warning.value ?? created.warning, !text.isEmpty {
+        noticeStaleStart(of: id, text)
       }
       clearPendingCreation(session)
     } catch {
@@ -3564,6 +3564,8 @@ final class AppStore: ObservableObject {
         selectedProjectID = project.id
         selectedTargetID = .workroom(project: project.path, name: name)
         session.finish(failure: errorText(error))
+        // Offline, the fetch and a networked setup script fail together: say both.
+        if let text = warning.value { noticeStaleStart(of: id, text) }
       } else {
         // Failed before the workroom existed — no tab/slot target; surface it.
         present(error)
@@ -3742,6 +3744,13 @@ final class AppStore: ObservableObject {
       }
       guard repository.host == "github.com" else {
         throw RemoteWorkrooms.Failure.notOnGitHub("Its origin is on \(repository.host).")
+      }
+      // A remote host has only origin, so a base branch this Mac alone has would fail its derive
+      // minutes in. Unreachable (nil) is left to the derive, which says so itself.
+      if let branch = project.baseBranch,
+        await resolver.originHasBranch(branch, in: project.path) == false
+      {
+        throw RemoteWorkrooms.Failure.baseBranchNotOnOrigin(branch)
       }
       let path = project.path
       let buildsBase = base == nil
@@ -5288,6 +5297,14 @@ final class AppStore: ObservableObject {
     surface(note)
   }
 
+  /// Tell the user a new workroom may start from an old commit: its create couldn't fetch.
+  private func noticeStaleStart(of id: TerminalTarget.ID, _ warning: String) {
+    surface(
+      notifications.recordNotice(
+        targetID: id, source: notificationSource(forTargetID: id),
+        title: "This workroom may start from an old commit", body: warning))
+  }
+
   /// Present a recorded notification: an in-app toast and the arrival sound while the app is
   /// frontmost, a native banner otherwise.
   private func surface(_ note: WorkroomNotification) {
@@ -5647,6 +5664,24 @@ struct WorkroomCreation {
 /// A box is needed because `onReady` is a *synchronous* callback the CLI invokes from whichever thread
 /// it is parsing on — it can start the task but cannot await it. Locked rather than actor-isolated so
 /// `set`/`claim` stay synchronous: registration has to be complete when `onReady` returns.
+/// The create's fetch warning, set from the CLI's parsing thread and read on the main actor.
+final class CreationWarningBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var stored: String?
+  var value: String? {
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return stored
+    }
+    set {
+      lock.lock()
+      stored = newValue
+      lock.unlock()
+    }
+  }
+}
+
 final class CreationLandingBox: @unchecked Sendable {
   private let lock = NSLock()
   private var task: Task<Void, Never>?
