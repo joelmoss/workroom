@@ -245,7 +245,8 @@ the editor prompt):
    `refs/remotes/origin/<base>` then `refs/heads/<base>` when the project sets `base_branch`
    (`workroom base set`), and an unresolvable base fails with `BaseBranchNotFound`. Without a base,
    `git remote set-head origin --auto` runs after the fetch and the start is `refs/remotes/origin/HEAD`.
-   A failed fetch keeps the last fetched refs and returns a warning in `CreateResult.Warning`.
+   A failed fetch keeps the last fetched refs and returns a warning in `CreateResult.Warning`, and so
+   does a base that origin lacks when the local branch is used instead.
    With no usable start, the command has no start point and no `--no-track`, so git uses `HEAD`, or
    makes an orphan branch in a repository with no commits.
 6. **Persist:** `config.AddWorkroom(...)` records `{path}` under the project, keyed by project path,

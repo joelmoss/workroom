@@ -72,10 +72,18 @@ func (g *Git) startPoint(dir, base string) (start, warning string, err error) {
 		}
 	}
 	if start == "" && base != "" {
+		if noOrigin == nil && !fetched {
+			return "", "", fmt.Errorf("%w: '%s' (could not fetch origin to look there)", errs.ErrBaseBranchNotFound, base)
+		}
 		return "", "", fmt.Errorf("%w: '%s'", errs.ErrBaseBranchNotFound, base)
 	}
-	if noOrigin == nil && !fetched {
+	switch {
+	case noOrigin == nil && !fetched:
 		warning = fmt.Sprintf("Could not fetch origin. The workroom starts from %s, which may be out of date.", g.refName(dir, start))
+	case noOrigin == nil && strings.HasPrefix(start, "refs/heads/"):
+		// Origin answered without the base: deleted there after a merge, or never pushed. The local
+		// copy can be far behind, so say which one this is.
+		warning = fmt.Sprintf("Origin has no %s, so the workroom starts from your local %s, which may be out of date.", base, base)
 	}
 	return start, warning, nil
 }
