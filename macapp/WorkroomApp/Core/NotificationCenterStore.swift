@@ -89,6 +89,19 @@ final class NotificationCenterStore: ObservableObject {
         title: title, body: body, date: now(), count: 1))
   }
 
+  /// Record a notice from the app itself, about `targetID` rather than one of its terminals. Its tab
+  /// id names no tab, so focusing a terminal never dismisses it unread: only opening or clearing it
+  /// does. Never dropped, because the app raises one only when the user must hear it.
+  @discardableResult
+  func recordNotice(
+    targetID: TerminalTarget.ID, source: String, title: String, body: String?
+  ) -> WorkroomNotification {
+    append(
+      WorkroomNotification(
+        id: UUID(), targetID: targetID, tabID: UUID(), source: source,
+        title: title, body: body, date: now(), count: 1))
+  }
+
   @discardableResult
   private func append(_ n: WorkroomNotification) -> WorkroomNotification {
     items.append(n)

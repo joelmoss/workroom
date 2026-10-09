@@ -18,10 +18,14 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
   /// them `list` returns only the new workroom, so a split anchor stops resolving the moment
   /// `landOnCreatedWorkroom` reloads — and the split is (correctly) refused for the wrong reason.
   let existingWorkrooms: [String]
+  /// The create's warning, as the CLI reports a failed fetch.
+  let warning: String?
+  /// What `setBaseBranch` was asked to store, in order.
+  private(set) var baseBranches: [String?] = []
 
   init(
     projectPath: String, workroomName: String, hasSetup: Bool, logLines: [String] = [],
-    failAfterReady: Bool = false, existingWorkrooms: [String] = []
+    failAfterReady: Bool = false, existingWorkrooms: [String] = [], warning: String? = nil
   ) {
     self.projectPath = projectPath
     self.workroomName = workroomName
@@ -29,6 +33,11 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
     self.logLines = logLines
     self.failAfterReady = failAfterReady
     self.existingWorkrooms = existingWorkrooms
+    self.warning = warning
+  }
+
+  func setBaseBranch(project: String, branch: String?) async throws {
+    baseBranches.append(branch)
   }
 
   private var workroomAbsPath: String { "\(projectPath)/.workrooms/\(workroomName)" }
@@ -60,7 +69,7 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
     // now awaits the landing, so no sleep is needed and this gap is a deterministic assertion.
     if failAfterReady { throw WorkroomCLIError.timedOut }
     return CreateResponse(
-      name: workroomName, path: workroomAbsPath, vcs: "git", project: project)
+      name: workroomName, path: workroomAbsPath, vcs: "git", project: project, warning: warning)
   }
 
   func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws {}
@@ -68,6 +77,13 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
   func deleteProject(
     _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
   ) async throws -> [URL] { [] }
+}
+
+/// Records banners instead of posting them, so no test raises the real permission prompt.
+private final class SilentNotifier: SystemNotifying {
+  func ensureAuthorized() async -> Bool { false }
+  func post(_ notification: WorkroomNotification) {}
+  func withdraw(tabIDs: [TerminalTab.ID]) {}
 }
 
 /// A fake CLI that lets a test control the INTERLEAVING of two real `createWorkroom` calls (issue
@@ -237,6 +253,44 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   }
 
   // MARK: - Async create flow
+
+  /// A create whose fetch failed tells the user, in a notification on the new workroom.
+  func testAFetchWarningBecomesANotificationOnTheNewWorkroom() async {
+    let warning =
+      "Could not fetch origin. The workroom starts from origin/main, which may be out of date."
+    let fake = CreatingFakeCLI(
+      projectPath: projectPath, workroomName: "calm-otter", hasSetup: false, warning: warning)
+    let store = makeStore(fake)
+    store.systemNotifier = SilentNotifier()
+
+    await store.createWorkroom(in: Project(path: projectPath, vcs: "git", workrooms: []))
+
+    XCTAssertEqual(store.notifications.items.map(\.body), [warning])
+    XCTAssertEqual(store.notifications.items.first?.targetID, store.selectedTarget?.id)
+  }
+
+  /// A create that fetched raises nothing.
+  func testACreateWithoutAWarningRaisesNoNotification() async {
+    let fake = CreatingFakeCLI(
+      projectPath: projectPath, workroomName: "calm-otter", hasSetup: false)
+    let store = makeStore(fake)
+    store.systemNotifier = SilentNotifier()
+
+    await store.createWorkroom(in: Project(path: projectPath, vcs: "git", workrooms: []))
+
+    XCTAssertTrue(store.notifications.items.isEmpty)
+  }
+
+  /// Project Settings stores a trimmed branch, and a blank one clears it.
+  func testSetBaseBranchTrimsAndClearsThroughTheCLI() async {
+    let fake = CreatingFakeCLI(projectPath: projectPath, workroomName: "x", hasSetup: false)
+    let store = makeStore(fake)
+
+    await store.setBaseBranch("  develop ", forProject: projectPath)
+    await store.setBaseBranch("   ", forProject: projectPath)
+
+    XCTAssertEqual(fake.baseBranches, ["develop", nil])
+  }
 
   /// With NO setup script there's no dialog — just the loader — and the create clears itself when it
   /// completes: no `creations` entry survives, `pendingCreation` clears, and the new workroom is

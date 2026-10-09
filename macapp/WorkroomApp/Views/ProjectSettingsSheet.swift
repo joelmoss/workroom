@@ -16,6 +16,7 @@ struct ProjectSettingsSheet: View {
   // Draft state, seeded from the store on appear; committed only on Save.
   @State private var command = ""
   @State private var autoRun = false
+  @State private var baseBranch = ""
 
   /// Trim with the same set `RunConfig.hasCommand` uses, so the auto-run gate and what's actually
   /// runnable agree (a newlines-only command must read as blank too — review #7).
@@ -54,6 +55,17 @@ struct ProjectSettingsSheet: View {
             "Runs in a dedicated terminal at the workroom's directory, in your login shell. "
               + "Start it from the toolbar Run button or ⌘R.")
         }
+        Section {
+          TextField("Base branch", text: $baseBranch, prompt: Text("origin's default branch"))
+            .lineLimit(1)
+            .accessibilityIdentifier("projectSettings.baseBranch")
+        } header: {
+          Text("New Workrooms")
+        } footer: {
+          Text(
+            "New workrooms start from origin's copy of this branch, fetched first, else the local "
+              + "branch. Leave it empty to start from origin's default branch.")
+        }
       }
       .formStyle(.grouped)
 
@@ -65,6 +77,11 @@ struct ProjectSettingsSheet: View {
         Button("Save") {
           store.setRunConfig(
             RunConfig(command: command, autoRun: autoRun), forProject: project.path)
+          let branch = baseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+          if branch != (project.baseBranch ?? "") {
+            let path = project.path
+            Task { await store.setBaseBranch(branch, forProject: path) }
+          }
           dismiss()
         }
         .keyboardShortcut(.defaultAction)
@@ -77,6 +94,7 @@ struct ProjectSettingsSheet: View {
       let config = store.runConfig(forProject: project.path)
       command = config.command
       autoRun = config.autoRun
+      baseBranch = project.baseBranch ?? ""
     }
   }
 }
