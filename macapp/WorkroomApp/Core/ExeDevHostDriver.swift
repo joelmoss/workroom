@@ -391,10 +391,15 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   /// The VM as the user's ssh reaches it, with only the agent's socket from the app's environment.
-  private func route(_ id: UUID) -> ContainerHostDriver.Route {
-    ContainerHostDriver.Route(
+  /// An ssh the app spawns gets no other environment (`HostStream.spawn`), so it also gets the
+  /// login shell's PATH, where a `ProxyCommand`'s helper is found, as in Terminal; a pane's ssh
+  /// has the pane's own.
+  func route(_ id: UUID, spawned: Bool) -> ContainerHostDriver.Route {
+    var environment = configuration.sshAgent.map { ["SSH_AUTH_SOCK": $0] } ?? [:]
+    if spawned { environment["PATH"] = ShellEnvironment.path() }
+    return ContainerHostDriver.Route(
       options: Self.sshOptions, destination: "\(Self.user)@\(name(of: id)).exe.xyz",
-      environment: configuration.sshAgent.map { ["SSH_AUTH_SOCK": $0] } ?? [:])
+      environment: environment)
   }
 
   func openStream(to host: HostID) async throws -> HostStream {
@@ -402,12 +407,12 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     return try ContainerHostDriver.exec(
       ContainerHostDriver.relayCommand(
         binary: AgentBootstrap.binary(besideSocket: agentSocket), socket: agentSocket),
-      via: route(id), purpose: .connection)
+      via: route(id, spawned: true), purpose: .connection)
   }
 
   func exec(_ command: String, on host: HostID) async throws -> HostStream {
     try ContainerHostDriver.exec(
-      command, via: route(try id(of: host)), purpose: .exchange)
+      command, via: route(try id(of: host), spawned: true), purpose: .exchange)
   }
 
   func attachCommand(
@@ -418,7 +423,8 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     try FileManager.default.createDirectory(
       at: hostDirectory(id), withIntermediateDirectories: true)
     return ContainerHostDriver.attachCommand(
-      via: route(id), in: hostDirectory(id), agentSocket: agentSocket, session: session,
+      via: route(id, spawned: false), in: hostDirectory(id), agentSocket: agentSocket,
+      session: session,
       workingDirectory: workingDirectory, restored: restored, metadata: metadata)
   }
 
