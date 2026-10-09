@@ -37,8 +37,8 @@ func (g *Git) Create(dir, vcsName, path, base string) (string, error) {
 
 // startPoint resolves where a new workroom's branch starts: origin/<base> then the local <base>
 // when the project names a base, else origin's default branch. It fetches first so the ref is
-// current; a failed fetch (offline, no credentials) keeps the last-fetched ref and returns a
-// warning. A named base that resolves nowhere is an error. With no base and no origin/HEAD it
+// current, and prunes so a branch deleted on origin is not used from its stale copy; a failed
+// fetch (offline, no credentials) keeps the last-fetched ref and returns a warning. A named base that resolves nowhere is an error. With no base and no origin/HEAD it
 // returns "", so the caller passes no start point: git then uses HEAD, or makes an orphan
 // branch in a repository with no commits, where an explicit HEAD is refused.
 // `set-head --auto` because fetch never moves origin/HEAD after a default-branch rename.
@@ -46,7 +46,7 @@ func (g *Git) startPoint(dir, base string) (start, warning string, err error) {
 	_, noOrigin := g.Executor.Run(dir, "git", "remote", "get-url", "origin")
 	fetched := false
 	if noOrigin == nil {
-		if _, err := g.Executor.Run(dir, "git", "fetch", "--quiet", "origin"); err == nil {
+		if _, err := g.Executor.Run(dir, "git", "fetch", "--quiet", "--prune", "origin"); err == nil {
 			fetched = true
 			if base == "" {
 				_, _ = g.Executor.Run(dir, "git", "remote", "set-head", "origin", "--auto")
