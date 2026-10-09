@@ -888,27 +888,18 @@ impl SessionStore {
         let Some((pty, shadow, attached)) = self.parts(id) else {
             return;
         };
-        let (size, acted) = {
+        let size = {
             let mut attached = attached.lock().expect("attachment lock poisoned");
             let acted = attached
                 .client(token)
                 .is_some_and(|client| client.classifier.is_user_input(bytes));
-            let size = if acted && attached.owner != Some(token) {
+            if acted && attached.owner != Some(token) {
                 attached.claim(token)
             } else {
                 None
-            };
-            (size, acted)
+            }
         };
         apply_size(&pty, &shadow, &attached, size);
-        // The keystroke grace (OQ19's S5) needs the moment the user last ACTED, and this is the one
-        // place input reaches a pty. Gated on the classifier above for the same reason the size
-        // claim is: a TUI polling its terminal (cursor position, device attributes) writes to the
-        // pty every few seconds with nobody there, and counting those would renew a 10 s grace
-        // forever on a detached session.
-        if acted {
-            crate::wakefulness::count_pty_input();
-        }
         let _ = pty.write_all(bytes);
     }
 
@@ -924,20 +915,6 @@ impl SessionStore {
             .lock()
             .map(|s| s.contains_key(&id))
             .unwrap_or(false)
-    }
-
-    /// The pty children's pids and nothing else, for the wakefulness tick. `list()` resolves each
-    /// session's foreground program with an ioctl and two `/proc` readlinks UNDER the store lock;
-    /// paying that once a second, blocking every attach and keystroke meanwhile, for a field the
-    /// classifier never reads would be the service's own cost dwarfing the sampler's. A poisoned
-    /// lock is read through rather than panicked on: this runs on a thread nothing restarts.
-    pub fn pids(&self) -> Vec<i32> {
-        self.sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .map(|session| session.pty.child_pid())
-            .collect()
     }
 
     /// Sorted by id so the list is stable between calls — an unordered list makes a UI reorder
@@ -1579,10 +1556,6 @@ fn read_session(
 
         match read {
             Ok(n) => {
-                // Counted here rather than at a client, because a DETACHED session's output is
-                // exactly the case the wakefulness signal exists for: a busy box with nobody
-                // watching.
-                crate::wakefulness::count_pty_out(n);
                 // Every attached client sees the same bytes — that is what makes two windows on
                 // one session show the same terminal rather than half of it each.
                 for target in &clients {

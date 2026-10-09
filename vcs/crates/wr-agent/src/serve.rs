@@ -131,10 +131,6 @@ impl Agent {
     /// Serves on a bound listener until idle. Returns when no session and no client has existed
     /// for `idle_timeout`. The listener is the one `bind` returns, or the one a hand-off carried
     /// across `execve` (`crate::handoff`), which must never be unbound and bound again.
-    ///
-    /// The wakefulness service starts unconditionally on Linux, because its heartbeat has to keep a
-    /// busy box awake while no client is attached at all — that is the whole reason it exists
-    /// (#257).
     pub fn run(
         &self,
         listener: UnixListener,
@@ -142,9 +138,6 @@ impl Agent {
         idle_timeout: Duration,
     ) -> Result<(), ServeError> {
         listener.set_nonblocking(true)?;
-        #[cfg(target_os = "linux")]
-        crate::wakefulness::spawn(self.sessions.clone());
-
         let mut idle_since = Some(Instant::now());
         let mut result = Ok(());
         loop {
@@ -202,8 +195,7 @@ impl Agent {
                     }
                     std::thread::sleep(Duration::from_millis(25));
                 }
-                // An accept failure (descriptor exhaustion, say) ends the agent, and it must stop
-                // the wakefulness service exactly as an idle exit does.
+                // An accept failure (descriptor exhaustion, say) ends the agent.
                 Err(e) => {
                     result = Err(e.into());
                     break;
@@ -211,9 +203,6 @@ impl Agent {
             }
         }
         let _ = std::fs::remove_file(socket);
-        // The wakefulness service goes with the socket: `status` stops saying it is running, and
-        // its thread ends within a tick (that tick may still send one heartbeat).
-        crate::wakefulness::stop();
         result
     }
 }
@@ -398,7 +387,7 @@ fn dispatch(
         return None;
     }
     if envelope.service == Service::Status {
-        crate::wakefulness::dispatch(envelope, writer);
+        retired_status(envelope, writer);
         return None;
     }
     if envelope.service == Service::Forward {
@@ -651,6 +640,26 @@ fn list_reply(payload: Vec<u8>) -> Frame {
         );
     }
     Frame::new(FrameKind::Sessions, payload)
+}
+
+/// The Status service is retired (#382): the agent no longer decides whether its box is busy. An app
+/// from before then still asks for `status`, so every request gets the one failure that app already
+/// handles, `unsupported` at the last version it reads. Dropping it instead would leave that app
+/// waiting out its own timeout. Stream 0 was where verdicts were pushed, never where a request
+/// arrives.
+fn retired_status(envelope: &Envelope, writer: &SharedWriter) {
+    if envelope.stream == 0 {
+        return;
+    }
+    crate::vcs::send(
+        writer,
+        Service::Status,
+        envelope.stream,
+        serde_json::json!({
+            "version": 2,
+            "error": {"unsupported": "this agent has no status service"},
+        }),
+    );
 }
 
 /// A `waitpid` status as the exit code a shell would report, which is what the `Exited` frame
