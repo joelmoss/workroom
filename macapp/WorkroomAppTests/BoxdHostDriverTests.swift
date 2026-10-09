@@ -262,6 +262,26 @@ final class BoxdHostDriverTests: XCTestCase {
     XCTAssertEqual(PendingMachines.entries(in: driver.directory).count, 1)
   }
 
+  /// A delete that removed the machine takes it off the pending list, so the launch sweep never
+  /// goes after a machine that is gone; one that failed keeps it (#373).
+  func testADeleteTakesItsMachineOffThePendingList() async throws {
+    // Value: protects=a deleted machine is not swept again, and a failed delete keeps its entry;
+    // fails_when=destroy leaves the entry, or drops it when the removal failed;
+    // why_new=the pending test covers only a create's rollback; seam=none
+    for removed in [true, false] {
+      let cli = StubCLI([
+        "machine remove": removed ? Self.ok(#"{"status":"destroyed"}"#) : Self.failed("error: x")
+      ])
+      let driver = driver(cli)
+      let id = UUID()
+      try PendingMachines.add(
+        .init(id: id, driver: RemoteWorkrooms.boxdDriver), in: driver.directory)
+      _ = try? await driver.destroy(.remote(id))
+      XCTAssertEqual(
+        PendingMachines.entries(in: driver.directory).map(\.id), removed ? [] : [id])
+    }
+  }
+
   func testAnInstanceCannotBeDerivedFromAndAnUnknownBaseIsUnknown() async throws {
     let instance = StubCLI([
       "machine get": Self.ok(#"{"name":"x","source":"snapshot/x:1"}"#)
