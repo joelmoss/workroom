@@ -272,10 +272,19 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 		}
 		// The project's own base wins; else the global one; else origin's default branch.
 		base := projects[dir].BaseBranch
-		if base == "" {
+		global := base == ""
+		if global {
 			base = s.Config.BaseBranch()
 		}
 		warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, base)
+		// An app-wide default must not block a project it doesn't fit (`upstream/main` in a
+		// repository with no upstream): start from origin's default and say so. A project's own
+		// base is an explicit choice, so it still fails.
+		if global && base != "" && errors.Is(err, ErrBaseBranchNotFound) {
+			warning, err = s.VCS.Create(dir, s.vcsName(name), wrPath, "")
+			notice := fmt.Sprintf("The default base branch %s doesn't exist in this project, so the workroom starts from origin's default branch.", base)
+			warning = strings.TrimSpace(notice + " " + warning)
+		}
 		if errors.Is(err, ErrBaseBranchNotFound) {
 			return res, err
 		}

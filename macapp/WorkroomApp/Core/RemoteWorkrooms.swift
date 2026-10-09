@@ -242,11 +242,11 @@ enum RemoteWorkrooms {
       case .baseBranchNotOnOrigin(let branch):
         return "This project's new workrooms start from \(branch), which origin doesn't have. A "
           + "remote workroom can only start from origin's branches. Push \(branch), or change the "
-          + "base branch in Project Settings."
+          + "base branch in Project Settings, or the default in Settings."
       case .baseBranchOnOtherRemote(let base):
         return "This project's new workrooms start from \(base), on a remote other than origin. A "
           + "remote workroom's machine has only origin, so it can't start there. To make remote "
-          + "workrooms, set a base branch on origin in Project Settings."
+          + "workrooms, set a base branch on origin in Project Settings, or the default in Settings."
       case .boxdNotInstalled:
         return "The boxd command wasn't found. Install it from boxd.sh, then sign in with "
           + "`boxd auth login`."

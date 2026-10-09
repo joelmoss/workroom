@@ -3271,7 +3271,9 @@ final class AppStore: ObservableObject {
         !tombstoned.contains(TerminalTarget.workroomID(project: project.path, name: $0.name))
       }
       guard kept.count != project.workrooms.count else { return project }
-      return Project(path: project.path, vcs: project.vcs, workrooms: kept, host: project.host)
+      return Project(
+        path: project.path, vcs: project.vcs, workrooms: kept, host: project.host,
+        baseBranch: project.baseBranch)
     }
   }
 
@@ -3758,17 +3760,23 @@ final class AppStore: ObservableObject {
       }
       // A remote host has only origin, so a base on another remote, or one only this Mac has, would
       // fail its derive minutes in. Unreachable (nil) is left to the derive, which says so itself.
+      // A project's own base that can't be used fails; the app-wide default only falls back to
+      // origin's default branch, with a notice, as a local create does.
       var startBranch: String?
+      var defaultNotUsed: String?
       if let base = effectiveBaseBranch(for: project) {
         let (remote, branch) = RemoteWorkrooms.splitBase(
           base, remotes: await resolver.remoteNames(in: project.path))
-        guard remote == "origin" else {
-          throw RemoteWorkrooms.Failure.baseBranchOnOtherRemote(base)
+        let fromDefault = project.baseBranch == nil
+        if remote != "origin" {
+          guard fromDefault else { throw RemoteWorkrooms.Failure.baseBranchOnOtherRemote(base) }
+          defaultNotUsed = base
+        } else if await resolver.originHasBranch(branch, in: project.path) == false {
+          guard fromDefault else { throw RemoteWorkrooms.Failure.baseBranchNotOnOrigin(branch) }
+          defaultNotUsed = base
+        } else {
+          startBranch = branch
         }
-        if await resolver.originHasBranch(branch, in: project.path) == false {
-          throw RemoteWorkrooms.Failure.baseBranchNotOnOrigin(branch)
-        }
-        startBranch = branch
       }
       let path = project.path
       let buildsBase = base == nil
@@ -3812,6 +3820,12 @@ final class AppStore: ObservableObject {
       await reload()
       selectedProjectID = project.id
       let sid = SidebarID.workroom(project: project.path, name: created.name)
+      if let defaultNotUsed {
+        noticeStaleStart(
+          of: TerminalTarget.workroomID(project: project.path, name: created.name),
+          "The default base branch \(defaultNotUsed) can't be used on a remote machine here, so the "
+            + "workroom starts from origin's default branch.")
+      }
       let landedInSplit =
         splitAnchor.map {
           insertWorkroomSplit(
@@ -4160,7 +4174,7 @@ final class AppStore: ObservableObject {
     let p = projects[idx]
     projects[idx] = Project(
       path: p.path, vcs: p.vcs, workrooms: p.workrooms.filter { $0.id != workroom.id },
-      host: p.host)
+      host: p.host, baseBranch: p.baseBranch)
     forgetLabels(forProject: project.path, workroomNames: [workroom.name])
     // Same reasoning as the label: a per-workroom cache keyed by `SidebarID` with no other pruning,
     // so without this it outlives the workroom and a same-named recreate inherits its branch name.
@@ -4184,7 +4198,7 @@ final class AppStore: ObservableObject {
           var wr = wr
           wr.label = labels[TerminalTarget.workroomID(project: project.path, name: wr.name)]
           return wr
-        }, host: project.host)
+        }, host: project.host, baseBranch: project.baseBranch)
     }
   }
 
@@ -4263,7 +4277,8 @@ final class AppStore: ObservableObject {
     wr.label = label
     workrooms[wIdx] = wr
     let p = projects[pIdx]
-    projects[pIdx] = Project(path: p.path, vcs: p.vcs, workrooms: workrooms, host: p.host)
+    projects[pIdx] = Project(
+      path: p.path, vcs: p.vcs, workrooms: workrooms, host: p.host, baseBranch: p.baseBranch)
   }
 
   /// Teardown failed (it ran in the background): pop an alert carrying the captured
@@ -5315,12 +5330,13 @@ final class AppStore: ObservableObject {
     surface(note)
   }
 
-  /// Tell the user a new workroom may start from an old commit: its create couldn't fetch.
+  /// Tell the user a new workroom doesn't start where they'd expect: its create couldn't fetch, the
+  /// base came from a local copy, or the app-wide default didn't fit this project.
   private func noticeStaleStart(of id: TerminalTarget.ID, _ warning: String) {
     surface(
       notifications.recordNotice(
         targetID: id, source: notificationSource(forTargetID: id),
-        title: "This workroom may start from an old commit", body: warning))
+        title: "Check where this workroom starts", body: warning))
   }
 
   /// Present a recorded notification: an in-app toast and the arrival sound while the app is
