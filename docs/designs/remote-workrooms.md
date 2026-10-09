@@ -1394,7 +1394,12 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     the key that would mint against the grant goes with it. An instance is never derived from,
     because its disk holds its key and credential helper. The workroom branches from
     `refs/remotes/origin/HEAD` after `git remote set-head origin --auto`, since `fetch` never
-    moves `origin/HEAD` when the remote's default branch is renamed.
+    moves `origin/HEAD` when the remote's default branch is renamed. A base branch overrides this
+    (PR #387). The project's own base, else the app-wide default, goes to `derive` as
+    `startBranch`, and the workroom branches from `refs/remotes/origin/<startBranch>`. The box has
+    only `origin`. So before any derive, the app refuses a project's own base on another remote, or
+    one that origin lacks. An app-wide default that does not fit falls back to
+    `origin/HEAD` with a notice.
   - **One operation at a time on a base.** `BaseLocks` serialises a derive's snapshot, a refresh
     and a destroy per base: `docker commit` freezes git wherever it is, so a snapshot taken
     during a refresh's fetch would hand its `.lock` files to every workroom derived from it.
