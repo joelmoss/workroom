@@ -105,8 +105,15 @@ type Config struct {
 	path string
 }
 
-// New creates a Config. If configPath is empty, uses the default location.
+// ConfigEnv names a config file to use in place of the default: a Dev build of the desktop app
+// keeps its own, so what it creates never shows in a Release or Nightly build, nor theirs in it.
+const ConfigEnv = "WORKROOM_CONFIG"
+
+// New creates a Config. If configPath is empty, uses $WORKROOM_CONFIG, else the default location.
 func New(configPath string) (*Config, error) {
+	if configPath == "" {
+		configPath = os.Getenv(ConfigEnv)
+	}
 	if configPath == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {

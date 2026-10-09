@@ -35,6 +35,9 @@ struct WorkroomApp: App {
     // constantly. A later write would be a use-after-free race. Everything that
     // needs the enriched value reads `ShellEnvironment.path()` / `.environment()`.
     setenv("PATH", ShellEnvironment.path(), 1)
+    // A Dev build's own config, for the bundled CLI and for `workroom` in its terminals, which
+    // inherit this environment. Set here for the same reason as PATH above.
+    if let config = WorkroomCLI.configPath() { setenv("WORKROOM_CONFIG", config, 1) }
 
     // UI-test launches only: a shell with Ghostty's integration but none of the developer's rc
     // files, so a test never depends on (or runs) someone's dotfiles. It is a `setenv`, so it

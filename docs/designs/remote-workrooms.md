@@ -1610,9 +1610,14 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     live, since the CLI deletes a destroyed entry and a live grant must keep its record. A
     descriptor that cannot be written destroys the instance.
   - **Each build owns its hosts.** Every descriptor records its `provisioner`, the bundle ID of
-    the build that made it. A Dev and a Nightly app share one config but not a key, so each
-    adopts, sweeps and opens panes on only its own hosts, and a create refuses a project whose
-    base another build made rather than replace that base's record.
+    the build that made it. Release and Nightly share one config but not a key, so each adopts,
+    sweeps and opens panes on only its own hosts, and a create refuses a project whose base
+    another build made rather than replace that base's record. A Dev build keeps its own config
+    (`$WORKROOM_CONFIG`, set by the app to `Application Support/Workroom/<bundle id>/config.json`;
+    every Dev build has its own, a workroom's included), so nothing it makes shows in Release or
+    Nightly. At each launch it moves what it made out of the shared config into its own
+    (`workroom claim-provisioned`, idempotent): its remote workrooms and its bases, which would
+    otherwise make Release and Nightly refuse creates in those projects.
   - **The CLI deletes a destroyed remote workroom** (`delete` and the interactive delete), and
     nothing else remote: it drops the entry and runs nothing, no teardown and no VCS. A remote
     workroom with a live host is still refused. `create --host` refuses a name already configured
@@ -1964,7 +1969,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     entry that two launches in a row found unrecorded, and that is over an hour old, is removed
     through the driver's `destroy`, at most 3 per sweep. The hour covers a second copy of the same
     build with a create still under way. The sweep never lists every unrecorded `workroom-*`
-    machine: names carry no build and config is shared by every build, so a listing would take
+    machine: names carry no build and Release and Nightly share one config, so a listing would take
     another build's create still under way. A machine whose record is lost after it was written is
     not swept.
   - **Letting go of an idle box** (superseded by #380, below: there is no let-go now, and the
