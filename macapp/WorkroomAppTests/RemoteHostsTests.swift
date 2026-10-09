@@ -645,6 +645,32 @@ final class RemoteHostsTests: XCTestCase {
     }
   }
 
+  /// Release and Nightly share each other's boxd and exe.dev hosts, and nothing else: a container
+  /// is its build's alone, a Dev build shares nothing, and a record that names no driver predates
+  /// the field, so it is taken as its build's container.
+  /// Value: protects=which build may open, derive from and delete a host; fails_when=containers or
+  /// Dev hosts are shared, or Release and Nightly stop sharing a provider's host;
+  /// why_new=nothing tested ownership across builds; seam=none
+  func testReleaseAndNightlyShareOnlyRemoteProviderHosts() {
+    let release = "com.developwithstyle.workroom"
+    let nightly = "com.developwithstyle.workroom.nightly"
+    let dev = "com.developwithstyle.workroom.dev"
+    func host(_ driver: String?, by provisioner: String) -> HostDescriptor {
+      HostDescriptor(driver: driver, provisioner: provisioner, id: UUID())
+    }
+    for driver in [RemoteWorkrooms.boxdDriver, RemoteWorkrooms.exeDevDriver] {
+      XCTAssertTrue(RemoteWorkrooms.ownsHost(host(driver, by: nightly), as: release), driver)
+      XCTAssertTrue(RemoteWorkrooms.ownsHost(host(driver, by: release), as: nightly), driver)
+      XCTAssertFalse(RemoteWorkrooms.ownsHost(host(driver, by: release), as: dev), driver)
+      XCTAssertFalse(RemoteWorkrooms.ownsHost(host(driver, by: dev), as: release), driver)
+    }
+    for driver in ["container", "apple-container", nil] {
+      XCTAssertFalse(RemoteWorkrooms.ownsHost(host(driver, by: nightly), as: release))
+      XCTAssertTrue(RemoteWorkrooms.ownsHost(host(driver, by: release), as: release))
+    }
+    XCTAssertTrue(RemoteWorkrooms.ownsHost(host("boxd", by: dev), as: dev))
+  }
+
   /// A remote workroom's icon names its machine as its provider lists it, the name each driver gives
   /// it, so it can be found in the provider's dashboard; a destroyed one names none.
   func testAWorkroomOnAHostNamesItsMachine() {

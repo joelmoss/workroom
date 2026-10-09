@@ -1610,9 +1610,16 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     live, since the CLI deletes a destroyed entry and a live grant must keep its record. A
     descriptor that cannot be written destroys the instance.
   - **Each build owns its hosts.** Every descriptor records its `provisioner`, the bundle ID of
-    the build that made it. Release and Nightly share one config but not a key, so each adopts,
-    sweeps and opens panes on only its own hosts, and a create refuses a project whose base
-    another build made rather than replace that base's record. A Dev build keeps its own config
+    the build that made it. A container takes its build's ssh key and Docker labels, so each build
+    adopts, sweeps and opens panes on only its own containers, and a create refuses a project
+    whose container base another build made rather than replace that base's record. Release and
+    Nightly share each other's boxd and exe.dev hosts (`RemoteWorkrooms.ownsHost`): those are
+    reached through the provider's CLI and the user's own ssh, and a grant cancels by Codaset
+    user, so nothing on them is a build's. Either opens, derives from and deletes the other's, and
+    they build one base per project and provider between them. The agent on a shared host is the
+    newest either pushed (D13, `oq8-cross-machine-reattach.md`), so a Release app can talk to a
+    Nightly's agent: `agent-protocol_test.sh` pins that the agent's `MIN_SUPPORTED_VERSION` never
+    rises above the protocol the latest stable app speaks. A Dev build keeps its own config
     (`$WORKROOM_CONFIG`, set by the app to `Application Support/Workroom/<bundle id>/config.json`;
     every Dev build has its own, a workroom's included), so nothing it makes shows in Release or
     Nightly. At each launch it moves what it made out of the shared config into its own
@@ -1652,7 +1659,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     sweep's once no record names it. A `creating` workroom is refused while its project is busy,
     since that is a create still deriving.
   - **Checked first.** Another build's live host is refused (its key and labels are not this
-    build's), as is one that records no provisioner, and so is any live host while signed out or
+    build's), unless Release and Nightly share it as a remote provider's host. So is one that
+    records no provisioner, and so is any live host while signed out or
     without Docker. The checks run before
     the optimistic removal, so a refusal leaves the sidebar as it was.
   - **A project**, in every scope, config-only included: dropping its record would leave each

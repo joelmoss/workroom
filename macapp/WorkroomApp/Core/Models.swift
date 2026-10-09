@@ -356,7 +356,7 @@ extension Workroom {
   /// local one.
   var remoteNote: String? {
     guard let host, !host.isDestroyed, reachableHost == nil else { return nil }
-    if host.provisioner != RemoteWorkrooms.provisioner {
+    if !RemoteWorkrooms.ownsHost(host) {
       return
         "Another Workroom build made it (\(host.provisioner ?? "unknown")), and only that build "
         + "can open it."
@@ -373,10 +373,10 @@ extension Workroom {
     }
   }
 
-  /// A host with no `state` is serving: "creating", "failed" and "destroyed" are not. Only this
-  /// build's: another build's host takes its key.
+  /// A host with no `state` is serving: "creating", "failed" and "destroyed" are not. Only one this
+  /// build owns (`RemoteWorkrooms.ownsHost`): another build's container takes its key.
   var reachableHost: UUID? {
-    guard let host, host.state == nil, host.provisioner == RemoteWorkrooms.provisioner
+    guard let host, host.state == nil, RemoteWorkrooms.ownsHost(host)
     else { return nil }
     return host.id
   }
