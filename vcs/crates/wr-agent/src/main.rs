@@ -15,8 +15,8 @@ use std::time::Duration;
 use wr_agent::handoff;
 use wr_agent::protocol::envelope::{
     negotiate, Envelope, EnvelopeDecoder, Hello, Service, MIN_FILE_VERSION, MIN_FORWARD_VERSION,
-    MIN_HANDOFF_VERSION, MIN_LAYOUT_VERSION, MIN_STATUS_VERSION, MIN_SUPPORTED_VERSION,
-    MIN_VCS_VERSION, PROTOCOL_VERSION,
+    MIN_HANDOFF_VERSION, MIN_LAYOUT_VERSION, MIN_SUPPORTED_VERSION, MIN_VCS_VERSION,
+    PROTOCOL_VERSION,
 };
 use wr_agent::protocol::frame::{Frame, FrameDecoder, FrameKind};
 use wr_agent::serve::{self, Agent, BUILD, DEFAULT_IDLE_TIMEOUT};
@@ -24,12 +24,9 @@ use wr_agent::serve::{self, Agent, BUILD, DEFAULT_IDLE_TIMEOUT};
 fn usage() -> &'static str {
     "usage:
   wr-agent serve --socket <path> [--idle-timeout <secs>|never] [--screens <dir>]
-        own ptys and services (the daemon role). On Linux it also decides BUSY/IDLE and keeps a
-        BUSY box awake with a UDP heartbeat to the default gateway, which a provider's network
-        idle timer counts, and once the box has been IDLE a while it closes the connections that
-        serve no attached pane, so the provider's own timer can sleep it.
-        --idle-timeout never is for a supervised remote agent, which must keep running (and keep
-        reporting BUSY/IDLE) with no client attached.
+        own ptys and services (the daemon role).
+        --idle-timeout never is for a supervised remote agent, which must keep running with no
+        client attached.
         --screens <dir> keeps each session's screen in <dir>, so a pane reattaching after the
         host reboots is shown its last one. <dir> must survive a reboot: not the socket's.
   wr-agent serve --stdio
@@ -83,7 +80,7 @@ fn main() -> ExitCode {
             println!(
                 "protocol {PROTOCOL_VERSION} (minimum supported {MIN_SUPPORTED_VERSION}) \
                  min-vcs {MIN_VCS_VERSION} min-file {MIN_FILE_VERSION} \
-                 min-status {MIN_STATUS_VERSION} min-forward {MIN_FORWARD_VERSION} \
+                 min-forward {MIN_FORWARD_VERSION} \
                  min-handoff {MIN_HANDOFF_VERSION} min-layout {MIN_LAYOUT_VERSION}"
             );
             println!("build {BUILD}");
@@ -315,7 +312,7 @@ fn adopt(
 ///
 /// A value that does not parse is an error, not the default. A supervisor that asked for `never`
 /// and got 30 seconds would see its agent exit 30 seconds after the last client left, which looks
-/// like a crash and takes the no-client busy/idle reports with it.
+/// like a crash, and its detached sessions would die with it.
 fn idle_timeout(value: Option<&str>) -> Result<Duration, String> {
     match value {
         None => Ok(DEFAULT_IDLE_TIMEOUT),

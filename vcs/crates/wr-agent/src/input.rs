@@ -241,7 +241,7 @@ mod tests {
 
     /// The whole reason this module exists: a terminal answers on the input channel.
     /// DECRPM: a TUI asking whether synchronized output is on gets this back on a timer, with
-    /// nobody at the keyboard. Counting it renewed the wakefulness keystroke grace forever.
+    /// nobody at the keyboard. Counting it as the user would hand the size to a window nobody is in.
     #[test]
     fn mode_reports_are_not_the_user() {
         assert!(!user(b"\x1b[?2026;1$y"));

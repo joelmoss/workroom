@@ -44,9 +44,6 @@ pub const MIN_VCS_VERSION: u16 = 2;
 /// because a protocol-2 agent drops a File envelope without answering it and the request would
 /// otherwise wait out its own timeout. Never folded into `negotiate`.
 pub const MIN_FILE_VERSION: u16 = 3;
-/// The minimum peer version that understands `Service::Status`. Same rule again: a protocol-3
-/// agent drops a Status envelope without answering it.
-pub const MIN_STATUS_VERSION: u16 = 4;
 /// The minimum peer version that understands `Service::Forward`. Same rule again: a protocol-4
 /// agent drops a Forward envelope without answering it, so a client checks the peer's raw
 /// `Hello.protocol_version` against this BEFORE sending an `open` — otherwise the forwarded
@@ -71,8 +68,8 @@ pub const ENVELOPE_HEADER_SIZE: usize = 9;
 pub const MAX_ENVELOPE_PAYLOAD: usize = 1 << 20;
 
 /// Which service a stream belongs to. Terminal and Control shipped in Phase 1, Vcs and File in
-/// Phase 2, Status (the wakefulness service, protocol 4) and Forward (port forwarding, protocol 5)
-/// after them. The envelope is the thing that
+/// Phase 2, Status (protocol 4, retired by #382) and Forward (port forwarding, protocol 5) after
+/// them. The envelope is the thing that
 /// had to be right from the first commit: adding Status and Forward later was not a wire change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -82,6 +79,8 @@ pub enum Service {
     Terminal = 0x01,
     Vcs = 0x02,
     File = 0x03,
+    /// Retired (#382), and its byte kept: an app from before then still asks, and an unknown byte
+    /// would fail its whole connection. `serve::retired_status` answers it.
     Status = 0x04,
     /// One loopback TCP connection per stream — see `forward.rs`.
     Forward = 0x05,

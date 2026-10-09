@@ -1175,7 +1175,7 @@ fn a_relay_delivers_replies_after_its_stdin_closes() {
         .client
         .envelope(Service::Status, 1, Duration::from_secs(10));
     let reply: Value = serde_json::from_slice(&reply.payload[1..]).expect("a JSON reply");
-    assert!(reply["result"]["verdict"].is_string(), "{reply}");
+    assert!(reply["error"]["unsupported"].is_string(), "{reply}");
     assert!(
         relay.exited_within(Duration::from_secs(5)),
         "the relay must exit once the agent closes its end"
@@ -1397,7 +1397,7 @@ fn a_relay_whose_stdin_and_stdout_are_one_socket_keeps_reading() {
 
     let _ = relay.kill();
     let _ = relay.wait();
-    assert!(reply["result"]["verdict"].is_string(), "{reply}");
+    assert!(reply["error"]["unsupported"].is_string(), "{reply}");
 }
 
 // ---------------------------------------------------------------------------
@@ -2115,7 +2115,7 @@ fn over_ssh_a_restored_pane_is_shown_its_last_screen_after_a_reboot() {
 }
 
 /// The rest of the multiplex through the same relay, while a terminal session streams on it:
-/// Status, VCS, File and Forward each answer.
+/// Status (refused since #382), VCS, File and Forward each answer.
 #[test]
 #[ignore = "needs the ssh container fixture: vcs/scripts/ssh-fixture/run.sh"]
 fn over_ssh_every_service_answers_through_the_relay() {
@@ -2145,7 +2145,7 @@ fn over_ssh_every_service_answers_through_the_relay() {
     );
 
     let status = client.request(Service::Status, 2, &json!({"method": "status"}));
-    assert!(status["result"]["verdict"].is_string(), "{status}");
+    assert!(status["error"]["unsupported"].is_string(), "{status}");
 
     let log = client.request(
         Service::Vcs,
@@ -2345,5 +2345,5 @@ fn over_ssh_the_supervisor_restarts_a_crashed_agent() {
     let status = relay
         .client
         .request(Service::Status, 1, &json!({"method": "status"}));
-    assert!(status["result"]["verdict"].is_string(), "{status}");
+    assert!(status["error"]["unsupported"].is_string(), "{status}");
 }

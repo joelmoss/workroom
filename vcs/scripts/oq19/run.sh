@@ -26,7 +26,6 @@ if [ "${1:-}" = "--self-test" ]; then
   python3 tests/test_procfs.py
   python3 tests/test_analyze.py
   python3 tests/test_record.py
-  python3 tests/test_golden.py
   exit 0
 fi
 
