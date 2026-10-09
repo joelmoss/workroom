@@ -157,9 +157,9 @@ per workroom; Xcode's build-database lock rejects a second concurrent build ther
 - **Xcode-driven builds** (⌘R/⌘U) don't go through the Makefile and always build the plain id, so a
   workroom opened in Xcode collides with the project checkout's dev app as before.
 - **TCC asks again per workroom.** macOS keys permissions to the signing identity, so a workroom's
-  dev app prompts afresh for notifications, Automation or other apps' data the first time it needs
-  them. Fixture-mode tests mostly don't. A UI-test launch's terminals do run a login shell, and its
-  children are attributed to the app, but since #268 that shell is a hermetic zsh
+  dev app prompts afresh for notifications, Automation, the microphone or other apps' data the
+  first time it needs them. Fixture-mode tests mostly don't. A UI-test launch's terminals do run a
+  login shell, and its children are attributed to the app, but since #268 that shell is a hermetic zsh
   (`UITestFixture.applyHermeticShell`: `SHELL=/bin/zsh`, a `ZDOTDIR` holding only a generated
   `.zshrc`), so a developer's `~/.zshenv`, `~/.zprofile`, `~/.zshrc` and `~/.zlogin` are never read.
   Before that, a shell startup that touched a protected folder (Documents, Desktop, iCloud Drive)
@@ -224,10 +224,10 @@ make app-uitest-vm
 ```
 
 - **Build once, on the host.** The guest tests the products `make app-uitest` builds, signed Apple
-  Development. The only entitlement is `com.apple.security.automation.apple-events`, which needs
-  no provisioning profile, so a dev-signed runner should launch in the guest; the first pass
-  checks this, and falls back to an ad-hoc build in its own `-derivedDataPath DerivedData-vm` if
-  it does not. Never build ad-hoc into the shared `DerivedData`: that replaces the signed dev
+  Development. The only entitlements are `com.apple.security.automation.apple-events` and
+  `com.apple.security.device.audio-input`, both hardened-runtime keys that need no provisioning
+  profile, so a dev-signed runner should launch in the guest; the first pass checks this, and
+  falls back to an ad-hoc build in its own `-derivedDataPath DerivedData-vm` if it does not. Never build ad-hoc into the shared `DerivedData`: that replaces the signed dev
   products the dev app and TCC grants depend on.
 - **Snapshot before queueing.** The run clones its products right after the build, because the
   person keeps working while it waits, and a `make app-run` in the same workroom rebuilds `Debug/`.

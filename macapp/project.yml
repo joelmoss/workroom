@@ -281,8 +281,15 @@ targets:
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.developer-tools
         # Shown once by the Automation TCC prompt when ⌘-clicking a file path in the terminal opens
-        # it via `/usr/bin/open` (see CODE_SIGN_ENTITLEMENTS above).
+        # it via `/usr/bin/open` (see CODE_SIGN_ENTITLEMENTS below).
         NSAppleEventsUsageDescription: "Workroom uses Apple Events to open files you ⌘-click in the terminal with your chosen editor."
+        # Shown once by the Microphone TCC prompt when a program opens the mic. Attributed to us
+        # because children inherit the app as their responsible process (see CODE_SIGN_ENTITLEMENTS
+        # below).
+        # Deliberately broader than Ghostty's and iTerm2's terminal-only wording: the grant also reaches
+        # the repository setup scripts and agent CLIs Workroom runs on the user's behalf, so the string
+        # says so.
+        NSMicrophoneUsageDescription: "Programs Workroom runs, including terminal commands, repository setup scripts and coding agents, can use your microphone."
         # Resolve from the build settings below so Scripts/release.sh can inject them from the
         # git tag. CFBundleVersion MUST increase every release — Sparkle compares it to decide
         # whether a newer build is available.
@@ -324,6 +331,9 @@ targets:
         # kTCCServiceSystemPolicyAppData, raised when a terminal child (e.g. an agent CLI) reads
         # ~/Library/Application Support/*, attributed to us because children inherit the app as
         # their responsible process. No entitlement suppresses it; grant the app Full Disk Access.
+        # The file also grants device.audio-input: a program in a terminal (Claude Code's voice
+        # mode) opening the mic is attributed to us, and without the entitlement the hardened
+        # runtime refuses before TCC is even asked — no prompt, no error, voice simply fails.
         CODE_SIGN_ENTITLEMENTS: WorkroomApp/Workroom.entitlements
         SWIFT_VERSION: "5.0"
         DEAD_CODE_STRIPPING: YES
@@ -350,9 +360,9 @@ targets:
           # The same reasoning one level down gives every workroom of this repo its own Debug id
           # (WORKROOM_DEV_ID_SUFFIX above), so two workrooms' dev apps and test runs stop sharing
           # preferences, session helpers and "is it already running". No provisioning profile is
-          # involved (the one entitlement, apple-events, is a hardened-runtime key), but TCC treats
-          # each id as a new app, so a workroom's dev app asks for its permissions afresh. See
-          # docs/designs/parallel-workroom-testing.md.
+          # involved (the two entitlements, apple-events and audio-input, are hardened-runtime
+          # keys), but TCC treats each id as a new app, so a workroom's dev app asks for its
+          # permissions afresh. See docs/designs/parallel-workroom-testing.md.
           PRODUCT_BUNDLE_IDENTIFIER: "com.developwithstyle.workroom.dev$(WORKROOM_DEV_ID_SUFFIX)"
           PRODUCT_NAME: "Workroom Dev"
           ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon-Dev
@@ -367,7 +377,8 @@ targets:
           OTHER_CODE_SIGN_FLAGS: "--timestamp"
           # `xcodebuild build` (vs archive) injects com.apple.security.get-task-allow=1, a debug
           # entitlement notarization rejects ("The executable requests the get-task-allow
-          # entitlement"). The app needs no entitlements, so suppress the base injection.
+          # entitlement"). Our entitlements come from CODE_SIGN_ENTITLEMENTS; only the base
+          # injection is suppressed.
           CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
         Nightly:
           # Side-by-side nightly identity (issue #91): distinct bundle id + name + icon so
