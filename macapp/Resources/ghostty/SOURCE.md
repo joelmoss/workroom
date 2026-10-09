@@ -35,6 +35,21 @@ in `b81d5c6d`, the SwiftTerm → libghostty commit). This section records what w
 deliberately does not duplicate it. The comparison baseline was a stock Ghostty.app install of that
 same version. Re-measure after a pin bump; these findings expire with it.
 
+**Checked 2026-10-09 for the 1.6.20260928 → 2.2.2026100901 pin bump** (engine `3c47ca15` →
+`35a81a98`). Nothing to regenerate: `src/shell-integration` and `src/terminfo` are byte-identical
+between the refs, so `CHECKSUMS` is unchanged.
+
+**Regenerated 2026-09-29 for the 1.5.20260903 → 1.6.20260928 pin bump** (engine `c4e16970` →
+`3c47ca15`). Two files changed and nothing else moved, verified by diffing `src/shell-integration`
+and `src/terminfo` between the refs (`terminfo` is byte-identical):
+
+- `shell-integration/bash/ghostty.bash` — bash's exit status is now preserved across
+  `PROMPT_COMMAND`: array entries get their own status (`${1:-$?}`), and a scalar `PROMPT_COMMAND`
+  is prefixed with a status capture/restore so commands run before our hook no longer clobber `$?`.
+  Also matches `declare -a` without a trailing space.
+- `shell-integration/bash/bash-preexec.sh` — upstream's bash-preexec update (+284/−85). Vendored
+  byte-for-byte from the ref, as before.
+
 **Regenerated 2026-09-03 for the 1.3.2 → 1.5.20260903 pin bump** (engine `35e1a016` → `c4e16970`).
 Three files changed and nothing else moved:
 

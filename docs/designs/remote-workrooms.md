@@ -161,7 +161,8 @@ extra the bad outcome costs. See the re-priced return in Phase 3's scrollback bu
 **Amended — the emulator is linked, not written. `libghostty-vt` has a C API.** Ghostty now builds
 its terminal emulator as a standalone C library (`src/lib_vt.zig`, `include/ghostty/vt.h` plus ~30
 headers), and it is present at the revision this app **already pins** — engine sha `c4e16970`
-(2026-08-25), via `libghostty-spm` 1.5.20260903. So the far side runs *Ghostty's own emulator*, the
+(2026-08-25), via `libghostty-spm` 1.5.20260903 (since bumped to 2.2.2026100901 / `35a81a98`; see
+`macapp/project.yml`, the source of truth). So the far side runs *Ghostty's own emulator*, the
 same one rendering locally, rather than a second implementation of one. Three of its API groups map
 one-to-one onto what this design needs:
 
