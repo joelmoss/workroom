@@ -103,7 +103,7 @@ final class AppStoreCloseTabsTests: XCTestCase {
     let (id, title) = failed("remote")
     store.terminals.onRemoteCloseFailed?(id, title)
     XCTAssertEqual(store.errorTitle, "Couldn't stop the terminal in remote")
-    XCTAssertTrue(store.errorMessage?.contains("Deleting the workroom stops it") == true)
+    XCTAssertTrue(store.errorMessage?.contains("tries again when it next connects") == true)
 
     store.clearError()
     WindowRegistry.shared.isTerminating = true

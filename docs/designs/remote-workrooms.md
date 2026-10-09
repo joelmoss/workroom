@@ -1125,7 +1125,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     connects to the host if need be and sends the agent's `Kill` on the service connection's Control
     service. If the host cannot be reached or does not acknowledge, the session is left running and
     reported as not killed, and the app says so. It then stays registered as remote, so a second
-    close is never handed to the local helpers. A quit waits at most 5 seconds for such a kill. Up
+    close is never handed to the local helpers. The app ends it again each time the host's service
+    connection comes up (#293), once per connection, so a host that keeps refusing is not asked in
+    a loop. Nothing connects the host for this: it waits for a pane, a selection or a read to do
+    so. The retry is lost on quit, with the registration. A quit waits at most 5 seconds for such a kill. Up
     to 8 of a host's kills are in flight at once, and its agent ends each on a thread of its own, so
     a shell that declines SIGHUP holds up neither the next kill nor the host's other requests. Local
     kills are waited for in full. Deleting a remote workroom does not ask the host to end its
@@ -4076,8 +4079,9 @@ service milestones below so each layer can be reviewed and landed independently.
        session to wait for.
      - *Limits.* The agent does not flush on SIGTERM, so a stop can lose up to 2 s of screen. The
        container test's `restart -t 0` is a SIGKILL, which is the harder case. Closing a remote
-       pane ends its session and its record (#283), but only while its host answers: the record
-       of a remote pane closed while its host was down stays until the 64-record bound drops it.
+       pane ends its session and its record (#283). One closed while its host was down is ended
+       when the host next connects (#293); a quit before then leaves the record until the
+       64-record bound drops it.
        An agent that crashes without a reboot leaves orphaned shells running (the `KillMode`
        caveat in "Two requirements on #229's real supervisor"), and their records then read as
        ended while their shells live.
