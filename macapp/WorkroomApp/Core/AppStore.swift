@@ -3663,6 +3663,10 @@ final class AppStore: ObservableObject {
     if let sid = row.workroom, case .workroom(_, let name) = sid {
       creatingWorkrooms.remove(TerminalTarget.workroomID(project: path, name: name))
       createSteps[sid] = nil
+      // Its status probes skipped it while it was being made, as `createWorkroom`'s do: the create
+      // reloaded and selected it while it still was.
+      refreshLocalStatus(for: sid)
+      scheduleSelectedStatusRefresh()
     } else {
       imagePulls[path] = nil
       createSteps[.project(path)] = nil
