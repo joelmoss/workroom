@@ -932,6 +932,11 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     return Self.refusedLastAttach(of: session, in: directory.appendingPathComponent(id.uuidString))
   }
 
+  func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool {
+    guard case .remote(let id) = host else { return false }
+    return Self.lostLinkLastAttach(of: session, in: directory.appendingPathComponent(id.uuidString))
+  }
+
   // MARK: The ssh transport, which any ssh-reachable driver shares (boxd's, #256)
 
   /// Runs `command` on `host` over ssh, with the host's `ssh_config` and `known_hosts` written to
@@ -1019,16 +1024,33 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// and erases from there (DECSC, DECRC, ED), so an attach that goes through shows only the
   /// session, however many rows the line wrapped onto. `SHELL` is what ssh runs `LocalCommand`
   /// with, so it is a POSIX one.
+  ///
+  /// ssh's status goes beside the log (`attachStatus`), because the pane's own exit status never
+  /// carries it: on macOS libghostty starts every command under `/usr/bin/login`, which exits 0
+  /// whatever ran under it (#392). The status is removed before ssh starts, so a wrapper killed
+  /// before it writes one leaves none rather than the last attach's.
   static let attachWrapper = """
     log=$1; shift; printf '\\0337%s' "workroom: waiting for this terminal's host..."; \
-    : > "$log"; \
-    SHELL=/bin/sh "$@"; status=$?; \
+    : > "$log"; rm -f "${log%.log}.status"; \
+    SHELL=/bin/sh "$@"; status=$?; echo "$status" > "${log%.log}.status"; \
     if [ -s "$log" ]; then printf '\\r\\n'; cat "$log" >&2; fi; exit "$status"
     """
 
   /// Where a pane's ssh writes its messages (`-E`): one file per session, emptied by each attach.
   static func attachLog(_ session: UUID, in hostDirectory: URL) -> URL {
     hostDirectory.appendingPathComponent("attach-\(session.uuidString).log")
+  }
+
+  /// Where the attach wrapper writes ssh's exit status, beside `attachLog`.
+  static func attachStatus(_ session: UUID, in hostDirectory: URL) -> URL {
+    hostDirectory.appendingPathComponent("attach-\(session.uuidString).status")
+  }
+
+  /// Whether the last attach of `session` ended with ssh's own failure, 255: the link dropped or
+  /// never came up, as after laptop sleep, a network change or the host restarting.
+  static func lostLinkLastAttach(of session: UUID, in hostDirectory: URL) -> Bool {
+    (try? String(contentsOf: attachStatus(session, in: hostDirectory), encoding: .utf8))?
+      .trimmingCharacters(in: .whitespacesAndNewlines) == "255"
   }
 
   /// Whether the last attach of `session`, whose log is in `hostDirectory`, was refused.
