@@ -153,6 +153,33 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
     }
   }
 
+  /// A hand-off whose reload fails keeps the project locked, with the progress on its row: the
+  /// list still lacks the base this create recorded, so a second create would build another.
+  /// Value: protects=one base per place when a reload fails after the name is reserved;
+  /// fails_when=the hand-off frees the project without checking the reload took; why_new=the
+  /// hand-off test only covers a reload that lists the workroom; seam=none
+  @MainActor
+  func testAHandOffWhoseReloadFailsKeepsTheProjectLocked() async {
+    let cli = RecordingCLI()
+    let store = AppStore(cli: cli)
+    let project = Project(path: "/proj", vcs: "git", workrooms: [])
+    cli.listed = [project]  // the reload does not list the new workroom
+    store.projects = [project]
+    let row = AppStore.RemoteCreateRow()
+    let step = AppStore.CreateStep(fraction: 0.25, label: "clone")
+    store.busyProjects["/proj"] = 1
+    store.showRemoteCreateStep(step, in: "/proj", row: row)
+
+    await store.handOffRemoteCreate(named: "c", in: "/proj", to: row)
+    XCTAssertTrue(store.isBusyProject("/proj"), "a second create could build a second base")
+    XCTAssertNil(row.workroom)
+    XCTAssertEqual(store.createSteps, [.project("/proj"): step])
+    XCTAssertTrue(store.creatingWorkrooms.isEmpty)
+
+    store.endRemoteCreate(in: "/proj", row: row)
+    XCTAssertFalse(store.isBusyProject("/proj"))
+  }
+
   /// A remote create that ends before its workroom has a name (it failed building the base, say)
   /// frees its project and clears the row's progress and image pull, as the project row spinner's
   /// old `defer` did.

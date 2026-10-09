@@ -3637,12 +3637,21 @@ final class AppStore: ObservableObject {
   /// workroom has a name: the row shows it, disabled, and the project is free for another create.
   func handOffRemoteCreate(named name: String, in path: String, to row: RemoteCreateRow) async {
     let sid = SidebarID.workroom(project: path, name: name)
+    let id = TerminalTarget.workroomID(project: path, name: name)
     // Before the reload, so the row arrives undeletable and with its progress.
-    creatingWorkrooms.insert(TerminalTarget.workroomID(project: path, name: name))
+    creatingWorkrooms.insert(id)
     createSteps[sid] = createSteps.removeValue(forKey: .project(path))
+    await reload()
+    // A reload that failed leaves `projects` without this workroom, and without any base this
+    // create recorded: a second create would build a second base over it. The project stays
+    // locked, with the progress, until this create ends.
+    guard Self.sidebarID(forTargetID: id, in: projects) != nil else {
+      creatingWorkrooms.remove(id)
+      createSteps[.project(path)] = createSteps.removeValue(forKey: sid)
+      return
+    }
     imagePulls[path] = nil
     row.workroom = sid
-    await reload()
     endBusy(path)
   }
 
