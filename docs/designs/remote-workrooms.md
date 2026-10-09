@@ -1960,9 +1960,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     stalled IDLE reading on a sleeping host shows "status unknown".
   - **Swept only when pending (#373).** The driver writes a machine down (`PendingMachines`) before
     the call that makes it, and the record naming it takes it off as soon as it is written. So an
-    entry names only a machine this build began making and config never recorded. At launch, an entry that two
-    launches in a row found unrecorded is removed through the driver's `destroy`, at most 3 per
-    sweep. The sweep never lists every unrecorded `workroom-*` machine: names carry no build and
+    entry names only a machine this build began making and config never recorded. At launch, an
+    entry that two launches in a row found unrecorded, and that is over an hour old, is removed
+    through the driver's `destroy`, at most 3 per sweep. The hour covers a second copy of the same
+    build with a create still under way. The sweep never lists every unrecorded `workroom-*` machine: names carry no build and
     config is shared by every build, so a listing would take another build's create still under
     way. A machine whose record is lost after it was written is not swept.
   - **Letting go of an idle box** (superseded by #380, below: there is no let-go now, and the

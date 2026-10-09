@@ -259,6 +259,15 @@ final class ExeDevHostDriverTests: XCTestCase {
     ] {
       let exe = StubExeDev(["rm": Self.ok(printed)])
       let driver = driver(exe)
+      // Value: protects=a deleted VM leaves the pending list and a kept one stays on it (#373);
+      // fails_when=destroy skips the forget, or forgets a VM it failed to remove;
+      // why_new=only a create's rollback is checked; seam=none
+      try PendingMachines.add(
+        .init(id: id, driver: RemoteWorkrooms.exeDevDriver), in: driver.directory)
+      defer {
+        XCTAssertEqual(
+          PendingMachines.entries(in: driver.directory).map(\.id), gone ? [] : [id], printed)
+      }
       do {
         try await driver.destroy(.remote(id))
         XCTAssertTrue(gone, "\(printed): reported gone")
@@ -328,9 +337,9 @@ final class ExeDevHostDriverTests: XCTestCase {
       guard case .remote(let id)? = host else { return XCTFail("no host recorded: \(name)") }
       XCTAssertTrue(name.contains(id.uuidString.lowercased()), name)
       // Pending too, with its account, so the launch sweep takes it if no record ever does (#373).
-      XCTAssertEqual(
-        PendingMachines.entries(in: driver.directory),
-        [.init(id: id, driver: RemoteWorkrooms.exeDevDriver, account: "me@x.dev")])
+      let pending = PendingMachines.entries(in: driver.directory)
+      XCTAssertEqual(pending.map(\.id), [id])
+      XCTAssertEqual(pending.map(\.account), ["me@x.dev"])
     }
     XCTAssertEqual(exe.commands, ["new", "rm"])
   }

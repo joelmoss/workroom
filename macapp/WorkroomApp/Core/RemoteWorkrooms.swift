@@ -948,10 +948,12 @@ final class RemoteHosts: @unchecked Sendable {
             group.addTask {
               // Through `destroy`, which first checks the driver's account: another account's
               // "not found" would read as gone.
-              let swept = await PendingMachines.sweep(ids, in: pendingIn) {
+              let failures = await PendingMachines.sweep(ids, in: pendingIn) {
                 try await self.driver(key).destroy(.remote($0))
               }
-              return (key, swept.failures, swept.ran)
+              // Done for the launch either way: a removal that failed (another account signed
+              // in, say) is tried at the next launch, not at every reload.
+              return (key, failures, true)
             }
           }
         }
@@ -1429,6 +1431,8 @@ enum PendingMachines {
     var account: String? = nil
     /// The launch whose sweep first found it unrecorded (`launch`), or nil before any did.
     var unrecordedIn: UUID? = nil
+    /// When it was written down (`add`).
+    var made: Date? = nil
 
     var key: RemoteHosts.DriverKey? {
       RemoteHosts.DriverKey(HostDescriptor(driver: driver, org: org, account: account))
@@ -1446,6 +1450,8 @@ enum PendingMachines {
 
   /// Writes `entry` down, before the call that makes its machine.
   static func add(_ entry: Entry, in directory: URL) throws {
+    var entry = entry
+    entry.made = entry.made ?? Date()
     try update(in: directory) { $0.append(entry) }
   }
 
@@ -1456,26 +1462,31 @@ enum PendingMachines {
   }
 
   /// Removes, through `destroy`, those of `ids` (one driver key's unrecorded entries) that an
-  /// earlier launch's sweep found unrecorded too, at most `cap`, and marks the rest for the next
-  /// launch: a config that failed to read once costs nothing (#284's rule). Nothing goes when the
-  /// marks cannot be written. Returns what failed, and whether every removal it tried succeeded.
+  /// earlier launch's sweep found unrecorded too and that were made more than `grace` ago, at
+  /// most `cap`, and marks the rest for the next launch: a config that failed to read once costs
+  /// nothing (#284's rule), and a create still under way in another copy of this build is never
+  /// taken. Nothing goes when the marks cannot be written. Returns what failed; a machine whose
+  /// removal failed stays named for the next launch, not the next reload.
   static func sweep(
-    _ ids: Set<UUID>, in directory: URL, launch: UUID = launch, cap: Int = 3,
-    destroy: (UUID) async throws -> Void
-  ) async -> (failures: [String], ran: Bool) {
+    _ ids: Set<UUID>, in directory: URL, launch: UUID = launch, now: Date = Date(),
+    grace: TimeInterval = grace, cap: Int = 3, destroy: (UUID) async throws -> Void
+  ) async -> [String] {
     var confirmed: [UUID] = []
     do {
       try update(in: directory) { entries in
         for index in entries.indices where ids.contains(entries[index].id) {
-          if let seen = entries[index].unrecordedIn, seen != launch {
-            confirmed.append(entries[index].id)
+          let entry = entries[index]
+          if let seen = entry.unrecordedIn, seen != launch {
+            if entry.made.map({ now.timeIntervalSince($0) >= grace }) ?? true {
+              confirmed.append(entry.id)
+            }
           } else {
             entries[index].unrecordedIn = launch
           }
         }
       }
     } catch {
-      return (["recording unrecorded machines: \(error.localizedDescription)"], true)
+      return ["recording unrecorded machines: \(error.localizedDescription)"]
     }
     var failures: [String] = []
     if confirmed.count > cap {
@@ -1483,19 +1494,21 @@ enum PendingMachines {
         "\(confirmed.count - cap) unrecorded machine(s) left for a later launch: at most \(cap) go"
           + " per sweep")
     }
-    var ran = true
     for id in confirmed.prefix(cap) {
       do {
         try await destroy(id)
         forget([id], in: directory)
       } catch {
-        // Left named, for a later sweep: signed in to another account, say.
-        ran = false
+        // Left named, for a later launch: signed in to another account, say.
         failures.append("machine \(id): \(error.localizedDescription)")
       }
     }
-    return (failures, ran)
+    return failures
   }
+
+  /// How old an entry must be before it goes: longer than any create takes (a derive's snapshot
+  /// alone may take 15 minutes), so another copy of this build running at once never loses one.
+  static let grace: TimeInterval = 60 * 60
 
   private static func read(_ directory: URL) -> [Entry] {
     (try? JSONDecoder().decode(
