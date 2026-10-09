@@ -196,6 +196,7 @@ enum RemoteWorkrooms {
     case incompleteBase
     case codasetRequired
     case boxdNotInstalled
+    case baseBranchNotOnOrigin(String)
 
     var errorDescription: String? {
       switch self {
@@ -225,6 +226,10 @@ enum RemoteWorkrooms {
       case .codasetRequired:
         return "A remote workroom fetches and pushes with Codaset's repository tokens, so it keeps "
           + "working with this Mac closed. Sign in to Codaset in Settings → Remote workrooms."
+      case .baseBranchNotOnOrigin(let branch):
+        return "This project's new workrooms start from \(branch), which origin doesn't have. A "
+          + "remote workroom can only start from origin's branches. Push \(branch), or change the "
+          + "base branch in Project Settings."
       case .boxdNotInstalled:
         return "The boxd command wasn't found. Install it from boxd.sh, then sign in with "
           + "`boxd auth login`."

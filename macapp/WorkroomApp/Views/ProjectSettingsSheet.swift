@@ -64,7 +64,8 @@ struct ProjectSettingsSheet: View {
         } footer: {
           Text(
             "New workrooms start from origin's copy of this branch, fetched first, else the local "
-              + "branch. Leave it empty to start from origin's default branch.")
+              + "branch. Remote workrooms need it on origin. Leave it empty to start from origin's "
+              + "default branch.")
         }
       }
       .formStyle(.grouped)

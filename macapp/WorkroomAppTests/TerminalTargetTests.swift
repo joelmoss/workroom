@@ -62,6 +62,19 @@ final class TerminalTargetTests: XCTestCase {
     XCTAssertNil(try JSONDecoder().decode(ListResponse.self, from: json).projects[0].baseBranch)
   }
 
+  /// The create's fetch warning decodes from both the "created" event and the success payload.
+  func testCreateWarningDecodesFromTheEventAndThePayload() throws {
+    let event = try JSONDecoder().decode(
+      StreamEvent.self,
+      from: Data(
+        #"{"type":"created","name":"a","path":"/w/a","setup":false,"warning":"stale"}"#.utf8))
+    XCTAssertEqual(event.warning, "stale")
+    let response = try JSONDecoder().decode(
+      CreateResponse.self,
+      from: Data(#"{"name":"a","path":"/w/a","vcs":"git","project":"/p","warning":"stale"}"#.utf8))
+    XCTAssertEqual(response.warning, "stale")
+  }
+
   /// The project's base branch arrives under the CLI's snake_case key.
   func testListDecodesAProjectsBaseBranch() throws {
     let json = Data(

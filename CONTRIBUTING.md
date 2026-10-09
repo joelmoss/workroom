@@ -240,7 +240,7 @@ the editor prompt):
 3. **Generate a unique name:** try `namegen.Generate()` up to 5 times; on persistent collision,
    append a random 2-digit suffix (up to 10 more tries).
 4. **Collision checks:** ensure the VCS workspace and the target directory don't already exist.
-5. **Create the workspace:** `mkdir -p ~/workrooms`, then `git fetch origin`, then
+5. **Create the workspace:** `mkdir -p ~/workrooms`, then `git fetch --prune origin`, then
    `git worktree add --no-track -b workroom/<name> <path> <start>`. The start is
    `refs/remotes/origin/<base>` then `refs/heads/<base>` when the project sets `base_branch`
    (`workroom base set`), and an unresolvable base fails with `BaseBranchNotFound`. Without a base,
@@ -267,7 +267,8 @@ failed" and offer cleanup.
 
 1. **Guard + validate** the name against `^[a-zA-Z0-9]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$`.
 2. **Confirm** (interactively, or via a matching `--confirm <name>` value).
-3. **Run teardown:** if `scripts/workroom_teardown` exists, run it inside the workroom (streaming).
+3. **Run teardown:** if `scripts/workroom_teardown` exists in the workroom, else in the root project,
+   run it inside the workroom (streaming).
 4. **Remove the workspace:** `git worktree remove <path> --force` (this also removes the directory).
    **The branch is intentionally left intact.**
 5. **Update config:** remove the workroom entry. If it was the project's last workroom, the project

@@ -222,6 +222,20 @@ struct WorkroomStatusResolver: Sendable {
     return GitHubRepository(remote: r.stdout)
   }
 
+  /// Whether `dir`'s origin has `branch`, asked of origin itself: nil when that can't be told
+  /// (offline, no credentials, a timeout), as `git ls-remote --exit-code` exits 2 only for no match.
+  func originHasBranch(_ branch: String, in dir: String) async -> Bool? {
+    let r = await runner.run(
+      "git", ["ls-remote", "--exit-code", "--heads", "origin", "refs/heads/\(branch)"], in: dir,
+      timeout: timeout)
+    guard !r.timedOut else { return nil }
+    switch r.exitCode {
+    case 0: return true
+    case 2: return false
+    default: return nil
+    }
+  }
+
   /// CI for `commit`, as GitHub's own combined **status check rollup** for that commit — the same
   /// aggregate the GitHub UI shows, covering *all* check types (Actions check-runs + external commit
   /// statuses + check-run apps), not just Actions runs (#76).

@@ -282,6 +282,26 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertNil(none)
   }
 
+  /// A remote create checks origin has the project's base branch: `ls-remote --exit-code` exits 2
+  /// only for no match, so anything else (offline, no credentials) is left undecided.
+  func testOriginHasBranchReadsLsRemotesExitCode() async {
+    func ask(_ code: Int32) async -> Bool? {
+      await WorkroomStatusResolver(
+        runner: MockStatusRunner { _, args in
+          XCTAssertEqual(
+            args, ["ls-remote", "--exit-code", "--heads", "origin", "refs/heads/develop"])
+          return CommandResult(stdout: "", stderr: "", exitCode: code, timedOut: false)
+        }
+      ).originHasBranch("develop", in: "/proj")
+    }
+    let found = await ask(0)
+    let missing = await ask(2)
+    let unknown = await ask(128)
+    XCTAssertEqual(found, true)
+    XCTAssertEqual(missing, false)
+    XCTAssertNil(unknown)
+  }
+
   /// REGRESSION. The PR panel, checks list and CI badge all depend on this answer now, and they used
   /// to survive a transient `gh` failure through `ghPreflight`. A lookup that collapsed every failure
   /// into "no repository" would blank a good panel on a blip.
