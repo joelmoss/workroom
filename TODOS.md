@@ -15,26 +15,6 @@ None open. The second-Mac discovery entry was dropped on 2026-10-07 (#348, close
 
 ## P2 — perf, correctness, and the next VCS phase
 
-### Give the keep-awake heartbeat its own thread (wr-agent) — #257 review
-
-**What:** Send the heartbeat from a thread of its own, fed the published verdict, instead of from
-the wakefulness service's tick.
-
-**Why:** The service samples `/proc` on the same thread. A read blocked behind a wedged process
-stops the tick, and with it the next heartbeat, so the provider's timer can sleep a busy box with a
-healthy network. `status` reports `stalled` after 30 s, but the timer does not wait for anyone to
-look. The other blocker on that thread, the verdict file write, is gone (Recently done,
-2026-10-06).
-
-**How to start:** The heartbeat thread reads `shared().state` once a second and sends while the
-published verdict is BUSY and the last tick is younger than `STALL_AFTER_S`, so a stalled service
-still lets the box sleep rather than holding it awake forever. `KeepAwake::tick` already takes the
-verdict as input.
-
-**Depends on:** nothing.
-
-**Priority:** P2 (left over from the P1 shim-leftover removal, 2026-10-06)
-
 ### UI tests: share the duplicated helpers, tighten loose assertions (macapp) — UI-test-merge review follow-up
 
 **What:** Move the helpers that UI test classes copy from each other into shared extensions, the
@@ -71,26 +51,6 @@ Each file you touch needs its class re-run with `make app-uitest APP_UITEST_FLAG
 **Depends on:** nothing.
 
 **Priority:** P2 (deferred in /ship review, 2026-10-06)
-
-### Fix the heartbeat status test's backwards clock (wr-agent) — #257 review
-
-**What:** `heartbeat.rs`'s status test runs its clock backwards (131.0, then 122.0 for the IDLE
-tick); use 132.0. The other items here (the settings saver's queue and spawn, who may send
-`settings`) went with the `settings` request in #380. This one goes too if #382 removes the
-heartbeat first.
-
-**Priority:** P2 (chosen in /ship's adversarial review of #257, 2026-10-06)
-
-### A crashed wakefulness thread hides the badge (macapp, wr-agent) — #257 review
-
-**What:** A gap the #257 red-team pass found. (A thread that is blocked rather than crashed is
-covered: `status` reports `stalled` and the badge shows the box unprotected.) `catch_unwind` calls
-`wakefulness::stop()`, which sets `running` false; the heartbeat stops, and the badge (gated on
-`status.running`) disappears rather than showing "busy but not kept awake". A remote agent is always
-Linux, so a remote badge could treat `running == false` with live sessions as unprotected. (The
-other #257 item, the last Mac's ceiling settings winning, went with the ceiling in #380.)
-
-**Priority:** P2 (chosen in /ship's review of #257, 2026-10-06)
 
 ### A hand-off can refuse a build that did report, when the check uses its whole time (wr-agent) — #352 finding
 
@@ -204,33 +164,6 @@ bring-your-own host.
 enrolment path for 5.
 
 **Priority:** P2, effort S.
-
-### Record a real Claude Code trace on Linux for the OQ19 harness (vcs) — #208 measurement follow-up
-
-**What:** Run real Claude Code (not `scenarios/tools/agent.py`) in the OQ19 measurement image through
-the scenario-3 and scenario-4 shapes (idle at its prompt with and without a keepalive connection; a
-silent 15-minute turn; a streaming turn), record it with `vcs/scripts/oq19/sampler.py`, and replay it
-with `analyze.py` at the frozen configuration and under the tty-aware wait rule.
-
-**Why:** Every scored OQ19 run used a synthetic agent that blocks in a tty read at its prompt
-(`wait_woken`). The real agent is an event loop. Two results depend on that difference: the
-tty-aware rule, which separates an idle keepalive (3b) from a silent turn (4b) and would remove the
-D3 accepted cost (an idle agent holding a connection keeps its box awake 24 h/day), passed 16
-configurations on the synthetic agent and is unselectable until a real trace confirms the wait
-class; and P5's exec-lifecycle signal was unneeded on the synthetic set and may matter on the real
-one. See `docs/designs/oq19-wakefulness-measurements.md`, "What is not measured".
-
-**How to start:** `run.sh scenario 3b --closed-loop '<frozen config>'` with the agent command in
-`scenarios/lib.py` swapped for `claude` (it needs a credential in the container and a peer that looks
-like the API; the keepalive is the real one). Compare `wchan` of the idle agent against
-`analyze.TTY_WCHAN`. If it blocks in `poll`/`epoll`, the tty-aware rule is dead and D3's cost stands.
-
-**Depends on / blocked by:** A Linux Claude Code build in the image, and a way to run it non-interactively
-against a stub API. The Rust wakefulness service (#215) shipped with the frozen agnostic wait rule;
-a real trace that confirms the tty-aware rule can still swap it, since the golden contract is by
-fixture and the fixtures would be re-recorded with it.
-
-**Priority:** P2, effort M.
 
 ### exe.dev VMs a crash leaves unrecorded (macapp) — #259 eng review, with #373
 

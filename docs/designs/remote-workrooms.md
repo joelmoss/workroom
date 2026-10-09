@@ -25,7 +25,8 @@ the container driver (#252, PR #280, 2026-10-01); the boxd driver with portable 
 #349, 2026-10-05); and keeping a busy box awake (#257, PR #353, 2026-10-06), built as a heartbeat in
 the agent, not a shim. #380 (2026-10-08) then made the box decide its own wakefulness: the agent
 pushes its verdict, and the awake ceiling and every let-go, the app's and the agent's, are gone
-("As built (#380)"). Follow-ups from #253's reviews are #283 to #288; #283 (closing a remote pane
+("As built (#380)"). #382 (2026-10-09) removed the rest: the heartbeat, the BUSY/IDLE classifier,
+the Status service and the badge ("As built (#382)"). Workroom keeps no wakefulness obligation. Follow-ups from #253's reviews are #283 to #288; #283 (closing a remote pane
 ends its session on the host) is merged (PR #306, 2026-10-03), with its own follow-ups in #293, #297
 and #304. The second real provider, exe.dev (#259), is built on branch `feat/259-exedev-driver`, not yet
 merged, with its live suite passing, a 9-hour soak in which no VM slept, and its pool load measured
@@ -2001,8 +2002,9 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   provider's sleep or billing. As first built it still owned two things: an open app never holds an
   idle box awake, and a box never sleeps under running work (the heartbeat, #257). In #381's review
   (2026-10-09) the owner dropped the first: "we don't care if the box stays awake forever ... that
-  is the user's responsibility. deleting a workroom will fix that." The second goes with the
-  heartbeat in #382.
+  is the user's responsibility. deleting a workroom will fix that." The second went with the
+  heartbeat in #382 (see "As built (#382)"), and with it everything below about verdicts and the
+  badge.
   - **Pushed verdicts.** `STATUS_SERVICE_VERSION` is 2. The agent pushes `{"event": "status",
     "status": …}` on stream 0 to every connection that has asked for `status`, whenever what the
     app shows changes (BUSY or IDLE, and whether a BUSY box's heartbeat is failing). The app asks
@@ -2049,11 +2051,33 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **What the live suite checks.** The let-go's two live tests went with it
     (`testAnIdleBoxsAgentLetsGoOfTheAttachedApp`, `testABusyBoxWithTheAppAttachedStaysAwakeThroughItsJob`):
     whether a box sleeps is its provider's and the user's, and not asserted. #257's heartbeat test
-    still checks sleep, as a control for the heartbeat, until #382 removes both.
+    went in #382 with the heartbeat.
   - **Mixed versions.** An app from before #380 against a version 2 agent shows no badge (it
     accepts only version 1) and its 10 s poll holds the box as before. An app from after it, against
     an agent a busy box kept rather than hand off, shows that agent's first reading and nothing
     pushed; the next connect hands off.
+- **As built (#382, no wakefulness at all).** Owner, 2026-10-08: keeping a box awake under running
+  work is the user's and the provider's concern too. The provider's own idle timer applies, so a
+  long job with no network traffic can be paused when its box sleeps; raising the provider's idle
+  timeout, or keeping a pane open, avoids it.
+  - **Removed.** Agent: `wakefulness.rs` and its `heartbeat`, `sample` and test modules (the
+    classifier, `Policy`, `Boundary`, the resume mask, the pty counters fed from `session.rs`,
+    `SessionStore::pids`), the OQ19 golden replay (`vcs/scripts/oq19/golden/`,
+    `tests/test_golden.py`), `STATUS_SERVICE_VERSION`, `MIN_STATUS_VERSION` and the `min-status`
+    token in `wr-agent protocol`. App: `AgentWakefulness*`, `WakefulnessModel` (and the busy
+    re-ask), `AgentVCSConnection.statusChanges`, `statusRequest` and `wakefulness()`,
+    `AgentControlClient.minStatusVersion`, `WakefulnessBadge` and its sidebar slot, and
+    `HostDriverTraits.keepAwakeHoldsCredential` and `sleepsWhenIdle` (the badge was the only
+    reader). Live: `testTheHeartbeatKeepsABusyBoxAwakeAndABoxWithoutOneSleeps`. The rest of
+    `vcs/scripts/oq19/` stays as the measurement record this doc and OQ19's cite.
+  - **Mixed versions.** `Service::Status` keeps byte `0x04`, and `PROTOCOL_VERSION` is unchanged
+    at 7. An app from before #382 still asks for `status`; a new agent answers every Status request
+    with `{"version": 2, "error": {"unsupported": …}}`, which that app reads as no service: no
+    badge, no hang, and its watch asks again every 10 s. A new app never asks, and drops any
+    Status envelope an older agent sends rather than failing the connection. An older agent, kept
+    by a busy box rather than handed off, still runs its heartbeat until the next connect hands off.
+    Pinned by `tests/status_service.rs` (agent) and
+    `testAStatusEnvelopeFromAnOlderAgentDoesNotFailTheConnection` (app).
 
 - **As built (#259, the exe.dev driver).** `ExeDevHostDriver` drives exe.dev's ssh API
   (`ssh exe.dev <command> --json`) and reaches each VM as `<name>.exe.xyz`, over the container

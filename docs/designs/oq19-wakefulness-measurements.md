@@ -1,5 +1,10 @@
 # OQ19 — can the agent tell BUSY from IDLE? Measurements
 
+**Superseded 2026-10-09 (#382): the agent no longer classifies its box.** Wakefulness is the user's
+and the provider's concern, so the classifier, its heartbeat and the Status service are removed,
+along with the golden replay fixtures. The harness and results under `vcs/scripts/oq19/` are kept as
+the record of this measurement; see "As built (#382)" in `remote-workrooms.md`.
+
 **Answer (signal half): yes, on the hold-out and on the provider, with one accepted cost and one
 open question.** A policy exists (P4 below, numeric parameters frozen in
 `vcs/scripts/oq19/results/frozen.json`) that made zero false-idle and zero busy-forever errors on 150
