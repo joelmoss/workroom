@@ -1018,7 +1018,10 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   ///
   /// ssh's own messages go to the session's log (`-E`), so the app can read why the last attach
   /// failed (`hostRefusedLastAttach`) rather than guess from the status, which is 255 for all of
-  /// them. A failure's message is then copied onto the screen, where ssh would have printed it.
+  /// them. A refusal's message is then copied onto the screen, where ssh would have printed it:
+  /// the pane stops retrying one, and its reason (a changed host key, a refused key) is what the
+  /// user has to act on. Any other lost link says, in plain words, that the pane keeps trying
+  /// (`retryNotice`); ssh's own reason stays in the log.
   /// Until ssh is in, the pane says what it is waiting for; `LocalCommand`, which ssh runs once it
   /// has authenticated and before the session starts, restores the cursor saved ahead of that line
   /// and erases from there (DECSC, DECRC, ED), so an attach that goes through shows only the
@@ -1033,8 +1036,19 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     log=$1; shift; printf '\\0337%s' "workroom: waiting for this terminal's host..."; \
     : > "$log"; rm -f "${log%.log}.status"; \
     SHELL=/bin/sh "$@"; status=$?; echo "$status" > "${log%.log}.status"; \
-    if [ -s "$log" ]; then printf '\\r\\n'; cat "$log" >&2; fi; exit "$status"
+    if [ "$status" = 255 ] && ! grep -qiF \(refusalPatterns) "$log"; then \
+    printf '\\r\\n%s\\r\\n' \(shellQuoted(retryNotice)) >&2; \
+    elif [ -s "$log" ]; then printf '\\r\\n'; cat "$log" >&2; fi; exit "$status"
     """
+
+  /// `refusals` as `grep -e` arguments.
+  private static let refusalPatterns = refusals.map { "-e " + shellQuoted($0) }.joined(
+    separator: " ")
+
+  /// What a pane whose link dropped says while it keeps trying (#392).
+  static let retryNotice =
+    "Can't reach this terminal's host right now. Workroom will keep trying, and your session "
+    + "will be restored when it connects."
 
   /// Where a pane's ssh writes its messages (`-E`): one file per session, emptied by each attach.
   static func attachLog(_ session: UUID, in hostDirectory: URL) -> URL {
@@ -1066,12 +1080,15 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// which can heal.
   static func isRefusal(_ log: String) -> Bool {
     let log = log.lowercased()
-    return [
-      "host key verification failed", "remote host identification has changed",
-      "permission denied (", "too many authentication failures", "unable to negotiate",
-      "load key", "bad owner or permissions",
-    ].contains { log.contains($0) }
+    return refusals.contains { log.contains($0) }
   }
+
+  /// `isRefusal`'s messages, lowercase. The attach wrapper matches the same ones, ignoring case.
+  static let refusals = [
+    "host key verification failed", "remote host identification has changed",
+    "permission denied (", "too many authentication failures", "unable to negotiate",
+    "load key", "bad owner or permissions",
+  ]
 
   /// What runs on the host, in the pty ssh allocates there.
   ///

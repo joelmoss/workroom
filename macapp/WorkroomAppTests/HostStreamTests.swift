@@ -196,8 +196,8 @@ final class HostStreamTests: XCTestCase {
   }
 
   /// A pane's attach to a host that is not there (#241): it says what it is waiting for, then
-  /// ssh's own reason, and exits 255; and the driver does not read that reason as a refusal, so
-  /// its pane keeps retrying.
+  /// that it keeps trying (#392), and exits 255; ssh's own reason stays in the log, and the driver
+  /// does not read it as a refusal, so its pane keeps retrying.
   func testAnUnreachableHostsAttachSaysSoAndIsNotReadAsARefusal() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
       UUID().uuidString)
@@ -222,7 +222,8 @@ final class HostStreamTests: XCTestCase {
     XCTAssertTrue(
       attach.output.hasPrefix("\u{1b}7workroom: waiting for this terminal's host...\r\n"),
       attach.output)
-    XCTAssertTrue(attach.output.contains("Connection refused"), attach.output)
+    XCTAssertTrue(attach.output.contains(ContainerHostDriver.retryNotice), attach.output)
+    XCTAssertFalse(attach.output.contains("Connection refused"), attach.output)
     let log = try String(
       contentsOf: ContainerHostDriver.attachLog(
         session, in: directory.appendingPathComponent(id.uuidString)),
@@ -255,6 +256,30 @@ final class HostStreamTests: XCTestCase {
       XCTAssertEqual(
         ContainerHostDriver.lostLinkLastAttach(of: session, in: directory), lostLink, "\(code)")
     }
+  }
+
+  // Value: protects=the reason a pane shows when its host refuses for good, which it stops
+  // retrying; fails_when=the wrapper shows the keep-trying notice for a refusal too, or drops
+  // ssh's reason; why_new=the notice replaced ssh's message for every other lost link (#392);
+  // seam=none
+  /// A refused attach shows ssh's own reason (what the user has to act on), not the notice that
+  /// the pane keeps trying: after a few refusals it stops.
+  func testARefusedAttachShowsSshsReasonRatherThanTheRetryNotice() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let log = ContainerHostDriver.attachLog(UUID(), in: directory).path
+    // Stands in for ssh: writes its message to the log it was given (`-E`), then fails as ssh does.
+    let run = try SessionBackendProbe.run(
+      URL(fileURLWithPath: "/bin/sh"),
+      arguments: [
+        "-c", ContainerHostDriver.attachWrapper, "workroom-attach", log, "/bin/sh", "-c",
+        "echo 'Host key verification failed.' > \"$0\"; exit 255", log,
+      ], timeout: 15)
+    XCTAssertEqual(run.status, 255, run.output)
+    XCTAssertTrue(run.output.contains("Host key verification failed."), run.output)
+    XCTAssertFalse(run.output.contains(ContainerHostDriver.retryNotice), run.output)
   }
 
   /// ssh's wording for a host that answered and will keep refusing, which stops a pane's retries,
