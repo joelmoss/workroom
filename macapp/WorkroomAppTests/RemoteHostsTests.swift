@@ -615,10 +615,10 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertFalse(store.canCreateRemoteWorkroom(in: project))
   }
 
-  /// A workroom on a host, a container or a remote provider, wears the network glyph on its tab and
-  /// pane in place of the cube, with what kind of host it is as the tooltip; one on this Mac keeps
-  /// the cube (#309).
-  func testAWorkroomOnAHostWearsTheNetworkGlyph() {
+  /// A workroom in a container wears the network glyph on its tab and pane in place of the cube, and
+  /// one on a remote provider the cloud, with what kind of host it is as the tooltip; one on this
+  /// Mac keeps the cube (#309).
+  func testAWorkroomOnAHostWearsItsPlacesGlyph() {
     let local = Workroom(name: "w", path: "/tmp/w", vcsName: "workroom/w", warnings: [])
       .target(inProject: "/proj")
     XCTAssertEqual(local.workroomGlyph, "cube")
@@ -636,6 +636,13 @@ final class RemoteHostsTests: XCTestCase {
       host: HostDescriptor(state: "destroyed", driver: "apple-container")
     ).target(inProject: "/proj")
     XCTAssertEqual(destroyed.workroomGlyph, "network")
+    for driver in [RemoteWorkrooms.boxdDriver, RemoteWorkrooms.exeDevDriver] {
+      let cloud = Workroom(
+        name: "c", path: "/home/boxd/r", vcsName: "workroom/c", warnings: [],
+        host: HostDescriptor(driver: driver, provisioner: RemoteWorkrooms.provisioner, id: UUID())
+      ).target(inProject: "/proj")
+      XCTAssertEqual(cloud.workroomGlyph, "cloud", driver)
+    }
   }
 
   /// A remote workroom's icon names its machine as its provider lists it, the name each driver gives
