@@ -2116,7 +2116,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   - **The seam (#259 step 1).** `RemoteHosts` asks only whether a key is a local container or a
     remote provider (`DriverKey.isRemoteProvider`); the agent socket is a `HostDriver` property;
     the readiness poll is a `HostDriver` extension; `Place.remoteProviders` feeds the menu, the
-    picker and the "+" tooltip. boxd's sleep, presence and let-go code stays boxd-specific (D1): exe.dev doesn't sleep,
+    picker and the "+" tooltip. boxd's sleep and presence code stays boxd-specific (D1; #380 removed the let-go): exe.dev doesn't sleep,
     so a presence protocol would have had one adopter. A new provider is one driver file, one
     `DriverKey` case and one `Place` entry. A create's progress row counts
     only the steps the provider takes: exe.dev's has no reboot step (`AppStore.createStep`).
