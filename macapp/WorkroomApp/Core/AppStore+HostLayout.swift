@@ -138,7 +138,8 @@ extension AppStore {
   /// answer in time, has no Layout service, or keeps no layouts, then opens what was held meanwhile.
   private func applyHostLayout(
     _ outcome: Result<(HostLayoutResolution, [SessionDescriptor]), Error>,
-    for targetID: TerminalTarget.ID, host: UUID, workroom: UUID, held: TargetSession?, key: String
+    for targetID: TerminalTarget.ID, host: UUID, workroom: UUID, held captured: TargetSession?,
+    key: String
   ) {
     hostLayouts.fetching.remove(targetID)
     waitingForHostLayout.remove(targetID)
@@ -166,7 +167,9 @@ extension AppStore {
     }
     hostLayouts.fetched.insert(targetID)
     hostLayouts.hosts[targetID] = (host, workroom)
-    deferredTargetSessions.removeValue(forKey: targetID)
+    // The pane can ask the host before the saved session is restored, which then holds this Mac's
+    // copy here rather than ask again: without it, a host that keeps no layouts opens a fresh pane.
+    let held = deferredTargetSessions.removeValue(forKey: targetID) ?? captured
     var session = held
     // What is restored is what the host holds: once it is on screen, that is what `written` is,
     // since a restore mints new tab keys and an earlier encoding would never match a capture.
