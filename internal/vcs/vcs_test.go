@@ -131,11 +131,84 @@ func TestGitCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := []string{"git", "worktree", "add", "-b", "workroom/foo", "/workrooms/foo"}
-	for i, v := range expected {
-		if mock.Calls[0][i] != v {
-			t.Fatalf("expected %s at position %d, got %s", v, i, mock.Calls[0][i])
-		}
+	expected := []string{"git", "worktree", "add", "--no-track", "-b", "workroom/foo", "/workrooms/foo", "refs/remotes/origin/HEAD"}
+	if last := mock.Calls[len(mock.Calls)-1]; !slices.Equal(last, expected) {
+		t.Fatalf("expected %v, got %v", expected, last)
+	}
+}
+
+// git runs a git command in dir for a test, with an identity and no signing so commits work on
+// any machine.
+func git(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	args = append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)
+	out, err := (&RealExecutor{}).Run(dir, "git", args...)
+	if err != nil {
+		t.Fatalf("git %v: %v %s", args, err, out)
+	}
+	return out
+}
+
+// createdFrom creates a workroom from project and returns the commit it checked out, failing if
+// its branch has an upstream.
+func createdFrom(t *testing.T, project string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "wr")
+	if out, err := (&Git{Executor: &RealExecutor{}}).Create(project, "workroom/wr", path); err != nil {
+		t.Fatalf("create: %v %s", err, out)
+	}
+	if out, err := (&RealExecutor{}).Run(path, "git", "rev-parse", "--abbrev-ref", "@{upstream}"); err == nil {
+		t.Fatalf("workroom branch has an upstream: %s", out)
+	}
+	return git(t, path, "rev-parse", "HEAD")
+}
+
+// A project with origin, its checkout on a feature branch and behind origin's default branch.
+// Returns the project, origin's URL, and the commits at origin's default branch before and after
+// the project last fetched, and on the feature branch.
+func projectBehindOrigin(t *testing.T) (project, origin, fetched, newer, feature string) {
+	t.Helper()
+	origin = filepath.Join(t.TempDir(), "origin.git")
+	git(t, filepath.Dir(origin), "init", "-q", "--bare", "-b", "trunk", origin)
+	pusher := filepath.Join(t.TempDir(), "pusher")
+	git(t, filepath.Dir(pusher), "clone", "-q", origin, pusher)
+	git(t, pusher, "commit", "-q", "--allow-empty", "-m", "fetched")
+	git(t, pusher, "push", "-q", "origin", "HEAD:trunk")
+	fetched = git(t, pusher, "rev-parse", "HEAD")
+
+	project = filepath.Join(t.TempDir(), "project")
+	git(t, filepath.Dir(project), "clone", "-q", origin, project)
+	git(t, project, "switch", "-q", "-c", "feature")
+	git(t, project, "commit", "-q", "--allow-empty", "-m", "feature")
+	feature = git(t, project, "rev-parse", "HEAD")
+
+	git(t, pusher, "commit", "-q", "--allow-empty", "-m", "newer")
+	git(t, pusher, "push", "-q", "origin", "HEAD:trunk")
+	newer = git(t, pusher, "rev-parse", "HEAD")
+	return project, origin, fetched, newer, feature
+}
+
+func TestGitCreateBranchesFromOriginsDefaultBranchFetched(t *testing.T) {
+	project, _, _, newer, _ := projectBehindOrigin(t)
+	if got := createdFrom(t, project); got != newer {
+		t.Fatalf("workroom at %s, want origin's newest trunk %s", got, newer)
+	}
+}
+
+func TestGitCreateUsesTheLastFetchWhenOriginIsUnreachable(t *testing.T) {
+	project, _, fetched, _, _ := projectBehindOrigin(t)
+	git(t, project, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
+	if got := createdFrom(t, project); got != fetched {
+		t.Fatalf("workroom at %s, want the last-fetched trunk %s", got, fetched)
+	}
+}
+
+func TestGitCreateBranchesFromHEADWithoutOrigin(t *testing.T) {
+	project := t.TempDir()
+	git(t, project, "init", "-q")
+	git(t, project, "commit", "-q", "--allow-empty", "-m", "only")
+	if got, want := createdFrom(t, project), git(t, project, "rev-parse", "HEAD"); got != want {
+		t.Fatalf("workroom at %s, want HEAD %s", got, want)
 	}
 }
 
@@ -265,5 +338,14 @@ func TestDetectRefusesAGitDirGitWouldNotAccept(t *testing.T) {
 	os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: /elsewhere\n"), 0o644)
 	if _, err := Detect(worktree); err != nil {
 		t.Fatalf("a gitdir: file is a worktree: %v", err)
+	}
+}
+
+// The create's fetch must fail, not ask for https credentials, when there are none.
+func TestChildEnvironmentDisablesGitsTerminalPrompt(t *testing.T) {
+	t.Setenv("GIT_TERMINAL_PROMPT", "1")
+	env := childEnvironment(t.TempDir())
+	if !slices.Contains(env, "GIT_TERMINAL_PROMPT=0") || slices.Contains(env, "GIT_TERMINAL_PROMPT=1") {
+		t.Fatal("GIT_TERMINAL_PROMPT not forced to 0")
 	}
 }

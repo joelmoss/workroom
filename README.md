@@ -266,7 +266,9 @@ workroom create
 ```
 
 A random friendly name (e.g. `swift-meadow`) is auto-generated from a 120-adjective × 210-noun word
-list. Workroom creates a Git worktree for it. If the generated name collides, it retries up to 5 times,
+list. Workroom creates a Git worktree for it, on a new branch from `origin`'s default branch. Workroom
+fetches `origin` first. If the fetch fails, it uses the last fetched copy. A repository without
+`origin` branches from the current `HEAD`. If the generated name collides, it retries up to 5 times,
 then falls back to appending a random 2-digit suffix (e.g. `swift-meadow-42`).
 
 Alias: `workroom c`. Flags: `--project <dir>` (operate on a directory other than the cwd),

@@ -240,7 +240,9 @@ the editor prompt):
 3. **Generate a unique name:** try `namegen.Generate()` up to 5 times; on persistent collision,
    append a random 2-digit suffix (up to 10 more tries).
 4. **Collision checks:** ensure the VCS workspace and the target directory don't already exist.
-5. **Create the workspace:** `mkdir -p ~/workrooms`, then `git worktree add -b workroom/<name> <path>`.
+5. **Create the workspace:** `mkdir -p ~/workrooms`, then `git fetch origin` and `git remote set-head origin --auto`,
+   then `git worktree add --no-track -b workroom/<name> <path> refs/remotes/origin/HEAD`. A failed fetch keeps the
+   last fetched `origin/HEAD`. With no `origin` or no `origin/HEAD`, the start point is `HEAD`.
 6. **Persist:** `config.AddWorkroom(...)` records `{path}` under the project, keyed by project path,
    with the VCS type.
 7. **Signal readiness:** fire `OnReady` (the app mounts the workroom and starts streaming the setup

@@ -34,15 +34,18 @@ var gitRedirects = []string{
 }
 
 // childEnvironment is this process's environment without gitRedirects, plus a ceiling so
-// repository discovery stops at dir (see ceilingDirectories).
+// repository discovery stops at dir (see ceilingDirectories), and GIT_TERMINAL_PROMPT=0 so the
+// create's fetch fails rather than asks for https credentials mid-command. ssh passphrase and
+// host-key prompts are ssh's own and not covered.
 func childEnvironment(dir string) []string {
-	env := make([]string, 0, len(os.Environ())+1)
+	env := make([]string, 0, len(os.Environ())+2)
 	for _, kv := range os.Environ() {
 		key, _, _ := strings.Cut(kv, "=")
-		if !slices.Contains(gitRedirects, key) {
+		if !slices.Contains(gitRedirects, key) && key != "GIT_TERMINAL_PROMPT" {
 			env = append(env, kv)
 		}
 	}
+	env = append(env, "GIT_TERMINAL_PROMPT=0")
 	if ceiling := ceilingDirectories(dir); ceiling != "" {
 		env = append(env, "GIT_CEILING_DIRECTORIES="+ceiling)
 	}
