@@ -2091,7 +2091,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     answers ssh about 2 s later.
   - **Traits.** `sshStdio`; `deriveSpeed` about 5 s (copy, then the identity and agent waits);
     `deriveCarriesLiveProcesses: false`; `durableDisk: true` (exe.dev streams disk writes off the
-    machine); `maxLifetime: nil`; `keepAwakeHoldsCredential: false`; `sleepsWhenIdle: false`.
+    machine); `maxLifetime: nil`. (`keepAwakeHoldsCredential` and `sleepsWhenIdle`, both false here,
+    went with #382.)
     Idle is not defined by exe.dev at all: the CLI has no stop, start or idle timer, and three VMs
     left idle for 40 minutes kept their boot, processes and `/dev/shm`. **No lifecycle shim**, for
     that reason. The soak (D7, 2026-10-08, 13:20 to 22:24 UTC, 9 h 4 min) confirmed it: one VM
