@@ -1435,7 +1435,7 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     `IdentityFile` ahead of boxd's. The pinned key is boxd's gateway's, the same for every machine
     (Phase 0, item 6), and the VM's sshd is not what answers: `ssh.socket` is masked on a boxd
     machine, and the gateway reaches the VM another way (measured 2026-10-01).
-  - **A base** is `machine new`, then `Resources/host-setup/boxd.sh` run as root over ssh. It
+  - **A base** is `machine new`, then `Resources/host-setup/systemd.sh` (named `boxd.sh` until #259) run as root over ssh. It
     installs two systemd units. `workroom-identity` is a oneshot that mints the machine's identity
     once per hostname (the fixture's marker rule): new ssh host keys, and a new machine-id, with
     `/var/lib/dbus/machine-id` removed too, since `systemd-machine-id-setup` otherwise restores
@@ -2087,7 +2087,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     forwarding of any kind (an agent works on the VM), no multiplexing, `RemoteCommand none`,
     `RequestTTY no` (a pane's `-t` outranks it), `EscapeChar none`, the dead-link keepalives (#228),
     `ConnectTimeout` and `LogLevel ERROR` (the attach log is read). The app's `SSH_AUTH_SOCK` (or
-    the login shell's) is passed to ssh; the user's own `IdentityAgent` wins over it. Measured
+    the login shell's, for an app opened from Finder) is passed to every ssh the driver runs, the
+    account commands (`ssh exe.dev …`) as well as a VM's; the user's own `IdentityAgent` wins over
+    it. An ssh the app spawns for a VM also gets the login shell's `PATH`, where a `ProxyCommand`
+    helper is found as in Terminal; a pane's ssh has the pane's own. Measured
     (2026-10-08): with a bare environment, ssh signed in through launchd's agent and through the
     Keychain alone. Nothing is registered on the account, so the generic SSH driver (#378) can
     share this path. The first build chose a key itself (`IdentitiesOnly`, the first of
@@ -2112,10 +2115,11 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     destroy and rollback.
   - **The seam (#259 step 1).** `RemoteHosts` asks only whether a key is a local container or a
     remote provider (`DriverKey.isRemoteProvider`); the agent socket is a `HostDriver` property;
-    the readiness poll is a `HostDriver` extension; `Place.remoteProviders` feeds the menu and
-    picker. boxd's sleep, presence and let-go code stays boxd-specific (D1): exe.dev doesn't sleep,
+    the readiness poll is a `HostDriver` extension; `Place.remoteProviders` feeds the menu, the
+    picker and the "+" tooltip. boxd's sleep, presence and let-go code stays boxd-specific (D1): exe.dev doesn't sleep,
     so a presence protocol would have had one adopter. A new provider is one driver file, one
-    `DriverKey` case and one `Place` entry.
+    `DriverKey` case and one `Place` entry. A create's progress row counts
+    only the steps the provider takes: exe.dev's has no reboot step (`AppStore.createStep`).
   - **Parity.** `ProviderParityTestCase` holds the cases every real provider must pass alike;
     `BoxdIntegrationTests` and `ExeDevIntegrationTests` each call them. The identity case reads each
     provider's sshd host key where that provider keeps it (M5). Live on exe.dev (2026-10-08): all

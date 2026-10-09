@@ -217,8 +217,10 @@ side is `Core/Broker/`:
 `Core/ExeDevHostDriver.swift` is the second (#259): exe.dev VMs driven through exe.dev's ssh API
 (`ssh exe.dev <cmd> --json`) and reached over the user's own ssh: their `~/.ssh/config`, keys, agent
 and Keychain, as `ssh exe.dev` in Terminal, with only `ExeDevHostDriver.sshOptions` set over them
-(nothing registered on the account). A VM's host key is checked as `exe.dev`'s (`HostKeyAlias`). A derive
-is `cp` of the base's flushed disk, so the base is synced first and no reboot follows; `rm` exits 0
+(nothing registered on the account). An app opened from Finder gives every ssh it runs, account
+commands and VMs alike, the login shell's `SSH_AUTH_SOCK`; a VM's spawned ssh also gets the login
+shell's `PATH`, for a `ProxyCommand` helper. A VM's host key is checked as `exe.dev`'s
+(`HostKeyAlias`). A derive is `cp` of the base's flushed disk, so the base is synced first and no reboot follows; `rm` exits 0
 whatever happened, so a delete reads what it printed. Both drivers' shared live cases are in
 `WorkroomAppTests/ProviderParityTestCase.swift`.
 
