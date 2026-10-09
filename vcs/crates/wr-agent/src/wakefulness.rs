@@ -8,10 +8,9 @@
 //!
 //! **The box decides its own wakefulness (#380).** The verdict is pushed to every connection that
 //! has asked for `status`, so no client polls an idle box (a poll's own bytes on eth0 voted the box
-//! BUSY for good). And once the verdict has been IDLE for [`LET_GO_GRACE_S`], the service closes the
-//! connections that serve no attached pane (`serve::Connections::let_go`): with Workroom's traffic
-//! gone, the provider's own idle timer sleeps the box. When to sleep, and for how long a box may
-//! stay awake, are the provider's and the user's; there is no awake ceiling here any more.
+//! BUSY for good). When to sleep, and for how long a box may stay awake, are the provider's and the
+//! user's: there is no awake ceiling here, and no connection is closed for being idle. A box an open
+//! app holds awake is the user's to free, by deleting its workroom.
 //!
 //! **The policy is not invented here.** It is P4, frozen in
 //! `vcs/scripts/oq19/results/frozen.json` and measured in
@@ -65,13 +64,6 @@ use crate::session::SharedWriter;
 /// (#380): the awake ceiling's fields and requests are gone, and verdict changes are pushed, so an
 /// app that sees 2 needs no poll while the box is idle.
 pub const STATUS_SERVICE_VERSION: u32 = 2;
-
-/// How long the verdict stays IDLE before the service lets go of the connections it may close, and
-/// how old a connection must be before it may be closed: a new one is someone arriving, and a pane's
-/// connection says so with its `Attach` well inside this. On top of the policy's 30 s window, so a
-/// connection is let go of a minute after the last work on the box, well inside a provider's own
-/// idle timer (boxd's were 120 s in the live suite).
-pub const LET_GO_GRACE_S: f64 = 30.0;
 
 /// A `SharedWriter` held without keeping its connection alive.
 type WeakWriter = Weak<Mutex<Box<dyn std::io::Write + Send>>>;
@@ -765,7 +757,7 @@ impl Wakefulness {
         // write on the tick thread would stop the next heartbeat, and the provider could then sleep
         // a busy box.
         // `Builder::spawn`, not `thread::spawn`, which panics when the OS refuses a thread: that
-        // panic would end the service, heartbeat and let-go included, over one missed event.
+        // panic would end the service, heartbeat included, over one missed event.
         for writer in listeners {
             let event = event.clone();
             let spawned = std::thread::Builder::new()
@@ -867,21 +859,6 @@ fn changed(pushed: &mut Option<(Verdict, bool)>, verdict: Verdict, keep_awake_er
     true
 }
 
-#[cfg(any(target_os = "linux", test))]
-/// When the verdict became IDLE, after this tick's: kept while it stays IDLE, gone on BUSY.
-fn idle_since(previous: Option<f64>, t: f64, verdict: Verdict) -> Option<f64> {
-    match verdict {
-        Verdict::Idle => Some(previous.unwrap_or(t)),
-        Verdict::Busy => None,
-    }
-}
-
-#[cfg(any(target_os = "linux", test))]
-/// Whether the service lets go of connections at `t`: IDLE for [`LET_GO_GRACE_S`] at least.
-fn letting_go(idle_since: Option<f64>, t: f64) -> bool {
-    idle_since.is_some_and(|since| t - since >= LET_GO_GRACE_S)
-}
-
 #[cfg(target_os = "linux")]
 pub use service::spawn;
 
@@ -889,8 +866,7 @@ pub use service::spawn;
 mod service {
     use super::heartbeat::{self, KeepAwake};
     use super::{
-        changed, drain_counters, idle_since, letting_go, shared, status_json, Boundary, Classifier,
-        Policy, EXCLUDED_COMMS, LET_GO_GRACE_S,
+        changed, drain_counters, shared, status_json, Boundary, Classifier, Policy, EXCLUDED_COMMS,
     };
     use crate::session::SessionStore;
     use std::sync::atomic::Ordering;
@@ -937,7 +913,6 @@ mod service {
             state.t = start;
         }
         let mut pushed = None;
-        let mut idle_from = None;
         let mut tick: u64 = 0;
         loop {
             let due = start + tick as f64 * policy.interval;
@@ -975,16 +950,6 @@ mod service {
             let joined = shared().joined.swap(false, Ordering::SeqCst);
             if changed(&mut pushed, verdict, keep_awake.error.is_some()) || joined {
                 shared().push(status);
-            }
-            idle_from = idle_since(idle_from, s.t, verdict);
-            if letting_go(idle_from, s.t) {
-                let closed = crate::serve::connections().let_go(
-                    std::time::Instant::now(),
-                    Duration::from_secs_f64(LET_GO_GRACE_S),
-                );
-                if closed > 0 {
-                    crate::note!("wakefulness: idle; let go of {closed} connection(s)");
-                }
             }
 
             // Skip ahead rather than bursting to catch up: a missed tick is simply missed, and
