@@ -22,6 +22,8 @@ func newTestConfig(t *testing.T) *Config {
 }
 
 func TestConfigPath(t *testing.T) {
+	// A Dev build's terminals set it; this test is about the default.
+	t.Setenv(ConfigEnv, "")
 	c, err := New("")
 	if err != nil {
 		t.Fatal(err)
