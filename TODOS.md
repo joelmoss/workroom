@@ -566,6 +566,15 @@ a `pre` tag.
 upstream commits) and `vcs/scripts/build-ghostty-vt.sh` `GHOSTTY_SHA` to match. `Package.resolved` and
 `GhosttyPinIntegrityTests.expectedRevision` now name `5a025555…`.
 
+**Re-targeted 2026-10-09 to package 2.2.2026100901 / ghostty `35a81a98` (2026-10-05).** The package
+moved to 2.x (Swift 6.2 tools) while this sat in review. `GhosttyKit` is still the product we link,
+and `ghostty.h` changed only by appending `GHOSTTY_ACTION_RESIZE_WINDOW`. `src/shell-integration` and
+`src/terminfo` are byte-identical to `3c47ca15`, so `CHECKSUMS` is unchanged. Package `0014` and
+`anchored_edit.py` did not change. The new package patch `0018` edits `apprt/embedded.zig` only, so
+the shadow does not carry it. Verified on macOS: the Zig build of `libghostty-vt` at `35a81a980` with
+0014 applied, `cargo test -p wr-agent`, and `make app-build`. `Package.resolved` and
+`expectedRevision` now name `d139d99a…`. The items below still stand, except the Zig build.
+
 **Target choice.** The package's newest `main` pins ghostty `b40acce58` (2026-09-26) but ships no
 semver release — only an `upstream.b40acce58dcf` tag, which `exactVersion` cannot pin. 1.6.20260928's
 own `Ghostty.ref` is `3c47ca159`, not `b40acce58`. Deliberately NOT taken: render-state overscan/row

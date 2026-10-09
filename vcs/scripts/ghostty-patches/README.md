@@ -23,6 +23,7 @@ Package patches that are **not** here, on purpose:
 - `0015` hold-frame-for-prompt-redraw: renderer-only behavior. It adds `Screen.prompt_redraw`, a flag
   the renderer reads; it changes no cell, mode, or reported byte, so nothing in a snapshot, formatter
   output or continuation differs. Revisit if that stops being true.
+- `0018` screen text history: an `apprt/embedded.zig` text-read path, so surface-only.
 - `0003`–`0009`, `0012`, `0013`, `0016`, `0017`: build and platform (iOS, Catalyst, visionOS, Metal).
 
 ## Bumping
@@ -33,4 +34,4 @@ with 0015) belongs here; re-copy the ones already here. Edit nothing locally —
 divergence from the app by definition. The patches are anchored: if upstream moved the text they
 edit, the build stops with a `[-]` line naming the file rather than patching the wrong place.
 
-Vendored from `libghostty-spm` `1.6.20260928` (`5a025555f0a85ee51da7eb306c35f660d116e879`).
+Vendored from `libghostty-spm` `2.2.2026100901` (`d139d99a5b10ab45a0a0704d4c1fb1d595710837`).
