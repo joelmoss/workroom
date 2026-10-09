@@ -67,7 +67,50 @@ fn flag(args: &[String], name: &str) -> Option<String> {
     args.get(index + 1).cloned()
 }
 
+/// Hands this process's crashes, and those of everything it starts, back to the kernel (#329).
+///
+/// The app's crash reporter (Sentry) takes the app's crashes through a Mach exception port, and
+/// every process the app starts inherits that port: this agent, then each session's shell and all
+/// it runs. A crash in one of those goes to the app's handler, which never answers for another
+/// process, so the faulting thread waits forever and the SIGSEGV a Go or C program would recover
+/// from never arrives. With no port, the kernel delivers the signal as usual.
+#[cfg(target_os = "macos")]
+fn drop_inherited_exception_ports() {
+    extern "C" {
+        // What <mach/mach_init.h>'s `mach_task_self()` reads.
+        static mach_task_self_: libc::mach_port_t;
+        fn task_set_exception_ports(
+            task: libc::mach_port_t,
+            exception_mask: libc::c_uint,
+            new_port: libc::mach_port_t,
+            behavior: libc::c_int,
+            new_flavor: libc::c_int,
+        ) -> libc::c_int;
+    }
+    // <mach/exception_types.h> and <mach/thread_status.h>.
+    const EXC_MASK_ALL: libc::c_uint = 0x1bfe;
+    const EXCEPTION_DEFAULT: libc::c_int = 1;
+    #[cfg(target_arch = "aarch64")]
+    const THREAD_STATE_NONE: libc::c_int = 5;
+    #[cfg(target_arch = "x86_64")]
+    const THREAD_STATE_NONE: libc::c_int = 13;
+    const MACH_PORT_NULL: libc::mach_port_t = 0;
+    // Nothing to do on failure: the agent runs as before, only without the fix.
+    let _ = unsafe {
+        task_set_exception_ports(
+            mach_task_self_,
+            EXC_MASK_ALL,
+            MACH_PORT_NULL,
+            EXCEPTION_DEFAULT,
+            THREAD_STATE_NONE,
+        )
+    };
+}
+
 fn main() -> ExitCode {
+    // Before anything is started, so no session's shell inherits the port.
+    #[cfg(target_os = "macos")]
+    drop_inherited_exception_ports();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("protocol") => {
