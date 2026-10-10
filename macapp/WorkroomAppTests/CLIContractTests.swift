@@ -124,6 +124,16 @@ final class CLIContractTests: XCTestCase {
     XCTAssertEqual(events.dropFirst().map(\.text), ["installing", "done"])
   }
 
+  func testCreateFetchWarning() throws {
+    let warning = "Could not fetch origin. The workroom starts from HEAD, which may be out of date."
+    try assertSuccess("create-fetch-warning.json")
+    XCTAssertEqual(try decode(CreateResponse.self, "create-fetch-warning.json").warning, warning)
+    let events = try events("create-fetch-warning-events.ndjson")
+    XCTAssertEqual(events.map(\.type), ["created"])
+    XCTAssertEqual(events[0].warning, warning)
+    XCTAssertEqual(events[0].setup, false)
+  }
+
   func testCreateRemote() throws {
     try assertSuccess("create-remote.json")
     let created = try decode(CreateResponse.self, "create-remote.json")

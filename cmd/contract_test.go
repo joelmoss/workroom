@@ -52,8 +52,8 @@ func runCLI(t *testing.T, args ...string) cliRun {
 		t.Fatal(err)
 	}
 	stdout, stderr := make(chan []byte), make(chan []byte)
-	go func() { b, _ := io.ReadAll(outR); stdout <- b }()
-	go func() { b, _ := io.ReadAll(errR); stderr <- b }()
+	go func() { b, _ := io.ReadAll(outR); _ = outR.Close(); stdout <- b }()
+	go func() { b, _ := io.ReadAll(errR); _ = errR.Close(); stderr <- b }()
 	savedOut, savedErr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = outW, errW
 	rootCmd.SetArgs(args)
@@ -250,6 +250,29 @@ func TestContractCreateSetupFailed(t *testing.T) {
 		t.Fatalf("create with a failing setup script exited 0: %s", run.stdout)
 	}
 	checkContract(t, "create-setup-failed.json", run.stdout, home, createdName(t, run.stdout), contractName)
+}
+
+// A create whose fetch fails warns that its start may be out of date, in the envelope and in the
+// created event the app takes it from.
+func TestContractCreateFetchWarning(t *testing.T) {
+	home := contractHomeDir(t)
+	project := gitRepo(t, filepath.Join(home, "src", "app"))
+	run(t, project, "git", "remote", "add", "origin", filepath.Join(home, "gone.git"))
+	cfg, err := config.New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddProject(project, "git"); err != nil {
+		t.Fatal(err)
+	}
+
+	run := runCLI(t, "create", "--json", "--no-editor", "--project", project)
+	if run.code != 0 {
+		t.Fatalf("create: exit %d, %s", run.code, run.stdout)
+	}
+	name := createdName(t, run.stdout)
+	checkContract(t, "create-fetch-warning.json", run.stdout, home, name, contractName)
+	checkContract(t, "create-fetch-warning-events.ndjson", run.stderr, home, name, contractName)
 }
 
 // The app records a remote workroom before it makes the host (#253).
