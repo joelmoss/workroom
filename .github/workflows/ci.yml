@@ -36,7 +36,8 @@ jobs:
           tar -xzf "$archive" actionlint
           ./actionlint -color
 
-      # Named file for the same reason as the change-selection test above.
+      # Named file, not `unittest discover -s scripts/ci`: discover exits 0 when it finds NO
+      # tests, so a deleted or renamed suite would report green while proving nothing.
       - name: Test the download stats report
         run: python3 scripts/ci/test_download_stats.py
 

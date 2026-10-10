@@ -472,7 +472,7 @@ final class PersistentSessionService {
 
   /// `pane`'s ssh to `sessionID` ended: its surface was freed or its process exited (#356). A
   /// window closing does both without ending the session, so this, not `endSession`, is what
-  /// stops a pane holding its host. A reconnect attaches it again (`attachCommand`).
+  /// stops a pane counting as attached to its host. A reconnect attaches it again (`attachCommand`).
   func paneDetached(_ sessionID: UUID, by pane: UUID) {
     attachedRemote[sessionID]?.remove(pane)
     if attachedRemote[sessionID]?.isEmpty == true { attachedRemote[sessionID] = nil }
@@ -496,8 +496,8 @@ final class PersistentSessionService {
     return remote.driver.lastAttachLostLink(of: sessionID, on: remote.host)
   }
 
-  /// `pane`, when given, is the pane whose ssh will run the command: it holds the host until it
-  /// detaches (`paneDetached`). Nil means no pane runs it (a probe), so nothing is held.
+  /// `pane`, when given, is the pane whose ssh will run the command: it counts as attached to the
+  /// host until it detaches (`paneDetached`). Nil means no pane runs it (a probe), so none is recorded.
   func attachCommand(
     forSession sessionID: UUID, restored: Bool = false, by pane: UUID? = nil
   ) -> String? {
@@ -514,7 +514,7 @@ final class PersistentSessionService {
         // retrying its ssh against a host that is down does not retry the service too.
         let host = remote.host
         Task {
-          // Only while a pane still holds it: one that exited or closed meanwhile holds nothing.
+          // Only while a pane is still attached: one that exited or closed meanwhile is not.
           guard self.hasAttachedPane(on: host) else { return }
           try? await RemoteHosts.shared.ensureConnected(host)
         }
