@@ -47,6 +47,88 @@ use std::time::{Duration, Instant};
 
 use crate::session::{FrozenSession, SessionId, SessionStore};
 
+/// Why a hand-off did not happen, or why a table could not be read. The text is what the
+/// requester is shown (a `Failure` frame, truncated to `MAX_REASON`) and what `handoff-check`
+/// prints, so each message is part of what a user sees.
+#[derive(Debug, thiserror::Error)]
+pub enum HandOffError {
+    #[error("not a hand-off table")]
+    NotATable,
+    #[error("hand-off table version {0} is not supported")]
+    TableVersion(u16),
+    #[error("hand-off table metadata is not UTF-8")]
+    MetadataNotUtf8,
+    #[error("hand-off table has trailing bytes")]
+    TrailingBytes,
+    #[error("hand-off table is truncated")]
+    Truncated,
+    #[error("this agent serves one connection and has nothing to hand off")]
+    NothingToHandOff,
+    #[error("{} is not an absolute path", .0.display())]
+    NotAbsolute(PathBuf),
+    #[error("cannot read {}: not a regular file", .0.display())]
+    NotAFile(PathBuf),
+    #[error("cannot read {}: {source}", path.display())]
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("another hand-off is in progress")]
+    InProgress,
+    #[error("a repository command is still running; try again when it finishes")]
+    RepositoryBusy,
+    #[error("a filesystem operation is still stuck on a mount; try again when it returns")]
+    FilesystemStuck,
+    #[error("a session is being ended; try again when it finishes")]
+    SessionEnding,
+    #[error("a session is being ended or repainted; try again when it finishes")]
+    SessionsBusy,
+    #[error("could not duplicate descriptor {fd}: {source}")]
+    Duplicate { fd: RawFd, source: std::io::Error },
+    #[error("could not write {}: {source}", path.display())]
+    WriteTable {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("{} could not start: {source}", binary.display())]
+    Start {
+        binary: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("{} did not say its build within {}s", .0.display(), CHECK_TIMEOUT.as_secs())]
+    BuildLate(PathBuf),
+    #[error("{} is build {theirs}, older than this agent's build {ours}", binary.display())]
+    Older {
+        binary: PathBuf,
+        theirs: u64,
+        ours: u64,
+    },
+    #[error("{} did not check the sessions within {}s", .0.display(), CHECK_TIMEOUT.as_secs())]
+    CheckLate(PathBuf),
+    /// `stderr` is the check's own output, trimmed.
+    #[error("{} cannot restore these sessions ({status}): {stderr}", binary.display())]
+    CannotRestore {
+        binary: PathBuf,
+        status: ExitStatus,
+        stderr: String,
+    },
+    #[error("the binary's path contains a NUL")]
+    BinaryNul,
+    #[error("an argument contains a NUL")]
+    ArgumentNul,
+    #[error("the table path has a NUL")]
+    TablePathNul,
+    #[error("the requester stopped waiting, so nothing was replaced")]
+    RequesterGone,
+    #[error("{} could not be executed: {source}", binary.display())]
+    Exec {
+        binary: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("this build cannot restore screens (built without terminal-state)")]
+    NoTerminalState,
+}
+
 const MAGIC: [u8; 4] = *b"WRHO";
 /// The table's format. The new program must read the old one's table, so a change here needs the
 /// reader to keep accepting every version a shipped agent writes: version 1 had no metadata, and its
@@ -151,14 +233,14 @@ impl Table {
         out
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Table, String> {
+    pub fn decode(bytes: &[u8]) -> Result<Table, HandOffError> {
         let mut reader = Reader(bytes);
         if reader.take(4)? != MAGIC {
-            return Err("not a hand-off table".into());
+            return Err(HandOffError::NotATable);
         }
         let version = u16::from_be_bytes(reader.array()?);
         if !(OLDEST_TABLE_VERSION..=TABLE_VERSION).contains(&version) {
-            return Err(format!("hand-off table version {version} is not supported"));
+            return Err(HandOffError::TableVersion(version));
         }
         let listener = i32::from_be_bytes(reader.array()?);
         let lock = i32::from_be_bytes(reader.array()?);
@@ -176,10 +258,10 @@ impl Table {
             if version >= 2 {
                 let entries = u32::from_be_bytes(reader.array()?);
                 for _ in 0..entries {
-                    let mut text = || -> Result<String, String> {
+                    let mut text = || -> Result<String, HandOffError> {
                         let length = u32::from_be_bytes(reader.array()?) as usize;
                         String::from_utf8(reader.take(length)?.to_vec())
-                            .map_err(|_| "hand-off table metadata is not UTF-8".to_string())
+                            .map_err(|_| HandOffError::MetadataNotUtf8)
                     };
                     let key = text()?;
                     let value = text()?;
@@ -197,7 +279,7 @@ impl Table {
             });
         }
         if !reader.0.is_empty() {
-            return Err("hand-off table has trailing bytes".into());
+            return Err(HandOffError::TrailingBytes);
         }
         Ok(Table {
             listener,
@@ -210,16 +292,16 @@ impl Table {
 struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
-    fn take(&mut self, count: usize) -> Result<&'a [u8], String> {
+    fn take(&mut self, count: usize) -> Result<&'a [u8], HandOffError> {
         if self.0.len() < count {
-            return Err("hand-off table is truncated".into());
+            return Err(HandOffError::Truncated);
         }
         let (head, tail) = self.0.split_at(count);
         self.0 = tail;
         Ok(head)
     }
 
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], String> {
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], HandOffError> {
         Ok(self.take(N)?.try_into().expect("exact length"))
     }
 }
@@ -287,22 +369,20 @@ pub fn hand_off(
     binary: &Path,
     force: bool,
     before_exec: impl FnOnce() -> bool,
-) -> Result<(), String> {
-    let context = CONTEXT
-        .get()
-        .ok_or("this agent serves one connection and has nothing to hand off")?;
+) -> Result<(), HandOffError> {
+    let context = CONTEXT.get().ok_or(HandOffError::NothingToHandOff)?;
     if !binary.is_absolute() {
-        return Err(format!("{} is not an absolute path", binary.display()));
+        return Err(HandOffError::NotAbsolute(binary.to_path_buf()));
     }
     // A regular file only: reading a FIFO or a device to its end could block this connection's
     // thread for good.
     if !std::fs::metadata(binary).is_ok_and(|meta| meta.is_file()) {
-        return Err(format!(
-            "cannot read {}: not a regular file",
-            binary.display()
-        ));
+        return Err(HandOffError::NotAFile(binary.to_path_buf()));
     }
-    let offered = digest(binary).map_err(|e| format!("cannot read {}: {e}", binary.display()))?;
+    let offered = digest(binary).map_err(|source| HandOffError::Read {
+        path: binary.to_path_buf(),
+        source,
+    })?;
     if !force && context.digest == Some(offered) {
         return Ok(());
     }
@@ -312,15 +392,14 @@ pub fn hand_off(
         Ok(guard) => guard,
         Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         Err(std::sync::TryLockError::WouldBlock) => {
-            return Err("another hand-off is in progress".into());
+            return Err(HandOffError::InProgress);
         }
     };
     PAUSED.store(true, std::sync::atomic::Ordering::Release);
     let _paused = Paused;
     // A repository command cut off by the exec could leave a repository half-written, so none may
     // be running, and none may start: every slot is taken until the exec, or until this returns.
-    let _quiet = crate::rpc::Quiet::acquire(QUIET_TIMEOUT)
-        .ok_or("a repository command is still running; try again when it finishes")?;
+    let _quiet = crate::rpc::Quiet::acquire(QUIET_TIMEOUT).ok_or(HandOffError::RepositoryBusy)?;
     // A file lookup left behind at its deadline (#334) holds no permit, so `Quiet` doesn't wait for
     // it, but the exec would: `execve` waits for every other thread to die, and one stuck in a FUSE
     // request can't. The exec would then freeze every session on the host. Race-free: with `Quiet`
@@ -328,9 +407,7 @@ pub fn hand_off(
     // only fall from here. No timeout on this refusal: a timeout is what would let the exec
     // through.
     if crate::file::filesystem_operations_left_behind() > 0 {
-        return Err(
-            "a filesystem operation is still stuck on a mount; try again when it returns".into(),
-        );
+        return Err(HandOffError::FilesystemStuck);
     }
     // A kill on its own thread holds `TERMINATING` until its shell is gone, so `frozen` already
     // keeps the exec out of its SIGHUP grace. What is left is its acknowledgement, written after:
@@ -339,7 +416,7 @@ pub fn hand_off(
     // `APP_TIMEOUT` (checked above) however the time is split.
     let deadline = Instant::now() + FREEZE_TIMEOUT;
     if !sessions.wait_for_kills(deadline) {
-        return Err("a session is being ended; try again when it finishes".into());
+        return Err(HandOffError::SessionEnding);
     }
     sessions
         .frozen(
@@ -350,14 +427,12 @@ pub fn hand_off(
                 // already past that lookup can still count itself after this; it then waits out
                 // the exec, and its acknowledgement is lost, so the app reports it as not killed.
                 if sessions.is_killing() {
-                    return Err("a session is being ended; try again when it finishes".into());
+                    return Err(HandOffError::SessionEnding);
                 }
                 replace(context, binary, frozen, before_exec)
             },
         )
-        .unwrap_or_else(|| {
-            Err("a session is being ended or repainted; try again when it finishes".into())
-        })
+        .unwrap_or(Err(HandOffError::SessionsBusy))
 }
 
 /// This build's number (`build.rs`): the commit time it was built from. Agents are ordered by it, so
@@ -385,7 +460,7 @@ pub static BUILD_MARKER: &str = concat!("WR-AGENT-BUILD:", env!("WR_AGENT_BUILD"
 struct Carried(Vec<RawFd>);
 
 impl Carried {
-    fn dup(&mut self, fd: RawFd) -> Result<RawFd, String> {
+    fn dup(&mut self, fd: RawFd) -> Result<RawFd, HandOffError> {
         // Close-on-exec at first, so the check below does not inherit them; cleared just before
         // the exec.
         // At 3 or above: a copy on 0, 1 or 2 would be the new program's stdio, and its diagnostics
@@ -393,10 +468,10 @@ impl Carried {
         // SAFETY: F_DUPFD_CLOEXEC takes and returns plain integers; a stale `fd` fails with EBADF.
         let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
         if copy < 0 {
-            return Err(format!(
-                "could not duplicate descriptor {fd}: {}",
-                std::io::Error::last_os_error()
-            ));
+            return Err(HandOffError::Duplicate {
+                fd,
+                source: std::io::Error::last_os_error(),
+            });
         }
         self.0.push(copy);
         Ok(copy)
@@ -418,7 +493,7 @@ fn replace(
     binary: &Path,
     frozen: &[FrozenSession],
     before_exec: impl FnOnce() -> bool,
-) -> Result<(), String> {
+) -> Result<(), HandOffError> {
     let mut carried = Carried(Vec::new());
     let mut sessions = Vec::with_capacity(frozen.len());
     for session in frozen {
@@ -440,7 +515,10 @@ fn replace(
         .mode(0o600)
         .open(&path)
         .and_then(|mut file| std::io::Write::write_all(&mut file, &table.encode()))
-        .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        .map_err(|source| HandOffError::WriteTable {
+            path: path.clone(),
+            source,
+        })?;
     // The build is asked for before the check and read after it: both within one `CHECK_TIMEOUT`,
     // since every session's output is stopped until they are done, and a program that cannot
     // restore these sessions still says so first.
@@ -472,14 +550,17 @@ struct BuildProbe {
 }
 
 impl BuildProbe {
-    fn start(binary: &Path) -> Result<Self, String> {
+    fn start(binary: &Path) -> Result<Self, HandOffError> {
         let mut child = Command::new(binary)
             .arg("protocol")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| format!("{} could not start: {e}", binary.display()))?;
+            .map_err(|source| HandOffError::Start {
+                binary: binary.to_path_buf(),
+                source,
+            })?;
         // Read while it runs, so a report bigger than a pipe cannot block it into the deadline,
         // and handed over through a channel waited on until the deadline only: a process the
         // program left behind can hold the pipe open long after the program itself has exited.
@@ -502,17 +583,16 @@ impl BuildProbe {
     /// has it. A build of this program with no number (0) refuses nothing, having nothing to
     /// compare. A program that has not exited by `deadline` is refused, and so is one whose report
     /// has not come through `REPORT_GRACE` after it exited: a process it left behind holds the pipe.
-    fn no_downgrade(mut self, binary: &Path, ours: u64, deadline: Instant) -> Result<(), String> {
+    fn no_downgrade(
+        mut self,
+        binary: &Path,
+        ours: u64,
+        deadline: Instant,
+    ) -> Result<(), HandOffError> {
         if ours == 0 {
             return Ok(());
         }
-        let late = || {
-            format!(
-                "{} did not say its build within {}s",
-                binary.display(),
-                CHECK_TIMEOUT.as_secs()
-            )
-        };
+        let late = || HandOffError::BuildLate(binary.to_path_buf());
         if wait_until(&mut self.child, deadline).is_none() {
             return Err(late());
         }
@@ -528,10 +608,11 @@ impl BuildProbe {
         };
         let theirs = build_number_in(&report);
         if theirs < ours {
-            return Err(format!(
-                "{} is build {theirs}, older than this agent's build {ours}",
-                binary.display()
-            ));
+            return Err(HandOffError::Older {
+                binary: binary.to_path_buf(),
+                theirs,
+                ours,
+            });
         }
         Ok(())
     }
@@ -555,7 +636,7 @@ fn build_number_in(report: &str) -> u64 {
 
 /// Runs `binary handoff-check <table>`: the new program reads the real table and paints every
 /// screen, without taking anything over.
-fn check(binary: &Path, table: &Path, deadline: Instant) -> Result<(), String> {
+fn check(binary: &Path, table: &Path, deadline: Instant) -> Result<(), HandOffError> {
     let mut child = Command::new(binary)
         .arg("handoff-check")
         .arg(table)
@@ -563,7 +644,10 @@ fn check(binary: &Path, table: &Path, deadline: Instant) -> Result<(), String> {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("{} could not start: {e}", binary.display()))?;
+        .map_err(|source| HandOffError::Start {
+            binary: binary.to_path_buf(),
+            source,
+        })?;
     // Drained while it runs: a check that wrote more than a pipe holds (a panic's backtrace) would
     // otherwise block on the write and read as a timeout, hiding what it said.
     let stderr = child.stderr.take().map(|mut pipe| {
@@ -575,11 +659,7 @@ fn check(binary: &Path, table: &Path, deadline: Instant) -> Result<(), String> {
         })
     });
     let Some(status) = wait_until(&mut child, deadline) else {
-        return Err(format!(
-            "{} did not check the sessions within {}s",
-            binary.display(),
-            CHECK_TIMEOUT.as_secs()
-        ));
+        return Err(HandOffError::CheckLate(binary.to_path_buf()));
     };
     if status.success() {
         return Ok(());
@@ -587,11 +667,11 @@ fn check(binary: &Path, table: &Path, deadline: Instant) -> Result<(), String> {
     let stderr = stderr
         .and_then(|reader| reader.join().ok())
         .unwrap_or_default();
-    Err(format!(
-        "{} cannot restore these sessions ({status}): {}",
-        binary.display(),
-        stderr.trim()
-    ))
+    Err(HandOffError::CannotRestore {
+        binary: binary.to_path_buf(),
+        status,
+        stderr: stderr.trim().to_string(),
+    })
 }
 
 /// `child`'s exit status, or None, with it killed, if it is still running at `deadline`.
@@ -615,9 +695,9 @@ fn exec(
     table: &Path,
     carried: &Carried,
     before_exec: impl FnOnce() -> bool,
-) -> Result<(), String> {
-    let program = CString::new(binary.as_os_str().as_bytes())
-        .map_err(|_| "the binary's path contains a NUL".to_string())?;
+) -> Result<(), HandOffError> {
+    let program =
+        CString::new(binary.as_os_str().as_bytes()).map_err(|_| HandOffError::BinaryNul)?;
     let mut arguments = vec![program.clone()];
     let mut previous = context.arguments.iter();
     while let Some(argument) = previous.next() {
@@ -626,17 +706,16 @@ fn exec(
             previous.next();
             continue;
         }
-        arguments
-            .push(CString::new(argument.as_bytes()).map_err(|_| "an argument contains a NUL")?);
+        arguments.push(CString::new(argument.as_bytes()).map_err(|_| HandOffError::ArgumentNul)?);
     }
     arguments.push(CString::new("--handoff").expect("no NUL"));
     arguments
-        .push(CString::new(table.as_os_str().as_bytes()).map_err(|_| "the table path has a NUL")?);
+        .push(CString::new(table.as_os_str().as_bytes()).map_err(|_| HandOffError::TablePathNul)?);
     let mut argv: Vec<*const libc::c_char> = arguments.iter().map(|a| a.as_ptr()).collect();
     argv.push(std::ptr::null());
 
     if !before_exec() {
-        return Err("the requester stopped waiting, so nothing was replaced".into());
+        return Err(HandOffError::RequesterGone);
     }
     for fd in &carried.0 {
         crate::pty::set_cloexec(*fd, false);
@@ -651,22 +730,25 @@ fn exec(
     for fd in &carried.0 {
         crate::pty::set_cloexec(*fd, true);
     }
-    Err(format!(
-        "{} could not be executed: {error}",
-        binary.display()
-    ))
+    Err(HandOffError::Exec {
+        binary: binary.to_path_buf(),
+        source: error,
+    })
 }
 
 /// `handoff-check <table>`: whether this binary can restore the sessions in `table`. Reads it and
 /// paints every screen into a terminal of its size, which is everything a restore does short of
 /// taking the descriptors.
-pub fn check_table(path: &Path) -> Result<usize, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+pub fn check_table(path: &Path) -> Result<usize, HandOffError> {
+    let bytes = std::fs::read(path).map_err(|source| HandOffError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let table = Table::decode(&bytes)?;
     // A build without the shadow terminal would accept these screens and paint nothing, so every
     // pane would reattach blank. Refusing keeps the agent that has them.
     if !cfg!(feature = "terminal-state") && table.sessions.iter().any(|s| !s.screen.is_empty()) {
-        return Err("this build cannot restore screens (built without terminal-state)".into());
+        return Err(HandOffError::NoTerminalState);
     }
     for session in &table.sessions {
         let mut shadow = crate::shadow::Shadow::new(session.columns, session.rows);
@@ -676,8 +758,11 @@ pub fn check_table(path: &Path) -> Result<usize, String> {
 }
 
 /// Reads and removes the table a hand-off left, for the program it was handed to.
-pub fn take_table(path: &Path) -> Result<Table, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()));
+pub fn take_table(path: &Path) -> Result<Table, HandOffError> {
+    let bytes = std::fs::read(path).map_err(|source| HandOffError::Read {
+        path: path.to_path_buf(),
+        source,
+    });
     let _ = std::fs::remove_file(path);
     Table::decode(&bytes?)
 }
@@ -715,7 +800,10 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(Table::decode(&table.encode()), Ok(table));
+        assert_eq!(
+            Table::decode(&table.encode()).map_err(|e| e.to_string()),
+            Ok(table)
+        );
     }
 
     /// A build without the shadow terminal refuses a table with screens, which it could only drop.
@@ -782,12 +870,22 @@ mod tests {
         assert!(
             no_downgrade(&older, 200, soon())
                 .unwrap_err()
+                .to_string()
                 .contains("older than this agent's build 200")
         );
         assert!(no_downgrade(&unnumbered, 200, soon()).is_err());
-        assert_eq!(no_downgrade(&same, 200, soon()), Ok(()));
-        assert_eq!(no_downgrade(&newer, 200, soon()), Ok(()));
-        assert_eq!(no_downgrade(&older, 0, soon()), Ok(()));
+        assert_eq!(
+            no_downgrade(&same, 200, soon()).map_err(|e| e.to_string()),
+            Ok(())
+        );
+        assert_eq!(
+            no_downgrade(&newer, 200, soon()).map_err(|e| e.to_string()),
+            Ok(())
+        );
+        assert_eq!(
+            no_downgrade(&older, 0, soon()).map_err(|e| e.to_string()),
+            Ok(())
+        );
         let slow = dir.join("slow");
         std::fs::write(&slow, "#!/bin/sh\nsleep 30\necho build-number 300\n").unwrap();
         std::fs::set_permissions(&slow, std::os::unix::fs::PermissionsExt::from_mode(0o755))
@@ -796,6 +894,7 @@ mod tests {
         assert!(
             no_downgrade(&slow, 200, Instant::now() + Duration::from_millis(300))
                 .unwrap_err()
+                .to_string()
                 .contains("did not say its build")
         );
         assert!(started.elapsed() < Duration::from_secs(5));
@@ -816,6 +915,7 @@ mod tests {
         assert!(
             no_downgrade(&lingering, 200, Instant::now() + Duration::from_millis(300))
                 .unwrap_err()
+                .to_string()
                 .contains("did not say its build")
         );
         assert!(started.elapsed() < Duration::from_secs(5));
@@ -825,7 +925,12 @@ mod tests {
         while probe.child.try_wait().unwrap().is_none() {
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(probe.no_downgrade(&newer, 200, Instant::now()), Ok(()));
+        assert_eq!(
+            probe
+                .no_downgrade(&newer, 200, Instant::now())
+                .map_err(|e| e.to_string()),
+            Ok(())
+        );
         // One whose report comes through just after it exited, with the time already used, is
         // read within `REPORT_GRACE` rather than refused: here a short-lived process it started
         // holds the pipe for 100 ms.
@@ -845,7 +950,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(
-            probe.no_downgrade(&late_report, 200, Instant::now()),
+            probe
+                .no_downgrade(&late_report, 200, Instant::now())
+                .map_err(|e| e.to_string()),
             Ok(())
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -912,5 +1019,149 @@ mod tests {
                 }],
             }
         );
+    }
+
+    /// Each refusal reads as it did when these were strings: the requester is shown this text, and
+    /// `handoff-check` prints it.
+    #[test]
+    fn every_refusal_reads_as_before() {
+        use std::os::unix::process::ExitStatusExt;
+        let path = || PathBuf::from("/opt/wr-agent");
+        let io = || std::io::Error::from_raw_os_error(libc::ENOENT);
+        let enoent = io().to_string();
+        let cases = [
+            (HandOffError::NotATable, "not a hand-off table".to_string()),
+            (
+                HandOffError::TableVersion(9),
+                "hand-off table version 9 is not supported".into(),
+            ),
+            (
+                HandOffError::MetadataNotUtf8,
+                "hand-off table metadata is not UTF-8".into(),
+            ),
+            (
+                HandOffError::TrailingBytes,
+                "hand-off table has trailing bytes".into(),
+            ),
+            (
+                HandOffError::Truncated,
+                "hand-off table is truncated".into(),
+            ),
+            (
+                HandOffError::NothingToHandOff,
+                "this agent serves one connection and has nothing to hand off".into(),
+            ),
+            (
+                HandOffError::NotAbsolute(path()),
+                "/opt/wr-agent is not an absolute path".into(),
+            ),
+            (
+                HandOffError::NotAFile(path()),
+                "cannot read /opt/wr-agent: not a regular file".into(),
+            ),
+            (
+                HandOffError::Read {
+                    path: path(),
+                    source: io(),
+                },
+                format!("cannot read /opt/wr-agent: {enoent}"),
+            ),
+            (
+                HandOffError::InProgress,
+                "another hand-off is in progress".into(),
+            ),
+            (
+                HandOffError::RepositoryBusy,
+                "a repository command is still running; try again when it finishes".into(),
+            ),
+            (
+                HandOffError::FilesystemStuck,
+                "a filesystem operation is still stuck on a mount; try again when it returns"
+                    .into(),
+            ),
+            (
+                HandOffError::SessionEnding,
+                "a session is being ended; try again when it finishes".into(),
+            ),
+            (
+                HandOffError::SessionsBusy,
+                "a session is being ended or repainted; try again when it finishes".into(),
+            ),
+            (
+                HandOffError::Duplicate {
+                    fd: 7,
+                    source: io(),
+                },
+                format!("could not duplicate descriptor 7: {enoent}"),
+            ),
+            (
+                HandOffError::WriteTable {
+                    path: path(),
+                    source: io(),
+                },
+                format!("could not write /opt/wr-agent: {enoent}"),
+            ),
+            (
+                HandOffError::Start {
+                    binary: path(),
+                    source: io(),
+                },
+                format!("/opt/wr-agent could not start: {enoent}"),
+            ),
+            (
+                HandOffError::BuildLate(path()),
+                "/opt/wr-agent did not say its build within 3s".into(),
+            ),
+            (
+                HandOffError::Older {
+                    binary: path(),
+                    theirs: 100,
+                    ours: 200,
+                },
+                "/opt/wr-agent is build 100, older than this agent's build 200".into(),
+            ),
+            (
+                HandOffError::CheckLate(path()),
+                "/opt/wr-agent did not check the sessions within 3s".into(),
+            ),
+            (
+                HandOffError::CannotRestore {
+                    binary: path(),
+                    status: ExitStatus::from_raw(1 << 8),
+                    stderr: "no".into(),
+                },
+                "/opt/wr-agent cannot restore these sessions (exit status: 1): no".into(),
+            ),
+            (
+                HandOffError::BinaryNul,
+                "the binary's path contains a NUL".into(),
+            ),
+            (
+                HandOffError::ArgumentNul,
+                "an argument contains a NUL".into(),
+            ),
+            (
+                HandOffError::TablePathNul,
+                "the table path has a NUL".into(),
+            ),
+            (
+                HandOffError::RequesterGone,
+                "the requester stopped waiting, so nothing was replaced".into(),
+            ),
+            (
+                HandOffError::Exec {
+                    binary: path(),
+                    source: io(),
+                },
+                format!("/opt/wr-agent could not be executed: {enoent}"),
+            ),
+            (
+                HandOffError::NoTerminalState,
+                "this build cannot restore screens (built without terminal-state)".into(),
+            ),
+        ];
+        for (error, text) in cases {
+            assert_eq!(error.to_string(), text);
+        }
     }
 }

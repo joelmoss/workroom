@@ -579,7 +579,7 @@ fn dispatch(
                 }
                 Err(reason) => {
                     crate::note!("hand-off refused: {reason}");
-                    let mut reason = reason.into_bytes();
+                    let mut reason = reason.to_string().into_bytes();
                     reason.truncate(crate::handoff::MAX_REASON);
                     reply(Frame::new(FrameKind::Failure, reason))
                 }
