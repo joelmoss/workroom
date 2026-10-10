@@ -218,8 +218,10 @@ GHOSTTY_PROBE_STATE="$(mktemp -d)"
 # Guard the emptiness explicitly rather than trusting `set -e` to have caught a failed mktemp: an
 # empty value would make this `XDG_STATE_HOME=` — which is not "isolated", it is a fallback to the
 # release engineer's REAL ~/.local/state, the precise thing the temp dir exists to avoid.
-[ -n "$GHOSTTY_PROBE_STATE" ] && [ -d "$GHOSTTY_PROBE_STATE" ] \
-  || { echo "error: could not create a temp XDG_STATE_HOME to probe the ghostty CLI." >&2; exit 1; }
+if [ -z "$GHOSTTY_PROBE_STATE" ] || [ ! -d "$GHOSTTY_PROBE_STATE" ]; then
+  echo "error: could not create a temp XDG_STATE_HOME to probe the ghostty CLI." >&2
+  exit 1
+fi
 ghostty_probe_rc=0
 XDG_STATE_HOME="$GHOSTTY_PROBE_STATE" "$GHOSTTY_LINK" +ssh-cache >/dev/null 2>&1 || ghostty_probe_rc=$?
 rm -rf "$GHOSTTY_PROBE_STATE"
