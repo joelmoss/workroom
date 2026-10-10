@@ -1,0 +1,5 @@
+# Swift packages layer upward, start in Swift 6, and Project and Workroom stay in the app for now
+
+Reusable app code lives in `macapp/Packages/`. A package depends only on Foundation, its own pins and lower packages, never on the app, and every new package starts in Swift 6 language mode with tests run by plain `swift test`. `WorkroomSessionProtocol` is the live wire to `wr-agent`, not a legacy target, so it became the `WorkroomWire` package instead of gaining a second wire module beside it. `WorkroomDomain` holds only values with no `HostDescriptor` edge (ids, pane layouts, root references). `Project`, `Workroom`, `HostDescriptor` and the Go `--json` envelopes move later, together, once `ContainerHostDriver.Record` is lifted out of the driver into a plain value, because `Project` reaches that record through `HostDescriptor`.
+
+Source: [Workroom architecture cleanup plan](https://claude.ai/code/artifact/7c4e90b9-19c7-4283-b5c6-846f6919e17e), engineering review decisions D3 and D7 (2026-10-10); [`macapp/AGENTS.md`](../../macapp/AGENTS.md) ("Gotchas"); the `Package.swift` of each package in [`macapp/Packages`](../../macapp/Packages).
