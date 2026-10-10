@@ -1,7 +1,6 @@
 package workroom
 
 import (
-	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -32,7 +31,7 @@ func newCreateSvc(t *testing.T) (*Service, *config.Config) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Service{Config: cfg, Out: &bytes.Buffer{}}, cfg
+	return &Service{Config: cfg}, cfg
 }
 
 // run executes a command in dir and fails the test on error, returning its trimmed output.
@@ -279,7 +278,7 @@ func TestAddProjectCreate_RollbackOnRegisterFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := &Service{Config: cfg, Out: &bytes.Buffer{}}
+	svc := &Service{Config: cfg}
 
 	canon, err := config.CanonicalPath(filepath.Join(t.TempDir(), "proj"))
 	if err != nil {
@@ -305,7 +304,7 @@ func TestAddProjectCreate_RollbackKeepsPreExistingDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := &Service{Config: cfg, Out: &bytes.Buffer{}}
+	svc := &Service{Config: cfg}
 
 	canon := t.TempDir() // pre-existing empty dir
 	if _, err := svc.addCreatedProject(canon); err == nil {

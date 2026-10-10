@@ -3,7 +3,6 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/joelmoss/workroom/internal/config"
@@ -63,9 +62,9 @@ func Execute() int {
 }
 
 // newService builds a Service for the current invocation. In --json mode it is
-// fully non-interactive: output is discarded (the command writes the JSON itself),
-// empty projects are pinned, and the interactive prompt/confirm hooks error rather
-// than block. Otherwise --verbose prints each progress step.
+// fully non-interactive: empty projects are pinned, and the interactive
+// prompt/confirm hooks error rather than block. Otherwise --verbose prints each
+// progress step.
 func newService() (*workroom.Service, error) {
 	cfg, err := config.New("")
 	if err != nil {
@@ -73,7 +72,6 @@ func newService() (*workroom.Service, error) {
 	}
 	svc := &workroom.Service{
 		Config:    cfg,
-		Out:       os.Stdout,
 		Pretend:   pretend,
 		PromptFn:  ui.MultiSelect,
 		ConfirmFn: ui.Confirm,
@@ -84,7 +82,6 @@ func newService() (*workroom.Service, error) {
 		}
 	}
 	if jsonOutput {
-		svc.Out = io.Discard
 		svc.KeepEmptyProject = true
 		svc.PromptFn = func(string, []string) ([]string, error) {
 			return nil, errors.New("interactive prompt not available in --json mode")
