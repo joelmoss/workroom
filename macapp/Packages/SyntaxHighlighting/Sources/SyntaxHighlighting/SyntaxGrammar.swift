@@ -22,7 +22,7 @@ import TreeSitterYAML
 
 /// A bundled grammar. New-file content is parsed with this grammar and the highlight captures drive
 /// the colours. Phase 1 ships ~14 languages; everything else (and the skip-list) renders plain.
-enum GrammarID: String, CaseIterable, Sendable {
+public enum GrammarID: String, CaseIterable, Sendable {
   case swift, go, ruby, javascript, typescript, tsx, python, json, yaml, toml, markdown, bash, html,
     css, sql
 
@@ -73,14 +73,14 @@ enum GrammarID: String, CaseIterable, Sendable {
 
 /// The extension/filename → grammar registry, plus the skip-list and byte cap. Pure and
 /// synchronous so `detect` is trivially unit-testable; `nil` always means "render plain".
-enum SyntaxLanguage {
+public enum SyntaxLanguage {
   /// Files at or above this size are never parsed (a 100MB file behind a 1-line diff would stall
   /// the parse and the byte↔offset arrays). The caller falls back to plain. Matches the diff
   /// runner's own 4MB output cap intent — we never parse far more than the diff itself showed.
-  static let byteCap = 2 * 1024 * 1024
+  public static let byteCap = 2 * 1024 * 1024
 
   /// Lowercased file extension → grammar.
-  static let byExtension: [String: GrammarID] = [
+  public static let byExtension: [String: GrammarID] = [
     "swift": .swift,
     "go": .go,
     "rb": .ruby, "rake": .ruby, "gemspec": .ruby, "ru": .ruby,
@@ -99,7 +99,7 @@ enum SyntaxLanguage {
   ]
 
   /// Exact (case-sensitive) filename → grammar, for extension-less or specially-named files.
-  static let byFilename: [String: GrammarID] = [
+  public static let byFilename: [String: GrammarID] = [
     "Gemfile": .ruby, "Rakefile": .ruby, "Guardfile": .ruby, "Podfile": .ruby, "Brewfile": .ruby,
     ".bashrc": .bash, ".bash_profile": .bash, ".zshrc": .bash, ".zprofile": .bash,
     ".profile": .bash,
@@ -107,19 +107,19 @@ enum SyntaxLanguage {
 
   /// Exact filenames that must render plain even though their extension would otherwise match a
   /// grammar — lockfiles (huge, machine-generated, no value highlighted) and friends.
-  static let skipFilenames: Set<String> = [
+  public static let skipFilenames: Set<String> = [
     "package-lock.json", "Gemfile.lock", "Cargo.lock", "yarn.lock", "pnpm-lock.yaml",
     "go.sum", "Package.resolved", "composer.lock", "poetry.lock", "flake.lock",
   ]
 
   /// Lowercased extensions that always render plain: data dumps, vector art, minified bundles,
   /// sourcemaps. Double extensions (`min.js`, `min.css`) are matched before the bare extension.
-  static let skipExtensions: Set<String> = ["csv", "tsv", "svg", "min.js", "min.css", "map"]
+  public static let skipExtensions: Set<String> = ["csv", "tsv", "svg", "min.js", "min.css", "map"]
 
   /// Grammar for a file, trying the path first (extension / known filename), then the **shebang** on
   /// the first line for an extension-less script (`#!/bin/bash`, `#!/usr/bin/env python3`). `nil` ⇒
   /// render plain. Used by the file viewer, which has the content to sniff.
-  static func grammar(forPath path: String, firstLine: String?) -> GrammarID? {
+  public static func grammar(forPath path: String, firstLine: String?) -> GrammarID? {
     if let g = grammar(forPath: path) { return g }
     if let firstLine, let g = grammar(forShebang: firstLine) { return g }
     return nil
@@ -128,7 +128,7 @@ enum SyntaxLanguage {
   /// Map a shebang line to a grammar. Resolves the interpreter basename — unwrapping
   /// `/usr/bin/env [flags] <interp>` — and strips a version suffix (`python3.11` → python). Returns
   /// `nil` for a non-shebang line or an unknown interpreter. Pure + unit-tested.
-  static func grammar(forShebang line: String) -> GrammarID? {
+  public static func grammar(forShebang line: String) -> GrammarID? {
     guard line.hasPrefix("#!") else { return nil }
     let tokens = line.dropFirst(2).split(whereSeparator: { $0 == " " || $0 == "\t" }).map(
       String.init)
@@ -150,7 +150,7 @@ enum SyntaxLanguage {
   }
 
   /// Grammar for a single path, honouring the skip-list. `nil` if skip-listed or unknown.
-  static func grammar(forPath path: String) -> GrammarID? {
+  public static func grammar(forPath path: String) -> GrammarID? {
     let name = (path as NSString).lastPathComponent
     if skipFilenames.contains(name) { return nil }
 

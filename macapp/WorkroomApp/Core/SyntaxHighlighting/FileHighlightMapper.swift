@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import SyntaxHighlighting
 
 /// Builds the themed `NSAttributedString` the `NSTextView`-backed `PlainFileViewer` / `CodeTextView`
 /// render for a whole file. Pure (no I/O, no parse) — the byte↔UTF-16 arithmetic mirrors

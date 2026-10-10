@@ -6,9 +6,14 @@ import Foundation
 /// text, which is also UTF-8 — see the byte↔offset mapping in `DiffViewer`). `capture` is the
 /// tree-sitter highlight capture name (e.g. `keyword`, `string`, `function`, `comment`); the theme
 /// turns it into a colour via `ThemeTokens.syntaxColor(forCapture:)`.
-struct HighlightSpan: Equatable, Sendable {
+public struct HighlightSpan: Equatable, Sendable {
   /// UTF-8 byte offsets into the whole parsed file. Half-open, non-overlapping, ascending.
-  let byteRange: Range<Int>
+  public let byteRange: Range<Int>
   /// The winning capture name after precedence resolution (dot-joined for nested captures).
-  let capture: String
+  public let capture: String
+
+  public init(byteRange: Range<Int>, capture: String) {
+    self.byteRange = byteRange
+    self.capture = capture
+  }
 }
