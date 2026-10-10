@@ -1,5 +1,6 @@
 # Repo-wide dev tasks, namespaced: `cli-*` = the Go CLI (the primary product), `app-*` = the
-# macOS app under macapp/ (Xcode-based). Run `make` with no target to list them.
+# macOS app under macapp/ (Xcode-based), `vcs-*` = the Rust workspace under vcs/. Run `make` with
+# no target to list them.
 #
 # App recipes run inside macapp/ and need its toolchain on PATH (xcodegen via Homebrew). The
 # Xcode build also runs project.yml phases — a non-fatal swift-format lint and embedding the Go
@@ -12,7 +13,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
         app-run app-build app-test app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
-        remote-host-image remote-host-image-test actions-lint
+        remote-host-image remote-host-image-test actions-lint vcs-lint
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -44,6 +45,20 @@ cli-clean: ## Remove the built binary
 
 actions-lint: ## Lint .github/workflows with actionlint (shellcheck included)
 	actionlint
+
+# --- Rust workspace (vcs/) ---
+
+# The toolchain ci.yml pins for its Rust lint gates. rustfmt's layout and clippy's lints change
+# between releases, so another toolchain can pass here and fail there; the PATH above puts
+# Homebrew's cargo first, so the recipe puts this one ahead of it. Keep in step with ci.yml.
+VCS_RUST := 1.96.1
+
+vcs-lint: ## Lint the Rust workspace as CI does: rustfmt, then clippy with and without terminal-state
+	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" || { echo "vcs-lint needs Rust $(VCS_RUST): rustup toolchain install $(VCS_RUST) --component rustfmt,clippy" >&2; exit 1; }; \
+	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
+	cargo fmt --manifest-path vcs/Cargo.toml --all -- --check && \
+	cargo clippy --manifest-path vcs/Cargo.toml --workspace --all-targets -- -D warnings && \
+	cargo clippy --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state --all-targets -- -D warnings
 
 # --- macOS app (macapp/) ---
 
