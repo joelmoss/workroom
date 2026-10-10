@@ -25,14 +25,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::protocol::envelope::{
-    Envelope, EnvelopeDecoder, Hello, MAX_ENVELOPE_PAYLOAD, ProtocolError, Service, negotiate,
-};
-use crate::protocol::frame::{Frame, FrameDecoder, FrameKind, HEADER_SIZE, MAX_PAYLOAD_SIZE};
 use crate::rpc::SharedWriter;
 use crate::session::{SessionId, SessionSpec, SessionStore};
 use crate::shell;
 use crate::transport::Transport;
+use wr_protocol::envelope::{
+    Envelope, EnvelopeDecoder, Hello, MAX_ENVELOPE_PAYLOAD, ProtocolError, Service, negotiate,
+};
+use wr_protocol::frame::{Frame, FrameDecoder, FrameKind, HEADER_SIZE, MAX_PAYLOAD_SIZE};
 
 pub const BUILD: &str = concat!("wr-agent ", env!("CARGO_PKG_VERSION"));
 

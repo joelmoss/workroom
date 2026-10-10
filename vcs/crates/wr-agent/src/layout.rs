@@ -34,8 +34,8 @@ use std::sync::{Mutex, OnceLock};
 
 use serde_json::{Value, json};
 
-use crate::protocol::envelope::{Envelope, Service};
 use crate::rpc::SharedWriter;
+use wr_protocol::envelope::{Envelope, Service};
 
 /// The wire version of this service, reported by `capabilities`. Separate from `PROTOCOL_VERSION`,
 /// which says whether the service exists at all.

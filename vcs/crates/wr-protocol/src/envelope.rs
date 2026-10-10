@@ -300,7 +300,7 @@ impl EnvelopeDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::frame::{Frame, FrameDecoder, FrameKind};
+    use crate::frame::{Frame, FrameDecoder, FrameKind};
 
     #[test]
     fn hello_round_trips() {

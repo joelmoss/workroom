@@ -3,7 +3,7 @@
 # Pins one invariant: the agent still accepts the latest stable release's app. Release and Nightly
 # share boxd and exe.dev hosts, and a host keeps the newest agent any build pushed (#255, D13), so
 # a Release app often talks to an agent a Nightly installed. The agent's only refusal of an app is
-# `negotiate` (vcs/crates/wr-agent/src/protocol/envelope.rs): min(app, agent) below
+# `negotiate` (vcs/crates/wr-protocol/src/envelope.rs): min(app, agent) below
 # `MIN_SUPPORTED_VERSION`. So that constant must never rise above the `protocolVersion` the latest
 # stable app sends (`AgentControlClient.protocolVersion`, read at that release's tag). Per-service
 # minimums are the app's to check against the agent's version, and a newer agent always passes
@@ -16,7 +16,7 @@ set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
 # Overridable so the test can be pointed at modified copies, to confirm it goes red.
-ENVELOPE="${AGENT_PROTOCOL_ENVELOPE:-$ROOT/vcs/crates/wr-agent/src/protocol/envelope.rs}"
+ENVELOPE="${AGENT_PROTOCOL_ENVELOPE:-$ROOT/vcs/crates/wr-protocol/src/envelope.rs}"
 CLIENT_PATH="macapp/WorkroomApp/Core/Session/AgentControlClient.swift"
 
 # shellcheck source=channel-helper.sh

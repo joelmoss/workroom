@@ -5,6 +5,7 @@ members = [
   "crates/wr-vcs-model",
   "crates/wr-agent",
   "crates/wr-vcs-git",
+  "crates/wr-protocol",
 ]
 resolver = "2"
 

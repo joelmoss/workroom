@@ -9,9 +9,9 @@ use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
-use wr_agent::protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
 use wr_agent::serve::handle_connection;
 use wr_agent::session::SessionStore;
+use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
 
 const OPEN: u8 = 0x01;
 const REPLY: u8 = 0x02;

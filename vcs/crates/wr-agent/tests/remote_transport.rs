@@ -24,12 +24,12 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use wr_agent::protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
-use wr_agent::protocol::frame::{Frame, FrameDecoder, FrameKind};
 use wr_agent::screens::Screens;
 use wr_agent::serve::{AttachRequest, handle_connection};
 use wr_agent::session::{SessionId, SessionStore};
 use wr_agent::transport::{FdStream, PipeTransport, close, set_nonblocking};
+use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
+use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 
 /// Drives an agent from the client side of a stream, speaking the real protocol.
 struct Client {

@@ -1059,9 +1059,9 @@ fn read_until_on_pty(pty: &Pty, needle: &str, timeout: Duration) -> bool {
 fn kill_all_ends_every_session() {
     use std::io::Read;
     use std::os::unix::net::UnixStream;
-    use wr_agent::protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
-    use wr_agent::protocol::frame::{Frame, FrameDecoder, FrameKind};
     use wr_agent::serve::BUILD;
+    use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
+    use wr_protocol::frame::{Frame, FrameDecoder, FrameKind};
 
     let workspace = Workspace::new("kill-all");
     let socket = workspace.socket();

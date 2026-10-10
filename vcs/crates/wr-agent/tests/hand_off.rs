@@ -10,8 +10,8 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
-use wr_agent::protocol::envelope::{Envelope, Hello, Service};
-use wr_agent::protocol::frame::{Frame, FrameKind};
+use wr_protocol::envelope::{Envelope, Hello, Service};
+use wr_protocol::frame::{Frame, FrameKind};
 
 mod common;
 use common::*;
@@ -432,7 +432,7 @@ fn an_agent_that_predates_hand_off_is_not_asked() {
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
     let recorder = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept");
-        let hello = wr_agent::protocol::envelope::Hello {
+        let hello = wr_protocol::envelope::Hello {
             protocol_version: 5,
             build: "wr-agent old".into(),
         };
@@ -445,7 +445,7 @@ fn an_agent_that_predates_hand_off_is_not_asked() {
     let output = hand_off(&socket, &agent_binary(), true);
     assert_eq!(output.status.code(), Some(3));
     let received = recorder.join().expect("recorder");
-    let (greeting, _) = wr_agent::protocol::envelope::Hello::decode(&received)
+    let (greeting, _) = wr_protocol::envelope::Hello::decode(&received)
         .expect("a greeting")
         .expect("a whole greeting");
     let greeting_length = greeting.encode().len();
@@ -885,12 +885,12 @@ fn kill_absent(socket: &Path, session: &str) {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("timeout");
-    let mut decoder = wr_agent::protocol::envelope::EnvelopeDecoder::new();
+    let mut decoder = wr_protocol::envelope::EnvelopeDecoder::new();
     let mut buffer = [0u8; 4096];
     loop {
         if let Some(envelope) = decoder.next_envelope().expect("envelope") {
             if envelope.service == Service::Control && envelope.stream == 2 {
-                let mut frames = wr_agent::protocol::frame::FrameDecoder::new();
+                let mut frames = wr_protocol::frame::FrameDecoder::new();
                 frames.push(&envelope.payload);
                 let frame = frames.next_frame().expect("frame").expect("whole frame");
                 assert_eq!(

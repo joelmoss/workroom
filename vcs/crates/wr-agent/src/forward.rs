@@ -165,7 +165,6 @@
 //! entries: a forward whose connect is failing holds its slot until its thread has said so and
 //! gone, and one whose client half-closed holds it until its reader is gone too.
 
-use crate::protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
 use crate::rpc::SharedWriter;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -177,6 +176,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use wr_protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
 
 /// The wire version of this service, reported in every reply. Separate from `PROTOCOL_VERSION`,
 /// which says whether the service exists at all.
@@ -1282,7 +1282,7 @@ mod tests {
     /// The opcodes the agent wrote toward the client, in order, with their streams.
     fn sent(capture: &Capture) -> Vec<(u32, u8)> {
         let written = capture.0.lock().unwrap().clone();
-        let mut decoder = crate::protocol::envelope::EnvelopeDecoder::new();
+        let mut decoder = wr_protocol::envelope::EnvelopeDecoder::new();
         decoder.push(&written);
         std::iter::from_fn(|| decoder.next_envelope().unwrap())
             .map(|e| (e.stream, e.payload[0]))
