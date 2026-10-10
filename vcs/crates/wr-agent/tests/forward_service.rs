@@ -332,6 +332,8 @@ fn a_peer_reset_ends_the_stream_with_close() {
             l_onoff: 1,
             l_linger: 0,
         };
+        // SAFETY: the option value is `linger` and the length passed is its exact size; `socket`
+        // is open for the call.
         unsafe {
             use std::os::unix::io::AsRawFd;
             libc::setsockopt(

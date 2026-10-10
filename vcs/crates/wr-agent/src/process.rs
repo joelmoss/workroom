@@ -90,6 +90,7 @@ impl Descendant {
     /// right fallback: failing to signal a real descendant leaves a process running forever, which
     /// is worse than the small risk this is guarding.
     pub fn is_running(&self) -> bool {
+        // SAFETY: `kill` takes no pointers, and signal 0 delivers nothing.
         if self.pid <= 0 || unsafe { libc::kill(self.pid, 0) } != 0 {
             return false;
         }
@@ -220,6 +221,8 @@ mod platform {
         let mut mib: [libc::c_int; 3] = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
         let mut size: libc::size_t = 0;
         // Size query first: the buffer is variable and can be large for a long argv.
+        // SAFETY: `mib` holds the 3 names passed, a null old buffer asks only for the size, which
+        // goes to the live `size`, and nothing is being set.
         let rc = unsafe {
             libc::sysctl(
                 mib.as_mut_ptr(),
@@ -234,6 +237,8 @@ mod platform {
             return None;
         }
         let mut buffer = vec![0u8; size];
+        // SAFETY: as above, with `buffer` as the old buffer and `size` its exact length, so the
+        // kernel writes at most `size` bytes and stores what it wrote back in `size`.
         let rc = unsafe {
             libc::sysctl(
                 mib.as_mut_ptr(),
@@ -266,6 +271,8 @@ mod platform {
         const BUFFER_SIZE: usize = VNODE_INFO_PATH_SIZE * 2;
 
         let mut buffer = vec![0u8; BUFFER_SIZE];
+        // SAFETY: `buffer` is BUFFER_SIZE bytes and that is the size passed, so the kernel cannot
+        // write past it.
         let written = unsafe {
             libc::proc_pidinfo(
                 pid,
@@ -315,8 +322,10 @@ mod platform {
     }
 
     fn bsdinfo(pid: i32) -> Option<libc::proc_bsdinfo> {
+        // SAFETY: `proc_bsdinfo` is plain old data, for which all zeroes is a valid value.
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        // SAFETY: the buffer is `info` itself and `size` is its exact size.
         let written = unsafe {
             libc::proc_pidinfo(
                 pid,
@@ -334,6 +343,7 @@ mod platform {
         // between that and the read, so ask for extra room and retry if the buffer came back
         // exactly full — "full" is indistinguishable from "truncated".
         for _ in 0..3 {
+            // SAFETY: a null buffer of size 0 is the documented way to ask for the size.
             let needed = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
             if needed <= 0 {
                 return Vec::new();
@@ -341,6 +351,7 @@ mod platform {
             let stride = std::mem::size_of::<libc::c_int>();
             let capacity = needed as usize / stride + 64;
             let mut buffer = vec![0 as libc::c_int; capacity];
+            // SAFETY: the size passed is `buffer`'s length in bytes, so the call cannot write past it.
             let written = unsafe {
                 libc::proc_listallpids(
                     buffer.as_mut_ptr() as *mut libc::c_void,

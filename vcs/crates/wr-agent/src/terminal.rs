@@ -98,7 +98,11 @@ unsafe extern "C" fn on_progress_report(
     report: *const GhosttyTerminalProgressReport,
 ) {
     let (Some(slot), Some(report)) = (
+        // SAFETY: the only userdata ever set is `ShadowTerminal::progress`, which outlives the
+        // terminal. The callback runs synchronously inside `write(&mut self)`, so nothing else
+        // holds a reference to the slot meanwhile.
         unsafe { (userdata as *mut ProgressSlot).as_mut() },
+        // SAFETY: libghostty passes a report that is valid for the duration of the call.
         unsafe { report.as_ref() },
     ) else {
         return;
@@ -114,14 +118,17 @@ unsafe extern "C" fn on_progress_report(
     slot.fresh = true;
 }
 
-// The handle is owned exclusively and every method takes `&mut self`, so the terminal is never
-// touched from two threads at once. libghostty-vt requires the caller to serialise access, which
-// is exactly what `&mut` expresses.
+// SAFETY: the handle and the progress slot are owned exclusively, so moving them to another thread
+// moves the only way to reach them. libghostty-vt requires the caller to serialise access, and it
+// is: `ShadowTerminal` is not `Sync`, so only the thread holding it can call in, and `&mut self`
+// orders the writes that run the callback.
 unsafe impl Send for ShadowTerminal {}
 
 impl ShadowTerminal {
     pub fn new(columns: u16, rows: u16) -> Option<ShadowTerminal> {
         let mut inner: GhosttyTerminal = ptr::null_mut();
+        // SAFETY: a null allocator selects the default one, `inner` is a live out-pointer, and
+        // both dimensions are at least 1, as the call requires.
         let rc =
             unsafe { ghostty_terminal_new(ptr::null(), &mut inner, columns.max(1), rows.max(1)) };
         if rc != OK || inner.is_null() {
@@ -140,6 +147,8 @@ impl ShadowTerminal {
     /// attaches later can only learn it from here (#359). Pointer-typed options are passed
     /// directly, not by address (`ghostty_terminal_set`'s doc).
     fn track_progress_reports(&self) {
+        // SAFETY: `inner` is a live terminal. The userdata is the progress slot, which `Drop`
+        // frees only after the terminal, and the callback matches the option's signature.
         unsafe {
             ghostty_terminal_set(
                 self.inner,
@@ -156,11 +165,14 @@ impl ShadowTerminal {
 
     /// The last progress report the program sent, or `None` once it cleared it.
     pub fn progress(&self) -> Progress {
+        // SAFETY: `progress` is a live allocation until `Drop`, and the callback that writes it
+        // only runs inside `write(&mut self)`, never during this `&self` read.
         unsafe { (*self.progress).report }
     }
 
     /// Whether a report (a REMOVE included) has arrived since this was last asked.
     pub fn take_fresh_report(&mut self) -> bool {
+        // SAFETY: as in `progress`; `&mut self` also rules out the callback running meanwhile.
         unsafe { std::mem::take(&mut (*self.progress).fresh) }
     }
 
@@ -183,6 +195,8 @@ impl ShadowTerminal {
 
     fn enable_continuation_tracking(&self) {
         let limit: usize = CONTINUATION_MAX_BYTES;
+        // SAFETY: a non-pointer option is passed by address, and `limit` is a live `usize` (the
+        // option's type) that the call reads before returning.
         unsafe {
             ghostty_terminal_set(
                 self.inner,
@@ -194,12 +208,14 @@ impl ShadowTerminal {
 
     /// Feed the emulator the same bytes the client is getting.
     pub fn write(&mut self, bytes: &[u8]) {
+        // SAFETY: `inner` is a live terminal, and the pointer and length come from one live slice.
         unsafe { ghostty_terminal_vt_write(self.inner, bytes.as_ptr(), bytes.len()) }
     }
 
     /// Cell pixel dimensions are zero: they feed image protocols and size reports, and the shadow
     /// renders nothing — the real client owns the pixels and reports its own.
     pub fn resize(&mut self, columns: u16, rows: u16) {
+        // SAFETY: `inner` is a live terminal, and both dimensions are at least 1, as required.
         unsafe {
             ghostty_terminal_resize(self.inner, columns.max(1), rows.max(1), 0, 0);
         }
@@ -261,6 +277,8 @@ impl ShadowTerminal {
 
     pub fn mode(&self, mode: GhosttyMode) -> Option<bool> {
         let mut config = GhosttyTerminalModeConfig { mode, value: false };
+        // SAFETY: DATA_MODE's input/output type is `GhosttyTerminalModeConfig`, and `config` is a
+        // live one with `mode` set first, as the call requires.
         let rc = unsafe {
             ghostty_terminal_get(
                 self.inner,
@@ -274,19 +292,26 @@ impl ShadowTerminal {
     fn continuation(&self) -> Vec<u8> {
         let mut ptr_out: *mut u8 = ptr::null_mut();
         let mut len: usize = 0;
+        // SAFETY: `inner` is a live terminal, a null allocator selects the default one, and both
+        // out-pointers are live locals.
         let rc = unsafe {
             ghostty_terminal_continuation_alloc(self.inner, ptr::null(), &mut ptr_out, &mut len)
         };
         if rc != OK || ptr_out.is_null() || len == 0 {
             return Vec::new();
         }
+        // SAFETY: on success the call returned `len` initialised bytes at `ptr_out`, freed only on
+        // the next line, after they are copied.
         let bytes = unsafe { std::slice::from_raw_parts(ptr_out, len) }.to_vec();
+        // SAFETY: the same pointer, length and (default) allocator the allocation came from.
         unsafe { ghostty_free(ptr::null(), ptr_out, len) };
         bytes
     }
 
     fn format(&self, extras: bool) -> Vec<u8> {
         let mut formatter: GhosttyFormatter = ptr::null_mut();
+        // SAFETY: the options are a C struct of integers, bools and sized sub-structs, for which
+        // all zeroes is a valid value; the fields that matter are set below.
         let mut options: GhosttyFormatterTerminalOptions = unsafe { std::mem::zeroed() };
         options.size = std::mem::size_of::<GhosttyFormatterTerminalOptions>();
         options.emit = GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_VT;
@@ -301,6 +326,8 @@ impl ShadowTerminal {
             options.extra.screen.size = std::mem::size_of::<GhosttyFormatterScreenExtra>();
             options.extra.screen.charsets = true;
         }
+        // SAFETY: `inner` is a live terminal that outlives the formatter, which is freed before
+        // this method returns; `formatter` is a live out-pointer.
         let rc = unsafe {
             ghostty_formatter_terminal_new(ptr::null(), &mut formatter, self.inner, options)
         };
@@ -309,15 +336,20 @@ impl ShadowTerminal {
         }
         let mut out: *mut u8 = ptr::null_mut();
         let mut len: usize = 0;
+        // SAFETY: `formatter` is live, and both out-pointers are live locals.
         let rc =
             unsafe { ghostty_formatter_format_alloc(formatter, ptr::null(), &mut out, &mut len) };
         let bytes = if rc == OK && !out.is_null() {
+            // SAFETY: on success the call returned `len` initialised bytes at `out`, freed only
+            // after they are copied.
             let copied = unsafe { std::slice::from_raw_parts(out, len) }.to_vec();
+            // SAFETY: the pointer, length and (default) allocator the allocation came from.
             unsafe { ghostty_free(ptr::null(), out, len) };
             copied
         } else {
             Vec::new()
         };
+        // SAFETY: `formatter` is live and freed exactly once, here.
         unsafe { ghostty_formatter_free(formatter) };
         bytes
     }
@@ -332,15 +364,21 @@ impl ShadowTerminal {
     fn clone_via_snapshot(&self) -> Option<ShadowTerminal> {
         let mut bytes: *mut u8 = ptr::null_mut();
         let mut len: usize = 0;
+        // SAFETY: `inner` is a live terminal, and both out-pointers are live locals.
         let rc =
             unsafe { ghostty_snapshot_encode_alloc(self.inner, ptr::null(), &mut bytes, &mut len) };
         if rc != OK || bytes.is_null() {
             return None;
         }
+        // SAFETY: on success the call returned `len` initialised bytes at `bytes`, freed only on
+        // the next line, after they are copied.
         let encoded = unsafe { std::slice::from_raw_parts(bytes, len) }.to_vec();
+        // SAFETY: the pointer, length and (default) allocator the allocation came from.
         unsafe { ghostty_free(ptr::null(), bytes, len) };
 
         let mut decoder: GhosttySnapshotDecoder = ptr::null_mut();
+        // SAFETY: the decoder borrows `encoded`, which is neither changed nor dropped until after
+        // the decoder is freed below.
         let rc = unsafe {
             ghostty_snapshot_decoder_new_buf(
                 ptr::null(),
@@ -353,7 +391,10 @@ impl ShadowTerminal {
             return None;
         }
         let mut inner: GhosttyTerminal = ptr::null_mut();
+        // SAFETY: `decoder` is live and has not started decoding; `inner` is a live out-pointer
+        // that receives a terminal this function then owns.
         let rc = unsafe { ghostty_snapshot_decoder_decode(decoder, &mut inner) };
+        // SAFETY: `decoder` is live and freed exactly once, here.
         unsafe { ghostty_snapshot_decoder_free(decoder) };
         if rc != OK || inner.is_null() {
             return None;
@@ -503,10 +544,14 @@ impl ShadowTerminal {
     /// a client, which gets `replay()`.
     pub fn visible_text(&self) -> String {
         let mut formatter: GhosttyFormatter = ptr::null_mut();
+        // SAFETY: the options are a C struct of integers, bools and sized sub-structs, for which
+        // all zeroes is a valid value; the fields that matter are set below.
         let mut options: GhosttyFormatterTerminalOptions = unsafe { std::mem::zeroed() };
         options.size = std::mem::size_of::<GhosttyFormatterTerminalOptions>();
         options.emit = GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_PLAIN;
         options.extra.size = std::mem::size_of::<GhosttyFormatterTerminalExtra>();
+        // SAFETY: `inner` is a live terminal that outlives the formatter, which is freed before
+        // this method returns; `formatter` is a live out-pointer.
         let rc = unsafe {
             ghostty_formatter_terminal_new(ptr::null(), &mut formatter, self.inner, options)
         };
@@ -515,16 +560,21 @@ impl ShadowTerminal {
         }
         let mut out: *mut u8 = ptr::null_mut();
         let mut len: usize = 0;
+        // SAFETY: `formatter` is live, and both out-pointers are live locals.
         let rc =
             unsafe { ghostty_formatter_format_alloc(formatter, ptr::null(), &mut out, &mut len) };
         let text = if rc == OK && !out.is_null() {
+            // SAFETY: on success the call returned `len` initialised bytes at `out`, freed only
+            // after they are copied.
             let copied = String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(out, len) })
                 .into_owned();
+            // SAFETY: the pointer, length and (default) allocator the allocation came from.
             unsafe { ghostty_free(ptr::null(), out, len) };
             copied
         } else {
             String::new()
         };
+        // SAFETY: `formatter` is live and freed exactly once, here.
         unsafe { ghostty_formatter_free(formatter) };
         text
     }
@@ -533,9 +583,12 @@ impl ShadowTerminal {
 impl Drop for ShadowTerminal {
     fn drop(&mut self) {
         if !self.inner.is_null() {
+            // SAFETY: `inner` is owned by this value and freed exactly once, here.
             unsafe { ghostty_terminal_free(self.inner) };
         }
         // After the terminal: it is what writes here.
+        // SAFETY: `progress` came from `Box::into_raw` and is freed exactly once, here, after the
+        // terminal that held a copy of it is gone.
         drop(unsafe { Box::from_raw(self.progress) });
     }
 }

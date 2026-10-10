@@ -1036,6 +1036,7 @@ impl Drop for Scratch {
 /// "stale" socket (measured: about 2 binds in 100 while another thread spawns). The forked child
 /// inherits copies of this process's descriptors too, but holds them only until its `_exit`.
 fn stale_socket(path: &Path) {
+    // SAFETY: `sockaddr_un` is plain old data, for which all zeroes is a valid value.
     let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     address.sun_family = libc::AF_UNIX as libc::sa_family_t;
     let bytes = std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str());
@@ -1047,11 +1048,13 @@ fn stale_socket(path: &Path) {
         *slot = *byte as libc::c_char;
     }
     let length = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
-    // Between `fork` and `_exit` the child calls only async-signal-safe functions, and allocates
-    // nothing: the address was built above.
+    // SAFETY: Between `fork` and `_exit` the child calls only async-signal-safe functions, and
+    // allocates nothing: the address was built above.
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0, "fork: {}", std::io::Error::last_os_error());
     if pid == 0 {
+        // SAFETY: socket, bind, listen and _exit are async-signal-safe; `address` is a live,
+        // initialised `sockaddr_un` and `length` is its size.
         unsafe {
             let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
             let bound = fd >= 0
@@ -1062,6 +1065,7 @@ fn stale_socket(path: &Path) {
     }
     let mut status = 0;
     assert_eq!(
+        // SAFETY: `status` is a live local, and `pid` is this test's own child.
         unsafe { libc::waitpid(pid, &mut status, 0) },
         pid,
         "waitpid"

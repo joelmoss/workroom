@@ -102,6 +102,7 @@ pub fn acquire_instance_lock(socket: &Path) -> Result<InstanceLock, ServeError> 
         .truncate(false)
         .write(true)
         .open(&path)?;
+    // SAFETY: the descriptor belongs to `file`, which is open for the call; flock takes integers.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc != 0 {
         return Err(ServeError::AlreadyRunning(path));
@@ -841,6 +842,8 @@ pub fn spawn_agent(binary: &Path, socket: &Path) -> std::io::Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // SAFETY: the closure runs in the forked child before exec, where only async-signal-safe calls
+    // are allowed. It makes one, `setsid`, and allocates nothing.
     unsafe {
         use std::os::unix::process::CommandExt;
         command.pre_exec(|| {

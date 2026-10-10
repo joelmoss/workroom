@@ -278,6 +278,9 @@ extern "C" fn ignore_signal(_: libc::c_int) {}
 /// It is process-wide, but only this test's own thread is ever sent SIGUSR1.
 #[test]
 fn a_signal_while_waiting_for_the_broker_does_not_fail_the_enrolment() {
+    // SAFETY: `sigaction` is plain old data, so all zeroes is valid. Without SA_SIGINFO the
+    // handler is a plain `extern "C" fn(c_int)`, which `ignore_signal` is, and it does nothing,
+    // so it is async-signal-safe.
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
         action.sa_sigaction = ignore_signal as extern "C" fn(libc::c_int) as usize;
@@ -288,6 +291,7 @@ fn a_signal_while_waiting_for_the_broker_does_not_fail_the_enrolment() {
     }
     let workspace = Workspace::new("broker-signal");
     // `pthread_t` is a pointer on macOS, so it crosses to the broker's thread as an integer.
+    // SAFETY: pthread_self takes no arguments and cannot fail.
     let client = unsafe { libc::pthread_self() } as usize;
     // Cleared as this thread leaves the test, even by a panic, so a signal never reaches a thread
     // id that has ended or been reused by another test.
@@ -308,6 +312,8 @@ fn a_signal_while_waiting_for_the_broker_does_not_fail_the_enrolment() {
             if !*here {
                 return;
             }
+            // SAFETY: `here` is true and its lock is held, so the test's thread has not left the
+            // test (`Leaving` clears it first), and `client` still names that live thread.
             unsafe { libc::pthread_kill(client as libc::pthread_t, libc::SIGUSR1) };
             drop(here);
             std::thread::sleep(std::time::Duration::from_millis(5));

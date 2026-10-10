@@ -37,6 +37,7 @@ fn hand_off(socket: &Path, binary: &Path, force: bool) -> Output {
 }
 
 fn alive(pid: i32) -> bool {
+    // SAFETY: `kill` takes no pointers, and signal 0 delivers nothing.
     unsafe { libc::kill(pid, 0) == 0 }
 }
 

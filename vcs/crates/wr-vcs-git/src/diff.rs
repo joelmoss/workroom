@@ -108,6 +108,8 @@ fn run_bounded(
         deadline: Instant,
     ) -> std::io::Result<Vec<u8>> {
         let fd = source.as_raw_fd();
+        // SAFETY: `fd` belongs to `source`, which stays open for this whole function; F_GETFL and
+        // F_SETFL take and return plain integers.
         unsafe {
             let flags = libc::fcntl(fd, libc::F_GETFL);
             if flags < 0 || libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
@@ -148,6 +150,8 @@ fn run_bounded(
     let mut status = None;
     loop {
         if exceeded.load(Ordering::Relaxed) || start.elapsed() >= timeout {
+            // SAFETY: `kill` takes no pointers. The child leads its own process group
+            // (`process_group(0)`), so the negated pid signals that group and nothing else.
             unsafe {
                 libc::kill(-(child.id() as i32), libc::SIGKILL);
             }
@@ -161,6 +165,7 @@ fn run_bounded(
                 Ok(Some(exit)) => status = Some(Ok(exit)),
                 Ok(None) => {}
                 Err(error) => {
+                    // SAFETY: as above, a pointer-free signal to the child's own process group.
                     unsafe {
                         libc::kill(-(child.id() as i32), libc::SIGKILL);
                     }
