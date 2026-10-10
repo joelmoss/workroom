@@ -205,38 +205,55 @@ impl ShadowTerminal {
         }
     }
 
-    /// A count or position, widened to `u32`. `ghostty_terminal_get` writes as many bytes as the
-    /// output type terminal.h names for each kind, so each is read into exactly that type: a
-    /// `size_t` for the scrollback rows, a `uint16_t` for the size and the cursor, a `uint8_t` for
-    /// the kitty flags. A `u32` for all of them overran the stack for the scrollback rows. Any
-    /// other kind is refused.
+    /// How many bytes `ghostty_terminal_get` writes for each kind `get_u32` reads: the size of the
+    /// output type terminal.h names, a `size_t` for the scrollback rows, a `uint16_t` for the size
+    /// and the cursor, a `uint8_t` for the kitty flags. `None` for any other kind.
+    /// `widths_are_what_libghostty_writes` holds this table to the linked library.
+    fn width_of(data: GhosttyTerminalData) -> Option<usize> {
+        match data {
+            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS => {
+                Some(std::mem::size_of::<usize>())
+            }
+            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS
+            | GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS
+            | GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_X
+            | GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y => {
+                Some(std::mem::size_of::<u16>())
+            }
+            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS => {
+                Some(std::mem::size_of::<u8>())
+            }
+            _ => None,
+        }
+    }
+
+    /// A count or position, widened to `u32`, read into a variable exactly `width_of(data)` bytes
+    /// wide, because that is how many bytes the library writes. A `u32` for every kind overran
+    /// the stack for the scrollback rows. A kind with no known width is refused.
     fn get_u32(&self, data: GhosttyTerminalData) -> Option<u32> {
         /// # Safety
-        /// `T` must be the output type terminal.h names for `data`.
+        /// `width` must be how many bytes `ghostty_terminal_get` writes for `data`.
         unsafe fn get<T: Default>(
             terminal: GhosttyTerminal,
             data: GhosttyTerminalData,
+            width: usize,
         ) -> Option<T> {
+            // A `T` of the wrong width still reads the right number on a little-endian machine,
+            // so only this check stops a wrong arm below from overrunning silently.
+            assert_eq!(std::mem::size_of::<T>(), width, "kind {data}");
             let mut out = T::default();
-            // SAFETY: `terminal` is live, and the caller passes the type `data` writes.
+            // SAFETY: `terminal` is live, and `out` is exactly the `width` bytes `data` writes.
             let rc = unsafe { ghostty_terminal_get(terminal, data, (&raw mut out).cast()) };
             (rc == OK).then_some(out)
         }
-        // SAFETY: `inner` is live, and each arm reads its kinds into the type terminal.h names.
+        let width = Self::width_of(data)?;
+        // SAFETY: `inner` is live, and `width` comes from `width_of`, which
+        // `widths_are_what_libghostty_writes` holds to the linked library.
         unsafe {
-            match data {
-                GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS => {
-                    get::<usize>(self.inner, data).and_then(|rows| u32::try_from(rows).ok())
-                }
-                GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS
-                | GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS
-                | GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_X
-                | GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y => {
-                    get::<u16>(self.inner, data).map(u32::from)
-                }
-                GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS => {
-                    get::<u8>(self.inner, data).map(u32::from)
-                }
+            match width {
+                1 => get::<u8>(self.inner, data, width).map(u32::from),
+                2 => get::<u16>(self.inner, data, width).map(u32::from),
+                8 => get::<u64>(self.inner, data, width).and_then(|n| u32::try_from(n).ok()),
                 _ => None,
             }
         }
@@ -678,12 +695,20 @@ mod tests {
     }
 
     /// The kitty stack is the one thing `extra.keyboard` does not carry, so it is emitted by hand.
+    ///
+    /// Value: protects=the kitty flags read back as the value pushed, on both ends; fails_when=
+    /// get_u32 stops reading KITTY_KEYBOARD_FLAGS, so both ends read None and still compare equal;
+    /// why_new=the equality alone passed with that arm removed; seam=none
     #[test]
     fn kitty_keyboard_flags_survive() {
         let mut producer = ShadowTerminal::new(80, 24).expect("producer");
         producer.write(b"\x1b[>13u");
         let mut client = ShadowTerminal::new(80, 24).expect("client");
         client.write(&producer.replay());
+        assert_eq!(
+            producer.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS),
+            Some(13)
+        );
         assert_eq!(
             producer.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS),
             client.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS)
@@ -1012,17 +1037,18 @@ mod tests {
         );
     }
 
+    /// Both counts above 255, so reading them a byte too narrow shows.
     #[test]
     fn resize_is_reflected() {
         let mut terminal = ShadowTerminal::new(80, 24).expect("terminal");
-        terminal.resize(100, 30);
+        terminal.resize(300, 400);
         assert_eq!(
             terminal.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS),
-            Some(100)
+            Some(300)
         );
         assert_eq!(
             terminal.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS),
-            Some(30)
+            Some(400)
         );
     }
 
@@ -1035,6 +1061,41 @@ mod tests {
             terminal.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_TOTAL_ROWS),
             None
         );
+    }
+
+    /// A read too wide or too narrow still gets the right number on a little-endian machine, so
+    /// no value assertion notices one; only counting the bytes the library writes does. This is
+    /// what fails if a Ghostty bump widens an output type.
+    ///
+    /// Value: protects=width_of equals the bytes libghostty writes for every kind get_u32 reads;
+    /// fails_when=a Ghostty bump changes an output type, or width_of names the wrong width;
+    /// why_new=a u32 read for every kind passed every other test; seam=none
+    #[test]
+    fn widths_are_what_libghostty_writes() {
+        const SENTINEL: u8 = 0xA5;
+        let terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        for kind in [
+            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS,
+            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS,
+            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS,
+            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_X,
+            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y,
+            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS,
+        ] {
+            // Words, not bytes, so the buffer is aligned for the widest type written into it.
+            let mut words = [u64::from_ne_bytes([SENTINEL; 8]); 2];
+            // SAFETY: `inner` is live, and 16 aligned bytes hold every output type listed here.
+            let rc =
+                unsafe { ghostty_terminal_get(terminal.inner, kind, words.as_mut_ptr().cast()) };
+            assert_eq!(rc, OK, "kind {kind}");
+            // Every value here is small, so no byte the library writes equals the sentinel.
+            let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_ne_bytes()).collect();
+            let written = bytes
+                .iter()
+                .rposition(|byte| *byte != SENTINEL)
+                .map(|i| i + 1);
+            assert_eq!(written, ShadowTerminal::width_of(kind), "kind {kind}");
+        }
     }
 
     /// The precondition behind `attach`'s chunking: a repaint really can exceed the protocol's
