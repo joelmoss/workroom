@@ -1,10 +1,15 @@
 //! The harness the agent's process-level tests share: a real agent and real clients over a real
 //! socket, each killed when its test ends.
 
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+use wr_agent::serve::handle_connection;
+use wr_agent::session::SessionStore;
+use wr_protocol::envelope::Hello;
 
 pub fn agent_binary() -> PathBuf {
     // `CARGO_BIN_EXE_wr-agent` is resolved at COMPILE time and bakes in an absolute path from the
@@ -207,4 +212,22 @@ pub fn has_terminal_state() -> bool {
     std::env::var_os("WR_AGENT_HAS_TERMINAL_STATE")
         .map(|value| !value.is_empty())
         .unwrap_or(false)
+}
+
+/// A connection to an agent served in this process, greeted as `name`: the agent's side runs
+/// `handle_connection` on a thread of its own, with a session store of its own. The stream has no
+/// read timeout yet; each caller picks its own once the greeting is done.
+pub fn connect_in_process(name: &str) -> (UnixStream, std::thread::JoinHandle<()>) {
+    let (mut stream, server) = UnixStream::pair().unwrap();
+    let server = std::thread::spawn(move || {
+        let _ = handle_connection(server, SessionStore::new());
+    });
+    stream.write_all(&Hello::current(name).encode()).unwrap();
+    let mut greeting = Vec::new();
+    while Hello::decode(&greeting).unwrap().is_none() {
+        let mut byte = [0u8];
+        stream.read_exact(&mut byte).unwrap();
+        greeting.push(byte[0]);
+    }
+    (stream, server)
 }

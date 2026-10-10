@@ -2,6 +2,9 @@
 //! bound. The unit tests in `file.rs` and `watch.rs` cover the pieces; this covers the seams — the
 //! envelope, chunked replies, events on stream 0, and a subscription's life inside one connection.
 
+#[allow(dead_code)] // not every helper is used here
+mod common;
+
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -9,9 +12,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
-use wr_agent::serve::handle_connection;
-use wr_agent::session::SessionStore;
-use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
+use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
 
 struct Client {
     stream: UnixStream,
@@ -23,19 +24,7 @@ struct Client {
 
 impl Client {
     fn connect() -> Client {
-        let (mut stream, server) = UnixStream::pair().unwrap();
-        let server = std::thread::spawn(move || {
-            let _ = handle_connection(server, SessionStore::new());
-        });
-        stream
-            .write_all(&Hello::current("file-test").encode())
-            .unwrap();
-        let mut greeting = Vec::new();
-        while Hello::decode(&greeting).unwrap().is_none() {
-            let mut byte = [0u8];
-            stream.read_exact(&mut byte).unwrap();
-            greeting.push(byte[0]);
-        }
+        let (stream, server) = common::connect_in_process("file-test");
         // Short reads only from here: the greeting can be slow on a loaded machine, and a timeout
         // during it would panic the test for a scheduling reason.
         stream

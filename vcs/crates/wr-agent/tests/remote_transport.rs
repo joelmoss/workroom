@@ -15,6 +15,10 @@
 //! the driver's job, not the protocol's. The ssh hop is covered at the end of this file, by tests
 //! that are ignored unless `vcs/scripts/ssh-fixture/run.sh` has started the container they need.
 
+#[allow(dead_code)] // not every helper is used here
+mod common;
+use common::{Spawned, Workspace, agent_binary};
+
 use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::io::AsRawFd;
@@ -693,13 +697,6 @@ fn a_banner_on_the_stream_is_rejected() {
 // ---------------------------------------------------------------------------
 // The same thing, but across a real process boundary.
 
-fn agent_binary() -> std::path::PathBuf {
-    match std::env::var_os("WR_AGENT_BIN") {
-        Some(path) => std::path::PathBuf::from(path),
-        None => std::path::PathBuf::from(env!("CARGO_BIN_EXE_wr-agent")),
-    }
-}
-
 /// `serve --stdio` over a pair of pipes to a child process: everything an ssh hop exercises except
 /// the network — argument handling, stdio wiring, and the agent serving a stream it does not own.
 /// (Production goes through `relay` to a supervised agent instead; see the relay tests below.)
@@ -1010,24 +1007,6 @@ fn relay_command(socket: &Path) -> Command {
     command
 }
 
-/// A scratch directory for a socket, removed when the test ends.
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(name: &str) -> Scratch {
-        let dir = std::env::temp_dir().join(format!("wr-relay-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        Scratch(dir)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 /// A socket file at `path` with nothing listening on it: what an agent that died leaves behind.
 ///
 /// Bound in a forked child that exits at once, not here. On macOS, std creates a socket and only
@@ -1076,20 +1055,11 @@ fn stale_socket(path: &Path) {
     );
 }
 
-/// An agent killed when the test ends, panic or not. It runs with `--idle-timeout never`, so a
-/// leaked one would hold its session's shell forever.
-struct Agent(Child);
-
-impl Drop for Agent {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-/// A supervised-style agent (`--idle-timeout never`) on `socket`, serving once this returns.
-fn start_agent(socket: &Path) -> Agent {
-    let agent = Agent(
+/// A supervised-style agent (`--idle-timeout never`) on `socket`, serving once this returns. It is
+/// killed when the test ends, panic or not: with no idle timeout, a leaked one would hold its
+/// session's shell forever.
+fn start_agent(socket: &Path) -> Spawned {
+    let agent = Spawned(
         Command::new(agent_binary())
             .args(["serve", "--socket"])
             .arg(socket)
@@ -1112,8 +1082,8 @@ fn start_agent(socket: &Path) -> Agent {
 /// in front of it, and a relay killed mid-session. The next relay must reach the SAME shell.
 #[test]
 fn a_relay_reaches_the_same_agent_after_the_link_drops() {
-    let scratch = Scratch::new("drop");
-    let socket = scratch.0.join("agent.sock");
+    let scratch = Workspace::new("drop");
+    let socket = scratch.dir.join("agent.sock");
     let agent = start_agent(&socket);
 
     let mut first = Relay::spawn(relay_command(&socket));
@@ -1161,8 +1131,8 @@ fn a_relay_reaches_the_same_agent_after_the_link_drops() {
 /// is a half-close, not a hang-up. Then the relay exits once the agent has closed its end.
 #[test]
 fn a_relay_delivers_replies_after_its_stdin_closes() {
-    let scratch = Scratch::new("half-close");
-    let socket = scratch.0.join("agent.sock");
+    let scratch = Workspace::new("half-close");
+    let socket = scratch.dir.join("agent.sock");
     let _agent = start_agent(&socket);
 
     let mut relay = Relay::spawn(relay_command(&socket));
@@ -1194,8 +1164,8 @@ fn a_relay_delivers_replies_after_its_stdin_closes() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_relay_to_a_silent_agent_exits_when_its_link_hangs_up() {
-    let scratch = Scratch::new("silent");
-    let socket = scratch.0.join("agent.sock");
+    let scratch = Workspace::new("silent");
+    let socket = scratch.dir.join("agent.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
     // Accepts, then holds the connection without ever touching it.
     let held = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
@@ -1230,11 +1200,11 @@ fn a_relay_to_a_silent_agent_exits_when_its_link_hangs_up() {
 /// idles out after a second, and idle at least as long, it must still be serving.
 #[test]
 fn an_agent_with_idle_timeout_never_outlives_one_that_idles_out() {
-    let scratch = Scratch::new("never");
-    let forever_socket = scratch.0.join("forever.sock");
-    let short_socket = scratch.0.join("short.sock");
+    let scratch = Workspace::new("never");
+    let forever_socket = scratch.dir.join("forever.sock");
+    let short_socket = scratch.dir.join("short.sock");
     let mut forever = start_agent(&forever_socket);
-    let mut short = Agent(
+    let mut short = Spawned(
         Command::new(agent_binary())
             .args(["serve", "--socket"])
             .arg(&short_socket)
@@ -1268,9 +1238,9 @@ fn an_agent_with_idle_timeout_never_outlives_one_that_idles_out() {
 /// Both shapes: no socket file at all, and a stale one from an agent that died.
 #[test]
 fn a_relay_with_no_agent_fails_fast_and_says_so() {
-    let scratch = Scratch::new("none");
-    let missing = scratch.0.join("missing.sock");
-    let stale = scratch.0.join("stale.sock");
+    let scratch = Workspace::new("none");
+    let missing = scratch.dir.join("missing.sock");
+    let stale = scratch.dir.join("stale.sock");
     stale_socket(&stale);
     assert!(stale.exists(), "the stale socket file stays behind");
 
@@ -1293,9 +1263,9 @@ fn a_relay_with_no_agent_fails_fast_and_says_so() {
 /// within a few hundred tries on macOS.
 #[test]
 fn a_stale_socket_stays_stale_while_children_are_spawned() {
-    let scratch = Scratch::new("stale-fixture");
+    let scratch = Workspace::new("stale-fixture");
     let load = SpawnLoad::start();
-    let socket = scratch.0.join("stale.sock");
+    let socket = scratch.dir.join("stale.sock");
     let mut connected = 0;
     for _ in 0..1000 {
         let _ = std::fs::remove_file(&socket);
@@ -1374,8 +1344,8 @@ impl Drop for SpawnLoad {
 /// relay that took "nothing to read yet" for the end of its input would hang up on the agent.
 #[test]
 fn a_relay_whose_stdin_and_stdout_are_one_socket_keeps_reading() {
-    let scratch = Scratch::new("one-socket");
-    let socket = scratch.0.join("agent.sock");
+    let scratch = Workspace::new("one-socket");
+    let socket = scratch.dir.join("agent.sock");
     let _agent = start_agent(&socket);
 
     let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");

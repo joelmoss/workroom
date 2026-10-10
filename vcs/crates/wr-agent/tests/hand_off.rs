@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use wr_protocol::envelope::{Envelope, Hello, Service};
 use wr_protocol::frame::{Frame, FrameKind};
 
+#[allow(dead_code)] // not every helper is used here
 mod common;
 use common::*;
 
