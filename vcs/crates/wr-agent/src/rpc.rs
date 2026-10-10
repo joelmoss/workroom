@@ -7,6 +7,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use wr_protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
+use wr_protocol::reply::Reply;
 use wr_vcs_model::VcsError;
 
 /// A connection's write half, shared with whichever session it is attached to.
@@ -151,7 +152,7 @@ pub(crate) fn send_with(
 ) {
     let mut bytes = serde_json::to_vec(&value).expect("JSON value serializes");
     if bytes.len() > MAX_RESPONSE {
-        bytes = serde_json::to_vec(&json!({"version": 1, "error": too_large()})).unwrap();
+        bytes = serde_json::to_vec(&Reply::error(1, too_large())).unwrap();
     }
     let chunks = bytes.chunks(MAX_ENVELOPE_PAYLOAD - 1);
     let count = chunks.len();

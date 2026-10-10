@@ -9,7 +9,11 @@ repository.workspace = true
 workspace = true
 
 # The agent's wire: the multiplex envelope and the session frame, with their version constants.
-# No I/O and nothing beyond the error derive, so anything that speaks to an agent can link it
-# without the agent's own dependencies.
+# No I/O and nothing beyond the error and serialize derives, so anything that speaks to an agent
+# can link it without the agent's own dependencies.
 [dependencies]
 thiserror = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"

@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use wr_protocol::envelope::{Envelope, Service};
+use wr_protocol::reply::Reply;
 use wr_vcs_model::VcsError;
 
 /// The wire version of this service, reported by `capabilities`. Separate from `PROTOCOL_VERSION`,
@@ -184,10 +185,7 @@ fn root_of(request: &Request) -> Result<PathBuf, FileError> {
 }
 
 fn reply(result: Result<Value, FileError>) -> Value {
-    match result {
-        Ok(result) => json!({"version": FILE_SERVICE_VERSION, "result": result}),
-        Err(error) => json!({"version": FILE_SERVICE_VERSION, "error": error}),
-    }
+    json!(Reply::new(FILE_SERVICE_VERSION, result))
 }
 
 /// Handle one envelope. Requests that do real work run on their own thread holding a `Permit`, like

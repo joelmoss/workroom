@@ -33,6 +33,7 @@ use wr_protocol::envelope::{
     Envelope, EnvelopeDecoder, Hello, MAX_ENVELOPE_PAYLOAD, ProtocolError, Service, negotiate,
 };
 use wr_protocol::frame::{Frame, FrameDecoder, FrameKind, HEADER_SIZE, MAX_PAYLOAD_SIZE};
+use wr_protocol::reply::Reply;
 
 pub const BUILD: &str = concat!("wr-agent ", env!("CARGO_PKG_VERSION"));
 
@@ -637,10 +638,10 @@ fn retired_status(envelope: &Envelope, writer: &SharedWriter) {
         writer,
         Service::Status,
         envelope.stream,
-        serde_json::json!({
-            "version": 2,
-            "error": {"unsupported": "this agent has no status service"},
-        }),
+        serde_json::json!(Reply::error(
+            2,
+            serde_json::json!({"unsupported": "this agent has no status service"})
+        )),
     );
 }
 

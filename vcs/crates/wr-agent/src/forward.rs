@@ -177,6 +177,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use wr_protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
+use wr_protocol::reply::Reply;
 
 /// The wire version of this service, reported in every reply. Separate from `PROTOCOL_VERSION`,
 /// which says whether the service exists at all.
@@ -275,7 +276,10 @@ impl Refusal {
     }
 
     fn value(&self) -> Value {
-        json!({"version": FORWARD_SERVICE_VERSION, "error": {self.0: self.1}})
+        json!(Reply::error(
+            FORWARD_SERVICE_VERSION,
+            json!({self.0: self.1})
+        ))
     }
 }
 
@@ -670,8 +674,10 @@ impl Forwards {
                 },
             );
         // Answered BEFORE the thread starts, so no ACCEPTED can reach the client ahead of it.
-        let reply =
-            json!({"version": FORWARD_SERVICE_VERSION, "result": {"listening": bound_port}});
+        let reply = json!(Reply::result(
+            FORWARD_SERVICE_VERSION,
+            json!({"listening": bound_port})
+        ));
         if !send_reply(writer, stream, &reply) {
             // The client is gone. Dropping `listener` releases the port.
             forget_listener(&self.listeners, stream, token);
@@ -935,7 +941,10 @@ fn connect_and_run(task: ForwardTask, source: Source) {
     if !send_reply(
         &task.writer,
         task.stream,
-        &json!({"version": FORWARD_SERVICE_VERSION, "result": {"opened": true}}),
+        &json!(Reply::result(
+            FORWARD_SERVICE_VERSION,
+            json!({"opened": true})
+        )),
     ) {
         forget(&task.open, task.stream, task.token);
         let _ = socket.shutdown(Shutdown::Both);
