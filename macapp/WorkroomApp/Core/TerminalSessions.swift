@@ -439,10 +439,12 @@ final class TerminalSessions: ObservableObject {
   /// `closeSuccessor`. Injectable like `makeView` so a test never mutates the singleton's order.
   var recency: SwitcherRecency = .shared
   /// What these sessions tell their owner, `AppStore`, through `onEvent`. One synchronous channel:
-  /// each event is a plain call at the point it happens, in the order things happen, before the
-  /// method that caused it returns. `AppStore.withHistorySuppressed` and `select` depend on that (eng
-  /// review D8), so never defer delivery: no `Task`, queue or `AsyncStream`. `AppStore` switches over
-  /// every case, so a new case cannot go unhandled.
+  /// each event is a plain call at the moment it happens, in the order things happen, never deferred
+  /// through a `Task`, queue or `AsyncStream`. So an event raised inside a sessions method (`focus`,
+  /// `select`, `closeTab`, `detachPane`, …) is handled before that method returns, which
+  /// `AppStore.withHistorySuppressed` and `select` depend on (eng review D8). `.remoteCloseFailed`
+  /// happens later: the remote close's own task raises it once the host has answered. `AppStore`
+  /// switches over every case, so a new case cannot go unhandled.
   enum Event: Equatable {
     /// A terminal's notification-worthy activity (OSC), for the notification spine.
     case activity(TerminalTarget.ID, TerminalTab.ID, TerminalActivity)

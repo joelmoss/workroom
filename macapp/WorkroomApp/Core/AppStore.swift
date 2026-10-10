@@ -1039,9 +1039,10 @@ final class AppStore: ObservableObject {
     loadInspectorState()
   }
 
-  /// Everything `TerminalSessions` reports. `onEvent` is called synchronously at each event's
-  /// source, so each arm runs before the sessions method that raised it returns: history
+  /// Everything `TerminalSessions` reports. `onEvent` calls this inline the moment an event happens,
+  /// so an event raised inside a sessions method is handled before that method returns: history
   /// suppression and `select`'s promote-then-focus order depend on that (eng review D8).
+  /// `.remoteCloseFailed` arrives later, from the remote close's own task.
   private func handleTerminalEvent(_ event: TerminalSessions.Event) {
     switch event {
     // Route each terminal's activity (OSC/bell) through the notification spine, gated on
