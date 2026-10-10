@@ -74,7 +74,8 @@ the v2-format `.golangci.yml`.
 **To change the Rust workspace (`vcs/`):** Rust **1.96.1** with rustfmt and clippy for `make vcs-lint`
 (`rustup toolchain install 1.96.1 --component rustfmt,clippy`), the version CI's lint jobs pin. Its
 `terminal-state` half also needs Zig 0.16.0 (installed through mise when it is available) and builds a
-pinned Ghostty on its first run.
+pinned Ghostty on its first run. The workspace lint table in `vcs/Cargo.toml` is a floor of lints the
+code already passes; never silence one with an `allow` without asking first.
 
 **To change a GitHub workflow:** **`actionlint` 1.7.12** for `make actions-lint`
 (`go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`), with `shellcheck` on `PATH` so
@@ -172,7 +173,7 @@ workroom/
 ├── .goreleaser.yml          # CLI cross-platform build/release config
 ├── .golangci.yml            # Linter config
 ├── install.sh / install.ps1 # Standalone CLI installers
-└── Makefile                 # Dev tasks: app-* (macOS app) and cli-* (Go engine)
+└── Makefile                 # Dev tasks: app-* (macOS app), cli-* (Go engine) and vcs-lint (Rust)
 ```
 
 ### The macOS app architecture
@@ -350,7 +351,7 @@ documented in [the README](README.md#the---json-machine-contract).
 ## Local Development
 
 Dev tasks run through the **repo-root `Makefile`**, namespaced `app-*` (macOS app) and `cli-*` (Go
-engine). Run `make` with no target to list everything.
+engine), plus `vcs-lint` for the Rust workspace. Run `make` with no target to list everything.
 
 ### Working on the macOS app
 
@@ -492,7 +493,8 @@ and every PR against either:
 - **`cli` job** (`ubuntu-latest`): sets up Go from `go.mod`, runs `golangci-lint` (subsumes `go vet`
   / `gofmt`), `go build`, and `go test ./...`.
 - **`rust` job** (`ubuntu-latest`): `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test` for the
-  whole `vcs/` Rust workspace, on a pinned toolchain.
+  whole `vcs/` Rust workspace, on a pinned toolchain. `make vcs-lint` runs the same format and lint checks
+  locally, plus the `agent-terminal-state` job's clippy pass.
 - **`app` job** (`macos-15`): sets up Xcode + Go, `brew install xcodegen`, runs `make app-lint`
   (swift-format `--strict`), `make app-package-test` and `make app-test` with **ad-hoc signing** flags (hosted runners have
   no signing cert), e.g.:
