@@ -16,55 +16,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Keep the workflow/check names present for branch protection. Only standalone website
-  # changes skip suites; unknown paths and unavailable history always run everything.
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      run: ${{ steps.changes.outputs.run }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      # Run the BASE branch's selector, never the PR's own. This job decides whether the
-      # native jobs run at all, and GitHub counts a conditionally-SKIPPED required check as
-      # passing — so a PR that edited changes.py to emit `run=false` (its `__main__` line alone,
-      # leaving should_run() and every test untouched) would merge green with no native coverage.
-      # Deleting ci.yml outright blocks a merge; silencing the gate would not. No-op on a push,
-      # where github.sha is already the trusted commit.
-      # Absent on the base ref when that ref predates the selector — the PR introducing it (this
-      # one) included. No trusted selector means NO gate: the two steps below are skipped, `run`
-      # stays empty, and the `!= 'false'` tests on the native jobs all pass, so everything
-      # runs. Never fall back to the PR's own copy; that is the bypass this whole step exists for.
-      - name: Restore the trusted selector
-        id: selector
-        env:
-          TRUSTED_REF: ${{ github.event.pull_request.base.sha || github.sha }}
-        run: |
-          if git checkout "$TRUSTED_REF" -- scripts/ci 2>/dev/null; then
-            echo "trusted=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "trusted=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::no scripts/ci at $TRUSTED_REF — change gate disabled, running every suite"
-          fi
-
-      # Named file, not `unittest discover -s scripts/ci`: discover exits 0 when it finds NO
-      # tests, so a deleted or renamed suite would report green while proving nothing about the
-      # gate that can switch every native job off.
-      - name: Test change selection
-        if: steps.selector.outputs.trusted == 'true'
-        run: python3 scripts/ci/test_changes.py
-
-      - id: changes
-        if: steps.selector.outputs.trusted == 'true'
-        env:
-          DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          DIFF_HEAD: ${{ github.sha }}
-        run: python3 scripts/ci/changes.py >> "$GITHUB_OUTPUT"
-
-  # Every workflow, shellchecked `run:` blocks included. Not behind `changes`: it takes seconds,
-  # and a workflow edit is exactly what the selector would skip. The pin moves with the Makefile's
+  # Every workflow, shellchecked `run:` blocks included. The pin moves with the Makefile's
   # `actions-lint` (CONTRIBUTING). The release archive is checked against its pinned sha256 before
   # it runs, so a replaced asset or tag fails here instead of running.
   workflows:
@@ -89,8 +41,6 @@ jobs:
         run: python3 scripts/ci/test_download_stats.py
 
   cli:
-    needs: changes
-    if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -135,8 +85,6 @@ jobs:
   # `app`: off the macOS critical path, Linux minutes are 10x cheaper, and it tests the agent away
   # from Apple targets.
   rust:
-    needs: changes
-    if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -174,8 +122,6 @@ jobs:
   # `rust` because it is the only thing in the repo that needs a Zig toolchain and a Ghostty
   # checkout, and the rest of the workspace should not wait on either.
   agent-terminal-state:
-    needs: changes
-    if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -224,8 +170,6 @@ jobs:
   # build-agent_test.sh can only see that each ELF is static and the right arch, not that it starts.
   # aarch64 runs under qemu-user, which needs no sysroot for a static binary.
   agent-linux:
-    needs: changes
-    if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -350,8 +294,6 @@ jobs:
   # and an emulated build would run apt under QEMU. No build cache and no Rust: the script needs
   # only Docker and ssh, which the runner image has.
   host-image-arm64:
-    needs: changes
-    if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
@@ -360,8 +302,6 @@ jobs:
         run: vcs/scripts/ssh-fixture/host-image-test.sh
 
   app:
-    needs: changes
-    if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
@@ -549,8 +489,6 @@ jobs:
   # If required status checks are ever configured for master, list this job beside `app`: the script
   # tests no longer run inside `app`, so requiring only `app` would stop them gating a merge.
   app-scripts:
-    needs: changes
-    if: always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false')
     runs-on: macos-15
     steps:
       # Full history, for the tags: agent-protocol_test.sh reads the latest stable release's app
