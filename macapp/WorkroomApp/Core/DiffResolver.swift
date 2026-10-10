@@ -1,4 +1,5 @@
 import Foundation
+import SyntaxHighlighting
 
 /// The outcome of a `DiffResolver.resolve` call.
 enum DiffResult: Equatable, Sendable {

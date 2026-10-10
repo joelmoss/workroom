@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Workroom
+@testable import SyntaxHighlighting
 
 /// Lane-A spike coverage + the highlighter's core contract: real tree-sitter parse → highlights
 /// query → resolved spans, for a no-scanner grammar (JSON) and an **external-scanner** grammar

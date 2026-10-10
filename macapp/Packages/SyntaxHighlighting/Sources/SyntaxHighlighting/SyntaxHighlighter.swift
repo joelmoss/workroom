@@ -11,8 +11,8 @@ import TreeSitter  // the C runtime's `TSInputEncodingUTF8` (not re-exported by 
 /// (grammar/query load fails, parse fails, no captures) degrades to `[]` ⇒ the caller renders plain.
 /// Run off-main — the parse + query are CPU-bound and the byte arrays are bounded by
 /// `SyntaxLanguage.byteCap`.
-final class SyntaxHighlighter: @unchecked Sendable {
-  static let shared = SyntaxHighlighter()
+public final class SyntaxHighlighter: @unchecked Sendable {
+  public static let shared = SyntaxHighlighter()
 
   /// A grammar loaded once: its parsed `Language` + compiled `highlights` query.
   private struct Loaded {
@@ -22,7 +22,7 @@ final class SyntaxHighlighter: @unchecked Sendable {
 
   /// Bumped if the resolver's capture semantics change, so cached spans from an older build are
   /// never reused. Part of the spans-cache key.
-  static let queryVersion = 1
+  public static let queryVersion = 1
 
   // Grammars + their queries are expensive to load (query compilation reads the bundle), so cache
   // per grammar. A present-but-nil entry records a load *failure* so we don't re-attempt (and
@@ -39,7 +39,7 @@ final class SyntaxHighlighter: @unchecked Sendable {
 
   /// The spans-cache key for a (grammar, content) pair. Exposed for tests: it must vary with the
   /// grammar, the content, and the query version — so stale or cross-grammar captures never leak.
-  static func cacheKey(grammar: GrammarID, content: String) -> Int {
+  public static func cacheKey(grammar: GrammarID, content: String) -> Int {
     var hasher = Hasher()
     hasher.combine(queryVersion)
     hasher.combine(grammar)
@@ -49,7 +49,7 @@ final class SyntaxHighlighter: @unchecked Sendable {
 
   /// Resolve `content` into highlight spans for `grammar`. Returns `[]` (⇒ render plain) on any
   /// failure or when there are no captures. Never throws. Results are cached by content-hash.
-  func spans(for content: String, grammar: GrammarID) -> [HighlightSpan] {
+  public func spans(for content: String, grammar: GrammarID) -> [HighlightSpan] {
     guard !content.isEmpty else { return [] }
 
     let key = Self.cacheKey(grammar: grammar, content: content)

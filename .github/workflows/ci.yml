@@ -329,9 +329,23 @@ jobs:
         run: make app-lint
 
       # The local packages' tests (macapp/Packages) run with plain `swift test`, outside the app
-      # host, so `make app-test` never sees them. Before the app build: they take seconds.
+      # host, so `make app-test` never sees them. SyntaxHighlighting clones its 16 tree-sitter
+      # packages and compiles them cold (~1.5 min; its 1.5GB .build is too big to cache), so resolve
+      # first with the same retries the Xcode resolve below needs for a github.com blip.
       - name: Test (Swift packages)
-        run: make app-package-test
+        run: |
+          for pkg in macapp/Packages/*/; do
+            attempt=1
+            until swift package resolve --package-path "$pkg"; do
+              if [ "$attempt" -ge 3 ]; then
+                echo "::error::SPM resolve of $pkg failed after 3 attempts"; exit 1
+              fi
+              echo "::warning::SPM resolve of $pkg attempt $attempt failed; retrying in 15s"
+              attempt=$((attempt + 1))
+              sleep 15
+            done
+          done
+          make app-package-test
 
       # The app bundles `wr-agent`, and the bundled build links libghostty-vt so a reattaching
       # pane can be repainted — see macapp/Scripts/build-agent.sh. That needs a Zig toolchain on

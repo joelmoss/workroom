@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import SyntaxHighlighting
 import XCTest
 
 @testable import Workroom
