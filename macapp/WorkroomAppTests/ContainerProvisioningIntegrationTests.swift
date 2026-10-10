@@ -287,6 +287,51 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label), [])
   }
 
+  // Value: protects=a workroom an older build derived keeps the commit image it runs from through
+  // every sweep, and deleting it removes that image; fails_when=destroy stops removing a record's
+  // image or the sweep stops keeping a recorded host's; why_new=the derive tests that reached
+  // these paths went with deriveFromBase; seam=none
+  /// A host an older build derived from a base records the image it was run from, which only it
+  /// uses: the sweep keeps that image while the host is recorded, and destroying the host takes the
+  /// image with it, a whole disk's worth of storage.
+  func testAnOlderBuildsDerivedHostKeepsItsImageUntilItIsDestroyed() async throws {
+    let provisioning = try provisioning()
+    let earlier = ContainerHostDriver(
+      hosts: [:], directory: directory.appendingPathComponent("earlier"),
+      provisioning: provisioning)
+    let host = try await earlier.create()
+    guard case .remote(let id) = host else { return XCTFail("not a remote host") }
+    // As an older build's derive committed it: the driver's labels, and made long ago.
+    let labels = (provisioning.labels + ["\(ContainerHostDriver.createdLabel)=0"]).flatMap {
+      ["--change", "LABEL \($0)"]
+    }
+    let image = try docker(
+      runtime, ["commit"] + labels + [ContainerHostDriver.containerName(id)])
+    XCTAssertTrue(ContainerHostDriver.isImageID(image), image)
+    let record = try XCTUnwrap(earlier.record(of: host))
+
+    let later = ContainerHostDriver(
+      hosts: [:], directory: directory.appendingPathComponent("later"), provisioning: provisioning)
+    try later.adopt(
+      id,
+      ContainerHostDriver.Record(
+        address: record.address, port: record.port, user: record.user, hostKey: record.hostKey,
+        image: image, context: record.context))
+    for _ in 0..<2 {
+      let failures = await later.sweep(keeping: [id], grace: 0)
+      XCTAssertEqual(failures, [])
+    }
+    XCTAssertEqual(
+      try leftovers("images", runtime: runtime, label: label).count, 1,
+      "the sweep took a recorded host's image")
+
+    try await later.destroy(host)
+    XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label), [])
+    XCTAssertEqual(
+      try leftovers("images", runtime: runtime, label: label), [],
+      "destroying the host left its image")
+  }
+
   /// A record naming an image that is not an older derive's commit is refused: `destroy` removes it
   /// by force.
   func testAdoptRefusesARecordWhoseImageIsNotAnImageID() throws {

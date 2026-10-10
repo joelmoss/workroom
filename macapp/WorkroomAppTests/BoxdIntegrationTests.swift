@@ -3,8 +3,8 @@ import XCTest
 
 @testable import Workroom
 
-/// `BoxdHostDriver` on real boxd machines (#256): bases, workrooms derived from them through the
-/// portable path, and what each failure leaves. These make and remove real machines on the
+/// `BoxdHostDriver` on real boxd machines (#256): fresh machines, one per workroom, and what each
+/// failure leaves. These make and remove real machines on the
 /// signed-in boxd account, so they run only when asked for, with the sandbox off (the CLI's gRPC
 /// does not go through the sandbox's proxy):
 ///

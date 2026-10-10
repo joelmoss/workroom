@@ -71,7 +71,7 @@ extension HostDriver {
   var agentSocket: String { RemoteWorkrooms.agentSocket }
 }
 
-/// What a provider driver runs on a new base to set it up.
+/// What a provider driver runs on a new host to set it up.
 enum HostSetup {
   /// `Resources/host-setup/systemd.sh`: the identity unit and the agent's supervisor, for a machine
   /// that runs systemd (boxd, exe.dev).

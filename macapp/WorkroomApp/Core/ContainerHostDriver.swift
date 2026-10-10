@@ -529,7 +529,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// The containers this driver began running that no config record names yet (#284), one file per
   /// runtime and Docker context. A name goes in before its `run`, and out once config records its
-  /// host (`RemoteHosts.adopt`) or it is removed. So a crash before a project's first base was
+  /// host (`RemoteHosts.adopt`) or it is removed. So a crash before a new workroom's host was
   /// recorded still leaves its container named here, and a launch whose config records nothing
   /// sweeps only these (`sweep(onlyPending:)`), never a live workroom that config fails to show.
   /// ponytail: a container removed by hand stays listed, costing its runtime one listing a launch;
