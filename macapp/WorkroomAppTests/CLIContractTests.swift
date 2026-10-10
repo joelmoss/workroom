@@ -145,6 +145,13 @@ final class CLIContractTests: XCTestCase {
 
   func testCreateSetupFailed() throws {
     try assertError("create-setup-failed.json", kind: "SetupScriptFailed")
+    // The app still mounts the workroom and shows the setup log up to the failure.
+    let events = try events("create-setup-failed-events.ndjson")
+    XCTAssertEqual(events.map(\.type), ["created", "log"])
+    XCTAssertEqual(events[0].name, "calm-river")
+    XCTAssertEqual(events[0].setup, true)
+    XCTAssertEqual(events[1].phase, "setup")
+    XCTAssertEqual(events[1].text, "boom")
   }
 
   func testAddProject() throws {

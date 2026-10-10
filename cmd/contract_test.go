@@ -258,7 +258,9 @@ func TestContractCreateSetupFailed(t *testing.T) {
 	if run.code == 0 {
 		t.Fatalf("create with a failing setup script exited 0: %s", run.stdout)
 	}
-	checkContract(t, "create-setup-failed.json", run.stdout, home, createdName(t, run.stdout), contractName)
+	name := createdName(t, run.stdout)
+	checkContract(t, "create-setup-failed.json", run.stdout, home, name, contractName)
+	checkContract(t, "create-setup-failed-events.ndjson", run.stderr, home, name, contractName)
 }
 
 // A create whose fetch fails warns that its start may be out of date, in the envelope and in the
