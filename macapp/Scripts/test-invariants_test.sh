@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # Dependency-free meta-test pinning two test-infra invariants that otherwise live only in Makefile
-# comments (Muxy test-practices review, filed in TODOS.md): the `APP_UITEST_FLAGS` skip list, and
+# comments (Muxy test-practices review): the `APP_UITEST_FLAGS` skip list, and
 # that release/nightly/CI workflows still actually invoke `make app-test` somewhere. No toolchain —
 # just sh + grep. Run: sh macapp/Scripts/test-invariants_test.sh   (exits non-zero on any mismatch).
 #

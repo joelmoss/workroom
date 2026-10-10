@@ -76,8 +76,7 @@ the likeliest suspects.
       a *parser*, and files the command in the branch that logs "unimplemented OSC callback" and
       discards it; the stream dispatch, apprt action and `ghostty_action_*` tag an embedder would
       need do not exist as PRs. Nor would building our own xcframework from a ref including #10467
-      change that. Re-check when **ghostty 1.4.0** ships (issue #5634 is milestoned there); see the
-      OSC 99 entry in `TODOS.md`. OSC 9/777 cover the common cases meanwhile; SwiftTerm parsed OSC 99
+      change that. Re-check when **ghostty 1.4.0** ships (issue #5634 is milestoned there). OSC 9/777 cover the common cases meanwhile; SwiftTerm parsed OSC 99
       itself, so this remains a minor regression.
 - [ ] Fire an OSC 9 in the **focused/active** tab → **no** notification (focus suppression).
 - [ ] **Background the app** (⌘-Tab away), fire an OSC 9 → **system banner** appears.

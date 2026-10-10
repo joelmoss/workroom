@@ -201,25 +201,6 @@ earlier class has to run first.
 
 **Priority:** P3. Test-only, and worked around.
 
-### The forward listener's fatal-`accept` path is untested (macapp) — #218 review follow-up
-
-**What:** `PortForward.acceptPending`'s `default:` branch (`Event.stopped`, which takes the row down)
-has no test. The other two #218 follow-ups are done (see Recently done, 2026-09-22).
-
-**Why:** A regression there is silent: a row that outlives its listener advertises an address that
-never answers.
-
-**How to start:** It needs an `accept` errno outside `EWOULDBLOCK`/`EINTR`/`ECONNABORTED` and the
-descriptor-exhaustion set, and no obvious userspace action on a healthy listening socket produces one.
-Either find one (probe `shutdown` on the listener and read what `accept` returns) or inject the
-`accept` call. Do not bend the listener's design to reach it.
-
-**Depends on / blocked by:** nothing. Also known and accepted: a local client that fully closes while
-the target never responds and never closes holds its stream until the connection ends (the same in
-`ssh -L`; the agent has no idle reaping either).
-
-**Priority:** P3, effort S.
-
 ### Ordinary connection failures blank the PR/CI badges (macapp) — #207 eng-review follow-up
 
 **What:** Classify plain connection failures (`error connecting to api.github.com`, `dial tcp`,
@@ -329,8 +310,8 @@ P1. Package `1.3.1` ≠ ghostty `v1.3.1`. Always read `Ghostty.ref` + the releas
 layer. Every wrapper-side Swift PR between our pin and 1.3.2 (AppKit copy-path change, async
 host-managed output queuing, prompt navigation, per-surface env vars, scrollbar delegate) touches
 types we don't consume and is out of scope for this bump. Whether we *should* start consuming that
-layer is a separate, open question — see "Own the GhosttyKit xcframework" below for the supply-chain
-angle; the API-surface angle is undecided and not yet filed.
+layer is a separate, open question — the supply-chain angle is decided: docs/adr/0001-raw-ghosttykit-exact-pin.md
+keeps the prebuilt exact pin. The API-surface angle is undecided and not yet filed.
 
 **The real risk is the patch swap, not the API.** The packager applies its own patches to ghostty
 before building, and `Script/apply-patches.sh` feature-probes the header to choose between them:
@@ -502,8 +483,8 @@ against those two refs, not assumed.
 
 **Do NOT take package `1.5.2` or any `upstream.1.3.1-*` build.** They are rebuilds of ghostty v1.3.1
 (`332b2aef`, **2026-03-13**), four months OLDER than our pin. Ghostty has tagged nothing since March,
-so `1.5.20260903` — a main build — is the only forward move. See "Own the GhosttyKit xcframework"
-below for why that also blunts the "prefer a tagged upstream" rule.
+so `1.5.20260903` — a main build — is the only forward move. See docs/adr/0001-raw-ghosttykit-exact-pin.md
+for why that also blunts the "prefer a tagged upstream" rule.
 
 **Why: one measured win, one gap it closes.**
 
@@ -668,189 +649,6 @@ nobody has looked at it yet," filed so it isn't rediscovered from scratch.
 
 **Priority:** P3 — no known bug this fixes today.
 
-### Own the GhosttyKit xcframework (macapp) — CMT-2, GA-time supply-chain decision
-
-**What:** stop depending on the third-party `libghostty-spm` (Lakr233) package as the source of
-truth. Build our own universal `GhosttyKit.xcframework` + version-matched resources from a ghostty
-ref *we* pin, and point `project.yml` at it.
-
-**Status: demoted from P1, and re-argued.** Two of the three rationales this entry used to carry were
-wrong, and are struck:
-
-- ~~"We trail ghostty by ~2 versions"~~ — a **package-vs-ghostty version confusion**; see the trap
-  described in the pin-bump entry above. We are on an engine four months NEWER than ghostty's newest
-  release, and still are (re-verified 2026-09-03; see "Measured" below).
-- ~~"Only owning the pin can reach OSC 99"~~ — **a fork cannot deliver OSC 99 either.** See the OSC 99
-  entry under Notifications for the upstream state; the short version is that the open parser PR
-  routes the command into an "unimplemented → discard" branch, and the pieces that would make it
-  reach an embedder do not exist as PRs at all.
-
-**What survives, and it is the whole argument: supply chain.** The shipped binary is **not stock
-ghostty**. `Patches/ghostty/` carries **20 files, ~400 KB** (re-counted 2026-09-03; it was 11 files
-/ ~200 KB on 2026-08-14) — including a 113 KB prebuilt-framedata patch and the ~18 KB host-managed-IO
-patch that rewrites PTY hosting — applied at build time by a single maintainer. Note that only about
-half are `.patch` files: `0004-ios-fixes.sh`, `0005-ios-metal-rendering-v2.sh`,
-`0007-disable-inspector.sh`, `0013-host-toolchain.sh` and friends are **shell scripts that rewrite
-ghostty's source at build time**, which is a wider blast radius than a diff you can read.
-
-The artifact is checksummed by SPM but **not signed or notarized** — unlike
-ghostty-org, which minisigns its own `ghostty-vt` artifacts. We link that into a notarized app, in
-the component that runs the user's shell. Slice composition churns too: arm64e slices shipped
-2026-07-21 and were reverted three days later, re-cutting an already-published tag.
-
-**The lag MECHANISM is still there, but the observed behaviour is much better (re-checked
-2026-09-03).** `.github/workflows/build.yml` still reads its ghostty commit from a hand-maintained
-`Ghostty.ref` (regex-validated as a 40-char sha), and it is now `on: workflow_dispatch:` — **no cron
-at all** on the engine build, so nothing pulls a new ghostty until one person edits that file and
-presses the button. What changed is that the person is doing it: the engine moved `35e1a016`
-(Jul 10) → `332b2aef` (= ghostty v1.3.1, Aug 20) → `c4e16970` (Sep 3), four bumps in two weeks.
-`github-actions[bot]` authors those releases only because the workflow creates them — it is not
-automation tracking upstream. The workflow also gained a `Test XCFramework Consumer` step.
-
-**Measured 2026-09-03 (supersedes the 2026-08-14 numbers this paragraph used to carry — "652 commits
-ahead", "libghostty-spm has cut nothing since 1.3.2"; both are dead).**
-
-**Check the DATES, not the version numbers — this is the same trap the entry above warns about, and
-it caught this file again on 2026-09-03.** A first pass at these corrections read the packager's new
-`upstream.1.3.1-*` tags as "ghostty moved past us" and briefly recorded that we were two releases
-behind. The opposite is true:
-
-- **ghostty has tagged nothing since v1.3.1, and v1.3.1 is `332b2aef` dated 2026-03-13.** Our pin
-  `35e1a016` is 2026-07-10 — four months NEWER than ghostty's newest release. The previous bump went
-  `332b2aef` → `35e1a016`, i.e. off v1.3.1 and onto post-release main.
-- So the packager's `upstream.1.3.1`, `-2`, `-3` builds (Aug 20 – Sep 2) are **rebuilds of the March
-  release**, and package `1.5.2` with them. Taking any of those would be an engine **DOWNGRADE**.
-- The only forward move on offer is **package `1.5.20260903`** = ghostty main `c4e16970`
-  (2026-08-25), ~6 weeks ahead of our pin.
-- We are pinned `exactVersion: 1.3.2` in `project.yml`, so none of this can move under us.
-
-**This also blunts the "prefer a tagged upstream" rule below**: there is no newer tag to prefer, so
-any forward move from here is a main build, exactly like the pin we already ship.
-
-**How to start:** clone `ghostty-org/ghostty` at the chosen ref, decide deliberately which of the 20
-patch files to carry (`0002-host-managed-io*` is load-bearing for embedding; the iOS/Catalyst ones are
-not ours), and regenerate `terminfo`/`shell-integration` from that same ref. Vendor the xcframework +
-a 2-file C shim, or host it as a release artifact in a separate repo's CI. Zig is needed only to
-*build*, not to *consume*. Signing is unchanged (a static archive in the main executable, no new
-framework to sign). **The build mechanics themselves are cheaper than "reuse the packager's tooling"
-implies** — see "Build path for owning GhosttyKit.xcframework" below.
-
-**Depends on:** nothing in-app. Best decided once GA has shipped and the pin bump has baked, since
-owning the pin means owning the patch decisions above.
-
-**Decided 2026-09-03: don't own it, and the GA gate this entry existed for is answered.** The
-supply-chain concern is real and unchanged, but `exactVersion: 1.3.2` means there is NO passive
-exposure — the only moment the risk exists is a bump we initiate. Owning the build buys that one
-moment at the cost of 20 patch decisions, Zig in CI, universal builds, terminfo/shell-integration
-regeneration, and rebasing the stack on every ghostty bump, permanently.
-
-Put the safety on the bump gate instead, where the risk actually lives:
-
-1. Prefer an `upstream.<ghostty-release>` package build over a date-versioned main-tracking one —
-   **but only when the release is actually newer than the pin.** Today it is not: the newest ghostty
-   tag is four months older than what we ship, so this rule currently selects nothing and any bump
-   is a main build.
-2. Diff `Patches/ghostty/` against the previous pin and read what changed — ~10 minutes, and it is
-   the only step that catches the actual threat.
-3. Confirm the release body's ghostty sha resolves to a ghostty TAG before accepting it.
-
-**Follow-up that falls out of this — and it is a real one, just not the one first written here.**
-The only bump target that moves us forward is package `1.5.20260903` (ghostty main `c4e16970`,
-2026-08-25), and it carries something this app specifically wants: *"renderer: release GPU resources
-for hidden surfaces (macOS)"*, which upstream measured at **384.6 MiB → 18.3 MiB** of tracked GPU
-allocations with 1 visible + 20 hidden tabs, and a 0.43 ms average swap-chain rebuild on unhide. A
-workroom window is many surfaces of which one is visible, so that is close to a best case for us —
-see "Memory / live-surface diagnostics" below, which this would partly answer. Run it through "Bump
-the libghostty pin" above (patch-swap risk, resource regeneration, bake gate); that entry's process
-applies unchanged.
-
-**Priority:** P3 — a real supply-chain posture question with no feature blocked behind it. Reopen the
-ownership question only if the hand-maintained `Ghostty.ref` leaves us stranded on an engine we need
-to move off.
-
-### Build path for owning GhosttyKit.xcframework (macapp) — CMT-2 finding, checked 2026-08-12
-
-**What:** if/when CMT-2 (above) is actioned, the build mechanics are cheaper than "reuse the
-packager's tooling" suggests. `ghostty-org/ghostty`'s own `build.zig` has first-class
-`-Demit-xcframework` machinery (`src/build/{Config,XCFrameworkStep,LipoStep,GhosttyXCFramework}.zig`)
-— it's what builds `GhosttyKit.xcframework` for **ghostty-org's own** macOS app
-(`macos/Ghostty.xcodeproj` links that exact framework). `-Demit-xcframework -Dapp-runtime=none` is
-the official surface, confirmed in `Config.zig`'s option defaults; it isn't a reverse-engineered
-path, it's the same one ghostty-org's own Mac build uses.
-
-**Why it's cheaper than assumed:** the packager's `Script/build-ghostty.sh` +
-hand-rolled `merge-xcframework.sh` reimplement a slice of that official machinery because their CI
-matrix targets 7 slices (macOS × iOS × iOS-sim × Catalyst, for *their* downstream reach — Workroom
-doesn't need any of that). We only ship macOS — 2 slices (`aarch64-macos`, `x86_64-macos`) — so
-`-Dxcframework-target=universal` should drive Zig's own `LipoStep`/`XCFrameworkStep` to assemble the
-universal xcframework directly in one invocation, with no custom lipo script needed.
-
-**What this doesn't solve:** patch curation is still fully on us. `Patches/ghostty/` carries 11
-patches (~200 KB); `0002-host-managed-io*` is load-bearing for embedding, the iOS/Catalyst ones are
-not ours to carry. Self-building doesn't remove that decision, it just makes it ours instead of
-inherited from Lakr233 — that's the real ongoing cost of CMT-2, not the build mechanics this entry
-is about.
-
-**Depends on:** CMT-2 actually being actioned — this is a build-path finding for that entry, not an
-independent task.
-
-**Priority:** P3 — same gating as CMT-2; irrelevant unless/until that entry is executed.
-
-### Evaluate adopting `AppTerminalView` for action-dispatch plumbing (macapp) — reviewed 2026-08-12, not now
-
-**What:** `libghostty-spm` ships more than the raw `GhosttyKit` C-API product we link — a Swift
-convenience layer (`Sources/GhosttyTerminal`) with a cross-platform `AppTerminalView`
-(AppKit)/`UITerminalView` (UIKit) pair, a `TerminalSurfaceCoordinator`/`TerminalController`, and a
-typed delegate family (`TerminalSurfaceTitleDelegate`, `...ResizeDelegate`, `...FocusDelegate`,
-`...BellDelegate`, `...ScrollbarDelegate`, `...ProgressReportDelegate`,
-`...CommandFinishedDelegate`, `...OpenURLDelegate`, `...HoverLinkDelegate`, `...PwdDelegate`,
-`...LifecycleDelegate`, etc.). We use none of it — `GhosttySurfaceView.swift` is our own 2001-line
-`NSView` subclass calling `ghostty_surface_config_new()` and the rest of the raw C API directly, with
-our own `GhosttyRuntimeAdapter` doing the `GHOSTTY_ACTION_*` switch by hand.
-
-**Checked, not assumed:** `AppTerminalView` is `open class: NSView` (not sealed), and every
-input override in `AppTerminalView+Input.swift` (`keyDown`, `mouseDown`, `rightMouseDown`,
-`scrollWheel`, `performKeyEquivalent`, …) is itself `override open`, so a subclass in our module
-genuinely can override further and call `super`. This is a real, thoughtfully-designed extension
-point, not a rebrand of a black box — worth recording so this doesn't get re-litigated on a
-surface-level "it's probably sealed" guess.
-
-**Why not now anyway:**
-- **It would bundle a UI-layer rewrite with the IO-layer risk the pin bump already carries.**
-  Adopting the delegate surface means adopting the coordinator/controller layer underneath it too,
-  which is exactly where the packager's `0002-host-managed-io*` patch swap lives (see the pin-bump
-  entry above). Evaluating two unknowns — a new engine *and* a new plumbing layer — at once defeats
-  the point of bumping the pin first and baking it.
-- **Migration cost is real, not mechanical.** `GhosttySurfaceView.swift` encodes ~15-20 documented,
-  empirically-discovered AppKit fixes (several **real-mouse-only** — synthetic/XCUITest clicks pass
-  on the buggy code, so they can't be regression-tested by CI alone): `.textSelection(.enabled)`
-  swallowing real mouseDown, the ⌘-key routing through `AppDelegate`'s monitor rather than
-  `event.window`, DECSET-1004 focus reporting via `ghostty_app_set_focus` + window-key handling, the
-  backspace-DEL-as-text and ⌃Tab workarounds, mask+contentShape hit-testing during scroll. `open`
-  subclassing means each of these is *portable in principle*, but re-deriving exactly where each one
-  hooks into `TerminalKeyEventHandler`/`TerminalSurfaceCoordinator` internals we didn't write is
-  rediscovery work, not a mechanical port — and several of these fixes have no delegate hook at all
-  (they're not events `AppTerminalView` surfaces, they're workarounds for how SwiftUI/AppKit deliver
-  events to *any* view underneath them).
-- **No pin-bump goal needs it.** `ghostty_surface_foreground_pid`/`ttyName` and
-  `GHOSTTY_ACTION_SELECTION_CHANGED` are both reachable through the raw C API we already call —
-  adopting the Swift layer buys nothing for CMT-1/CMT-3.
-- **It deepens exactly the coupling CMT-2 (above) is questioning.** Consuming more of a
-  single-maintainer package's Swift surface, while a neighboring entry is asking whether to stop
-  depending on that same package altogether, is the wrong direction until CMT-2 is resolved.
-
-**What it could buy, if revisited later:** the delegate family plausibly replaces a chunk of
-`GhosttyRuntimeAdapter`'s hand-rolled `GHOSTTY_ACTION_*` switch (title/resize/bell/scrollbar/
-progress-report/command-finished are all typed callbacks instead of a raw tag switch) — but that's
-an argument for adopting the **dispatch layer only**, not for replacing our own input/mouse/keyboard
-handling, which is where nearly all the hard-won fixes live.
-
-**Depends on:** the pin bump landing and baking first (see above), and CMT-2's supply-chain question
-being settled — no point deepening coupling to a dependency we might drop.
-
-**Priority:** P3 — no feature blocked behind it, reviewed and consciously deferred rather than
-unconsidered.
-
 ### Finish the action-dispatch UI coverage (macapp) — search counters
 
 **What:** add the `SEARCH_TOTAL` / `SEARCH_SELECTED` case to
@@ -899,46 +697,6 @@ purely about the engine→UI leg.
 
 **Priority:** P3 — two of the three visible tags are covered, and the search path has unit coverage
 for everything except the engine round-trip.
-
-### Bundled ghostty resources — provenance recorded, nothing to regenerate (macapp)
-
-**Status: the premise of this entry was wrong, and it is measured now.** It used to say "regenerate
-`terminfo/` + `shell-integration/` from the ref the pinned package builds from", on the assumption
-that unrecorded provenance meant *stale* resources. Measured 2026-08-09 against a stock Ghostty.app
-1.3.1 install and ghostty's own git history:
-
-- **`terminfo/` has zero drift.** `terminfo/78/xterm-ghostty` is byte-identical to the engine's own.
-  `terminfo/67/ghostty` is the same record under the `ghostty` alias. Nothing to regenerate.
-- **`shell-integration/` is *ahead* of the engine, not behind** — a `main` snapshot from the window
-  [`43f3dc5f` 2026-03-25 … `484d6ec6` 2026-05-04), pinned by a byte-exact blob match on
-  `bash/ghostty.bash`. It carries four upstream fixes v1.3.1 lacks (ble.sh cursor desync,
-  `PROMPT_COMMAND` newline handling, inherited-`PROMPT_COMMAND` errors in subshells, trailing-`%`
-  prompt corruption).
-- **The drift is safe on both contract axes**, checked rather than assumed: the two sets reference
-  an identical ten-variable `GHOSTTY_*` surface, and our OSC 133 vocabulary is a subset of what the
-  v1.3.1 scripts themselves emit, so the pinned engine parses everything we send.
-
-So **regenerating against v1.3.1 would be a downgrade** — four real fixes traded for a version
-number. Don't.
-
-What actually shipped instead: full provenance in `macapp/Resources/ghostty/SOURCE.md`, a
-`CHECKSUMS` manifest pinning the bytes, and `GhosttyResourcesTests` verifying membership + hashes
-both ways. That is the tripwire the entry existed to ask for.
-
-~~**One live risk survives, and it moved to the bump entry**: upstream deleted the inline ssh wrapper
-in favour of `ghostty +ssh`, a binary we do not ship.~~ **Resolved** — we ship it now, as a relative
-`Contents/MacOS/ghostty` symlink to the app binary (libghostty already carried the `+action`
-dispatcher). What remains under the bump entry is testing `+ssh` itself once the pin moves.
-
-**Watch:** `libghostty-spm` PR #43 proposes shipping compiled terminfo + shell-integration from the
-package itself, pointing `GHOSTTY_RESOURCES_DIR` at the package bundle. If that merges, our copies
-get deleted instead of refreshed. Open as of 2026-08-05.
-
-**Trap that still applies:** `themes/` in that directory is **ours** — 116 curated files whose
-filenames `ThemeService.families` parses. Never regenerate it from a ghostty checkout. It keeps its
-own `themes/SOURCE.md` + `themes/CHECKSUMS`, deliberately disjoint from the new one.
-
-**Priority:** done.
 
 ### VCS write actions — Phase 2 (macapp) — roadmap pointer
 
@@ -1187,44 +945,6 @@ to the bundled agent (on for Nightly and Dev only, commit 26b9d881) is on for st
 
 **Priority:** P3 — cleanup, no user-visible effect.
 
-### Rename `AgentVCSConnection` once it carries files and events (macapp) — #211 follow-up
-
-**What:** rename `AgentVCSConnection` to `AgentConnection` (and `AgentVCSReader` / `LocalAgentVCS` where
-the name is now too narrow), and update its doc comment and error strings.
-
-**Why:** after #211 the class owns the File service and an always-open events stream as well as VCS.
-A name that says VCS on a class that carries three services misleads the next reader. #211 itself
-fixes only the comment and the strings that became false (`Invalid VCS envelope`).
-
-**Pros:** the name matches what the class does. **Cons:** pure churn across `LocalAgentVCS`,
-`HostConnectionManager`, `AgentVCSIntegrationTests` and `AgentVCSProtocolTests`; done inside #211 it
-would bury a security-sensitive change in mechanical noise.
-
-**How to start:** one pure-rename commit right after #211 merges, so `git diff --color-moved` verifies it.
-
-**Depends on:** #211 merged.
-
-**Priority:** P3.
-
-### Extract the agent's shared service plumbing out of `vcs.rs` (wr-agent) — #211 follow-up
-
-**What:** move `send` (chunked reply writer, parameterized by service byte), `Permit` / `ACTIVE` /
-`is_busy`, and the exec runner from `vcs.rs` into `service.rs`; `vcs.rs`, `file.rs` and the watcher import it.
-
-**Why:** #211 chose `pub(crate)` reuse over an extraction to keep its diff on new behavior. Three
-services (VCS, File, watch) now share this code, `vcs.rs` is ~1900 lines, and the helpers are the
-agent's service layer in all but name.
-
-**Pros:** honest module boundary; `vcs.rs` becomes the VCS service again. **Cons:** ~300 moved lines,
-in a crate whose changes need the mandatory adversarial review (`macapp/AGENTS.md` rule 3).
-
-**How to start:** one pure-move commit with no behavior change, verified by `git diff --color-moved`
-and the existing suite, immediately after #211 merges so the review does not re-read moved code.
-
-**Depends on:** #211 merged.
-
-**Priority:** P3.
-
 ### One OS watcher per subscription duplicates watches across windows (wr-agent) — #211 accepted shortcut
 
 **What:** share one OS watcher per canonical root across subscriptions and connections, fanning events
@@ -1246,22 +966,6 @@ agent lands.
 **Depends on:** Phase 3 Linux agent, or a measured FSEvents problem.
 
 **Priority:** P3 — no cost on the only platform it ships on today.
-
-### #211 review findings deliberately not applied (macapp + wr-agent)
-
-**What:** the gstack `/review` of #211 raised these and they were left, with reasons:
-simplification advisories (single-set `Pending`, drop the merge re-cap in `Coalescer::event`, delete the
-default `files(context:)`, decode only `version` from the capabilities reply); a per-process cap on watch
-subscriptions (the cap is per connection); reclaiming an agent-side subscription slot when its coalescer
-thread ends on its own; hard-link containment (a same-user peer only, parity with the native read);
-sharing the git-scrub env list and `pre_exec` barrier setup with `wr-vcs-git`; a shared test fixture base
-for the two agent integration suites; and a batch of lower-value tests (a swap-race stress test for
-`read_file`, `receive()` stream-0 protocol-violation cases, scripted `HostFileWatcher` cases,
-`PlainFileViewer.loadOutcome`, `Permit` exhaustion, a timeout on the FIFO tests).
-
-**Why:** none is a defect a user can hit today; each trades a real change for a small gain.
-
-**Priority:** P3.
 
 ### Listings above the 4 MiB capture ceiling fail instead of paginating (macapp + wr-agent) — #211 follow-up
 
@@ -1310,32 +1014,6 @@ allowlist question first, then apply to both paths.
 **Priority:** P3 — real and measured, but it needs a policy decision, and the affected configuration is
 uncommon.
 
-### `ShellEnvironment` exposes no probe-readiness signal (macapp) — gh-flap eng-review follow-up
-
-**What:** give `ShellEnvironment` a way for callers to know whether the interactive-shell PATH probe has
-landed (or to await it), instead of silently degrading to the floor.
-
-**Why:** `ShellEnvironment.path()` returns the probed PATH if the probe finished and the deterministic
-floor otherwise, with nothing distinguishing the two. The probe is fired detached in `WorkroomApp.init`
-and nothing joins it, while `refreshVCSToolReport` runs from `apply(projects)` — so a launch-time
-`--version` probe can genuinely run against floor-only PATH. The floor covers Homebrew but not a
-version-manager shim dir, Nix, or MacPorts, so those tools read as missing. `VCSToolVersionCache` no
-longer *pins* such a verdict (it refuses to cache a discovered absence — shipped with the gh-flap work),
-but that treats the symptom: any future caller reading `path()` early inherits the same ambiguity with
-no way to detect it.
-
-**Pros:** removes a whole class of "it depends when we asked" bugs, and would let the few callers that
-genuinely need enrichment await it rather than guess. **Cons:** the probe is best-effort BY DESIGN — its
-failures must degrade to the floor, never block — so a readiness signal must not become a hidden
-dependency that stalls launch. Larger and more delicate than it first looks.
-
-**How to start:** `ShellEnvironment.ProbeState` already tracks a generation; surface "has a probe
-completed" from it, then audit `path()` callers for who should wait versus who should keep degrading.
-
-**Depends on:** nothing.
-
-**Priority:** P3 — the honest fix for a family of PATH-timing bugs, none currently reported.
-
 ### N-in-flight concurrency accounting test for status sweeps (macapp) — Muxy test-practices review follow-up — FIXED
 
 **What:** Add an injectable seam to `WorkroomStatusResolver.resolveGit`/`resolveJJ` (they called
@@ -1361,45 +1039,6 @@ returning enough of a real answer to keep `resolveCI`'s chain moving), asserting
 calls stay ≤ 2 (`AppStore.ciConcurrency`) and that the fan-out actually overlapped (>1).
 
 **Priority:** done.
-
-### Repo-level meta-test for Makefile/CI test invariants (macapp) — FIXED
-
-**What:** Add a check — in the existing dependency-free script tier alongside
-`Scripts/build-helper_test.sh`/`Scripts/channel-helper_test.sh` (run via `make app-test-scripts`), not a
-new XCTest class — that pins two invariants: the `APP_UITEST_FLAGS` skip list in `Makefile:67`, and
-that CI/release/nightly workflows actually invoke `app-test` somewhere (not just that the Makefile's
-dependency graph excludes it from `app-release`).
-
-**Fixed:** `Scripts/test-invariants_test.sh` — pins the skip list literally (want vs. got string
-compare) and greps `ci.yml`/`release.yml`/`nightly.yml` for a bare `make app-test` invocation (word-
-bounded so it can't match `app-test-scripts`/`app-test-supervisor`). Overridable via
-`TEST_INVARIANTS_MAKEFILE`/`TEST_INVARIANTS_WORKFLOWS_DIR`, and both cases proven to actually fail
-against a dropped skip entry / an emptied workflow (not just pass vacuously). Wired into
-`app-test-scripts`.
-
-**Priority:** done.
-
-### Cross-launch navigation history (macapp) — issue #26 / #46 follow-up
-
-**What:** Back/forward (⌘[ / ⌘]) does nothing immediately after a relaunch. Session restore (issue #46)
-brings the panes back but not the history that led to them, so the first ⌘[ in a restored window has
-nowhere to go.
-
-**Why:** It is the one part of "pick up exactly where you left off" that #46 deliberately left out, and
-the reason is structural rather than lazy — worth writing down so the next person meets it instead of
-rediscovering it. `NavLocation` keys on `TerminalTab.ID`, and restore **mints fresh tab ids on purpose**
-(a tab id is unique across windows at runtime, and `WindowRegistry.ownerOf(tabID:)` routes OS
-notification clicks by it). So every persisted history entry would point at a tab that no longer exists,
-and naively reviving the old ids would trade a dead-history bug for a duplicate-id one.
-
-**How to start:** `Core/NavigationHistory.swift`. `NavLocation` already carries a content identity
-beside the tab id (the `FocusedTabSelection`-shaped payload), so the path is to re-key replay on content
-rather than on the tab — then persisting the stack is a small addition to `WindowSession`. Note that
-`NavPayload` normalises `isPreview` and `selectedPath` out, which persistence would need back.
-
-**Depends on:** issue #46 landing first (restore has to exist before there is anything to replay into).
-
-**Priority:** P3 — a nicety, and the window it affects is the first few keystrokes after a launch.
 
 ### Deterministic tab lookup for content panes (macapp) — nav-history follow-up
 
@@ -1451,27 +1090,6 @@ rewrite touches the whole diff UI (regression surface).
 
 **Priority:** P3 (build when a feature — ignore-whitespace / word-diff / staging / diff-edit — needs it).
 
-### Git-side errors still flatten to `.io` (macapp) — error-taxonomy follow-up
-
-**What:** `GitProvider` throws `VCSError.io("\(error)")` from every catch, so nothing on the git path
-can reach `.lockContention` / `.notFound` / `.unsupportedRepo`.
-
-**Why it hasn't been done:** the blocker is deliberate and documented in `GitProvider`'s
-own header — binding SwiftGitX's typed error (`catch let e as SwiftGitXError`) trips a **Swift 6 SIL
-ownership error** across the async boundary, so the provider catches untyped on purpose. Classifying
-would mean sniffing error *strings* (fragile, locale-adjacent) or getting the typed catch to compile.
-Note the status path depends on today's behaviour: `.io` → `.notRepository` is the honest answer for
-git's most common failure (a path that isn't a repo), so this is not a silent lie — it's a missing
-distinction (`index.lock` contention in particular, which would map to `.busy`).
-
-**How to start:** re-test the typed catch on the current toolchain (the SIL bug may be fixed); if it
-still crashes, isolate the typed binding in a small synchronous helper the async path calls. Then map
-libgit2's `GIT_ELOCKED`/`GIT_ENOTFOUND`/`GIT_ENOTREPO`-shaped cases onto the taxonomy.
-
-**Depends on:** nothing. Touches `Core/GitProvider.swift`.
-
-**Priority:** P3 (no wrong diagnosis today, only a coarse one).
-
 ### Git diff shows one side when a file is both staged and re-modified (macapp) — FIXED
 
 **What:** `GitProvider` working diff/status use `entry.workingTree ?? entry.index`, so a file that is
@@ -1506,49 +1124,7 @@ views, so it wants a deliberate visual pass rather than a drive-by change.
 
 **Priority:** P3 (consistency + theme correctness; no functional bug).
 
-### XCUITest coverage for find-bar render+scroll integration (macapp) — ⌘F-on-diffs eng-review follow-up
-
-**What:** add XCUITest coverage asserting the find bar actually appears, highlights the right text,
-and scrolls to matches — across the file viewer, diff, and changeset panes.
-
-**Why:** `FileFindTests.swift`'s own doc comment states render+scroll for `PlainFileViewer` is "covered
-by manual QA" — no automated integration test exists. The ⌘F-on-diffs fix (`plan-eng-review`,
-2026-09-01) extended the same `FileFindModel`/`FileFindBar` pattern from one content kind (file) to
-three (file, diff, changeset) without adding integration coverage for any of them — the outside-voice
-review pass flagged this explicitly ("integration risk remains untested... shortcut → visible bar →
-correct source → highlighted row → scrolling... left to manual QA").
-
-**How to start:** `DiffPaneFocusUITests.swift` already proves the fixture-mode click/focus pattern
-works for diff panes in this app (canned diffs via `-WorkroomUITestFixture 1`, `terminal.pane`
-accessibility elements). XCUITest can't see `NSAttributedString` colours directly, so this needs a new
-test-observable `accessibilityValue` signal for "this row has a find match" / "is the current match" —
-mirroring `lineRow`'s existing `highlighted`/`plain` `accessibilityValue` convention (already used to
-make syntax-highlight state testable without reading pixels).
-
-**Depends on:** the ⌘F-on-diffs fix shipping first (nothing to test against yet). Touches
-`WorkroomAppUITests/`, `Views/DiffViewer.swift`, `Views/PlainFileViewer.swift`.
-
-**Priority:** P3 (real coverage gap, not blocking — manual QA is this feature's accepted testing
-boundary today).
-
 ## P3 — Terminal, panes, and focus
-
-### Local workrooms' layouts on the local agent (macapp, wr-agent) — #255 follow-up
-
-**What:** Store local workrooms' pane layouts on the local agent through the Layout service that
-#255 adds for remote workrooms, leaving `session.json` with window-level state only.
-
-**Why:** One restore path instead of two. `docs/designs/remote-workrooms.md` (lines 225-230)
-names agent-side layout as parity work for local workrooms too; #255 deliberately did remote only
-(`docs/designs/oq8-cross-machine-reattach.md`, premise 8).
-
-**How to start:** Pick a portable local key first: `target.id` embeds the project path
-(`TerminalTarget.workroomID`). Then reuse #255's seed, read-on-open and write-through path, and
-keep `session.json`'s bundle-id scoping.
-
-**Depends on:** #255.
-
-**Priority:** P3 (chosen in the #255 eng review, 2026-10-05)
 
 ### Agent bootstrap (#231): the review findings the /ship pass deferred (macapp, wr-agent)
 
@@ -1664,80 +1240,6 @@ moment.
 **Priority:** P3, and arguably "leave it". Revisit only when someone actually needs to observe one of
 these keys, or alongside an unrelated settings migration.
 
-### Consolidate terminal focus authority (macapp) — focus-desync follow-up — HALF SHIPPED (2026-09-02)
-
-**Part (2), cross-window reconciliation: SHIPPED.** `WindowRegistry`'s `didBecomeKeyNotification`
-handler now calls `reconcileTerminalFocus`, which hands first responder back to
-`store.terminals.focusedTab(for:)?.surface` when — and only when — focus has genuinely drifted. The
-decision is a single pure-ish function against a real `NSWindow`,
-`TerminalFocusReconciliation.shouldRestoreFirstResponder(in:to:)`, taking Codex's caveat seriously:
-"no sheet is open" is NOT sufficient on its own, so only three states count as drift — no first
-responder, the window itself, or a DETACHED view. Anything still mounted in the window (a text field
-or its field editor, the sidebar table, another split pane) keeps the keyboard, and a focused tab
-with no surface (diff / file / changeset) is left exactly as AppKit restored it, so this can never
-drag focus out of a diff into a terminal.
-
-`TerminalFocusReconciliationTests` covers both halves — the guard against a real window in every
-state it distinguishes EXCEPT the app-modal one (`NSApp.modalWindow`, which no unit test can raise),
-plus the WIRING (post the real `didBecomeKeyNotification` at a registered window and assert
-the surface takes focus; a second test posts it with a text field focused and asserts it does not).
-Modelled on `TerminalFocusAdoptionTests`; `spawnsSurface: false` matters because these mount the view
-in a window, and `isReleasedWhenClosed = false` on every window (the sheet test closes one, and
-without it the next test in the class crashes — that cost a debug cycle).
-
-**MEASURED IN THE LIVE APP (2026-09-02): it is a backstop that never fires, and that is now a fact
-rather than a guess.** A temporary `os.Logger` probe in `reconcileTerminalFocus` (since removed)
-logged the responder state at every key-gain across seven real ⌘-Tab round-trips over a terminal, a
-text field and a diff pane. Result: **7/7 `restore=false`, every one because first responder was
-ALREADY the `GhosttySurfaceView`** — macOS preserves first responder across app deactivate/reactivate,
-so the drift this entry assumed does not happen on ⌘-Tab. The one remaining event was a clean
-`no focused surface` bail on a pane with no terminal. So the handler runs, is correctly wired, and
-correctly does nothing.
-
-Kept anyway: it is a guarded no-op that measured 7/7 correct, and it still covers states ⌘-Tab does
-not produce (a sheet dismissed while the window was inactive, a pane unmounted mid-split). But do not
-carry the belief that ⌘-Tab strands focus — it does not, and a future "keys dead" report needs a
-fresh diagnosis rather than pointing here. **Reasonable to delete this whole mechanism** if the
-codebase would rather not carry dead-in-practice code.
-
-Note on capture, worth knowing next time: `NSLog` from this app does NOT reach the unified log
-(`log show` finds nothing), and `make app-run` uses `open`, so its stdout isn't in the make log
-either. `os.Logger` with a `com.developwithstyle.workroom` subsystem DOES show up. A first attempt at
-this measurement was silently empty for exactly that reason.
-
-**Part (1), the DRY collapse, remains open** — deliberately not taken with (2): refactoring focus
-timing right before GA is how the next focus race ships. Original description follows.
-
-**What:** (1) Collapse the ~5 duplicated "make first responder + `setSurfaceFocused`" call sites in
-`GhosttySurfaceView`/`TerminalContainerView` into one guarded helper; ~~(2) add window key-gain focus
-reconciliation~~ (shipped, above).
-
-**Current state:** The reported bug — arrows/letters dead when a TUI selection prompt appears in a
-freshly-mounted/unfocused-looking pane — is **fixed**: `createSurface` now re-syncs the libghostty
-focus flag when the surface is created while the view already holds first responder
-(`GhosttySurfaceView.adoptFocusIfFirstResponder`, tested by `TerminalFocusAdoptionTests` +
-`TerminalFocusAdoptionLiveSurfaceTests`). Focus-set logic still lives in several places
-(`becomeFirstResponder`, `mouseDown`, search hand-back `:171`, `viewDidMoveToWindow`, `applyFocus`),
-and `WindowRegistry`'s `didBecomeKeyNotification` observer still only updates `lastActiveStore`, not
-terminal focus.
-
-**Why:** The duplication has produced repeated focus-race fixes (#3 splits, the diff-pane fix, the
-`viewDidMoveToWindow` backstop, and now this one) — each patch adds another copy and the next race
-slips through the gap. One guarded helper removes that class. Cross-window reconciliation is the one
-drift trigger the createSurface fix does not cover (surface already exists; first responder moved
-away). Surfaced by `/plan-eng-review` (DRY finding) and the Codex outside-voice pass, deliberately
-deferred to avoid refactoring focus timing before the root cause was confirmed.
-
-**How to start:** Extract `focusTerminal(surface:)` with a single guard set; route the existing call
-sites through it — the reconciliation half is done, so this is purely the DRY pass now.
-
-**Depends on:** the shipped createSurface focus-sync; also relates to the queued first-responder
-stale-state recheck noted under "Workroom split: deferred follow-ups" (`TerminalContainerView`
-`applyFocus`) — fold both into the one helper.
-
-**Priority:** P3 (primary bug fixed, reconciliation shipped; what's left is the DRY pass that
-prevents the next focus race — worth doing right AFTER a release, not before one).
-
 ### Workroom split: deferred follow-ups (macapp) — #23
 
 **Shipped:** drag a workroom tab onto a pane edge → a nested, resizable side-by-side split of full
@@ -1818,140 +1320,9 @@ fire on every theme and drag each palette toward `fg`, which is exactly the mist
 `ThemeTokens.swift:213` already records. A real guard needs Lab ΔE, and for two achromatic themes it
 is not worth the code.
 
-**Depends on:** nothing. Subsumed entirely by the image-snapshot evaluation in "P3 — Tests and
-tooling" if that ever lands.
-
-**Priority:** P3 (no data loss; the accessibility label and the popover still carry the numbers).
-
-### One vocabulary for quota window names (macapp) — #168 follow-up
-
-**What:** Decide whether the footer and its popover should name the same two quota windows the same
-way, or keep two vocabularies on purpose.
-
-**Why:** `CodingAgentQuotaWindowKind.compactLabel` (`Core/CodingAgentUsage.swift`) says `5h` / `wk`;
-`CodingAgentUsageDetailView.title(for:)` says `Session` / `Weekly`. Same windows, two vocabularies.
-
-Note the #168 footer does NOT show `compactLabel` on screen — the bars are unlabelled, identified by
-order and by the tooltip. So the visible collision is narrower than it first looks: it is the
-segment's TOOLTIP and accessibility label ("5h quota 42% used…") against the popover rows they sit
-directly above ("Session 42% used"). Still two names for one window in two adjacent surfaces, just
-not two names drawn side by side.
-
-**Pros:** one name per concept. **Cons:** both choices are deliberate — the compact labels exist
-because the footer's tooltip and accessibility label are read in a narrow strip, and the prose titles
-exist because the popover has room and reads better in sentences. "Unify" probably means
-picking which surface gets the worse name.
-
-**Context for whoever picks this up:** two wrinkles make it more than a rename. `compactLabel` also
-feeds `quotaAccessibilityLabel`, which all of `CodingAgentUsageUITests` asserts on — changing it
-re-baselines seven tests. And the `.duration(minutes:)` case GENERATES its label (`3d`, `12h`,
-`45m`), so a prose vocabulary needs a generated-name rule, not just two more constants.
-
-**Depends on:** nothing. It's a naming/design call, not an engineering one.
-
-**Priority:** P3 (cosmetic inconsistency, visible only when the popover is open).
-
-### AppKit tracking-handle divider for an even wider resize target (macapp) — #83 follow-up
-
-**What:** Replace the SwiftUI invisible-`Rectangle` resize divider (`SplitDivider` in
-`Views/PaneTreeView.swift`, `WorkroomSplitDivider` in `Views/WorkroomSplitView.swift`) with a
-dedicated AppKit tracking/drag handle (pattern: the existing `InspectorResizeHandle`) so the grab
-target can extend *over* the terminal surface without stealing its mouse input.
-
-**Why:** Issue #83 widened the hit zone to `PaneTreeLayout.dividerHitThickness` (8pt = the 4pt gutter
-plus the 2pt pane padding on each side). That's the safe ceiling for the overlay approach — any wider
-would overhang the live libghostty surface and intercept text selection, OSC8 link clicks, the
-right-click menu, and TUI mouse reporting near the gutter. A real AppKit handle owns its own tracking
-area, so it can be larger and still not fight the terminal NSView.
-
-**How to start:** Model it on `InspectorResizeHandle`; mount one per `PaneDividerFrame`, positioned on
-`d.rect`, calling the same `onRatio`/`setRatio` path the current divider uses. Keep the visual gutter
-invisible (the panes' own borders mark the boundary).
-
-**Depends on:** shipping #83 first, then real-use feedback that 8pt still feels fiddly. Surfaced by the
-Codex outside-voice pass during `/plan-eng-review`.
-
-**Priority:** P3 (8pt already doubles the old 4pt target; only revisit if users still find it tight).
-
-### Clipboard confirmation: two deliberate gaps from the ABI port (macapp) — filed 2026-09-03
-
-**What:** two things the `c4e16970` clipboard port left on the floor on purpose.
-
-1. **The "remember this decision" session grant is never offered.** The new ABI's confirmation
-   carries `can_remember`, and the completion carries `remember`; we always send `remember: false`,
-   so a program that asks twice is asked about twice. A persistent allow is a bigger promise than the
-   current prompt explains ("this program, for this session" vs what the wording implies), so
-   surfacing it is product work — a checkbox plus copy that says what the grant covers and how it
-   ends — not a port detail.
-2. **A prompt whose surface disappears still leaks the request.** `confirmReadClipboard` answers via
-   the surface, so if the tab is closed while the sheet is up there is nothing to complete or deny
-   with and the engine's `ClipboardRequest` allocation is stranded. One allocation per abandoned
-   prompt, and it needs a user to close a tab mid-prompt. The C API exposes no surface-free way to
-   answer; the honest fix is to dismiss the sheet when the surface goes away, which needs a teardown
-   signal `GhosttySurfaceView` does not currently publish.
-
-**Why:** neither is reachable by accident and neither loses data — but (1) is the difference between
-a prompt users tolerate and one they dismiss reflexively, and (2) is a real (if tiny) leak that the
-rest of this file's leak entries would not let pass unrecorded.
-
-**How to start:** (1) thread `can_remember` through `clipboardConfirmation` into an
-`NSAlert.showsSuppressionButton`, and decide the grant's scope + expiry before writing the copy.
-(2) give `GhosttySurfaceView` a teardown hook the adapter can observe, and cancel any live sheet for
-that surface.
-
-**Depends on:** the clipboard port (landed).
-
-**Priority:** P3 both. (1) is product work with no forcing function; (2) is bounded and only fires on
-a close-during-prompt.
-
-### Wire ghostty's `terminfo.version` into the resource-contract test (macapp) — filed 2026-09-03
-
-**What:** ghostty gained a content-derived hash of its terminfo source (`terminfo.version` in
-`src/terminfo/ghostty.zig`) at `c4e16970`. Record the pinned engine's value and assert the bundled
-`Resources/ghostty/terminfo` was regenerated for that engine.
-
-**Why:** today the only thing that catches a stale bundled terminfo is a human remembering to diff
-`src/terminfo/*.zig` between two refs at bump time — and the bundled entry is what makes Backspace and
-line editing work, so a missed regeneration is a user-visible break with no test behind it. `CHECKSUMS`
-pins the bytes we ship but says nothing about which ENGINE they belong to, which is exactly the gap.
-Both of the last two bumps changed terminfo (`Se` last time, `Smol`/`Rmol` this time), so "it rarely
-changes" is not the reason to skip it.
-
-**How to start:** the hash is a comptime constant in ghostty's source, not exposed through the C API,
-so it has to be read from the pinned ref and stored next to the pin — the same shape as
-`GhosttyPinIntegrityTests.expectedRevision`, and it should fail the same way on the next bump.
-
 **Depends on:** nothing.
 
-**Priority:** P3 — small, and it converts a manual bump step into a tripwire.
-
-### Memory / live-surface diagnostics (macapp)
-
-**What:** Lightweight instrumentation of live `ghostty_surface_t` count and process memory, to
-catch leaks/growth at high tab counts.
-
-**Why:** Each surface is a GPU-backed Metal layer; the plan flags the 50–100-tab surface budget as
-"measure, don't assume." Occlusion is wired (A4) so off-screen surfaces idle, but magnitude at
-Workroom's tab counts is unverified. Muxy ships a 458-line `MemoryDiagnostics` for this reason.
-
-**How to start:** A periodic sampler logging `tabsByTarget` leaf count + `mach_task_basic_info`
-resident size via `os.Logger`; optionally a debug overlay. Keep it far lighter than Muxy's — a
-counter + a memory read, not crash-crumb recovery (D1). (None of this exists yet — no
-`mach_task_basic_info` read, no surface-count logging.)
-
-**Depends on:** `TerminalSessions` (surface inventory), `GhosttyApp` (`os.Logger` already set up).
-
-**Amended 2026-09-03 — the premise changed, and the question is now narrower.** The
-`c4e16970` pin bump brings upstream's "release GPU resources for hidden surfaces (macOS)", which they
-measured at 384.6 MiB → 18.3 MiB of tracked GPU allocations with 1 visible + 20 hidden tabs (swap-chain
-rebuild on unhide 0.43 ms avg). That is most of what this entry was worried about, inherited for free.
-So this is no longer "is there a problem at high tab counts" — it is **verify the win actually lands
-for us**, which our surface shape (many surfaces, one visible, panes as well as tabs) makes likely but
-does not guarantee. That reframing makes the instrumentation below cheaper to justify AND easier to
-build: a one-off measurement at 20 tabs on the old and new pins answers it, and only if the answer is
-disappointing is a permanent sampler worth writing.
-
-**Priority:** P3 (diagnostic aid; pair with the manual surface-budget QA pass).
+**Priority:** P3 (no data loss; the accessibility label and the popover still carry the numbers).
 
 ### Quick-switcher deferrals (macapp) — #132 follow-ups
 
@@ -1991,123 +1362,6 @@ rail draws marks and miniatures instead.
 
 **Priority:** P3 for all five.
 
-### A live "all terminals" mini-viewer — revisit, the old premise was wrong (macapp), filed 2026-08-14
-
-**What:** re-examined the standing belief that a live dashboard of many running terminals ("show every
-pane, with a detail view") isn't possible because libghostty doesn't support it. **That's not what
-happened, and it's worth correcting in place rather than re-citing.** The only thing actually built and
-shipped under #132 was OS-level capture (`8a1d2547`, "rail thumbnails via own-window capture") —
-`SCShareableContent.currentProcess`, no TCC/permission, real pixels confirmed end-to-end. It was
-**reverted** (`455d28e8`) and replaced by hue+monogram marks (`8de09cba`) for a UX reason — "an
-aspect-fit terminal thumbnail at card size is a grey smudge that looks like every other terminal" — not
-a technical block. **libghostty was never in that path at all**; the capture happened entirely at the
-AppKit/ScreenCaptureKit layer, over the window's on-screen pixels.
-
-**Hard requirement (stated explicitly, 2026-08-14): the mini view must be identical to the full pane,
-not a resized/reflowed one.** Ruled out on that basis: shrinking a pane by calling
-`ghostty_surface_set_size`/reducing font-size recomputes columns/rows, which reflows text and sends a
-real resize signal to whatever's running in the pane (confirmed existing behavior at this pin —
-`QA-libghostty.md:18-19`, "resize the window → reflows cleanly"). That's a different render of the same
-session, not a miniature of the current one, and it's structurally exclusive with the real pane (same
-NSView, one superview at a time — can't show both at once). Ruled out for that reason, not revisited
-below.
-
-**Validated path: a continuous `SCStream`, not the one-shot capture #132 used.**
-`ScreenCaptureKit` has two capture modes; #132/T12 only used the weaker one (`SCScreenshotManager`,
-single frame per call). `SCStream` is a persistent stream that pushes fresh frames as the source
-changes, with **output width/height set independently of the source's real point size**
-(`SCStreamConfiguration`) — the compositor scales server-side. **Confirmed empirically, not assumed
-from docs (2026-08-14):** a standalone compiled Swift binary (`swiftc`, own process, no Xcode project)
-opened a real `NSWindow`, fetched `SCShareableContent.currentProcess`, built
-`SCContentFilter(desktopIndependentWindow:)`, and started a real `SCStream` against it —
-**31 frames delivered over 3s, exit 0, no Screen Recording permission prompt, no TCC error.** Same
-own-process carve-out the one-shot method already used, now confirmed to extend to the continuous
-streaming API too, which was the actual open question this entry used to carry.
-
-Why this is the right fit for "identical, live, and doesn't monopolize the surface": the source pane's
-real `ghostty_surface_t` geometry is never touched — no `set_size`, no font change, no reflow, no
-resize signal to the child process. What's captured is the exact same columns/rows/content as the full
-pane, continuously, and — since it's compositor pixels, not the `NSView` object itself — the same pane
-can be full-size in its tab **and** live in a preview simultaneously (see the hover-preview entry below,
-which is the concrete first use of this).
-
-**One real, unremovable constraint:** the source still has to be actually rendering and mounted
-on-screen for there to be anything to capture. A tab that libghostty has occluded (or a view AppKit
-isn't compositing at all — confirmed the case for a backgrounded tab, see the hover-preview entry) has
-no pixels to stream. This is physical, not a technique flaw — every approach that shows a live
-background pane costs the same GPU work the occlusion-skip optimization exists to avoid; `SCStream`
-only makes delivery continuous and correctly-scaled instead of manually re-polling a screenshot.
-
-**Two options considered and set aside, kept for context:**
-- `ghostty_surface_read_text` (VoiceOver's own poll target, live regardless of on-screen visibility) —
-  ruled out once "identical" became a hard requirement: `ghostty_text_s` is plain bytes, no
-  color/attribute/cursor data, so it can never be visually identical to the real pane.
-- Upstream **`libghostty-vt`** (new, unlinked cell/grid/color API) — still real, but a second dependency
-  to vendor; `SCStream` gets the same "live and colored" result today with zero new dependency.
-
-**Depends on:** nothing to start. The concrete first application is the hover-preview entry below.
-
-**Priority:** P3 — no user complaint driving this; filed so the next person doesn't re-derive "we looked
-into this, wasn't possible" from a premise that was never quite right, and doesn't re-litigate the
-capture-mode question this entry just closed out empirically.
-
-### Tab-hover live mini-preview (macapp) — planned 2026-08-14, reviewed 2026-08-14, plan-eng-reviewed
-
-**Issue:** #137
-
-**Superseded by a full plan + eng review** — this entry's original draft (SCStream-only,
-pixel-identical framing) is out of date; the reviewed plan corrected the architecture and closed 21
-findings (2 architecture, 2 code quality, 17 outside-voice via Codex — 3 cross-model tensions, 14 direct
-corrections). Full plan: `~/.claude/plans/ethereal-inventing-wolf.md` (eng review CLEAR, 0 unresolved).
-Summary for anyone picking this up without the plan file:
-
-- **Hard requirements unchanged:** live (not a static snapshot), only live while actually hovered, and
-  the real pane's geometry (columns/rows) must never change — no `ghostty_surface_set_size` call, ever,
-  from this feature.
-- **Critical finding the original draft missed:** naively copying `TerminalContainerView.mount`'s
-  re-home code sets `view.frame` to the small preview size *before* `addSubview`, which triggers
-  `viewDidMoveToWindow` → `updateMetalLayerSize` → a real resize. Any implementation must never write
-  `.frame`/`.bounds`/`.autoresizingMask` on the surface.
-- **Architecture is now spike-first, two candidates, not SCStream-only:** (A) CALayer
-  `sublayerTransform` scale-compositing — mount the real surface untouched, shrink it via a visual
-  transform only; no new dependency, no capture pipeline; try this first. (B) The originally-planned
-  continuous `SCStream` capture — still validated (no TCC), but requires a dedicated real-size,
-  on-screen, unoccluded "parking" window per hover, whose actual unobtrusiveness is unverified (a Stage 0
-  spike question, not assumed). A third outcome (shelve the feature, or redefine the "identical"
-  requirement) is explicitly on the table if both candidates fail their spikes.
-- **Occlusion must go through a single writer:** `TerminalSessions.reconcileOcclusion` stays the only
-  caller of `surface.setVisible` — a hover claim is exposed via `beginPreview`/`endPreview(tab:session:
-  for:)` methods (per-target, session-tokened, not a bare tab id — two sequential hovers of the same tab
-  need to be distinguishable) that route through `reconcileOcclusion` themselves.
-- **Testability:** a minimal `Scheduling`/`FrameSource` seam (not a full second-backend abstraction) keeps
-  the state machine unit-testable without reopening a swappable-backend design.
-
-**Depends on:** nothing blocking — Stage 0's spike is the very next step.
-
-**Priority:** P3 → actively being implemented (see the plan file's Implementation Tasks, T0-T6).
-
-### Stream the inline terminal agent's diagnosis into the banner — #49 follow-up
-
-**What:** Show the diagnosis appearing live in the banner (claude `--output-format stream-json`)
-instead of a spinner during the (blocking) call.
-
-**Why:** Nicer perceived latency. Deferred deliberately, not dropped: (1) the diagnosis output is a
-structured JSON object (`{summary, fix, detail}`) — that's what makes the "Insert fix" button
-reliable (the on-demand eval validates it) — and streaming emits partial JSON deltas that don't
-render nicely; (2) the inline diagnosis now runs on Haiku 4.5 (~2-3s), so the spinner is brief and
-the payoff is marginal.
-
-**How to start:** The clean approach that preserves the structured fix is to change the model's
-output to "one-line prose summary, then a delimiter, then the JSON fix", stream the prose live while
-parsing the JSON tail on completion. Needs: an incremental-stdout streaming runner (the current
-`StatusCommandRunner` buffers to completion), a stream-json NDJSON delta parser, the split prompt +
-parser, banner partial-text state, and its own entry in `CodingAgentDiagnosisEvalTests`.
-
-**Depends on:** the inline agent (#49, merged). Touches `CodingAgentRunner`, `CodingAgentPrompt`,
-`TerminalCodingAgentManager`, `TerminalCodingAgentBanner`.
-
-**Priority:** P3 (polish; marginal over a 2-3s spinner, and must not regress the structured fix).
-
 ### Unify foreground-process detection onto argv0 (macapp) — issue #141 eng-review follow-up, filed 2026-08-17
 
 **What:** `CodingAgentProcessRecognition.backend(forPID:)` (`CodingAgentUsage.swift`, backs the issue #49 inline
@@ -2138,27 +1392,6 @@ scope-reduction) to keep that PR single-purpose; this session's review confirmed
 
 ## P3 — Inspector, window layout, and theming
 
-### Back/forward doesn't reinstate the inspector section (macapp) — nav-history follow-up
-
-**What:** `activeInspectorSection` is not part of a `NavLocation`, so ⌘[/⌘] never moves it. Add it to the
-location and map content kinds to sections (`.diff`/`.file` → `.changes`, `.changeset` → the pane holding
-History), suppressed under replay so it doesn't write the persisted default.
-
-**Why:** narrower than it first looks, and worth stating so nobody re-scopes it wrongly:
-`ActivitySection.changes` stacks `[.changes, .history, .pullRequest]` as sub-sections of **one** pane, so
-moving between a diff and a commit needs no section switch at all — both lists are already on screen.
-The only real case is **Files ↔ Changes**: open a file from the Files section, press Back to a diff, and
-the pane is correct while the inspector still lists files, so no row highlights.
-
-**How to start:** `AppStore.activeInspectorSection` (`@Published`, persisted in its `didSet`) plus the
-`FocusedTabSelection` → `ActivitySection` mapping. `withHistorySuppressed` already exists for the
-replay-side guard.
-
-**Depends on:** nothing.
-
-**Priority:** P3 (cosmetic — the detail pane, which is what the bug report was about, is correct in every
-case; only the inspector's list can be the wrong one).
-
 ### Search section for the right activity bar (macapp) — activity-bar follow-up
 
 **What:** A functional Search pane (find in files / content) as a new right-activity-bar section.
@@ -2177,28 +1410,6 @@ to ship the scaffold before the search is real.
 `Views/ChangesPanel.swift` (`RightInspector`), a new `Views/SearchPanel.swift`.
 
 **Priority:** P3 (new feature; not blocking).
-
-### Profile inspector pane body during live divider-drag (macapp) — NSSplitView inspector follow-up
-
-**What:** Verify there's no stutter when dragging an inspector section divider with a large Changes
-set. The NSSplitView inspector (shipped) hosts each section body inside a native `NSScrollView`, so
-a vertical divider drag changes only the pane's *viewport height* — the body's `NSHostingView` keeps
-its intrinsic (content) height and its width is unchanged, so SwiftUI should NOT re-lay-out per
-frame. This TODO is to confirm that under profiling, not a known regression.
-
-**Why:** `ChangesPanel` can render up to ~200 non-lazy file rows. (An earlier version of this entry
-put the worst case at ~400 across **two** lists; the panel is now one working-copy list, so the
-ceiling is back to one list's worth.) The original eng-review of the migration plan
-flagged per-frame re-layout as a risk; the scroll-view pane design should avoid it (drag = viewport
-change, not document re-layout), but it hasn't been profiled.
-
-**How to start:** Instruments (Time Profiler / SwiftUI body re-evaluation) while dragging the
-Changes divider on a fixture with ~200 changed files. Only if jank shows: coalesce
-resize → re-layout, or `.drawingGroup()` the body for the drag duration. Note `LazyVStack` won't help
-here — the pane scrolls via AppKit `NSScrollView` with an intrinsic-size host, so there's no SwiftUI
-clip rect to virtualize against.
-
-**Priority:** P3 (likely already a non-issue by construction; confirm before optimizing).
 
 ### Raise the inspector's 520pt width cap (macapp) — column-layout follow-up
 
@@ -2278,50 +1489,6 @@ a theme that fails the rail's contrast floor (`Violet Dark`, 3.94:1), six stock 
 terminal defaults, and a byte-identical duplicate (`Zenbones` ≡ `Zenbones Light`). So the heuristic is
 the easy half; the deny-list and a contrast gate are the real work.
 
-### Use ghostty's native `theme = dark:<X>,light:<Y>` syntax (macapp) — RE-PRICED, not a fit for this batch
-
-**What:** Replace our rewrite-the-conf-on-every-appearance-change path with the engine's own
-per-appearance theme selection.
-
-**Why we thought this:** libghostty accepts `theme = dark:<X>,light:<Y>` and picks the variant
-itself. We instead write a single `theme = "<name>"` and, on every appearance change, rewrite
-`~/Library/Application Support/Workroom/<bundle id>/ghostty.conf`, then `ghostty_config_load_file`,
-`ghostty_app_update_config`, then `updateConfig` on every surface
-(`GhosttyApp.swift` `writeThemeConfig`, `ThemeService.applyActiveTheme`). Muxy already uses the
-native form (`muxy/Muxy/Services/ThemeService.swift` `parseThemeSelection`).
-
-**What verification against the pinned engine (sha `35e1a016`) actually found:** the two-variant
-syntax itself works (`Config.zig:9837` `Theme.parseCLI` — `light:`/`dark:` keys, both required,
-order-independent). But "the engine picks the variant itself" is false for a *live* surface:
-
-- Which variant applies is resolved once, at config-derive time, from `_conditional_state.theme`
-  (`Config.zig:4457`).
-- `ghostty_app_set_color_scheme`/`ghostty_surface_set_color_scheme` (App.zig `colorSchemeEvent`,
-  Surface.zig:4716 `colorSchemeCallback`) only **flip that state and fire a
-  `.reload_config{.soft=true}` action** — neither one re-derives the config itself.
-- `apprt/embedded.zig:267` `performAction` forwards every action straight to the host `action_cb`;
-  there is no internal embedded-apprt handler that re-derives on our behalf.
-- `GhosttyRuntimeAdapter.swift:127` doesn't handle `GHOSTTY_ACTION_RELOAD_CONFIG` — it falls into
-  `default:` → `logUnhandled` → returns `false`.
-
-So adopting this syntax needs either (a) implementing that action for both the app-scoped and
-surface-scoped case, which means calling `ghostty_app_update_config`/`ghostty_surface_update_config`
-back into the engine from inside `action_cb` while it's mid-`colorSchemeEvent` — the same kind of
-reentrancy-off-callback-stacks hazard flagged for surface teardown (see the libghostty-surface-free
-memory note) — or (b) keeping our own explicit `updateConfig` calls, where scheme-flip-before-derive
-becomes a newly load-bearing ordering invariant (today's `ThemeService.applyActiveTheme` calls `reloadConfig`
-*before* `setColorScheme`, which is harmless only because today's single-name theme has no
-conditional state to get stale).
-
-**Verdict:** not a fit for a pre-release stability batch. There's no bug behind the current
-single-name-per-appearance path — it's shipped and correct — and the two ways to land the native
-syntax are either an engine-callback reentrancy change or a same-risk reorder of existing calls, both
-only verifiable by manually flip-testing OS appearance against live terminals. Re-pricing from "emit
-both names once, drop `force:`" to "action-handling change with a re-entrancy hazard and a new
-ordering invariant."
-
-**Priority:** P2 → hold. Re-open only alongside deliberate engine-callback work, not as a drive-by.
-
 ### Profile and fix the theme picker's invalidation storm (macapp) — MEASURED, MOOT (2026-08-13)
 
 **What:** Measure the picker's per-keypress cost, then stop every row re-rendering on every apply.
@@ -2370,30 +1537,6 @@ pins only what we already vendored.
 
 **Priority:** P3.
 
-### Verify `minimum-contrast` precedence vs a user's own ghostty config (macapp)
-
-**What:** Confirm load order between Workroom's generated `theme` config file
-(`GhosttyApp.writeThemeConfig`) and a user's own `~/.config/ghostty/config` for the `minimum-contrast`
-key — does theirs win, ours win, or do they conflict/merge unpredictably?
-
-**Why:** If a user has separately set their own `minimum-contrast`, it's unclear whether Workroom's
-value silently overrides theirs or vice versa.
-
-**Pros:** closes a real (if narrow) unknown before it surprises a power user who tunes their own
-Ghostty config.
-
-**Cons:** requires the user to have set this exact key themselves — low likelihood, low urgency.
-
-**Context:** raised during the outside-voice (Codex) review of the light-theme terminal-contrast fix
-(2026-09-01, `GhosttyApp.writeThemeConfig` adding `minimum-contrast = 3.0`). Not investigated as part
-of that fix — narrow edge case. Start by reading how `ghostty_config_load_file` handles multiple
-loaded config sources for the same key (last-wins vs first-wins) — likely documented in the pinned
-`libghostty-spm` source or Ghostty's own config docs.
-
-**Depends on:** nothing.
-
-**Priority:** P3.
-
 ## P3 — Pull requests and GitHub
 
 ### At-a-glance review status in the sidebar / collapsed PR header (macapp) — #52 follow-up
@@ -2426,58 +1569,7 @@ sweep stage.
 
 **Priority:** P3 (strong UX win, but the background-sweep work makes it its own chunk, not part of #52).
 
-### Per-reviewer comment counts in the PR panel (macapp) — #52 follow-up
-
-**What:** Show a per-reviewer comment count next to each reviewer row in the Pull Request panel,
-e.g. `iainad approved · 3 comments` — the `[N comments]` part of the issue #52 mockup.
-
-**Current state:** #52 shipped the per-reviewer rows (state + bot-aware "in progress" label) by
-riding the existing `gh pr list --head … --json …` probe, which carries `latestReviews` /
-`reviewRequests` but **no review-comment counts**. The rows show state only.
-
-**Why:** richer signal at a glance — how much feedback a reviewer left, not just their verdict.
-
-**How to start:** counts aren't in `latestReviews`, so this needs a second call —
-`gh api repos/{owner}/{repo}/pulls/{number}/comments` (review/diff comments) grouped by
-`user.login` — added to `resolvePR` (`Core/WorkroomStatusResolver.swift`) and surfaced on
-`Reviewer` (e.g. an optional `commentCount`). Weigh the extra network round-trip on the already-slow,
-TTL-throttled PR probe; consider fetching counts lazily/only for the selected PR. Map counts onto
-the existing identity-keyed fold; teams won't have counts.
-
-**Depends on:** the #52 reviewer rows (shipped).
-
-**Priority:** P3 (nice-to-have; deliberately deferred from #52 to keep that change to free data).
-
 ## P3 — Notifications and run commands
-
-### OSC 99 desktop notifications (macapp) — blocked upstream, watch ghostty 1.4.0
-
-**What:** support Kitty-style OSC 99 notifications (`printf '\e]99;;done\a'`). Nothing to build here
-yet — this entry exists so the gap stays tracked and nobody re-derives the upstream state.
-
-**Why it's a gap:** SwiftTerm parsed OSC 99; libghostty does not, so this is a regression against the
-app's own prior behaviour. OSC 9 and OSC 777 work today
-(`GhosttyRuntimeAdapter` `GHOSTTY_ACTION_DESKTOP_NOTIFICATION`), which covers the common cases.
-
-**Upstream state (checked 2026-08-05) — the important part:**
-- Issue **ghostty-org/ghostty#5634** is open, assigned, milestone **1.4.0**.
-- PR **#10467** ("parse the Kitty desktop notification protocol (OSC 99)") is open, rebased and
-  described by its author as ready — but it adds **only a parser**. Its one-line `stream.zig` change
-  files `.kitty_desktop_notification` in the branch that logs `"unimplemented OSC callback"` and
-  discards it. Its own description says: *"This includes only parsing of the OSC. You cannot (yet)
-  use OSC 99 to send notifications."*
-- Three further pieces are needed before an **embedder** sees anything: stream dispatch, a
-  Surface/apprt action (OSC 99's richer model — id, urgency, icon, chunked payloads — does not fit
-  the existing 2-field `DesktopNotification`), and a `ghostty_action_*` tag in `include/ghostty.h`.
-  **None exists as an open or merged PR.**
-
-**So: the re-check trigger is "ghostty 1.4.0 ships", NOT "#10467 merges".** Merging #10467 alone
-changes nothing observable, and cherry-picking it into a fork of our own would not either — this is
-why the OSC 99 rationale was struck from CMT-2.
-
-**Depends on:** upstream only. Then the pin bump (or whatever engine source we're on) to pick it up.
-
-**Priority:** P3 — one escape sequence, with two working alternatives already wired.
 
 ### Auto-emit OSC notifications on command completion (macapp)
 
@@ -2576,172 +1668,6 @@ logic wasn't reviewed against this change.
 
 **Priority:** done.
 
-## P3 — Tests and tooling
-
-### Evaluate image-snapshot testing for SwiftUI chrome (macapp)
-
-**What:** Try ONE narrowly-scoped image-snapshot test and see whether it survives a month, rather
-than committing to a suite.
-
-**Why:** macapp has a structural blind spot, and several eyeball-only visuals share one root
-cause, not several unlucky features. Unit tests cannot assert SwiftUI text — macOS only materializes
-a11y elements for a live AX client, so an `NSHostingView` in a test process reports an `AXGroup` with
-0 children (`WorkroomAppTests/HistoryCommitCardTests.swift:9-13`). XCUITest reads the accessibility
-label, which carries the full string regardless of what is drawn. So `#136`'s path truncation was
-eyeball-only, and `#168` added more eyeball-only visuals in the same footer. Snapshots are the
-only mechanism that would catch any of them, and they'd cover future pane chrome retroactively.
-
-**Cons, stated up front because they're the reason this is an evaluation and not a task:** the
-earlier `#136` path-truncation entry (shipped, since removed) named the killer objection — snapshots "would churn on every theme and
-font change" — and this app ships 56 themes. A naive full-window suite would be permanently red.
-
-**How to start:** snapshot ONE component under ONE pinned theme and ONE pinned font, and leave it a
-month before adding a second. The hard part is already solved: `UITestFixture.usageSnapshot` is a
-deterministic model-only fixture with four launch flags, so there's a stable subject to shoot. Open
-questions are scope (single component vs whole window), how many themes, and whether
-`swift-snapshot-testing` earns a new SPM dependency in a project that has none for testing.
-
-**Depends on:** nothing. Subsumes the `#168` agent-usage-bar entry in "P3 — Terminal, panes, and
-focus" (the `#136` path-truncation entry shipped and is gone).
-
-**Priority:** P3 (nothing is broken today; this buys the ability to notice when it breaks).
-
-
-### Onboarding wizard's failed-add step has no test coverage (macapp) — filed 2026-08-19, issue #151
-
-**What:** `OnboardingWindow.handleAdd`'s failure branch (a CLI-level `addProject` failure leaves the
-Add Project step up, no `hasCompletedOnboarding` flag set, so the user can retry) has zero test
-coverage at any level — unit or UI.
-
-**Why not fixed now:** `AddProjectSheetModel.isValid` already disables Add for the common failure
-case (malformed path), so this only fires for a genuine CLI-level failure (permission denied, a
-race). Forcing that reliably in an XCUITest needs a filesystem trick (e.g. a chmod'd-unwritable temp
-dir) that can behave differently under CI sandboxing/root, trading real coverage for CI flakiness —
-and `AppStore.addProject`'s fixture-mode branch (added after this was filed, to stop UI tests from
-touching the real `~/.config/workroom/config.json`) always simulates success, so it can no longer
-even reach a failure via fixture mode at all; only a real (non-fixture) run or an injectable
-`WorkroomCLIProtocol` fake could exercise this now. Flagged during `/plan-eng-review` of issue #151's
-onboarding wizard plan; accepted as a deferred gap rather than a blocking test.
-
-**How to start:** a UI test that creates a temp dir, `chmod`s it unwritable, points the wizard's Add
-Project step at a path under it in create mode, and asserts the step stays up with no flag set. If
-CI sandboxing makes the permission trick unreliable, an alternative is injecting a fake
-`WorkroomCLIProtocol` that fails deterministically — but that requires the onboarding window to take
-an injectable store/CLI, which it currently doesn't (see the plan for issue #151).
-
-**Depends on:** nothing blocking — the onboarding wizard itself (issue #151) shipping first.
-
-**Priority:** P3 — narrow, low-probability gap, not a known bug.
-
-### `AppStore`'s default `cli` isn't hardened against a forgotten test double (macapp) — filed 2026-08-16
-
-**What:** `AppStore.init(cli: WorkroomCLIProtocol? = nil, ...)` defaults an un-injected `cli` to the
-real `WorkroomCLI.shared` — including under XCTest. A test that constructs a bare `AppStore()`,
-leaves `projectStore.projects` empty, and calls `bootstrap()`/`reload()` would silently shell out to
-the real bundled `workroom` binary and read the developer's actual `~/.config/workroom/config.json`.
-
-**Why not fixed now:** traced every current call site (`AppStoreSessionRestoreTests`'s two
-`bootstrap()` calls) — both pre-seed `projectStore.projects`, so `bootstrap` takes the
-`apply(projectStore.projects)` branch and never reaches `cli.list`. Nothing is broken today; this is
-defense against a future test, not a current bug. See the 2026-08-16 "Recently done" entry above for
-the actual bug this session found and fixed (the shared window's own bootstrap, not this).
-
-**How to start:** default the un-injected `cli` to a `WorkroomCLIProtocol` conformer, active only
-under `XCTestConfigurationFilePath != nil`, whose every method throws immediately — a test that
-forgot to inject a fake gets a loud, specific failure instead of a silent real-data read.
-
-**Depends on:** nothing blocking.
-
-**Priority:** P3 — hardening, not a known bug.
-
-### `WindowDragUITests.testDraggingWorkroomTabReordersTwoChips` is a known gesture-timing flake — IMPROVED, still flaky, still skipped
-
-**What:** Reproduced a pass then a fail on two consecutive back-to-back reruns of the identical test
-against the identical binary during the beta.24 release gate — nothing else running, same machine,
-same window geometry. Not caused by the beta.24 geometry fixes (fixture window 1200→1450pt): the
-test computes its drag distance from the chips' own on-screen positions, so it's width-independent.
-
-**Real bug found and fixed along the way:** `WorkroomTabBar.commitDrag`/`TerminalTabStrip.commitDrag`
-computed the reorder's drop index from the `dragTranslation` **state**, which is only ever written
-inside `onChanged` — so a drag whose LAST `onChanged` sample landed short of the true release point
-(any coarse/fast delivery, synthetic or real) commits off a stale, under-shot translation instead of
-the gesture's own accurate final `value.translation` at `onEnded`. Fixed in both strips (they
-deliberately mirror each other's reorder math) to read `value.translation` directly at commit time.
-Correct regardless of whether it's THE cause of this flake — verified via the full `WindowDragUITests`
-+ `WorkroomStatus*`/`VCSProviderConformanceTests` suites, no regressions.
-
-**Measured, three iterations, ~30 back-to-back reruns total:**
-1. The `commitDrag` fix alone: 1/5 passed. Ruled out as a full fix on its own.
-2. + polling `chipsByX` until two reads agree (ruling out a race against the strip's own 0.2s
-   reorder-settle `withAnimation`): 3/5.
-3. + switching the gesture from the touch-oriented `press(forDuration:thenDragTo:…)` to the
-   macOS-native mouse `click(forDuration:thenDragTo:…)` (same API family, `XCUICoordinateMouseEvents`,
-   available on macOS): **9/10 in clean, uncontaminated batches** (one batch's first two runs were
-   invalidated by an unrelated concurrent edit to `WorkroomStatusResolver.swift` mid-build — excluded).
-
-**Still flaky — deliberately left skipped.** ~90% is a real improvement over the original coin-flip,
-but not deterministic, and a ~1-in-10 spurious red X right before a release is its own cost. The
-`APP_UITEST_FLAGS` skip entry (`Makefile:67`) stays as-is.
-
-**How to fix further (not attempted):** the TODO's original two ideas — a manual multi-step drag
-giving the reorder logic more interpolated samples, or loosening the swap threshold's dependency on
-event count — remain open, on top of whatever residual gap the native-mouse switch didn't close.
-Low priority: single test, single known flake mode, not client-facing.
-
-**Still open regardless of state-machine cleanup elsewhere:** the bug class this entry is about (an
-under-shot final sample) is real-mouse-only — no synthetic test can prove a fast real flick commits
-the true endpoint. Run a manual fast-flick drag test in both `TerminalTabStrip` and `WorkroomTabBar`
-before trusting this beyond the automated numbers above.
-
-**Second real bug found doing that manual check, 2026-08-16 — FIXED.** The reorder itself always
-landed correctly; what the manual flick surfaced was a visual glitch on the SUCCESS path: the dragged
-chip visibly flicked back to its pre-drag position for one frame, THEN the reorder animated it to its
-new home — reads as "the drag failed, then something else moved it." Root cause: both strips'
-commit function called `drag.commit(...)` (which resets `drag.id`/`translation` — the state driving
-the dragged chip's `offsetX` — as a side effect) OUTSIDE the `withAnimation` block, and wrapped only
-the resulting `moveTab`/order-write inside it. The offset-reset therefore applied instantly,
-unanimated, one render pass before the reorder's own animated transition started. Fixed by moving the
-`drag.commit(...)` call itself inside `withAnimation` in both `TerminalTabStrip.swift` and
-`WorkroomTabBar.commitDrag`, so the offset resetting to 0 and the array reordering land in the same
-animated transaction — one continuous motion from under the cursor to the new slot, whether or not a
-reorder actually resulted.
-
-**Re-measuring the flake rate while verifying this, same day:** got 7/12 fails with the fix, then (to
-rule out a regression) 4/8 fails on the ORIGINAL unfixed code — both far worse than the "9/10" figure
-above. `uptime` showed a load average of 7+ at the time (this machine had been running back-to-back
-`xcodebuild` invocations for hours). Confirms the fix isn't the cause and the flake is genuinely
-load-sensitive, not a fixed ~10% — the original measurement's "clean, uncontaminated batches" caveat
-undersold how much machine load moves this number. Re-verify on a quiet machine before trusting any
-future pass-rate measurement of this test.
-
-### UITestFixture: no deterministic appearance-mode override (macapp)
-
-**What:** Add `-WorkroomUITestAppearance "light"|"dark"|"system"`, mirrored into `Defaults[.theme]`
-(`ThemePreference`) inside `UITestFixture.applyFixtureDefaults`, following the exact pattern already
-used for `themeFamily` (`UITestFixture.swift:536-620`) — read the launch arg, fall back sanely on an
-unrecognized value, mirror into `Defaults` before any `AppStore` is built.
-
-**Why:** every existing UI test today inherits whatever appearance the Dev domain's `Defaults[.theme]`
-last held — nothing pins it. Any future test that needs a specific light/dark rendering (visual
-regression, theme-dependent assertions) has no deterministic way to force it, the same class of
-flakiness `themeFamily` was built to prevent for theme *family* selection.
-
-**Pros:** closes a real, generically-useful gap; small, in-pattern addition (~10 lines) once someone
-actually needs it.
-
-**Cons:** speculative until a concrete test needs it — no test currently blocked on this.
-
-**Context:** discovered while planning a light-theme terminal-contrast fix (2026-09-01,
-`GhosttyApp.writeThemeConfig` `minimum-contrast` addition). That plan's test was originally going to
-need this (a pixel-capture XCUITest requiring a forced-light render) but was redesigned around
-config introspection instead of rendering after outside-voice review found the pixel approach had
-unfixable-cheaply design bugs — so the immediate need went away, but the underlying fixture gap is
-still real and un-addressed.
-
-**Depends on:** nothing.
-
-**Priority:** P3.
-
 ## P3 — Performance and diagnostics (WORKROOM-2B follow-ups)
 
 ### Status-aware avatar image loader (macapp) — FIXED
@@ -2784,74 +1710,6 @@ unrelated-publish case is now 0 rebuilds (was 200); the 1000-file tree now build
 `HistoryRowInvalidationTests` uses.
 
 **Priority:** done.
-
-### Main-menu rebuild App Hang (macapp) — WORKROOM-3A — NO CODE CAUSE FOUND (2026-09-02)
-
-**What:** Sentry WORKROOM-3A, `App Hanging: App hanging for at least 2000 ms.`, culprit `_xzm_free`.
-**One event**, nightly build 733 (`2.0.0-nightly.733`), macOS 26.6.2, MacBookPro18,1,
-2026-09-02 18:21:21Z. `app_start_time` 12:16Z — the app had been up **~6 hours**, so not a
-launch/window-restore stall. Breadcrumbs: five alternating `app.lifecycle active/inactive` pairs, i.e.
-app-activation churn. Main thread, **zero in-app frames**:
-
-```
-NSRunLoop.flushObservers → AppGraph.graphDidChange → AppDelegate.scenesDidChange
-  → AppDelegate.makeMainMenu → AppKitMainMenuItem.updateMainMenu → updateMenuHost
-  → ViewGraphRootValueUpdater.invalidateProperties → GraphHost.updatePreferences
-  → DynamicContainerInfo.updateItems → ForEachList.applyNodes → ~18× ModifiedViewList.applyNodes
-  → DynamicViewListItem → MappedViews chain release
-     (swift::RefCounts::doDecrementSlow → _swift_release_dealloc → _xzm_free)
-```
-
-A scene change rebuilt the SwiftUI main menu, and the sample landed in the teardown of the previous
-menu view-list graph.
-
-**Three code-side hypotheses, all measured and all dead** (Debug build, temporary `#if DEBUG` counter
-at the top of `WorkroomCommands.body` logging evals/second; reverted after measuring):
-
-- **A dynamic/huge menu.** There is no `ForEach` anywhere in the app's menu code — `WorkroomCommands`
-  (`WorkroomApp.swift:985`) is the repo's only `Commands` conformer and declares 71 static leaves
-  (43 `Button` + 9 `Toggle` + 19 `Divider`, 36 `.keyboardShortcut`, 45 `.disabled`). The
-  `ForEachList`/`DynamicViewListItem` frames are SwiftUI's **own** per-window list for
-  `WindowGroup(for: WindowSeed.self)` (`WorkroomApp.swift:71`), not app code.
-- **An invalidation storm off `@FocusedObject private var store: AppStore?`** (`WorkroomApp.swift:996`;
-  `AppStore` has 65 `@Published`, hover/drag state included, and `RootView.swift:725-730` documents the
-  menu as explicitly *not* observing the store). Plausible on paper — WORKROOM-2B's shape — but
-  **measured: ~4 body evals/sec peak** during real-mouse sidebar-edge hover and split-divider drags,
-  **~0.2/sec idle**, 21 in the launch burst. (If the sidebar was expanded during that gesture,
-  `hoveringLeftToggle`/`previewingLeft` never fired and the 4/sec is drag-only — the conclusion rests on
-  the independent activation/RSS test either way.) SwiftUI coalesces those publishes. Thousands of evals over
-  a 6-hour session, not millions; nowhere near a 2s stall. The planned `@FocusedObject` → `Equatable`
-  weak-store-box swap was **not** landed: it would have been a no-op against a hang this size.
-- **Menu-graph accumulation across rebuilds** (retained `MappedViews` generations freed in one go).
-  Measured with 100 scripted app-activation cycles: **~5 body evals per activation** (502 over the run)
-  and **RSS flat** — 183 MB → 193 MB, dipping to 164 MB mid-run. Old generations are freed as they go:
-  **no accumulation in 100 rapid cycles**. Scope that honestly — the test was ~30s, one window, whatever
-  dev state was open; the crash session was 6h with ~7 ghostty surfaces (the kqueue×3+futex+poll thread
-  groups in the event). It rules out a straight leak, not every slow-growth shape.
-
-**Reading: unexplained.** One sample, not reproducible, and no metric grew under test. An ANR sample
-is *where the main thread stood at the 2s mark, not where the time went* — the same gap the
-"Main-thread timing from a real hang" entry below was filed to close — so the menu rebuild may be a
-bystander rather than the cost. Note the event argues against a memory-pressure story: `usable_memory`
-was 11.1 GB of 16 GB and `thermal_state` was `nominal` (the low `free_memory: 3.3 GB` is just file
-cache, as it always is on macOS).
-
-**If it recurs** (a second event is what would justify spending more here), capture in this order:
-1. All events on the issue — Sentry fingerprints App Hangs loosely (WORKROOM-2T grouped two distinct
-   bugs), so confirm the other stacks really share `scenesDidChange → makeMainMenu`.
-2. Device memory pressure at hang time (`free_memory` vs `memory_size` in the event context) — if the
-   recurrences all sit at low free memory, it's the allocator/pressure story and not ours to fix.
-3. Only if the stacks are consistent AND memory is healthy: Time Profiler over N window open/close and
-   activation cycles, timing `makeMainMenu` vs N. Growth ⇒ accumulation; flat-but-large ⇒ intrinsic
-   cost, which is the one outcome that justifies the AppKit escape hatch — a hand-built `NSApp.mainMenu`
-   replacing the 71 SwiftUI leaves, the same remedy already used for the toolbar
-   (`Core/WindowBackgroundThemer.swift:63` hides SwiftUI's injected toolbar for this hang family).
-   Every shortcut would have to stay reserved in `GhosttySurfaceView.isAppShortcut`.
-
-**Not done, deliberately:** no production change. Rewriting a 71-item menu against one unreproduced
-sample with every measurable code-side cause ruled out is how you ship a regression for nothing.
-
-**Priority:** P3 — dormant until a second occurrence.
 
 ### Main-thread timing from a real hang (macapp) — WORKROOM-2B follow-up
 
