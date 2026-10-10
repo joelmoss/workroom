@@ -31,10 +31,11 @@ private final class InFlightCounter: @unchecked Sendable {
 private struct CountingReader: VCSProviding {
   let context: RepositoryContext
   let counter: InFlightCounter
+  var delay: TimeInterval = 0.02
   func workingStatus() async throws -> WorkroomStatus {
     counter.enter()
     defer { counter.leave() }
-    try await runBlocking { Thread.sleep(forTimeInterval: 0.02) }
+    try await runBlocking { Thread.sleep(forTimeInterval: delay) }
     return WorkroomStatus(dirty: false)
   }
   func log(limit: Int) async throws -> VCSHistoryPage { throw VCSError.io("unused") }
@@ -51,8 +52,10 @@ private struct CountingReader: VCSProviding {
 
 /// The router the sweep reads local status through, with `CountingReader` as its local reader — the
 /// same `RepositoryRouter.reader(for:)` boundary production takes, only the reader is a double.
-private func countingRouter(_ counter: InFlightCounter) -> RepositoryRouter {
-  RepositoryRouter(localReader: { CountingReader(context: $0, counter: counter) })
+private func countingRouter(_ counter: InFlightCounter, delay: TimeInterval = 0.02)
+  -> RepositoryRouter
+{
+  RepositoryRouter(localReader: { CountingReader(context: $0, counter: counter, delay: delay) })
 }
 
 /// Reports every tool as missing (exit 127) so `refreshGitHubCLI` resolves to "not available" and
@@ -189,6 +192,22 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
         + "sweep, so it isn't proving the cap does any work")
   }
 
+  // Value: protects=a wedged local repo reads as timeout on its own row, never clean or not-a-repo;
+  // fails_when=resolve(location:) loses its timeout bound or maps VCSTimeoutError to another badge;
+  // why_new=no test drives the resolver's timeout path, and resolveGit's removal left it unasserted; seam=none
+  func testAWedgedLocalReadReadsAsTimeout() async throws {
+    let project = throwawayProject("wedged")
+    let location = try await RepositoryLocation.local(project.path)
+    let resolver = WorkroomStatusResolver(
+      timeout: 0.05, router: countingRouter(InFlightCounter(), delay: 1))
+
+    let status = await resolver.resolve(location: location)
+
+    XCTAssertEqual(status.failure, .timeout)
+    XCTAssertNil(status.dirty, "a timed-out read is unknown, never clean")
+    XCTAssertNotNil(status.localReadAt, "a timed-out read still stamps when it finished")
+  }
+
   /// The `runCISweep` half TODOS.md left open: same shape as the local-sweep test above, but over
   /// `resolveCI`/`gh`. 8 items across 8 distinct project roots (so each becomes CI-eligible in one
   /// pass, and the per-project repository prefetch — sequential by construction — can't be mistaken
@@ -202,11 +221,21 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
     let ghCounter = InFlightCounter()
     // `dirty: false` (not counted here) only needs to make every item CI-eligible
     // (`workroomStatuses[sid]?.dirty != nil`) — the assertion below is entirely about `ghCounter`.
+    // Every item here is registered, so it carries a location: the local counter proves that branch of
+    // `resolve(item:)` reads through the injected router too, not `.shared`.
+    // Value: protects=a located status item reads through the resolver's injected router;
+    // fails_when=resolve(item:) routes a located item through .shared again; why_new=the local-cap test
+    // only drives items without a location; seam=none
+    let localCounter = InFlightCounter()
     store.statusResolver = WorkroomStatusResolver(
-      runner: CountingGHRunner(counter: ghCounter), router: countingRouter(InFlightCounter()))
+      runner: CountingGHRunner(counter: ghCounter), router: countingRouter(localCounter))
 
     store.refreshWorkroomStatuses(force: true)
     await store.statusSweepTask?.value
+
+    XCTAssertGreaterThan(
+      localCounter.peak, 0,
+      "a registered item's status was not read through the resolver's injected router")
 
     XCTAssertLessThanOrEqual(
       ghCounter.peak, AppStore.ciConcurrency,
