@@ -790,6 +790,12 @@ final class FakeAgent: @unchecked Sendable {
 
   /// The VCS `capabilities` reply body.
   private let capabilities: Data
+  /// The `result` of the reply to every exec request, e.g. a successful git; nil leaves them
+  /// unanswered.
+  private let execResult: String?
+  private var execs: [String] = []
+  /// Every exec request received, as the JSON the client sent, in arrival order.
+  var receivedExecs: [String] { lock.withLock { execs } }
   /// Stop reading the client's socket (without closing it) once `capabilities` is answered.
   private let stallAfterCapabilities: Bool
   private let forward: Bool
@@ -812,9 +818,10 @@ final class FakeAgent: @unchecked Sendable {
     forwardEpilogue: Int = 0, forwardReplies: Int = 1, forwardReplyBody: Data? = nil,
     forwardRefusals: Int = .max, forwardEpilogueOnData: Bool = false,
     capabilities: String = #"{"version":1,"result":{"version":1,"reads":9,"exec":2}}"#,
-    stallAfterCapabilities: Bool = false
+    stallAfterCapabilities: Bool = false, execResult: String? = nil
   ) throws {
     self.capabilities = Data(capabilities.utf8)
+    self.execResult = execResult.map { #"{"version":1,"result":\#($0)}"# }
     self.stallAfterCapabilities = stallAfterCapabilities
     self.forward = forward
     self.forwardRefusal = forwardRefusal
@@ -887,8 +894,17 @@ final class FakeAgent: @unchecked Sendable {
           continue
         }
         let request = String(decoding: payload, as: UTF8.self)
-        guard bytes[0] == 2, request.contains("capabilities") else { continue }
-        let body = capabilities
+        guard bytes[0] == 2 else { continue }
+        let isCapabilities = request.contains("capabilities")
+        if !isCapabilities { lock.withLock { execs.append(request) } }
+        let body: Data
+        if isCapabilities {
+          body = capabilities
+        } else if let execResult {
+          body = Data(execResult.utf8)
+        } else {
+          continue
+        }
         var reply = Data([bytes[0]])
         for value in [stream, UInt32(body.count + 1)] {
           var value = value.bigEndian

@@ -53,7 +53,8 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
 
   private func environment(
     client: Bool, gitHubToken: (@Sendable () async throws -> String)?,
-    driver: any HostDriver = CountingDriver()
+    driver: any HostDriver = CountingDriver(),
+    connect: @escaping @Sendable (HostID) async throws -> AgentVCSConnection = lostConnection
   ) -> RemoteProvisioning.Environment {
     RemoteProvisioning.Environment(
       driver: driver, agentSocket: RemoteWorkrooms.agentSocket,
@@ -64,7 +65,18 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
         : nil,
       gitHubToken: gitHubToken,
       agentBroker: .init(url: { client, _, _ in client.baseURL }, release: { _ in }),
-      connect: Self.lostConnection)
+      connect: connect)
+  }
+
+  /// Every git command a host's agent is asked to run succeeds.
+  private static let gitSucceeds =
+    #"{"stdout":"","stderr":"","exit_code":0,"timed_out":false,"signaled":false}"#
+
+  private static func connecting(to fake: FakeAgent)
+    -> @Sendable (HostID) async throws
+    -> AgentVCSConnection
+  {
+    { host in try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath) }
   }
 
   private func provision(
@@ -146,6 +158,86 @@ final class RemoteProvisioningCredentialsTests: XCTestCase {
       XCTAssertEqual(refusal.code, "app_not_installed")
     }
   }
+
+  // Value: protects=a workroom whose App is not installed ends up relayed, with no grant, clones and
+  // switches with the Mac's token, and records only its host; fails_when=the fallback leaves
+  // relayed false or a grant checkpoint, or the token stops reaching git;
+  // why_new=the other tests stop at the lost clone and the integration relay test signs out
+  // instead; seam=none
+  /// Signed in but refused for the App, the workroom takes the Mac's token: relayed, no grant to
+  /// record, and git told to start from origin's default branch.
+  func testAnUninstalledAppWorkroomEndsRelayedWithOnlyItsHostRecorded() async throws {
+    BrokerStub.reset([Self.appNotInstalled])
+    let fake = try FakeAgent(version: 4, execResult: Self.gitSucceeds)
+    defer { fake.stop() }
+    let driver = CountingDriver()
+    let checkpoints = CheckpointLog()
+
+    let instance = try await RemoteProvisioning.provision(
+      repository: repository, cloneURL: "https://github.com/o/r.git", path: "/p",
+      workroom: UUID(), branch: "wr-b",
+      in: environment(
+        client: true, gitHubToken: { "gho_mac" }, driver: driver,
+        connect: Self.connecting(to: fake))
+    ) { host, grant in checkpoints.add(host, grant) }
+    await instance.connection.close()
+
+    XCTAssertTrue(instance.relayed)
+    XCTAssertNil(instance.grantID)
+    XCTAssertEqual(checkpoints.all.map(\.host), [instance.host])
+    XCTAssertEqual(checkpoints.all.map(\.grant), [nil], "a grant was recorded for a relayed create")
+    XCTAssertEqual(driver.destroys, 0)
+
+    let requests = try fake.receivedExecs.map {
+      try XCTUnwrap(JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])
+    }
+    XCTAssertEqual(requests.count, 2)
+    XCTAssertEqual(
+      requests[0]["args"] as? [String],
+      ["clone", "--quiet", "--origin", "origin", "--", "https://github.com/o/r.git", "/p"])
+    XCTAssertEqual(
+      requests[1]["args"] as? [String],
+      ["switch", "--quiet", "--no-track", "--create", "wr-b", "refs/remotes/origin/HEAD"])
+    for request in requests {
+      let env = try XCTUnwrap(request["env"] as? [String: String])
+      XCTAssertEqual(
+        env["GIT_CONFIG_VALUE_0"],
+        RemoteProvisioning.cloneEnvironment(token: "gho_mac")["GIT_CONFIG_VALUE_0"])
+    }
+  }
+
+  // Value: protects=a host that exists is recorded before anything else runs on it, and a record
+  // that fails undoes the create without connecting; fails_when=the first checkpoint moves outside
+  // the rollback, or after connect; why_new=the integration checkpoint test fails only the grant's
+  // record; seam=none
+  /// The host is recorded the moment it exists: a record that fails removes it, before any agent is
+  /// reached.
+  func testAHostThatCannotBeRecordedIsRemovedBeforeAnythingRunsOnIt() async throws {
+    let driver = CountingDriver()
+    let connects = StepLog()
+    struct NoRecord: Error {}
+    do {
+      _ = try await RemoteProvisioning.provision(
+        repository: repository, cloneURL: "u", path: "/p", workroom: UUID(), branch: "b",
+        in: environment(
+          client: false, gitHubToken: { "gho_mac" }, driver: driver,
+          connect: { _ in
+            connects.add(.setup)
+            throw HostDriverError.provisioning("connected")
+          })
+      ) { _, _ in throw NoRecord() }
+      XCTFail("a create whose host could not be recorded succeeded")
+    } catch is NoRecord {}
+    XCTAssertEqual(driver.destroys, 1, "the unrecorded host was left running")
+    XCTAssertEqual(connects.take(), [], "an unrecorded host was used")
+  }
+}
+
+private final class CheckpointLog: @unchecked Sendable {
+  private let lock = NSLock()
+  private var seen: [(host: HostID, grant: String?)] = []
+  var all: [(host: HostID, grant: String?)] { lock.withLock { seen } }
+  func add(_ host: HostID, _ grant: String?) { lock.withLock { seen.append((host, grant)) } }
 }
 
 extension RemoteProvisioningCredentialsTests {
