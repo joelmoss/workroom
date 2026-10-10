@@ -334,7 +334,7 @@ config. Shape:
   sees a partial file.
 - Read-modify-write cycles are guarded by a **best-effort cross-process advisory lock**
   (`config.json.lock`) so the standalone CLI and the app's bundled binary don't clobber each other;
-  it is an OS advisory lock (`flock`) that the kernel releases when its holder dies, so nothing is
+  it is an OS advisory lock (`gofrs/flock`: `flock(2)` on Unix, `LockFileEx` on Windows) that the kernel releases when its holder dies, so nothing is
   stolen on a timer, and it degrades to running unlocked on any lock trouble or after a 30s backstop
   rather than failing.
 

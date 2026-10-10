@@ -123,8 +123,8 @@ type's doc comment). Swift coverage: `RepositoryWriteGateTests`.
 ## Terminal sessions: `wr-agent` (Rust) and the daemon it replaces
 
 A pane's shell outlives the pane, so the app does not own the pty — a **session helper** does, and
-the app attaches to it. New sessions all go to `wr-agent`; the older Swift daemon survives only as an
-attach-only client (issue #154):
+the app attaches to it. New sessions all go to `wr-agent`; the Swift `workroom-session` in this build only
+attaches to older daemons that are still running (issue #154):
 
 - **`wr-agent`** (`vcs/crates/wr-agent`, Rust) — where every NEW session goes. One binary,
   `serve | attach`, multiplexing services over one stream with a versioned envelope
