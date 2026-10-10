@@ -162,5 +162,16 @@ final class CLIContractTests: XCTestCase {
     XCTAssertEqual(
       try decode(DeleteProjectResponse.self, "delete-project-from-disk.json").trashPaths,
       ["/Users/dev/src/app", "/Users/dev/workrooms/calm-river"])
+
+    // Config-only removal runs no teardown; both cascading modes stream it.
+    XCTAssertEqual(try events("delete-project-events.ndjson").count, 0)
+    for name in [
+      "delete-project-with-workrooms-events.ndjson", "delete-project-from-disk-events.ndjson",
+    ] {
+      let events = try events(name)
+      XCTAssertEqual(events.map(\.type), ["log"], name)
+      XCTAssertEqual(events.first?.phase, "teardown", name)
+      XCTAssertEqual(events.first?.text, "stopping", name)
+    }
   }
 }
