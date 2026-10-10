@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/joelmoss/workroom/internal/errs"
+	"github.com/joelmoss/workroom/internal/workroom"
 	"github.com/spf13/cobra"
 )
 
@@ -50,11 +52,18 @@ var deleteCmd = &cobra.Command{
 			return writeJSONSuccess(os.Stdout, "delete", map[string]any{"name": name})
 		}
 
-		if len(args) == 0 {
-			return svc.InteractiveDelete(dir)
-		}
-		return svc.Delete(dir, args[0], confirmFlag)
+		return runDeleteHuman(svc, dir, args, confirmFlag, os.Stdout)
 	},
+}
+
+// runDeleteHuman is the human delete, writing to out: of the workroom named in args, or, with
+// none, of those the user picks.
+func runDeleteHuman(svc *workroom.Service, dir string, args []string, confirm string, out io.Writer) error {
+	svc.Out = out
+	if len(args) == 0 {
+		return svc.InteractiveDelete(dir)
+	}
+	return svc.Delete(dir, args[0], confirm)
 }
 
 func init() {
