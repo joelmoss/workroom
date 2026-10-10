@@ -577,8 +577,8 @@ fn a_healthy_agent_is_not_replaced_by_a_shell() {
 #[test]
 fn a_failure_frame_is_reported_rather_than_replaced_by_a_shell() {
     use std::io::Write;
-    use wr_agent::protocol::envelope::{Envelope, Hello, Service};
-    use wr_agent::protocol::frame::{Frame, FrameKind};
+    use wr_protocol::envelope::{Envelope, Hello, Service};
+    use wr_protocol::frame::{Frame, FrameKind};
 
     let dir = scratch("failure");
     let socket = dir.join("a.sock");
@@ -1101,9 +1101,9 @@ fn a_remote_attach_whose_agent_goes_away_exits_255() {
 #[test]
 fn list_fails_when_the_agent_hangs_up_without_answering() {
     use std::io::Write;
-    use wr_agent::protocol::envelope::{Envelope, Hello, Service};
-    use wr_agent::protocol::frame::{Frame, FrameKind};
     use wr_agent::serve::BUILD;
+    use wr_protocol::envelope::{Envelope, Hello, Service};
+    use wr_protocol::frame::{Frame, FrameKind};
 
     let dir = scratch("list-eof");
     let socket = dir.join("a.sock");

@@ -1978,8 +1978,16 @@ dependencies = [
  "serde_json",
  "thiserror",
  "ureq",
+ "wr-protocol",
  "wr-vcs-git",
  "wr-vcs-model",
+]
+
+[[package]]
+name = "wr-protocol"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]

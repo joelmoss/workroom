@@ -1,0 +1,15 @@
+[package]
+name = "wr-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+# The agent's wire: the multiplex envelope and the session frame, with their version constants.
+# No I/O and nothing beyond the error derive, so anything that speaks to an agent can link it
+# without the agent's own dependencies.
+[dependencies]
+thiserror = { workspace = true }

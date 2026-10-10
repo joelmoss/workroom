@@ -1,7 +1,6 @@
 //! Versioned VCS requests over Service::Vcs. Capability negotiation is separate from the terminal
 //! greeting. Each nonzero stream is one request. Reply JSON is chunked; the first payload byte is
 //! 0 for continuation, 1 for final. Maximum assembled reply is 16MiB. Requests are never replayed.
-use crate::protocol::envelope::{Envelope, Service};
 use crate::rpc::{MAX_RESPONSE, PartialRequests, Permit, SharedWriter, reassemble, send};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -15,6 +14,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
+use wr_protocol::envelope::{Envelope, Service};
 use wr_vcs_model::{self as model, VcsError};
 
 const MAX_HISTORY_LIMIT: usize = 10000;
@@ -921,11 +921,11 @@ pub fn dispatch(partial: &mut PartialRequests, envelope: &Envelope, writer: &Sha
 mod tests {
 
     use super::*;
-    use crate::protocol::envelope::{EnvelopeDecoder, Hello};
-    use crate::protocol::frame::{Frame, FrameKind};
     use crate::rpc::is_busy;
     use std::io::Read;
     use std::os::unix::net::UnixStream;
+    use wr_protocol::envelope::{EnvelopeDecoder, Hello};
+    use wr_protocol::frame::{Frame, FrameKind};
 
     #[test]
     fn version_and_path_errors_are_explicit() {

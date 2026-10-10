@@ -22,13 +22,13 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::input::InputClassifier;
-use crate::protocol::envelope::{Envelope, Service};
-use crate::protocol::frame::{Frame, FrameKind};
 use crate::pty::{Pty, PtyError};
 use crate::rpc::SharedWriter;
 use crate::screens::Screens;
 use crate::shadow::Shadow;
 use crate::transport::WRITE_TIMEOUT;
+use wr_protocol::envelope::{Envelope, Service};
+use wr_protocol::frame::{Frame, FrameKind};
 
 /// A `waitpid` status as the exit code a shell would report, which is what the `Exited` frame
 /// carries.
@@ -3079,7 +3079,7 @@ mod tests {
             }
             shadow.write(&paint);
             assert!(
-                shadow.replay().len() > crate::protocol::frame::MAX_PAYLOAD_SIZE,
+                shadow.replay().len() > wr_protocol::frame::MAX_PAYLOAD_SIZE,
                 "fixture no longer exceeds the cap, so this proves nothing"
             );
         }

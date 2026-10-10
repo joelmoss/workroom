@@ -16,7 +16,6 @@ pub mod input;
 pub mod layout;
 pub mod log;
 pub mod process;
-pub mod protocol;
 pub mod pty;
 pub mod rpc;
 pub mod screens;

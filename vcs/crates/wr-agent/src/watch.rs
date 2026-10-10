@@ -39,7 +39,6 @@
 //! is what triggers the close.
 
 use crate::file::FileError;
-use crate::protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
 use crate::rpc::SharedWriter;
 use crate::transport::Closer;
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -51,6 +50,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use wr_protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
 
 /// Watches one connection may hold. Each is an OS watcher plus a thread, so this is what bounds
 /// them, in place of the request permit a subscription deliberately does not take.

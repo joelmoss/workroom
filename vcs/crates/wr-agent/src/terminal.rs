@@ -1178,11 +1178,11 @@ mod tests {
         terminal.write(&paint);
 
         assert!(
-            terminal.replay().len() > crate::protocol::frame::MAX_PAYLOAD_SIZE,
+            terminal.replay().len() > wr_protocol::frame::MAX_PAYLOAD_SIZE,
             "a 400x200 styled screen replayed in {} bytes, under the {} cap — the fixture no \
              longer reproduces the condition `attach`'s chunking exists for",
             terminal.replay().len(),
-            crate::protocol::frame::MAX_PAYLOAD_SIZE
+            wr_protocol::frame::MAX_PAYLOAD_SIZE
         );
     }
 }

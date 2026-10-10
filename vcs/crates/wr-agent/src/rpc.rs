@@ -2,11 +2,11 @@
 //! chunked replies, chunked-request reassembly, and the one admission budget that a hand-off and
 //! idle-exit both consult. Services depend on this rather than on each other: it used to live in
 //! `vcs` and `session`, which made every service depend on both.
-use crate::protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
 use serde_json::{Value, json};
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use wr_protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
 use wr_vcs_model::VcsError;
 
 /// A connection's write half, shared with whichever session it is attached to.

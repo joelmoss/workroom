@@ -6,9 +6,9 @@ use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
-use wr_agent::protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
 use wr_agent::serve::handle_connection;
 use wr_agent::session::SessionStore;
+use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
 
 struct Client {
     stream: UnixStream,

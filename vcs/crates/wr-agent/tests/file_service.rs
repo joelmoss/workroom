@@ -9,9 +9,9 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
-use wr_agent::protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
 use wr_agent::serve::handle_connection;
 use wr_agent::session::SessionStore;
+use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
 
 struct Client {
     stream: UnixStream,

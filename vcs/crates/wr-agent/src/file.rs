@@ -22,7 +22,6 @@
 //! **Errors are this crate's own [`FileError`]**, not `wr_vcs_model::VcsError`: it is a type only this
 //! agent and its Swift client care about.
 
-use crate::protocol::envelope::{Envelope, Service};
 use crate::rpc::SharedWriter;
 use crate::rpc::{self, Permit};
 use crate::vcs;
@@ -35,6 +34,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+use wr_protocol::envelope::{Envelope, Service};
 use wr_vcs_model::VcsError;
 
 /// The wire version of this service, reported by `capabilities`. Separate from `PROTOCOL_VERSION`,
@@ -1423,7 +1423,7 @@ mod tests {
         let request = json!({"version": 1, "method": "resolve", "root": root, "path": "f"});
         let envelope = Envelope::new(Service::File, 1, serde_json::to_vec(&request).unwrap());
         dispatch(&envelope, &writer, &subscriptions);
-        let mut decoder = crate::protocol::envelope::EnvelopeDecoder::new();
+        let mut decoder = wr_protocol::envelope::EnvelopeDecoder::new();
         decoder.push(&capture.0.lock().unwrap());
         let reply = decoder
             .next_envelope()

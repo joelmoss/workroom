@@ -41,6 +41,7 @@ ureq = { version = "~3.4", default-features = false, features = ["rustls"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 ring = "0.17"
 base64 = "0.22"
+wr-protocol = { path = "../wr-protocol" }
 wr-vcs-git = { path = "../wr-vcs-git" }
 wr-vcs-model = { path = "../wr-vcs-model" }
 
