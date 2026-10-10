@@ -36,6 +36,10 @@ jobs:
           tar -xzf "$archive" actionlint
           ./actionlint -color
 
+      # Here, not in the macOS `app` job: shellcheck is already on this runner for actionlint.
+      - name: Lint the macapp shell scripts
+        run: make app-scripts-lint
+
       # Named file, not `unittest discover -s scripts/ci`: discover exits 0 when it finds NO
       # tests, so a deleted or renamed suite would report green while proving nothing.
       - name: Test the download stats report
