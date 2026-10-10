@@ -184,7 +184,7 @@ func TestListDataFullUsesReconciledVCS(t *testing.T) {
 func TestListHumanPathWarnsAndListsOnce(t *testing.T) {
 	dir := t.TempDir()
 	vcstest.MakeGitDir(t, dir) // drift: stored jj, on-disk git
-	svc, buf, cfg := newTestService(t, nil)
+	svc, _, cfg := newTestService(t, nil)
 	// Two workrooms whose dirs exist (so only the VCS-workspace warning can fire).
 	os.MkdirAll(filepath.Join(dir, "w1"), 0o755)
 	os.MkdirAll(filepath.Join(dir, "w2"), 0o755)
@@ -194,10 +194,11 @@ func TestListHumanPathWarnsAndListsOnce(t *testing.T) {
 	fake := &fakeVCS{typ: vcs.TypeGit, list: []string{"w1"}} // w2 absent from VCS
 	svc.VCSForTypeFunc = func(tp vcs.Type) (vcs.VCS, error) { return fake, nil }
 
-	if err := svc.List(dir); err != nil {
+	l, err := svc.Listing(dir)
+	if err != nil {
 		t.Fatal(err)
 	}
-	out := buf.String()
+	out := listingText(l)
 	if !strings.Contains(out, "git workspace not found") {
 		t.Fatalf("expected a 'git workspace not found' warning for w2, got:\n%s", out)
 	}
@@ -212,7 +213,7 @@ func TestListHumanPathWarnsAndListsOnce(t *testing.T) {
 func TestListHumanPathNoFalseWarningWhenListUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	vcstest.MakeGitDir(t, dir)
-	svc, buf, cfg := newTestService(t, nil)
+	svc, _, cfg := newTestService(t, nil)
 	os.MkdirAll(filepath.Join(dir, "w1"), 0o755)
 	cfg.AddWorkroom(dir, "w1", filepath.Join(dir, "w1"), "jj")
 
@@ -220,11 +221,12 @@ func TestListHumanPathNoFalseWarningWhenListUnavailable(t *testing.T) {
 	fake := &fakeVCS{typ: vcs.TypeGit, err: os.ErrPermission}
 	svc.VCSForTypeFunc = func(tp vcs.Type) (vcs.VCS, error) { return fake, nil }
 
-	if err := svc.List(dir); err != nil {
+	l, err := svc.Listing(dir)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(buf.String(), "workspace not found") {
-		t.Fatalf("must not emit a workspace warning when listing is unavailable, got:\n%s", buf.String())
+	if out := listingText(l); strings.Contains(out, "workspace not found") {
+		t.Fatalf("must not emit a workspace warning when listing is unavailable, got:\n%s", out)
 	}
 }
 
