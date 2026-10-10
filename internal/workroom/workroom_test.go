@@ -697,7 +697,7 @@ func TestListNoWorkroomsAnywhere(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if l.InWorkroom || l.AtProject || len(l.Projects) != 0 {
+	if l.InWorkroom || l.AtProject || l.Count != 0 || listingText(l) != "" {
 		t.Fatalf("expected nothing to list, got %+v", l)
 	}
 }
