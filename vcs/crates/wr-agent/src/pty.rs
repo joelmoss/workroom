@@ -108,6 +108,12 @@ impl Pty {
             }
             None => None,
         };
+        // The fallback when `cwd` cannot be entered, read here because the child may only make
+        // async-signal-safe calls, and `getenv` is not one.
+        let c_home = c_cwd
+            .as_ref()
+            .and_then(|_| std::env::var_os("HOME"))
+            .and_then(|home| CString::new(home.as_bytes()).ok());
 
         let mut err_pipe: [libc::c_int; 2] = [-1, -1];
         // SAFETY: `err_pipe` has room for the two descriptors pipe writes.
@@ -152,9 +158,8 @@ impl Pty {
             // Child. Everything from here to execve must be async-signal-safe: this is a forked
             // process, so allocating or taking a lock the parent held risks a deadlock rather than
             // an error. All the CStrings were built before the fork for exactly that reason.
-            // SAFETY: every call below is a plain syscall, plus `getenv`, which only reads
-            // `environ`; nothing can be writing it in this one-threaded child. Every pointer is
-            // to a CString or array built before the fork, alive until exec. `close_inherited`
+            // SAFETY: every call below is an async-signal-safe syscall or libc function. Every
+            // pointer is to a CString or array built before the fork, alive until exec. `close_inherited`
             // runs in the child before exec, as it requires, and this child never returns to
             // code that could use what it closes: it execs or `_exit`s.
             unsafe {
@@ -169,11 +174,12 @@ impl Pty {
                 }
 
                 if let Some(dir) = &c_cwd {
-                    if libc::chdir(dir.as_ptr()) != 0 {
-                        let home = libc::getenv(c"HOME".as_ptr());
-                        if home.is_null() || libc::chdir(home) != 0 {
-                            libc::chdir(c"/".as_ptr());
-                        }
+                    if libc::chdir(dir.as_ptr()) != 0
+                        && c_home
+                            .as_ref()
+                            .is_none_or(|home| libc::chdir(home.as_ptr()) != 0)
+                    {
+                        libc::chdir(c"/".as_ptr());
                     }
                 }
 
@@ -676,9 +682,10 @@ mod tests {
     }
 
     /// A workroom directory deleted while the session was detached must still yield a working
-    /// shell, not a dead session.
+    /// shell, not a dead session, and in `$HOME` rather than at `/`.
     #[test]
     fn falls_back_when_the_directory_is_gone() {
+        let home = std::env::var("HOME").expect("HOME");
         let pty = spawn(
             OsStr::new("/bin/pwd"),
             &[],
@@ -688,8 +695,8 @@ mod tests {
             24,
         )
         .expect("a missing cwd must not fail the spawn");
-        let output = read_until(&pty, "/", Duration::from_secs(5));
-        assert!(output.contains('/'), "got {output:?}");
+        let output = read_until(&pty, &home, Duration::from_secs(5));
+        assert!(output.contains(&home), "got {output:?}");
     }
 
     #[test]
