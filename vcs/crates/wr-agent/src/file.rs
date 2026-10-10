@@ -23,12 +23,12 @@
 //! agent and its Swift client care about.
 
 use crate::protocol::envelope::{Envelope, Service};
-use crate::session::SharedWriter;
-use crate::vcs::{self, Permit};
+use crate::rpc::SharedWriter;
+use crate::rpc::{self, Permit};
+use crate::vcs;
 use crate::watch::Subscriptions;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use std::io::Read;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::OpenOptionsExt;
@@ -199,7 +199,11 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter, subscriptions: &Subs
         return;
     }
     let stream = envelope.stream;
-    let send = |value: Value| vcs::send(writer, Service::File, stream, value);
+    // A File reply over the 16 MiB ceiling becomes `FileError::TooLarge`. The service bounds its own
+    // replies below it by construction (an 8 MiB read is 10.7 MiB of base64), so it is never sent;
+    // it exists so that if one ever were, the client gets an error it can decode.
+    let too_large = || json!(FileError::TooLarge("File reply exceeds 16 MiB".into()));
+    let send = |value: Value| rpc::send_with(writer, Service::File, stream, value, too_large);
     // A request is always one envelope. The chunk marker the VCS service uses for oversized requests
     // starts with 0x02, which is not `{`; refusing it here answers instead of parsing garbage.
     if envelope.payload.first() != Some(&b'{') {
@@ -246,7 +250,13 @@ pub fn dispatch(envelope: &Envelope, writer: &SharedWriter, subscriptions: &Subs
             std::thread::spawn(move || {
                 let _permit = permit;
                 let _slot = slot;
-                vcs::send(&writer, Service::File, stream, reply(handle(&request)));
+                rpc::send_with(
+                    &writer,
+                    Service::File,
+                    stream,
+                    reply(handle(&request)),
+                    too_large,
+                );
             });
         }
     }
@@ -337,35 +347,7 @@ fn listing_command() -> (&'static str, Vec<String>) {
 /// `LC_ALL=C` so a translated git cannot change a message a caller matches on, and no `GIT_DIR` family
 /// so an inherited override cannot list a different repository than the one asked about.
 fn listing_environment() -> Vec<(String, String)> {
-    scrubbed_environment(std::env::vars_os())
-}
-
-/// `listing_environment` over an explicit variable set, so the scrub and the pins can be tested
-/// without mutating this process's own environment — which other tests' child processes inherit.
-pub(crate) fn scrubbed_environment(
-    vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
-) -> Vec<(String, String)> {
-    const SCRUBBED: [&str; 7] = [
-        "GIT_EXTERNAL_DIFF",
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    ];
-    let mut env: BTreeMap<String, String> = vars
-        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
-        .collect();
-    env.retain(|key, _| !SCRUBBED.contains(&key.as_str()));
-    for (key, value) in [
-        ("GIT_OPTIONAL_LOCKS", "0"),
-        ("GIT_TERMINAL_PROMPT", "0"),
-        ("LC_ALL", "C"),
-    ] {
-        env.insert(key.into(), value.into());
-    }
-    env.into_iter().collect()
+    vcs::scrubbed_environment(std::env::vars_os())
 }
 
 fn list(request: &Request) -> Result<Value, FileError> {
@@ -392,7 +374,7 @@ fn list(request: &Request) -> Result<Value, FileError> {
     // raw cap above does not bound the reply. Refuse rather than let `send` replace the whole reply
     // with an error the caller cannot tell from a real failure.
     if vcs::escaped_len(&stdout) + vcs::escaped_len(&stderr)
-        > vcs::MAX_RESPONSE - vcs::EXEC_REPLY_RESERVE
+        > rpc::MAX_RESPONSE - vcs::EXEC_REPLY_RESERVE
     {
         return Err(FileError::ListingTruncated(
             "listing exceeds the reply ceiling once escaped".into(),
@@ -1532,26 +1514,5 @@ mod tests {
         let request = json!({"version": 1, "method": "list", "backend": "git", "root": root});
         let reply = execute(&serde_json::to_vec(&request).unwrap());
         assert_ne!(reply["result"]["exit_code"], 0, "{reply}");
-    }
-
-    #[test]
-    fn a_listing_environment_scrubs_repository_overrides_and_pins_the_locale() {
-        let vars = [
-            ("GIT_DIR", "/elsewhere"),
-            ("GIT_EXTERNAL_DIFF", "/bin/evil"),
-            ("LC_ALL", "fr_FR.UTF-8"),
-            ("HOME", "/home/someone"),
-        ]
-        .map(|(key, value)| (key.into(), value.into()));
-        let env: BTreeMap<_, _> = scrubbed_environment(vars.into_iter()).into_iter().collect();
-        assert!(!env.contains_key("GIT_DIR"));
-        assert!(!env.contains_key("GIT_EXTERNAL_DIFF"));
-        assert_eq!(env["LC_ALL"], "C");
-        assert_eq!(env["GIT_OPTIONAL_LOCKS"], "0");
-        assert_eq!(env["GIT_TERMINAL_PROMPT"], "0");
-        assert_eq!(
-            env["HOME"], "/home/someone",
-            "everything else passes through"
-        );
     }
 }

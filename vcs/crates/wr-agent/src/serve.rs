@@ -29,32 +29,12 @@ use crate::protocol::envelope::{
     Envelope, EnvelopeDecoder, Hello, MAX_ENVELOPE_PAYLOAD, ProtocolError, Service, negotiate,
 };
 use crate::protocol::frame::{Frame, FrameDecoder, FrameKind, HEADER_SIZE, MAX_PAYLOAD_SIZE};
-use crate::session::{SessionId, SessionSpec, SessionStore, SharedWriter};
+use crate::rpc::SharedWriter;
+use crate::session::{SessionId, SessionSpec, SessionStore};
 use crate::shell;
 use crate::transport::Transport;
 
 pub const BUILD: &str = concat!("wr-agent ", env!("CARGO_PKG_VERSION"));
-
-/// This build's number (`build.rs`): the commit time it was built from. Agents are ordered by it, so
-/// the app never replaces a newer agent with an older one, and an agent never hands off to an older
-/// program (#255, D13). 0 for a build with no git and no `WR_AGENT_BUILD`.
-///
-/// Read out of `BUILD_MARKER`, through `black_box`, so the marker is reachable from code that runs:
-/// `#[used]` keeps it in the object file, but only a reference keeps it past a linker that drops
-/// unreferenced sections.
-pub fn build_number() -> u64 {
-    std::hint::black_box(BUILD_MARKER)
-        .strip_prefix("WR-AGENT-BUILD:")
-        .and_then(|rest| rest.strip_suffix(';'))
-        .and_then(|number| number.parse().ok())
-        .unwrap_or(0)
-}
-
-/// The build number as the app finds it in a binary it has not run: the bundled Linux agents are
-/// never run on the Mac, so the app reads this marker out of their bytes instead
-/// (`AgentBootstrap.buildNumber(in:)`).
-#[used]
-pub static BUILD_MARKER: &str = concat!("WR-AGENT-BUILD:", env!("WR_AGENT_BUILD"), ";");
 
 /// How long an agent with no sessions and no clients waits before exiting.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -85,7 +65,7 @@ impl InstanceLock {
     /// `fd` must be the open lock file the hand-off table names, owned by nothing else.
     pub unsafe fn adopt(fd: std::os::unix::io::RawFd) -> InstanceLock {
         use std::os::unix::io::FromRawFd;
-        crate::handoff::set_cloexec(fd, true);
+        crate::pty::set_cloexec(fd, true);
         InstanceLock {
             // SAFETY: the caller guarantees `fd` is the open lock file and owned by nothing else,
             // so the `File` can take ownership of it.
@@ -181,12 +161,12 @@ impl Agent {
                     // whose request already tripped the app-side timeout) while its VCS request is
                     // still running, e.g. a git commit mid-way through updating the index, would
                     // otherwise let `connections` and `sessions` both read empty while that thread is
-                    // still mutating the repository. `crate::vcs::is_busy()` is the only thing that
+                    // still mutating the repository. `crate::rpc::is_busy()` is the only thing that
                     // actually knows.
                     // A kill on its own thread is the same shape: see `SessionStore::is_killing`.
                     let busy = self.connections.load(Ordering::SeqCst) > 0
                         || !self.sessions.is_empty()
-                        || crate::vcs::is_busy()
+                        || crate::rpc::is_busy()
                         || self.sessions.is_killing();
                     if busy {
                         idle_since = None;
@@ -237,9 +217,9 @@ pub fn bind(socket: &Path) -> std::io::Result<UnixListener> {
 struct ConnectionServices {
     /// `Transport::peer`, for the log lines a kill or a hand-off writes.
     peer: String,
-    partial: crate::vcs::PartialRequests,
+    partial: crate::rpc::PartialRequests,
     /// The Layout service's own, so its chunked requests never share a buffer with the VCS one's.
-    layout_partial: crate::vcs::PartialRequests,
+    layout_partial: crate::rpc::PartialRequests,
     subscriptions: crate::watch::Subscriptions,
     forwards: crate::forward::Forwards,
 }
@@ -302,8 +282,8 @@ pub fn handle_connection<T: Transport>(
     let mut attached: Option<SessionId> = None;
     let mut services = ConnectionServices {
         peer,
-        partial: crate::vcs::PartialRequests::default(),
-        layout_partial: crate::vcs::PartialRequests::default(),
+        partial: crate::rpc::PartialRequests::default(),
+        layout_partial: crate::rpc::PartialRequests::default(),
         subscriptions: crate::watch::Subscriptions::new(Arc::clone(&writer), closer),
         forwards: crate::forward::Forwards::new(),
     };
@@ -653,7 +633,7 @@ fn retired_status(envelope: &Envelope, writer: &SharedWriter) {
     if envelope.stream == 0 {
         return;
     }
-    crate::vcs::send(
+    crate::rpc::send(
         writer,
         Service::Status,
         envelope.stream,
@@ -662,29 +642,6 @@ fn retired_status(envelope: &Envelope, writer: &SharedWriter) {
             "error": {"unsupported": "this agent has no status service"},
         }),
     );
-}
-
-/// A `waitpid` status as the exit code a shell would report, which is what the `Exited` frame
-/// carries.
-///
-/// The raw status is not that number: it packs the exit code into its high byte, so `exit 7`
-/// arrives as 1792. Both ends of this wire already agree on the shell convention —
-/// `SessionDaemon.exitCode` produces it and `SessionAttachClient` returns it as its own exit
-/// status — so sending the raw value would make the same frame mean a different number depending
-/// on which backend served the session, and a caller checking `$? == 7` would silently never
-/// match.
-pub fn exit_code(status: i32) -> i32 {
-    // The low seven bits are the terminating signal, 0 when the process exited normally.
-    let signal = status & 0o177;
-    if signal == 0 {
-        return (status >> 8) & 0xFF;
-    }
-    // 0o177 means stopped rather than terminated — not an exit at all, so report success rather
-    // than inventing a failure for a process that is still there.
-    if signal == 0o177 {
-        return 0;
-    }
-    128 + signal
 }
 
 /// Ends `id` on a thread of its own and acknowledges it there, once the shell is gone, counted in
@@ -1148,23 +1105,6 @@ mod tests {
             1 <= bytes.len() / 37,
             "a single descriptor must satisfy Swift's minimumEncodedSize guard"
         );
-    }
-
-    /// The number in an `Exited` frame is the one a shell would report, not the raw `waitpid`
-    /// status — the two differ by a byte shift, and `SessionAttachClient` hands whatever arrives
-    /// straight back as its own exit status.
-    #[test]
-    fn an_exit_status_becomes_the_code_a_shell_would_report() {
-        assert_eq!(exit_code(7 << 8), 7, "exit 7, not the raw 1792");
-        assert_eq!(exit_code(0), 0);
-        assert_eq!(exit_code(255 << 8), 255, "the widest normal exit");
-        assert_eq!(
-            exit_code(libc::SIGKILL),
-            128 + 9,
-            "killed, by shell convention"
-        );
-        assert_eq!(exit_code(libc::SIGHUP), 128 + 1);
-        assert_eq!(exit_code(0o177), 0, "stopped is not an exit");
     }
 
     /// A `Sessions` reply is one frame, and `Frame::encode` panics rather than truncating past the

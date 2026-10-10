@@ -152,7 +152,7 @@ fn main() -> ExitCode {
             );
             println!("build {BUILD}");
             // The order between builds (#255): the app's probe reads it to decide whether to push.
-            println!("build-number {}", serve::build_number());
+            println!("build-number {}", handoff::build_number());
             // Whether this build can repaint a reattaching client. A build without it serves
             // sessions perfectly well and then hands a reconnecting pane a blank screen, which is
             // invisible until someone quits the app and comes back — so it is stated here and
@@ -356,7 +356,7 @@ fn adopt(
     let lock = unsafe { serve::InstanceLock::adopt(table.lock) };
     // SAFETY: as above; the listening socket is one of those descriptors.
     let listener = unsafe { UnixListener::from_raw_fd(table.listener) };
-    handoff::set_cloexec(table.listener, true);
+    wr_agent::pty::set_cloexec(table.listener, true);
     for session in table.sessions {
         let pty = wr_agent::pty::Pty::adopt(session.master, session.pid);
         if let Err(e) = agent.sessions.adopt(

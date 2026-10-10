@@ -40,7 +40,7 @@
 
 use crate::file::FileError;
 use crate::protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
-use crate::session::SharedWriter;
+use crate::rpc::SharedWriter;
 use crate::transport::Closer;
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde_json::{Value, json};
