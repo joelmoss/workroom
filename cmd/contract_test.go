@@ -5,6 +5,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -94,6 +95,14 @@ func contractHomeDir(t *testing.T) string {
 	}
 	t.Setenv("HOME", home)
 	return home
+}
+
+// requireGit skips a test when the git binary is not on PATH.
+func requireGit(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
 }
 
 // gitRepo makes a repository with one commit at dir.
