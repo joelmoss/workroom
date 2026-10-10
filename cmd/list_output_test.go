@@ -56,6 +56,11 @@ func TestListOutput(t *testing.T) {
 	inWorkroom := filepath.Join(home, "workrooms", contractName)
 
 	for _, colour := range []bool{false, true} {
+		if colour && os.Getenv("NO_COLOR") != "" {
+			// internal/ui's colours are made with NO_COLOR already applied, at package init.
+			t.Log("NO_COLOR is set: the coloured output is not checked")
+			continue
+		}
 		saved := color.NoColor
 		color.NoColor = !colour
 		t.Cleanup(func() { color.NoColor = saved })
