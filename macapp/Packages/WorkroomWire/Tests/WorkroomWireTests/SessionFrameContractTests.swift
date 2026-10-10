@@ -39,6 +39,7 @@ final class SessionFrameContractTests: XCTestCase {
     let kinds = Dictionary(
       uniqueKeysWithValues: SessionFrameKind.allCases.map { (String(describing: $0), $0) })
     var rows = 0
+    var seen: [String] = []
     for line in text.split(separator: "\n") where !line.hasPrefix("#") {
       let columns = line.split(separator: "\t", omittingEmptySubsequences: false)
       XCTAssertEqual(columns.count, 3, "not three columns: \(line)")
@@ -60,6 +61,7 @@ final class SessionFrameContractTests: XCTestCase {
           XCTAssertEqual(error as? SessionProtocolError, .unknownFrameKind(frame[0]), "\(line)")
         }
       default:
+        seen.append(expect)
         if let kind = kinds[expect] {
           XCTAssertEqual(kind.rawValue, frame[0], "\(line)")
           XCTAssertEqual(SessionFrame(kind: kind, payload: payload).encoded(), frame, "\(line)")
@@ -76,5 +78,10 @@ final class SessionFrameContractTests: XCTestCase {
       rows += 1
     }
     XCTAssertEqual(rows, 16, "every row was read")
+    // Every kind WorkroomWire defines has exactly one row, so none can go uncovered.
+    XCTAssertEqual(seen.count, Set(seen).count, "a kind is listed twice")
+    XCTAssertEqual(
+      Set(seen), Set(kinds.keys).union(Self.newerThanWorkroomWire), "one fixture row per frame kind"
+    )
   }
 }

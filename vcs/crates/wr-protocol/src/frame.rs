@@ -311,6 +311,7 @@ mod tests {
         };
         let fixture = include_str!("../../../../testdata/contracts/frames.tsv");
         let mut rows = 0;
+        let mut kinds = Vec::new();
         for line in fixture
             .lines()
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -343,10 +344,17 @@ mod tests {
                         "{line}"
                     );
                     assert_eq!(decoder.buffered_len(), 0, "{line}");
+                    kinds.push(frame[0]);
                 }
             }
             rows += 1;
         }
         assert_eq!(rows, 16, "every row was read");
+        // Every kind this codec defines has exactly one row, so a new kind cannot go uncovered.
+        let defined: Vec<u8> = (0..=u8::MAX)
+            .filter(|&b| FrameKind::from_u8(b).is_some())
+            .collect();
+        kinds.sort_unstable();
+        assert_eq!(kinds, defined, "one fixture row per frame kind");
     }
 }
