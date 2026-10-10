@@ -59,12 +59,6 @@ func Parse(s string) (Channel, bool) {
 	}
 }
 
-// Valid reports whether c is one of the three canonical channels.
-func Valid(c Channel) bool {
-	_, ok := Parse(string(c))
-	return ok
-}
-
 // Classify maps a GitHub release tag to the channel it belongs to. ok is false
 // for tags that are not part of any channel (the appcast feed release, or a tag
 // that isn't a recognizable version). See the package doc for the full contract.

@@ -1060,12 +1060,6 @@ pub fn parse_session_id(value: &OsStr) -> Option<SessionId> {
     Some(SessionId(bytes))
 }
 
-/// Reads a session id from the environment the app sets, matching `PersistentSessionService`'s
-/// `WORKROOM_SESSION_ID`.
-pub fn session_id_from_env() -> Option<SessionId> {
-    parse_session_id(&std::env::var_os("WORKROOM_SESSION_ID")?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
