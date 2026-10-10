@@ -1074,17 +1074,17 @@ mod tests {
     fn widths_are_what_libghostty_writes() {
         const SENTINEL: u8 = 0xA5;
         let terminal = ShadowTerminal::new(80, 24).expect("terminal");
-        for kind in [
-            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS,
-            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS,
-            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS,
-            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_X,
-            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y,
-            GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS,
-        ] {
+        // Every kind the table claims, so a kind added to it is checked without being listed
+        // here. terminal.h's kinds run from 0 to 39 today.
+        let kinds: Vec<_> = (0..256)
+            .filter_map(|kind| ShadowTerminal::width_of(kind).map(|width| (kind, width)))
+            .collect();
+        assert!(!kinds.is_empty(), "width_of claims no kinds");
+        for (kind, width) in kinds {
             // Words, not bytes, so the buffer is aligned for the widest type written into it.
             let mut words = [u64::from_ne_bytes([SENTINEL; 8]); 2];
-            // SAFETY: `inner` is live, and 16 aligned bytes hold every output type listed here.
+            // SAFETY: `inner` is live, and only kinds the table claims are read. 16 aligned bytes
+            // hold all of them, and a table entry off by up to 8 bytes is what this test reports.
             let rc =
                 unsafe { ghostty_terminal_get(terminal.inner, kind, words.as_mut_ptr().cast()) };
             assert_eq!(rc, OK, "kind {kind}");
@@ -1094,7 +1094,7 @@ mod tests {
                 .iter()
                 .rposition(|byte| *byte != SENTINEL)
                 .map(|i| i + 1);
-            assert_eq!(written, ShadowTerminal::width_of(kind), "kind {kind}");
+            assert_eq!(written, Some(width), "kind {kind}");
         }
     }
 
