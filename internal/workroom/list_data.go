@@ -64,7 +64,7 @@ type ListResult struct {
 
 // ListData returns every configured project (incl. empty), sorted by path with
 // workrooms sorted by name, computing warnings at the requested level. Unlike the
-// human List, it does not depend on the current working directory.
+// human Listing, it does not depend on the current working directory.
 func (s *Service) ListData(level WarningsLevel) (ListResult, error) {
 	projects, err := s.Config.AllProjects()
 	if err != nil {
@@ -91,7 +91,7 @@ func (s *Service) ListData(level WarningsLevel) (ListResult, error) {
 }
 
 // projectInfo builds one project's warnings-annotated view. Shared by ListData (--json) and
-// List (human) so the two paths compute identical Warning Kind/Message pairs from one place —
+// Listing (human) so the two paths compute identical Warning Kind/Message pairs from one place —
 // they used to diverge on whether an empty/missing workroom path warns "directory not found"
 // (List did unconditionally; ListData silently didn't). That's resolved here in favor of always
 // checking: an empty path is exactly as "not found" as a populated one that doesn't exist.
