@@ -131,7 +131,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   func create() async throws -> HostID {
     guard let provisioning else { throw HostDriverError.notImplemented("Creating a host") }
     try await ensureImage(provisioning.image)
-    return try await run(provisioning.image, image: nil)
+    return try await run(provisioning.image)
   }
 
   /// Told how far a host image's pull has got, 0 to 1, then nil once it is done, for a create run
@@ -620,7 +620,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Runs a container from `source` and waits until it can be reached: its identity minted, its
   /// host key pinned, and an ssh login through this driver's own configuration answering. A
   /// container that gets no further is removed.
-  private func run(_ source: String, image: String?) async throws -> HostID {
+  private func run(_ source: String) async throws -> HostID {
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
     // A port of its own rather than an ephemeral one (`127.0.0.1::22`): a restart keeps it, so the
     // host's address outlives a reboot, as a provider's box keeps its address.
@@ -657,7 +657,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
           address: "127.0.0.1", port: Int(port), user: provisioning.user,
           identityFile: provisioning.identityFile, hostKey: hostKey,
           agentSocket: provisioning.agentSocket)
-        provisioned[id] = Provisioned(container: container, image: image)
+        provisioned[id] = Provisioned(container: container, image: nil)
       }
       try await awaitLogin(.remote(id))
       return .remote(id)

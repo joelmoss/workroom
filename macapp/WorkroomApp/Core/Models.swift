@@ -30,9 +30,11 @@ struct HostDescriptor: Codable, Hashable {
   /// A workroom's broker grant, which destroying it cancels.
   var grantID: String? = nil
   /// The ID a workroom's grant and its agent's route to the broker are keyed by
-  /// (`RemoteProvisioning.derive`). Chosen before the host exists, so not the host's.
+  /// (`RemoteProvisioning.provision`). Chosen before the host exists, so not the host's.
   var workroomID: UUID? = nil
-  /// A base's repository, as `RemoteProvisioning.Base` records it.
+  /// A workroom's GitHub repository, `owner/name`, and its clone URL, for its PR and CI status
+  /// (`RemoteWorkrooms.registrations`). An older build's base recorded the same fields, with the
+  /// clone's `path`.
   var repository: String? = nil
   var cloneURL: String? = nil
   var path: String? = nil
@@ -129,14 +131,6 @@ struct HostDescriptor: Codable, Hashable {
     credentials = try? fields?.decodeIfPresent(String.self, forKey: .credentials)
     org = try? fields?.decodeIfPresent(String.self, forKey: .org)
     account = try? fields?.decodeIfPresent(String.self, forKey: .account)
-  }
-
-  /// A project's base, when the descriptor records a whole one.
-  var base: RemoteProvisioning.Base? {
-    guard let id, let repository, let cloneURL, let path else { return nil }
-    return RemoteProvisioning.Base(
-      host: id, repository: repository, cloneURL: cloneURL, path: path,
-      relayed: isRelayed ? true : nil)
   }
 }
 

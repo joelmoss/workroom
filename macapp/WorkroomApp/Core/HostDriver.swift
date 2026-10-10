@@ -133,15 +133,15 @@ extension HostTerminalDriver {
 enum HostDriverError: Error, Equatable, Sendable, LocalizedError {
   case unknownHost(HostID)
   /// From a driver that cannot provision, such as a `ContainerHostDriver` given no
-  /// `Provisioning`, for `create`, `deriveFromBase` and `destroy`; and from `destroy` for a host
-  /// the driver was handed rather than made.
+  /// `Provisioning`, for `create` and `destroy`; and from `destroy` for a host the driver was
+  /// handed rather than made.
   case notImplemented(String)
   case invalidConfiguration(String)
-  /// Making, deriving or removing a host failed. A failed `create` or `deriveFromBase` has
-  /// removed what it made (or says otherwise with `leftBehind`); a failed `destroy` leaves the
-  /// host as it was, still known to the driver, so it can be tried again.
+  /// Making or removing a host failed. A failed `create` has removed what it made (or says
+  /// otherwise with `leftBehind`); a failed `destroy` leaves the host as it was, still known to
+  /// the driver, so it can be tried again.
   case provisioning(String)
-  /// A failed `create` or `deriveFromBase` could not remove what it had made: each of `leftover`
+  /// A failed `create` could not remove what it had made: each of `leftover`
   /// is still there, named by what the driver called it. `host`, when the driver can name it, is
   /// the host it made, so the caller can record it for a later delete to take down (#356).
   case leftBehind(cause: String, leftover: [String], host: HostID? = nil)

@@ -343,9 +343,6 @@ final class AgentEnrolmentTests: XCTestCase {
     }
 
     func create() async throws -> HostID { throw HostDriverError.notImplemented("create") }
-    func deriveFromBase(_ base: HostID) async throws -> HostID {
-      throw HostDriverError.notImplemented("derive")
-    }
     func destroy(_ host: HostID) async throws { throw HostDriverError.notImplemented("destroy") }
     func openStream(to host: HostID) async throws -> HostStream {
       throw HostDriverError.notImplemented("openStream")

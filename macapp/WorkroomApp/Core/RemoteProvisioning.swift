@@ -62,20 +62,6 @@ enum RemoteProvisioning {
     var agentBinary: String { AgentBootstrap.binary(besideSocket: agentSocket) }
   }
 
-  /// A project's base machine, as the project's host descriptor records it.
-  struct Base: Codable, Equatable, Sendable {
-    let host: UUID
-    /// `owner/name` on GitHub, which the broker mints tokens for.
-    let repository: String
-    let cloneURL: String
-    /// The clone on the host.
-    let path: String
-    /// Whether its workrooms take git's credentials from the Mac's relay instead of enrolling with
-    /// the broker (#309): made when signed out of Codaset, or when the repository's owner hasn't
-    /// installed the Codaset App. nil, as every base before #309 has it, is the broker.
-    var relayed: Bool? = nil
-  }
-
   /// A workroom's host, serving requests over `connection`.
   struct Instance: Sendable {
     let host: HostID
@@ -83,9 +69,10 @@ enum RemoteProvisioning {
     let grantID: String?
     let path: String
     let branch: String
-    /// Whether its git takes credentials from the Mac's relay instead of the broker (#309).
-    var relayed = false
     let connection: AgentVCSConnection
+
+    /// Whether its git takes credentials from the Mac's relay instead of the broker (#309).
+    var relayed: Bool { grantID == nil }
   }
 
   enum Failure: Error, Equatable, LocalizedError {
@@ -219,8 +206,7 @@ enum RemoteProvisioning {
         ],
         in: path, environment: header, on: connected)
       return Instance(
-        host: host, grantID: grant, path: path, branch: branch, relayed: grant == nil,
-        connection: connected)
+        host: host, grantID: grant, path: path, branch: branch, connection: connected)
     } catch {
       var error = error
       var alreadyFailed: (grant: String, failure: String)?
