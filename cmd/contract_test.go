@@ -341,6 +341,7 @@ func TestContractDeleteProject(t *testing.T) {
 				t.Fatalf("delete-project %v: exit %d, %s", mode.flags, run.code, run.stdout)
 			}
 			checkContract(t, mode.file, run.stdout, home)
+			checkContract(t, strings.TrimSuffix(mode.file, ".json")+"-events.ndjson", run.stderr, home)
 		})
 	}
 }
