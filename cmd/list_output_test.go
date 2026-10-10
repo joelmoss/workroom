@@ -76,7 +76,7 @@ func TestListOutput(t *testing.T) {
 		b := wrap("\x1b[1m", "\x1b[22m")
 		d := wrap("\x1b[90m", "\x1b[0m")
 		y := wrap("\x1b[33m", "\x1b[0m")
-		missing := y("[directory not found, git workspace not found]")
+		missing := y("[directory not found, git workroom not found]")
 
 		check("in a workroom", run(inWorkroom),
 			y("You are already in a workroom.")+"\nParent project is at ~/src/app\n")
