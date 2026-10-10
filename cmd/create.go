@@ -2,10 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/joelmoss/workroom/internal/errs"
-
+	"github.com/joelmoss/workroom/internal/ui"
 	"github.com/joelmoss/workroom/internal/workroom"
 	"github.com/spf13/cobra"
 )
@@ -34,10 +37,6 @@ var createCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if createNoEditor {
-			svc.SuppressEditor = true
-		}
-
 		if cmd.Flags().Changed("host") {
 			return createRemote(svc, dir)
 		}
@@ -76,8 +75,58 @@ var createCmd = &cobra.Command{
 			return writeJSONSuccess(os.Stdout, "create", payload)
 		}
 
-		return svc.Create(dir)
+		return createWorkroom(svc, dir, os.Stdout, !createNoEditor)
 	},
+}
+
+// createWorkroom is the human create: the setup script's output streams into a log panel, then
+// the success line, then, with offerEditor, the offer to open the workroom in $EDITOR.
+func createWorkroom(svc *workroom.Service, dir string, out io.Writer, offerEditor bool) error {
+	// The setup script's output streams live into this panel as it runs. The panel
+	// renders lazily on first output, so a script with no output draws nothing.
+	panel := ui.NewLogPanel(out, "Setup")
+	res, err := svc.CreateNamed(dir, panel)
+	panel.Close(err == nil)
+	// Before a setup error too: offline, the fetch and a networked setup script fail together.
+	if res.Warning != "" {
+		fmt.Fprintln(out, ui.Yellow(res.Warning))
+	}
+	if err != nil {
+		return err
+	}
+
+	if panel.Shown() {
+		fmt.Fprintln(out)
+	}
+	fmt.Fprintln(out, ui.Green(fmt.Sprintf("Workroom '%s' created successfully at %s.", res.Name, ui.DisplayPath(res.Path))))
+
+	// Offer to open the workroom in the user's editor
+	editor := os.Getenv("EDITOR")
+	if editor != "" && !svc.Pretend && offerEditor {
+		open, err := svc.ConfirmFn(fmt.Sprintf("Open workroom in %s?", editor))
+		if err != nil {
+			return err
+		}
+		if open {
+			if err := openEditor(editor, res.Path); err != nil {
+				return fmt.Errorf("failed to open editor: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// openEditor opens path with editor, a command line such as $EDITOR, attached to this terminal.
+// Tests replace it.
+var openEditor = func(editor, path string) error {
+	parts := strings.Fields(editor)
+	args := append(parts[1:], path)
+	cmd := exec.Command(parts[0], args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // createRemote records a remote workroom the app is about to make (#253), and prints its name.
