@@ -476,10 +476,12 @@ type Listing struct {
 	AtProject bool
 	// Count is how many projects Projects yields.
 	Count int
-	// Projects yields the projects to show, sorted by path, with their warnings at WarningsFull.
-	// Away from any project it is every project that has workrooms. Each project's warnings are
-	// computed only as it is reached, so a caller can show one before the next one's checks run.
-	Projects iter.Seq[ProjectInfo]
+	// Projects yields the projects to show, sorted by path: each one's path, and a function that
+	// runs its checks and returns it with its warnings at WarningsFull. Away from any project it
+	// is every project that has workrooms. A caller shows each path before its checks run, and
+	// each project before the next one's, so one that stalls (a hung network volume) is named
+	// and holds back nothing before it.
+	Projects iter.Seq2[string, func() ProjectInfo]
 }
 
 // Listing returns what the human list shows from cwd. Unlike ListData it depends on cwd, and away
@@ -496,10 +498,10 @@ func (s *Service) Listing(cwd string) (Listing, error) {
 	// may heal the stored VCS type, which an empty project's listing never did.
 	if found && project != nil {
 		if len(project.Workrooms) == 0 {
-			return Listing{AtProject: true, Projects: func(func(ProjectInfo) bool) {}}, nil
+			return Listing{AtProject: true, Projects: func(func(string, func() ProjectInfo) bool) {}}, nil
 		}
-		return Listing{AtProject: true, Count: 1, Projects: func(yield func(ProjectInfo) bool) {
-			yield(s.projectInfo(projectPath, *project, WarningsFull))
+		return Listing{AtProject: true, Count: 1, Projects: func(yield func(string, func() ProjectInfo) bool) {
+			yield(projectPath, func() ProjectInfo { return s.projectInfo(projectPath, *project, WarningsFull) })
 		}}, nil
 	}
 
@@ -515,9 +517,9 @@ func (s *Service) Listing(cwd string) (Listing, error) {
 	}
 	sort.Strings(paths)
 
-	return Listing{Count: len(paths), Projects: func(yield func(ProjectInfo) bool) {
+	return Listing{Count: len(paths), Projects: func(yield func(string, func() ProjectInfo) bool) {
 		for _, path := range paths {
-			if !yield(s.projectInfo(path, projects[path], WarningsFull)) {
+			if !yield(path, func() ProjectInfo { return s.projectInfo(path, projects[path], WarningsFull) }) {
 				return
 			}
 		}

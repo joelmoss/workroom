@@ -261,9 +261,10 @@ func TestListDataFullToleratesAStoredJJProjectWithoutGit(t *testing.T) {
 	}
 }
 
-// The human list shows each project as soon as its own checks are done: Listing runs none up
-// front, and a project's only when it is reached, so one that stalls (a hung network volume)
-// cannot hold back those before it.
+// The human list names each project before its checks run, and shows it before the next one's
+// run: Listing runs none up front, yields a project's path before running its checks, and runs
+// them only when asked, so one that stalls (a hung network volume) is named and holds back
+// nothing before it.
 func TestListingChecksEachProjectOnlyWhenReached(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
 	vcstest.MakeGitDir(t, a)
@@ -281,10 +282,14 @@ func TestListingChecksEachProjectOnlyWhenReached(t *testing.T) {
 	if l.Count != 2 || fake.listCalls != 0 {
 		t.Fatalf("Listing = %d projects after %d checks, want 2 projects and no checks yet", l.Count, fake.listCalls)
 	}
-	for range l.Projects {
+	for path, project := range l.Projects {
+		if path != a && path != b || fake.listCalls != 0 {
+			t.Fatalf("first project %q reached after %d checks, want a project path and none", path, fake.listCalls)
+		}
+		project()
 		break
 	}
 	if fake.listCalls != 1 {
-		t.Fatalf("reaching the first project ran %d checks, want 1", fake.listCalls)
+		t.Fatalf("checking the first project ran %d checks, want 1", fake.listCalls)
 	}
 }
