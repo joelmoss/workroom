@@ -205,16 +205,41 @@ impl ShadowTerminal {
         }
     }
 
+    /// A count or position, widened to `u32`. `ghostty_terminal_get` writes as many bytes as the
+    /// output type terminal.h names for each kind, so each is read into exactly that type: a
+    /// `size_t` for the scrollback rows, a `uint16_t` for the size and the cursor, a `uint8_t` for
+    /// the kitty flags. A `u32` for all of them overran the stack for the scrollback rows. Any
+    /// other kind is refused.
     fn get_u32(&self, data: GhosttyTerminalData) -> Option<u32> {
-        let mut out: u32 = 0;
-        let rc = unsafe {
-            ghostty_terminal_get(
-                self.inner,
-                data,
-                &mut out as *mut u32 as *mut std::ffi::c_void,
-            )
-        };
-        (rc == OK).then_some(out)
+        /// # Safety
+        /// `T` must be the output type terminal.h names for `data`.
+        unsafe fn get<T: Default>(
+            terminal: GhosttyTerminal,
+            data: GhosttyTerminalData,
+        ) -> Option<T> {
+            let mut out = T::default();
+            // SAFETY: `terminal` is live, and the caller passes the type `data` writes.
+            let rc = unsafe { ghostty_terminal_get(terminal, data, (&raw mut out).cast()) };
+            (rc == OK).then_some(out)
+        }
+        // SAFETY: `inner` is live, and each arm reads its kinds into the type terminal.h names.
+        unsafe {
+            match data {
+                GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS => {
+                    get::<usize>(self.inner, data).and_then(|rows| u32::try_from(rows).ok())
+                }
+                GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS
+                | GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS
+                | GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_X
+                | GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y => {
+                    get::<u16>(self.inner, data).map(u32::from)
+                }
+                GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS => {
+                    get::<u8>(self.inner, data).map(u32::from)
+                }
+                _ => None,
+            }
+        }
     }
 
     pub fn mode(&self, mode: GhosttyMode) -> Option<bool> {
@@ -998,6 +1023,17 @@ mod tests {
         assert_eq!(
             terminal.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS),
             Some(30)
+        );
+    }
+
+    /// `get_u32` reads only the kinds whose width it knows: a kind it was not told about could
+    /// write more than the variable it reads into.
+    #[test]
+    fn get_u32_refuses_a_kind_of_unknown_width() {
+        let terminal = ShadowTerminal::new(80, 24).expect("terminal");
+        assert_eq!(
+            terminal.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_TOTAL_ROWS),
+            None
         );
     }
 
