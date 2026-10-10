@@ -17,6 +17,7 @@ make app-package-test # swift test in each macapp/Packages package — no app ho
 make app-uitest     # XCUITest — needs the GUI session to itself; queues behind other workrooms
 make app-identity   # the bundle id this checkout's Debug build gets (one per workroom)
 make app-test-scripts # script tests (build-helper archs, channel classify, dev identity, GUI lock)
+make app-scripts-lint # shellcheck over macapp/Scripts/*.sh
 make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.yml
 make app-format     # swift-format, rewrite sources in place
 make app-lint       # swift-format --strict (non-zero on any violation — the hard gate)
