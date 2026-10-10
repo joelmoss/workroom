@@ -198,7 +198,7 @@ struct CodingAgentUsageSegment: View {
 
   /// Takes `now` from the segment's `TimelineView` rather than reading its own clock, so the tooltip
   /// and the VoiceOver label describe the same instant the pace pins are drawn for. The FORMAT is
-  /// load-bearing: every `AgentUsageUITests` assertion reads this string, and
+  /// load-bearing: every `CodingAgentUsageUITests` assertion reads this string, and
   /// `CodingAgentUsageSegmentLabelTests` pins the zero-usage branch. Static so a unit test can call it.
   static func quotaAccessibilityLabel(_ snapshot: CodingAgentQuotaSnapshot, now: Date) -> String {
     let windows = snapshot.windows.map { window in
