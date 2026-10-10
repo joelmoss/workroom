@@ -220,22 +220,26 @@ and Keychain, as `ssh exe.dev` in Terminal, with only `ExeDevHostDriver.sshOptio
 (nothing registered on the account). An app opened from Finder gives every ssh it runs, account
 commands and VMs alike, the login shell's `SSH_AUTH_SOCK`; a VM's spawned ssh also gets the login
 shell's `PATH`, for a `ProxyCommand` helper. A VM's host key is checked as `exe.dev`'s
-(`HostKeyAlias`). A derive is `cp` of the base's flushed disk, so the base is synced first and no reboot follows; `rm` exits 0
+(`HostKeyAlias`). A host is `new` plus `systemd.sh`, with no base to copy; `rm` exits 0
 whatever happened, so a delete reads what it printed. Both drivers' shared live cases are in
 `WorkroomAppTests/ProviderParityTestCase.swift`.
 
 `Core/BoxdHostDriver.swift` is the first real provider: boxd machines driven through the `boxd`
 CLI (`--json`) and reached over the container driver's ssh transport (its `exec`,
 `attachCommand` and `writeConfiguration` statics). Its ssh details come only from the blocks the
-CLI manages in `~/.ssh/config` and `~/.ssh/known_hosts` (`SSHDetails`). A base is set up by
+CLI manages in `~/.ssh/config` and `~/.ssh/known_hosts` (`SSHDetails`). A host is set up by
 `Resources/host-setup/systemd.sh` (an identity unit and the agent's supervisor, both systemd; shared
-with every provider driver whose machines run systemd, #259). A
-derive is snapshot, restore, then reboot, and the reboot is not optional: a restored snapshot
-runs the base's processes until it happens. The CLI acts in boxd's active org, so the driver
+with every provider driver whose machines run systemd, #259). Every remote workroom is a fresh
+machine of its own: `RemoteProvisioning.provision` has the driver `create()` it, enrols its agent,
+clones and checks out the branch, and no driver derives a host from another. The identity unit
+stays: every fresh boxd machine boots with the image's machine-id and ssh host key (measured,
+2026-10-10). The CLI acts in boxd's active org, so the driver
 is told its org and account (`Configuration.org`, `Configuration.account`; every personal
 account's org is nil, so the org alone cannot tell two accounts apart) and refuses to act while
-another is active (#356). Machines and snapshots are named
-`<prefix>-<host id>`, so cleanup and a relaunched app find them by ID. `BoxdIntegrationTests`
+another is active (#356). Machines are named
+`<prefix>-<host id>`, so cleanup and a relaunched app find them by ID; a delete also removes the
+snapshot an older build's derive may have left under that name. Bases older builds recorded stay
+until a follow-up retires them (`TODOS.md`); Delete Project still takes them down. `BoxdIntegrationTests`
 make real machines: they run only with `TEST_RUNNER_WR_BOXD_TESTS=1`
 and the sandbox off. The app reaches it from New Workroom › Remote › boxd (#356): `RemoteHosts`
 holds any driver by `DriverKey` (a container runtime or a boxd org and account), a background read

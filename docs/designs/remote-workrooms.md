@@ -9,6 +9,14 @@ Mode: Builder
 > **Note:** Workroom dropped Jujutsu (jj) support in #266. Passages here that describe jj
 > behaviour are a record of the design as it stood then, not of the current code.
 
+> **Note (2026-10-10):** #395 removed per-project base machines. Every remote workroom is now a
+> fresh host made by the driver's `create()`, with its own clone, and `HostDriver.deriveFromBase`
+> is gone from every driver. A derive measured slower than a fresh machine on boxd and saved about
+> 2.5 s on exe.dev. Passages below that describe a base, a derive or `deriveFromBase` record the
+> design as it stood, not the current code. The `workroom-identity` unit stays, because fresh boxd
+> machines share the image's machine-id and ssh host key (measured the same day). Bases older
+> builds recorded are retired by a follow-up (`TODOS.md`, P1).
+
 ## Current Status — 2026-10-08
 
 **Phase 4 is under way, and the app can now create, open and delete remote workrooms.** Since PR
