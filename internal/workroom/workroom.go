@@ -465,37 +465,43 @@ func (s *Service) workroomExists(dir, name string) (bool, error) {
 	return slices.Contains(existing, name), nil
 }
 
-// List shows workrooms for the current project or all projects.
-func (s *Service) List(cwd string) error {
+// Listing is what the human `workroom list` shows from a directory.
+type Listing struct {
+	// InWorkroom is true when the directory is inside a workroom; ParentPath is its project.
+	InWorkroom bool
+	ParentPath string
+	// AtProject is true when the directory is a registered project's root. Projects then holds
+	// that project alone, or nothing when it has no workrooms.
+	AtProject bool
+	// Projects holds the projects to show, sorted by path, with their warnings at WarningsFull.
+	// Away from any project it is every project that has workrooms.
+	Projects []ProjectInfo
+}
+
+// Listing returns what the human list shows from cwd. Unlike ListData it depends on cwd, and away
+// from a project it holds only projects with workrooms.
+func (s *Service) Listing(cwd string) (Listing, error) {
 	projectPath, project, found := s.Config.FindCurrentProject(cwd)
 
 	// Inside a workroom
 	if found && projectPath != cwd {
-		s.sayColor("You are already in a workroom.", "yellow")
-		s.say(fmt.Sprintf("Parent project is at %s", ui.DisplayPath(projectPath)))
-		return nil
+		return Listing{InWorkroom: true, ParentPath: projectPath}, nil
 	}
 
-	// Inside a parent project
+	// Inside a parent project. Its warnings are computed only when it has workrooms: projectInfo
+	// may heal the stored VCS type, which an empty project's listing never did.
 	if found && project != nil {
-		if len(project.Workrooms) == 0 {
-			s.say("No workrooms found for this project.")
-			return nil
+		l := Listing{AtProject: true}
+		if len(project.Workrooms) > 0 {
+			l.Projects = []ProjectInfo{s.projectInfo(projectPath, *project, WarningsFull)}
 		}
-
-		s.printWorkroomsTable(s.projectInfo(projectPath, *project, WarningsFull))
-		return nil
+		return l, nil
 	}
 
 	// Neither — list all
 	projects, err := s.Config.ProjectsWithWorkrooms()
 	if err != nil {
-		return err
-	}
-
-	if len(projects) == 0 {
-		s.say("No workrooms found.")
-		return nil
+		return Listing{}, err
 	}
 
 	paths := make([]string, 0, len(projects))
@@ -504,31 +510,11 @@ func (s *Service) List(cwd string) error {
 	}
 	sort.Strings(paths)
 
+	var l Listing
 	for _, path := range paths {
-		s.say(fmt.Sprintf("%s:", ui.DisplayPath(path)))
-		s.printWorkroomsTable(s.projectInfo(path, projects[path], WarningsFull))
-		s.say("")
+		l.Projects = append(l.Projects, s.projectInfo(path, projects[path], WarningsFull))
 	}
-
-	return nil
-}
-
-// printWorkroomsTable renders one project's already-computed warnings (see projectInfo) as the
-// human-readable table.
-func (s *Service) printWorkroomsTable(pinfo ProjectInfo) {
-	var rows [][]string
-	for _, wi := range pinfo.Workrooms {
-		row := []string{ui.Bold(wi.Name), ui.Dim(ui.DisplayPath(wi.Path))}
-		if len(wi.Warnings) > 0 {
-			messages := make([]string, len(wi.Warnings))
-			for i, w := range wi.Warnings {
-				messages[i] = w.Message
-			}
-			row = append(row, ui.Yellow(fmt.Sprintf("[%s]", strings.Join(messages, ", "))))
-		}
-		rows = append(rows, row)
-	}
-	ui.PrintTable(s.output(), rows, 2)
+	return l, nil
 }
 
 // Delete removes a workroom by name.

@@ -601,15 +601,14 @@ func TestListWorkroomsForCurrentProject(t *testing.T) {
 	cfg.AddWorkroom(dir, "foo", fooDir, "git")
 	cfg.AddWorkroom(dir, "bar", barDir, "git")
 
-	var buf bytes.Buffer
-	svc := &Service{Config: cfg, Out: &buf}
+	svc := &Service{Config: cfg}
 
-	err := svc.List(dir)
+	l, err := svc.Listing(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := buf.String()
+	output := listingText(l)
 	if !strings.Contains(output, "foo") {
 		t.Fatalf("expected foo in output, got %q", output)
 	}
@@ -623,15 +622,14 @@ func TestListWarnsWhenDirNotFound(t *testing.T) {
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	cfg.AddWorkroom(dir, "foo", "/nonexistent", "git")
 
-	var buf bytes.Buffer
-	svc := &Service{Config: cfg, Out: &buf}
+	svc := &Service{Config: cfg}
 
-	err := svc.List(dir)
+	l, err := svc.Listing(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := buf.String()
+	output := listingText(l)
 	if !strings.Contains(output, "directory not found") {
 		t.Fatalf("expected warning, got %q", output)
 	}
@@ -644,15 +642,14 @@ func TestListNoWarningWhenDirExists(t *testing.T) {
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	cfg.AddWorkroom(dir, "foo", wrDir, "git")
 
-	var buf bytes.Buffer
-	svc := &Service{Config: cfg, Out: &buf}
+	svc := &Service{Config: cfg}
 
-	err := svc.List(dir)
+	l, err := svc.Listing(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := buf.String()
+	output := listingText(l)
 	if strings.Contains(output, "directory not found") {
 		t.Fatalf("unexpected warning, got %q", output)
 	}
@@ -670,18 +667,17 @@ func TestListAllGroupedByParent(t *testing.T) {
 	cfg.AddWorkroom("/other/project", "baz", bazDir, "git")
 	cfg.AddWorkroom("/another/project", "qux", quxDir, "git")
 
-	var buf bytes.Buffer
-	svc := &Service{Config: cfg, Out: &buf}
+	svc := &Service{Config: cfg}
 
 	// cwd is not a known project
 	unknownDir := filepath.Join(dir, "unknown")
 	os.MkdirAll(unknownDir, 0o755)
-	err := svc.List(unknownDir)
+	l, err := svc.Listing(unknownDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := buf.String()
+	output := listingText(l)
 	if !strings.Contains(output, "/other/project:") {
 		t.Fatalf("expected /other/project:, got %q", output)
 	}
@@ -694,17 +690,15 @@ func TestListNoWorkroomsAnywhere(t *testing.T) {
 	dir := t.TempDir()
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 
-	var buf bytes.Buffer
-	svc := &Service{Config: cfg, Out: &buf}
+	svc := &Service{Config: cfg}
 
-	err := svc.List(dir)
+	l, err := svc.Listing(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := buf.String()
-	if !strings.Contains(output, "No workrooms found.") {
-		t.Fatalf("expected 'No workrooms found.', got %q", output)
+	if l.InWorkroom || l.AtProject || len(l.Projects) != 0 {
+		t.Fatalf("expected nothing to list, got %+v", l)
 	}
 }
 
@@ -715,20 +709,15 @@ func TestListInsideWorkroom(t *testing.T) {
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	cfg.AddWorkroom(dir, "myworkroom", wrDir, "git")
 
-	var buf bytes.Buffer
-	svc := &Service{Config: cfg, Out: &buf}
+	svc := &Service{Config: cfg}
 
-	err := svc.List(wrDir)
+	l, err := svc.Listing(wrDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := buf.String()
-	if !strings.Contains(output, "You are already in a workroom.") {
-		t.Fatalf("expected in-workroom message, got %q", output)
-	}
-	if !strings.Contains(output, dir) {
-		t.Fatalf("expected parent path, got %q", output)
+	if !l.InWorkroom || l.ParentPath != dir {
+		t.Fatalf("expected to be in a workroom of %s, got %+v", dir, l)
 	}
 }
 
