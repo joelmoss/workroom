@@ -45,7 +45,7 @@ final class WindowRegistry: ObservableObject {
   /// Combined unread notification count across every window — drives the menu-bar label + Dock badge
   /// (issue #70). `@Published` so the `MenuBarExtra` label re-renders as any window's count changes.
   @Published private(set) var aggregateUnread = 0
-  @Published private(set) var activeAgentBackends: Set<AgentBackend> = []
+  @Published private(set) var activeAgentBackends: Set<CodingAgentBackend> = []
 
   init() {
     // Track the active workroom window. Only registered windows update `lastActiveStore`, so the quit
@@ -258,7 +258,7 @@ final class WindowRegistry: ObservableObject {
   // MARK: Aggregation
 
   private func recomputeActiveAgents() {
-    let agents = allStores.reduce(into: Set<AgentBackend>()) {
+    let agents = allStores.reduce(into: Set<CodingAgentBackend>()) {
       $0.formUnion($1.terminals.activeAgentBackends)
     }
     if agents != activeAgentBackends { activeAgentBackends = agents }

@@ -71,7 +71,7 @@ extension View {
       .environmentObject(store.notifications)
       .environmentObject(sessions)
       .environmentObject(sessions.agentManager)
-      .environmentObject(AgentUsageMonitor.shared)
+      .environmentObject(CodingAgentUsageMonitor.shared)
       .environmentObject(ClaudeUsageBridge.shared)
   }
 }

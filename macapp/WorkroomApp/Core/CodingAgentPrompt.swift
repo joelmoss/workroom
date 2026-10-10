@@ -3,14 +3,14 @@ import Foundation
 /// The agent's structured diagnosis of a failed command (issue #49). `fixCommand` is a single shell
 /// command the user can insert (reviewed, never auto-run — and gated by `DestructiveCommandDetector`
 /// when risky); `detail` is optional extra context.
-struct AgentDiagnosis: Equatable, Sendable {
+struct CodingAgentDiagnosis: Equatable, Sendable {
   let summary: String
   let fixCommand: String?
   let detail: String?
 }
 
 /// Pure prompt construction + response parsing for the inline diagnosis (no I/O; unit-tested).
-enum AgentPrompt {
+enum CodingAgentPrompt {
   /// System prompt for the no-tools inline diagnosis. Deliberately tight: it shapes the output AND
   /// replaces claude's heavy default system prompt to cut cost (token opt, task #15). It also frames
   /// the captured output as untrusted data (prompt-injection defence, X4).
@@ -53,7 +53,7 @@ enum AgentPrompt {
   /// A shell command line that opens an interactive `claude` seeded with the failure so the agent can
   /// start investigating immediately (issue #49). Run in the pane's real cwd (unlike the neutral-dir
   /// no-tools diagnosis), so it can inspect the project.
-  static func investigateCommandLine(for state: AgentBannerState) -> String {
+  static func investigateCommandLine(for state: CodingAgentBannerState) -> String {
     let (failure, diagnosis) = state.failureAndDiagnosis
     let prompt = investigatePrompt(
       command: failure.command, exitCode: failure.exitCode, diagnosis: diagnosis)
@@ -63,7 +63,7 @@ enum AgentPrompt {
   /// The natural-language seed prompt for the interactive Investigate session: the failed command,
   /// its exit code, and (when available) the quick diagnosis, then an instruction to dig in. Output
   /// is deliberately omitted — the agent runs in the real cwd and can re-run the command itself.
-  static func investigatePrompt(command: String?, exitCode: Int32, diagnosis: AgentDiagnosis?)
+  static func investigatePrompt(command: String?, exitCode: Int32, diagnosis: CodingAgentDiagnosis?)
     -> String
   {
     var lines: [String] = []
@@ -88,11 +88,11 @@ enum AgentPrompt {
     "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
   }
 
-  /// Parse claude's `--output-format json` envelope into an `AgentDiagnosis`. The envelope is
+  /// Parse claude's `--output-format json` envelope into an `CodingAgentDiagnosis`. The envelope is
   /// `{"type":"result","is_error":false,"result":"<model text>",…}` and the model text is itself the
   /// compact JSON we asked for. Defensive at both layers: a missing/errored envelope → nil; an inner
   /// that isn't JSON → the raw text becomes the summary (so the user still sees something).
-  static func parse(envelopeJSON: String) -> AgentDiagnosis? {
+  static func parse(envelopeJSON: String) -> CodingAgentDiagnosis? {
     guard let data = envelopeJSON.data(using: .utf8),
       let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else { return nil }
@@ -103,18 +103,18 @@ enum AgentPrompt {
 
   /// Parse the model's compact reply (the envelope's `result`): a bare JSON object, a ```json-fenced
   /// object, or — failing that — plain text used as the summary.
-  static func parseInner(_ text: String) -> AgentDiagnosis {
+  static func parseInner(_ text: String) -> CodingAgentDiagnosis {
     let stripped = stripCodeFence(text)
     if let data = stripped.data(using: .utf8),
       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
       let summary = nonBlank(object["summary"] as? String)
     {
-      return AgentDiagnosis(
+      return CodingAgentDiagnosis(
         summary: summary,
         fixCommand: nonNullString(object["fix"]),
         detail: nonNullString(object["detail"]))
     }
-    return AgentDiagnosis(
+    return CodingAgentDiagnosis(
       summary: text.trimmingCharacters(in: .whitespacesAndNewlines), fixCommand: nil, detail: nil)
   }
 

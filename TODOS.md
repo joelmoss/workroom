@@ -1584,7 +1584,7 @@ fixture's `over_ssh_the_bootstrap_*` test; 2–5 are mechanical; 6 with Phase 4'
 
 ### The ✦ diagnosis badge was unreachable to accessibility (macapp) — FIXED (2026-09-03)
 
-**Found by the pre-release XCUITest run:** `TerminalAgentUITests.testFailedTabShowsAgentBadge` was
+**Found by the pre-release XCUITest run:** `TerminalCodingAgentUITests.testFailedTabShowsAgentBadge` was
 failing, and had been for some time — it also fails on `ca9f4695`, so it predates this session's
 work (verified by checking that commit out and re-running).
 
@@ -1770,11 +1770,11 @@ The pieces below were explicitly deferred — each small, none blocking.
 **What:** Issue #168 replaced the pane footer's quota text with a logo plus one bar per quota window.
 Several things about that segment are **eyeball-only**, exactly like the pane footer's path truncation (#136, shipped and removed from this file): the
 brand logo rendering at all, the two bar fills (`accent` / `warning` / `failure` by
-`AgentPace.severity`), the two pace-pin positions, and the pin's knockout gap reading as a gap on
+`CodingAgentPace.severity`), the two pace-pin positions, and the pin's knockout gap reading as a gap on
 whatever ground it lands on.
 
 Issue #176 moved the segment to the app footer. XCUITest reads element frames, and
-`AgentUsageUITests.testCodexQuotaLabelPopoverSplitAndSecondWindow` (its split step) now asserts that
+`CodingAgentUsageUITests.testCodexQuotaLabelPopoverSplitAndSecondWindow` (its split step) now asserts that
 splitting a pane neither duplicates nor
 resizes the window's quota segment, and that it stays inside its window. Pane splits no longer
 exercise the `ViewThatFits` bar-width ladder; the visual checks below remain manual.
@@ -1782,8 +1782,8 @@ exercise the `ViewThatFits` bar-width ladder; the visual checks below remain man
 **Why it's open:** same root cause as `#136`'s path truncation (shipped; its entry is gone). The unit gate can't
 assert SwiftUI text at all (`NSHostingView` in a test process reports an `AXGroup` with 0 children —
 documented at `macapp/WorkroomAppTests/HistoryCommitCardTests.swift:9-13`), and XCUITest reads the
-accessibility *label*, which `AgentUsageSegment.quotaAccessibilityLabel` keeps byte-identical to what
-it was before the bars existed — so `AgentUsageUITests` passes whichever variant rendered, and would
+accessibility *label*, which `CodingAgentUsageSegment.quotaAccessibilityLabel` keeps byte-identical to what
+it was before the bars existed — so `CodingAgentUsageUITests` passes whichever variant rendered, and would
 pass if the bars themselves drew nothing.
 
 Verified by eye on 2026-09-10 at the 44pt and 32pt rungs, dark and light: logo in brand colour,
@@ -1828,8 +1828,8 @@ tooling" if that ever lands.
 **What:** Decide whether the footer and its popover should name the same two quota windows the same
 way, or keep two vocabularies on purpose.
 
-**Why:** `AgentQuotaWindowKind.compactLabel` (`Core/AgentUsage.swift`) says `5h` / `wk`;
-`AgentUsageDetailView.title(for:)` says `Session` / `Weekly`. Same windows, two vocabularies.
+**Why:** `CodingAgentQuotaWindowKind.compactLabel` (`Core/CodingAgentUsage.swift`) says `5h` / `wk`;
+`CodingAgentUsageDetailView.title(for:)` says `Session` / `Weekly`. Same windows, two vocabularies.
 
 Note the #168 footer does NOT show `compactLabel` on screen — the bars are unlabelled, identified by
 order and by the tooltip. So the visible collision is narrower than it first looks: it is the
@@ -1843,7 +1843,7 @@ exist because the popover has room and reads better in sentences. "Unify" probab
 picking which surface gets the worse name.
 
 **Context for whoever picks this up:** two wrinkles make it more than a rename. `compactLabel` also
-feeds `quotaAccessibilityLabel`, which all of `AgentUsageUITests` asserts on — changing it
+feeds `quotaAccessibilityLabel`, which all of `CodingAgentUsageUITests` asserts on — changing it
 re-baselines seven tests. And the `.duration(minutes:)` case GENERATES its label (`3d`, `12h`,
 `45m`), so a prose vocabulary needs a generated-name rule, not just two more constants.
 
@@ -2101,16 +2101,16 @@ the payoff is marginal.
 output to "one-line prose summary, then a delimiter, then the JSON fix", stream the prose live while
 parsing the JSON tail on completion. Needs: an incremental-stdout streaming runner (the current
 `StatusCommandRunner` buffers to completion), a stream-json NDJSON delta parser, the split prompt +
-parser, banner partial-text state, and its own entry in `AgentDiagnosisEvalTests`.
+parser, banner partial-text state, and its own entry in `CodingAgentDiagnosisEvalTests`.
 
-**Depends on:** the inline agent (#49, merged). Touches `AgentRunner`, `AgentPrompt`,
-`TerminalAgentManager`, `TerminalAgentBanner`.
+**Depends on:** the inline agent (#49, merged). Touches `CodingAgentRunner`, `CodingAgentPrompt`,
+`TerminalCodingAgentManager`, `TerminalCodingAgentBanner`.
 
 **Priority:** P3 (polish; marginal over a 2-3s spinner, and must not regress the structured fix).
 
 ### Unify foreground-process detection onto argv0 (macapp) — issue #141 eng-review follow-up, filed 2026-08-17
 
-**What:** `AgentProcessRecognition.backend(forPID:)` (`AgentUsage.swift`, backs the issue #49 inline
+**What:** `CodingAgentProcessRecognition.backend(forPID:)` (`CodingAgentUsage.swift`, backs the issue #49 inline
 diagnosis badge) and the new `GhosttySurfaceView.foregroundExecutableName` (issue #141 favicon) both
 resolve a live pane's foreground process via `proc_name`. Port the
 argv0/`KERN_PROCARGS2` logic of the retired daemon's `SessionPTY.executableName(processID:)` (already
@@ -2120,13 +2120,13 @@ place of `proc_name`.
 
 **Why:** `proc_name` is defeated by any CLI that renames its own process title post-launch — confirmed
 case: Claude Code, whose `p_comm` reads as a version string ("2.1.232"), not "claude". No known live
-bug today: both features have a title-based fallback (`AgentTitleRecognition`/
+bug today: both features have a title-based fallback (`CodingAgentTitleRecognition`/
 `ToolLogoRegistry.tool(forTitle:)`) that catches Claude regardless. But every tool added to the
 favicon registry is one more surface where this could matter if it also self-renames, and the daemon
 side already proves the fix works.
 
 **How to start:** Add a `ProcessArgv0` helper under `WorkroomApp/Core/`, ported from the retired
-`SessionPTY.executableName(processID:)`. Replace `AgentProcessRecognition.backend(forPID:)`'s
+`SessionPTY.executableName(processID:)`. Replace `CodingAgentProcessRecognition.backend(forPID:)`'s
 `proc_name`/`MAXPATHLEN` body with a call through the shared helper. Replace
 `GhosttySurfaceView.foregroundExecutableName`'s inlined `proc_name` block the same way.
 

@@ -6,7 +6,7 @@ import Foundation
 ///   path AND the Investigate hand-off.
 /// - `.codex exec` has no zero-tools mode (`-s read-only` still runs read-only commands), so it is
 ///   **Investigate-only** — never the silent inline path. (Investigate is wired in the banner, T8.)
-enum AgentBackend: String, Sendable, CaseIterable {
+enum CodingAgentBackend: String, Sendable, CaseIterable {
   case claude
   case codex
 
@@ -30,12 +30,12 @@ enum AgentBackend: String, Sendable, CaseIterable {
 
   /// The inline-diagnosis backend among those installed: claude or nothing (X1). When nil, the UI
   /// offers Investigate-with-codex only rather than a silent inline run.
-  static func inlineBackend(installed: Set<AgentBackend>) -> AgentBackend? {
+  static func inlineBackend(installed: Set<CodingAgentBackend>) -> CodingAgentBackend? {
     installed.contains(.claude) ? .claude : nil
   }
 
   /// Preferred backend for the Investigate hand-off: claude, else codex.
-  static func preferred(installed: Set<AgentBackend>) -> AgentBackend? {
+  static func preferred(installed: Set<CodingAgentBackend>) -> CodingAgentBackend? {
     if installed.contains(.claude) { return .claude }
     if installed.contains(.codex) { return .codex }
     return nil
@@ -43,13 +43,13 @@ enum AgentBackend: String, Sendable, CaseIterable {
 }
 
 /// A resolved CLI command: the executable plus its argv (the prompt is the trailing positional).
-struct AgentInvocation: Equatable, Sendable {
+struct CodingAgentInvocation: Equatable, Sendable {
   let executable: String
   let arguments: [String]
 }
 
 /// Pure argv construction (unit-tested; no process spawning).
-enum AgentInvocationBuilder {
+enum CodingAgentInvocationBuilder {
   /// The inline, no-tools claude diagnosis (issue #49, X1). Verified against the installed claude:
   /// - `--print --output-format json` → a single JSON result envelope (the `result` field is the
   ///   text; parsed in T5),
@@ -61,7 +61,7 @@ enum AgentInvocationBuilder {
   /// output and cuts token cost (task #15). `model`, when given, pins a cheap/fast model so the
   /// diagnosis doesn't run on the user's (often Opus) default. The prompt stays the trailing positional.
   static func claudeInline(systemPrompt: String? = nil, model: String? = nil, prompt: String)
-    -> AgentInvocation
+    -> CodingAgentInvocation
   {
     var arguments = [
       "--print",
@@ -77,13 +77,14 @@ enum AgentInvocationBuilder {
       arguments.append(contentsOf: ["--system-prompt", systemPrompt])
     }
     arguments.append(prompt)
-    return AgentInvocation(executable: AgentBackend.claude.executable, arguments: arguments)
+    return CodingAgentInvocation(
+      executable: CodingAgentBackend.claude.executable, arguments: arguments)
   }
 }
 
 /// The raw outcome of an inline diagnosis run, before the model's text is parsed into an
-/// `AgentDiagnosis` (T5). Distinct cases so the banner can show actionable states (X1/A2).
-enum AgentRunOutcome: Sendable, Equatable {
+/// `CodingAgentDiagnosis` (T5). Distinct cases so the banner can show actionable states (X1/A2).
+enum CodingAgentRunOutcome: Sendable, Equatable {
   /// Process succeeded; `stdout` is the raw JSON envelope (claude `--output-format json`).
   case success(stdout: String)
   /// `/usr/bin/env` exit 127 — the agent CLI isn't on PATH.
@@ -110,7 +111,7 @@ enum AgentRunOutcome: Sendable, Equatable {
 
 /// A seam (mirrors `StatusCommandRunning`) so the inline-agent manager (T6) is unit-testable with a
 /// fake runner — no real `claude`/`codex` process.
-protocol AgentRunning: Sendable {
+protocol CodingAgentRunning: Sendable {
   /// Run an inline, no-tools diagnosis (claude only, X1). `systemPrompt` replaces claude's default
   /// to shape output + cut cost; `model` pins a cheap/fast model (task #15). `cwd` is where claude
   /// runs — callers should pass a NEUTRAL dir (not the project) so `AGENTS.md` doesn't auto-load:
@@ -118,13 +119,13 @@ protocol AgentRunning: Sendable {
   /// belongs in the prompt text, not here.
   func diagnoseInline(
     systemPrompt: String?, model: String?, prompt: String, cwd: String, timeout: TimeInterval
-  ) async -> AgentRunOutcome
+  ) async -> CodingAgentRunOutcome
 }
 
-/// Default `AgentRunning`: builds the claude inline argv and runs it through the existing
+/// Default `CodingAgentRunning`: builds the claude inline argv and runs it through the existing
 /// `StatusCommandRunning` executor (CQ1 — no duplicated process/drain/timeout/cancel code). The
 /// executor's process-group termination (X2, T3) reaps any agent child processes on cancel/timeout.
-struct AgentRunner: AgentRunning {
+struct CodingAgentRunner: CodingAgentRunning {
   let executor: StatusCommandRunning
 
   init(executor: StatusCommandRunning = StatusCommandRunner()) {
@@ -134,8 +135,8 @@ struct AgentRunner: AgentRunning {
   func diagnoseInline(
     systemPrompt: String? = nil, model: String? = nil, prompt: String, cwd: String,
     timeout: TimeInterval = 60
-  ) async -> AgentRunOutcome {
-    let invocation = AgentInvocationBuilder.claudeInline(
+  ) async -> CodingAgentRunOutcome {
+    let invocation = CodingAgentInvocationBuilder.claudeInline(
       systemPrompt: systemPrompt, model: model, prompt: prompt)
     let result = await executor.run(
       invocation.executable, invocation.arguments, in: cwd, timeout: timeout)
@@ -144,7 +145,7 @@ struct AgentRunner: AgentRunning {
 
   /// Map a raw process result to a diagnosis outcome. Pure + unit-tested. stdout carries the model's
   /// JSON; stderr is treated only as diagnostics (CLI warnings must not be mistaken for the result).
-  static func classify(_ result: CommandResult) -> AgentRunOutcome {
+  static func classify(_ result: CommandResult) -> CodingAgentRunOutcome {
     if result.timedOut { return .timedOut }
     if result.signaled { return .interrupted }
     if result.exitCode == CommandResult.launchFailed { return .launchFailed }

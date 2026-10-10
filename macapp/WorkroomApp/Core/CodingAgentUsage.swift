@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-enum AgentQuotaWindowKind: Equatable, Sendable {
+enum CodingAgentQuotaWindowKind: Equatable, Sendable {
   case fiveHour
   case weekly
   case duration(minutes: Int)
@@ -28,7 +28,7 @@ enum PaceSeverity: Equatable, Sendable {
   case critical
 }
 
-struct AgentPace: Equatable, Sendable {
+struct CodingAgentPace: Equatable, Sendable {
   /// Percentage points ahead of sustainable use. Negative means under pace.
   let percentagePoints: Double
 
@@ -51,8 +51,8 @@ struct AgentPace: Equatable, Sendable {
   }
 }
 
-struct AgentQuotaWindow: Equatable, Sendable, Identifiable {
-  let kind: AgentQuotaWindowKind
+struct CodingAgentQuotaWindow: Equatable, Sendable, Identifiable {
+  let kind: CodingAgentQuotaWindowKind
   let usedPercentage: Double
   let duration: TimeInterval
   let resetsAt: Date
@@ -60,7 +60,7 @@ struct AgentQuotaWindow: Equatable, Sendable, Identifiable {
   var id: String { kind.compactLabel }
 
   init(
-    kind: AgentQuotaWindowKind, usedPercentage: Double, duration: TimeInterval, resetsAt: Date
+    kind: CodingAgentQuotaWindowKind, usedPercentage: Double, duration: TimeInterval, resetsAt: Date
   ) {
     self.kind = kind
     self.usedPercentage = min(max(usedPercentage, 0), 100)
@@ -68,11 +68,11 @@ struct AgentQuotaWindow: Equatable, Sendable, Identifiable {
     self.resetsAt = resetsAt
   }
 
-  func pace(at now: Date) -> AgentPace {
-    guard duration > 0 else { return AgentPace(percentagePoints: usedPercentage) }
+  func pace(at now: Date) -> CodingAgentPace {
+    guard duration > 0 else { return CodingAgentPace(percentagePoints: usedPercentage) }
     let startsAt = resetsAt.addingTimeInterval(-duration)
     let elapsed = min(max(now.timeIntervalSince(startsAt) / duration, 0), 1) * 100
-    return AgentPace(percentagePoints: usedPercentage - elapsed)
+    return CodingAgentPace(percentagePoints: usedPercentage - elapsed)
   }
 
   /// Where a quota bar's pace pin sits: the point usage would have reached if it exactly tracked
@@ -116,23 +116,23 @@ struct AgentQuotaWindow: Equatable, Sendable, Identifiable {
   }
 }
 
-struct AgentQuotaSnapshot: Equatable, Sendable {
-  let backend: AgentBackend
-  let windows: [AgentQuotaWindow]
+struct CodingAgentQuotaSnapshot: Equatable, Sendable {
+  let backend: CodingAgentBackend
+  let windows: [CodingAgentQuotaWindow]
   let capturedAt: Date
 
-  func fresh(at now: Date) -> AgentQuotaSnapshot? {
+  func fresh(at now: Date) -> CodingAgentQuotaSnapshot? {
     let freshWindows = windows.filter { $0.isFresh(at: now) }
     guard !freshWindows.isEmpty else { return nil }
-    return AgentQuotaSnapshot(backend: backend, windows: freshWindows, capturedAt: capturedAt)
+    return CodingAgentQuotaSnapshot(backend: backend, windows: freshWindows, capturedAt: capturedAt)
   }
 }
 
-enum AgentTitleRecognition {
+enum CodingAgentTitleRecognition {
   /// Shell integration reports either the actual command line or the provider's own stable title.
   /// Only the first executable token is considered; wrappers and prose containing an agent name are
   /// deliberately rejected.
-  static func backend(for title: String?) -> AgentBackend? {
+  static func backend(for title: String?) -> CodingAgentBackend? {
     guard let title else { return nil }
     let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
@@ -156,8 +156,8 @@ enum AgentTitleRecognition {
   }
 }
 
-enum AgentProcessRecognition {
-  static func backend(forProcessName name: String?) -> AgentBackend? {
+enum CodingAgentProcessRecognition {
+  static func backend(forProcessName name: String?) -> CodingAgentBackend? {
     guard let name else { return nil }
     switch (name as NSString).lastPathComponent.lowercased() {
     case "claude": return .claude
@@ -166,7 +166,7 @@ enum AgentProcessRecognition {
     }
   }
 
-  static func backend(forPID pid: pid_t) -> AgentBackend? {
+  static func backend(forPID pid: pid_t) -> CodingAgentBackend? {
     guard pid > 1 else { return nil }
     var name = [CChar](repeating: 0, count: Int(MAXPATHLEN))
     guard proc_name(pid, &name, UInt32(name.count)) > 0 else { return nil }
@@ -174,7 +174,7 @@ enum AgentProcessRecognition {
   }
 }
 
-enum AgentUsageDecoding {
+enum CodingAgentUsageDecoding {
   static let maximumTailBytes = 256 * 1024
 
   /// How many of the newest rollouts one read will try, and so how many directories it asks to be
@@ -182,12 +182,12 @@ enum AgentUsageDecoding {
   /// one; the cap is what keeps both the read and the watch set bounded on a years-deep tree.
   static let candidateLimit = 12
 
-  static func claude(data: Data, capturedAt: Date, now: Date) -> AgentQuotaSnapshot? {
+  static func claude(data: Data, capturedAt: Date, now: Date) -> CodingAgentQuotaSnapshot? {
     guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
       return nil
     }
     let limits = (root["rate_limits"] as? [String: Any]) ?? root
-    var windows: [AgentQuotaWindow] = []
+    var windows: [CodingAgentQuotaWindow] = []
     if let value = decodeClaudeWindow(
       limits["five_hour"], kind: .fiveHour, duration: 5 * 60 * 60)
     {
@@ -203,10 +203,10 @@ enum AgentUsageDecoding {
 
   /// A Claude cache read, carrying WHY it produced nothing so the footer can say so.
   enum ClaudeRead: Sendable {
-    case snapshot(AgentQuotaSnapshot)
+    case snapshot(CodingAgentQuotaSnapshot)
     case failure(String)
 
-    var snapshot: AgentQuotaSnapshot? {
+    var snapshot: CodingAgentQuotaSnapshot? {
       if case .snapshot(let value) = self { return value }
       return nil
     }
@@ -236,7 +236,7 @@ enum AgentUsageDecoding {
   }
 
   static func codexRollout(data: Data, fileSize: UInt64, modifiedAt: Date, now: Date)
-    -> AgentQuotaSnapshot?
+    -> CodingAgentQuotaSnapshot?
   {
     var bytes = data
     // A bounded tail can begin halfway through a JSONL record. Drop that fragment.
@@ -252,7 +252,7 @@ enum AgentUsageDecoding {
       else { continue }
 
       let capturedAt = (object["timestamp"] as? String).flatMap(parseISO8601) ?? modifiedAt
-      var windows: [AgentQuotaWindow] = []
+      var windows: [CodingAgentQuotaWindow] = []
       for key in ["primary", "secondary"] {
         guard let value = limits[key] as? [String: Any],
           let minutes = number(value["window_minutes"]).map(Int.init), minutes > 0,
@@ -268,7 +268,7 @@ enum AgentUsageDecoding {
         }
         guard let reset else { continue }
         windows.append(
-          AgentQuotaWindow(
+          CodingAgentQuotaWindow(
             kind: kind(for: minutes), usedPercentage: used,
             duration: TimeInterval(minutes * 60), resetsAt: reset))
       }
@@ -281,7 +281,7 @@ enum AgentUsageDecoding {
 
   /// What one Codex read produced: the snapshot, and where to watch for the next one.
   struct CodexRead: Sendable {
-    let snapshot: AgentQuotaSnapshot?
+    let snapshot: CodingAgentQuotaSnapshot?
     /// Every directory holding a rollout this read considered, plus that rollout's ancestors up to
     /// and including `sessionsRoot`.
     let watchDirectories: [URL]
@@ -291,7 +291,7 @@ enum AgentUsageDecoding {
   ///
   /// Both answers come out of ONE enumeration, on whatever background thread called this. The watch
   /// set used to be derived by a *second*, fully recursive walk performed on the main actor after
-  /// every read (`AgentUsageMonitor.updateWatches`), which is why it's computed here now.
+  /// every read (`CodingAgentUsageMonitor.updateWatches`), which is why it's computed here now.
   ///
   /// `isCancelled` is polled between files rather than read from `Task.isCancelled`, because this
   /// runs inside `runBlocking`'s GCD closure where there is no ambient task and `Task.isCancelled`
@@ -409,26 +409,26 @@ enum AgentUsageDecoding {
   }
 
   private static func decodeClaudeWindow(
-    _ raw: Any?, kind: AgentQuotaWindowKind, duration: TimeInterval
-  ) -> AgentQuotaWindow? {
+    _ raw: Any?, kind: CodingAgentQuotaWindowKind, duration: TimeInterval
+  ) -> CodingAgentQuotaWindow? {
     guard let value = raw as? [String: Any],
       let used = number(value["used_percentage"]),
       let reset = number(value["resets_at"])
     else { return nil }
-    return AgentQuotaWindow(
+    return CodingAgentQuotaWindow(
       kind: kind, usedPercentage: used, duration: duration,
       resetsAt: Date(timeIntervalSince1970: reset))
   }
 
   private static func normalized(
-    _ backend: AgentBackend, windows: [AgentQuotaWindow], capturedAt: Date, now: Date
-  ) -> AgentQuotaSnapshot? {
+    _ backend: CodingAgentBackend, windows: [CodingAgentQuotaWindow], capturedAt: Date, now: Date
+  ) -> CodingAgentQuotaSnapshot? {
     let fresh = windows.filter { $0.isFresh(at: now) }.sorted { $0.duration < $1.duration }
     guard !fresh.isEmpty else { return nil }
-    return AgentQuotaSnapshot(backend: backend, windows: fresh, capturedAt: capturedAt)
+    return CodingAgentQuotaSnapshot(backend: backend, windows: fresh, capturedAt: capturedAt)
   }
 
-  private static func kind(for minutes: Int) -> AgentQuotaWindowKind {
+  private static func kind(for minutes: Int) -> CodingAgentQuotaWindowKind {
     switch minutes {
     case 300: return .fiveHour
     case 10080: return .weekly
@@ -485,18 +485,18 @@ private final class ReadCancellation: @unchecked Sendable {
 }
 
 @MainActor
-final class AgentUsageMonitor: ObservableObject {
+final class CodingAgentUsageMonitor: ObservableObject {
   /// The app's one monitor. `WorkroomApp` injects it into every scene, and a detached pane's window
   /// (issue #172) injects it too — environment does not cross an `NSHostingView`, so that window has
   /// to reach the same instance by name rather than inherit it. Tests keep building their own with
   /// injected roots; nothing forces them through this.
-  static let shared = AgentUsageMonitor()
+  static let shared = CodingAgentUsageMonitor()
 
-  @Published private(set) var snapshots: [AgentBackend: AgentQuotaSnapshot] = [:]
-  @Published private(set) var loading: Set<AgentBackend> = []
+  @Published private(set) var snapshots: [CodingAgentBackend: CodingAgentQuotaSnapshot] = [:]
+  @Published private(set) var loading: Set<CodingAgentBackend> = []
   /// Why the last read produced no snapshot, per backend. Surfaced by the footer so an unavailable
   /// quota says what's missing instead of being a dead end.
-  @Published private(set) var readFailures: [AgentBackend: String] = [:]
+  @Published private(set) var readFailures: [CodingAgentBackend: String] = [:]
 
   let codexSessionsURL: URL
   let claudeCacheURL: URL
@@ -549,14 +549,14 @@ final class AgentUsageMonitor: ObservableObject {
     for watch in watches { watch.cancel() }
   }
 
-  func snapshot(for backend: AgentBackend) -> AgentQuotaSnapshot? {
+  func snapshot(for backend: CodingAgentBackend) -> CodingAgentQuotaSnapshot? {
     snapshots[backend]?.fresh(at: now())
   }
 
   /// One sentence explaining an empty `snapshot(for:)`, evaluated at READ time — a stored snapshot
   /// expires wherever it sits, with no refresh running to record why, so expiry can only be caught
   /// here.
-  func unavailableReason(for backend: AgentBackend) -> String {
+  func unavailableReason(for backend: CodingAgentBackend) -> String {
     let name = backend.displayName
     if let stored = snapshots[backend], stored.fresh(at: now()) == nil {
       let captured = stored.capturedAt.formatted(.relative(presentation: .named))
@@ -603,13 +603,13 @@ final class AgentUsageMonitor: ObservableObject {
       // forever" starvation this repo already fixed once; see `Timeout.swift`.
       let read = try? await runBlocking(qos: .utility) {
         (
-          codex: AgentUsageDecoding.readCodex(
+          codex: CodingAgentUsageDecoding.readCodex(
             sessionsRoot: codexURL, now: current, isCancelled: cancellation.isCancelled),
-          claude: AgentUsageDecoding.readClaudeSnapshot(cacheURL: claudeURL, now: current)
+          claude: CodingAgentUsageDecoding.readClaudeSnapshot(cacheURL: claudeURL, now: current)
         )
       }
       guard let self, let read, !cancellation.isCancelled(), !Task.isCancelled else { return }
-      var failures: [AgentBackend: String] = [:]
+      var failures: [CodingAgentBackend: String] = [:]
       if read.codex.snapshot == nil {
         failures[.codex] =
           "No recent Codex rate-limit record in \(codexURL.path(percentEncoded: false))."
@@ -632,9 +632,9 @@ final class AgentUsageMonitor: ObservableObject {
   /// measure it) for a spinner nothing renders — and automatic reads are frequent: every watched
   /// directory event schedules one, and the Claude bridge's status line rewrites its cache file (a
   /// create + rename in a watched directory) on every single invocation.
-  private func pendingBackends(userInitiated: Bool) -> Set<AgentBackend> {
+  private func pendingBackends(userInitiated: Bool) -> Set<CodingAgentBackend> {
     Set(
-      AgentBackend.allCases.filter {
+      CodingAgentBackend.allCases.filter {
         snapshot(for: $0) == nil && (userInitiated || readFailures[$0] == nil)
       })
   }
@@ -645,7 +645,7 @@ final class AgentUsageMonitor: ObservableObject {
   /// `ViewThatFits` instantiates all of its children to measure them — so the common read (one
   /// rollout line appended, same percentages) has to be silent.
   private func apply(
-    snapshots read: [AgentQuotaSnapshot], failures: [AgentBackend: String],
+    snapshots read: [CodingAgentQuotaSnapshot], failures: [CodingAgentBackend: String],
     codexDirectories: [URL]
   ) {
     completedReadCount += 1
@@ -658,7 +658,7 @@ final class AgentUsageMonitor: ObservableObject {
 
   /// Would these two read the same on screen? `capturedAt` is deliberately excluded.
   ///
-  /// `AgentQuotaSnapshot`'s synthesized `==` includes it, and Claude's `capturedAt` is the cache
+  /// `CodingAgentQuotaSnapshot`'s synthesized `==` includes it, and Claude's `capturedAt` is the cache
   /// file's mtime — which the bridge's status-line wrapper freshens on EVERY invocation by `mv -f`
   /// of a rebuilt temp file, whether or not a single percentage moved. Comparing on it therefore
   /// made the guard above fire on every read for the most frequent trigger there is, which is the
@@ -666,7 +666,8 @@ final class AgentUsageMonitor: ObservableObject {
   /// only through `unavailableReason`'s relative phrase for an EXPIRED snapshot, and holding the
   /// instant the numbers last actually changed is the more truthful answer there anyway.
   private static func displaysSame(
-    _ lhs: [AgentBackend: AgentQuotaSnapshot], _ rhs: [AgentBackend: AgentQuotaSnapshot]
+    _ lhs: [CodingAgentBackend: CodingAgentQuotaSnapshot],
+    _ rhs: [CodingAgentBackend: CodingAgentQuotaSnapshot]
   ) -> Bool {
     lhs.count == rhs.count
       && lhs.allSatisfy { backend, snapshot in rhs[backend]?.windows == snapshot.windows }
@@ -679,7 +680,7 @@ final class AgentUsageMonitor: ObservableObject {
   /// directory found, on every read — 43 ms and 699 descriptors for two years of sessions, and a
   /// read follows every watched directory event — plus once more during window setup, synchronously,
   /// with a cold page cache. The set now arrives from the read's own enumeration
-  /// (`AgentUsageDecoding.watchDirectories`) and is a handful of directories, so reopening it every
+  /// (`CodingAgentUsageDecoding.watchDirectories`) and is a handful of directories, so reopening it every
   /// time costs a few syscalls.
   ///
   /// There is deliberately NO "skip if the paths are unchanged" fast path. A vnode source watches an

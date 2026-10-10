@@ -10,20 +10,20 @@ private let successEnvelope: String = {
 }()
 
 /// The inline-agent state machine (issue #49, T6): disposition → banner, manual vs auto, cooldown,
-/// cancel-supersede, lifecycle, and outcome mapping — all driven through a fake `AgentRunning`, no
+/// cancel-supersede, lifecycle, and outcome mapping — all driven through a fake `CodingAgentRunning`, no
 /// real CLI. The manager is `@MainActor`, so is the test.
 @MainActor
-final class TerminalAgentManagerTests: XCTestCase {
+final class TerminalCodingAgentManagerTests: XCTestCase {
   private let target: TerminalTarget.ID = "wr|/p|x"
 
   private func makeManager(
-    outcome: AgentRunOutcome = .success(stdout: successEnvelope),
+    outcome: CodingAgentRunOutcome = .success(stdout: successEnvelope),
     auto: Bool = false,
     now: @escaping () -> Date = { Date(timeIntervalSince1970: 1000) },
     cooldown: TimeInterval = 20
-  ) -> (TerminalAgentManager, FakeAgentRunner) {
-    let runner = FakeAgentRunner(outcome: outcome)
-    let manager = TerminalAgentManager(
+  ) -> (TerminalCodingAgentManager, FakeCodingAgentRunner) {
+    let runner = FakeCodingAgentRunner(outcome: outcome)
+    let manager = TerminalCodingAgentManager(
       runner: runner, featureEnabled: { true }, autoDiagnoseEnabled: { auto },
       redactSecrets: { true }, now: now, cooldown: cooldown, inlineCwd: "/var/neutral", timeout: 5)
     return (manager, runner)
@@ -41,8 +41,8 @@ final class TerminalAgentManagerTests: XCTestCase {
   // MARK: gating + disposition
 
   func testDisabledFeatureDoesNothing() {
-    let runner = FakeAgentRunner(outcome: .success(stdout: successEnvelope))
-    let manager = TerminalAgentManager(runner: runner, featureEnabled: { false })
+    let runner = FakeCodingAgentRunner(outcome: .success(stdout: successEnvelope))
+    let manager = TerminalCodingAgentManager(runner: runner, featureEnabled: { false })
     let tab = UUID()
     manager.commandFinished(tab: tab, target: target, failure: failure(1))
     XCTAssertNil(manager.banners[tab])
@@ -166,7 +166,7 @@ final class TerminalAgentManagerTests: XCTestCase {
   }
 
   /// A killed diagnosis must map to `.other("interrupted")`, never `.other("exit 9")` — the whole
-  /// point of `AgentRunOutcome.interrupted` existing as its own case.
+  /// point of `CodingAgentRunOutcome.interrupted` existing as its own case.
   func testInterruptedMapsToItsOwnFailureNotAnExitCode() async {
     let (manager, _) = makeManager(outcome: .interrupted, auto: true)
     let tab = UUID()
@@ -195,9 +195,9 @@ final class TerminalAgentManagerTests: XCTestCase {
 
   // MARK: auto-diagnose opt-in (first manual Diagnose)
 
-  private func optInManager(prompted: Bool, spy: OptInSpy) -> TerminalAgentManager {
-    TerminalAgentManager(
-      runner: FakeAgentRunner(outcome: .success(stdout: successEnvelope)),
+  private func optInManager(prompted: Bool, spy: OptInSpy) -> TerminalCodingAgentManager {
+    TerminalCodingAgentManager(
+      runner: FakeCodingAgentRunner(outcome: .success(stdout: successEnvelope)),
       featureEnabled: { true }, autoDiagnoseEnabled: { false }, redactSecrets: { false },
       hasPromptedAutoOptIn: { prompted }, persistAutoOptIn: { spy.calls.append($0) },
       inlineCwd: "/var/neutral", timeout: 5)
@@ -248,16 +248,16 @@ private final class OptInSpy {
 }
 
 /// Records calls and returns a canned outcome, so the manager runs without a real `claude`/`codex`.
-private final class FakeAgentRunner: AgentRunning, @unchecked Sendable {
-  let outcome: AgentRunOutcome
+private final class FakeCodingAgentRunner: CodingAgentRunning, @unchecked Sendable {
+  let outcome: CodingAgentRunOutcome
   private(set) var calls = 0
   private(set) var lastCwd: String?
 
-  init(outcome: AgentRunOutcome) { self.outcome = outcome }
+  init(outcome: CodingAgentRunOutcome) { self.outcome = outcome }
 
   func diagnoseInline(
     systemPrompt: String?, model: String?, prompt: String, cwd: String, timeout: TimeInterval
-  ) async -> AgentRunOutcome {
+  ) async -> CodingAgentRunOutcome {
     calls += 1
     lastCwd = cwd
     return outcome
