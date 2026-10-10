@@ -1768,7 +1768,7 @@ The pieces below were explicitly deferred — each small, none blocking.
 ### Agent-usage bar visuals are manual-verify only (macapp) — #168 follow-up
 
 **What:** Issue #168 replaced the pane footer's quota text with a logo plus one bar per quota window.
-Several things about that segment are **eyeball-only**, exactly like the path-truncation entry above: the
+Several things about that segment are **eyeball-only**, exactly like the pane footer's path truncation (#136, shipped and removed from this file): the
 brand logo rendering at all, the two bar fills (`accent` / `warning` / `failure` by
 `AgentPace.severity`), the two pace-pin positions, and the pin's knockout gap reading as a gap on
 whatever ground it lands on.
@@ -1779,7 +1779,7 @@ splitting a pane neither duplicates nor
 resizes the window's quota segment, and that it stays inside its window. Pane splits no longer
 exercise the `ViewThatFits` bar-width ladder; the visual checks below remain manual.
 
-**Why it's open:** same root cause as `#136`'s path truncation, one entry above. The unit gate can't
+**Why it's open:** same root cause as `#136`'s path truncation (shipped; its entry is gone). The unit gate can't
 assert SwiftUI text at all (`NSHostingView` in a test process reports an `AXGroup` with 0 children —
 documented at `macapp/WorkroomAppTests/HistoryCommitCardTests.swift:9-13`), and XCUITest reads the
 accessibility *label*, which `AgentUsageSegment.quotaAccessibilityLabel` keeps byte-identical to what
@@ -2112,9 +2112,11 @@ parser, banner partial-text state, and its own entry in `AgentDiagnosisEvalTests
 
 **What:** `AgentProcessRecognition.backend(forPID:)` (`AgentUsage.swift`, backs the issue #49 inline
 diagnosis badge) and the new `GhosttySurfaceView.foregroundExecutableName` (issue #141 favicon) both
-resolve a live pane's foreground process via `proc_name`. Extract `SessionPTY.executableName(processID:)`'s
-argv0/`KERN_PROCARGS2` logic (already correct, used only at daemon reattach time) into a shared
-`WorkroomSessionProtocol` helper, and use it from both call sites in place of `proc_name`.
+resolve a live pane's foreground process via `proc_name`. Port the
+argv0/`KERN_PROCARGS2` logic of the retired daemon's `SessionPTY.executableName(processID:)` (already
+correct; the original is `git show 9ce6201f^:macapp/WorkroomSession/SessionPTY.swift`, and the Rust
+agent has its own port, `87dcb476`) into a shared app-side helper, and use it from both call sites in
+place of `proc_name`.
 
 **Why:** `proc_name` is defeated by any CLI that renames its own process title post-launch — confirmed
 case: Claude Code, whose `p_comm` reads as a version string ("2.1.232"), not "claude". No known live
@@ -2123,10 +2125,8 @@ bug today: both features have a title-based fallback (`AgentTitleRecognition`/
 favicon registry is one more surface where this could matter if it also self-renames, and the daemon
 side already proves the fix works.
 
-**How to start:** Move `SessionPTY.swift`'s `executableName(processID:)` into a new
-`WorkroomSessionProtocol/ProcessArgv0.swift` (that target is already linked into both `WorkroomApp`
-and `workroom-session`, no new project.yml wiring). Delete it from `SessionPTY.swift`; update
-`SessionDaemon.swift`'s one call site. Replace `AgentProcessRecognition.backend(forPID:)`'s
+**How to start:** Add a `ProcessArgv0` helper under `WorkroomApp/Core/`, ported from the retired
+`SessionPTY.executableName(processID:)`. Replace `AgentProcessRecognition.backend(forPID:)`'s
 `proc_name`/`MAXPATHLEN` body with a call through the shared helper. Replace
 `GhosttySurfaceView.foregroundExecutableName`'s inlined `proc_name` block the same way.
 
@@ -2583,16 +2583,16 @@ logic wasn't reviewed against this change.
 **What:** Try ONE narrowly-scoped image-snapshot test and see whether it survives a month, rather
 than committing to a suite.
 
-**Why:** macapp has a structural blind spot and it now has three TODOS entries sharing one root
-cause, not three unlucky features. Unit tests cannot assert SwiftUI text — macOS only materializes
+**Why:** macapp has a structural blind spot, and several eyeball-only visuals share one root
+cause, not several unlucky features. Unit tests cannot assert SwiftUI text — macOS only materializes
 a11y elements for a live AX client, so an `NSHostingView` in a test process reports an `AXGroup` with
 0 children (`WorkroomAppTests/HistoryCommitCardTests.swift:9-13`). XCUITest reads the accessibility
-label, which carries the full string regardless of what is drawn. So `#136`'s path truncation is
+label, which carries the full string regardless of what is drawn. So `#136`'s path truncation was
 eyeball-only, and `#168` added more eyeball-only visuals in the same footer. Snapshots are the
 only mechanism that would catch any of them, and they'd cover future pane chrome retroactively.
 
 **Cons, stated up front because they're the reason this is an evaluation and not a task:** the
-existing `#136` entry already names the killer objection — snapshots "would churn on every theme and
+earlier `#136` path-truncation entry (shipped, since removed) named the killer objection — snapshots "would churn on every theme and
 font change" — and this app ships 56 themes. A naive full-window suite would be permanently red.
 
 **How to start:** snapshot ONE component under ONE pinned theme and ONE pinned font, and leave it a
@@ -2601,8 +2601,8 @@ deterministic model-only fixture with four launch flags, so there's a stable sub
 questions are scope (single component vs whole window), how many themes, and whether
 `swift-snapshot-testing` earns a new SPM dependency in a project that has none for testing.
 
-**Depends on:** nothing. Subsumes the `#136` path-truncation entry and the `#168` agent-usage-bar
-entry, both in "P3 — Terminal, panes, and focus".
+**Depends on:** nothing. Subsumes the `#168` agent-usage-bar entry in "P3 — Terminal, panes, and
+focus" (the `#136` path-truncation entry shipped and is gone).
 
 **Priority:** P3 (nothing is broken today; this buys the ability to notice when it breaks).
 
@@ -2886,7 +2886,7 @@ than shipped on nightly.
 > It was never one bug: Sentry groups a Cocoa event on its in-app frames and a macOS app hang has
 > exactly one (`main` at `main.swift:57`), so every hang the app reports landed here regardless of
 > cause. Fixed at the root on 2026-09-15 with an `options.beforeSend` fingerprint in
-> `Core/SentryConfig.swift` — see "App hangs are fingerprinted client-side" below. Everything in this
+> `Core/SentryConfig.swift` (`appHangFingerprint`, applied in `beforeSend`). Everything in this
 > entry is still true of the DiffViewer strand; it just was not the whole issue.
 
 **What:** Sentry WORKROOM-2T, nightly build 596 (macOS 26.5.2), 5 occurrences. **Pulling all events
