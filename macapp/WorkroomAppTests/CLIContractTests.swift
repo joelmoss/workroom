@@ -73,7 +73,16 @@ final class CLIContractTests: XCTestCase {
     let remote = try XCTUnwrap(byName["remote"]?.host)
     XCTAssertTrue(try XCTUnwrap(byName["remote"]).isRemote)
     XCTAssertEqual(remote.state, "running")
-    XCTAssertEqual(remote.driver, "boxd")
+    XCTAssertEqual(remote.driver, "container")
+    XCTAssertEqual(remote.provisioner, "com.developwithstyle.workroom.dev")
+    XCTAssertEqual(remote.credentials, "relay")
+    XCTAssertEqual(remote.org, "acme")
+    XCTAssertEqual(remote.account, "user-1")
+    XCTAssertEqual(
+      remote.container,
+      ContainerHostDriver.Record(
+        address: "127.0.0.1", port: 2222, user: "workroom", hostKey: "ssh-ed25519 AAAA", image: nil,
+        context: "colima"))
     XCTAssertEqual(remote.id, UUID(uuidString: "6F9619FF-8B86-D011-B42D-00C04FC964FF"))
     XCTAssertEqual(remote.workroomID, UUID(uuidString: "1B4E28BA-2FA1-11D2-883F-0016D3CCA427"))
     XCTAssertEqual(remote.grantID, "grant-1")
@@ -96,10 +105,14 @@ final class CLIContractTests: XCTestCase {
     XCTAssertNil(created.warning)
   }
 
+  private func events(_ name: String) throws -> [StreamEvent] {
+    try String(decoding: golden(name), as: UTF8.self).split(separator: "\n").map {
+      try JSONDecoder().decode(StreamEvent.self, from: Data($0.utf8))
+    }
+  }
+
   func testCreateEvents() throws {
-    let lines = String(decoding: try golden("create-events.ndjson"), as: UTF8.self)
-      .split(separator: "\n")
-    let events = try lines.map { try JSONDecoder().decode(StreamEvent.self, from: Data($0.utf8)) }
+    let events = try events("create-events.ndjson")
     XCTAssertEqual(events.map(\.type), ["created", "log", "log"])
 
     XCTAssertEqual(events[0].name, "calm-river")
@@ -109,6 +122,15 @@ final class CLIContractTests: XCTestCase {
 
     XCTAssertEqual(events[1].phase, "setup")
     XCTAssertEqual(events.dropFirst().map(\.text), ["installing", "done"])
+  }
+
+  func testCreateRemote() throws {
+    try assertSuccess("create-remote.json")
+    let created = try decode(CreateResponse.self, "create-remote.json")
+    XCTAssertEqual(created.name, "calm-river")
+    XCTAssertEqual(created.path, "/home/workroom/app")
+    XCTAssertEqual(created.vcs, "git")
+    XCTAssertEqual(created.project, "/Users/dev/src/app")
   }
 
   func testCreateSetupFailed() throws {
@@ -125,6 +147,10 @@ final class CLIContractTests: XCTestCase {
 
   func testDelete() throws {
     try assertSuccess("delete.json")
+    let events = try events("delete-events.ndjson")
+    XCTAssertEqual(events.map(\.type), ["log"])
+    XCTAssertEqual(events[0].phase, "teardown")
+    XCTAssertEqual(events[0].text, "stopping")
   }
 
   func testDeleteProject() throws {
