@@ -4,7 +4,7 @@ Workroom is a native macOS app for working on several branches of a git project 
 
 ## Naming rules
 
-- **Agent** means wr-agent and nothing else. Claude and Codex are **coding agents**; new Swift types for them take the prefix `CodingAgent`. Existing `Agent*` types for them (`AgentBackend`, `AgentRunner`, `AgentDiagnosis`, `AgentUsage*`) predate this rule and are renamed when touched.
+- **Agent** means wr-agent and nothing else. Claude and Codex are **coding agents**; Swift type names for them say `CodingAgent`, never bare `Agent` (`CodingAgentRunner`, `TerminalCodingAgentManager`).
 - **Host** is the one word for remote compute. Do not call one a machine, a box, a VM or a base. Provider-facing names (boxd and exe.dev call theirs machines and VMs) and older code keep their words; new names say host.
 - **Base** means a base branch only. It no longer names a machine that remote workrooms are derived from.
 - Use the terms below in code, issues, tests and docs. A name that is not here either belongs to one of the contexts below or is a gap to add.
