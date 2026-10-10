@@ -8,7 +8,7 @@ import Foundation
 /// the dirty dot, and is gated by a much longer TTL than the local git probe. Three separate lanes
 /// here (this sweep, `scheduleSelectedStatusRefresh`, `handleWorkroomFileChange`) can all read the
 /// same project concurrently, and nothing orders their RESULTS — a slow probe still lands after a
-/// faster one that read the tree later — so `resolveLocal` stamps each read's completion and
+/// faster one that read the tree later — so `resolve(location:)` stamps each read's completion and
 /// `mergeLocalStatus` drops a result stamped earlier than the one already recorded.
 extension AppStore {
   fileprivate static let localStatusTTL: TimeInterval = 15  // git dirty/changed-files
@@ -667,7 +667,7 @@ extension AppStore {
 
   /// Merge a fresh local result into the stored snapshot, preserving the (separately-resolved)
   /// CI fields so a local refresh never wipes the CI badge.
-  /// Ordering comes from `fresh.localReadAt`, which `WorkroomStatusResolver.resolveLocal` stamps when
+  /// Ordering comes from `fresh.localReadAt`, which `WorkroomStatusResolver.resolve(location:)` stamps when
   /// the read FINISHED. Deliberately not a caller-supplied invocation time: a read can queue for a
   /// while before it observes anything, so invocation time would call a probe older when it
   /// actually saw a later tree. A result with no stamp (a hand-built status in a test)

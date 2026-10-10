@@ -243,7 +243,7 @@ struct WorkroomStatus: Equatable, Sendable {
   var checks: [CICheck]?
   var lastChecked: Date?
   /// When the local read behind these values FINISHED, stamped by
-  /// `WorkroomStatusResolver.resolveLocal`. Five independent lanes probe local status (see
+  /// `WorkroomStatusResolver.resolve(location:)`. Five independent lanes probe local status (see
   /// `AppStore+WorkroomStatus`), none ordered against the others, so a slow probe can merge after a
   /// faster one that read the tree LATER — and `lastChecked` cannot tell those apart, because it
   /// records the landing, not the read. This is what `mergeLocalStatus` compares to refuse a result
