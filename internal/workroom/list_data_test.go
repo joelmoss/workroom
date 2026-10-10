@@ -103,7 +103,8 @@ func TestListDataFlagsEmptyPathAsMissingDirectory(t *testing.T) {
 // check what the human list shows.
 func listingText(l Listing) string {
 	var b strings.Builder
-	for p := range l.Projects {
+	for _, project := range l.Projects {
+		p := project()
 		b.WriteString(p.Path + ":\n")
 		for _, w := range p.Workrooms {
 			b.WriteString(w.Name)
