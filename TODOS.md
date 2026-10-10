@@ -11,7 +11,42 @@ None open. The crossing-`keep` flake entry went with the test, `keep` and the pr
 
 ## P1 — before GA
 
-None open. The second-Mac discovery entry was dropped on 2026-10-07 (#348, closed as not needed).
+### Finish removing base machines (macapp, codaset) — #395 follow-ups
+
+**What:** The rest of the remove-bases plan (claims 1.3, 2, 2.1, 2.2, 3, 3.1, 3.2, 4.0). #395 made
+every new remote workroom a fresh host with its own clone and took `deriveFromBase` out of every
+driver. It did not touch the bases older builds already made.
+
+**Why:** Each project that had a remote workroom still records a base per provider, and those
+machines keep running. On exe.dev they never stop. On boxd they hibernate after four hours but keep
+their disk. Nothing uses them now. Only Delete Project takes one down.
+
+**Context:**
+- **Retire at launch (claims 3, 3.1):** `RemoteHosts.adopt` destroys every base this build owns
+  with `RemoteProvisioning.destroyBase`, then drops its record. A base it cannot remove (signed out
+  of its provider) keeps its record, and the next launch tries again. Release and Nightly share one
+  config (`cmd/claim.go:15`). A Release build without #395 would make a new base at its next create,
+  and Nightly would retire it again. So ship #395 to stable first, or skip bases another build
+  provisioned.
+- **Drop the legacy model (claims 2, 2.1, 2.2):** once bases are retired, remove
+  `HostDescriptor.bases`/`allBases`, `RemoteWorkrooms.base(in:for:)`, `removing`, `deleteBase`,
+  `registrations`' fallback to a base's repository, and the Delete Project sheet's "base machine"
+  text. Before the fallback goes, stamp each older workroom's descriptor with its base's
+  `repository`, or those workrooms lose PR and CI status.
+- **Docs (claim 1.3):** #395 updated `macapp/AGENTS.md`'s provider paragraphs and put a dated
+  note at the top of `docs/designs/remote-workrooms.md`. That doc's Provider Decision, Phase 4
+  "As built" entries, Phase 0 item 6 and Open Questions 9-11 still read as if bases exist. Mark or
+  rewrite them, with the full 2026-10-10 measurements (boxd and exe.dev, fresh against derive, per
+  step).
+- **Codaset (claim 4.0):** remove the `base_clone_token` route (`app/controllers/broker/grants_controller.rb`)
+  after the first stable release with #395. Older builds still call it until then.
+- **Release note (claim 3.2):** the first release with #395 says new remote workrooms clone their own
+  repository, and that the app removes old base machines (once claim 3 ships).
+
+**Effort:** M
+**Priority:** P1
+**Depends on:** #395 merged. Deferred from plan: the remove-bases html-plan
+(https://claude.ai/artifact/1tzAi15Cr1hGHV39UTSnny).
 
 ## P2 — perf, correctness, and the next VCS phase
 
