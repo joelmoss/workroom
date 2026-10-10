@@ -25,7 +25,7 @@ final class ToolLogoRegistryTests: XCTestCase {
   }
 
   /// Codex's real terminal title can be the standalone provider-owned "Codex" (mirroring
-  /// `AgentTitleRecognition`'s own literal `"codex"` case) — without a `titles` entry (review
+  /// `CodingAgentTitleRecognition`'s own literal `"codex"` case) — without a `titles` entry (review
   /// finding), a capitalized standalone title would miss the case-sensitive executable-token
   /// fallback too, since it isn't a command line with `codex` as its literal lowercase first token.
   func testMatchesCodexLiteralProviderTitleCaseInsensitively() {
@@ -53,11 +53,11 @@ final class ToolLogoRegistryTests: XCTestCase {
   /// `ToolLogo-claude.imageset`, change an id, or lose an asset from `fetch-tool-logos.sh`, and the
   /// footer quietly reverts to text with every other assertion still green.
   func testAgentBackendsResolveBundledLogos() {
-    for backend in AgentBackend.allCases {
+    for backend in CodingAgentBackend.allCases {
       // Identity, not just non-nil: a cross-wired registry (executable "claude" aliased to the
       // entry whose id is "codex") satisfies a nil check and then renders the wrong brand logo,
       // since the asset name is built from `tool.id`. This is the only thing pinning the
-      // `AgentBackend.rawValue` ↔ registry-id coupling the whole lookup rests on.
+      // `CodingAgentBackend.rawValue` ↔ registry-id coupling the whole lookup rests on.
       XCTAssertEqual(
         ToolLogoRegistry.tool(forExecutableName: backend.executable)?.id, backend.rawValue,
         "no bundled logo for agent backend \(backend.rawValue)")

@@ -1,6 +1,6 @@
 import XCTest
 
-final class AgentUsageUITests: XCTestCase {
+final class CodingAgentUsageUITests: XCTestCase {
   override func setUp() {
     super.setUp()
     continueAfterFailure = false

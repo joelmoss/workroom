@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 final class ClaudeUsageBridge: ObservableObject {
-  /// The app's one bridge — see `AgentUsageMonitor.shared` for why a named instance exists.
+  /// The app's one bridge — see `CodingAgentUsageMonitor.shared` for why a named instance exists.
   static let shared = ClaudeUsageBridge()
 
   enum State: Equatable {
@@ -39,7 +39,7 @@ final class ClaudeUsageBridge: ObservableObject {
   var metadataURL: URL { directoryURL.appendingPathComponent("claude-status-line-metadata.json") }
   var cacheURL: URL { directoryURL.appendingPathComponent("claude-rate-limits.json") }
   /// Scratch space for the wrapper's per-invocation temp files, kept OUT of `directoryURL` itself.
-  /// `AgentUsageMonitor` watches `directoryURL` for `cacheURL` updates; every create/delete in a
+  /// `CodingAgentUsageMonitor` watches `directoryURL` for `cacheURL` updates; every create/delete in a
   /// watched directory fires that watch, so if the wrapper's transient files lived there too, every
   /// status-line invocation (not just ones that change the cached rate limits) would trigger a
   /// refresh for as long as an agent session runs.

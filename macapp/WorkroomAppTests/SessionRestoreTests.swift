@@ -61,7 +61,7 @@ final class SessionRestoreTests: XCTestCase {
       await sessions.materializeLivePersistentSessions(reattaches: Self.every) { [] }
       XCTAssertTrue(sessions.activeAgentBackends.isEmpty, "lost sessions must not restore usage")
       await sessions.materializeLivePersistentSessions(reattaches: Self.every) { [descriptor] }
-      let expected: Set<AgentBackend> =
+      let expected: Set<CodingAgentBackend> =
         command == "claude" ? [.claude] : command == "codex" ? [.codex] : []
       XCTAssertEqual(sessions.activeAgentBackends, expected, command)
       XCTAssertFalse(sessions.isRunning(forTargetID: target.id), "recovery must not imply activity")

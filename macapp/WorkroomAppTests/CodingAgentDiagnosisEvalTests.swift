@@ -8,7 +8,7 @@ import XCTest
 /// process under `xcodebuild test`):
 ///
 ///     touch /tmp/workroom-run-agent-eval
-///     xcodebuild ... -only-testing:WorkroomAppTests/AgentDiagnosisEvalTests test
+///     xcodebuild ... -only-testing:WorkroomAppTests/CodingAgentDiagnosisEvalTests test
 ///     rm /tmp/workroom-run-agent-eval
 ///
 /// (Or set `WORKROOM_RUN_AGENT_EVAL=1` in the scheme's test action when running from Xcode.)
@@ -16,7 +16,7 @@ import XCTest
 /// canonical failures — the guard against prompt regressions, and the check that fixes land in the
 /// structured `fix` field (the T8 note). Codex is Investigate-only (no headless no-tools mode), so
 /// the inline eval is claude-only.
-final class AgentDiagnosisEvalTests: XCTestCase {
+final class CodingAgentDiagnosisEvalTests: XCTestCase {
   private struct Scenario {
     let name: String
     let command: String
@@ -67,17 +67,18 @@ final class AgentDiagnosisEvalTests: XCTestCase {
       evalEnabled,
       "Eval skipped. Run: touch /tmp/workroom-run-agent-eval (needs an authenticated `claude`).")
 
-    let runner = AgentRunner()
+    let runner = CodingAgentRunner()
     for scenario in scenarios {
-      let prompt = AgentPrompt.userMessage(
+      let prompt = CodingAgentPrompt.userMessage(
         command: scenario.command, cwd: "/tmp/project", exitCode: scenario.exitCode, shell: "zsh",
         output: scenario.output)
       let outcome = await runner.diagnoseInline(
-        systemPrompt: AgentPrompt.systemPrompt, model: "claude-haiku-4-5-20251001", prompt: prompt,
+        systemPrompt: CodingAgentPrompt.systemPrompt, model: "claude-haiku-4-5-20251001",
+        prompt: prompt,
         cwd: NSTemporaryDirectory(), timeout: 90)
 
       guard case .success(let stdout) = outcome,
-        let diagnosis = AgentPrompt.parse(envelopeJSON: stdout)
+        let diagnosis = CodingAgentPrompt.parse(envelopeJSON: stdout)
       else {
         XCTFail("[\(scenario.name)] expected a parsed diagnosis, got \(outcome)")
         continue

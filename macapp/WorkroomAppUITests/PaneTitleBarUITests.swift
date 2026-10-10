@@ -159,7 +159,7 @@ final class PaneTitleBarUITests: XCTestCase {
   /// Open File into `pane.toolbar.overflow`.
   ///
   /// This codebase has already shipped a DEAD `ViewThatFits` ladder with the whole suite green —
-  /// `AgentUsageUITests.testNarrowSplitKeepsBothWindowsAndShrinksTheBars` documents it (issue #168:
+  /// `CodingAgentUsageUITests.testNarrowSplitKeepsBothWindowsAndShrinksTheBars` documents it (issue #168:
   /// a `.fixedSize` made the first variant always "fit", so every later rung was unreachable). The
   /// same trap applies here, so assert the collapse by OBSERVING it, not by trusting the ladder.
   func testNarrowPaneCollapsesTheOptionalControlsIntoTheOverflowMenu() {

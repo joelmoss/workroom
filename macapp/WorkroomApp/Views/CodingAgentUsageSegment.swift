@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// Provider quota controls shared by every window footer.
-struct AgentUsageSegment: View {
-  let backend: AgentBackend
-  @EnvironmentObject var agentUsage: AgentUsageMonitor
+struct CodingAgentUsageSegment: View {
+  let backend: CodingAgentBackend
+  @EnvironmentObject var agentUsage: CodingAgentUsageMonitor
   @EnvironmentObject var claudeUsageBridge: ClaudeUsageBridge
   @State private var usageDetailPinned = false
   @State private var confirmingClaudeUsage = false
@@ -52,8 +52,8 @@ struct AgentUsageSegment: View {
   // MARK: Agent quota
 
   /// Resolve the bundled provider logos once per launch.
-  private static let logoTools: [AgentBackend: RecognizedTool] = Dictionary(
-    uniqueKeysWithValues: AgentBackend.allCases.compactMap { backend in
+  private static let logoTools: [CodingAgentBackend: RecognizedTool] = Dictionary(
+    uniqueKeysWithValues: CodingAgentBackend.allCases.compactMap { backend in
       ToolLogoRegistry.tool(forExecutableName: backend.executable).map { (backend, $0) }
     })
 
@@ -62,7 +62,7 @@ struct AgentUsageSegment: View {
   /// logo plus bars, with nothing else to shed.
   ///
   /// Which bar is which window is deliberately not drawn. They run shortest-window-first
-  /// (`AgentUsageDecoding.normalized` sorts by duration), and the segment's tooltip and popover both
+  /// (`CodingAgentUsageDecoding.normalized` sorts by duration), and the segment's tooltip and popover both
   /// name them in full: the footer is a glance, not a reading.
   ///
   private static let quotaBarWidths: [CGFloat] = [44, 32, 24]
@@ -80,13 +80,13 @@ struct AgentUsageSegment: View {
   /// and letting the ticks re-render a captured value means an idle agent that stops rewriting its
   /// quota file keeps an EXPIRED window on screen indefinitely, marching the pin to 100% and
   /// eventually claiming "resets now" — the filter never gets a chance to run.
-  /// `AgentUsageMonitor.unavailableReason` exists precisely for that state and says so in its own
+  /// `CodingAgentUsageMonitor.unavailableReason` exists precisely for that state and says so in its own
   /// doc comment; re-resolving here is what lets the segment reach it.
   ///
   /// It also sits OUTSIDE the `ViewThatFits` below: that view instantiates every child to measure
   /// it, so a `TimelineView` inside the variants would run one schedule per rung. `VCSToolbar`
   /// wraps its whole bar for the same reason.
-  @ViewBuilder private func agentUsageSegment(_ backend: AgentBackend) -> some View {
+  @ViewBuilder private func agentUsageSegment(_ backend: CodingAgentBackend) -> some View {
     TimelineView(.periodic(from: .now, by: 60)) { context in
       let now = context.date
       if backend == .claude, claudeUsageBridge.state == .disabled {
@@ -119,8 +119,8 @@ struct AgentUsageSegment: View {
         .accessibilityLabel(label)
         .accessibilityIdentifier("terminal.statusBar.agentUsage")
         .popover(isPresented: usageDetailPresented, arrowEdge: .bottom) {
-          AgentUsageDetailView(snapshot: snapshot, now: now)
-            .frame(width: AgentUsageDetailView.popoverWidth)
+          CodingAgentUsageDetailView(snapshot: snapshot, now: now)
+            .frame(width: CodingAgentUsageDetailView.popoverWidth)
         }
       } else {
         let isLoading = agentUsage.loading.contains(backend)
@@ -159,7 +159,8 @@ struct AgentUsageSegment: View {
 
   /// The agent's logo followed by one bar per window. `barWidth` is the only thing the `ViewThatFits`
   /// ladder varies between its variants.
-  private func quotaBars(_ snapshot: AgentQuotaSnapshot, now: Date, barWidth: CGFloat) -> some View
+  private func quotaBars(_ snapshot: CodingAgentQuotaSnapshot, now: Date, barWidth: CGFloat)
+    -> some View
   {
     HStack(spacing: 8) {
       agentLogo(snapshot.backend)
@@ -169,7 +170,7 @@ struct AgentUsageSegment: View {
     }
   }
 
-  private func quotaBar(_ window: AgentQuotaWindow, now: Date, width: CGFloat) -> some View {
+  private func quotaBar(_ window: CodingAgentQuotaWindow, now: Date, width: CGFloat) -> some View {
     let pace = window.pace(at: now)
     return QuotaBar(
       usedPercentage: window.usedPercentage,
@@ -182,7 +183,7 @@ struct AgentUsageSegment: View {
   /// tab chip's favicon (`TerminalTabStrip`). No template-tinting risk: neither agent imageset
   /// declares `template-rendering-intent`, so this bar's ambient `foregroundStyle` leaves the brand
   /// colour alone.
-  @ViewBuilder private func agentLogo(_ backend: AgentBackend) -> some View {
+  @ViewBuilder private func agentLogo(_ backend: CodingAgentBackend) -> some View {
     if let tool = Self.logoTools[backend] {
       Image(ToolLogoRegistry.assetName(for: tool.id))
         .resizable()
@@ -197,9 +198,9 @@ struct AgentUsageSegment: View {
 
   /// Takes `now` from the segment's `TimelineView` rather than reading its own clock, so the tooltip
   /// and the VoiceOver label describe the same instant the pace pins are drawn for. The FORMAT is
-  /// load-bearing: every `AgentUsageUITests` assertion reads this string, and
-  /// `AgentUsageSegmentLabelTests` pins the zero-usage branch. Static so a unit test can call it.
-  static func quotaAccessibilityLabel(_ snapshot: AgentQuotaSnapshot, now: Date) -> String {
+  /// load-bearing: every `CodingAgentUsageUITests` assertion reads this string, and
+  /// `CodingAgentUsageSegmentLabelTests` pins the zero-usage branch. Static so a unit test can call it.
+  static func quotaAccessibilityLabel(_ snapshot: CodingAgentQuotaSnapshot, now: Date) -> String {
     let windows = snapshot.windows.map { window in
       let used = Int(window.usedPercentage.rounded())
       let pace = used == 0 ? "" : ", \(window.pace(at: now).accessibilityDescription)"

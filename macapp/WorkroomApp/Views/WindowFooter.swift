@@ -11,9 +11,9 @@ struct WindowFooter: View {
   var body: some View {
     HStack(spacing: 20) {
       ForEach(
-        AgentBackend.allCases.filter { registry.activeAgentBackends.contains($0) }, id: \.self
+        CodingAgentBackend.allCases.filter { registry.activeAgentBackends.contains($0) }, id: \.self
       ) {
-        AgentUsageSegment(backend: $0)
+        CodingAgentUsageSegment(backend: $0)
       }
       Spacer(minLength: 8)
       NotificationsBarButton()
