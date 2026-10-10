@@ -149,7 +149,7 @@ fn adopt(
     agent: &Agent,
     table: &std::path::Path,
 ) -> Result<(serve::InstanceLock, UnixListener), String> {
-    let table = handoff::take_table(table)?;
+    let table = handoff::take_table(table).map_err(|e| e.to_string())?;
     // SAFETY: the table names descriptors the outgoing program carried across the exec for this
     // and nothing else, and nothing in this process has touched them.
     let lock = unsafe { serve::InstanceLock::adopt(table.lock) };
