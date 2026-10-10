@@ -3630,15 +3630,10 @@ final class AppStore: ObservableObject {
     let label: String
   }
 
-  /// `step` of a remote provider's create that builds the project's base first or not, as the row
-  /// shows it, or nil for a step that create does not take. Only boxd restarts a copy (`reboots`):
-  /// exe.dev's copy boots with its own identity (#259).
-  nonisolated static func createStep(
-    _ step: RemoteProvisioning.Step, buildsBase: Bool, reboots: Bool = true
-  ) -> CreateStep? {
-    let all = RemoteProvisioning.Step.allCases.filter { reboots || $0 != .reboot }
-    let steps = buildsBase ? all : Array(all.drop { $0 != .snapshot })
-    guard let index = steps.firstIndex(of: step) else { return nil }
+  /// `step` of a remote provider's create, as the row shows it.
+  nonisolated static func createStep(_ step: RemoteProvisioning.Step) -> CreateStep {
+    let steps = RemoteProvisioning.Step.allCases
+    let index = steps.firstIndex(of: step) ?? 0
     return CreateStep(
       fraction: Double(index) / Double(steps.count),
       label: "\(step.rawValue) (step \(index + 1) of \(steps.count))")
@@ -3652,18 +3647,15 @@ final class AppStore: ObservableObject {
     return nil
   }
 
-  /// Whether a create must say that its new base fell back to the Mac's own GitHub token (#309, D9):
-  /// signed in to Codaset, yet the base it made relays, which only an uninstalled Codaset App does.
-  /// Said once, when the base is made; signed out, the relay is the only way, and expected.
-  nonisolated static func fellBackToGitHub(
-    signedIn: Bool, hadBase: Bool, made: HostDescriptor?
-  ) -> Bool {
-    signedIn && !hadBase && made?.isRelayed == true
+  /// Whether a create must say that its workroom fell back to the Mac's own GitHub token (#309, D9):
+  /// signed in to Codaset, yet the workroom relays, which only an uninstalled Codaset App does.
+  /// Signed out, the relay is the only way, and expected.
+  nonisolated static func fellBackToGitHub(signedIn: Bool, relayed: Bool) -> Bool {
+    signedIn && relayed
   }
 
   /// Whether creating a container workroom is on for `project`: not while another create holds it
-  /// busy, since a second create would build a second base. A remote create holds it only until its
-  /// workroom has a name, by when any base it built is recorded.
+  /// busy. A remote create holds it only until its workroom has a name.
   func canCreateRemoteWorkroom(in project: Project) -> Bool {
     !isBusyProject(project.path) && !deletingProjects.contains(project.path)
   }
@@ -3677,9 +3669,8 @@ final class AppStore: ObservableObject {
     creatingWorkrooms.insert(id)
     createSteps[sid] = createSteps.removeValue(forKey: .project(path))
     await reload()
-    // A reload that failed leaves `projects` without this workroom, and without any base this
-    // create recorded: a second create would build a second base over it. The project stays
-    // locked, with the progress, until this create ends.
+    // A reload that failed leaves `projects` without this workroom, so its row could not show the
+    // progress. The project stays locked, with the progress, until this create ends.
     guard Self.sidebarID(forTargetID: id, in: projects) != nil else {
       creatingWorkrooms.remove(id)
       createSteps[.project(path)] = createSteps.removeValue(forKey: sid)
@@ -3718,27 +3709,22 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Creates a remote workroom for `project` at `place` (#253, #309, #356): a container on this Mac
-  /// or a boxd machine, derived from the project's base machine there (built first if it has none),
-  /// then selects it, which opens its first pane on the far side. `splitAnchor` lands it beside
-  /// that workroom instead, as `createWorkroom`.
+  /// Creates a remote workroom for `project` at `place` (#253, #309, #356): a container on this Mac,
+  /// or a boxd machine or exe.dev VM, each with its own clone, then selects it, which opens its
+  /// first pane on the far side. `splitAnchor` lands it beside that workroom instead, as
+  /// `createWorkroom`.
   func createRemoteWorkroom(
     in project: Project, place: RemoteWorkrooms.Place = .container(.docker),
     splitAnchor: SidebarID? = nil
   ) async {
-    // As it is now, not as a menu or the picker caught it: a create that finished meanwhile may
-    // have recorded the project's first base, which this one must derive from, not overwrite.
+    // As it is now, not as a menu or the picker caught it: its base branch may have changed.
     let project = projects.first { $0.path == project.path } ?? project
     guard canCreateRemoteWorkroom(in: project) else { return }
     beginBusy(project.path)
     let row = RemoteCreateRow()
     defer { endRemoteCreate(in: project.path, row: row) }
     do {
-      // A project keeps a base per runtime and Docker context (#309): the workroom derives from the
-      // one where it is asked for, made there first if there is none.
-      let wanted = try await RemoteHosts.shared.key(for: place)
-      let base = RemoteWorkrooms.base(in: project.host, for: wanted)
-      let key = base.flatMap(RemoteHosts.DriverKey.init) ?? wanted
+      let key = try await RemoteHosts.shared.key(for: place)
       let (driver, environment) = try RemoteHosts.shared.environment(key)
       // A remote host has no relay to fall back to (OQ20): say so before anything is made.
       try RemoteWorkrooms.checkCredentials(for: key, client: environment.client)
@@ -3759,7 +3745,7 @@ final class AppStore: ObservableObject {
         throw RemoteWorkrooms.Failure.notOnGitHub("Its origin is on \(repository.host).")
       }
       // A remote host has only origin, so a base on another remote, or one only this Mac has, would
-      // fail its derive minutes in. Unreachable (nil) is left to the derive, which says so itself.
+      // fail its checkout minutes in. Unreachable (nil) is left to the checkout, which says so.
       // A project's own base that can't be used fails; the app-wide default only falls back to
       // origin's default branch, with a notice, as a local create does.
       var startBranch: String?
@@ -3779,14 +3765,9 @@ final class AppStore: ObservableObject {
         }
       }
       let path = project.path
-      let buildsBase = base == nil
-      let reboots = if case .boxd = key { true } else { false }
       let stepped: @Sendable (RemoteProvisioning.Step) -> Void = { step in
         Task { @MainActor [weak self] in
-          guard let self,
-            let shown = Self.createStep(step, buildsBase: buildsBase, reboots: reboots)
-          else { return }
-          self.showRemoteCreateStep(shown, in: path, row: row)
+          self?.showRemoteCreateStep(Self.createStep(step), in: path, row: row)
         }
       }
       let report: @Sendable (Double?) -> Void = { fraction in
@@ -3811,8 +3792,8 @@ final class AppStore: ObservableObject {
         try await ContainerHostDriver.$pullProgress.withValue(report) {
           try await RemoteWorkrooms.create(
             repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
-            base: base, project: project.host, startBranch: startBranch, key: key,
-            driver: driver, environment: environment, recorder: recorder)
+            startBranch: startBranch, key: key, driver: driver, environment: environment,
+            recorder: recorder)
         }
       }
       // Its panes attach through their own ssh; Changes and the rest connect for themselves.
@@ -3832,17 +3813,14 @@ final class AppStore: ObservableObject {
             sid, beside: $0, edge: .right, destinationRect: workroomPaneRect(for: $0))
         } ?? false
       if !landedInSplit { selectedTargetID = sid }
-      let made = RemoteWorkrooms.base(
-        in: projects.first { $0.path == project.path }?.host, for: wanted)
       if Self.fellBackToGitHub(
-        signedIn: environment.client != nil, hadBase: base != nil, made: made)
+        signedIn: environment.client != nil, relayed: created.instance.relayed)
       {
-        errorTitle =
-          "\(place.displayName) workrooms of \(project.displayName) use your own GitHub access"
+        errorTitle = "\(created.name) uses your own GitHub access"
         errorMessage =
-          "The Codaset App isn't installed for \(repository.owner), so git in this project's "
-          + "\(place.displayName) workrooms asks your gh sign-in on this Mac, with all of its "
-          + "access, as a workroom on this Mac does. They keep doing so after the App is installed."
+          "The Codaset App isn't installed for \(repository.owner), so git in this workroom asks "
+          + "your gh sign-in on this Mac, with all of its access, as a workroom on this Mac does. "
+          + "It keeps doing so after the App is installed."
       }
     } catch {
       await reload()
@@ -4340,7 +4318,7 @@ final class AppStore: ObservableObject {
     let remote: RemoteHosts.Deletion?
     do {
       remote = try RemoteHosts.shared.environment(
-        toDelete: remoteWorkrooms.compactMap(\.host) + bases, bases: Set(bases.compactMap(\.id)))
+        toDelete: remoteWorkrooms.compactMap(\.host) + bases)
     } catch {
       present(error)
       errorTitle = "Can't delete \(project.displayName)"

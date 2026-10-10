@@ -7,19 +7,14 @@ struct HostDriverTraits: Equatable, Sendable {
   enum Transport: Equatable, Sendable { case sshStdio, sdkExec, webSocket }
 
   let transport: Transport
-  /// Roughly how long `deriveFromBase` takes, or nil for a driver that cannot derive yet.
-  let deriveSpeed: Duration?
-  /// Whether a derived instance carries the base's running processes (a live fork), or only its
-  /// disk.
-  let deriveCarriesLiveProcesses: Bool
   let durableDisk: Bool
   /// The wall clock an instance dies on, or nil for one that lives until destroyed.
   let maxLifetime: Duration?
 }
 
-/// One provider. Four methods, and the only one that is not provisioning is `openStream`
-/// (design doc, Phase 3). `deriveFromBase` is the ONLY way a workroom instance comes to exist;
-/// `create` makes the base it derives from.
+/// One provider. Three methods, and the only one that is not provisioning is `openStream`
+/// (design doc, Phase 3). `create` makes each workroom's host: there is no base to derive from
+/// (a derive measured slower than a fresh machine on boxd, 2026-10-10).
 ///
 /// **Every driver must authenticate its peer as strongly as a shell login.** The agent's exec
 /// service runs `git` with arbitrary arguments, which is arbitrary code execution, so a stream
@@ -31,13 +26,11 @@ protocol HostDriver: Sendable {
   /// beside, and the relay and the attach connect to. A remote provider's is on the host's home
   /// disk, so its enrolment and screens survive a stop (#259).
   var agentSocket: String { get }
-  /// Provisions a base.
+  /// Provisions a workroom's host.
   func create() async throws -> HostID
-  /// Provisions a workroom instance from `base`.
-  func deriveFromBase(_ base: HostID) async throws -> HostID
-  /// Takes down a base or an instance.
+  /// Takes down a host.
   func destroy(_ host: HostID) async throws
-  /// A byte stream to the agent on `host`, base or instance, for
+  /// A byte stream to the agent on `host`, for
   /// `AgentVCSConnection.connect(host:stream:)`. Not the first thing to open on a host:
   /// `AgentBootstrap.connect` runs the bootstrap first (#231), which is what puts an agent there.
   /// Spawned as a `.connection`, which `connect` takes over (`HostStream.handOff`).

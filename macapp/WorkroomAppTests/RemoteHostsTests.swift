@@ -178,7 +178,7 @@ final class RemoteHostsTests: XCTestCase {
     let session = UUID()
     let sessions = PersistentSessionService.shared
     sessions.registerRemoteSession(
-      session, on: host, via: DerivingDriver(derived: boxd), workingDirectory: "/home/boxd/r")
+      session, on: host, via: MachineDriver(made: boxd), workingDirectory: "/home/boxd/r")
     // A restored pane registers its session but spawns nothing until it enters a window.
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a pane that never attached holds the box")
     // An attach no pane runs (a probe, a test's own call) holds nothing.
@@ -193,7 +193,7 @@ final class RemoteHostsTests: XCTestCase {
     // A forgotten pane holds nothing, even if its id is registered again; nor does one whose host
     // the driver can't reach, whose pane only says why.
     sessions.registerRemoteSession(
-      session, on: host, via: DerivingDriver(derived: boxd), workingDirectory: "/home/boxd/r")
+      session, on: host, via: MachineDriver(made: boxd), workingDirectory: "/home/boxd/r")
     XCTAssertFalse(sessions.hasAttachedPane(on: host), "a forgotten pane still holds the box")
     sessions.forgetRemoteSession(session)
     sessions.registerRemoteSession(
@@ -528,37 +528,6 @@ final class RemoteHostsTests: XCTestCase {
       "sha256:" + hex + "a", "sha256:" + String(repeating: "g", count: 64),
     ] {
       XCTAssertFalse(ContainerHostDriver.isImageID(bad), bad)
-    }
-  }
-
-  /// A project whose origin changed since its base was cloned is refused before anything is made:
-  /// reusing the base would give it workrooms of the old repository, with credentials for that.
-  func testABaseOfAnotherRepositoryIsNotReused() async throws {
-    let driver = ContainerHostDriver(hosts: [:], directory: FileManager.default.temporaryDirectory)
-    let environment = RemoteProvisioning.Environment(
-      driver: driver, agentSocket: RemoteWorkrooms.agentSocket,
-      client: BrokerClient(
-        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())))
-    let recorder = RemoteWorkrooms.Recorder(
-      reserve: { _, _ in
-        XCTFail("a name was taken")
-        return "x"
-      },
-      record: { _, _ in XCTFail("something was recorded") },
-      forget: { _ in XCTFail("something was forgotten") })
-
-    do {
-      _ = try await RemoteWorkrooms.create(
-        repository: try XCTUnwrap(GitHubRepository(host: "github.com", owner: "fork", name: "r")),
-        cloneURL: "https://github.com/fork/r.git",
-        base: HostDescriptor(
-          provisioner: RemoteWorkrooms.provisioner, id: UUID(), repository: "upstream/r",
-          cloneURL: "https://github.com/upstream/r.git", path: "/home/workroom/r"),
-        driver: driver, environment: environment, recorder: recorder)
-      XCTFail("a base of another repository was reused")
-    } catch RemoteWorkrooms.Failure.baseRepositoryChanged(let base, let origin) {
-      XCTAssertEqual(base, "upstream/r")
-      XCTAssertEqual(origin, "fork/r")
     }
   }
 
@@ -996,10 +965,10 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(apple, RemoteHosts.DriverKey(runtime: .apple))
   }
 
-  /// A project keeps a base per runtime and Docker context (#309): a workroom derives from the one
-  /// where it is asked for, a base made before #309 (no context) still serves Docker, and recording
-  /// or removing one keeps the others.
-  func testAProjectKeepsABasePerRuntimeAndContext() throws {
+  /// A project an older build made keeps a base per runtime and Docker context (#309): the one for
+  /// a key is found, a base made before #309 (no context) still serves Docker, and removing one
+  /// keeps the others.
+  func testAnOlderProjectsBasesAreFoundAndRemovedOneByOne() throws {
     let base = { (runtime: RemoteWorkrooms.Runtime, context: String?) in
       HostDescriptor(
         driver: runtime.rawValue, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
@@ -1014,12 +983,12 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertNil(RemoteWorkrooms.base(in: old, for: key(.apple, nil)))
 
     let apple = base(.apple, nil)
-    let both = RemoteWorkrooms.recording(apple, in: old)
+    let both = HostDescriptor(bases: [old, apple])
     XCTAssertEqual(both.allBases.map(\.id), [old.id, apple.id])
     XCTAssertEqual(RemoteWorkrooms.base(in: both, for: key(.apple, nil))?.id, apple.id)
     // An exact match wins over the context-less one.
     let pinned = base(.docker, "orbstack")
-    let three = RemoteWorkrooms.recording(pinned, in: both)
+    let three = HostDescriptor(bases: [old, apple, pinned])
     XCTAssertEqual(RemoteWorkrooms.base(in: three, for: key(.docker, "orbstack"))?.id, pinned.id)
     XCTAssertEqual(RemoteWorkrooms.base(in: three, for: key(.docker, "desktop-linux"))?.id, old.id)
     // Round-trips through config, and comes apart again base by base.
@@ -1248,10 +1217,10 @@ final class RemoteHostsTests: XCTestCase {
   }
 
   /// A workroom created on boxd records `driver: "boxd"` with its org and account, and no
-  /// container record, from the moment its machine exists; a base of another place is refused.
+  /// container record, from the moment its machine exists.
   func testABoxdWorkroomRecordsItsOrgAndAccount() async throws {
     let made = UUID()
-    let driver = DerivingDriver(derived: made)
+    let driver = MachineDriver(made: made)
     // The driver wrote its machine down as pending; the record naming it takes it off (#373), so
     // the sweep can never take a machine config names, whatever a later config read says.
     let pending = try hostsDirectory()
@@ -1264,11 +1233,6 @@ final class RemoteHostsTests: XCTestCase {
       client: BrokerClient(
         baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())),
       connect: { _ in throw HostDriverError.provisioning("stop after the checkpoint") })
-    let base = { (driver: String, org: String?, account: String?) in
-      HostDescriptor(
-        driver: driver, provisioner: RemoteWorkrooms.provisioner, id: UUID(), repository: "o/r",
-        cloneURL: "https://github.com/o/r.git", path: "/home/boxd/r", org: org, account: account)
-    }
     let recorded = Recorded()
     let recorder = RemoteWorkrooms.Recorder(
       reserve: { _, descriptor in
@@ -1278,8 +1242,7 @@ final class RemoteHostsTests: XCTestCase {
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
     do {
       _ = try await RemoteWorkrooms.create(
-        repository: repository, cloneURL: "https://github.com/o/r.git",
-        base: base(RemoteWorkrooms.boxdDriver, "acme", "usr_1"), key: key, driver: driver,
+        repository: repository, cloneURL: "https://github.com/o/r.git", key: key, driver: driver,
         environment: environment, recorder: recorder, pendingIn: pending)
       XCTFail("the connect was meant to fail")
     } catch {}
@@ -1291,33 +1254,17 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertNil(live.container)
     XCTAssertTrue(
       recorded.all.allSatisfy { $0.driver == RemoteWorkrooms.boxdDriver && $0.account == "usr_1" })
-
-    for (place, other, said) in [
-      (key, base(RemoteWorkrooms.containerDriver, nil, nil), "Docker"),
-      (RemoteHosts.DriverKey(), base(RemoteWorkrooms.boxdDriver, "acme", "usr_1"), "boxd"),
-    ] {
-      do {
-        _ = try await RemoteWorkrooms.create(
-          repository: repository, cloneURL: "https://github.com/o/r.git", base: other, key: place,
-          driver: driver, environment: environment,
-          recorder: RemoteWorkrooms.Recorder(
-            reserve: { _, _ in "x" }, record: { _, _ in XCTFail("recorded") }, forget: { _ in }))
-        XCTFail("a workroom went on another place than its base")
-      } catch RemoteWorkrooms.Failure.baseOnOtherRuntime(let name) {
-        XCTAssertEqual(name, said)
-      }
-    }
   }
 
-  // Value: protects=a derive that fails and cannot remove its machine keeps the workroom's entry,
-  // failed, naming the machine, so a delete can take the paid machine down; fails_when=the
-  // catch-all forgets the entry on leftBehind; why_new=no test fails a derive's rollback; seam=none
-  /// A derive whose rollback leaves its machine running keeps the workroom's entry, `failed`,
-  /// naming the machine, rather than forgetting it: otherwise a paid machine runs on with nothing
-  /// in the app to find it (#356).
-  func testADeriveThatLeavesItsMachineBehindKeepsItsEntry() async throws {
+  // Value: protects=a create whose machine cannot be removed keeps the workroom's entry, failed,
+  // naming the machine, so a delete can take the paid machine down; fails_when=the catch-all
+  // forgets the entry on leftBehind; why_new=no test fails a create's machine rollback; seam=none
+  /// A create whose driver leaves its machine running keeps the workroom's entry, `failed`, naming
+  /// the machine, rather than forgetting it: otherwise a paid machine runs on with nothing in the
+  /// app to find it (#356).
+  func testACreateThatLeavesItsMachineBehindKeepsItsEntry() async throws {
     let made = UUID()
-    let driver = DerivingDriver(derived: made, leavesItBehind: true)
+    let driver = MachineDriver(made: made, leavesItBehind: true)
     let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
     let environment = RemoteProvisioning.Environment(
       driver: driver,
@@ -1335,13 +1282,9 @@ final class RemoteHostsTests: XCTestCase {
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
     do {
       _ = try await RemoteWorkrooms.create(
-        repository: repository, cloneURL: "https://github.com/o/r.git",
-        base: HostDescriptor(
-          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
-          repository: "o/r", cloneURL: "https://github.com/o/r.git", path: "/home/boxd/r",
-          org: "acme", account: "usr_1"),
-        key: key, driver: driver, environment: environment, recorder: recorder)
-      XCTFail("a derive that left its machine behind succeeded")
+        repository: repository, cloneURL: "https://github.com/o/r.git", key: key, driver: driver,
+        environment: environment, recorder: recorder)
+      XCTFail("a create that left its machine behind succeeded")
     } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, _, let cleanup) {
       XCTAssertEqual(host, .remote(made))
       XCTAssertEqual(cleanup, ["machine x"])
@@ -1355,56 +1298,14 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(recorded.names.last, "x")
   }
 
-  // Value: protects=a base create whose rollback fails records the base machine failed on the
-  // project, so the project knows it and a delete takes it down; fails_when=the leftBehind catch is
-  // dropped or its record is not written; why_new=the derive test passes a base and only covers the
-  // derive catch; seam=none
-  /// A project's first boxd create whose rollback leaves its machine running records that base on
-  /// the project, `failed`, rather than forgetting a paid machine (#356, #370).
-  func testABaseCreateThatLeavesItsMachineBehindIsRecorded() async throws {
+  // Value: protects=a workroom whose create fails after its machine exists, and whose rollback
+  // cannot destroy it, keeps its entry failed; fails_when=only the driver's own leftBehind is
+  // recorded; why_new=the other test fails inside create(); seam=none
+  /// A create that fails after its machine exists (here its first connect), with a destroy that
+  /// fails too, keeps the workroom's entry, `failed`, naming the machine (#356).
+  func testAWorkroomWhoseRollbackFailsKeepsItsEntry() async throws {
     let made = UUID()
-    let driver = DerivingDriver(derived: made, createLeavesItBehind: true)
-    let key = RemoteHosts.DriverKey.boxd(org: "acme", account: "usr_1")
-    let environment = RemoteProvisioning.Environment(
-      driver: driver,
-      agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
-      client: BrokerClient(
-        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())))
-    let recorded = Recorded()
-    let forgot = Recorded()
-    let recorder = RemoteWorkrooms.Recorder(
-      reserve: { _, descriptor in
-        recorded.add(descriptor)
-        return "x"
-      }, record: { _, descriptor in recorded.add(descriptor) },
-      forget: { _ in forgot.add(HostDescriptor()) })
-    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
-    do {
-      _ = try await RemoteWorkrooms.create(
-        repository: repository, cloneURL: "https://github.com/o/r.git", base: nil, key: key,
-        driver: driver, environment: environment, recorder: recorder)
-      XCTFail("a base create that left its machine behind succeeded")
-    } catch HostDriverError.leftBehind(_, let left, let host) {
-      XCTAssertEqual(host, .remote(made))
-      XCTAssertEqual(left, ["machine x"])
-    }
-    XCTAssertTrue(forgot.all.isEmpty)
-    let failed = try XCTUnwrap(
-      recorded.all.flatMap { [$0] + ($0.bases ?? []) }.last { $0.id == made },
-      "the base machine left behind was not recorded")
-    XCTAssertEqual(failed.state, "failed")
-    XCTAssertEqual(failed.driver, RemoteWorkrooms.boxdDriver)
-    XCTAssertEqual(failed.account, "usr_1")
-  }
-
-  // Value: protects=a base whose build fails after its machine exists, and whose rollback cannot
-  // destroy it, is recorded failed on the project; fails_when=only the driver's own leftBehind is
-  // recorded; why_new=the other base test fails inside create(); seam=none
-  /// A base build that fails after its machine exists (here its first connect), with a destroy that
-  /// fails too, records the machine on the project, `failed`, as a create's own undo does (#356).
-  func testABaseBuildWhoseRollbackFailsIsRecorded() async throws {
-    let made = UUID()
-    let driver = DerivingDriver(derived: made, createMakes: true, destroyFails: true)
+    let driver = MachineDriver(made: made, destroyFails: true)
     let environment = RemoteProvisioning.Environment(
       driver: driver,
       agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
@@ -1418,61 +1319,49 @@ final class RemoteHostsTests: XCTestCase {
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
     do {
       _ = try await RemoteWorkrooms.create(
-        repository: repository, cloneURL: "https://github.com/o/r.git", base: nil,
+        repository: repository, cloneURL: "https://github.com/o/r.git",
         key: .boxd(org: "acme", account: "usr_1"), driver: driver, environment: environment,
         recorder: recorder)
-      XCTFail("a base build whose rollback failed succeeded")
+      XCTFail("a create whose rollback failed succeeded")
     } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, _, _) {
       XCTAssertEqual(host, .remote(made))
     }
     let failed = try XCTUnwrap(
-      recorded.all.flatMap { [$0] + ($0.bases ?? []) }.last { $0.id == made },
-      "the base machine left running was not recorded")
+      recorded.all.last { $0.id == made }, "the machine left running was not recorded")
     XCTAssertEqual(failed.state, "failed")
 
     // A record that fails too leaves the caller the original failure, not the record's.
     do {
       _ = try await RemoteWorkrooms.create(
-        repository: repository, cloneURL: "https://github.com/o/r.git", base: nil,
+        repository: repository, cloneURL: "https://github.com/o/r.git",
         key: .boxd(org: "acme", account: "usr_1"), driver: driver, environment: environment,
         recorder: RemoteWorkrooms.Recorder(
           reserve: { _, _ in "x" },
           record: { _, _ in throw HostDriverError.provisioning("no record") },
           forget: { _ in }))
-      XCTFail("a base build whose rollback failed succeeded")
+      XCTFail("a create whose rollback failed succeeded")
     } catch RemoteProvisioning.Failure.rollbackIncomplete(_, let host, _, _) {
       XCTAssertEqual(host, .remote(made))
     }
   }
 
-  /// A driver whose derive makes `derived` and whose destroy succeeds unless told otherwise;
-  /// `create` fails, leaving `derived` behind or not, unless `createMakes`.
-  private struct DerivingDriver: HostTerminalDriver {
-    let derived: UUID
-    /// The derive fails and cannot remove the machine it made.
-    var leavesItBehind = false
+  /// A driver whose create makes `made`, and whose destroy succeeds, unless told otherwise.
+  private struct MachineDriver: HostTerminalDriver {
+    let made: UUID
     /// The create fails and cannot remove the machine it made.
-    var createLeavesItBehind = false
-    /// The create makes `derived`, and a destroy of it fails.
-    var createMakes = false
+    var leavesItBehind = false
     var destroyFails = false
     /// Told of each host a destroy is asked for.
     var onDestroy: (@Sendable (HostID) -> Void)? = nil
     var traits: HostDriverTraits {
       HostDriverTraits(
-        transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
+        transport: .sshStdio,
         durableDisk: true, maxLifetime: nil)
     }
     func create() async throws -> HostID {
-      if createMakes { return .remote(derived) }
-      guard createLeavesItBehind else { throw HostDriverError.provisioning("no create") }
+      guard leavesItBehind else { return .remote(made) }
       throw HostDriverError.leftBehind(
-        cause: "setup timed out", leftover: ["machine x"], host: .remote(derived))
-    }
-    func deriveFromBase(_ base: HostID) async throws -> HostID {
-      guard leavesItBehind else { return .remote(derived) }
-      throw HostDriverError.leftBehind(
-        cause: "reboot timed out", leftover: ["machine x"], host: .remote(derived))
+        cause: "setup timed out", leftover: ["machine x"], host: .remote(made))
     }
     func destroy(_ host: HostID) async throws {
       onDestroy?(host)
@@ -1816,7 +1705,7 @@ final class RemoteHostsTests: XCTestCase {
     let destroyed = Swept()
     let remote = RemoteHosts(
       makeDriver: { key in
-        DerivingDriver(derived: UUID(), onDestroy: { destroyed.add("\(key) \($0)", []) })
+        MachineDriver(made: UUID(), onDestroy: { destroyed.add("\(key) \($0)", []) })
       }, pendingIn: directory)
     let host = HostDescriptor(
       driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: recorded,
@@ -1853,7 +1742,7 @@ final class RemoteHostsTests: XCTestCase {
     let destroyed = Swept()
     let remote = RemoteHosts(
       makeDriver: { _ in
-        DerivingDriver(derived: UUID(), onDestroy: { destroyed.add("\($0)", []) })
+        MachineDriver(made: UUID(), onDestroy: { destroyed.add("\($0)", []) })
       }, pendingIn: directory)
     let host = HostDescriptor(
       driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: id,
@@ -2052,46 +1941,6 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(removed, ["image delete \(snapshot)"])
   }
 
-  /// A derived image is rebuilt from the exported disk with the host image's own process: its
-  /// entrypoint, command and environment, not the run-time ones a container carries.
-  func testAppleDerivesWithTheImagesOwnProcess() throws {
-    let image: [String: Any] = [
-      "variants": [
-        [
-          "platform": ["architecture": "amd64"],
-          "config": ["config": ["Entrypoint": ["/wrong"]]],
-        ],
-        [
-          "platform": ["architecture": "arm64"],
-          "config": [
-            "config": [
-              "Entrypoint": ["/usr/local/bin/entrypoint.sh"], "Cmd": ["serve", "a b"],
-              "Env": ["PATH=/usr/bin:/bin", #"QUOTED=say "hi" \ $HOME"#], "WorkingDir": "/srv/$x",
-              "User": "",
-            ]
-          ],
-        ],
-      ]
-    ]
-    let process = try XCTUnwrap(
-      AppleContainerCLI.processConfig(ofImage: image, architecture: "arm64"))
-    XCTAssertEqual(
-      try AppleContainerCLI.dockerfile(process),
-      """
-      FROM scratch
-      ADD rootfs.tar /
-      ENV PATH="/usr/bin:/bin"
-      ENV QUOTED="say \\"hi\\" \\\\ \\$HOME"
-      WORKDIR /srv/\\$x
-      ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-      CMD ["serve","a b"]
-
-      """)
-    var broken = process
-    broken.env.append("BAD=line\nbreak")
-    XCTAssertThrowsError(try AppleContainerCLI.dockerfile(broken))
-  }
-
   /// What each container gets: Apple's own default is a 1 GB VM, too small for a compiler or an
   /// agent, so it gets half the cores and a quarter of the memory, between 2 and 8 GB, unless set.
   /// Docker's containers share Docker's VM and get nothing unless set.
@@ -2139,62 +1988,6 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: live.path), "a live derive's was taken")
   }
 
-  /// A derive whose stop of the base fails, as a cancelled create's does, starts the base again:
-  /// the stop may have taken effect all the same, and the base must not be left down.
-  func testAnAppleDeriveCutOffMidStopStartsTheBaseAgain() async throws {
-    let base = UUID()
-    let container = ContainerHostDriver.containerName(base)
-    let inspected: [[String: Any]] = [
-      [
-        "id": container, "status": ["state": "running"],
-        "configuration": ["image": ["reference": "host:1"]],
-      ]
-    ]
-    let image: [[String: Any]] = [
-      [
-        "variants": [
-          [
-            "platform": ["architecture": "arm64"],
-            "config": ["config": ["Entrypoint": ["/usr/local/bin/entrypoint.sh"]]],
-          ]
-        ]
-      ]
-    ]
-    let json = { (o: Any) in
-      String(decoding: try JSONSerialization.data(withJSONObject: o), as: UTF8.self)
-    }
-    let (runtime, log) = try scriptedRuntime(
-      """
-      "inspect \(container)") printf '%s' \(ContainerHostDriver.shellQuoted(try json(inspected))) ;;
-      "image inspect host:1") printf '%s' \(ContainerHostDriver.shellQuoted(try json(image))) ;;
-      "stop \(container)") exit 1 ;;
-      """)
-    let driver = Self.driver(runtime: runtime, context: nil, dialect: .apple)
-    try driver.adopt(base, Self.record(context: nil), isBase: true)
-    do {
-      _ = try await driver.deriveFromBase(.remote(base))
-      XCTFail("derived through a failed stop")
-    } catch {}
-    let made = try calls(log)
-    XCTAssertTrue(made.contains("stop \(container)"), "\(made)")
-    XCTAssertTrue(made.contains("start \(container)"), "the base was left stopped: \(made)")
-  }
-
-  /// Only a base is derived from. An Apple instance records no image, as a base doesn't, so a
-  /// host is a base only when its adopter says so; deriving from an instance would copy its
-  /// enrolment.
-  func testAnAppleInstanceIsNeverDerivedFrom() async throws {
-    let (runtime, log) = try stubRuntime()
-    let driver = Self.driver(runtime: runtime, context: nil, dialect: .apple)
-    let instance = UUID()
-    try driver.adopt(instance, Self.record(context: nil), isBase: false)
-    do {
-      _ = try await driver.deriveFromBase(.remote(instance))
-      XCTFail("derived from an instance")
-    } catch HostDriverError.invalidConfiguration {}
-    XCTAssertFalse(FileManager.default.fileExists(atPath: log.path), "the instance was touched")
-  }
-
   /// A recorded Apple host is adopted into Apple's driver, and a Docker one beside it into
   /// Docker's, by the descriptor's `driver`.
   func testHostsAreAdoptedIntoTheirRuntimesDrivers() throws {
@@ -2224,33 +2017,6 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(
       (remote.existingDriver(holding: apple) as? ContainerHostDriver)?.provisioning?.dialect,
       .apple)
-  }
-
-  /// A project's workrooms are derived from its base, so they go on the base's runtime: asking
-  /// for another is refused before anything is made.
-  func testAWorkroomOnAnotherRuntimeThanItsBaseIsRefused() async throws {
-    let (runtime, _) = try stubRuntime()
-    let driver = Self.driver(runtime: runtime, context: nil, dialect: .apple)
-    let environment = RemoteProvisioning.Environment(
-      driver: driver, agentSocket: RemoteWorkrooms.agentSocket,
-      client: BrokerClient(
-        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())))
-    do {
-      _ = try await RemoteWorkrooms.create(
-        repository: try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r")),
-        cloneURL: "https://github.com/o/r.git",
-        base: HostDescriptor(
-          driver: RemoteWorkrooms.Runtime.docker.rawValue, provisioner: RemoteWorkrooms.provisioner,
-          id: UUID(), repository: "o/r", cloneURL: "https://github.com/o/r.git",
-          path: "/home/workroom/r"),
-        key: RemoteHosts.DriverKey(runtime: .apple), driver: driver, environment: environment,
-        recorder: RemoteWorkrooms.Recorder(
-          reserve: { _, _ in "x" }, record: { _, _ in XCTFail("recorded") },
-          forget: { _ in }))
-      XCTFail("a workroom went on another runtime than its base")
-    } catch RemoteWorkrooms.Failure.baseOnOtherRuntime(let runtime) {
-      XCTAssertEqual(runtime, "Docker")
-    }
   }
 
   /// Why a container runtime's New Workroom entry is off, in the order a user has to fix it:
@@ -2284,25 +2050,15 @@ final class RemoteHostsTests: XCTestCase {
       "sign in to Codaset or run gh auth login")
   }
 
-  /// A boxd create's row shows the step it is on as a fraction of the steps it takes: all eight
-  /// when it builds the project's base first, the five of a derive when the base exists (#356).
-  func testABoxdCreateShowsItsStepOfTheStepsItTakes() {
+  /// A remote provider's create row shows the step it is on as a fraction of its five (#356).
+  func testARemoteCreateShowsItsStepOfFive() {
     XCTAssertEqual(
-      AppStore.createStep(.machine, buildsBase: true),
-      .init(fraction: 0, label: "Creating the base machine (step 1 of 8)"))
-    XCTAssertEqual(AppStore.createStep(.snapshot, buildsBase: true)?.fraction, 3.0 / 8)
+      AppStore.createStep(.machine),
+      .init(fraction: 0, label: "Creating the workroom's machine (step 1 of 5)"))
+    XCTAssertEqual(AppStore.createStep(.clone).fraction, 3.0 / 5)
     XCTAssertEqual(
-      AppStore.createStep(.snapshot, buildsBase: false),
-      .init(fraction: 0, label: "Copying the base machine (step 1 of 5)"))
-    XCTAssertEqual(AppStore.createStep(.checkout, buildsBase: false)?.fraction, 4.0 / 5)
-    XCTAssertNil(AppStore.createStep(.clone, buildsBase: false), "a derive clones nothing")
-    // exe.dev's copy boots with its own identity, so it takes no reboot step (#259).
-    XCTAssertEqual(
-      AppStore.createStep(.checkout, buildsBase: true, reboots: false),
-      .init(fraction: 6.0 / 7, label: "Checking out the workroom's branch (step 7 of 7)"))
-    XCTAssertEqual(
-      AppStore.createStep(.enrol, buildsBase: false, reboots: false)?.fraction, 2.0 / 4)
-    XCTAssertNil(AppStore.createStep(.reboot, buildsBase: false, reboots: false))
+      AppStore.createStep(.checkout),
+      .init(fraction: 4.0 / 5, label: "Checking out the workroom's branch (step 5 of 5)"))
   }
 
   /// boxd's entry is off without its CLI, and without Codaset: a boxd workroom takes the broker's
@@ -2355,31 +2111,5 @@ final class RemoteHostsTests: XCTestCase {
       XCTAssertEqual(driver.provisioning?.context, key.context)
       XCTAssertEqual(driver.provisioning?.dialect, key.runtime == .apple ? .apple : .docker)
     }
-  }
-
-  /// A base record that names a host but not enough to derive from is refused: building another
-  /// would leave the recorded one running with nothing pointing at it.
-  func testAnIncompleteBaseIsNotReplaced() async throws {
-    let driver = ContainerHostDriver(hosts: [:], directory: FileManager.default.temporaryDirectory)
-    let environment = RemoteProvisioning.Environment(
-      driver: driver, agentSocket: RemoteWorkrooms.agentSocket,
-      client: BrokerClient(
-        baseURL: BrokerEndpoint.development, key: .software(P256.Signing.PrivateKey())))
-    let recorder = RemoteWorkrooms.Recorder(
-      reserve: { _, _ in
-        XCTFail("a name was taken")
-        return "x"
-      },
-      record: { _, _ in XCTFail("something was recorded") },
-      forget: { _ in XCTFail("something was forgotten") })
-
-    do {
-      _ = try await RemoteWorkrooms.create(
-        repository: try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r")),
-        cloneURL: "https://github.com/o/r.git",
-        base: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: UUID()),
-        driver: driver, environment: environment, recorder: recorder)
-      XCTFail("an incomplete base was replaced")
-    } catch RemoteWorkrooms.Failure.incompleteBase {}
   }
 }

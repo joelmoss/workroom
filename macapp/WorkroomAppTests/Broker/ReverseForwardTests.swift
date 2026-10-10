@@ -434,7 +434,7 @@ final class ReverseEvents: @unchecked Sendable {
 /// Runs every exec on this Mac with `/bin/sh`, under `home`, as the remote host's shell would.
 private final class ShellDriver: HostDriver, @unchecked Sendable {
   let traits = HostDriverTraits(
-    transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
+    transport: .sshStdio,
     durableDisk: false, maxLifetime: nil)
   let home: URL
   init(home: URL) { self.home = home }

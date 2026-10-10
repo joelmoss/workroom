@@ -20,7 +20,7 @@ final class AgentBootstrapTests: XCTestCase {
     var streamSocket: String?
     var traits: HostDriverTraits {
       HostDriverTraits(
-        transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
+        transport: .sshStdio,
         durableDisk: false, maxLifetime: nil)
     }
 
@@ -737,7 +737,7 @@ final class AgentBootstrapTests: XCTestCase {
   private final class LocalShellDriver: HostDriver, @unchecked Sendable {
     let path: String
     let traits = HostDriverTraits(
-      transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
+      transport: .sshStdio,
       durableDisk: false, maxLifetime: nil)
 
     init(path: String) { self.path = path }
