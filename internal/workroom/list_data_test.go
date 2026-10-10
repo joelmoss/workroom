@@ -99,21 +99,40 @@ func TestListDataFlagsEmptyPathAsMissingDirectory(t *testing.T) {
 	}
 }
 
+// listingText flattens a Listing's projects, workroom names and warning messages, for tests that
+// check what the human list shows.
+func listingText(l Listing) string {
+	var b strings.Builder
+	for _, project := range l.Projects {
+		p := project()
+		b.WriteString(p.Path + ":\n")
+		for _, w := range p.Workrooms {
+			b.WriteString(w.Name)
+			for _, warning := range w.Warnings {
+				b.WriteString(" " + warning.Message)
+			}
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
 // TestListAndListDataAgreeOnEmptyPath pins the fix for a real divergence: `workroom list`
 // (List, via os.Stat's unconditional call) used to warn on an empty/missing "path" config
 // entry while `workroom list --json` (ListData, guarded on wrPath != "") silently didn't. Both
 // now share projectInfo, so they must agree.
 func TestListAndListDataAgreeOnEmptyPath(t *testing.T) {
 	mock := &mockExecutor{}
-	svc, buf, cfg := newTestService(t, &vcs.Git{Executor: mock})
+	svc, _, cfg := newTestService(t, &vcs.Git{Executor: mock})
 
 	cfg.AddWorkroom("/a", "ghost", "", "git")
 
-	if err := svc.List("/a"); err != nil {
+	l, err := svc.Listing("/a")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "directory not found") {
-		t.Fatalf("expected 'directory not found' in human list output, got %q", buf.String())
+	if out := listingText(l); !strings.Contains(out, "directory not found") {
+		t.Fatalf("expected 'directory not found' in the human listing, got %q", out)
 	}
 
 	res, err := svc.ListData(WarningsFast)
@@ -135,7 +154,7 @@ func TestListAndListDataAgreeOnEmptyPath(t *testing.T) {
 // human path always did — deliberately, not by accident, and now proven on both outputs.
 func TestListAndListDataAgreeOnMalformedWorkroomEntry(t *testing.T) {
 	mock := &mockExecutor{}
-	svc, buf, cfg := newTestService(t, &vcs.Git{Executor: mock})
+	svc, _, cfg := newTestService(t, &vcs.Git{Executor: mock})
 
 	if err := cfg.Write(map[string]any{
 		"/a": map[string]any{"vcs": "git", "workrooms": map[string]any{"ghost": "oops"}},
@@ -143,11 +162,12 @@ func TestListAndListDataAgreeOnMalformedWorkroomEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := svc.List("/a"); err != nil {
+	l, err := svc.Listing("/a")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(buf.String(), "ghost") {
-		t.Fatalf("expected malformed entry to be skipped from human list, got %q", buf.String())
+	if out := listingText(l); strings.Contains(out, "ghost") {
+		t.Fatalf("expected malformed entry to be skipped from human list, got %q", out)
 	}
 
 	res, err := svc.ListData(WarningsFull)
@@ -314,13 +334,14 @@ func TestListDataReportsHostDescriptors(t *testing.T) {
 
 func TestListShowsHostDestroyed(t *testing.T) {
 	git := &vcs.Git{Executor: &mockExecutor{}}
-	svc, buf, _ := newTestService(t, git)
+	svc, _, _ := newTestService(t, git)
 	remoteConfig(t, svc, git)
 
-	if err := svc.List("/a"); err != nil {
+	l, err := svc.Listing("/a")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "host destroyed by its provider") {
-		t.Fatalf("expected the destroyed state in human list output, got %q", buf.String())
+	if out := listingText(l); !strings.Contains(out, "host destroyed by its provider") {
+		t.Fatalf("expected the destroyed state in the human listing, got %q", out)
 	}
 }
