@@ -319,7 +319,7 @@ final class AppStore: ObservableObject {
   /// polarity to `collapsedProjects`: terminals are collapsed by default, so the set holds only the
   /// expanded ones (empty = all collapsed). Persisted with the session (issue #46) — restored only for
   /// targets whose panes actually came back, since an expand flag pointing at nothing would render an
-  /// empty disclosure. Pruned below 2 tabs by the `onTabsRemoved` hook in `init`.
+  /// empty disclosure. Pruned below 2 tabs by the `.tabsRemoved` arm of `handleTerminalEvent`.
   @Published var expandedTerminalTargets: Set<TerminalTarget.ID> = [] {
     didSet { markSessionDirty() }
   }
@@ -577,7 +577,7 @@ final class AppStore: ObservableObject {
   let remoteState: RemoteStateModel
   /// Shared find state for ⌘F across file/diff/changeset panes — one instance for all three content
   /// kinds (`FileFindModel` has no content-specific logic), so only the focused pane feeds + shows it,
-  /// and `onFocusChange`/`startFindInFocusedPane`/`navigateFocusedPaneSearch` each need a single
+  /// and `.focusChanged`/`startFindInFocusedPane`/`navigateFocusedPaneSearch` each need a single
   /// branch/call rather than one per content kind.
   let contentFind = FileFindModel()
   /// True while `loadInspectorState` is writing the four collapse flags + weights, so their
@@ -876,7 +876,7 @@ final class AppStore: ObservableObject {
   /// tests can inspect it (read-only) while only the store mutates it.
   @Published private(set) var history = NavigationHistory()
   /// True while `navigateBack`/`navigateForward`/`applyLocation` are replaying, so the
-  /// `selectedTargetID` didSet and the `terminals.onFocusChange` seam don't re-record the very
+  /// `selectedTargetID` didSet and the `.focusChanged` event don't re-record the very
   /// location they're navigating to.
   private var isNavigatingHistory = false
 
@@ -1022,14 +1022,34 @@ final class AppStore: ObservableObject {
       AppStore.releaseWrite(projectRoot: root, in: projectStore)
     }
     pendingRestoreSelection = Defaults[.sidebarSelection]
+    // Everything `TerminalSessions` reports comes through one synchronous sink, handled in
+    // `handleTerminalEvent` (eng review D8).
+    terminals.onEvent = { [weak self] event in self?.handleTerminalEvent(event) }
+    // Mirror the aggregate unread count onto the Dock icon badge (issue #32). Owned here, not in a
+    // view: see `NotificationCenterStore.onTotalChange` for why a view-driven badge misses
+    // background notifications. `DockBadge` draws into the tile's `contentView` (not `badgeLabel`,
+    // which a linked framework suppresses here). Captures no `self`, so there's no retain cycle.
+    notifications.onTotalChange = { _ in
+      // Combined count across all windows (issue #70) — the registry sums every window's total and
+      // updates the menu-bar label + Dock badge, so a second window can't clobber the first's count.
+      WindowRegistry.shared.recomputeBadge()
+    }
+    // Hydrate the (global) inspector section layout once at launch — it's shared across all
+    // workrooms, so it's loaded here rather than re-loaded on every selection change (issue #24).
+    loadInspectorState()
+  }
+
+  /// Everything `TerminalSessions` reports. `onEvent` is called synchronously at each event's
+  /// source, so each arm runs before the sessions method that raised it returns: history
+  /// suppression and `select`'s promote-then-focus order depend on that (eng review D8).
+  private func handleTerminalEvent(_ event: TerminalSessions.Event) {
+    switch event {
     // Route each terminal's activity (OSC/bell) through the notification spine, gated on
     // focus, and raise a native banner only when the app is backgrounded.
-    terminals.activityHandler = { [weak self] targetID, tabID, activity in
-      self?.handleActivity(targetID: targetID, tabID: tabID, activity: activity)
-    }
+    case .activity(let targetID, let tabID, let activity):
+      handleActivity(targetID: targetID, tabID: tabID, activity: activity)
     // Record each focused-tab change for back/forward history (issue #26), unless we're replaying.
-    terminals.onFocusChange = { [weak self] _, tabID in
-      guard let self else { return }
+    case .focusChanged:
       // Find is tied to the focused file/diff/changeset pane (the model is shared across all three
       // kinds). Any focused-tab change ends that session: close it so ⌘G can't step a hidden find
       // from a terminal pane, and the bar doesn't reappear pre-filled on the next pane (review).
@@ -1038,33 +1058,29 @@ final class AppStore: ObservableObject {
       self.refreshSelectionHasTabs()
       guard !self.isNavigatingHistory else { return }
       self.recordCurrentLocation()
-    }
     // A tab's content changed underneath an unmoved focus (the shared preview tab being retargeted, or
-    // a file selected inside a commit). `onFocusChange` cannot see either, which is why browsing the
+    // a file selected inside a commit). `.focusChanged` cannot see either, which is why browsing the
     // Changes/Files panels used to record nothing after the first click.
     //
     // Scoped to the on-screen cursor location: a content change in a co-displayed but NON-selected
     // workroom is not where the user is, and `recordCurrentLocation` records the *selected* target's
     // focused tab, so recording here would log the wrong place at the wrong moment.
-    terminals.onTabContentChange = { [weak self] targetID, tabID in
-      guard let self, !self.isNavigatingHistory else { return }
+    case .tabContentChanged(let targetID, let tabID):
+      guard !self.isNavigatingHistory else { return }
       guard let selected = self.selectedTarget, selected.id == targetID,
         self.terminals.focusedTab(for: selected)?.id == tabID
       else { return }
       self.recordCurrentLocation()
-    }
     // A closed remote pane whose host could not end its session (#283). Not while quitting: the
     // quit has stopped waiting for it, and an alert would hold the quit up instead.
-    terminals.onRemoteCloseFailed = { [weak self] target, title in
-      guard let self, !WindowRegistry.shared.isTerminating else { return }
+    case .remoteCloseFailed(let target, let title):
+      guard !WindowRegistry.shared.isTerminating else { return }
       self.reportRemoteCloseFailure(target: target, title: title)
-    }
     // Prune dead entries when tabs are closed/reaped, so canGoBack/Forward stay honest (issue #26).
     // Also collapse a target's sidebar terminal subtree once a close drops it below the 2-tab
     // disclosure threshold (issue #30), so a stale expand flag can't auto-reveal if the count climbs
     // back later — the subtree is meant to be re-opened deliberately.
-    terminals.onTabsRemoved = { [weak self] targetID, ids in
-      guard let self else { return }
+    case .tabsRemoved(let targetID, let ids):
       self.history.prune(removing: Set(ids))
       if self.terminals.tabCount(forTargetID: targetID) < 2 {
         self.expandedTerminalTargets.remove(targetID)
@@ -1094,47 +1110,30 @@ final class AppStore: ObservableObject {
       // After the fallback re-point (or not): if the selected target now has no tabs, the inspector
       // empties (issue: History/Changes/PR stayed on the last workroom after closing all its tabs).
       self.refreshSelectionHasTabs()
-    }
-    // Mirror the aggregate unread count onto the Dock icon badge (issue #32). Owned here, not in a
-    // view: see `NotificationCenterStore.onTotalChange` for why a view-driven badge misses
-    // background notifications. `DockBadge` draws into the tile's `contentView` (not `badgeLabel`,
-    // which a linked framework suppresses here). Captures no `self`, so there's no retain cycle.
-    notifications.onTotalChange = { _ in
-      // Combined count across all windows (issue #70) — the registry sums every window's total and
-      // updates the menu-bar label + Dock badge, so a second window can't clobber the first's count.
-      WindowRegistry.shared.recomputeBadge()
-    }
     // A click into a co-displayed split pane's terminal focuses that workroom (issue #23 follow-up),
     // so commands target it. History-suppressed (the routing method) — glancing between panes isn't
     // navigation.
-    terminals.onSurfaceFocused = { [weak self] targetID in
-      self?.focusWorkroomMemberFromSurface(targetID)
-    }
+    case .surfaceFocused(let targetID):
+      focusWorkroomMemberFromSurface(targetID)
     // Pop-out panes (issue #172). `detachPane`/`dockPane` own the model half and fire these for the
     // window half, so membership and window are always written together — see `DetachedPaneWindows`
     // for the state machine and for why these windows are NOT in `WindowRegistry`.
-    terminals.onPaneDetached = { [weak self] targetID, tabID, screenPoint in
-      guard let self, let target = self.terminalTarget(forID: targetID),
+    case .paneDetached(let targetID, let tabID, let screenPoint):
+      guard let target = self.terminalTarget(forID: targetID),
         let tab = self.terminals.tab(tabID, for: target)
       else { return }
       self.openDetachedPane(tab: tab, target: target, origin: screenPoint, frame: nil)
-    }
-    terminals.onPaneRestoredDetached = { [weak self] targetID, tabID, frame in
-      guard let self, let target = self.terminalTarget(forID: targetID),
+    case .paneRestoredDetached(let targetID, let tabID, let frame):
+      guard let target = self.terminalTarget(forID: targetID),
         let tab = self.terminals.tab(tabID, for: target)
       else { return }
       self.openDetachedPane(tab: tab, target: target, origin: nil, frame: frame)
-    }
-    terminals.onPaneDocked = { [weak self] tabID in
-      self?.detachedPanes.close(tabID: tabID)
-    }
+    case .paneDocked(let tabID):
+      detachedPanes.close(tabID: tabID)
     // Something tried to focus a pane that lives in its own window; its window is the honest answer.
-    terminals.onPaneRaiseRequested = { [weak self] tabID in
-      self?.raiseDetachedPane(tabID)
+    case .paneRaiseRequested(let tabID):
+      raiseDetachedPane(tabID)
     }
-    // Hydrate the (global) inspector section layout once at launch — it's shared across all
-    // workrooms, so it's loaded here rather than re-loaded on every selection change (issue #24).
-    loadInspectorState()
   }
 
   /// The last persisted window frame (issue #70), or nil when unset/degenerate.
@@ -1672,7 +1671,7 @@ final class AppStore: ObservableObject {
 
   /// Run-STATE is owned here (not on `TerminalSessions`) so the toolbar, sidebar, menu, and RootView
   /// — which all observe this store — react to start/stop/exit from one `@Published` source (OV-A).
-  /// `TerminalSessions` only creates/focuses the tab and reports its removal via `onTabsRemoved`.
+  /// `TerminalSessions` only creates/focuses the tab and reports its removal via `.tabsRemoved`.
   @Published private(set) var runStates: [TerminalTarget.ID: RunState] = [:]
 
   /// Live Investigate sessions (issue #49/#146), tab → target. Kept separate from `runStates` (one
@@ -2086,7 +2085,7 @@ final class AppStore: ObservableObject {
 
   /// A fresh per-run pid-file path. Does NOT store it — the caller assigns `runPidFiles[target]`
   /// AFTER the tab is (re)created, because `respawnRunTab` closes the old tab first and that fires
-  /// `onTabsRemoved` → `clearRunPidFile`, which would otherwise wipe a path stored too early (the
+  /// `.tabsRemoved` → `clearRunPidFile`, which would otherwise wipe a path stored too early (the
   /// re-run-can't-be-stopped bug, issue #7).
   private func makeRunPidPath() -> String {
     (NSTemporaryDirectory() as NSString)
@@ -4081,7 +4080,7 @@ final class AppStore: ObservableObject {
   /// gracefully stopped (issue #7), so the dev server isn't orphaned against a deleted dir.
   func reapTargetLocally(_ targetID: TerminalTarget.ID) async {
     await terminals.reap(targetID)
-    // `reap` only fires `onTabsRemoved` (which clears run state) when tabs existed; a target armed
+    // `reap` only fires `.tabsRemoved` (which clears run state) when tabs existed; a target armed
     // for auto-run but deleted before its pane mounted has none, so clear directly too (issue #7).
     runStates[targetID] = nil
     clearRunPidFile(for: targetID)
@@ -4805,7 +4804,7 @@ final class AppStore: ObservableObject {
 
   /// Select a file within a changeset tab (a tap in the History detail's file list). Updates the tab
   /// so `ChangesetDetailView` shows that file's diff (no reload — its `.task` keys on the commit).
-  /// Each in-commit selection is its own back/forward step, recorded by `onTabContentChange` rather
+  /// Each in-commit selection is its own back/forward step, recorded by `.tabContentChanged` rather
   /// than here — one seam, so no opener can forget. A plain forward: `setChangesetSelectedPath` already
   /// applies the same two preconditions (the tab exists and is a changeset, and the path actually
   /// changed), so re-checking them here would just be two guards to keep in sync.
@@ -4902,7 +4901,7 @@ final class AppStore: ObservableObject {
       return true
     }
     // Only when a file/diff/changeset pane is actually focused: the find model is shared, so a stale
-    // open state must not let ⌘G step a hidden find from a terminal pane (review). `onFocusChange`
+    // open state must not let ⌘G step a hidden find from a terminal pane (review). `.focusChanged`
     // already closes it on focus-away; this is the defence-in-depth read-side check.
     if let target = selectedTarget, let tab = terminals.focusedTab(for: target) {
       switch tab.content {
@@ -4964,7 +4963,7 @@ final class AppStore: ObservableObject {
   /// Record the on-screen location (selected target + its focused tab) into history. No-op while
   /// replaying (guarded at the call sites) and when there's no focused terminal yet — so a switch to
   /// a never-visited target records nothing until its first terminal exists, and the later
-  /// `addTab`→`onFocusChange` records the real first entry (no `(target, nil)` ghost).
+  /// `addTab`→`.focusChanged` records the real first entry (no `(target, nil)` ghost).
   private func recordCurrentLocation() {
     guard let sid = selectedTargetID, let target = selectedTarget, target.opensTerminals,
       let tab = terminals.focusedTab(for: target)
@@ -5012,7 +5011,7 @@ final class AppStore: ObservableObject {
 
   /// The single primitive for "go to (target, tab)": used by back/forward replay and by
   /// `openTerminal` (notification / ⇧⌘N). Sets the selection + focuses the tab with history recording
-  /// suppressed (the `didSet`/`onFocusChange` seams no-op via `isNavigatingHistory`), then records
+  /// suppressed (the `didSet`/`.focusChanged` seams no-op via `isNavigatingHistory`), then records
   /// exactly one entry when `recordHistory` is true — so a jump never leaves a phantom intermediate
   /// entry. `tab` is optional (an old notification may carry none / a stale id); it resolves to the
   /// requested tab when it still exists, else the target's current focused tab.

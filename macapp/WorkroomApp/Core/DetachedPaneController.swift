@@ -66,7 +66,7 @@ final class DetachedPaneFocus: ObservableObject {
 ///        └────────────▶ ┌──────────┐ ◀───────┘
 ///                       │  CLOSED  │
 ///                       └──────────┘
-///      closeTab / reap → undetach → onPaneDocked → close(tabID:), i.e. the window
+///      closeTab / reap → undetach → .paneDocked → close(tabID:), i.e. the window
 ///      goes as a CONSEQUENCE of the tab dying
 /// ```
 ///
@@ -80,7 +80,7 @@ final class DetachedPaneFocus: ObservableObject {
 /// 2. The **Dock button closes the window and keeps the pane.** It is the only close-shaped action
 ///    that does, and it goes through `close(tabID:)`, which explicitly does not touch the tab.
 /// 3. A tab dying closes its window as a *consequence*, never the cause: `closeTab`/`reap` call
-///    `undetach`, which fires `onPaneDocked`, which calls `close(tabID:)`. Nothing here may close a
+///    `undetach`, which fires `.paneDocked`, which calls `close(tabID:)`. Nothing here may close a
 ///    window in order to close a tab.
 ///
 /// Deliberately **not** registered in `WindowRegistry`: these windows own no `AppStore`, and
@@ -358,7 +358,7 @@ final class DetachedPaneWindows {
 
   /// Turns the window's own close (red button, ⌘W) into a request to close the TAB — asymmetry 1
   /// above. Returning `false` lets `requestCloseTerminalTab` run its confirmation first; the window
-  /// then closes as a consequence, via `closeTab` → `undetach` → `onPaneDocked` → `close(tabID:)`.
+  /// then closes as a consequence, via `closeTab` → `undetach` → `.paneDocked` → `close(tabID:)`.
   private final class Delegate: NSObject, NSWindowDelegate {
     private let onCloseTab: () -> Void
     init(onCloseTab: @escaping () -> Void) { self.onCloseTab = onCloseTab }

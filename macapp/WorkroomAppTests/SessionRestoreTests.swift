@@ -266,7 +266,7 @@ final class SessionRestoreTests: XCTestCase {
   func testRestoreDoesNotFireTheFocusSeam() {
     let sessions = makeSessions()
     var fired = 0
-    sessions.onFocusChange = { _, _ in fired += 1 }
+    sessions.onEvent = { if case .focusChanged = $0 { fired += 1 } }
     sessions.restore(
       TargetSession(
         targetID: target.id,

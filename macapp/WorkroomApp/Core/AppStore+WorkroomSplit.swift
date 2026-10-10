@@ -381,10 +381,10 @@ extension AppStore {
   /// on the now-empty workroom (`selectFallbackWorkroom`'s no-fallback branch). No-op unless the emptied
   /// target is the selected one — a *background* workroom emptying must never steal focus, and a
   /// *delete* nils (or re-points to a split survivor) selection before its async reap fires
-  /// `onTabsRemoved`, so this is a no-op there too. The split-member case is already handled by
+  /// `.tabsRemoved`, so this is a no-op there too. The split-member case is already handled by
   /// `autoCloseEmptiedSplitMember`, which
   /// runs first and moves selection to the survivor — so by here the emptied target is no longer
-  /// selected and this no-ops (no double-jump). Called from the `onTabsRemoved` hook AFTER the split
+  /// selected and this no-ops (no double-jump). Called from the `.tabsRemoved` hook AFTER the split
   /// auto-close.
   func selectFallbackWorkroomAfterEmpty(_ targetID: TerminalTarget.ID) {
     guard terminals.tabCount(forTargetID: targetID) == 0,

@@ -52,19 +52,19 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertTrue(attach.contains("/home/workroom/r") || attach.contains("Could not reach"), attach)
   }
 
-  // MARK: onTabContentChange — the navigation-history seam
+  // MARK: .tabContentChanged — the navigation-history seam
 
-  /// Retargeting the shared preview tab mutates content without moving focus, so `onFocusChange` never
+  /// Retargeting the shared preview tab mutates content without moving focus, so `.focusChanged` never
   /// fires. This seam is the only way history can see it — the whole cause of "Back skips the files you
   /// browsed".
   func testContentSeamFiresOnPreviewRetarget() {
     let s = makeSessions()
     var fired: [TerminalTab.ID] = []
-    s.onTabContentChange = { _, tabID in fired.append(tabID) }
+    s.onEvent = { if case .tabContentChanged(_, let tabID) = $0 { fired.append(tabID) } }
     let first = s.openDiffPreview(
       DiffDescriptor(path: "A.swift", change: .modified, source: .gitWorktree, isPreview: true),
       for: target)
-    XCTAssertTrue(fired.isEmpty, "a NEW preview tab changes focus, so onFocusChange covers it")
+    XCTAssertTrue(fired.isEmpty, "a NEW preview tab changes focus, so .focusChanged covers it")
 
     let second = s.openDiffPreview(
       DiffDescriptor(path: "B.swift", change: .modified, source: .gitWorktree, isPreview: true),
@@ -80,7 +80,7 @@ final class TerminalSessionsTests: XCTestCase {
     let tab = s.openContentPreview(
       ChangesetDescriptor(commitID: "abc", title: "t", isPreview: true), for: target)
     var fired: [TerminalTab.ID] = []
-    s.onTabContentChange = { _, tabID in fired.append(tabID) }
+    s.onEvent = { if case .tabContentChanged(_, let tabID) = $0 { fired.append(tabID) } }
 
     s.setChangesetSelectedPath("one.swift", forTab: tab, in: target)
     s.setChangesetSelectedPath("one.swift", forTab: tab, in: target)  // unchanged → no event
@@ -100,7 +100,7 @@ final class TerminalSessionsTests: XCTestCase {
       DiffDescriptor(path: "A.swift", change: .modified, source: .gitWorktree, isPreview: true),
       for: target)
     var fired = 0
-    s.onTabContentChange = { _, _ in fired += 1 }
+    s.onEvent = { if case .tabContentChanged = $0 { fired += 1 } }
 
     let file = s.openFilePreview(FileDescriptor(path: "R.md", isPreview: true), for: target)
     XCTAssertEqual(tab, file, "the file preview retargets the one preview slot")
@@ -1076,13 +1076,43 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(split.tabIDs.first, s.activeTab(for: target)?.id)  // new pane: leading + focused
   }
 
-  // MARK: onFocusChange seam (issue #26)
+  // MARK: The event sink (one synchronous channel to AppStore)
+
+  /// `select` promotes the tab's workroom before it moves focus, so navigation history records the
+  /// focus change against the workroom that now owns it. Both events reach the sink in that order and
+  /// before `select` returns: history suppression (`AppStore.withHistorySuppressed`) only covers what
+  /// is delivered inside its scope, so a deferred event would record a replayed location.
+  ///
+  /// Value: protects=focus history recorded against the promoted workroom, and replay staying
+  /// unrecorded; fails_when=the sink reorders or defers delivery; why_new=the sink replaces ten
+  /// separate closures, so nothing pinned their relative order; seam=none
+  func testSelectDeliversSurfaceFocusedThenFocusChangeSynchronously() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let first = s.tabs(for: target)[0].id
+    s.addTab(for: target)
+    let second = s.tabs(for: target)[1].id
+    s.focus(first, for: target)
+    var events: [TerminalSessions.Event] = []
+    s.onEvent = { events.append($0) }
+
+    s.select(second, for: target)
+    XCTAssertEqual(events, [.surfaceFocused(target.id), .focusChanged(target.id, second)])
+
+    // Re-selecting the focused tab still promotes its workroom, though `focus` has nothing to do:
+    // the reason `select` reports the surface first.
+    events.removeAll()
+    s.select(second, for: target)
+    XCTAssertEqual(events, [.surfaceFocused(target.id)])
+  }
+
+  // MARK: .focusChanged seam (issue #26)
 
   /// The seam fires for add and the close-successor (D6) but not for `reap` (notify: false).
   func testOnFocusChangeFiresForAddAndCloseSuccessorButNotReap() async {
     let s = makeSessions()
     var events: [TerminalTab.ID?] = []
-    s.onFocusChange = { _, tabID in events.append(tabID) }
+    s.onEvent = { if case .focusChanged(_, let tabID) = $0 { events.append(tabID) } }
 
     s.addTab(for: target)
     let t1 = s.tabs(for: target)[0].id
@@ -1104,7 +1134,7 @@ final class TerminalSessionsTests: XCTestCase {
     let s = makeSessions()
     s.addTab(for: target)
     var events: [TerminalTab.ID?] = []
-    s.onFocusChange = { _, tabID in events.append(tabID) }
+    s.onEvent = { if case .focusChanged(_, let tabID) = $0 { events.append(tabID) } }
     s.splitFocusedPane(for: target, edge: .right)
     XCTAssertEqual(events, [s.activeTab(for: target)?.id])
   }
@@ -1115,16 +1145,16 @@ final class TerminalSessionsTests: XCTestCase {
     s.addTab(for: target)
     let only = s.activeTab(for: target)!.id
     var fired = 0
-    s.onFocusChange = { _, _ in fired += 1 }
+    s.onEvent = { if case .focusChanged = $0 { fired += 1 } }
     s.focus(only, for: target)  // already focused → guarded no-op
     XCTAssertEqual(fired, 0)
   }
 
-  /// onTabsRemoved fires for closeTab and reap, so history can prune dead entries (issue #26).
+  /// .tabsRemoved fires for closeTab and reap, so history can prune dead entries (issue #26).
   func testOnTabsRemovedFiresForCloseAndReap() async {
     let s = makeSessions()
     var removed: [TerminalTab.ID] = []
-    s.onTabsRemoved = { _, ids in removed.append(contentsOf: ids) }
+    s.onEvent = { if case .tabsRemoved(_, let ids) = $0 { removed.append(contentsOf: ids) } }
     s.addTab(for: target)
     let t1 = s.tabs(for: target)[0].id
     s.addTab(for: target)
@@ -2205,7 +2235,7 @@ final class RemotePaneCloseTests: XCTestCase {
       throw RepositoryRoutingError.unavailable(host)
     }
     var reported: [String] = []
-    s.onRemoteCloseFailed = { reported.append($1) }
+    s.onEvent = { if case .remoteCloseFailed(let a, title: let b) = $0 { reported.append(b) } }
     let tab = s.addTab(for: target)
     s.closeTab(tab.id, for: target)
     await s.sessionService.awaitPendingCloseKills(until: .now + .seconds(5))
@@ -2282,7 +2312,7 @@ final class RemotePaneCloseTests: XCTestCase {
     let target = remoteTarget()
     let s = makeSessions { _, _ in true }
     var reported: [String] = []
-    s.onRemoteCloseFailed = { reported.append($1) }
+    s.onEvent = { if case .remoteCloseFailed(let a, title: let b) = $0 { reported.append(b) } }
     let tab = s.addTab(for: target)
     s.closeTab(tab.id, for: target)
     await s.sessionService.awaitPendingCloseKills(until: .now + .seconds(5))
@@ -2297,7 +2327,7 @@ final class RemotePaneCloseTests: XCTestCase {
     s.sessionService = PersistentSessionService(
       probe: { _ in .ready(version: "test") }, ownership: { _ in .unreachable })
     var reported: [String] = []
-    s.onRemoteCloseFailed = { reported.append($1) }
+    s.onEvent = { if case .remoteCloseFailed(let a, title: let b) = $0 { reported.append(b) } }
     let tab = s.addTab(for: target, sessionID: UUID())
     guard case .terminal(let state) = tab.content else { return XCTFail("not a terminal") }
     XCTAssertNotNil(state.sessionID, "the pane has a session to fail to kill")

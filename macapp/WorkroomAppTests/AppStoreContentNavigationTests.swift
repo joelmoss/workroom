@@ -579,7 +579,7 @@ final class AppStoreContentNavigationTests: XCTestCase {
   }
 
   /// A refresh is not navigation: it must not record a back/forward entry, even for the focused tab of
-  /// the selected target — the one place `onTabContentChange` would.
+  /// the selected target — the one place `.tabContentChanged` would.
   func testRefreshingAChangeKindRecordsNoHistory() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let a = SidebarID.workroom(project: "/a", name: "main")

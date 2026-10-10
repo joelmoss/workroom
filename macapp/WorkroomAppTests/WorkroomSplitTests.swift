@@ -662,7 +662,7 @@ final class WorkroomSplitTests: XCTestCase {
     let before = store.history.entries.count
 
     // A click into b's terminal surface routes selection to b — but does NOT record nav history (T3).
-    store.terminals.onSurfaceFocused?(store.target(for: b)!.id)
+    store.terminals.onEvent?(.surfaceFocused(store.target(for: b)!.id))
     XCTAssertEqual(store.selectedTargetID, b, "surface focus retargets the focused workroom (F2)")
     XCTAssertEqual(
       store.history.entries.count, before, "intra-split focus is history-suppressed (T3)")
@@ -723,7 +723,7 @@ final class WorkroomSplitTests: XCTestCase {
     store.selectedTargetID = outsider  // a non-member → the split is hidden, `bugfix` shows solo
     XCTAssertFalse(store.isWorkroomSplitVisible, "precondition: the split is off screen")
 
-    store.terminals.onSurfaceFocused?(store.target(for: b)!.id)
+    store.terminals.onEvent?(.surfaceFocused(store.target(for: b)!.id))
 
     XCTAssertEqual(
       store.selectedTargetID, outsider,
@@ -738,7 +738,7 @@ final class WorkroomSplitTests: XCTestCase {
     store.terminals.addTab(for: store.target(for: a)!)
     store.terminals.addTab(for: store.target(for: b)!)
     store.selectedTargetID = a  // no split active
-    store.terminals.onSurfaceFocused?(store.target(for: b)!.id)
+    store.terminals.onEvent?(.surfaceFocused(store.target(for: b)!.id))
     XCTAssertEqual(
       store.selectedTargetID, a, "no split → a surface focus must not retarget the workroom")
   }
@@ -1017,7 +1017,7 @@ final class WorkroomSplitTests: XCTestCase {
     let store = store4()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)  // group A
     store.insertWorkroomSplit(wr("review"), beside: wr("docs"), edge: .right)  // group B, selected
-    store.terminals.onSurfaceFocused?(store.target(for: wr("feature"))!.id)
+    store.terminals.onEvent?(.surfaceFocused(store.target(for: wr("feature"))!.id))
     XCTAssertEqual(store.selectedTargetID, wr("review"), "a hidden group's focus claim is ignored")
     XCTAssertEqual(store.workroomSplits.count, 2)
   }
