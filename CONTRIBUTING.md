@@ -334,8 +334,9 @@ config. Shape:
   sees a partial file.
 - Read-modify-write cycles are guarded by a **best-effort cross-process advisory lock**
   (`config.json.lock`) so the standalone CLI and the app's bundled binary don't clobber each other;
-  it degrades to running unlocked rather than failing, and steals locks left by crashed processes
-  after 10s.
+  it is an OS advisory lock (`flock`) that the kernel releases when its holder dies, so nothing is
+  stolen on a timer, and it degrades to running unlocked on any lock trouble or after a 30s backstop
+  rather than failing.
 
 The CLI's machine-readable `--json` envelope — the contract the app drives the engine over — is
 documented in [the README](README.md#the---json-machine-contract).
