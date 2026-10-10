@@ -3,7 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"testing"
 
@@ -57,29 +56,12 @@ func TestHostSetWithPretendWritesNothing(t *testing.T) {
 // printed on stdout.
 func runHostCLI(t *testing.T, args ...string) (int, map[string]any) {
 	t.Helper()
-	read, write, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stdout := os.Stdout
-	os.Stdout = write
-	// cobra keeps flag values between runs.
-	t.Cleanup(func() {
-		jsonOutput, hostProject, hostWorkroom, pretend, currentCommand = false, "", "", false, ""
-		claimFrom, claimProvisioner = "", ""
-		rootCmd.SetArgs(nil)
-	})
-	rootCmd.SetArgs(args)
-	code := Execute()
-	os.Stdout = stdout
-	write.Close()
-	out, _ := io.ReadAll(read)
-	jsonOutput, hostProject, hostWorkroom, pretend = false, "", "", false
+	run := runCLI(t, args...)
 	var envelope map[string]any
-	if err := json.Unmarshal(out, &envelope); err != nil {
-		t.Fatalf("not one JSON envelope: %q", out)
+	if err := json.Unmarshal(run.stdout, &envelope); err != nil {
+		t.Fatalf("not one JSON envelope: %q", run.stdout)
 	}
-	return code, envelope
+	return run.code, envelope
 }
 
 func TestHostCommandsSpeakTheJSONContract(t *testing.T) {

@@ -5,7 +5,6 @@ import (
 	"flag"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,6 +21,9 @@ import (
 // deliberate contract change rewrites them:
 //
 //	go test ./cmd -run TestContract -update
+//
+// The goldens cover each command whose payload the app decodes into its own type. Commands the app
+// reads only as a bare Envelope (host, base, claim-provisioned) have their own tests.
 var updateContracts = flag.Bool("update", false, "rewrite testdata/contracts from the CLI's output")
 
 // contractHome stands in for the temporary HOME every path in a golden sits under.
@@ -101,17 +103,10 @@ func gitRepo(t *testing.T, dir string) string {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	git(t, dir, "init", "-q", "-b", "main")
-	git(t, dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+	run(t, dir, "git", "init", "-q", "-b", "main")
+	run(t, dir, "git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
 		"commit", "-q", "--allow-empty", "-m", "first")
 	return dir
-}
-
-func git(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v %s", args, err, out)
-	}
 }
 
 // writeProjectScript writes scripts/<name> in project with body.
@@ -174,7 +169,7 @@ func TestContractList(t *testing.T) {
 	app := gitRepo(t, filepath.Join(home, "src", "app"))
 	empty := gitRepo(t, filepath.Join(home, "src", "empty"))
 	workrooms := filepath.Join(home, "workrooms")
-	git(t, app, "worktree", "add", "-q", "-b", "workroom/ok", filepath.Join(workrooms, "ok"))
+	run(t, app, "git", "worktree", "add", "-q", "-b", "workroom/ok", filepath.Join(workrooms, "ok"))
 	if err := os.MkdirAll(filepath.Join(workrooms, "stray"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -188,10 +183,17 @@ func TestContractList(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The CLI stores and lists a host descriptor verbatim, which the app relies on for every key.
 	remote := map[string]any{
-		"state": "running", "driver": "boxd", "id": "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+		"state": "running", "driver": "container", "id": "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+		"provisioner": "com.developwithstyle.workroom.dev", "credentials": "relay",
 		"workroom_id": "1B4E28BA-2FA1-11D2-883F-0016D3CCA427", "grant_id": "grant-1",
 		"repository": "acme/app", "clone_url": "https://github.com/acme/app.git",
+		"org": "acme", "account": "user-1",
+		"container": map[string]any{
+			"address": "127.0.0.1", "port": 2222, "user": "workroom", "host_key": "ssh-ed25519 AAAA",
+			"context": "colima",
+		},
 	}
 	if err := cfg.AddRemoteWorkroom(app, "remote", "/home/workroom/remote", remote); err != nil {
 		t.Fatal(err)
@@ -250,6 +252,26 @@ func TestContractCreateSetupFailed(t *testing.T) {
 	checkContract(t, "create-setup-failed.json", run.stdout, home, createdName(t, run.stdout), contractName)
 }
 
+// The app records a remote workroom before it makes the host (#253).
+func TestContractCreateRemote(t *testing.T) {
+	home := contractHomeDir(t)
+	project := gitRepo(t, filepath.Join(home, "src", "app"))
+	cfg, err := config.New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.AddProject(project, "git"); err != nil {
+		t.Fatal(err)
+	}
+
+	run := runCLI(t, "create", "--json", "--no-editor", "--project", project,
+		"--host", `{"driver":"boxd","state":"creating"}`, "--host-path", "/home/workroom/app")
+	if run.code != 0 {
+		t.Fatalf("create --host: exit %d, %s", run.code, run.stdout)
+	}
+	checkContract(t, "create-remote.json", run.stdout, home, createdName(t, run.stdout), contractName)
+}
+
 func TestContractAddProject(t *testing.T) {
 	home := contractHomeDir(t)
 	project := gitRepo(t, filepath.Join(home, "src", "app"))
@@ -277,7 +299,7 @@ func projectWithWorkroom(t *testing.T, home string) string {
 	t.Helper()
 	project := gitRepo(t, filepath.Join(home, "src", "app"))
 	path := filepath.Join(home, "workrooms", contractName)
-	git(t, project, "worktree", "add", "-q", "-b", "workroom/"+contractName, path)
+	run(t, project, "git", "worktree", "add", "-q", "-b", "workroom/"+contractName, path)
 	writeProjectScript(t, project, "workroom_teardown", "echo stopping\n")
 	cfg, err := config.New("")
 	if err != nil {
@@ -298,6 +320,7 @@ func TestContractDelete(t *testing.T) {
 		t.Fatalf("delete: exit %d, %s", run.code, run.stdout)
 	}
 	checkContract(t, "delete.json", run.stdout, home)
+	checkContract(t, "delete-events.ndjson", run.stderr, home)
 }
 
 func TestContractDeleteProject(t *testing.T) {

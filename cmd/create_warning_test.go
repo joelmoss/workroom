@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,16 +71,7 @@ func TestCreateJSONCarriesTheFetchWarning(t *testing.T) {
 // a setup script that then fails cannot lose it.
 func TestCreateEventCarriesTheFetchWarning(t *testing.T) {
 	project := unreachableOriginProject(t)
-	read, write, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stderr := os.Stderr
-	os.Stderr = write
-	runHostCLI(t, "create", "--json", "--no-editor", "--project", project)
-	os.Stderr = stderr
-	write.Close()
-	events, _ := io.ReadAll(read)
+	events := runCLI(t, "create", "--json", "--no-editor", "--project", project).stderr
 	for _, line := range strings.Split(string(events), "\n") {
 		var event map[string]any
 		if json.Unmarshal([]byte(line), &event) == nil && event["type"] == "created" {
