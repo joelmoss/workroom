@@ -123,8 +123,9 @@ public final class SyntaxHighlighter: @unchecked Sendable {
 
   /// Find a grammar's `queries/highlights.scm` inside its SPM resource bundle (named
   /// `<package>_<target>`, e.g. `TreeSitterJSON_TreeSitterJSON`) and return its bytes. Searches
-  /// `Bundle.main` (the app — also the test host), the bundle that owns this class, and every
-  /// loaded bundle, so it resolves whether running as the app or under XCTest. `nil` ⇒ render plain.
+  /// `Bundle.main` (the app — also the test host), the bundle that owns this class, every loaded
+  /// bundle, and the directory beside this class's bundle, so it resolves as the app, as a hosted
+  /// test, and under `swift test`. `nil` ⇒ render plain.
   private static func highlightsQueryData(forBundleNamed bundleName: String) -> Data? {
     var containers: [URL] = []
     if let u = Bundle.main.resourceURL { containers.append(u) }
@@ -132,6 +133,9 @@ public final class SyntaxHighlighter: @unchecked Sendable {
     let own = Bundle(for: SyntaxHighlighter.self)
     if let u = own.resourceURL { containers.append(u) }
     containers.append(contentsOf: Bundle.allBundles.compactMap(\.resourceURL))
+    // `swift test` on SwiftPM's native build system puts each dependency's resource bundle beside
+    // the `.xctest`, not inside anything loaded (the CI toolchain; the newer engine differs).
+    containers.append(own.bundleURL.deletingLastPathComponent())
 
     for container in containers {
       let bundleURL = container.appendingPathComponent("\(bundleName).bundle")
