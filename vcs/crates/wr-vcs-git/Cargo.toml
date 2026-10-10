@@ -24,7 +24,3 @@ wr-vcs-model = { path = "../wr-vcs-model" }
 serde = { workspace = true }
 serde_json = "1"
 libc = "0.2"
-
-[[bin]]
-name = "gix-log-spike"
-path = "src/main.rs"

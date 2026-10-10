@@ -20,28 +20,6 @@ enum WorkroomTitlebar {
   static let outerInset: CGFloat = 8
 }
 
-/// A transparent backing view that lets a click-drag on the empty parts of the custom title bar
-/// move the window — the content area isn't window-draggable by default (only the real title bar
-/// is), so the bar needs this to stay draggable. Interactive controls drawn on top consume their
-/// own clicks; clicks that fall through to this view start a window drag.
-struct WindowDragBackground: NSViewRepresentable {
-  func makeNSView(context: Context) -> NSView { DragView() }
-  func updateNSView(_ nsView: NSView, context: Context) {}
-
-  final class DragView: NSView {
-    override var mouseDownCanMoveWindow: Bool { true }
-    override func mouseDown(with event: NSEvent) {
-      // Double-click on the empty bar runs the system title-bar action (zoom/minimize); a single
-      // click-drag moves the window.
-      if event.clickCount == 2 {
-        window?.performZoom(nil)
-      } else {
-        window?.performDrag(with: event)
-      }
-    }
-  }
-}
-
 /// Toggles the window's `isMovable` to gate AppKit's automatic title-bar drag. The custom title bar
 /// (issue #23) is drawn in the window's full-size content, where AppKit's title-bar drag ignores the
 /// content views' `mouseDownCanMoveWindow` (verified) — so a drag anywhere in the bar, including on a

@@ -69,7 +69,7 @@ final class WindowDragUITests: XCTestCase {
   /// 1. The core regression: dragging a single workroom tab chip horizontally must NOT move the
   ///    window.
   /// 2. The other half: dragging an *empty* part of the title bar still MOVES the window
-  ///    (`WindowDragBackground` re-enables movement for its explicit `performDrag`). Uses the thin
+  ///    (the window stays movable there; `WindowMovableController` only disables it over a chip). Uses the thin
   ///    strip just above the chips, clear of every control. It runs second and re-reads the frame
   ///    itself, and it proves in the SAME launch that a synthetic drag CAN move this window — so
   ///    step 1's "did not move" cannot pass for a harness that never moves windows.

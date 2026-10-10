@@ -1348,10 +1348,6 @@ final class AppStore: ObservableObject {
     }
   }
 
-  var selectedProject: Project? {
-    projects.first { $0.id == selectedProjectID }
-  }
-
   /// The selected terminal target resolved against the current project list (nil if it no
   /// longer exists).
   var selectedTarget: TerminalTarget? { selectedTargetID.flatMap(target(for:)) }

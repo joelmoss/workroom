@@ -206,13 +206,6 @@ final class AvatarImageLoader {
     }
     cache[url] = result
   }
-
-  /// Test/QA seam: forget every cached result and in-flight request.
-  func clearForTesting() {
-    cache.removeAll()
-    cacheOrder.removeAll()
-    inFlight.removeAll()
-  }
 }
 
 /// A single circular avatar: the remote image once it loads, the coloured initials chip otherwise

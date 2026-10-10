@@ -309,15 +309,6 @@ final class RemoteStateModel: ObservableObject {
     return !tracking.gone
   }
 
-  func canPerform(_ action: VCSRemoteAction) -> Bool {
-    switch action {
-    case .fetch: return canFetch
-    case .push: return canPush
-    case .pull: return canPull
-    case .abortRebase: return inFlight == nil
-    }
-  }
-
   // MARK: Actions
 
   /// Perform an action. Dropped if one is already in flight — the model is deliberately single-action
