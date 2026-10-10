@@ -138,7 +138,7 @@ func (s *Service) projectInfo(path string, project config.Project, level Warning
 				}
 			}
 			if checksVCS && vcsSet != nil && !vcsSet[name] {
-				wi.Warnings = append(wi.Warnings, Warning{Kind: "VCSWorkroomMissing", Message: vcsType + " workspace not found", VCS: vcsType})
+				wi.Warnings = append(wi.Warnings, Warning{Kind: "VCSWorkroomMissing", Message: vcsType + " workroom not found", VCS: vcsType})
 			}
 		}
 		pinfo.Workrooms = append(pinfo.Workrooms, wi)

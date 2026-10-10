@@ -199,8 +199,8 @@ func TestListHumanPathWarnsAndListsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := listingText(l)
-	if !strings.Contains(out, "git workspace not found") {
-		t.Fatalf("expected a 'git workspace not found' warning for w2, got:\n%s", out)
+	if !strings.Contains(out, "git workroom not found") {
+		t.Fatalf("expected a 'git workroom not found' warning for w2, got:\n%s", out)
 	}
 	if fake.listCalls != 1 {
 		t.Fatalf("human Listing called ListWorkrooms %d times, want 1 (no N+1)", fake.listCalls)
@@ -225,8 +225,8 @@ func TestListHumanPathNoFalseWarningWhenListUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out := listingText(l); strings.Contains(out, "workspace not found") {
-		t.Fatalf("must not emit a workspace warning when listing is unavailable, got:\n%s", out)
+	if out := listingText(l); strings.Contains(out, "workroom not found") {
+		t.Fatalf("must not emit a missing-workroom warning when listing is unavailable, got:\n%s", out)
 	}
 }
 

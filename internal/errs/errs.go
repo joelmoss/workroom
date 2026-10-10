@@ -4,7 +4,7 @@ import "errors"
 
 var (
 	ErrInWorkroom          = errors.New("looks like you are already in a workroom. Run this command from the root of your main development directory, not from within an existing workroom")
-	ErrUnsupportedVCS      = errors.New("no supported VCS detected in this directory. Workroom requires Git to manage workspaces")
+	ErrUnsupportedVCS      = errors.New("no supported VCS detected in this directory. Workroom requires Git to manage workrooms")
 	ErrNotDirectory        = errors.New("path exists but is not a directory")
 	ErrInvalidName         = errors.New("workroom name must be alphanumeric (dashes and underscores allowed), and must not start or end with a dash or underscore")
 	ErrDirExists           = errors.New("workroom directory already exists")

@@ -1,1 +1,1 @@
-{"cli_version":"dev","command":"add-project","error":{"kind":"UnsupportedVCS","message":"no supported VCS detected in this directory. Workroom requires Git to manage workspaces"},"ok":false,"schema_version":1}
+{"cli_version":"dev","command":"add-project","error":{"kind":"UnsupportedVCS","message":"no supported VCS detected in this directory. Workroom requires Git to manage workrooms"},"ok":false,"schema_version":1}
