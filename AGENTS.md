@@ -2,11 +2,11 @@
 
 ## Project Structure & Module Organization
 
-Workroom combines a native macOS app with a bundled, standalone Go CLI.
+Workroom is a native macOS app. The Go CLI at the repository root is the app's engine: the app bundles it and shells out to it for every project and workroom operation, and it also runs standalone. The app bundles the Rust `wr-agent` daemon too. Most work lands in `macapp/`.
 
-- `cmd/` contains Cobra commands; `internal/` owns workspace lifecycle, VCS, configuration, and scripts. Go tests sit beside sources; shared fixtures live in `testdata/`.
 - `macapp/WorkroomApp/Core/` contains app services and models; `Views/` contains SwiftUI interfaces. Assets and bundled resources live under `macapp/WorkroomApp/`.
 - `macapp/WorkroomAppTests/` and `WorkroomAppUITests/` contain app tests.
+- `cmd/` contains the CLI's Cobra commands; `internal/` owns workspace lifecycle, VCS, configuration, and scripts. Go tests sit beside sources; shared fixtures live in `testdata/`. The Go module root is the repository root (`go.mod`, `main.go`).
 - `vcs/` is the Rust workspace for the `wr-agent` daemon (terminal sessions, VCS and File services) and its git read crates.
 - `docs/` contains supporting documentation.
 
@@ -14,15 +14,15 @@ Workroom combines a native macOS app with a bundled, standalone Go CLI.
 
 Run commands from the repository root; `make` lists available targets.
 
-- `make cli-build`, `make cli-test`: build the CLI and run `go test ./...`.
-- `make cli-lint`: run golangci-lint v2 and check gofmt/goimports formatting.
-- `make actions-lint`: lint `.github/workflows` with actionlint, shellcheck included.
 - `make app-build`: build Rust dependencies, generate the Xcode project, and build Debug.
 - `make app-run`: rebuild and relaunch this checkout's Workroom Dev; stops its persisted session helpers.
 - `make app-test`: run app unit/integration tests; safe alongside other workrooms' runs.
 - `make app-uitest`: run XCUITest in a logged-in GUI session; it takes that session exclusively, so runs from several workrooms queue.
 - `make app-test-scripts`: check packaging/helper shell scripts.
 - `make app-format`, `make app-lint`: format Swift and enforce strict linting.
+- `make cli-build`, `make cli-test`: build the CLI and run `go test ./...`.
+- `make cli-lint`: run golangci-lint v2 and check gofmt/goimports formatting.
+- `make actions-lint`: lint `.github/workflows` with actionlint, shellcheck included.
 
 Use `macapp/project.yml` for project configuration; do not edit generated `.xcodeproj` files.
 

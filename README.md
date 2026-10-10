@@ -22,6 +22,10 @@ workroom, with its own terminal and its own context, so you can work on multiple
 branches at the same time without losing context. You can even work on multiple projects in a single
 split view.
 
+The app is the product. Under it runs the `workroom` Go CLI, the engine the app bundles and drives
+for every project and workroom operation. The CLI also works on its own from a shell (see
+[The CLI](#the-cli)), but app users never install it.
+
 <p align="center">
   <video src="https://github.com/user-attachments/assets/ee234785-981c-4dc6-a9e4-306d9033ad2f" width="900" controls muted
     alt="The Workroom macOS app: a sidebar tree of several projects and their workrooms with current branches and change badges; two workrooms open side by side, one with a vertically split terminal running a test suite and a dev server, the other showing a syntax-highlighted file diff; and an inspector with Changes, Pull Request, and Notifications panels.">
