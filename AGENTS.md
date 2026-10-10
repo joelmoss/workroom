@@ -17,6 +17,7 @@ Run commands from the repository root; `make` lists available targets.
 - `make app-build`: build Rust dependencies, generate the Xcode project, and build Debug.
 - `make app-run`: rebuild and relaunch this checkout's Workroom Dev; stops its persisted session helpers.
 - `make app-test`: run app unit/integration tests; safe alongside other workrooms' runs.
+- `make app-package-test`: run the tests of the local Swift packages in `macapp/Packages/` with `swift test`; `make app-test` does not run them.
 - `make app-uitest`: run XCUITest in a logged-in GUI session; it takes that session exclusively, so runs from several workrooms queue.
 - `make app-test-scripts`: check packaging/helper shell scripts.
 - `make app-format`, `make app-lint`: format Swift and enforce strict linting.
