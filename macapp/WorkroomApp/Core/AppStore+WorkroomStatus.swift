@@ -21,19 +21,17 @@ extension AppStore {
   struct StatusWorkItem: Sendable, Equatable {
     let sid: SidebarID
     let path: String
-    let vcs: String
     /// The project root. Equals `path` for the root row; for a workroom it's the parent project's
     /// path — the shared repository its writes are keyed by.
     let projectRoot: String
     let location: RepositoryLocation?
 
     init(
-      sid: SidebarID, path: String, vcs: String, projectRoot: String,
+      sid: SidebarID, path: String, projectRoot: String,
       location: RepositoryLocation? = nil
     ) {
       self.sid = sid
       self.path = path
-      self.vcs = vcs
       self.projectRoot = projectRoot
       self.location = location ?? RepositoryRouter.shared.localLocation(for: path)
     }
@@ -61,21 +59,16 @@ extension AppStore {
     var items: [StatusWorkItem] = []
     for p in projects {
       items.append(
-        StatusWorkItem(sid: .root(project: p.id), path: p.path, vcs: p.vcs, projectRoot: p.path))
+        StatusWorkItem(sid: .root(project: p.id), path: p.path, projectRoot: p.path))
       // A remote workroom's path is not a path on this Mac: a reachable one is probed on its host,
       // and any other has nothing to probe.
       for w in p.workrooms where w.isRemote {
         if let item = remoteStatusWorkItem(w, in: p) { items.append(item) }
       }
       for w in p.workrooms where !w.isRemote {
-        // A workroom's VCS *type* is its project's (`p.vcs`) — a git project's workrooms are git
-        // worktrees. NOT `w.vcsName`, which is the workroom's
-        // branch/workspace *name* (`workroom/<name>`); passing that as the type made resolveLocal
-        // fall through to `.notRepository` for every workroom.
         items.append(
           StatusWorkItem(
-            sid: .workroom(project: p.id, name: w.name), path: w.path, vcs: p.vcs,
-            projectRoot: p.path))
+            sid: .workroom(project: p.id, name: w.name), path: w.path, projectRoot: p.path))
       }
     }
     return items
@@ -560,12 +553,12 @@ extension AppStore {
     selectedStatusWorkItem(for: sid) != nil
   }
 
-  /// `internal` rather than `private`: the commit sheet needs a row's path and vcs to open against it.
+  /// `internal` rather than `private`: the commit sheet needs a row's path to open against it.
   func selectedStatusWorkItem(for sid: SidebarID) -> StatusWorkItem? {
     switch sid {
     case .root(let path):
       guard let p = projects.first(where: { $0.id == path }) else { return nil }
-      return StatusWorkItem(sid: sid, path: p.path, vcs: p.vcs, projectRoot: p.path)
+      return StatusWorkItem(sid: sid, path: p.path, projectRoot: p.path)
     case .workroom(let path, let name):
       guard let p = projects.first(where: { $0.id == path }),
         let w = p.workrooms.first(where: { $0.id == name })
@@ -573,8 +566,7 @@ extension AppStore {
       // A remote workroom's item is on its host. One this app can't reach has none, which also
       // makes `targetExists` false, so commits, PR actions and late status merges skip it.
       if w.isRemote { return remoteStatusWorkItem(w, in: p) }
-      // `p.vcs` is the VCS type; `w.vcsName` is the branch name, not the type (see statusWorkItems).
-      return StatusWorkItem(sid: sid, path: w.path, vcs: p.vcs, projectRoot: p.path)
+      return StatusWorkItem(sid: sid, path: w.path, projectRoot: p.path)
     case .project:
       return nil
     }
@@ -587,7 +579,7 @@ extension AppStore {
       let location = try? RepositoryLocation.remote(host: host, path: w.path)
     else { return nil }
     return StatusWorkItem(
-      sid: .workroom(project: p.id, name: w.name), path: w.path, vcs: "git", projectRoot: w.path,
+      sid: .workroom(project: p.id, name: w.name), path: w.path, projectRoot: w.path,
       location: location)
   }
 

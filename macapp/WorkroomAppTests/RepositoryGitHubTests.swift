@@ -508,7 +508,7 @@ final class RepositoryGitHubTests: XCTestCase {
     try router.register(.init(location: without, sharedLocation: without))
     func item(_ location: RepositoryLocation?) -> AppStore.StatusWorkItem {
       AppStore.StatusWorkItem(
-        sid: .root(project: "/srv"), path: "/srv", vcs: "git", projectRoot: "/srv",
+        sid: .root(project: "/srv"), path: "/srv", projectRoot: "/srv",
         location: location)
     }
     let localLocation = try await RepositoryLocation.local("/private/tmp")

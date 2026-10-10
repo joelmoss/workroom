@@ -25,13 +25,6 @@ enum ChecksResolution: Equatable, Sendable {
   case keepPrior
 }
 
-/// `resolveGit`'s native status seam (mirrors `StatusCommandRunning`'s role for the CLI-shelling
-/// probes) — real reads via `GitProvider`, a gated/counting double in tests.
-protocol VCSWorkingStatusReading: Sendable {
-  func workingStatus(root: URL) throws -> WorkroomStatus
-}
-extension GitProvider: VCSWorkingStatusReading {}
-
 /// Resolves a workroom's VCS + CI status app-side by shelling to git/gh. App-side (not in
 /// the `workroom --json` contract) for the same reasons as `BranchResolver`: GUI-only, keeps
 /// `list` instant, isolates a slow repo to its own row. Stage 1 (`resolveLocal`) is fast/local;
@@ -41,18 +34,18 @@ struct WorkroomStatusResolver: Sendable {
   let runner: StatusCommandRunning
   var timeout: TimeInterval  // local git
   var ciTimeout: TimeInterval  // gh (network)
-  /// `resolveGit`'s native status seam — real reads by default (`GitProvider`), a gated/counting
-  /// double in tests. See `VCSWorkingStatusReading`.
-  var gitStatus: VCSWorkingStatusReading?
+  /// Where local and remote status reads are routed. `.shared` in the app; tests inject a router
+  /// whose `localReader` is a double, so the sweep's real path is the one under test.
+  let router: RepositoryRouter
 
   init(
     runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 3,
-    ciTimeout: TimeInterval = 10, gitStatus: VCSWorkingStatusReading? = nil
+    ciTimeout: TimeInterval = 10, router: RepositoryRouter = .shared
   ) {
     self.runner = runner
     self.timeout = timeout
     self.ciTimeout = ciTimeout
-    self.gitStatus = gitStatus
+    self.router = router
   }
 
   /// `-c` overrides prepended to every `git` invocation. A workroom can be a clone of an *untrusted*
@@ -64,45 +57,20 @@ struct WorkroomStatusResolver: Sendable {
 
   // MARK: Stage 1 — local VCS status
 
-  func resolveLocal(path: String, vcs: String) async -> WorkroomStatus {
-    if gitStatus == nil {
-      do { return await resolve(location: try await RepositoryLocation.local(path)) } catch {
-        return WorkroomStatus(dirty: nil, failure: .unavailable)
-      }
+  func resolveLocal(path: String) async -> WorkroomStatus {
+    do {
+      return await resolve(location: try await RepositoryLocation.local(path))
+    } catch {
+      return WorkroomStatus(dirty: nil, failure: .unavailable)
     }
-    var status: WorkroomStatus
-    if FileManager.default.fileExists(atPath: path) {
-      if vcs == "git" {
-        status = await resolveGit(path)
-      } else {
-        // A stale "jj" from an old config, or anything else: not a repository we read.
-        status = WorkroomStatus(dirty: nil, failure: .notRepository)
-      }
-    } else {
-      status = WorkroomStatus(dirty: nil, failure: .missingPath)
-    }
-    // Stamp when this read FINISHED, so `mergeLocalStatus` can order results that its five unordered
-    // lanes produce. It has to be stamped here rather than by the caller: a read can queue behind
-    // others for a while before it observes anything, so the caller's invocation time can say a
-    // probe is older when it actually saw a LATER tree. Completion is the closest observable
-    // bound on when the tree was seen. (Two overlapping reads can still finish in the opposite order
-    // to their observations; closing that needs a filesystem generation number, not a clock.)
-    status.localReadAt = Date()
-    return status
   }
 
   func resolve(item: AppStore.StatusWorkItem) async -> WorkroomStatus {
-    if let location = item.location {
-      if location.host != .local || gitStatus == nil {
-        return await resolve(location: location)
-      }
-    }
-    return await resolveLocal(path: item.path, vcs: item.vcs)
+    if let location = item.location { return await resolve(location: location) }
+    return await resolveLocal(path: item.path)
   }
 
-  func resolve(location: RepositoryLocation, router: RepositoryRouter = .shared) async
-    -> WorkroomStatus
-  {
+  func resolve(location: RepositoryLocation) async -> WorkroomStatus {
     var status: WorkroomStatus
     do {
       if location.host == .local {
@@ -128,6 +96,12 @@ struct WorkroomStatusResolver: Sendable {
     } catch let error as VCSError {
       status = WorkroomStatus(dirty: nil, failure: Self.failure(for: error))
     } catch { status = WorkroomStatus(dirty: nil, failure: .notRepository) }
+    // Stamp when this read FINISHED, so `mergeLocalStatus` can order results that its five unordered
+    // lanes produce. It has to be stamped here rather than by the caller: a read can queue behind
+    // others for a while before it observes anything, so the caller's invocation time can say a
+    // probe is older when it actually saw a LATER tree. Completion is the closest observable
+    // bound on when the tree was seen. (Two overlapping reads can still finish in the opposite order
+    // to their observations; closing that needs a filesystem generation number, not a clock.)
     status.localReadAt = Date()
     return status
   }
@@ -146,29 +120,6 @@ struct WorkroomStatusResolver: Sendable {
     case .lockContention: return .busy
     case .staleSnapshot: return .staleWorkingCopy
     case .unsupportedRepo, .notFound, .partialData, .backendVersion, .io: return .notRepository
-    }
-  }
-
-  private func resolveGit(_ dir: String) async -> WorkroomStatus {
-    // Read git status structurally through libgit2 (SwiftGitX) instead of shelling `git status` +
-    // `git diff --shortstat`. `LocalVCSProviding` has no built-in timeout, so bound the (synchronous,
-    // off-main) read with `withTimeout` — a wedged repo abandons only its own row.
-    let root = URL(fileURLWithPath: dir, isDirectory: true)
-    do {
-      let ws = try await withTimeout(seconds: timeout) {
-        // `runBlocking` (GCD), NOT `Task.detached`: the cooperative pool is fixed-width and this read
-        // is fanned out ~5-wide per sweep (`runLocalSweep`), overlapping History/diff/branch reads —
-        // exactly the burst the `runBlocking` doc flags as the "History loads forever" starvation.
-        let gitStatus = self.gitStatus ?? GitProvider()
-        return try await runBlocking { try gitStatus.workingStatus(root: root) }
-      }
-      return ws
-    } catch is VCSTimeoutError, is VCSCancellationError {
-      return WorkroomStatus(dirty: nil, failure: .timeout)
-    } catch let error as VCSError {
-      return WorkroomStatus(dirty: nil, failure: Self.failure(for: error))
-    } catch {
-      return WorkroomStatus(dirty: nil, failure: .notRepository)
     }
   }
 

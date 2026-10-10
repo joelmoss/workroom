@@ -276,7 +276,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
       _ = try await reader.workingStatus()
       XCTFail("closed channel returned status")
     } catch is HostConnectionError {}
-    let status = await WorkroomStatusResolver().resolve(location: location, router: router)
+    let status = await WorkroomStatusResolver(router: router).resolve(location: location)
     XCTAssertNil(status.dirty)
     XCTAssertEqual(status.failure, .unavailable)
   }

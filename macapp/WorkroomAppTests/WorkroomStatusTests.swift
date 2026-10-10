@@ -184,12 +184,10 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertNil(store.aggregateStatus(forProject: "/p"))
   }
 
-  /// Regression: a workroom's status work item must carry the project's VCS *type* (`p.vcs`), not
-  /// the workroom's `vcsName` — which is the branch/workspace name (`workroom/<name>`), not a type.
-  /// Passing the branch name made `resolveLocal` fall through to `.notRepository`, so every
-  /// workroom's Changes panel showed "not a repository" with a "detached" header.
+  /// A workroom's status work item is keyed by its project's root, the shared repository its writes
+  /// go to.
   @MainActor
-  func testStatusWorkItemsUseProjectVCSTypeForWorkrooms() {
+  func testStatusWorkItemsKeyWorkroomsByProjectRoot() {
     let store = AppStore()
     store.projects = [
       Project(
@@ -200,12 +198,9 @@ final class WorkroomStatusTests: XCTestCase {
     ]
     let items = store.statusWorkItems()
     let workroomItem = items.first { $0.sid == .workroom(project: "/p", name: "feat") }
-    XCTAssertEqual(workroomItem?.vcs, "git")  // the project's type, NOT "workroom/feat"
     // Must be the PROJECT's path ("/p"), not the workroom's own path ("/p/feat") — the shared
     // repository the workroom's writes are keyed by.
     XCTAssertEqual(workroomItem?.projectRoot, "/p")
-    let rootItem = items.first { $0.sid == .root(project: "/p") }
-    XCTAssertEqual(rootItem?.vcs, "git")
   }
 
   /// A remote workroom's path is on its host (#249): the local sweep must not probe it.

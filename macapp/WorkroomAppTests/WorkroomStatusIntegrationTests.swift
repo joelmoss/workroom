@@ -12,7 +12,6 @@ import XCTest
 /// removed in `tearDown` — these tests NEVER touch any of the developer's own repositories.
 final class WorkroomStatusIntegrationTests: XCTestCase {
   private var dirs: [String] = []
-  private let resolver = WorkroomStatusResolver()  // real StatusCommandRunner
 
   override func tearDown() {
     for d in dirs { try? FileManager.default.removeItem(atPath: d) }
@@ -29,7 +28,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
       let router = RepositoryRouter()
       try router.register(
         .init(location: location, sharedLocation: shared))
-      return await resolver.resolve(location: location, router: router)
+      return await WorkroomStatusResolver(router: router).resolve(location: location)
     } catch {
       XCTFail("\(error)")
       return WorkroomStatus(dirty: nil, failure: .unavailable)
