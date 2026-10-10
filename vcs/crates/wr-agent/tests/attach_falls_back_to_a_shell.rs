@@ -12,17 +12,14 @@
 //! The claim under test is the one the eng review said was not established: *if the agent breaks,
 //! you still get a working terminal.*
 
+#[allow(dead_code)] // not every helper is used here
+mod common;
+use common::{Spawned, agent_binary};
+
 use std::io::Read;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-
-fn agent_binary() -> PathBuf {
-    match std::env::var_os("WR_AGENT_BIN") {
-        Some(path) => PathBuf::from(path),
-        None => PathBuf::from(env!("CARGO_BIN_EXE_wr-agent")),
-    }
-}
 
 /// A short directory: a unix socket address is capped at 104 bytes and cargo's target dir is long.
 fn scratch(name: &str) -> PathBuf {
@@ -711,17 +708,8 @@ fn a_deleted_working_directory_falls_back_to_home_before_root() {
 }
 
 /// A healthy agent on `socket`, killed when the guard drops.
-struct Agent(std::process::Child);
-
-impl Drop for Agent {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-fn start_agent(socket: &std::path::Path) -> Agent {
-    let agent = Agent(
+fn start_agent(socket: &std::path::Path) -> Spawned {
+    let agent = Spawned(
         Command::new(agent_binary())
             .args(["serve", "--socket"])
             .arg(socket)

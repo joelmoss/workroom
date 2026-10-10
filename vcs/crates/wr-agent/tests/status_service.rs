@@ -2,13 +2,14 @@
 //! and must get a failure it already handles, on the stream it asked on, rather than silence (it
 //! would wait out its own timeout) or a protocol error (it would lose the whole connection).
 
+#[allow(dead_code)] // not every helper is used here
+mod common;
+
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
-use wr_agent::serve::handle_connection;
-use wr_agent::session::SessionStore;
-use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
+use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
 
 struct Client {
     stream: UnixStream,
@@ -18,23 +19,7 @@ struct Client {
 
 impl Client {
     fn connect() -> Client {
-        let (stream, server) = UnixStream::pair().unwrap();
-        std::thread::spawn(move || {
-            let _ = handle_connection(server, SessionStore::new());
-        });
-        Client::greet(stream)
-    }
-
-    fn greet(mut stream: UnixStream) -> Client {
-        stream
-            .write_all(&Hello::current("status-test").encode())
-            .unwrap();
-        let mut greeting = Vec::new();
-        while Hello::decode(&greeting).unwrap().is_none() {
-            let mut byte = [0u8];
-            stream.read_exact(&mut byte).unwrap();
-            greeting.push(byte[0]);
-        }
+        let (stream, _server) = common::connect_in_process("status-test");
         stream
             .set_read_timeout(Some(Duration::from_millis(200)))
             .unwrap();

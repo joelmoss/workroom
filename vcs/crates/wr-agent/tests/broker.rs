@@ -1,6 +1,10 @@
 //! The agent's credential broker client (#251) against a stand-in broker on loopback, and its git
 //! configuration against real git.
 
+#[allow(dead_code)] // not every helper is used here
+mod common;
+use common::{Workspace, agent_binary};
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
@@ -12,26 +16,6 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 use wr_agent::broker::{self, BrokerError};
-
-/// A temporary directory standing in for the agent's own, removed when the test ends.
-struct Workspace {
-    dir: std::path::PathBuf,
-}
-
-impl Workspace {
-    fn new(name: &str) -> Workspace {
-        let dir = std::env::temp_dir().join(format!("wr-agent-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Workspace { dir }
-    }
-}
-
-impl Drop for Workspace {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
 
 /// One request the stand-in broker received.
 #[derive(Debug, Clone)]
@@ -1025,7 +1009,7 @@ fn credential_relay_without_a_usable_port_fails() {
         &["credential", "relay", "--port", "70000"],
         &["credential", "relay", "--port", "-1"],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_wr-agent"))
+        let output = Command::new(agent_binary())
             .args(args)
             .stdin(Stdio::null())
             .output()

@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use wr_agent::pty::Pty;
 
+#[allow(dead_code)] // not every helper is used here
 mod common;
 use common::*;
 

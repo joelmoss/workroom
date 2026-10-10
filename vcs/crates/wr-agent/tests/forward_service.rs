@@ -3,15 +3,16 @@
 //! socket it owns. The parsing and the loopback allowlist are unit-tested in `forward.rs`; this
 //! covers the seam — the opcode framing, the socket, and the teardown.
 
+#[allow(dead_code)] // not every helper is used here
+mod common;
+
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
-use wr_agent::serve::handle_connection;
-use wr_agent::session::SessionStore;
-use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
+use wr_protocol::envelope::{Envelope, EnvelopeDecoder, Service};
 
 const OPEN: u8 = 0x01;
 const REPLY: u8 = 0x02;
@@ -89,19 +90,7 @@ struct Client {
 
 impl Client {
     fn connect() -> Client {
-        let (mut stream, server) = UnixStream::pair().unwrap();
-        std::thread::spawn(move || {
-            let _ = handle_connection(server, SessionStore::new());
-        });
-        stream
-            .write_all(&Hello::current("forward-test").encode())
-            .unwrap();
-        let mut greeting = Vec::new();
-        while Hello::decode(&greeting).unwrap().is_none() {
-            let mut byte = [0u8];
-            stream.read_exact(&mut byte).unwrap();
-            greeting.push(byte[0]);
-        }
+        let (stream, _server) = common::connect_in_process("forward-test");
         stream
             .set_read_timeout(Some(Duration::from_millis(50)))
             .unwrap();
