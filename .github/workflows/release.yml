@@ -146,6 +146,7 @@ jobs:
           WORKROOM_HOST_IMAGE: ${{ needs.host-image.outputs.image }}
         run: |
           echo "$NOTARY_KEY" | openssl base64 -d -A > "$RUNNER_TEMP/notary.p8"
+          make app-package-test
           NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-test APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
           NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-release
 

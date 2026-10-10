@@ -231,6 +231,11 @@ jobs:
       # `make app-release` cannot depend on this itself: app-test builds Debug, which pins automatic
       # "Apple Development" signing (project.yml), and this runner imports only a Developer ID cert.
       # Hence the same ad-hoc overrides ci.yml uses.
+      # The local packages' tests (macapp/Packages) run outside the app host, so `make app-test`
+      # below does not cover them.
+      - name: Test (Swift packages)
+        run: make app-package-test
+
       - name: Test (artifact gate)
         run: >-
           make app-test

@@ -49,6 +49,11 @@ for wf in ci.yml release.yml nightly.yml; do
     echo "FAIL: $wf no longer invokes 'make app-test' — the unit-test safety net may be gone"
     fails=$((fails + 1))
   fi
+  # The local packages' tests run outside the app host, so app-test alone misses them.
+  if ! grep -q 'make app-package-test' "$path"; then
+    echo "FAIL: $wf no longer invokes 'make app-package-test' — the package tests would run nowhere"
+    fails=$((fails + 1))
+  fi
 done
 
 # --- the appcast's minimum system version stays derived, never restated ---------------------

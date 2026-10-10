@@ -328,6 +328,11 @@ jobs:
       - name: Lint (swift-format --strict)
         run: make app-lint
 
+      # The local packages' tests (macapp/Packages) run with plain `swift test`, outside the app
+      # host, so `make app-test` never sees them. Before the app build: they take seconds.
+      - name: Test (Swift packages)
+        run: make app-package-test
+
       # The app bundles `wr-agent`, and the bundled build links libghostty-vt so a reattaching
       # pane can be repainted — see macapp/Scripts/build-agent.sh. That needs a Zig toolchain on
       # this runner too, pinned by version AND checksum for the same reason the Linux agent job
@@ -396,7 +401,7 @@ jobs:
           path: macapp/DerivedData/SourcePackages
           key: >-
             spm-${{ runner.os }}-${{
-            hashFiles('macapp/project.yml', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved')
+            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved')
             }}
 
       # Compiling the dependency graph — libgit2 (429 tasks), SwiftGitX, the tree-sitter grammars,
@@ -421,7 +426,7 @@ jobs:
           path: macapp/DerivedData/Build
           key: >-
             xcbuild-${{ runner.os }}-${{ steps.xcode.outputs.version }}-${{
-            hashFiles('macapp/project.yml', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+            hashFiles('macapp/project.yml', 'macapp/Packages/*/Package.swift', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
 
       # Resolve up front with retries so a transient github.com blip mid-clone can't fail the whole
       # run (it did: swift-syntax clone hit "Couldn't connect to server"). The subsequent app-test
