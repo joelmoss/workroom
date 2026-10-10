@@ -59,12 +59,11 @@ func newTestService(t *testing.T, v vcs.VCS) (*Service, *bytes.Buffer, *config.C
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	var buf bytes.Buffer
 	svc := &Service{
-		Config:         cfg,
-		VCS:            v,
-		Out:            &buf,
-		ConfirmFn:      func(string) (bool, error) { return true, nil },
-		PromptFn:       func(string, []string) ([]string, error) { return nil, nil },
-		OpenEditorFunc: func(string, string) error { return nil },
+		Config:    cfg,
+		VCS:       v,
+		Out:       &buf,
+		ConfirmFn: func(string) (bool, error) { return true, nil },
+		PromptFn:  func(string, []string) ([]string, error) { return nil, nil },
 	}
 	return svc, &buf, cfg
 }
@@ -100,7 +99,7 @@ func TestCreateErrorsIfNotGit(t *testing.T) {
 		Out:    &bytes.Buffer{},
 	}
 
-	err := svc.Create(dir)
+	_, err := svc.CreateNamed(dir, nil)
 	if !errors.Is(err, ErrUnsupportedVCS) {
 		t.Fatalf("expected ErrUnsupportedVCS, got %v", err)
 	}
@@ -111,7 +110,7 @@ func TestCreateErrorsIfInWorkroom(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, ".Workroom"), []byte{}, 0o644)
 
 	svc := &Service{Out: &bytes.Buffer{}}
-	err := svc.Create(dir)
+	_, err := svc.CreateNamed(dir, nil)
 	if !errors.Is(err, ErrInWorkroom) {
 		t.Fatalf("expected ErrInWorkroom, got %v", err)
 	}
@@ -128,20 +127,18 @@ func TestCreateSucceedsGit(t *testing.T) {
 	}
 	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, git)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 
 	svc.NameGenFunc = func() string { return "bar" }
 
-	err := svc.Create(dir)
+	res, err := svc.CreateNamed(dir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	output := buf.String()
-	if !strings.Contains(output, "Workroom 'bar' created successfully") {
-		t.Fatalf("expected success message, got %q", output)
+	if res.Name != "bar" {
+		t.Fatalf("expected workroom bar, got %+v", res)
 	}
 
 	// Verify config was updated
@@ -181,26 +178,22 @@ func TestCreateRunsSetupScript(t *testing.T) {
 	}
 	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, git)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "foo" }
 
-	err := svc.Create(dir)
+	var setupOut bytes.Buffer
+	res, err := svc.CreateNamed(dir, &setupOut)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	output := buf.String()
-	// Setup output is rendered inside a titled log panel with a gutter border.
-	if !strings.Contains(output, "╭─ Setup ") {
-		t.Fatalf("expected setup log panel header, got %q", output)
+	// The setup script's output streams to setupOut and is captured too.
+	if !strings.Contains(setupOut.String(), "I succeeded") || !strings.Contains(res.SetupOutput, "I succeeded") {
+		t.Fatalf("expected setup output streamed and captured, got %q and %q", setupOut.String(), res.SetupOutput)
 	}
-	if !strings.Contains(output, "│ I succeeded") {
-		t.Fatalf("expected gutter-prefixed setup output, got %q", output)
-	}
-	if !strings.Contains(output, "Workroom 'foo' created successfully") {
-		t.Fatalf("expected success message, got %q", output)
+	if res.Name != "foo" {
+		t.Fatalf("expected workroom foo, got %+v", res)
 	}
 }
 
@@ -322,7 +315,7 @@ func TestCreateErrorsOnFailedSetupScript(t *testing.T) {
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "foo" }
 
-	err := svc.Create(dir)
+	_, err := svc.CreateNamed(dir, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -341,7 +334,7 @@ func TestCreateRetriesOnNameCollisionWorkspace(t *testing.T) {
 	}
 	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, git)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 
@@ -354,14 +347,12 @@ func TestCreateRetriesOnNameCollisionWorkspace(t *testing.T) {
 		return "fresh"
 	}
 
-	err := svc.Create(dir)
+	res, err := svc.CreateNamed(dir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	output := buf.String()
-	if !strings.Contains(output, "Workroom 'fresh' created successfully") {
-		t.Fatalf("expected fresh name, got %q", output)
+	if res.Name != "fresh" {
+		t.Fatalf("expected fresh name, got %+v", res)
 	}
 }
 
@@ -376,7 +367,7 @@ func TestCreateRetriesOnNameCollisionDirectory(t *testing.T) {
 	}
 	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, git)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 
@@ -389,14 +380,12 @@ func TestCreateRetriesOnNameCollisionDirectory(t *testing.T) {
 		return "fresh"
 	}
 
-	err := svc.Create(dir)
+	res, err := svc.CreateNamed(dir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	output := buf.String()
-	if !strings.Contains(output, "Workroom 'fresh' created successfully") {
-		t.Fatalf("expected fresh name, got %q", output)
+	if res.Name != "fresh" {
+		t.Fatalf("expected fresh name, got %+v", res)
 	}
 }
 
@@ -429,7 +418,7 @@ func TestCreateErrorsAfterTooManyNameCollisions(t *testing.T) {
 		os.MkdirAll(filepath.Join(workroomsDir, fmt.Sprintf("taken-%d", i)), 0o755)
 	}
 
-	err := svc.Create(dir)
+	_, err := svc.CreateNamed(dir, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -447,144 +436,6 @@ func TestCreateErrorsAfterTooManyNameCollisions(t *testing.T) {
 	}
 	if listCalls != 1 {
 		t.Fatalf("expected exactly 1 'git worktree list' call across all retry attempts, got %d", listCalls)
-	}
-}
-
-// --- Create: Editor prompt ---
-
-func TestCreatePromptsToOpenEditorWhenSet(t *testing.T) {
-	dir := t.TempDir()
-	vcstest.MakeGitDir(t, dir)
-	workroomsDir := filepath.Join(dir, "workrooms")
-
-	mock := &mockExecutor{output: gitWorktrees(dir)}
-	git := &vcs.Git{Executor: mock}
-
-	svc, _, _ := newTestService(t, git)
-	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
-	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.NameGenFunc = func() string { return "foo" }
-
-	t.Setenv("EDITOR", "code")
-
-	confirmCalled := false
-	svc.ConfirmFn = func(msg string) (bool, error) {
-		if strings.Contains(msg, "Open workroom in code?") {
-			confirmCalled = true
-		}
-		return false, nil
-	}
-	svc.OpenEditorFunc = func(editor, path string) error {
-		t.Fatal("editor should not be opened when user declines")
-		return nil
-	}
-
-	err := svc.Create(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !confirmCalled {
-		t.Fatal("expected editor confirm prompt")
-	}
-}
-
-func TestCreateDoesNotPromptEditorWhenUnset(t *testing.T) {
-	dir := t.TempDir()
-	vcstest.MakeGitDir(t, dir)
-	workroomsDir := filepath.Join(dir, "workrooms")
-
-	mock := &mockExecutor{output: gitWorktrees(dir)}
-	git := &vcs.Git{Executor: mock}
-
-	svc, _, _ := newTestService(t, git)
-	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
-	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.NameGenFunc = func() string { return "foo" }
-
-	t.Setenv("EDITOR", "")
-
-	editorPrompted := false
-	svc.ConfirmFn = func(msg string) (bool, error) {
-		if strings.Contains(msg, "Open workroom in") {
-			editorPrompted = true
-		}
-		return false, nil
-	}
-
-	err := svc.Create(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if editorPrompted {
-		t.Fatal("should not prompt for editor when EDITOR is unset")
-	}
-}
-
-func TestCreateOpensEditorWhenConfirmed(t *testing.T) {
-	dir := t.TempDir()
-	vcstest.MakeGitDir(t, dir)
-	workroomsDir := filepath.Join(dir, "workrooms")
-
-	mock := &mockExecutor{output: gitWorktrees(dir)}
-	git := &vcs.Git{Executor: mock}
-
-	svc, _, _ := newTestService(t, git)
-	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
-	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.NameGenFunc = func() string { return "foo" }
-
-	t.Setenv("EDITOR", "myeditor")
-
-	var openedEditor, openedPath string
-	svc.ConfirmFn = func(msg string) (bool, error) { return true, nil }
-	svc.OpenEditorFunc = func(editor, path string) error {
-		openedEditor = editor
-		openedPath = path
-		return nil
-	}
-
-	err := svc.Create(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if openedEditor != "myeditor" {
-		t.Fatalf("expected editor 'myeditor', got %q", openedEditor)
-	}
-	if openedPath != filepath.Join(workroomsDir, "foo") {
-		t.Fatalf("expected path %q, got %q", filepath.Join(workroomsDir, "foo"), openedPath)
-	}
-}
-
-func TestCreateSkipsEditorPromptInPretendMode(t *testing.T) {
-	dir := t.TempDir()
-	vcstest.MakeGitDir(t, dir)
-	workroomsDir := filepath.Join(dir, "workrooms")
-
-	mock := &mockExecutor{output: gitWorktrees(dir)}
-	git := &vcs.Git{Executor: mock}
-
-	svc, _, _ := newTestService(t, git)
-	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
-	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.NameGenFunc = func() string { return "foo" }
-	svc.Pretend = true
-
-	t.Setenv("EDITOR", "code")
-
-	editorPrompted := false
-	svc.ConfirmFn = func(msg string) (bool, error) {
-		if strings.Contains(msg, "Open workroom in") {
-			editorPrompted = true
-		}
-		return false, nil
-	}
-
-	err := svc.Create(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if editorPrompted {
-		t.Fatal("should not prompt for editor in pretend mode")
 	}
 }
 

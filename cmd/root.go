@@ -64,8 +64,8 @@ func Execute() int {
 
 // newService builds a Service for the current invocation. In --json mode it is
 // fully non-interactive: output is discarded (the command writes the JSON itself),
-// the editor prompt is suppressed, empty projects are pinned, and the interactive
-// prompt/confirm hooks error rather than block.
+// empty projects are pinned, and the interactive prompt/confirm hooks error rather
+// than block. Otherwise --verbose prints each progress step.
 func newService() (*workroom.Service, error) {
 	cfg, err := config.New("")
 	if err != nil {
@@ -74,14 +74,17 @@ func newService() (*workroom.Service, error) {
 	svc := &workroom.Service{
 		Config:    cfg,
 		Out:       os.Stdout,
-		Verbose:   verbose,
 		Pretend:   pretend,
 		PromptFn:  ui.MultiSelect,
 		ConfirmFn: ui.Confirm,
 	}
+	if verbose && !jsonOutput {
+		svc.Status = func(status, msg string) {
+			fmt.Fprintf(os.Stdout, "%12s  %s\n", status, msg)
+		}
+	}
 	if jsonOutput {
 		svc.Out = io.Discard
-		svc.SuppressEditor = true
 		svc.KeepEmptyProject = true
 		svc.PromptFn = func(string, []string) ([]string, error) {
 			return nil, errors.New("interactive prompt not available in --json mode")
