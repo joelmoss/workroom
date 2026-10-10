@@ -13,25 +13,6 @@ final class InspectorPanePolicyTests: XCTestCase {
   private let minH = InspectorPanePolicy.expandedMinHeight
   private let divider: CGFloat = 1
 
-  // MARK: constraints
-
-  func testCollapsedPaneIsPinnedToHeader() {
-    let con = InspectorPanePolicy.constraints(collapsed: true)
-    XCTAssertEqual(con.minHeight, header)
-    XCTAssertEqual(con.maxHeight, header)
-    XCTAssertTrue(con.isPinned)
-  }
-
-  func testExpandedPaneIsFlooredAndUnbounded() {
-    let con = InspectorPanePolicy.constraints(collapsed: false)
-    XCTAssertEqual(con.minHeight, minH, "expanded pane floors at the sensible minimum")
-    XCTAssertEqual(con.maxHeight, .greatestFiniteMagnitude, "expanded pane has no ceiling")
-    XCTAssertFalse(con.isPinned)
-    XCTAssertLessThan(
-      con.holdingPriority.rawValue, NSLayoutConstraint.Priority.defaultHigh.rawValue,
-      "expanded panes hold low so a window resize is absorbed here, not by a pinned pane")
-  }
-
   // MARK: allocate — equal default when all expanded
 
   func testAllExpandedSplitsEqually() {

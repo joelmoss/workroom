@@ -13,28 +13,6 @@ enum InspectorSectionKind: CaseIterable {
   case history
 }
 
-/// The vertical sizing constraints one inspector pane imposes on the `NSSplitView`, derived purely
-/// from whether the section is collapsed.
-///
-/// ```
-///                  minHeight          maxHeight        holdingPriority
-///   collapsed      headerHeight       headerHeight     high   (pinned — only the header shows)
-///   expanded       expandedMinHeight  .infinity        low    (resizable, floored, fills/yields)
-/// ```
-///
-/// `holdingPriority` is NSSplitView's resize-resistance: a window resize between explicit
-/// re-layouts is absorbed by the lowest-priority (expanded) panes, never a collapsed/pinned one.
-/// The deterministic *default* distribution (equal thirds) is set explicitly via
-/// `InspectorPanePolicy.allocate`; these constraints only bound what a drag can do.
-struct PaneConstraints: Equatable {
-  var minHeight: CGFloat
-  var maxHeight: CGFloat
-  var holdingPriority: NSLayoutConstraint.Priority
-
-  /// A collapsed pane is pinned: it can't be resized in either direction.
-  var isPinned: Bool { minHeight == maxHeight }
-}
-
 /// Pure, headless-testable sizing rules for the inspector's `NSSplitView` panes. No SwiftUI, no
 /// view tree, no content measurement — `NSSplitViewController` *fills and distributes* space (it
 /// does not hug content), so the policy decides the floors/ceilings each pane imposes on a drag
@@ -51,21 +29,6 @@ enum InspectorPanePolicy {
   /// squeezed to an unreadable sliver. This is the drag floor and the per-pane minimum.
   static let expandedMinHeight: CGFloat = 120
 
-  static func constraints(collapsed: Bool) -> PaneConstraints {
-    // Collapsed: pin to the header, body hidden. Pinned, so holding priority is moot but kept high
-    // so a window resize never tries to steal from a pinned pane.
-    if collapsed {
-      return PaneConstraints(
-        minHeight: headerHeight, maxHeight: headerHeight, holdingPriority: .defaultHigh)
-    }
-    // Expanded: floor at expandedMinHeight, no ceiling (free to drag/grow), and lowest holding
-    // priority so a window resize is absorbed here rather than by a pinned pane.
-    return PaneConstraints(
-      minHeight: expandedMinHeight,
-      maxHeight: .greatestFiniteMagnitude,
-      holdingPriority: .defaultLow)
-  }
-
   /// The pane heights for the given collapse state and available `capacity` (the split view's
   /// height), accounting for the dividers between panes.
   ///
@@ -77,7 +40,7 @@ enum InspectorPanePolicy {
   ///   don't fit, panes still get their floor and overflow into their own scroll views.
   ///
   /// The result is realised by the controller via `setPosition(ofDividerAt:)`; the user can then
-  /// drag dividers freely within the `constraints` floors.
+  /// drag dividers freely down to the panes' floors.
   static func allocate(
     collapsed: [Bool], weights: [CGFloat]? = nil, capacity: CGFloat, dividerThickness: CGFloat
   ) -> [CGFloat] {
