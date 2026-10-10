@@ -2,7 +2,7 @@
 //! bound. The unit tests in `file.rs` and `watch.rs` cover the pieces; this covers the seams — the
 //! envelope, chunked replies, events on stream 0, and a subscription's life inside one connection.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -66,7 +66,7 @@ impl Client {
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                     ) =>
                 {
-                    return None
+                    return None;
                 }
                 Err(error) => panic!("read failed: {error}"),
             }
@@ -196,12 +196,14 @@ fn touched(event: &Value, name: &str) -> bool {
 #[test]
 fn capabilities_list_and_read_round_trip_over_the_wire() {
     let root = scratch("roundtrip");
-    assert!(Command::new("git")
-        .args(["init", "-q", "-b", "main"])
-        .current_dir(&root)
-        .status()
-        .unwrap()
-        .success());
+    assert!(
+        Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success()
+    );
     std::fs::write(root.join("hello.txt"), b"hello wire").unwrap();
 
     let mut client = Client::connect();
@@ -246,12 +248,14 @@ fn a_large_read_arrives_intact_across_chunked_envelopes() {
 #[test]
 fn a_listing_over_the_capture_cap_is_a_typed_failure_not_a_short_list() {
     let root = scratch("truncated");
-    assert!(Command::new("git")
-        .args(["init", "-q", "-b", "main"])
-        .current_dir(&root)
-        .status()
-        .unwrap()
-        .success());
+    assert!(
+        Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success()
+    );
     // 22,000 names of 200 bytes is 4.4 MB of `ls-files` output, past the 4 MiB cap.
     let padding = "n".repeat(190);
     for index in 0..22_000 {
@@ -405,10 +409,12 @@ fn subscription_ids_are_unique_and_the_count_is_capped() {
     let root = scratch("cap");
     let mut client = Client::connect();
     assert!(client.watch(1, &root)["result"].is_object());
-    assert!(client.watch(1, &root)["error"]["Unsupported"]
-        .as_str()
-        .unwrap()
-        .contains("already in use"));
+    assert!(
+        client.watch(1, &root)["error"]["Unsupported"]
+            .as_str()
+            .unwrap()
+            .contains("already in use")
+    );
     for id in 2..=64 {
         assert!(client.watch(id, &root)["result"].is_object(), "{id}");
     }

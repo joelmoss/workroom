@@ -165,16 +165,16 @@
 //! entries: a forward whose connect is failing holds its slot until its thread has said so and
 //! gone, and one whose client half-closed holds it until its reader is gone too.
 
-use crate::protocol::envelope::{Envelope, Service, MAX_ENVELOPE_PAYLOAD};
+use crate::protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
 use crate::session::SharedWriter;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -335,7 +335,7 @@ fn request(body: &[u8]) -> Result<Opening, Refusal> {
         _ => {
             return Err(Refusal::unsupported(
                 r#"forward requests are {"method": "open", "host": …, "port": …}"#,
-            ))
+            ));
         }
     }
     if request.listener.is_some() {
@@ -1564,11 +1564,13 @@ mod tests {
                 (MAX_FORWARDS as u32 + 1, CLOSE)
             ]
         );
-        assert!(!forwards
-            .open
-            .lock()
-            .unwrap()
-            .contains_key(&(MAX_FORWARDS as u32 + 1)));
+        assert!(
+            !forwards
+                .open
+                .lock()
+                .unwrap()
+                .contains_key(&(MAX_FORWARDS as u32 + 1))
+        );
     }
 
     /// The connection went away while the connect was still in flight (`Forwards::drop` took the

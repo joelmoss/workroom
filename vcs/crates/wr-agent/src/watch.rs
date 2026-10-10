@@ -39,11 +39,11 @@
 //! is what triggers the close.
 
 use crate::file::FileError;
-use crate::protocol::envelope::{Envelope, Service, MAX_ENVELOPE_PAYLOAD};
+use crate::protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
 use crate::session::SharedWriter;
 use crate::transport::Closer;
 use notify::{EventKind, RecursiveMode, Watcher};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};

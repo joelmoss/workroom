@@ -8,8 +8,8 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 use wr_agent::broker::{self, BrokerError};
 
@@ -892,9 +892,11 @@ fn an_enrolled_workroom_mints_its_own_and_never_asks_the_relay() {
         &mut output,
     )
     .unwrap();
-    assert!(String::from_utf8(output)
-        .unwrap()
-        .starts_with("username=x-access-token\npassword=ghs_own\n"));
+    assert!(
+        String::from_utf8(output)
+            .unwrap()
+            .starts_with("username=x-access-token\npassword=ghs_own\n")
+    );
 }
 
 #[test]

@@ -7,8 +7,8 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 use wr_vcs_model::{self as model, ChangeKind, ChangedFile, Commit, LineStats, VcsError};

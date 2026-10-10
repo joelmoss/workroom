@@ -27,7 +27,7 @@ use crate::session::SharedWriter;
 use crate::vcs::{self, Permit};
 use crate::watch::Subscriptions;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::os::fd::{AsRawFd, RawFd};
@@ -847,12 +847,14 @@ mod tests {
     }
 
     fn git(root: &Path, args: &[&str]) {
-        assert!(Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success()
+        );
     }
 
     #[test]
@@ -880,9 +882,11 @@ mod tests {
             assert_eq!(read_file(&root, "src/a.txt", mode, 100).unwrap(), b"hello");
         }
         std::fs::write(root.join("empty"), b"").unwrap();
-        assert!(read_file(&root, "empty", Symlinks::Refuse, 100)
-            .unwrap()
-            .is_empty());
+        assert!(
+            read_file(&root, "empty", Symlinks::Refuse, 100)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1006,10 +1010,12 @@ mod tests {
             "symlinks": "refuse", "max_bytes": MAX_READ_BYTES + 1,
         });
         let reply = execute(&serde_json::to_vec(&request).unwrap());
-        assert!(reply["error"]["Unsupported"]
-            .as_str()
-            .unwrap()
-            .contains("ceiling"));
+        assert!(
+            reply["error"]["Unsupported"]
+                .as_str()
+                .unwrap()
+                .contains("ceiling")
+        );
     }
 
     #[test]
