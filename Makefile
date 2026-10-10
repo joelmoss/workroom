@@ -54,7 +54,9 @@ actions-lint: ## Lint .github/workflows with actionlint (shellcheck included)
 VCS_RUST := 1.96.1
 
 vcs-lint: ## Lint the Rust workspace as CI does: rustfmt, then clippy with and without terminal-state
-	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" || { echo "vcs-lint needs Rust $(VCS_RUST): rustup toolchain install $(VCS_RUST) --component rustfmt,clippy" >&2; exit 1; }; \
+	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" && \
+	rustup which --toolchain $(VCS_RUST) cargo-fmt >/dev/null && \
+	rustup which --toolchain $(VCS_RUST) cargo-clippy >/dev/null || { echo "vcs-lint needs Rust $(VCS_RUST) with rustfmt and clippy: rustup toolchain install $(VCS_RUST) --component rustfmt,clippy" >&2; exit 1; }; \
 	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
 	cargo fmt --manifest-path vcs/Cargo.toml --all -- --check && \
 	cargo clippy --manifest-path vcs/Cargo.toml --workspace --all-targets -- -D warnings && \
