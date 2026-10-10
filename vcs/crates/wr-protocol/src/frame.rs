@@ -295,4 +295,58 @@ mod tests {
         decoder.push(&Frame::control(FrameKind::List).encode());
         assert_eq!(decoder.next_frame(), Err(FrameError::DecoderFailed));
     }
+
+    /// `testdata/contracts/frames.tsv`, which WorkroomWire's tests read too: every kind encodes and
+    /// decodes to the same bytes in both codecs, and the same malformed frames are refused.
+    #[test]
+    fn the_shared_contract_fixture_holds() {
+        let hex = |text: &str| -> Vec<u8> {
+            if text == "-" {
+                return Vec::new();
+            }
+            (0..text.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&text[i..i + 2], 16).expect("hex"))
+                .collect()
+        };
+        let fixture = include_str!("../../../../testdata/contracts/frames.tsv");
+        let mut rows = 0;
+        for line in fixture
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        {
+            let [expect, frame, payload] = line.split('\t').collect::<Vec<_>>()[..] else {
+                panic!("not three columns: {line:?}");
+            };
+            let (frame, payload) = (hex(frame), hex(payload));
+            let mut decoder = FrameDecoder::new();
+            decoder.push(&frame);
+            match expect.strip_prefix("error:") {
+                Some("frameTooLarge") => assert!(
+                    matches!(decoder.next_frame(), Err(FrameError::FrameTooLarge(_))),
+                    "{line}"
+                ),
+                Some("unknownKind") => assert_eq!(
+                    decoder.next_frame(),
+                    Err(FrameError::UnknownKind(frame[0])),
+                    "{line}"
+                ),
+                Some(other) => panic!("unknown error {other:?}"),
+                None => {
+                    let kind = FrameKind::from_u8(frame[0]).expect(expect);
+                    let name = format!("{kind:?}");
+                    assert_eq!(name[..1].to_lowercase() + &name[1..], expect, "{line}");
+                    assert_eq!(Frame::new(kind, payload.clone()).encode(), frame, "{line}");
+                    assert_eq!(
+                        decoder.next_frame(),
+                        Ok(Some(Frame::new(kind, payload))),
+                        "{line}"
+                    );
+                    assert_eq!(decoder.buffered_len(), 0, "{line}");
+                }
+            }
+            rows += 1;
+        }
+        assert_eq!(rows, 16, "every row was read");
+    }
 }
