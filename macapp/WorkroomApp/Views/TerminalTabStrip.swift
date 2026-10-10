@@ -22,7 +22,7 @@ struct TerminalTabStrip: View {
   @ObservedObject var sessions: TerminalSessions
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
-  @EnvironmentObject var agentManager: TerminalAgentManager
+  @EnvironmentObject var agentManager: TerminalCodingAgentManager
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// The tab whose ✦ agent popover is open.
   @State private var agentPopoverTab: TerminalTab.ID?
@@ -386,7 +386,7 @@ struct TerminalTabStrip: View {
   /// The ✦ agent popover for a tab (inline presentation): the diagnosis + its actions, off the grid.
   @ViewBuilder private func agentPopover(for tab: TerminalTab) -> some View {
     if let state = agentManager.banners[tab.id] {
-      TerminalAgentBanner(
+      TerminalCodingAgentBanner(
         state: state,
         onDiagnose: { agentManager.diagnose(tab: tab.id, target: target.id) },
         onInsertFix: { fix in

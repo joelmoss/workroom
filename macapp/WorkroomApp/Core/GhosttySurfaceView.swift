@@ -34,13 +34,13 @@ final class GhosttySurfaceView: NSView {
   /// libghostty for the PTY foreground process group.
   var foregroundProcessNameForTesting: String?
 
-  var foregroundAgentBackend: AgentBackend? {
+  var foregroundAgentBackend: CodingAgentBackend? {
     if let foregroundProcessNameForTesting {
-      return AgentProcessRecognition.backend(forProcessName: foregroundProcessNameForTesting)
+      return CodingAgentProcessRecognition.backend(forProcessName: foregroundProcessNameForTesting)
     }
     guard let surface else { return nil }
     let pid = pid_t(ghostty_surface_foreground_pid(surface))
-    return AgentProcessRecognition.backend(forPID: pid)
+    return CodingAgentProcessRecognition.backend(forPID: pid)
   }
 
   /// The basename of the PTY's current foreground process, or nil (no surface, dead pid, name

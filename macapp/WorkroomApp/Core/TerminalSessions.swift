@@ -340,7 +340,7 @@ struct TerminalState {
   /// The agent identified from the PTY foreground process (or conservatively from shell title as a
   /// fallback for multiplexed sessions). Providers repaint OSC titles while they run, so this is
   /// deliberately latched until `command_finished` instead of being derived from `liveTitle`.
-  var activeAgentBackend: AgentBackend?
+  var activeAgentBackend: CodingAgentBackend?
   /// Reject recovery metadata if the command ended while the helper query was in flight.
   var commandFinishGeneration = 0
   /// The curated CLI/TUI tool recognized as currently running in this terminal's foreground (issue
@@ -564,7 +564,7 @@ final class TerminalSessions: ObservableObject {
 
   /// The inline terminal agent (issue #49). Owned here so the per-tab callbacks can feed it; injected
   /// into the environment (see `WorkroomApp`) so the pane banner observes it. Opt-in, default off.
-  let agentManager: TerminalAgentManager
+  let agentManager: TerminalCodingAgentManager
 
   /// Where a remote pane's host-side working directory is asked for (#239). Settable for tests.
   var hostConnections: HostConnectionManager = .shared
@@ -578,11 +578,11 @@ final class TerminalSessions: ObservableObject {
     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
     // so the XCUITest sees the banner; otherwise the normal opt-in, default-off real runner.
     if UITestFixture.agentStub {
-      agentManager = TerminalAgentManager(
-        runner: StubAgentRunner(envelope: UITestFixture.agentStubEnvelope),
+      agentManager = TerminalCodingAgentManager(
+        runner: StubCodingAgentRunner(envelope: UITestFixture.agentStubEnvelope),
         featureEnabled: { true }, autoDiagnoseEnabled: { true })
     } else {
-      agentManager = TerminalAgentManager()
+      agentManager = TerminalCodingAgentManager()
     }
     // The OS-appearance observer that used to live here now belongs to `ThemeService` — one owner
     // for the whole app rather than one per window (WORKROOM-3R).
@@ -711,7 +711,7 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// Includes hidden targets, background tabs, and panes popped into their own windows.
-  var activeAgentBackends: Set<AgentBackend> {
+  var activeAgentBackends: Set<CodingAgentBackend> {
     Set(
       tabsByTarget.values.flatMap { $0.values }.compactMap { tab in
         if case .terminal(let state) = tab.content { return state.activeAgentBackend }
@@ -1770,7 +1770,7 @@ final class TerminalSessions: ObservableObject {
     // TOCTOU gap where the foreground process could differ between the two reads (review finding).
     let foregroundExecutableName = s.view.foregroundExecutableName
     let detectedAgent =
-      s.view.foregroundAgentBackend ?? AgentTitleRecognition.backend(for: trimmed)
+      s.view.foregroundAgentBackend ?? CodingAgentTitleRecognition.backend(for: trimmed)
     let detectedTool =
       ToolLogoRegistry.tool(forExecutableName: foregroundExecutableName)
       ?? ToolLogoRegistry.tool(forTitle: trimmed)
@@ -2397,7 +2397,7 @@ final class TerminalSessions: ObservableObject {
           generations[tab.id]?.sessionID == sessionID,
           generations[tab.id]?.generation == state.commandFinishGeneration,
           let command = descriptor.value(forMetadataKey: "command"),
-          let backend = AgentProcessRecognition.backend(forProcessName: command)
+          let backend = CodingAgentProcessRecognition.backend(forProcessName: command)
         {
           mutateTerminalState(tab.id, target: target) {
             $0.activeAgentBackend = backend

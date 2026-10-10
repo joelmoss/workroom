@@ -691,7 +691,7 @@ struct PaneLeafView: View {
   /// Routes the diff pane's reused tab context menu (issue #72: "Open File in…", split, close group).
   @EnvironmentObject var store: AppStore
   /// The inline terminal agent (issue #49); its per-tab state drives the auto-diagnose opt-in dialog.
-  @EnvironmentObject var agentManager: TerminalAgentManager
+  @EnvironmentObject var agentManager: TerminalCodingAgentManager
   let title: String
   let focused: Bool
   let multiPane: Bool

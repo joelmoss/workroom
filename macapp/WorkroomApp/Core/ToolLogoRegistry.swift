@@ -14,7 +14,7 @@ struct ToolLogoEntry: Codable, Equatable {
   let faviconSource: String
 }
 
-/// Latched onto a running terminal tab (mirrors `AgentBackend`, but data-driven and not limited to
+/// Latched onto a running terminal tab (mirrors `CodingAgentBackend`, but data-driven and not limited to
 /// two cases). Deliberately smaller than `ToolLogoEntry` — a tab only needs to remember the match.
 struct RecognizedTool: Equatable {
   let id: String
@@ -46,8 +46,8 @@ enum ToolLogoRegistry {
   /// Pure data match — works even before `fetch-tool-logos.sh` has produced an imageset for the id,
   /// so it's directly unit-testable against `registry.json` content alone.
   ///
-  /// Case-sensitive on purpose, mirroring `AgentTitleRecognition.backend(for:)`
-  /// (`AgentUsage.swift`): a command title is the real, lower-case executable name, so comparing
+  /// Case-sensitive on purpose, mirroring `CodingAgentTitleRecognition.backend(for:)`
+  /// (`CodingAgentUsage.swift`): a command title is the real, lower-case executable name, so comparing
   /// case-sensitively rejects prose like "Go to definition" matching the `go` entry.
   static func matchingEntry(forTitle title: String?) -> ToolLogoEntry? {
     guard let title else { return nil }
@@ -59,7 +59,7 @@ enum ToolLogoRegistry {
     return byExecutable[(token as NSString).lastPathComponent]
   }
 
-  /// Lowercased before lookup (review finding) — matching `AgentProcessRecognition.backend(forProcessName:)`'s
+  /// Lowercased before lookup (review finding) — matching `CodingAgentProcessRecognition.backend(forProcessName:)`'s
   /// precedent. Unlike the title-matching path above, a `proc_name`-resolved executable name is never
   /// prose, so there's no "Go to definition" style false-positive risk to guard against by staying
   /// case-sensitive here — and macOS's default case-insensitive filesystem means a real binary can

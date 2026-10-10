@@ -4,39 +4,39 @@ import XCTest
 
 @testable import Workroom
 
-final class AgentUsageTests: XCTestCase {
+final class CodingAgentUsageTests: XCTestCase {
   private let now = Date(timeIntervalSince1970: 2_000_000_000)
 
   func testRecognizesOnlyDirectAgentCommandsAndKnownTitles() {
-    XCTAssertEqual(AgentTitleRecognition.backend(for: "claude"), .claude)
-    XCTAssertEqual(AgentTitleRecognition.backend(for: "claude --resume abc"), .claude)
+    XCTAssertEqual(CodingAgentTitleRecognition.backend(for: "claude"), .claude)
+    XCTAssertEqual(CodingAgentTitleRecognition.backend(for: "claude --resume abc"), .claude)
     XCTAssertEqual(
-      AgentTitleRecognition.backend(for: "/opt/homebrew/bin/claude --model opus"), .claude)
-    XCTAssertEqual(AgentTitleRecognition.backend(for: "Claude Code"), .claude)
-    XCTAssertEqual(AgentTitleRecognition.backend(for: "codex --full-auto"), .codex)
-    XCTAssertEqual(AgentTitleRecognition.backend(for: "/usr/local/bin/codex"), .codex)
-    XCTAssertEqual(AgentTitleRecognition.backend(for: "Codex"), .codex)
+      CodingAgentTitleRecognition.backend(for: "/opt/homebrew/bin/claude --model opus"), .claude)
+    XCTAssertEqual(CodingAgentTitleRecognition.backend(for: "Claude Code"), .claude)
+    XCTAssertEqual(CodingAgentTitleRecognition.backend(for: "codex --full-auto"), .codex)
+    XCTAssertEqual(CodingAgentTitleRecognition.backend(for: "/usr/local/bin/codex"), .codex)
+    XCTAssertEqual(CodingAgentTitleRecognition.backend(for: "Codex"), .codex)
 
     for title in ["echo claude", "myclaude", "codex-helper", "Claude Code setup", "", "pwd"] {
-      XCTAssertNil(AgentTitleRecognition.backend(for: title), "false positive for \(title)")
+      XCTAssertNil(CodingAgentTitleRecognition.backend(for: title), "false positive for \(title)")
     }
-    XCTAssertNil(AgentTitleRecognition.backend(for: nil))
+    XCTAssertNil(CodingAgentTitleRecognition.backend(for: nil))
   }
 
   func testRecognizesOnlyDirectAgentProcessNames() {
-    XCTAssertEqual(AgentProcessRecognition.backend(forProcessName: "claude"), .claude)
+    XCTAssertEqual(CodingAgentProcessRecognition.backend(forProcessName: "claude"), .claude)
     XCTAssertEqual(
-      AgentProcessRecognition.backend(forProcessName: "/opt/homebrew/bin/codex"), .codex)
+      CodingAgentProcessRecognition.backend(forProcessName: "/opt/homebrew/bin/codex"), .codex)
     for name in ["node", "claude-helper", "codex-agent", "Claude Code", ""] {
-      XCTAssertNil(AgentProcessRecognition.backend(forProcessName: name))
+      XCTAssertNil(CodingAgentProcessRecognition.backend(forProcessName: name))
     }
-    XCTAssertNil(AgentProcessRecognition.backend(forProcessName: nil))
+    XCTAssertNil(CodingAgentProcessRecognition.backend(forProcessName: nil))
   }
 
   func testPaceAtStartMidpointAndEnd() {
     let duration: TimeInterval = 300
     let reset = now.addingTimeInterval(duration)
-    let window = AgentQuotaWindow(
+    let window = CodingAgentQuotaWindow(
       kind: .fiveHour, usedPercentage: 40, duration: duration, resetsAt: reset)
     XCTAssertEqual(window.pace(at: now).percentagePoints, 40, accuracy: 0.001)
     XCTAssertEqual(
@@ -49,7 +49,7 @@ final class AgentUsageTests: XCTestCase {
   /// The pace pin's position, hoisted out of two view methods that each carried this expression
   /// verbatim while claiming to avoid a second copy of it.
   func testSustainablePacePercentageTracksElapsedTime() {
-    let window = AgentQuotaWindow(
+    let window = CodingAgentQuotaWindow(
       kind: .fiveHour, usedPercentage: 42, duration: 300,
       resetsAt: now.addingTimeInterval(150))
     // Half the window elapsed ⇒ the pin sits at 50%, wherever usage happens to be.
@@ -65,13 +65,14 @@ final class AgentUsageTests: XCTestCase {
 
   func testPaceDescriptionsAndPercentageClamping() {
     XCTAssertEqual(
-      AgentPace(percentagePoints: 6.4).accessibilityDescription, "6% in deficit")
-    XCTAssertEqual(AgentPace(percentagePoints: -3.2).accessibilityDescription, "3% in reserve")
+      CodingAgentPace(percentagePoints: 6.4).accessibilityDescription, "6% in deficit")
     XCTAssertEqual(
-      AgentQuotaWindow(kind: .weekly, usedPercentage: 130, duration: 10, resetsAt: now)
+      CodingAgentPace(percentagePoints: -3.2).accessibilityDescription, "3% in reserve")
+    XCTAssertEqual(
+      CodingAgentQuotaWindow(kind: .weekly, usedPercentage: 130, duration: 10, resetsAt: now)
         .usedPercentage, 100)
     XCTAssertEqual(
-      AgentQuotaWindow(kind: .weekly, usedPercentage: -4, duration: 10, resetsAt: now)
+      CodingAgentQuotaWindow(kind: .weekly, usedPercentage: -4, duration: 10, resetsAt: now)
         .usedPercentage, 0)
   }
 
@@ -81,19 +82,19 @@ final class AgentUsageTests: XCTestCase {
   /// remaining numeric surfaces describe as "15% in deficit" — stays `.warning` rather than
   /// colouring as critical.
   func testPaceSeverityThresholds() {
-    XCTAssertEqual(AgentPace(percentagePoints: -20).severity, .onPace)
-    XCTAssertEqual(AgentPace(percentagePoints: 0).severity, .onPace)
+    XCTAssertEqual(CodingAgentPace(percentagePoints: -20).severity, .onPace)
+    XCTAssertEqual(CodingAgentPace(percentagePoints: 0).severity, .onPace)
     // Rounds to 0 ⇒ not over pace at all, matching `isOver`.
-    XCTAssertEqual(AgentPace(percentagePoints: 0.4).severity, .onPace)
-    XCTAssertEqual(AgentPace(percentagePoints: 1).severity, .warning)
-    XCTAssertEqual(AgentPace(percentagePoints: 15).severity, .warning)
-    XCTAssertEqual(AgentPace(percentagePoints: 15.4).severity, .warning)
+    XCTAssertEqual(CodingAgentPace(percentagePoints: 0.4).severity, .onPace)
+    XCTAssertEqual(CodingAgentPace(percentagePoints: 1).severity, .warning)
+    XCTAssertEqual(CodingAgentPace(percentagePoints: 15).severity, .warning)
+    XCTAssertEqual(CodingAgentPace(percentagePoints: 15.4).severity, .warning)
     XCTAssertEqual(
-      AgentPace(percentagePoints: 15.4).accessibilityDescription, "15% in deficit")
+      CodingAgentPace(percentagePoints: 15.4).accessibilityDescription, "15% in deficit")
     // 15.6 rounds to 16, so it crosses on the value the user is shown, not on the raw double.
-    XCTAssertEqual(AgentPace(percentagePoints: 15.6).severity, .critical)
-    XCTAssertEqual(AgentPace(percentagePoints: 16).severity, .critical)
-    XCTAssertEqual(AgentPace(percentagePoints: 90).severity, .critical)
+    XCTAssertEqual(CodingAgentPace(percentagePoints: 15.6).severity, .critical)
+    XCTAssertEqual(CodingAgentPace(percentagePoints: 16).severity, .critical)
+    XCTAssertEqual(CodingAgentPace(percentagePoints: 90).severity, .critical)
   }
 
   /// `QuotaBar.fill(for:_:)` is the only thing carrying severity in the footer now that the pace
@@ -107,7 +108,7 @@ final class AgentUsageTests: XCTestCase {
   }
 
   func testRelativeResetDescriptionCapsAtTwoUnits() {
-    let window = AgentQuotaWindow(
+    let window = CodingAgentQuotaWindow(
       kind: .weekly, usedPercentage: 10, duration: 10, resetsAt: now.addingTimeInterval(93_000))
     XCTAssertEqual(window.resetDescription(at: now), "resets in 1d 1h")
     XCTAssertEqual(window.resetDescription(at: now.addingTimeInterval(92_999)), "resets in 1m")
@@ -119,22 +120,23 @@ final class AgentUsageTests: XCTestCase {
       """
       {"rate_limits":{"five_hour":{"used_percentage":23.5,"resets_at":2000003600,"future":1},"seven_day":{"used_percentage":41.2,"resets_at":2000604800}},"ignored":true}
       """.utf8)
-    let snapshot = try XCTUnwrap(AgentUsageDecoding.claude(data: both, capturedAt: now, now: now))
+    let snapshot = try XCTUnwrap(
+      CodingAgentUsageDecoding.claude(data: both, capturedAt: now, now: now))
     XCTAssertEqual(snapshot.backend, .claude)
     XCTAssertEqual(snapshot.windows.map(\.kind), [.fiveHour, .weekly])
     XCTAssertEqual(snapshot.windows.map(\.usedPercentage), [23.5, 41.2])
 
     let one = Data(#"{"five_hour":{"used_percentage":17,"resets_at":2000003600}}"#.utf8)
     XCTAssertEqual(
-      AgentUsageDecoding.claude(data: one, capturedAt: now, now: now)?.windows.count, 1)
+      CodingAgentUsageDecoding.claude(data: one, capturedAt: now, now: now)?.windows.count, 1)
   }
 
   func testClaudeRejectsMalformedPartialAndExpiredData() {
-    XCTAssertNil(AgentUsageDecoding.claude(data: Data("{".utf8), capturedAt: now, now: now))
+    XCTAssertNil(CodingAgentUsageDecoding.claude(data: Data("{".utf8), capturedAt: now, now: now))
     let expired = Data(#"{"five_hour":{"used_percentage":10,"resets_at":1999999999}}"#.utf8)
-    XCTAssertNil(AgentUsageDecoding.claude(data: expired, capturedAt: now, now: now))
+    XCTAssertNil(CodingAgentUsageDecoding.claude(data: expired, capturedAt: now, now: now))
     let partial = Data(#"{"five_hour":{"used_percentage":10}}"#.utf8)
-    XCTAssertNil(AgentUsageDecoding.claude(data: partial, capturedAt: now, now: now))
+    XCTAssertNil(CodingAgentUsageDecoding.claude(data: partial, capturedAt: now, now: now))
   }
 
   /// Every empty-quota footer has to be able to say WHY, so each way the Claude cache comes up empty
@@ -147,7 +149,7 @@ final class AgentUsageTests: XCTestCase {
 
     func reason() -> String {
       guard
-        case .failure(let value) = AgentUsageDecoding.readClaudeSnapshot(
+        case .failure(let value) = CodingAgentUsageDecoding.readClaudeSnapshot(
           cacheURL: cacheURL, now: now)
       else { return "" }
       return value
@@ -162,7 +164,7 @@ final class AgentUsageTests: XCTestCase {
 
     try Data(#"{"five_hour":{"used_percentage":10,"resets_at":2000003600}}"#.utf8).write(
       to: cacheURL)
-    let read = AgentUsageDecoding.readClaudeSnapshot(cacheURL: cacheURL, now: now)
+    let read = CodingAgentUsageDecoding.readClaudeSnapshot(cacheURL: cacheURL, now: now)
     XCTAssertEqual(read.snapshot?.windows.first?.usedPercentage, 10)
   }
 
@@ -177,7 +179,7 @@ final class AgentUsageTests: XCTestCase {
       to: cacheURL)
 
     let clock = Clock(value: now)
-    let monitor = AgentUsageMonitor(
+    let monitor = CodingAgentUsageMonitor(
       codexSessionsURL: root.appendingPathComponent("sessions"), claudeCacheURL: cacheURL,
       now: { clock.value }, startAutomatically: false)
     XCTAssertTrue(monitor.unavailableReason(for: .claude).contains("has been read yet"))
@@ -208,7 +210,7 @@ final class AgentUsageTests: XCTestCase {
       secondary: (61, 10080, 2_000_604_800))
     let data = Data((older + "\n" + newer + "\n").utf8)
     let snapshot = try XCTUnwrap(
-      AgentUsageDecoding.codexRollout(
+      CodingAgentUsageDecoding.codexRollout(
         data: data, fileSize: UInt64(data.count), modifiedAt: now, now: now))
     XCTAssertEqual(snapshot.windows.map(\.kind), [.fiveHour, .weekly])
     XCTAssertEqual(snapshot.windows.map(\.usedPercentage), [42, 61])
@@ -219,7 +221,7 @@ final class AgentUsageTests: XCTestCase {
       timestamp: "2033-05-18T03:33:20Z", primary: (12, 60, 2_000_003_600), secondary: nil)
     let data = Data((valid + "\n{partial").utf8)
     let snapshot = try XCTUnwrap(
-      AgentUsageDecoding.codexRollout(
+      CodingAgentUsageDecoding.codexRollout(
         data: data, fileSize: UInt64(data.count), modifiedAt: now, now: now))
     XCTAssertEqual(snapshot.windows.count, 1)
     XCTAssertEqual(snapshot.windows[0].kind, .duration(minutes: 60))
@@ -242,7 +244,8 @@ final class AgentUsageTests: XCTestCase {
     try Data("{partial".utf8).write(to: malformedURL)
     try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: malformedURL.path)
 
-    let read = AgentUsageDecoding.readCodex(sessionsRoot: root, now: now, maximumTailBytes: 1024)
+    let read = CodingAgentUsageDecoding.readCodex(
+      sessionsRoot: root, now: now, maximumTailBytes: 1024)
     let snapshot = try XCTUnwrap(read.snapshot)
     XCTAssertEqual(snapshot.windows[0].usedPercentage, 33)
   }
@@ -253,7 +256,7 @@ final class AgentUsageTests: XCTestCase {
   /// unbounded set is a main-thread stall that grows with the user's history (issue: app hang in
   /// `rebuildWatches`).
   func testCodexReadWatchesOnlyTheNewestRolloutDirectoriesAndTheirAncestors() throws {
-    // Standardized to match what `AgentUsageDecoding.watchDirectories` returns: it standardizes
+    // Standardized to match what `CodingAgentUsageDecoding.watchDirectories` returns: it standardizes
     // every URL it hands back, so expectations built off a raw `temporaryDirectory` compare two
     // differently-normalized spellings on any machine whose temp dir carries a `/private` prefix.
     let root = FileManager.default.temporaryDirectory.standardizedFileURL
@@ -261,7 +264,7 @@ final class AgentUsageTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: root) }
     let month = root.appendingPathComponent("2033/05")
     var days: [URL] = []
-    for day in 1...(AgentUsageDecoding.candidateLimit + 2) {
+    for day in 1...(CodingAgentUsageDecoding.candidateLimit + 2) {
       let directory = month.appendingPathComponent(String(format: "%02d", day))
       try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
       let file = directory.appendingPathComponent("rollout.jsonl")
@@ -276,7 +279,7 @@ final class AgentUsageTests: XCTestCase {
       days.append(directory)
     }
 
-    let read = AgentUsageDecoding.readCodex(sessionsRoot: root, now: now)
+    let read = CodingAgentUsageDecoding.readCodex(sessionsRoot: root, now: now)
     let watched = Set(read.watchDirectories.map(\.path))
     XCTAssertEqual(read.watchDirectories.first?.path, root.path)
     XCTAssertEqual(
@@ -284,7 +287,7 @@ final class AgentUsageTests: XCTestCase {
       Set(
         ([root, root.appendingPathComponent("2033"), month]
           + days.suffix(
-            AgentUsageDecoding.candidateLimit)).map(\.path)))
+            CodingAgentUsageDecoding.candidateLimit)).map(\.path)))
     for stale in days.prefix(2) { XCTAssertFalse(watched.contains(stale.path)) }
   }
 
@@ -294,7 +297,7 @@ final class AgentUsageTests: XCTestCase {
   /// `ViewThatFits` instantiates all of its children to measure them — so the common read (same
   /// numbers, Claude's bridge having merely rewritten its cache file) has to be silent. Two things
   /// used to break that and neither is visible from the published values alone, which is why this
-  /// counts `objectWillChange` instead: `capturedAt` rides in `AgentQuotaSnapshot`'s synthesized
+  /// counts `objectWillChange` instead: `capturedAt` rides in `CodingAgentQuotaSnapshot`'s synthesized
   /// `==` and moves with the file's mtime on every rewrite, and `loading` toggled on and off for a
   /// backend that never resolves. Deleting either guard leaves every value assertion in this file
   /// passing.
@@ -307,7 +310,7 @@ final class AgentUsageTests: XCTestCase {
     try Data(#"{"five_hour":{"used_percentage":10,"resets_at":2000003600}}"#.utf8).write(
       to: cacheURL)
 
-    let monitor = AgentUsageMonitor(
+    let monitor = CodingAgentUsageMonitor(
       codexSessionsURL: root.appendingPathComponent("sessions"), claudeCacheURL: cacheURL,
       now: { self.now }, startAutomatically: false)
 
@@ -362,7 +365,7 @@ final class AgentUsageTests: XCTestCase {
     try Data(#"{"five_hour":{"used_percentage":10,"resets_at":2000003600}}"#.utf8).write(
       to: cacheURL)
 
-    let monitor = AgentUsageMonitor(
+    let monitor = CodingAgentUsageMonitor(
       codexSessionsURL: sessions, claudeCacheURL: cacheURL, now: { self.now },
       startAutomatically: false)
     monitor.refresh()
@@ -393,7 +396,7 @@ final class AgentUsageTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
-    let monitor = AgentUsageMonitor(
+    let monitor = CodingAgentUsageMonitor(
       codexSessionsURL: root.appendingPathComponent("sessions"),
       claudeCacheURL: root.appendingPathComponent("bridge/claude-rate-limits.json"),
       now: { self.now }, startAutomatically: false)
@@ -427,7 +430,7 @@ final class AgentUsageTests: XCTestCase {
     let empty = root.appendingPathComponent("2033/05/19")
     try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
 
-    let read = AgentUsageDecoding.readCodex(sessionsRoot: root, now: now)
+    let read = CodingAgentUsageDecoding.readCodex(sessionsRoot: root, now: now)
     let watched = Set(read.watchDirectories.map(\.path))
     XCTAssertTrue(
       watched.contains(empty.path),
@@ -455,11 +458,12 @@ final class AgentUsageTests: XCTestCase {
 
     // Baseline: the same tree DOES produce a snapshot and watches when nothing cancels, so the
     // assertions below cannot be satisfied by a read that simply found nothing.
-    let live = AgentUsageDecoding.readCodex(sessionsRoot: root, now: now, isCancelled: { false })
+    let live = CodingAgentUsageDecoding.readCodex(
+      sessionsRoot: root, now: now, isCancelled: { false })
     XCTAssertNotNil(live.snapshot)
     XCTAssertFalse(live.watchDirectories.isEmpty)
 
-    let cancelled = AgentUsageDecoding.readCodex(
+    let cancelled = CodingAgentUsageDecoding.readCodex(
       sessionsRoot: root, now: now, isCancelled: { true })
     XCTAssertNil(cancelled.snapshot)
     XCTAssertTrue(
@@ -478,7 +482,7 @@ final class AgentUsageTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     // No Claude cache file and no Codex sessions tree: both backends settle as unavailable.
-    let monitor = AgentUsageMonitor(
+    let monitor = CodingAgentUsageMonitor(
       codexSessionsURL: root.appendingPathComponent("sessions"),
       claudeCacheURL: root.appendingPathComponent("claude-rate-limits.json"), now: { self.now },
       startAutomatically: false)
@@ -495,10 +499,10 @@ final class AgentUsageTests: XCTestCase {
 
     // ...but a click must, and a watch event landing underneath it must not undo that.
     monitor.refresh(userInitiated: true)
-    XCTAssertEqual(monitor.loading, Set(AgentBackend.allCases))
+    XCTAssertEqual(monitor.loading, Set(CodingAgentBackend.allCases))
     monitor.refresh()
     XCTAssertEqual(
-      monitor.loading, Set(AgentBackend.allCases),
+      monitor.loading, Set(CodingAgentBackend.allCases),
       "an automatic refresh stole the spinner from a user-initiated retry")
   }
 
@@ -525,7 +529,7 @@ final class AgentUsageTests: XCTestCase {
       [.modificationDate: mtime], ofItemAtPath: file.path)
 
     let snapshot = try XCTUnwrap(
-      AgentUsageDecoding.readCodex(sessionsRoot: root, now: now).snapshot)
+      CodingAgentUsageDecoding.readCodex(sessionsRoot: root, now: now).snapshot)
     XCTAssertEqual(
       snapshot.capturedAt.timeIntervalSince1970, 2_000_000_000.553, accuracy: 0.0005,
       "capturedAt should be the parsed rollout timestamp")

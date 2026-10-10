@@ -1,8 +1,8 @@
 import Foundation
 
-/// Pure presentation of an `AgentBannerState` (issue #49, T8): the text and which controls the
-/// inline-agent banner shows. Keeps `TerminalAgentBanner` a dumb renderer and unit-testable.
-struct AgentBannerViewModel: Equatable {
+/// Pure presentation of an `CodingAgentBannerState` (issue #49, T8): the text and which controls the
+/// inline-agent banner shows. Keeps `TerminalCodingAgentBanner` a dumb renderer and unit-testable.
+struct CodingAgentBannerViewModel: Equatable {
   enum Style: Equatable { case awaiting, loading, ready, failure, remote }
 
   let style: Style
@@ -18,7 +18,7 @@ struct AgentBannerViewModel: Equatable {
   let showsInvestigate: Bool
   let showsDismiss: Bool
 
-  init(state: AgentBannerState) {
+  init(state: CodingAgentBannerState) {
     switch state {
     case .awaitingDiagnose(let failure):
       style = .awaiting
@@ -79,7 +79,7 @@ struct AgentBannerViewModel: Equatable {
   }
 
   /// User-facing message for an error outcome.
-  static func message(for kind: AgentErrorKind) -> String {
+  static func message(for kind: CodingAgentErrorKind) -> String {
     switch kind {
     case .cliNotFound: return "No agent CLI found — install Claude Code or Codex"
     case .notAuthenticated: return "Agent not signed in — run `claude login`"
@@ -92,7 +92,7 @@ struct AgentBannerViewModel: Equatable {
 
   /// Whether a failed diagnosis is worth a retry button. A missing/unauthenticated CLI won't fix
   /// itself on retry; a timeout / transient parse failure might.
-  static func isRetryable(_ kind: AgentErrorKind) -> Bool {
+  static func isRetryable(_ kind: CodingAgentErrorKind) -> Bool {
     switch kind {
     case .timedOut, .emptyOutput, .malformed, .other: return true
     case .cliNotFound, .notAuthenticated: return false

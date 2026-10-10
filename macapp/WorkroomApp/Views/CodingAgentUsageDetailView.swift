@@ -4,7 +4,7 @@ import SwiftUI
 /// each showing a progress bar against the reset countdown, plus a pace caption. Since issue #168
 /// the footer segment is bars alone, so this popover (and the segment's tooltip) is the ONLY place
 /// the percentages behind them are written out.
-struct AgentUsageDetailView: View {
+struct CodingAgentUsageDetailView: View {
   /// The popover's fixed presented width (the caller applies this via `.frame(width:)`) — kept here,
   /// not just at the call site, so `barWidth` below derives from the same number rather than a second
   /// copy that could drift out of sync.
@@ -14,7 +14,7 @@ struct AgentUsageDetailView: View {
   /// faster wouldn't change anything the displayed text shows.
   private static let refreshInterval: TimeInterval = 60
 
-  let snapshot: AgentQuotaSnapshot
+  let snapshot: CodingAgentQuotaSnapshot
 
   /// Seeds `currentTime` below; the view re-reads its own clock afterward rather than holding this
   /// fixed, since a pinned popover (unlike the old hover-only tooltip) can stay open indefinitely —
@@ -24,7 +24,7 @@ struct AgentUsageDetailView: View {
   private let theme = ThemeService.shared
   private var barWidth: CGFloat { Self.popoverWidth - Self.horizontalPadding * 2 }
 
-  init(snapshot: AgentQuotaSnapshot, now: Date) {
+  init(snapshot: CodingAgentQuotaSnapshot, now: Date) {
     self.snapshot = snapshot
     _currentTime = State(initialValue: now)
   }
@@ -44,7 +44,7 @@ struct AgentUsageDetailView: View {
     }
   }
 
-  private func windowRow(_ window: AgentQuotaWindow) -> some View {
+  private func windowRow(_ window: CodingAgentQuotaWindow) -> some View {
     let pace = window.pace(at: currentTime)
     let paceMarker = window.sustainablePacePercentage(at: currentTime)
 
@@ -71,7 +71,7 @@ struct AgentUsageDetailView: View {
     .accessibilityElement(children: .combine)
   }
 
-  private func title(for kind: AgentQuotaWindowKind) -> String {
+  private func title(for kind: CodingAgentQuotaWindowKind) -> String {
     switch kind {
     case .fiveHour: return "Session"
     case .weekly: return "Weekly"
@@ -79,13 +79,13 @@ struct AgentUsageDetailView: View {
     }
   }
 
-  private func capitalizedResetDescription(_ window: AgentQuotaWindow) -> String {
+  private func capitalizedResetDescription(_ window: CodingAgentQuotaWindow) -> String {
     let raw = window.resetDescription(at: currentTime)
     return raw.prefix(1).uppercased() + raw.dropFirst()
   }
 
   /// `"9% in reserve · Lasts until reset"`.
-  private func caption(for pace: AgentPace) -> String {
+  private func caption(for pace: CodingAgentPace) -> String {
     let status = pace.isOver ? "May run out before reset" : "Lasts until reset"
     return "\(pace.accessibilityDescription) · \(status)"
   }
@@ -130,7 +130,7 @@ struct AgentUsageDetailView: View {
 /// view computes its own preferred size once at presentation time, and a `GeometryReader` anywhere in
 /// that tree throws that computation off — it reported an intrinsic size too short to hold this row's
 /// caption text, which then rendered truncated instead of wrapped. The caller already fixes the
-/// popover to `AgentUsageDetailView.popoverWidth`, so the bar can just derive from that same constant.
+/// popover to `CodingAgentUsageDetailView.popoverWidth`, so the bar can just derive from that same constant.
 struct QuotaBar: View {
   let usedPercentage: Double
   let markerPercentage: Double

@@ -4,13 +4,13 @@ import XCTest
 /// in the fixture workroom, so the capture path the unit tests can't reach runs against a live
 /// libghostty surface: a non-zero run exit → `applyRunStatus` → `diagnoseRunFailure` →
 /// `readFullSurface` (real SURFACE read) → `RunCaptureSupport` (waits for the supervisor's in-band
-/// exit trailer) → manager → `AgentPrompt.parse` → the diagnosis surfaces in the detail-panel status
+/// exit trailer) → manager → `CodingAgentPrompt.parse` → the diagnosis surfaces in the detail-panel status
 /// bar (and a ✦ badge on the tab).
 ///
 /// Hermetic: `-WorkroomUITestAgentStub` enables the agent with a STUB backend that returns a canned
 /// diagnosis, so the test never hits `claude`/`codex` (no network, no cost) — only the *capture* and
 /// *UI* are real. The canned summary ("UITEST diagnosis…") is asserted.
-final class TerminalAgentUITests: XCTestCase {
+final class TerminalCodingAgentUITests: XCTestCase {
   override func setUp() {
     super.setUp()
     continueAfterFailure = false

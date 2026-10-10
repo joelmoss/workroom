@@ -10,7 +10,7 @@ import SwiftUI
 /// title bar naming itself, so the path was being shown twice. Identity goes at the top of the pane,
 /// live state at the bottom.
 ///
-/// The diagnosis is a compact indicator that opens the full `TerminalAgentBanner` in a POPOVER — not
+/// The diagnosis is a compact indicator that opens the full `TerminalCodingAgentBanner` in a POPOVER — not
 /// an overlay. A SwiftUI overlay's controls sit over the terminal's Metal `NSView`, which wins AppKit
 /// hit-testing, so overlay buttons silently swallow clicks; a popover lives in its own window.
 struct TerminalStatusBar: View {
@@ -20,7 +20,7 @@ struct TerminalStatusBar: View {
   /// cwd, run state or diagnosis, only the branch.
   let state: TerminalState?
   @EnvironmentObject var store: AppStore
-  @EnvironmentObject var agentManager: TerminalAgentManager
+  @EnvironmentObject var agentManager: TerminalCodingAgentManager
   /// Observed here too (`DetachedSessionsButton` already observes it) so a divider next to that
   /// button can know whether it's actually showing anything.
   @ObservedObject private var sessionsStore = TerminalSessionsStore.shared
@@ -39,7 +39,9 @@ struct TerminalStatusBar: View {
 
   private var isRunTab: Bool { state != nil && store.runTabID(for: target.id) == tabID }
 
-  private var diagnosis: AgentBannerState? { state == nil ? nil : agentManager.banners[tabID] }
+  private var diagnosis: CodingAgentBannerState? {
+    state == nil ? nil : agentManager.banners[tabID]
+  }
 
   var body: some View {
     // Computed once per render so a divider between two segments only appears when BOTH sides are
@@ -236,8 +238,8 @@ struct TerminalStatusBar: View {
 
   // MARK: Diagnosis
 
-  private func diagnosisSegment(_ bannerState: AgentBannerState) -> some View {
-    let model = AgentBannerViewModel(state: bannerState)
+  private func diagnosisSegment(_ bannerState: CodingAgentBannerState) -> some View {
+    let model = CodingAgentBannerViewModel(state: bannerState)
     let tint = diagnosisTint(model.style)
     return Button {
       showingDiagnosis.toggle()
@@ -255,7 +257,7 @@ struct TerminalStatusBar: View {
     .accessibilityLabel("Diagnosis: \(model.headline)")
     .accessibilityIdentifier("terminal.statusBar.diagnosis")
     .popover(isPresented: $showingDiagnosis, arrowEdge: .bottom) {
-      TerminalAgentBanner(
+      TerminalCodingAgentBanner(
         state: bannerState,
         onDiagnose: { agentManager.diagnose(tab: tabID, target: target.id) },
         onInsertFix: { fix in
@@ -278,14 +280,14 @@ struct TerminalStatusBar: View {
 
   /// Foreground for the diagnosis indicator: red for the command-failure states (a diagnosis exists
   /// because a command failed), muted for the transient/neutral ones.
-  private func diagnosisTint(_ style: AgentBannerViewModel.Style) -> AnyShapeStyle {
+  private func diagnosisTint(_ style: CodingAgentBannerViewModel.Style) -> AnyShapeStyle {
     switch style {
     case .ready, .awaiting, .failure: return AnyShapeStyle(theme.tokens.failure)
     case .loading, .remote: return AnyShapeStyle(theme.tokens.fgMuted)
     }
   }
 
-  @ViewBuilder private func diagnosisIcon(_ style: AgentBannerViewModel.Style) -> some View {
+  @ViewBuilder private func diagnosisIcon(_ style: CodingAgentBannerViewModel.Style) -> some View {
     switch style {
     case .loading:
       ProgressView().controlSize(.mini)

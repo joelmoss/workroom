@@ -12,7 +12,7 @@ struct WorkroomApp: App {
   @StateObject private var updater = Updater()
   // The shared instances, so a detached pane's window can inject the SAME objects (issue #172):
   // environment does not cross an `NSHostingView`, so that window cannot inherit these from the scene.
-  @StateObject private var agentUsage = AgentUsageMonitor.shared
+  @StateObject private var agentUsage = CodingAgentUsageMonitor.shared
   @StateObject private var claudeUsageBridge = ClaudeUsageBridge.shared
   /// Fetches release notes for the "What's New" dialog (shown automatically on the first launch
   /// after an update). One instance shared across windows; presentation is owned window-side,

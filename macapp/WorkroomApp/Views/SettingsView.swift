@@ -78,7 +78,7 @@ struct SettingsView: View {
     case .general: GeneralSettingsPane()
     case .appearance: AppearanceSettingsPane()
     case .terminal: TerminalSettingsPane()
-    case .agent: AgentSettingsPane()
+    case .agent: CodingAgentSettingsPane()
     case .about: AboutSettingsPane()
     }
   }
@@ -528,12 +528,12 @@ private struct TerminalSettingsPane: View {
   }
 }
 
-private struct AgentSettingsPane: View {
+private struct CodingAgentSettingsPane: View {
   @Default(.terminalAgentBackend) private var agentBackend
   @Default(.terminalAgentAutoDiagnose) private var agentAutoDiagnose
   @Default(.terminalAgentRedactSecrets) private var agentRedactSecrets
   @EnvironmentObject private var claudeUsageBridge: ClaudeUsageBridge
-  @EnvironmentObject private var agentUsage: AgentUsageMonitor
+  @EnvironmentObject private var agentUsage: CodingAgentUsageMonitor
   @State private var confirmingClaudeAction = false
   @State private var bridgeError: String?
 

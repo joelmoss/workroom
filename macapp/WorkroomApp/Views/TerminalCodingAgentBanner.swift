@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// The inline-agent banner shown below a failed terminal pane (issue #49, T8). A dumb renderer over
-/// `AgentBannerViewModel`; all behaviour is closures the host wires to `TerminalAgentManager`.
-struct TerminalAgentBanner: View {
-  let state: AgentBannerState
+/// `CodingAgentBannerViewModel`; all behaviour is closures the host wires to `TerminalCodingAgentManager`.
+struct TerminalCodingAgentBanner: View {
+  let state: CodingAgentBannerState
   var onDiagnose: () -> Void
   var onInsertFix: (String) -> Void
   var onInvestigate: () -> Void
@@ -11,7 +11,7 @@ struct TerminalAgentBanner: View {
 
   @State private var confirmingDestructiveFix = false
 
-  private var model: AgentBannerViewModel { AgentBannerViewModel(state: state) }
+  private var model: CodingAgentBannerViewModel { CodingAgentBannerViewModel(state: state) }
 
   var body: some View {
     HStack(alignment: .top, spacing: 10) {

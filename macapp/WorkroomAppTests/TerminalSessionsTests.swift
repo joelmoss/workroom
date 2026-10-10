@@ -1441,7 +1441,7 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertNil(s.split(for: target))
   }
 
-  private func activeAgent(in sessions: TerminalSessions) -> AgentBackend? {
+  private func activeAgent(in sessions: TerminalSessions) -> CodingAgentBackend? {
     guard case .terminal(let state)? = sessions.tabs(for: target).first?.content else { return nil }
     return state.activeAgentBackend
   }

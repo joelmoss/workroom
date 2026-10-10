@@ -135,7 +135,7 @@ Allow filters to compose across author, date, path, and branch scope. Let users 
 
 Show a small contextual list beside a selected file, grouped by relationship. Use imports, references, naming conventions, and co-change history to retrieve candidates; label inferred relevance distinctly from known references.
 
-**Example:** Opening `TerminalAgentManager.swift` offers its tests, prompt builder, runner, and banner view as useful next files.
+**Example:** Opening `TerminalCodingAgentManager.swift` offers its tests, prompt builder, runner, and banner view as useful next files.
 
 ### FH-7 · Relevant code history
 
@@ -384,7 +384,7 @@ Product-specific success measures should include time to locate the right file o
 - [History panel](../../macapp/WorkroomApp/Views/HistoryPanel.swift) and [history model](../../macapp/WorkroomApp/Core/HistoryModel.swift)
 - [PR panel](../../macapp/WorkroomApp/Views/PullRequestPanel.swift) and [GitHub repository adapter](../../macapp/WorkroomApp/Core/RepositoryGitHub.swift)
 - [PR/CI resolution](../../macapp/WorkroomApp/Core/WorkroomStatusResolver.swift) and [refresh/action lifecycle](../../macapp/WorkroomApp/Core/AppStore+WorkroomStatus.swift)
-- [Terminal diagnosis](../../macapp/WorkroomApp/Core/TerminalAgentManager.swift) and [generative diagnosis contract](../../macapp/WorkroomApp/Core/AgentPrompt.swift)
+- [Terminal diagnosis](../../macapp/WorkroomApp/Core/TerminalCodingAgentManager.swift) and [generative diagnosis contract](../../macapp/WorkroomApp/Core/CodingAgentPrompt.swift)
 - [Notifications](../../macapp/WorkroomApp/Core/NotificationCenterStore.swift)
 
 These references describe the inspected working tree, which includes ongoing changes; they are not a claim about a particular released version.

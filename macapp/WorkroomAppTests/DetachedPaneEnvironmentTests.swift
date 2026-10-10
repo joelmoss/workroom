@@ -30,8 +30,8 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
     "AppStore": ".environmentObject(store)",
     "NotificationCenterStore": "store.notifications",
     "TerminalSessions": ".environmentObject(sessions)",
-    "TerminalAgentManager": "sessions.agentManager",
-    "AgentUsageMonitor": "AgentUsageMonitor.shared",
+    "TerminalCodingAgentManager": "sessions.agentManager",
+    "CodingAgentUsageMonitor": "CodingAgentUsageMonitor.shared",
     "ClaudeUsageBridge": "ClaudeUsageBridge.shared",
   ]
 

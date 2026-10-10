@@ -416,19 +416,19 @@ enum UITestFixture {
     }
   }
 
-  static var usageSnapshot: AgentQuotaSnapshot? {
+  static var usageSnapshot: CodingAgentQuotaSnapshot? {
     guard !flag("WorkroomUITestUsageUnavailable") else { return nil }
-    guard let title = usageAgentTitle, let backend = AgentTitleRecognition.backend(for: title)
+    guard let title = usageAgentTitle, let backend = CodingAgentTitleRecognition.backend(for: title)
     else {
       return nil
     }
     let now = Date()
     // `-WorkroomUITestUsageZero 1` seeds zero usage, the only way to see the plain-accent `.onPace`
     // bar (TODOS' manual visual check). The spoken label for it is pinned by
-    // `AgentUsageSegmentLabelTests`; the bar's colour has no automated check.
+    // `CodingAgentUsageSegmentLabelTests`; the bar's colour has no automated check.
     let used = flag("WorkroomUITestUsageZero") ? 0.0 : 42.0
     let weeklyUsed = flag("WorkroomUITestUsageZero") ? 0.0 : 61.0
-    return AgentQuotaSnapshot(
+    return CodingAgentQuotaSnapshot(
       backend: backend,
       windows: [
         // 3.5h left of 5h ⇒ 30% elapsed against 42% used ⇒ pace +12, i.e. `.warning` and a
@@ -437,10 +437,10 @@ enum UITestFixture {
         // pin was indistinguishable from the fill and `.warning` was reachable by no fixture at all
         // (weekly lands at +18 ⇒ `.critical`, and `WorkroomUITestUsageZero` gives `.onPace`). No
         // test asserts `resetsAt` — they assert only that the label contains "resets in".
-        AgentQuotaWindow(
+        CodingAgentQuotaWindow(
           kind: .fiveHour, usedPercentage: used, duration: 5 * 60 * 60,
           resetsAt: now.addingTimeInterval(3.5 * 60 * 60)),
-        AgentQuotaWindow(
+        CodingAgentQuotaWindow(
           kind: .weekly, usedPercentage: weeklyUsed, duration: 7 * 24 * 60 * 60,
           resetsAt: now.addingTimeInterval(4 * 24 * 60 * 60)),
       ], capturedAt: now)
@@ -1354,12 +1354,12 @@ struct FixtureVCSProvider: LocalVCSProviding {
 
 /// The inline agent backend used under `-WorkroomUITestAgentStub`: returns a canned envelope with no
 /// network, so the XCUITest exercises the real capture + banner without hitting `claude`/`codex`.
-struct StubAgentRunner: AgentRunning {
+struct StubCodingAgentRunner: CodingAgentRunning {
   let envelope: String
 
   func diagnoseInline(
     systemPrompt: String?, model: String?, prompt: String, cwd: String, timeout: TimeInterval
-  ) async -> AgentRunOutcome {
+  ) async -> CodingAgentRunOutcome {
     .success(stdout: envelope)
   }
 }

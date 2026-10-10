@@ -2366,10 +2366,10 @@ final class AppStore: ObservableObject {
   /// tracks the tab in `investigateTabs` so it isn't invisible to quit/close teardown.
   @discardableResult
   func startInvestigate(
-    bannerState: AgentBannerState, target: TerminalTarget, surface: GhosttySurfaceView?
+    bannerState: CodingAgentBannerState, target: TerminalTarget, surface: GhosttySurfaceView?
   ) -> TerminalTab {
     let cwd = surface?.lastKnownCwd ?? target.path
-    let command = AgentPrompt.investigateCommandLine(for: bannerState)
+    let command = CodingAgentPrompt.investigateCommandLine(for: bannerState)
     let tab = terminals.addRunTab(for: target, command: command, cwd: cwd)
     investigateTabs[tab.id] = target.id
     let tabID = tab.id

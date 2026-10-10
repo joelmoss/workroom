@@ -859,7 +859,7 @@ final class RunCommandTests: XCTestCase {
 
   // MARK: Investigate (issue #146)
 
-  private func investigateBanner(_ target: TerminalTarget) -> AgentBannerState {
+  private func investigateBanner(_ target: TerminalTarget) -> CodingAgentBannerState {
     .awaitingDiagnose(
       FailedCommand(
         command: "npm test", cwd: target.path, exitCode: 1, shell: nil, output: "",
@@ -873,7 +873,7 @@ final class RunCommandTests: XCTestCase {
 
     let tab = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
 
-    XCTAssertEqual(captured.last, AgentPrompt.investigateCommandLine(for: bannerState))
+    XCTAssertEqual(captured.last, CodingAgentPrompt.investigateCommandLine(for: bannerState))
     XCTAssertEqual(store.investigateTabs[tab.id], t.id)
   }
 

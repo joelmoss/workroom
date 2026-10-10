@@ -3,7 +3,7 @@ import Foundation
 
 /// A captured failed command, ready to diagnose (issue #49). The host builds this from the surface
 /// view (command + cwd from shell integration, exit code from `command_finished`, `output` from
-/// `readCommandRegion`); passing a value type keeps `TerminalAgentManager` testable without a live
+/// `readCommandRegion`); passing a value type keeps `TerminalCodingAgentManager` testable without a live
 /// terminal. `output` is the tidied capture; the manager applies redaction before sending.
 struct FailedCommand: Equatable, Sendable {
   var command: String?
@@ -16,7 +16,7 @@ struct FailedCommand: Equatable, Sendable {
 }
 
 /// Distinct error states so the banner can show actionable guidance.
-enum AgentErrorKind: Equatable, Sendable {
+enum CodingAgentErrorKind: Equatable, Sendable {
   case cliNotFound
   case notAuthenticated
   case timedOut
@@ -26,22 +26,22 @@ enum AgentErrorKind: Equatable, Sendable {
 }
 
 /// What the banner shows for a tab (issue #49). Absent (no entry) means no banner.
-enum AgentBannerState: Equatable, Sendable {
+enum CodingAgentBannerState: Equatable, Sendable {
   /// An eligible failure that hasn't been diagnosed yet — shows a "Diagnose" button.
   case awaitingDiagnose(FailedCommand)
   /// A diagnosis is running.
   case loading(FailedCommand)
   /// A diagnosis came back.
-  case ready(FailedCommand, AgentDiagnosis)
+  case ready(FailedCommand, CodingAgentDiagnosis)
   /// The run failed (CLI missing, auth, timeout, …).
-  case failure(FailedCommand, AgentErrorKind)
+  case failure(FailedCommand, CodingAgentErrorKind)
   /// A remote/ssh/tmux session — the local agent can't see the real host, so we caveat and disable
   /// Investigate rather than give a confidently-wrong local diagnosis (X5).
   case remoteCaveat(FailedCommand)
 
   /// The captured failure every state carries, plus the diagnosis when one is ready — for building
   /// the interactive Investigate seed prompt (issue #49).
-  var failureAndDiagnosis: (FailedCommand, AgentDiagnosis?) {
+  var failureAndDiagnosis: (FailedCommand, CodingAgentDiagnosis?) {
     switch self {
     case .awaitingDiagnose(let failure), .loading(let failure), .failure(let failure, _),
       .remoteCaveat(let failure):
@@ -58,8 +58,8 @@ enum AgentBannerState: Equatable, Sendable {
 /// `AppStore`/`TerminalSessions`. Pure decision logic lives in `FailureClassifier`; the runner and
 /// the feature gates are injected so the state machine is seam-tested with a fake.
 @MainActor
-final class TerminalAgentManager: ObservableObject {
-  @Published private(set) var banners: [TerminalTab.ID: AgentBannerState] = [:]
+final class TerminalCodingAgentManager: ObservableObject {
+  @Published private(set) var banners: [TerminalTab.ID: CodingAgentBannerState] = [:]
 
   /// Cheap gate so the host can skip the (screen-reading) capture work entirely when the feature is
   /// off — checked before `readCommandRegion()` runs on every command finish.
@@ -70,7 +70,7 @@ final class TerminalAgentManager: ObservableObject {
   /// prompt. The banner for this tab presents it; the answer persists the choice.
   @Published private(set) var autoOptInPromptTab: TerminalTab.ID?
 
-  private let runner: AgentRunning
+  private let runner: CodingAgentRunning
   private let featureEnabled: () -> Bool
   private let autoDiagnoseEnabled: () -> Bool
   private let redactSecrets: () -> Bool
@@ -96,7 +96,7 @@ final class TerminalAgentManager: ObservableObject {
   private var lastFailure: [TerminalTab.ID: FailedCommand] = [:]
 
   init(
-    runner: AgentRunning = AgentRunner(),
+    runner: CodingAgentRunning = CodingAgentRunner(),
     featureEnabled: @escaping () -> Bool = { true },
     autoDiagnoseEnabled: @escaping () -> Bool = { Defaults[.terminalAgentAutoDiagnose] },
     redactSecrets: @escaping () -> Bool = { Defaults[.terminalAgentRedactSecrets] },
@@ -204,10 +204,10 @@ final class TerminalAgentManager: ObservableObject {
     setBanner(.loading(failure), tab: tab)
 
     let output = redactSecrets() ? SecretRedactor.redact(failure.output) : failure.output
-    let prompt = AgentPrompt.userMessage(
+    let prompt = CodingAgentPrompt.userMessage(
       command: failure.command, cwd: failure.cwd, exitCode: failure.exitCode, shell: failure.shell,
       output: output)
-    let systemPrompt = AgentPrompt.systemPrompt
+    let systemPrompt = CodingAgentPrompt.systemPrompt
     let runner = self.runner
     let cwd = inlineCwd
     let timeout = self.timeout
@@ -221,21 +221,21 @@ final class TerminalAgentManager: ObservableObject {
     }
   }
 
-  private func apply(outcome: AgentRunOutcome, tab: TerminalTab.ID, failure: FailedCommand) {
+  private func apply(outcome: CodingAgentRunOutcome, tab: TerminalTab.ID, failure: FailedCommand) {
     // Ignore a result whose banner was superseded or dismissed while it ran.
     guard case .loading(let pending)? = banners[tab], pending == failure else { return }
     inFlight[tab] = nil
 
-    let resolved: AgentBannerState
+    let resolved: CodingAgentBannerState
     switch outcome {
     case .success(let stdout):
       resolved =
-        AgentPrompt.parse(envelopeJSON: stdout).map { .ready(failure, $0) }
+        CodingAgentPrompt.parse(envelopeJSON: stdout).map { .ready(failure, $0) }
         ?? .failure(failure, .malformed)
     case .cliNotFound: resolved = .failure(failure, .cliNotFound)
     case .notAuthenticated: resolved = .failure(failure, .notAuthenticated)
     case .timedOut: resolved = .failure(failure, .timedOut)
-    // The workroom's folder is gone, not a real exit code — see `AgentRunOutcome.launchFailed`.
+    // The workroom's folder is gone, not a real exit code — see `CodingAgentRunOutcome.launchFailed`.
     case .launchFailed: resolved = .failure(failure, .other("workroom folder is gone"))
     // Not `.other("exit \(code)")`: `result.exitCode` on a signalled outcome is the SIGNAL number,
     // not a real CLI exit status — showing "exit 9" for a killed agent is the nonsense the gh-flap
@@ -256,7 +256,7 @@ final class TerminalAgentManager: ObservableObject {
     setBanner(nil, tab: tab)
   }
 
-  private func setBanner(_ state: AgentBannerState?, tab: TerminalTab.ID) {
+  private func setBanner(_ state: CodingAgentBannerState?, tab: TerminalTab.ID) {
     banners[tab] = state
   }
 
