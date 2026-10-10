@@ -6,8 +6,8 @@ Workroom *is* and how to use it, see [`README.md`](README.md).
 
 Before opening a PR:
 
-- Run the linters on everything you touched: `make cli-lint` (Go), `make app-lint` (Swift) and
-  `make actions-lint` (GitHub workflows).
+- Run the linters on everything you touched: `make cli-lint` (Go), `make app-lint` (Swift),
+  `make vcs-lint` (Rust) and `make actions-lint` (GitHub workflows).
 - Run the relevant tests: `make cli-test` and/or `make app-test`.
 - Keep the `--json` contract stable — it's the boundary between the CLI and the app. Breaking changes
   bump `schema_version` (`cmd/json.go`). See
@@ -70,6 +70,11 @@ module path). Install it with `go install`, not a prebuilt binary: a golangci-li
 older Go cannot read the current toolchain's export data. v1 is not an option here — its vendored
 `go/types` caps out at export-data version 2, so it cannot analyze a Go 1.27 stdlib, and it rejects
 the v2-format `.golangci.yml`.
+
+**To change the Rust workspace (`vcs/`):** Rust **1.96.1** with rustfmt and clippy for `make vcs-lint`
+(`rustup toolchain install 1.96.1 --component rustfmt,clippy`), the version CI's lint jobs pin. Its
+`terminal-state` half also needs Zig 0.16.0 (installed through mise when it is available) and builds a
+pinned Ghostty on its first run.
 
 **To change a GitHub workflow:** **`actionlint` 1.7.12** for `make actions-lint`
 (`go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`), with `shellcheck` on `PATH` so
@@ -442,6 +447,7 @@ executor and a temp config — no real repo required.
 | `cli-install` | `go install` into `$GOBIN` |
 | `cli-lint` | `golangci-lint run` |
 | `cli-clean` | Remove the built binary |
+| `vcs-lint` | rustfmt and clippy over `vcs/`, with and without `terminal-state`, on CI's Rust 1.96.1 |
 
 ---
 
