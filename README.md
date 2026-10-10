@@ -28,7 +28,7 @@ for every project and workroom operation. The CLI also works on its own from a s
 
 <p align="center">
   <video src="https://github.com/user-attachments/assets/ee234785-981c-4dc6-a9e4-306d9033ad2f" width="900" controls muted
-    alt="The Workroom macOS app: a sidebar tree of several projects and their workrooms with current branches and change badges; two workrooms open side by side, one with a vertically split terminal running a test suite and a dev server, the other showing a syntax-highlighted file diff; and an inspector with Changes, Pull Request, and Notifications panels.">
+    alt="The Workroom macOS app: a sidebar tree of several projects and their workrooms with current branches and change badges; two workrooms open side by side, one with a vertically split terminal running a test suite and a dev server, the other showing a syntax-highlighted file diff; and an inspector with Changes, History, Pull Request, and Files sections.">
   </video>
 </p>
 

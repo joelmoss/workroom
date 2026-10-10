@@ -22,9 +22,11 @@ make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.
 make app-format     # swift-format, rewrite sources in place
 make app-lint       # swift-format --strict (non-zero on any violation — the hard gate)
 make app-release    # Release build → notarize → staple → DMG installer (Scripts/release.sh).
-                    # Gated on app-test + app-test-scripts: several assertions exist to stop a bad
-                    # ARTIFACT shipping (bundled-resource checksums, universal-arch cases), and a
-                    # CI-only gate can be outrun by a release cut from a dirty tree.
+                    # Depends on app-test-scripts only: several assertions exist to stop a bad
+                    # ARTIFACT shipping (bundled-resource checksums, universal-arch cases). app-test
+                    # is deliberately NOT a prerequisite (see the comment above the Makefile target);
+                    # release.yml and nightly.yml run app-package-test and app-test as explicit steps
+                    # before it, so a local `make app-release` does not run the xcodebuild suite.
 make app-icon       # regenerate AppIcon PNGs (Scripts/make-icon.swift)
 make app-clean      # remove DerivedData + .xcodeproj
 ```
@@ -121,7 +123,8 @@ type's doc comment). Swift coverage: `RepositoryWriteGateTests`.
 ## Terminal sessions: `wr-agent` (Rust) and the daemon it replaces
 
 A pane's shell outlives the pane, so the app does not own the pty — a **session helper** does, and
-the app attaches to it. There are two, mid-migration (issue #154, Phase 1):
+the app attaches to it. New sessions all go to `wr-agent`; the older Swift daemon survives only as an
+attach-only client (issue #154):
 
 - **`wr-agent`** (`vcs/crates/wr-agent`, Rust) — where every NEW session goes. One binary,
   `serve | attach`, multiplexing services over one stream with a versioned envelope
@@ -131,8 +134,10 @@ the app attaches to it. There are two, mid-migration (issue #154, Phase 1):
   own program with the bundled binary in place, keeping its pid and every session
   (`AgentHandOff.start()`, protocol 6, `wr-agent hand-off`, #230), in every build; see
   the "As built (#230)" section of `docs/designs/remote-workrooms.md` for the mechanics.
-- **`workroom-session`** (`macapp/WorkroomSession/`, Swift) — the shipped daemon. It keeps the
-  sessions it already holds until the user closes them; it cannot hand a live pty over.
+- **`workroom-session`** (`macapp/WorkroomSession/`, Swift) — attach-only now. The `daemon`
+  subcommand is gone, so this build cannot start one; the tool only attaches to daemons an app at or
+  before v2.0.0 left running, which keep their sessions until the user closes them and cannot hand a
+  live pty over.
 
 **A restored remote pane can show its last screen instead of a fresh shell (#232).** When a host's
 supervisor opts in (`wr-agent serve --screens <dir>`), the agent keeps each session's last screen on
@@ -143,15 +148,16 @@ repaints from. See the "As built (#232)" section of `docs/designs/remote-workroo
 write/prune/restore mechanics — no real host's supervisor passes `--screens` yet, only the ssh
 fixture's (Phase 4 provisioning).
 
-**The migration is a drain, not a switch.** `SessionBackend.preferred()` returns `.rustAgent` unless
-the agent fails its probe; `PersistentSessionService.backend(forSession:)` resolves each EXISTING
+**The migration is a drain, not a switch.** `SessionBackend.preferred()` returns `.rustAgent`, or nil
+when the agent fails its probe (there is no fallback to the daemon, which this build cannot start); `PersistentSessionService.backend(forSession:)` resolves each EXISTING
 session to whichever helper owns it. Two rules there are load-bearing and were both got wrong once:
 the answer is resolved **once per session and cached** (a pane asks twice — `attachCommand` for the
 binary, `launchEnvironment` for the socket — and the two must agree, or the daemon binds the agent's
 socket), and an **unanswered** ownership probe resolves to *neither* — `backend(forSession:)` returns
 nil and the pane opens a plain shell until a later probe succeeds. There is no safe guess, because
-**both** helpers create-on-attach: `SessionDaemon.handleAttach` ends in `create(request:connection:)`
-for an id it does not hold, exactly as the agent does, so either guess forks a second pty under the
+**both** helpers create-on-attach: the retired `SessionDaemon.handleAttach` (code deleted, but the
+v2.0.0 daemons still run it) ends in `create(request:connection:)` for an id it does not hold, exactly
+as the agent does, so either guess forks a second pty under the
 same id and orphans the user's shell. A failed `connect` is NOT an unanswered probe — it means
 nothing is listening, which is a definitive "not owned" (the daemon leaves a stale `session.sock`
 behind on any `pkill`, so this case is common, not exotic).
