@@ -43,7 +43,7 @@ let brandBlack = rgb(0x00, 0x00, 0x00)
 let devOrange = rgb(0xFF, 0x5A, 0x36)
 let nightlyIndigo = rgb(0x5B, 0x55, 0xE7)
 
-// The exact 36×36 geometry used by website/assets/brand/codaset-symbol.svg.
+// The exact 36×36 geometry of the Codaset symbol.
 let markBlocks = [
     CGRect(x: 2, y: 2, width: 9, height: 9),
     CGRect(x: 14, y: 2, width: 8, height: 9),

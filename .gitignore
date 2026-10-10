@@ -42,4 +42,6 @@ CLAUDE.local.md
 __pycache__/
 *.pyc
 .gstack/
+/tmp/
+/.impeccable/
 .gbrain-source
