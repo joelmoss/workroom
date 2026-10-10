@@ -16,6 +16,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 thiserror = { workspace = true }
 # Only for the pty and process layers: forkpty, tcgetpgrp, sysctl, proc_pidinfo. No async runtime
