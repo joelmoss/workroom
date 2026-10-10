@@ -30,7 +30,6 @@ type ConfirmFunc func(message string) (bool, error)
 type Service struct {
 	Config         *config.Config
 	VCS            vcs.VCS
-	Out            io.Writer
 	Pretend        bool
 	PromptFn       PromptFunc
 	ConfirmFn      ConfirmFunc
@@ -48,38 +47,16 @@ type Service struct {
 	// place of the human terminal log panel. The captured output is still returned,
 	// but on failure the surfaced error stays concise (the output already streamed).
 	ScriptLogWriter io.Writer
+	// ScriptOutput, when set and ScriptLogWriter is not, opens a place for a teardown script's
+	// output as it runs, under title: it returns the writer for that output and a function to call
+	// once the script ends, with whether it passed. The human CLI shows a log panel. With neither,
+	// the script's output stays in the error a failing script returns.
+	ScriptOutput func(title string) (io.Writer, func(ok bool))
 	// OnReady, when set, is called once the workroom exists (VCS workspace + config
 	// written) but before the setup script runs. --json mode uses it to emit an early
 	// "created" event so a GUI can mount the new workroom and stream the setup log
 	// beneath its terminal from the start.
 	OnReady func(CreateResult)
-}
-
-func (s *Service) output() io.Writer {
-	if s.Out != nil {
-		return s.Out
-	}
-	return os.Stdout
-}
-
-func (s *Service) say(msg string) {
-	fmt.Fprintln(s.output(), msg)
-}
-
-func (s *Service) sayColor(msg, colorName string) {
-	w := s.output()
-	switch colorName {
-	case "green":
-		fmt.Fprintln(w, ui.Green(msg))
-	case "red":
-		fmt.Fprintln(w, ui.Red(msg))
-	case "yellow":
-		fmt.Fprintln(w, ui.Yellow(msg))
-	case "blue":
-		fmt.Fprintln(w, ui.Blue(msg))
-	default:
-		fmt.Fprintln(w, msg)
-	}
 }
 
 func (s *Service) sayStatus(status, msg string) {
@@ -473,26 +450,50 @@ func (s *Service) Listing(cwd string) (Listing, error) {
 	}}, nil
 }
 
-// Delete removes a workroom by name.
-func (s *Service) Delete(dir, name, confirmValue string) error {
+// DeleteOutcome is what Delete did with a workroom.
+type DeleteOutcome int
+
+const (
+	// Deleted: its teardown ran, its worktree is removed and its entry dropped. Its branch is kept.
+	Deleted DeleteOutcome = iota
+	// ForgotDestroyedRemote: a remote workroom whose host is gone. Only its entry is dropped.
+	ForgotDestroyedRemote
+	// ForgotNonGit: not a git worktree. Only its entry is dropped; its folder is left at Path.
+	ForgotNonGit
+	// Declined: the user declined to confirm, so nothing was done.
+	Declined
+)
+
+// DeleteResult is what Delete did with workroom Name.
+type DeleteResult struct {
+	Name    string
+	Outcome DeleteOutcome
+	// Branch is the git branch a Deleted workroom leaves behind.
+	Branch string
+	// Path is where a ForgotNonGit workroom's folder was left.
+	Path string
+}
+
+// Delete removes a workroom by name, asking ConfirmFn first unless confirmValue names it.
+func (s *Service) Delete(dir, name, confirmValue string) (DeleteResult, error) {
 	if err := s.CheckNotInWorkroom(dir); err != nil {
-		return err
+		return DeleteResult{}, err
 	}
 
 	if !validNameRe.MatchString(name) {
-		return fmt.Errorf("%w: %q", ErrInvalidName, name)
+		return DeleteResult{}, fmt.Errorf("%w: %q", ErrInvalidName, name)
 	}
 
 	destroyed, err := s.destroyedRemote(dir, name)
 	if err != nil {
-		return err
+		return DeleteResult{}, err
 	}
 
 	// A destroyed remote workroom is only dropped from config, which needs no local repository: the
 	// project's checkout may be gone by then.
 	if !destroyed {
 		if err := s.detectVCS(dir); err != nil {
-			return err
+			return DeleteResult{}, err
 		}
 	}
 
@@ -501,31 +502,30 @@ func (s *Service) Delete(dir, name, confirmValue string) error {
 		exists := destroyed
 		if !destroyed {
 			if exists, err = s.workroomExists(dir, name); err != nil {
-				return err
+				return DeleteResult{}, err
 			}
 		}
 		if !exists {
 			orphan, err = s.nonGitWorkroomPath(dir, name)
 			if err != nil {
-				return err
+				return DeleteResult{}, err
 			}
 			if orphan == "" {
-				return fmt.Errorf("%w: %s '%s' does not exist", ErrGitWorktreeNotFound, s.VCS.Label(), name)
+				return DeleteResult{}, fmt.Errorf("%w: %s '%s' does not exist", ErrGitWorktreeNotFound, s.VCS.Label(), name)
 			}
 		}
 
 		if confirmValue != "" {
 			if confirmValue != name {
-				return fmt.Errorf("%w: --confirm value '%s' does not match workroom name '%s'", ErrConfirmMismatch, confirmValue, name)
+				return DeleteResult{}, fmt.Errorf("%w: --confirm value '%s' does not match workroom name '%s'", ErrConfirmMismatch, confirmValue, name)
 			}
 		} else {
 			confirmed, err := s.ConfirmFn(fmt.Sprintf("Are you sure you want to delete workroom '%s'?", name))
 			if err != nil {
-				return err
+				return DeleteResult{}, err
 			}
 			if !confirmed {
-				s.sayColor(fmt.Sprintf("Aborting. Workroom '%s' was not deleted.", name), "yellow")
-				return nil
+				return DeleteResult{Name: name, Outcome: Declined}, nil
 			}
 		}
 	}
@@ -568,7 +568,7 @@ func (s *Service) nonGitWorkroomPath(dir, name string) (string, error) {
 // forgetNonGitWorkroom removes a non-git workroom's config entry and nothing else. It runs no git
 // (git there would discover an ANCESTOR repository) and no teardown script (which would run in that
 // folder), and it leaves the folder for the user to remove.
-func (s *Service) forgetNonGitWorkroom(dir, name, path string) error {
+func (s *Service) forgetNonGitWorkroom(dir, name, path string) (DeleteResult, error) {
 	var err error
 	if s.KeepEmptyProject {
 		err = s.Config.RemoveWorkroomKeepProject(dir, name)
@@ -576,28 +576,39 @@ func (s *Service) forgetNonGitWorkroom(dir, name, path string) error {
 		err = s.Config.RemoveWorkroom(dir, name)
 	}
 	if err != nil {
-		return err
+		return DeleteResult{}, err
 	}
-	s.sayColor(fmt.Sprintf("Workroom '%s' removed from Workroom. It is not a git worktree, so no git or teardown ran.", name), "green")
-	s.say(fmt.Sprintf("Note: its folder was left at %s. Delete it manually if needed.", ui.DisplayPath(path)))
-	return nil
+	return DeleteResult{Name: name, Outcome: ForgotNonGit, Path: path}, nil
 }
 
-// InteractiveDelete shows a multi-select prompt for deleting workrooms.
-func (s *Service) InteractiveDelete(dir string) error {
+// PickOutcome is how an InteractiveDelete ended.
+type PickOutcome int
+
+const (
+	// PicksDeleted: every pick was deleted, each reported as it went.
+	PicksDeleted PickOutcome = iota
+	// NoWorkroomsToPick: the project has no workrooms, so nothing was offered.
+	NoWorkroomsToPick
+	// NothingPicked: the user picked no workroom.
+	NothingPicked
+	// PicksDeclined: the user declined to confirm the picks, so nothing was deleted.
+	PicksDeclined
+)
+
+// InteractiveDelete offers the project's workrooms through PromptFn, confirms the picks through
+// ConfirmFn, and deletes each one, handing report its result as soon as it is done.
+func (s *Service) InteractiveDelete(dir string, report func(DeleteResult)) (PickOutcome, error) {
 	if err := s.CheckNotInWorkroom(dir); err != nil {
-		return err
+		return 0, err
 	}
 
 	_, project, found := s.Config.FindCurrentProject(dir)
 	if !found || project == nil {
-		s.say("No workrooms found for this project.")
-		return nil
+		return NoWorkroomsToPick, nil
 	}
 
 	if len(project.Workrooms) == 0 {
-		s.say("No workrooms found for this project.")
-		return nil
+		return NoWorkroomsToPick, nil
 	}
 
 	names := make([]string, 0, len(project.Workrooms))
@@ -607,12 +618,11 @@ func (s *Service) InteractiveDelete(dir string) error {
 
 	selected, err := s.PromptFn("Select workrooms to delete:", names)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	if len(selected) == 0 {
-		s.sayColor("Aborting. No workrooms were selected.", "yellow")
-		return nil
+		return NothingPicked, nil
 	}
 
 	quotedNames := make([]string, len(selected))
@@ -623,15 +633,14 @@ func (s *Service) InteractiveDelete(dir string) error {
 
 	confirmed, err := s.ConfirmFn(msg)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !confirmed {
-		s.sayColor("Aborting. No workrooms were deleted.", "yellow")
-		return nil
+		return PicksDeclined, nil
 	}
 
 	if err := s.detectVCS(dir); err != nil {
-		return err
+		return 0, err
 	}
 
 	for _, name := range selected {
@@ -639,31 +648,36 @@ func (s *Service) InteractiveDelete(dir string) error {
 		// deleteByName only forgets it), and a selection git does not list as a worktree may be a
 		// workroom Jujutsu made (#266), which is only forgotten.
 		if _, err := s.destroyedRemote(dir, name); err != nil {
-			return err
+			return 0, err
 		}
 		if !s.Pretend {
 			orphan, err := s.legacyWorkroomPath(dir, name)
 			if err != nil {
-				return err
+				return 0, err
 			}
 			if orphan != "" {
-				if err := s.forgetNonGitWorkroom(dir, name, orphan); err != nil {
-					return err
+				res, err := s.forgetNonGitWorkroom(dir, name, orphan)
+				if err != nil {
+					return 0, err
 				}
+				report(res)
 				continue
 			}
 		}
-		if err := s.deleteByName(dir, name); err != nil {
-			return err
+		res, err := s.deleteByName(dir, name)
+		if err != nil {
+			return 0, err
 		}
+		report(res)
 	}
 
-	return nil
+	return PicksDeleted, nil
 }
 
 // RunTeardown runs the teardown script for a workroom. It resolves the workroom
-// directory via the config WorkroomsDir, streams output to the NDJSON log sink (in
-// --json mode) or a live log panel (in human mode), and respects Pretend mode.
+// directory via the config WorkroomsDir, streams output to ScriptLogWriter (the
+// NDJSON sink in --json mode) or else ScriptOutput (the human log panel), and
+// respects Pretend mode.
 // Returns the script error if the script fails; returns nil when the script is absent.
 // deleteByName runs it first, so its remote refusal covers every delete.
 func (s *Service) RunTeardown(dir, name string) error {
@@ -678,23 +692,17 @@ func (s *Service) RunTeardown(dir, name string) error {
 	if teardownScript, ok := findScript("workroom_teardown", wrPath, dir); ok {
 		s.sayStatus("teardown", fmt.Sprintf("Running %s from %q", teardownScript, wrPath))
 		if !s.Pretend {
-			var panel *ui.LogPanel
 			stream := s.ScriptLogWriter
-			if stream == nil {
-				if out := s.output(); out != io.Discard {
-					panel = ui.NewLogPanel(out, "Teardown")
-					stream = panel
-				}
+			var done func(ok bool)
+			if stream == nil && s.ScriptOutput != nil {
+				stream, done = s.ScriptOutput("Teardown")
 			}
 			_, scriptErr := script.Run("teardown", teardownScript, wrPath, name, dir, stream)
-			if panel != nil {
-				panel.Close(scriptErr == nil)
+			if done != nil {
+				done(scriptErr == nil)
 			}
 			if scriptErr != nil {
 				return scriptErr
-			}
-			if panel != nil && panel.Shown() {
-				s.say("")
 			}
 		}
 	}
@@ -731,10 +739,10 @@ func (s *Service) refuseRemote(dir, name string) error {
 	return nil
 }
 
-func (s *Service) deleteByName(dir, name string) error {
+func (s *Service) deleteByName(dir, name string) (DeleteResult, error) {
 	destroyed, err := s.destroyedRemote(dir, name)
 	if err != nil {
-		return err
+		return DeleteResult{}, err
 	}
 	if destroyed {
 		return s.forgetDestroyedRemote(dir, name)
@@ -742,22 +750,21 @@ func (s *Service) deleteByName(dir, name string) error {
 
 	wrPath, err := s.workroomPath(name)
 	if err != nil {
-		return err
+		return DeleteResult{}, err
 	}
 
 	// Run teardown script, streaming its output as it runs. --json mode supplies an
 	// NDJSON sink (ScriptLogWriter); otherwise the human terminal gets a live log
-	// panel. When neither applies (output discarded, no sink) the stream is nil, so
-	// script.Run keeps the captured output in the returned error instead of dropping
-	// it.
+	// panel (ScriptOutput). When neither applies the stream is nil, so script.Run
+	// keeps the captured output in the returned error instead of dropping it.
 	if err := s.RunTeardown(dir, name); err != nil {
-		return err
+		return DeleteResult{}, err
 	}
 
 	// Delete VCS workspace
 	if !s.Pretend {
 		if _, err := s.VCS.Delete(dir, s.vcsName(name), wrPath); err != nil {
-			return fmt.Errorf("%w: %v", ErrVCSCommand, err)
+			return DeleteResult{}, fmt.Errorf("%w: %v", ErrVCSCommand, err)
 		}
 	}
 
@@ -765,36 +772,29 @@ func (s *Service) deleteByName(dir, name string) error {
 	if !s.Pretend {
 		if s.KeepEmptyProject {
 			if err := s.Config.RemoveWorkroomKeepProject(dir, name); err != nil {
-				return err
+				return DeleteResult{}, err
 			}
 		} else {
 			if err := s.Config.RemoveWorkroom(dir, name); err != nil {
-				return err
+				return DeleteResult{}, err
 			}
 		}
 	}
 
-	s.sayColor(fmt.Sprintf("Workroom '%s' deleted successfully.", name), "green")
-
-	s.say("")
-	s.say(fmt.Sprintf("Note: Git branch '%s' was not deleted.", s.vcsName(name)))
-	s.say(fmt.Sprintf("      Delete manually with `git branch -D %s` if needed.", s.vcsName(name)))
-
-	return nil
+	return DeleteResult{Name: name, Outcome: Deleted, Branch: s.vcsName(name)}, nil
 }
 
 // forgetDestroyedRemote drops the config entry of a remote workroom whose host is gone. Nothing
 // runs: there is no box for the teardown script, and no workspace on this Mac.
-func (s *Service) forgetDestroyedRemote(dir, name string) error {
+func (s *Service) forgetDestroyedRemote(dir, name string) (DeleteResult, error) {
 	if !s.Pretend {
 		remove := s.Config.RemoveWorkroom
 		if s.KeepEmptyProject {
 			remove = s.Config.RemoveWorkroomKeepProject
 		}
 		if err := remove(dir, name); err != nil {
-			return err
+			return DeleteResult{}, err
 		}
 	}
-	s.sayColor(fmt.Sprintf("Workroom '%s' deleted successfully.", name), "green")
-	return nil
+	return DeleteResult{Name: name, Outcome: ForgotDestroyedRemote}, nil
 }

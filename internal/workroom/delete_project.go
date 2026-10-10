@@ -123,7 +123,7 @@ func (s *Service) DeleteProject(path, confirm string, withWorkrooms, fromDisk bo
 			if err := refuseRemoteProject(s.Config, canon); err != nil {
 				return DeleteProjectResult{}, err
 			}
-			if err := s.Delete(canon, name, name); err != nil {
+			if _, err := s.Delete(canon, name, name); err != nil {
 				return DeleteProjectResult{}, err
 			}
 		}
