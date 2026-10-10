@@ -1,5 +1,6 @@
 import Defaults
 import SwiftUI
+import WorkroomDomain
 
 /// The docked Projects sidebar as a custom card laid out *beside* the detail in `RootView`'s split
 /// `HStack` — the mirror of `InspectorColumn` on the leading edge. We render our own `sidebarCard`

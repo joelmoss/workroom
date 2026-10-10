@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WorkroomDomain
 
 /// One rail card's data — a **value type**, resolved once when the rail opens.
 ///

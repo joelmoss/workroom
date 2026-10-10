@@ -1,6 +1,7 @@
 import AppKit
 import Defaults
 import SwiftUI
+import WorkroomDomain
 
 /// Geometry the workroom pane cards share with the chrome AROUND them.
 enum WorkroomPaneMetrics {

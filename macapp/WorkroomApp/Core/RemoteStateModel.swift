@@ -1,5 +1,6 @@
 import Defaults
 import Foundation
+import WorkroomDomain
 
 /// Store-owned state for the VCS toolbar: the selected workroom's branch, its divergence from the
 /// remote, when the project last fetched, and the fetch/push/pull actions.

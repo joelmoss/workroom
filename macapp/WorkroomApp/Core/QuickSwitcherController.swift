@@ -1,5 +1,6 @@
 import AppKit
 import Defaults
+import WorkroomDomain
 
 /// Hosts one `QuickSwitcherReducer` session and connects it to the world (issue #132, T10): it freezes
 /// the item list at open, arms the reveal, polls the trigger modifier, watches for the ways a session

@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import WorkroomDomain
 
 /// The sidebar: a collapsible tree with projects at the root and their workrooms nested
 /// one level below, each of which can reveal its terminals one level deeper. Selecting a

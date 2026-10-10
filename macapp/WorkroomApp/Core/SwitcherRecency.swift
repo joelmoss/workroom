@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomDomain
 
 /// A window's identity for the quick switcher (issue #132), stable for that window's whole life and
 /// **never reused**.

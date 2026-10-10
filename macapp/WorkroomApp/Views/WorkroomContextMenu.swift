@@ -1,4 +1,5 @@
 import SwiftUI
+import WorkroomDomain
 
 /// The shared right-click menu items for a workroom, reused by the tab chip
 /// (`WorkroomTabBar`) and the split group title bar (`WorkroomSplitView`) — issue #112. One

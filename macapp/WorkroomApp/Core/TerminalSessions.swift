@@ -1,6 +1,11 @@
 import AppKit
 import Defaults
+import WorkroomDomain
 import WorkroomSessionProtocol
+
+/// The terminal split's concrete instantiation (issue #3): leaves are tab ids. Keeps terminal call
+/// sites reading unchanged after the generic refactor (issue #23 needs `PaneLayout<SidebarID>`).
+typealias TerminalPaneLayout = PaneLayout<TerminalTab.ID>
 
 /// One tab in a target's strip. A tab is exactly one PANE: historically always a terminal surface,
 /// and since issue #66 it can instead host non-terminal content (a file diff today; more kinds

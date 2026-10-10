@@ -1,4 +1,5 @@
 import SwiftUI
+import WorkroomDomain
 
 /// The workroom tab bar shown in the title bar (issue #23): a chip per active target (a workroom or
 /// project root with ≥1 terminal), drag-to-reorder (reusing the shared `TabReorder` math). A tab

@@ -1,5 +1,6 @@
 import Defaults
 import SwiftUI
+import WorkroomDomain
 
 /// The detail pane's terminals for one target (a workroom or a project root): a horizontal
 /// tab strip below the title bar plus the active terminal. Observes `TerminalSessions` so

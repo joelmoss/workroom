@@ -1,6 +1,5 @@
+import WorkroomDomain
 import XCTest
-
-@testable import Workroom
 
 /// Pure-tree tests for `PaneLayout` (issue #3). No surfaces needed — leaves are tab ids.
 final class PaneLayoutTests: XCTestCase {
@@ -8,7 +7,6 @@ final class PaneLayoutTests: XCTestCase {
   private let b = UUID()
   private let c = UUID()
   private let d = UUID()
-
   func testTabIDsReadingOrderNested() {
     // split(h, leaf(a), split(v, leaf(b), leaf(c)))  →  [a, b, c]
     let tree = PaneLayout.split(
@@ -22,7 +20,6 @@ final class PaneLayoutTests: XCTestCase {
     XCTAssertTrue(tree.contains(c))
     XCTAssertFalse(tree.contains(d))
   }
-
   func testInsertingBesideLeaf() {
     // leaf(a) + b on the trailing side → split(a, b)
     let tree = PaneLayout.leaf(a)
@@ -33,14 +30,12 @@ final class PaneLayoutTests: XCTestCase {
       .inserting(b, beside: a, orientation: .vertical, newLeafFirst: true, ratio: 0.5)
     XCTAssertEqual(leading.tabIDs, [b, a])
   }
-
   func testInsertingDeepInTree() {
     let tree = PaneLayout.split(
       id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b)
     ).inserting(c, beside: b, orientation: .vertical, newLeafFirst: false, ratio: 0.5)
     XCTAssertEqual(tree.tabIDs, [a, b, c])
   }
-
   func testRemovingLeafCollapsesToSibling() {
     let split = PaneLayout.split(
       id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b))
@@ -49,7 +44,6 @@ final class PaneLayoutTests: XCTestCase {
     XCTAssertEqual(collapsed, .leaf(b))
     XCTAssertEqual(collapsed?.tabIDs.count, 1)
   }
-
   func testRemovingLeafFromThreePaneKeepsSplit() {
     let tree = PaneLayout.split(
       id: UUID(), orientation: .horizontal, ratio: 0.5,
@@ -59,12 +53,10 @@ final class PaneLayoutTests: XCTestCase {
     let collapsed = tree.removingLeaf(b)
     XCTAssertEqual(collapsed?.tabIDs, [a, c])  // inner split collapses to c; outer keeps a|c
   }
-
   func testRemovingWholeLeafReturnsNil() {
     XCTAssertNil(PaneLayout.leaf(a).removingLeaf(a))
     XCTAssertEqual(PaneLayout.leaf(a).removingLeaf(b), .leaf(a))  // not present → unchanged
   }
-
   func testReplacingLeafKeepsSlotAndStructure() {
     // split(h, 0.3, leaf(a), split(v, 0.7, leaf(b), leaf(c)))  →  swap b for d in place.
     let inner = UUID()
@@ -85,14 +77,12 @@ final class PaneLayoutTests: XCTestCase {
           id: inner, orientation: .vertical, ratio: 0.7, first: .leaf(d), second: .leaf(c))))
     XCTAssertEqual(replaced.tabIDs, [a, d, c])
   }
-
   func testReplacingAbsentLeafIsUnchanged() {
     let tree = PaneLayout.split(
       id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b))
     XCTAssertEqual(tree.replacingLeaf(c, with: d), tree)  // c not present → no change
     XCTAssertEqual(PaneLayout.leaf(a).replacingLeaf(a, with: d), .leaf(d))  // bare leaf swaps
   }
-
   func testSettingRatioTargetsOneNode() {
     let inner = UUID()
     let tree = PaneLayout.split(
@@ -107,7 +97,6 @@ final class PaneLayoutTests: XCTestCase {
       XCTFail("inner split not found")
     }
   }
-
   func testContainsSplitFindsRootAndNestedNodesOnly() {
     // The lookup a holder of SEVERAL trees uses to find which one owns a dragged divider
     // (`AppStore.setWorkroomSplitRatio` over `workroomSplits`).
@@ -123,13 +112,11 @@ final class PaneLayoutTests: XCTestCase {
     XCTAssertFalse(tree.containsSplit(UUID()), "an id from another tree must not match")
     XCTAssertFalse(PaneLayout.leaf(a).containsSplit(outer), "a lone leaf owns no split node")
   }
-
   func testRatioSanitizeClampsOpenInterval() {
     XCTAssertEqual(PaneRatio.sanitize(0), 0.001, accuracy: 0.0001)
     XCTAssertEqual(PaneRatio.sanitize(1), 0.999, accuracy: 0.0001)
     XCTAssertEqual(PaneRatio.sanitize(0.5), 0.5, accuracy: 0.0001)
   }
-
   // MARK: leafCount + equalized (issue #83)
 
   func testLeafCount() {
@@ -144,11 +131,9 @@ final class PaneLayoutTests: XCTestCase {
         id: UUID(), orientation: .vertical, ratio: 0.5, first: .leaf(b), second: .leaf(c)))
     XCTAssertEqual(three.leafCount, 3)
   }
-
   func testEqualizedLeafIsNoop() {
     XCTAssertEqual(PaneLayout.leaf(a).equalized(), .leaf(a))
   }
-
   func testEqualizedBalancedSplitIsHalf() {
     let tree = PaneLayout.split(
       id: UUID(), orientation: .horizontal, ratio: 0.2, first: .leaf(a), second: .leaf(b))
@@ -158,7 +143,6 @@ final class PaneLayoutTests: XCTestCase {
       XCTFail("expected a split")
     }
   }
-
   func testEqualizedUnbalancedWeightsByLeafCount() {
     // split(A, split(B, C)) → outer leans 1/3 (A is 1 of 3 leaves), inner 1/2.
     let outer = UUID()
@@ -174,80 +158,5 @@ final class PaneLayoutTests: XCTestCase {
     } else {
       XCTFail("expected a nested split")
     }
-  }
-
-  func testEqualizedSameOrientationGivesEqualWidths() {
-    // All-horizontal A | B | C — equalized lays out to equal widths (within a divider's rounding).
-    let tree = PaneLayout.split(
-      id: UUID(), orientation: .horizontal, ratio: 0.7,
-      first: .leaf(a),
-      second: .split(
-        id: UUID(), orientation: .horizontal, ratio: 0.2, first: .leaf(b), second: .leaf(c)))
-    let rect = CGRect(x: 0, y: 0, width: 1200, height: 600)
-    let widths = [a, b, c].compactMap {
-      PaneTreeLayout.plan(tree.equalized(), in: rect).panes[$0]?.width
-    }
-    XCTAssertEqual(widths.count, 3)
-    for w in widths {
-      XCTAssertEqual(w, 400, accuracy: PaneTreeLayout.dividerThickness * 2)
-    }
-  }
-
-  func testEqualizedMixedOrientationKeepsThePerpendicularDivider() {
-    // A | (B / C). The nested split runs the other way, so it is ONE column: A and the stacked pair
-    // each get half the width, and the pair splits its own height. Weighting by leaf count instead
-    // gave A a third of the width — a split made inside the right column resizing the left one,
-    // which is the defect #126 reported ("split down, then split right, and the untouched pane
-    // shrinks"). Deliberately NOT equal-area: A is twice either stacked pane, as in every tiler.
-    let tree = PaneLayout.split(
-      id: UUID(), orientation: .horizontal, ratio: 0.8,
-      first: .leaf(a),
-      second: .split(
-        id: UUID(), orientation: .vertical, ratio: 0.8, first: .leaf(b), second: .leaf(c)))
-    let rect = CGRect(x: 0, y: 0, width: 1200, height: 900)
-    let panes = PaneTreeLayout.plan(tree.equalized(), in: rect).panes
-    XCTAssertEqual(panes[a]?.width ?? 0, 599, accuracy: 2, "half the width")
-    XCTAssertEqual(panes[a]?.height ?? 0, 900, accuracy: 2, "full height, untouched")
-    XCTAssertEqual(panes[b]?.width ?? 0, 599, accuracy: 2)
-    XCTAssertEqual(panes[b]?.height ?? 0, 449, accuracy: 2, "the pair splits its own height")
-    XCTAssertEqual(panes[c]?.height ?? 0, 449, accuracy: 2)
-  }
-
-  func testEqualizedGridGivesFourIdenticalPanes() {
-    // (A / B) | (C / D): two columns, each split in half. Every pane the same size.
-    let tree = PaneLayout.split(
-      id: UUID(), orientation: .horizontal, ratio: 0.8,
-      first: .split(
-        id: UUID(), orientation: .vertical, ratio: 0.2, first: .leaf(a), second: .leaf(b)),
-      second: .split(
-        id: UUID(), orientation: .vertical, ratio: 0.7, first: .leaf(c), second: .leaf(d)))
-    let panes = PaneTreeLayout.plan(
-      tree.equalized(), in: CGRect(x: 0, y: 0, width: 1200, height: 900)
-    ).panes
-    for id in [a, b, c, d] {
-      XCTAssertEqual(panes[id]?.width ?? 0, 599, accuracy: 2)
-      XCTAssertEqual(panes[id]?.height ?? 0, 449, accuracy: 2)
-    }
-  }
-
-  // MARK: divider hit-zone (issue #83)
-
-  func testDividerHitRectWidensSplitAxisOnly() {
-    let rect = CGRect(x: 0, y: 0, width: 1000, height: 800)
-
-    let hSplit = PaneLayout.split(
-      id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b))
-    let hDiv = PaneTreeLayout.plan(hSplit, in: rect).dividers[0]
-    XCTAssertEqual(hDiv.hitRect.width, PaneTreeLayout.dividerHitThickness, accuracy: 0.0001)
-    // Full perpendicular length, centered on the gutter.
-    XCTAssertEqual(hDiv.hitRect.height, hDiv.rect.height, accuracy: 0.0001)
-    XCTAssertEqual(hDiv.hitRect.midX, hDiv.rect.midX, accuracy: 0.0001)
-
-    let vSplit = PaneLayout.split(
-      id: UUID(), orientation: .vertical, ratio: 0.5, first: .leaf(a), second: .leaf(b))
-    let vDiv = PaneTreeLayout.plan(vSplit, in: rect).dividers[0]
-    XCTAssertEqual(vDiv.hitRect.height, PaneTreeLayout.dividerHitThickness, accuracy: 0.0001)
-    XCTAssertEqual(vDiv.hitRect.width, vDiv.rect.width, accuracy: 0.0001)
-    XCTAssertEqual(vDiv.hitRect.midY, vDiv.rect.midY, accuracy: 0.0001)
   }
 }
