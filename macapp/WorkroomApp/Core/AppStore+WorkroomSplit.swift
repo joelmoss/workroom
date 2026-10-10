@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import WorkroomDomain
 
 /// Workroom-into-workroom split (issue #23 follow-up). The stored `@Published var workroomSplits` lives
 /// on `AppStore`; these are the pure-ish transforms over it. They mirror `TerminalSessions`'

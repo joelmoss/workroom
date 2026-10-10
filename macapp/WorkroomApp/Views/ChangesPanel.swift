@@ -1,6 +1,7 @@
 import AppKit
 import Defaults
 import SwiftUI
+import WorkroomDomain
 
 /// The right inspector (issue #24). macOS 14 supports only one `.inspector` per view, so the
 /// inspector composes four collapsible sections — **Changes** (the selected workroom's VCS detail),

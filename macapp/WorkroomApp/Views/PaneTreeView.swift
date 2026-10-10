@@ -1,6 +1,7 @@
 import AppKit
 import Defaults
 import SwiftUI
+import WorkroomDomain
 
 /// Renders a target's pane layout (issue #3): a solo terminal is a single-leaf layout, a split is a
 /// tree. Every visible pane is laid out in ONE flat `ZStack`, positioned by an absolutely-computed

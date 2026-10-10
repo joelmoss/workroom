@@ -2,6 +2,7 @@ import AppKit
 import Defaults
 import SwiftUI
 import UserNotifications
+import WorkroomDomain
 
 // No `@main`: the entry point is `main.swift`, which dispatches Ghostty's `+action` CLI when this
 // binary is invoked through the `Contents/MacOS/ghostty` symlink, and calls `WorkroomApp.main()`

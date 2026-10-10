@@ -1,5 +1,6 @@
 import Defaults
 import SwiftUI
+import WorkroomDomain
 
 /// The horizontal tab strip above a target's terminal: a chip per terminal tab, a "+" to open a
 /// new one, and the drag interactions — reorder within the strip, or drag a chip down into a pane

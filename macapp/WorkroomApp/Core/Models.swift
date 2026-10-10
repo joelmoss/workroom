@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomDomain
 
 // Mirrors the `workroom --json` public API (schema_version 1). Decoders are lenient:
 // unknown fields are ignored so a newer bundled/standalone CLI won't break the app.
@@ -199,24 +200,6 @@ struct Project: Codable, Identifiable, Hashable {
 // the sidebar, never deletable. Its branch label is a GUI-only concern (the
 // `workroom` CLI never shows it), so it is resolved app-side by BranchResolver, NOT carried
 // in the `list --json` contract.
-
-/// What kind of reference the working copy is on. Drives the root row's label treatment
-/// (see RootPresentation). `ref_kind`-style, self-describing — the renderer needs no
-/// `project.vcs` cross-reference.
-enum RefKind: Hashable {
-  case branch  // on a branch
-  case detached  // detached HEAD — showing a short SHA
-  case none  // no branch resolvable, or not yet resolved
-}
-
-/// A project root's resolved label. `branch` is normalized to nil (never "") so an empty
-/// result is unambiguously `.none`.
-struct RootRef: Hashable {
-  let branch: String?
-  let kind: RefKind
-
-  static let unresolved = RootRef(branch: nil, kind: .none)
-}
 
 /// A place a terminal can be opened: a workroom or a project root. The id is
 /// project-scoped, so same-named workrooms in different projects (and roots) never share a

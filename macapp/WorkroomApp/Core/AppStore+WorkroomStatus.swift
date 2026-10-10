@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomDomain
 
 /// Workroom VCS + CI status scheduling (issue #24). Split out of `AppStore` (already large) per
 /// the `AppStore+WorkroomSplit.swift` convention. Best-effort / "last checked", NOT real-time:

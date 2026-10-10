@@ -1,5 +1,6 @@
 import Defaults
 import SwiftUI
+import WorkroomDomain
 
 /// The "Pull Request" inspector section (issue #24, Phase 2): the pull request for the selected
 /// workroom's branch — its full (wrapping) title, review decision, per-reviewer rows, and CI

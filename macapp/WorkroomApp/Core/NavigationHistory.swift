@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomDomain
 
 /// One visited location in the back/forward history (issue #26): a target, the tab focused there, and
 /// what that tab was showing.

@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomDomain
 
 /// Resolves a project root's current branch for the sidebar root-row label — the current branch, or
 /// a short SHA when detached — read structurally through `LocalVCSProviding` (SwiftGitX, or wr-agent

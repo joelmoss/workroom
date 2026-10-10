@@ -1,6 +1,7 @@
 import AppKit
 import Defaults
 import SwiftUI
+import WorkroomDomain
 
 struct RootView: View {
   @EnvironmentObject var store: AppStore

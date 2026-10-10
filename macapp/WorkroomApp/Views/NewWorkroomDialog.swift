@@ -1,4 +1,5 @@
 import SwiftUI
+import WorkroomDomain
 
 /// New Workroom picker (issue #81). A searchable list of projects, raised by File ▸ New Workroom
 /// (⌘N). Type to filter (partial, case-insensitive); ↑/↓ move the highlight; ⏎ or a click picks a

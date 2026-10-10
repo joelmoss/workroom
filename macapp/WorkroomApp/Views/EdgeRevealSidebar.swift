@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WorkroomDomain
 
 /// Edge-hover reveal for a collapsed sidebar (issue #56, #74). When a sidebar is closed, hovering its
 /// title-bar *toggle button* slides the sidebar content IN, OVER the detail (an overlay, not a pushed

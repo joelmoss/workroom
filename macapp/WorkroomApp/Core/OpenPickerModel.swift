@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomDomain
 
 /// One openable row in the Open Workroom picker (issue #94): a project root or a workroom, carrying
 /// the `SidebarID` the picker hands to `AppStore.openExisting`. The picker groups rows under a

@@ -1,4 +1,5 @@
 import SwiftUI
+import WorkroomDomain
 
 /// Open Workroom picker (issue #94). A searchable list of existing roots + workrooms, raised by
 /// File ▸ Open workroom… (⌘O). Type to filter (partial, case-insensitive); ↑/↓ move the highlight;

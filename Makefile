@@ -162,11 +162,17 @@ app-test-scripts: ## Run the script tests (build-helper/build-agent archs, chann
 app-generate: ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 	cd macapp && xcodegen generate
 
+# The Swift that app-format and app-lint cover, relative to macapp/. Each package's manifest, Sources
+# and Tests, never its .build: that holds its dependencies' checkouts.
+APP_SWIFT_PATHS := WorkroomApp WorkroomAppTests WorkroomAppUITests WorkroomSessionProtocol \
+  WorkroomSession $(patsubst macapp/%,%,$(wildcard macapp/Packages/*/Package.swift \
+  macapp/Packages/*/Sources macapp/Packages/*/Tests))
+
 app-format: ## Format Swift sources in place (swift-format)
-	cd macapp && xcrun swift-format format --in-place --parallel --recursive WorkroomApp WorkroomAppTests WorkroomAppUITests WorkroomSessionProtocol WorkroomSession
+	cd macapp && xcrun swift-format format --in-place --parallel --recursive $(APP_SWIFT_PATHS)
 
 app-lint: ## Lint Swift with swift-format (--strict)
-	cd macapp && xcrun swift-format lint --strict --parallel --recursive WorkroomApp WorkroomAppTests WorkroomAppUITests WorkroomSessionProtocol WorkroomSession
+	cd macapp && xcrun swift-format lint --strict --parallel --recursive $(APP_SWIFT_PATHS)
 
 # `app-test-scripts` gates the release because it is the cheap half that catches an ARTIFACT bug
 # (the universal-arch cases) and needs no toolchain, no keychain and no Xcode.
