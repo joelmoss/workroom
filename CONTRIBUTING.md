@@ -13,6 +13,8 @@ Before opening a PR:
   bump `schema_version` (`cmd/json.go`). See
   [the contract](README.md#the---json-machine-contract).
 - Workroom supports Git repos only, so contribute through Git.
+- Report security vulnerabilities privately, as [`SECURITY.md`](SECURITY.md) describes. Do not file
+  them as public issues or PRs.
 
 See [`AGENTS.md`](AGENTS.md) and [`macapp/AGENTS.md`](macapp/AGENTS.md) for the conventions the
 maintainer follows.

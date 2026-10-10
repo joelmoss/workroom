@@ -1,0 +1,54 @@
+name: Bug report
+description: Something in the Workroom app, the workroom CLI or the wr-agent daemon does not work.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report security vulnerabilities privately; see [SECURITY.md](https://github.com/joelmoss/workroom/security/policy). Do not file them here.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: The shortest sequence that triggers it. Say whether it happens every time.
+      placeholder: |
+        1. Open a project in Workroom
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Workroom version and channel
+      description: Settings ▸ About shows the app's version; `workroom version` shows the CLI's. Say stable, pre or Nightly.
+      placeholder: "2.1.0 (stable)"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and chip
+      placeholder: "macOS 15.6, Apple silicon"
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where does the workroom run
+      options:
+        - Local
+        - Remote host (boxd)
+        - Remote host (exe.dev)
+        - Remote host (other)
+        - Not sure
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots or `--json` output
+      description: Redact tokens, hostnames and anything private before pasting.
+      render: shell
