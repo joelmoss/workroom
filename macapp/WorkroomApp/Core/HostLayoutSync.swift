@@ -1,5 +1,5 @@
 import Foundation
-import WorkroomSessionProtocol
+import WorkroomWire
 import os
 
 /// Where a remote workroom's layout is kept: its host's agent (`AgentLayoutService`), or a fake.

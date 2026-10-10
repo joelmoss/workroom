@@ -1,5 +1,5 @@
 import Foundation
-import WorkroomSessionProtocol
+import WorkroomWire
 
 @MainActor
 enum TerminalSessionAttachment {

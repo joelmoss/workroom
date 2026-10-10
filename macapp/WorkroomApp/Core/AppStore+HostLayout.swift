@@ -1,5 +1,5 @@
 import Foundation
-import WorkroomSessionProtocol
+import WorkroomWire
 
 /// A window's state for the remote workrooms whose layouts their hosts keep (#255,
 /// `docs/designs/oq8-cross-machine-reattach.md`).

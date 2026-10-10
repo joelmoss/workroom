@@ -1,7 +1,7 @@
 import AppKit
 import Defaults
 import WorkroomDomain
-import WorkroomSessionProtocol
+import WorkroomWire
 
 /// The terminal split's concrete instantiation (issue #3): leaves are tab ids. Keeps terminal call
 /// sites reading unchanged after the generic refactor (issue #23 needs `PaneLayout<SidebarID>`).

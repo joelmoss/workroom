@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import WorkroomSessionProtocol
+@testable import WorkroomWire
 
 final class SessionFrameTests: XCTestCase {
   func testRoundTripsEmptyPayload() throws {

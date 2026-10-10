@@ -1,5 +1,5 @@
 import Foundation
-import WorkroomSessionProtocol
+import WorkroomWire
 
 /// The first `HostDriver`: a Linux container running sshd and a supervised `wr-agent`
 /// (`vcs/scripts/ssh-fixture`, #228), reached over plain ssh-stdio. It is the test fixture for

@@ -1,5 +1,5 @@
 import Foundation
-import WorkroomSessionProtocol
+import WorkroomWire
 
 /// Live daemon sessions filtered to those no tab owns, keyed by workroom. Multiple status bars
 /// (split panes, multiple windows on different workrooms) share this one instance, so the list

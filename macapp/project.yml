@@ -28,6 +28,8 @@ packages:
   # `swift test` (`make app-package-test`). The app and its hosted test bundle depend on them.
   WorkroomDomain:
     path: Packages/WorkroomDomain
+  WorkroomWire:
+    path: Packages/WorkroomWire
   # git backend: SwiftGitX (libgit2, pure-Swift). Local repositories are read here; the bundled
   # wr-agent serves the same reads over its VCS service. Both feed one VCSProviding model layer.
   SwiftGitX:
@@ -257,7 +259,7 @@ targets:
       - package: TreeSitterSql
         product: TreeSitterSql
       - package: WorkroomDomain
-      - target: WorkroomSessionProtocol
+      - package: WorkroomWire
       - target: workroom-session
         embed: false
         link: false
@@ -413,7 +415,7 @@ targets:
             # checkouts.
             xcrun swift-format lint --parallel --recursive \
               "${SRCROOT}/WorkroomApp" "${SRCROOT}/WorkroomAppTests" \
-              "${SRCROOT}/WorkroomSessionProtocol" "${SRCROOT}/WorkroomSession" \
+              "${SRCROOT}/WorkroomSession" \
               "${SRCROOT}"/Packages/*/Package.swift "${SRCROOT}"/Packages/*/Sources \
               "${SRCROOT}"/Packages/*/Tests || true
           else
@@ -469,7 +471,7 @@ targets:
     dependencies:
       - target: WorkroomApp
       - package: WorkroomDomain
-      - target: WorkroomSessionProtocol
+      - package: WorkroomWire
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -484,23 +486,6 @@ targets:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Workroom Dev.app/Contents/MacOS/Workroom Dev"
         BUNDLE_LOADER: "$(TEST_HOST)"
 
-  # Binary protocol + replay buffer + shell-injection used by workroom-session and the app.
-  WorkroomSessionProtocol:
-    type: library.static
-    platform: macOS
-    sources:
-      - path: WorkroomSessionProtocol
-    settings:
-      base:
-        PRODUCT_NAME: WorkroomSessionProtocol
-        PRODUCT_MODULE_NAME: WorkroomSessionProtocol
-        SWIFT_VERSION: "5.0"
-        MACOSX_DEPLOYMENT_TARGET: "15.0"
-        DEVELOPMENT_TEAM: B898J443L9
-        CODE_SIGN_STYLE: Automatic
-        GENERATE_INFOPLIST_FILE: YES
-        SKIP_INSTALL: YES
-
   # Detached PTY daemon + attach client. Lives in Contents/MacOS so it can outlive the app.
   workroom-session:
     type: tool
@@ -508,7 +493,7 @@ targets:
     sources:
       - path: WorkroomSession
     dependencies:
-      - target: WorkroomSessionProtocol
+      - package: WorkroomWire
     settings:
       base:
         PRODUCT_NAME: workroom-session

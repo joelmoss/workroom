@@ -1,5 +1,5 @@
 import Darwin
-import WorkroomSessionProtocol
+import WorkroomWire
 
 /// One-shot control-channel client for list / info / kill over the daemon socket.
 enum SessionControlClient {

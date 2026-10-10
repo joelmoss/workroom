@@ -1,5 +1,5 @@
 import Darwin
-import WorkroomSessionProtocol
+import WorkroomWire
 
 enum SessionAttachExitCode {
   static let transportFailure: Int32 = 90

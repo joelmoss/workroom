@@ -2,7 +2,7 @@ import Darwin
 import XCTest
 
 @testable import Workroom
-@testable import WorkroomSessionProtocol
+@testable import WorkroomWire
 
 /// `AgentControlClient` against a real `wr-agent serve`.
 ///

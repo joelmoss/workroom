@@ -1,5 +1,5 @@
 import Darwin
-import WorkroomSessionProtocol
+import WorkroomWire
 import XCTest
 
 @testable import Workroom

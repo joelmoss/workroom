@@ -1,5 +1,5 @@
 import SwiftUI
-import WorkroomSessionProtocol
+import WorkroomWire
 
 /// Status-bar control listing background sessions that no tab in this workroom currently owns.
 struct DetachedSessionsButton: View {

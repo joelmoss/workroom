@@ -1,5 +1,5 @@
 import Darwin
-import WorkroomSessionProtocol
+import WorkroomWire
 
 /// Become an ordinary shell, because this relay could not deliver the session it was sent for.
 ///

@@ -1,5 +1,5 @@
 import Darwin
-import WorkroomSessionProtocol
+import WorkroomWire
 
 func argumentValue(_ name: String, in arguments: [String]) -> String? {
   guard let index = arguments.firstIndex(of: name), index + 1 < arguments.count else { return nil }

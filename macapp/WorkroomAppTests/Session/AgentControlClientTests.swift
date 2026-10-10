@@ -1,7 +1,7 @@
 import XCTest
 
 @testable import Workroom
-@testable import WorkroomSessionProtocol
+@testable import WorkroomWire
 
 /// Pins the Swift half of the agent wire against the Rust half.
 ///
