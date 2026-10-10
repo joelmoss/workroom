@@ -1,7 +1,7 @@
 import AppKit
 import Defaults
 import GhosttyKit
-import WorkroomSessionProtocol
+import WorkroomWire
 import os
 
 /// One terminal surface: an `NSView` that hosts a `ghostty_surface_t` (Metal-rendered by libghostty

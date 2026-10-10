@@ -1,5 +1,5 @@
 import Defaults
-import WorkroomSessionProtocol
+import WorkroomWire
 import XCTest
 
 @testable import Workroom

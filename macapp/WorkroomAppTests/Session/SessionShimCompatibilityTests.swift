@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import WorkroomSessionProtocol
+import WorkroomWire
 import XCTest
 
 @testable import Workroom
@@ -10,7 +10,7 @@ import XCTest
 ///
 /// **Why a pinned binary and not a fake.** The obvious cheap version of this test is a stub that
 /// binds a socket and answers with `SessionFrame`s. It proves nothing. A fake built from
-/// `WorkroomSessionProtocol` reads the same source the client does, so a change to that module
+/// `WorkroomWire` reads the same source the client does, so a change to that module
 /// moves both sides together and the test stays green through exactly the break it was written to
 /// catch. The only peer whose behaviour cannot drift with our source tree is a binary that was
 /// compiled before it: `Fixtures/workroom-session-v2.0.0`, lifted unmodified from
@@ -18,8 +18,8 @@ import XCTest
 ///
 /// This is the whole justification for keeping the client half of `macapp/WorkroomSession/` at all.
 /// If these fail, a user who updates while holding a terminal from an older build loses it — see
-/// `docs/designs/remote-workrooms.md`. **`WorkroomSessionProtocol` is frozen while the shim ships**
-/// precisely because this peer can never be recompiled to match a change.
+/// `docs/designs/remote-workrooms.md`. **`WorkroomWire` (`WorkroomSessionProtocol` until it became a
+/// package) is frozen while the shim ships** precisely because this peer can never be recompiled to match a change.
 
 /// Thrown after an `XCTFail` so the test stops without the failure being reported as a skip.
 private enum CompatibilityFixtureError: Error {
@@ -256,7 +256,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
 
   /// The version handshake, ported from the deleted `SessionDaemonEndToEndTests` — the only test
   /// anywhere that exercised it, and the one most likely to be broken by an edit to
-  /// `WorkroomSessionProtocol` made for the app's own control client.
+  /// `WorkroomWire` made for the app's own control client.
   ///
   /// Driven straight against the SHIPPED daemon rather than a rebuilt one, so it measures the
   /// agreement that actually matters: what this tree encodes against what v2.0.0 decodes.
@@ -302,7 +302,7 @@ final class SessionShimCompatibilityTests: XCTestCase {
 
     XCTAssertNoThrow(
       try client.wait(for: .attached, timeout: 5),
-      "v2.0.0 refused a request encoded by this tree — WorkroomSessionProtocol has drifted")
+      "v2.0.0 refused a request encoded by this tree — WorkroomWire has drifted")
   }
 
   // MARK: - The attach-only client's own failure modes

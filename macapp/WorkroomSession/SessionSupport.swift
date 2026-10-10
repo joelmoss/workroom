@@ -1,5 +1,5 @@
 import Darwin
-import WorkroomSessionProtocol
+import WorkroomWire
 
 /// The terminal geometry of a descriptor.
 ///

@@ -1,7 +1,7 @@
 import Darwin
 import XCTest
 
-@testable import WorkroomSessionProtocol
+@testable import WorkroomWire
 
 /// `SessionByteQueue`'s `drain` is normally exercised only indirectly, through whatever
 /// `SessionConnection`/`PTYSession` traffic happens to touch it — this drives its `wouldBlock`

@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import WorkroomSessionProtocol
+import WorkroomWire
 
 /// What a daemon said about a session it was asked to account for.
 ///

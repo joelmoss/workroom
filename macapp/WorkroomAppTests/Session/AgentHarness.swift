@@ -1,5 +1,5 @@
 import Foundation
-import WorkroomSessionProtocol
+import WorkroomWire
 
 /// Launches a throwaway `wr-agent serve` against a temp socket, and can put real sessions on it.
 ///

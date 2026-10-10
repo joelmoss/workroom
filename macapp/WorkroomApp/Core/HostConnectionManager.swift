@@ -1,5 +1,5 @@
 import Foundation
-import WorkroomSessionProtocol
+import WorkroomWire
 
 /// A negotiated service connection, separate from the terminal attach relays. Factories must
 /// return a fresh connection for each attempt. Blocking transport work belongs off the actor.

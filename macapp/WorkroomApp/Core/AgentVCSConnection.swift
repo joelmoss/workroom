@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import WorkroomSessionProtocol
+import WorkroomWire
 
 /// A persistent, negotiated service channel — VCS and File share one connection per host. Terminal
 /// relays keep their existing connections.

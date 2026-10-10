@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import WorkroomSessionProtocol
+import WorkroomWire
 
 /// The control-plane client for `wr-agent`, which wraps the same `SessionFrame`s the Swift daemon
 /// uses inside a versioned envelope.
