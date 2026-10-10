@@ -402,7 +402,7 @@ final class TerminalSessions: ObservableObject {
   @Published private(set) var activityPulses: [TerminalTab.ID: Int] = [:]
   /// The tabs currently living in their own window (issue #172). Membership only — the windows
   /// themselves are owned by `AppStore`'s `DetachedPaneWindows`, and the two are kept in step by
-  /// `detachPane`/`dockPane` firing `onPaneDetached`/`onPaneDocked`. The invariant every reader may
+  /// `detachPane`/`dockPane` firing `.paneDetached`/`.paneDocked`. The invariant every reader may
   /// rely on: **a tab in here has exactly one live detached window, and vice versa.**
   ///
   /// A detached tab is deliberately absent from `splitsByTarget` (detaching runs the same removal
@@ -438,55 +438,65 @@ final class TerminalSessions: ObservableObject {
   /// The app-wide most-recently-focused pane order (issue #132), written by `setFocused` and read by
   /// `closeSuccessor`. Injectable like `makeView` so a test never mutates the singleton's order.
   var recency: SwitcherRecency = .shared
-  /// Set once by `AppStore`: forwards each terminal's notification-worthy activity (OSC) up to the
-  /// notification spine. A closure (not a store reference) so sessions stay ignorant of `AppStore`.
-  var activityHandler: ((TerminalTarget.ID, TerminalTab.ID, TerminalActivity) -> Void)?
-  /// Set once by `AppStore`: fired whenever the focused tab of a target actually changes, so
-  /// navigation history (issue #26) can record the new location. A closure (not a store reference),
-  /// mirroring `activityHandler`, so sessions stay ignorant of `AppStore`. `tabID` is nil when the
-  /// target's focus was cleared (a `reap` passes `notify: false`, so that case never reaches here).
-  var onFocusChange: ((TerminalTarget.ID, TerminalTab.ID?) -> Void)?
-  /// Set once by `AppStore`: fired when a tab's recorded **location** changes underneath a focus that
-  /// did not move, so navigation history can record it. `onFocusChange` cannot cover this: retargeting
-  /// the shared preview tab in place mutates `content` and leaves `focusedTabByTarget` untouched, so
-  /// every Changes/Files click after the first recorded nothing at all — the whole bug.
-  ///
-  /// "Location", not "content identity": one of the two fire sites is `setChangesetSelectedPath`, and a
-  /// changeset's selected file is deliberately NOT part of content identity (`sameChangeset` excludes
-  /// it, which is why the preview can be retargeted across files without becoming a different tab). It
-  /// is still its own back/forward step, so it belongs here.
-  ///
-  /// Fired from exactly the two sites that mutate content identity (`openContentPreview`'s retarget
-  /// branch and `setChangesetSelectedPath`) and nowhere else. The other opener branches all end in
-  /// `setFocused` on a tab that was not focused, so `onFocusChange` already records them; firing here
-  /// too would redefine this seam as "an open happened", which is not what it means.
-  var onTabContentChange: ((TerminalTarget.ID, TerminalTab.ID) -> Void)?
-  /// Set once by `AppStore`: the tabs just removed by a `closeTab` or `reap`, so navigation history
-  /// can prune their now-dead entries (issue #26 — honest back/forward enablement).
-  var onTabsRemoved: ((TerminalTarget.ID, [TerminalTab.ID]) -> Void)?
-  /// Set once by `AppStore`: a surface in this target became first responder (a click into its
-  /// terminal), or a tab in it was *deliberately* selected (`select` — a chip tap / ⌘1–9). Routes focus
-  /// up to the *workroom* selection in a workroom split (issue #23 follow-up), so ⌘T/Run/notifications
-  /// target that pane's workroom — and so a tab clicked in a co-displayed but non-focused member
-  /// actually takes keyboard focus (selecting it alone leaves `surfaceActive` false, so the surface
-  /// never grabs first responder). A closure (not a store reference), mirroring `onFocusChange`, so
-  /// sessions stay ignorant of `AppStore`.
-  var onSurfaceFocused: ((TerminalTarget.ID) -> Void)?
-  /// Set once by `AppStore`: a pane just became detached and needs a window opened for it at the
-  /// given SCREEN point (issue #172). A closure, not a store reference, so sessions stay ignorant of
-  /// `AppStore` — the same posture as `onFocusChange`/`onTabsRemoved` above. Firing it is the second
-  /// half of the one coordinated transition `detachPane` performs; nothing else may open that window.
-  var onPaneDetached: ((TerminalTarget.ID, TerminalTab.ID, CGPoint) -> Void)?
-  /// The mirror of `onPaneDetached`: this tab is docked again, so its window must go. Also fired by
-  /// `closeTab`/`reap` by way of `undetach`, so a detached window can never outlive its tab.
-  var onPaneDocked: ((TerminalTab.ID) -> Void)?
-  /// Something tried to focus a detached pane. Its window is the honest answer, so `AppStore` raises
-  /// it (see `setFocused`, which refuses the focus write itself).
-  var onPaneRaiseRequested: ((TerminalTab.ID) -> Void)?
-  /// A restored pane was detached when the session was saved, so its window must be rebuilt at the
-  /// saved frame. Separate from `onPaneDetached` because restore is not a gesture: there is no cursor
-  /// to place the window at, and the frame is authoritative.
-  var onPaneRestoredDetached: ((TerminalTarget.ID, TerminalTab.ID, NSRect) -> Void)?
+  /// What these sessions tell their owner, `AppStore`, through `onEvent`. One synchronous channel:
+  /// each event is a plain call at the point it happens, in the order things happen, before the
+  /// method that caused it returns. `AppStore.withHistorySuppressed` and `select` depend on that (eng
+  /// review D8), so never defer delivery: no `Task`, queue or `AsyncStream`. `AppStore` switches over
+  /// every case, so a new case cannot go unhandled.
+  enum Event: Equatable {
+    /// A terminal's notification-worthy activity (OSC), for the notification spine.
+    case activity(TerminalTarget.ID, TerminalTab.ID, TerminalActivity)
+    /// Fired whenever the focused tab of a target actually changes, so
+    /// navigation history (issue #26) can record the new location. `tabID` is nil when the target's
+    /// focus was cleared (a `reap` passes `notify: false`, so that case never reaches here).
+    case focusChanged(TerminalTarget.ID, TerminalTab.ID?)
+    /// Fired when a tab's recorded **location** changes underneath a focus that
+    /// did not move, so navigation history can record it. `.focusChanged` cannot cover this: retargeting
+    /// the shared preview tab in place mutates `content` and leaves `focusedTabByTarget` untouched, so
+    /// every Changes/Files click after the first recorded nothing at all — the whole bug.
+    ///
+    /// "Location", not "content identity": one of the two fire sites is `setChangesetSelectedPath`, and a
+    /// changeset's selected file is deliberately NOT part of content identity (`sameChangeset` excludes
+    /// it, which is why the preview can be retargeted across files without becoming a different tab). It
+    /// is still its own back/forward step, so it belongs here.
+    ///
+    /// Fired from exactly the two sites that mutate content identity (`openContentPreview`'s retarget
+    /// branch and `setChangesetSelectedPath`) and nowhere else. The other opener branches all end in
+    /// `setFocused` on a tab that was not focused, so `.focusChanged` already records them; firing here
+    /// too would redefine this seam as "an open happened", which is not what it means.
+    case tabContentChanged(TerminalTarget.ID, TerminalTab.ID)
+    /// The tabs just removed by a `closeTab` or `reap`, so navigation history
+    /// can prune their now-dead entries (issue #26 — honest back/forward enablement).
+    case tabsRemoved(TerminalTarget.ID, [TerminalTab.ID])
+    /// A surface in this target became first responder (a click into its
+    /// terminal), or a tab in it was *deliberately* selected (`select` — a chip tap / ⌘1–9). Routes focus
+    /// up to the *workroom* selection in a workroom split (issue #23 follow-up), so ⌘T/Run/notifications
+    /// target that pane's workroom — and so a tab clicked in a co-displayed but non-focused member
+    /// actually takes keyboard focus (selecting it alone leaves `surfaceActive` false, so the surface
+    /// never grabs first responder).
+    case surfaceFocused(TerminalTarget.ID)
+    /// A pane just became detached and needs a window opened for it at the
+    /// given SCREEN point (issue #172). Firing it is the second
+    /// half of the one coordinated transition `detachPane` performs; nothing else may open that window.
+    case paneDetached(TerminalTarget.ID, TerminalTab.ID, at: CGPoint)
+    /// The mirror of `.paneDetached`: this tab is docked again, so its window must go. Also fired by
+    /// `closeTab`/`reap` by way of `undetach`, so a detached window can never outlive its tab.
+    case paneDocked(TerminalTab.ID)
+    /// Something tried to focus a detached pane. Its window is the honest answer, so `AppStore` raises
+    /// it (see `setFocused`, which refuses the focus write itself).
+    case paneRaiseRequested(TerminalTab.ID)
+    /// A restored pane was detached when the session was saved, so its window must be rebuilt at the
+    /// saved frame. Separate from `.paneDetached` because restore is not a gesture: there is no cursor
+    /// to place the window at, and the frame is authoritative.
+    case paneRestoredDetached(TerminalTarget.ID, TerminalTab.ID, frame: NSRect)
+    /// A closed remote pane's session could not be ended on its host, so it
+    /// is still running there (#283). Given the target's id and title.
+    case remoteCloseFailed(TerminalTarget.ID, title: String)
+  }
+
+  /// Set once by `AppStore`. A closure, not a store reference, so sessions stay ignorant of
+  /// `AppStore`.
+  var onEvent: ((Event) -> Void)?
 
   /// Factory seam (plan T1): how a surface view is created for a target at a working directory.
   /// Overridable in tests so the lifecycle can be exercised without a real window/shell. The cwd
@@ -561,10 +571,6 @@ final class TerminalSessions: ObservableObject {
   /// Each remote tab's latest host cwd query. An entry also marks a tab whose first prompt has
   /// already asked, so after that only `command_finished` asks again.
   private var hostCwdQueries: [TerminalTab.ID: Task<Void, Never>] = [:]
-
-  /// Set once by `AppStore`: a closed remote pane's session could not be ended on its host, so it
-  /// is still running there (#283). Given the target's id and title.
-  var onRemoteCloseFailed: ((TerminalTarget.ID, String) -> Void)?
 
   init() {
     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
@@ -839,7 +845,7 @@ final class TerminalSessions: ObservableObject {
   ///   ids would put a duplicate-id hazard one bug away for no benefit. The persisted keys are a join
   ///   key valid only within one snapshot; order, split and focus are rewired through them here.
   /// - **Focus is set with `notify: false`** (the escape `reap` uses): a restore is not a navigation,
-  ///   and firing `onFocusChange` would seed back/forward with a place the user never went.
+  ///   and firing `.focusChanged` would seed back/forward with a place the user never went.
   /// - **No-op when the target already has tabs**, so a restore can never race or duplicate a live
   ///   session.
   ///
@@ -922,11 +928,11 @@ final class TerminalSessions: ObservableObject {
     // `makeTerminalTab` bumps the counter per terminal it builds, so take whichever is higher: the
     // saved value keeps "Terminal 7" from becoming "Terminal 3" again after closes.
     counts[target.id] = max(session.terminalCounter ?? 0, counts[target.id] ?? 0)
-    // Open the windows AFTER the dictionaries are set: `onPaneDetached` builds a window whose content
+    // Open the windows AFTER the dictionaries are set: `.paneDetached` builds a window whose content
     // looks the tab up by id. Restoring is not a user gesture, so this skips `detachPane` — the split
     // was already captured without these tabs, and membership was recorded above.
     for (tabID, frame) in restoredDetached {
-      onPaneRestoredDetached?(target.id, tabID, frame)
+      onEvent?(.paneRestoredDetached(target.id, tabID, frame: frame))
     }
     reconcileOcclusion(for: target)
     return RestoreResult(count: order.count)
@@ -967,9 +973,9 @@ final class TerminalSessions: ObservableObject {
   // EVERY branch above must end up recorded in navigation history, and they get there two ways —
   // forget this and back/forward silently stops seeing a whole content kind (that WAS the bug):
   //
-  //   Inv A         ─▶ setFocused (a brand-new tab) ─▶ onFocusChange ─▶ AppStore records
-  //   Inv B         ─▶ content mutates, focus does NOT ─▶ onTabContentChange ─▶ AppStore records
-  //   Inv C         ─▶ focus may EARLY-RETURN (already focused) ─▶ onTabContentChange too, so a
+  //   Inv A         ─▶ setFocused (a brand-new tab) ─▶ .focusChanged ─▶ AppStore records
+  //   Inv B         ─▶ content mutates, focus does NOT ─▶ .tabContentChanged ─▶ AppStore records
+  //   Inv C         ─▶ focus may EARLY-RETURN (already focused) ─▶ .tabContentChanged too, so a
   //                    re-select can reconcile a cursor that a replay left elsewhere
   //   persist / setDiffViewMode / setMarkdownPreview ─▶ NEITHER — a pin and a view mode are not places
 
@@ -989,21 +995,21 @@ final class TerminalSessions: ObservableObject {
     desc.isPreview = true
     if let existing = contentTab(matching: desc, in: target.id) {
       focus(existing, for: target)
-      // Re-selecting content that is ALREADY the focused tab moves nothing, so `onFocusChange` stays
+      // Re-selecting content that is ALREADY the focused tab moves nothing, so `.focusChanged` stays
       // quiet — yet after a replay landed in a tab the history cursor doesn't name, the cursor and the
       // screen disagree, and staying quiet leaves the forward stack pointing at a future that is no
       // longer on screen. Report it and let `record`'s dedup decide: same place ⇒ free no-op, different
       // place ⇒ the entry the user actually re-selected, which truncates forward.
-      onTabContentChange?(target.id, existing)
+      onEvent?(.tabContentChanged(target.id, existing))
       return existing
     }
     if let previewID = previewTabID(in: target.id), var tab = tabsByTarget[target.id]?[previewID] {
       tab.content = desc.makeTabContent()
       tabsByTarget[target.id]?[previewID] = tab
       focus(previewID, for: target)
-      // The content moved but the focus did not, so `onFocusChange` will not fire — this is the one
+      // The content moved but the focus did not, so `.focusChanged` will not fire — this is the one
       // opener branch navigation history cannot otherwise see (issue #26 follow-up).
-      onTabContentChange?(target.id, previewID)
+      onEvent?(.tabContentChanged(target.id, previewID))
       return previewID
     }
     let tab = TerminalTab(content: desc.makeTabContent())
@@ -1025,7 +1031,8 @@ final class TerminalSessions: ObservableObject {
     if let existing = contentTab(matching: desc, in: target.id) {
       persist(existing, for: target)
       focus(existing, for: target)
-      onTabContentChange?(target.id, existing)  // same reconciliation as the preview dedup branch
+      // Same reconciliation as the preview dedup branch.
+      onEvent?(.tabContentChanged(target.id, existing))
       return existing
     }
     let tab = TerminalTab(content: desc.makeTabContent())
@@ -1121,7 +1128,7 @@ final class TerminalSessions: ObservableObject {
     tabsByTarget[target.id]?[tabID] = tab
     // A selection change inside a commit is its own location, and it moves no focus — so, like the
     // preview retarget, only this seam can tell navigation history about it.
-    onTabContentChange?(target.id, tabID)
+    onEvent?(.tabContentChanged(target.id, tabID))
   }
 
   /// Refresh an open diff tab's change kind in place, leaving everything else about the tab alone.
@@ -1131,7 +1138,7 @@ final class TerminalSessions: ObservableObject {
   /// follow the working copy while the tab sits open. Called by `AppStore.refreshOpenDiffChangeKinds`
   /// off the status sweep.
   ///
-  /// Deliberately NOT routed through `setContent`, and deliberately silent on `onTabContentChange`: that
+  /// Deliberately NOT routed through `setContent`, and deliberately silent on `.tabContentChanged`: that
   /// callback records a back/forward entry, and a sweep noticing a file went from modified to deleted is
   /// not somewhere the user navigated. Returns whether anything changed; the no-op case publishes
   /// nothing, so a 15s sweep can't invalidate every strip row for free.
@@ -1177,7 +1184,7 @@ final class TerminalSessions: ObservableObject {
     guard case .terminal = tab.content else {
       tab.content = payload.makeTabContent(isPreview: wasPreview)
       tabsByTarget[target.id]?[tabID] = tab
-      onTabContentChange?(target.id, tabID)
+      onEvent?(.tabContentChanged(target.id, tabID))
       return
     }
     assertionFailure("replay must never overwrite a terminal tab's content")
@@ -1213,7 +1220,7 @@ final class TerminalSessions: ObservableObject {
   ///   running(interrupted) ── Stop (2nd) ─▶ closeTab → ghostty_surface_free (SIGHUP, hard kill)
   ///   restarting ── child exits ─▶ close + respawn (graceful; frees the port); Stop ─▶ running(interrupted)
   ///   stopped ──────── Run / ⌘R / Restart ─▶ close + respawn
-  ///   any state ────── close tab (⌘W/✕) / reap ─▶ removed (state cleared via onTabsRemoved)
+  ///   any state ────── close tab (⌘W/✕) / reap ─▶ removed (state cleared via .tabsRemoved)
   /// ```
   /// A backgrounded run tab is never the active tab, so it never mounts — and a libghostty surface
   /// spawns its process only on window-mount. We give the off-window `ensureSurfaceCreated` a sane
@@ -1466,7 +1473,7 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// Move a pane into its own window (issue #172). One coordinated transition: the model half here,
-  /// the window half through `onPaneDetached`, so the two can never be observed apart.
+  /// the window half through `.paneDetached`, so the two can never be observed apart.
   ///
   /// The model half MIRRORS `extractFromSplit` (it does not call it) — a detached tab must not remain
   /// a split member, or the layout would still try to render it. It is a mirror rather than a reuse
@@ -1486,7 +1493,7 @@ final class TerminalSessions: ObservableObject {
     detachedTabIDs.insert(tabID)
     if wasFocused { setFocused(successor, for: target.id) }
     reconcileOcclusion(for: target)
-    onPaneDetached?(target.id, tabID, screenPoint)
+    onEvent?(.paneDetached(target.id, tabID, at: screenPoint))
   }
 
   /// Bring a detached pane back into the pane tree (issue #172) — the mirror of `detachPane`, and the
@@ -1508,7 +1515,7 @@ final class TerminalSessions: ObservableObject {
   @discardableResult
   private func undetach(_ tabID: TerminalTab.ID) -> Bool {
     guard detachedTabIDs.remove(tabID) != nil else { return false }
-    onPaneDocked?(tabID)
+    onEvent?(.paneDocked(tabID))
     return true
   }
 
@@ -1532,7 +1539,7 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// A *deliberate* tab selection (chip tap, ⌘1–9, next/prev) — `focus` plus a request for the owning
-  /// workroom to become the focused split member (via `onSurfaceFocused`). Selecting a tab in a
+  /// workroom to become the focused split member (via `.surfaceFocused`). Selecting a tab in a
   /// co-displayed but non-focused workroom must move keyboard focus there, mirroring a click into that
   /// pane's body — without this the chip highlights but the terminal never focuses (the renderer keeps
   /// `surfaceActive` false until the workroom is the selected member). Fired *before* `focus` so the
@@ -1540,20 +1547,20 @@ final class TerminalSessions: ObservableObject {
   /// and so the focus-change history records against the now-correct workroom. A no-op outside a split
   /// or when this target is already the focused member (the store-side guard handles both).
   func select(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
-    onSurfaceFocused?(target.id)
+    onEvent?(.surfaceFocused(target.id))
     focus(tabID, for: target)
   }
 
   /// The single write-point for a target's focused tab (issue #26). Centralising the seven former
   /// direct writes means every focus change — `addTab`, splits, drag-into-split, `focus`, and the
-  /// close-successor — fires `onFocusChange` so navigation history can record the new location.
+  /// close-successor — fires `.focusChanged` so navigation history can record the new location.
   /// `notify: false` is used by `reap` (the target is being torn down; nothing is focused afterward,
   /// and its history entries are skipped at replay instead) and by `restore` (materialising saved
   /// panes is not a navigation). No-op when unchanged.
   ///
   /// Also the recency write-point (issue #132): quick-switcher MRU order and the close-successor
   /// (issue #160) are the same question — "where was the user last" — so both read one list, written
-  /// here rather than from the `onFocusChange` observer, which would leave this file's own
+  /// here rather than from the `.focusChanged` observer, which would leave this file's own
   /// close-successor depending on `AppStore` having wired it up.
   ///
   /// Both writes sit under `notify`, which is what keeps them meaning "the user went here". `reap`
@@ -1573,14 +1580,14 @@ final class TerminalSessions: ObservableObject {
     // switcher, and Files/Changes re-focusing an existing preview tab. Guarding the write-point
     // covers all of them at once; raising the pane's own window is the useful thing to do instead.
     if let tabID, detachedTabIDs.contains(tabID) {
-      onPaneRaiseRequested?(tabID)
+      onEvent?(.paneRaiseRequested(tabID))
       return
     }
     guard focusedTabByTarget[targetID] != tabID else { return }
     focusedTabByTarget[targetID] = tabID
     guard notify else { return }
     recency.recordPane(tabID)
-    onFocusChange?(targetID, tabID)
+    onEvent?(.focusChanged(targetID, tabID))
   }
 
   /// Move focus to the adjacent pane in `direction` within the visible split (⌃⌘arrows, issue #3).
@@ -1643,7 +1650,7 @@ final class TerminalSessions: ObservableObject {
     Task {
       let ended = await self.endPersistentSession(for: tab)
       service.closeKillEnded(remote: remote)
-      if remote && !ended { self.onRemoteCloseFailed?(target.id, target.title) }
+      if remote && !ended { self.onEvent?(.remoteCloseFailed(target.id, title: target.title)) }
     }
     teardown(tab)
     tabsByTarget[target.id]?[tabID] = nil
@@ -1659,7 +1666,7 @@ final class TerminalSessions: ObservableObject {
     recency.forgetPanes([tabID])  // after the successor is picked, before anyone else looks
     reconcileOcclusion(for: target)
     agentManager.tabClosed(tabID)
-    onTabsRemoved?(target.id, [tabID])
+    onEvent?(.tabsRemoved(target.id, [tabID]))
   }
 
   /// Terminate and forget every terminal for a target (on delete / when its directory disappears).
@@ -1696,7 +1703,7 @@ final class TerminalSessions: ObservableObject {
     for removed in removedIDs {
       agentManager.tabClosed(removed)
     }
-    if !removedIDs.isEmpty { onTabsRemoved?(id, removedIDs) }
+    if !removedIDs.isEmpty { onEvent?(.tabsRemoved(id, removedIDs)) }
   }
 
   func reapAll() async {
@@ -2142,7 +2149,7 @@ final class TerminalSessions: ObservableObject {
     let targetID = target.id
     let tabID = tab.id
     view.onActivity = { [weak self] activity in
-      self?.activityHandler?(targetID, tabID, activity)
+      self?.onEvent?(.activity(targetID, tabID, activity))
     }
     view.onTitleChange = { [weak self] title in
       self?.updateTitle(title, forTab: tabID, target: targetID)
@@ -2168,7 +2175,7 @@ final class TerminalSessions: ObservableObject {
     view.onFocused = { [weak self] in
       guard let self, let target = self.target(forID: targetID) else { return }
       self.focus(tabID, for: target)
-      self.onSurfaceFocused?(targetID)
+      self.onEvent?(.surfaceFocused(targetID))
     }
 
     if target.remoteHost != nil {

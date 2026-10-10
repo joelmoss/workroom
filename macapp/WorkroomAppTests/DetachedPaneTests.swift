@@ -97,7 +97,7 @@ final class DetachedPaneTests: XCTestCase {
     XCTAssertEqual(s.focusedTab(for: target)?.id, stay.id, "detaching hands focus to the successor")
 
     var raised: [TerminalTab.ID] = []
-    s.onPaneRaiseRequested = { raised.append($0) }
+    s.onEvent = { if case .paneRaiseRequested(let a) = $0 { raised.append(a) } }
     s.focus(detached.id, for: target)
 
     XCTAssertEqual(
@@ -167,7 +167,7 @@ final class DetachedPaneTests: XCTestCase {
     XCTAssertEqual(s.displayedTabIDs(for: target), [first.id, third.id])
 
     var closed: [TerminalTab.ID] = []
-    s.onPaneDocked = { closed.append($0) }
+    s.onEvent = { if case .paneDocked(let a) = $0 { closed.append(a) } }
     s.dockPane(second.id, for: target)
 
     // The MIDDLE tab again: a dock that re-appended would read `[first, third, second]`, which is
@@ -189,7 +189,7 @@ final class DetachedPaneTests: XCTestCase {
     s.detachPane(detached.id, for: target, at: .zero)
 
     var closed: [TerminalTab.ID] = []
-    s.onPaneDocked = { closed.append($0) }
+    s.onEvent = { if case .paneDocked(let a) = $0 { closed.append(a) } }
     s.closeTab(detached.id, for: target)
 
     XCTAssertEqual(closed, [detached.id])
@@ -203,7 +203,7 @@ final class DetachedPaneTests: XCTestCase {
     s.detachPane(detached.id, for: target, at: .zero)
 
     var closed: [TerminalTab.ID] = []
-    s.onPaneDocked = { closed.append($0) }
+    s.onEvent = { if case .paneDocked(let a) = $0 { closed.append(a) } }
     await s.reap(target.id)
 
     XCTAssertEqual(closed, [detached.id])
@@ -215,7 +215,9 @@ final class DetachedPaneTests: XCTestCase {
     let s = makeSessions()
     let tab = s.addTab(for: target)
     var reported: [(TerminalTarget.ID, TerminalTab.ID, CGPoint)] = []
-    s.onPaneDetached = { reported.append(($0, $1, $2)) }
+    s.onEvent = {
+      if case .paneDetached(let a, let b, at: let c) = $0 { reported.append((a, b, c)) }
+    }
 
     s.detachPane(tab.id, for: target, at: CGPoint(x: 120, y: 340))
 
@@ -237,7 +239,11 @@ final class DetachedPaneTests: XCTestCase {
   func testARestoredPaneComesBackDetachedAtItsSavedFrame() {
     let s = makeSessions()
     var restored: [(TerminalTab.ID, NSRect)] = []
-    s.onPaneRestoredDetached = { _, tabID, frame in restored.append((tabID, frame)) }
+    s.onEvent = {
+      if case .paneRestoredDetached(_, let tabID, frame: let frame) = $0 {
+        restored.append((tabID, frame))
+      }
+    }
 
     let frame = NSRect(x: 120, y: 340, width: 800, height: 560)
     var detached = terminalTab("b", title: "Terminal 2")
@@ -261,7 +267,7 @@ final class DetachedPaneTests: XCTestCase {
   func testAnUnparseableDetachedFrameRestoresDocked() {
     let s = makeSessions()
     var restored = 0
-    s.onPaneRestoredDetached = { _, _, _ in restored += 1 }
+    s.onEvent = { if case .paneRestoredDetached = $0 { restored += 1 } }
 
     var detached = terminalTab("a", title: "Terminal 1")
     detached.detachedFrame = "not a rect"
@@ -317,7 +323,7 @@ final class DetachedPaneTests: XCTestCase {
     XCTAssertEqual(s.focusedTab(for: target)?.id, second.id)
 
     var closed = 0
-    s.onPaneDocked = { _ in closed += 1 }
+    s.onEvent = { if case .paneDocked = $0 { closed += 1 } }
     s.dockPane(first.id, for: target)
 
     XCTAssertEqual(closed, 0, "no window exists, so nothing may be told to close one")
@@ -331,7 +337,7 @@ final class DetachedPaneTests: XCTestCase {
     let s = makeSessions()
     let tab = s.addTab(for: target)
     var reported = 0
-    s.onPaneDetached = { _, _, _ in reported += 1 }
+    s.onEvent = { if case .paneDetached = $0 { reported += 1 } }
 
     s.detachPane(tab.id, for: target, at: .zero)
     s.detachPane(tab.id, for: target, at: .zero)

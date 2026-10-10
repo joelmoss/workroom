@@ -5,7 +5,7 @@ import XCTest
 
 /// Pins ⌘F/⌘G dispatch across ALL tab-content kinds through `AppStore.contentFind` — the single
 /// shared `FileFindModel` (eng review decision, 2026-09-01) `startFindInFocusedPane`/
-/// `navigateFocusedPaneSearch`/`onFocusChange` route through. Covers the pre-existing `.terminal`/
+/// `navigateFocusedPaneSearch`/`.focusChanged` route through. Covers the pre-existing `.terminal`/
 /// `.file` paths (UNTESTED before this plan, despite being live production code) alongside the new
 /// `.diff`/`.changeset` cases — the Iron Rule regression guard for modifying both dispatch functions.
 @MainActor

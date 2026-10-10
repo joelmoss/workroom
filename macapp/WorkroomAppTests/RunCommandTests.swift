@@ -893,7 +893,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertNil(store.investigateTabs[tab1.id])
     XCTAssertFalse(store.hasLiveRunCommand)
 
-    // Cleanup path 2: the tab is closed/reaped (`onTabsRemoved`) — independent of `onChildExited`
+    // Cleanup path 2: the tab is closed/reaped (`.tabsRemoved`) — independent of `onChildExited`
     // ever firing (it isn't guaranteed to, per libghostty exit-reporting flakiness).
     let tab2 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
     let surface2 = try! XCTUnwrap(tab2.surface)
@@ -943,7 +943,7 @@ final class RunCommandTests: XCTestCase {
 
   /// A third teardown path, distinct from `closeTab`/quit: deleting a workroom/project reaps the
   /// target directly (`reapTargetLocally`), which must also purge `investigateTabs` via the same
-  /// `onTabsRemoved` route — this exercises that specific caller, not just `closeTab`.
+  /// `.tabsRemoved` route — this exercises that specific caller, not just `closeTab`.
   func testInvestigateTabsClearedWhenTargetReapedWithLiveInvestigateTab() async {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")

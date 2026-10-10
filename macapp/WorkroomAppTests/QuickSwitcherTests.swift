@@ -280,7 +280,7 @@ final class QuickSwitcherTests: XCTestCase {
     XCTAssertEqual(
       store.terminals.activeTab(for: target)?.id, second, "a tap lands on the previously used pane")
 
-    // The commit re-orders MRU through `onFocusChange`, so the next tap comes back — the ⌘Tab feel.
+    // The commit re-orders MRU through `.focusChanged`, so the next tap comes back — the ⌘Tab feel.
     XCTAssertEqual(
       SwitcherRecency.shared.panes.ids.first, second, "the real hook recorded the commit")
     recency.recordPane(second)
