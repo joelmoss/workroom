@@ -181,7 +181,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     let remote = try RepositoryLocation.remote(host: UUID(), path: path)
     router.replaceRemote([try .init(location: remote, sharedLocation: remote)])
 
-    let status = await WorkroomStatusResolver().resolve(location: remote, router: router)
+    let status = await WorkroomStatusResolver(router: router).resolve(location: remote)
 
     XCTAssertEqual(status.failure, .asleep)
     XCTAssertNil(status.dirty)
@@ -200,7 +200,7 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     let remote = try RepositoryLocation.remote(host: UUID(), path: path)
     router.replaceRemote([try .init(location: remote, sharedLocation: remote)])
 
-    let status = await WorkroomStatusResolver().resolve(location: remote, router: router)
+    let status = await WorkroomStatusResolver(router: router).resolve(location: remote)
 
     XCTAssertNotEqual(status.failure, .asleep)
     XCTAssertNotNil(status.failure)
@@ -252,7 +252,6 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     let item = try XCTUnwrap(
       store.selectedStatusWorkItem(for: .workroom(project: "/proj", name: "a")))
     XCTAssertEqual(item.location, try .remote(host: host, path: path))
-    XCTAssertEqual(item.vcs, "git")
     XCTAssertFalse(item.permitsLocalAccess)
     XCTAssertTrue(item.permitsGitHubAccess)
     XCTAssertEqual(item.sharedLocation, item.location)

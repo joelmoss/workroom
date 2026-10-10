@@ -137,7 +137,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testResolveLocalMissingPath() async {
     let r = WorkroomStatusResolver(runner: MockStatusRunner { _, _ in ok("") })
     let missing = "/definitely/not/here-\(UUID().uuidString)"
-    let s = await r.resolveLocal(path: missing, vcs: "git")
+    let s = await r.resolveLocal(path: missing)
     XCTAssertNil(s.dirty)  // unknown, NOT clean
     XCTAssertEqual(s.failure, .missingPath)
   }
@@ -149,17 +149,10 @@ final class WorkroomStatusResolverTests: XCTestCase {
     // `existing` is a real directory but NOT a git repo, so the SwiftGitX read fails → notRepository.
     // The regression-critical property: a failed probe is UNKNOWN, never clean.
     let r = WorkroomStatusResolver()
-    let s = await r.resolveLocal(path: existing, vcs: "git")
+    let s = await r.resolveLocal(path: existing)
     XCTAssertNil(s.dirty)
     XCTAssertFalse(s.isClean)
     XCTAssertTrue(s.isUnknown)
-    XCTAssertEqual(s.failure, .notRepository)
-  }
-
-  func testResolveLocalUnknownVCS() async {
-    let r = WorkroomStatusResolver(runner: MockStatusRunner { _, _ in ok("anything") })
-    let s = await r.resolveLocal(path: existing, vcs: "hg")
-    XCTAssertNil(s.dirty)
     XCTAssertEqual(s.failure, .notRepository)
   }
 
@@ -701,17 +694,6 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(
       runner.calls.first?.args, ["pr", "merge", "9", "--squash", "--repo", "github.com/octo/repo"])
     XCTAssertEqual(runner.calls.first?.dir, NSTemporaryDirectory())
-  }
-
-  func testResolveLocalStaleJJVCSIsNotRepository() async {
-    // A stale "jj" from an old config, on a directory with no `.git`: unsupported → notRepository.
-    // The regression-critical property: a failed probe is UNKNOWN, never clean.
-    let r = WorkroomStatusResolver()
-    let s = await r.resolveLocal(path: existing, vcs: "jj")
-    XCTAssertNil(s.dirty)  // unknown, NOT clean
-    XCTAssertFalse(s.isClean)
-    XCTAssertTrue(s.isUnknown)
-    XCTAssertEqual(s.failure, .notRepository)
   }
 
   func testGHPreflightStderrTimeoutKeepsPrior() {

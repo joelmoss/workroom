@@ -77,7 +77,7 @@ final class RepositoryRoutingTests: XCTestCase {
           XCTFail("constructed local writer for remote")
         } catch { XCTAssertEqual(error as? RepositoryRoutingError, .unavailable(.remote(host))) }
       }
-      let failed = await WorkroomStatusResolver().resolve(location: remote, router: router)
+      let failed = await WorkroomStatusResolver(router: router).resolve(location: remote)
       XCTAssertNil(failed.dirty)
       XCTAssertEqual(failed.failure, .unavailable)
       let context = try await router.context(for: remote)
@@ -394,7 +394,7 @@ extension RepositoryRoutingTests {
     for host in [UUID(), UUID()] {
       let remote = try RepositoryLocation.remote(host: host, path: path)
       let item = AppStore.StatusWorkItem(
-        sid: sid, path: path, vcs: "git", projectRoot: path,
+        sid: sid, path: path, projectRoot: path,
         location: remote)
       store.performPRAction(.convertToDraft, number: 1, on: item)
       XCTAssertEqual(store.workroomStatuses[sid]?.pr, prior)
@@ -470,8 +470,8 @@ extension RepositoryRoutingTests {
 
   func testMissingPathStatusKeepsCompletionTimestamp() async throws {
     let location = try await RepositoryLocation.local("/private/tmp/missing-\(UUID().uuidString)")
-    let status = await WorkroomStatusResolver().resolve(
-      location: location, router: RepositoryRouter())
+    let status = await WorkroomStatusResolver(router: RepositoryRouter()).resolve(
+      location: location)
     XCTAssertEqual(status.failure, .missingPath)
     XCTAssertNotNil(status.localReadAt)
   }

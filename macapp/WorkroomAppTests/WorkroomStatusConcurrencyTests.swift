@@ -24,17 +24,35 @@ private final class InFlightCounter: @unchecked Sendable {
   }
 }
 
-/// A `VCSWorkingStatusReading` double that holds briefly while counting concurrent callers — long enough
-/// that more than `cap` probes would visibly overlap if the fan-out weren't actually bounded, short
-/// enough the test doesn't feel it (8 items / cap 5 ⇒ two sequential batches of ~20ms).
-private struct CountingGitStatus: VCSWorkingStatusReading {
+/// A local reader that holds briefly in `workingStatus` while counting concurrent callers — long
+/// enough that more than `cap` probes would visibly overlap if the fan-out weren't actually bounded,
+/// short enough the test doesn't feel it (8 items / cap 5 ⇒ two sequential batches of ~20ms). Nothing
+/// else is read by the status sweep.
+private struct CountingReader: VCSProviding {
+  let context: RepositoryContext
   let counter: InFlightCounter
-  func workingStatus(root: URL) throws -> WorkroomStatus {
+  func workingStatus() async throws -> WorkroomStatus {
     counter.enter()
     defer { counter.leave() }
-    Thread.sleep(forTimeInterval: 0.02)
+    try await runBlocking { Thread.sleep(forTimeInterval: 0.02) }
     return WorkroomStatus(dirty: false)
   }
+  func log(limit: Int) async throws -> VCSHistoryPage { throw VCSError.io("unused") }
+  func changeset(commitID: String) async throws -> VCSChangeset { throw VCSError.io("unused") }
+  func fileDiff(commitID: String, path: String) async throws -> String {
+    throw VCSError.io("unused")
+  }
+  func workingFileDiff(path: String) async throws -> String { throw VCSError.io("unused") }
+  func fileContent(rev: String, path: String) async throws -> String? { nil }
+  func commitParentFileContent(commitID: String, path: String) async throws -> String? { nil }
+  func workingBaseFileContent(path: String) async throws -> String? { nil }
+  func currentRef() async throws -> VCSRef { .none }
+}
+
+/// The router the sweep reads local status through, with `CountingReader` as its local reader — the
+/// same `RepositoryRouter.reader(for:)` boundary production takes, only the reader is a double.
+private func countingRouter(_ counter: InFlightCounter) -> RepositoryRouter {
+  RepositoryRouter(localReader: { CountingReader(context: $0, counter: counter) })
 }
 
 /// Reports every tool as missing (exit 127) so `refreshGitHubCLI` resolves to "not available" and
@@ -123,12 +141,11 @@ private struct CountingGHRunner: StatusCommandRunning, @unchecked Sendable {
 }
 
 /// REGRESSION (Muxy test-practices review, filed in TODOS.md — "N-in-flight concurrency accounting
-/// test for status sweeps"): `WorkroomStatusResolver.resolveGit` called `GitProvider()` directly,
-/// bypassing any injection seam, so this invariant was untestable until `VCSWorkingStatusReading`
-/// existed. `testCISweepNeverExceedsItsConcurrencyCap` covers the
-/// remaining half of that same entry: the `runCISweep` stage's own cap, over `resolveCI`/`gh`, which
-/// already had an injectable `StatusCommandRunning` (see `GatedGHRunner` in `WorkroomStatusTests.swift`)
-/// — the seam gap this file was filed for was only ever `resolveGit`'s.
+/// test for status sweeps"): the local sweep's cap is asserted through `RepositoryRouter`'s injectable
+/// `localReader`, the boundary every local status read takes. `testCISweepNeverExceedsItsConcurrencyCap`
+/// covers the remaining half of that same entry: the `runCISweep` stage's own cap, over
+/// `resolveCI`/`gh`, which has an injectable `StatusCommandRunning` (see `GatedGHRunner` in
+/// `WorkroomStatusTests.swift`).
 final class WorkroomStatusConcurrencyTests: XCTestCase {
   private var dirs: [String] = []
 
@@ -138,8 +155,8 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
     super.tearDown()
   }
 
-  /// A throwaway, empty directory standing in for a project root — `resolveLocal`'s `fileExists`
-  /// guard must pass, but nothing inside it is ever read (the injected double never touches disk).
+  /// A throwaway checkout standing in for a project root — the router's `fileExists` and `.git`
+  /// guards must pass, but nothing inside it is ever read (the injected reader never touches disk).
   private func throwawayProject(_ name: String) -> Project {
     let path = NSTemporaryDirectory() + "wr-cap-\(name)-\(UUID().uuidString)"
     try? makeGitCheckout(atPath: path)
@@ -157,7 +174,7 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
 
     let counter = InFlightCounter()
     store.statusResolver = WorkroomStatusResolver(
-      runner: MissingToolRunner(), gitStatus: CountingGitStatus(counter: counter))
+      runner: MissingToolRunner(), router: countingRouter(counter))
 
     store.refreshWorkroomStatuses(force: true)
     await store.statusSweepTask?.value
@@ -186,8 +203,7 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
     // `dirty: false` (not counted here) only needs to make every item CI-eligible
     // (`workroomStatuses[sid]?.dirty != nil`) — the assertion below is entirely about `ghCounter`.
     store.statusResolver = WorkroomStatusResolver(
-      runner: CountingGHRunner(counter: ghCounter),
-      gitStatus: CountingGitStatus(counter: InFlightCounter()))
+      runner: CountingGHRunner(counter: ghCounter), router: countingRouter(InFlightCounter()))
 
     store.refreshWorkroomStatuses(force: true)
     await store.statusSweepTask?.value
@@ -226,7 +242,7 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
 
     let runner = LookupCountingRunner()
     store.statusResolver = WorkroomStatusResolver(
-      runner: runner, gitStatus: CountingGitStatus(counter: InFlightCounter()))
+      runner: runner, router: countingRouter(InFlightCounter()))
 
     store.refreshWorkroomStatuses(force: true)
     await store.statusSweepTask?.value
@@ -252,7 +268,7 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
       lookupResult: CommandResult(
         stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true))
     store.statusResolver = WorkroomStatusResolver(
-      runner: runner, gitStatus: CountingGitStatus(counter: InFlightCounter()))
+      runner: runner, router: countingRouter(InFlightCounter()))
 
     store.refreshWorkroomStatuses(force: true)
     await store.statusSweepTask?.value
