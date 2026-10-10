@@ -14,6 +14,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 # `sha1` is not optional in practice: gix-hash gates its `Kind` enum variants behind it, so with no
 # hash feature the enum is empty and gix-hash fails to compile itself. `revision` is what provides

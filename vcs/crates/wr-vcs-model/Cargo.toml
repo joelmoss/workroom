@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lints]
+workspace = true
+
 # VCS-library-free by construction — pure domain types shared across the workspace and mapped into
 # the app's own Swift models at the provider boundary. Adding gix here is a layering violation.
 [dependencies]
