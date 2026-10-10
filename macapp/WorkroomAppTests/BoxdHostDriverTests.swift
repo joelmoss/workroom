@@ -70,6 +70,7 @@ final class BoxdHostDriverTests: XCTestCase {
 
   func testOnlyTheCLIsOwnNotFoundAnswersCountAsGone() {
     XCTAssertTrue(BoxdHostDriver.isNotFound("error: VM 'workroom-1' not found"))
+    XCTAssertTrue(BoxdHostDriver.isNotFound("error: snapshot not found"))
     XCTAssertFalse(
       BoxdHostDriver.isNotFound(
         "error: cannot connect to https://boxd.sh:9443: dns error: not found"))
@@ -127,6 +128,11 @@ final class BoxdHostDriverTests: XCTestCase {
         lock.withLock { pending[command] = entries }
       }
       if command == cancelling { withUnsafeCurrentTask { $0?.cancel() } }
+      // A delete also removes an older build's derive snapshot named after the machine, usually
+      // absent.
+      if command == "snapshots remove", answers[command] == nil {
+        return BoxdHostDriverTests.notFound("error: snapshot not found")
+      }
       // The account's own org is active unless a test says otherwise.
       if command == "auth --json", answers[command] == nil {
         let org = lock.withLock { orgs.isEmpty ? nil : orgs.removeFirst() }
@@ -141,6 +147,7 @@ final class BoxdHostDriverTests: XCTestCase {
   fileprivate static func ok(_ json: String) -> CommandResult {
     CommandResult(stdout: json, stderr: "", exitCode: 0, timedOut: false)
   }
+  fileprivate static func notFound(_ said: String) -> CommandResult { failed(said) }
   private static func failed(_ said: String) -> CommandResult {
     CommandResult(stdout: "", stderr: "\n  A new version…\n\(said)\n", exitCode: 1, timedOut: false)
   }
@@ -292,7 +299,7 @@ final class BoxdHostDriverTests: XCTestCase {
       configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), org: "acme"),
       directory: FileManager.default.temporaryDirectory, runner: cli)
     try await named.destroy(.remote(UUID()))
-    XCTAssertEqual(cli.commands, ["machine remove"])
+    XCTAssertEqual(cli.commands, ["machine remove", "snapshots remove"])
   }
 
   // Value: protects=every new boxd host records the account it was made in, so a delete checks it;
@@ -333,7 +340,7 @@ final class BoxdHostDriverTests: XCTestCase {
       configuration: .init(cli: URL(fileURLWithPath: "/nonexistent/boxd"), account: "usr_other"),
       directory: FileManager.default.temporaryDirectory, runner: cli)
     try await other.destroy(.remote(UUID()))
-    XCTAssertEqual(cli.commands, ["machine remove"])
+    XCTAssertEqual(cli.commands, ["machine remove", "snapshots remove"])
   }
 
   /// boxd's idle timers, whose encoding isn't documented: the shorter of the two that are set, in
@@ -393,15 +400,21 @@ final class BoxdHostDriverTests: XCTestCase {
     }
   }
 
-  /// A cancelled call is a cancellation, not a provisioning failure.
+  /// A cancelled call is a cancellation, not a provisioning failure: also while a delete removes
+  /// an older build's derive snapshot, which the best-effort step must not swallow, or a cancelled delete would
+  /// read as done and its record go while the snapshot stays (#356).
   func testACancelledCLICallThrowsCancellation() async throws {
-    let cli = StubCLI(["machine remove": Self.ok("{}")])
-    cli.cancelling = "machine remove"
-    let destroy = Task { [driver = driver(cli)] in try await driver.destroy(.remote(UUID())) }
-    do {
-      try await destroy.value
-      XCTFail("a cancelled destroy reported success")
-    } catch is CancellationError {}
+    for step in ["machine remove", "snapshots remove"] {
+      let cli = StubCLI([
+        "machine remove": Self.ok("{}"), "snapshots remove": Self.failed("error: internal"),
+      ])
+      cli.cancelling = step
+      let destroy = Task { [driver = driver(cli)] in try await driver.destroy(.remote(UUID())) }
+      do {
+        try await destroy.value
+        XCTFail("a destroy cancelled at \(step) reported success")
+      } catch is CancellationError {}
+    }
   }
 
   func testDestroyingAMachineAlreadyGoneSucceedsAndAFailedRemovalThrows() async throws {
@@ -415,5 +428,27 @@ final class BoxdHostDriverTests: XCTestCase {
     } catch HostDriverError.provisioning(let detail) {
       XCTAssertTrue(detail.hasSuffix("boxd machine remove: error: internal"), detail)
     }
+
+    // Value: protects=a delete also removes the derive snapshot an older build's failed derive left, named as its
+    // machine is, even when the machine is already gone, and a snapshot that will not go never
+    // makes a removed machine read as running; fails_when=destroy removes only the machine, names
+    // another snapshot, or throws on the snapshot step; why_new=destroy tests never named a
+    // snapshot; seam=none
+    for machine in [Self.ok(#"{"status":"destroyed"}"#), Self.failed("error: VM 'x' not found")] {
+      let snapshot = StubCLI(["machine remove": machine, "snapshots remove": Self.ok("{}")])
+      try await driver(snapshot).destroy(.remote(UUID()))
+      XCTAssertEqual(snapshot.commands, ["machine remove", "snapshots remove"])
+      let removals = snapshot.arguments.filter { $0.count > 2 && $0[1] == "remove" }
+      XCTAssertEqual(removals.count, 2)
+      XCTAssertEqual(
+        removals.first?.dropFirst(2).first, removals.last?.dropFirst(2).first,
+        "the snapshot removed was not the one named after the machine")
+    }
+    let stuck = StubCLI([
+      "machine remove": Self.ok(#"{"status":"destroyed"}"#),
+      "snapshots remove": Self.failed("error: internal"),
+    ])
+    try await driver(stuck).destroy(.remote(UUID()))
+    XCTAssertEqual(stuck.commands, ["machine remove", "snapshots remove"])
   }
 }

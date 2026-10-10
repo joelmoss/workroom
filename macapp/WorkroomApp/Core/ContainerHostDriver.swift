@@ -134,6 +134,14 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     return try await run(provisioning.image)
   }
 
+  /// Pulls the host image unless this runtime has it. A create calls it before it names its
+  /// workroom, so a download's progress (`pullProgress`) shows on the project's row, which is the
+  /// one that shows it; `create` then finds the image there.
+  func ensureHostImage() async throws {
+    guard let provisioning else { throw HostDriverError.notImplemented("Creating a host") }
+    try await ensureImage(provisioning.image)
+  }
+
   /// Told how far a host image's pull has got, 0 to 1, then nil once it is done, for a create run
   /// inside `$pullProgress.withValue` (#309): a task-local, so `HostDriver.create` keeps its shape
   /// and two creates at once each hear only their own.

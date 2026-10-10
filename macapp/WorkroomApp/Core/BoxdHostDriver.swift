@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// The first real provider driver (#256): boxd.sh machines, driven through the `boxd` CLI and
 /// reached over ssh. Each workroom is a fresh machine of its own: there is no base to derive from.
@@ -76,6 +77,9 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     self.runner = runner
   }
 
+  private static let logger = Logger(
+    subsystem: "com.developwithstyle.workroom", category: "BoxdHostDriver")
+
   func name(of id: UUID) -> String { "\(configuration.prefix)-\(id.uuidString.lowercased())" }
 
   private func id(of host: HostID) throws -> UUID {
@@ -126,6 +130,22 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     if let failure = await remove(machine: name(of: id)) {
       try Task.checkCancellation()
       throw HostDriverError.provisioning(failure)
+    }
+    // An older build's derive that failed or was quit partway can leave its snapshot, named as its
+    // machine is (#356), with the base's disk in it: it goes too, while such builds' pending
+    // machines and failed records are still about. Best-effort: the machine is gone, which is what
+    // a delete reports, so a failure here is logged rather than made to read as a running box.
+    // Usually "not found", which this org (just checked) makes final, so no second org check.
+    do {
+      _ = try await cli(["snapshots", "remove", name(of: id), "-y"])
+    } catch let failure as CLIFailure where failure.notFound {
+    } catch is CancellationError {
+      // A cancelled delete isn't done: it fails, so the record of the snapshot stays.
+      throw CancellationError()
+    } catch {
+      Self.logger.error(
+        "snapshot \(self.name(of: id), privacy: .public) not removed: \(error.localizedDescription, privacy: .public)"
+      )
     }
     PendingMachines.forget([id], in: directory)
     try? FileManager.default.removeItem(at: hostDirectory(id))
@@ -326,11 +346,12 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       .first { $0.hasPrefix("error:") }
   }
 
-  /// The CLI's answer for a machine that does not exist: `error: VM '<name>' not found`
-  /// (measured). Matched whole, so a transport failure that happens to say "not found" is never
-  /// taken for a removal.
+  /// The CLI's answers for a machine or snapshot that does not exist: `error: VM '<name>' not
+  /// found` and `error: snapshot not found` (measured). Matched whole, so a transport failure
+  /// that happens to say "not found" is never taken for a removal.
   static func isNotFound(_ said: String) -> Bool {
-    said.hasPrefix("error: VM '") && said.hasSuffix("' not found")
+    said == "error: snapshot not found"
+      || (said.hasPrefix("error: VM '") && said.hasSuffix("' not found"))
   }
 
   // MARK: ssh

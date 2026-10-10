@@ -3790,7 +3790,10 @@ final class AppStore: ObservableObject {
         key.isRemoteProvider ? stepped : nil
       ) {
         try await ContainerHostDriver.$pullProgress.withValue(report) {
-          try await RemoteWorkrooms.create(
+          // Before the workroom has a name: once it does, its row has the create's progress, and
+          // a download's percentage shows only on the project's.
+          try await (driver as? ContainerHostDriver)?.ensureHostImage()
+          return try await RemoteWorkrooms.create(
             repository: repository, cloneURL: RemoteWorkrooms.cloneURL(for: repository),
             startBranch: startBranch, key: key, driver: driver, environment: environment,
             recorder: recorder)
