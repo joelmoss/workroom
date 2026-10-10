@@ -10,7 +10,7 @@ body:
     id: what-happened
     attributes:
       label: What happened
-      description: What you did, what you saw, and what you expected instead.
+      description: What you did, what you saw, and what you expected instead. You can attach screenshots here.
     validations:
       required: true
   - type: textarea
@@ -27,14 +27,14 @@ body:
     id: version
     attributes:
       label: Workroom version and channel
-      description: Settings ▸ About shows the app's version; `workroom version` shows the CLI's. Say stable, pre or Nightly.
+      description: Settings ▸ About shows the app's version. `workroom version` shows the CLI's (`workroom-nightly version` on Nightly); add `--json` to see its channel. Say stable, pre or Nightly.
       placeholder: "2.1.0 (stable)"
     validations:
       required: true
   - type: input
     id: macos
     attributes:
-      label: macOS version and chip
+      label: OS version and chip
       placeholder: "macOS 15.6, Apple silicon"
   - type: dropdown
     id: where
@@ -49,6 +49,6 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: Logs, screenshots or `--json` output
+      label: Logs or `--json` output
       description: Redact tokens, hostnames and anything private before pasting.
       render: shell
