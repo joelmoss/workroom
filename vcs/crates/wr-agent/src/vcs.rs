@@ -1558,7 +1558,18 @@ mod tests {
     /// `exec`'s executable restriction, specifically to observe what reaches the child.
     #[test]
     fn run_exec_replaces_the_daemons_environment_with_the_requests() {
-        std::env::set_var("WORKROOM_DAEMON_ONLY", "stale-daemon-value");
+        // A variable this process already has and the request does not set. Inherited rather than
+        // set here: changing the environment of a test process whose other tests run on other
+        // threads is unsound, which is why `set_var` is `unsafe` as of edition 2024.
+        let request = [
+            "PATH",
+            "SSH_AUTH_SOCK",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_CEILING_DIRECTORIES",
+        ];
+        let (inherited, _) = std::env::vars()
+            .find(|(key, _)| !request.contains(&key.as_str()))
+            .expect("the test process has a variable the request does not set");
         let root = git_repo("run-exec-env");
         let captured = run_exec(
             &root,
@@ -1577,8 +1588,11 @@ mod tests {
         assert!(stdout.contains("SSH_AUTH_SOCK=/tmp/allowed.sock"));
         assert!(stdout.contains("GIT_AUTHOR_EMAIL=fresh@example.com"));
         // The daemon's own environment must not reach the child at all.
-        assert!(!stdout.contains("WORKROOM_DAEMON_ONLY"));
-        std::env::remove_var("WORKROOM_DAEMON_ONLY");
+        let leaked = format!("{inherited}=");
+        assert!(
+            !stdout.lines().any(|line| line.starts_with(&leaked)),
+            "{inherited} reached the child"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
