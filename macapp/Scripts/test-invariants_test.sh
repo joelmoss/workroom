@@ -95,7 +95,7 @@ if ! grep -q 'WORKROOM_APPCAST: appcast-nightly.xml' "$PROJECT_YML"; then
   echo "      Workroom Nightly would share the main feed and be offered the main Workroom DMG."
   fails=$((fails + 1))
 fi
-if ! grep -q 'SUFeedURL: .*\$(WORKROOM_APPCAST)' "$PROJECT_YML"; then
+if ! grep -q 'SUFeedURL: .*[$](WORKROOM_APPCAST)' "$PROJECT_YML"; then
   echo "FAIL: project.yml's SUFeedURL no longer resolves \$(WORKROOM_APPCAST); the per-config"
   echo "      nightly feed override cannot take effect."
   fails=$((fails + 1))
@@ -118,12 +118,12 @@ for target in app-build app-test app-uitest; do
     fails=$((fails + 1))
   fi
 done
-if ! recipe app-test | grep -q '\$(call gui_lock,shared,app-test)'; then
+if ! recipe app-test | grep -q '[$](call gui_lock,shared,app-test)'; then
   echo "FAIL: app-test no longer runs its tests under the shared GUI lock — a unit run's host windows"
   echo "      would land on top of another workroom's XCUITest run."
   fails=$((fails + 1))
 fi
-if ! recipe app-uitest | grep -q '\$(call gui_lock,exclusive,app-uitest)'; then
+if ! recipe app-uitest | grep -q '[$](call gui_lock,exclusive,app-uitest)'; then
   echo "FAIL: app-uitest no longer holds the GUI session exclusively — two workrooms' UI-test runs"
   echo "      would drive the one pointer and keyboard at once."
   fails=$((fails + 1))
@@ -133,13 +133,13 @@ if recipe app-run | grep -q 'pkill'; then
   echo "      stops other workrooms' dev apps and test runs. Stop by identity (stop-dev-app.sh)."
   fails=$((fails + 1))
 fi
-if ! grep -qF 'PRODUCT_BUNDLE_IDENTIFIER: "com.developwithstyle.workroom.dev$(WORKROOM_DEV_ID_SUFFIX)"' \
+if ! grep -qF "PRODUCT_BUNDLE_IDENTIFIER: \"com.developwithstyle.workroom.dev\$(WORKROOM_DEV_ID_SUFFIX)\"" \
   "$PROJECT_YML"; then
   echo "FAIL: project.yml's Debug bundle id no longer carries \$(WORKROOM_DEV_ID_SUFFIX), so the"
   echo "      Makefile's per-workroom identity reaches nothing."
   fails=$((fails + 1))
 fi
-if [ "$(grep -cF '$(WORKROOM_DEV_ID_SUFFIX)' "$PROJECT_YML")" -ne 1 ]; then
+if [ "$(grep -cF "\$(WORKROOM_DEV_ID_SUFFIX)" "$PROJECT_YML")" -ne 1 ]; then
   echo "FAIL: \$(WORKROOM_DEV_ID_SUFFIX) must reach the Debug bundle id and nothing else — above all"
   echo "      never the Release or Nightly bundle id, which Sparkle updates and TCC grants key on."
   fails=$((fails + 1))

@@ -100,7 +100,8 @@ fi
 # Cargo resolves rustc through PATH even when rustup selected cargo. Pin the matching
 # compiler so a Homebrew rustc cannot silently replace the cross-capable toolchain.
 if [ "$CARGO" != "cargo" ]; then
-  export RUSTC="$(rustup which --toolchain "$AGENT_TOOLCHAIN" rustc)"
+  RUSTC="$(rustup which --toolchain "$AGENT_TOOLCHAIN" rustc)"
+  export RUSTC
 fi
 
 echo "Building $HELPER_NAME (${TARGETS[*]}) -> $DEST"

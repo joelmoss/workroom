@@ -124,7 +124,7 @@ fi
 # from the script (`$(dirname "$0")/../..`), and an off-by-one there still exits 0 and still prints
 # nothing whenever the wrong directory also happens to be a main checkout — which `macapp/` is. Only
 # the comparison can tell a resolved default root from a wrong one.
-default_out="$(sh "$SCRIPT")"
+sh "$SCRIPT" >/dev/null
 default_status=$?
 if [ "$default_status" -ne 0 ]; then
   echo "FAIL: dev-identity.sh with no argument exited $default_status"
