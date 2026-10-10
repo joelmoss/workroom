@@ -1,0 +1,1 @@
+{"cli_version":"dev","command":"create","created":{"name":"calm-river","path":"/Users/dev/workrooms/calm-river","project":"/Users/dev/src/app","vcs":"git"},"error":{"kind":"SetupScriptFailed","message":"setup script failed: /Users/dev/src/app/scripts/workroom_setup returned a non-zero exit code"},"ok":false,"schema_version":1}
