@@ -36,6 +36,7 @@ use serde_json::{Value, json};
 
 use crate::rpc::SharedWriter;
 use wr_protocol::envelope::{Envelope, Service};
+use wr_protocol::reply::Reply;
 
 /// The wire version of this service, reported by `capabilities`. Separate from `PROTOCOL_VERSION`,
 /// which says whether the service exists at all.
@@ -251,10 +252,10 @@ pub fn dispatch(
 }
 
 fn reply(result: Result<Value, LayoutError>) -> Value {
-    match result {
-        Ok(result) => json!({"version": LAYOUT_SERVICE_VERSION, "result": result}),
-        Err(error) => json!({"version": LAYOUT_SERVICE_VERSION, "error": error.json()}),
-    }
+    json!(Reply::new(
+        LAYOUT_SERVICE_VERSION,
+        result.map_err(|error| error.json())
+    ))
 }
 
 /// One request against `layouts`, separated from the transport so tests drive it directly.
