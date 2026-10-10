@@ -130,11 +130,18 @@ app-test: ## Run the app's unit tests (other workrooms' unit runs can overlap)
 	  $(call gui_lock,shared,app-test) \
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) test-without-building
 
-# Each local package's tests (macapp/Packages), with plain `swift test`: no app host, so no GUI lock,
-# and seconds rather than the app build. CI runs it before `make app-test`. SwiftPM's build service
-# cannot write under Claude Code's command sandbox, so run it with the sandbox off there.
+# Each local package's tests (macapp/Packages), with plain `swift test`: no app host, so no GUI lock.
+# CI, nightly and release run it beside `make app-test`. Each package resolves first, up to three
+# times: SyntaxHighlighting clones 16 grammars, and a github.com blip would otherwise fail a release
+# gate. SwiftPM's build service cannot write under Claude Code's command sandbox, so run it with
+# the sandbox off there.
 app-package-test: ## Run the local Swift packages' tests (swift test, no app host or GUI lock)
 	@set -e; for pkg in macapp/Packages/*/; do \
+	  attempt=1; \
+	  until swift package resolve --package-path "$$pkg"; do \
+	    if [ "$$attempt" -ge 3 ]; then echo "SPM resolve of $$pkg failed 3 times" >&2; exit 1; fi; \
+	    echo "SPM resolve of $$pkg failed; retrying in 15s" >&2; attempt=$$((attempt + 1)); sleep 15; \
+	  done; \
 	  echo "swift test --package-path $$pkg"; swift test --package-path "$$pkg"; \
 	done
 
