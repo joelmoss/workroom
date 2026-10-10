@@ -11,7 +11,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .DEFAULT_GOAL := help
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
-        app-run app-build app-test app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
+        app-run app-build app-test app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-scripts-lint app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
         remote-host-image remote-host-image-test actions-lint
 
 help: ## List available targets
@@ -173,6 +173,9 @@ app-test-scripts: ## Run the script tests (build-helper/build-agent archs, chann
 	sh macapp/Scripts/dev-identity_test.sh
 	sh macapp/Scripts/stop-dev-app_test.sh
 	python3 macapp/Scripts/gui-lock_test.py
+
+app-scripts-lint: ## Lint macapp/Scripts/*.sh with shellcheck (needs shellcheck on PATH)
+	shellcheck -x -P SCRIPTDIR macapp/Scripts/*.sh
 
 app-generate: ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 	cd macapp && xcodegen generate

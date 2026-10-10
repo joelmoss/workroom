@@ -20,6 +20,7 @@ Run commands from the repository root; `make` lists available targets.
 - `make app-package-test`: run the tests of the local Swift packages in `macapp/Packages/` with `swift test`; `make app-test` does not run them.
 - `make app-uitest`: run XCUITest in a logged-in GUI session; it takes that session exclusively, so runs from several workrooms queue.
 - `make app-test-scripts`: check packaging/helper shell scripts.
+- `make app-scripts-lint`: run shellcheck over `macapp/Scripts/*.sh`.
 - `make app-format`, `make app-lint`: format Swift and enforce strict linting.
 - `make cli-build`, `make cli-test`: build the CLI and run `go test ./...`.
 - `make cli-lint`: run golangci-lint v2 and check gofmt/goimports formatting.

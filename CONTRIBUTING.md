@@ -74,7 +74,8 @@ the v2-format `.golangci.yml`.
 **To change a GitHub workflow:** **`actionlint` 1.7.12** for `make actions-lint`
 (`go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`), with `shellcheck` on `PATH` so
 `run:` blocks are checked too. CI's `workflows` job runs the same version, checked by the
-release archive's sha256: bump the version and the hash there together.
+release archive's sha256: bump the version and the hash there together. The same `shellcheck` lints
+`macapp/Scripts/*.sh` through `make app-scripts-lint`; CI runs it in that `workflows` job.
 
 Runtime requirements for *using* Workroom are in [the README](README.md#requirements).
 
@@ -430,6 +431,7 @@ executor and a temp config — no real repo required.
 | `app-uitest` | Run `WorkroomAppUITests` (XCUITest; needs a GUI session) |
 | `app-generate` | Regenerate the `.xcodeproj` from `project.yml` |
 | `app-format` / `app-lint` | Format / lint Swift via swift-format |
+| `app-scripts-lint` | shellcheck over `macapp/Scripts/*.sh` (needs `shellcheck` on `PATH`) |
 | `app-release` | Build → sign → notarize → staple → DMG (full release) |
 | `app-icon` | Regenerate the AppIcon PNGs |
 | `app-clean` | Remove `DerivedData` + the `.xcodeproj` |
