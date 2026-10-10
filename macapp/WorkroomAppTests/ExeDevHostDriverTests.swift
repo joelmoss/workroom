@@ -327,11 +327,6 @@ final class ExeDevHostDriverTests: XCTestCase {
 
   /// A `HostDriver` whose "host" is a local shell: `exec` runs the check line with `/bin/sh`.
   private struct ShellHost: HostDriver {
-    var traits: HostDriverTraits {
-      HostDriverTraits(
-        transport: .sshStdio,
-        durableDisk: true, maxLifetime: nil)
-    }
     func create() async throws -> HostID { .local }
     func destroy(_ host: HostID) async throws {}
     func openStream(to host: HostID) async throws -> HostStream {

@@ -18,11 +18,6 @@ final class AgentBootstrapTests: XCTestCase {
     private(set) var commands: [String] = []
     /// Where `openStream` connects, or nil for one that throws.
     var streamSocket: String?
-    var traits: HostDriverTraits {
-      HostDriverTraits(
-        transport: .sshStdio,
-        durableDisk: false, maxLifetime: nil)
-    }
 
     init(_ answers: [Answer]) { self.answers = answers }
 
@@ -733,9 +728,6 @@ final class AgentBootstrapTests: XCTestCase {
   /// coreutils, `/sbin/sha256sum` included. The fixture proves the same on a real Linux host.
   private final class LocalShellDriver: HostDriver, @unchecked Sendable {
     let path: String
-    let traits = HostDriverTraits(
-      transport: .sshStdio,
-      durableDisk: false, maxLifetime: nil)
 
     init(path: String) { self.path = path }
 

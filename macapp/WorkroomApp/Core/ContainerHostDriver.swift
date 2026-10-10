@@ -101,10 +101,6 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// seconds since 1970, so `sweep` can leave one that may still be part of a create.
   static let createdLabel = "workroom.created"
 
-  var traits: HostDriverTraits {
-    HostDriverTraits(transport: .sshStdio, durableDisk: false, maxLifetime: nil)
-  }
-
   /// Where each host's `ssh_config` and `known_hosts` are written.
   let directory: URL
   let provisioning: Provisioning?
