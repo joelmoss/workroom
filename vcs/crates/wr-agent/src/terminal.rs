@@ -522,10 +522,9 @@ impl ShadowTerminal {
 
         if let Some(flags) =
             self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS)
+            && flags != 0
         {
-            if flags != 0 {
-                out.extend_from_slice(format!("\x1b[>{flags}u").as_bytes());
-            }
+            out.extend_from_slice(format!("\x1b[>{flags}u").as_bytes());
         }
 
         out.extend_from_slice(&self.cursor_position());

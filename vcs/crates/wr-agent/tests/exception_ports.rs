@@ -28,7 +28,7 @@ const THREAD_STATE_NONE: libc::c_int = 13;
 const MACH_PORT_RIGHT_RECEIVE: libc::c_uint = 1;
 const MACH_MSG_TYPE_MAKE_SEND: libc::c_uint = 20;
 
-extern "C" {
+unsafe extern "C" {
     // What <mach/mach_init.h>'s `mach_task_self()` reads.
     static mach_task_self_: libc::mach_port_t;
     fn mach_port_allocate(

@@ -440,10 +440,10 @@ fn a_watched_root_that_is_deleted_ends_the_subscription_with_a_typed_event() {
     let mut ended = None;
     let deadline = Instant::now() + Duration::from_secs(8);
     while Instant::now() < deadline && ended.is_none() {
-        if let Some(event) = client.event(9, Duration::from_millis(500)) {
-            if event["event"] == "ended" {
-                ended = Some(event);
-            }
+        if let Some(event) = client.event(9, Duration::from_millis(500))
+            && event["event"] == "ended"
+        {
+            ended = Some(event);
         }
     }
     assert_eq!(ended.expect("an `ended` event")["reason"], "root_removed");

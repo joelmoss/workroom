@@ -744,10 +744,10 @@ impl Forwards {
     /// The client will send no more: the socket's write half goes down so the peer sees EOF. Once.
     fn half_close(&self, stream: u32) {
         let open = self.open.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(conn) = open.get(&stream) {
-            if !conn.half_closed.swap(true, Ordering::AcqRel) {
-                let _ = conn.tx.send(Msg::Eof);
-            }
+        if let Some(conn) = open.get(&stream)
+            && !conn.half_closed.swap(true, Ordering::AcqRel)
+        {
+            let _ = conn.tx.send(Msg::Eof);
         }
     }
 
@@ -838,10 +838,10 @@ fn retire_after_spawn_failure(
 /// finishes with the one CLOSE.
 fn kill_own(open: &Mutex<HashMap<u32, Conn>>, stream: u32, token: u64) {
     let open = open.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(conn) = open.get(&stream) {
-        if conn.token == token {
-            conn.kill();
-        }
+    if let Some(conn) = open.get(&stream)
+        && conn.token == token
+    {
+        conn.kill();
     }
 }
 

@@ -115,11 +115,11 @@ fn apply_bash(root: &str, env: &mut Environment) {
     }
     env.set("ENV", &format!("{root}/bash/ghostty.bash"));
     env.set("GHOSTTY_BASH_INJECT", "1");
-    if env.get("HISTFILE").is_none() {
-        if let Some(home) = env.get("HOME").filter(|home| !home.is_empty()) {
-            env.set("HISTFILE", &format!("{home}/.bash_history"));
-            env.set("GHOSTTY_BASH_UNEXPORT_HISTFILE", "1");
-        }
+    if env.get("HISTFILE").is_none()
+        && let Some(home) = env.get("HOME").filter(|home| !home.is_empty())
+    {
+        env.set("HISTFILE", &format!("{home}/.bash_history"));
+        env.set("GHOSTTY_BASH_UNEXPORT_HISTFILE", "1");
     }
 }
 

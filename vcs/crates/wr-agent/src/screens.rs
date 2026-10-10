@@ -305,15 +305,15 @@ fn flush(
             }
         }
     }
-    if !saved.is_empty() {
-        if let Err(e) = screens.sync() {
-            // Their renames are not durable yet, and taking their screens cleared their changed
-            // flags: an idle session would never be written, or synced, again.
-            for id in saved {
-                sessions.mark_changed(id);
-            }
-            eprintln!("wr-agent: could not sync the screens directory: {e}");
+    if !saved.is_empty()
+        && let Err(e) = screens.sync()
+    {
+        // Their renames are not durable yet, and taking their screens cleared their changed
+        // flags: an idle session would never be written, or synced, again.
+        for id in saved {
+            sessions.mark_changed(id);
         }
+        eprintln!("wr-agent: could not sync the screens directory: {e}");
     }
     // After the writes, so a session killed while its screen was being written loses the record
     // that write put back. A session that ends while the agent runs leaves nothing to restore.
