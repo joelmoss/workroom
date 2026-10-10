@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/config"
-	"github.com/joelmoss/workroom/internal/ui"
 	"github.com/joelmoss/workroom/internal/vcs"
 	"github.com/joelmoss/workroom/internal/vcs/vcstest"
 )
@@ -57,13 +56,16 @@ func newTestService(t *testing.T, v vcs.VCS) (*Service, *bytes.Buffer, *config.C
 	t.Helper()
 	dir := t.TempDir()
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
+	// buf receives each teardown script's output, where the human CLI shows a log panel.
 	var buf bytes.Buffer
 	svc := &Service{
 		Config:    cfg,
 		VCS:       v,
-		Out:       &buf,
 		ConfirmFn: func(string) (bool, error) { return true, nil },
 		PromptFn:  func(string, []string) ([]string, error) { return nil, nil },
+		ScriptOutput: func(string) (io.Writer, func(bool)) {
+			return &buf, func(bool) {}
+		},
 	}
 	return svc, &buf, cfg
 }
@@ -96,7 +98,6 @@ func TestCreateErrorsIfNotGit(t *testing.T) {
 	dir := t.TempDir()
 	svc := &Service{
 		Config: newTestConfig(t, filepath.Join(dir, "config.json")),
-		Out:    &bytes.Buffer{},
 	}
 
 	_, err := svc.CreateNamed(dir, nil)
@@ -109,7 +110,7 @@ func TestCreateErrorsIfInWorkroom(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, ".Workroom"), []byte{}, 0o644)
 
-	svc := &Service{Out: &bytes.Buffer{}}
+	svc := &Service{}
 	_, err := svc.CreateNamed(dir, nil)
 	if !errors.Is(err, ErrInWorkroom) {
 		t.Fatalf("expected ErrInWorkroom, got %v", err)
@@ -582,7 +583,7 @@ func TestDeleteInvalidName(t *testing.T) {
 	svc, _, _ := newTestService(t, git)
 	vcstest.MakeGitDir(t, dir)
 
-	err := svc.Delete(dir, "fo.o", "")
+	_, err := svc.Delete(dir, "fo.o", "")
 	if !errors.Is(err, ErrInvalidName) {
 		t.Fatalf("expected ErrInvalidName, got %v", err)
 	}
@@ -593,10 +594,9 @@ func TestDeleteErrorsIfNotGit(t *testing.T) {
 
 	svc := &Service{
 		Config: newTestConfig(t, filepath.Join(dir, "config.json")),
-		Out:    &bytes.Buffer{},
 	}
 
-	err := svc.Delete(dir, "foo", "")
+	_, err := svc.Delete(dir, "foo", "")
 	if !errors.Is(err, ErrUnsupportedVCS) {
 		t.Fatalf("expected ErrUnsupportedVCS, got %v", err)
 	}
@@ -614,7 +614,7 @@ func TestDeleteErrorsIfGitWorktreeNotFound(t *testing.T) {
 	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 
-	err := svc.Delete(dir, "foo", "foo")
+	_, err := svc.Delete(dir, "foo", "foo")
 	if !errors.Is(err, ErrGitWorktreeNotFound) {
 		t.Fatalf("expected ErrGitWorktreeNotFound, got %v", err)
 	}
@@ -631,12 +631,13 @@ func TestDeleteForgetsAWorkroomThatIsNotAGitWorktree(t *testing.T) {
 	os.MkdirAll(filepath.Join(wrPath, ".jj"), 0o755)
 
 	mock := &mockExecutor{output: gitWorktrees(dir)}
-	svc, buf, _ := newTestService(t, &vcs.Git{Executor: mock})
+	svc, _, _ := newTestService(t, &vcs.Git{Executor: mock})
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
-	if err := svc.Delete(dir, "foo", "foo"); err != nil {
+	res, err := svc.Delete(dir, "foo", "foo")
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, call := range mock.calls {
@@ -654,8 +655,8 @@ func TestDeleteForgetsAWorkroomThatIsNotAGitWorktree(t *testing.T) {
 	if _, err := os.Stat(wrPath); err != nil {
 		t.Fatalf("expected the folder to be left in place: %v", err)
 	}
-	if !strings.Contains(buf.String(), ui.DisplayPath(wrPath)) {
-		t.Fatalf("expected output to name the folder left behind, got %q", buf.String())
+	if res.Outcome != ForgotNonGit || res.Path != wrPath {
+		t.Fatalf("expected the result to name the folder left behind, got %+v", res)
 	}
 }
 
@@ -672,7 +673,7 @@ func TestDeleteForgetsANonGitWorkroomButKeepsAnEmptyProject(t *testing.T) {
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 	svc.KeepEmptyProject = true
 
-	if err := svc.Delete(dir, "foo", "foo"); err != nil {
+	if _, err := svc.Delete(dir, "foo", "foo"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	projects, err := svc.Config.AllProjects()
@@ -692,8 +693,8 @@ func TestDeleteErrorsIfInWorkroom(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, ".Workroom"), []byte{}, 0o644)
 
-	svc := &Service{Out: &bytes.Buffer{}}
-	err := svc.Delete(dir, "foo", "")
+	svc := &Service{}
+	_, err := svc.Delete(dir, "foo", "")
 	if !errors.Is(err, ErrInWorkroom) {
 		t.Fatalf("expected ErrInWorkroom, got %v", err)
 	}
@@ -717,19 +718,17 @@ func TestDeleteSucceeds(t *testing.T) {
 	}
 	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, git)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
-	err := svc.Delete(dir, "foo", "foo")
+	res, err := svc.Delete(dir, "foo", "foo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	output := buf.String()
-	if !strings.Contains(output, "Workroom 'foo' deleted successfully.") {
-		t.Fatalf("expected success message, got %q", output)
+	if res.Outcome != Deleted || res.Name != "foo" {
+		t.Fatalf("expected foo deleted, got %+v", res)
 	}
 
 	// git worktree remove (simulated by the mock) removes the directory
@@ -755,7 +754,7 @@ func TestDeleteUpdatesConfig(t *testing.T) {
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
-	err := svc.Delete(dir, "foo", "foo")
+	_, err := svc.Delete(dir, "foo", "foo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -788,7 +787,7 @@ func TestDeleteConfirmSkipsPrompt(t *testing.T) {
 		return true, nil
 	}
 
-	err := svc.Delete(dir, "foo", "foo")
+	_, err := svc.Delete(dir, "foo", "foo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -813,7 +812,7 @@ func TestDeleteConfirmMismatchErrors(t *testing.T) {
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 
-	err := svc.Delete(dir, "foo", "wrong")
+	_, err := svc.Delete(dir, "foo", "wrong")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -844,21 +843,14 @@ func TestDeleteRunsTeardownScript(t *testing.T) {
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
-	err := svc.Delete(dir, "foo", "foo")
+	_, err := svc.Delete(dir, "foo", "foo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	output := buf.String()
-	// Teardown output is rendered inside a titled log panel with a gutter border.
-	if !strings.Contains(output, "╭─ Teardown ") {
-		t.Fatalf("expected teardown log panel header, got %q", output)
-	}
-	if !strings.Contains(output, "│ I teared down") {
-		t.Fatalf("expected gutter-prefixed teardown output, got %q", output)
-	}
-	if !strings.Contains(output, "Workroom 'foo' deleted successfully.") {
-		t.Fatalf("expected success message, got %q", output)
+	// Teardown output streams to ScriptOutput, the human CLI's log panel.
+	if !strings.Contains(buf.String(), "I teared down") {
+		t.Fatalf("expected the teardown output streamed, got %q", buf.String())
 	}
 }
 
@@ -884,7 +876,7 @@ func TestDeleteErrorsOnFailedTeardownScript(t *testing.T) {
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
-	err := svc.Delete(dir, "foo", "foo")
+	_, err := svc.Delete(dir, "foo", "foo")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -914,14 +906,13 @@ func TestDeleteTeardownFailureStreamsToScriptLogWriter(t *testing.T) {
 	git := &vcs.Git{Executor: mock}
 
 	svc, _, _ := newTestService(t, git)
-	svc.Out = io.Discard // machine/JSON mode discards human output
 	var logged bytes.Buffer
 	svc.ScriptLogWriter = &logged // ...but script output streams here
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
-	err := svc.Delete(dir, "foo", "foo")
+	_, err := svc.Delete(dir, "foo", "foo")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -949,40 +940,42 @@ func TestDeleteGitShowsBranchNote(t *testing.T) {
 	}
 	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, git)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
-	err := svc.Delete(dir, "foo", "foo")
+	res, err := svc.Delete(dir, "foo", "foo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	output := buf.String()
-	if !strings.Contains(output, "Git branch 'workroom/foo' was not deleted") {
-		t.Fatalf("expected git branch note, got %q", output)
+	if res.Branch != "workroom/foo" {
+		t.Fatalf("expected the branch left behind, got %+v", res)
 	}
 }
 
 // --- Interactive Delete ---
+
+// interactiveDelete runs svc.InteractiveDelete and collects the results it reports, in order.
+func interactiveDelete(svc *Service, dir string) (PickOutcome, []DeleteResult, error) {
+	var results []DeleteResult
+	outcome, err := svc.InteractiveDelete(dir, func(res DeleteResult) { results = append(results, res) })
+	return outcome, results, err
+}
 
 func TestInteractiveDeleteNoWorkrooms(t *testing.T) {
 	dir := t.TempDir()
 	vcstest.MakeGitDir(t, dir)
 	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 
-	var buf bytes.Buffer
-	svc := &Service{Config: cfg, Out: &buf}
+	svc := &Service{Config: cfg}
 
-	err := svc.InteractiveDelete(dir)
+	outcome, _, err := interactiveDelete(svc, dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	output := buf.String()
-	if !strings.Contains(output, "No workrooms found for this project.") {
-		t.Fatalf("expected no workrooms message, got %q", output)
+	if outcome != NoWorkroomsToPick {
+		t.Fatalf("expected no workrooms to pick, got %v", outcome)
 	}
 }
 
@@ -996,13 +989,14 @@ func TestInteractiveDeleteForgetsAWorkroomThatIsNotAGitWorktree(t *testing.T) {
 	os.MkdirAll(filepath.Join(wrPath, ".jj"), 0o755)
 
 	mock := &mockExecutor{output: gitWorktrees(dir)}
-	svc, buf, _ := newTestService(t, &vcs.Git{Executor: mock})
+	svc, _, _ := newTestService(t, &vcs.Git{Executor: mock})
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 	svc.PromptFn = func(string, []string) ([]string, error) { return []string{"foo"}, nil }
 
-	if err := svc.InteractiveDelete(dir); err != nil {
+	_, results, err := interactiveDelete(svc, dir)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, call := range mock.calls {
@@ -1020,8 +1014,8 @@ func TestInteractiveDeleteForgetsAWorkroomThatIsNotAGitWorktree(t *testing.T) {
 	if _, err := os.Stat(wrPath); err != nil {
 		t.Fatalf("expected the folder to be left in place: %v", err)
 	}
-	if !strings.Contains(buf.String(), ui.DisplayPath(wrPath)) {
-		t.Fatalf("expected output to name the folder left behind, got %q", buf.String())
+	if len(results) != 1 || results[0].Outcome != ForgotNonGit || results[0].Path != wrPath {
+		t.Fatalf("expected the result to name the folder left behind, got %+v", results)
 	}
 }
 
@@ -1037,7 +1031,7 @@ func TestInteractiveDeleteSingle(t *testing.T) {
 	}
 	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, git)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
@@ -1047,14 +1041,12 @@ func TestInteractiveDeleteSingle(t *testing.T) {
 	}
 	svc.ConfirmFn = func(string) (bool, error) { return true, nil }
 
-	err := svc.InteractiveDelete(dir)
+	outcome, results, err := interactiveDelete(svc, dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	output := buf.String()
-	if !strings.Contains(output, "Workroom 'foo' deleted successfully.") {
-		t.Fatalf("expected success message, got %q", output)
+	if outcome != PicksDeleted || len(results) != 1 || results[0].Name != "foo" || results[0].Outcome != Deleted {
+		t.Fatalf("expected foo deleted, got %v %+v", outcome, results)
 	}
 }
 
@@ -1072,7 +1064,7 @@ func TestInteractiveDeleteMultiple(t *testing.T) {
 	}
 	git := &vcs.Git{Executor: mock}
 
-	svc, buf, _ := newTestService(t, git)
+	svc, _, _ := newTestService(t, git)
 	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", fooPath, "git")
@@ -1083,17 +1075,12 @@ func TestInteractiveDeleteMultiple(t *testing.T) {
 	}
 	svc.ConfirmFn = func(string) (bool, error) { return true, nil }
 
-	err := svc.InteractiveDelete(dir)
+	outcome, results, err := interactiveDelete(svc, dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	output := buf.String()
-	if !strings.Contains(output, "Workroom 'foo' deleted successfully.") {
-		t.Fatalf("expected foo success, got %q", output)
-	}
-	if !strings.Contains(output, "Workroom 'bar' deleted successfully.") {
-		t.Fatalf("expected bar success, got %q", output)
+	if outcome != PicksDeleted || len(results) != 2 || results[0].Name != "foo" || results[1].Name != "bar" {
+		t.Fatalf("expected foo then bar deleted, got %v %+v", outcome, results)
 	}
 }
 
@@ -1108,24 +1095,20 @@ func TestInteractiveDeleteAbortsOnDecline(t *testing.T) {
 	cfg.SetWorkroomsDir(workroomsDir)
 	cfg.AddWorkroom(dir, "foo", wrPath, "git")
 
-	var buf bytes.Buffer
 	svc := &Service{
 		Config: cfg,
-		Out:    &buf,
 		PromptFn: func(msg string, opts []string) ([]string, error) {
 			return []string{"foo"}, nil
 		},
 		ConfirmFn: func(string) (bool, error) { return false, nil },
 	}
 
-	err := svc.InteractiveDelete(dir)
+	outcome, _, err := interactiveDelete(svc, dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	output := buf.String()
-	if !strings.Contains(output, "Aborting. No workrooms were deleted.") {
-		t.Fatalf("expected abort message, got %q", output)
+	if outcome != PicksDeclined {
+		t.Fatalf("expected the picks declined, got %v", outcome)
 	}
 	// Directory should still exist
 	if _, err := os.Stat(wrPath); os.IsNotExist(err) {
@@ -1144,23 +1127,19 @@ func TestInteractiveDeleteAbortsOnNoSelection(t *testing.T) {
 	cfg.SetWorkroomsDir(workroomsDir)
 	cfg.AddWorkroom(dir, "foo", wrPath, "git")
 
-	var buf bytes.Buffer
 	svc := &Service{
 		Config: cfg,
-		Out:    &buf,
 		PromptFn: func(msg string, opts []string) ([]string, error) {
 			return []string{}, nil
 		},
 	}
 
-	err := svc.InteractiveDelete(dir)
+	outcome, _, err := interactiveDelete(svc, dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	output := buf.String()
-	if !strings.Contains(output, "Aborting. No workrooms were selected.") {
-		t.Fatalf("expected no-selection message, got %q", output)
+	if outcome != NothingPicked {
+		t.Fatalf("expected nothing picked, got %v", outcome)
 	}
 }
 
@@ -1168,8 +1147,8 @@ func TestInteractiveDeleteErrorsIfInWorkroom(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, ".Workroom"), []byte{}, 0o644)
 
-	svc := &Service{Out: &bytes.Buffer{}}
-	err := svc.InteractiveDelete(dir)
+	svc := &Service{}
+	_, _, err := interactiveDelete(svc, dir)
 	if !errors.Is(err, ErrInWorkroom) {
 		t.Fatalf("expected ErrInWorkroom, got %v", err)
 	}
@@ -1211,7 +1190,7 @@ func TestInteractiveDeleteRefusesRemoteWorkroom(t *testing.T) {
 	mock.output = gitWorktrees(dir)
 	svc.PromptFn = func(string, []string) ([]string, error) { return []string{"foo"}, nil }
 
-	if err := svc.InteractiveDelete(dir); !errors.Is(err, ErrRemoteWorkroom) {
+	if _, _, err := interactiveDelete(svc, dir); !errors.Is(err, ErrRemoteWorkroom) {
 		t.Fatalf("expected ErrRemoteWorkroom, got %v", err)
 	}
 	projects, err := svc.Config.AllProjects()
@@ -1228,8 +1207,8 @@ func TestInteractiveDeleteRefusesRemoteWorkroom(t *testing.T) {
 
 func TestDeleteRefusesRemoteWorkroom(t *testing.T) {
 	for name, del := range map[string]func(*Service, string) error{
-		"Delete":            func(s *Service, dir string) error { return s.Delete(dir, "foo", "foo") },
-		"InteractiveDelete": func(s *Service, dir string) error { return s.InteractiveDelete(dir) },
+		"Delete":            func(s *Service, dir string) error { _, err := s.Delete(dir, "foo", "foo"); return err },
+		"InteractiveDelete": func(s *Service, dir string) error { _, _, err := interactiveDelete(s, dir); return err },
 	} {
 		t.Run(name, func(t *testing.T) {
 			svc, dir, wrPath, marker, mock := remoteDeleteFixture(t)
@@ -1260,8 +1239,8 @@ func TestDeleteRefusesRemoteWorkroom(t *testing.T) {
 // drops its entry (#253), and still runs nothing on this Mac.
 func TestDeleteDropsADestroyedRemoteWorkroomAndRunsNothing(t *testing.T) {
 	for name, del := range map[string]func(*Service, string) error{
-		"Delete":            func(s *Service, dir string) error { return s.Delete(dir, "foo", "foo") },
-		"InteractiveDelete": func(s *Service, dir string) error { return s.InteractiveDelete(dir) },
+		"Delete":            func(s *Service, dir string) error { _, err := s.Delete(dir, "foo", "foo"); return err },
+		"InteractiveDelete": func(s *Service, dir string) error { _, _, err := interactiveDelete(s, dir); return err },
 	} {
 		t.Run(name, func(t *testing.T) {
 			svc, dir, wrPath, marker, mock := remoteDeleteFixture(t)
@@ -1303,7 +1282,7 @@ func TestDeleteDropsADestroyedRemoteWorkroomOfAProjectNoLongerHere(t *testing.T)
 	}
 	svc.VCS = nil // detected from the project, as the CLI does
 
-	if err := svc.Delete(dir, "foo", "foo"); err != nil {
+	if _, err := svc.Delete(dir, "foo", "foo"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if names, _ := svc.Config.WorkroomNames(dir); slices.Contains(names, "foo") {

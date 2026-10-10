@@ -54,7 +54,6 @@ func newTestSvc(t *testing.T, v vcs.VCS) (*workroom.Service, *config.Config) {
 	return &workroom.Service{
 		Config:           cfg,
 		VCS:              v,
-		Out:              &bytes.Buffer{},
 		KeepEmptyProject: true,
 	}, cfg
 }
