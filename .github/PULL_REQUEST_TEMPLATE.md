@@ -15,7 +15,7 @@
 - [ ] `make app-package-test` (changes under `macapp/Packages`)
 - [ ] `make app-test-scripts` (changes under `macapp/Scripts`)
 - [ ] `make actions-lint` (changes under `.github/workflows`)
-- [ ] `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test` in `vcs/` (Rust changes)
+- [ ] In `vcs/`: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test` (Rust changes)
 
 ## Screenshots
 
@@ -23,6 +23,6 @@
 
 ## Checklist
 
-- [ ] The `--json` contract is unchanged, or `schema_version` in `cmd/json.go` is bumped.
+- [ ] The `--json` contract has no breaking change, or `schema_version` in `cmd/json.go` is bumped.
 - [ ] Tests cover the changed behavior and any regression it fixes.
 - [ ] The title follows the repo's commit style, such as `fix(macapp): …`, `refactor(macapp): …` or `docs(…): …`.
