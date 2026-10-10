@@ -74,8 +74,8 @@ func TestAddProjectOutput(t *testing.T) {
 		{"create on a file", []string{"add-project", file, "--json", "--create"}, 3,
 			envelope(`"command":"add-project","error":{"kind":"NotADirectory","message":"path exists but is not a directory"},"ok":false,"schema_version":1`), ""},
 		{"create in a full directory", []string{"add-project", full, "--json", "--create"}, 3,
-			envelope(`"command":"add-project","error":{"kind":"UnsupportedVCS","message":"no supported VCS detected in this directory. Workroom requires Git to manage workspaces"},"ok":false,"schema_version":1`), ""},
+			envelope(`"command":"add-project","error":{"kind":"UnsupportedVCS","message":"no supported VCS detected in this directory. Workroom requires Git to manage workrooms"},"ok":false,"schema_version":1`), ""},
 		{"not a repository", []string{"add-project", full, "--json", "--pretend"}, 3,
-			envelope(`"command":"add-project","error":{"kind":"UnsupportedVCS","message":"no supported VCS detected in this directory. Workroom requires Git to manage workspaces"},"ok":false,"schema_version":1`), ""},
+			envelope(`"command":"add-project","error":{"kind":"UnsupportedVCS","message":"no supported VCS detected in this directory. Workroom requires Git to manage workrooms"},"ok":false,"schema_version":1`), ""},
 	})
 }
