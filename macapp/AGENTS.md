@@ -13,6 +13,7 @@ root, not `macapp/`):
 make app-run        # canonical local loop: xcodegen → xcodebuild (Debug) → relaunch
 make app-build      # xcodegen → xcodebuild (Debug)
 make app-test       # xcodebuild test (WorkroomAppTests) — parallel; APP_TEST_FLAGS= to serialize
+make app-package-test # swift test in each macapp/Packages package — no app host, no GUI lock
 make app-uitest     # XCUITest — needs the GUI session to itself; queues behind other workrooms
 make app-identity   # the bundle id this checkout's Debug build gets (one per workroom)
 make app-test-scripts # script tests (build-helper archs, channel classify, dev identity, GUI lock)
@@ -330,13 +331,20 @@ Being more careful is not a substitute, and on this branch it demonstrably was n
 
 Swift is formatted/linted with **swift-format** (bundled with the Xcode toolchain — run via
 `xcrun swift-format`, no install). Config `macapp/.swift-format` (2-space, 100 cols) covers
-`WorkroomApp/` + `WorkroomAppTests/` only (not the `Scripts/*.swift` tools). Use `make app-format`
+`WorkroomApp/`, `WorkroomAppTests/` and each package's `Package.swift`, `Sources/` and `Tests/` (not
+the `Scripts/*.swift` tools, nor a package's `.build/`). Use `make app-format`
 / `make app-lint`. Every Xcode/`xcodebuild` build also runs a `swift-format lint` pre-build phase
 that surfaces violations as **warnings** (non-fatal — `make app-lint` is the hard gate). Run
 `make app-format` before committing.
 
 ## Gotchas
 
+- **Local packages live in `macapp/Packages/`** (`WorkroomDomain`, `WorkroomWire`,
+  `SyntaxHighlighting`), each in Swift 6 language mode with its own tests, run by
+  `make app-package-test` rather than `make app-test`. A file that names a package's type imports
+  that package itself; nothing re-exports one. A package depends on Foundation, its own pins and
+  lower packages, never on the app. `WorkroomWire` is the frozen session codec: see its
+  `Package.swift` before changing it.
 - **The Swift module is `Workroom`** (the target is `WorkroomApp`; `PRODUCT_MODULE_NAME` is pinned
   to `Workroom` in `project.yml`). Tests use `@testable import Workroom`. The pin matters because
   `PRODUCT_NAME` is **per-config**: `Workroom` for Release, `Workroom Dev` for Debug (see below) —
