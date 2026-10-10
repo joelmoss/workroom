@@ -8,7 +8,7 @@ Workroom combines a native macOS app with a bundled, standalone Go CLI.
 - `macapp/WorkroomApp/Core/` contains app services and models; `Views/` contains SwiftUI interfaces. Assets and bundled resources live under `macapp/WorkroomApp/`.
 - `macapp/WorkroomAppTests/` and `WorkroomAppUITests/` contain app tests.
 - `vcs/` is the Rust workspace for the `wr-agent` daemon (terminal sessions, VCS and File services) and its git read crates.
-- `website/` contains the website; `docs/` contains supporting documentation.
+- `docs/` contains supporting documentation.
 
 ## Build, Test, and Development Commands
 

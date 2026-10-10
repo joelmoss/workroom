@@ -59,7 +59,7 @@ Workroom's durable distinction is parallel development context: each task gets a
 - Product documentation and factual feature inventory: `/Users/joelmoss/.codex/worktrees/3f49/workroom/README.md`.
 - Native app architecture and development documentation: `/Users/joelmoss/.codex/worktrees/3f49/workroom/macapp/README.md`.
 - Current product screenshot: `/Users/joelmoss/.codex/worktrees/3f49/workroom/docs/workroom-app.png`.
-- Shared Codaset/Workroom square mark: `website/assets/workroom-mark.svg` and its inline SVG equivalent.
+- Shared Codaset/Workroom square mark: no longer in this repo; the last copy is `website/assets/workroom-mark.svg` at commit 5be0428b.
 - Repository tests and implementation provide evidence for current workflows, terminology, keyboard use, reduced-motion handling, and accessibility labels.
 - No approved testimonials, customer logos, usage benchmarks, pricing claims, or market-leadership claims were established during init; future work must not fabricate them.
 
