@@ -72,71 +72,30 @@ class ProviderParityTestCase: XCTestCase {
 
   // MARK: The driver
 
-  /// AC 3, for the machine: each derived workroom keeps its base's disk, and has an sshd host
-  /// key, a machine-id and a kernel of its own. The supervisor serves the agent on every one, and
-  /// destroying them leaves nothing.
-  func instancesCarryTheBaseDiskButNotItsIdentity(_ provider: LiveProvider) async throws {
+  /// AC 3, for the machine: every fresh host has an sshd host key and a machine-id of its own,
+  /// whatever its provider's image ships (boxd's ships one of each for every machine, measured
+  /// 2026-10-10). The supervisor serves the agent on each, and destroying them leaves nothing.
+  func freshHostsHaveAnIdentityOfTheirOwn(_ provider: LiveProvider) async throws {
     let driver = provider.driver
-    let base = try await driver.create()
-    try await onHost(driver, base, "echo from-the-base > ~/template")
-    _ = try await connect(provider, base)
-    let baseIdentity = try await identity(provider, base)
-
-    let first = try await driver.deriveFromBase(base)
-    let second = try await driver.deriveFromBase(base)
-
-    for instance in [first, second] {
-      let template = try await onHost(driver, instance, "cat ~/template")
-      XCTAssertEqual(template, "from-the-base")
-      // The agent the base was given, started by the instance's own supervisor.
-      _ = try await connect(provider, instance)
-    }
+    let first = try await driver.create()
+    let second = try await driver.create()
+    for host in [first, second] { _ = try await connect(provider, host) }
     let firstIdentity = try await identity(provider, first)
     let secondIdentity = try await identity(provider, second)
-    for (name, index) in [("ssh host key", 0), ("machine-id", 1), ("boot_id", 2)] {
+    for (name, index) in [("ssh host key", 0), ("machine-id", 1)] {
       XCTAssertNotEqual(
-        firstIdentity[index], secondIdentity[index], "two instances share a \(name)")
-      XCTAssertNotEqual(
-        firstIdentity[index], baseIdentity[index], "an instance kept its base's \(name)")
-      XCTAssertNotEqual(
-        secondIdentity[index], baseIdentity[index], "an instance kept its base's \(name)")
+        firstIdentity[index], secondIdentity[index], "two hosts share a \(name)")
     }
 
     for host in [first, second] { try await driver.destroy(host) }
-    XCTAssertEqual(try provider.leftovers(), [provider.name(base)])
-    try await driver.destroy(base)
-    try await driver.destroy(base)  // Gone already: still a success.
+    try await driver.destroy(first)  // Gone already: still a success.
     XCTAssertEqual(try provider.leftovers(), [])
   }
 
-  /// A derive returns once its agent answers, not merely once its identity is minted: the
-  /// supervisor starts the agent after the identity unit, so a connection made at once could find
-  /// nothing listening. The base's supervisor is made slow to show it.
-  func aDerivedWorkroomServesAsSoonAsItsDeriveReturns(_ provider: LiveProvider) async throws {
-    let driver = provider.driver
-    let base = try await driver.create()
-    _ = try await connect(provider, base)
-    try await onHost(
-      driver, base,
-      "sudo mkdir -p /etc/systemd/system/workroom-agent.service.d"
-        + " && printf '[Service]\\nExecStartPre=/bin/sleep 8\\n'"
-        + " | sudo tee /etc/systemd/system/workroom-agent.service.d/slow.conf > /dev/null"
-        + " && sudo systemctl daemon-reload")
+  // MARK: Workrooms, through the provisioning sequence
 
-    let instance = try await driver.deriveFromBase(base)
-    // No bootstrap: straight to the agent, as a caller would once the derive has returned.
-    let connection = try await AgentVCSConnection.connect(
-      host: instance, stream: try await driver.openStream(to: instance))
-    connections.append(connection)
-
-    for host in [instance, base] { try await driver.destroy(host) }
-  }
-
-  // MARK: Workrooms, through the derivation sequence
-
-  /// A provider's driver whose bases also run the ssh fixture's GitHub and broker
-  /// (`vcs/scripts/ssh-fixture/fake-github.py`), as systemd units so every workroom derived from
-  /// them runs its own: https for github.com on the machine's loopback, trusted for that host
+  /// A provider's driver whose hosts also run the ssh fixture's GitHub and broker
+  /// (`vcs/scripts/ssh-fixture/fake-github.py`), as systemd units so every workroom runs its own: https for github.com on the machine's loopback, trusted for that host
   /// only, behind a token check. git reaches it through `http.curloptResolve`, not `/etc/hosts`,
   /// and both settings are in the user's global config, not the system's: boxd rewrites
   /// `/etc/hosts` and `/etc/gitconfig` at every boot (measured).
@@ -147,9 +106,6 @@ class ProviderParityTestCase: XCTestCase {
 
     var traits: HostDriverTraits { driver.traits }
     var agentSocket: String { driver.agentSocket }
-    func deriveFromBase(_ base: HostID) async throws -> HostID {
-      try await driver.deriveFromBase(base)
-    }
     func destroy(_ host: HostID) async throws { try await driver.destroy(host) }
     func openStream(to host: HostID) async throws -> HostStream {
       try await driver.openStream(to: host)
@@ -220,8 +176,6 @@ class ProviderParityTestCase: XCTestCase {
     }
   }
 
-  static let cloneToken = BrokerStub.Answer(
-    body: #"{"token":"\#(WithFakeGitHub.cloneToken)","expires_at":"2026-10-01T18:00:00Z"}"#)
   static let grant = BrokerStub.Answer(
     status: 201,
     body: #"{"grant_id":"g1","enrolment_code":"one-time","repository_id":1,"expires_at":"x"}"#)
@@ -233,7 +187,7 @@ class ProviderParityTestCase: XCTestCase {
     }.count
   }
 
-  /// The derivation sequence over `driver`. The Mac's broker calls go to `BrokerStub`; each
+  /// The provisioning sequence over `driver`. The Mac's broker calls go to `BrokerStub`; each
   /// agent enrols with the fake broker on its own machine, `brokerURL` (or one that refuses).
   func environment(
     _ driver: any HostDriver, brokerURL: String = "http://127.0.0.1:8081"
@@ -248,16 +202,15 @@ class ProviderParityTestCase: XCTestCase {
       connect: { host in
         try await AgentBootstrap.connect(
           host: host, driver: driver, socket: socket, handOff: false)
-      },
-      revoke: { _ in })
+      })
   }
 
   /// AC 1 (through the sequence the app runs, `RemoteProvisioning`), AC 2 and AC 3 for enrolment,
   /// and AC 4.
   ///
-  /// Two workrooms are derived from one base, each on its own branch with its own enrolment key.
-  /// git on a workroom gets its token from the agent's helper, which the broker minted, and with
-  /// the Mac's link gone it fetches and pushes. After its machine restarts, a pane comes back to
+  /// Two workrooms are made, each on a host of its own, on its own branch with its own enrolment
+  /// key. git on a workroom clones with a token from the agent's helper, which the broker minted,
+  /// and with the Mac's link gone it fetches and pushes. After its machine restarts, a pane comes back to
   /// its last screen and git still mints: the enrolment is on the home disk.
   @MainActor
   func workroomsPushWithTheMacDisconnectedAndSurviveARestart(_ provider: LiveProvider)
@@ -266,18 +219,15 @@ class ProviderParityTestCase: XCTestCase {
     let path = "\(provider.home)/project"
     let driver = WithFakeGitHub(driver: provider.driver, user: provider.user)
     let environment = environment(driver)
-    BrokerStub.reset([Self.cloneToken])
-    let base = try await RemoteProvisioning.buildBase(
-      repository: "o/r", cloneURL: "https://github.com/origin.git", path: path,
-      in: environment, record: { _ in })
 
     var instances: [(RemoteProvisioning.Instance, UUID)] = []
     var keys: [String] = []
     for branch in ["wr-one", "wr-two"] {
       BrokerStub.reset([Self.grant])
       let workroom = UUID()
-      let instance = try await RemoteProvisioning.derive(
-        from: base, workroom: workroom, branch: branch, in: environment)
+      let instance = try await RemoteProvisioning.provision(
+        repository: "o/r", cloneURL: "https://github.com/origin.git", path: path,
+        workroom: workroom, branch: branch, in: environment)
       instances.append((instance, workroom))
       let head = try await RemoteProvisioning.git(
         ["rev-parse", "--abbrev-ref", "HEAD"], in: instance.path, on: instance.connection)
@@ -361,32 +311,26 @@ class ProviderParityTestCase: XCTestCase {
       try await RemoteProvisioning.destroy(instance, workroom: workroom, in: environment)
       XCTAssertEqual(grantsCancelled, 1, "destroying a workroom left its grant live")
     }
-    XCTAssertEqual(try provider.leftovers(), [provider.name(.remote(base.host))])
-    try await RemoteProvisioning.destroyBase(base.host, in: environment, forget: {})
     XCTAssertEqual(try provider.leftovers(), [])
   }
 
   /// AC 5, for the steps after the provider's: a workroom whose enrolment or checkout fails is
   /// removed with its grant cancelled.
   @MainActor
-  func aWorkroomThatFailsAfterItsDeriveLeavesNothing(_ provider: LiveProvider) async throws {
+  func aWorkroomThatFailsAfterItsMachineLeavesNothing(_ provider: LiveProvider) async throws {
     let driver = WithFakeGitHub(driver: provider.driver, user: provider.user)
-    BrokerStub.reset([Self.cloneToken])
-    let base = try await RemoteProvisioning.buildBase(
-      repository: "o/r", cloneURL: "https://github.com/origin.git",
-      path: "\(provider.home)/project",
-      in: environment(driver), record: { _ in })
 
     // Nothing listens there, so the agent's enrolment fails after the grant is made; and git
-    // refuses the branch name only once the instance is enrolled.
+    // refuses the branch name only once the workroom is enrolled and cloned.
     for (step, environment, branch) in [
       ("enrol", environment(driver, brokerURL: "http://127.0.0.1:9"), "wr-enrol"),
       ("checkout", environment(driver), "bad..name"),
     ] {
       BrokerStub.reset([Self.grant, Self.cancelled])
       do {
-        _ = try await RemoteProvisioning.derive(
-          from: base, workroom: UUID(), branch: branch, in: environment)
+        _ = try await RemoteProvisioning.provision(
+          repository: "o/r", cloneURL: "https://github.com/origin.git",
+          path: "\(provider.home)/project", workroom: UUID(), branch: branch, in: environment)
         XCTFail("a workroom that failed at \(step) was made")
       } catch {
         switch (step, error) {
@@ -396,20 +340,17 @@ class ProviderParityTestCase: XCTestCase {
         default: XCTFail("\(step) failed for another reason: \(error)")
         }
       }
-      XCTAssertEqual(
-        try provider.leftovers(), [provider.name(.remote(base.host))],
-        "a failure at \(step) left a machine")
+      XCTAssertEqual(try provider.leftovers(), [], "a failure at \(step) left a machine")
       XCTAssertEqual(grantsCancelled, 1, "a failure at \(step) left its grant live")
     }
-    try await RemoteProvisioning.destroyBase(base.host, in: environment(driver), forget: {})
   }
 
   // MARK: In the app
 
   /// A remote workroom made and taken down the way the app does it (`RemoteWorkrooms.create` and
-  /// `delete` on the provider's driver key): the base is built in the provider user's home, the
-  /// workroom's record names the provider with its account, and deleting the workroom, then the
-  /// base, leaves no machine and no live grant.
+  /// `delete` on the provider's driver key): it clones in the provider user's home, its record
+  /// names the provider with its account and its own repository, the project records nothing, and
+  /// deleting the workroom leaves no machine and no live grant.
   @MainActor
   func aRemoteWorkroomIsMadeAndTakenDownAsTheAppDoesIt(_ provider: LiveProvider) async throws {
     let driver = WithFakeGitHub(driver: provider.driver, user: provider.user)
@@ -417,27 +358,27 @@ class ProviderParityTestCase: XCTestCase {
     let key = provider.key
     let records = Records()
     let recorder = RemoteWorkrooms.Recorder(
-      reserve: { _, descriptor in
+      reserve: { path, descriptor in
         records.set(nil, descriptor, as: "w")
+        records.path = path
         return "w"
       }, record: { name, descriptor in records.set(name, descriptor) },
       forget: { name in records.forget(name) })
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
 
-    BrokerStub.reset([Self.cloneToken, Self.grant])
+    BrokerStub.reset([Self.grant])
     let created = try await RemoteWorkrooms.create(
-      repository: repository, cloneURL: "https://github.com/origin.git", base: nil, key: key,
+      repository: repository, cloneURL: "https://github.com/origin.git", key: key,
       driver: driver, environment: environment, recorder: recorder)
     await created.instance.connection.close()
-    let base = try XCTUnwrap(records.project)
+    XCTAssertNil(records.project, "the project recorded a base")
     let workroom = try XCTUnwrap(records.workrooms["w"])
-    XCTAssertEqual(base.path, "\(provider.home)/r")
-    for descriptor in [base, workroom] {
-      XCTAssertEqual(descriptor.driver, RemoteWorkrooms.driverName(key))
-      XCTAssertEqual(descriptor.org, key.org)
-      XCTAssertEqual(descriptor.account, key.account)
-      XCTAssertNil(descriptor.container)
-    }
+    XCTAssertEqual(records.path, "\(provider.home)/r")
+    XCTAssertEqual(workroom.driver, RemoteWorkrooms.driverName(key))
+    XCTAssertEqual(workroom.org, key.org)
+    XCTAssertEqual(workroom.account, key.account)
+    XCTAssertEqual(workroom.repository, "o/r")
+    XCTAssertNil(workroom.container)
     XCTAssertEqual(RemoteHosts.DriverKey(workroom), key)
 
     BrokerStub.reset([Self.cancelled])
@@ -445,7 +386,6 @@ class ProviderParityTestCase: XCTestCase {
       "w", host: workroom, environment: environment, recorder: recorder)
     XCTAssertNil(records.workrooms["w"], "the workroom's entry was kept")
     XCTAssertEqual(grantsCancelled, 1, "deleting the workroom left its grant live")
-    try await RemoteWorkrooms.deleteBase(base, environment: environment, clear: {})
     XCTAssertEqual(try provider.leftovers(), [])
   }
 
@@ -453,7 +393,13 @@ class ProviderParityTestCase: XCTestCase {
     private let lock = NSLock()
     private var base: HostDescriptor?
     private var named: [String: HostDescriptor] = [:]
+    private var reserved: String?
     var project: HostDescriptor? { lock.withLock { base } }
+    /// Where the workroom's clone is on its host, as its entry was reserved.
+    var path: String? {
+      get { lock.withLock { reserved } }
+      set { lock.withLock { reserved = newValue } }
+    }
     var workrooms: [String: HostDescriptor] { lock.withLock { named } }
     func set(_ name: String?, _ descriptor: HostDescriptor, as reserved: String? = nil) {
       lock.withLock {

@@ -2,8 +2,8 @@ import XCTest
 
 @testable import Workroom
 
-/// `ContainerHostDriver`'s provisioning (#252): bases and instances derived from them, made from
-/// the ssh fixture's image with the container runtime. Skipped unless run through the fixture
+/// `ContainerHostDriver`'s provisioning (#252): workroom hosts made from the ssh fixture's image
+/// with the container runtime. Skipped unless run through the fixture
 /// script, which builds the image and says where it is:
 ///
 ///   vcs/scripts/ssh-fixture/run.sh <linux wr-agent> \
@@ -72,8 +72,8 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  /// The containers (`ps`) or images (`images`) carrying this test's label. `-a` for both: a
-  /// commit is untagged, and `images` lists an untagged image only with it.
+  /// The containers (`ps`) or images (`images`) carrying this test's label. `-a` for both: an
+  /// untagged image is listed only with it.
   private func leftovers(_ kind: String, runtime: URL, label: String) throws -> [String] {
     try docker(runtime, [kind, "-a", "-q", "--filter", "label=\(label)"])
       .split(separator: "\n").map(String.init)
@@ -96,7 +96,7 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     ]
   }
 
-  func testABaseIsReachableItsAgentServesAndDestroyingItLeavesNothing() async throws {
+  func testAHostIsReachableItsAgentServesAndDestroyingItLeavesNothing() async throws {
     let provisioning = try provisioning()
     let driver = ContainerHostDriver(hosts: [:], directory: directory, provisioning: provisioning)
 
@@ -145,42 +145,29 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     try await driver.destroy(base)
   }
 
-  func testInstancesDerivedFromOneBaseCarryItsDiskButMintTheirOwnIdentity() async throws {
+  func testFreshHostsHaveAnIdentityOfTheirOwn() async throws {
     let provisioning = try provisioning()
     let driver = ContainerHostDriver(hosts: [:], directory: directory, provisioning: provisioning)
-    let base = try await driver.create()
-    try await onHost(driver, base, "echo from-the-base > ~/template")
-    let baseIdentity = try await identity(driver, base)
+    let first = try await driver.create()
+    let second = try await driver.create()
 
-    let first = try await driver.deriveFromBase(base)
-    let second = try await driver.deriveFromBase(base)
-
-    for instance in [first, second] {
-      let template = try await onHost(driver, instance, "cat ~/template")
-      XCTAssertEqual(template, "from-the-base")
+    for host in [first, second] {
       let connection = try await AgentVCSConnection.connect(
-        host: instance, stream: try await driver.openStream(to: instance))
+        host: host, stream: try await driver.openStream(to: host))
       connections.append(connection)
     }
     let firstIdentity = try await identity(driver, first)
     let secondIdentity = try await identity(driver, second)
     for (name, index) in [("ssh host key", 0), ("machine-id", 1)] {
-      XCTAssertNotEqual(
-        firstIdentity[index], secondIdentity[index], "two instances share a \(name)")
-      XCTAssertNotEqual(
-        firstIdentity[index], baseIdentity[index], "an instance kept its base's \(name)")
-      XCTAssertNotEqual(
-        secondIdentity[index], baseIdentity[index], "an instance kept its base's \(name)")
+      XCTAssertNotEqual(firstIdentity[index], secondIdentity[index], "two hosts share a \(name)")
     }
 
-    for host in [first, second, base] { try await driver.destroy(host) }
+    for host in [first, second] { try await driver.destroy(host) }
     XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label), [])
-    XCTAssertEqual(
-      try leftovers("images", runtime: runtime, label: label), [], "a commit outlived its instance")
   }
 
   /// A runtime that runs the real one, except for the subcommand named in `failing` when that
-  /// file exists: a provider that fails partway through a derive, once the base is made. Named
+  /// file exists: a provider that fails partway through a create. Named
   /// with a `+`, the subcommand runs and THEN fails, as a CLI killed after the daemon took the
   /// request does: the resource exists and its ID was never printed.
   private func failingRuntime() throws -> (runtime: URL, failing: URL) {
@@ -202,46 +189,38 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     return (script, failing)
   }
 
-  func testADeriveThatFailsAtEachStepLeavesNoContainerOrImageBehind() async throws {
+  func testACreateThatFailsAtEachStepLeavesNoContainerBehind() async throws {
     let (script, failing) = try failingRuntime()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: try provisioning(runtime: script))
-    let base = try await driver.create()
-    let baseContainers = try leftovers("ps", runtime: runtime, label: label)
 
-    // `commit` makes the image and `run` the container; `exec` comes once it is running. A failed
-    // `exec` reads as an identity never minted, so it carries no runtime message.
-    for step in ["commit", "commit+", "run", "run+", "exec"] {
+    // `run` makes the container; `exec` comes once it is running. A failed `exec` reads as an
+    // identity never minted, so it carries no runtime message.
+    for step in ["run", "run+", "exec"] {
       try step.write(to: failing, atomically: true, encoding: .utf8)
       do {
-        _ = try await driver.deriveFromBase(base)
-        XCTFail("a derive that failed at \(step) succeeded")
+        _ = try await driver.create()
+        XCTFail("a create that failed at \(step) succeeded")
       } catch HostDriverError.provisioning(let detail) {
         XCTAssertTrue(
           detail.contains(step == "exec" ? "never minted" : "injected failure"),
           "\(step): \(detail)")
       }
       XCTAssertEqual(
-        try leftovers("ps", runtime: runtime, label: label), baseContainers,
-        "a derive that failed at \(step) left a container")
-      XCTAssertEqual(
-        try leftovers("images", runtime: runtime, label: label), [],
-        "a derive that failed at \(step) left an image")
+        try leftovers("ps", runtime: runtime, label: label), [],
+        "a create that failed at \(step) left a container")
     }
     try FileManager.default.removeItem(at: failing)
-    try await driver.destroy(base)
-    XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label), [])
   }
 
-  /// A derived workroom's supervisor keeps screens on a disk that outlives a reboot (#232, #252):
-  /// a pane that reattaches after the box is stopped and started is shown its last screen, ended,
-  /// rather than a fresh shell. The restart keeps the host's address and its identity, so the
-  /// pane's ssh gets in with the key pinned at the derive.
-  func testAPaneOnADerivedWorkroomIsShownItsLastScreenAfterAReboot() async throws {
+  /// A workroom's supervisor keeps screens on a disk that outlives a reboot (#232, #252): a pane
+  /// that reattaches after the box is stopped and started is shown its last screen, ended, rather
+  /// than a fresh shell. The restart keeps the host's address and its identity, so the pane's ssh
+  /// gets in with the key pinned at the create.
+  func testAPaneOnAWorkroomIsShownItsLastScreenAfterAReboot() async throws {
     let provisioning = try provisioning()
     let driver = ContainerHostDriver(hosts: [:], directory: directory, provisioning: provisioning)
-    let base = try await driver.create()
-    let instance = try await driver.deriveFromBase(base)
+    let instance = try await driver.create()
     let session = UUID()
 
     let first = try RemoteHostIntegrationTests.Pane(
@@ -277,65 +256,39 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
     XCTAssertTrue(seen.contains("LAST-SCREEN"), seen)
     XCTAssertTrue(seen.contains("ended when its host restarted"), seen)
 
-    for host in [instance, base] { try await driver.destroy(host) }
+    try await driver.destroy(instance)
   }
 
-  /// An instance has enrolled, so its disk holds its key and credential helper: a derive from it
-  /// would hand both on.
-  func testAWorkroomInstanceCannotBeDerivedFrom() async throws {
-    let provisioning = try provisioning()
-    let driver = ContainerHostDriver(hosts: [:], directory: directory, provisioning: provisioning)
-    let base = try await driver.create()
-    let instance = try await driver.deriveFromBase(base)
-
-    do {
-      _ = try await driver.deriveFromBase(instance)
-      XCTFail("an instance was derived from")
-    } catch HostDriverError.invalidConfiguration {}
-    XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label).count, 2)
-
-    for host in [instance, base] { try await driver.destroy(host) }
-  }
-
-  /// A later launch's driver takes back what an earlier one made (#253): from their records
-  /// alone, it reaches both hosts on their pinned keys, derives from the base, and destroys them
-  /// with their image.
-  func testADriverInALaterLaunchAdoptsRecordedHosts() async throws {
+  /// A later launch's driver takes back what an earlier one made (#253): from its record alone, it
+  /// reaches the host on its pinned key, and destroys it.
+  func testADriverInALaterLaunchAdoptsARecordedHost() async throws {
     let provisioning = try provisioning()
     let earlier = ContainerHostDriver(
       hosts: [:], directory: directory.appendingPathComponent("earlier"),
       provisioning: provisioning)
-    let base = try await earlier.create()
-    let instance = try await earlier.deriveFromBase(base)
-    let baseRecord = try XCTUnwrap(earlier.record(of: base))
-    let instanceRecord = try XCTUnwrap(earlier.record(of: instance))
-    XCTAssertNil(baseRecord.image)
-    XCTAssertNotNil(instanceRecord.image)
+    let host = try await earlier.create()
+    let record = try XCTUnwrap(earlier.record(of: host))
+    XCTAssertNil(record.image)
     // Through the descriptor, as config holds it between launches.
     let stored = try JSONDecoder().decode(
       HostDescriptor.self,
-      from: try JSONEncoder().encode(HostDescriptor(driver: "container", container: instanceRecord))
-    )
-    XCTAssertEqual(stored.container, instanceRecord)
+      from: try JSONEncoder().encode(HostDescriptor(driver: "container", container: record)))
+    XCTAssertEqual(stored.container, record)
 
     let later = ContainerHostDriver(
       hosts: [:], directory: directory.appendingPathComponent("later"), provisioning: provisioning)
-    guard case .remote(let baseID) = base, case .remote(let instanceID) = instance else {
-      return XCTFail("not remote hosts")
-    }
-    try later.adopt(baseID, baseRecord)
-    try later.adopt(instanceID, try XCTUnwrap(stored.container))
-    let adopted = try await identity(later, instance)
-    let original = try await identity(earlier, instance)
+    guard case .remote(let id) = host else { return XCTFail("not a remote host") }
+    try later.adopt(id, try XCTUnwrap(stored.container))
+    let adopted = try await identity(later, host)
+    let original = try await identity(earlier, host)
     XCTAssertEqual(adopted, original, "the adopted host is another machine")
-    let second = try await later.deriveFromBase(base)
 
-    for host in [second, instance, base] { try await later.destroy(host) }
+    try await later.destroy(host)
     XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label), [])
-    XCTAssertEqual(try leftovers("images", runtime: runtime, label: label), [])
   }
 
-  /// A record naming an image that is not a commit's is refused: `destroy` removes it by force.
+  /// A record naming an image that is not an older derive's commit is refused: `destroy` removes it
+  /// by force.
   func testAdoptRefusesARecordWhoseImageIsNotAnImageID() throws {
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: try provisioning())
@@ -346,84 +299,72 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
   }
 
   /// The sweep removes what carries the driver's labels and no record names, and leaves the
-  /// recorded hosts, their images, and whatever is younger than its grace (#253).
+  /// recorded hosts and whatever is younger than its grace (#253).
   func testSweepRemovesOnlyUnrecordedResourcesPastTheirGrace() async throws {
     let provisioning = try provisioning()
     let driver = ContainerHostDriver(hosts: [:], directory: directory, provisioning: provisioning)
     let kept = try await driver.create()
-    let instance = try await driver.deriveFromBase(kept)
     let orphan = try await driver.create()
-    let orphanInstance = try await driver.deriveFromBase(orphan)
-    guard case .remote(let keptID) = kept, case .remote(let instanceID) = instance,
-      case .remote(let orphanID) = orphan
-    else { return XCTFail("not remote hosts") }
-    XCTAssertEqual(try leftovers("images", runtime: runtime, label: label).count, 2)
+    guard case .remote(let keptID) = kept, case .remote(let orphanID) = orphan else {
+      return XCTFail("not remote hosts")
+    }
 
-    let young = await driver.sweep(keeping: [keptID, instanceID], grace: 3600)
+    let young = await driver.sweep(keeping: [keptID], grace: 3600)
     XCTAssertEqual(young, [])
-    XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label).count, 4, "young ones went")
+    XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label).count, 2, "young ones went")
 
-    // The first sweep to find the orphans unknown only writes them down (#284). Images are not
-    // held back, but the orphaned instance's is still in use by its container, which refuses it.
-    let firstSweep = await driver.sweep(keeping: [keptID, instanceID], grace: 0)
-    XCTAssertTrue(firstSweep.allSatisfy { $0.hasPrefix("image ") }, "\(firstSweep)")
+    // The first sweep to find the orphan unknown only writes it down (#284).
+    let firstSweep = await driver.sweep(keeping: [keptID], grace: 0)
+    XCTAssertEqual(firstSweep, [])
     XCTAssertEqual(
-      try leftovers("ps", runtime: runtime, label: label).count, 4, "one sweep took a container")
+      try leftovers("ps", runtime: runtime, label: label).count, 2, "one sweep took a container")
 
-    let old = await driver.sweep(keeping: [keptID, instanceID], grace: 0)
+    let old = await driver.sweep(keeping: [keptID], grace: 0)
     XCTAssertEqual(old, [])
     let names = try docker(
       runtime, ["ps", "-a", "--filter", "label=\(label!)", "--format", "{{.Names}}"])
     XCTAssertEqual(
       Set(names.split(separator: "\n").map(String.init)),
-      [ContainerHostDriver.containerName(keptID), ContainerHostDriver.containerName(instanceID)])
+      [ContainerHostDriver.containerName(keptID)])
     XCTAssertFalse(names.contains(ContainerHostDriver.containerName(orphanID)))
-    XCTAssertEqual(
-      try leftovers("images", runtime: runtime, label: label).count, 1,
-      "the orphaned instance's image stayed, or the recorded one's went")
-    _ = orphanInstance
-    try await onHost(driver, instance, "true")
+    try await onHost(driver, kept, "true")
 
-    for host in [instance, kept] { try await driver.destroy(host) }
+    try await driver.destroy(kept)
   }
 
-  /// Derives from one base at once: each gets a host, port and identity of its own, and the
-  /// driver's registry keeps them apart.
-  func testConcurrentDerivesFromOneBaseEachGetTheirOwnHost() async throws {
+  /// Creates at once: each gets a host, port and identity of its own, and the driver's registry
+  /// keeps them apart.
+  func testConcurrentCreatesEachGetTheirOwnHost() async throws {
     let provisioning = try provisioning()
     let driver = ContainerHostDriver(hosts: [:], directory: directory, provisioning: provisioning)
-    let base = try await driver.create()
 
-    let instances = try await withThrowingTaskGroup(of: HostID.self) { group in
-      for _ in 0..<3 { group.addTask { try await driver.deriveFromBase(base) } }
+    let hosts = try await withThrowingTaskGroup(of: HostID.self) { group in
+      for _ in 0..<3 { group.addTask { try await driver.create() } }
       return try await group.reduce(into: [HostID]()) { $0.append($1) }
     }
 
-    XCTAssertEqual(Set(instances).count, 3)
+    XCTAssertEqual(Set(hosts).count, 3)
     var keys: Set<String> = []
-    for instance in instances {
-      keys.insert(
-        try await onHost(driver, instance, "cut -d' ' -f2 /etc/ssh/ssh_host_ed25519_key.pub"))
+    for host in hosts {
+      keys.insert(try await onHost(driver, host, "cut -d' ' -f2 /etc/ssh/ssh_host_ed25519_key.pub"))
     }
-    XCTAssertEqual(keys.count, 3, "concurrent derives share a host key")
-    for host in instances + [base] { try await driver.destroy(host) }
+    XCTAssertEqual(keys.count, 3, "concurrent creates share a host key")
+    for host in hosts { try await driver.destroy(host) }
     XCTAssertEqual(try leftovers("ps", runtime: runtime, label: label), [])
-    XCTAssertEqual(try leftovers("images", runtime: runtime, label: label), [])
   }
 
-  /// A derive that fails and cannot remove what it made says what is still there (#280 review),
+  /// A create that fails and cannot remove what it made says what is still there (#280 review),
   /// rather than dropping the host from its registry with its container still running.
-  func testADeriveThatCannotRemoveItsContainerSaysWhatIsLeft() async throws {
+  func testACreateThatCannotRemoveItsContainerSaysWhatIsLeft() async throws {
     let (script, failing) = try failingRuntime()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: try provisioning(runtime: script))
-    let base = try await driver.create()
     // The identity read fails, then removing the container fails too.
     try "exec rm".write(to: failing, atomically: true, encoding: .utf8)
 
     do {
-      _ = try await driver.deriveFromBase(base)
-      XCTFail("a derive that failed succeeded")
+      _ = try await driver.create()
+      XCTFail("a create that failed succeeded")
     } catch HostDriverError.leftBehind(let cause, let leftover, _) {
       XCTAssertTrue(cause.contains("never minted"), cause)
       XCTAssertTrue(leftover.contains { $0.hasPrefix("container workroom-") }, "\(leftover)")

@@ -140,45 +140,33 @@ final class BoxdIntegrationTests: ProviderParityTestCase {
 
   // MARK: The driver
 
-  /// AC 3, for the machine (`ProviderParityTestCase`). On boxd the instance's own kernel is the
-  /// derive's reboot: every fresh boxd machine shares one boot_id (measured).
-  func testInstancesDerivedFromOneBaseCarryItsDiskButMintTheirOwnIdentity() async throws {
-    try await instancesCarryTheBaseDiskButNotItsIdentity(provider())
+  /// AC 3, for the machine (`ProviderParityTestCase`). On boxd it is the identity unit's doing:
+  /// every fresh machine boots with the image's one machine-id and host key (measured).
+  func testFreshMachinesHaveAnIdentityOfTheirOwn() async throws {
+    try await freshHostsHaveAnIdentityOfTheirOwn(provider())
   }
 
-  func testADerivedWorkroomServesAsSoonAsItsDeriveReturns() async throws {
-    try await aDerivedWorkroomServesAsSoonAsItsDeriveReturns(provider())
-  }
-
-  /// AC 5, for the provider's steps: a derive that fails at each CLI step, or after it ran (`+`:
-  /// the machine or snapshot exists and the CLI said otherwise), leaves no machine or snapshot.
-  func testADeriveThatFailsAtEachStepLeavesNoMachineOrSnapshot() async throws {
+  /// AC 5, for the provider's steps: a create that fails at its CLI step, or after it ran (`+`:
+  /// the machine exists and the CLI said otherwise), leaves no machine.
+  func testACreateThatFailsAtItsMachineStepLeavesNoMachine() async throws {
     let (script, failing) = try failingCLI()
     let driver = driver(cli: script)
-    let base = try await driver.create()
 
-    for step in [
-      "snapshots save", "snapshots save+", "machine new", "machine new+", "snapshots remove",
-      "machine reboot",
-    ] {
+    for step in ["machine new", "machine new+"] {
       try step.write(to: failing, atomically: true, encoding: .utf8)
       do {
-        _ = try await driver.deriveFromBase(base)
-        XCTFail("a derive that failed at \(step) succeeded")
+        _ = try await driver.create()
+        XCTFail("a create that failed at \(step) succeeded")
       } catch HostDriverError.provisioning(let detail) {
         XCTAssertTrue(detail.contains("injected failure"), "\(step): \(detail)")
       }
       XCTAssertFalse(
-        FileManager.default.fileExists(atPath: failing.path), "the derive never reached \(step)")
-      XCTAssertEqual(
-        try leftovers("machine"), [name(base)], "a derive that failed at \(step) left a machine")
-      XCTAssertEqual(
-        try leftovers("snapshots"), [], "a derive that failed at \(step) left a snapshot")
+        FileManager.default.fileExists(atPath: failing.path), "the create never reached \(step)")
+      XCTAssertEqual(try leftovers("machine"), [], "a create that failed at \(step) left a machine")
     }
-    try await driver.destroy(base)
   }
 
-  /// The CLI, except that the command (`machine new`, `snapshots save`, …) named in `failing`
+  /// The CLI, except that the command (`machine new`, `machine remove`, …) named in `failing`
   /// fails once, and the file goes. Named with a `+`, the command runs and THEN fails, as a CLI
   /// killed after the API took the request does. Once, so the rollback's own `remove` goes
   /// through.
@@ -203,17 +191,17 @@ final class BoxdIntegrationTests: ProviderParityTestCase {
     return (script, failing)
   }
 
-  // MARK: Workrooms, through the derivation sequence (`ProviderParityTestCase`)
+  // MARK: Workrooms, through the provisioning sequence (`ProviderParityTestCase`)
 
   /// boxd also installs a system credential helper; the agent's must win over it.
   @MainActor
-  func testWorkroomsDerivedOnBoxdPushWithTheMacDisconnectedAndSurviveAStop() async throws {
+  func testWorkroomsOnBoxdPushWithTheMacDisconnectedAndSurviveAStop() async throws {
     try await workroomsPushWithTheMacDisconnectedAndSurviveARestart(provider())
   }
 
   @MainActor
-  func testAWorkroomThatFailsAfterItsDeriveLeavesNoMachineAndNoGrant() async throws {
-    try await aWorkroomThatFailsAfterItsDeriveLeavesNothing(provider())
+  func testAWorkroomThatFailsAfterItsMachineLeavesNoMachineAndNoGrant() async throws {
+    try await aWorkroomThatFailsAfterItsMachineLeavesNothing(provider())
   }
 
   // MARK: In the app (#356)

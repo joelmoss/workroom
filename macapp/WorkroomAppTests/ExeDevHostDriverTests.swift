@@ -3,8 +3,8 @@ import XCTest
 @testable import Workroom
 
 /// The exe.dev driver (#259) with exe.dev's ssh API stubbed: the user's own ssh it runs, its account
-/// guard, what it refuses to derive from, and how it reads `rm`. What it
-/// runs on a VM (setup, `sync`, the readiness waits) goes over real ssh, so the live suite covers it.
+/// guard, and how it reads `rm`. What it runs on a VM (setup, the readiness waits) goes over real
+/// ssh, so the live suite covers it.
 final class ExeDevHostDriverTests: XCTestCase {
   /// Both of exe.dev's not-found answers, matched whole: anything else is not a removal.
   func testNotFoundIsExeDevsAnswerMatchedWhole() {
@@ -165,7 +165,6 @@ final class ExeDevHostDriverTests: XCTestCase {
     let attempts: [() async throws -> Void] = [
       { try await driver.destroy(.remote(UUID())) },
       { _ = try await driver.create() },
-      { _ = try await driver.deriveFromBase(.remote(UUID())) },
     ]
     for attempt in attempts {
       do {
@@ -178,52 +177,8 @@ final class ExeDevHostDriverTests: XCTestCase {
     XCTAssertEqual(exe.commands, [], "a change ran in another account")
   }
 
-  /// Only a base is derived from: a VM without the base tag is a workroom, whose disk holds its
-  /// own enrolment, and is refused before anything is copied. A base that's gone is unknown.
-  func testOnlyATaggedBaseIsDerivedFrom() async throws {
-    let base = UUID()
-    let name = driver(StubExeDev([:])).name(of: base)
-    for (listing, expected) in [
-      (#"{"vms":[{"vm_name":"\#(name)"}]}"#, "untagged"),
-      (#"{"vms":[{"vm_name":"\#(name)","tags":["prod"]}]}"#, "untagged"),
-      (#"{"vms":[]}"#, "gone"),
-    ] {
-      let exe = StubExeDev(["ls": Self.ok(listing)])
-      let driver = driver(exe)
-      do {
-        _ = try await driver.deriveFromBase(.remote(base))
-        XCTFail("derived from \(listing)")
-      } catch HostDriverError.invalidConfiguration(let detail) {
-        XCTAssertEqual(expected, "untagged")
-        XCTAssertEqual(detail, "a workroom instance cannot be derived from")
-      } catch HostDriverError.unknownHost(let host) {
-        XCTAssertEqual(expected, "gone")
-        XCTAssertEqual(host, .remote(base))
-      }
-      XCTAssertEqual(exe.commands, ["ls"], "\(listing): a copy was attempted")
-      XCTAssertEqual(exe.arguments(of: "ls"), [name, "--json"])
-    }
-  }
-
-  /// exe.dev failing to list the base is a provisioning error the app can show, never the driver's
-  /// own failure type escaping it.
-  func testAFailedListingIsAProvisioningError() async throws {
-    let exe = StubExeDev(
-      [
-        "ls": CommandResult(
-          stdout: #"{"error":"rate limited"}"#, stderr: "", exitCode: 1, timedOut: false)
-      ])
-    let driver = driver(exe)
-    do {
-      _ = try await driver.deriveFromBase(.remote(UUID()))
-      XCTFail("derived with no listing")
-    } catch HostDriverError.provisioning(let detail) {
-      XCTAssertEqual(detail, "exe.dev ls: rate limited")
-    }
-  }
-
-  /// A base is made with the base tag, which a copy is made without.
-  func testABaseIsTaggedAndARefusedOneHasNothingToRemove() async throws {
+  /// A VM is made with no tag: a tag marked a base, which nothing makes any more.
+  func testAHostIsUntaggedAndARefusedOneHasNothingToRemove() async throws {
     let exe = StubExeDev(
       [
         "new": CommandResult(
@@ -232,14 +187,13 @@ final class ExeDevHostDriverTests: XCTestCase {
     let driver = driver(exe)
     do {
       _ = try await driver.create()
-      XCTFail("a refused VM became a base")
+      XCTFail("a refused VM became a host")
     } catch HostDriverError.provisioning(let detail) {
       XCTAssertEqual(detail, "exe.dev new: VM limit reached")
     }
     XCTAssertEqual(PendingMachines.entries(in: driver.directory), [], "a removed VM stayed pending")
     let new = try XCTUnwrap(exe.arguments(of: "new"))
-    XCTAssertEqual(
-      Array(new[new.firstIndex(of: "--tag")!...].prefix(2)), ["--tag", "workroom-base"])
+    XCTAssertFalse(new.contains("--tag"), "\(new)")
     XCTAssertEqual(exe.commands, ["new", "rm"])
   }
 
@@ -375,11 +329,10 @@ final class ExeDevHostDriverTests: XCTestCase {
   private struct ShellHost: HostDriver {
     var traits: HostDriverTraits {
       HostDriverTraits(
-        transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
+        transport: .sshStdio,
         durableDisk: true, maxLifetime: nil)
     }
     func create() async throws -> HostID { .local }
-    func deriveFromBase(_ base: HostID) async throws -> HostID { .local }
     func destroy(_ host: HostID) async throws {}
     func openStream(to host: HostID) async throws -> HostStream {
       throw HostDriverError.notImplemented("stream")

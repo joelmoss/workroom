@@ -2,8 +2,8 @@ import XCTest
 
 @testable import Workroom
 
-/// `ContainerHostDriver` on Apple's real `container` runtime (#309): a base, a workroom derived
-/// from it, a restart, the sweep, and teardown. Opt-in: Apple's runtime needs Apple silicon and a
+/// `ContainerHostDriver` on Apple's real `container` runtime (#309): two workroom hosts, a restart,
+/// the sweep, and teardown. Opt-in: Apple's runtime needs Apple silicon and a
 /// VM per container, which CI's macOS runners can't give it, so these run on a Mac by hand before
 /// a release. Skipped unless `TEST_RUNNER_WR_APPLE_CONTAINER_TESTS=1`, with
 /// `TEST_RUNNER_WR_APPLE_HOST_IMAGE` naming a `workroom-host` image the runtime already has, e.g.
@@ -92,61 +92,33 @@ final class AppleContainerIntegrationTests: XCTestCase {
     return output.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  func testABaseDerivesARestartableWorkroomAndTeardownLeavesNothing() async throws {
+  func testFreshHostsAreRestartableAndTeardownLeavesNothing() async throws {
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: try provisioning())
 
-    let base = try await driver.create()
-    _ = try await onHost(driver, base, "echo carried > ~/marker")
-    let baseKey = try await onHost(driver, base, "cut -d' ' -f2 /etc/ssh/ssh_host_ed25519_key.pub")
-
-    // The disk comes across, the identity doesn't, and the derived image is gone again.
-    let instance = try await driver.deriveFromBase(base)
-    let marker = try await onHost(driver, instance, "cat ~/marker")
-    XCTAssertEqual(marker, "carried")
-    let instanceKey = try await onHost(
-      driver, instance, "cut -d' ' -f2 /etc/ssh/ssh_host_ed25519_key.pub")
-    XCTAssertNotEqual(instanceKey, baseKey)
-    let images = try AppleContainerCLI.objects(cli(["image", "list", "--format", "json"]))
-    XCTAssertFalse(
-      images.contains {
-        AppleContainerCLI.name(ofImage: $0)?.contains("workroom-derive-") == true
-          && carries(AppleContainerCLI.labels(ofImage: $0))
-      },
-      "the derived image was left behind")
-    // The base was stopped for the export and started again.
-    let back = try await onHost(driver, base, "cat ~/marker")
-    XCTAssertEqual(back, "carried")
+    let first = try await driver.create()
+    let second = try await driver.create()
+    var keys: [String] = []
+    for host in [first, second] {
+      keys.append(try await onHost(driver, host, "cut -d' ' -f2 /etc/ssh/ssh_host_ed25519_key.pub"))
+    }
+    XCTAssertNotEqual(keys[0], keys[1], "two hosts share a host key")
 
     // Apple keeps nothing running across a restart: opening starts it again, on its port.
-    guard case .remote(let id) = instance else { return XCTFail("\(instance)") }
+    guard case .remote(let id) = first, case .remote(let secondID) = second else {
+      return XCTFail("not remote hosts")
+    }
     try cli(["stop", ContainerHostDriver.containerName(id)])
-    try await driver.startIfStopped(instance)
-    let up = try await onHost(driver, instance, "echo up")
+    try await driver.startIfStopped(first)
+    let up = try await onHost(driver, first, "echo up")
     XCTAssertEqual(up, "up")
 
-    // A base left stopped (a reboot: Apple restarts nothing) is still derived from, and left
-    // stopped.
-    guard case .remote(let stoppedBase) = base else { return XCTFail("\(base)") }
-    try cli(["stop", ContainerHostDriver.containerName(stoppedBase)])
-    let second = try await driver.deriveFromBase(base)
-    let carried = try await onHost(driver, second, "cat ~/marker")
-    XCTAssertEqual(carried, "carried")
-    let state = try AppleContainerCLI.objects(
-      cli(["inspect", ContainerHostDriver.containerName(stoppedBase)])
-    ).first.flatMap(AppleContainerCLI.state)
-    XCTAssertEqual(state, "stopped")
-    try await driver.destroy(second)
-    try await driver.startIfStopped(base)
-
     // Both are recorded hosts: the sweep takes neither, however old.
-    guard case .remote(let baseID) = base else { return XCTFail("\(base)") }
-    let failures = await driver.sweep(keeping: [baseID, id], grace: 0)
+    let failures = await driver.sweep(keeping: [id, secondID], grace: 0)
     XCTAssertEqual(failures, [])
     XCTAssertEqual(try ours().count, 2)
 
-    try await driver.destroy(instance)
-    try await driver.destroy(base)
+    for host in [first, second] { try await driver.destroy(host) }
     XCTAssertEqual(try ours(), [])
   }
 }

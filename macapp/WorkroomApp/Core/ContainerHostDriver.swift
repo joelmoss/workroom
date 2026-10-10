@@ -7,8 +7,8 @@ import WorkroomSessionProtocol
 /// ssh-reachable driver shares (`BoxdHostDriver`, #256).
 ///
 /// Its hosts are the ones the caller hands in, plus, given `Provisioning`, the containers it makes
-/// itself (#252): `create` runs a base from the fixture's image, `deriveFromBase` snapshots a base
-/// (`commit`) and runs a container from that, and `destroy` removes either. Nothing here persists.
+/// itself (#252): `create` runs a workroom's host from the fixture's image, and `destroy` removes
+/// it. Nothing here persists.
 final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   struct Host: Sendable {
     let address: String
@@ -61,20 +61,18 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   /// The two container CLIs a driver can speak (#309). Apple's `container` (1.5.0) runs each
-  /// container in a VM of its own and has no `commit`, no `--restart`, no `--filter` and no Go
-  /// templates (`AppleContainerCLI`).
+  /// container in a VM of its own and has no `--restart`, no `--filter` and no Go templates
+  /// (`AppleContainerCLI`).
   enum Dialect: Sendable {
     case docker
     case apple
   }
 
-  /// A host this driver made: its container, whether it is a base (the one kind a workroom is
-  /// derived from), and for a derived one the image it was run from, which only it uses. An Apple
-  /// instance has no image: its own disk outlives the image it was run from, which is removed.
+  /// A host this driver made: its container, and for one an older build derived from a base, the
+  /// image it was run from, which only it uses.
   private struct Provisioned {
     let container: String
     let image: String?
-    let isBase: Bool
   }
 
   /// What a host this driver made needs to be reached and destroyed again by a driver in a later
@@ -86,7 +84,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     let port: Int
     let user: String
     let hostKey: String
-    /// The image a derived instance was run from, which only it uses; nil for a base.
+    /// The image a workroom an older build derived from a base was run from, which only it uses;
+    /// nil for any other host.
     let image: String?
     /// The Docker context it runs in (`Provisioning.context`). nil, as every record made before
     /// #309 has it, follows the environment and the CLI's current context, as those always did.
@@ -99,15 +98,11 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   /// The label every container and image this driver makes carries, with when it was made in
-  /// seconds since 1970, so `sweep` can leave one that may still be part of a create or derive.
+  /// seconds since 1970, so `sweep` can leave one that may still be part of a create.
   static let createdLabel = "workroom.created"
 
-  /// A derive is a snapshot of the disk only: a commit keeps no process, and the container run
-  /// from it boots afresh.
   var traits: HostDriverTraits {
-    HostDriverTraits(
-      transport: .sshStdio, deriveSpeed: provisioning == nil ? nil : .seconds(5),
-      deriveCarriesLiveProcesses: false, durableDisk: false, maxLifetime: nil)
+    HostDriverTraits(transport: .sshStdio, durableDisk: false, maxLifetime: nil)
   }
 
   /// Where each host's `ssh_config` and `known_hosts` are written.
@@ -134,9 +129,9 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   func create() async throws -> HostID {
-    guard let provisioning else { throw HostDriverError.notImplemented("Creating a base") }
+    guard let provisioning else { throw HostDriverError.notImplemented("Creating a host") }
     try await ensureImage(provisioning.image)
-    return try await run(provisioning.image, image: nil, isBase: true)
+    return try await run(provisioning.image, image: nil)
   }
 
   /// Told how far a host image's pull has got, 0 to 1, then nil once it is done, for a create run
@@ -170,7 +165,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
             if let fraction = progress.read(data, stderr: stderr) { report(fraction) }
           }
         })
-      // The rest of the create (a clone, a derive) can take minutes, and isn't a download.
+      // The rest of the create (the setup, the clone) can take minutes, and isn't a download.
       report?(nil)
     } catch {
       let said = error.localizedDescription
@@ -210,143 +205,6 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
         + "Docker context is one on this Mac, then try again.")
   }
 
-  /// A snapshot of `base`'s disk, run as a container of its own. The base keeps running: `commit`
-  /// pauses it only while it copies. The new container mints its own identity at its first boot
-  /// (`entrypoint.sh`), before sshd or the agent starts, so it serves nothing as its base; its
-  /// host key is read once that is done and pinned here.
-  func deriveFromBase(_ base: HostID) async throws -> HostID {
-    guard let provisioning else {
-      throw HostDriverError.notImplemented("Deriving a workroom instance")
-    }
-    guard case .remote(let id) = base, let source = lock.withLock({ provisioned[id] }) else {
-      throw HostDriverError.unknownHost(base)
-    }
-    // An instance has enrolled, and its key and credential helper are on its disk: a copy of it
-    // would start with them.
-    guard source.isBase else {
-      throw HostDriverError.invalidConfiguration("a workroom instance cannot be derived from")
-    }
-    if provisioning.dialect == .apple { return try await appleDerive(from: source) }
-    // Labelled with an ID chosen here, because the runtime's own is known only from its output:
-    // a commit that outlives its CLI (killed by the silence bound, or a cancelled derive) leaves
-    // an image nothing would otherwise find.
-    let commit = "workroom.commit=\(UUID().uuidString.lowercased())"
-    do {
-      let image = try await runtime(
-        ["commit"]
-          + (provisioning.labels + [commit, Self.created()]).flatMap {
-            ["--change", "LABEL \($0)"]
-          }
-          + [source.container],
-        // `commit` prints nothing until it is done, and copying a base's disk takes a while.
-        timeout: 900)
-      return try await run(image, image: image, isBase: false)
-    } catch {
-      let removals = await Task { () -> [String] in
-        do {
-          var failed: [String] = []
-          for image in try await self.runtime(
-            ["images", "-aq", "--filter", "label=\(commit)"], allLines: true
-          ).split(separator: "\n") {
-            do { _ = try await self.runtime(["rmi", "--force", String(image)]) } catch {
-              failed.append("image \(image): \(error.localizedDescription)")
-            }
-          }
-          return failed
-        } catch { return ["images labelled \(commit): \(error.localizedDescription)"] }
-      }.value
-      // A run that could not remove its container says so; its image goes on that list too.
-      var (cause, leftover) = (error.localizedDescription, removals)
-      if case HostDriverError.leftBehind(let inner, let left, _) = error {
-        (cause, leftover) = (inner, left + removals)
-      }
-      guard !leftover.isEmpty else { throw error }
-      throw HostDriverError.leftBehind(cause: cause, leftover: leftover)
-    }
-  }
-
-  /// Apple's derive (#309). `container` 1.5.0 has no `commit`, so the base's disk is exported (with
-  /// the base stopped, so the copy is consistent, and started again whatever happens), built back
-  /// into an image from scratch with the host image's own entrypoint and environment, and run.
-  /// The image is then removed: Apple's runtime gives each container a disk of its own, which
-  /// outlives the image it came from, and a derived image is the size of the base's whole disk.
-  /// Apple also removes an image a container still uses, so nothing would protect one later.
-  private func appleDerive(from source: Provisioned) async throws -> HostID {
-    guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
-    let tag = Self.deriveDirectoryPrefix + UUID().uuidString.lowercased()
-    let work = FileManager.default.temporaryDirectory.appendingPathComponent(tag)
-    try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: work) }
-
-    try AppleContainerCLI.dockerfile(try await appleProcess(of: source, provisioning)).write(
-      to: work.appendingPathComponent("Dockerfile"), atomically: true, encoding: .utf8)
-
-    let rootfs = work.appendingPathComponent("rootfs.tar")
-    // Stopped only if running, and started again whatever happens, even if this derive is
-    // cancelled: a cancelled `runtime` call ends its CLI, so the start runs in a task of its own.
-    // A base found stopped (an earlier derive cut off mid-export) is exported as it is and left
-    // stopped: nothing needs it running, since a derive reads its disk, not its processes.
-    let wasRunning =
-      try AppleContainerCLI.objects(
-        try await runtime(["inspect", source.container], allLines: true)
-      ).first.flatMap(AppleContainerCLI.state) == "running"
-    if wasRunning {
-      do { _ = try await runtime(["stop", source.container]) } catch {
-        // Cut off mid-stop (a cancelled create ends its CLI), it may have stopped all the same:
-        // started again, as after the export, so a failed create never leaves the base down.
-        _ = try? await Task { _ = try await self.runtime(["start", source.container]) }.value
-        throw error
-      }
-    }
-    let exported: Error?
-    do {
-      // ponytail: `export` prints nothing until the whole disk is written, so this silence bound
-      // is a total one, an hour; upgrade path: export to stdout and stream it to the file.
-      _ = try await runtime(["export", "--output", rootfs.path, source.container], timeout: 3600)
-      exported = nil
-    } catch { exported = error }
-    if wasRunning {
-      try await Task { _ = try await self.runtime(["start", source.container]) }.value
-    }
-    if let exported { throw exported }
-
-    // Never `--quiet`: in 1.5.0 a quiet build never returns. The builder is one VM for the whole
-    // Mac, which other builds may be using, so it is left running.
-    do {
-      _ = try await runtime(
-        ["build"] + (provisioning.labels + [Self.created()]).flatMap { ["--label", $0] }
-          + ["--tag", tag, work.path], timeout: 900)
-      // The image holds the disk now; the tar is as big again.
-      try? FileManager.default.removeItem(at: rootfs)
-      let host = try await run(tag, image: nil, isBase: false)
-      _ = try? await runtime(["image", "delete", tag])
-      return host
-    } catch {
-      _ = await Task { try? await self.runtime(["image", "delete", "--force", tag]) }.value
-      throw error
-    }
-  }
-
-  /// How the image `source` was run from starts its process, for the derived image to start the
-  /// same way; the host image's own when that image is gone (Apple removes images still in use, so
-  /// a prune or a newer pinned image can take it).
-  private func appleProcess(of source: Provisioned, _ provisioning: Provisioning) async throws
-    -> AppleContainerCLI.ProcessConfig
-  {
-    let base = try AppleContainerCLI.objects(
-      try await runtime(["inspect", source.container], allLines: true))
-    for reference in [base.first.flatMap(AppleContainerCLI.imageReference), provisioning.image]
-      .compactMap({ $0 })
-    {
-      guard let text = try? await runtime(["image", "inspect", reference], allLines: true),
-        let image = try? AppleContainerCLI.objects(text).first,
-        let process = AppleContainerCLI.processConfig(ofImage: image, architecture: "arm64")
-      else { continue }
-      return process
-    }
-    throw HostDriverError.provisioning("couldn't read the base's image to derive from")
-  }
-
   /// A pull's output, read as it arrives from two streams at once.
   private final class PullReader: @unchecked Sendable {
     private let lock = NSLock()
@@ -366,7 +224,8 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
     }
   }
 
-  /// Where an Apple derive stages a base's exported disk, and the derived image's name.
+  /// Where an older build's Apple derive staged a base's exported disk, and the derived image's
+  /// name: what a crash left with it is still swept.
   static let deriveDirectoryPrefix = "workroom-derive-"
 
   /// Removes the container and the image it alone was run from. A host handed in rather than
@@ -429,14 +288,12 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   /// Takes a host an earlier launch made back on (#253), as its `record` describes it, so it can
-  /// be reached, derived from and destroyed as if this driver had made it. Whether its container
-  /// is still there is found out by using it. `isBase` says whether it is a project's base; left
-  /// out, a Docker host with no image is one, as only a base has none. An Apple instance has none
-  /// either, so it is a base only when the caller says so.
-  func adopt(_ id: UUID, _ record: Record, isBase: Bool? = nil) throws {
+  /// be reached and destroyed as if this driver had made it. Whether its container is still there
+  /// is found out by using it.
+  func adopt(_ id: UUID, _ record: Record) throws {
     guard let provisioning else { throw HostDriverError.notImplemented("Adopting a host") }
     // `destroy` removes it by this, with `--force`: a config edited by hand must not name an image
-    // that is not a commit's.
+    // that is not an older derive's commit.
     if let image = record.image, !Self.isImageID(image) {
       throw HostDriverError.invalidConfiguration("image \(image) is not an image ID")
     }
@@ -451,9 +308,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
         address: record.address, port: record.port, user: record.user,
         identityFile: provisioning.identityFile, hostKey: record.hostKey,
         agentSocket: provisioning.agentSocket)
-      provisioned[id] = Provisioned(
-        container: Self.containerName(id), image: record.image,
-        isBase: isBase ?? (provisioning.dialect == .docker && record.image == nil))
+      provisioned[id] = Provisioned(container: Self.containerName(id), image: record.image)
       destroyed.remove(id)
     }
   }
@@ -765,7 +620,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Runs a container from `source` and waits until it can be reached: its identity minted, its
   /// host key pinned, and an ssh login through this driver's own configuration answering. A
   /// container that gets no further is removed.
-  private func run(_ source: String, image: String?, isBase: Bool) async throws -> HostID {
+  private func run(_ source: String, image: String?) async throws -> HostID {
     guard let provisioning else { throw HostDriverError.notImplemented("Provisioning") }
     // A port of its own rather than an ephemeral one (`127.0.0.1::22`): a restart keeps it, so the
     // host's address outlives a reboot, as a provider's box keeps its address.
@@ -802,7 +657,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
           address: "127.0.0.1", port: Int(port), user: provisioning.user,
           identityFile: provisioning.identityFile, hostKey: hostKey,
           agentSocket: provisioning.agentSocket)
-        provisioned[id] = Provisioned(container: container, image: image, isBase: isBase)
+        provisioned[id] = Provisioned(container: container, image: image)
       }
       try await awaitLogin(.remote(id))
       return .remote(id)

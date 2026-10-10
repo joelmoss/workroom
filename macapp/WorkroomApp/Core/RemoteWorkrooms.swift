@@ -201,11 +201,7 @@ enum RemoteWorkrooms {
     case notOnGitHub(String)
     case noDocker
     case noAppleContainer
-    case baseOnOtherRuntime(String)
-    case anotherBuildsBase(String)
     case anotherBuildsHost(String)
-    case baseRepositoryChanged(base: String, origin: String)
-    case incompleteBase
     case codasetRequired
     case boxdNotInstalled
     case baseBranchNotOnOrigin(String)
@@ -220,22 +216,9 @@ enum RemoteWorkrooms {
         return "Sign in to Codaset in Settings → Remote workrooms to cancel its grant."
       case .notOnGitHub(let detail):
         return "A remote workroom needs a project whose origin is on github.com. \(detail)"
-      case .anotherBuildsBase(let build):
-        return "This project's base machine was made by another Workroom build (\(build)), "
-          + "whose remote hosts this build can't reach. Create the remote workroom from that build."
       case .anotherBuildsHost(let build):
         return "It runs on a remote host another Workroom build made (\(build)), which this build "
           + "can't take down. Delete it from that build."
-      case .baseRepositoryChanged(let base, let origin):
-        return
-          "This project's base machine is a clone of \(base), but its GitHub repository is now "
-          + "\(origin): its origin changed, or the repository was renamed or moved. Its remote "
-          + "workrooms would clone \(base). To start over from \(origin), delete the project (its "
-          + "remote workrooms and base go with it) and add it again."
-      case .incompleteBase:
-        return "This project's base machine record is incomplete, so it can't be reused, and "
-          + "building another would leave it running unrecorded. Delete the project (its remote "
-          + "workrooms and base go with it) and add it again."
       case .codasetRequired:
         return "A remote workroom fetches and pushes with Codaset's repository tokens, so it keeps "
           + "working with this Mac closed. Sign in to Codaset in Settings → Remote workrooms."
@@ -255,9 +238,6 @@ enum RemoteWorkrooms {
       case .noAppleContainer:
         return "Apple's container command wasn't found. Install it from "
           + "github.com/apple/container, then run `container system start`."
-      case .baseOnOtherRuntime(let runtime):
-        return "This project's base machine runs on \(runtime), so its workrooms are created there "
-          + "too."
       }
     }
   }
@@ -271,14 +251,6 @@ enum RemoteWorkrooms {
     // Only Docker has an unpinned form; a boxd base belongs to exactly one org and account.
     guard let runtime = key.runtime else { return nil }
     return bases.first { RemoteHosts.DriverKey($0) == RemoteHosts.DriverKey(runtime: runtime) }
-  }
-
-  /// A project's descriptor `host` with `base` recorded in it, in place of any base on the same
-  /// runtime and context (#309). A project with one base keeps the one-base form.
-  static func recording(_ base: HostDescriptor, in host: HostDescriptor?) -> HostDescriptor {
-    let key = RemoteHosts.DriverKey(base)
-    let others = (host?.allBases ?? []).filter { $0.id != nil && RemoteHosts.DriverKey($0) != key }
-    return others.isEmpty ? base : HostDescriptor(bases: others + [base])
   }
 
   /// A project's descriptor `host` without the base `id`, or nil when it had no other.
@@ -348,90 +320,35 @@ enum RemoteWorkrooms {
     let instance: RemoteProvisioning.Instance
   }
 
-  /// Creates a remote workroom for a project (#253): its base first if it has none, then a name
-  /// in config, then the derived instance, then the instance's descriptor. The name is taken
-  /// before the derive, so the branch is named for it and a crash part-way leaves an entry the
-  /// user can see and delete; anything the crash left on a host is the sweep's
-  /// (`RemoteHosts.adopt`, and `PendingMachines` for a remote provider's machine, #373).
+  /// Creates a remote workroom for a project (#253): a name in config, then the workroom's own
+  /// host with its own clone, then the host's descriptor. The name is taken before the host is
+  /// made, so the branch is named for it and a crash part-way leaves an entry the user can see and
+  /// delete; anything the crash left on a host is the sweep's (`RemoteHosts.adopt`, and
+  /// `PendingMachines` for a remote provider's machine, #373).
   ///
-  /// When the derive fails and undid itself, the entry is dropped. When undoing it failed too,
-  /// the entry keeps what is still live (host, grant) so deleting it can finish the job.
+  /// When the create fails and undid itself, the entry is dropped. When undoing it failed too, the
+  /// entry keeps what is still live (host, grant) so deleting it can finish the job.
   static func create(
-    repository: GitHubRepository, cloneURL: String, base existing: HostDescriptor?,
-    project projectHost: HostDescriptor? = nil, startBranch: String? = nil,
+    repository: GitHubRepository, cloneURL: String, startBranch: String? = nil,
     key: RemoteHosts.DriverKey = .init(),
     driver: any HostTerminalDriver,
     environment: RemoteProvisioning.Environment, recorder: Recorder,
     pendingIn: URL? = RemoteHosts.pendingIn
   ) async throws -> Created {
     let recorder = recorder.forgettingPending(in: pendingIn)
-    let base: RemoteProvisioning.Base
-    if let existing, !ownsHost(existing) {
-      // Its key and labels are another build's, so this one can neither reach nor replace it.
-      throw Failure.anotherBuildsBase(existing.provisioner ?? "an unknown build")
-    }
-    // A workroom is derived from its base, on the base's driver: a base of another runtime, or of
-    // boxd when the workroom isn't (or the reverse), is never derived from (#356).
-    if let existing, existing.id != nil {
-      let other = (try? RemoteHosts.deletionKey(existing)) ?? .init()
-      if other.runtime != key.runtime {
-        throw Failure.baseOnOtherRuntime(other.place.displayName)
-      }
-    }
-    if let recorded = existing?.base {
-      // Reused only for the repository it cloned: a changed origin would otherwise get workrooms of
-      // the old one, with credentials for it.
-      let origin = "\(repository.owner)/\(repository.name)"
-      // GitHub names are case-insensitive.
-      guard recorded.repository.lowercased() == origin.lowercased() else {
-        throw Failure.baseRepositoryChanged(base: recorded.repository, origin: origin)
-      }
-      base = recorded
-    } else if existing?.id != nil {
-      // A host is recorded but not enough of it to derive from: a second base would leave this one
-      // live with nothing pointing at it.
-      throw Failure.incompleteBase
-    } else {
-      do {
-        base = try await RemoteProvisioning.buildBase(
-          repository: "\(repository.owner)/\(repository.name)",
-          cloneURL: cloneURL,
-          path: clonePath(for: repository, on: key), in: environment
-        ) { base in
-          // Beside the project's bases on other runtimes and contexts (#309).
-          var descriptor = describing(
-            .remote(base.host), key: key, driver: driver, credentials: base.relayed)
-          descriptor.repository = base.repository
-          descriptor.cloneURL = base.cloneURL
-          descriptor.path = base.path
-          try await recorder.record(nil, recording(descriptor, in: projectHost))
-        }
-      } catch {
-        // A base machine left running stays recorded, `failed`, so the project knows it (a later
-        // create refuses to make a second one beside it) and a delete finds it: whether the driver
-        // could not undo its create, or the build's own rollback could not destroy it.
-        if let host = leftBehindHost(error) {
-          var descriptor = describing(host, key: key, driver: driver, credentials: nil)
-          descriptor.state = "failed"
-          await recordLeftBehind(host) {
-            try await recorder.record(nil, recording(descriptor, in: projectHost))
-          }
-        }
-        throw error
-      }
-    }
-
+    let origin = "\(repository.owner)/\(repository.name)"
+    let path = clonePath(for: repository, on: key)
     let workroomID = UUID()
     let name = try await recorder.reserve(
-      base.path,
+      path,
       HostDescriptor(
         state: "creating", driver: driverName(key), provisioner: provisioner,
         workroomID: workroomID, org: key.org, account: key.account))
     let instance: RemoteProvisioning.Instance
     do {
-      instance = try await RemoteProvisioning.derive(
-        from: base, workroom: workroomID, branch: branch(for: name), startBranch: startBranch,
-        in: environment
+      instance = try await RemoteProvisioning.provision(
+        repository: origin, cloneURL: cloneURL, path: path, workroom: workroomID,
+        branch: branch(for: name), startBranch: startBranch, in: environment
       ) { host, grant in
         // Still `creating`, but now naming what a delete has to take down.
         try await recorder.record(
@@ -475,9 +392,12 @@ enum RemoteWorkrooms {
     }
     do {
       var descriptor = describing(
-        instance.host, key: key, driver: driver, credentials: base.relayed)
+        instance.host, key: key, driver: driver, credentials: instance.relayed)
       descriptor.grantID = instance.grantID
       descriptor.workroomID = workroomID
+      // Its own GitHub identity, for PR and CI status (`registrations`).
+      descriptor.repository = origin
+      descriptor.cloneURL = cloneURL
       try await recorder.record(name, descriptor)
     } catch {
       // Unrecorded, the instance would be found by nothing but the sweep, and its grant by nothing.
@@ -520,12 +440,12 @@ enum RemoteWorkrooms {
   /// A live host's descriptor on `key`: its driver, this build, and how `key`'s driver finds it
   /// again (a container record, or a boxd org and account).
   private static func describing(
-    _ host: HostID, key: RemoteHosts.DriverKey, driver: any HostTerminalDriver, credentials: Bool?
+    _ host: HostID, key: RemoteHosts.DriverKey, driver: any HostTerminalDriver, credentials: Bool
   ) -> HostDescriptor {
     var descriptor = HostDescriptor(
       driver: driverName(key), provisioner: provisioner,
       container: (driver as? ContainerHostDriver)?.record(of: host),
-      credentials: credentials == true ? "relay" : nil, org: key.org, account: key.account)
+      credentials: credentials ? "relay" : nil, org: key.org, account: key.account)
     if case .remote(let id) = host { descriptor.id = id }
     return descriptor
   }
@@ -604,16 +524,6 @@ enum RemoteWorkrooms {
     }
     if let id = host.id { await RemoteHosts.shared.forgetRelay(id) }
     try await forget()
-  }
-
-  /// The machine a failed create left running, when the failure names one: the driver's own undo
-  /// (`leftBehind`) or a build's rollback (`rollbackIncomplete`) that could not take it down.
-  private static func leftBehindHost(_ error: any Error) -> HostID? {
-    switch error {
-    case HostDriverError.leftBehind(_, _, let host?): return host
-    case RemoteProvisioning.Failure.rollbackIncomplete(_, let host?, _, _): return host
-    default: return nil
-    }
   }
 
   /// Records what a failure left live (a machine, a grant). A record that fails too is logged with
@@ -925,7 +835,7 @@ final class RemoteHosts: @unchecked Sendable {
     let recorded = descriptors.filter {
       DriverKey($0) != nil && RemoteWorkrooms.ownsHost($0)
     }
-    // Only a base is derived from; on Apple nothing in its record says which a host is.
+    // An older build's base, until it is removed: it never relays.
     let bases = Set(projects.flatMap { $0.host?.allBases.compactMap(\.id) ?? [] })
     let already = lock.withLock {
       for descriptor in recorded {
@@ -972,7 +882,7 @@ final class RemoteHosts: @unchecked Sendable {
         guard let id = descriptor.id, let record = descriptor.container,
           driver.record(of: .remote(id)) == nil
         else { continue }
-        do { try driver.adopt(id, record, isBase: bases.contains(id)) } catch {
+        do { try driver.adopt(id, record) } catch {
           Self.logger.error("adopting host \(id, privacy: .public): \(error, privacy: .public)")
         }
       }
@@ -1087,7 +997,7 @@ final class RemoteHosts: @unchecked Sendable {
   /// signed out or without a runtime they need. Refuses one another build made
   /// (`RemoteWorkrooms.checkDeletable`).
   @MainActor
-  func environment(toDelete hosts: [HostDescriptor], bases: Set<UUID> = []) throws -> Deletion? {
+  func environment(toDelete hosts: [HostDescriptor]) throws -> Deletion? {
     guard try RemoteWorkrooms.checkDeletable(hosts) else { return nil }
     var environments: [DriverKey: RemoteProvisioning.Environment] = [:]
     for host in hosts where RemoteWorkrooms.isLive(host) {
@@ -1099,8 +1009,7 @@ final class RemoteHosts: @unchecked Sendable {
       let driver = try containerDriver(key)
       guard let id = host.id, let record = host.container, driver.record(of: .remote(id)) == nil
       else { continue }
-      // Whether it is a base sticks for the launch: a later create derives from it.
-      do { try driver.adopt(id, record, isBase: bases.contains(id)) } catch {
+      do { try driver.adopt(id, record) } catch {
         Self.logger.error("adopting host \(id, privacy: .public): \(error, privacy: .public)")
       }
     }

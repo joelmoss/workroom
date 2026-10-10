@@ -2,7 +2,7 @@ import Foundation
 import os
 
 /// The second real provider driver (#259): exe.dev VMs, driven through exe.dev's ssh API
-/// (`ssh exe.dev <command> --json`) and reached over ssh, with the portable derivation.
+/// (`ssh exe.dev <command> --json`) and reached over ssh. Each workroom is a fresh VM of its own.
 ///
 /// - **The user's own ssh.** exe.dev knows the user by their ssh key, and the driver's ssh is the
 ///   one `ssh exe.dev` in Terminal is: the user's `~/.ssh/config`, keys, agent and Keychain pick
@@ -16,11 +16,8 @@ import os
 ///   and every `<vm>.exe.xyz` (spike, 2026-10-08). A VM's key is checked against the user's own
 ///   `known_hosts` entry for `exe.dev` (`HostKeyAlias`), so a key exe.dev rotates is accepted
 ///   again with one `ssh exe.dev`, not an app update.
-/// - **A base** is `new --tag workroom-base`, then `Resources/host-setup/systemd.sh` run as root.
-/// - **A derive** is `sync` on the base, then `cp --copy-tags=false`: a cold copy of the base's
-///   flushed disk. The copy boots under its own name, so exe.dev gives it a new hostname and
-///   machine-id and the identity unit mints the rest. No reboot: nothing of the base's memory
-///   survives the copy (measured). A source without the base tag is a workroom, and is refused.
+/// - **A host** is `new`, then `Resources/host-setup/systemd.sh` run as root. exe.dev gives every
+///   VM its own machine-id (measured, 2026-10-10), so the identity unit has little to mint here.
 /// - **Names.** A host is the VM `<prefix>-<host id>`. A failed step removes by name.
 ///
 /// exe.dev has no stop, start or idle timer, and its VMs were never put to sleep while idle
@@ -30,7 +27,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     /// What every VM this driver makes is named after.
     var prefix = "workroom"
     /// The exe.dev account this driver's VMs belong to, `whoami`'s email, or nil to accept any.
-    /// Checked before every create, derive, destroy and rollback: another account's VM reads as
+    /// Checked before every create, destroy and rollback: another account's VM reads as
     /// "not found", which `destroy` would take for gone. Whoever records a host records this.
     var account: String?
     /// The agent's socket on every host, on the home disk: the agent keeps its broker enrolment
@@ -45,19 +42,13 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// The user every exe.dev VM logs in as (exeuntu's `exe.dev/login-user`).
   static let user = "exedev"
   static let stateDirectory = "/home/\(user)/.local/state/workroom"
-  /// The tag a base carries and a workroom does not: only a base is derived from.
-  static let baseTag = "workroom-base"
   static let lobby = "exe.dev"
   /// The gateway's key's fingerprint as exe.dev publishes it (`ssh exe.dev doc faq/host-key`), for
   /// an error that asks the user to sign in once.
   static let gatewayFingerprint = "SHA256:JJOP/lwiBGOMilfONPWZCXUrfK154cnJFXcqlsi6lPo"
 
-  /// Measured: `cp` returns in about half a second and the copy answers ssh about 2 s later; the
-  /// waits for its identity and agent take a few more.
   var traits: HostDriverTraits {
-    HostDriverTraits(
-      transport: .sshStdio, deriveSpeed: .seconds(5), deriveCarriesLiveProcesses: false,
-      durableDisk: true, maxLifetime: nil)
+    HostDriverTraits(transport: .sshStdio, durableDisk: true, maxLifetime: nil)
   }
 
   let configuration: Configuration
@@ -91,7 +82,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   // MARK: Provisioning
 
-  /// A fresh VM, tagged as a base and set up: the identity unit has minted its identity and the
+  /// A fresh VM, set up as a workroom's host: the identity unit has minted its identity and the
   /// supervisor is waiting for an agent. A VM that gets no further is removed.
   func create() async throws -> HostID {
     try await checkAccount()
@@ -100,7 +91,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     try markPending(id)
     do {
       RemoteProvisioning.reportStep?(.machine)
-      _ = try await cli(["new", "--name", name, "--tag", Self.baseTag, "--no-email"])
+      _ = try await cli(["new", "--name", name, "--no-email"])
       try await awaitBoot(of: id)
       RemoteProvisioning.reportStep?(.setup)
       let (status, output) = try await exec(
@@ -113,47 +104,6 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
         throw HostDriverError.provisioning("setting up \(name) failed: \(output)")
       }
       try await awaitIdentity(of: id)
-      return .remote(id)
-    } catch {
-      try await undo(error, id: id)
-    }
-  }
-
-  /// A copy of `base`'s disk as a VM of its own. The base keeps running. Callers serialise this
-  /// against anything that writes the base's repository (`BaseLocks`).
-  func deriveFromBase(_ base: HostID) async throws -> HostID {
-    let baseName = name(of: try id(of: base))
-    try await checkAccount()
-    // A workroom's disk holds its enrolment key and credential helper: a copy would start with
-    // both. Every base is made by `create`, with the tag, and every copy is made without it.
-    let listed: [Listing.Machine]
-    do {
-      listed = try decode(Listing.self, await cli(["ls", baseName]), baseName).vms
-    } catch let failure as CLIFailure {
-      throw HostDriverError.provisioning(failure.localizedDescription)
-    }
-    guard let machine = listed.first(where: { $0.name == baseName }) else {
-      throw HostDriverError.unknownHost(base)
-    }
-    guard machine.tags?.contains(Self.baseTag) == true else {
-      throw HostDriverError.invalidConfiguration("a workroom instance cannot be derived from")
-    }
-    let id = UUID()
-    let name = name(of: id)
-    try markPending(id)
-    do {
-      // `cp` copies the base's disk as it is on disk: a write still in the page cache, such as
-      // the end of the base's last clone or fetch, would be missing from the copy (measured).
-      let (status, output) = try await exec("sync", on: base).communicate(nil, timeout: 60)
-      guard status == 0 else {
-        throw HostDriverError.provisioning("syncing \(baseName) failed: \(output)")
-      }
-      RemoteProvisioning.reportStep?(.snapshot)
-      _ = try await cli(["cp", baseName, name, "--copy-tags=false"], timeout: 900)
-      RemoteProvisioning.reportStep?(.restore)
-      try await awaitIdentity(of: id)
-      // The identity unit is done before the supervisor starts the agent.
-      try await awaitAgent(of: id)
       return .remote(id)
     } catch {
       try await undo(error, id: id)
@@ -181,8 +131,8 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
       in: directory)
   }
 
-  /// Removes what a failed `create` or `deriveFromBase` made, then rethrows `error`, or says what
-  /// is still there. In a task of its own, so a cancelled caller still cleans up.
+  /// Removes what a failed `create` made, then rethrows `error`, or says what is still there. In a
+  /// task of its own, so a cancelled caller still cleans up.
   private func undo(_ error: any Error, id: UUID) async throws -> Never {
     let name = name(of: id)
     let failure = await Task { () -> String? in
@@ -230,8 +180,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     ) { "\(self.name(of: id)) never finished booting: \($0)" }
   }
 
-  /// Until the identity unit has run on this VM: its marker and hostname both name it. On a copy
-  /// the marker still names the base until the unit runs.
+  /// Until the identity unit has run on this VM: its marker and hostname both name it.
   private func awaitIdentity(of id: UUID) async throws {
     let name = PosixShell.quoted(name(of: id))
     try await poll(
@@ -239,18 +188,6 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
       "test \"$(cat /etc/workroom-identity 2>/dev/null)\" = \(name) && test \"$(hostname)\" = \(name)",
       tries: 150
     ) { "\(self.name(of: id)) never minted its identity: \($0)" }
-  }
-
-  /// Until the supervisor's agent answers on its socket. A base that was never given an agent
-  /// hands none on, and there is nothing to wait for: the bootstrap installs one and waits itself.
-  private func awaitAgent(of id: UUID) async throws {
-    let socket = configuration.agentSocket
-    let binary = PosixShell.quoted(AgentBootstrap.binary(besideSocket: socket))
-    try await poll(
-      .remote(id),
-      "test ! -e \(binary) || \(binary) list --socket \(PosixShell.quoted(socket)) > /dev/null",
-      tries: 75
-    ) { "\(self.name(of: id))'s agent never answered: \($0)" }
   }
 
   /// Refuses to act while exe.dev answers as another account than this driver's.
@@ -284,19 +221,6 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   }
 
   struct Whoami: Decodable { let email: String }
-
-  struct Listing: Decodable {
-    let vms: [Machine]
-    struct Machine: Decodable {
-      let name: String
-      /// Absent when the VM has none (spike).
-      let tags: [String]?
-      enum CodingKeys: String, CodingKey {
-        case name = "vm_name"
-        case tags
-      }
-    }
-  }
 
   struct Removal: Decodable {
     let deleted: [String]

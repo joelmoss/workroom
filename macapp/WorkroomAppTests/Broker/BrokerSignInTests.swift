@@ -326,7 +326,7 @@ final class AgentEnrolmentTests: XCTestCase {
   /// Runs every exec as a shell script that saves its stdin and answers as told.
   private final class StubDriver: HostDriver, @unchecked Sendable {
     let traits = HostDriverTraits(
-      transport: .sshStdio, deriveSpeed: nil, deriveCarriesLiveProcesses: false,
+      transport: .sshStdio,
       durableDisk: false, maxLifetime: nil)
     let stdinFile: URL
     let output: String

@@ -108,22 +108,18 @@ final class ExeDevIntegrationTests: ProviderParityTestCase {
 
   // MARK: The parity cases
 
-  func testInstancesDerivedFromOneBaseCarryItsDiskButMintTheirOwnIdentity() async throws {
-    try await instancesCarryTheBaseDiskButNotItsIdentity(provider())
-  }
-
-  func testADerivedWorkroomServesAsSoonAsItsDeriveReturns() async throws {
-    try await aDerivedWorkroomServesAsSoonAsItsDeriveReturns(provider())
+  func testFreshVMsHaveAnIdentityOfTheirOwn() async throws {
+    try await freshHostsHaveAnIdentityOfTheirOwn(provider())
   }
 
   @MainActor
-  func testWorkroomsDerivedOnExeDevPushWithTheMacDisconnectedAndSurviveARestart() async throws {
+  func testWorkroomsOnExeDevPushWithTheMacDisconnectedAndSurviveARestart() async throws {
     try await workroomsPushWithTheMacDisconnectedAndSurviveARestart(provider())
   }
 
   @MainActor
-  func testAWorkroomThatFailsAfterItsDeriveLeavesNoVMAndNoGrant() async throws {
-    try await aWorkroomThatFailsAfterItsDeriveLeavesNothing(provider())
+  func testAWorkroomThatFailsAfterItsMachineLeavesNoVMAndNoGrant() async throws {
+    try await aWorkroomThatFailsAfterItsMachineLeavesNothing(provider())
   }
 
   @MainActor
@@ -168,41 +164,22 @@ final class ExeDevIntegrationTests: ProviderParityTestCase {
     }
   }
 
-  /// AC 5, for the provider's steps: a derive that fails at each lobby step, or after it ran (`+`:
-  /// the copy exists and the lobby said otherwise), leaves no VM but the base.
-  func testADeriveThatFailsAtEachStepLeavesNoVM() async throws {
+  /// AC 5, for the provider's steps: a create that fails at its lobby step, or after it ran (`+`:
+  /// the VM exists and the lobby said otherwise), leaves no VM.
+  func testACreateThatFailsAtItsLobbyStepLeavesNoVM() async throws {
     let lobby = FailingLobby()
     let driver = driver(runner: lobby)
-    let base = try await driver.create()
 
-    for step in ["ls", "cp", "cp+"] {
+    for step in ["new", "new+"] {
       lobby.fail(step)
       do {
-        _ = try await driver.deriveFromBase(base)
-        XCTFail("a derive that failed at \(step) succeeded")
+        _ = try await driver.create()
+        XCTFail("a create that failed at \(step) succeeded")
       } catch HostDriverError.provisioning(let detail) {
         XCTAssertTrue(detail.contains("injected failure"), "\(step): \(detail)")
       }
-      XCTAssertFalse(lobby.pending, "the derive never reached \(step)")
-      XCTAssertEqual(try leftovers(), [name(base)], "a derive that failed at \(step) left a VM")
+      XCTAssertFalse(lobby.pending, "the create never reached \(step)")
+      XCTAssertEqual(try leftovers(), [], "a create that failed at \(step) left a VM")
     }
-    try await driver.destroy(base)
-    XCTAssertEqual(try leftovers(), [])
-  }
-
-  /// Deriving from a workroom, not its base, is refused before anything is copied: a workroom's
-  /// disk holds its own enrolment.
-  func testAWorkroomIsNeverDerivedFrom() async throws {
-    let driver = driver()
-    let base = try await driver.create()
-    let instance = try await driver.deriveFromBase(base)
-    do {
-      _ = try await driver.deriveFromBase(instance)
-      XCTFail("derived from a workroom")
-    } catch HostDriverError.invalidConfiguration(let detail) {
-      XCTAssertEqual(detail, "a workroom instance cannot be derived from")
-    }
-    XCTAssertEqual(try leftovers(), [name(base), name(instance)].sorted())
-    for host in [instance, base] { try await driver.destroy(host) }
   }
 }
