@@ -1,8 +1,7 @@
-package cmd
+package workroom
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -13,11 +12,10 @@ import (
 	"github.com/joelmoss/workroom/internal/config"
 	"github.com/joelmoss/workroom/internal/errs"
 	"github.com/joelmoss/workroom/internal/vcs"
-	"github.com/joelmoss/workroom/internal/workroom"
 )
 
 // requireGit skips a test when the git binary is not on PATH (the create flow
-// shells out to real git, like the delete-project integration tests).
+// shells out to real git).
 func requireGit(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -26,24 +24,33 @@ func requireGit(t *testing.T) {
 }
 
 // newCreateSvc returns a Service backed by a throwaway config file, plus the
-// config, for exercising add-project --create. The config lives in its own temp
-// dir so project directories created by the tests stay separate.
-func newCreateSvc(t *testing.T) (*workroom.Service, *config.Config) {
+// config, for exercising AddProject. The config lives in its own temp dir so
+// project directories created by the tests stay separate.
+func newCreateSvc(t *testing.T) (*Service, *config.Config) {
 	t.Helper()
 	cfg, err := config.New(filepath.Join(t.TempDir(), "config.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &workroom.Service{Config: cfg, Out: &bytes.Buffer{}}, cfg
+	return &Service{Config: cfg, Out: &bytes.Buffer{}}, cfg
 }
 
-func decodeEnvelope(t *testing.T, b []byte) map[string]any {
+// run executes a command in dir and fails the test on error, returning its trimmed output.
+func run(t *testing.T, dir, name string, args ...string) string {
 	t.Helper()
-	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		t.Fatalf("decode envelope: %v\n%s", err, b)
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, out)
 	}
-	return m
+	return strings.TrimSpace(string(out))
+}
+
+// branchExists reports whether the repo at dir has a local branch named branch.
+func branchExists(t *testing.T, dir, branch string) bool {
+	t.Helper()
+	return run(t, dir, "git", "branch", "--list", branch) != ""
 }
 
 // TestAddProjectCreate_MissingPath: --create on a path that does not exist
@@ -54,22 +61,21 @@ func TestAddProjectCreate_MissingPath(t *testing.T) {
 	svc, cfg := newCreateSvc(t)
 	target := filepath.Join(t.TempDir(), "new", "project") // nested + missing
 
-	var out bytes.Buffer
 	canon, err := config.CanonicalPath(target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runAddProjectCreate(svc, canon, &out); err != nil {
+	res, err := svc.addCreatedProject(canon)
+	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
 
 	// The registered/reported path is re-canonicalized once the dir exists (C4),
 	// which resolves symlinks (e.g. /var -> /private/var on macOS), so it is the
 	// source of truth — not the pre-create `canon`.
-	env := decodeEnvelope(t, out.Bytes())
-	got, _ := env["path"].(string)
-	if env["vcs"] != "git" || got == "" || env["ok"] != true {
-		t.Fatalf("unexpected envelope: %v", env)
+	got := res.Path
+	if res.VCS != "git" || got == "" || res.WouldCreate {
+		t.Fatalf("unexpected result: %+v", res)
 	}
 	if info, err := os.Stat(got); err != nil || !info.IsDir() {
 		t.Fatalf("directory not created: err=%v", err)
@@ -93,7 +99,7 @@ func TestAddProjectCreate_ExistingEmptyDir(t *testing.T) {
 	svc, _ := newCreateSvc(t)
 	canon := t.TempDir() // exists, empty
 
-	if err := runAddProjectCreate(svc, canon, &bytes.Buffer{}); err != nil {
+	if _, err := svc.addCreatedProject(canon); err != nil {
 		t.Fatalf("create on empty dir failed: %v", err)
 	}
 	if info, err := os.Stat(filepath.Join(canon, ".git")); err != nil || !info.IsDir() {
@@ -111,7 +117,7 @@ func TestAddProjectCreate_DSStoreOnlyDirCountsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := runAddProjectCreate(svc, canon, &bytes.Buffer{}); err != nil {
+	if _, err := svc.addCreatedProject(canon); err != nil {
 		t.Fatalf("create on .DS_Store-only dir failed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(canon, ".git")); err != nil {
@@ -135,7 +141,7 @@ func TestAddProjectCreate_ExistingGitRepoUsedAsIs(t *testing.T) {
 	run(t, canon, "git", "commit", "-q", "--allow-empty", "-m", "more")
 	before := run(t, canon, "git", "rev-list", "--count", "HEAD")
 
-	if err := runAddProjectCreate(svc, canon, &bytes.Buffer{}); err != nil {
+	if _, err := svc.addCreatedProject(canon); err != nil {
 		t.Fatalf("create on existing repo failed: %v", err)
 	}
 	if after := run(t, canon, "git", "rev-list", "--count", "HEAD"); after != before {
@@ -158,7 +164,7 @@ func TestAddProjectCreate_EndToEndWorkroomCreatable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runAddProjectCreate(svc, canon, &bytes.Buffer{}); err != nil {
+	if _, err := svc.addCreatedProject(canon); err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
 
@@ -203,7 +209,7 @@ func TestAddProjectCreate_HardenedCommitNoGitIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runAddProjectCreate(svc, canon, &bytes.Buffer{}); err != nil {
+	if _, err := svc.addCreatedProject(canon); err != nil {
 		t.Fatalf("create with no git identity failed (OV1 regression): %v", err)
 	}
 	if c := run(t, canon, "git", "rev-list", "--count", "HEAD"); c != "1" {
@@ -220,7 +226,7 @@ func TestAddProjectCreate_PathIsFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	canon, _ := config.CanonicalPath(f)
-	if err := runAddProjectCreate(svc, canon, &bytes.Buffer{}); !errors.Is(err, errs.ErrNotDirectory) {
+	if _, err := svc.addCreatedProject(canon); !errors.Is(err, errs.ErrNotDirectory) {
 		t.Fatalf("expected ErrNotDirectory, got %v", err)
 	}
 }
@@ -238,7 +244,7 @@ func TestAddProjectCreate_FileInParentComponent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runAddProjectCreate(svc, canon, &bytes.Buffer{}); !errors.Is(err, errs.ErrNotDirectory) {
+	if _, err := svc.addCreatedProject(canon); !errors.Is(err, errs.ErrNotDirectory) {
 		t.Fatalf("expected ErrNotDirectory for ENOTDIR, got %v", err)
 	}
 }
@@ -251,7 +257,7 @@ func TestAddProjectCreate_NonEmptyNonRepo(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(canon, "README.md"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := runAddProjectCreate(svc, canon, &bytes.Buffer{}); !errors.Is(err, errs.ErrUnsupportedVCS) {
+	if _, err := svc.addCreatedProject(canon); !errors.Is(err, errs.ErrUnsupportedVCS) {
 		t.Fatalf("expected ErrUnsupportedVCS, got %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(canon, ".git")); !os.IsNotExist(err) {
@@ -273,13 +279,13 @@ func TestAddProjectCreate_RollbackOnRegisterFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := &workroom.Service{Config: cfg, Out: &bytes.Buffer{}}
+	svc := &Service{Config: cfg, Out: &bytes.Buffer{}}
 
 	canon, err := config.CanonicalPath(filepath.Join(t.TempDir(), "proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runAddProjectCreate(svc, canon, &bytes.Buffer{}); err == nil {
+	if _, err := svc.addCreatedProject(canon); err == nil {
 		t.Fatal("expected an error from the failing config write")
 	}
 	if _, err := os.Stat(canon); !os.IsNotExist(err) {
@@ -299,10 +305,10 @@ func TestAddProjectCreate_RollbackKeepsPreExistingDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := &workroom.Service{Config: cfg, Out: &bytes.Buffer{}}
+	svc := &Service{Config: cfg, Out: &bytes.Buffer{}}
 
 	canon := t.TempDir() // pre-existing empty dir
-	if err := runAddProjectCreate(svc, canon, &bytes.Buffer{}); err == nil {
+	if _, err := svc.addCreatedProject(canon); err == nil {
 		t.Fatal("expected an error from the failing config write")
 	}
 	if _, err := os.Stat(canon); err != nil {
@@ -317,12 +323,12 @@ func TestAddProjectExisting_RepoOnlyUnchanged(t *testing.T) {
 	svc, _ := newCreateSvc(t)
 
 	missing, _ := config.CanonicalPath(filepath.Join(t.TempDir(), "nope"))
-	if err := runAddProjectExisting(svc, missing, &bytes.Buffer{}); !errors.Is(err, errs.ErrUnsupportedVCS) {
+	if _, err := svc.addExistingProject(missing); !errors.Is(err, errs.ErrUnsupportedVCS) {
 		t.Fatalf("missing path without --create should be UnsupportedVCS, got %v", err)
 	}
 
 	nonRepo := t.TempDir() // exists, not a repo
-	if err := runAddProjectExisting(svc, nonRepo, &bytes.Buffer{}); !errors.Is(err, errs.ErrUnsupportedVCS) {
+	if _, err := svc.addExistingProject(nonRepo); !errors.Is(err, errs.ErrUnsupportedVCS) {
 		t.Fatalf("non-repo dir without --create should be UnsupportedVCS, got %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(nonRepo, ".git")); !os.IsNotExist(err) {
@@ -333,17 +339,14 @@ func TestAddProjectExisting_RepoOnlyUnchanged(t *testing.T) {
 // TestAddProjectCreate_PretendDryRun proves OV3: --create --pretend mutates
 // nothing and reports the intended action.
 func TestAddProjectCreate_PretendDryRun(t *testing.T) {
-	old := pretend
-	pretend = true
-	defer func() { pretend = old }()
-
 	svc, cfg := newCreateSvc(t)
+	svc.Pretend = true
 	canon, err := config.CanonicalPath(filepath.Join(t.TempDir(), "proj"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
-	if err := runAddProjectCreate(svc, canon, &out); err != nil {
+	res, err := svc.addCreatedProject(canon)
+	if err != nil {
 		t.Fatalf("pretend dry-run failed: %v", err)
 	}
 	if _, err := os.Stat(canon); !os.IsNotExist(err) {
@@ -353,9 +356,8 @@ func TestAddProjectCreate_PretendDryRun(t *testing.T) {
 	if _, ok := data[canon]; ok {
 		t.Fatal("pretend must not register the project")
 	}
-	env := decodeEnvelope(t, out.Bytes())
-	if env["would_create"] != true || env["vcs"] != "git" {
-		t.Fatalf("unexpected dry-run envelope: %v", env)
+	if !res.WouldCreate || res.VCS != "git" {
+		t.Fatalf("unexpected dry-run result: %+v", res)
 	}
 }
 
@@ -364,11 +366,8 @@ func TestAddProjectCreate_PretendDryRun(t *testing.T) {
 // still errors) but the project is never registered.
 func TestAddProjectExisting_PretendDryRun(t *testing.T) {
 	requireGit(t)
-	old := pretend
-	pretend = true
-	defer func() { pretend = old }()
-
 	svc, cfg := newCreateSvc(t)
+	svc.Pretend = true
 	canon, err := config.CanonicalPath(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -378,38 +377,33 @@ func TestAddProjectExisting_PretendDryRun(t *testing.T) {
 	run(t, canon, "git", "config", "user.name", "T")
 	run(t, canon, "git", "commit", "-q", "--allow-empty", "-m", "real work")
 
-	var out bytes.Buffer
-	if err := runAddProjectExisting(svc, canon, &out); err != nil {
+	res, err := svc.addExistingProject(canon)
+	if err != nil {
 		t.Fatalf("pretend dry-run failed: %v", err)
 	}
 	data, _ := cfg.Read()
 	if _, ok := data[canon]; ok {
 		t.Fatal("pretend must not register the project")
 	}
-	env := decodeEnvelope(t, out.Bytes())
-	if env["would_create"] != false || env["vcs"] != "git" {
-		t.Fatalf("unexpected dry-run envelope: %v", env)
+	if res.WouldCreate || res.VCS != "git" {
+		t.Fatalf("unexpected dry-run result: %+v", res)
 	}
 }
 
 // TestAddProjectExisting_PretendNonRepoStillErrors proves detection still runs
 // under --pretend: a non-repo path errors with ErrUnsupportedVCS, it is never
-// registered, and no dry-run envelope is written for it.
+// registered, and no dry-run result is reported for it.
 func TestAddProjectExisting_PretendNonRepoStillErrors(t *testing.T) {
-	old := pretend
-	pretend = true
-	defer func() { pretend = old }()
-
 	svc, cfg := newCreateSvc(t)
+	svc.Pretend = true
 	nonRepo := t.TempDir() // exists, not a repo
 
-	var out bytes.Buffer
-	err := runAddProjectExisting(svc, nonRepo, &out)
+	res, err := svc.addExistingProject(nonRepo)
 	if !errors.Is(err, errs.ErrUnsupportedVCS) {
 		t.Fatalf("non-repo dir under --pretend should be UnsupportedVCS, got %v", err)
 	}
-	if out.Len() != 0 {
-		t.Fatalf("no envelope should be written on error, got %q", out.String())
+	if res != (AddProjectResult{}) {
+		t.Fatalf("no result should be reported on error, got %+v", res)
 	}
 	data, _ := cfg.Read()
 	if _, ok := data[nonRepo]; ok {
@@ -445,8 +439,7 @@ func TestAddProjectRefusesRemotePath(t *testing.T) {
 	for _, create := range []bool{false, true} {
 		svc, cfg := newCreateSvc(t)
 		cwd, _ := os.Getwd()
-		var out bytes.Buffer
-		err := runAddProject(svc, "git@example.com:org/repo.git", create, &out)
+		res, err := svc.AddProject("git@example.com:org/repo.git", create)
 		if !errors.Is(err, errs.ErrRemoteProject) || errs.Code(err) != "RemoteProjectUnsupported" {
 			t.Fatalf("create=%v: expected ErrRemoteProject, got %v", create, err)
 		}
@@ -459,8 +452,8 @@ func TestAddProjectRefusesRemotePath(t *testing.T) {
 		if data, _ := cfg.Read(); len(data) != 0 {
 			t.Fatalf("create=%v: config was written: %v", create, data)
 		}
-		if out.Len() != 0 {
-			t.Fatalf("create=%v: a success envelope was written: %s", create, out.String())
+		if res != (AddProjectResult{}) {
+			t.Fatalf("create=%v: a result was reported: %+v", create, res)
 		}
 	}
 }
