@@ -2,7 +2,7 @@ import Defaults
 import Foundation
 import os
 
-/// Remote workrooms in the app (#253): a workroom derived from its project's base machine, on a
+/// Remote workrooms in the app (#253): a workroom on a host of its own, with its own clone, on a
 /// host the app provisions. A remote workroom always belongs to a project registered on this Mac
 /// (design doc, Phase 4: there are no remote projects).
 enum RemoteWorkrooms {
@@ -135,7 +135,7 @@ enum RemoteWorkrooms {
     "com.developwithstyle.workroom", "com.developwithstyle.workroom.nightly",
   ]
 
-  /// Whether `own`'s build may open, derive from and take down `host`. Its own, always. Another
+  /// Whether `own`'s build may open and take down `host`. Its own, always. Another
   /// build's only on a remote provider, and only between Release and Nightly: a boxd or exe.dev
   /// machine is reached through the provider's CLI and the user's own ssh, and a grant cancels by
   /// Codaset user, so nothing there is the build's. A container takes this build's ssh key and
@@ -150,7 +150,7 @@ enum RemoteWorkrooms {
   static let agentSocket = "/run/workroom/agent.sock"
   static let user = "workroom"
 
-  /// The image a new base runs (#309): the hidden `remoteHostImage` override, else the published
+  /// The image a new container host runs (#309): the hidden `remoteHostImage` override, else the published
   /// image this build pins by digest (`WorkroomHostImage`, from CI), else a local `workroom-host`,
   /// as `make remote-host-image` builds it for a Dev build.
   static var hostImage: String {
@@ -181,12 +181,12 @@ enum RemoteWorkrooms {
     return ("origin", base)
   }
 
-  /// How a base clones `repository`: over https, which is how the broker's tokens work.
+  /// How a workroom clones `repository`: over https, which is how the broker's tokens work.
   static func cloneURL(for repository: GitHubRepository) -> String {
     "https://\(repository.host)/\(repository.owner)/\(repository.name).git"
   }
 
-  /// Where a project's base clones its repository on a host of `key`: the home of the user its
+  /// Where a workroom clones its repository on a host of `key`: the home of the user its
   /// driver logs in as (`workroom` in a container, `boxd` on boxd, #356).
   static func clonePath(
     for repository: GitHubRepository, on key: RemoteHosts.DriverKey = .init()
@@ -242,9 +242,9 @@ enum RemoteWorkrooms {
     }
   }
 
-  /// The base a workroom on `key` derives from, in a project whose descriptor is `host` (#309): the
-  /// one made on that runtime and Docker context, else for Docker one made before #309, which names
-  /// no context and follows the current one, as `key` does.
+  /// The base an older build derived a workroom on `key` from, in a project whose descriptor is
+  /// `host` (#309): the one made on that runtime and Docker context, else for Docker one made before
+  /// #309, which names no context and follows the current one, as `key` does.
   static func base(in host: HostDescriptor?, for key: RemoteHosts.DriverKey) -> HostDescriptor? {
     let bases = host?.allBases ?? []
     if let exact = bases.first(where: { RemoteHosts.DriverKey($0) == key }) { return exact }
@@ -270,9 +270,13 @@ enum RemoteWorkrooms {
         guard let host = workroom.reachableHost,
           let location = try? RepositoryLocation.remote(host: host, path: workroom.path)
         else { return nil }
-        let own = workroom.host.flatMap(RemoteHosts.DriverKey.init).flatMap {
-          base(in: project.host, for: $0)?.repository
-        }
+        // Recorded on the workroom by `create`; a workroom an older build derived from a base
+        // reads its base's.
+        let own =
+          workroom.host?.repository
+          ?? workroom.host.flatMap(RemoteHosts.DriverKey.init).flatMap {
+            base(in: project.host, for: $0)?.repository
+          }
         let github = (own ?? any).flatMap(gitHubRepository)
         return try? RepositoryRouter.Registration(
           location: location, sharedLocation: location, github: github)
@@ -280,7 +284,8 @@ enum RemoteWorkrooms {
     }
   }
 
-  /// A base's `owner/name` (`buildBase`), on github.com, the only host the broker mints for.
+  /// A workroom's (or an older build's base's) `owner/name`, on github.com, the only host the
+  /// broker mints for.
   static func gitHubRepository(_ repository: String) -> GitHubRepository? {
     let parts = repository.split(separator: "/", omittingEmptySubsequences: false)
     guard parts.count == 2 else { return nil }
@@ -460,7 +465,7 @@ enum RemoteWorkrooms {
   }
 
   /// Whether `host` records anything still up: a box or a grant. A destroyed one has nothing, and
-  /// neither has one a create left at `creating` before its derive made a box, whose container (if
+  /// neither has one a create left at `creating` before its driver made a box, whose container (if
   /// any) the sweep takes once no record names it.
   static func isLive(_ host: HostDescriptor) -> Bool {
     !host.isDestroyed && (host.id != nil || host.grantID != nil)
@@ -840,8 +845,15 @@ final class RemoteHosts: @unchecked Sendable {
     let already = lock.withLock {
       for descriptor in recorded {
         if let id = descriptor.id, let key = DriverKey(descriptor) { keys[id] = key }
-        // A base never has git ask for credentials; only its workrooms are relayed.
-        if let id = descriptor.id, descriptor.isRelayed, !bases.contains(id) { relayed.insert(id) }
+        // A base never has git ask for credentials; only its workrooms are relayed. A newly relayed
+        // host can be connected already (a Debug create's enrolment opens its connection first,
+        // then falls back to the relay), so the next connection check installs its relay; one a
+        // connect installs it on clears this.
+        if let id = descriptor.id, descriptor.isRelayed, !bases.contains(id),
+          relayed.insert(id).inserted
+        {
+          relayPending[id] = relayPending[id] ?? now() - Self.retryAfter
+        }
       }
       return Set(made.keys)
     }
@@ -960,8 +972,7 @@ final class RemoteHosts: @unchecked Sendable {
   }
 
   /// The driver key a new workroom on `runtime` wants (#309): Apple's runtime has one, and Docker's
-  /// is the context the CLI uses now, which a new base is pinned to. `RemoteWorkrooms.base(in:for:)`
-  /// then finds the project's base there, if it has one.
+  /// is the context the CLI uses now, which the new host is pinned to.
   func key(for runtime: RemoteWorkrooms.Runtime) async throws -> DriverKey {
     guard runtime == .docker else { return DriverKey(runtime: runtime) }
     return DriverKey(runtime: .docker, context: try await containerDriver().currentContext())
@@ -1085,7 +1096,12 @@ final class RemoteHosts: @unchecked Sendable {
 
   /// A relayed workroom's host is gone: its relay with it (#309).
   func forgetRelay(_ id: UUID) async {
-    guard lock.withLock({ relayed.remove(id) }) != nil else { return }
+    guard
+      lock.withLock({
+        relayPending[id] = nil
+        return relayed.remove(id)
+      }) != nil
+    else { return }
     await CredentialRelay.shared.close(id)
   }
 
@@ -1475,8 +1491,9 @@ enum PendingMachines {
     return failures
   }
 
-  /// How old an entry must be before it goes: longer than any create takes (a derive's snapshot
-  /// alone may take 15 minutes), so another copy of this build running at once never loses one.
+  /// How old an entry must be before it goes: longer than any create takes to record its machine
+  /// (the machine and its setup; the clone comes after), so another copy of this build running at
+  /// once never loses one.
   static let grace: TimeInterval = 60 * 60
 
   private static func read(_ directory: URL) -> [Entry] {

@@ -79,6 +79,35 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     XCTAssertEqual(github[try .remote(host: apple, path: path)], "github.com/o/new")
   }
 
+  // Value: protects=a workroom made without a base carries the repository its create recorded,
+  // so its PR and CI status show; fails_when=registrations reads only the project's bases;
+  // why_new=every other registrations test builds the identity from a base; seam=none
+  /// A workroom with a host of its own carries the repository its create recorded on it, with no
+  /// base in the project, and over a base's.
+  func testAWorkroomCarriesTheRepositoryItsCreateRecorded() throws {
+    let (own, other) = (UUID(), UUID())
+    let workroom = { (name: String, host: UUID, repository: String?) in
+      Workroom(
+        name: name, path: self.path, vcsName: "workroom/\(name)", warnings: [],
+        host: HostDescriptor(
+          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: host,
+          repository: repository, org: "acme", account: "usr_1"))
+    }
+    let alone = RemoteWorkrooms.registrations([
+      Project(path: "/proj", vcs: "git", workrooms: [workroom("w", own, "o/r")], host: nil)
+    ])
+    XCTAssertEqual(alone.first?.entry.github?.flag, "github.com/o/r")
+
+    let beside = RemoteWorkrooms.registrations([
+      Project(
+        path: "/proj", vcs: "git", workrooms: [workroom("w", other, "o/new")],
+        host: HostDescriptor(
+          driver: RemoteWorkrooms.boxdDriver, provisioner: RemoteWorkrooms.provisioner, id: UUID(),
+          repository: "o/old", org: "acme", account: "usr_1"))
+    ])
+    XCTAssertEqual(beside.first?.entry.github?.flag, "github.com/o/new")
+  }
+
   /// No base identity, no GitHub identity: its PR and CI stay off rather than guess.
   func testAProjectWithoutABaseRepositoryRegistersNoGitHubIdentity() {
     let registrations = RemoteWorkrooms.registrations([

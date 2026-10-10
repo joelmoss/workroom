@@ -1,24 +1,23 @@
 #!/bin/sh
-# Makes a fresh systemd machine a Workroom base (issue #256; shared by every provider driver since
+# Makes a fresh systemd machine a Workroom host (issue #256; shared by every provider driver since
 # #259: `BoxdHostDriver.create` runs it as root over the driver's ssh, with this script on stdin):
 #
 #   sudo sh -s -- <user> <agent socket> <screens directory>  < systemd.sh
 #
-# It needs systemd as PID 1 and a hostname the provider gives each machine its own of (boxd names
-# a machine on restore; exe.dev's `cp` boots the copy under its new name). Written for boxd, it runs
-# unchanged on exe.dev (spike, 2026-10-08).
+# It needs systemd as PID 1 and a hostname the provider gives each machine its own of (boxd and
+# exe.dev name each machine at create). Written for boxd, it runs unchanged on exe.dev (spike,
+# 2026-10-08).
 #
 # It installs the two far-side pieces the design doc gives a provider (Phase 3, "A lifecycle shim";
-# Phase 4, the derive sequence), both as systemd units, so they come back with every boot:
+# Phase 4, the create sequence), both as systemd units, so they come back with every boot:
 #
 # - workroom-identity: mints the machine's identity once per machine, before the agent starts. A
-#   workroom is derived from a snapshot of its base (`BoxdHostDriver.deriveFromBase`), and a
-#   snapshot carries the base's disk: its ssh host keys, `/etc/machine-id` and whatever the agent
-#   kept beside its socket. boxd gives every machine its own hostname, so the marker holds the
+#   provider's image can carry one identity for every machine made from it: every fresh boxd
+#   machine boots with the same ssh host keys and `/etc/machine-id` (measured, 2026-10-10).
+#   boxd gives every machine its own hostname, so the marker holds the
 #   hostname the identity was minted for, and a machine whose hostname differs from it mints its
 #   own. A stop and start keeps the hostname, so it keeps the identity, and with it the agent's
 #   enrolment. The marker is written last: a boot that dies halfway mints again on the next one.
-#   boot_id needs nothing here: the derive reboots the instance, which gives it a kernel of its own.
 #   Renaming the machine (`boxd machine rename`) would mint a new identity and drop its enrolment.
 # - workroom-agent: the agent's supervisor. It starts the agent the app installs beside its socket
 #   (`AgentBootstrap`), at boot and again whenever it exits, and waits for one to be installed

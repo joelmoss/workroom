@@ -519,6 +519,39 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertEqual(relays.calls, 2, "tried again once it had taken")
   }
 
+  // Value: protects=a workroom first recorded as relayed while its connection is up (a Debug
+  // create's enrolment connects first, then falls back) gets its relay at the next check;
+  // fails_when=adopt marks the host relayed with no pending relay; why_new=the retry test starts
+  // from a failed install, never from adopt; seam=none
+  /// A workroom first recorded as relayed while its host is connected already gets its relay at
+  /// the next connection check: nothing else would install it before a reconnect.
+  func testARelayedWorkroomAdoptedWhileConnectedGetsItsRelay() async throws {
+    let clock = Connects()
+    let relays = Connects()
+    relays.hold(false)
+    let remote = RemoteHosts(
+      connectHost: { _ in }, isConnected: { _ in true }, startHost: { _ in },
+      now: { clock.now }, relayHost: { try await relays.connect($0) })
+    let id = UUID()
+    remote.adopt([
+      Project(
+        path: "/proj", vcs: "git",
+        workrooms: [
+          Workroom(
+            name: "w", path: "/home/exedev/r", vcsName: "workroom/w", warnings: [],
+            host: HostDescriptor(
+              driver: RemoteWorkrooms.exeDevDriver, provisioner: RemoteWorkrooms.provisioner,
+              id: id, credentials: "relay", account: "me@x.dev"))
+        ])
+    ])
+
+    try await remote.ensureConnected(.remote(id))
+    XCTAssertEqual(relays.calls, 1, "the relay was never installed")
+    clock.advance(RemoteHosts.retryAfter)
+    try await remote.ensureConnected(.remote(id))
+    XCTAssertEqual(relays.calls, 1, "installed again once it had taken")
+  }
+
   /// `destroy` removes a host's image with `--force`, so a record's image must be a commit's ID.
   func testOnlyAWholeLowercaseSHA256IsAnImageID() {
     let hex = String(repeating: "a1", count: 32)
@@ -1254,6 +1287,52 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertNil(live.container)
     XCTAssertTrue(
       recorded.all.allSatisfy { $0.driver == RemoteWorkrooms.boxdDriver && $0.account == "usr_1" })
+  }
+
+  // Value: protects=a workroom that fell back to the Mac's token is recorded as relayed, with its
+  // repository and clone URL, so a later launch gives it the credential relay and its GitHub
+  // identity; fails_when=create records credentials from anything but the instance, or drops the
+  // repository or clone URL; why_new=no test reaches a serving create's descriptor without Docker;
+  // seam=none
+  /// A workroom made without a grant records `credentials: relay`, which is what a later launch
+  /// reads to install the Mac's relay on its host, and the repository and clone URL it was made from.
+  func testARelayedWorkroomIsRecordedAsSuch() async throws {
+    let made = UUID()
+    let driver = MachineDriver(made: made)
+    let fake = try FakeAgent(
+      version: 4,
+      execResult: #"{"stdout":"","stderr":"","exit_code":0,"timed_out":false,"signaled":false}"#)
+    defer { fake.stop() }
+    let environment = RemoteProvisioning.Environment(
+      driver: driver,
+      agentSocket: BoxdHostDriver.Configuration(cli: URL(fileURLWithPath: "/boxd")).agentSocket,
+      client: nil, gitHubToken: { "gho_mac" },
+      connect: { host in
+        try await AgentVCSConnection.connect(host: host, socketPath: fake.socketPath)
+      })
+    let recorded = Recorded()
+    let recorder = RemoteWorkrooms.Recorder(
+      reserve: { _, descriptor in
+        recorded.add(descriptor)
+        return "x"
+      }, record: { name, descriptor in recorded.add(descriptor, as: name) }, forget: { _ in })
+    let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
+
+    let created = try await RemoteWorkrooms.create(
+      repository: repository, cloneURL: "https://github.com/o/r.git",
+      key: .boxd(org: "acme", account: "usr_1"), driver: driver, environment: environment,
+      recorder: recorder, pendingIn: nil)
+    await created.instance.connection.close()
+
+    XCTAssertTrue(created.instance.relayed)
+    let serving = try XCTUnwrap(recorded.all.last)
+    XCTAssertEqual(recorded.names.last, "x")
+    XCTAssertEqual(serving.id, made)
+    XCTAssertTrue(serving.isRelayed)
+    XCTAssertNil(serving.grantID)
+    XCTAssertEqual(serving.repository, "o/r")
+    XCTAssertEqual(serving.cloneURL, "https://github.com/o/r.git")
+    XCTAssertNil(serving.state, "a serving workroom's descriptor has a state")
   }
 
   // Value: protects=a create whose machine cannot be removed keeps the workroom's entry, failed,

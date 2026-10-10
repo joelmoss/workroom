@@ -10,15 +10,15 @@
 set -eu
 
 # The machine's identity is minted on its first boot, never inherited (#252, open question 9). A
-# container committed from another and run again (`ContainerHostDriver.deriveFromBase`) starts with
-# its source's disk: the ssh host keys (which openssh-server's install also bakes into the image),
-# `/etc/machine-id`, and the agent's broker files beside its socket. The marker holds the hostname
+# container run from the image starts with the image's disk: the ssh host keys (which
+# openssh-server's install bakes into it), `/etc/machine-id`, and the agent's broker files beside its
+# socket. The marker holds the hostname
 # the identity was minted for. A restart keeps the container's hostname, so a reboot keeps its
 # identity and its pinned host key; a new container has a new hostname, so it mints its own. The
 # marker is written last: a boot that dies halfway mints again on the next one.
 #
 # Not re-mintable here: `/proc/sys/kernel/random/boot_id` is the kernel's, which every container
-# on one machine shares. A VM provider's derived instance boots a kernel of its own.
+# on one machine shares. A VM provider's machine boots a kernel of its own.
 IDENTITY=/etc/workroom-identity
 if [ "$(cat "$IDENTITY" 2>/dev/null)" != "$(hostname)" ]; then
   rm -f /etc/ssh/ssh_host_*
@@ -26,7 +26,7 @@ if [ "$(cat "$IDENTITY" 2>/dev/null)" != "$(hostname)" ]; then
   tr -d '-' < /proc/sys/kernel/random/uuid > /etc/machine-id
   # With the agent's interrupted saves (`.broker.json.<pid>`), which can hold a key.
   rm -f /run/workroom/broker.json /run/workroom/broker-token.json /run/workroom/.broker*
-  # The Mac's relay (#309): its port and secret are the base's, and the app installs its own.
+  # The Mac's relay (#309): its port and secret are the image's, and the app installs its own.
   rm -f /run/workroom/relay.json /run/workroom/.relay*
   rm -rf /home/workroom/.local/state/workroom/screens
   hostname > "$IDENTITY"

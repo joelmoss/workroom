@@ -124,11 +124,7 @@ final class TerminalTargetTests: XCTestCase {
       (object["container"] as? [String: Any])?["host_key"] as? String, "ssh-ed25519 AAAA")
     XCTAssertNil(object["state"], "an unset field is written as absent, not null")
     XCTAssertEqual(try JSONDecoder().decode(HostDescriptor.self, from: json), descriptor)
-    XCTAssertEqual(
-      descriptor.base,
-      RemoteProvisioning.Base(
-        host: id, repository: "o/r", cloneURL: "https://github.com/o/r.git",
-        path: "/home/workroom/r"))
+    XCTAssertEqual(object["clone_url"] as? String, "https://github.com/o/r.git")
 
     let odd = try JSONDecoder().decode(
       HostDescriptor.self,

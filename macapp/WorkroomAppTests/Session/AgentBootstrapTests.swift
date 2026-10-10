@@ -27,9 +27,6 @@ final class AgentBootstrapTests: XCTestCase {
     init(_ answers: [Answer]) { self.answers = answers }
 
     func create() async throws -> HostID { throw HostDriverError.notImplemented("create") }
-    func deriveFromBase(_ base: HostID) async throws -> HostID {
-      throw HostDriverError.notImplemented("derive")
-    }
     func destroy(_ host: HostID) async throws { throw HostDriverError.notImplemented("destroy") }
     func openStream(to host: HostID) async throws -> HostStream {
       guard let streamSocket else { throw HostDriverError.notImplemented("openStream") }
@@ -743,9 +740,6 @@ final class AgentBootstrapTests: XCTestCase {
     init(path: String) { self.path = path }
 
     func create() async throws -> HostID { throw HostDriverError.notImplemented("create") }
-    func deriveFromBase(_ base: HostID) async throws -> HostID {
-      throw HostDriverError.notImplemented("derive")
-    }
     func destroy(_ host: HostID) async throws { throw HostDriverError.notImplemented("destroy") }
     func openStream(to host: HostID) async throws -> HostStream {
       throw HostDriverError.notImplemented("openStream")
