@@ -1432,11 +1432,6 @@ final class RemoteHostsTests: XCTestCase {
     var destroyFails = false
     /// Told of each host a destroy is asked for.
     var onDestroy: (@Sendable (HostID) -> Void)? = nil
-    var traits: HostDriverTraits {
-      HostDriverTraits(
-        transport: .sshStdio,
-        durableDisk: true, maxLifetime: nil)
-    }
     func create() async throws -> HostID {
       guard leavesItBehind else { return .remote(made) }
       throw HostDriverError.leftBehind(

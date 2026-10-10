@@ -104,7 +104,6 @@ class ProviderParityTestCase: XCTestCase {
     let user: String
     static let cloneToken = "ghs_fixture_clone_token_0123456789"
 
-    var traits: HostDriverTraits { driver.traits }
     var agentSocket: String { driver.agentSocket }
     func destroy(_ host: HostID) async throws { try await driver.destroy(host) }
     func openStream(to host: HostID) async throws -> HostStream {

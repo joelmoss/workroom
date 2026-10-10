@@ -58,10 +58,6 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Where Workroom keeps its state on a boxd machine: the agent's socket and the sessions' screens.
   static let stateDirectory = "/home/\(user)/.local/state/workroom"
 
-  var traits: HostDriverTraits {
-    HostDriverTraits(transport: .sshStdio, durableDisk: true, maxLifetime: nil)
-  }
-
   let configuration: Configuration
   var agentSocket: String { configuration.agentSocket }
   /// Where each host's `ssh_config` and `known_hosts` are written.

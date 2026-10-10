@@ -256,7 +256,6 @@ private final class CountingDriver: HostDriver, @unchecked Sendable {
   private var removed = 0
   var creates: Int { lock.withLock { made } }
   var destroys: Int { lock.withLock { removed } }
-  let traits = HostDriverTraits(transport: .sshStdio, durableDisk: false, maxLifetime: nil)
 
   func create() async throws -> HostID {
     lock.withLock { made += 1 }

@@ -47,10 +47,6 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// an error that asks the user to sign in once.
   static let gatewayFingerprint = "SHA256:JJOP/lwiBGOMilfONPWZCXUrfK154cnJFXcqlsi6lPo"
 
-  var traits: HostDriverTraits {
-    HostDriverTraits(transport: .sshStdio, durableDisk: true, maxLifetime: nil)
-  }
-
   let configuration: Configuration
   var agentSocket: String { configuration.agentSocket }
   /// Where each host's attach logs are kept.

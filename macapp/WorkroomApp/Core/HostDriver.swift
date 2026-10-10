@@ -1,17 +1,6 @@
 import Darwin
 import Foundation
 
-/// How a provider's hosts are reached and what they can do, declared so a provider can be gated
-/// when it is chosen (design doc, Phase 3 "the stream drivers", and Premise 8).
-struct HostDriverTraits: Equatable, Sendable {
-  enum Transport: Equatable, Sendable { case sshStdio, sdkExec, webSocket }
-
-  let transport: Transport
-  let durableDisk: Bool
-  /// The wall clock an instance dies on, or nil for one that lives until destroyed.
-  let maxLifetime: Duration?
-}
-
 /// One provider. Three methods, and the only one that is not provisioning is `openStream`
 /// (design doc, Phase 3). `create` makes each workroom's host: there is no base to derive from
 /// (a derive measured slower than a fresh machine on boxd, 2026-10-10).
@@ -21,7 +10,6 @@ struct HostDriverTraits: Equatable, Sendable {
 /// that reaches an agent is a shell whatever it is called. ssh meets that bar; an SDK exec or a
 /// WebSocket driver must show it does before it counts as a driver.
 protocol HostDriver: Sendable {
-  var traits: HostDriverTraits { get }
   /// The supervised agent's socket on this driver's hosts: what the bootstrap installs the agent
   /// beside, and the relay and the attach connect to. A remote provider's is on the host's home
   /// disk, so its enrolment and screens survive a stop (#259).
