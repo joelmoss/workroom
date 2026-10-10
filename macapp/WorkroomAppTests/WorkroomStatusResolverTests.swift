@@ -48,7 +48,7 @@ private func fail() -> CommandResult {
 
 final class WorkroomStatusResolverTests: XCTestCase {
 
-  /// An existing directory so `resolveLocal`'s fileExists guard passes (the mock ignores it).
+  /// An existing directory, so the `.missingPath` guard in `resolve(location:)` passes.
   private let existing = NSTemporaryDirectory()
 
   // git status is now read structurally via GitProvider (SwiftGitX); the porcelain-v2 parser is
