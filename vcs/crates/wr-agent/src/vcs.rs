@@ -512,6 +512,7 @@ fn descendants(pid: i32) -> Vec<crate::process::Descendant> {
 /// only "the pid exited and nothing new has it yet", never "the pid now names someone else".
 fn kill_recorded(descendants: &[crate::process::Descendant]) {
     for descendant in descendants.iter().filter(|d| d.is_running()) {
+        // SAFETY: `kill` takes no pointers; `is_running` is the pid-reuse guard described above.
         unsafe { libc::kill(descendant.pid, libc::SIGKILL) };
     }
 }
@@ -642,6 +643,7 @@ pub(crate) fn run_exec_with(
                 // Snapshot BEFORE signalling: SIGTERM may reap the leader within microseconds, and
                 // an orphaned `setsid` descendant is unreachable from that moment on.
                 recorded = descendants(pid);
+                // SAFETY: `kill` takes no pointers; `-pid` is the group the child leads.
                 unsafe { libc::kill(-pid, libc::SIGTERM) };
             } else if elapsed >= timeout + Duration::from_secs(2) {
                 if !sent_kill {
@@ -649,6 +651,7 @@ pub(crate) fn run_exec_with(
                     // Recorded tree first, then group: the tree reaches a descendant that left the
                     // group, the group reaches one that spawned after the snapshot.
                     kill_recorded(&recorded);
+                    // SAFETY: as for the SIGTERM above.
                     unsafe { libc::kill(-pid, libc::SIGKILL) };
                     killed_at = Some(Instant::now());
                 } else if killed_at.is_some_and(|at| at.elapsed() >= REAP_GRACE) {
@@ -686,6 +689,7 @@ pub(crate) fn run_exec_with(
         // `pgrep -P` would find nothing — the orphan re-parented to init the moment its parent died.
         // This is the branch the snapshot exists for.
         kill_recorded(&recorded);
+        // SAFETY: `kill` takes no pointers; the reaped-leader pid-reuse window is the one above.
         unsafe { libc::kill(-pid, libc::SIGKILL) };
     }
     // 2. Drain bound, mirroring `StatusCommandRunner`'s `_ = drain.wait(timeout: .now() + 2)` and

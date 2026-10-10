@@ -81,8 +81,11 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 fn drop_inherited_exception_ports() {
     // <sys/proc_info.h>
     const PROC_FLAG_TRACED: u32 = 2;
+    // SAFETY: `proc_bsdshortinfo` is plain old data, for which all zeroes is a valid value.
     let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+    // SAFETY: the buffer is `info` itself and `size` is its exact size, so the kernel cannot write
+    // past it.
     let written = unsafe {
         libc::proc_pidinfo(
             std::process::id() as libc::c_int,
@@ -115,6 +118,8 @@ fn drop_inherited_exception_ports() {
     const THREAD_STATE_NONE: libc::c_int = 13;
     const MACH_PORT_NULL: libc::mach_port_t = 0;
     // Nothing to do on failure: the agent runs as before, only without the fix.
+    // SAFETY: libSystem sets `mach_task_self_` before `main` and never changes it, and the call
+    // takes only integers and port names.
     let _ = unsafe {
         task_set_exception_ports(
             mach_task_self_,
@@ -349,6 +354,7 @@ fn adopt(
     // SAFETY: the table names descriptors the outgoing program carried across the exec for this
     // and nothing else, and nothing in this process has touched them.
     let lock = unsafe { serve::InstanceLock::adopt(table.lock) };
+    // SAFETY: as above; the listening socket is one of those descriptors.
     let listener = unsafe { UnixListener::from_raw_fd(table.listener) };
     handoff::set_cloexec(table.listener, true);
     for session in table.sessions {
@@ -461,6 +467,8 @@ fn run_relay(args: &[String]) -> ExitCode {
         },
     ];
     loop {
+        // SAFETY: `watched` holds exactly the 2 pollfds passed, for `stream` (open for the whole
+        // loop) and stdout.
         if unsafe { libc::poll(watched.as_mut_ptr(), 2, -1) } < 0 {
             if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
                 continue;
@@ -972,7 +980,9 @@ fn await_attached(
 /// The size of the terminal this process was forked into, or zero when there is none (a pipe, a
 /// test harness) so the agent applies its own default rather than creating a 0x0 pty.
 fn terminal_size() -> (u16, u16) {
+    // SAFETY: `winsize` is plain old data, for which all zeroes is a valid value.
     let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+    // SAFETY: TIOCGWINSZ writes one `winsize` through the pointer, which is a live local.
     let rc = unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut size) };
     if rc != 0 {
         return (0, 0);
@@ -1045,12 +1055,16 @@ struct RawMode(Option<libc::termios>);
 
 impl RawMode {
     fn enter() -> RawMode {
+        // SAFETY: `termios` is plain old data, for which all zeroes is a valid value.
         let mut original: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: tcgetattr fills the live `termios` it is pointed at, or fails without writing.
         if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut original) } != 0 {
             return RawMode(None);
         }
         let mut raw = original;
+        // SAFETY: `raw` is a live `termios`, filled in by tcgetattr above.
         unsafe { libc::cfmakeraw(&mut raw) };
+        // SAFETY: tcsetattr only reads the `termios` it is given, which is live.
         if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) } != 0 {
             return RawMode(None);
         }
@@ -1064,6 +1078,7 @@ impl Drop for RawMode {
     /// arm — so the split was generality for an unreachable state and the two lines live here again.
     fn drop(&mut self) {
         if let Some(original) = self.0.as_ref() {
+            // SAFETY: tcsetattr only reads `original`, the settings tcgetattr returned in `enter`.
             unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) };
         }
     }

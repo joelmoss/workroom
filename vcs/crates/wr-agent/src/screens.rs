@@ -656,6 +656,7 @@ mod tests {
     #[test]
     fn a_failing_write_is_retried_and_clears_once_it_succeeds() {
         // Root writes through a read-only directory, so there is no failure to retry.
+        // SAFETY: `geteuid` takes no arguments and cannot fail.
         if unsafe { libc::geteuid() } == 0 {
             eprintln!("skipping: running as root");
             return;

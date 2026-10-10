@@ -110,6 +110,7 @@ impl Pty {
         };
 
         let mut err_pipe: [libc::c_int; 2] = [-1, -1];
+        // SAFETY: `err_pipe` has room for the two descriptors pipe writes.
         if unsafe { libc::pipe(err_pipe.as_mut_ptr()) } != 0 {
             return Err(PtyError::Pipe(std::io::Error::last_os_error()));
         }
@@ -130,12 +131,16 @@ impl Pty {
             ws_ypixel: 0,
         };
         // Before the fork: the child may not ask anything that could allocate or take a lock.
+        // SAFETY: getdtablesize takes no arguments.
         let descriptor_limit = unsafe { libc::getdtablesize() };
         let mut master: libc::c_int = -1;
+        // SAFETY: `master` is a live int forkpty writes the master descriptor to; null name and
+        // termios are allowed; `size` is a live winsize forkpty only reads.
         let pid = unsafe { forkpty(&mut master, std::ptr::null_mut(), std::ptr::null(), &size) };
 
         if pid < 0 {
             let err = std::io::Error::last_os_error();
+            // SAFETY: both ends are this function's own pipe, and nothing else ever sees them.
             unsafe {
                 libc::close(err_read);
                 libc::close(err_write);
@@ -147,6 +152,11 @@ impl Pty {
             // Child. Everything from here to execve must be async-signal-safe: this is a forked
             // process, so allocating or taking a lock the parent held risks a deadlock rather than
             // an error. All the CStrings were built before the fork for exactly that reason.
+            // SAFETY: every call below is a plain syscall, plus `getenv`, which only reads
+            // `environ`; nothing can be writing it in this one-threaded child. Every pointer is
+            // to a CString or array built before the fork, alive until exec. `close_inherited`
+            // runs in the child before exec, as it requires, and this child never returns to
+            // code that could use what it closes: it execs or `_exit`s.
             unsafe {
                 libc::close(err_read);
                 close_inherited(err_write, descriptor_limit);
@@ -184,10 +194,13 @@ impl Pty {
         // Parent. Close our copy of the write end BEFORE reading: the child's copy closing on a
         // successful exec is only observable as EOF if no other descriptor holds the pipe open,
         // and ours would, so the read below would block forever.
+        // SAFETY: the parent's own copy of the write end, closed once and not used after.
         unsafe { libc::close(err_write) };
         let mut buffer = [0u8; 4];
         let mut total = 0usize;
         while total < buffer.len() {
+            // SAFETY: `total` < 4, so the pointer stays inside `buffer` and the length is what is
+            // left of it.
             let n = unsafe {
                 libc::read(
                     err_read,
@@ -204,10 +217,13 @@ impl Pty {
             }
             break;
         }
+        // SAFETY: the parent's read end, closed once and not used after.
         unsafe { libc::close(err_read) };
 
         if total > 0 {
             let raw = i32::from_ne_bytes(buffer);
+            // SAFETY: `master` belongs to no `Pty` yet, so closing it here is its only close, and
+            // `status` is a live local for waitpid to fill.
             unsafe {
                 libc::close(master);
                 // Reap the child that already _exit(127)'d, so a failed spawn leaves no zombie.
@@ -256,6 +272,7 @@ impl Pty {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
+        // SAFETY: TIOCSWINSZ reads one `winsize` through the pointer, which is a live local.
         let rc = unsafe { libc::ioctl(self.master, libc::TIOCSWINSZ, &size) };
         if rc != 0 {
             return Err(std::io::Error::last_os_error());
@@ -274,6 +291,7 @@ impl Pty {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
+        // SAFETY: TIOCGWINSZ writes one `winsize` through the pointer, which is a live local.
         let rc = unsafe { libc::ioctl(self.master, libc::TIOCGWINSZ, &mut size) };
         if rc != 0 {
             return Err(std::io::Error::last_os_error());
@@ -288,12 +306,15 @@ impl Pty {
     /// entirely. `SessionPTY.swift`'s own `terminationTargets` comment documents the same escape.
     /// It is a real limit of the mechanism, not a bug in this call.
     pub fn foreground_pgid(&self) -> Option<libc::pid_t> {
+        // SAFETY: tcgetpgrp takes and returns plain integers; `master` is open while `self` is.
         let group = unsafe { libc::tcgetpgrp(self.master) };
         (group > 0).then_some(group)
     }
 
     /// Non-blocking; `Ok(0)` means the child has gone.
     pub fn read(&self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        // SAFETY: the pointer and length come from one live `&mut [u8]`, so the kernel writes only
+        // inside it.
         let n = unsafe {
             libc::read(
                 self.master,
@@ -308,6 +329,7 @@ impl Pty {
     }
 
     pub fn write(&self, bytes: &[u8]) -> std::io::Result<usize> {
+        // SAFETY: the pointer and length come from one live `&[u8]`, which write only reads.
         let n = unsafe {
             libc::write(
                 self.master,
@@ -362,6 +384,7 @@ impl Pty {
     /// Blocks until the child exits, returning its status. Returns `None` if it was already reaped.
     pub fn wait(&self) -> Option<i32> {
         let mut status = 0;
+        // SAFETY: `status` is a live local for waitpid to fill.
         let rc = unsafe { libc::waitpid(self.pid, &mut status, 0) };
         (rc == self.pid).then_some(status)
     }
@@ -370,6 +393,7 @@ impl Pty {
 impl Drop for Pty {
     fn drop(&mut self) {
         if self.master >= 0 {
+            // SAFETY: the `Pty` owns `master`, and this is its only close.
             unsafe { libc::close(self.master) };
         }
     }
@@ -380,10 +404,12 @@ impl Drop for Pty {
 /// rather than going through `std::io::Error`.
 #[inline]
 fn errno_value() -> i32 {
+    // SAFETY: `__error` returns this thread's errno location, which is always valid to read.
     #[cfg(target_vendor = "apple")]
     unsafe {
         *libc::__error()
     }
+    // SAFETY: `__errno_location` returns this thread's errno location, always valid to read.
     #[cfg(not(target_vendor = "apple"))]
     unsafe {
         *libc::__errno_location()
@@ -391,6 +417,7 @@ fn errno_value() -> i32 {
 }
 
 fn set_nonblocking(fd: libc::c_int) {
+    // SAFETY: F_GETFL and F_SETFL take and return plain integers; a stale `fd` only fails.
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFL);
         if flags >= 0 {
@@ -573,10 +600,13 @@ mod tests {
     #[test]
     fn the_shell_inherits_no_descriptor_but_its_terminal() {
         let mut fds = [-1; 2];
+        // SAFETY: `fds` has room for the two descriptors pipe writes.
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
         // Well above anything the shell opens for itself, and left without close-on-exec.
+        // SAFETY: F_DUPFD takes and returns plain integers.
         let stray = unsafe { libc::fcntl(fds[1], libc::F_DUPFD, 60) };
         assert!(stray >= 60, "dup: {}", std::io::Error::last_os_error());
+        // SAFETY: the test's own pipe ends, closed once and not used after.
         unsafe {
             libc::close(fds[0]);
             libc::close(fds[1]);
@@ -592,6 +622,7 @@ mod tests {
             24,
         )
         .expect("spawn");
+        // SAFETY: the test's own duplicate, closed once and not used after.
         unsafe { libc::close(stray) };
         let output = read_until(&pty, "\n", Duration::from_secs(5));
         assert!(
@@ -742,6 +773,7 @@ mod tests {
         assert!(pgid > 0);
         // Not left to the hangup when `pty` drops: kill the child's whole group (it is a session
         // leader, so `sh` and a `sleep` it forked share it) and reap it.
+        // SAFETY: `kill` takes no pointers, and `pty` has not been waited on, so the group is live.
         unsafe { libc::kill(-pty.child_pid(), libc::SIGKILL) };
         assert!(pty.wait().is_some(), "the child was not reaped");
     }

@@ -1269,6 +1269,7 @@ fn child_gone(pid: i32, status: &mut i32) -> bool {
     if pid <= 0 {
         return true;
     }
+    // SAFETY: `status` is a live `&mut i32` for the call; `pid` is this pty's own child.
     let rc = unsafe { libc::waitpid(pid, status, libc::WNOHANG) };
     rc != 0
 }
@@ -1645,6 +1646,8 @@ fn terminate(ptys: &[&Arc<Pty>]) {
     let descendants = crate::process::descendants(&roots);
 
     for pid in roots.iter().chain(descendants.iter().map(|d| &d.pid)) {
+        // SAFETY: `kill` takes no pointers. The descendants were read just above, so a reused pid
+        // is limited to that short window.
         unsafe { libc::kill(*pid, libc::SIGHUP) };
     }
 
@@ -1654,6 +1657,7 @@ fn terminate(ptys: &[&Arc<Pty>]) {
     for _ in 0..(SIGHUP_GRACE.as_millis() / SIGHUP_POLL.as_millis()) {
         unreaped.retain(|pid| {
             let mut status = 0;
+            // SAFETY: `status` is a live local; the roots are this process's own children.
             let rc = unsafe { libc::waitpid(*pid, &mut status, libc::WNOHANG) };
             rc == 0
         });
@@ -1675,10 +1679,13 @@ fn terminate(ptys: &[&Arc<Pty>]) {
         crate::note!("SIGHUP declined for {SIGHUP_GRACE:?}; SIGKILL to pids {killing:?}");
     }
     for pid in &killing {
+        // SAFETY: `kill` takes no pointers; `is_running` filtered out reused descendant pids, and
+        // the unreaped roots are our own children, so their pids cannot have been reused.
         unsafe { libc::kill(*pid, libc::SIGKILL) };
     }
     for pid in &unreaped {
         let mut status = 0;
+        // SAFETY: `status` is a live local, and each pid is an unreaped child just sent SIGKILL.
         unsafe { libc::waitpid(*pid, &mut status, 0) };
     }
 }
@@ -1856,6 +1863,7 @@ mod tests {
                 loop {
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     assert!(!remaining.is_zero(), "command produced no output");
+                    // SAFETY: one live pollfd, for a master descriptor `pty` keeps open.
                     let ready = unsafe {
                         libc::poll(&mut descriptor, 1, remaining.as_millis() as libc::c_int)
                     };
@@ -2057,6 +2065,7 @@ mod tests {
             Err(SessionError::AlreadyExists(_))
         ));
         // The refused pty was dropped, which hangs its shell up; reap it so no zombie is left.
+        // SAFETY: a null status pointer is allowed, and `pid` is this test's own child.
         unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
         store.kill_all();
     }
@@ -2890,6 +2899,7 @@ mod tests {
 
         // The child must be gone, not a zombie: signal 0 probes for existence.
         std::thread::sleep(Duration::from_millis(100));
+        // SAFETY: `kill` takes no pointers, and signal 0 delivers nothing.
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "child should be reaped");
     }
 
@@ -2942,6 +2952,7 @@ mod tests {
         }
         let survived = alive(grandchild);
         if survived {
+            // SAFETY: `kill` takes no pointers; this is the test's own grandchild, still alive.
             unsafe { libc::kill(grandchild, libc::SIGKILL) };
         }
         assert!(!survived, "a setsid'd grandchild must not survive the kill");
@@ -2951,6 +2962,7 @@ mod tests {
     /// times through `process::Descendant`, which this deliberately does not — a test that watched
     /// for pid reuse would be testing the OS, not the agent.
     fn alive(pid: i32) -> bool {
+        // SAFETY: `kill` takes no pointers, and signal 0 delivers nothing.
         pid > 0 && unsafe { libc::kill(pid, 0) } == 0
     }
 

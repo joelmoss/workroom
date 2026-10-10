@@ -67,6 +67,8 @@ fn bad_access_port() -> libc::mach_port_t {
     let mut ports = [0; EXC_TYPES_COUNT];
     let mut behaviors = [0; EXC_TYPES_COUNT];
     let mut flavors = [0; EXC_TYPES_COUNT];
+    // SAFETY: libSystem sets `mach_task_self_` before `main`. Every array holds EXC_TYPES_COUNT
+    // entries and `count` says so, so the kernel writes at most that many into each.
     let kr = unsafe {
         task_get_exception_ports(
             mach_task_self_,
@@ -90,8 +92,11 @@ fn bad_access_port() -> libc::mach_port_t {
 /// same behaviour the issue's probe reported (`0x80000001`). Never deallocated, so it stays live
 /// for the whole test, as the app's does while the app runs.
 fn install_live_port() -> libc::mach_port_t {
+    // SAFETY: libSystem sets `mach_task_self_` before `main` and never changes it.
     let task = unsafe { mach_task_self_ };
     let mut port = 0;
+    // SAFETY: `port` is a live out-pointer; the other arguments are integers and port names this
+    // task owns.
     unsafe {
         assert_eq!(
             mach_port_allocate(task, MACH_PORT_RIGHT_RECEIVE, &mut port),

@@ -369,6 +369,7 @@ impl Carried {
         // the exec.
         // At 3 or above: a copy on 0, 1 or 2 would be the new program's stdio, and its diagnostics
         // would be written into a pty or the listening socket.
+        // SAFETY: F_DUPFD_CLOEXEC takes and returns plain integers; a stale `fd` fails with EBADF.
         let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
         if copy < 0 {
             return Err(format!(
@@ -384,6 +385,8 @@ impl Carried {
 impl Drop for Carried {
     fn drop(&mut self) {
         for fd in &self.0 {
+            // SAFETY: each one is a duplicate `dup` made and only this list holds. A successful
+            // exec never gets here, so nothing else can be using it.
             unsafe { libc::close(*fd) };
         }
     }
@@ -620,6 +623,8 @@ fn exec(
     // `execv`, not `Command::exec`: std's exec resets SIGPIPE to its default before the call, and
     // when the call fails that leaves this program to be killed by the next write to a closed
     // socket. `execv` keeps the environment, which carries the settings `serve` reads from it.
+    // SAFETY: `program` and every pointer in `argv` point into CStrings that outlive the call, and
+    // `argv` ends with the null pointer execv requires.
     unsafe { libc::execv(program.as_ptr(), argv.as_ptr()) };
     let error = std::io::Error::last_os_error();
     for fd in &carried.0 {
@@ -632,6 +637,7 @@ fn exec(
 }
 
 pub fn set_cloexec(fd: RawFd, on: bool) {
+    // SAFETY: F_GETFD and F_SETFD take and return plain integers; a stale `fd` only fails.
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFD);
         if flags >= 0 {

@@ -158,6 +158,8 @@ impl FdStream {
 impl Read for FdStream {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         loop {
+            // SAFETY: the pointer and length come from one live `&mut [u8]`, so the kernel writes
+            // only inside it. A stale descriptor fails with EBADF.
             let n = unsafe {
                 libc::read(
                     self.fd,
@@ -177,6 +179,7 @@ impl Read for FdStream {
                 events: libc::POLLIN,
                 revents: 0,
             };
+            // SAFETY: one live pollfd, and the count passed is 1.
             unsafe { libc::poll(&mut ready, 1, -1) };
         }
     }
@@ -186,6 +189,7 @@ impl Write for FdStream {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let deadline = std::time::Instant::now() + WRITE_TIMEOUT;
         loop {
+            // SAFETY: the pointer and length come from one live `&[u8]`, which write only reads.
             let n =
                 unsafe { libc::write(self.fd, bytes.as_ptr() as *const libc::c_void, bytes.len()) };
             if n >= 0 {
@@ -272,13 +276,18 @@ impl Transport for PipeTransport {
 /// response to a client request, which cannot arrive before this function has returned.
 fn pipe() -> io::Result<(RawFd, RawFd)> {
     let mut fds = [0 as libc::c_int; 2];
+    // SAFETY: `fds` has room for the two descriptors pipe writes.
     if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
         return Err(io::Error::last_os_error());
     }
     for fd in fds {
+        // SAFETY: `fd` is one of the two this function just created; F_GETFD takes integers.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        // SAFETY: as above, for F_SETFD.
         if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
             let error = io::Error::last_os_error();
+            // SAFETY: both descriptors are this function's own, and returning the error means
+            // nothing else ever sees them.
             unsafe {
                 libc::close(fds[0]);
                 libc::close(fds[1]);
@@ -295,10 +304,12 @@ fn pipe() -> io::Result<(RawFd, RawFd)> {
 /// any deadline the caller thinks it has — a test that reads with a timeout will hang instead of
 /// failing. The agent's own pty reads are non-blocking for the same reason.
 pub fn set_nonblocking(stream: &FdStream) -> io::Result<()> {
+    // SAFETY: F_GETFL takes and returns plain integers; a stale descriptor only fails.
     let flags = unsafe { libc::fcntl(stream.fd, libc::F_GETFL) };
     if flags < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: as above, for F_SETFL.
     if unsafe { libc::fcntl(stream.fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -307,6 +318,8 @@ pub fn set_nonblocking(stream: &FdStream) -> io::Result<()> {
 
 /// Closes a descriptor, to end a test's side of a transport.
 pub fn close(stream: &FdStream) {
+    // SAFETY: `close` takes no pointers. Its one caller, remote_transport.rs, closes a stream it
+    // made and does not use it afterwards.
     unsafe { libc::close(stream.fd) };
 }
 
@@ -323,6 +336,8 @@ fn peer_pid(stream: &UnixStream) -> Option<i32> {
     {
         let mut pid: libc::pid_t = 0;
         let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+        // SAFETY: the option value is `pid` and `len` is its exact size, so the kernel writes at
+        // most that many bytes into it.
         let rc = unsafe {
             libc::getsockopt(
                 stream.as_raw_fd(),
@@ -336,8 +351,10 @@ fn peer_pid(stream: &UnixStream) -> Option<i32> {
     }
     #[cfg(target_os = "linux")]
     {
+        // SAFETY: `ucred` is plain old data, for which all zeroes is a valid value.
         let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
         let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: the option value is `cred` and `len` is its exact size.
         let rc = unsafe {
             libc::getsockopt(
                 stream.as_raw_fd(),

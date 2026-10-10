@@ -999,7 +999,9 @@ fn the_client_puts_its_own_terminal_into_raw_mode() {
 
     // What the mode actually is. `tcgetattr` on the master reads the pty's line discipline, which
     // is the same one the client's stdin sees.
+    // SAFETY: `termios` is plain old data, for which all zeroes is a valid value.
     let mut settings: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: tcgetattr fills the live `termios` it is pointed at; `pty` keeps the master open.
     let rc = unsafe { libc::tcgetattr(pty.master_fd(), &mut settings) };
     assert_eq!(rc, 0, "could not read the pty's terminal settings");
     for (name, flag) in [

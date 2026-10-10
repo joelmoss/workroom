@@ -954,6 +954,7 @@ mod tests {
     fn a_fifo_is_refused_without_blocking() {
         let root = scratch("fifo");
         let path = std::ffi::CString::new(root.join("pipe").as_os_str().as_bytes()).unwrap();
+        // SAFETY: `path` is a NUL-terminated string that outlives the call.
         assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
         let started = std::time::Instant::now();
         assert_eq!(

@@ -66,7 +66,9 @@ fn one_line(message: &str) -> String {
 /// failed open therefore leaves everything where it was, to be tried again on the next line, where
 /// opening after the rename would leave `fd` writing to `<path>.1` for good with no `path` at all.
 fn rotate(path: &Path, fd: RawFd, max: u64) {
+    // SAFETY: `stat` is plain old data, for which all zeroes is a valid value.
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: `stat` is a live, writable `libc::stat`; a stale `fd` only makes fstat fail.
     if unsafe { libc::fstat(fd, &mut stat) } != 0 || (stat.st_size as u64) <= max {
         return;
     }
@@ -88,6 +90,8 @@ fn rotate(path: &Path, fd: RawFd, max: u64) {
         let _ = std::fs::remove_file(&fresh);
         return;
     }
+    // SAFETY: `file` is open for the call. `fd` is a raw log descriptor no Rust value owns (stderr
+    // in production), so replacing what it points at invalidates nothing.
     unsafe { libc::dup2(file.as_raw_fd(), fd) };
 }
 
@@ -110,7 +114,9 @@ fn timestamp() -> String {
         .unwrap_or_default();
     // Typed by `localtime_r`'s parameter rather than named: musl deprecates the `time_t` alias.
     let seconds = now.as_secs().try_into().unwrap_or_default();
+    // SAFETY: `tm` is plain old data (its zone pointer may be null), so all zeroes is valid.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: both pointers are to live locals, and the reentrant `_r` form keeps no static buffer.
     unsafe { libc::localtime_r(&seconds, &mut tm) };
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
@@ -140,6 +146,7 @@ pub fn redirect_stderr(socket: &Path) {
     let path = log_path(socket);
     if stderr_is(Path::new("/dev/null")) {
         let Ok(file) = open_log(&path) else { return };
+        // SAFETY: `file` is open for the call, and std holds fd 2 by number, not as an owned fd.
         unsafe { libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO) };
     }
     if stderr_is(&path) {
@@ -208,7 +215,10 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("dir");
         let path = dir.join("agent.log");
         let file = open_log(&path).expect("log");
+        // SAFETY: `file` is open for the call; dup takes and returns plain integers.
         let fd = unsafe { libc::dup(file.as_raw_fd()) };
+        // SAFETY: the pointer and length come from one live slice, and `fd` stays open until the
+        // close at the end of the test.
         let write = |bytes: &[u8]| unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
 
         write(b"under\n");
@@ -220,6 +230,7 @@ mod tests {
         write(b"after\n");
         let kept = std::fs::read_to_string(dir.join("agent.log.1")).expect("previous");
         let fresh = std::fs::read_to_string(&path).expect("fresh");
+        // SAFETY: `fd` is the test's own duplicate, closed once and not used after.
         unsafe { libc::close(fd) };
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(kept, "under\nnow over the limit\n");
@@ -234,7 +245,10 @@ mod tests {
         std::fs::create_dir_all(dir.join("agent.log.new")).expect("blocker");
         let path = dir.join("agent.log");
         let file = open_log(&path).expect("log");
+        // SAFETY: `file` is open for the call; dup takes and returns plain integers.
         let fd = unsafe { libc::dup(file.as_raw_fd()) };
+        // SAFETY: the pointer and length come from one live slice, and `fd` stays open until the
+        // close at the end of the test.
         let write = |bytes: &[u8]| unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
 
         write(b"over the limit\n");
@@ -242,6 +256,7 @@ mod tests {
         write(b"still here\n");
         let log = std::fs::read_to_string(&path).unwrap_or_default();
         let moved = dir.join("agent.log.1").exists();
+        // SAFETY: `fd` is the test's own duplicate, closed once and not used after.
         unsafe { libc::close(fd) };
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!moved, "the log moved aside with nothing to replace it");
