@@ -10,25 +10,25 @@
 
 pub mod broker;
 pub mod cli;
-pub mod file;
+mod file;
 pub mod forward;
-pub mod handoff;
-pub mod input;
-pub mod layout;
-pub mod log;
-pub mod process;
+mod handoff;
+mod input;
+mod layout;
+mod log;
+mod process;
 pub mod pty;
-pub mod rpc;
+mod rpc;
 pub mod screens;
 pub mod serve;
 pub mod session;
-pub mod shadow;
-pub mod shell;
+mod shadow;
+mod shell;
 pub mod transport;
-pub mod vcs;
-pub mod watch;
+mod vcs;
+mod watch;
 
 /// The shadow terminal that makes a reattaching client see the session instead of a blank screen.
 /// Behind a feature because it links libghostty-vt — see the crate's Cargo.toml.
 #[cfg(feature = "terminal-state")]
-pub mod terminal;
+mod terminal;

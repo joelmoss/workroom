@@ -595,10 +595,15 @@ impl Drop for ShadowTerminal {
 /// Modes worth naming, for tests and for anything that needs to reason about what survived.
 pub mod modes {
     use super::{GhosttyMode, mode_new};
+    #[cfg(test)]
     pub const APP_CURSOR_KEYS: GhosttyMode = mode_new(1, false);
+    #[cfg(test)]
     pub const MOUSE_BUTTON: GhosttyMode = mode_new(1002, false);
+    #[cfg(test)]
     pub const MOUSE_SGR: GhosttyMode = mode_new(1006, false);
+    #[cfg(test)]
     pub const FOCUS_EVENTS: GhosttyMode = mode_new(1004, false);
+    #[cfg(test)]
     pub const BRACKETED_PASTE: GhosttyMode = mode_new(2004, false);
     pub const ALT_SCREEN: GhosttyMode = mode_new(1049, false);
 }
