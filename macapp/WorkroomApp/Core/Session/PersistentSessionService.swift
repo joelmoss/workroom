@@ -478,7 +478,7 @@ final class PersistentSessionService {
     if attachedRemote[sessionID]?.isEmpty == true { attachedRemote[sessionID] = nil }
   }
 
-  /// Whether a pane has attached to a session on `host`: its ssh holds the host's box awake (#356).
+  /// Whether a pane has attached to a session on `host` (#356).
   func hasAttachedPane(on host: HostID) -> Bool {
     attachedRemote.keys.contains { remoteSessions[$0]?.host == host }
   }

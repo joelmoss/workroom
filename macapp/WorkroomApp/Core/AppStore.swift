@@ -80,9 +80,9 @@ struct PendingProjectSettings: Identifiable {
   var id: String { project.id }
 }
 
-/// App-wide state and actions. A single shared instance is used so the App, views,
-/// and menu Commands all act on the same store. All CLI work is awaited (it runs off
-/// the main thread inside WorkroomCLI), keeping the UI responsive.
+/// One window's state and actions. Production builds one store per window (issue #70); the
+/// project data every window shares lives in `ProjectStore.shared`. All CLI work is awaited (it
+/// runs off the main thread inside WorkroomCLI), keeping the UI responsive.
 @MainActor
 final class AppStore: ObservableObject {
   /// Shared, app-wide project data (issue #70). Holds the project list and everything derived from
