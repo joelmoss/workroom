@@ -955,7 +955,7 @@ final class GhosttySurfaceView: NSView {
   /// attach twice, and by closing the pane.
   private(set) var pendingReconnect: DispatchWorkItem?
 
-  /// This pane's ssh is gone: its attach no longer holds its remote host awake (#356).
+  /// This pane's ssh is gone: it no longer counts as attached to its remote host (#356).
   private func detachFromHost() {
     if let persistentSessionID {
       PersistentSessionService.shared.paneDetached(persistentSessionID, by: attachToken)
