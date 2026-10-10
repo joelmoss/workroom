@@ -17,7 +17,7 @@ Owns projects, workrooms, setup and teardown, and the labels the sidebar shows. 
 A git repository registered with Workroom, identified by its canonical path.
 
 **Workroom**:
-A linked git worktree on its own branch, `workroom/<name>`, that Workroom creates for one line of work. It has its own terminals and lives on this Mac or on a host.
+A branch of a project, `workroom/<name>`, that Workroom creates for one line of work, with its own terminals. On this Mac it is a linked git worktree; on a host it is a fresh clone.
 _Avoid_: Workspace
 
 **Root**:
@@ -31,7 +31,7 @@ The branch a new workroom starts from, set per project or for all projects.
 _Avoid_: Base (alone)
 
 **Setup script**, **Teardown script**:
-The project's hooks, `scripts/workroom_setup` and `scripts/workroom_teardown`, run inside a workroom when it is created and before it is deleted.
+The project's hooks, `scripts/workroom_setup` and `scripts/workroom_teardown`, run inside a local workroom when it is created and before it is deleted. A remote workroom runs neither.
 
 ## Version control
 
@@ -106,8 +106,7 @@ A loopback port on a host made reachable on this Mac for as long as the app is a
 Owns the wr-agent wire protocol, its transport and its hand-off. The Mac's end of the connection is the app; the far end is wr-agent.
 
 **wr-agent**:
-The Rust daemon that holds sessions and serves version control, files, exec and port forwarding over one multiplexed stream.
-_Avoid_: Agent (alone, which would also cover the coding agents)
+The Rust daemon that holds sessions and serves version control, files, exec and port forwarding over one multiplexed stream. "Agent" on its own means this and nothing else.
 
 **Service**:
 One capability a wr-agent serves over its stream, such as terminal sessions, version control or file reads.
