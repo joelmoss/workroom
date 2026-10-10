@@ -203,10 +203,10 @@ func TestListHumanPathWarnsAndListsOnce(t *testing.T) {
 		t.Fatalf("expected a 'git workspace not found' warning for w2, got:\n%s", out)
 	}
 	if fake.listCalls != 1 {
-		t.Fatalf("human List called ListWorkrooms %d times, want 1 (no N+1)", fake.listCalls)
+		t.Fatalf("human Listing called ListWorkrooms %d times, want 1 (no N+1)", fake.listCalls)
 	}
 	if s := storedVCS(t, svc, dir); s != "git" {
-		t.Fatalf("human List did not heal config; vcs = %q, want git", s)
+		t.Fatalf("human Listing did not heal config; vcs = %q, want git", s)
 	}
 }
 
@@ -258,5 +258,33 @@ func TestListDataFullToleratesAStoredJJProjectWithoutGit(t *testing.T) {
 	}
 	if got := storedVCS(t, svc, dir); got != "jj" {
 		t.Fatalf("stored vcs = %q, want jj left untouched", got)
+	}
+}
+
+// The human list shows each project as soon as its own checks are done: Listing runs none up
+// front, and a project's only when it is reached, so one that stalls (a hung network volume)
+// cannot hold back those before it.
+func TestListingChecksEachProjectOnlyWhenReached(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	vcstest.MakeGitDir(t, a)
+	vcstest.MakeGitDir(t, b)
+	svc, _, cfg := newTestService(t, nil)
+	cfg.AddWorkroom(a, "w1", filepath.Join(a, "w1"), "git")
+	cfg.AddWorkroom(b, "w2", filepath.Join(b, "w2"), "git")
+	fake := &fakeVCS{typ: vcs.TypeGit}
+	svc.VCSForTypeFunc = func(vcs.Type) (vcs.VCS, error) { return fake, nil }
+
+	l, err := svc.Listing(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Count != 2 || fake.listCalls != 0 {
+		t.Fatalf("Listing = %d projects after %d checks, want 2 projects and no checks yet", l.Count, fake.listCalls)
+	}
+	for range l.Projects {
+		break
+	}
+	if fake.listCalls != 1 {
+		t.Fatalf("reaching the first project ran %d checks, want 1", fake.listCalls)
 	}
 }

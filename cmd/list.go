@@ -88,14 +88,16 @@ func printListing(w io.Writer, l workroom.Listing) {
 	case l.InWorkroom:
 		fmt.Fprintln(w, ui.Yellow("You are already in a workroom."))
 		fmt.Fprintf(w, "Parent project is at %s\n", ui.DisplayPath(l.ParentPath))
-	case l.AtProject && len(l.Projects) == 0:
+	case l.AtProject && l.Count == 0:
 		fmt.Fprintln(w, "No workrooms found for this project.")
 	case l.AtProject:
-		printWorkroomsTable(w, l.Projects[0])
-	case len(l.Projects) == 0:
+		for p := range l.Projects {
+			printWorkroomsTable(w, p)
+		}
+	case l.Count == 0:
 		fmt.Fprintln(w, "No workrooms found.")
 	default:
-		for _, p := range l.Projects {
+		for p := range l.Projects {
 			fmt.Fprintf(w, "%s:\n", ui.DisplayPath(p.Path))
 			printWorkroomsTable(w, p)
 			fmt.Fprintln(w)

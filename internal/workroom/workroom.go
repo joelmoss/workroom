@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"math/rand/v2"
 	"os"
 	"os/exec"
@@ -470,12 +471,15 @@ type Listing struct {
 	// InWorkroom is true when the directory is inside a workroom; ParentPath is its project.
 	InWorkroom bool
 	ParentPath string
-	// AtProject is true when the directory is a registered project's root. Projects then holds
+	// AtProject is true when the directory is a registered project's root. Projects then yields
 	// that project alone, or nothing when it has no workrooms.
 	AtProject bool
-	// Projects holds the projects to show, sorted by path, with their warnings at WarningsFull.
-	// Away from any project it is every project that has workrooms.
-	Projects []ProjectInfo
+	// Count is how many projects Projects yields.
+	Count int
+	// Projects yields the projects to show, sorted by path, with their warnings at WarningsFull.
+	// Away from any project it is every project that has workrooms. Each project's warnings are
+	// computed only as it is reached, so a caller can show one before the next one's checks run.
+	Projects iter.Seq[ProjectInfo]
 }
 
 // Listing returns what the human list shows from cwd. Unlike ListData it depends on cwd, and away
@@ -491,11 +495,12 @@ func (s *Service) Listing(cwd string) (Listing, error) {
 	// Inside a parent project. Its warnings are computed only when it has workrooms: projectInfo
 	// may heal the stored VCS type, which an empty project's listing never did.
 	if found && project != nil {
-		l := Listing{AtProject: true}
-		if len(project.Workrooms) > 0 {
-			l.Projects = []ProjectInfo{s.projectInfo(projectPath, *project, WarningsFull)}
+		if len(project.Workrooms) == 0 {
+			return Listing{AtProject: true, Projects: func(func(ProjectInfo) bool) {}}, nil
 		}
-		return l, nil
+		return Listing{AtProject: true, Count: 1, Projects: func(yield func(ProjectInfo) bool) {
+			yield(s.projectInfo(projectPath, *project, WarningsFull))
+		}}, nil
 	}
 
 	// Neither — list all
@@ -510,11 +515,13 @@ func (s *Service) Listing(cwd string) (Listing, error) {
 	}
 	sort.Strings(paths)
 
-	var l Listing
-	for _, path := range paths {
-		l.Projects = append(l.Projects, s.projectInfo(path, projects[path], WarningsFull))
-	}
-	return l, nil
+	return Listing{Count: len(paths), Projects: func(yield func(ProjectInfo) bool) {
+		for _, path := range paths {
+			if !yield(s.projectInfo(path, projects[path], WarningsFull)) {
+				return
+			}
+		}
+	}}, nil
 }
 
 // Delete removes a workroom by name.
