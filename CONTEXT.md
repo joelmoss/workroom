@@ -4,8 +4,8 @@ Workroom is a native macOS app for working on several branches of a git project 
 
 ## Naming rules
 
-- **Agent** means wr-agent and nothing else. Claude and Codex are **coding agents**, and their Swift types take the prefix `CodingAgent`.
-- **Host** is the one word for remote compute. Do not call one a machine, a box, a VM or a base.
+- **Agent** means wr-agent and nothing else. Claude and Codex are **coding agents**; new Swift types for them take the prefix `CodingAgent`. Existing `Agent*` types for them (`AgentBackend`, `AgentRunner`, `AgentDiagnosis`, `AgentUsage*`) predate this rule and are renamed when touched.
+- **Host** is the one word for remote compute. Do not call one a machine, a box, a VM or a base. Provider-facing names (boxd and exe.dev call theirs machines and VMs) and older code keep their words; new names say host.
 - **Base** means a base branch only. It no longer names a machine that remote workrooms are derived from.
 - Use the terms below in code, issues, tests and docs. A name that is not here either belongs to one of the contexts below or is a gap to add.
 
@@ -41,7 +41,7 @@ Owns repositories, changesets, diffs, history, working status, and the commit an
 The git data behind a project or a workroom, wherever it is read from.
 
 **Changeset**:
-The files one commit, or the working tree, changes.
+The files one commit changes, with its message and authors. The working tree's changes are shown as Changes, not as a changeset.
 
 **Diff**:
 The patch for one file in a changeset.
@@ -61,7 +61,7 @@ Owns panes, tabs, splits, sessions, surfaces and run commands. The terminal is l
 One terminal, or one diff, file or changeset view, opened in a target.
 
 **Split**:
-A tree that lays several of a target's tabs, or several workrooms in a window, out side by side.
+A tree that lays several of a target's tabs, or several workrooms in a window, out side by side or stacked.
 
 **Pane**:
 The area on screen that shows one tab.
@@ -83,7 +83,7 @@ A command the user sets to run in a workroom, such as `npm start`, started in a 
 Owns hosts, their drivers, provisioning, the credential broker and port forwarding. A remote workroom is a workroom whose files, shells and agent live on a host.
 
 **Host**:
-A machine other than this Mac that holds a remote workroom. Every remote workroom gets a fresh one.
+The compute that holds a remote workroom: a VM or container made by a host driver, on a provider or in a container runtime on this Mac. Every remote workroom gets a fresh one.
 _Avoid_: Machine, box, VM, base
 
 **Host driver**:
@@ -93,7 +93,7 @@ The adapter for one provider that creates, reaches and destroys hosts: a local c
 Making a host for one remote workroom: the driver creates it, its agent is enrolled, and the repository is cloned and checked out.
 
 **Broker**:
-The credential service, run by Codaset, through which a host pushes to GitHub without holding a token.
+The credential service, run by Codaset, through which a host gets a one-hour GitHub token for one repository, so it never holds a long-lived GitHub credential.
 
 **Grant**:
 A broker permission for one workroom's host, cancelled when the workroom is destroyed.
@@ -116,11 +116,11 @@ One capability a wr-agent serves over its stream, such as terminal sessions, ver
 Replacing a running wr-agent's program with a newer binary in place, keeping its process and every session.
 
 **Bootstrap**:
-Pushing the matching Linux wr-agent, with Ghostty's terminfo and shell integration, to a host on first connect and starting it.
+Putting the bundled Linux wr-agent, with Ghostty's terminfo and shell integration, on a host that has none or an older one, and handing a running older agent off to it. It runs on every connect; the host's supervisor starts the agent.
 
 ## Coding agents
 
-Owns the Claude and Codex features: failure diagnosis, investigate hand-off, usage and banners.
+Owns the Claude and Codex features: failure diagnosis, investigating a failed command, usage and banners.
 
 **Coding agent**:
 Claude or Codex, the AI coding tool a user runs in a terminal and the app reads or calls.
@@ -153,7 +153,7 @@ _Avoid_: History (alone)
 The right-hand column of Changes, History, Pull Request and Files sections for the selected target.
 
 **Notification**:
-A badge or desktop banner raised from terminal output, such as a command finishing.
+A badge or desktop banner raised when a program in a terminal asks for attention with an OSC notification sequence.
 
 **Theme**:
 A bundled colour scheme applied to the terminals and the interface.
