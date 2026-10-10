@@ -98,7 +98,7 @@ fn drop_inherited_exception_ports() {
     if written == size && info.pbsi_flags & PROC_FLAG_TRACED != 0 {
         return;
     }
-    extern "C" {
+    unsafe extern "C" {
         // What <mach/mach_init.h>'s `mach_task_self()` reads.
         static mach_task_self_: libc::mach_port_t;
         fn task_set_exception_ports(

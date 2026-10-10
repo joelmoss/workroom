@@ -158,12 +158,11 @@ pub fn descendants(roots: &[i32]) -> Vec<Descendant> {
 fn name_from_argv(argv: &[String]) -> Option<String> {
     let first = argv.first()?;
     let name = basename(first)?;
-    if is_interpreter(name) {
-        if let Some(script) = argv.iter().skip(1).find(|a| !a.starts_with('-')) {
-            if let Some(script_name) = basename(script) {
-                return Some(script_name.to_string());
-            }
-        }
+    if is_interpreter(name)
+        && let Some(script) = argv.iter().skip(1).find(|a| !a.starts_with('-'))
+        && let Some(script_name) = basename(script)
+    {
+        return Some(script_name.to_string());
     }
     Some(name.to_string())
 }
@@ -384,17 +383,16 @@ mod platform {
         if let Some(exe) = fs::read_link(format!("/proc/{pid}/exe"))
             .ok()
             .and_then(|p| p.to_str().map(str::to_string))
+            && let Some(name) = basename(&exe)
         {
-            if let Some(name) = basename(&exe) {
-                if !is_interpreter(name) {
-                    return Some(name.to_string());
-                }
-                // An interpreter: the script the user typed is in argv, not in `exe`.
-                if let Some(from_argv) = name_from_argv(&argv) {
-                    return Some(from_argv);
-                }
+            if !is_interpreter(name) {
                 return Some(name.to_string());
             }
+            // An interpreter: the script the user typed is in argv, not in `exe`.
+            if let Some(from_argv) = name_from_argv(&argv) {
+                return Some(from_argv);
+            }
+            return Some(name.to_string());
         }
         // No `exe` (a zombie, or a process we cannot read): argv is all that is left, with its
         // self-renaming caveat, which still beats reporting nothing.

@@ -570,11 +570,13 @@ fn call(
             return Ok((json, skew));
         }
         let code = json["error"].as_str().unwrap_or("unknown").to_string();
-        if attempt == 0 && status == 401 && code == "stale_proof" {
-            if let Some(server) = date {
-                skew = server - unix_now();
-                continue;
-            }
+        if attempt == 0
+            && status == 401
+            && code == "stale_proof"
+            && let Some(server) = date
+        {
+            skew = server - unix_now();
+            continue;
         }
         return Err(BrokerError::Refused {
             status,

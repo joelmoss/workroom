@@ -87,7 +87,9 @@ impl InstanceLock {
         use std::os::unix::io::FromRawFd;
         crate::handoff::set_cloexec(fd, true);
         InstanceLock {
-            file: std::fs::File::from_raw_fd(fd),
+            // SAFETY: the caller guarantees `fd` is the open lock file and owned by nothing else,
+            // so the `File` can take ownership of it.
+            file: unsafe { std::fs::File::from_raw_fd(fd) },
         }
     }
 }
@@ -329,10 +331,9 @@ pub fn handle_connection<T: Transport>(
                         &mut services,
                         &writer,
                         &send,
-                    ) {
-                        if !send(&reply.encode()) {
-                            break 'outer;
-                        }
+                    ) && !send(&reply.encode())
+                    {
+                        break 'outer;
                     }
                 }
                 Ok(None) => break,

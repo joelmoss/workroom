@@ -173,14 +173,13 @@ impl Pty {
                     libc::signal(signal, libc::SIG_DFL);
                 }
 
-                if let Some(dir) = &c_cwd {
-                    if libc::chdir(dir.as_ptr()) != 0
-                        && c_home
-                            .as_ref()
-                            .is_none_or(|home| libc::chdir(home.as_ptr()) != 0)
-                    {
-                        libc::chdir(c"/".as_ptr());
-                    }
+                if let Some(dir) = &c_cwd
+                    && libc::chdir(dir.as_ptr()) != 0
+                    && c_home
+                        .as_ref()
+                        .is_none_or(|home| libc::chdir(home.as_ptr()) != 0)
+                {
+                    libc::chdir(c"/".as_ptr());
                 }
 
                 libc::execve(c_program.as_ptr(), argv.as_ptr(), envp.as_ptr());
@@ -450,17 +449,20 @@ unsafe fn close_inherited(keep: libc::c_int, limit: libc::c_int) {
         // kernel takes the low 32 bits.
         let (first, all, flags): (libc::c_ulong, libc::c_ulong, libc::c_ulong) =
             (3, u32::MAX.into(), 0);
-        if let Ok(keep) = libc::c_ulong::try_from(keep) {
-            if keep >= first {
-                let below = if keep > first {
-                    libc::syscall(libc::SYS_close_range, first, keep - 1, flags)
-                } else {
-                    0
-                };
-                let above = libc::syscall(libc::SYS_close_range, keep + 1, all, flags);
-                if below == 0 && above == 0 {
-                    return;
-                }
+        if let Ok(keep) = libc::c_ulong::try_from(keep)
+            && keep >= first
+        {
+            let below = if keep > first {
+                // SAFETY: close_range takes integers only and closes descriptors nothing else in
+                // this child uses.
+                unsafe { libc::syscall(libc::SYS_close_range, first, keep - 1, flags) }
+            } else {
+                0
+            };
+            // SAFETY: as above.
+            let above = unsafe { libc::syscall(libc::SYS_close_range, keep + 1, all, flags) };
+            if below == 0 && above == 0 {
+                return;
             }
         }
     }
@@ -468,14 +470,16 @@ unsafe fn close_inherited(keep: libc::c_int, limit: libc::c_int) {
     // survives. Nothing here lowers it.
     for fd in 3..limit {
         if fd != keep {
-            libc::close(fd);
+            // SAFETY: `close` takes no pointers, and in a child about to exec nothing else uses
+            // these descriptors.
+            unsafe { libc::close(fd) };
         }
     }
 }
 
 // glibc puts forkpty in libutil; musl and Darwin put it in libc.
 #[cfg_attr(target_env = "gnu", link(name = "util"))]
-extern "C" {
+unsafe extern "C" {
     fn forkpty(
         amaster: *mut libc::c_int,
         name: *mut libc::c_char,
@@ -768,11 +772,11 @@ mod tests {
         // of the child's 10 (closing the master when `pty` drops hangs it up).
         let mut found = None;
         for _ in 0..250 {
-            if let Some(pgid) = pty.foreground_pgid() {
-                if let Some(name) = crate::process::executable_name(pgid) {
-                    found = Some((pgid, name));
-                    break;
-                }
+            if let Some(pgid) = pty.foreground_pgid()
+                && let Some(name) = crate::process::executable_name(pgid)
+            {
+                found = Some((pgid, name));
+                break;
             }
             std::thread::sleep(Duration::from_millis(20));
         }

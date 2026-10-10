@@ -500,10 +500,10 @@ impl SessionStore {
         // kills would want pruning on a timer or past a size.
         refused.retain(|_, until| *until > now);
         refused.insert(id, now + REFUSED_ID_WINDOW);
-        if let Some(path) = self.refusals.get() {
-            if let Err(e) = write_refusals(path, &refused, now) {
-                crate::note!("could not keep refusals in {}: {e}", path.display());
-            }
+        if let Some(path) = self.refusals.get()
+            && let Err(e) = write_refusals(path, &refused, now)
+        {
+            crate::note!("could not keep refusals in {}: {e}", path.display());
         }
     }
 
@@ -623,10 +623,8 @@ impl SessionStore {
             spec.id.to_hyphenated(),
             pty.child_pid()
         );
-        if superseded {
-            if let Some(screens) = self.screens.get() {
-                let _ = screens.sync();
-            }
+        if superseded && let Some(screens) = self.screens.get() {
+            let _ = screens.sync();
         }
         // `std::thread::spawn` panics when the OS cannot create a thread. Reachable here on the
         // connection's own dispatch thread (this runs inside `handle_connection`), so the panic
@@ -906,8 +904,8 @@ impl SessionStore {
     /// Who owns the size, for tests and diagnostics.
     pub fn size_owner(&self, id: SessionId) -> Option<u64> {
         let (_, _, attached) = self.parts(id)?;
-        let owner = attached.lock().ok()?.owner;
-        owner
+
+        attached.lock().ok()?.owner
     }
 
     pub fn contains(&self, id: SessionId) -> bool {
