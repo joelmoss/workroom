@@ -312,7 +312,7 @@ pub fn hand_off(
         Ok(guard) => guard,
         Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         Err(std::sync::TryLockError::WouldBlock) => {
-            return Err("another hand-off is in progress".into())
+            return Err("another hand-off is in progress".into());
         }
     };
     PAUSED.store(true, std::sync::atomic::Ordering::Release);
@@ -773,9 +773,11 @@ mod tests {
         let no_downgrade = |binary: &Path, ours: u64, deadline: Instant| {
             BuildProbe::start(binary)?.no_downgrade(binary, ours, deadline)
         };
-        assert!(no_downgrade(&older, 200, soon())
-            .unwrap_err()
-            .contains("older than this agent's build 200"));
+        assert!(
+            no_downgrade(&older, 200, soon())
+                .unwrap_err()
+                .contains("older than this agent's build 200")
+        );
         assert!(no_downgrade(&unnumbered, 200, soon()).is_err());
         assert_eq!(no_downgrade(&same, 200, soon()), Ok(()));
         assert_eq!(no_downgrade(&newer, 200, soon()), Ok(()));

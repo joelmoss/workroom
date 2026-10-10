@@ -3,11 +3,11 @@
 //! socket it owns. The parsing and the loopback allowlist are unit-tested in `forward.rs`; this
 //! covers the seam — the opcode framing, the socket, and the teardown.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::UnixStream;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 use wr_agent::protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
 use wr_agent::serve::handle_connection;

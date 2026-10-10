@@ -176,7 +176,7 @@ pub(crate) struct ProcessLink {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{name_from_argv, ProcessLink};
+    use super::{ProcessLink, name_from_argv};
 
     /// `KERN_PROCARGS2`, the exec-time argv snapshot. Layout: `argc` (i32), the exec path
     /// (NUL-terminated), NUL padding, then `argc` NUL-terminated argv strings.
@@ -372,7 +372,7 @@ mod platform {
 
 #[cfg(target_os = "linux")]
 mod platform {
-    use super::{basename, is_interpreter, name_from_argv, ProcessLink};
+    use super::{ProcessLink, basename, is_interpreter, name_from_argv};
     use std::fs;
 
     /// Prefers `/proc/<pid>/exe`, which a process cannot rewrite, and only consults `cmdline` when

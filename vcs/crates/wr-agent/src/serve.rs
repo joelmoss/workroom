@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::protocol::envelope::{
-    negotiate, Envelope, EnvelopeDecoder, Hello, ProtocolError, Service, MAX_ENVELOPE_PAYLOAD,
+    Envelope, EnvelopeDecoder, Hello, MAX_ENVELOPE_PAYLOAD, ProtocolError, Service, negotiate,
 };
 use crate::protocol::frame::{Frame, FrameDecoder, FrameKind, HEADER_SIZE, MAX_PAYLOAD_SIZE};
 use crate::session::{SessionId, SessionSpec, SessionStore, SharedWriter};
@@ -1244,11 +1244,13 @@ mod tests {
         assert_eq!(kept[0], ("workroom".to_string(), long));
 
         let over = "w".repeat(MAX_WORKROOM_BYTES + 1);
-        assert!(session_metadata(&env(&[
-            ("WORKROOM_SESSION_WORKROOM", &over),
-            ("WORKROOM_SESSION_TITLE", "Terminal 1"),
-        ]))
-        .is_empty());
+        assert!(
+            session_metadata(&env(&[
+                ("WORKROOM_SESSION_WORKROOM", &over),
+                ("WORKROOM_SESSION_TITLE", "Terminal 1"),
+            ]))
+            .is_empty()
+        );
     }
 
     /// A title is cut to `MAX_TITLE_BYTES` at a character boundary, never mid-character.

@@ -2,7 +2,7 @@
 //! and must get a failure it already handles, on the stream it asked on, rather than silence (it
 //! would wait out its own timeout) or a protocol error (it would lose the whole connection).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};

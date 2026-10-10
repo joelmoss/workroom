@@ -80,9 +80,11 @@ fn unborn_history_and_root_commit_reads() {
             deletions: 0
         })
     );
-    assert!(diff::committed_patch(&repo.0, &change.commit, "hello")
-        .unwrap()
-        .contains("+hello"));
+    assert!(
+        diff::committed_patch(&repo.0, &change.commit, "hello")
+            .unwrap()
+            .contains("+hello")
+    );
     assert_eq!(
         vcs::file_content(&repo.0, &id, "hello", false)
             .unwrap()
@@ -162,9 +164,11 @@ fn a_repository_filter_driver_never_runs_during_reads() {
     repo.write("file", "bass\n");
     let status = diff::working_status(&repo.0).unwrap();
     assert!(status.files.iter().any(|f| f.path == "file"));
-    assert!(diff::working_patch(&repo.0, "file")
-        .unwrap()
-        .contains("+bass"));
+    assert!(
+        diff::working_patch(&repo.0, "file")
+            .unwrap()
+            .contains("+bass")
+    );
     assert!(
         !marker.exists(),
         "a filter from .git/config ran during a read"
@@ -190,9 +194,11 @@ fn an_empty_named_repository_filter_driver_never_runs_during_reads() {
     std::thread::sleep(std::time::Duration::from_millis(1100));
     repo.write("file", "bass\n");
     diff::working_status(&repo.0).unwrap();
-    assert!(diff::working_patch(&repo.0, "file")
-        .unwrap()
-        .contains("+bass"));
+    assert!(
+        diff::working_patch(&repo.0, "file")
+            .unwrap()
+            .contains("+bass")
+    );
     assert!(!marker.exists(), "an empty-named driver ran during a read");
 }
 
@@ -326,9 +332,11 @@ fn working_status_combines_staged_and_unstaged_and_keeps_untracked() {
     assert_eq!(status.untracked, vec!["untracked"]);
     let patch = diff::working_patch(&repo.0, "file").unwrap();
     assert!(patch.contains("-base") && patch.contains("+final") && !patch.contains("staged"));
-    assert!(diff::working_patch(&repo.0, "untracked")
-        .unwrap()
-        .contains("+new"));
+    assert!(
+        diff::working_patch(&repo.0, "untracked")
+            .unwrap()
+            .contains("+new")
+    );
 }
 
 #[test]

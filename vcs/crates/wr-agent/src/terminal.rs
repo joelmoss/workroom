@@ -594,7 +594,7 @@ impl Drop for ShadowTerminal {
 
 /// Modes worth naming, for tests and for anything that needs to reason about what survived.
 pub mod modes {
-    use super::{mode_new, GhosttyMode};
+    use super::{GhosttyMode, mode_new};
     pub const APP_CURSOR_KEYS: GhosttyMode = mode_new(1, false);
     pub const MOUSE_BUTTON: GhosttyMode = mode_new(1002, false);
     pub const MOUSE_SGR: GhosttyMode = mode_new(1006, false);

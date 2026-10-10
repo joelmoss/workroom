@@ -14,9 +14,9 @@ use std::time::Duration;
 
 use wr_agent::handoff;
 use wr_agent::protocol::envelope::{
-    negotiate, Envelope, EnvelopeDecoder, Hello, Service, MIN_FILE_VERSION, MIN_FORWARD_VERSION,
-    MIN_HANDOFF_VERSION, MIN_LAYOUT_VERSION, MIN_SUPPORTED_VERSION, MIN_VCS_VERSION,
-    PROTOCOL_VERSION,
+    Envelope, EnvelopeDecoder, Hello, MIN_FILE_VERSION, MIN_FORWARD_VERSION, MIN_HANDOFF_VERSION,
+    MIN_LAYOUT_VERSION, MIN_SUPPORTED_VERSION, MIN_VCS_VERSION, PROTOCOL_VERSION, Service,
+    negotiate,
 };
 use wr_agent::protocol::frame::{Frame, FrameDecoder, FrameKind};
 use wr_agent::serve::{self, Agent, BUILD, DEFAULT_IDLE_TIMEOUT};

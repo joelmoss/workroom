@@ -1,17 +1,17 @@
 //! Versioned VCS requests over Service::Vcs. Capability negotiation is separate from the terminal
 //! greeting. Each nonzero stream is one request. Reply JSON is chunked; the first payload byte is
 //! 0 for continuation, 1 for final. Maximum assembled reply is 16MiB. Requests are never replayed.
-use crate::protocol::envelope::{Envelope, Service, MAX_ENVELOPE_PAYLOAD};
+use crate::protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
 use crate::session::SharedWriter;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
 use wr_vcs_model::{self as model, VcsError};
@@ -1124,26 +1124,32 @@ mod tests {
 
     #[test]
     fn version_and_path_errors_are_explicit() {
-        assert!(execute(br#"{"version":99,"method":"capabilities"}"#)
-            .get("error")
-            .is_some());
+        assert!(
+            execute(br#"{"version":99,"method":"capabilities"}"#)
+                .get("error")
+                .is_some()
+        );
         assert_eq!(
             execute(br#"{"version":1,"method":"capabilities"}"#)["result"]["reads"],
             9
         );
         for root in ["relative", "/tmp/../other", "/tmp/./other", "/tmp/\0other"] {
             let request = json!({"version":1,"method":"log","backend":"git","root":root});
-            assert!(execute(&serde_json::to_vec(&request).unwrap())
-                .get("error")
-                .is_some());
+            assert!(
+                execute(&serde_json::to_vec(&request).unwrap())
+                    .get("error")
+                    .is_some()
+            );
         }
         // The jj backend is gone: naming it fails to parse and is answered per request, not by
         // special handling.
         let request =
             json!({"version":1,"method":"log","backend":"jj","root":"/definitely-absent"});
-        assert!(execute(&serde_json::to_vec(&request).unwrap())
-            .get("error")
-            .is_some());
+        assert!(
+            execute(&serde_json::to_vec(&request).unwrap())
+                .get("error")
+                .is_some()
+        );
     }
 
     #[test]
@@ -1258,12 +1264,14 @@ mod tests {
             vec!["config", "user.name", "Test"],
             vec!["config", "user.email", "test@example.com"],
         ] {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(&root)
-                .status()
-                .unwrap()
-                .success());
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(&root)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
         }
         root
     }

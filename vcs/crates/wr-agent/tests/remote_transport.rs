@@ -22,14 +22,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use wr_agent::protocol::envelope::{Envelope, EnvelopeDecoder, Hello, Service};
 use wr_agent::protocol::frame::{Frame, FrameDecoder, FrameKind};
 use wr_agent::screens::Screens;
-use wr_agent::serve::{handle_connection, AttachRequest};
+use wr_agent::serve::{AttachRequest, handle_connection};
 use wr_agent::session::{SessionId, SessionStore};
-use wr_agent::transport::{close, set_nonblocking, FdStream, PipeTransport};
+use wr_agent::transport::{FdStream, PipeTransport, close, set_nonblocking};
 
 /// Drives an agent from the client side of a stream, speaking the real protocol.
 struct Client {
@@ -2235,9 +2235,11 @@ fn over_ssh_two_clients_share_a_workroom_its_sessions_and_its_layout() {
         &format!("WORKROOM_SESSION_WORKROOM={workroom} 'WORKROOM_SESSION_TITLE=Terminal 7'"),
     );
     mac_a.type_line("echo A-WAS-HERE");
-    assert!(mac_a
-        .read_until("A-WAS-HERE", Duration::from_secs(20))
-        .contains("A-WAS-HERE"));
+    assert!(
+        mac_a
+            .read_until("A-WAS-HERE", Duration::from_secs(20))
+            .contains("A-WAS-HERE")
+    );
 
     // Mac B's view of the host: the session, tagged, and A's layout.
     let mut relay = fixture.relay();
@@ -2278,16 +2280,20 @@ fn over_ssh_two_clients_share_a_workroom_its_sessions_and_its_layout() {
 
     // Mac B reattaches to the same shell and is shown what A left on it.
     let mut mac_b = Pane::attach(&fixture, session, true);
-    assert!(mac_b
-        .read_until("A-WAS-HERE", Duration::from_secs(20))
-        .contains("A-WAS-HERE"));
+    assert!(
+        mac_b
+            .read_until("A-WAS-HERE", Duration::from_secs(20))
+            .contains("A-WAS-HERE")
+    );
 
     // Mac A quits: its link drops, and B carries on in the same shell.
     drop(mac_a);
     mac_b.type_line("echo B-STILL-HERE");
-    assert!(mac_b
-        .read_until("B-STILL-HERE", Duration::from_secs(20))
-        .contains("B-STILL-HERE"));
+    assert!(
+        mac_b
+            .read_until("B-STILL-HERE", Duration::from_secs(20))
+            .contains("B-STILL-HERE")
+    );
 
     // A close on either Mac ends the session for both: B's pane exits with the shell.
     let mut id = [0u8; 16];
