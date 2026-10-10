@@ -355,6 +355,7 @@ make app-run
 # Build / test / lint / format
 make app-build
 make app-test           # WorkroomAppTests (unit, headless)
+make app-package-test   # macapp/Packages tests (swift test, no app host)
 make app-uitest         # WorkroomAppUITests (XCUITest — needs a real GUI login session)
 make app-lint           # swift-format --strict
 make app-format         # swift-format, rewrite in place
@@ -423,6 +424,7 @@ executor and a temp config — no real repo required.
 | `app-run` | Build (Debug) and relaunch the dev app |
 | `app-build` | Build the app (Debug) |
 | `app-test` | Run `WorkroomAppTests` (unit) |
+| `app-package-test` | Run each `macapp/Packages` package's tests with `swift test` (no app host) |
 | `app-uitest` | Run `WorkroomAppUITests` (XCUITest; needs a GUI session) |
 | `app-generate` | Regenerate the `.xcodeproj` from `project.yml` |
 | `app-format` / `app-lint` | Format / lint Swift via swift-format |
@@ -481,7 +483,7 @@ and every PR against either:
 - **`rust` job** (`ubuntu-latest`): `cargo fmt --check`, `cargo clippy -D warnings`, and `cargo test` for the
   whole `vcs/` Rust workspace, on a pinned toolchain.
 - **`app` job** (`macos-15`): sets up Xcode + Go, `brew install xcodegen`, runs `make app-lint`
-  (swift-format `--strict`) and `make app-test` with **ad-hoc signing** flags (hosted runners have
+  (swift-format `--strict`), `make app-package-test` and `make app-test` with **ad-hoc signing** flags (hosted runners have
   no signing cert), e.g.:
 
   ```

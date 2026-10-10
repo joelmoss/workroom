@@ -11,7 +11,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .DEFAULT_GOAL := help
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
-        app-run app-build app-test app-uitest app-identity app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
+        app-run app-build app-test app-package-test app-uitest app-identity app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-tool-logos app-clean \
         remote-host-image remote-host-image-test actions-lint
 
 help: ## List available targets
@@ -129,6 +129,14 @@ app-test: ## Run the app's unit tests (other workrooms' unit runs can overlap)
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' build-for-testing $(APP_SIGN_FLAGS) $(APP_ID_FLAGS) && \
 	  $(call gui_lock,shared,app-test) \
 	  $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) test-without-building
+
+# Each local package's tests (macapp/Packages), with plain `swift test`: no app host, so no GUI lock,
+# and seconds rather than the app build. CI runs it before `make app-test`. SwiftPM's build service
+# cannot write under Claude Code's command sandbox, so run it with the sandbox off there.
+app-package-test: ## Run the local Swift packages' tests (swift test, no app host or GUI lock)
+	@set -e; for pkg in macapp/Packages/*/; do \
+	  echo "swift test --package-path $$pkg"; swift test --package-path "$$pkg"; \
+	done
 
 app-uitest: ## Run the app's UI tests (XCUITest — needs the GUI session; queues behind other runs)
 	cd macapp && xcodegen generate && \
