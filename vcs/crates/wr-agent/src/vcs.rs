@@ -15,6 +15,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use wr_protocol::envelope::{Envelope, Service};
+use wr_protocol::reply::Reply;
 use wr_vcs_model::{self as model, VcsError};
 
 const MAX_HISTORY_LIMIT: usize = 10000;
@@ -337,10 +338,7 @@ pub fn execute(bytes: &[u8]) -> Value {
                 .map_err(io)
                 .and_then(read),
         });
-    match result {
-        Ok(result) => json!({"version": 1, "result": result}),
-        Err(error) => json!({"version": 1, "error": error}),
-    }
+    json!(Reply::new(1, result))
 }
 
 pub(crate) struct Captured {
@@ -895,7 +893,7 @@ pub fn dispatch(partial: &mut PartialRequests, envelope: &Envelope, writer: &Sha
                 writer,
                 Service::Vcs,
                 envelope.stream,
-                json!({"version": 1, "error": error}),
+                json!(Reply::error(1, error)),
             );
             return;
         }
@@ -905,7 +903,7 @@ pub fn dispatch(partial: &mut PartialRequests, envelope: &Envelope, writer: &Sha
             writer,
             Service::Vcs,
             envelope.stream,
-            json!({"version": 1, "error": VcsError::LockContention}),
+            json!(Reply::error(1, VcsError::LockContention)),
         );
         return;
     };
