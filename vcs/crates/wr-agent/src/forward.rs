@@ -156,17 +156,17 @@
 //! stream id — which the app's connection reader answers by failing the whole connection.
 //!
 //! The *writer* is the process-wide [`SharedWriter`], held for one envelope at a time — the same
-//! discipline `vcs::send` and every session's output already use. A forward is not faster or slower
+//! discipline `rpc::send` and every session's output already use. A forward is not faster or slower
 //! to starve than pty output is.
 //!
-//! A forward takes no request [`Permit`](crate::vcs::Permit): like a `watch` subscription it is a
+//! A forward takes no request [`Permit`](crate::rpc::Permit): like a `watch` subscription it is a
 //! resource that lives across many requests, not a request in flight, so it is capped separately
 //! ([`MAX_FORWARDS`] per connection). The cap counts forwards with a thread alive, not map
 //! entries: a forward whose connect is failing holds its slot until its thread has said so and
 //! gone, and one whose client half-closed holds it until its reader is gone too.
 
 use crate::protocol::envelope::{Envelope, MAX_ENVELOPE_PAYLOAD, Service};
-use crate::session::SharedWriter;
+use crate::rpc::SharedWriter;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, VecDeque};
@@ -369,7 +369,7 @@ fn abbreviated(text: &str, limit: usize) -> String {
 }
 
 /// One Forward envelope, written under the shared writer lock — one envelope at a time, exactly as
-/// `vcs::send` writes one chunk at a time. `false` means the client is gone — or the body could
+/// `rpc::send` writes one chunk at a time. `false` means the client is gone — or the body could
 /// not be an envelope at all. It never is (DATA is read in `READ_BUFFER` pieces, replies are
 /// small), but `Envelope::encode` asserts rather than errs, and an assertion under the writer lock
 /// would poison it for every service on the connection.

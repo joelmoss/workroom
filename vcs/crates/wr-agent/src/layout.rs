@@ -20,7 +20,7 @@
 //! holds at most `MAX_KEYS` layouts: a remote host is one workroom, so one key is the real case and
 //! the cap only bounds a misbehaving client. Past either, a `put` is refused, never truncated.
 //!
-//! Methods, as JSON on the chunked request/reply envelope (`vcs::send`, `vcs::reassemble`):
+//! Methods, as JSON on the chunked request/reply envelope (`rpc::send`, `rpc::reassemble`):
 //!
 //! - `capabilities` — this service's version and limits.
 //! - `get {key}` — `{revision, blob}`; revision 0 and no blob for a key never written.
@@ -35,7 +35,7 @@ use std::sync::{Mutex, OnceLock};
 use serde_json::{Value, json};
 
 use crate::protocol::envelope::{Envelope, Service};
-use crate::session::SharedWriter;
+use crate::rpc::SharedWriter;
 
 /// The wire version of this service, reported by `capabilities`. Separate from `PROTOCOL_VERSION`,
 /// which says whether the service exists at all.
@@ -211,7 +211,7 @@ pub fn dir_beside(screens: &Path) -> PathBuf {
 }
 
 pub fn dispatch(
-    partial: &mut crate::vcs::PartialRequests,
+    partial: &mut crate::rpc::PartialRequests,
     envelope: &Envelope,
     writer: &SharedWriter,
 ) {
@@ -219,8 +219,8 @@ pub fn dispatch(
     if envelope.stream == 0 {
         return;
     }
-    let send = |value: Value| crate::vcs::send(writer, Service::Layout, envelope.stream, value);
-    let bytes = match crate::vcs::reassemble(partial, envelope) {
+    let send = |value: Value| crate::rpc::send(writer, Service::Layout, envelope.stream, value);
+    let bytes = match crate::rpc::reassemble(partial, envelope) {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return,
         Err(error) => {
@@ -231,7 +231,7 @@ pub fn dispatch(
     // On its own thread, as a File request is: a put syncs a file and its directory, and the
     // connection's other services must not wait behind that. The permit is held until the reply is
     // written, so a hand-off drains layout writes before it replaces the program.
-    let Some(permit) = crate::vcs::Permit::acquire() else {
+    let Some(permit) = crate::rpc::Permit::acquire() else {
         send(reply(Err(LayoutError::Failed(
             "too many requests in flight".into(),
         ))));
@@ -241,7 +241,7 @@ pub fn dispatch(
     let stream = envelope.stream;
     std::thread::spawn(move || {
         let _permit = permit;
-        crate::vcs::send(
+        crate::rpc::send(
             &writer,
             Service::Layout,
             stream,

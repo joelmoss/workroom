@@ -319,7 +319,7 @@ pub fn hand_off(
     let _paused = Paused;
     // A repository command cut off by the exec could leave a repository half-written, so none may
     // be running, and none may start: every slot is taken until the exec, or until this returns.
-    let _quiet = crate::vcs::Quiet::acquire(QUIET_TIMEOUT)
+    let _quiet = crate::rpc::Quiet::acquire(QUIET_TIMEOUT)
         .ok_or("a repository command is still running; try again when it finishes")?;
     // A file lookup left behind at its deadline (#334) holds no permit, so `Quiet` doesn't wait for
     // it, but the exec would: `execve` waits for every other thread to die, and one stuck in a FUSE
@@ -359,6 +359,27 @@ pub fn hand_off(
             Err("a session is being ended or repainted; try again when it finishes".into())
         })
 }
+
+/// This build's number (`build.rs`): the commit time it was built from. Agents are ordered by it, so
+/// the app never replaces a newer agent with an older one, and an agent never hands off to an older
+/// program (#255, D13). 0 for a build with no git and no `WR_AGENT_BUILD`.
+///
+/// Read out of `BUILD_MARKER`, through `black_box`, so the marker is reachable from code that runs:
+/// `#[used]` keeps it in the object file, but only a reference keeps it past a linker that drops
+/// unreferenced sections.
+pub fn build_number() -> u64 {
+    std::hint::black_box(BUILD_MARKER)
+        .strip_prefix("WR-AGENT-BUILD:")
+        .and_then(|rest| rest.strip_suffix(';'))
+        .and_then(|number| number.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The build number as the app finds it in a binary it has not run: the bundled Linux agents are
+/// never run on the Mac, so the app reads this marker out of their bytes instead
+/// (`AgentBootstrap.buildNumber(in:)`).
+#[used]
+pub static BUILD_MARKER: &str = concat!("WR-AGENT-BUILD:", env!("WR_AGENT_BUILD"), ";");
 
 /// Duplicates made for the exec, closed again if it does not happen.
 struct Carried(Vec<RawFd>);
@@ -427,7 +448,7 @@ fn replace(
     let probe = BuildProbe::start(binary);
     let result = check(binary, &path, deadline)
         .and(probe)
-        .and_then(|probe| probe.no_downgrade(binary, crate::serve::build_number(), deadline))
+        .and_then(|probe| probe.no_downgrade(binary, build_number(), deadline))
         .and_then(|()| {
             let ids: Vec<String> = frozen.iter().map(|s| s.id.to_hyphenated()).collect();
             crate::note!(
@@ -618,7 +639,7 @@ fn exec(
         return Err("the requester stopped waiting, so nothing was replaced".into());
     }
     for fd in &carried.0 {
-        set_cloexec(*fd, false);
+        crate::pty::set_cloexec(*fd, false);
     }
     // `execv`, not `Command::exec`: std's exec resets SIGPIPE to its default before the call, and
     // when the call fails that leaves this program to be killed by the next write to a closed
@@ -628,27 +649,12 @@ fn exec(
     unsafe { libc::execv(program.as_ptr(), argv.as_ptr()) };
     let error = std::io::Error::last_os_error();
     for fd in &carried.0 {
-        set_cloexec(*fd, true);
+        crate::pty::set_cloexec(*fd, true);
     }
     Err(format!(
         "{} could not be executed: {error}",
         binary.display()
     ))
-}
-
-pub fn set_cloexec(fd: RawFd, on: bool) {
-    // SAFETY: F_GETFD and F_SETFD take and return plain integers; a stale `fd` only fails.
-    unsafe {
-        let flags = libc::fcntl(fd, libc::F_GETFD);
-        if flags >= 0 {
-            let flags = if on {
-                flags | libc::FD_CLOEXEC
-            } else {
-                flags & !libc::FD_CLOEXEC
-            };
-            libc::fcntl(fd, libc::F_SETFD, flags);
-        }
-    }
 }
 
 /// `handoff-check <table>`: whether this binary can restore the sessions in `table`. Reads it and

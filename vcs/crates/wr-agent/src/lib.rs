@@ -18,6 +18,7 @@ pub mod log;
 pub mod process;
 pub mod protocol;
 pub mod pty;
+pub mod rpc;
 pub mod screens;
 pub mod serve;
 pub mod session;

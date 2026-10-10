@@ -25,16 +25,33 @@ use crate::input::InputClassifier;
 use crate::protocol::envelope::{Envelope, Service};
 use crate::protocol::frame::{Frame, FrameKind};
 use crate::pty::{Pty, PtyError};
+use crate::rpc::SharedWriter;
 use crate::screens::Screens;
 use crate::shadow::Shadow;
 use crate::transport::WRITE_TIMEOUT;
 
-/// A connection's write half, shared with whichever session it is attached to.
+/// A `waitpid` status as the exit code a shell would report, which is what the `Exited` frame
+/// carries.
 ///
-/// Boxed because the reader below holds it for the session's life and must not be generic over the
-/// transport — a session outlives the connection that created it, and the next one may arrive over
-/// a different kind of stream entirely.
-pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+/// The raw status is not that number: it packs the exit code into its high byte, so `exit 7`
+/// arrives as 1792. Both ends of this wire already agree on the shell convention —
+/// `SessionDaemon.exitCode` produces it and `SessionAttachClient` returns it as its own exit
+/// status — so sending the raw value would make the same frame mean a different number depending
+/// on which backend served the session, and a caller checking `$? == 7` would silently never
+/// match.
+pub fn exit_code(status: i32) -> i32 {
+    // The low seven bits are the terminating signal, 0 when the process exited normally.
+    let signal = status & 0o177;
+    if signal == 0 {
+        return (status >> 8) & 0xFF;
+    }
+    // 0o177 means stopped rather than terminated — not an exit at all, so report success rather
+    // than inventing a failure for a process that is still there.
+    if signal == 0o177 {
+        return 0;
+    }
+    128 + signal
+}
 
 /// One attached client.
 struct Client {
@@ -1542,11 +1559,8 @@ fn read_session(
                 let bytes = terminal_envelope(
                     target.stream,
                     // The code a shell would report, not the raw `waitpid` status: `exit 7` is 7
-                    // here, not 1792. See `serve::exit_code`.
-                    Frame::new(
-                        FrameKind::Exited,
-                        crate::serve::exit_code(status).to_be_bytes().to_vec(),
-                    ),
+                    // here, not 1792. See `exit_code`.
+                    Frame::new(FrameKind::Exited, exit_code(status).to_be_bytes().to_vec()),
                 );
                 deliver(&attached, &target, &bytes);
             }
@@ -3164,5 +3178,22 @@ mod tests {
             "a 1 MiB screen got {:?}, which a modest link cannot meet",
             repaint_budget(1024 * 1024)
         );
+    }
+
+    /// The number in an `Exited` frame is the one a shell would report, not the raw `waitpid`
+    /// status — the two differ by a byte shift, and `SessionAttachClient` hands whatever arrives
+    /// straight back as its own exit status.
+    #[test]
+    fn an_exit_status_becomes_the_code_a_shell_would_report() {
+        assert_eq!(exit_code(7 << 8), 7, "exit 7, not the raw 1792");
+        assert_eq!(exit_code(0), 0);
+        assert_eq!(exit_code(255 << 8), 255, "the widest normal exit");
+        assert_eq!(
+            exit_code(libc::SIGKILL),
+            128 + 9,
+            "killed, by shell convention"
+        );
+        assert_eq!(exit_code(libc::SIGHUP), 128 + 1);
+        assert_eq!(exit_code(0o177), 0, "stopped is not an exit");
     }
 }
