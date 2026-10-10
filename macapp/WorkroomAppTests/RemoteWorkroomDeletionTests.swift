@@ -29,7 +29,7 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
   private let mine = RemoteWorkrooms.provisioner
 
   /// Nothing live, nothing to take down: a destroyed host, or a create that crashed before its
-  /// derive made a box, is only dropped, and needs no broker or Docker.
+  /// driver made a box, is only dropped, and needs no broker or Docker.
   func testAWorkroomWithNothingLiveIsOnlyForgotten() async throws {
     let calls = Calls()
     try await RemoteWorkrooms.delete(

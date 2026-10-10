@@ -650,7 +650,7 @@ final class RemoteHostsTests: XCTestCase {
   /// Release and Nightly share each other's boxd and exe.dev hosts, and nothing else: a container
   /// is its build's alone, a Dev build shares nothing, and a record that names no driver predates
   /// the field, so it is taken as its build's container.
-  /// Value: protects=which build may open, derive from and delete a host; fails_when=containers or
+  /// Value: protects=which build may open and delete a host; fails_when=containers or
   /// Dev hosts are shared, or Release and Nightly stop sharing a provider's host;
   /// why_new=nothing tested ownership across builds; seam=none
   func testReleaseAndNightlyShareOnlyRemoteProviderHosts() {

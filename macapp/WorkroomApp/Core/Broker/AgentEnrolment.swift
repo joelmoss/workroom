@@ -6,7 +6,8 @@ import Foundation
 /// makes its own key on the instance and registers it (`wr-agent enrol`); from then on it mints
 /// its own tokens and the Mac is not involved.
 ///
-/// Runs after the derive (OQ10): the base never enrols, so a fork never inherits an enrolment.
+/// Runs once the workroom's host exists and before its clone (OQ10), so git clones with the agent's
+/// own credentials.
 enum AgentEnrolment {
   /// Silence allowed on the exec. `wr-agent enrol` is one broker request and at most one
   /// stale-proof retry, each bounded by the agent's own 15 s `TIMEOUT` (`broker.rs`), so this keeps
