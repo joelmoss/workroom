@@ -9,6 +9,7 @@
 //! file, status and port-forwarding services are Phase 2 over the same envelope.
 
 pub mod broker;
+pub mod cli;
 pub mod file;
 pub mod forward;
 pub mod handoff;
