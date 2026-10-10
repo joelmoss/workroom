@@ -356,7 +356,7 @@ func TestAddProjectCreate_PretendDryRun(t *testing.T) {
 	if _, ok := data[canon]; ok {
 		t.Fatal("pretend must not register the project")
 	}
-	if !res.WouldCreate || res.VCS != "git" {
+	if !res.WouldCreate || res.VCS != "git" || res.Path != canon {
 		t.Fatalf("unexpected dry-run result: %+v", res)
 	}
 }
@@ -385,7 +385,7 @@ func TestAddProjectExisting_PretendDryRun(t *testing.T) {
 	if _, ok := data[canon]; ok {
 		t.Fatal("pretend must not register the project")
 	}
-	if res.WouldCreate || res.VCS != "git" {
+	if res.WouldCreate || res.VCS != "git" || res.Path != canon {
 		t.Fatalf("unexpected dry-run result: %+v", res)
 	}
 }
