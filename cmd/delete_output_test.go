@@ -26,6 +26,10 @@ func TestDeleteOutput(t *testing.T) {
 			stderr string
 		}{
 			{"deleted", nil, 0, "╭─ Teardown ────────────────────────────────────────────────\n│ stopping\n╰───────────────────────────────────────────────────────────\n\nWorkroom 'calm-river' deleted successfully.\n\nNote: Git branch 'workroom/calm-river' was not deleted.\n      Delete manually with `git branch -D workroom/calm-river` if needed.\n", ""},
+			{"quiet teardown", func(t *testing.T, _, project string) []string {
+				writeProjectScript(t, project, "workroom_teardown", "true\n")
+				return nil
+			}, 0, "Workroom 'calm-river' deleted successfully.\n\nNote: Git branch 'workroom/calm-river' was not deleted.\n      Delete manually with `git branch -D workroom/calm-river` if needed.\n", ""},
 			{"verbose", func(*testing.T, string, string) []string { return []string{"--verbose"} }, 0, "        repo  Detected Git worktree\n    teardown  Running /Users/dev/src/app/scripts/workroom_teardown from \"/Users/dev/workrooms/calm-river\"\n╭─ Teardown ────────────────────────────────────────────────\n│ stopping\n╰───────────────────────────────────────────────────────────\n\nWorkroom 'calm-river' deleted successfully.\n\nNote: Git branch 'workroom/calm-river' was not deleted.\n      Delete manually with `git branch -D workroom/calm-river` if needed.\n", ""},
 			{"teardown fails", func(t *testing.T, _, project string) []string {
 				writeProjectScript(t, project, "workroom_teardown", "echo boom\nexit 1\n")
