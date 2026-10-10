@@ -156,12 +156,12 @@ func TestCreateReportsAFailedFetch(t *testing.T) {
 		}
 		return "", nil
 	})
-	if err := svc.Create(dir); err != nil {
+	res, err := svc.CreateNamed(dir, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	out := svc.Out.(interface{ String() string }).String()
-	if !strings.Contains(out, "Could not fetch origin") || !strings.Contains(out, "origin/main") {
-		t.Fatalf("output = %q, want the fetch warning naming origin/main", out)
+	if !strings.Contains(res.Warning, "Could not fetch origin") || !strings.Contains(res.Warning, "origin/main") {
+		t.Fatalf("warning = %q, want the fetch warning naming origin/main", res.Warning)
 	}
 }
 
@@ -255,11 +255,12 @@ func TestCreateShowsTheFetchWarningWhenSetupFails(t *testing.T) {
 	})
 	dir = d
 	writeScript(t, dir, "exit 1")
-	if err := svc.Create(dir); err == nil {
+	res, err := svc.CreateNamed(dir, nil)
+	if err == nil {
 		t.Fatal("a failing setup script reported success")
 	}
-	if out := svc.Out.(interface{ String() string }).String(); !strings.Contains(out, "Could not fetch origin") {
-		t.Fatalf("output = %q, want the fetch warning", out)
+	if !strings.Contains(res.Warning, "Could not fetch origin") {
+		t.Fatalf("warning = %q, want the fetch warning", res.Warning)
 	}
 }
 

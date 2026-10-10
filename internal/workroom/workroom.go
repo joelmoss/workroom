@@ -7,7 +7,6 @@ import (
 	"iter"
 	"math/rand/v2"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -32,17 +31,15 @@ type Service struct {
 	Config         *config.Config
 	VCS            vcs.VCS
 	Out            io.Writer
-	Verbose        bool
 	Pretend        bool
 	PromptFn       PromptFunc
 	ConfirmFn      ConfirmFunc
 	NameGenFunc    func() string                   // override for testing
-	OpenEditorFunc func(editor, path string) error // override for testing
 	VCSForTypeFunc func(vcs.Type) (vcs.VCS, error) // override for testing (used by ListData)
 
-	// SuppressEditor disables the post-create "open in $EDITOR" prompt. Set by
-	// --no-editor and implied by --json (a GUI/machine caller must never block).
-	SuppressEditor bool
+	// Status, when set, receives a progress step as it happens: a short status word and what was
+	// done, e.g. ("setup", "Running <script> from <dir>"). --verbose prints them.
+	Status func(status, msg string)
 	// KeepEmptyProject leaves a project registered after its last workroom is
 	// deleted. Set by GUI callers that pin empty projects in the sidebar.
 	KeepEmptyProject bool
@@ -86,8 +83,8 @@ func (s *Service) sayColor(msg, colorName string) {
 }
 
 func (s *Service) sayStatus(status, msg string) {
-	if s.Verbose {
-		fmt.Fprintf(s.output(), "%12s  %s\n", status, msg)
+	if s.Status != nil {
+		s.Status(status, msg)
 	}
 }
 
@@ -123,19 +120,6 @@ func (s *Service) workroomPath(name string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, name), nil
-}
-
-func (s *Service) openEditor(editor, path string) error {
-	if s.OpenEditorFunc != nil {
-		return s.OpenEditorFunc(editor, path)
-	}
-	parts := strings.Fields(editor)
-	args := append(parts[1:], path)
-	cmd := exec.Command(parts[0], args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
 
 func (s *Service) generateName() string {
@@ -214,8 +198,8 @@ type CreateResult struct {
 
 // CreateNamed generates a unique name, creates the VCS workspace, updates config,
 // and runs the setup script, returning a structured result. It writes nothing to
-// stdout beyond verbose status lines (which go to s.Out). The human-facing success
-// message and the editor prompt live in the Create wrapper.
+// stdout; progress steps go to s.Status. The human create (cmd) renders the success
+// message and the editor prompt.
 //
 // If setupOut is non-nil the setup script's output is streamed to it live as the
 // script runs; the full output is also captured into res.SetupOutput regardless.
@@ -368,43 +352,6 @@ func (s *Service) CreateRemote(dir, path string, host map[string]any) (CreateRes
 	}
 	// git: the host's checkout is a clone, whatever the project uses on this Mac.
 	return CreateResult{Name: name, Path: path, VCS: string(vcs.TypeGit), Project: dir}, nil
-}
-
-// Create generates a unique name and creates a new workroom (human-facing).
-func (s *Service) Create(dir string) error {
-	// The setup script's output streams live into this panel as it runs. The panel
-	// renders lazily on first output, so a script with no output draws nothing.
-	panel := ui.NewLogPanel(s.output(), "Setup")
-	res, err := s.CreateNamed(dir, panel)
-	panel.Close(err == nil)
-	// Before a setup error too: offline, the fetch and a networked setup script fail together.
-	if res.Warning != "" {
-		s.sayColor(res.Warning, "yellow")
-	}
-	if err != nil {
-		return err
-	}
-
-	if panel.Shown() {
-		s.say("")
-	}
-	s.sayColor(fmt.Sprintf("Workroom '%s' created successfully at %s.", res.Name, ui.DisplayPath(res.Path)), "green")
-
-	// Offer to open the workroom in the user's editor
-	editor := os.Getenv("EDITOR")
-	if editor != "" && !s.Pretend && !s.SuppressEditor {
-		open, err := s.ConfirmFn(fmt.Sprintf("Open workroom in %s?", editor))
-		if err != nil {
-			return err
-		}
-		if open {
-			if err := s.openEditor(editor, res.Path); err != nil {
-				return fmt.Errorf("failed to open editor: %w", err)
-			}
-		}
-	}
-
-	return nil
 }
 
 func (s *Service) generateUniqueName(dir string) (string, error) {
