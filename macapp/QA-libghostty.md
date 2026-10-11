@@ -153,8 +153,8 @@ bump is worthless.
 - SPM leaves `checkouts/libghostty-spm` read-only, so resolving the new pin fails with
   `Unable to create '.git/index.lock': Permission denied`. `chmod -R u+w` then `rm -rf` that checkout.
 - A `BUILD SUCCEEDED` straight after the resolve proves nothing: Xcode does not recompile Swift
-  when only the binary artifact's header changed. `touch` the files that call the C API
-  (`GhosttyApp.swift`, `GhosttyRuntimeAdapter.swift`) and rebuild.
+  when only the binary artifact's header changed. `touch` every file that imports GhosttyKit
+  (`grep -rl 'import GhosttyKit' macapp`, tests included) and rebuild, or do a clean build.
 - Regenerate `Resources/ghostty/` (terminfo via `infocmp`/`tic`, `shell-integration/`) from the
   pinned commit; see `Resources/ghostty/SOURCE.md`. Update `GhosttyPinIntegrityTests.expectedRevision`
   in the same commit.
@@ -251,7 +251,8 @@ there.
       missing binary used to produce.
 
 ### Build shapes CI doesn't cover
-- [ ] **Universal Release build links**:
+- [ ] **Universal Release build links**: `nightly.yml` builds universal daily and `release.sh` refuses
+      a bundle with a thin Mach-O, so this is covered. To see it before pushing:
       `xcodebuild -configuration Release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO build`, then
-      `lipo -info` the binary → both slices. CI only builds Debug/native.
+      `lipo -info` the binary → both slices.
 - [ ] **Bake gate**: N clean nightlies before this enters a `pre` tag.
