@@ -84,9 +84,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      # No module cache: this job's output is published, and a restored entry could be poisoned.
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: Build nightly archives
         run: |
@@ -156,9 +158,11 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      # No module cache: this job's output is published, and a restored entry could be poisoned.
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
 
       # aws/tap ships pre-tapped but untrusted on the runner image, which makes every `brew
       # install` on this job emit a "tap trust" warning annotation unrelated to our formulae.
@@ -190,12 +194,6 @@ jobs:
           echo "${ZIG_SHA256}  zig.tar.xz" | shasum -a 256 -c -
           mkdir -p "$HOME/.zig" && tar -xJf zig.tar.xz -C "$HOME/.zig" --strip-components=1
           echo "$HOME/.zig" >> "$GITHUB_PATH"
-
-      - name: Cache libghostty-vt
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
 
       # Scripts/build-agent.sh builds wr-agent per darwin arch and lipos the slices for this
       # universal build, so both targets are needed even though the app links no other Rust.

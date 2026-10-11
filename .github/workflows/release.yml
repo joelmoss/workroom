@@ -33,9 +33,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      # No module cache: this job's output is published, and a restored entry could be poisoned.
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
 
       - uses: goreleaser/goreleaser-action@v7
         with:
@@ -66,9 +68,11 @@ jobs:
           xcode-version: latest-stable
 
       # Scripts/build-helper.sh compiles + embeds the workroom CLI into the app bundle.
+      # No module cache: this job's output is published, and a restored entry could be poisoned.
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: Install XcodeGen + create-dmg + sentry-cli
         # sentry-cli uploads dSYMs in release.sh (skipped there if the Sentry env vars are unset).
@@ -93,12 +97,6 @@ jobs:
           echo "${ZIG_SHA256}  zig.tar.xz" | shasum -a 256 -c -
           mkdir -p "$HOME/.zig" && tar -xJf zig.tar.xz -C "$HOME/.zig" --strip-components=1
           echo "$HOME/.zig" >> "$GITHUB_PATH"
-
-      - name: Cache libghostty-vt
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/workroom/ghostty-vt
-          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
 
       # Scripts/build-agent.sh builds wr-agent per darwin arch and lipos the slices for the universal
       # app. Homebrew rust can't cross-compile, so ensure rustup has both darwin targets.
