@@ -326,11 +326,11 @@ final class RemotePaneReconnectTests: XCTestCase {
     let hostDirectory = directory.appendingPathComponent(host.uuidString)
     try FileManager.default.createDirectory(at: hostDirectory, withIntermediateDirectories: true)
     try log.write(
-      to: ContainerHostDriver.attachLog(session, in: hostDirectory), atomically: true,
+      to: SSHTransport.attachLog(session, in: hostDirectory), atomically: true,
       encoding: .utf8)
     if let status {
       try status.write(
-        to: ContainerHostDriver.attachStatus(session, in: hostDirectory), atomically: true,
+        to: SSHTransport.attachStatus(session, in: hostDirectory), atomically: true,
         encoding: .utf8)
     }
     PersistentSessionService.shared.registerRemoteSession(

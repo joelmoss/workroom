@@ -354,7 +354,7 @@ final class CredentialRelay: @unchecked Sendable {
     _ = try localPort()
     try await registry().open(workroom: id, host: host)
     let command =
-      ContainerHostDriver.shellQuoted(agentBinary)
+      SSHTransport.shellQuoted(agentBinary)
       + " credential relay --port \(Self.port(for: id))"
     let (status, output) = try await driver.exec(command, on: host).communicate(
       Data((try secret(for: id) + "\n").utf8), timeout: 30)

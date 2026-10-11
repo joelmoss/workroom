@@ -97,11 +97,11 @@ final class HostStreamTests: XCTestCase {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
       UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: directory) }
-    let host = ContainerHostDriver.Host(
+    let host = SSHTransport.Host(
       address: "127.0.0.1", port: 2222, user: "workroom", identityFile: "/keys/id",
       hostKey: "ssh-ed25519 AAAAC3Nza", agentSocket: "/run/workroom/agent.sock")
     let config = try String(
-      contentsOf: ContainerHostDriver.writeConfiguration(for: host, in: directory),
+      contentsOf: SSHTransport.writeConfiguration(for: host, in: directory),
       encoding: .utf8)
     for line in [
       "BatchMode yes", "StrictHostKeyChecking yes", "GlobalKnownHostsFile /dev/null",
@@ -119,11 +119,11 @@ final class HostStreamTests: XCTestCase {
 
   /// A value is written into `ssh_config`, where a newline would start a directive of its own.
   func testAConfigurationValueCannotInjectADirective() {
-    let host = ContainerHostDriver.Host(
+    let host = SSHTransport.Host(
       address: "127.0.0.1\n  ProxyCommand touch /tmp/owned", port: 22, user: "workroom",
       identityFile: "/keys/id", hostKey: "ssh-ed25519 AAAA", agentSocket: "/run/a.sock")
     XCTAssertThrowsError(
-      try ContainerHostDriver.writeConfiguration(
+      try SSHTransport.writeConfiguration(
         for: host, in: FileManager.default.temporaryDirectory))
   }
 
@@ -132,7 +132,7 @@ final class HostStreamTests: XCTestCase {
   /// the shell integration are the host's set's, when it has one (#239).
   func testARemotePanesCommandCarriesTheSessionAndNothingOfTheMacs() throws {
     let session = UUID()
-    let fresh = ContainerHostDriver.remoteAttachCommand(
+    let fresh = SSHTransport.remoteAttachCommand(
       binary: "/run/workroom/wr-agent", session: session, socket: "/run/workroom/agent.sock",
       resources: "/run/workroom/ghostty", workingDirectory: "/home/w/it's here", restored: false)
     XCTAssertEqual(
@@ -148,7 +148,7 @@ final class HostStreamTests: XCTestCase {
         + "'WORKROOM_SESSION_SOCKET=/run/workroom/agent.sock' "
         + "'WORKROOM_SESSION_CWD=/home/w/it'\\''s here' '/run/workroom/wr-agent' 'attach' "
         + "'--no-spawn'")
-    let restored = ContainerHostDriver.remoteAttachCommand(
+    let restored = SSHTransport.remoteAttachCommand(
       binary: "/b", session: session, socket: "/s", resources: "/r", workingDirectory: "/w",
       restored: true)
     XCTAssertTrue(restored.hasSuffix("'--no-spawn' '--no-create'"), restored)
@@ -156,7 +156,7 @@ final class HostStreamTests: XCTestCase {
     // The session's workroom and title go with it, under the variables a local pane's attach gets,
     // so the host's agent can tag the session for any Mac to find (#255). The project, a path on
     // this Mac, is not: an ssh command line is visible to everything on the host.
-    let tagged = ContainerHostDriver.remoteAttachCommand(
+    let tagged = SSHTransport.remoteAttachCommand(
       binary: "/b", session: session, socket: "/s", resources: "/r", workingDirectory: "/w",
       restored: false,
       metadata: [
@@ -185,7 +185,7 @@ final class HostStreamTests: XCTestCase {
       ], directory: directory)
     let command = try driver.attachCommand(
       to: .remote(id), session: session, workingDirectory: "/w", restored: true)
-    let log = ContainerHostDriver.attachLog(
+    let log = SSHTransport.attachLog(
       session, in: directory.appendingPathComponent(id.uuidString)
     ).path
     XCTAssertTrue(
@@ -222,10 +222,10 @@ final class HostStreamTests: XCTestCase {
     XCTAssertTrue(
       attach.output.hasPrefix("\u{1b}7workroom: waiting for this terminal's host...\r\n"),
       attach.output)
-    XCTAssertTrue(attach.output.contains(ContainerHostDriver.retryNotice), attach.output)
+    XCTAssertTrue(attach.output.contains(SSHTransport.retryNotice), attach.output)
     XCTAssertFalse(attach.output.contains("Connection refused"), attach.output)
     let log = try String(
-      contentsOf: ContainerHostDriver.attachLog(
+      contentsOf: SSHTransport.attachLog(
         session, in: directory.appendingPathComponent(id.uuidString)),
       encoding: .utf8)
     XCTAssertTrue(log.contains("Connection refused"), log)
@@ -244,17 +244,17 @@ final class HostStreamTests: XCTestCase {
     defer { try? FileManager.default.removeItem(at: directory) }
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let session = UUID()
-    let log = ContainerHostDriver.attachLog(session, in: directory).path
+    let log = SSHTransport.attachLog(session, in: directory).path
     for (code, lostLink) in [(255, true), (3, false)] {
       let run = try SessionBackendProbe.run(
         URL(fileURLWithPath: "/bin/sh"),
         arguments: [
-          "-c", ContainerHostDriver.attachWrapper, "workroom-attach", log, "/bin/sh", "-c",
+          "-c", SSHTransport.attachWrapper, "workroom-attach", log, "/bin/sh", "-c",
           "exit \(code)",
         ], timeout: 15)
       XCTAssertEqual(run.status, Int32(code), run.output)
       XCTAssertEqual(
-        ContainerHostDriver.lostLinkLastAttach(of: session, in: directory), lostLink, "\(code)")
+        SSHTransport.lostLinkLastAttach(of: session, in: directory), lostLink, "\(code)")
     }
   }
 
@@ -269,17 +269,17 @@ final class HostStreamTests: XCTestCase {
       UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: directory) }
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    let log = ContainerHostDriver.attachLog(UUID(), in: directory).path
+    let log = SSHTransport.attachLog(UUID(), in: directory).path
     // Stands in for ssh: writes its message to the log it was given (`-E`), then fails as ssh does.
     let run = try SessionBackendProbe.run(
       URL(fileURLWithPath: "/bin/sh"),
       arguments: [
-        "-c", ContainerHostDriver.attachWrapper, "workroom-attach", log, "/bin/sh", "-c",
+        "-c", SSHTransport.attachWrapper, "workroom-attach", log, "/bin/sh", "-c",
         "echo 'Host key verification failed.' > \"$0\"; exit 255", log,
       ], timeout: 15)
     XCTAssertEqual(run.status, 255, run.output)
     XCTAssertTrue(run.output.contains("Host key verification failed."), run.output)
-    XCTAssertFalse(run.output.contains(ContainerHostDriver.retryNotice), run.output)
+    XCTAssertFalse(run.output.contains(SSHTransport.retryNotice), run.output)
   }
 
   /// ssh's wording for a host that answered and will keep refusing, which stops a pane's retries,
@@ -296,7 +296,7 @@ final class HostStreamTests: XCTestCase {
       "Load key \"/keys/id\": invalid format",
       "Bad owner or permissions on /keys/config",
     ] {
-      XCTAssertTrue(ContainerHostDriver.isRefusal(refusal), refusal)
+      XCTAssertTrue(SSHTransport.isRefusal(refusal), refusal)
     }
     for heals in [
       "",
@@ -311,7 +311,7 @@ final class HostStreamTests: XCTestCase {
       "Connection timed out during banner exchange",
       "client_loop: send disconnect: Broken pipe",
     ] {
-      XCTAssertFalse(ContainerHostDriver.isRefusal(heals), heals)
+      XCTAssertFalse(SSHTransport.isRefusal(heals), heals)
     }
   }
 
@@ -489,11 +489,11 @@ final class HostStreamTests: XCTestCase {
   /// The binary is derived from the socket and run by path from any cwd, so a relative socket is
   /// refused before anything is written.
   func testARelativeAgentSocketIsRefused() {
-    let host = ContainerHostDriver.Host(
+    let host = SSHTransport.Host(
       address: "127.0.0.1", port: 22, user: "workroom", identityFile: "/keys/id",
       hostKey: "ssh-ed25519 AAAA", agentSocket: "run/agent.sock")
     XCTAssertThrowsError(
-      try ContainerHostDriver.writeConfiguration(
+      try SSHTransport.writeConfiguration(
         for: host, in: FileManager.default.temporaryDirectory)
     ) {
       XCTAssertEqual(
@@ -510,7 +510,7 @@ final class HostStreamTests: XCTestCase {
       URL(fileURLWithPath: "/bin/sh"),
       arguments: [
         "-c",
-        ContainerHostDriver.remoteAttachCommand(
+        SSHTransport.remoteAttachCommand(
           binary: missing, session: UUID(), socket: "/s", resources: "/r", workingDirectory: "/w",
           restored: true),
       ], timeout: 5)
@@ -520,7 +520,7 @@ final class HostStreamTests: XCTestCase {
       URL(fileURLWithPath: "/bin/sh"),
       arguments: [
         "-c",
-        ContainerHostDriver.remoteAttachCommand(
+        SSHTransport.remoteAttachCommand(
           binary: "/usr/bin/true", session: UUID(), socket: "/s", resources: "/r",
           workingDirectory: "/w", restored: false),
       ], timeout: 5)
@@ -550,7 +550,7 @@ final class HostStreamTests: XCTestCase {
         arguments: [
           "-i", "PATH=/usr/bin:/bin", "WORKROOM_SESSION_RESOURCES=/stale",
           "GHOSTTY_SHELL_FEATURES=stale", "/bin/sh", "-c",
-          ContainerHostDriver.remoteAttachCommand(
+          SSHTransport.remoteAttachCommand(
             binary: binary.path, session: UUID(), socket: "/s", resources: resources.path,
             workingDirectory: "/w", restored: false),
         ], timeout: 5)
@@ -587,12 +587,12 @@ final class HostStreamTests: XCTestCase {
   /// The installed binary by its path, beside the socket (#231): a host has no `wr-agent` on its
   /// PATH.
   func testTheRelayCommandRunsTheInstalledBinaryAndQuotesForTheRemoteShell() {
-    let host = ContainerHostDriver.Host(
+    let host = SSHTransport.Host(
       address: "h", port: 22, user: "u", identityFile: "/k", hostKey: "ssh-ed25519 AAAA",
       agentSocket: "/run/it's here/a.sock")
     XCTAssertEqual(host.agentBinary, "/run/it's here/wr-agent")
     XCTAssertEqual(
-      ContainerHostDriver.relayCommand(binary: host.agentBinary, socket: host.agentSocket),
+      SSHTransport.relayCommand(binary: host.agentBinary, socket: host.agentSocket),
       "'/run/it'\\''s here/wr-agent' relay --socket '/run/it'\\''s here/a.sock'")
   }
 }

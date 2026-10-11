@@ -778,8 +778,8 @@ final class RemoteHostsTests: XCTestCase {
     let log = directory.appendingPathComponent("calls")
     try """
     #!/bin/sh
-    printf '%s\\n' "$*" >> \(ContainerHostDriver.shellQuoted(log.path))
-    printf '%s' \(ContainerHostDriver.shellQuoted(output))
+    printf '%s\\n' "$*" >> \(SSHTransport.shellQuoted(log.path))
+    printf '%s' \(SSHTransport.shellQuoted(output))
     """.write(to: runtime, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtime.path)
     return (runtime, log)
@@ -896,7 +896,7 @@ final class RemoteHostsTests: XCTestCase {
     ] {
       let (runtime, log) = try stubRuntime()
       let script = try String(contentsOf: runtime, encoding: .utf8)
-      try (script + "\nprintf '%s\\n' \(ContainerHostDriver.shellQuoted(said)) >&2; exit 1\n")
+      try (script + "\nprintf '%s\\n' \(SSHTransport.shellQuoted(said)) >&2; exit 1\n")
         .write(to: runtime, atomically: true, encoding: .utf8)
       do {
         _ = try await Self.driver(runtime: runtime, context: nil, dialect: dialect).create()
@@ -1521,7 +1521,7 @@ final class RemoteHostsTests: XCTestCase {
     let script = try String(contentsOf: runtime, encoding: .utf8)
     try
       (script + "\ncase \"$1 $2\" in \"ps -a\") printf '%s' "
-      + ContainerHostDriver.shellQuoted(lines) + " ;; esac\n").write(
+      + SSHTransport.shellQuoted(lines) + " ;; esac\n").write(
         to: runtime, atomically: true, encoding: .utf8)
     return (runtime, log)
   }
@@ -1606,8 +1606,8 @@ final class RemoteHostsTests: XCTestCase {
     let journal = directory.appendingPathComponent("pending-containers-docker.json")
     let seen = directory.appendingPathComponent("seen-at-run")
     let (failing, _) = try scriptedRuntime(
-      "run*) cat \(ContainerHostDriver.shellQuoted(journal.path)) >> "
-        + "\(ContainerHostDriver.shellQuoted(seen.path)); exit 1 ;;")
+      "run*) cat \(SSHTransport.shellQuoted(journal.path)) >> "
+        + "\(SSHTransport.shellQuoted(seen.path)); exit 1 ;;")
     let driver = Self.driver(runtime: failing, context: nil, directory: directory)
     do {
       _ = try await driver.create()
@@ -1967,8 +1967,8 @@ final class RemoteHostsTests: XCTestCase {
     }
     let (runtime, log) = try scriptedRuntime(
       """
-      "list --all --format json") printf '%s' \(ContainerHostDriver.shellQuoted(try json(list))) ;;
-      "image list --format json") printf '%s' \(ContainerHostDriver.shellQuoted(try json(images))) ;;
+      "list --all --format json") printf '%s' \(SSHTransport.shellQuoted(try json(list))) ;;
+      "image list --format json") printf '%s' \(SSHTransport.shellQuoted(try json(images))) ;;
       """)
     let driver = Self.driver(runtime: runtime, context: nil, dialect: .apple)
     func removed() throws -> [String] {
@@ -2014,8 +2014,8 @@ final class RemoteHostsTests: XCTestCase {
     }
     let (runtime, log) = try scriptedRuntime(
       """
-      "list --all --format json") printf '%s' \(ContainerHostDriver.shellQuoted(try json(list))) ;;
-      "image list --format json") printf '%s' \(ContainerHostDriver.shellQuoted(try json(images))) ;;
+      "list --all --format json") printf '%s' \(SSHTransport.shellQuoted(try json(list))) ;;
+      "image list --format json") printf '%s' \(SSHTransport.shellQuoted(try json(images))) ;;
       """)
     let failures = await Self.driver(runtime: runtime, context: nil, dialect: .apple).sweep(
       keeping: [workroom], images: [])

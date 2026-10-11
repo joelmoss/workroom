@@ -528,8 +528,8 @@ final class PersistentSessionService {
         // honest; one on the wrong machine is not.
         let notice = "Could not reach this terminal's host: \(error.localizedDescription)"
         return "/bin/sh -c "
-          + ContainerHostDriver.shellQuoted(
-            "printf '%s\\n' " + ContainerHostDriver.shellQuoted(notice))
+          + SSHTransport.shellQuoted(
+            "printf '%s\\n' " + SSHTransport.shellQuoted(notice))
       }
     }
     // Nil owner ⇒ nil command ⇒ the caller opens a plain shell rather than guessing a helper.

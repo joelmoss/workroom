@@ -8,7 +8,7 @@ import os
 ///   own result. The CLI also writes each machine's ssh stanza into `~/.ssh/config` and its host
 ///   key into `~/.ssh/known_hosts`, inside blocks it manages; the driver reads the machine's
 ///   address, port, user, key and host key from those blocks only (`SSHDetails`), and writes its
-///   own locked-down configuration from them (`ContainerHostDriver.writeConfiguration`), so
+///   own locked-down configuration from them (`SSHTransport.writeConfiguration`), so
 ///   nothing else in the user's ssh config applies. The host key is boxd's gateway's, the same
 ///   for every machine, which is why a machine's own regenerated keys never trip it (Phase 0,
 ///   item 6). The VM's sshd is not what answers: boxd terminates ssh at the gateway.
@@ -353,7 +353,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   // MARK: ssh
 
   /// The machine's ssh details, from the CLI's blocks in the user's ssh files.
-  private func ssh(_ id: UUID) throws -> ContainerHostDriver.Host {
+  private func ssh(_ id: UUID) throws -> SSHTransport.Host {
     let name = name(of: id)
     let config = (try? String(contentsOf: configuration.sshConfig, encoding: .utf8)) ?? ""
     let known = (try? String(contentsOf: configuration.knownHosts, encoding: .utf8)) ?? ""
@@ -361,7 +361,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       throw HostDriverError.invalidConfiguration(
         "boxd has written no ssh details for \(name); `boxd machine list` refreshes them")
     }
-    return ContainerHostDriver.Host(
+    return SSHTransport.Host(
       address: details.hostName, port: details.port, user: details.user,
       identityFile: details.identityFile, hostKey: details.hostKey,
       agentSocket: configuration.agentSocket)
@@ -370,14 +370,14 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
   func openStream(to host: HostID) async throws -> HostStream {
     let id = try id(of: host)
     let target = try ssh(id)
-    return try ContainerHostDriver.exec(
-      ContainerHostDriver.relayCommand(binary: target.agentBinary, socket: target.agentSocket),
+    return try SSHTransport.exec(
+      SSHTransport.relayCommand(binary: target.agentBinary, socket: target.agentSocket),
       on: target, in: hostDirectory(id), purpose: .connection)
   }
 
   func exec(_ command: String, on host: HostID) async throws -> HostStream {
     let id = try id(of: host)
-    return try ContainerHostDriver.exec(
+    return try SSHTransport.exec(
       command, on: try ssh(id), in: hostDirectory(id), purpose: .exchange)
   }
 
@@ -386,19 +386,19 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
     metadata: [(key: String, value: String)]
   ) throws -> String {
     let id = try id(of: host)
-    return try ContainerHostDriver.attachCommand(
+    return try SSHTransport.attachCommand(
       to: try ssh(id), in: hostDirectory(id), session: session,
       workingDirectory: workingDirectory, restored: restored, metadata: metadata)
   }
 
   func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
     guard case .remote(let id) = host else { return false }
-    return ContainerHostDriver.refusedLastAttach(of: session, in: hostDirectory(id))
+    return SSHTransport.refusedLastAttach(of: session, in: hostDirectory(id))
   }
 
   func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool {
     guard case .remote(let id) = host else { return false }
-    return ContainerHostDriver.lostLinkLastAttach(of: session, in: hostDirectory(id))
+    return SSHTransport.lostLinkLastAttach(of: session, in: hostDirectory(id))
   }
 }
 

@@ -32,7 +32,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
 
   private struct Fixture {
     let config: String
-    let host: ContainerHostDriver.Host
+    let host: SSHTransport.Host
     /// The Linux agent the fixture was built around: what the bootstrap tests push as the app's
     /// bundled one, since a Debug build carries none.
     let agent: URL
@@ -48,7 +48,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     }
     return Fixture(
       config: try need("WR_SSH_FIXTURE_CONFIG"),
-      host: ContainerHostDriver.Host(
+      host: SSHTransport.Host(
         address: try need("WR_SSH_FIXTURE_ADDRESS"),
         port: Int(try need("WR_SSH_FIXTURE_PORT")) ?? 0,
         user: try need("WR_SSH_FIXTURE_USER"),
@@ -58,7 +58,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
       agent: URL(fileURLWithPath: try need("WR_SSH_FIXTURE_AGENT")))
   }
 
-  private func connect(_ host: ContainerHostDriver.Host) async throws -> (
+  private func connect(_ host: SSHTransport.Host) async throws -> (
     AgentVCSConnection, UUID
   ) {
     let id = UUID()
@@ -713,7 +713,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
     let impostor = try String(
       contentsOfFile: fixture.host.identityFile + ".pub", encoding: .utf8
     ).split(separator: " ").prefix(2).joined(separator: " ")
-    let host = ContainerHostDriver.Host(
+    let host = SSHTransport.Host(
       address: fixture.host.address, port: fixture.host.port, user: fixture.host.user,
       identityFile: fixture.host.identityFile, hostKey: impostor,
       agentSocket: fixture.host.agentSocket)
@@ -731,7 +731,7 @@ final class RemoteHostIntegrationTests: XCTestCase {
   /// nothing listens at the socket the host was configured with.
   func testAHostWithNoAgentAtItsSocketSaysSo() async throws {
     let fixture = try fixture()
-    let host = ContainerHostDriver.Host(
+    let host = SSHTransport.Host(
       address: fixture.host.address, port: fixture.host.port, user: fixture.host.user,
       identityFile: fixture.host.identityFile, hostKey: fixture.host.hostKey,
       agentSocket: "/run/workroom/nothing.sock")
