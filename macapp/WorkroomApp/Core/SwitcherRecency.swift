@@ -103,7 +103,7 @@ struct RecencyList<ID: Hashable>: Equatable {
 /// aggregation / run ownership / quit — recency is none of those, and keeping it here keeps
 /// `RecencyList` a trivially testable value type.
 ///
-/// **Recording is unconditional.** Both write-points — `AppStore`'s `selectedTargetID` didSet for
+/// **Recording is unconditional.** Both write-points — `AppStore`'s `selectionDidChange(from:)` for
 /// workrooms, `TerminalSessions.setFocused` for panes — sit *above* `AppStore`'s
 /// `isNavigatingHistory` guard, because `applyLocation` raises that flag for its whole body and the
 /// switcher's own commit goes through it — a gated write would never record where the switcher just

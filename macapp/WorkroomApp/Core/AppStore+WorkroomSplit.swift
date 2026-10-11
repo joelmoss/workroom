@@ -136,7 +136,7 @@ extension AppStore {
   }
 
   /// Focus a split member: this is the selection (mirrors `RootView.selectWorkroomTab`). Records nav
-  /// history via `selectedTargetID.didSet` — used by *deliberate* actions (drop, remove-reselect). The
+  /// history via `selectionDidChange(from:)` — used by *deliberate* actions (drop, remove-reselect). The
   /// incidental click-to-focus path (a surface becoming first responder) routes through a
   /// history-suppressed setter instead (see the focus callback), so co-monitoring glances don't spam ⌘[.
   func focusWorkroomMember(_ sid: SidebarID) {

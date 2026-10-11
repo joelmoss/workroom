@@ -166,45 +166,51 @@ final class AppStore: ObservableObject {
   /// project toggles its expansion instead. Persisted across launches (issue #14) via `didSet`
   /// and restored in `apply()`.
   @Published var selectedTargetID: SidebarID? {
-    didSet {
-      if persistsSidebarPrefs {
-        Defaults[.sidebarSelection] = Self.targetIDString(for: selectedTargetID)
-      }
-      // The saved session records selection PER WINDOW (issue #46); the Defaults key above is the
-      // single-slot cold-start fallback for a launch with no usable session file.
-      markSessionDirty()
-      // Promote this workroom in the quick switcher's most-recently-used order (issue #132).
-      // UNCONDITIONAL, unlike the history record below: `applyLocation` raises `isNavigatingHistory`
-      // for its whole body and the switcher commits through it, so a gated write would never record
-      // where the switcher just took you — ⌥Tab would flip to the same place forever. Recency means
-      // "where did the user end up", which is equally true of a ⌘[ replay.
-      SwitcherRecency.shared.recordWorkroom(store: self, sid: selectedTargetID)
-      // Record the new location for back/forward (issue #26), unless we're replaying history.
-      if !isNavigatingHistory { recordCurrentLocation() }
-      // Freshen the newly-selected workroom's status (incl. CI) — debounced so arrow-key
-      // cycling through rows doesn't fork a probe per row (issue #24).
-      scheduleSelectedStatusRefresh()
-      // The inspector's section collapse/size is GLOBAL (issue #24) — deliberately NOT reloaded on a
-      // workroom switch, so switching workrooms changes only the inspector's content, never its shape.
-      // The Files tree is re-pointed lazily by `FilesPanel` (only while that section is shown), not
-      // here — so selecting a workroom doesn't list its files unless you're actually browsing them.
-      refreshSelectionHasTabs()  // the inspector follows the *active* (tab-having) selection
-      // Re-point History the instant the workroom changes (only while it's the visible section,
-      // mirroring HistoryPanel's own guard) so the list clears + shows its loader immediately,
-      // instead of lingering on the previous workroom's commits until the panel's `.task` catches
-      // up. `focus` is idempotent, so the panel's later re-focus to the same root no-ops.
-      if selectedTargetID != oldValue {
-        // Opening a container workroom starts its container if it was stopped (#309).
-        let selected = selectedWorkroom?.reachableHost.map(HostID.remote)
-        RemoteHosts.shared.select(selected, in: ObjectIdentifier(self))
-        if let selected { RemoteHosts.shared.activate(selected) }
-        focusHistoryIfShown()
-        focusRemoteStateIfShown()
-        // A confirmation asking about the OLD workroom's dirty tree is meaningless once the selection
-        // moves. `runRemoteAction` re-checks the sid so answering it couldn't misfire anyway, but leaving
-        // the dialog up would ask about a workroom the user is no longer looking at.
-        if pendingRemoteConfirm != nil { pendingRemoteConfirm = nil }
-      }
+    didSet { selectionDidChange(from: oldValue) }
+  }
+
+  /// Everything that reacts to a change of `selectedTargetID`, in order: the persisted selection,
+  /// the session, the quick switcher's recency, back/forward history, status, the inspector, and,
+  /// when the target actually changed, the remote host, History, remote state and any pending
+  /// remote confirmation. One named place, so a new reaction is added here, not to the `didSet`.
+  private func selectionDidChange(from oldValue: SidebarID?) {
+    if persistsSidebarPrefs {
+      Defaults[.sidebarSelection] = Self.targetIDString(for: selectedTargetID)
+    }
+    // The saved session records selection PER WINDOW (issue #46); the Defaults key above is the
+    // single-slot cold-start fallback for a launch with no usable session file.
+    markSessionDirty()
+    // Promote this workroom in the quick switcher's most-recently-used order (issue #132).
+    // UNCONDITIONAL, unlike the history record below: `applyLocation` raises `isNavigatingHistory`
+    // for its whole body and the switcher commits through it, so a gated write would never record
+    // where the switcher just took you — ⌥Tab would flip to the same place forever. Recency means
+    // "where did the user end up", which is equally true of a ⌘[ replay.
+    SwitcherRecency.shared.recordWorkroom(store: self, sid: selectedTargetID)
+    // Record the new location for back/forward (issue #26), unless we're replaying history.
+    if !isNavigatingHistory { recordCurrentLocation() }
+    // Freshen the newly-selected workroom's status (incl. CI) — debounced so arrow-key
+    // cycling through rows doesn't fork a probe per row (issue #24).
+    scheduleSelectedStatusRefresh()
+    // The inspector's section collapse/size is GLOBAL (issue #24) — deliberately NOT reloaded on a
+    // workroom switch, so switching workrooms changes only the inspector's content, never its shape.
+    // The Files tree is re-pointed lazily by `FilesPanel` (only while that section is shown), not
+    // here — so selecting a workroom doesn't list its files unless you're actually browsing them.
+    refreshSelectionHasTabs()  // the inspector follows the *active* (tab-having) selection
+    // Re-point History the instant the workroom changes (only while it's the visible section,
+    // mirroring HistoryPanel's own guard) so the list clears + shows its loader immediately,
+    // instead of lingering on the previous workroom's commits until the panel's `.task` catches
+    // up. `focus` is idempotent, so the panel's later re-focus to the same root no-ops.
+    if selectedTargetID != oldValue {
+      // Opening a container workroom starts its container if it was stopped (#309).
+      let selected = selectedWorkroom?.reachableHost.map(HostID.remote)
+      RemoteHosts.shared.select(selected, in: ObjectIdentifier(self))
+      if let selected { RemoteHosts.shared.activate(selected) }
+      focusHistoryIfShown()
+      focusRemoteStateIfShown()
+      // A confirmation asking about the OLD workroom's dirty tree is meaningless once the selection
+      // moves. `runRemoteAction` re-checks the sid so answering it couldn't misfire anyway, but leaving
+      // the dialog up would ask about a workroom the user is no longer looking at.
+      if pendingRemoteConfirm != nil { pendingRemoteConfirm = nil }
     }
   }
 
@@ -539,7 +545,7 @@ final class AppStore: ObservableObject {
   /// shared `inspector.activeSection` setting. Same hazard as `confirmOnCloseOverrideForTesting`
   /// (which see for the full account): `-parallel-testing` gives each worker its own host process but
   /// ONE UserDefaults domain, so a class that wants its store on History leaves every store another
-  /// worker builds meanwhile starting on History too — and the `selectedTargetID` didSet then focuses
+  /// worker builds meanwhile starting on History too — and the `selectionDidChange(from:)` then focuses
   /// `commitHistory` (a real VCS read on a fixture path) in a test that never asked for History.
   var isolatesInspectorSectionForTesting = false
   /// Test seam: pin whether the inspector pane counts as visible, per store, instead of writing the
@@ -562,7 +568,7 @@ final class AppStore: ObservableObject {
     override ?? Defaults[.showInspector]
   }
   /// The repo file tree behind the inspector's Files section. Re-pointed at the selected target's
-  /// directory whenever the selection changes (see `selectedTargetID.didSet`); the `FilesPanel`
+  /// directory whenever the selection changes (see `selectionDidChange(from:)`); the `FilesPanel`
   /// observes it. Owned here so it survives inspector re-renders and tracks selection centrally.
   let fileTree = FileTreeModel()
   /// Store-owned commit-history state for the History inspector section (issue #59); re-pointed on
@@ -876,7 +882,7 @@ final class AppStore: ObservableObject {
   /// tests can inspect it (read-only) while only the store mutates it.
   @Published var history = NavigationHistory()
   /// True while `navigateBack`/`navigateForward`/`applyLocation` are replaying, so the
-  /// `selectedTargetID` didSet and the `.focusChanged` event don't re-record the very
+  /// `selectionDidChange(from:)` and the `.focusChanged` event don't re-record the very
   /// location they're navigating to.
   var isNavigatingHistory = false
 
