@@ -142,7 +142,7 @@
 //! other service's error reply does.)
 //!
 //! What bounds the unbounded channel is a byte budget: a forward holding more than
-//! [`MAX_QUEUED_BYTES`] of undelivered client bytes — counting a fixed overhead per message, so a
+//! `MAX_QUEUED_BYTES` of undelivered client bytes — counting a fixed overhead per message, so a
 //! flood of empty ones is not free — is killed with CLOSE rather than allowed to grow. The
 //! multiplex has no per-stream flow control, so the choice is between buffering without limit,
 //! blocking the reader thread, and dropping one stalled connection; only the third keeps the other
@@ -155,11 +155,11 @@
 //! wire without going through the threads was a way for a stale envelope to land on a re-used
 //! stream id — which the app's connection reader answers by failing the whole connection.
 //!
-//! The *writer* is the process-wide [`SharedWriter`], held for one envelope at a time — the same
+//! The *writer* is the process-wide `SharedWriter`, held for one envelope at a time — the same
 //! discipline `rpc::send` and every session's output already use. A forward is not faster or slower
 //! to starve than pty output is.
 //!
-//! A forward takes no request [`Permit`](crate::rpc::Permit): like a `watch` subscription it is a
+//! A forward takes no request `rpc::Permit`: like a `watch` subscription it is a
 //! resource that lives across many requests, not a request in flight, so it is capped separately
 //! ([`MAX_FORWARDS`] per connection). The cap counts forwards with a thread alive, not map
 //! entries: a forward whose connect is failing holds its slot until its thread has said so and
