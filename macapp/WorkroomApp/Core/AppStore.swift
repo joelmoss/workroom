@@ -582,7 +582,7 @@ final class AppStore: ObservableObject {
   let contentFind = FileFindModel()
   /// True while `loadInspectorState` is writing the four collapse flags + weights, so their
   /// `didSet`s don't persist the values straight back (and the load isn't mistaken for a user edit).
-  private var isLoadingInspectorState = false
+  var isLoadingInspectorState = false
 
   /// Setting it drops `errorDetails` and `errorLink`, which belong to whatever error set them: a
   /// later message from a direct setter must not show an earlier error's codes or its Install
@@ -874,11 +874,11 @@ final class AppStore: ObservableObject {
   /// `@Published` so toolbar/menu enablement (`canGoBack`/`canGoForward`) re-evaluates when it
   /// changes. Session-only — deliberately not persisted across launches. `private(set)` so unit
   /// tests can inspect it (read-only) while only the store mutates it.
-  @Published private(set) var history = NavigationHistory()
+  @Published var history = NavigationHistory()
   /// True while `navigateBack`/`navigateForward`/`applyLocation` are replaying, so the
   /// `selectedTargetID` didSet and the `.focusChanged` event don't re-record the very
   /// location they're navigating to.
-  private var isNavigatingHistory = false
+  var isNavigatingHistory = false
 
   private let resolver = BranchResolver()
   /// The in-flight branch-resolution sweep; cancelled and replaced on each reload so a
@@ -3044,7 +3044,7 @@ final class AppStore: ObservableObject {
 
   /// Drop the stored labels for the named workrooms of a project (used by the delete paths so an
   /// in-app delete clears the label immediately, not just on the next prune-on-load).
-  private func forgetLabels(forProject path: String, workroomNames: [String]) {
+  func forgetLabels(forProject path: String, workroomNames: [String]) {
     var labels = Defaults[.workroomLabels]
     var changed = false
     for name in workroomNames {
@@ -3682,7 +3682,7 @@ final class AppStore: ObservableObject {
   /// replaying (guarded at the call sites) and when there's no focused terminal yet — so a switch to
   /// a never-visited target records nothing until its first terminal exists, and the later
   /// `addTab`→`.focusChanged` records the real first entry (no `(target, nil)` ghost).
-  private func recordCurrentLocation() {
+  func recordCurrentLocation() {
     guard let sid = selectedTargetID, let target = selectedTarget, target.opensTerminals,
       let tab = terminals.focusedTab(for: target)
     else { return }
@@ -3709,7 +3709,7 @@ final class AppStore: ObservableObject {
   /// way — a bare `defer { isNavigatingHistory = false }` inside a future nested region would reopen
   /// recording halfway through the outer one and replay would silently record itself, which no
   /// assertion outside `testReplayAppendsNothing` would catch.
-  private func withHistorySuppressed(_ body: () -> Void) {
+  func withHistorySuppressed(_ body: () -> Void) {
     let wasNavigating = isNavigatingHistory
     isNavigatingHistory = true
     defer { isNavigatingHistory = wasNavigating }
@@ -3733,8 +3733,7 @@ final class AppStore: ObservableObject {
   /// exactly one entry when `recordHistory` is true — so a jump never leaves a phantom intermediate
   /// entry. `tab` is optional (an old notification may carry none / a stale id); it resolves to the
   /// requested tab when it still exists, else the target's current focused tab.
-  private func applyLocation(target sid: SidebarID, tab tabID: TerminalTab.ID?, recordHistory: Bool)
-  {
+  func applyLocation(target sid: SidebarID, tab tabID: TerminalTab.ID?, recordHistory: Bool) {
     withHistorySuppressed {
       selectedProjectID = Self.projectPath(of: sid)
       selectedTargetID = sid
