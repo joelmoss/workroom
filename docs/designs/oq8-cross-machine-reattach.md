@@ -574,7 +574,7 @@ History: Reopened by Codex #6 (local IDs embed the project path, Models.swift wo
     History: none
 
 ### F2: layout requests travel as a chunked JSON service, not Control frames
-Finding: F2, P2, confidence 8/10, `vcs/crates/wr-agent/src/protocol/frame.rs`
+Finding: F2, P2, confidence 8/10, `vcs/crates/wr-protocol/src/frame.rs`
 (`pub const MAX_PAYLOAD_SIZE: usize = 1 << 20;`) against `vcs/crates/wr-agent/src/file.rs`
 ("Requests and replies are JSON on the same chunked envelope as `Service::Vcs`"), reviewer: Claude
 (plan-eng-review Scope Challenge)
@@ -820,7 +820,7 @@ Eight findings, five P1, recorded verbatim in the review transcript. Verified ag
 below; O6 reopens F1.
 
 ### O2: a refused existing-only attach must not open an untracked shell
-Finding: O2 (Codex #2), P1, confidence 9/10, `vcs/crates/wr-agent/src/main.rs` (`Answer::Refused(_)
+Finding: O2 (Codex #2), P1, confidence 9/10, `vcs/crates/wr-agent/src/cli/attach.rs` (`Answer::Refused(_)
 if request.existing_only => { return fall_back_to_shell(&request, "the terminal that was running
 here has ended, so this is a new shell"); }`), reviewer: Codex, verified by Claude
 Plan baseline: premise 3 says a missing session's pane "stays in the layout as an ended pane until
@@ -1428,11 +1428,11 @@ with Claude Code or Codex; checkbox as you ship.
   - Verify: cargo test; 10 KB title lists at 256 bytes; 1100-byte ID kept; v1 record and old table fixtures pass
 - [ ] **T3 (P1, human: ~1 day / CC: ~2h)** — wr-agent — Service::Layout with revision CAS
   - Surfaced by: F2 (D3); R3-2, R3-5 post-review fixes
-  - Files: vcs/crates/wr-agent/src/{layout.rs,serve.rs,lib.rs,protocol/envelope.rs}
+  - Files: vcs/crates/wr-agent/src/{layout.rs,serve.rs,lib.rs}, vcs/crates/wr-protocol/src/envelope.rs
   - Verify: concurrent puts one winner; truncated file = revision 0; caps refused; PROTOCOL_VERSION 7
 - [ ] **T4 (P1, human: ~2h / CC: ~30min)** — wr-agent attach — Remote existing-only refusal shows an ended pane
   - Surfaced by: O2 (D7)
-  - Files: vcs/crates/wr-agent/src/main.rs
+  - Files: vcs/crates/wr-agent/src/cli/attach.rs
   - Verify: remote attach to unknown id shows the notice, no child shell; local fallback unchanged
 - [ ] **T5 (P1, human: ~1 day / CC: ~2h)** — bootstrap — Build number, push only when older, hand-off refuses lower
   - Surfaced by: O7 (D13); R3-6

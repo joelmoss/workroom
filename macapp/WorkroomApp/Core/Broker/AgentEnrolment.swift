@@ -13,7 +13,7 @@ enum AgentEnrolment {
   /// stale-proof retry, each bounded by the agent's own 15 s `TIMEOUT` (`broker.rs`), so this keeps
   /// headroom over both; change them together.
   static let execTimeout: TimeInterval = 60
-  /// The lines `wr-agent enrol` writes on failure (`run_enrol` in `wr-agent/src/main.rs`).
+  /// The lines `wr-agent enrol` writes on failure (`run_enrol` in `wr-agent/src/cli/broker.rs`).
   static let errorPrefix = "error: "
   static let refusalPrefix = "refusal: "
 

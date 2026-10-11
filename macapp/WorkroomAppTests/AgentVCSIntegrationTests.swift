@@ -817,7 +817,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
   /// The fixture must GREET and then hang up. An earlier version just accepted and closed, which
   /// fails at the greeting read inside `connect`'s `runBlocking` closure and leaves the function
   /// before the `catch` under test — so it passed against the reverted fix. The hello is
-  /// `"WRA1"` + a big-endian u16 version + a build-string length byte (`protocol/envelope.rs`).
+  /// `"WRA1"` + a big-endian u16 version + a build-string length byte (`wr-protocol/src/envelope.rs`).
   func testADroppedHandshakeStaysRecoverableRatherThanBecomingUnavailable() async throws {
     let dir = try root()
     let path = dir.appendingPathComponent("dead.sock").path

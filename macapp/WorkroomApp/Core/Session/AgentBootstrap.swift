@@ -438,7 +438,7 @@ enum AgentBootstrap {
 
   /// The build number a bundled agent was built with, read out of its bytes rather than by running
   /// it: the bundled agents are Linux binaries the Mac cannot run. The agent keeps it as the
-  /// marker `WR-AGENT-BUILD:<number>;` (`serve::BUILD_MARKER`). 0 when there is none, which orders
+  /// marker `WR-AGENT-BUILD:<number>;` (`handoff::BUILD_MARKER`). 0 when there is none, which orders
   /// below every numbered build.
   static func buildNumber(in data: Data) -> UInt64 {
     let marker = Data("WR-AGENT-BUILD:".utf8)

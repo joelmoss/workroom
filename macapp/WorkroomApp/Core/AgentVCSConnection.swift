@@ -72,9 +72,9 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
   /// The first exec service version a remote host's writes can use: it takes `host_environment`
   /// and answers `stat`.
   private static let remoteWriteVersion = 3
-  /// `MAX_ENVELOPE_PAYLOAD` in `protocol/envelope.rs`.
+  /// `MAX_ENVELOPE_PAYLOAD` in `wr-protocol/src/envelope.rs`.
   private static let maxEnvelopePayload = 1 << 20
-  /// `MAX_REQUEST` in `vcs.rs` — the reassembled ceiling, mirroring the reply side's.
+  /// `MAX_REQUEST` in `rpc.rs` — the reassembled ceiling, mirroring the reply side's.
   private static let maxRequest = 16 * 1024 * 1024
   /// Marks a chunked request envelope. A whole request is JSON and starts `{`, so the two are
   /// unambiguous — see `REQUEST_CHUNK_MARKER`.
@@ -194,7 +194,7 @@ final class AgentVCSConnection: HostServiceConnection, @unchecked Sendable {
             // terminals) truthfully reports its own lower version here, and its `dispatch` has no
             // VCS handling at all — it would silently drop the capabilities request that follows,
             // stalling this connect for the full capabilities timeout instead of failing now.
-            // Matches `MIN_VCS_VERSION` in the agent's `protocol::envelope`.
+            // Matches `MIN_VCS_VERSION` in the agent's `wr_protocol::envelope`.
             guard greeting.version >= AgentControlClient.minVCSVersion else {
               throw VCSError.backendVersion("Agent predates VCS support.")
             }
