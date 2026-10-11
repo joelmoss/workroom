@@ -15,10 +15,11 @@ import XCTest
 /// `DefaultsIsolationTests.testEveryShippedKeyDeclaresTheAppSuite`: the rule is enforced, not just
 /// documented.
 final class DetachedPaneEnvironmentTests: XCTestCase {
-  /// The two the pane subtree genuinely cannot reach: `RootView` chrome only (the update pill and the
-  /// What's New dialog). If a pane ever needs one, it goes into `detachedPaneEnvironment` and comes
-  /// out of here — deliberately, rather than by a test quietly going green.
-  private let sceneOnly: Set<String> = ["Updater", "WhatsNewService"]
+  /// The ones the pane subtree genuinely cannot reach: `RootView` chrome only (the update pill, the
+  /// What's New dialog, and the Source Control menu state). If a pane ever needs one, it goes into
+  /// `detachedPaneEnvironment` and comes out of here — deliberately, rather than by a test quietly
+  /// going green.
+  private let sceneOnly: Set<String> = ["Updater", "WhatsNewService", "RemoteStateModel"]
 
   /// How each type is supplied, since several arrive through an owner rather than by their own name
   /// (`store.notifications`, `sessions.agentManager`) — matching on the type alone would report those
