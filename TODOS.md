@@ -13,7 +13,7 @@ None open. The crossing-`keep` flake entry went with the test, `keep` and the pr
 
 ### Finish removing base machines (macapp, codaset) — #395 follow-ups
 
-**What:** The rest of the remove-bases plan (claims 1.3, 2, 2.1, 2.2, 3, 3.1, 3.2, 4.0). #395 made
+**What:** The rest of the remove-bases plan (claims 2, 2.1, 2.2, 3, 3.1, 3.2, 4.0). #395 made
 every new remote workroom a fresh host with its own clone and took `deriveFromBase` out of every
 driver. It did not touch the bases older builds already made.
 
@@ -33,11 +33,6 @@ their disk. Nothing uses them now. Only Delete Project takes one down.
   `registrations`' fallback to a base's repository, and the Delete Project sheet's "base machine"
   text. Before the fallback goes, stamp each older workroom's descriptor with its base's
   `repository`, or those workrooms lose PR and CI status.
-- **Docs (claim 1.3):** #395 updated `macapp/AGENTS.md`'s provider paragraphs and put a dated
-  note at the top of `docs/designs/remote-workrooms.md`. That doc's Provider Decision, Phase 4
-  "As built" entries, Phase 0 item 6 and Open Questions 9-11 still read as if bases exist. Mark or
-  rewrite them, with the full 2026-10-10 measurements (boxd and exe.dev, fresh against derive, per
-  step).
 - **Codaset (claim 4.0):** remove the `base_clone_token` route (`app/controllers/broker/grants_controller.rb`)
   after the first stable release with #395. Older builds still call it until then.
 - **Release note (claim 3.2):** the first release with #395 says new remote workrooms clone their own
@@ -50,42 +45,27 @@ their disk. Nothing uses them now. Only Delete Project takes one down.
 
 ## P2 — perf, correctness, and the next VCS phase
 
-### UI tests: share the duplicated helpers, tighten loose assertions (macapp) — UI-test-merge review follow-up
+### UI tests: stale skip entry, session-isolation wiring check, close-the-right-pane (macapp) — UI-test-merge review follow-up
 
-**What:** Move the helpers that UI test classes copy from each other into shared extensions, the
-way `XCUIApplication+Menus.swift` already holds the menu helpers.
+**What:** Three items left from the pre-landing review of the UI-test merge branch.
 
-**Why:** The pre-landing review of the UI-test merge branch found four copies:
-- a terminal `waitForScreen` poll (about 45 lines) in several classes;
-- `waitForDisappearance` and `waitForSheetToGoAway`, which XCTest's own `waitForNonExistence(timeout:)`
-  replaces;
-- `assertCount`, which is in about 14 files.
+- **Stale skip entry.** `APP_UITEST_FLAGS` still names `AgentResumeUITests`, which was deleted with
+  the Resume feature in `67cb53ed`. Drop it from the Makefile and from `test-invariants_test.sh`
+  (its `want_flags` string must change with the Makefile).
+- **Session-isolation wiring.** A fixture-launch UI check that pins the session-isolation launch
+  wiring in the routine run. Today only `SessionRestoreUITests` exercises that wiring, and the
+  Makefile skips it by default. The `APP_UITEST_FLAGS` comment states that gap.
+- **`PaneTitleBarUITests` passes on wrong behaviour.** It closes a pane and checks only that the
+  count drops, so closing the wrong pane passes (the doc comment names that defect). Split Down is
+  checked by count only. Assert which pane survived.
 
-They are not bugs. They were deferred so that the branch did not have to re-run UI tests across
-every class.
-
-**Also on the table, same review:** a fixture-launch UI check that pins the session-isolation launch
-wiring in the routine run. Today only `SessionRestoreUITests` exercises that wiring, and the
-Makefile skips it by default. (The skip list also still names `AgentResumeUITests`, which was
-deleted with the Resume feature in `67cb53ed`; drop it there and in `test-invariants_test.sh`.) The `APP_UITEST_FLAGS` comment states that gap.
-
-**Also, assertions that pass on wrong behaviour** (Codex adversarial review, same branch; they came
-from the original tests, the merges did not add them):
-- `HistoryStressUITests` scrolls the app's first scroll view, not History's. Its "back at the top"
-  check matches `s000`, which every one of the 800 fixture ids starts with.
-- `PaneTitleBarUITests` closes a pane and checks only that the count drops, so closing the wrong pane
-  passes. Split Down is checked by count only.
-- `GhosttyActionDispatchUITests`: the OSC `9;4;0` Idle check can pass because the ~10s command ends
-  within the 15s wait (`TerminalSessions.swift` clears `progressActive` on completion).
-- `CommitSheetUITests` takes the sheet closing as a commit and never inspects the request the writer
-  got. The render-cap case checks only the button's `258`. The Amend warning matches any "amend".
-
-**How to start:** `grep -l "func assertCount\|func waitForScreen\|func waitForDisappearance\|func waitForSheetToGoAway" macapp/WorkroomAppUITests`.
-Each file you touch needs its class re-run with `make app-uitest APP_UITEST_FLAGS="-only-testing:…"`.
+**How to start:** Each file you touch needs its class re-run with
+`make app-uitest APP_UITEST_FLAGS="-only-testing:…"`.
 
 **Depends on:** nothing.
 
-**Priority:** P2 (deferred in /ship review, 2026-10-06)
+**Priority:** P2 for the stale skip entry (two lines); P3 for the rest (deferred in /ship review,
+2026-10-06).
 
 ### Tell a Mac its pane is sized for another Mac (wr-agent, macapp) — #255 follow-up
 
@@ -108,8 +88,8 @@ the owner; have the pane show the marker while it is not the owner. Design follo
 
 ### Remote workroom layouts: the review's deferred edge cases (macapp, wr-agent) — #255 review follow-up
 
-**What:** Four cases the pre-landing `/review` of `feat/255-cross-machine-reattach` found and
-deferred (2026-10-05). None loses data from a single window.
+**What:** Two cases the pre-landing `/review` of `feat/255-cross-machine-reattach` found and
+deferred (2026-10-05). Neither loses data from a single window.
 
 1. **A sibling window never takes over writing.** When two windows on this Mac show one remote
    workroom and the window that owns its layout (`HostLayoutOwners`, D10) closes, the other one
@@ -121,61 +101,23 @@ deferred (2026-10-05). None loses data from a single window.
    `session.json` copy while the owner's `HostLayoutSync.appending` adds the second window's
    sessions (same `sessionWorkroomKey`) as tabs, so one agent session is attached twice on one Mac
    and the two panes fight over its size. Fix: append only sessions no window on this Mac shows.
-3. **An empty layout that fails to write is forgotten.** Closing a remote workroom's last tab while
-   its host is unreachable writes an empty layout, which fails and is marked stale, but
-   `captureTargetSessions()` drops targets with no tabs, so neither the empty layout nor its stale
-   mark reaches `session.json`. Next launch the host's old layout comes back, its panes showing
-   "This terminal has ended". Fix: keep an empty, stale target (a tombstone) until the host takes it.
-4. **A dev build can pin a host to a dev agent.** The build number is the commit time (T5, not the
-   commit count D13 named; neither orders across branches). A dev build committed after a release
-   makes `AgentBootstrap` keep that dev agent on a host (`.keptNewer`) and hand-off refuse the
-   release until a later release ships. Equal numbers are common between dev builds: 500 of 1225
-   master commits share a commit second with another (a rebase stamps one time), though none of
-   the 35 release tags do. Equal numbers push as before #255 (D13), so two Macs on two commits of
-   one rebased stack can still swap a host's agent (Codex on #349). Fix: decide whether release
-   and dev builds number apart, and whether equal numbers need a tie-break.
 
-**Why:** Each is rare (two windows on one remote workroom, an offline close, a dev build on a
-shared host), and the PR was already 4.2k lines.
+**Why:** Each is rare (two windows on one remote workroom), and the PR was already 4.2k lines.
 
 **Depends on:** #255.
 
 **Priority:** P2 (deferred in the #255 `/review`, D3, 2026-10-05)
 
-### Credential broker clients: the review's deferred items (macapp, wr-agent) — #251 review follow-up
+### Credential broker clients: check the Keychain item's access (macapp) — #251 review follow-up
 
-**What:** Five things the #251 review left open (PR #263):
+**What:** The real Keychain calls in `BrokerCredentials.SecretStore.keychain` are untested (tests use
+the stand-in), and `kSecAttrAccessibleAfterFirstUnlock` on a login-keychain item was never measured.
+If the item is not readable before first unlock, sign-in prompts after a reboot.
 
-1. A copy of an already-enrolled workroom mints under the original's grant: `wr-agent credential`
-   never checks that it is on the machine that enrolled. A machine-identity check does not help,
-   because a disk copy copies `/etc/machine-id` too.
-2. Re-enrolling replaces the key and token before the new code is proven, so a refused re-enrolment
-   leaves the instance with no credentials while the old grant stays live.
-3. The real Keychain calls in `BrokerCredentials.SecretStore.keychain` are untested (tests use the
-   stand-in), and `kSecAttrAccessibleAfterFirstUnlock` on a login-keychain item was never measured.
-4. `AgentEnrolment.enrol` swallows a failed `cancelGrant` after a failed enrolment, so the grant ID
-   is lost and the grant can stay live, possibly with a key the agent already enrolled.
-5. `configure_git` makes the agent the only helper for all of `https://github.com` in *global*
-   config, so on a host holding more than one repository every other repository gets this
-   workroom's repository-scoped token instead of its own credentials.
+**How to start:** Sign in on a Dev build and on a Developer ID Nightly once codaset.dev serves the
+broker, and check the item's access list in Keychain Access.
 
-**Why:** 1 and 2 cannot happen in the designed flow (only bases, which never enrol, are derived;
-re-enrolment only follows a failed first enrolment, so there is no working key to lose), but
-provisioning is where either could start happening. 4 has no caller until provisioning, which owns
-the rollback, and destroying the instance destroys the enrolled key. 5 holds because each
-provisioned VM hosts one workroom; the helper is global on purpose, since it must outrank boxd's
-system helper and answer the first clone, before any repository exists.
-
-**How to start:** #252 (derivation) settles part of 1 and 4. For 1, `ContainerHostDriver` refuses
-to derive from an instance; every later driver needs the same refusal, and nothing stops a copy
-made outside Workroom. 4 is fixed: `AgentEnrolment.enrol` throws `GrantStillLive` with the grant ID when its own cancel
-fails, and provisioning passes it on in `RemoteProvisioning.Failure.rollbackIncomplete`. For 2,
-stage a pending key beside the current one and swap on success. For 3, sign in on a Dev build and on a Developer ID Nightly once codaset.dev serves the
-broker, and check the item's access list in Keychain Access. Revisit 5 if enrolment ever runs on a
-bring-your-own host.
-
-**Depends on / blocked by:** nothing for 2 (#252 has landed); codaset#43 deployed for 3; a BYO-host
-enrolment path for 5.
+**Depends on / blocked by:** codaset#43 deployed.
 
 **Priority:** P2, effort S.
 
@@ -605,89 +547,38 @@ views, so it wants a deliberate visual pass rather than a drive-by change.
 
 ## P3 — Terminal, panes, and focus
 
-### Agent bootstrap (#231): the review findings the /ship pass deferred (macapp, wr-agent)
+### Agent bootstrap (#231): two review findings the /ship pass deferred (macapp, wr-agent)
 
-**What:** Six items the #231 review raised and the branch did not take, cheapest first:
+**What:** Two items the #231 review raised and the branch did not take.
 1. `wr-agent hand-off` exit 92 covers both "nothing listening" and "accepted but did not greet in
    5 s"; `install.sh` and `AgentBootstrap` tell them apart by the CLI's stderr wording
    (`no agent listening`). Give did-not-greet its own exit code in `run_hand_off` and branch on it.
 2. `ContainerHostDriver.shellQuoted` is a one-line forwarder to `PosixShell.quoted` (~14 call
    sites, plus `PersistentSessionService`); two older copies exist in `CommandLineInstaller` and
    `GhosttySurfaceView`. Point everything at `PosixShell.quoted`.
-3. `AgentBootstrapTests`' `StubDriver`/`LocalShellDriver` and `RemoteHostIntegrationTests`' six
-   identical `ensure` calls repeat their traits and stubs; one closure-backed driver and a
-   `bootstrap(_:agent:)` helper would cut ~30 lines.
-4. `install.sh` sets `listening=yes` in four arms; a `[ -S "$socket" ]` default cleared only by the
-   92 "no agent listening" arm is the same table in three fewer lines (no local test covers that
-   arm, so add one first).
-5. The Rust attach tests (`attach_falls_back_to_a_shell.rs`) read and `wait()` with no deadline, so
-   a regression hangs `cargo test` rather than failing it; poll `try_wait` as `Pane::exit_code`
-   in `remote_transport.rs` does.
-6. The scripts run whatever file sits beside the socket and never check the directory is 0700 and
-   the ssh user's (#228's requirement). Refusing a shared or symlinked directory (`WRB outcome
-   refused unsafe-dir`, and the probe reporting it so the app fails before any relay runs) belongs
-   with the host configuration work in Phase 4, where a real `Host` is first produced.
 
-**Why:** 1 is the only one that changes behaviour (a CLI wording change would silently read a dead
-socket as a live agent); the rest are duplication and test hygiene the design doc's "As built
-(#231)" already names.
+**Why:** 1 changes behaviour (a CLI wording change would silently read a dead socket as a live
+agent); 2 is duplication.
 
 **How to start:** 1 in `vcs/crates/wr-agent/src/main.rs` (`run_hand_off`, the 92 arms) with the
-fixture's `over_ssh_the_bootstrap_*` test; 2–5 are mechanical; 6 with Phase 4's host setup.
+fixture's `over_ssh_the_bootstrap_*` test; 2 is mechanical.
 
 **Priority:** P3, effort S each.
 
-### The ✦ diagnosis badge was unreachable to accessibility (macapp) — FIXED (2026-09-03)
+### The tab chip's ✕ close button is unreachable to accessibility (macapp)
 
-**Found by the pre-release XCUITest run:** `TerminalCodingAgentUITests.testFailedTabShowsAgentBadge` was
-failing, and had been for some time — it also fails on `ca9f4695`, so it predates this session's
-work (verified by checking that commit out and re-running).
-
-**Root cause, already documented in the file that caused it.** The tab chip carries its own
-`.accessibilityLabel` (added by issue #141 so a recognized tool's favicon gets announced), which
-collapses the whole chip into ONE accessibility element and makes every nested control unreachable.
-`TerminalTabStrip`'s own comment says so and names the casualty: "no `.accessibilityElement(children:)`
-policy kept the nested run-state icon **or the ✦ badge** separately queryable once the chip has its
-own label (measured; `.contain` didn't help in either modifier position)". Issue #141 fixed RUN STATE
-by moving it onto the chip's `.accessibilityValue` and left the badge behind, along with a test still
-querying `app.buttons["Diagnosis available"]` — an element accessibility no longer exposes. So the
-test waited 20s and failed on every run.
-
-**This was never a functional bug.** The badge renders and clicks; `agentBadge` reads the same
-`agentManager.banners[tab.id]` the status bar reads, and every other test in that class passes
-(status bar, Investigate, Dismiss). What was broken was perception and operability.
-
-**A second, worse defect in the same class:** `testDismissFromPopoverClearsDiagnosis` asserted
-`XCTAssertFalse(app.buttons["Diagnosis available"].exists)` — **vacuously true**, since that element
-is never exposed. It passed whether or not dismiss cleared the badge. A test that cannot fail is
-worse than a red one, because it reads as coverage.
-
-**Fix:**
-- The badge is announced in the chip's own label (`chipAccessibilityLabel`: title, tool, badge).
-  Deliberately the LABEL and not the value: run state owns the value, and
-  `RunStatusUITests`/`GhosttyActionDispatchUITests` assert it with EXACT equality (`value == "failed"`,
-  `== "Busy"`) — and a failed run is precisely the case that also raises a badge, so appending there
-  would have broken them. The label is asserted with `contains` (`ToolFaviconUITests`), so it extends
-  safely.
-- `.accessibilityActions { if agentBadge { Button("Show diagnosis") … } }` makes the badge
-  **operable** — a VoiceOver user could not reach or activate it at all before. That is the
-  substantive half of this fix.
-- Both tests repaired to read the chip's label. Each was red/green-verified by probe: forcing the
-  label to never announce fails the badge test, forcing it to always announce fails the dismiss test.
-  Both assertions are now load-bearing.
-
-**Residual gap, deliberate:** clicking the badge to open the popover is manual-verify only. XCUITest
-cannot invoke a named accessibility action, and the badge has no reachable element to click. The
-popover's contents and actions are covered from the status-bar entry point instead.
-
-**Still open, same mechanism:** the nested ✕ close button carries its own
+**Why:** the tab chip carries its own `.accessibilityLabel`, which collapses the whole chip into ONE
+accessibility element and makes every nested control unreachable (`TerminalTabStrip`'s own comment
+says so). The ✦ diagnosis badge was fixed by announcing it in the chip's label and adding
+`.accessibilityActions { Button("Show diagnosis") … }`. The nested ✕ carries its own
 `.accessibilityLabel("Close <title>")` and is swallowed identically, so it is presumably also
 unreachable to assistive technology. No UI test exercises it via accessibility, so this is inferred
-from the same documented behaviour rather than measured. Worth an `.accessibilityActions` entry
-alongside the badge's — the chip already has a close affordance in its context menu, so this is
-politeness rather than a blocker.
+from the documented behaviour rather than measured.
 
-**Priority:** done for the badge. The ✕ follow-up is P3.
+**What:** add a `Button("Close") { onClose() }` to the same `.accessibilityActions` block. The chip
+already has a close affordance in its context menu, so this is politeness rather than a blocker.
+
+**Priority:** P3, effort S.
 
 ### `Defaults` keys with dots in their names cannot be observed (macapp) — measured, NOT fixed (2026-09-03)
 
@@ -719,70 +610,34 @@ moment.
 **Priority:** P3, and arguably "leave it". Revisit only when someone actually needs to observe one of
 these keys, or alongside an unrelated settings migration.
 
-### Workroom split: deferred follow-ups (macapp) — #23
+### Workroom split: ⌥⌘-arrow focus between workroom panes (macapp) — #23
 
-**Shipped:** drag a workroom tab onto a pane edge → a nested, resizable side-by-side split of full
-terminal UIs, same feel as the ⌘D terminal panes (`Views/WorkroomSplitView.swift`,
-`Core/AppStore+WorkroomSplit.swift`, generic `PaneLayout<Leaf>` / `PaneTreeLayout`). The bar always
-shows; `RootView` always routes the detail through `WorkroomSplitView` (single = `.leaf(selected)`).
-The pieces below were explicitly deferred — each small, none blocking.
-
-- **⌥⌘-arrow focus between workroom panes** — `PaneTreeLayout.adjacentPane` is already generic and
-  ready; only the key-monitor wiring is missing. Deferred to avoid clashing with the terminal-level
-  ⌥⌘arrows (which navigate the focused workroom's *terminal* split) — needs a precedence decision.
-- **Drag-a-pane-out-to-dissolve** — removal today is the per-pane ✕ (strip trailing) + clicking a
-  non-member tab; the terminal split's "drag the grip up out of the panes" gesture isn't wired for
-  workroom panes.
-- **Per-pane activity border-flash** (partial) — the *terminals hosted inside* a workroom pane flash
-  via `PaneLeafView`'s `activityPulses` handler, but the workroom **pane itself** doesn't flash the way
-  a terminal split pane does; workroom-level activity surfaces via `WorkroomTabChip` tinting instead. A
-  presentation difference, not a missing signal.
-- **Queued first-responder stale-state recheck** (`Views/TerminalContainerView.swift:78`) — `applyFocus`
-  enqueues `makeFirstResponder(view)` on `DispatchQueue.main.async` and re-checks only
-  `firstResponder !== view`, not a *fresh* focus condition, so a stale enqueue could in theory flip
-  focus cross-target. Largely defused already by the `surfaceActive` gate (a non-focused workroom pane
-  passes `isFocusedPane=false` → never enqueues); this is the residual race within terminal-pane splits.
-  Fix would re-read live focus state inside the async block rather than relying on the captured value.
+**What:** `PaneTreeLayout.adjacentPane` is already generic and ready; only the key-monitor wiring is
+missing for workroom panes. Deferred to avoid clashing with the terminal-level ⌥⌘arrows (which
+navigate the focused workroom's *terminal* split), so it needs a precedence decision.
 
 **Priority:** P3 (polish on a shipped feature).
 
 ### Quick-switcher deferrals (macapp) — #132 follow-ups
 
-**What:** Five things the ⌥Tab / ⌃Tab switcher shipped without, deliberately. Independent of each
-other; take them one at a time.
+**What:** Two things the ⌥Tab / ⌃Tab switcher shipped without, deliberately. Independent of each
+other.
 
 - **MRU order in the ⌘O Open Workroom picker.** `SwitcherRecency` already answers "what did I use
   last", so `OpenPickerModel` could rank by it instead of alphabetically. Cheap, but it reorders a
   shipped, tested surface (`OpenPickerModelTests`) — hence deferred until we've lived with MRU in the
   switcher and know it feels right there first.
-- **Scope ⌥Tab to the current Space.** A cross-window commit to a window on another Space animates the
-  Space switch for ~0.5–1s. Nothing is wrong, but it's a jarring result for a keystroke that reads as
-  instant. Either filter `QuickSwitcher.workroomSlots` by `hostWindow?.isOnActiveSpace` (and lose the
-  ability to reach those workrooms at all) or leave it; decide from use, not from taste.
-- **The shared `UnreadBadge` still draws the RAW accent.** The rail passes its own corrected pair
-  (`Palette.nsBadgeFill` == `nsRing`, ink measured), because a themed accent can sit close to the
-  surface it's on — the sidebar and toolbar badges have the same exposure and no correction. Now a
-  small change: `ThemeTokens.contrastRatio` is genuinely WCAG since `dfcc0bd8`, so
-  `legible(accent, on: host, target: 3.0)` at the component's own call sites means what it says.
-- **The 10s session ceiling cancels silently.** A stuck modifier can't leave the rail up forever, so
-  `QuickSwitcherReducer.sessionCeiling` ends the session — with **no commit**, so a user who held ⌥ for
-  eleven seconds while reading the rail gets nothing. Arguably the timeout should commit the cursor
-  instead. A product call, not a bug: pick one and say so in the reducer's doc comment.
 - **⌃-click on the pane rail is unverified.** ⌃-click is a secondary click, and the rail panel is never
   key, so it may not deliver a `.onTapGesture` at all. Needs a **real mouse** — this repo has twice
   been lied to by synthetic input (`macapp-textselection-swallows-taps`,
   `macapp-hover-slide-release-only`), so an XCUITest pass here would prove nothing.
 
 **Why:** each of these was written down in the #132 plan's out-of-scope table and would otherwise be
-lost with it. Two other entries from that table are now **moot**: the window-capture layer was built
-and then removed (an aspect-fit terminal thumbnail at card size is a grey smudge that looks like every
-other terminal), so "a libghostty damage callback for thumbnail freshness" and "per-pane sensitive
-marking / screen-sharing auto-suppress" no longer have a subject — `Core/Snapshots/` is gone and the
-rail draws marks and miniatures instead.
+lost with it.
 
-**Depends on:** nothing. The badge item wants `dfcc0bd8` (the contrast-metric fix), which has landed.
+**Depends on:** nothing.
 
-**Priority:** P3 for all five.
+**Priority:** P3 for both.
 
 ### Unify foreground-process detection onto argv0 (macapp) — issue #141 eng-review follow-up, filed 2026-08-17
 
