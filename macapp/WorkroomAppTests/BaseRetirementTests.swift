@@ -133,6 +133,25 @@ final class BaseRetirementTests: XCTestCase {
       ["set d repository o/old", "set a repository o/new", "destroy \(docker.id!.uuidString)"])
   }
 
+  /// Descriptors from before the `driver` field are Docker's, as `deletionKey` reads them: such a
+  /// workroom still records its base's repository before the base goes.
+  func testADriverlessWorkroomRecordsItsDriverlessBasesRepository() async throws {
+    let log = Log()
+    let old = HostDescriptor(provisioner: mine, id: UUID(), repository: "o/r")
+    let project = Project(
+      path: "/p", vcs: "git",
+      workrooms: [
+        Workroom(
+          name: "w", path: "/home/workroom/r", vcsName: "workroom/w", warnings: [],
+          host: HostDescriptor(provisioner: mine, id: UUID()))
+      ],
+      host: old)
+
+    _ = await BaseRetirement.retire([project], effects: effects(log))
+
+    XCTAssertEqual(log.all.first, "set w repository o/r")
+  }
+
   /// A workroom whose repository can't be recorded keeps its project's base, so its status isn't
   /// lost: the next launch tries again.
   func testAFailedStampKeepsTheBase() async throws {

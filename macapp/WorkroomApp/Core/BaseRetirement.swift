@@ -85,7 +85,8 @@ enum BaseRetirement {
     var changed = false
     for workroom in project.workrooms {
       guard var host = workroom.host, host.repository == nil,
-        let key = RemoteHosts.DriverKey(host),
+        // A descriptor from before the `driver` field is Docker's (`deletionKey`).
+        let key = try? RemoteHosts.deletionKey(host),
         let base = base(in: bases, for: key), let repository = base.repository
       else { continue }
       host.repository = repository
@@ -125,10 +126,11 @@ enum BaseRetirement {
   /// Docker context, else for Docker one made before #309, which names no context and follows the
   /// current one, as `key` does.
   static func base(in bases: [HostDescriptor], for key: RemoteHosts.DriverKey) -> HostDescriptor? {
-    if let exact = bases.first(where: { RemoteHosts.DriverKey($0) == key }) { return exact }
+    let keyed = bases.map { (base: $0, key: try? RemoteHosts.deletionKey($0)) }
+    if let exact = keyed.first(where: { $0.key == key }) { return exact.base }
     // Only Docker has an unpinned form; a boxd base belongs to exactly one org and account.
     guard let runtime = key.runtime else { return nil }
-    return bases.first { RemoteHosts.DriverKey($0) == RemoteHosts.DriverKey(runtime: runtime) }
+    return keyed.first { $0.key == RemoteHosts.DriverKey(runtime: runtime) }?.base
   }
 
   private static let logger = Logger(
