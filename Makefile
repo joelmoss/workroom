@@ -53,14 +53,16 @@ actions-lint: ## Lint .github/workflows with actionlint (shellcheck included)
 # Homebrew's cargo first, so the recipe puts this one ahead of it. Keep in step with ci.yml.
 VCS_RUST := 1.96.1
 
-vcs-lint: ## Lint the Rust workspace as CI does: rustfmt, then clippy with and without terminal-state
+vcs-lint: ## Lint the Rust workspace: rustfmt, clippy and rustdoc, each with and without terminal-state
 	@cargo_bin="$$(rustup which --toolchain $(VCS_RUST) cargo)" && \
 	rustup which --toolchain $(VCS_RUST) cargo-fmt >/dev/null && \
 	rustup which --toolchain $(VCS_RUST) cargo-clippy >/dev/null || { echo "vcs-lint needs Rust $(VCS_RUST) with rustfmt and clippy: rustup toolchain install $(VCS_RUST) --component rustfmt,clippy" >&2; exit 1; }; \
 	export PATH="$$(dirname "$$cargo_bin"):$$PATH"; \
 	cargo fmt --manifest-path vcs/Cargo.toml --all -- --check && \
 	cargo clippy --manifest-path vcs/Cargo.toml --workspace --all-targets -- -D warnings && \
-	cargo clippy --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state --all-targets -- -D warnings
+	cargo clippy --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state --all-targets -- -D warnings && \
+	RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path vcs/Cargo.toml --workspace --no-deps && \
+	RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state --no-deps
 
 # --- macOS app (macapp/) ---
 

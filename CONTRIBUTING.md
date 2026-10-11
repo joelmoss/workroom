@@ -452,7 +452,7 @@ executor and a temp config — no real repo required.
 | `cli-install` | `go install` into `$GOBIN` |
 | `cli-lint` | `golangci-lint run` |
 | `cli-clean` | Remove the built binary |
-| `vcs-lint` | rustfmt and clippy over `vcs/`, with and without `terminal-state`, on CI's Rust 1.96.1 |
+| `vcs-lint` | rustfmt, clippy and `cargo doc -D warnings` over `vcs/`, with and without `terminal-state`, on CI's Rust 1.96.1 |
 
 ---
 
@@ -499,7 +499,7 @@ and every PR against either:
   / `gofmt`), `go build`, and `go test ./...`.
 - **`rust` job** (`ubuntu-latest`): `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test` for the
   whole `vcs/` Rust workspace, on a pinned toolchain. `make vcs-lint` runs the same format and lint checks
-  locally, plus the `agent-terminal-state` job's clippy pass.
+  locally, plus the `agent-terminal-state` job's clippy pass and a `cargo doc -D warnings` check CI does not run.
 - **`app` job** (`macos-15`): sets up Xcode + Go, `brew install xcodegen`, runs `make app-lint`
   (swift-format `--strict`), `make app-package-test` and `make app-test` with **ad-hoc signing** flags (hosted runners have
   no signing cert), e.g.:
