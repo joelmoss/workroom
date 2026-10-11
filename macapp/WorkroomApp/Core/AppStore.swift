@@ -638,8 +638,8 @@ final class AppStore: ObservableObject {
   }
   /// Whether `path` has any create/delete in flight — the sidebar row's spinner gate.
   func isBusyProject(_ path: String) -> Bool { (busyProjects[path] ?? 0) > 0 }
-  private func beginBusy(_ path: String) { busyProjects[path, default: 0] += 1 }
-  private func endBusy(_ path: String) {
+  func beginBusy(_ path: String) { busyProjects[path, default: 0] += 1 }
+  func endBusy(_ path: String) {
     guard let n = busyProjects[path] else { return }
     if n <= 1 { busyProjects[path] = nil } else { busyProjects[path] = n - 1 }
   }
@@ -880,7 +880,7 @@ final class AppStore: ObservableObject {
   /// location they're navigating to.
   var isNavigatingHistory = false
 
-  private let resolver = BranchResolver()
+  let resolver = BranchResolver()
   /// The in-flight branch-resolution sweep; cancelled and replaced on each reload so a
   /// slow sweep never writes stale labels over a newer one.
   private var branchTask: Task<Void, Never>?
@@ -2430,7 +2430,7 @@ final class AppStore: ObservableObject {
   }
 
   /// Writes what the remote create and delete sequences record to `path`'s config, through the CLI.
-  private func remoteRecorder(project path: String) -> RemoteWorkrooms.Recorder {
+  func remoteRecorder(project path: String) -> RemoteWorkrooms.Recorder {
     let cli = self.cli
     return RemoteWorkrooms.Recorder(
       reserve: { hostPath, descriptor in
@@ -3231,7 +3231,7 @@ final class AppStore: ObservableObject {
     errorMessage = output.isEmpty ? errorText(error) : output
   }
 
-  private func errorText(_ error: Error) -> String {
+  func errorText(_ error: Error) -> String {
     (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
   }
 
@@ -3709,7 +3709,7 @@ final class AppStore: ObservableObject {
 
   /// Tell the user a new workroom doesn't start where they'd expect: its create couldn't fetch, the
   /// base came from a local copy, or the app-wide default didn't fit this project.
-  private func noticeStaleStart(of id: TerminalTarget.ID, _ warning: String) {
+  func noticeStaleStart(of id: TerminalTarget.ID, _ warning: String) {
     surface(
       notifications.recordNotice(
         targetID: id, source: notificationSource(forTargetID: id),
