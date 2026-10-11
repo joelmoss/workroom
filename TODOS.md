@@ -560,7 +560,7 @@ views, so it wants a deliberate visual pass rather than a drive-by change.
 **Why:** 1 changes behaviour (a CLI wording change would silently read a dead socket as a live
 agent); 2 is duplication.
 
-**How to start:** 1 in `vcs/crates/wr-agent/src/main.rs` (`run_hand_off`, the 92 arms) with the
+**How to start:** 1 in `vcs/crates/wr-agent/src/cli/hand_off.rs` (`run_hand_off`, the 92 arms) with the
 fixture's `over_ssh_the_bootstrap_*` test; 2 is mechanical.
 
 **Priority:** P3, effort S each.

@@ -112,7 +112,7 @@ struct AgentCommandRunner: StatusCommandRunning, Sendable {
     }
   }
 
-  /// `vcs.rs`'s request-reassembly refusals, sent before a request is dispatched at all.
+  /// `rpc.rs`'s request-reassembly refusals, sent before a request is dispatched at all.
   static let preRunRefusals: Set<String> = [
     "truncated request chunk", "too many large VCS requests in flight",
     "VCS request exceeds 16 MiB",

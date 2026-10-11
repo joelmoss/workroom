@@ -24,6 +24,7 @@ Run commands from the repository root; `make` lists available targets.
 - `make app-format`, `make app-lint`: format Swift and enforce strict linting.
 - `make cli-build`, `make cli-test`: build the CLI and run `go test ./...`.
 - `make cli-lint`: run golangci-lint v2 and check gofmt/goimports formatting.
+- `make vcs-lint`: run rustfmt and clippy over the `vcs/` Rust workspace, with and without `terminal-state`, on CI's Rust 1.96.1.
 - `make actions-lint`: lint `.github/workflows` with actionlint, shellcheck included.
 
 Use `macapp/project.yml` for project configuration; do not edit generated `.xcodeproj` files.

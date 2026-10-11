@@ -207,7 +207,7 @@ final class AgentBootstrapTests: XCTestCase {
     XCTAssertEqual(outcome, .init(architecture: "aarch64", pushed: true, agent: .handedOff))
   }
 
-  /// A bundled agent with build number `build`, as `serve::BUILD_MARKER` keeps it in the binary.
+  /// A bundled agent with build number `build`, as `handoff::BUILD_MARKER` keeps it in the binary.
   private func numberedAgent(_ build: UInt64) throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(
       "wr-agent-linux-\(UUID().uuidString.prefix(8))")
