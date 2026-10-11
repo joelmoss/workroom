@@ -327,24 +327,24 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// An ssh the app spawns gets no other environment (`HostStream.spawn`), so it also gets the
   /// login shell's PATH, where a `ProxyCommand`'s helper is found, as in Terminal; a pane's ssh
   /// has the pane's own.
-  func route(_ id: UUID, spawned: Bool) -> ContainerHostDriver.Route {
+  func route(_ id: UUID, spawned: Bool) -> SSHTransport.Route {
     var environment = configuration.sshAgent.map { ["SSH_AUTH_SOCK": $0] } ?? [:]
     if spawned { environment["PATH"] = ShellEnvironment.path() }
-    return ContainerHostDriver.Route(
+    return SSHTransport.Route(
       options: Self.sshOptions, destination: "\(Self.user)@\(name(of: id)).exe.xyz",
       environment: environment)
   }
 
   func openStream(to host: HostID) async throws -> HostStream {
     let id = try id(of: host)
-    return try ContainerHostDriver.exec(
-      ContainerHostDriver.relayCommand(
+    return try SSHTransport.exec(
+      SSHTransport.relayCommand(
         binary: AgentBootstrap.binary(besideSocket: agentSocket), socket: agentSocket),
       via: route(id, spawned: true), purpose: .connection)
   }
 
   func exec(_ command: String, on host: HostID) async throws -> HostStream {
-    try ContainerHostDriver.exec(
+    try SSHTransport.exec(
       command, via: route(try id(of: host), spawned: true), purpose: .exchange)
   }
 
@@ -355,7 +355,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
     let id = try id(of: host)
     try FileManager.default.createDirectory(
       at: hostDirectory(id), withIntermediateDirectories: true)
-    return ContainerHostDriver.attachCommand(
+    return SSHTransport.attachCommand(
       via: route(id, spawned: false), in: hostDirectory(id), agentSocket: agentSocket,
       session: session,
       workingDirectory: workingDirectory, restored: restored, metadata: metadata)
@@ -363,11 +363,11 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   func hostRefusedLastAttach(of session: UUID, on host: HostID) -> Bool {
     guard case .remote(let id) = host else { return false }
-    return ContainerHostDriver.refusedLastAttach(of: session, in: hostDirectory(id))
+    return SSHTransport.refusedLastAttach(of: session, in: hostDirectory(id))
   }
 
   func lastAttachLostLink(of session: UUID, on host: HostID) -> Bool {
     guard case .remote(let id) = host else { return false }
-    return ContainerHostDriver.lostLinkLastAttach(of: session, in: hostDirectory(id))
+    return SSHTransport.lostLinkLastAttach(of: session, in: hostDirectory(id))
   }
 }

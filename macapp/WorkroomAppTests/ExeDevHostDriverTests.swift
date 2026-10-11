@@ -311,7 +311,7 @@ final class ExeDevHostDriverTests: XCTestCase {
     let session = UUID()
     let command = try driver.attachCommand(
       to: .remote(id), session: session, workingDirectory: "/w", restored: true)
-    let log = ContainerHostDriver.attachLog(
+    let log = SSHTransport.attachLog(
       session, in: driver.directory.appendingPathComponent(id.uuidString))
     XCTAssertTrue(command.contains("'\(log.path)'"), command)
     XCTAssertFalse(driver.hostRefusedLastAttach(of: session, on: .remote(id)))
