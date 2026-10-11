@@ -162,6 +162,9 @@ struct RootView: View {
     // flipping it here would also close the inspector in any OTHER window that still has something
     // selected. The toggle's own on/off state (View menu, `ActivityBar`) is untouched either way — it
     // just resumes controlling real visibility again the moment something's selected.
+    // Re-renders on every activity-bar click, so `showInspector` is read fresh
+    // (`AppStore.inspectorToggles`).
+    let _ = store.inspectorToggles
     let inspectorVisible = showInspector && store.selectedTarget != nil
     // Same reasoning as `inspectorVisible`: with zero projects, `SidebarColumn` has nothing to list
     // but its own "No projects yet" empty state — which `detailContent`'s empty state now also shows

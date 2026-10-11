@@ -24,6 +24,8 @@ struct ActivityBar: View {
   static let width: CGFloat = 44
 
   var body: some View {
+    // Re-renders on every click, so `showInspector` is read fresh (`AppStore.inspectorToggles`).
+    let _ = store.inspectorToggles
     VStack(spacing: 2) {
       ForEach(ActivitySection.allCases) { section in
         ActivityBarButton(

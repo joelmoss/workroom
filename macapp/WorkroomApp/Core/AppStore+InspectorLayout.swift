@@ -64,15 +64,16 @@ extension AppStore {
   }
 
   /// Apply an activity-bar navigation action through the pure `ActivityBarReducer`. Writes the
-  /// resulting pane visibility to `Defaults[.showInspector]` first, then **always** assigns
-  /// `activeInspectorSection` (even when it doesn't change): `@Published` fires `objectWillChange`
-  /// on every set, so this forces the bar + inspector to re-render synchronously on the click and
-  /// read the freshly-written `showInspector` (which, as a bare `@Default`, invalidates async).
+  /// resulting pane visibility to `Defaults[.showInspector]` first, then sets
+  /// `activeInspectorSection` and bumps `inspectorToggles`, so the bar + inspector re-render
+  /// synchronously on the click and read the freshly-written `showInspector` (which, as a bare
+  /// `@Default`, invalidates async) even when the section doesn't change.
   func apply(_ action: ActivityBarReducer.Action) {
     let current = ActivityBarReducer.State(
       active: activeInspectorSection, visible: Defaults[.showInspector])
     let next = ActivityBarReducer.reduce(current, action)
     Defaults[.showInspector] = next.visible
     activeInspectorSection = next.active
+    inspectorToggles += 1
   }
 }
