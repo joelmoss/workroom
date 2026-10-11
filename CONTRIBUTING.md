@@ -77,10 +77,13 @@ the v2-format `.golangci.yml`.
 pinned Ghostty on its first run. The workspace lint table in `vcs/Cargo.toml` is a floor of lints the
 code already passes; never silence one with an `allow` without asking first.
 
-**To change a GitHub workflow:** **`actionlint` 1.7.12** for `make actions-lint`
-(`go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`), with `shellcheck` on `PATH` so
-`run:` blocks are checked too. CI's `workflows` job runs the same version, checked by the
-release archive's sha256: bump the version and the hash there together. That job
+**To change a GitHub workflow:** **`jactionlint` 2.1.0** for `make actions-lint`
+(`go install github.com/jdx/jactionlint/v2/cmd/jactionlint@v2.1.0`, or
+`mise use -g github:jdx/jactionlint@2.1.0`), with `shellcheck` on `PATH` so `run:` blocks are
+checked too. It runs every actionlint check plus security rules: pinned action SHAs, job-level
+`permissions`, `timeout-minutes` on every job, no restored caches in publishing jobs. CI's
+`workflows` job runs the same version, checked by the release archive's sha256: bump the version
+and the hash there together. That job
 installs `shellcheck` 0.11.0 the same way (`SHELLCHECK_VERSION` and `SHELLCHECK_SHA256`), because the
 runner's own is older, and also lints `macapp/Scripts/*.sh` through `make app-scripts-lint`.
 
