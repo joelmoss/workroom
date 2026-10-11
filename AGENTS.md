@@ -25,7 +25,7 @@ Run commands from the repository root; `make` lists available targets.
 - `make cli-build`, `make cli-test`: build the CLI and run `go test ./...`.
 - `make cli-lint`: run golangci-lint v2 and check gofmt/goimports formatting.
 - `make vcs-lint`: run rustfmt, clippy and `cargo doc -D warnings` over the `vcs/` Rust workspace, with and without `terminal-state`, on CI's Rust 1.96.1.
-- `make actions-lint`: lint `.github/workflows` with actionlint, shellcheck included.
+- `make actions-lint`: lint `.github/workflows`, the composite actions and `dependabot.yml` with jactionlint, shellcheck included.
 
 Use `macapp/project.yml` for project configuration; do not edit generated `.xcodeproj` files.
 
