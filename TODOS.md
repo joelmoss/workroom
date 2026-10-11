@@ -112,10 +112,10 @@ deferred (2026-10-05). Neither loses data from a single window.
 
 **What:** The real Keychain calls in `BrokerCredentials.SecretStore.keychain` are untested (tests use
 the stand-in), and `kSecAttrAccessibleAfterFirstUnlock` on a login-keychain item was never measured.
-If the item is not readable before first unlock, sign-in prompts after a reboot.
 
 **How to start:** Sign in on a Dev build and on a Developer ID Nightly once codaset.dev serves the
-broker, and check the item's access list in Keychain Access.
+broker, and check the item's access list in Keychain Access. The question is whether each app
+signature reads the item after login without an authorization prompt.
 
 **Depends on / blocked by:** codaset#43 deployed.
 
