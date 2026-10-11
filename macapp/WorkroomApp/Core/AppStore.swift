@@ -85,7 +85,7 @@ final class AppStore: ObservableObject {
   /// `WorkroomCLI.shared`; tests inject a fake to drive mutations without a real
   /// subprocess. Injected like `projectStore` (in the init body, not as a default
   /// arg, which is evaluated nonisolated).
-  private let cli: WorkroomCLIProtocol
+  let cli: WorkroomCLIProtocol
 
   /// Seam over the macOS Trash (issue #108): a from-disk project delete moves dirs to the Bin via
   /// `FileManager.trashItem` (Finder "Put Back", no TCC prompt). Injectable so tests assert the
@@ -1673,7 +1673,7 @@ final class AppStore: ObservableObject {
   /// Run-STATE is owned here (not on `TerminalSessions`) so the toolbar, sidebar, menu, and RootView
   /// — which all observe this store — react to start/stop/exit from one `@Published` source (OV-A).
   /// `TerminalSessions` only creates/focuses the tab and reports its removal via `.tabsRemoved`.
-  @Published private(set) var runStates: [TerminalTarget.ID: RunState] = [:]
+  @Published var runStates: [TerminalTarget.ID: RunState] = [:]
 
   /// Live Investigate sessions (issue #49/#146), tab → target. Kept separate from `runStates` (one
   /// `RunState` per target, modelling a single dev-server-style run): an Investigate session is a
@@ -1699,11 +1699,11 @@ final class AppStore: ObservableObject {
   ///   alert — now fires for a     — unaffected in practice: only
   ///   live Investigate session    `runStates` feeds the actual
   ///                                gracefully-stop loop
-  private(set) var investigateTabs: [TerminalTab.ID: TerminalTarget.ID] = [:]
+  var investigateTabs: [TerminalTab.ID: TerminalTarget.ID] = [:]
 
   /// Per-target end-of-run outcome for the run toast (issue #67). Set on exit / failed start, cleared
   /// when a fresh run starts for that target. Derived-from, not duplicating, `runStates`.
-  @Published private(set) var runOutcomes: [TerminalTarget.ID: RunOutcome] = [:]
+  @Published var runOutcomes: [TerminalTarget.ID: RunOutcome] = [:]
 
   // MARK: Run toast (issue #67) — DERIVED view-model, dismissal, native banner
 
@@ -1736,15 +1736,15 @@ final class AppStore: ObservableObject {
   /// Targets whose run toast was explicitly dismissed (✕) or auto-dismissed after a terminal state.
   /// Cleared when a fresh run starts. Open-terminal does NOT add here — it lets the visibility rule
   /// hide the toast while the run is on screen, so it reappears when you navigate away.
-  @Published private(set) var dismissedRunToasts: Set<TerminalTarget.ID> = []
+  @Published var dismissedRunToasts: Set<TerminalTarget.ID> = []
   /// Targets whose LIVE (running/restarting) toast auto-hid after lingering a while — separate from
   /// `dismissedRunToasts` so a run that quietly auto-hid its "still running" toast can still surface
   /// a later terminal (exited/failed) toast; only gates the non-terminal branch of `runToastItems`.
   /// Cleared on a fresh "running" edge (start or restart), so the toast reappears each time.
-  @Published private(set) var runningToastAutoHidden: Set<TerminalTarget.ID> = []
+  @Published var runningToastAutoHidden: Set<TerminalTarget.ID> = []
   /// Pending auto-dismiss/auto-hide timers, one per target, cancelled on restart so a stale timer
   /// can't dismiss the next run's toast (review: timer cancellation on restart).
-  private var runToastDismissWork: [TerminalTarget.ID: DispatchWorkItem] = [:]
+  var runToastDismissWork: [TerminalTarget.ID: DispatchWorkItem] = [:]
   /// How long a terminal-state run toast lingers before auto-dismissing.
   private static let runToastLinger: TimeInterval = 6
   /// How long the LIVE (running/restarting) toast shows before auto-hiding — longer than the terminal
@@ -1839,7 +1839,7 @@ final class AppStore: ObservableObject {
 
   /// Clear toast dismissal + cancel any pending auto-dismiss for a target — called when a fresh run
   /// starts (so the new run always gets a toast) and when the run goes away (close/reap/delete).
-  private func resetRunToast(for targetID: TerminalTarget.ID) {
+  func resetRunToast(for targetID: TerminalTarget.ID) {
     runToastDismissWork[targetID]?.cancel()
     runToastDismissWork[targetID] = nil
     dismissedRunToasts.remove(targetID)
@@ -1892,7 +1892,7 @@ final class AppStore: ObservableObject {
 
   /// The owning project of a target by id (mirrors `notificationSource`'s scan) — for the run toast's
   /// command label.
-  private func project(forTargetID id: TerminalTarget.ID) -> Project? {
+  func project(forTargetID id: TerminalTarget.ID) -> Project? {
     projects.first { p in
       TerminalTarget.rootID(project: p.path) == id
         || p.workrooms.contains { TerminalTarget.workroomID(project: p.path, name: $0.name) == id }
@@ -2082,7 +2082,7 @@ final class AppStore: ObservableObject {
   /// Per-target temp file holding the run command's pid (written by the run wrapper, read to resolve
   /// + signal its process group). Generated fresh per start/respawn; cleared when the run exits or
   /// its tab is removed so a reused pid can never be signalled.
-  private(set) var runPidFiles: [TerminalTarget.ID: String] = [:]
+  var runPidFiles: [TerminalTarget.ID: String] = [:]
 
   /// A fresh per-run pid-file path. Does NOT store it — the caller assigns `runPidFiles[target]`
   /// AFTER the tab is (re)created, because `respawnRunTab` closes the old tab first and that fires
@@ -2108,7 +2108,7 @@ final class AppStore: ObservableObject {
   /// process the run command spawns stays in the one session `login` created for it (unless it
   /// daemonizes via setsid, which dev servers don't — a typed Ctrl-C stops them, proving it). The
   /// session id stays valid after its leader exits, so it reaps a server that outlived the launcher.
-  private var runSessions: [TerminalTarget.ID: pid_t] = [:]
+  var runSessions: [TerminalTarget.ID: pid_t] = [:]
 
   /// Poll the just-spawned run wrapper's pid file and record its session id while it's still alive, so
   /// a later Stop / child-exit can SIGINT the whole session (issue #7). The launcher lives through the
@@ -2158,7 +2158,7 @@ final class AppStore: ObservableObject {
 
   /// Forget (and delete) a target's captured pid file + group once its run has exited/closed, so a
   /// later reuse of that pid/group can't be signalled.
-  private func clearRunPidFile(for targetID: TerminalTarget.ID) {
+  func clearRunPidFile(for targetID: TerminalTarget.ID) {
     runSessions[targetID] = nil
     lastRunStatus[targetID] = nil
     if let path = runPidFiles.removeValue(forKey: targetID) {
@@ -2191,7 +2191,7 @@ final class AppStore: ObservableObject {
 
   /// Last status line applied per target, so the poller reacts only to CHANGES (and doesn't re-fire
   /// the auto-dismiss timer each tick). Cleared in `clearRunPidFile`.
-  private var lastRunStatus: [TerminalTarget.ID: String] = [:]
+  var lastRunStatus: [TerminalTarget.ID: String] = [:]
 
   /// Poll the supervisor's status file — the AUTHORITATIVE run state (issue #7) — while the run pane is
   /// open, applying each change. Replaces inferring state from child-exit + an `interrupted` flag (which
@@ -2763,7 +2763,7 @@ final class AppStore: ObservableObject {
   /// before running `proceed` (the actual close/teardown); otherwise run `proceed` now. Ordinary
   /// shell tabs (which don't exit on Ctrl-C) and already-exited run tabs fall straight through, so
   /// only a live dev server pays the wait.
-  private func closingRunTab(
+  func closingRunTab(
     _ tabID: TerminalTab.ID, for targetID: TerminalTarget.ID, then proceed: @escaping () -> Void
   ) {
     let isRunTab = runStates[targetID]?.tab == tabID
@@ -5460,7 +5460,7 @@ final class AppStore: ObservableObject {
 
   // MARK: Errors
 
-  private func present(_ error: Error) {
+  func present(_ error: Error) {
     errorTitle = nil  // generic title
     errorMessage = errorText(error)
     errorDetails = Self.errorDetails(error)
