@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # Bumps the commit SHAs every `uses:` is pinned to, and the `# vN` comment beside each.
+  - package-ecosystem: github-actions
+    # "/" covers .github/workflows; the composite actions live under .github/actions.
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    # Skip releases younger than a week: a hijacked action is usually caught within days.
+    cooldown:
+      default-days: 7
+    # One PR for every action bumped that week, rather than one per action.
+    groups:
+      actions:
+        patterns:
+          - "*"
