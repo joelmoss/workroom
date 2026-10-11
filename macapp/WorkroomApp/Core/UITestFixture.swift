@@ -424,7 +424,7 @@ enum UITestFixture {
     }
     let now = Date()
     // `-WorkroomUITestUsageZero 1` seeds zero usage, the only way to see the plain-accent `.onPace`
-    // bar (TODOS' manual visual check). The spoken label for it is pinned by
+    // bar (a manual visual check). The spoken label for it is pinned by
     // `CodingAgentUsageSegmentLabelTests`; the bar's colour has no automated check.
     let used = flag("WorkroomUITestUsageZero") ? 0.0 : 42.0
     let weeklyUsed = flag("WorkroomUITestUsageZero") ? 0.0 : 61.0

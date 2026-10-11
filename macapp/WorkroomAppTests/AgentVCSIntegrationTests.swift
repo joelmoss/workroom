@@ -714,7 +714,7 @@ final class AgentVCSIntegrationTests: XCTestCase {
   /// A live agent must actually ROUTE writes, not merely fail to refuse them. Paired with the two
   /// fallback tests above, which cover the refusal: together they pin the DECISION rather than the
   /// capability number that currently encodes it, so replacing that number with an exec-service
-  /// check (TODOS item 4) does not invalidate this.
+  /// check does not invalidate this.
   ///
   /// `localWriter` is the only writer wired and it cannot throw `backendVersion`, so a fallback here
   /// is impossible — the commit below is the agent's own child process or nothing.

@@ -254,7 +254,7 @@ struct GitProvider: LocalVCSProviding {
   /// both the post-index name — a rename only the worktree half made would show up there), never the
   /// staged blob, so both legs of the edit show up as one diff. Mirrors `workingPatch`'s `.conflicted`
   /// case, which reads HEAD→worktree the same way (that case's own blob lookup is a pre-existing,
-  /// separate gap — see TODOS.md).
+  /// separate gap).
   private static func combinedWorkingDiff(
     _ repo: Repository, indexDelta: Diff.Delta, workingTreeDelta: Diff.Delta, root: URL
   ) throws -> String {

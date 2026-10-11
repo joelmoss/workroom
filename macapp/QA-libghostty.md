@@ -137,7 +137,33 @@ the likeliest suspects.
 
 **Run this section against the *current* engine first and record the result.** Half of these items
 have no correct absolute answer — only "same as before the bump" — so a baseline taken after the
-bump is worthless. See TODOS.md → "Bump the libghostty pin".
+bump is worthless.
+
+**Procedure (learned on the 1.3.2 and 1.5.20260903 bumps; the TODOS entries that held it were removed
+2026-10-11, see git history):**
+- Package version is not ghostty's version. `libghostty-spm` versions itself; read the release body
+  ("Ghostty commit: …") and `Ghostty.ref`, never the tag. Do not take a build that rebuilds an older
+  ghostty (package `1.5.2` and `upstream.1.3.1-*` were rebuilds of March's v1.3.1).
+- Sweep the whole of `include/ghostty.h` with `diff -u` between the two refs, then grep `WorkroomApp*`
+  for every removed or changed symbol. The 1.5.20260903 bump rewrote the clipboard API wholesale.
+- The packager's `Script/apply-patches.sh` feature-probes ghostty's source to pick patch variants,
+  and falls back to `git apply --3way` when context drifted, which only echoes "context drifted" and
+  does not fail the build. Read the packager's CI log for that string (`gh run view <id> -R
+  Lakr233/libghostty-spm --log`) before accepting the artifact.
+- SPM leaves `checkouts/libghostty-spm` read-only, so resolving the new pin fails with
+  `Unable to create '.git/index.lock': Permission denied`. `chmod -R u+w` then `rm -rf` that checkout.
+- A `BUILD SUCCEEDED` straight after the resolve proves nothing: Xcode does not recompile Swift
+  when only the binary artifact's header changed. `touch` the files that call the C API
+  (`GhosttyApp.swift`, `GhosttyRuntimeAdapter.swift`) and rebuild.
+- Regenerate `Resources/ghostty/` (terminfo via `infocmp`/`tic`, `shell-integration/`) from the
+  pinned commit; see `Resources/ghostty/SOURCE.md`. Update `GhosttyPinIntegrityTests.expectedRevision`
+  in the same commit.
+- Re-check the GhosttyKit modulemap-collision workaround (`macapp/AGENTS.md`). `release.sh` refuses a
+  bundle with a thin Mach-O, and `nightly.yml` builds universal daily, so no separate universal build
+  is needed.
+- The bake gate (how many clean nightlies before the bump enters a `pre` tag) has never been decided.
+- Rollback is not one line: revert, `rm -rf macapp/DerivedData/SourcePackages`, rebuild. CI's
+  `spm-`/`xcbuild-` cache `restore-keys` can restore a mixed state.
 
 **Scope note:** the risk in a bump is the **patch swap**
 (`0002-host-managed-io.patch` → `-modern`, which rewrites PTY hosting), not the C enum. A mid-enum

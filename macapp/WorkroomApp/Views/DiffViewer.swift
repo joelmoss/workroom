@@ -94,8 +94,7 @@ struct DiffViewer: View {
   /// instead of it. Retargeting this pane swaps the id value at a stable slot (the view instance is
   /// reused, not recreated), and cancellation delivery for that shape does not measure the same
   /// way everywhere: `AvatarView` measured `Task.isCancelled == false` throughout the outgoing
-  /// invocation in the live app (see TODOS "`.task(id:)` cancellation is not reliably delivered on
-  /// an in-place value swap"), while this view measured it DELIVERED in a hosted-view harness
+  /// invocation in the live app (2026-08-13), while this view measured it DELIVERED in a hosted-view harness
   /// (`DiffViewerStaleLoadTests`). The harness is not the app's view tree and the flag's delivery is
   /// an unspecified SwiftUI detail, so the flag is the guard the test proves and the token is the
   /// belt. `@State` survives the slot being reused, so whichever invocation started LAST wins.
@@ -572,7 +571,7 @@ struct DiffViewer: View {
     // per-row `AppKitPlatformViewHost` node for a row that was never realized). `HistoryPanel`'s
     // `LazyVStack` is fine for its OWN rows (single-line, fixed-height, so a lazy stack's height
     // estimate is exact) but couldn't have carried the same fix here without the pre-measurement work
-    // `List` makes unnecessary — see TODOS.md/WORKROOM-2T for the full investigation, including why
+    // `List` makes unnecessary — see WORKROOM-2T for the investigation, including why
     // `List` was avoided elsewhere in this codebase (macOS list chrome fighting custom row styling) and
     // why that concern didn't hold up here once actually tried (`.listStyle(.plain)` +
     // `.listRowInsets`/`.listRowSeparator(.hidden)` + `.environment(\.defaultMinListRowHeight, 0)`).

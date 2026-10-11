@@ -415,7 +415,7 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   truth for which package version and which ghostty engine we ship** — read the comment there rather
   than trusting a version quoted anywhere else, and note the trap it documents: the package versions
   itself independently of ghostty, so package `1.3.1` is not ghostty `v1.3.1`. Bumping it is not a
-  one-line change (see "Bump the libghostty pin" in `TODOS.md`). The terminal surface
+  one-line change (see the procedure under §N of `macapp/QA-libghostty.md`). The terminal surface
   (`Core/GhosttySurfaceView.swift`) + runtime (`GhosttyApp`/`GhosttyRuntimeAdapter`) are ours; the
   bundled `Resources/ghostty` (terminfo + shell-integration) must ship for the engine to start.
 - **The child environment has two layers, and only one of them is reliable** (`Core/ShellEnvironment.swift`).

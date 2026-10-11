@@ -5,7 +5,7 @@ import XCTest
 
 @testable import Workroom
 
-/// The measurement TODOS.md asked for before touching anything: `FamilyRow` reads
+/// The measurement taken before touching anything: `FamilyRow` reads
 /// `ThemeService.shared.tokens` for its own chrome (border/hover/accent colours), and
 /// `ThemeService` is `@Observable`, so every row that touched `tokens` during its last body pass
 /// is a real dependency — an arrow-key press (`applyFamily` → `tokens` replaced) invalidates every

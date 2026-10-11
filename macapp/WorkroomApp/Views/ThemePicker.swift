@@ -159,7 +159,7 @@ struct FamilyRow: View {
 
   #if DEBUG
     /// How many times ANY row's body has been evaluated this process — the measurement behind
-    /// `ThemePickerInvalidationTests` (WORKROOM-2B follow-up, TODOS.md). Debug-only.
+    /// `ThemePickerInvalidationTests` (WORKROOM-2B follow-up). Debug-only.
     static var bodyPasses = 0
   #endif
 

@@ -4,7 +4,7 @@ import XCTest
 
 @testable import Workroom
 
-/// The regression net for the WORKROOM-2B candidate flagged in TODOS.md for `Views/FilesPanel.swift`:
+/// The regression net for the WORKROOM-2B candidate in `Views/FilesPanel.swift`:
 /// `FileTreeRowView` used to hold BOTH `@EnvironmentObject var store: AppStore` (read only inside
 /// tap/menu closures, never in the rendered body) and `@ObservedObject var model: FileTreeModel`,
 /// over an eager `VStack` capped at 4000 rows — the same shape that turned per-row avatar work into a

@@ -69,12 +69,13 @@ packages:
     # 2026-03-13) — four months OLDER than the engine we ship. The packager's `upstream.1.3.1-*`
     # builds (and package 1.5.2 with them) are rebuilds of that March release, so taking one would
     # be an engine DOWNGRADE. This has now misled two separate readings of this pin.
-    # Reading the package version as a ghostty version once put a false premise into TODOS.md and
-    # made a P1 out of it. To check what a package release actually contains, read its release body
+    # Reading the package version as a ghostty version once put a false premise into the
+    # roadmap and made a P1 out of it. To check what a package release actually contains, read its release body
     # ("Ghostty commit: …") and the repo's hand-maintained `Ghostty.ref` — never the tag alone.
     #
-    # Bumping this is NOT a one-line change: see "Bump the libghostty pin" in TODOS.md for the
-    # patch-swap risk, the resources that must be regenerated with it, and the bake gate.
+    # Bumping this is NOT a one-line change: see the procedure under §N of
+    # macapp/QA-libghostty.md for the patch-swap risk, the resources that must be regenerated with
+    # it, and the bake gate.
     url: https://github.com/Lakr233/libghostty-spm
     exactVersion: 1.5.20260903
   Sentry:

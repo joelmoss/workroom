@@ -148,8 +148,8 @@ running `+ssh-cache` on it, because a build completing proves packaging, not fun
 **Consequence for the bump: regenerating `shell-integration/` is now safe** — but only *with or
 after* the pin bump, never before it. `+ssh` does not exist at the pinned v1.3.1 (it is `main`-only,
 in no tagged release) and arrives at the bump target `35e1a016`. Regenerating first would swap the
-inline wrapper for a call to an action this engine does not have. TODOS.md's pin-bump entry carries
-the blocking test that must accompany it.
+inline wrapper for a call to an action this engine does not have. The tests that accompanied
+it are `GhosttyCLITests.testGhosttySshHelpDispatches` and the stub-`ssh` wrapper tests beside it.
 
 **Done, 2026-08-12.** The 1.3.2 bump regenerated `shell-integration/` from `35e1a016` (with the pin,
 same commit, not before it) — both `bash/ghostty.bash` and `zsh/ghostty-integration` now call
