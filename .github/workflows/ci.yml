@@ -28,7 +28,9 @@ jobs:
       SHELLCHECK_VERSION: 0.11.0
       SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       # The runner's own shellcheck (0.9.0 on ubuntu-24.04) is older than the one developers run, so
       # the same script could lint clean locally and fail here. Pinned by checksum like actionlint;
@@ -62,9 +64,11 @@ jobs:
   cli:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
 
@@ -76,7 +80,7 @@ jobs:
       # reads (older cannot decode newer export data; that is what killed v1 here), so a linter
       # built by a NEWER Go than the module targets is correct, not a mismatch.
       - name: Lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           version: v2.13.2
 
@@ -106,7 +110,9 @@ jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       # Pinned for the lint gates below, unlike the `app` job (which deliberately tracks the runner's
       # rustc so a toolchain bump invalidates its output cache). rustfmt's layout and clippy's lint set
@@ -118,7 +124,7 @@ jobs:
           rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy
           rustup default 1.96.1
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: vcs
 
@@ -150,7 +156,9 @@ jobs:
   agent-terminal-state:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         run: |
@@ -169,12 +177,12 @@ jobs:
       # Keyed on the pinned engine sha, so a bump refetches and rebuilds and nothing else does.
       # Without this every run clones Ghostty and spends ~75s building the emulator.
       - name: Cache libghostty-vt
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/workroom/ghostty-vt
           key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: vcs
 
@@ -204,7 +212,9 @@ jobs:
     env:
       TARGET: ${{ matrix.arch }}-unknown-linux-musl
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         run: |
@@ -223,12 +233,12 @@ jobs:
       # Its own key per arch. Sharing `agent-terminal-state`'s key would restore that job's glibc
       # prefix, count as a hit, never save the musl one, and rebuild it on every run.
       - name: Cache libghostty-vt
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/workroom/ghostty-vt
           key: ghostty-vt-${{ runner.os }}-${{ env.TARGET }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: vcs
           key: ${{ env.TARGET }}
@@ -237,7 +247,7 @@ jobs:
       # installed, so cache it on the pinned version.
       - name: Cache cargo-zigbuild
         id: zigbuild
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cargo/bin/cargo-zigbuild
           key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-0.23.4
@@ -273,10 +283,10 @@ jobs:
       - name: Set up Docker Buildx (ssh fixture)
         id: buildx
         if: matrix.arch == 'x86_64'
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Expose the Actions cache to buildx (ssh fixture)
         if: matrix.arch == 'x86_64'
-        uses: crazy-max/ghaction-github-runtime@v4
+        uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4
 
       # The persistent remote path over real ssh (issue #228): this ELF, supervised in a container
       # with sshd, driven from the runner by the ignored `over_ssh_*` tests in remote_transport.rs.
@@ -323,22 +333,26 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - name: workroom-host image (arm64)
         run: vcs/scripts/ssh-fixture/host-image-test.sh
 
   app:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       # Xcode 16+ bundles swift-format (used by `make app-lint`) and builds for macOS 14+.
-      - uses: maxim-lobanov/setup-xcode@v1
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
         with:
           xcode-version: latest-stable
 
       # Scripts/build-helper.sh compiles + embeds the workroom CLI during the test build.
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
 
@@ -378,7 +392,7 @@ jobs:
 
       - name: Cache cargo-zigbuild
         id: zigbuild
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cargo/bin/cargo-zigbuild
           key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-0.23.4
@@ -390,7 +404,7 @@ jobs:
       # Keyed on the pinned engine sha, as in `agent-terminal-state`: a bump refetches and
       # rebuilds, nothing else does.
       - name: Cache libghostty-vt
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/workroom/ghostty-vt
           key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
@@ -398,7 +412,7 @@ jobs:
       # Xcode builds the bundled wr-agent (Scripts/build-agent.sh). v2 avoids old entries saved
       # without the agent build.
       - name: Cache cargo (agent)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: vcs
           key: app-agent-v2
@@ -423,7 +437,7 @@ jobs:
       # it's exactly the situation this cache must not paper over.
       - name: Cache SPM packages
         id: spm
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: macapp/DerivedData/SourcePackages
           key: >-
@@ -448,7 +462,7 @@ jobs:
           echo "version=$(xcodebuild -version | awk 'NR==1{v=$2} NR==2{b=$NF} END{print v "-" b}')" >> "$GITHUB_OUTPUT"
 
       - name: Cache Xcode build dir
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: macapp/DerivedData/Build
           key: >-
@@ -490,7 +504,7 @@ jobs:
       # which is why diagnosing nightly 33955949260's failure needed a local repro instead of a read.
       - name: Upload test results (xcresult)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: xcresult-ci
           path: macapp/DerivedData/Logs/Test/*.xcresult
@@ -527,12 +541,13 @@ jobs:
     steps:
       # Full history, for the tags: agent-protocol_test.sh reads the latest stable release's app
       # protocol at its tag, and fails in a clone without them.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       # build-helper_test.sh cross-compiles the workroom CLI.
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
 
@@ -544,7 +559,7 @@ jobs:
           sha256: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
 
       - name: Cache libghostty-vt
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/workroom/ghostty-vt
           key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
@@ -554,7 +569,7 @@ jobs:
       # `vcs/target`, for the reason the test gives. The key changed with the directory: an exact hit
       # on the old entry would never save the new one.
       - name: Cache cargo (agent)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: vcs -> build-agent-target
           key: app-scripts-build-agent
@@ -586,7 +601,7 @@ jobs:
       # all that is installed, so cache it on the pinned version.
       - name: Cache cargo-zigbuild
         id: zigbuild
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cargo/bin/cargo-zigbuild
           key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-0.23.4

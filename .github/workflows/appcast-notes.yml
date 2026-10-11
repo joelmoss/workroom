@@ -25,7 +25,10 @@ jobs:
     if: github.event.release.tag_name != 'appcast'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # download-stats.sh pushes its snapshot with these credentials.
+          persist-credentials: true
       # appcast-notes.sh may clobber appcast.xml, resetting its poll count; read it first
       # (download-stats.yml). Never blocks the refresh.
       - name: Snapshot download counts before the clobber
