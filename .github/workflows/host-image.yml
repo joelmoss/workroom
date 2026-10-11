@@ -42,7 +42,9 @@ jobs:
       digest-amd64: ${{ steps.push.outputs.digest-amd64 }}
       digest-arm64: ${{ steps.push.outputs.digest-arm64 }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Build
         run: docker build --tag workroom-host-candidate vcs/scripts/ssh-fixture
