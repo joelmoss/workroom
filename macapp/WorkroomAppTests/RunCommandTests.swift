@@ -405,7 +405,7 @@ final class RunCommandTests: XCTestCase {
       store.runTabID(for: t.id), first, "re-run spawns a fresh tab (dead supervisor)")
   }
 
-  /// TODOS.md ("Stopped run-tab silently closes instead of warning when its command is cleared"):
+  /// A stopped run-tab whose command is cleared:
   /// a run stops (pane stays open), the command is cleared via Project Settings, and the next ⌘R
   /// used to hit `respawnRunCommand`'s `hasRunCommand` guard and just close the pane — no warning,
   /// indistinguishable from ⌘R doing nothing at all. It must now surface the same warning sheet the

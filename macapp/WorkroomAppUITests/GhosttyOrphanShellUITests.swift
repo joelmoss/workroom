@@ -1,7 +1,7 @@
 import XCTest
 
 /// Regression cover for the IO-layer patch swap (`0002-host-managed-io.patch` →
-/// `-modern`, see "Bump the libghostty pin" in TODOS.md) leaving a shell behind on quit.
+/// `-modern`, see §N of `QA-libghostty.md`) leaving a shell behind on quit.
 ///
 /// **Why a marker, not a shell-name grep.** `QA-libghostty.md`'s manual "Orphan check" used to grep
 /// `ps -ax` for `zsh|bash` — which always matches every unrelated shell already running on the

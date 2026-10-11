@@ -172,7 +172,7 @@ final class GhosttyResourcesTests: XCTestCase {
 final class GhosttyPinIntegrityTests: XCTestCase {
   /// The exact commit `macapp/project.yml`'s `libghostty` pin (version 1.5.20260903) resolved to
   /// when this bump was researched and landed. Update this alongside `project.yml`'s `exactVersion`
-  /// on every future bump — see "Bump the libghostty pin again" in `TODOS.md`.
+  /// on every future bump — see §N of `QA-libghostty.md`.
   private static let expectedRevision = "a2565ccf047c03c74a59dd7c16a8fac7c477852f"
 
   /// `Package.resolved` lives next to the (gitignored) `.xcodeproj`, not under `Resources` — it isn't

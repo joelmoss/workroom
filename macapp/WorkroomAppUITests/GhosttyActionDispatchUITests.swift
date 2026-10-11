@@ -13,8 +13,8 @@ import XCTest
 ///
 /// That is a bad trade for a dependency we upgrade: an action that stops arriving fails SILENTLY —
 /// no crash, no red test, just a title that stops updating or a spinner that never stops. These
-/// tests were written deliberately against the CURRENT engine, BEFORE the pin bump (see "Bump the
-/// libghostty pin" in TODOS.md), so they record known-good behaviour. Written after the bump they
+/// tests were written deliberately against the CURRENT engine, BEFORE the pin bump (see the procedure in
+/// `QA-libghostty.md` §N), so they record known-good behaviour. Written after the bump they
 /// would encode whatever the new engine does as correct and could never detect a regression.
 ///
 /// **What these do NOT test, and why:**

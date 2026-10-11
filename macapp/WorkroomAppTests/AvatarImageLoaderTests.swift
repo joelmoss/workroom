@@ -5,8 +5,7 @@ import XCTest
 
 @testable import Workroom
 
-/// `AvatarImageLoader` (WORKROOM-2B follow-up — the status-aware replacement for `AsyncImage`, see
-/// TODOS.md): reads the real HTTP status, so a genuine 404 ("no avatar for this address") and a
+/// `AvatarImageLoader` (WORKROOM-2B follow-up — the status-aware replacement for `AsyncImage`): reads the real HTTP status, so a genuine 404 ("no avatar for this address") and a
 /// transient failure ("the network dropped") are distinguishable — only the former is cached — and
 /// decoded images are cached too. A `URLProtocol` stub means no real network for any of this, exactly
 /// the testability gap `AsyncImage` couldn't offer.

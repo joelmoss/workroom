@@ -143,8 +143,8 @@ private struct CountingGHRunner: StatusCommandRunning, @unchecked Sendable {
   }
 }
 
-/// REGRESSION (Muxy test-practices review, filed in TODOS.md — "N-in-flight concurrency accounting
-/// test for status sweeps"): the local sweep's cap is asserted through `RepositoryRouter`'s injectable
+/// REGRESSION (Muxy test-practices review: N-in-flight concurrency accounting
+/// for status sweeps): the local sweep's cap is asserted through `RepositoryRouter`'s injectable
 /// `localReader`, the boundary every local status read takes. `testCISweepNeverExceedsItsConcurrencyCap`
 /// covers the remaining half of that same entry: the `runCISweep` stage's own cap, over
 /// `resolveCI`/`gh`, which has an injectable `StatusCommandRunning` (see `GatedGHRunner` in
@@ -208,7 +208,7 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
     XCTAssertNotNil(status.localReadAt, "a timed-out read still stamps when it finished")
   }
 
-  /// The `runCISweep` half TODOS.md left open: same shape as the local-sweep test above, but over
+  /// The `runCISweep` half of that: same shape as the local-sweep test above, but over
   /// `resolveCI`/`gh`. 8 items across 8 distinct project roots (so each becomes CI-eligible in one
   /// pass, and the per-project repository prefetch — sequential by construction — can't be mistaken
   /// for the bound under test) must never run more than `ciConcurrency` (2) `gh`/`git` calls at once.

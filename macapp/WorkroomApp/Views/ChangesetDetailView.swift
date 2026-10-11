@@ -28,8 +28,7 @@ struct ChangesetDetailView: View {
   /// instead of it. Retargeting this pane swaps the id value at a stable slot (the view instance is
   /// reused, not recreated), and cancellation delivery for that shape does not measure the same
   /// way everywhere: `AvatarView` measured `Task.isCancelled == false` throughout the outgoing
-  /// invocation in the live app (see TODOS "`.task(id:)` cancellation is not reliably delivered on
-  /// an in-place value swap"), while this view measured it DELIVERED in a hosted-view harness
+  /// invocation in the live app (2026-08-13), while this view measured it DELIVERED in a hosted-view harness
   /// (`DiffViewerStaleLoadTests`). The harness is not the app's view tree and the flag's delivery is
   /// an unspecified SwiftUI detail, so the flag is the guard the test proves and the token is the
   /// belt. `@State` survives the slot being reused, so whichever invocation started LAST wins.

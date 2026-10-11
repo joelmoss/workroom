@@ -4,8 +4,8 @@ import XCTest
 
 @testable import Workroom
 
-/// REGRESSION for the `.task(id:)` stale-write class (TODOS: "`.task(id:)` cancellation is not
-/// reliably delivered on an in-place value swap").
+/// REGRESSION for the `.task(id:)` stale-write class (SwiftUI does not reliably deliver
+/// `.task(id:)` cancellation on an in-place value swap).
 ///
 /// A content pane is REUSED when the user picks another file — `DiffViewer` keeps its view identity
 /// and only `descriptor` changes — and `DiffViewer.load` had NO staleness guard at all, so a slow
@@ -16,8 +16,7 @@ import XCTest
 /// **What it does NOT pin, deliberately.** The guard is `!Task.isCancelled, activeFetchKey == key`,
 /// and only the first half is falsifiable here: measured in this harness, SwiftUI DOES deliver
 /// cancellation for an in-place id swap, so removing the `activeFetchKey` token alone still passes.
-/// The token stays because `AvatarView` measured the opposite in the live app (TODOS "`.task(id:)`
-/// cancellation is not reliably delivered on an in-place value swap"), and a hosted `NSHostingView`
+/// The token stays because `AvatarView` measured the opposite in the live app (2026-08-13), and a hosted `NSHostingView`
 /// is not the app's real view tree — the flag is the guard this test proves, the token is the belt.
 ///
 /// The race is made deterministic (not timing-dependent) by injecting `resolveDiff` and holding A's

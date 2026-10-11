@@ -372,8 +372,8 @@ struct HistoryRow: View, Equatable {
         }
         try? await Task.sleep(for: .milliseconds(500))
         // Checked against the generation, not `Task.isCancelled` alone: this closure's `isSelected`
-        // is the value from when it started, and cancellation of an in-place swap isn't reliable (see
-        // TODOS "`.task(id:)` cancellation is not reliably delivered on an in-place value swap").
+        // is the value from when it started, and cancellation of an in-place swap isn't reliable
+        // (`AvatarView` measured `Task.isCancelled == false` after the swap).
         guard !Task.isCancelled, dwellGeneration == generation, hovering else { return }
         showCard = true
       }
