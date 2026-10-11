@@ -3472,9 +3472,9 @@ final class ScriptLogSession: ObservableObject, Identifiable {
   let id = UUID()
   let title: String
   let phase: String
-  private(set) var lines: [LogLine] = []
-  private(set) var isFinished = false
-  private(set) var failureMessage: String?
+  @Published private(set) var lines: [LogLine] = []
+  @Published private(set) var isFinished = false
+  @Published private(set) var failureMessage: String?
 
   init(title: String, phase: String) {
     self.title = title
