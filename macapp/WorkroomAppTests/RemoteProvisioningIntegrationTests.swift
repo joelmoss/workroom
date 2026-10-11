@@ -764,26 +764,33 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     func get() -> String? { lock.withLock { commit } }
   }
 
-  /// A base an older build made goes, and its record only once it is gone.
+  /// A base an older build made goes, and its record only once it is gone (`BaseRetirement`).
   @MainActor
-  func testDestroyingABaseRemovesItAndForgetsItsRecordOnlyOnceItIsGone() async throws {
+  func testRetiringABaseRemovesItAndForgetsItsRecordOnlyOnceItIsGone() async throws {
     let fixture = try fixture()
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
-    let environment = environment(fixture, driver: driver)
     guard case .remote(let host) = try await driver.create() else { return XCTFail("not remote") }
+    let project = Project(
+      path: "/p", vcs: "git", workrooms: [],
+      host: HostDescriptor(provisioner: RemoteWorkrooms.provisioner, id: host))
     let forgotten = Forgotten()
+    let effects = { (driver: ContainerHostDriver, forget: @escaping @Sendable () throws -> Void) in
+      BaseRetirement.Effects(
+        setHost: { _, _, _ in try forget() },
+        destroy: { try await driver.destroy(.remote($0.id!)) })
+    }
 
     // Forgetting fails the first time: the box is gone, and a retry gets past the destroy it
     // already did to forget the record.
     do {
-      try await RemoteProvisioning.destroyBase(
-        host, in: environment, forget: { throw WorkroomCLIError.timedOut })
+      _ = try await BaseRetirement.retireBases(
+        of: project, effects: effects(driver) { throw WorkroomCLIError.timedOut })
       XCTFail("a failed forget was swallowed")
     } catch WorkroomCLIError.timedOut {}
     XCTAssertEqual(try leftovers("ps", label: label), [])
-    try await RemoteProvisioning.destroyBase(
-      host, in: environment, forget: { forgotten.add("forgot") })
+    _ = try await BaseRetirement.retireBases(
+      of: project, effects: effects(driver) { forgotten.add("forgot") })
     XCTAssertEqual(forgotten.all, ["forgot"])
 
     // A base this driver never knew (an app relaunched since) keeps its record: nothing has shown
@@ -791,9 +798,8 @@ final class RemoteProvisioningIntegrationTests: XCTestCase {
     let relaunched = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: fixture.provisioning)
     do {
-      try await RemoteProvisioning.destroyBase(
-        host, in: self.environment(fixture, driver: relaunched),
-        forget: { forgotten.add("forgot again") })
+      _ = try await BaseRetirement.retireBases(
+        of: project, effects: effects(relaunched) { forgotten.add("forgot again") })
       XCTFail("an unknown base was destroyed")
     } catch HostDriverError.unknownHost {}
     XCTAssertEqual(forgotten.all, ["forgot"])

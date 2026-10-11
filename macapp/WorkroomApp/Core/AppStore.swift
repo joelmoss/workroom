@@ -2012,6 +2012,12 @@ final class AppStore: ObservableObject {
     // No sweep while a delete is in flight: `fresh` leaves out hosts config still records, and a
     // delete that fails keeps them (#296).
     RemoteHosts.shared.adopt(fresh, sweep: deletingProjects.isEmpty && deletingWorkrooms.isEmpty)
+    // Older builds' base machines go, once per launch; the same in-flight-delete hold as the sweep.
+    if deletingProjects.isEmpty && deletingWorkrooms.isEmpty {
+      BaseRetirement.retireOnce(fresh, effects: BaseRetirement.live(cli: cli)) { [weak self] in
+        Task { await self?.reload() }
+      }
+    }
     let acceptedPaths = Set(fresh.flatMap { [$0.path] + $0.workrooms.map(\.path) })
     RepositoryRouter.shared.replaceLocal(
       registrations.filter {
@@ -2536,7 +2542,8 @@ final class AppStore: ObservableObject {
     // What that needs is checked here, before the local cleanup below kills this project's shells
     // and forgets its labels.
     let remoteWorkrooms = project.workrooms.filter(\.isRemote)
-    let bases = project.host?.allBases ?? []
+    // An older build's bases that launch has not retired yet (its provider signed out, say).
+    let bases = BaseRetirement.bases(of: project.host)
     let remote: RemoteHosts.Deletion?
     do {
       remote = try RemoteHosts.shared.environment(
@@ -2583,19 +2590,17 @@ final class AppStore: ObservableObject {
           // Each base on its own runtime and context (#309). Config keeps the ones still to go, so
           // a failure part-way leaves what is live recorded for the next delete.
           let cli = self.cli
-          var left = project.host
-          for base in bases {
-            // A base without an id can't be told apart, so the record stays as it is.
-            let rest = base.id.map { RemoteWorkrooms.removing($0, from: left) } ?? left
-            try await RemoteWorkrooms.deleteBase(base, environment: remote?.environment(for: base))
-            {
-              try await cli.setHost(
-                project: project.path, workroom: nil,
-                descriptor: try rest.map { try JSONEncoder().encode($0) })
+          var effects = BaseRetirement.live(cli: cli)
+          effects.destroy = { base in
+            guard let id = base.id, let environment = remote?.environment(for: base) else {
+              throw RemoteWorkrooms.Failure.signedOut
             }
-            left = rest
+            try await environment.driver.destroy(.remote(id))
           }
-          if left != nil {
+          _ = try await BaseRetirement.retireBases(of: project, effects: effects)
+          // What that leaves can't be told apart (no id) or is another build's and not live (a live
+          // one was refused above): the record goes with the project.
+          if bases.contains(where: { $0.id == nil || !RemoteWorkrooms.ownsHost($0) }) {
             try await cli.setHost(project: project.path, workroom: nil, descriptor: nil)
           }
           let trashPaths = try await self.cli.deleteProject(

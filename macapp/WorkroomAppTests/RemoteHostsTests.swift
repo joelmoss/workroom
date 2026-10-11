@@ -1012,27 +1012,29 @@ final class RemoteHostsTests: XCTestCase {
       RemoteHosts.DriverKey(runtime: runtime, context: context)
     }
     // The one-base form a project before #309 has serves Docker on any context, and not Apple.
-    XCTAssertEqual(RemoteWorkrooms.base(in: old, for: key(.docker, "orbstack"))?.id, old.id)
-    XCTAssertNil(RemoteWorkrooms.base(in: old, for: key(.apple, nil)))
+    XCTAssertEqual(
+      BaseRetirement.base(in: BaseRetirement.bases(of: old), for: key(.docker, "orbstack"))?.id,
+      old.id)
+    XCTAssertNil(BaseRetirement.base(in: BaseRetirement.bases(of: old), for: key(.apple, nil)))
 
     let apple = base(.apple, nil)
     let both = HostDescriptor(bases: [old, apple])
-    XCTAssertEqual(both.allBases.map(\.id), [old.id, apple.id])
-    XCTAssertEqual(RemoteWorkrooms.base(in: both, for: key(.apple, nil))?.id, apple.id)
+    XCTAssertEqual(BaseRetirement.bases(of: both).map(\.id), [old.id, apple.id])
+    XCTAssertEqual(
+      BaseRetirement.base(in: BaseRetirement.bases(of: both), for: key(.apple, nil))?.id, apple.id)
     // An exact match wins over the context-less one.
     let pinned = base(.docker, "orbstack")
     let three = HostDescriptor(bases: [old, apple, pinned])
-    XCTAssertEqual(RemoteWorkrooms.base(in: three, for: key(.docker, "orbstack"))?.id, pinned.id)
-    XCTAssertEqual(RemoteWorkrooms.base(in: three, for: key(.docker, "desktop-linux"))?.id, old.id)
-    // Round-trips through config, and comes apart again base by base.
+    XCTAssertEqual(
+      BaseRetirement.base(in: BaseRetirement.bases(of: three), for: key(.docker, "orbstack"))?.id,
+      pinned.id)
+    XCTAssertEqual(
+      BaseRetirement.base(in: BaseRetirement.bases(of: three), for: key(.docker, "desktop-linux"))?
+        .id, old.id)
+    // Round-trips through config, so a launch can read what it retires.
     let decoded = try JSONDecoder().decode(
       HostDescriptor.self, from: try JSONEncoder().encode(three))
     XCTAssertEqual(decoded, three)
-    let fewer = RemoteWorkrooms.removing(try XCTUnwrap(old.id), from: three)
-    XCTAssertEqual(fewer?.allBases.map(\.id), [apple.id, pinned.id])
-    let one = RemoteWorkrooms.removing(try XCTUnwrap(apple.id), from: fewer)
-    XCTAssertEqual(one, pinned, "one base left goes back to the one-base form")
-    XCTAssertNil(RemoteWorkrooms.removing(try XCTUnwrap(pinned.id), from: one))
   }
 
   /// Each recorded host is adopted into its own context's driver, and every driver's sweep keeps
@@ -1096,9 +1098,13 @@ final class RemoteHostsTests: XCTestCase {
     XCTAssertThrowsError(try RemoteHosts.deletionKey(HostDescriptor(driver: "exe.dev", id: UUID())))
     // A boxd base serves only its own org and account; there is no unpinned form to fall back to.
     XCTAssertEqual(
-      RemoteWorkrooms.base(in: boxd, for: .boxd(org: "acme", account: "usr_1"))?.id, boxd.id)
-    XCTAssertNil(RemoteWorkrooms.base(in: boxd, for: .boxd(org: nil, account: "usr_1")))
-    XCTAssertNil(RemoteWorkrooms.base(in: boxd, for: RemoteHosts.DriverKey()))
+      BaseRetirement.base(
+        in: BaseRetirement.bases(of: boxd), for: .boxd(org: "acme", account: "usr_1"))?.id, boxd.id)
+    XCTAssertNil(
+      BaseRetirement.base(
+        in: BaseRetirement.bases(of: boxd), for: .boxd(org: nil, account: "usr_1")))
+    XCTAssertNil(
+      BaseRetirement.base(in: BaseRetirement.bases(of: boxd), for: RemoteHosts.DriverKey()))
     // And the descriptor round-trips through config with its org and account.
     XCTAssertEqual(
       try JSONDecoder().decode(HostDescriptor.self, from: try JSONEncoder().encode(boxd)), boxd)
@@ -1219,9 +1225,12 @@ final class RemoteHostsTests: XCTestCase {
     let repository = try XCTUnwrap(GitHubRepository(host: "github.com", owner: "o", name: "r"))
     XCTAssertEqual(RemoteWorkrooms.clonePath(for: repository, on: key), "/home/exedev/r")
     XCTAssertEqual(try RemoteHosts.deletionKey(host), key)
-    XCTAssertEqual(RemoteWorkrooms.base(in: host, for: key)?.id, host.id)
-    XCTAssertNil(RemoteWorkrooms.base(in: host, for: .exeDev(account: "other@x.dev")))
-    XCTAssertNil(RemoteWorkrooms.base(in: host, for: .boxd(org: nil, account: "me@x.dev")))
+    XCTAssertEqual(BaseRetirement.base(in: BaseRetirement.bases(of: host), for: key)?.id, host.id)
+    XCTAssertNil(
+      BaseRetirement.base(in: BaseRetirement.bases(of: host), for: .exeDev(account: "other@x.dev")))
+    XCTAssertNil(
+      BaseRetirement.base(
+        in: BaseRetirement.bases(of: host), for: .boxd(org: nil, account: "me@x.dev")))
     XCTAssertEqual(host.kindDescription, "Remote workroom on exe.dev")
     XCTAssertEqual(
       try JSONDecoder().decode(HostDescriptor.self, from: try JSONEncoder().encode(host)), host)

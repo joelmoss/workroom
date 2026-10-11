@@ -242,42 +242,17 @@ enum RemoteWorkrooms {
     }
   }
 
-  /// The base an older build derived a workroom on `key` from, in a project whose descriptor is
-  /// `host` (#309): the one made on that runtime and Docker context, else for Docker one made before
-  /// #309, which names no context and follows the current one, as `key` does.
-  static func base(in host: HostDescriptor?, for key: RemoteHosts.DriverKey) -> HostDescriptor? {
-    let bases = host?.allBases ?? []
-    if let exact = bases.first(where: { RemoteHosts.DriverKey($0) == key }) { return exact }
-    // Only Docker has an unpinned form; a boxd base belongs to exactly one org and account.
-    guard let runtime = key.runtime else { return nil }
-    return bases.first { RemoteHosts.DriverKey($0) == RemoteHosts.DriverKey(runtime: runtime) }
-  }
-
-  /// A project's descriptor `host` without the base `id`, or nil when it had no other.
-  static func removing(_ id: UUID, from host: HostDescriptor?) -> HostDescriptor? {
-    let others = (host?.allBases ?? []).filter { $0.id != nil && $0.id != id }
-    return others.count > 1 ? HostDescriptor(bases: others) : others.first
-  }
-
   /// The router registrations of `projects`' reachable remote workrooms (#253). Each is its own
-  /// shared root on its host, as an independent clone is. Its GitHub identity is its own base's, so
-  /// its PR and CI status read through `gh` here: a project's bases on other runtimes may be clones
-  /// of another repository, made before its origin changed (#309).
+  /// shared root on its host, as an independent clone is, with the GitHub repository `create`
+  /// recorded on it (`BaseRetirement` records it on one an older build derived from a base), so its
+  /// PR and CI status read through `gh` here.
   static func registrations(_ projects: [Project]) -> [RepositoryRouter.Registration] {
     projects.flatMap { project in
-      let any = project.host?.allBases.lazy.compactMap(\.repository).first
-      return project.workrooms.compactMap { workroom -> RepositoryRouter.Registration? in
+      project.workrooms.compactMap { workroom -> RepositoryRouter.Registration? in
         guard let host = workroom.reachableHost,
           let location = try? RepositoryLocation.remote(host: host, path: workroom.path)
         else { return nil }
-        // Recorded on the workroom by `create`; a workroom an older build derived from a base
-        // reads its base's.
-        let own =
-          workroom.host?.repository
-          ?? workroom.host.flatMap(RemoteHosts.DriverKey.init).flatMap {
-            base(in: project.host, for: $0)?.repository
-          }
-        let github = (own ?? any).flatMap(gitHubRepository)
+        let github = workroom.host?.repository.flatMap(gitHubRepository)
         return try? RepositoryRouter.Registration(
           location: location, sharedLocation: location, github: github)
       }
@@ -311,9 +286,7 @@ enum RemoteWorkrooms {
       let record = self.record
       recorder.record = { workroom, descriptor in
         try await record(workroom, descriptor)
-        PendingMachines.forget(
-          Set(descriptor.allBases.compactMap(\.id) + [descriptor.id].compactMap { $0 }),
-          in: directory)
+        PendingMachines.forget(Set([descriptor.id].compactMap { $0 }), in: directory)
       }
       return recorder
     }
@@ -550,18 +523,6 @@ enum RemoteWorkrooms {
 
   private static let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "RemoteWorkrooms")
-
-  /// Destroys a project's base (#253), for an explicit project delete, then clears its record
-  /// (`clear`). Its workrooms go first: config keeps a project with a base when its last workroom is
-  /// removed, and only while it has one.
-  static func deleteBase(
-    _ host: HostDescriptor, environment: RemoteProvisioning.Environment?,
-    clear: @Sendable () async throws -> Void
-  ) async throws {
-    guard try checkDeletable([host]), let id = host.id else { return try await clear() }
-    guard let environment else { throw Failure.signedOut }
-    try await RemoteProvisioning.destroyBase(id, in: environment, forget: clear)
-  }
 }
 
 /// The app's remote hosts (#253): a `ContainerHostDriver` per container runtime and Docker context
@@ -833,15 +794,15 @@ final class RemoteHosts: @unchecked Sendable {
   /// still records (#296).
   func adopt(_ projects: [Project], sweep: Bool = true) {
     let descriptors =
-      projects.flatMap { $0.host?.allBases ?? [] }
+      projects.flatMap { BaseRetirement.bases(of: $0.host) }
       + projects.flatMap { $0.workrooms.compactMap(\.host) }
     // Another build's hosts take another key: adopted here, they would refuse every login. A
     // remote provider's host Release and Nightly share is both's (`ownsHost`).
     let recorded = descriptors.filter {
       DriverKey($0) != nil && RemoteWorkrooms.ownsHost($0)
     }
-    // An older build's base, until it is removed: it never relays.
-    let bases = Set(projects.flatMap { $0.host?.allBases.compactMap(\.id) ?? [] })
+    // An older build's base, until `BaseRetirement` removes it: it never relays.
+    let bases = Set(projects.flatMap { BaseRetirement.bases(of: $0.host).compactMap(\.id) })
     let already = lock.withLock {
       for descriptor in recorded {
         if let id = descriptor.id, let key = DriverKey(descriptor) { keys[id] = key }

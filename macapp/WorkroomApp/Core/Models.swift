@@ -41,9 +41,10 @@ struct HostDescriptor: Codable, Hashable {
   var path: String? = nil
   /// How `ContainerHostDriver` finds the host again, including the Docker context it runs in.
   var container: ContainerHostDriver.Record? = nil
-  /// A project's bases when it has more than one (#309): one per container runtime and Docker
-  /// context, each a whole base descriptor. nil for a project with one base, whose descriptor is
-  /// the base itself, as every project before #309 has it.
+  /// A project's bases when an older build made more than one (#309): one per container runtime
+  /// and Docker context, each a whole base descriptor. nil for a project with one base, whose
+  /// descriptor is the base itself. Read only to retire them (`BaseRetirement`); it goes once no
+  /// build that made bases is in use.
   var bases: [HostDescriptor]? = nil
   /// `relay` for a local container base or workroom whose git credentials come from the Mac's
   /// relay instead of the broker (#309); nil for the broker.
@@ -79,9 +80,6 @@ struct HostDescriptor: Codable, Hashable {
 
   /// Whether git's credentials on this host come through the Mac's relay (#309).
   var isRelayed: Bool { credentials == "relay" }
-
-  /// The bases a project's descriptor records.
-  var allBases: [HostDescriptor] { bases ?? [self] }
 
   var isDestroyed: Bool { state == "destroyed" }
 
