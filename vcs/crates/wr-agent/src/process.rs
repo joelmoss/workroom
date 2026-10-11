@@ -337,10 +337,11 @@ mod platform {
         (written == size).then_some(info)
     }
 
-    fn all_pids() -> Vec<i32> {
-        // A zero-size call returns the byte count the table currently needs. Processes can start
-        // between that and the read, so ask for extra room and retry if the buffer came back
-        // exactly full — "full" is indistinguishable from "truncated".
+    pub(super) fn all_pids() -> Vec<i32> {
+        // Both calls return a count of pids, not bytes, though the buffer's size is passed in bytes;
+        // a zero-size call says how many the table holds now. Processes can start between that and
+        // the read, so ask for extra room and retry if the buffer came back exactly full — "full"
+        // is indistinguishable from "truncated".
         for _ in 0..3 {
             // SAFETY: a null buffer of size 0 is the documented way to ask for the size.
             let needed = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
@@ -348,7 +349,7 @@ mod platform {
                 return Vec::new();
             }
             let stride = std::mem::size_of::<libc::c_int>();
-            let capacity = needed as usize / stride + 64;
+            let capacity = needed as usize + 64;
             let mut buffer = vec![0 as libc::c_int; capacity];
             // SAFETY: the size passed is `buffer`'s length in bytes, so the call cannot write past it.
             let written = unsafe {
@@ -360,7 +361,7 @@ mod platform {
             if written <= 0 {
                 return Vec::new();
             }
-            let count = written as usize / stride;
+            let count = written as usize;
             if count < capacity {
                 buffer.truncate(count);
                 return buffer.into_iter().filter(|pid| *pid > 0).collect();
@@ -561,6 +562,23 @@ mod tests {
             name.as_deref(),
             Some("sleep"),
             "must report the real binary, not the rewritten argv[0]"
+        );
+    }
+
+    /// The listing comes back newest first, so a short read drops the oldest processes, launchd
+    /// (pid 1) among them, while this test's own recent pid survives.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lists_every_process() {
+        let pids = platform::all_pids();
+        assert!(
+            pids.contains(&(std::process::id() as i32)),
+            "own pid missing"
+        );
+        assert!(
+            pids.contains(&1),
+            "launchd missing from {} pids",
+            pids.len()
         );
     }
 
