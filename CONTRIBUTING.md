@@ -497,9 +497,10 @@ and every PR against either:
 
 - **`cli` job** (`ubuntu-latest`): sets up Go from `go.mod`, runs `golangci-lint` (subsumes `go vet`
   / `gofmt`), `go build`, and `go test ./...`.
-- **`rust` job** (`ubuntu-latest`): `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test` for the
-  whole `vcs/` Rust workspace, on a pinned toolchain. `make vcs-lint` runs the same format and lint checks
-  locally, plus the `agent-terminal-state` job's clippy pass and a `cargo doc -D warnings` check CI does not run.
+- **`rust` job** (`ubuntu-latest`): `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo doc` with
+  `RUSTDOCFLAGS="-D warnings"`, and `cargo test` for the whole `vcs/` Rust workspace, on a pinned
+  toolchain. `make vcs-lint` runs the same format, lint and doc checks locally, plus the
+  `agent-terminal-state` job's clippy pass and a `terminal-state` doc check CI does not run.
 - **`app` job** (`macos-15`): sets up Xcode + Go, `brew install xcodegen`, runs `make app-lint`
   (swift-format `--strict`), `make app-package-test` and `make app-test` with **ad-hoc signing** flags (hosted runners have
   no signing cert), e.g.:

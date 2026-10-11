@@ -129,6 +129,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --manifest-path vcs/Cargo.toml --workspace --all-targets -- -D warnings
 
+      # rustdoc's warnings as errors, chiefly a public doc linking to a private or moved item.
+      # `make vcs-lint` runs the same check, plus its terminal-state half, which needs Zig.
+      - name: Docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --manifest-path vcs/Cargo.toml --workspace --no-deps
+
       # This already covers wr-agent, and covers it on LINUX — the workspace has no
       # `default-members`, so every member's unit and integration tests run here. That matters
       # because the agent's pty, /proc introspection and socket code are the parts most likely to
