@@ -126,8 +126,8 @@ final class FilesPanelInvalidationTests: XCTestCase {
       FileTreeRowView.bodyPasses, 0, "the fixture must actually render file rows")
 
     FileTreeRowView.bodyPasses = 0
-    // Reassigning a `@Published` property fires `objectWillChange` regardless of value equality —
-    // this says nothing whatsoever about the file tree.
+    // Each toggle is a real change to an `AppStore` property that has nothing to do with the file
+    // tree.
     for _ in 0..<10 { store.isLoading.toggle() }
     settle(view)
 

@@ -67,19 +67,23 @@ struct PendingProjectSettings: Identifiable {
 /// project data every window shares lives in `ProjectStore.shared`. All CLI work is awaited (it
 /// runs off the main thread inside WorkroomCLI), keeping the UI responsive.
 @MainActor
+@Observable
+// `ObservableObject` stays only so the window root can hold the store in a `@StateObject`, which
+// builds it once; a `@State` initial value is re-evaluated on every init of the view struct, and a
+// throwaway `AppStore` registers with `WindowRegistry` and subscribes to its terminals. Nothing reads
+// its `objectWillChange`: views observe the store through Observation.
 final class AppStore: ObservableObject {
   /// Shared, app-wide project data (issue #70). Holds the project list and everything derived from
   /// it that is identical across windows (root labels, VCS/CI status cache, GitHub-CLI status, busy
-  /// set). The properties below proxy through to it, and `init` re-publishes its `objectWillChange`,
+  /// set). The properties below proxy through to it, and Observation tracks the reads through it,
   /// so views/menus observing this store still re-render when the shared data changes.
   let projectStore: ProjectStore
-  private var projectStoreObservation: AnyCancellable?
   /// Marks the saved session dirty on any pane change (issue #46). Hooking the publisher rather than
   /// the ~12 structural mutators in `TerminalSessions` is deliberate: a thirteenth mutation cannot be
   /// forgotten. It fires far more often than the session changes (every live title, every activity
   /// pulse), which the coordinator answers with coalescing plus an equality gate — the excluded
   /// fields make that chatter produce an identical document, so it costs a comparison, not a write.
-  private var sessionObservation: AnyCancellable?
+  @ObservationIgnored private var sessionObservation: AnyCancellable?
 
   /// Seam over the bundled `workroom` CLI (issue #103). Production uses
   /// `WorkroomCLI.shared`; tests inject a fake to drive mutations without a real
@@ -100,7 +104,7 @@ final class AppStore: ObservableObject {
   /// on registration and freed for reuse when the window closes (issue #70, macOS untitled-doc style).
   /// Backs the `windowTitle` fallback for a window with nothing selected ("Window 1", "Window 2", …).
   /// `@Published` so the title updates the moment the registry assigns it. 0 until registered.
-  @Published var windowNumber = 0
+  var windowNumber = 0
   /// This window's *identity* for cross-window bookkeeping (issue #132) — minted here and never
   /// reused, unlike `windowNumber`, which is a display number reclaimed by the next new window. Used
   /// by the quick switcher's recency (and its snapshot cache) so a closed window's entries can't
@@ -125,9 +129,9 @@ final class AppStore: ObservableObject {
   /// several restored windows doesn't fan out duplicate dialogs.
   var isRestoreWindow = false
   /// Retained `NSWindow` frame-change observers that persist this window's size for the next launch.
-  private var frameObservers: [NSObjectProtocol] = []
+  @ObservationIgnored private var frameObservers: [NSObjectProtocol] = []
   /// Retains the `NSWindow.didUpdate` observer that keeps the title out of the title bar (issue #70).
-  private var titleVisibilityObserver: NSObjectProtocol?
+  @ObservationIgnored private var titleVisibilityObserver: NSObjectProtocol?
 
   deinit {
     for token in frameObservers { NotificationCenter.default.removeObserver(token) }
@@ -160,12 +164,12 @@ final class AppStore: ObservableObject {
     get { projectStore.projects }
     set { projectStore.projects = newValue }
   }
-  @Published var selectedProjectID: Project.ID?
+  var selectedProjectID: Project.ID?
   /// The selected terminal target — a `.root` or a `.workroom` (never `.project`), or nil
   /// when nothing is selected (the launch state). `.project` is not a target; clicking a
   /// project toggles its expansion instead. Persisted across launches (issue #14) via `didSet`
   /// and restored in `apply()`.
-  @Published var selectedTargetID: SidebarID? {
+  var selectedTargetID: SidebarID? {
     didSet { selectionDidChange(from: oldValue) }
   }
 
@@ -220,13 +224,13 @@ final class AppStore: ObservableObject {
   /// terminal" placeholder — this keeps the two in sync). Maintained at selection changes + the tab
   /// add/remove hooks: a plain `terminals.tabCount` read in a view wouldn't re-render on a tab close,
   /// because AppStore doesn't forward `terminals`' `objectWillChange` (only `ProjectStore`'s).
-  @Published private(set) var selectionHasTabs = false
+  private(set) var selectionHasTabs = false
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
   /// rather than read via `@Default` in the view: a `@Default` change does not reliably re-evaluate
   /// the sidebar's `List` until some *other* state changes (e.g. the pointer moving over a row), so
   /// expand/collapse appeared to "stick" until you moved the mouse. `@Published` fires
   /// `objectWillChange` synchronously, so the tree updates on the click itself. Persisted via `didSet`.
-  @Published var collapsedProjects: Set<String> = Defaults[.collapsedProjects] {
+  var collapsedProjects: Set<String> = Defaults[.collapsedProjects] {
     didSet { if persistsSidebarPrefs { Defaults[.collapsedProjects] = collapsedProjects } }
   }
   /// Remembered workroom tab-bar order (issue #23), as `TerminalTarget.ID` strings. `@Published`
@@ -234,7 +238,7 @@ final class AppStore: ObservableObject {
   /// `NavigationSplitView` detail, so a drag-reorder's write didn't take and the dropped chip snapped
   /// back to its old slot. Persisted via `didSet`; initialised from `Defaults`. Stale ids resolve away
   /// in `orderedWorkroomTargets`, so it's self-healing.
-  @Published var workroomTabOrder: [TerminalTarget.ID] = Defaults[.workroomTabOrder] {
+  var workroomTabOrder: [TerminalTarget.ID] = Defaults[.workroomTabOrder] {
     didSet { if persistsSidebarPrefs { Defaults[.workroomTabOrder] = workroomTabOrder } }
   }
   /// Whether the projects sidebar column is visible. The single source of truth for showing the
@@ -254,7 +258,7 @@ final class AppStore: ObservableObject {
   /// fails BOTH the tests that need the sidebar open (`WorkroomWorkflowUITests`,
   /// `ViewMenuShortcutsUITests`) and the ones that broke when it's open (see below), never a clean
   /// pass either way.
-  @Published var sidebarVisible: Bool = (UITestFixture.isActive ? true : Defaults[.sidebarVisible])
+  var sidebarVisible: Bool = (UITestFixture.isActive ? true : Defaults[.sidebarVisible])
   {
     didSet { if persistsSidebarPrefs { Defaults[.sidebarVisible] = sidebarVisible } }
   }
@@ -265,8 +269,8 @@ final class AppStore: ObservableObject {
   /// Notifications panel and a toast never co-display — the invariant at `recordNotification`), and
   /// `ToastStack` withholds toasts while it's set. Session-only and deliberately NOT persisted (a
   /// transient hover state). Set by `EdgeRevealSidebar`.
-  @Published var previewingLeft: Bool = false
-  @Published var previewingRight: Bool = false
+  var previewingLeft: Bool = false
+  var previewingRight: Bool = false
   /// The cursor is over the matching sidebar's title-bar *toggle button* while that sidebar is
   /// collapsed — the trigger for the edge-hover reveal (issue #74). The trigger used to be a wide
   /// strip over the toolbar (issue #56), but that strip sat directly above the leftmost workroom
@@ -275,8 +279,8 @@ final class AppStore: ObservableObject {
   /// is set by the leading sidebar's title-bar toggle (`LeadingTitlebarBar`); the trailing side has no
   /// toggle button (the activity bar is always pinned to that edge), so `hoveringRightToggle` stays
   /// false. Observed by `EdgeRevealSidebar`. Session-only, not persisted (transient hover state).
-  @Published var hoveringLeftToggle: Bool = false
-  @Published var hoveringRightToggle: Bool = false
+  var hoveringLeftToggle: Bool = false
+  var hoveringRightToggle: Bool = false
   /// The docked Projects sidebar's chosen width, set by `SidebarColumn`'s resize handle on drag-end
   /// (mirrors `dockedInspectorWidth`), so the edge-hover reveal panel (issue #56) matches the user's
   /// width rather than a fixed guess. `nil` until first set this session; both the column and the
@@ -288,7 +292,7 @@ final class AppStore: ObservableObject {
   /// resize drag re-renders the inspector live. Safe to publish (unlike `dockedSidebarWidth`):
   /// the inspector is a custom column now, not the native NavigationSplitView one, so nothing writes
   /// this on every layout pass. `nil` until first set this session; falls back to `Defaults`.
-  @Published var dockedInspectorWidth: CGFloat?
+  var dockedInspectorWidth: CGFloat?
   /// The workroom-into-workroom split groups (issue #23 follow-up): each entry is two+ workrooms shown
   /// side by side, every one a full `TargetTerminalDetail`. Empty = the single `selectedTarget` (the
   /// normal case). Leaves are `SidebarID`; the focused member IS `selectedTargetID`. **Several groups can
@@ -299,7 +303,7 @@ final class AppStore: ObservableObject {
   /// longer resolve dissolves on restore. All edits go through the helpers in
   /// `AppStore+WorkroomSplit.swift`; stale leaves resolve away in `resolvedSplitLeaves(of:)`, so it's
   /// self-healing. See that file for the transforms.
-  @Published var workroomSplits: [PaneLayout<SidebarID>] = [] {
+  var workroomSplits: [PaneLayout<SidebarID>] = [] {
     didSet { markSessionDirty() }
   }
   /// The rect `WorkroomSplitView` lays its panes out in — the detail content inset by the split
@@ -326,7 +330,7 @@ final class AppStore: ObservableObject {
   /// expanded ones (empty = all collapsed). Persisted with the session (issue #46) — restored only for
   /// targets whose panes actually came back, since an expand flag pointing at nothing would render an
   /// empty disclosure. Pruned below 2 tabs by the `.tabsRemoved` arm of `handleTerminalEvent`.
-  @Published var expandedTerminalTargets: Set<TerminalTarget.ID> = [] {
+  var expandedTerminalTargets: Set<TerminalTarget.ID> = [] {
     didSet { markSessionDirty() }
   }
   /// Per-project resolved root branch labels, hydrated asynchronously after each
@@ -357,7 +361,7 @@ final class AppStore: ObservableObject {
   var ghAuthCache: GitHubAuthCache { projectStore.ghAuthCache }
   var vcsToolVersionCache: VCSToolVersionCache { projectStore.vcsToolVersionCache }
   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
-  @Published var prActionInFlight = false
+  var prActionInFlight = false
 
   /// The commit sheet's target, or nil when it's closed. Presented from the Changes section header.
   ///
@@ -365,7 +369,7 @@ final class AppStore: ObservableObject {
   /// a per-workroom draft store on the AppStore would need pruning on workroom delete, would inherit
   /// a recycled workroom name's old message, and — since `AppStore` is per WINDOW — would let two
   /// windows on the same workroom fight over one `Defaults` dictionary with last-writer-wins.
-  @Published var pendingCommit: PendingCommit?
+  var pendingCommit: PendingCommit?
 
   /// Rows with a commit in flight. A `Set` rather than a `Bool` because the app's premise is N
   /// parallel workrooms: a single flag would let a commit in one disable the button in another.
@@ -394,19 +398,19 @@ final class AppStore: ObservableObject {
   // they're the GLOBAL layout, loaded once at launch and persisted on every change to
   // `Defaults[.inspectorLayout]` via `loadInspectorState()` / `persistInspectorState()` — shared
   // across all workrooms, so a workroom switch never changes them.
-  @Published var changesSectionCollapsed = false {
+  var changesSectionCollapsed = false {
     didSet { persistInspectorState() }
   }
   /// Collapse state of the Files section (the repo file tree). Sits second, right under Changes.
-  @Published var filesSectionCollapsed = false {
+  var filesSectionCollapsed = false {
     didSet { persistInspectorState() }
   }
-  @Published var prSectionCollapsed = false {
+  var prSectionCollapsed = false {
     didSet { persistInspectorState() }
   }
   /// Collapse state of the History section (the commit log) — the middle section of the Changes
   /// stack, between Changes and Pull Request.
-  @Published var historySectionCollapsed = false {
+  var historySectionCollapsed = false {
     didSet {
       persistInspectorState()
       // Expanding it with a workroom already selected: point the model now (same reason the
@@ -514,13 +518,13 @@ final class AppStore: ObservableObject {
   /// Equal == the default equal-sections layout; updated when the user drags a divider (via
   /// `updateInspectorSizeWeights`) and persisted globally, like the collapse flags above. Not set
   /// directly by the view — the `NSSplitView` reports drag results back through the store.
-  @Published var inspectorSizeWeights: [Double] = [1, 1, 1, 1]
+  var inspectorSizeWeights: [Double] = [1, 1, 1, 1]
   /// The selected top-level section in the right activity bar (issue: activity bar). Drives which
   /// pane the inspector shows (`RightInspector` renders `activeInspectorSection.subSections`). Held
   /// as `@Published` (not read via `@Default` in the bar) so a click re-renders the bar + inspector
   /// synchronously — a bare `@Default` write invalidates asynchronously (the `SettingsView` gotcha).
   /// Persisted per-machine via `didSet`; whether the pane is visible at all is `Defaults[.showInspector]`.
-  @Published var activeInspectorSection: ActivitySection = Defaults[.activeInspectorSection] {
+  var activeInspectorSection: ActivitySection = Defaults[.activeInspectorSection] {
     didSet {
       if activeInspectorSection != oldValue {
         if !isolatesInspectorSectionForTesting {
@@ -593,7 +597,7 @@ final class AppStore: ObservableObject {
   /// Setting it drops `errorDetails` and `errorLink`, which belong to whatever error set them: a
   /// later message from a direct setter must not show an earlier error's codes or its Install
   /// button. `present(_:)` and its callers set them after it.
-  @Published var errorMessage: String? {
+  var errorMessage: String? {
     didSet {
       errorDetails = nil
       errorLink = nil
@@ -601,13 +605,13 @@ final class AppStore: ObservableObject {
   }
   /// Title for the error alert. Nil falls back to the generic title; specific
   /// failures (e.g. teardown) set their own.
-  @Published var errorTitle: String?
+  var errorTitle: String?
   /// A link the error alert offers beside OK, cleared with it: where to fix the failure, such as
   /// the Workroom GitHub App's install page for a remote workroom's repository (#253).
-  @Published var errorLink: ErrorLink?
+  var errorLink: ErrorLink?
   /// The error's codes and raw text, under the error sheet's collapsed Details. Set only by
   /// `present(_:)`, cleared with the message.
-  @Published var errorDetails: String?
+  var errorDetails: String?
 
   struct ErrorLink: Equatable {
     let title: String
@@ -634,7 +638,7 @@ final class AppStore: ObservableObject {
     errorTitle = "Couldn't stop the terminal in \(title)"
   }
 
-  @Published var isLoading = false
+  var isLoading = false
   /// How many creates are in flight per project path (for the sidebar row's spinner + disabling).
   /// Counted, not a set — see `ProjectStore.busyProjects`. (Named for creates AND deletes when it
   /// was introduced, but only `createWorkroom` has ever written it; deletes are optimistic.)
@@ -673,36 +677,36 @@ final class AppStore: ObservableObject {
     set { projectStore.deletingProjects = newValue }
   }
   /// Set by the "Add Project" menu command to trigger the sidebar's file importer.
-  @Published var requestAddProject = false
+  var requestAddProject = false
   /// Set by the "New Workroom" menu command (⌘N) to raise the project-picker dialog (issue #81).
   /// RootView observes it, presents the sheet, and resets the flag — same idiom as `requestAddProject`.
-  @Published var requestNewWorkroomPicker = false
+  var requestNewWorkroomPicker = false
   /// Set by the "Open workroom…" menu command (⌘O, issue #94) to raise the open-existing picker.
   /// RootView observes it, presents the sheet, and resets the flag — same idiom as the two above.
-  @Published var requestOpenWorkroomPicker = false
+  var requestOpenWorkroomPicker = false
   /// Which command-palette dialog is currently shown (nil = none). Single source of truth so the New
   /// and Open Workroom presenters are mutually exclusive — opening one replaces the other (issue #94).
-  @Published var activePicker: ActivePicker?
+  var activePicker: ActivePicker?
   /// Whether the picker about to be raised should SPLIT rather than replace (issue #163) — set by
   /// ⌥⌘N / ⌥⌘O. Plain `var`, not `@Published`: it is read once by the presenter as it raises and
   /// cleared in the same breath (`consumePickerSplitIntent`), so nothing observes it.
   var pickerSplits = false
   /// A workroom awaiting delete confirmation; setting it raises the confirmation prompt.
-  @Published var pendingDeletion: PendingWorkroomDeletion?
+  var pendingDeletion: PendingWorkroomDeletion?
   /// A target awaiting close confirmation (tab bar "Close"); setting it raises the close prompt.
-  @Published var pendingWorkroomClose: PendingWorkroomClose?
+  var pendingWorkroomClose: PendingWorkroomClose?
   /// A project awaiting type-to-confirm deletion (drives the DeleteProjectSheet). Set by the
   /// project row's context menu; cleared when the sheet's Delete/Cancel resolves.
-  @Published var pendingProjectDeletion: PendingProjectDeletion?
+  var pendingProjectDeletion: PendingProjectDeletion?
   /// A workroom awaiting a display-label edit (drives the WorkroomLabelSheet, issue #41). Set by the
   /// sidebar row's / tab chip's "Set Label…"/"Edit Label…" item; cleared when the sheet resolves.
-  @Published var pendingWorkroomLabel: PendingWorkroomLabel?
+  var pendingWorkroomLabel: PendingWorkroomLabel?
   /// The project-settings sheet's one presentation source (drives `ProjectSettingsSheet`, issue #7
   /// origin, issue #127 adds the no-command-Run trigger). Set by the project row's hover button /
   /// context menu (`showsRunWarning: false`), or by `runOrFocusRunCommand` when Run is invoked with
   /// no command configured (`showsRunWarning: true`). See `PendingProjectSettings`'s doc comment for
   /// why this is ONE store-level source rather than a sidebar-local `@State` plus a second one.
-  @Published var pendingProjectSettings: PendingProjectSettings?
+  var pendingProjectSettings: PendingProjectSettings?
   /// A remote action awaiting confirmation — currently only a pull over a dirty working tree, where
   /// `--autostash` will stash and reapply.
   ///
@@ -710,21 +714,21 @@ final class AppStore: ObservableObject {
   /// there are two entry points (the toolbar segment and the Source Control menu's ⌥⇧⌘P), and a gate
   /// owned by one view can only guard that view. It carries the `SidebarID` it was raised for so the
   /// confirmed action can't be redirected onto whatever is selected by the time the dialog is answered.
-  @Published var pendingRemoteConfirm: PendingVCSAction?
+  var pendingRemoteConfirm: PendingVCSAction?
   /// Workrooms being created in THIS window, keyed by their own target id (issue #167). An entry
   /// lands the moment the CLI reports the workroom exists and lives until that workroom's setup
   /// dialog is dismissed (a setup script ran) or the create auto-dismisses it (no script) — so it
   /// tracks the OPERATION, not which dialog is on screen. Keyed per target because nothing
   /// serializes concurrent creates: two overlapping creates each keep their own log, their own
   /// terminal withholding and their own Dismiss. Per-window, like selection.
-  @Published var creations: [TerminalTarget.ID: WorkroomCreation] = [:]
+  var creations: [TerminalTarget.ID: WorkroomCreation] = [:]
   /// The one create still in its PRE-NAME phase — no target id exists yet, so it can't be keyed, and
   /// having no workroom to render beside it can only be full-frame. That is why `focusedCreation`
   /// shows it ONLY when nothing else is selected: full-frame is a window-wide blackout, and a create
   /// is not a reason to take the window away from a workroom the user is already looking at.
   /// Presentation only: newest create wins, and each create clears this slot only if it still owns
   /// it (by session id).
-  @Published var pendingCreation: WorkroomCreation?
+  var pendingCreation: WorkroomCreation?
   /// Mirrors whether one of RootView's *view-local* sheets is up (Add Project, Keyboard Shortcuts,
   /// What's New — the theme dropdown is a transient popover, not modal, and deliberately NOT counted:
   /// it closes itself when one of these comes up). Those are `@State` in RootView rather than the
@@ -733,7 +737,7 @@ final class AppStore: ObservableObject {
   /// store: re-homing a local sheet flag to a store-level published item needs a clobber guard to stop
   /// a second trigger silently overwriting an open sheet's in-progress input, and none of that
   /// complexity buys anything here — all this needs is "is something up".
-  @Published var auxSheetPresented = false
+  var auxSheetPresented = false
 
   /// Whether ANY modal presentation owns this window: a command-palette dialog, a confirmation, an
   /// alert, or one of the sheets. The single source of truth for making shortcuts inert behind a
@@ -769,7 +773,7 @@ final class AppStore: ObservableObject {
   /// notification. FIFO, capped at `maxToasts` (a new toast beyond the cap pushes the oldest out);
   /// each toast carries the `WorkroomNotification` it mirrors so a tap can route via `openTerminal`.
   /// Rendered by `ToastStack`, overlaid bottom-right in `RootView`.
-  @Published var toasts: [WorkroomNotification] = []
+  var toasts: [WorkroomNotification] = []
   /// Max simultaneously-visible toasts; beyond this the oldest is dropped so a chatty emitter can't
   /// overflow the window (matches the "stack a few, drop oldest" decision).
   private static let maxToasts = 4
@@ -787,7 +791,7 @@ final class AppStore: ObservableObject {
   /// Cleared from three other places, because the resolver only ever writes the FOCUSED target and so
   /// can't retract anything: `pruneResolvedBranchNameIfDrifted` (a status sweep disagreed),
   /// `removeWorkroomLocally` and `removeProjectLocally` (the target is gone).
-  @Published private(set) var resolvedBranchNames: [SidebarID: String] = [:]
+  private(set) var resolvedBranchNames: [SidebarID: String] = [:]
 
   /// Record (or clear) the resolver's branch answer for a target. Names come only from
   /// `RemoteStateModel`; see `resolvedBranchNames` for who clears them.
@@ -804,10 +808,10 @@ final class AppStore: ObservableObject {
   /// Whether the `git` on PATH is new enough for the VCS remote actions (see
   /// `VCSToolVersions`). `nil` until the background probe lands — treated as usable, so a slow probe
   /// never disables a working feature.
-  @Published private(set) var vcsToolReport: VCSToolVersions.Report?
+  private(set) var vcsToolReport: VCSToolVersions.Report?
   /// Tool warnings the user has dismissed this session, by tool name. The condition is standing (an
   /// old binary doesn't fix itself), so the warning would otherwise reappear on every reload.
-  @Published private(set) var dismissedToolWarnings: Set<String> = []
+  private(set) var dismissedToolWarnings: Set<String> = []
 
   /// Whether remote actions are permitted. Optimistic before the probe lands and for `.unknown` —
   /// never cry wolf.
@@ -880,7 +884,7 @@ final class AppStore: ObservableObject {
   /// `@Published` so toolbar/menu enablement (`canGoBack`/`canGoForward`) re-evaluates when it
   /// changes. Session-only — deliberately not persisted across launches. `private(set)` so unit
   /// tests can inspect it (read-only) while only the store mutates it.
-  @Published var history = NavigationHistory()
+  var history = NavigationHistory()
   /// True while `navigateBack`/`navigateForward`/`applyLocation` are replaying, so the
   /// `selectionDidChange(from:)` and the `.focusChanged` event don't re-record the very
   /// location they're navigating to.
@@ -900,7 +904,8 @@ final class AppStore: ObservableObject {
   /// Keeps the selected workroom's local VCS status live (without polling) by watching its directory
   /// for filesystem changes (issue #24 follow-up). Retargeted on selection; see
   /// `updateSelectedWorkroomWatch` / `handleWorkroomFileChange`.
-  lazy var workroomFileWatcher = HostFileWatcher { [weak self] paths, overflow in
+  @ObservationIgnored lazy var workroomFileWatcher = HostFileWatcher {
+    [weak self] paths, overflow in
     self?.handleWorkroomFileChange(paths, overflow: overflow)
   }
   /// The watcher's local-refresh task — cancel-and-replace so the latest filesystem change wins and
@@ -941,7 +946,7 @@ final class AppStore: ObservableObject {
   var hostLayouts = HostLayoutState()
   /// The remote workrooms waiting on their host for their layout (`hostLayouts.fetching`),
   /// published so their empty pane says so rather than offer a terminal that opens only later.
-  @Published var waitingForHostLayout: Set<TerminalTarget.ID> = []
+  var waitingForHostLayout: Set<TerminalTarget.ID> = []
   /// Set once `endOrphanedSessionsOnce` has run: it is per process, not per window.
   static var sweptOrphanedSessions = false
   /// One-shot guard: `WindowAccessor` can resolve the same window more than once, and a claim must
@@ -985,11 +990,6 @@ final class AppStore: ObservableObject {
           makeWriter: { _ in FixtureVCSWriter() }, debounce: 0, ttl: 0,
           autoFetchInterval: .greatestFiniteMagnitude)
         : RemoteStateModel())
-    // Re-publish the shared project store's changes so views and menus observing THIS store
-    // re-render when the proxied `projects` / `rootRefs` / `workroomStatuses` / … change (issue #70).
-    projectStoreObservation = store.objectWillChange.sink { [weak self] _ in
-      self?.objectWillChange.send()
-    }
     // Any pane change marks the saved session dirty (issue #46). `objectWillChange` fires BEFORE the
     // mutation, so the coordinator must always schedule a capture — never take one inline here.
     sessionObservation = terminals.objectWillChange.sink { [weak self] _ in
@@ -1620,10 +1620,14 @@ final class AppStore: ObservableObject {
 
   // The run command's stored state. Its code is in `AppStore+RunCommand.swift`.
 
+  /// Bumped by `setRunConfig` and read by `runConfig(forProject:)`, so views that show a run command
+  /// re-render when it is saved: the config itself lives in `Defaults`, which Observation cannot see.
+  var runConfigRevision = 0
+
   /// Run-STATE is owned here (not on `TerminalSessions`) so the toolbar, sidebar, menu, and RootView
   /// — which all observe this store — react to start/stop/exit from one `@Published` source (OV-A).
   /// `TerminalSessions` only creates/focuses the tab and reports its removal via `.tabsRemoved`.
-  @Published var runStates: [TerminalTarget.ID: RunState] = [:]
+  var runStates: [TerminalTarget.ID: RunState] = [:]
 
   /// Live Investigate sessions (issue #49/#146), tab → target. Kept separate from `runStates` (one
   /// `RunState` per target, modelling a single dev-server-style run): an Investigate session is a
@@ -1653,17 +1657,17 @@ final class AppStore: ObservableObject {
 
   /// Per-target end-of-run outcome for the run toast (issue #67). Set on exit / failed start, cleared
   /// when a fresh run starts for that target. Derived-from, not duplicating, `runStates`.
-  @Published var runOutcomes: [TerminalTarget.ID: RunOutcome] = [:]
+  var runOutcomes: [TerminalTarget.ID: RunOutcome] = [:]
 
   /// Targets whose run toast was explicitly dismissed (✕) or auto-dismissed after a terminal state.
   /// Cleared when a fresh run starts. Open-terminal does NOT add here — it lets the visibility rule
   /// hide the toast while the run is on screen, so it reappears when you navigate away.
-  @Published var dismissedRunToasts: Set<TerminalTarget.ID> = []
+  var dismissedRunToasts: Set<TerminalTarget.ID> = []
   /// Targets whose LIVE (running/restarting) toast auto-hid after lingering a while — separate from
   /// `dismissedRunToasts` so a run that quietly auto-hid its "still running" toast can still surface
   /// a later terminal (exited/failed) toast; only gates the non-terminal branch of `runToastItems`.
   /// Cleared on a fresh "running" edge (start or restart), so the toast reappears each time.
-  @Published var runningToastAutoHidden: Set<TerminalTarget.ID> = []
+  var runningToastAutoHidden: Set<TerminalTarget.ID> = []
   /// Pending auto-dismiss/auto-hide timers, one per target, cancelled on restart so a stale timer
   /// can't dismiss the next run's toast (review: timer cancellation on restart).
   var runToastDismissWork: [TerminalTarget.ID: DispatchWorkItem] = [:]
@@ -2318,12 +2322,12 @@ final class AppStore: ObservableObject {
   /// How far each project's container workroom create has got downloading its host image, 0 to 1
   /// (#309): the first create in a project pulls it, a couple of hundred MB. The row's spinner
   /// shows it.
-  @Published var imagePulls: [String: Double] = [:]
+  var imagePulls: [String: Double] = [:]
 
   /// How far each remote provider's workroom create has got (#356): the step it is on, and that as
   /// a fraction of the steps it will take. Keyed by the row that shows it: the project's while the
   /// create builds the project's base, then the new workroom's once it has a name.
-  @Published var createSteps: [SidebarID: CreateStep] = [:]
+  var createSteps: [SidebarID: CreateStep] = [:]
 
   /// Removes the workroom from the sidebar immediately, then runs its teardown (script +
   /// workspace removal) in the background. On success the optimistic removal already
@@ -3468,9 +3472,9 @@ final class ScriptLogSession: ObservableObject, Identifiable {
   let id = UUID()
   let title: String
   let phase: String
-  @Published private(set) var lines: [LogLine] = []
-  @Published private(set) var isFinished = false
-  @Published private(set) var failureMessage: String?
+  private(set) var lines: [LogLine] = []
+  private(set) var isFinished = false
+  private(set) var failureMessage: String?
 
   init(title: String, phase: String) {
     self.title = title
