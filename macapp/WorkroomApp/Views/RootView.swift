@@ -9,6 +9,9 @@ struct RootView: View {
   // Observed so the detail's workroom tab bar re-renders as terminals open/close (a tab appears when a
   // workroom gains its first terminal and disappears when it loses its last) — issue #23.
   @EnvironmentObject var terminals: TerminalSessions
+  // Observed so the Source Control menu items follow `canFetch`/`canPush`/`canPull`, which the
+  // store's Observation tracking cannot see.
+  @EnvironmentObject var remoteState: RemoteStateModel
   // Drives the leading title-bar "Update" pill (injected into the accessory closure below) and the
   // "What's New" dialog. Both injected by `WorkroomApp` on the `RootWindow`.
   @EnvironmentObject var updater: Updater
@@ -475,9 +478,9 @@ struct RootView: View {
           // Source Control (⌥⇧⌘F / ⇧⌘P / ⌥⇧⌘P). The model's own `can*` already fold in "a remote
           // exists" and "nothing is in flight"; the tool floor and the modal guard are ANDed here so
           // the menu can't fire an action the toolbar itself would refuse.
-          vcsCanFetch: store.remoteState.canFetch && vcsToolsUsable && !store.hasModalPresentation,
-          vcsCanPush: store.remoteState.canPush && vcsToolsUsable && !store.hasModalPresentation,
-          vcsCanPull: store.remoteState.canPull && vcsToolsUsable && !store.hasModalPresentation,
+          vcsCanFetch: remoteState.canFetch && vcsToolsUsable && !store.hasModalPresentation,
+          vcsCanPush: remoteState.canPush && vcsToolsUsable && !store.hasModalPresentation,
+          vcsCanPull: remoteState.canPull && vcsToolsUsable && !store.hasModalPresentation,
           hasRunTerminal: store.hasAnyRunTerminal && !store.hasModalPresentation,
           // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
           multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1

@@ -6,6 +6,8 @@ struct DetachedSessionsButton: View {
   let target: TerminalTarget
   @EnvironmentObject var store: AppStore
   @ObservedObject private var sessionsStore = TerminalSessionsStore.shared
+  // Observed so "Detach" enables once the focused tab has a surface; `AppStore` doesn't track it.
+  @EnvironmentObject private var terminals: TerminalSessions
   @State private var showing = false
 
   var body: some View {
@@ -52,7 +54,7 @@ struct DetachedSessionsButton: View {
           }
           Spacer(minLength: 8)
           Button("Active tab") { attachToActive(session) }
-            .disabled(store.terminals.focusedTab(for: target)?.surface == nil)
+            .disabled(terminals.focusedTab(for: target)?.surface == nil)
           Button("New tab") { openNew(session) }
           Button("Stop", role: .destructive) { stop(session) }
         }
