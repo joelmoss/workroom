@@ -7,10 +7,11 @@ import WorkroomDomain
 /// multiple per-window `AppStore`s can share one project list while each keeps its own selection,
 /// terminals, splits, history, and run state.
 ///
-/// `AppStore` proxies these properties and re-publishes `objectWillChange`. List requests are
+/// `AppStore` proxies these properties; Observation tracks them through it. List requests are
 /// ordered here across windows; each `AppStore` reconciles its own window after an accepted read.
 @MainActor
-final class ProjectStore: ObservableObject {
+@Observable
+final class ProjectStore {
   /// The shared instance used in production (every window's `AppStore` points at it). Tests
   /// construct an isolated `AppStore()`, which gets its own fresh `ProjectStore`, so they never
   /// pollute this singleton or each other.
@@ -18,9 +19,9 @@ final class ProjectStore: ObservableObject {
 
   /// The list of configured projects (from the CLI's `~/.config/workroom/config.json`). The one
   /// piece of state shared across all windows.
-  @Published var projects: [Project] = []
+  var projects: [Project] = []
   /// The app-wide base branch for projects that name none; nil means origin's default branch.
-  @Published var globalBaseBranch: String?
+  var globalBaseBranch: String?
 
   /// A read is stamped when issued, across all windows (#170). Superseded callers await
   /// the newest read too. Success publishes its result; failure leaves the project list unchanged.
@@ -57,16 +58,16 @@ final class ProjectStore: ObservableObject {
   }
 
   /// Per-project resolved root branch labels, hydrated asynchronously after each load.
-  @Published var rootRefs: [Project.ID: RootRef] = [:]
+  var rootRefs: [Project.ID: RootRef] = [:]
 
   /// Per-workroom (and per-root) VCS + CI status driving the ambient badges and the Changes panel
   /// (issue #24), keyed by `SidebarID`. Resolved app-side, best-effort/"last checked". Shared so two
   /// windows showing the same workroom report a consistent badge and don't double the probes.
-  @Published var workroomStatuses: [SidebarID: WorkroomStatus] = [:]
+  var workroomStatuses: [SidebarID: WorkroomStatus] = [:]
 
   /// Whether the GitHub CLI is usable for the PR/CI probes (machine-global). Optimistic default so
   /// no warning flashes before the first check.
-  @Published var githubCLIStatus: GitHubCLIStatus = .available
+  var githubCLIStatus: GitHubCLIStatus = .available
 
   /// Owns the `gh auth status` probe: its freshness clock AND its single-flight, so N windows share
   /// one `gh` and the staleness check can't interleave with the write the way a bare timestamp on
@@ -88,13 +89,13 @@ final class ProjectStore: ObservableObject {
   /// How many creates are in flight against each project path (for the sidebar row's spinner +
   /// disabling). Counted rather than a `Set` for the reason `committingProjectRoots` is: two creates
   /// in one project are a normal action, and the first to finish must not clear the other's spinner.
-  @Published var busyProjects: [String: Int] = [:]
+  var busyProjects: [String: Int] = [:]
 
   /// Target ids of workrooms whose create is still in flight — from the "created" event until the
   /// create flow ends (issue #116). A workroom here must not be deleted: its setup script is running
   /// against the worktree. Shared across windows so a delete from ANY window is blocked, not just the
   /// creating one.
-  @Published var creatingWorkrooms: Set<TerminalTarget.ID> = []
+  var creatingWorkrooms: Set<TerminalTarget.ID> = []
 
   /// The subset of `creatingWorkrooms` that is running an actual SETUP SCRIPT — the ones whose
   /// terminal must stay withheld, not merely undeletable (issue #167).
@@ -105,7 +106,7 @@ final class ProjectStore: ObservableObject {
   /// the setup script was still writing. The withholding belongs to the operation, and the operation
   /// outlives any one window's dialog. Held separately from `creatingWorkrooms` because that set also
   /// covers no-setup creates, which must never withhold — their terminal is the point.
-  @Published var settingUpWorkrooms: Set<TerminalTarget.ID> = []
+  var settingUpWorkrooms: Set<TerminalTarget.ID> = []
 
   /// Sidebar rows with a commit in flight, for the per-row button state.
   ///
@@ -113,7 +114,7 @@ final class ProjectStore: ObservableObject {
   /// `RepositoryWriteGate` and the `index.lock` contention it exists to prevent are per PROCESS. Held on
   /// the window's own store, a second window's 15s sweep, FSEvents lane and Refresh button all saw an
   /// empty set and kept probing a repo mid-write.
-  @Published var committingTargets: Set<SidebarID> = []
+  var committingTargets: Set<SidebarID> = []
 
   /// How many commits are in flight against each project root, which is what the read lanes actually
   /// have to stand clear of.
@@ -123,7 +124,7 @@ final class ProjectStore: ObservableObject {
   /// workroom B of the same project, which a per-row check waved straight through. Counted rather than
   /// a `Set` because the app's premise is N parallel workrooms, so two of one project can legitimately
   /// commit at once and the first to finish must not clear the other's suppression.
-  @Published var committingProjectRoots: [RepositoryLocation: Int] = [:]
+  var committingProjectRoots: [RepositoryLocation: Int] = [:]
 
   /// How many writes (commit, fetch, push, or pull) are in flight against each project root,
   /// across every window. Checked by the write ACTIONS THEMSELVES before starting — not just
@@ -134,18 +135,18 @@ final class ProjectStore: ObservableObject {
   /// concurrently on the shared `.git`). Distinct from `committingProjectRoots`, which exists for
   /// a different reason (suppressing READ lanes during a commit specifically) and keeps its own
   /// narrower role unchanged; this counter is the umbrella that all four write kinds share.
-  @Published var writingProjectRoots: [RepositoryLocation: Int] = [:]
+  var writingProjectRoots: [RepositoryLocation: Int] = [:]
 
   /// Target ids of workrooms with an in-flight optimistic deletion — dropped from the sidebar but
   /// their teardown (worktree/config removal) not yet finished. `AppStore.apply` filters these out of
   /// every incoming CLI `list`, so a stale snapshot taken before the teardown persisted can't
   /// resurrect a just-deleted workroom (the create/delete reload race). Cleared when teardown ends.
-  @Published var deletingWorkrooms: Set<TerminalTarget.ID> = []
+  var deletingWorkrooms: Set<TerminalTarget.ID> = []
 
   /// Paths of projects with an in-flight Delete Project — the project-level counterpart of
   /// `deletingWorkrooms` (#287). Tearing down a project's remote hosts can take minutes, and a
   /// reload in that window would otherwise republish it with half-destroyed workrooms.
-  @Published var deletingProjects: Set<String> = []
+  var deletingProjects: Set<String> = []
 
   /// Whether the persisted last-session selection is still up for grabs (issue #70). The first
   /// window to launch with `restore == true` consumes it and restores the saved selection; every

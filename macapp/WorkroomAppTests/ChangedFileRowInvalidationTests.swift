@@ -145,6 +145,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     store.workroomStatuses[.workroom(project: projectPath, name: workroomName)] = WorkroomStatus(
       dirty: true, changedFiles: files(20), lastChecked: Date())
 
+    ChangedFileRow.bodyPasses = 0
     let (window, view) = host(store)
     defer {
       Task { await store.terminals.reapAll() }
@@ -161,9 +162,8 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     XCTAssertEqual(
       FocusedTabSelection.current(store: store, sessions: store.terminals),
       .diff(path: "src/file0.swift", source: .gitWorktree), "file0's diff must be the focused tab")
-    ChangedFileRow.bodyPasses = 0
-    store.workroomStatuses[.workroom(project: projectPath, name: workroomName)]?.dirty = true
-    settle(view, until: { ChangedFileRow.bodyPasses > 0 })
+    // Counted from the first render: a row no longer rebuilds on an unrelated `AppStore` change, so
+    // nudging the store can't show the rows are there.
     XCTAssertGreaterThan(
       ChangedFileRow.bodyPasses, 0,
       "rows must be on screen when the measurement window opens — otherwise 'the rows rebuilt' and "

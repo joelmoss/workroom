@@ -258,7 +258,8 @@ extension AppStore {
   /// settings sheet, and auto-run. Stored app-side in `Defaults` (GUI-only — the CLI can't hold a
   /// long-running process, so it's deliberately out of the `--json` contract, like branch labels).
   func runConfig(forProject projectPath: String) -> RunConfig {
-    Defaults[.runCommands][projectPath] ?? .empty
+    _ = runConfigRevision  // a read Observation tracks: `Defaults` itself is not observable
+    return Defaults[.runCommands][projectPath] ?? .empty
   }
 
   /// Whether a project has a non-blank run command configured.
@@ -302,10 +303,11 @@ extension AppStore {
   }
 
   /// Persist a project's run config. A blank command with auto-run off removes the entry so the map
-  /// doesn't accrue dead keys. `objectWillChange` fires so the toolbar/menu re-render `hasRunCommand`
-  /// the moment Save commits (those consumers observe this store — issue #7 reactivity, OV-A).
+  /// doesn't accrue dead keys. Bumps `runConfigRevision` so the toolbar/menu re-render
+  /// `hasRunCommand` the moment Save commits (those consumers observe this store — issue #7
+  /// reactivity, OV-A).
   func setRunConfig(_ config: RunConfig, forProject projectPath: String) {
-    objectWillChange.send()
+    runConfigRevision += 1
     var map = Defaults[.runCommands]
     if config.hasCommand || config.autoRun {
       map[projectPath] = RunConfig(
