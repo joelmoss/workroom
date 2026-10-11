@@ -9,6 +9,9 @@ on:
   pull_request:
     branches: [master, "release/**"]
 
+# Nothing is granted workflow-wide; each job asks for only what it uses.
+permissions: {}
+
 # Superseded PR pushes stop burning a macOS runner. Branch pushes keep every run so each commit a
 # release can be cut from — on master or a `release/**` branch — has its own signal.
 concurrency:
@@ -22,6 +25,8 @@ jobs:
   workflows:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     env:
       ACTIONLINT_VERSION: 1.7.12
       ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
@@ -63,6 +68,9 @@ jobs:
 
   cli:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -109,6 +117,9 @@ jobs:
   # from Apple targets.
   rust:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -155,6 +166,9 @@ jobs:
   # checkout, and the rest of the workspace should not wait on either.
   agent-terminal-state:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -205,6 +219,9 @@ jobs:
   # aarch64 runs under qemu-user, which needs no sysroot for a static binary.
   agent-linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -332,6 +349,8 @@ jobs:
   host-image-arm64:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -341,6 +360,9 @@ jobs:
 
   app:
     runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -538,6 +560,9 @@ jobs:
   # tests no longer run inside `app`, so requiring only `app` would stop them gating a merge.
   app-scripts:
     runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       # Full history, for the tags: agent-protocol_test.sh reads the latest stable release's app
       # protocol at its tag, and fails in a clone without them.

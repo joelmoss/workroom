@@ -14,13 +14,15 @@ on:
     - cron: "5 0 * * *" # just after 00:00 UTC, so each interval starts on the day it covers
   workflow_dispatch:
 
-permissions:
-  contents: write
+# Nothing is granted workflow-wide; each job asks for only what it uses.
+permissions: {}
 
 jobs:
   snapshot:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:

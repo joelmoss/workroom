@@ -5,8 +5,8 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
+# Nothing is granted workflow-wide; each job asks for only what it uses.
+permissions: {}
 
 # Serialize with the nightly + appcast-notes workflows: all three download-modify-upload the same
 # appcast.xml, so overlapping runs could drop items. Queue rather than cancel.
@@ -28,6 +28,9 @@ jobs:
 
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -59,6 +62,9 @@ jobs:
   macapp:
     needs: host-image
     runs-on: macos-15
+    timeout-minutes: 120
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -172,6 +178,9 @@ jobs:
   publish:
     needs: [release, macapp]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
