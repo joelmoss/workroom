@@ -25,7 +25,7 @@ fails=0
 # --- APP_UITEST_FLAGS skip list -------------------------------------------------------------
 # Pinned literally: a refactor that silently drops or adds an entry re-enables (or newly skips) a
 # flaky/expensive UI test in the default local `make app-uitest` run without anyone deciding to.
-want_flags='-skip-testing:WorkroomAppUITests/AgentResumeUITests -skip-testing:WorkroomAppUITests/SessionRestoreUITests -skip-testing:WorkroomAppUITests/HistoryStressUITests/testLargeHistoryStaysInteractive -skip-testing:WorkroomAppUITests/WindowDragUITests/testDraggingWorkroomTabReordersTwoChips'
+want_flags='-skip-testing:WorkroomAppUITests/SessionRestoreUITests -skip-testing:WorkroomAppUITests/HistoryStressUITests/testLargeHistoryStaysInteractive -skip-testing:WorkroomAppUITests/WindowDragUITests/testDraggingWorkroomTabReordersTwoChips'
 got_flags="$(sed -n 's/^APP_UITEST_FLAGS ?= //p' "$MAKEFILE")"
 if [ "$got_flags" != "$want_flags" ]; then
   echo "FAIL: Makefile's APP_UITEST_FLAGS skip list changed."

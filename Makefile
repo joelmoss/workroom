@@ -123,7 +123,7 @@ APP_TEST_FLAGS ?= -parallel-testing-enabled YES
 # path) has its decision logic pinned by unit tests, in `SessionStoreTests` (`forEnvironment`); the
 # launch wiring that feeds it is covered only by the skipped `SessionRestoreUITests`. Run the full suite
 # (pre-release, or after touching any of these) with `make app-uitest APP_UITEST_FLAGS=`.
-APP_UITEST_FLAGS ?= -skip-testing:WorkroomAppUITests/AgentResumeUITests -skip-testing:WorkroomAppUITests/SessionRestoreUITests -skip-testing:WorkroomAppUITests/HistoryStressUITests/testLargeHistoryStaysInteractive -skip-testing:WorkroomAppUITests/WindowDragUITests/testDraggingWorkroomTabReordersTwoChips
+APP_UITEST_FLAGS ?= -skip-testing:WorkroomAppUITests/SessionRestoreUITests -skip-testing:WorkroomAppUITests/HistoryStressUITests/testLargeHistoryStaysInteractive -skip-testing:WorkroomAppUITests/WindowDragUITests/testDraggingWorkroomTabReordersTwoChips
 
 # Stops every running copy of THIS build's identity first (Scripts/stop-dev-app.sh), and its
 # persisted session helpers, whose panes come back empty. By bundle id, never by process name: every

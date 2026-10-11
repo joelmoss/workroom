@@ -113,10 +113,10 @@ struct RepositoryGitHub: Sendable {
     let message: String
     switch await repository() {
     case .found(let repo): return await resolver.runPRCommand(arguments, repo: repo)
-    // A blip is a retry-in-a-minute condition; "no repository" reads as a permanent problem.
+    // A blip is a retry-in-a-minute condition, and so is an offline Mac (a connection failure is
+    // `keepPrior` in `ghPreflight`); "no repository" reads as a permanent problem.
     case .keepPrior:
       message = "Couldn’t reach GitHub to find this workroom’s repository. Try again."
-    // Also what an offline Mac gets: a plain connection failure classifies as absent (see TODOS.md).
     case .absent:
       message =
         "Couldn’t determine the GitHub repository for this workroom. "
