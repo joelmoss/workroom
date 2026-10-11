@@ -10,8 +10,8 @@ on:
   release:
     types: [edited]
 
-permissions:
-  contents: write
+# Nothing is granted workflow-wide; each job asks for only what it uses.
+permissions: {}
 
 # Serialize with the release + nightly workflows: all three download-modify-upload the same
 # appcast.xml, so overlapping runs could drop items. Queue rather than cancel.
@@ -24,6 +24,9 @@ jobs:
     # Skip edits to the appcast feed release itself (it mirrors no notes).
     if: github.event.release.tag_name != 'appcast'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:

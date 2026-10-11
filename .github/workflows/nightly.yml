@@ -11,8 +11,8 @@ on:
     - cron: "0 5 * * *" # daily ~05:00 UTC (5am GMT)
   workflow_dispatch:
 
-permissions:
-  contents: write
+# Nothing is granted workflow-wide; each job asks for only what it uses.
+permissions: {}
 
 # Serialize with the release + appcast-notes workflows: all three download-modify-upload the same
 # appcast.xml, so overlapping runs could drop items. Queue rather than cancel.
@@ -31,6 +31,9 @@ jobs:
   # The commit count is the monotonic ordering key the CLI + Sparkle compare on.
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     outputs:
       should_build: ${{ steps.guard.outputs.should_build }}
       version: ${{ steps.guard.outputs.version }}
@@ -77,6 +80,9 @@ jobs:
     needs: check
     if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
     env:
       VERSION: ${{ needs.check.outputs.version }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -150,6 +156,9 @@ jobs:
     needs: [check, host-image]
     if: needs.check.outputs.should_build == 'true'
     runs-on: macos-15
+    timeout-minutes: 120
+    permissions:
+      contents: read
     env:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
@@ -299,6 +308,9 @@ jobs:
   publish:
     needs: [check, cli, macapp]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VERSION: ${{ needs.check.outputs.version }}
