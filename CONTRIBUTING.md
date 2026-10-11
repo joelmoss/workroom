@@ -150,8 +150,8 @@ workroom/
 │   ├── base.go              # `workroom base set|clear` (the branch new workrooms start from)
 │   ├── update.go            # `workroom update` (alias u) — CLI self-update
 │   ├── version.go           # `workroom version`
-│   ├── add_project.go       # Hidden; --json only; used by the app to register a project
-│   ├── delete_project.go    # Hidden; --json only; used by the app to drop a project
+│   ├── add_project.go       # Hidden; --json only; used by the app to register a project (Service.AddProject)
+│   ├── delete_project.go    # Hidden; --json only; used by the app to drop a project (Service.DeleteProject)
 │   ├── claim.go             # Hidden; `claim-provisioned`; used by a Dev build of the app to move its remote entries into its own config
 │   ├── json.go              # --json success/error envelope writers
 │   ├── jsonlog.go           # NDJSON streaming of setup/teardown output (stderr)
@@ -160,7 +160,7 @@ workroom/
 │   ├── config/              # JSON config CRUD (atomic writes + advisory lock)
 │   ├── namegen/             # Adjective-noun name generation (120 × 210)
 │   ├── vcs/                 # VCS interface + Git impl + CommandExecutor (testable)
-│   ├── workroom/            # Core orchestration: Service.{Create,Delete,List,ListData}
+│   ├── workroom/            # Core orchestration, prints nothing: Service.{CreateNamed,Delete,InteractiveDelete,Listing,ListData,AddProject,DeleteProject}
 │   ├── script/              # Setup/teardown script runner (env vars + live streaming)
 │   ├── ui/                  # Colored output, tables, log panels, interactive prompts (huh)
 │   ├── updater/             # `workroom update`: GitHub release check + binary swap
@@ -169,6 +169,7 @@ workroom/
 ├── vcs/                     # Rust workspace: the wr-agent daemon + git read crates
 ├── scripts/workroom_setup   # This repo's own example setup hook
 ├── testdata/fixtures/       # Setup/teardown scripts used by Go tests
+├── testdata/contracts/      # Golden --json envelopes, checked by cmd's Go tests and decoded by the app's tests
 ├── .github/workflows/       # CI + release + appcast automation
 ├── .goreleaser.yml          # CLI cross-platform build/release config
 ├── .golangci.yml            # Linter config
@@ -219,31 +220,34 @@ renders its own error format. Each subcommand builds a `workroom.Service` via `n
 ```go
 // internal/workroom/workroom.go
 type Service struct {
-    Config         *config.Config
-    VCS            vcs.VCS
-    Out            io.Writer
-    Verbose        bool
-    Pretend        bool
-    PromptFn       PromptFunc   // interactive multi-select (huh)
-    ConfirmFn      ConfirmFunc  // interactive yes/no (huh)
-    // ... plus test-injection hooks and --json wiring (SuppressEditor,
-    //     KeepEmptyProject, ScriptLogWriter, OnReady)
+    Config          *config.Config
+    VCS             vcs.VCS
+    Pretend         bool
+    PromptFn        PromptFunc   // interactive multi-select (huh)
+    ConfirmFn       ConfirmFunc  // interactive yes/no (huh)
+    Status          func(status, msg string)                       // progress steps; --verbose prints them
+    ScriptOutput    func(title string) (io.Writer, func(ok bool))  // the human teardown log panel
+    ScriptLogWriter io.Writer                                      // --json: NDJSON script output on stderr
+    // ... plus test-injection hooks and --json wiring (KeepEmptyProject, OnReady)
 }
 ```
 
-In `--json` mode, `newService()` swaps the human pieces for machine-safe ones: output is discarded
-(the command writes the JSON itself), the editor prompt is suppressed, empty projects are pinned,
-and the interactive prompt/confirm hooks return errors rather than blocking. This is how the same
-`Service` serves both the interactive terminal and the GUI.
+`internal/workroom` prints nothing. Its methods return results, and `cmd/` renders them: the
+`--json` envelope, or the human output (tables, log panels, success lines). Prompts reach the
+user through the `PromptFn`/`ConfirmFn` hooks. In `--json` mode, `newService()` pins empty projects and makes the interactive prompt/confirm hooks return
+errors rather than block. This is how the same `Service` serves both the interactive terminal and
+the GUI.
 
-`Service` methods (`Create`, `CreateNamed`, `Delete`, `InteractiveDelete`, `List`, `ListData`) hold
-the orchestration logic and delegate VCS work to the `vcs.VCS` interface, persistence to
-`config.Config`, and hook execution to `script.Run`.
+`Service` methods (`CreateNamed`, `Delete`, `InteractiveDelete`, `Listing`, `ListData`,
+`AddProject`, `DeleteProject`) hold the orchestration logic and delegate VCS work to the `vcs.VCS`
+interface, persistence to `config.Config`, and hook execution to `script.Run`. The human commands
+wrap them in `cmd/`: `createWorkroom` in `cmd/create.go` adds the setup log panel, the success line
+and the `$EDITOR` prompt; `cmd/list.go` renders `Listing`; `runDeleteHuman` in `cmd/delete.go`
+renders each `DeleteResult`.
 
 ### How a workroom is created (lifecycle)
 
-`Service.CreateNamed` (the machine path; `Service.Create` wraps it for humans with a log panel and
-the editor prompt):
+`Service.CreateNamed` (both paths; the human `workroom create` wraps it in `createWorkroom`):
 
 1. **Guard:** reject if the cwd is already a workroom (presence of a `.Workroom` marker).
 2. **Detect VCS:** `vcs.Detect(dir)` looks for `.git` and returns the `Git` impl, or `ErrUnsupportedVCS`
