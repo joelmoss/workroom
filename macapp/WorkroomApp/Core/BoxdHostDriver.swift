@@ -111,7 +111,7 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       guard status == 0 else {
         throw HostDriverError.provisioning("setting up \(name) failed: \(output)")
       }
-      try await awaitIdentity(of: id)
+      try await awaitIdentity(of: id, named: name)
       return .remote(id)
     } catch {
       try await undo(error, id: id)
@@ -196,18 +196,6 @@ final class BoxdHostDriver: HostTerminalDriver, @unchecked Sendable {
       try await checkOrg()
       return nil
     } catch { return "\(name) not removed: \(error.localizedDescription)" }
-  }
-
-  /// Until the identity unit has run on this machine: its marker and hostname both name it. boxd's
-  /// own readiness signal is not one (Phase 0, item 6), so the wait asks the machine itself.
-  private func awaitIdentity(of id: UUID) async throws {
-    let name = PosixShell.quoted(name(of: id))
-    try await poll(
-      .remote(id),
-      "test \"$(cat /etc/workroom-identity 2>/dev/null)\" = \(name)"
-        + " && test \"$(hostname)\" = \(name)",
-      tries: 150
-    ) { "\(self.name(of: id)) never minted its identity: \($0)" }
   }
 
   /// Refuses to act while boxd's active org or signed-in account is not this driver's

@@ -99,7 +99,7 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
       guard status == 0 else {
         throw HostDriverError.provisioning("setting up \(name) failed: \(output)")
       }
-      try await awaitIdentity(of: id)
+      try await awaitIdentity(of: id, named: name)
       return .remote(id)
     } catch {
       try await undo(error, id: id)
@@ -174,16 +174,6 @@ final class ExeDevHostDriver: HostTerminalDriver, @unchecked Sendable {
       "s=$(systemctl is-system-running --wait 2>/dev/null); test \"$s\" = running || test \"$s\" = degraded",
       tries: 150
     ) { "\(self.name(of: id)) never finished booting: \($0)" }
-  }
-
-  /// Until the identity unit has run on this VM: its marker and hostname both name it.
-  private func awaitIdentity(of id: UUID) async throws {
-    let name = PosixShell.quoted(name(of: id))
-    try await poll(
-      .remote(id),
-      "test \"$(cat /etc/workroom-identity 2>/dev/null)\" = \(name) && test \"$(hostname)\" = \(name)",
-      tries: 150
-    ) { "\(self.name(of: id)) never minted its identity: \($0)" }
   }
 
   /// Refuses to act while exe.dev answers as another account than this driver's.

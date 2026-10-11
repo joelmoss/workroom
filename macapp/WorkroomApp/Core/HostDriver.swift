@@ -54,6 +54,19 @@ extension HostDriver {
     throw HostDriverError.provisioning(failure(last))
   }
 
+  /// Until the identity unit has run on host `id`, a machine named `name`: its marker and its
+  /// hostname both name it. A provider's own readiness signal is not one (boxd's Phase 0, item 6),
+  /// so the wait asks the machine itself.
+  func awaitIdentity(of id: UUID, named name: String) async throws {
+    let quoted = PosixShell.quoted(name)
+    try await poll(
+      .remote(id),
+      "test \"$(cat /etc/workroom-identity 2>/dev/null)\" = \(quoted)"
+        + " && test \"$(hostname)\" = \(quoted)",
+      tries: 150
+    ) { "\(name) never minted its identity: \($0)" }
+  }
+
   /// The container image's socket (`vcs/scripts/ssh-fixture/entrypoint.sh`), for a driver that
   /// doesn't say otherwise.
   var agentSocket: String { RemoteWorkrooms.agentSocket }
