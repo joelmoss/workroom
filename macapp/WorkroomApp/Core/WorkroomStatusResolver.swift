@@ -487,7 +487,7 @@ struct WorkroomStatusResolver: Sendable {
   }
 
   /// Shared preflight for the two `gh` read probes (CI runs, PR list): distinguishes a transient
-  /// blip (timeout / rate-limit / 503 → `keepPrior`, so the badge doesn't flicker) from a hard
+  /// blip (timeout / rate-limit / 503 / no connection → `keepPrior`, so the badge doesn't flicker) from a hard
   /// absence (gh not installed / auth failure / no remote → `absent`) from "proceed and parse"
   /// (`proceed`). Both classifiers must treat gh's failure modes identically — sharing this keeps
   /// them from drifting.
@@ -495,6 +495,21 @@ struct WorkroomStatusResolver: Sendable {
     case proceed
     case absent
     case keepPrior
+  }
+
+  /// Whether `gh`'s stderr names a failure that clears by itself, so the last PR/CI state should
+  /// stay on screen. Shared by `ghPreflight` and the `gh pr checks` classifier so they cannot drift.
+  /// `HTTP 503` is the status line `gh` prints, not a bare `503` (a port or a repo name would match
+  /// that). The connection strings are what an offline Mac gets: `gh pr list` prints `error
+  /// connecting to <host>`, and `gh api` prints the Go error (`dial tcp …: no such host`,
+  /// `proxyconnect tcp: dial tcp …: connection refused`). Without them the badge blanks to "no PR"
+  /// on every poll while offline.
+  static func isTransientGitHubFailure(_ stderr: String) -> Bool {
+    let e = stderr.lowercased()
+    return [
+      "rate limit", "http 503", "timeout",
+      "error connecting to", "dial tcp", "no such host", "connection refused",
+    ].contains(where: e.contains)
   }
 
   static func ghPreflight(_ r: CommandResult) -> GHPreflight {
@@ -506,10 +521,7 @@ struct WorkroomStatusResolver: Sendable {
     // exactly how the gh *auth* probe came to publish a killed child's verdict.
     if r.signaled { return .keepPrior }
     if r.exitCode == CommandResult.commandNotFound { return .absent }  // gh not installed
-    let lowerErr = r.stderr.lowercased()
-    if lowerErr.contains("rate limit") || lowerErr.contains("503") || lowerErr.contains("timeout") {
-      return .keepPrior
-    }
+    if isTransientGitHubFailure(r.stderr) { return .keepPrior }
     if !r.ok { return .absent }  // auth failure, no remote, not a gh repo, etc.
     return .proceed
   }
@@ -731,10 +743,7 @@ struct WorkroomStatusResolver: Sendable {
     // use, because `gh pr checks` overloads its exit code — carries the sibling check.
     if r.signaled { return .keepPrior }
     if r.exitCode == CommandResult.commandNotFound { return .absent }  // gh not installed
-    let lowerErr = r.stderr.lowercased()
-    if lowerErr.contains("rate limit") || lowerErr.contains("503") || lowerErr.contains("timeout") {
-      return .keepPrior
-    }
+    if isTransientGitHubFailure(r.stderr) { return .keepPrior }
     return .absent  // no checks reported / auth failure / no remote / etc.
   }
 

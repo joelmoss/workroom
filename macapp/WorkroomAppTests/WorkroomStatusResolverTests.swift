@@ -799,6 +799,35 @@ final class WorkroomStatusResolverTests: XCTestCase {
       WorkroomStatusResolver.classifyGitHubCLI(branchNamedOddly), .verdict(.available))
   }
 
+  /// An offline Mac is a blip, not "no PR": each stderr below is what `gh` 2.102 printed with the
+  /// network unreachable (`gh pr list`, and `gh api` through a dead proxy), one per matched string.
+  /// Reading any of them as `.absent` blanks the PR panel and CI badge on every poll while offline.
+  /// `gh pr checks` goes through its own classifier, so it is pinned too.
+  func testGHPreflightConnectionFailuresKeepPrior() {
+    let stderrs = [
+      "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com",
+      #"Get "https://api.github.com/user": dial tcp 140.82.121.6:443: i/o error"#,
+      #"Get "https://api.github.com/user": lookup api.github.com: no such host"#,
+      "proxyconnect tcp: connect: connection refused",
+    ]
+    for stderr in stderrs {
+      let r = CommandResult(stdout: "", stderr: stderr, exitCode: 1, timedOut: false)
+      XCTAssertEqual(WorkroomStatusResolver.ghPreflight(r), .keepPrior, stderr)
+      XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .keepPrior, stderr)
+      XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(r), .keepPrior, stderr)
+      XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .keepPrior, stderr)
+    }
+  }
+
+  /// `HTTP 503` is the status line; a bare `503` elsewhere in stderr (a port, a repo name) is not a
+  /// server error, so a real failure with one in it still reads as absent.
+  func testGHPreflightBare503IsNotATransientFailure() {
+    let r = CommandResult(
+      stdout: "", stderr: "no git remotes found for octo/svc-503", exitCode: 1, timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.ghPreflight(r), .absent)
+    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .absent)
+  }
+
   /// A signalled `gh pr list`/`gh run list` must not clear a good PR/CI badge either.
   func testGHPreflightSignalledKeepsPrior() {
     let killed = CommandResult(
