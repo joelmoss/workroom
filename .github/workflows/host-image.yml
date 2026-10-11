@@ -63,6 +63,7 @@ jobs:
       - name: Push
         id: push
         run: |
+          set -euo pipefail
           repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/workroom-host"
           tag="$repo:build-${{ github.run_id }}-${{ matrix.arch }}"
           docker tag workroom-host-candidate "$tag"
@@ -93,6 +94,7 @@ jobs:
           ARM64: ${{ needs.build.outputs.digest-arm64 }}
           TAG: ${{ inputs.tag }}
         run: |
+          set -euo pipefail
           repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/workroom-host"
           docker buildx imagetools create --tag "$repo:$TAG" "$repo@$AMD64" "$repo@$ARM64"
           digest="$(docker buildx imagetools inspect "$repo:$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
@@ -106,6 +108,7 @@ jobs:
         env:
           IMAGE: ${{ steps.create.outputs.image }}
         run: |
+          set -euo pipefail
           path="${IMAGE#ghcr.io/}"; name="${path%@*}"; digest="${IMAGE#*@}"
           # A private package refuses the token itself, which the manifest's refusal below reports.
           token="$(curl -sS "https://ghcr.io/token?scope=repository:$name:pull" | jq -r '.token // empty')"
