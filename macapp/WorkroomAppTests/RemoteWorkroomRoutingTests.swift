@@ -15,22 +15,20 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
 
   private func remote(
     _ name: String, host: UUID, state: String? = nil,
-    provisioner: String = RemoteWorkrooms.provisioner
+    provisioner: String = RemoteWorkrooms.provisioner, repository: String? = "o/r"
   ) -> Workroom {
     Workroom(
       name: name, path: path, vcsName: "workroom/\(name)", warnings: [],
-      host: HostDescriptor(state: state, provisioner: provisioner, id: host))
+      host: HostDescriptor(
+        state: state, provisioner: provisioner, id: host, repository: repository))
   }
 
-  private func project(_ workrooms: [Workroom], repository: String? = "o/r") -> Project {
-    Project(
-      path: "/proj", vcs: "git", workrooms: workrooms,
-      host: HostDescriptor(
-        provisioner: RemoteWorkrooms.provisioner, id: UUID(), repository: repository))
+  private func project(_ workrooms: [Workroom]) -> Project {
+    Project(path: "/proj", vcs: "git", workrooms: workrooms, host: nil)
   }
 
   /// Two remote workrooms at one path on two hosts are two repositories. Each is its own shared
-  /// root and carries the base's GitHub identity; one this app can't reach (being created, or
+  /// root and carries its own GitHub identity; one this app can't reach (being created, or
   /// another build's) is not registered at all.
   func testReachableRemoteWorkroomsRegisterOnTheirOwnHosts() throws {
     let a = UUID()
@@ -49,34 +47,6 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
       XCTAssertEqual(registration.entry.sharedLocation, registration.location)
       XCTAssertEqual(registration.entry.github?.flag, "github.com/o/r")
     }
-  }
-
-  /// A workroom carries its own base's GitHub identity: a base on another runtime, made after the
-  /// project's origin changed, is a clone of another repository (#309).
-  func testEachWorkroomCarriesItsOwnBasesRepository() throws {
-    let (docker, apple) = (UUID(), UUID())
-    let workroom = { (name: String, host: UUID, driver: String) in
-      Workroom(
-        name: name, path: self.path, vcsName: "workroom/\(name)", warnings: [],
-        host: HostDescriptor(driver: driver, provisioner: RemoteWorkrooms.provisioner, id: host))
-    }
-    let registrations = RemoteWorkrooms.registrations([
-      Project(
-        path: "/proj", vcs: "git",
-        workrooms: [workroom("d", docker, "container"), workroom("a", apple, "apple-container")],
-        host: HostDescriptor(bases: [
-          HostDescriptor(
-            driver: "container", provisioner: RemoteWorkrooms.provisioner, id: UUID(),
-            repository: "o/old"),
-          HostDescriptor(
-            driver: "apple-container", provisioner: RemoteWorkrooms.provisioner, id: UUID(),
-            repository: "o/new"),
-        ]))
-    ])
-    let github = Dictionary(
-      uniqueKeysWithValues: registrations.map { ($0.location, $0.entry.github?.flag) })
-    XCTAssertEqual(github[try .remote(host: docker, path: path)], "github.com/o/old")
-    XCTAssertEqual(github[try .remote(host: apple, path: path)], "github.com/o/new")
   }
 
   // Value: protects=a workroom made without a base carries the repository its create recorded,
@@ -108,10 +78,10 @@ final class RemoteWorkroomRoutingTests: XCTestCase {
     XCTAssertEqual(beside.first?.entry.github?.flag, "github.com/o/new")
   }
 
-  /// No base identity, no GitHub identity: its PR and CI stay off rather than guess.
-  func testAProjectWithoutABaseRepositoryRegistersNoGitHubIdentity() {
+  /// No recorded repository, no GitHub identity: its PR and CI stay off rather than guess.
+  func testAWorkroomWithoutARepositoryRegistersNoGitHubIdentity() {
     let registrations = RemoteWorkrooms.registrations([
-      project([remote("a", host: UUID())], repository: nil)
+      project([remote("a", host: UUID(), repository: nil)])
     ])
     XCTAssertEqual(registrations.count, 1)
     XCTAssertNil(registrations.first?.entry.github)

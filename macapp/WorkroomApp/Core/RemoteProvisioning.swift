@@ -102,17 +102,6 @@ enum RemoteProvisioning {
   /// clone detached on the host and poll for it, so only silence ends it.
   static let gitTimeout: TimeInterval = 600
 
-  // MARK: A legacy base
-
-  /// Removes a base a build made before remote workrooms stopped deriving from one, and its
-  /// record. Workrooms derived from it are not affected: each is a copy.
-  static func destroyBase(
-    _ host: UUID, in environment: Environment, forget: @Sendable () async throws -> Void
-  ) async throws {
-    try await environment.driver.destroy(.remote(host))
-    try await forget()
-  }
-
   // MARK: Credentials
 
   /// The Mac's GitHub token, for a relayed workroom (#309).

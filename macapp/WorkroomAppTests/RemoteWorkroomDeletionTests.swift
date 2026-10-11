@@ -89,25 +89,8 @@ final class RemoteWorkroomDeletionTests: XCTestCase {
       ]))
   }
 
-  /// A base with nothing live is only cleared; a live one is never cleared without its box going.
-  func testABaseIsClearedOnlyOnceNothingOfItIsLive() async throws {
-    let calls = Calls()
-    try await RemoteWorkrooms.deleteBase(
-      HostDescriptor(state: "destroyed", provisioner: mine, id: UUID()), environment: nil
-    ) { calls.add("clear") }
-    XCTAssertEqual(calls.all, ["clear"])
-
-    do {
-      try await RemoteWorkrooms.deleteBase(
-        HostDescriptor(provisioner: mine, id: UUID()), environment: nil
-      ) { calls.add("clear") }
-      XCTFail("a live base was cleared")
-    } catch RemoteWorkrooms.Failure.signedOut {}
-    XCTAssertEqual(calls.all, ["clear"])
-  }
-
-  /// Removing a workroom from the sidebar keeps its project's base: without it, the next New
-  /// Remote Workroom before a reload would build a second base.
+  /// Removing a workroom from the sidebar keeps its project's base record, so the launch that
+  /// retires older builds' bases (`BaseRetirement`) still finds it.
   @MainActor
   func testRemovingAWorkroomLocallyKeepsTheProjectsBase() {
     let store = AppStore()
