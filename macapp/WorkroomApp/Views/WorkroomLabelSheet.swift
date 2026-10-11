@@ -1,4 +1,5 @@
 import SwiftUI
+import WorkroomDomain
 
 /// Set/edit a workroom's display label (issue #41). Opened from the sidebar row's or the tab chip's
 /// "Set Label…"/"Edit Label…" context-menu item via `AppStore.pendingWorkroomLabel`. A label is a

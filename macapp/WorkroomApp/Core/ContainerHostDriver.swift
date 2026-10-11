@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomDomain
 import WorkroomWire
 
 /// The first `HostDriver`: a Linux container running sshd and a supervised `wr-agent`
@@ -51,28 +52,6 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   private struct Provisioned {
     let container: String
     let image: String?
-  }
-
-  /// What a host this driver made needs to be reached and destroyed again by a driver in a later
-  /// launch (#253): the `container` part of its host descriptor. The client key and the agent's
-  /// socket are the driver's own (`Provisioning`), and the container's name follows from the
-  /// host's ID.
-  struct Record: Codable, Hashable, Sendable {
-    let address: String
-    let port: Int
-    let user: String
-    let hostKey: String
-    /// The image a workroom an older build derived from a base was run from, which only it uses;
-    /// nil for any other host.
-    let image: String?
-    /// The Docker context it runs in (`Provisioning.context`). nil, as every record made before
-    /// #309 has it, follows the environment and the CLI's current context, as those always did.
-    var context: String? = nil
-
-    enum CodingKeys: String, CodingKey {
-      case address, port, user, image, context
-      case hostKey = "host_key"
-    }
   }
 
   /// The label every container and image this driver makes carries, with when it was made in
@@ -259,11 +238,11 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
 
   /// What a later launch's driver needs to `adopt` `host`, or nil for a host this driver did not
   /// make.
-  func record(of host: HostID) -> Record? {
+  func record(of host: HostID) -> ContainerHostRecord? {
     guard case .remote(let id) = host else { return nil }
     return lock.withLock {
       guard let target = hosts[id], let made = provisioned[id] else { return nil }
-      return Record(
+      return ContainerHostRecord(
         address: target.address, port: target.port, user: target.user, hostKey: target.hostKey,
         image: made.image, context: provisioning?.context)
     }
@@ -272,7 +251,7 @@ final class ContainerHostDriver: HostTerminalDriver, @unchecked Sendable {
   /// Takes a host an earlier launch made back on (#253), as its `record` describes it, so it can
   /// be reached and destroyed as if this driver had made it. Whether its container is still there
   /// is found out by using it.
-  func adopt(_ id: UUID, _ record: Record) throws {
+  func adopt(_ id: UUID, _ record: ContainerHostRecord) throws {
     guard let provisioning else { throw HostDriverError.notImplemented("Adopting a host") }
     // `destroy` removes it by this, with `--force`: a config edited by hand must not name an image
     // that is not an older derive's commit.

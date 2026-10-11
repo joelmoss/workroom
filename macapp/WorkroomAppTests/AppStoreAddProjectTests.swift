@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomDomain
 import XCTest
 
 @testable import Workroom

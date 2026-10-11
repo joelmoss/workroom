@@ -67,10 +67,10 @@ final class WorkroomLabelTests: XCTestCase {
   }
 
   func testNormalizedLabel() {
-    XCTAssertNil(Workroom.normalizedLabel(nil))
-    XCTAssertNil(Workroom.normalizedLabel(""))
-    XCTAssertNil(Workroom.normalizedLabel("   \n\t "))
-    XCTAssertEqual(Workroom.normalizedLabel("  Hi  "), "Hi")
+    XCTAssertNil(WorkroomDomain.Workroom.normalizedLabel(nil))
+    XCTAssertNil(WorkroomDomain.Workroom.normalizedLabel(""))
+    XCTAssertNil(WorkroomDomain.Workroom.normalizedLabel("   \n\t "))
+    XCTAssertEqual(WorkroomDomain.Workroom.normalizedLabel("  Hi  "), "Hi")
   }
 
   // MARK: Model — target title

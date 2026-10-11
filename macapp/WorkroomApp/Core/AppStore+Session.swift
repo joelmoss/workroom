@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import OSLog
+import WorkroomDomain
 
 /// What one window contributes to the saved session (issue #46). `SessionCoordinator` decides when
 /// this runs; `SessionStore` owns the file.

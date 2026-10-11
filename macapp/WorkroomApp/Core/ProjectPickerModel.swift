@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomDomain
 
 /// New Workroom project picker (issue #81): a thin adapter over the generic `PickerModel` that
 /// matches the query against each project's `displayName`. The shared core lives in `PickerModel`
