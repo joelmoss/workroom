@@ -1,5 +1,6 @@
 import CryptoKit
 import Defaults
+import WorkroomDomain
 import XCTest
 
 @testable import Workroom
@@ -936,8 +937,8 @@ final class RemoteHostsTests: XCTestCase {
         context: context, dialect: dialect))
   }
 
-  private static func record(context: String?) -> ContainerHostDriver.Record {
-    ContainerHostDriver.Record(
+  private static func record(context: String?) -> ContainerHostRecord {
+    ContainerHostRecord(
       address: "127.0.0.1", port: 2222, user: RemoteWorkrooms.user, hostKey: "ssh-ed25519 AAAA",
       image: nil, context: context)
   }
@@ -947,7 +948,7 @@ final class RemoteHostsTests: XCTestCase {
   func testARecordWithoutAContextReadsAsTheUnpinnedOne() throws {
     let old = Data(
       #"{"address":"127.0.0.1","port":2222,"user":"workroom","host_key":"ssh-ed25519 AAAA"}"#.utf8)
-    let decoded = try JSONDecoder().decode(ContainerHostDriver.Record.self, from: old)
+    let decoded = try JSONDecoder().decode(ContainerHostRecord.self, from: old)
     XCTAssertNil(decoded.context)
     XCTAssertEqual(decoded, Self.record(context: nil))
 
@@ -959,7 +960,7 @@ final class RemoteHostsTests: XCTestCase {
     let pinned = Self.record(context: "orbstack")
     XCTAssertEqual(
       try JSONDecoder().decode(
-        ContainerHostDriver.Record.self, from: try JSONEncoder().encode(pinned)), pinned)
+        ContainerHostRecord.self, from: try JSONEncoder().encode(pinned)), pinned)
   }
 
   /// Every runtime command names a pinned context, ahead of the command (Docker refuses it after),

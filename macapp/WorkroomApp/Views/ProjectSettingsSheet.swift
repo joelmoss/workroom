@@ -1,4 +1,5 @@
 import SwiftUI
+import WorkroomDomain
 
 /// Per-project settings (issue #7): the run command + whether it auto-runs after a workroom is
 /// created. Opened from the project row's context menu. Uses a draft + Cancel/Save model (unlike the

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WorkroomDomain
 import XCTest
 
 @testable import Workroom

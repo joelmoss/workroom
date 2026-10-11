@@ -1,4 +1,5 @@
 import Defaults
+import WorkroomDomain
 import WorkroomWire
 import XCTest
 

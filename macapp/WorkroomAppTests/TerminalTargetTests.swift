@@ -1,4 +1,5 @@
 import Defaults
+import WorkroomDomain
 import XCTest
 
 @testable import Workroom
@@ -114,7 +115,7 @@ final class TerminalTargetTests: XCTestCase {
     let descriptor = HostDescriptor(
       driver: "container", id: id, grantID: "g1", repository: "o/r",
       cloneURL: "https://github.com/o/r.git", path: "/home/workroom/r",
-      container: ContainerHostDriver.Record(
+      container: ContainerHostRecord(
         address: "127.0.0.1", port: 2222, user: "workroom", hostKey: "ssh-ed25519 AAAA",
         image: nil))
     let json = try JSONEncoder().encode(descriptor)

@@ -2,6 +2,7 @@ import AppKit
 import Defaults
 import Foundation
 import SyntaxHighlighting
+import WorkroomDomain
 
 /// UI-testing fixture seam (issue #3 UI tests). When the app is launched with
 /// `-WorkroomUITestFixture 1`, `AppStore` loads this deterministic set of fake projects and

@@ -1,3 +1,4 @@
+import WorkroomDomain
 import XCTest
 
 @testable import Workroom
@@ -314,7 +315,7 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
       hosts: [:], directory: directory.appendingPathComponent("later"), provisioning: provisioning)
     try later.adopt(
       id,
-      ContainerHostDriver.Record(
+      ContainerHostRecord(
         address: record.address, port: record.port, user: record.user, hostKey: record.hostKey,
         image: image, context: record.context))
     for _ in 0..<2 {
@@ -337,7 +338,7 @@ final class ContainerProvisioningIntegrationTests: XCTestCase {
   func testAdoptRefusesARecordWhoseImageIsNotAnImageID() throws {
     let driver = ContainerHostDriver(
       hosts: [:], directory: directory, provisioning: try provisioning())
-    let record = ContainerHostDriver.Record(
+    let record = ContainerHostRecord(
       address: "127.0.0.1", port: 2222, user: "workroom", hostKey: "ssh-ed25519 AAAA",
       image: "debian:bookworm")
     XCTAssertThrowsError(try driver.adopt(UUID(), record))

@@ -1,4 +1,5 @@
 import Foundation
+import WorkroomDomain
 
 /// Pure presentation/validation rules for `WorkroomLabelSheet` (issue #41), extracted so the
 /// submit-enabled logic is unit-testable without rendering SwiftUI — mirrors `DeleteProjectSheetModel`.
@@ -19,17 +20,17 @@ enum WorkroomLabelSheetModel {
 
   /// Validate `input` for a workroom whose current label is `current`, against the display names of
   /// its **siblings** (every other workroom in the same project, each already resolved to its
-  /// label-or-name). Reuses `Workroom.normalizedLabel` so the "is this blank?" rule matches
+  /// label-or-name). Reuses `WorkroomDomain.Workroom.normalizedLabel` so the "is this blank?" rule matches
   /// `displayName` exactly.
   ///
   /// Disabled when the normalized input is empty, unchanged from the current label, or equal to a
   /// sibling's display name (which would render two rows identically).
   static func validate(input: String, current: String?, siblingDisplayNames: [String]) -> Validation
   {
-    guard let normalized = Workroom.normalizedLabel(input) else {
+    guard let normalized = WorkroomDomain.Workroom.normalizedLabel(input) else {
       return Validation(canSubmit: false, collides: false)  // blank ⇒ no label; use Remove instead
     }
-    if normalized == Workroom.normalizedLabel(current) {
+    if normalized == WorkroomDomain.Workroom.normalizedLabel(current) {
       return Validation(canSubmit: false, collides: false)  // unchanged
     }
     if siblingDisplayNames.contains(normalized) {

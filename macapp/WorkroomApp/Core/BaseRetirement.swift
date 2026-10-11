@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import WorkroomDomain
 
 /// Takes down the base machines older builds made (#395 follow-up). Since #395 every remote
 /// workroom is a fresh host with its own clone and nothing reads a base, but a project an older

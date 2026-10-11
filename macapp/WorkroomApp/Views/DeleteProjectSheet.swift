@@ -1,4 +1,5 @@
 import SwiftUI
+import WorkroomDomain
 
 /// The three escalating destructiveness levels offered by `DeleteProjectSheet` (issue #108):
 /// keep everything, hard-delete the workroom dirs (branches kept), or move the whole project +

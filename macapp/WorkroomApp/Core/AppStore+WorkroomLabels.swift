@@ -74,7 +74,7 @@ extension AppStore {
   func setWorkroomLabel(_ workroom: Workroom, in project: Project, to raw: String) {
     let key = TerminalTarget.workroomID(project: project.path, name: workroom.name)
     var labels = Defaults[.workroomLabels]
-    if let normalized = Workroom.normalizedLabel(raw) {
+    if let normalized = WorkroomDomain.Workroom.normalizedLabel(raw) {
       labels[key] = normalized
     } else {
       // Blank input means "no label". The sheet disables submit on blank, so this branch is reached
