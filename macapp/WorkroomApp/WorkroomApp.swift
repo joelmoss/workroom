@@ -1353,8 +1353,8 @@ struct WorkroomCommands: Commands {
 
       // View menu: reveal the Files view (the repo file tree) — its own single-section activity-bar
       // pane, so showing it selects the Files pane and opens the inspector; turning it off hides the
-      // pane (Files has no sub-section to collapse). Assigning `activeInspectorSection` in both
-      // branches forces the bar + inspector to re-render synchronously (see `AppStore.apply`).
+      // pane (Files has no sub-section to collapse). Bumping `inspectorToggles` makes the bar +
+      // inspector re-render synchronously, even when the section stays Files (see `AppStore.apply`).
       Toggle(
         "Files",
         isOn: Binding(
@@ -1362,6 +1362,7 @@ struct WorkroomCommands: Commands {
           set: { on in
             store?.activeInspectorSection = .files
             showInspector = on
+            store?.inspectorToggles += 1
           })
       )
       .keyboardShortcut("f", modifiers: [.command, .option])

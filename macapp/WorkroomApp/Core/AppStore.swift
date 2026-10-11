@@ -521,7 +521,7 @@ final class AppStore: ObservableObject {
   var inspectorSizeWeights: [Double] = [1, 1, 1, 1]
   /// The selected top-level section in the right activity bar (issue: activity bar). Drives which
   /// pane the inspector shows (`RightInspector` renders `activeInspectorSection.subSections`). Held
-  /// as `@Published` (not read via `@Default` in the bar) so a click re-renders the bar + inspector
+  /// on the store (not read via `@Default` in the bar) so a click re-renders the bar + inspector
   /// synchronously — a bare `@Default` write invalidates asynchronously (the `SettingsView` gotcha).
   /// Persisted per-machine via `didSet`; whether the pane is visible at all is `Defaults[.showInspector]`.
   var activeInspectorSection: ActivitySection = Defaults[.activeInspectorSection] {
@@ -539,6 +539,11 @@ final class AppStore: ObservableObject {
       }
     }
   }
+  /// Bumped by every activity-bar click (`apply(_:)`) and View-menu Files toggle, and read by the
+  /// views that also read `Defaults[.showInspector]` through `@Default`: that write invalidates them
+  /// only asynchronously, and a toggle that keeps the section changes nothing else Observation
+  /// tracks, so without this the inspector would open or close only at the next unrelated event.
+  var inspectorToggles = 0
   /// Test seam: keep collapse/size changes in THIS store instead of persisting them to the shared
   /// `inspector.layout.v2` setting — the third half of the gate `inspectorVisibleOverrideForTesting`
   /// and `isolatesInspectorSectionForTesting` cover, and the same cross-worker hazard: a class that
