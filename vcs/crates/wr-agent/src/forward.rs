@@ -85,9 +85,9 @@
 //!
 //! ## Listening (the reverse direction)
 //!
-//! A Debug build of the app has its agent reach the Mac's own development Codaset through this
-//! (codaset.dev is off limits to it), so a process on the agent's box connects to a port HERE and
-//! the client carries the connection to something on its side. Two more methods, and still only
+//! A local container workroom's git asks the Mac for GitHub credentials through this (#309), so a
+//! process on the agent's box connects to a port HERE and the client carries the connection to
+//! something on its side. Two more methods, and still only
 //! client-chosen stream ids:
 //!
 //! ```json
@@ -200,9 +200,9 @@ pub const MAX_LISTENERS: usize = 4;
 /// sockets without limit.
 pub const MAX_PENDING: usize = 8;
 
-/// How long an accepted connection waits to be claimed before it is closed. Well under the broker
-/// client's own 15 s request timeout (`broker.rs`), so a git helper whose Mac cannot reach Codaset
-/// fails in seconds rather than at its own deadline.
+/// How long an accepted connection waits to be claimed before it is closed. Well under the
+/// credential relay's own 15 s timeout (`credential.rs`), so a git helper whose Mac does not claim
+/// it fails in seconds rather than at its own deadline.
 pub const PENDING_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How often a listener's thread wakes with nothing to accept, to notice a kill and expire what
@@ -648,8 +648,8 @@ impl Forwards {
         }
         // Loopback only, so nothing off this box can reach it. Everything ON the box can: a
         // listener is a door into whatever the client connects it to, for every process and user
-        // here. The app opens one only in a Debug build, to the Mac's development Codaset
-        // (`BrokerReverseForwards`, which records what that exposes).
+        // here. The app opens one only for a container workroom's credential relay
+        // (`CredentialRelay`, which records what that exposes).
         let bound = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).and_then(|listener| {
             listener.set_nonblocking(true)?;
             let port = listener.local_addr()?.port();

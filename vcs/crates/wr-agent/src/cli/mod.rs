@@ -2,7 +2,7 @@
 //! a subcommand does, beyond reading its own flags, lives here.
 
 pub mod attach;
-pub mod broker;
+pub mod credential;
 pub mod hand_off;
 pub mod list;
 pub mod relay;
