@@ -1,5 +1,6 @@
 import DesignSystem
 import SwiftUI
+import WorkroomVCS
 
 /// Every number the VCS toolbar uses, in one place.
 ///

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WorkroomVCS
 
 /// The VCS failure dialog: what failed, the whole message, the tool's own output, and every action that
 /// can be taken about it.
