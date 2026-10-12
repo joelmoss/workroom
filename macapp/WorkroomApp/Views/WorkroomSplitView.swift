@@ -1,5 +1,6 @@
 import AppKit
 import Defaults
+import DesignSystem
 import SwiftUI
 import WorkroomDomain
 

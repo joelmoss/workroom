@@ -28,6 +28,8 @@ packages:
   # `swift test` (`make app-package-test`). The app and its hosted test bundle depend on them.
   WorkroomDomain:
     path: Packages/WorkroomDomain
+  DesignSystem:
+    path: Packages/DesignSystem
   WorkroomWire:
     path: Packages/WorkroomWire
   SyntaxHighlighting:
@@ -150,6 +152,7 @@ targets:
         product: Sentry
       - package: Defaults
       # Syntax highlighting: tree-sitter and its grammars, pinned in the package's Package.swift.
+      - package: DesignSystem
       - package: SyntaxHighlighting
       - package: WorkroomDomain
       - package: WorkroomWire
@@ -363,6 +366,7 @@ targets:
       - path: WorkroomAppTests
     dependencies:
       - target: WorkroomApp
+      - package: DesignSystem
       - package: SyntaxHighlighting
       - package: WorkroomDomain
       - package: WorkroomWire

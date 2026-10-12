@@ -1,4 +1,5 @@
 import AppKit
+import DesignSystem
 import SwiftUI
 import SyntaxHighlighting
 import XCTest
@@ -11,7 +12,7 @@ import XCTest
 /// guard. Pure — no parser, no UI, no filesystem.
 @MainActor
 final class DiffHighlightMapperTests: XCTestCase {
-  private func ns(_ hex: String) -> NSColor { ThemeService.parseHex(hex)! }
+  private func ns(_ hex: String) -> NSColor { ThemeCatalog.parseHex(hex)! }
 
   /// Tokens with a distinct palette so each capture colour is identifiable.
   private func tokens() -> ThemeTokens {

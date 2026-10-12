@@ -1,5 +1,6 @@
 import CryptoKit
 import Defaults
+import DesignSystem
 import SwiftUI
 
 extension VCSCommit {

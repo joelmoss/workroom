@@ -1,4 +1,5 @@
 import AppKit
+import DesignSystem
 import XCTest
 
 @testable import Workroom
@@ -29,7 +30,7 @@ final class SwitcherThemeSweepTests: XCTestCase {
       "the app bundle must carry its themes — the terminal can't start without them")
     let names = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
     let themes = names.compactMap {
-      ThemeService.parseThemeFile(atPath: root.path + "/" + $0, name: $0)
+      ThemeCatalog.parseThemeFile(atPath: root.path + "/" + $0, name: $0)
     }
     XCTAssertGreaterThan(
       themes.count, 100, "the bundled set is 116 themes; a near-empty sweep is a bug")

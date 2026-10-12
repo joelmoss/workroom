@@ -1,4 +1,5 @@
 import AppKit
+import DesignSystem
 
 /// A workroom's identity mark for the ⌥Tab rail (issue #132): a colour and a monogram, both derived,
 /// neither stored.

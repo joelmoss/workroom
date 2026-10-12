@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 
 /// The detailed usage breakdown opened by clicking the footer's quota segment — one row per window,

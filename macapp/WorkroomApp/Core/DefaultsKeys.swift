@@ -1,4 +1,5 @@
 import Defaults
+import DesignSystem
 import Foundation
 
 // MARK: - Dotted key names cannot be OBSERVED (measured 2026-09-03)
@@ -61,7 +62,7 @@ extension Defaults.Keys {
   /// the active variant follows `theme`/the OS appearance. Defaults to the shipped `Workroom`
   /// family so existing users get the Workroom look on upgrade. Resolved by `ThemeService`.
   static let themeFamily = Key<String>(
-    "themeFamily", default: ThemeService.defaultFamilyName, suite: .app)
+    "themeFamily", default: ThemeCatalog.defaultFamilyName, suite: .app)
 
   /// Copy a finished terminal selection to the pasteboard automatically (xterm/iTerm2 convention).
   static let copyOnSelect = Key<Bool>("copyOnSelect", default: true, suite: .app)
