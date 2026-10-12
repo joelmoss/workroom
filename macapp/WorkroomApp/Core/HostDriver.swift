@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import WorkroomVCS
 
 /// One provider. Three methods, and the only one that is not provisioning is `openStream`
 /// (design doc, Phase 3). `create` makes each workroom's host: there is no base to derive from

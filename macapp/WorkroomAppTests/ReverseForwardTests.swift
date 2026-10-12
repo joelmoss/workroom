@@ -1,4 +1,5 @@
 import Darwin
+import WorkroomVCS
 import XCTest
 
 @testable import Workroom

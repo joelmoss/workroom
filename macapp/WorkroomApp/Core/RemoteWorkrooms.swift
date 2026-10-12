@@ -1,6 +1,7 @@
 import Defaults
 import Foundation
 import WorkroomDomain
+import WorkroomVCS
 import os
 
 /// Remote workrooms in the app (#253): a workroom on a host of its own, with its own clone, on a

@@ -1,5 +1,6 @@
 import Foundation
 import WorkroomDomain
+import WorkroomVCS
 import WorkroomWire
 
 /// The first `HostDriver`: a Linux container running sshd and a supervised `wr-agent`
